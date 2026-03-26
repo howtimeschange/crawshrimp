@@ -390,6 +390,26 @@ def put_settings(cfg: dict):
     return {"ok": True}
 
 
+class TestNotifyRequest(BaseModel):
+    channel: str  # dingtalk | feishu | webhook
+
+
+@app.post("/settings/test-notify")
+def test_notify(req: TestNotifyRequest):
+    try:
+        notifier.send(
+            channel=req.channel,
+            title="🦐 抓虾通知测试",
+            records=0,
+            adapter_name="crawshrimp",
+            task_name="测试通知",
+            sample_rows=[{"状态": "✅ 通知配置正常", "渠道": req.channel}],
+        )
+        return {"ok": True, "msg": f"{req.channel} 通知发送成功"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/settings/chrome-tabs")
 def chrome_tabs():
     try:

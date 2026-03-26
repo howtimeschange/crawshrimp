@@ -271,10 +271,17 @@ app.whenReady().then(async () => {
 
   await startBackend()
 
-  // Check Chrome status
+  // Auto-launch Chrome with CDP on startup
   const chromeOk = await probeTcp(CDP_PORT)
-  sendStatus('chrome', chromeOk)
-  if (!chromeOk) log('[chrome] CDP not ready — open Settings to launch Chrome')
+  if (chromeOk) {
+    log('[chrome] CDP already ready on port ' + CDP_PORT)
+    sendStatus('chrome', true)
+  } else {
+    log('[chrome] CDP not detected, auto-launching Chrome...')
+    const result = await launchChrome()
+    log('[chrome] ' + result.msg)
+    sendStatus('chrome', result.ok)
+  }
 })
 
 app.on('window-all-closed', () => {
@@ -359,5 +366,13 @@ ipcMain.handle('read-excel', async (_, filePath) => {
     return await apiCall('POST', '/files/read-excel', { path: filePath })
   } catch (e) {
     return { error: e.message, headers: [], rows: [], total: 0 }
+  }
+})
+
+ipcMain.handle('test-notify', async (_, channel) => {
+  try {
+    return await apiCall('POST', '/settings/test-notify', { channel })
+  } catch (e) {
+    return { ok: false, error: e.message }
   }
 })
