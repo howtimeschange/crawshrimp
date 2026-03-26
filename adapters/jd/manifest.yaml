@@ -1,0 +1,65 @@
+id: jd
+name: 京东价格监控
+version: 1.0.0
+author: howtimeschange
+description: "京东店铺全品价格抓取 + 破价检测，支持单次导出和定时巡检"
+entry_url: https://mall.jd.com
+
+auth:
+  check_script: auth_check.js
+  login_url: https://passport.jd.com/new/login.aspx
+
+tasks:
+  - id: price_export
+    name: 导出全店价格
+    description: 抓取店铺全部 SKU 的页面价和吊牌价，导出 Excel，支持自动翻页
+    script: price-export.js
+    params:
+      - id: shop_url
+        type: text
+        label: 店铺主页链接
+        placeholder: "例: https://mall.jd.com/index-1000462158.html"
+        hint: 填写京东店铺主页，脚本自动解析 shop_id 并逐页抓取
+        required: true
+      - id: page_size
+        type: select
+        label: 每页商品数
+        default: "60"
+        options:
+          - value: "30"
+            label: 30 件/页
+          - value: "60"
+            label: 60 件/页（推荐）
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "JD价格_{date}.xlsx"
+
+  - id: price_check
+    name: 破价巡检
+    description: 将当前价格与吊牌价对比，按阈值检测破价 SKU，触发钉钉通知
+    script: price-check.js
+    params:
+      - id: shop_url
+        type: text
+        label: 店铺主页链接
+        placeholder: "例: https://mall.jd.com/index-1000462158.html"
+        hint: 填写京东店铺主页链接
+        required: true
+      - id: threshold
+        type: number
+        label: 破价阈值（折扣 %）
+        hint: 当前台价 ÷ 吊牌价 < 阈值时触发告警，例如填 50 表示 5 折
+        default: 50
+        min: 1
+        max: 99
+    trigger:
+      type: interval
+      interval_minutes: 120
+    output:
+      - type: excel
+        filename: "JD破价记录_{date}.xlsx"
+      - type: notify
+        channel: dingtalk
+        condition: violations > 0
