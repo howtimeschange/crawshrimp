@@ -1,0 +1,13 @@
+node_modules/
+dist/
+python/bundle/
+python-vendor/
+*.pyc
+__pycache__/
+.DS_Store
+~/.crawshrimp/
+data/
+logs/
+*.xlsx
+*.log
+.env

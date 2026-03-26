@@ -1,0 +1,16 @@
+id: my-adapter
+name: My Adapter
+version: 1.0.0
+author: yourname
+description: "What this adapter does"
+entry_url: https://example.com
+
+tasks:
+  - id: my_task
+    name: My Task
+    script: example-task.js
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "result_{date}.xlsx"

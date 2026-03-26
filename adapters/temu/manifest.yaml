@@ -1,0 +1,57 @@
+id: temu
+name: "Temu Seller Assistant"
+version: "1.0.0"
+author: howtimeschange
+description: "Temu seller platform data scraping"
+entry_url: https://seller.temu.com
+
+auth:
+  check_script: auth_check.js
+  login_url: https://seller.temu.com/login
+
+tasks:
+  - id: goods_data
+    name: Product Data
+    description: Scrape all product listings with prices
+    script: goods-data.js
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "goods_{date}.xlsx"
+      - type: notify
+        channel: dingtalk
+        condition: "data.length > 0"
+
+  - id: reviews
+    name: Reviews
+    description: Fetch pending reviews
+    script: reviews.js
+    trigger:
+      type: interval
+      interval_minutes: 60
+    output:
+      - type: json
+      - type: notify
+        channel: dingtalk
+        condition: "data.length > 0"
+
+  - id: aftersales
+    name: After-sales
+    description: Fetch after-sales cases
+    script: aftersales.js
+    trigger:
+      type: interval
+      interval_minutes: 30
+    output:
+      - type: json
+
+  - id: store_items
+    name: Store Items
+    description: Full store item listing
+    script: store-items.js
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "store_items_{date}.xlsx"
