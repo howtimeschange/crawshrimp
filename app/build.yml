@@ -1,0 +1,62 @@
+appId: com.crawshrimp.app
+productName: CrawShrimp
+copyright: "Copyright © 2025"
+electronVersion: "29.4.6"
+
+directories:
+  output: dist
+  buildResources: assets
+
+mac:
+  category: public.app-category.business
+  icon: assets/icon.icns
+  hardenedRuntime: false
+  gatekeeperAssess: false
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+
+win:
+  icon: assets/icon.png
+  target:
+    - target: nsis
+      arch:
+        - x64
+  requestedExecutionLevel: asInvoker
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: CrawShrimp
+
+dmg:
+  title: CrawShrimp
+  window:
+    width: 540
+    height: 380
+
+files:
+  - "src/**/*"
+  - "dist/renderer/**/*"
+  - "package.json"
+  - "node_modules/**/*"
+
+extraResources:
+  # Python scripts (core/ + adapters/)
+  - from: "../core"
+    to: python-scripts/core
+  - from: "../adapters"
+    to: python-scripts/adapters
+  # Python interpreter (downloaded by scripts/download-python.sh)
+  # Actual copy happens in afterPack hook
+
+# afterPack: copies per-arch Python bundle into Resources/python/
+afterPack: scripts/after-pack.js
+
+asarUnpack:
+  - "**/*.node"

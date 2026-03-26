@@ -1,0 +1,24 @@
+{
+  "name": "crawshrimp",
+  "version": "1.0.0",
+  "description": "Universal web automation desktop app",
+  "main": "src/main.js",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"electron .\"",
+    "build": "vite build && electron-builder",
+    "build:mac": "vite build && electron-builder --mac",
+    "build:win": "vite build && electron-builder --win",
+    "vite:build": "vite build"
+  },
+  "dependencies": {
+    "portfinder": "^1.0.32"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.0.4",
+    "concurrently": "^8.2.2",
+    "electron": "29.4.6",
+    "electron-builder": "^24.13.3",
+    "vite": "^5.2.0",
+    "vue": "^3.4.21"
+  }
+}
