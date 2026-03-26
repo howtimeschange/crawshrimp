@@ -46,6 +46,15 @@
               {{ opt.label }}
             </option>
           </select>
+          <!-- 联动：选了「自定义日期/自定义」时，显示日期区间控件 -->
+          <template v-if="isCustomDateSelected(param.id)">
+            <div class="custom-date-hint">自定义范围</div>
+            <div class="date-range" style="margin-top:6px">
+              <input type="date" v-model="values['_custom_start_' + param.id]" class="input" />
+              <span class="date-sep">~</span>
+              <input type="date" v-model="values['_custom_end_' + param.id]" class="input" />
+            </div>
+          </template>
         </template>
 
         <!-- 复选框组 -->
@@ -230,8 +239,22 @@ async function runTask() {
       }
       delete params[p.id + '_start']
       delete params[p.id + '_end']
+    } else if (p.type === 'select') {
+      // 如果选了「自定义」，把对应的日期也打进去
+      const v = values.value[p.id]
+      if (v === '自定义') {
+        params['custom_start'] = values.value['_custom_start_' + p.id] || ''
+        params['custom_end']   = values.value['_custom_end_'   + p.id] || ''
+        // 同时把 custom_range 填进去（兼容 manifest 里单独声明的 date_range）
+        params['custom_range'] = {
+          start: params['custom_start'],
+          end:   params['custom_end'],
+        }
+      }
+      // 清理联动临时字段
+      delete params['_custom_start_' + p.id]
+      delete params['_custom_end_'   + p.id]
     } else if (p.type === 'file_excel') {
-      // 注入 rows 数组和 headers，脚本用 params.{id}.rows / .headers
       params[p.id] = {
         path:    values.value[p.id + '_path'],
         headers: values.value[p.id + '_headers'] || [],
@@ -313,6 +336,11 @@ function fileName(path) {
 
 function openFile(path) {
   window.cs.openFile(path)
+}
+
+function isCustomDateSelected(paramId) {
+  const v = values.value[paramId]
+  return v === '自定义' || v === 'custom'
 }
 
 async function pickExcel(paramId) {
@@ -398,6 +426,7 @@ onUnmounted(() => clearInterval(pollTimer))
 .date-range { display: flex; align-items: center; gap: 10px; }
 .date-sep { font-size: 12px; color: var(--text2); }
 .date-range .input { width: 160px; }
+.custom-date-hint { font-size: 11px; color: var(--text3); margin-top: 10px; font-weight: 600; letter-spacing: 0.04em; }
 
 /* 执行按钮 */
 .action-row { display: flex; align-items: center; gap: 12px; padding-top: 4px; }

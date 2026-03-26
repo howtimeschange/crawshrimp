@@ -1,9 +1,9 @@
 id: temu
 name: Temu 运营助手
-version: 1.0.0
+version: 1.1.0
 author: howtimeschange
 description: "Temu 卖家后台数据抓取：商品数据、售后、评价、店铺商品"
-entry_url: https://seller.temu.com
+entry_url: https://agentseller.temu.com
 
 auth:
   check_script: auth_check.js
@@ -12,7 +12,7 @@ auth:
 tasks:
   - id: goods_data
     name: 商品数据
-    description: 抓取 Temu 商品数据（支付件数、趋势等）
+    description: 抓取 Temu 商品数据（支付件数、趋势等），支持时间区间筛选
     script: goods-data.js
     params:
       - id: mode
@@ -31,12 +31,15 @@ tasks:
         options:
           - value: ""
             label: 默认（不修改）
-          - value: "近7天"
-            label: 近 7 天
-          - value: "近30天"
-            label: 近 30 天
-          - value: "近90天"
-            label: 近 90 天
+          - value: "昨日"
+            label: 昨日
+          - value: "近7日"
+            label: 近 7 日
+          - value: "近30日"
+            label: 近 30 日
+          - value: "自定义"
+            label: 自定义日期
+        hint: 选择「自定义日期」后将出现日期选择器，区间不超过 31 天
     trigger:
       type: manual
     output:
@@ -45,7 +48,7 @@ tasks:
 
   - id: reviews
     name: 店铺评价
-    description: 抓取 Temu 店铺评价列表（评分/文字/时间/图片）
+    description: 抓取 Temu 店铺评价列表（评分/文字/时间/图片），支持中英文双语页面
     script: reviews.js
     params:
       - id: shop_url
@@ -63,7 +66,7 @@ tasks:
 
   - id: aftersales
     name: 售后数据
-    description: 抓取 Temu 商家后台售后管理数据
+    description: 抓取 Temu 商家后台售后管理数据，支持多地区切换
     script: aftersales.js
     params:
       - id: mode
@@ -77,17 +80,15 @@ tasks:
             label: 全新页面（重新导航）
       - id: regions
         type: checkbox
-        label: 筛选地区
-        hint: 不选默认抓取全部地区
+        label: 地区
+        hint: 不选默认抓取全部可用地区
         options:
-          - value: US
+          - value: 全球
+            label: 全球
+          - value: 美国
             label: 美国
-          - value: UK
-            label: 英国
-          - value: DE
-            label: 德国
-          - value: FR
-            label: 法国
+          - value: 欧区
+            label: 欧区
     trigger:
       type: interval
       interval_minutes: 30
@@ -97,7 +98,7 @@ tasks:
 
   - id: store_items
     name: 站点商品
-    description: 抓取 Temu 店铺商品列表（商品名/价格/评分/链接）
+    description: 抓取 Temu 店铺商品列表（商品名/价格/评分/链接），自动加载全量
     script: store-items.js
     params:
       - id: shop_url

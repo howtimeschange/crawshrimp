@@ -1,109 +1,168 @@
-/**
- * store-items.js - Temu store product listing scraper
- * Page: https://www.temu.com/store/... (Items tab)
- *
- * Returns: { success, data: [{name, price, originalPrice, rating, reviewCount, href, imgSrc}] }
- */
 ;(async () => {
-  try {
-    const itemSelectors = [
-      '[class*="goods-item"]',
-      '[class*="GoodsItem"]',
-      '[class*="product-item"]',
-      '[class*="ProductItem"]',
-      '[class*="item-card"]',
-      '[data-type="goods"]'
-    ];
+  const params  = window.__CRAWSHRIMP_PARAMS__ || {}
+  const page    = window.__CRAWSHRIMP_PAGE__ || 1
+  const shopUrl = params.shop_url || ''
 
-    // Wait for items to render
-    let itemEls = [];
-    for (let i = 0; i < 30; i++) {
-      for (const sel of itemSelectors) {
-        itemEls = document.querySelectorAll(sel);
-        if (itemEls.length > 0) break;
+  function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+  // ── 第一页：导航 + 点「商品/Items」tab + 加载全量 ─────────────
+  if (page === 1) {
+    if (shopUrl) {
+      const curPath = location.pathname + location.search
+      const tgtPath = new URL(shopUrl).pathname + new URL(shopUrl).search
+      if (!curPath.startsWith(tgtPath.slice(0, 30))) {
+        location.href = shopUrl
+        await sleep(4000)
       }
-      if (itemEls.length > 0) break;
-      await new Promise(r => setTimeout(r, 500));
     }
 
-    // Click "See More" if present
-    const seeMoreBtns = Array.from(document.querySelectorAll('button, [role="button"], a'))
-      .filter(el => /see more/i.test(el.innerText) && el.offsetParent !== null);
-    for (const btn of seeMoreBtns) {
-      btn.click();
-      await new Promise(r => setTimeout(r, 1500));
+    // 等待 nav 渲染
+    let waited = 0
+    while (document.querySelectorAll('h2._2kIA1PhC').length === 0 && waited < 8000) {
+      await sleep(500); waited += 500
     }
 
-    // Scroll to trigger lazy load
-    const totalH = document.body.scrollHeight;
-    for (let s = 1; s <= 8; s++) {
-      window.scrollTo(0, (totalH / 8) * s);
-      await new Promise(r => setTimeout(r, 300));
+    // 点「商品/Items」tab
+    let clicked = false
+    for (const el of document.querySelectorAll('h2._2kIA1PhC')) {
+      const t = el.innerText.trim()
+      if (t === '商品' || t === 'Items') { el.click(); clicked = true; break }
     }
-    window.scrollTo(0, 0);
-    await new Promise(r => setTimeout(r, 500));
+    await sleep(2000)
 
-    // Re-collect
-    for (const sel of itemSelectors) {
-      const els = document.querySelectorAll(sel);
-      if (els.length > itemEls.length) itemEls = els;
-    }
-
-    // Exclude "Explore Temu's picks" section
-    function isInExploreSection(el) {
-      let node = el;
-      while (node && node !== document.body) {
-        const text = (node.getAttribute('class') || '') + ' ' + (node.innerText || '').slice(0, 100);
-        if (/explore temu.{0,5}picks/i.test(text)) return true;
-        const prev = node.previousElementSibling;
-        if (prev && /explore temu.{0,5}picks/i.test(prev.innerText || '')) return true;
-        node = node.parentElement;
+    // 获取总数
+    function getGoodsTotal() {
+      const containers = document.querySelectorAll('._17RAYb2C._2vH-84kZ')
+      for (const c of containers) {
+        const text = c.innerText
+        if (text.includes('商品') || text.includes('Items')) {
+          const numEl = c.querySelector('._2VVwJmfY')
+          if (numEl) return parseInt(numEl.innerText.trim().replace(/,/g, '')) || 0
+        }
       }
-      return false;
+      const countEl = document.querySelector('._25EQ1kor')
+      if (countEl) {
+        const m = countEl.innerText.trim().match(/^(\d[\d,]*)/)
+        if (m) return parseInt(m[1].replace(/,/g, ''))
+      }
+      return 0
     }
 
-    const data = [];
-    itemEls.forEach(el => {
-      if (isInExploreSection(el)) return;
+    const total = getGoodsTotal()
+    let cur = document.querySelectorAll('div._6q6qVUF5._1UrrHYym').length
 
-      const nameEl = el.querySelector('[class*="title"], [class*="name"], [class*="goods-name"]');
-      const name = nameEl ? nameEl.innerText.trim() : '';
+    // 点「查看更多/See more」直到全量
+    if (total > cur) {
+      let noChangeCount = 0
+      let prevCount = cur
+      for (let i = 0; i < 50; i++) {
+        // 找商品列表区域的 See more 按钮
+        const btn = document.querySelector('[aria-label="See more items"][role="button"]') ||
+          document.querySelector('[aria-label="查看更多商品"][role="button"]')
+        if (!btn) break
 
-      const priceEl = el.querySelector('[class*="price"] [class*="value"], [class*="sale-price"]');
-      const price = priceEl ? priceEl.innerText.trim().replace(/[^\d.,]/g, '') : '';
+        btn.scrollIntoView({ block: 'center' })
+        btn.click()
+        await sleep(1500)
 
-      const origEl = el.querySelector('[class*="original-price"], [class*="origin-price"], del, s');
-      const originalPrice = origEl ? origEl.innerText.trim().replace(/[^\d.,]/g, '') : '';
-
-      const ratingEl = el.querySelector('[class*="rating"], [aria-label*="star"], [class*="score"]');
-      const rating = ratingEl ? (ratingEl.getAttribute('aria-label') || ratingEl.innerText.trim()) : '';
-
-      const reviewCountEl = el.querySelector('[class*="review-count"], [class*="sold"], [class*="comment-count"]');
-      const reviewCount = reviewCountEl ? reviewCountEl.innerText.trim() : '';
-
-      const linkEl = el.querySelector('a[href*="/goods.html"], a[href*="goods_id"], a');
-      const href = linkEl ? linkEl.href : '';
-
-      const imgEl = el.querySelector('img');
-      const imgSrc = imgEl ? imgEl.src : '';
-
-      if (name || price) {
-        data.push({ name, price, originalPrice, rating, reviewCount, href, imgSrc });
+        cur = document.querySelectorAll('div._6q6qVUF5._1UrrHYym').length
+        if (cur >= total) break
+        if (cur === prevCount) {
+          noChangeCount++
+          if (noChangeCount >= 3) break
+        } else {
+          noChangeCount = 0
+        }
+        prevCount = cur
       }
-    });
+    }
+  }
 
-    const nextBtn = document.querySelector(
-      '.ant-pagination-next:not(.ant-pagination-disabled), ' +
-      '[class*="pagination"] [aria-label="Next"]:not([disabled])'
-    );
-    const has_more = !!nextBtn;
+  // ── 抓取商品数据（分批，每次 page 抓 50 条）────────────────────
+  const BATCH = 50
+  const offset = (page - 1) * BATCH
+  const cards = document.querySelectorAll('div._6q6qVUF5._1UrrHYym')
+  const total = cards.length
 
-    return {
-      success: true,
-      data,
-      meta: { has_more, records_on_page: data.length }
-    };
-  } catch (e) {
-    return { success: false, error: e.message };
+  if (offset >= total) {
+    return { success: true, data: [], meta: { has_more: false } }
+  }
+
+  const end = Math.min(offset + BATCH, total)
+  const results = []
+
+  for (let i = offset; i < end; i++) {
+    const card = cards[i]
+    const r = {}
+
+    // 链接
+    const linkEl = card.querySelector('a[href*="-g-"]')
+    r['商品链接'] = linkEl?.href || ''
+
+    // 名称
+    r['商品名称'] = card.getAttribute('data-tooltip-title') || ''
+    if (!r['商品名称'] && linkEl) {
+      r['商品名称'] = linkEl.innerText.trim()
+        .replace(/在新标签页中打开。/g, '')
+        .replace(/Open in a new tab\./gi, '')
+        .trim().split('\n')[0]
+    }
+
+    // 主图
+    const mainImg = card.querySelector('img[data-js-main-img="true"]') ||
+      card.querySelector('img[src*="kwcdn.com/product"]')
+    r['商品图片'] = mainImg?.src || ''
+
+    // 价格（收集 ¥/$/€/£ 格式的价格）
+    const prices = []
+    for (const el of card.querySelectorAll('*')) {
+      const txt = el.children.length === 0 ? el.innerText?.trim() : ''
+      if (txt && (txt.match(/^[A-Z]{0,3}\$[\d.]+$/) || txt.match(/^[¥€£][\d,.]+$/))) {
+        if (!prices.includes(txt)) prices.push(txt)
+      }
+    }
+    r['价格'] = prices[0] || ''
+    r['原价'] = prices[1] || ''
+
+    // 销量
+    r['销量'] = ''
+    const soldEls = card.querySelectorAll('._2XgTiMJi')
+    for (const el of soldEls) {
+      const t = el.innerText.trim()
+      if (t.startsWith('已售') || /^[Ss]old/i.test(t) || /^\d+.*(?:件|sold)/i.test(t)) {
+        r['销量'] = t.replace(/^已售/, '').replace(/^[Ss]old\s*/i, '').replace(/sold$/i, '')
+        break
+      }
+    }
+    if (!r['销量']) {
+      for (const el of card.querySelectorAll('*')) {
+        const t = el.children.length === 0 ? el.innerText?.trim() : ''
+        if (t && (t.match(/^[\d.万千,]+件$/) || t.toLowerCase().match(/^[\d,]+\s*sold/))) {
+          r['销量'] = t; break
+        }
+      }
+    }
+
+    // 评分
+    r['评分'] = ''
+    for (const el of card.querySelectorAll('*')) {
+      const t = el.children.length === 0 ? el.innerText?.trim() : ''
+      if (t && (t.match(/^[1-5]星/) || t.match(/^[1-5]\s*star/i))) {
+        r['评分'] = t; break
+      }
+    }
+
+    // goods_id
+    const tooltip = card.getAttribute('data-tooltip') || ''
+    const m1 = tooltip.match(/goodContainer-(\d+)/)
+    r['goods_id'] = m1 ? m1[1] : (r['商品链接'].match(/g-(\d+)\.html/) || ['',''])[1]
+
+    if (r['商品名称'] || r['商品链接']) results.push(r)
+  }
+
+  return {
+    success: true,
+    data: results,
+    meta: { has_more: end < total }
   }
 })()
