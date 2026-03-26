@@ -36,7 +36,7 @@ _run_logs: dict = {}   # job_id -> list[str]
 _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
 
 
-async def _execute_task(adapter_id: str, task_id: str):
+async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
     """
     Core task execution pipeline:
     1. Find matching Chrome tab via CDP
@@ -83,7 +83,7 @@ async def _execute_task(adapter_id: str, task_id: str):
 
         runner = JSRunner(bridge.get_tab_ws_url(tab))
         log(f"Injecting script: {task.script}")
-        data = await runner.run_script_file(script_path)
+        data = await runner.run_script_file(script_path, params=params or {})
         log(f"Script complete. Records: {len(data)}")
 
         # Process outputs
@@ -261,6 +261,8 @@ def list_tasks():
                 "adapter_name": m.name,
                 "task_id": task.id,
                 "task_name": task.name,
+                "description": task.description,
+                "params": [p.model_dump() for p in task.params],
                 "trigger": task.trigger.model_dump(),
                 "enabled": item['enabled'],
                 "next_run": scheduled.get(jid, {}).get('next_run'),
@@ -270,14 +272,18 @@ def list_tasks():
     return result
 
 
+class RunTaskRequest(BaseModel):
+    params: Optional[dict] = None
+
+
 @app.post("/tasks/{adapter_id}/{task_id}/run")
-async def run_task(adapter_id: str, task_id: str, background_tasks: BackgroundTasks):
+async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskRequest(), background_tasks: BackgroundTasks = None):
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
         raise HTTPException(404, f"Adapter not found: {adapter_id}")
     if not any(t.id == task_id for t in m.tasks):
         raise HTTPException(404, f"Task not found: {task_id}")
-    background_tasks.add_task(_execute_task, adapter_id, task_id)
+    background_tasks.add_task(_execute_task, adapter_id, task_id, req.params or {})
     return {"ok": True, "message": "Task started in background"}
 
 

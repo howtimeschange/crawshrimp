@@ -317,10 +317,11 @@ ipcMain.handle('install-adapter', async (_, payload) => {
 })
 
 ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks'))
-ipcMain.handle('run-task',        async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/run`))
+ipcMain.handle('run-task',        async (_, aid, tid, params) =>
+  apiCall('POST', `/tasks/${aid}/${tid}/run`, { params: params || {} }))
 ipcMain.handle('get-task-status', async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/status`))
 ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/logs`))
-ipcMain.handle('stop-task', async () => ({ ok: false, msg: 'Use task run to trigger; stop is per-process' }))
+ipcMain.handle('stop-task', async () => ({ ok: false, msg: 'Use task run to trigger' }))
 
 ipcMain.handle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
 ipcMain.handle('export-data', async (_, aid, tid, fmt) => {
@@ -330,6 +331,11 @@ ipcMain.handle('export-data', async (_, aid, tid, fmt) => {
   } catch (e) {
     return { ok: false, error: e.message }
   }
+})
+
+ipcMain.handle('open-file', async (_, filePath) => {
+  shell.openPath(filePath)
+  return { ok: true }
 })
 
 ipcMain.handle('get-settings',  async () => apiCall('GET', '/settings'))

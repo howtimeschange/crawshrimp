@@ -75,13 +75,20 @@ class JSRunner:
             error=val.get("error"),
         )
 
-    async def run_script_file(self, script_path: Path) -> List[dict]:
-        """执行脚本文件，支持自动分页，返回合并后的所有 data 记录"""
+    async def run_script_file(self, script_path: Path, params: dict = None) -> List[dict]:
+        """执行脚本文件，支持自动分页，返回合并后的所有 data 记录
+        params: 用户填写的参数，注入为 window.__CRAWSHRIMP_PARAMS__
+        """
         script = script_path.read_text(encoding="utf-8")
         all_data: List[dict] = []
+        params_json = json.dumps(params or {}, ensure_ascii=False)
 
         for page in range(1, MAX_PAGES + 1):
-            paged = f"window.__CRAWSHRIMP_PAGE__ = {page};\n" + script
+            preamble = (
+                f"window.__CRAWSHRIMP_PAGE__ = {page};\n"
+                f"window.__CRAWSHRIMP_PARAMS__ = {params_json};\n"
+            )
+            paged = preamble + script
             result = await self.evaluate(paged)
 
             if not result.success:

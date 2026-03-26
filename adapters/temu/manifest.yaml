@@ -1,8 +1,8 @@
 id: temu
-name: "Temu Seller Assistant"
-version: "1.0.0"
+name: Temu 运营助手
+version: 1.0.0
 author: howtimeschange
-description: "Temu seller platform data scraping"
+description: "Temu 卖家后台数据抓取：商品数据、售后、评价、店铺商品"
 entry_url: https://seller.temu.com
 
 auth:
@@ -11,47 +11,103 @@ auth:
 
 tasks:
   - id: goods_data
-    name: Product Data
-    description: Scrape all product listings with prices
+    name: 商品数据
+    description: 抓取 Temu 商品数据（支付件数、趋势等）
     script: goods-data.js
+    params:
+      - id: mode
+        type: radio
+        label: 登录模式
+        default: current
+        options:
+          - value: current
+            label: 在当前页面（已登录）
+          - value: new
+            label: 全新页面（重新导航）
+      - id: time_range
+        type: select
+        label: 时间区间
+        default: ""
+        options:
+          - value: ""
+            label: 默认（不修改）
+          - value: "近7天"
+            label: 近 7 天
+          - value: "近30天"
+            label: 近 30 天
+          - value: "近90天"
+            label: 近 90 天
     trigger:
       type: manual
     output:
       - type: excel
-        filename: "goods_{date}.xlsx"
-      - type: notify
-        channel: dingtalk
-        condition: "data.length > 0"
+        filename: "商品数据_{date}.xlsx"
 
   - id: reviews
-    name: Reviews
-    description: Fetch pending reviews
+    name: 店铺评价
+    description: 抓取 Temu 店铺评价列表（评分/文字/时间/图片）
     script: reviews.js
+    params:
+      - id: shop_url
+        type: text
+        label: 店铺链接
+        placeholder: "例: https://www.temu.com/mall.html?mall_id=634418214560482"
+        hint: 请填写 Temu 店铺主页链接（mall.html?mall_id=...），脚本会自动点击「Reviews/评价」tab
+        required: true
     trigger:
       type: interval
       interval_minutes: 60
     output:
-      - type: json
-      - type: notify
-        channel: dingtalk
-        condition: "data.length > 0"
+      - type: excel
+        filename: "店铺评价_{date}.xlsx"
 
   - id: aftersales
-    name: After-sales
-    description: Fetch after-sales cases
+    name: 售后数据
+    description: 抓取 Temu 商家后台售后管理数据
     script: aftersales.js
+    params:
+      - id: mode
+        type: radio
+        label: 登录模式
+        default: current
+        options:
+          - value: current
+            label: 在当前页面（已登录）
+          - value: new
+            label: 全新页面（重新导航）
+      - id: regions
+        type: checkbox
+        label: 筛选地区
+        hint: 不选默认抓取全部地区
+        options:
+          - value: US
+            label: 美国
+          - value: UK
+            label: 英国
+          - value: DE
+            label: 德国
+          - value: FR
+            label: 法国
     trigger:
       type: interval
       interval_minutes: 30
     output:
-      - type: json
+      - type: excel
+        filename: "售后数据_{date}.xlsx"
 
   - id: store_items
-    name: Store Items
-    description: Full store item listing
+    name: 站点商品
+    description: 抓取 Temu 店铺商品列表（商品名/价格/评分/链接）
     script: store-items.js
+    params:
+      - id: shop_url
+        type: text
+        label: 店铺链接
+        placeholder: "例: https://www.temu.com/mall.html?mall_id=634418214560482"
+        hint: 请填写 Temu 店铺主页链接
+        required: true
     trigger:
       type: manual
     output:
       - type: excel
-        filename: "store_items_{date}.xlsx"
+        filename: "站点商品_{date}.xlsx"

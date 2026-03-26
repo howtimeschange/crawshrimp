@@ -30,11 +30,40 @@ class TaskTrigger(BaseModel):
     cron: Optional[str] = None
 
 
+class ParamType(str, Enum):
+    text       = "text"        # 单行文本输入
+    radio      = "radio"       # 单选框组
+    select     = "select"      # 下拉选择
+    checkbox   = "checkbox"    # 复选框组（多选）
+    date_range = "date_range"  # 日期区间（start_date / end_date）
+    number     = "number"      # 数字输入
+
+
+class ParamOption(BaseModel):
+    value: str
+    label: str
+
+
+class TaskParam(BaseModel):
+    id: str                            # 参数 key，注入到 window.__CRAWSHRIMP_PARAMS__
+    type: ParamType
+    label: str
+    placeholder: Optional[str] = None
+    hint: Optional[str] = None
+    default: Optional[Any] = None
+    options: Optional[List[ParamOption]] = None  # radio / select / checkbox 用
+    required: bool = False
+    min: Optional[float] = None        # number 用
+    max: Optional[float] = None
+    step: Optional[float] = None
+
+
 class TaskDefinition(BaseModel):
     id: str
     name: str
     description: Optional[str] = None
     script: str
+    params: List[TaskParam] = []       # 脚本声明的 UI 输入参数
     trigger: TaskTrigger = TaskTrigger()
     output: List[TaskOutput] = []
 
