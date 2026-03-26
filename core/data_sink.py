@@ -26,7 +26,9 @@ def _data_root() -> Path:
 
 def _db_path() -> Path:
     base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    return Path(base) / "crawshrimp.db"
+    p = Path(base)
+    p.mkdir(parents=True, exist_ok=True)   # auto-create ~/.crawshrimp/
+    return p / "crawshrimp.db"
 
 
 def _get_conn() -> sqlite3.Connection:
