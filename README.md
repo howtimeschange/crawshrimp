@@ -1,48 +1,191 @@
 # 🦐 抓虾 · crawshrimp
 
-> 通用网页自动化底座 — 安装适配包，启动即用
+**通用网页自动化底座** — 安装适配包，点击运行，数据自动导出。
+
+[![GitHub release](https://img.shields.io/github/v/release/howtimeschange/crawshrimp?label=latest)](https://github.com/howtimeschange/crawshrimp/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
+---
 
 ## 是什么
 
-抓虾是一个桌面应用底座（Electron + Python），核心能力：
+crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具体的爬虫逻辑，而是提供：
 
-- 通过 **Chrome DevTools Protocol（CDP）** 直连用户已登录的浏览器
-- 向目标页面注入 **JS 脚本**，提取数据 / 执行操作
-- 提供 **插件化适配包**（Adapter）机制：每个平台一个包，底座负责加载、调度、导出
-- 内置 **Vue 前端 GUI**：平台管理 / 任务面板 / 数据查看 / 设置
+- 🔌 **插件化适配包（Adapter）** — 每个平台一个包，安装即可使用
+- 🌐 **CDP 直连浏览器** — 脚本在你已登录的 Chrome 里运行，不需要重新登录
+- 💉 **JS 注入执行** — 适配包只写 JS，底座负责注入、分页、超时重试
+- 📊 **自动导出** — Excel / JSON 全自动存文件，可选定时通知
+- 🖥 **Vue 3 GUI** — 平台管理、任务面板、数据预览、设置，开箱即用
+
+### 内置适配包
+
+| 适配包 | 平台 | 功能 |
+|--------|------|------|
+| `temu` | Temu 卖家后台 | 商品数据 / 售后管理 / 店铺评价 / 站点商品 |
+| `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
+
+---
 
 ## 快速开始
+
+### 前置条件
+
+- Chrome 浏览器（用 `--remote-debugging-port=9222` 启动，见下）
+- Python 3.10+
+- Node.js 18+
+
+### 1. 克隆并安装
 
 ```bash
 git clone https://github.com/howtimeschange/crawshrimp
 cd crawshrimp
 
-# 安装 Python 依赖
-cd core && pip install -r requirements.txt
+# Python 依赖
+python3 -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r core/requirements.txt
 
-# 启动 Python Core
-python api_server.py
-
-# 另开终端，启动 Electron
-cd ../app && npm install && npm start
+# 前端依赖
+cd app && npm install && cd ..
 ```
+
+### 2. 启动带 CDP 的 Chrome
+
+```bash
+# macOS
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome \
+  --remote-debugging-port=9222 \
+  --user-data-dir=/tmp/chrome-crawshrimp
+
+# Windows
+chrome.exe --remote-debugging-port=9222 --user-data-dir=%TEMP%\chrome-crawshrimp
+
+# Linux
+google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-crawshrimp
+```
+
+> 提示：启动后在浏览器里正常登录目标平台，之后才能运行脚本。
+
+### 3. 启动抓虾
+
+```bash
+# 方式一：开发模式（前端热重载）
+bash dev.sh
+
+# 方式二：分步启动
+PYTHONPATH=. venv/bin/python3 core/api_server.py &   # 后端
+cd app && npm run dev                                  # Vite dev server
+# 另开终端
+cd app && npm run electron                             # Electron
+```
+
+API 服务默认运行在 `http://127.0.0.1:18765`，可通过环境变量 `CRAWSHRIMP_PORT` 修改。
+
+---
 
 ## 目录结构
 
 ```
 crawshrimp/
-├── core/              # Python 底座（FastAPI + CDP + 调度 + 导出）
-├── app/               # Electron 前端（Vue 3 + Vite）
-├── adapters/          # 内置示例适配包
-│   └── temu/          # Temu 商家助手
-├── sdk/               # 适配包开发工具 & 规范文档
-└── .github/workflows/ # CI/CD
+├── core/                     # Python 底座
+│   ├── api_server.py         # FastAPI 入口，所有 HTTP 端点
+│   ├── cdp_bridge.py         # CDP 连接管理（websockets 直连）
+│   ├── js_runner.py          # JS 注入执行器（分页 / 超时 / 重试）
+│   ├── adapter_loader.py     # 适配包扫描 / 安装 / 校验
+│   ├── scheduler.py          # 任务调度（APScheduler）
+│   ├── data_sink.py          # 数据落盘（Excel / JSON / SQLite）
+│   ├── notifier.py           # 通知推送（钉钉 / Feishu / Webhook）
+│   ├── config.py             # 全局配置读写
+│   └── models.py             # Pydantic 数据模型
+├── app/                      # Electron + Vue 3 前端
+│   ├── src/main.js           # Electron 主进程
+│   ├── src/preload.js        # IPC bridge（window.cs.*）
+│   └── src/renderer/         # Vue 3 视图
+├── adapters/                 # 内置适配包
+│   ├── temu/                 # Temu 运营助手
+│   └── jd/                   # 京东价格监控
+└── sdk/                      # 开发工具 & 规范
+    ├── ADAPTER_GUIDE.md      # 开发文档（详细版）
+    └── manifest.schema.json  # manifest.yaml JSON Schema
 ```
 
-## 开发适配包
+---
 
-见 [sdk/ADAPTER_GUIDE.md](sdk/ADAPTER_GUIDE.md)
+## 安装适配包
+
+### 从本地目录安装
+
+```bash
+curl -X POST http://localhost:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/path/to/my-adapter"}'
+```
+
+### 从 ZIP 包安装
+
+```bash
+curl -X POST http://localhost:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/path/to/adapter.zip"}'
+```
+
+也可以在 GUI 的「我的脚本」页面点击安装按钮，选择文件夹或 ZIP 文件。
+
+---
+
+## 写一个适配包
+
+最小结构：
+
+```
+my-adapter/
+  manifest.yaml
+  my-task.js
+```
+
+**manifest.yaml（最简版）**
+
+```yaml
+id: my-adapter
+name: 我的适配包
+version: 1.0.0
+entry_url: https://example.com
+
+tasks:
+  - id: scrape_data
+    name: 抓取数据
+    script: my-task.js
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "数据_{date}.xlsx"
+```
+
+**my-task.js（最简版）**
+
+```js
+;(async () => {
+  const data = []
+  document.querySelectorAll('table tr').forEach(row => {
+    const cells = [...row.querySelectorAll('td')].map(td => td.textContent.trim())
+    if (cells.length) data.push({ col1: cells[0], col2: cells[1] })
+  })
+  return { success: true, data, meta: { has_more: false } }
+})()
+```
+
+详细开发文档见 → **[sdk/ADAPTER_GUIDE.md](sdk/ADAPTER_GUIDE.md)**
+
+---
 
 ## 相关项目
 
-- [temu-assistant](https://github.com/howtimeschange/temu-assistant) — 抓虾的前身，Temu 专用版
+- [jd-price-monitor](https://github.com/howtimeschange/jd-price-monitor) — 京东价格监控（独立版，crawshrimp JD 适配包的前身）
+- [temu-assistant](https://github.com/howtimeschange/temu-assistant) — Temu 运营助手（独立版，crawshrimp Temu 适配包的前身）
+
+---
+
+## License
+
+MIT
