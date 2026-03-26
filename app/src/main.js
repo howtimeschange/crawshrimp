@@ -342,10 +342,22 @@ ipcMain.handle('get-settings',  async () => apiCall('GET', '/settings'))
 ipcMain.handle('save-settings', async (_, cfg) => apiCall('PUT', '/settings', cfg))
 
 ipcMain.handle('browse-file', async (_, opts = {}) => {
+  const props = opts.directory ? ['openDirectory'] : ['openFile']
+  const filters = opts.filters || (opts.excel
+    ? [{ name: 'Excel / CSV', extensions: ['xlsx', 'xls', 'csv'] }, { name: '所有文件', extensions: ['*'] }]
+    : [{ name: '所有文件', extensions: ['*'] }])
   const res = await dialog.showOpenDialog(mainWindow, {
-    title: opts.title || 'Select file',
-    properties: opts.directory ? ['openDirectory'] : ['openFile'],
-    filters: opts.filters || [],
+    title: opts.title || '选择文件',
+    properties: props,
+    filters,
   })
   return res.canceled ? '' : res.filePaths[0] || ''
+})
+
+ipcMain.handle('read-excel', async (_, filePath) => {
+  try {
+    return await apiCall('POST', '/files/read-excel', { path: filePath })
+  } catch (e) {
+    return { error: e.message, headers: [], rows: [], total: 0 }
+  }
 })

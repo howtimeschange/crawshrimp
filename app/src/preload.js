@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('cs', {
   getData:         (aid, tid) => ipcRenderer.invoke('get-data', aid, tid),
   exportData:      (aid, tid, fmt) => ipcRenderer.invoke('export-data', aid, tid, fmt),
   openFile:        (path) => ipcRenderer.invoke('open-file', path),
+  readExcel:       (path) => ipcRenderer.invoke('read-excel', path),
 
   getSettings:     () => ipcRenderer.invoke('get-settings'),
   saveSettings:    (cfg) => ipcRenderer.invoke('save-settings', cfg),

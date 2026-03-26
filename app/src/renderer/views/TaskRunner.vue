@@ -81,6 +81,24 @@
             class="input input-number"
           />
         </template>
+
+        <!-- Excel / CSV 文件上传 -->
+        <template v-else-if="param.type === 'file_excel'">
+          <div class="file-picker">
+            <div class="file-chosen" :class="{ empty: !values[param.id + '_path'] }" @click="pickExcel(param.id)">
+              <span class="f-ico">📊</span>
+              <span class="f-label">{{ values[param.id + '_path'] ? fileName(values[param.id + '_path']) : '点击选择 Excel / CSV 文件…' }}</span>
+              <span v-if="values[param.id + '_path']" class="f-clear" @click.stop="clearExcel(param.id)">✕</span>
+            </div>
+            <button class="btn-pick" @click="pickExcel(param.id)">选择文件</button>
+          </div>
+          <div v-if="values[param.id + '_rows']?.length" class="excel-preview">
+            <span class="preview-count">已读取 {{ values[param.id + '_rows'].length }} 行</span>
+            <span class="preview-cols">列：{{ values[param.id + '_headers']?.join(' / ') }}</span>
+          </div>
+          <div v-if="excelLoading[param.id]" class="excel-loading">读取文件中…</div>
+          <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+        </template>
       </div>
 
       <!-- 执行按钮 -->
@@ -161,6 +179,7 @@ const lastResult = ref(null)
 const logEl = ref(null)
 const outputFiles = ref([])
 const showFiles = ref(false)
+const excelLoading = ref({})
 let pollTimer = null
 
 // 初始化默认值
@@ -170,6 +189,11 @@ watch(() => props.task, (task) => {
   for (const p of (task.params || [])) {
     if (p.type === 'checkbox') v[p.id] = p.default || []
     else if (p.type === 'date_range') { v[p.id + '_start'] = ''; v[p.id + '_end'] = '' }
+    else if (p.type === 'file_excel') {
+      v[p.id + '_path'] = ''
+      v[p.id + '_rows'] = []
+      v[p.id + '_headers'] = []
+    }
     else v[p.id] = p.default ?? ''
   }
   values.value = v
@@ -181,7 +205,11 @@ watch(() => props.task, (task) => {
 
 const missingRequired = computed(() => {
   if (!props.task) return false
-  return (props.task.params || []).some(p => p.required && !values.value[p.id])
+  return (props.task.params || []).some(p => {
+    if (!p.required) return false
+    if (p.type === 'file_excel') return !values.value[p.id + '_path']
+    return !values.value[p.id]
+  })
 })
 
 async function runTask() {
@@ -202,6 +230,16 @@ async function runTask() {
       }
       delete params[p.id + '_start']
       delete params[p.id + '_end']
+    } else if (p.type === 'file_excel') {
+      // 注入 rows 数组和 headers，脚本用 params.{id}.rows / .headers
+      params[p.id] = {
+        path:    values.value[p.id + '_path'],
+        headers: values.value[p.id + '_headers'] || [],
+        rows:    values.value[p.id + '_rows'] || [],
+      }
+      delete params[p.id + '_path']
+      delete params[p.id + '_rows']
+      delete params[p.id + '_headers']
     }
   }
 
@@ -275,6 +313,35 @@ function fileName(path) {
 
 function openFile(path) {
   window.cs.openFile(path)
+}
+
+async function pickExcel(paramId) {
+  const path = await window.cs.browseFile({
+    title: '选择 Excel 或 CSV 文件',
+    excel: true,
+  })
+  if (!path) return
+  values.value[paramId + '_path'] = path
+  values.value[paramId + '_rows'] = []
+  values.value[paramId + '_headers'] = []
+  excelLoading.value[paramId] = true
+  try {
+    const r = await window.cs.readExcel(path)
+    if (r.rows) {
+      values.value[paramId + '_rows'] = r.rows
+      values.value[paramId + '_headers'] = r.headers
+    }
+  } catch (e) {
+    values.value[paramId + '_path'] = ''
+  } finally {
+    excelLoading.value[paramId] = false
+  }
+}
+
+function clearExcel(paramId) {
+  values.value[paramId + '_path'] = ''
+  values.value[paramId + '_rows'] = []
+  values.value[paramId + '_headers'] = []
 }
 
 onUnmounted(() => clearInterval(pollTimer))
@@ -389,4 +456,31 @@ onUnmounted(() => clearInterval(pollTimer))
 .log-line.ok   { color: #4ade80; }
 .log-line.err  { color: #f87171; }
 .log-line.warn { color: #fbbf24; }
+
+/* Excel 文件选择控件 */
+.file-picker { display: flex; gap: 8px; align-items: center; }
+.file-chosen {
+  flex: 1; display: flex; align-items: center; gap: 8px;
+  background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
+  padding: 8px 12px; cursor: pointer; transition: border-color 0.15s;
+  min-width: 0;
+}
+.file-chosen:hover { border-color: var(--orange); }
+.file-chosen.empty .f-label { color: var(--text3); }
+.f-ico { font-size: 15px; flex-shrink: 0; }
+.f-label { flex: 1; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.f-clear { font-size: 12px; color: var(--text3); flex-shrink: 0; line-height: 1; }
+.f-clear:hover { color: #f87171; }
+.btn-pick {
+  padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
+  background: var(--bg3); color: var(--text2); font-size: 12px; white-space: nowrap;
+}
+.btn-pick:hover { background: var(--orange-bg); color: var(--orange); border-color: var(--orange); }
+.excel-preview {
+  display: flex; gap: 12px; align-items: center;
+  padding: 5px 10px; background: rgba(74,222,128,0.07); border-radius: 6px;
+}
+.preview-count { font-size: 12px; color: #4ade80; font-weight: 600; }
+.preview-cols { font-size: 11px; color: var(--text3); }
+.excel-loading { font-size: 12px; color: var(--text3); padding: 4px 0; }
 </style>

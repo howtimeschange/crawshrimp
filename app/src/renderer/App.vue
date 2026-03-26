@@ -203,7 +203,8 @@ input, select, textarea { font-family: inherit; }
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  padding: 0 80px 0 20px;
+  /* macOS 红绿灯按钮区约 78px，右侧留空给全屏等 */
+  padding: 0 20px 0 88px;
   gap: 8px;
 }
 .logo { font-size: 18px; }
