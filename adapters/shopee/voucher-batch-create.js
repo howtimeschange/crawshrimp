@@ -309,21 +309,46 @@
   }
 
   function getDatePickerHeader(panel) {
-    const year = Number((textOf(panel?.querySelector('.date-default-style.year')) || '').replace(/\D+/g, ''))
-    const month = Number((textOf(panel?.querySelector('.date-default-style.month')) || '').replace(/\D+/g, ''))
+    const root = panel?.querySelector('.date-box') || panel
+    const year = Number((textOf(root?.querySelector('.year, .date-default-style.year')) || '').replace(/\D+/g, ''))
+    const month = Number((textOf(root?.querySelector('.month, .date-default-style.month')) || '').replace(/\D+/g, ''))
     if (!year || !month) return null
     return { year, month }
   }
 
   function getPickerNavButtons(panel) {
-    const icons = [...panel.querySelectorAll('.eds-react-date-picker__header .eds-react-icon')]
-    const btns = icons.map(icon => icon.closest('span, button, div') || icon).filter(Boolean)
-    return {
-      prevYear: btns[0] || null,
-      prevMonth: btns[1] || null,
-      nextMonth: btns[2] || null,
-      nextYear: btns[3] || null,
+    const btns = [...panel.querySelectorAll('.eds-react-date-picker__header .btn-arrow-default')].filter(visible)
+    if (btns.length >= 4) {
+      return {
+        prevYear: btns[0] || null,
+        prevMonth: btns[1] || null,
+        nextMonth: btns[2] || null,
+        nextYear: btns[3] || null,
+      }
     }
+    const icons = [...panel.querySelectorAll('.eds-react-date-picker__header .eds-react-icon')]
+    const fallback = icons.map(icon => icon.closest('span, button, div') || icon).filter(Boolean)
+    return {
+      prevYear: fallback[0] || null,
+      prevMonth: fallback[1] || null,
+      nextMonth: fallback[2] || null,
+      nextYear: fallback[3] || null,
+    }
+  }
+
+  async function clickNavAndVerify(panel, btn, expectedDirection) {
+    if (!btn) return false
+    const before = getDatePickerHeader(panel)
+    if (!before) return false
+    click(btn)
+    await sleep(180)
+    const after = getDatePickerHeader(panel)
+    if (!after) return false
+    if (expectedDirection === 'prevYear') return after.year < before.year
+    if (expectedDirection === 'nextYear') return after.year > before.year
+    if (expectedDirection === 'prevMonth') return (after.year < before.year) || (after.year === before.year && after.month < before.month)
+    if (expectedDirection === 'nextMonth') return (after.year > before.year) || (after.year === before.year && after.month > before.month)
+    return false
   }
 
   async function navigateDatePicker(panel, target) {
@@ -332,12 +357,16 @@
       if (!header) break
       if (header.year === target.year && header.month === target.month) return true
       const nav = getPickerNavButtons(panel)
+      let moved = false
       if (header.year !== target.year) {
-        tap(header.year > target.year ? nav.prevYear : nav.nextYear)
+        const dir = header.year > target.year ? 'prevYear' : 'nextYear'
+        moved = await clickNavAndVerify(panel, nav[dir], dir)
+        if (!moved) throw new Error(`日期面板${dir}箭头点击后年月未变化`)
       } else if (header.month !== target.month) {
-        tap(header.month > target.month ? nav.prevMonth : nav.nextMonth)
+        const dir = header.month > target.month ? 'prevMonth' : 'nextMonth'
+        moved = await clickNavAndVerify(panel, nav[dir], dir)
+        if (!moved) throw new Error(`日期面板${dir}箭头点击后年月未变化`)
       }
-      await sleep(180)
     }
     const header = getDatePickerHeader(panel)
     return !!header && header.year === target.year && header.month === target.month
