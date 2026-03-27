@@ -827,70 +827,106 @@
     // FORM_FILL_REST — 填写其余字段
     // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'form_fill_rest') {
-      const result = shared.result || buildResult()
+      const result   = shared.result || buildResult()
+      const warnings = []
 
       // 1. 提前显示优惠券
-      const showEarlyKey = Object.keys(row).find(k => k.replace(/\s+/g, '').includes('是否提前显示'))
-      const showEarly    = boolLike(showEarlyKey ? row[showEarlyKey] : '')
-      await setShowEarly(showEarly)
+      try {
+        const showEarlyKey = Object.keys(row).find(k => k.replace(/\s+/g, '').includes('是否提前显示'))
+        const showEarly    = boolLike(showEarlyKey ? row[showEarlyKey] : '')
+        await setShowEarly(showEarly)
+      } catch (e) { warnings.push(`提前显示：${e.message}`) }
 
       // 2. 奖励类型
-      const rewardType = norm(row['奖励类型'] || '')
-      if (rewardType) await setRewardType(rewardType)
+      try {
+        const rewardType = norm(row['奖励类型'] || '')
+        if (rewardType) await setRewardType(rewardType)
+      } catch (e) { warnings.push(`奖励类型：${e.message}`) }
 
       // 3. 折扣类型
       const discountType = norm(row['折扣类型'] || '')
       let actualDiscountType = discountType
-      if (discountType) actualDiscountType = await setDiscountType(discountType)
+      try {
+        if (discountType) actualDiscountType = await setDiscountType(discountType)
+      } catch (e) { warnings.push(`折扣类型：${e.message}`) }
 
       // 4. 优惠限额
-      const rawLimit = digitsOnly(row['优惠限额'] || '')
-      if (rawLimit) {
-        const limitValue = discountLimitValue(rawLimit, actualDiscountType || discountType)
-        await fillDiscountLimit(limitValue)
-      }
+      try {
+        const rawLimit = digitsOnly(row['优惠限额'] || '')
+        if (rawLimit) {
+          const limitValue = discountLimitValue(rawLimit, actualDiscountType || discountType)
+          await fillDiscountLimit(limitValue)
+        }
+      } catch (e) { warnings.push(`优惠限额：${e.message}`) }
 
       // 5. 最高优惠金额
-      const maxDiscount = digitsOnly(row['最高优惠金额'] || '')
-      if (maxDiscount) await fillMaxDiscount(maxDiscount)
+      try {
+        const maxDiscount = digitsOnly(row['最高优惠金额'] || '')
+        if (maxDiscount) await fillMaxDiscount(maxDiscount)
+      } catch (e) { warnings.push(`最高优惠金额：${e.message}`) }
 
       // 6. 最低消费金额
-      const minSpend = digitsOnly(row['最低消费金额'] || '')
-      if (minSpend) {
-        const item = getFormItem('最低消费金额')
-        if (item) {
-          const inp = getTextInputs(item)[0]
-          if (inp) await typeInto(inp, String(toNumber(minSpend)))
+      try {
+        const minSpend = digitsOnly(row['最低消费金额'] || '')
+        if (minSpend) {
+          const item = getFormItem('最低消费金额')
+          if (item) {
+            const inp = getTextInputs(item)[0]
+            if (inp) await typeInto(inp, String(toNumber(minSpend)))
+          }
         }
-      }
+      } catch (e) { warnings.push(`最低消费金额：${e.message}`) }
 
       // 7. 可使用总数
-      const totalCount = digitsOnly(row['可使用总数'] || '')
-      if (totalCount) {
-        const item = getFormItem(['可使用总数', '优惠券可使用总数'])
-        if (item) {
-          const inp = getTextInputs(item)[0]
-          if (inp) await typeInto(inp, String(toNumber(totalCount)))
+      try {
+        const totalCount = digitsOnly(row['可使用总数'] || '')
+        if (totalCount) {
+          const item = getFormItem(['可使用总数', '优惠券可使用总数'])
+          if (item) {
+            const inp = getTextInputs(item)[0]
+            if (inp) await typeInto(inp, String(toNumber(totalCount)))
+          }
         }
-      }
+      } catch (e) { warnings.push(`可使用总数：${e.message}`) }
 
       // 8. 每个买家可用数量上限
-      const perBuyer = digitsOnly(row['每个买家可用的优惠券数量上限'] || '')
-      if (perBuyer) {
-        const item = getFormItem('每个买家可用的优惠券数量上限') || getFormItem('每个买家')
-        if (item) {
-          const inp = getTextInputs(item)[0]
-          if (inp) await typeInto(inp, String(toNumber(perBuyer)))
+      try {
+        const perBuyer = digitsOnly(row['每个买家可用的优惠券数量上限'] || '')
+        if (perBuyer) {
+          const item = getFormItem('每个买家可用的优惠券数量上限') || getFormItem('每个买家')
+          if (item) {
+            const inp = getTextInputs(item)[0]
+            if (inp) await typeInto(inp, String(toNumber(perBuyer)))
+          }
         }
-      }
+      } catch (e) { warnings.push(`每个买家限额：${e.message}`) }
 
+      if (warnings.length > 0) console.warn(`[FORM_REST] 字段警告（不阻断流程）：${warnings.join(' | ')}`)
       return nextPhase('submit', 200, { ...shared, result })
     }
 
     // ══════════════════════════════════════════════════════════════════════════
-    // SUBMIT — 点确认按钮提交表单
+    // SUBMIT — 提交前扫描校验错误，再点确认按钮
     // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'submit') {
+      const result = shared.result || buildResult()
+
+      // 提交前扫描页面上已有的校验错误（例如"结束时间不能超过开始时间后的3个月"）
+      // 选择器覆盖：React EDS form item help/extra、通用 error-msg、标红的输入框旁说明
+      const preErrors = [...document.querySelectorAll(
+        '.eds-react-form-item__extra, .eds-react-form-item__help, ' +
+        '[class*="error-msg"], [class*="error-text"], [class*="form-error"], ' +
+        '.eds-form-item__help, .eds-form-item__extra'
+      )].filter(visible).map(e => textOf(e)).filter(t => t.length > 0)
+
+      if (preErrors.length > 0) {
+        console.warn(`[SUBMIT] 页面存在校验错误，不提交：${preErrors.join(' | ')}`)
+        result['执行状态'] = '失败'
+        result['错误原因'] = `表单校验错误：${preErrors.join(' | ')}`
+        result['当前URL']  = location.href || ''
+        return finishRow(result)
+      }
+
       const allBtns = [...document.querySelectorAll('button')].filter(visible)
       // 优先找 primary 确认按钮，排除弹窗内的取消/关闭
       const confirmBtn = (
@@ -1066,7 +1102,9 @@
     if (!vueInst?.ctx?.handleStartChange) throw new Error('未找到 Vue handleStartChange（999 页面组件实例）')
 
     const ctx   = vueInst.ctx
-    const toISO = (dt) => dt ? new Date(`${dt.y}-${dt.mo}-${dt.d}T${dt.hh}:${dt.mm}:00+08:00`).toISOString() : null
+    // 关注礼的 handleStartChange/handleEndChange 接收本地时间字符串（YYYY-MM-DD HH:mm:ss），
+    // 不能传 UTC ISO（会导致时差偏移 -8h），直接传格式化的本地字符串
+    const toISO = (dt) => dt ? `${dt.y}-${dt.mo}-${dt.d} ${dt.hh}:${dt.mm}:00` : null
 
     if (startDt) {
       try { ctx.handleStartChange(toISO(startDt)) }
