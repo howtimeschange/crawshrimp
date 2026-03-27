@@ -6,26 +6,36 @@
   const rows = params.input_file?.rows || []
   const mode = (params.mode || 'current').trim().toLowerCase()
 
-  const ENTRY_URL = 'https://seller.shopee.cn/portal/marketing'
-  const VOUCHERS_ROOT_URL = 'https://seller.shopee.cn/portal/marketing/vouchers'
+  const MARKETING_URL = 'https://seller.shopee.cn/portal/marketing'
+  const VOUCHERS_URL  = 'https://seller.shopee.cn/portal/marketing/vouchers/'
   const row = rows[page - 1]
 
+  // ─── 工具函数 ────────────────────────────────────────────────────────────────
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
   function norm(s) { return String(s || '').replace(/\s+/g, ' ').trim() }
+  function textOf(el) { return norm(el?.innerText || el?.textContent || el?.value || '') }
+
   function digitsOnly(v) { return String(v ?? '').replace(/,/g, '').trim() }
-  function numericValue(v) {
-    const s = digitsOnly(v)
-    if (!s) return ''
-    // 去掉百分号，直接取数字部分
-    const stripped = s.replace(/%$/, '').trim()
-    const n = Number(stripped)
-    if (Number.isNaN(n)) return stripped
+
+  function toNumber(v) {
+    const s = digitsOnly(v).replace(/%$/, '').trim()
+    const n = Number(s)
+    return Number.isNaN(n) ? s : n
+  }
+
+  // 优惠限额：扣除百分比时 0.05 => 5，折扣金额时原值
+  function discountLimitValue(raw, discountType) {
+    const n = toNumber(raw)
+    if (typeof n === 'number' && /百分比|percentage/i.test(discountType || '') && n > 0 && n <= 1) {
+      return String(Math.round(n * 100))
+    }
     return String(n)
   }
+
   function boolLike(v) {
-    const s = norm(v)
-    return s === '1' || /^(是|true|yes|y)$/i.test(s)
+    return String(v || '').trim() === '1' || /^(是|true|yes|y)$/i.test(String(v || '').trim())
   }
+
   function randCode(n = 5) {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
     let out = ''
@@ -36,49 +46,38 @@
   function parseDateTime(raw, kind) {
     const s = norm(raw)
     if (!s) return null
-    const m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:\s*[T\s-]\s*(\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/)
+    const m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[T\s-](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/)
     if (!m) return null
-    const y = m[1]
-    const mo = String(m[2]).padStart(2, '0')
-    const d = String(m[3]).padStart(2, '0')
-    const hh = m[4] != null ? String(m[4]).padStart(2, '0') : (kind === 'start' ? '00' : '23')
-    const mm = m[5] != null ? String(m[5]).padStart(2, '0') : (kind === 'start' ? '00' : '59')
+    const y = m[1], mo = String(m[2]).padStart(2,'0'), d = String(m[3]).padStart(2,'0')
+    const hh = m[4] != null ? String(m[4]).padStart(2,'0') : (kind==='start' ? '00' : '23')
+    const mm = m[5] != null ? String(m[5]).padStart(2,'0') : (kind==='start' ? '00' : '59')
     return { y, mo, d, hh, mm, str: `${y}-${mo}-${d} ${hh}:${mm}` }
   }
 
   function visible(el) {
     if (!el) return false
-    const style = getComputedStyle(el)
-    const rect = el.getBoundingClientRect()
-    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0
+    const st = getComputedStyle(el)
+    const r = el.getBoundingClientRect()
+    return st.visibility !== 'hidden' && st.display !== 'none' && r.width > 0 && r.height > 0
   }
 
-  function textOf(el) {
-    return norm(el?.innerText || el?.textContent || el?.value || '')
-  }
-
-  function textKey(v) {
-    return norm(v).toLowerCase()
+  async function waitFor(fn, timeout = 10000, interval = 300) {
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeout) {
+      const r = fn()
+      if (r) return r
+      await sleep(interval)
+    }
+    return null
   }
 
   function click(el) {
     if (!el) return false
-    try { el.scrollIntoView({ block: 'center', inline: 'center' }) } catch {}
-    for (const ev of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+    try { el.scrollIntoView({ block: 'center' }) } catch {}
+    for (const ev of ['pointerdown','mousedown','mouseup','click']) {
       try { el.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true, view: window })) } catch {}
     }
     try { el.click() } catch {}
-    return true
-  }
-
-  function scheduleClick(el) {
-    if (!el) return false
-    setTimeout(() => { try { click(el) } catch {} }, 50)
-    return true
-  }
-
-  function scheduleNavigate(url) {
-    setTimeout(() => { try { location.href = url } catch {} }, 50)
     return true
   }
 
@@ -89,546 +88,376 @@
     const desc = Object.getOwnPropertyDescriptor(proto, 'value')
     if (desc?.set) desc.set.call(el, val)
     else el.value = val
-    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('input',  { bubbles: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
-    el.dispatchEvent(new Event('blur', { bubbles: true }))
+    el.dispatchEvent(new Event('blur',   { bubbles: true }))
     return true
   }
 
-  async function focusAndType(el, value) {
+  async function typeInto(el, value) {
     click(el)
-    await sleep(120)
+    await sleep(80)
     try { el.focus() } catch {}
     setNativeValue(el, value)
-    try { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) } catch {}
-    try { el.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', bubbles: true })) } catch {}
     await sleep(200)
   }
 
-  async function waitFor(fn, timeout = 12000, interval = 300) {
-    const t0 = Date.now()
-    while (Date.now() - t0 < timeout) {
-      const res = fn()
-      if (res) return res
-      await sleep(interval)
+  async function closeBlockingOverlays() {
+    for (const el of [...document.querySelectorAll('.fullstory-modal-wrapper, .diagnosis-result-modal')]) {
+      try { el.remove() } catch {}
     }
-    return null
+    for (const btn of [...document.querySelectorAll('button')]) {
+      if (visible(btn) && /^(关闭|知道了|稍后|取消)$/.test(textOf(btn))) {
+        try { click(btn) } catch {}
+      }
+    }
+    await sleep(100)
   }
 
-  function allCandidates() {
-    return [...document.querySelectorAll('button, a, [role="button"], [role="menuitem"], [role="option"], li, div, span, label')]
+  // 找 .eds-react-form-item 表单项（按 label 文本）
+  function getFormItem(labelText) {
+    return [...document.querySelectorAll('.eds-react-form-item')].find(el => {
+      const lbl = el.querySelector('.eds-react-form-item__label')
+      return lbl && norm(lbl.textContent).includes(labelText)
+    }) || null
+  }
+
+  function getTextInputs(container) {
+    return [...(container || document).querySelectorAll('input:not([type=radio]):not([type=checkbox]),textarea')]
       .filter(visible)
   }
 
-  function findByText(text, exact = false) {
-    const target = norm(text)
-    if (!target) return null
-    for (const el of allCandidates()) {
-      const t = textOf(el)
-      if (!t) continue
-      if ((exact && t === target) || (!exact && t.includes(target))) return el
-    }
-    return null
-  }
-
-  function getFormItemByLabel(labelText) {
-    const items = [...document.querySelectorAll('.eds-react-form-item')].filter(visible)
-    for (const item of items) {
-      const label = item.querySelector('.eds-react-form-item__label')
-      const t = textOf(label)
-      if (t === labelText || t.includes(labelText)) return item
-    }
-    return null
-  }
-
-  function getEditableInputs(container) {
-    return [...(container || document).querySelectorAll('input:not([type="radio"]):not([type="checkbox"]), textarea')]
-      .filter(visible)
-  }
-
-  async function fillFormField(labelText, value, index = 0, required = true) {
-    const item = getFormItemByLabel(labelText)
-    if (!item) {
-      if (required) throw new Error(`未找到表单项：${labelText}`)
-      return false
-    }
-    const inputs = getEditableInputs(item)
-    const input = inputs[index]
-    if (!input) {
-      if (required) throw new Error(`表单项"${labelText}"未找到输入框`)
-      return false
-    }
-    click(input)
-    await sleep(120)
-    setNativeValue(input, value)
-    await sleep(260)
+  async function fillField(labelText, value, inputIndex = 0) {
+    const item = getFormItem(labelText)
+    if (!item) throw new Error(`未找到表单项：${labelText}`)
+    const inputs = getTextInputs(item)
+    const el = inputs[inputIndex]
+    if (!el) throw new Error(`表单项"${labelText}"没有可编辑 input`)
+    await typeInto(el, value)
     return true
   }
 
-  // ─── 日期时间选择器：精确到分 ─────────────────────────────────────────────
-  // Shopee 的日期时间选择器每个时间分量是独立的 input（或用 picker panel），
-  // 需要先点击触发打开，再逐个 input 赋值，最后点确认关闭
-  async function fillDatetimePicker(inputTrigger, dt) {
-    // dt = { y, mo, d, hh, mm }
-    // 1. 点击触发器打开 picker
-    click(inputTrigger)
+  // ─── 日期时间 Picker ─────────────────────────────────────────────────────────
+  async function fillDatetimePicker(triggerInput, dt) {
+    click(triggerInput)
     await sleep(600)
 
-    // 2. 尝试方案A：picker panel 内有独立的数字输入框（年/月/日 时:分）
-    //    典型结构：.eds-react-date-picker-panel 或 .eds-picker-dropdown
-    const panel = await waitFor(() => {
-      return document.querySelector(
-        '.eds-react-date-picker-panel, .eds-picker-dropdown, .eds-react-datepicker, [class*="date-picker"][class*="panel"], [class*="datepicker"][class*="dropdown"]'
-      )
-    }, 3000, 100)
+    // 等面板出现
+    const panel = await waitFor(() =>
+      document.querySelector('.eds-react-date-picker-panel, .eds-picker-dropdown, [class*="date-picker"][class*="panel"], [class*="datepicker"][class*="dropdown"]')
+    , 3000, 100)
 
     if (panel) {
-      // 找 panel 内所有可编辑 input（过滤 radio/checkbox）
-      const pInputs = [...panel.querySelectorAll('input:not([type="radio"]):not([type="checkbox"])')].filter(visible)
-      // 典型布局：[年, 月, 日] [时, 分]  或  [年-月-日 时:分 整体 input]
+      const pInputs = [...panel.querySelectorAll('input:not([type=radio]):not([type=checkbox])')].filter(visible)
       if (pInputs.length >= 5) {
-        // 分散 input：年 月 日 时 分
-        await focusAndType(pInputs[0], dt.y)
-        await focusAndType(pInputs[1], dt.mo)
-        await focusAndType(pInputs[2], dt.d)
-        await focusAndType(pInputs[3], dt.hh)
-        await focusAndType(pInputs[4], dt.mm)
+        for (const [i, v] of [[0,dt.y],[1,dt.mo],[2,dt.d],[3,dt.hh],[4,dt.mm]]) {
+          await typeInto(pInputs[i], v)
+        }
       } else if (pInputs.length >= 2) {
-        // 日期 input + 时间 input
-        await focusAndType(pInputs[0], `${dt.y}-${dt.mo}-${dt.d}`)
-        await focusAndType(pInputs[1], `${dt.hh}:${dt.mm}`)
+        await typeInto(pInputs[0], `${dt.y}-${dt.mo}-${dt.d}`)
+        await typeInto(pInputs[1], `${dt.hh}:${dt.mm}`)
       } else if (pInputs.length === 1) {
-        await focusAndType(pInputs[0], dt.str)
+        await typeInto(pInputs[0], dt.str)
       }
-
-      // 点确认按钮关闭 picker
-      await sleep(300)
-      const okBtn = [...panel.querySelectorAll('button')].find(el => visible(el) && /^(确认|确定|OK|ok)$/.test(textOf(el)))
+      await sleep(200)
+      const okBtn = [...panel.querySelectorAll('button')].find(b => visible(b) && /^(确认|确定|OK)$/i.test(textOf(b)))
       if (okBtn) { click(okBtn); await sleep(300) }
-      else { try { click(document.body) } catch {}; await sleep(200) }
-      return
+      else { try { document.body.click() } catch {}; await sleep(200) }
+    } else {
+      // 没有面板，直接填 input
+      setNativeValue(triggerInput, dt.str)
+      await sleep(200)
+      try { document.body.click() } catch {}
     }
+  }
 
-    // 3. 方案B：没有弹出 panel，触发器本身就是 text input，直接赋值
-    setNativeValue(inputTrigger, dt.str)
-    await sleep(200)
-    // 尝试关闭可能的浮层
+  async function setDateRange(startDt, endDt) {
+    const item = getFormItem('优惠券领取期限')
+    if (!item) throw new Error('未找到"优惠券领取期限"')
+    const inputs = getTextInputs(item)
+    if (inputs.length < 2) throw new Error(`领取期限 input 数量不足: ${inputs.length}`)
+    if (startDt) await fillDatetimePicker(inputs[0], startDt)
+    if (endDt)   await fillDatetimePicker(inputs[1], endDt)
     try { document.body.click() } catch {}
     await sleep(200)
   }
 
-  async function setDateRange(startDt, endDt) {
-    const item = getFormItemByLabel('优惠券领取期限')
-    if (!item) throw new Error('未找到"优惠券领取期限"表单项')
-
-    // 找到领取期限区域内的所有文本型 input（排除 radio/checkbox）
-    const inputs = [...item.querySelectorAll('input:not([type="radio"]):not([type="checkbox"])')].filter(visible)
-
-    if (inputs.length < 2) {
-      throw new Error('未找到领取期限开始/结束输入框，当前可见 input 数量：' + inputs.length)
-    }
-
-    // inputs[0] = 开始时间触发器，inputs[1] = 结束时间触发器
-    if (startDt) await fillDatetimePicker(inputs[0], startDt)
-    if (endDt) await fillDatetimePicker(inputs[1], endDt)
-
-    try { click(document.body) } catch {}
-    await sleep(300)
-  }
-
-  // ─── 提前显示优惠券 checkbox ──────────────────────────────────────────────
-  async function setShowEarlyCheckbox(desired) {
-    // 不依赖 getFormItemByLabel，直接在整个文档内找含"提前显示优惠券"文本的 label
-    const targetText = '提前显示优惠券'
-
-    // 先找 label 元素
-    const labels = [...document.querySelectorAll('label')].filter(el => visible(el) && textOf(el).includes(targetText))
-    let cb = null
-    let labelEl = null
-
-    for (const lbl of labels) {
-      // label 内可能直接包含 input[checkbox]
-      const inner = lbl.querySelector('input[type="checkbox"]')
-      if (inner) { cb = inner; labelEl = lbl; break }
-      // 或者 label[for] 关联
-      if (lbl.htmlFor) {
-        const associated = document.getElementById(lbl.htmlFor)
-        if (associated && associated.type === 'checkbox') { cb = associated; labelEl = lbl; break }
-      }
-    }
-
-    // 再试：找含目标文本的 span/div 附近的 checkbox
-    if (!cb) {
-      const spans = [...document.querySelectorAll('span, div')].filter(el => {
-        if (!visible(el)) return false
-        // 精确只匹配文本本身（避免把父级大容器误匹配）
-        const own = norm(el.childNodes.length === 1 && el.childNodes[0].nodeType === 3
-          ? el.childNodes[0].textContent
-          : el.textContent)
-        return own.includes(targetText)
-      })
-      for (const sp of spans) {
-        const container = sp.closest('label') || sp.parentElement
-        const inner = container?.querySelector('input[type="checkbox"]')
-        if (inner) { cb = inner; labelEl = container; break }
-      }
-    }
-
-    if (!cb) {
-      // 找自定义 checkbox（eds 样式的 checkbox 可能用 div 模拟）
-      const customCbs = [...document.querySelectorAll('.eds-react-checkbox, [class*="checkbox"]')].filter(el => {
-        return visible(el) && textOf(el).includes(targetText)
-      })
-      if (customCbs.length) {
-        const target = customCbs[0]
-        const currentChecked = target.classList.contains('eds-react-checkbox--checked') ||
-          target.querySelector('input[type="checkbox"]')?.checked || false
-        if (!!currentChecked !== !!desired) {
-          click(target)
-          await sleep(220)
-        }
-        return true
-      }
-      // 找不到 checkbox，如果 desired=false 则静默跳过，=true 则报错
+  // ─── 提前显示优惠券 checkbox ──────────────────────────────────────────────────
+  async function setShowEarly(desired) {
+    // 找含"提前显示优惠券"文本的 label 或 checkbox 容器
+    const target = [...document.querySelectorAll('label, .eds-react-checkbox')].find(el => {
+      return visible(el) && textOf(el).includes('提前显示优惠券')
+    })
+    if (!target) {
       if (desired) throw new Error('未找到"提前显示优惠券"复选框')
       return false
     }
-
-    const currentChecked = !!cb.checked
-    if (currentChecked !== !!desired) {
-      click(labelEl || cb)
-      await sleep(220)
+    const cb = target.querySelector?.('input[type=checkbox]') ||
+               (target.tagName === 'INPUT' ? target : null)
+    const isChecked = () => {
+      if (cb) return cb.checked
+      return target.classList.contains('eds-react-checkbox--checked') ||
+             target.getAttribute('aria-checked') === 'true'
+    }
+    if (isChecked() !== !!desired) {
+      click(target)
+      await sleep(200)
     }
     return true
   }
 
-  async function setRadioByLabel(labelText) {
-    const aliasesMap = {
-      '折扣': ['折扣', 'discount'],
-      'shopee币回扣': ['shopee币回扣', '币回扣', 'coin cashback', 'coins cashback'],
-      'Shopee币回扣': ['Shopee币回扣', 'shopee币回扣', '币回扣', 'coin cashback', 'coins cashback']
+  // ─── 奖励类型 radio ───────────────────────────────────────────────────────────
+  async function setRewardType(text) {
+    const aliases = {
+      '折扣':      ['折扣', 'discount'],
+      'shopee币回扣': ['shopee币回扣','Shopee币回扣','币回扣','coin cashback'],
     }
-    const aliases = aliasesMap[labelText] || [labelText]
-    const aliasKeys = aliases.map(textKey)
-    const item = getFormItemByLabel('奖励类型') || document
-    const label = [...item.querySelectorAll('.eds-react-radio__label, label, span, div')]
-      .find(el => {
-        if (!visible(el)) return false
-        const t = textKey(textOf(el))
-        return aliasKeys.some(a => t === a || t.includes(a) || a.includes(t))
-      })
-    if (!label) throw new Error(`未找到单选项：${labelText}`)
+    const keys = (aliases[text] || [text]).map(s => s.toLowerCase())
+    const item = getFormItem('奖励类型') || document
+    const label = [...item.querySelectorAll('.eds-react-radio__label, label, span')].find(el => {
+      if (!visible(el)) return false
+      const t = textOf(el).toLowerCase()
+      return keys.some(k => t === k || t.includes(k))
+    })
+    if (!label) throw new Error(`未找到奖励类型：${text}`)
     click(label.closest('label') || label)
-    await sleep(260)
+    await sleep(200)
   }
 
-  // ─── 折扣类型下拉框 ───────────────────────────────────────────────────────
-  async function chooseDiscountType(optionText) {
-    const aliasesMap = {
-      '扣除百分比': ['扣除百分比', '折扣百分比', 'percentage'],
-      '折扣金额': ['折扣金额', '固定金额', 'fixed amount', 'fixed']
+  // ─── 折扣类型下拉 ──────────────────────────────────────────────────────────────
+  // Shopee EDS Select 组件：
+  //   触发器 = .trigger.trigger--normal（必须派发 pointerdown+mousedown+mouseup+click）
+  //   选项   = .eds-react-select-option（可见时直接 click）
+  async function setDiscountType(text) {
+    const aliases = {
+      '扣除百分比': ['扣除百分比','折扣百分比','percentage'],
+      '折扣金额':   ['折扣金额','固定金额','fixed amount'],
     }
-    const aliases = aliasesMap[optionText] || [optionText]
-    const aliasKeys = aliases.map(textKey)
+    const keys = (aliases[text] || [text]).map(s => s.toLowerCase())
 
-    // 找"折扣类型"表单项；Shopee 的 label 可能叫"折扣类型 | 优惠限额"或单独"折扣类型"
-    let item = getFormItemByLabel('折扣类型 | 优惠限额') || getFormItemByLabel('折扣类型')
-    if (!item) throw new Error('未找到"折扣类型"表单项')
+    const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
+    if (!item) throw new Error('未找到折扣类型表单项')
 
-    // 找 select 触发器：eds-react-select 内的 .trigger，或带 role="combobox" 的元素
-    let trigger = item.querySelector('[role="combobox"]') ||
-      item.querySelector('.eds-react-select__trigger') ||
-      item.querySelector('.eds-react-select .trigger') ||
-      item.querySelector('.eds-react-select')
+    // 触发器是 .trigger.trigger--normal，必须用完整事件序列
+    const trigger = item.querySelector('.trigger.trigger--normal')
+    if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器(.trigger.trigger--normal)')
 
-    if (!trigger || !visible(trigger)) {
-      // fallback：找 item 内第一个可见的按钮/div（非 input）当做触发器
-      trigger = [...item.querySelectorAll('div, button')].find(el => {
-        if (!visible(el)) return false
-        const role = el.getAttribute('role')
-        return role === 'combobox' || el.classList.toString().includes('select')
-      })
+    trigger.scrollIntoView({ block: 'center' })
+    await sleep(100)
+    for (const evtName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      try {
+        trigger.dispatchEvent(new MouseEvent(evtName, { bubbles: true, cancelable: true, view: window, buttons: 1 }))
+      } catch (_) {}
     }
-    if (!trigger) throw new Error('未找到折扣类型下拉触发器')
+    await sleep(600)
 
-    click(trigger)
-    await sleep(500)
-
-    // 等待 dropdown/listbox 出现（可能是 portal 挂到 body 上）
-    const panel = await waitFor(() => {
-      return document.querySelector(
-        '.eds-react-select__dropdown, .eds-react-select-dropdown, [role="listbox"], [class*="select"][class*="dropdown"], [class*="select"][class*="panel"]'
-      )
+    // 等选项出现（.eds-react-select-option）
+    const options = await waitFor(() => {
+      const opts = [...document.querySelectorAll('.eds-react-select-option')].filter(visible)
+      return opts.length > 0 ? opts : null
     }, 4000, 150)
+    if (!options) throw new Error('折扣类型下拉未展开（未找到 .eds-react-select-option）')
 
-    if (!panel) throw new Error('折扣类型下拉框未展开')
-
-    const option = await waitFor(() => {
-      return [...panel.querySelectorAll('[role="option"], .eds-react-select-option, li, div')]
-        .find(el => {
-          if (!visible(el)) return false
-          const t = textKey(textOf(el))
-          return aliasKeys.some(a => t === a || t.includes(a))
-        })
-    }, 4000, 150)
-
-    if (!option) throw new Error(`未找到折扣类型选项：${optionText}，已展开的选项：${[...panel.querySelectorAll('[role="option"]')].map(e => textOf(e)).join(', ')}`)
+    const option = options.find(el => {
+      const t = textOf(el).toLowerCase()
+      return keys.some(k => t === k || t.includes(k))
+    })
+    if (!option) throw new Error(`未找到折扣类型选项：${text}（可选：${options.map(o=>textOf(o)).join('/')}）`)
     click(option)
     await sleep(400)
   }
 
-  // ─── 最高优惠金额：独立 form-item 定位 ───────────────────────────────────
-  async function fillMaxDiscount(value) {
-    // 标签名可能是"最高优惠金额"，也可能嵌在折扣规则组内
-    const candidates = ['最高优惠金额', '最高折扣金额', '最高优惠']
-    for (const label of candidates) {
-      const done = await fillFormField(label, numericValue(value), 0, false)
-      if (done) return true
-    }
-    // fallback：在页面上找包含上述文字的 label 并找其旁边的 input
-    for (const text of candidates) {
-      const labelEl = [...document.querySelectorAll('label, .eds-react-form-item__label, span')]
-        .find(el => visible(el) && textOf(el).includes(text))
-      if (labelEl) {
-        const container = labelEl.closest('.eds-react-form-item') || labelEl.parentElement
-        const input = container?.querySelector('input:not([type="radio"]):not([type="checkbox"])')
-        if (input && visible(input)) {
-          click(input)
-          await sleep(120)
-          setNativeValue(input, numericValue(value))
-          await sleep(260)
-          return true
-        }
-      }
-    }
-    return false
-  }
-
-  // ─── 优惠限额输入框（折扣类型选好后旁边的 input）────────────────────────
+  // ─── 优惠限额（折扣类型旁边的数字框）────────────────────────────────────────
+  // 只有选了折扣类型后才出现在 DOM 里（同一个 .eds-react-form-item__control 内）
   async function fillDiscountLimit(value) {
-    // 先尝试通过表单项定位
-    let item = getFormItemByLabel('折扣类型 | 优惠限额') || getFormItemByLabel('折扣类型')
+    const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
     if (item) {
-      const inputs = getEditableInputs(item)
-      // inputs[0] 是折扣类型下拉（select），inputs[1] 是数值输入框
-      // 但有时 select 不算 input，所以 inputs[0] 就是数值框
-      const numInput = inputs.find(el => el.type !== 'hidden' && visible(el))
-      if (numInput) {
-        click(numInput)
-        await sleep(120)
-        setNativeValue(numInput, numericValue(value))
-        await sleep(260)
-        return true
-      }
+      const inputs = getTextInputs(item)
+      const inp = inputs.find(el => visible(el) && el.tagName === 'INPUT')
+      if (inp) { await typeInto(inp, value); return }
     }
     throw new Error('未找到优惠限额输入框')
   }
 
-  // ─── 入口：确保特定买家优惠券入口可见（新买家/回购/关注礼）─────────────
-  async function ensureBuyerSpecificEntriesVisible(testId) {
-    // 先检查目标卡片是否已可见
-    const existing = document.querySelector(`button[data-testid="${testId}"]`)
-    if (existing && visible(existing)) return true
+  // ─── 最高优惠金额（条件字段：选了"扣除百分比"后才出现）────────────────────────
+  async function fillMaxDiscount(value) {
+    for (const lbl of ['最高优惠金额', '最高折扣金额', '最高优惠', '最高减免']) {
+      const item = getFormItem(lbl)
+      if (item) {
+        const inp = getTextInputs(item)[0]
+        if (inp && visible(inp)) { await typeInto(inp, String(toNumber(value))); return true }
+      }
+    }
+    // 字段不存在时不抛错（可能是折扣金额类型，不需要这个字段）
+    return false
+  }
 
-    // 找展开按钮（文本匹配，不依赖 hash class）
-    const expandBtn = [...document.querySelectorAll('button')].find(el => {
-      if (!visible(el)) return false
-      const t = textOf(el)
-      return t.includes('为特定买家提供更多种类的优惠券')
-    })
-    if (!expandBtn) throw new Error('未找到"为特定买家提供更多种类的优惠券"展开按钮')
-
+  // ─── 确保特定买家入口展开 ─────────────────────────────────────────────────────
+  async function ensureBuyerEntries(testId) {
+    let btn = document.querySelector(`button[data-testid="${testId}"]`)
+    if (btn && visible(btn)) return true
+    // 找展开按钮
+    const expandBtn = [...document.querySelectorAll('button, a')].find(el =>
+      visible(el) && textOf(el).includes('为特定买家提供更多种类的优惠券')
+    )
+    if (!expandBtn) throw new Error('未找到展开特定买家入口按钮')
     click(expandBtn)
     await sleep(800)
-
-    // 等待目标卡片出现
-    const appeared = await waitFor(() => {
+    btn = await waitFor(() => {
       const el = document.querySelector(`button[data-testid="${testId}"]`)
       return visible(el) ? el : null
-    }, 6000, 200)
-
-    if (!appeared) throw new Error(`展开后仍未找到优惠券入口 [data-testid="${testId}"]`)
+    }, 5000, 200)
+    if (!btn) throw new Error(`展开后仍未找到 ${testId}`)
     return true
   }
 
-  async function closeBlockingOverlays() {
-    for (const el of [...document.querySelectorAll('.fullstory-modal-wrapper, .diagnosis-result-modal, .eds-modal-mask')]) {
-      try { el.remove() } catch {}
-    }
-    for (const btn of [...document.querySelectorAll('button')]) {
-      const t = textOf(btn)
-      if (visible(btn) && /关闭|知道了|取消|稍后/i.test(t)) {
-        try { click(btn) } catch {}
-      }
-    }
-    await sleep(120)
-  }
-
+  // ─── buildContext ─────────────────────────────────────────────────────────────
   function buildContext() {
     if (!row) return null
-    const store = norm(row['店铺'])
-    const site = norm(row['站点'])
+    const store       = norm(row['店铺'])
+    const site        = norm(row['站点'])
     const voucherType = norm(row['优惠券品类'])
-    const rewardType = norm(row['奖励类型'])
-    const discountType = norm(row['折扣类型'])
-    const discountLimit = digitsOnly(row['优惠限额'])
+    const rewardType  = norm(row['奖励类型'])
+    const discountType= norm(row['折扣类型'])
+    const rawLimit    = digitsOnly(row['优惠限额'])
+    const discountLimit = discountLimitValue(rawLimit, discountType)
     const maxDiscount = digitsOnly(row['最高优惠金额'])
-    const minSpend = digitsOnly(row['最低消费金额'])
-    const totalCount = digitsOnly(row['可使用总数'])
-    const perBuyerLimit = digitsOnly(row['每个买家可用的优惠券数量上限'])
-    // 兼容 Excel 列名中换行符/空格/变体写法
-    const showEarlyKey = Object.keys(row).find(k => k.replace(/\s+/g, '').includes('是否提前显示'))
-    const showEarly = boolLike(showEarlyKey ? row[showEarlyKey] : '')
-    const startDt = parseDateTime(row['优惠券领取期限（开始）精确到分'], 'start')
-    const endDt = parseDateTime(row['优惠券领取期限（结束）精确到分'], 'end')
+    const minSpend    = digitsOnly(row['最低消费金额'])
+    const totalCount  = digitsOnly(row['可使用总数'])
+    const perBuyer    = digitsOnly(row['每个买家可用的优惠券数量上限'])
 
-    if (!store) throw new Error('Excel 缺少"店铺"')
+    // 提前显示字段名可能含换行符
+    const showEarlyKey = Object.keys(row).find(k => k.replace(/\s+/g,'').includes('是否提前显示'))
+    const showEarly   = boolLike(showEarlyKey ? row[showEarlyKey] : '')
+
+    const startDt = parseDateTime(row['优惠券领取期限（开始）精确到分'], 'start')
+    const endDt   = parseDateTime(row['优惠券领取期限（结束）精确到分'], 'end')
+
+    if (!store)       throw new Error('Excel 缺少"店铺"')
     if (!voucherType) throw new Error('Excel 缺少"优惠券品类"')
 
-    const couponName = shared.couponName || `${store}${discountLimit}`
+    const couponName = shared.couponName || (store + discountLimit)
     const couponCode = shared.couponCode || randCode(5)
-
     const result = shared.result || {
-      '序号': page,
-      '站点': row['站点'] || '',
-      '店铺': row['店铺'] || '',
-      '优惠券品类': row['优惠券品类'] || '',
-      '奖励类型': row['奖励类型'] || '',
-      '折扣类型': row['折扣类型'] || '',
-      '优惠限额': row['优惠限额'] || '',
-      '生成优惠券名称': couponName,
-      '生成优惠码': couponCode,
-      '执行状态': '待执行',
-      '错误原因': ''
+      '序号': page, '站点': site, '店铺': store, '优惠券品类': voucherType,
+      '奖励类型': rewardType, '折扣类型': discountType, '优惠限额': discountLimit,
+      '生成优惠券名称': couponName, '生成优惠码': couponCode,
+      '执行状态': '待执行', '错误原因': ''
     }
-
-    return {
-      store, site, voucherType, rewardType, discountType,
-      discountLimit, maxDiscount, minSpend, totalCount, perBuyerLimit,
-      showEarly, startDt, endDt, couponName, couponCode, result
-    }
+    return { store, site, voucherType, rewardType, discountType, discountLimit,
+             maxDiscount, minSpend, totalCount, perBuyer, showEarly,
+             startDt, endDt, couponName, couponCode, result }
   }
 
-  function nextPhase(nextPhase, ctx, sleepMs = 1200, extras = {}) {
+  function nextPhase(np, ctx, sleepMs = 1200, extras = {}) {
     return {
-      success: true,
-      data: [],
+      success: true, data: [],
       meta: {
-        action: 'next_phase',
-        next_phase: nextPhase,
-        sleep_ms: sleepMs,
+        action: 'next_phase', next_phase: np, sleep_ms: sleepMs,
         shared: {
           ...(shared || {}),
-          ...(ctx ? {
-            couponName: ctx.couponName,
-            couponCode: ctx.couponCode,
-            result: ctx.result,
-          } : {}),
-          ...extras,
+          couponName: ctx.couponName, couponCode: ctx.couponCode, result: ctx.result,
+          ...extras
         }
       }
     }
   }
 
+  function hasCreateFormMounted() {
+    return !![...document.querySelectorAll('.eds-react-form-item')].find(el => {
+      const lbl = el.querySelector('.eds-react-form-item__label')
+      return lbl && norm(lbl.textContent).includes('优惠券名称')
+    })
+  }
+
+  function isOnCreatePage() {
+    return location.href.includes('/portal/marketing/vouchers/new') || hasCreateFormMounted()
+  }
+
   function finish(result, error = '') {
-    const output = { ...(result || {}) }
-    if (error) {
-      output['执行状态'] = '失败'
-      output['错误原因'] = error
-    } else {
-      output['执行状态'] = '成功'
-      output['错误原因'] = ''
-    }
+    const out = { ...(result || {}) }
+    out['执行状态'] = error ? '失败' : '成功'
+    out['错误原因'] = error || ''
     return {
-      success: true,
-      data: [output],
-      meta: {
-        action: 'complete',
-        has_more: page < rows.length,
-        page,
-        total: rows.length,
-        shared: {}
-      }
+      success: true, data: [out],
+      meta: { action: 'complete', has_more: page < rows.length, page, total: rows.length, shared: {} }
     }
   }
 
   if (!row) {
-    return {
-      success: true,
-      data: [],
-      meta: { action: 'complete', has_more: false, page, total: rows.length, shared: {} }
-    }
+    return { success: true, data: [], meta: { action: 'complete', has_more: false, page, total: rows.length, shared: {} } }
   }
 
+  // ════════════════════════════════════════════════════════════════════════════
+  //  PHASES
+  // ════════════════════════════════════════════════════════════════════════════
   try {
     await closeBlockingOverlays()
     const ctx = buildContext()
 
-    // ── phase: main ──────────────────────────────────────────────────────────
+    // ── main ─────────────────────────────────────────────────────────────────
+    // 入口：确保在营销中心页面（用于搜索店铺）
     if (phase === 'main') {
-      if (page === 1 && mode === 'new' && !location.href.startsWith(ENTRY_URL)) {
-        scheduleNavigate(ENTRY_URL)
-        return nextPhase('goto_list', ctx, 2600)
+      if (isOnCreatePage()) {
+        return nextPhase('form_fill', ctx, 80)
       }
-      return nextPhase('goto_list', ctx, 50)
+      if (mode === 'new' || !location.href.startsWith(MARKETING_URL)) {
+        // 需要导航到营销中心
+        location.href = MARKETING_URL
+        return nextPhase('store_switch', ctx, 3000)
+      }
+      // 已在营销中心域内，直接切换店铺
+      return nextPhase('store_switch', ctx, 200)
     }
 
-    // ── phase: goto_list ─────────────────────────────────────────────────────
-    if (phase === 'goto_list') {
-      if (location.href.includes('/portal/marketing/vouchers')) {
-        return nextPhase('store_switch', ctx, 50)
-      }
-      scheduleNavigate(VOUCHERS_ROOT_URL)
-      return nextPhase('store_switch', ctx, 2600)
-    }
-
-    // ── phase: store_switch ──────────────────────────────────────────────────
+    // ── store_switch ─────────────────────────────────────────────────────────
+    // 在营销中心搜索并切换到目标店铺
     if (phase === 'store_switch') {
-      // 检查"当前店铺"显示区域（营销中心所有页面都有）
-      // DOM 结构：<div class="当前店铺容器"><span>马来西亚 / semir2022.my</span></div>
-      // 也可能是 URL 参数里带有 cnsc_shop_id，但没有直接映射到店铺名
-      // 最稳定：找页面上明文含 ctx.store 的当前店铺文本区域
-      function getCurrentStoreText() {
-        // 营销中心所有页面均有 .shop-switcher 容器，文本如 "当前店铺 马来西亚 / semir2022.my"
-        const switcher = document.querySelector('.shop-switcher, .shop-switcher-container, .shop-select')
-        if (switcher && visible(switcher)) return textOf(switcher)
-        // fallback：找 .shop-label 的父级
-        const label = document.querySelector('.shop-label')
-        if (label && label.parentElement) return textOf(label.parentElement)
-        return ''
+      // 如果已经进入创建页且表单已挂载，不要再拉回营销主页
+      if (isOnCreatePage()) {
+        return nextPhase('form_fill', ctx, 80)
       }
 
-      const currentStoreText = getCurrentStoreText()
-      const alreadyOnStore = currentStoreText.includes(ctx.store) &&
-        (!ctx.site || currentStoreText.includes(ctx.site))
+      // 确保在营销中心主页（/portal/marketing 精确匹配，不是 /vouchers）
+      const url = location.href
+      if (!url.includes('/portal/marketing') ||
+          url.includes('/portal/marketing/vouchers')) {
+        location.href = MARKETING_URL
+        return nextPhase('store_switch', ctx, 3000)
+      }
 
-      if (!alreadyOnStore) {
-        // 需要切换店铺：在 /portal/marketing 主页找搜索框
-        if (!location.href.includes('/portal/marketing')) {
-          scheduleNavigate(ENTRY_URL)
-          return nextPhase('store_switch', ctx, 2500)
-        }
+      // 检查当前店铺是否已匹配
+      function getStoreText() {
+        const el = document.querySelector('.shop-switcher, .shop-switcher-container, .shop-select, .shop-info, .shop-label')
+        if (el && visible(el)) return textOf(el.closest('.shop-info') || el.parentElement || el)
+        // fallback：找页面内含"当前店铺"的区域
+        const all = [...document.querySelectorAll('div, span')].filter(e => visible(e) && textOf(e).startsWith('当前店铺'))
+        return all.length ? textOf(all[0]) : ''
+      }
 
-        // 等待搜索框出现（营销中心主页的店铺搜索输入框）
-        const searchInput = await waitFor(() => {
-          return [...document.querySelectorAll('input')].find(el => {
-            if (!visible(el)) return false
-            const ph = norm(el.placeholder)
-            if (ph.includes('搜索店铺') || ph.includes('搜索') && el.closest('[class*="shop"]')) return true
-            // 兜底：找在 shop-switcher 区域内的 input
-            if (el.closest('.shop-switcher, .shop-switcher-container, .shop-select, [class*="shopSwitch"], [class*="shop-switch"]')) return true
-            return false
-          })
-        }, 8000, 250)
-        if (!searchInput) throw new Error('未找到店铺搜索框（请确认已打开营销中心主页）')
+      const storeText = getStoreText()
+      const matched = storeText.includes(ctx.store) && (!ctx.site || storeText.includes(ctx.site))
+
+      if (!matched) {
+        // 找搜索框
+        const searchInput = await waitFor(() =>
+          [...document.querySelectorAll('input')].find(el =>
+            visible(el) && (
+              norm(el.placeholder).includes('搜索') ||
+              el.closest('.shop-switcher, .shop-select, [class*="shopSwitch"], [class*="shop-switch"]')
+            )
+          )
+        , 8000, 300)
+        if (!searchInput) throw new Error('未找到店铺搜索框，请确认已打开营销中心主页')
 
         click(searchInput)
         await sleep(200)
         setNativeValue(searchInput, ctx.store)
         await sleep(1200)
 
-        const candidate = await waitFor(() => {
-          return [...document.querySelectorAll('li, [role="option"], .search-item, [class*="shopItem"], [class*="shop-item"]')]
+        // 找候选项
+        const candidate = await waitFor(() =>
+          [...document.querySelectorAll('li, [role=option], .search-item, [class*="shopItem"], [class*="shop-item"]')]
             .filter(visible)
             .find(el => {
               const t = textOf(el)
@@ -636,249 +465,235 @@
               if (ctx.site && !t.includes(ctx.site)) return false
               return true
             })
-        }, 6000, 250)
-
-        if (!candidate) throw new Error(`搜索后未找到店铺候选项：${ctx.store}`)
-        if (/没有权限|无权限/.test(textOf(candidate))) {
-          throw new Error(`店铺"${ctx.store}"当前账号无权限`)
-        }
+        , 6000, 250)
+        if (!candidate) throw new Error(`搜索后未找到店铺：${ctx.store}`)
+        if (/没有权限|无权限/.test(textOf(candidate))) throw new Error(`店铺"${ctx.store}"无权限`)
 
         click(candidate)
-        await sleep(2000)  // 等待切换完成，店铺切换后 Shopee 会重新加载页面内容
+        await sleep(2000)
         await closeBlockingOverlays()
-      }
 
-      // 校验：当前店铺文字包含目标店铺名，或直接继续（已匹配则直接跳过校验）
-      if (!alreadyOnStore) {
-        // 等待店铺切换后页面刷新完毕
+        // 等待店铺名更新
         await waitFor(() => {
-          const t = getCurrentStoreText()
+          const t = getStoreText()
           return t.includes(ctx.store) ? t : null
         }, 5000, 300)
-        const verifyText = getCurrentStoreText()
-        // 店铺名短时可能还未更新，不做硬阻断，仅打印警告
+
+        const verifyText = getStoreText()
         if (!verifyText.includes(ctx.store)) {
-          // 尝试从页面全文找店铺名，部分页面有多处展示
-          const fullText = norm(document.body.innerText)
-          if (!fullText.includes(ctx.store)) {
-            throw new Error(`切换店铺后校验失败，当前店铺区域：${verifyText.substring(0, 80)}`)
-          }
+          const full = document.body.innerText
+          if (!full.includes(ctx.store)) throw new Error(`切换店铺后未能确认：${verifyText.substring(0,80)}`)
         }
       }
 
-      // 确保在 vouchers 页面
-      if (!location.href.includes('/portal/marketing/vouchers')) {
-        scheduleNavigate(VOUCHERS_ROOT_URL)
-        return nextPhase('enter_type', ctx, 2200)
+      // 店铺已匹配，进入优惠券菜单
+      // 方式一：侧边栏点"优惠券"菜单
+      const sidebarVoucherLink = [...document.querySelectorAll('a, [role=menuitem], li')].find(el =>
+        visible(el) && /^优惠券$/.test(textOf(el))
+      )
+      if (sidebarVoucherLink) {
+        click(sidebarVoucherLink)
+        return nextPhase('enter_type', ctx, 2000)
       }
-      return nextPhase('enter_type', ctx, 50)
+      // 方式二：直接导航
+      location.href = VOUCHERS_URL
+      return nextPhase('enter_type', ctx, 2500)
     }
 
-    // ── phase: enter_type ────────────────────────────────────────────────────
+    // ── enter_type ───────────────────────────────────────────────────────────
+    // 在优惠券列表页找到对应类型入口，点"创建"，等待表单出现
     if (phase === 'enter_type') {
+      // 已在创建页时直接续跑表单填写，避免再次点击入口造成状态重置
+      if (isOnCreatePage()) {
+        return nextPhase('form_fill', ctx, 80)
+      }
+
+      // 确保在优惠券列表页
       if (!location.href.includes('/portal/marketing/vouchers')) {
-        scheduleNavigate(VOUCHERS_ROOT_URL)
-        return nextPhase('enter_type', ctx, 2200)
+        location.href = VOUCHERS_URL
+        return nextPhase('enter_type', ctx, 2500)
       }
 
       const entryMap = {
-        '商店优惠券': 'voucherEntry1',
+        '商店优惠券':   'voucherEntry1',
         '新买家优惠券': 'voucherEntry3',
-        '回购买家优惠券': 'voucherEntry4',
-        '关注礼优惠券': 'voucherEntry999'
+        '回购买家优惠券':'voucherEntry4',
+        '关注礼优惠券': 'voucherEntry999',
       }
       const testId = entryMap[ctx.voucherType]
-      if (!testId) throw new Error(`未配置优惠券类型入口：${ctx.voucherType}`)
+      if (!testId) throw new Error(`未配置入口：${ctx.voucherType}`)
 
-      // 对特定买家类型，先确保入口区域展开
-      if (['voucherEntry3', 'voucherEntry4', 'voucherEntry999'].includes(testId)) {
-        await ensureBuyerSpecificEntriesVisible(testId)
+      // 特定买家类型需要展开
+      if (['voucherEntry3','voucherEntry4','voucherEntry999'].includes(testId)) {
+        await ensureBuyerEntries(testId)
       }
 
-      // 找优惠券入口卡片：优先 data-testid，找不到则按文字匹配
-      let cardBtn = await waitFor(() => {
+      // 找入口卡片
+      const card = await waitFor(() => {
         const el = document.querySelector(`button[data-testid="${testId}"]`)
         return visible(el) ? el : null
-      }, 3000, 150)
+      }, 5000, 200)
+      if (!card) throw new Error(`未找到优惠券入口卡片：${ctx.voucherType}`)
 
-      if (!cardBtn) {
-        // fallback：按文字匹配入口卡片/按钮
-        const textAliases = {
-          '商店优惠券': ['商店优惠券', '店铺优惠券'],
-          '新买家优惠券': ['新买家优惠券', '新买家'],
-          '回购买家优惠券': ['回购买家优惠券', '回购买家', '老买家优惠券'],
-          '关注礼优惠券': ['关注礼优惠券', '关注礼', '关注者优惠券'],
-        }
-        const targets = textAliases[ctx.voucherType] || [ctx.voucherType]
-        cardBtn = [...document.querySelectorAll('button, [role="button"], .voucher-entry-card')]
-          .find(el => {
-            if (!visible(el)) return false
-            const t = textOf(el)
-            return targets.some(alias => t.includes(alias))
-          })
-      }
-      if (!cardBtn) throw new Error(`未找到优惠券类型入口：${ctx.voucherType}`)
+      // 找卡片内的"创建"子按钮（必须点这个，不是点整张卡片）
+      const createBtn = [...card.querySelectorAll('button')].find(el =>
+        visible(el) && /^(创建|新建)$/.test(textOf(el))
+      )
+      const clickTarget = createBtn || card
 
-      // 点击卡片后等待页面跳转到创建页
-      click(cardBtn)
-      const navigated = await waitFor(() => {
-        return location.href.includes('/portal/marketing/vouchers/new') ? true : null
-      }, 8000, 300)
-      if (!navigated) {
-        // 有些卡片需要点卡片内的"创建"按钮，再等一次
-        const createBtn = [...document.querySelectorAll('button')].find(el => {
-          if (!visible(el)) return false
-          const t = textOf(el)
-          return t === '创建' || t === '新建' || t === '+ 创建'
-        })
-        if (createBtn) {
-          click(createBtn)
-          const nav2 = await waitFor(() => location.href.includes('/portal/marketing/vouchers/new') ? true : null, 6000, 300)
-          if (!nav2) throw new Error(`点击"${ctx.voucherType}"后未能进入创建页，当前URL：${location.href}`)
-        } else {
-          throw new Error(`点击"${ctx.voucherType}"后未能进入创建页，当前URL：${location.href}`)
-        }
+      // ★ 关键：同一次 evaluate 里 click 后 waitFor 等表单出现
+      // 不能 return nextPhase，因为 SPA 导航后旧 context 失效
+      // 但是：只要 evaluate 还在跑（awaitPromise=true），导航后 context 依然有效！
+      click(clickTarget)
+
+      // 等待创建表单出现（最多 12s）
+      const formItem = await waitFor(() => {
+        const items = document.querySelectorAll('.eds-react-form-item')
+        // 找"优惠券名称"这个 item 确认是创建页表单
+        return [...items].find(el => {
+          const lbl = el.querySelector('.eds-react-form-item__label')
+          return lbl && norm(lbl.textContent).includes('优惠券名称')
+        }) || null
+      }, 12000, 400)
+
+      if (!formItem) {
+        throw new Error(`点击"创建"后等待表单超时，当前URL：${location.href.substring(0,100)}`)
       }
 
-      return nextPhase('form_fill', ctx, 4000)
+      // 表单已出现，继续在当前 context 填写
+      await sleep(300)
+      return nextPhase('form_fill', ctx, 100)
     }
 
-    // ── phase: form_fill ─────────────────────────────────────────────────────
+    // ── form_fill ────────────────────────────────────────────────────────────
     if (phase === 'form_fill') {
-      // 等待页面导航到创建页（允许最多 6 秒，CDP 注入时 context 可能还未稳定）
-      // enter_type 末尾已等 4s，这里主要是确保 React 表单已挂载
-      const onNewPage = await waitFor(() =>
-        location.href.includes('/portal/marketing/vouchers/new') ? true : null
-      , 6000, 300)
-      if (!onNewPage) {
-        throw new Error(`未进入优惠券创建页，当前URL：${location.href}`)
-      }
-      // 额外等待表单控件完全渲染（Shopee React 表单较慢）
-      await waitFor(() => document.querySelector('.eds-react-form-item') ? true : null, 5000, 300)
-      await sleep(500)
+      // 等表单确实可用（evaluate 在新 context 里，应该能直接找到）
+      const formReady = await waitFor(() => {
+        const items = [...document.querySelectorAll('.eds-react-form-item')]
+        return items.find(el => {
+          const lbl = el.querySelector('.eds-react-form-item__label')
+          return lbl && norm(lbl.textContent).includes('优惠券名称')
+        }) || null
+      }, 10000, 400)
+      if (!formReady) throw new Error(`创建表单未出现，当前URL：${location.href.substring(0,100)}`)
+      await sleep(300)
 
-      // 1. 基础信息
-      await fillFormField('优惠券名称', ctx.couponName)
-      await fillFormField('优惠码', ctx.couponCode)
+      // 1. 优惠券名称
+      await fillField('优惠券名称', ctx.couponName)
 
-      // 2. 领取期限（精确到分钟，使用日期时间 picker）
-      await setDateRange(ctx.startDt, ctx.endDt)
+      // 2. 优惠码
+      await fillField('优惠码', ctx.couponCode)
 
-      // 3. 提前显示优惠券 checkbox
-      await setShowEarlyCheckbox(ctx.showEarly)
+      // 3. 领取期限
+      if (ctx.startDt || ctx.endDt) await setDateRange(ctx.startDt, ctx.endDt)
 
-      // 4. 奖励类型（radio）
-      if (ctx.rewardType) await setRadioByLabel(ctx.rewardType)
+      // 4. 提前显示
+      await setShowEarly(ctx.showEarly)
 
-      // 5. 折扣类型（下拉框），选好后再填优惠限额
-      if (ctx.discountType) await chooseDiscountType(ctx.discountType)
+      // 5. 奖励类型
+      if (ctx.rewardType) await setRewardType(ctx.rewardType)
 
-      // 6. 优惠限额（数字，不含%符号）
-      await fillDiscountLimit(ctx.discountLimit)
+      // 6. 折扣类型（下拉）
+      if (ctx.discountType) await setDiscountType(ctx.discountType)
 
-      // 7. 最高优惠金额
+      // 7. 优惠限额（折扣类型旁的数字框）
+      if (ctx.discountLimit) await fillDiscountLimit(ctx.discountLimit)
+
+      // 8. 最高优惠金额
       if (ctx.maxDiscount) await fillMaxDiscount(ctx.maxDiscount)
 
-      // 8. 最低消费金额
-      if (ctx.minSpend) await fillFormField('最低消费金额', numericValue(ctx.minSpend), 0, false)
+      // 9. 最低消费金额
+      if (ctx.minSpend) {
+        const item = getFormItem('最低消费金额')
+        if (item) { const inp = getTextInputs(item)[0]; if (inp) await typeInto(inp, String(toNumber(ctx.minSpend))) }
+      }
 
-      // 9. 可使用总数
-      if (ctx.totalCount) await fillFormField('可使用总数', numericValue(ctx.totalCount), 0, false)
+      // 10. 可使用总数
+      if (ctx.totalCount) {
+        const item = getFormItem('可使用总数')
+        if (item) { const inp = getTextInputs(item)[0]; if (inp) await typeInto(inp, String(toNumber(ctx.totalCount))) }
+      }
 
-      // 10. 每个买家可用的优惠券数量上限
-      if (ctx.perBuyerLimit) await fillFormField('每个买家可用的优惠券数量上限', numericValue(ctx.perBuyerLimit), 0, false)
+      // 11. 每个买家可用数量上限
+      if (ctx.perBuyer) {
+        const item = getFormItem('每个买家可用的优惠券数量上限') || getFormItem('每个买家')
+        if (item) { const inp = getTextInputs(item)[0]; if (inp) await typeInto(inp, String(toNumber(ctx.perBuyer))) }
+      }
 
       return nextPhase('submit', ctx, 50)
     }
 
-    // ── phase: submit ────────────────────────────────────────────────────────
+    // ── submit ───────────────────────────────────────────────────────────────
     if (phase === 'submit') {
-      // 找"确认"按钮：优先 primary 样式
       const allBtns = [...document.querySelectorAll('button')].filter(visible)
+      // 优先 primary 样式的"确认/确定"
       const confirmBtn =
-        // 1. primary 样式 + 确认/确定文字
         allBtns.find(el => {
           const t = textOf(el)
           if (t !== '确认' && t !== '确定') return false
-          const cls = el.className || ''
-          return cls.includes('primary') || cls.includes('confirm') || cls.includes('submit')
+          return (el.className || '').includes('primary')
         }) ||
-        // 2. 兜底：只按文字匹配
-        allBtns.find(el => {
-          const t = textOf(el)
-          return t === '确认' || t === '确定'
-        })
+        allBtns.find(el => textOf(el) === '确认' || textOf(el) === '确定')
 
       if (!confirmBtn) throw new Error('未找到"确认"按钮')
-      scheduleClick(confirmBtn)
-      return nextPhase('post_submit', ctx, 3200)
+      click(confirmBtn)
+      return nextPhase('post_submit', ctx, 3500)
     }
 
-    // ── phase: post_submit ───────────────────────────────────────────────────
+    // ── post_submit ──────────────────────────────────────────────────────────
     if (phase === 'post_submit') {
-      // 等待：要么成功跳转列表页，要么出现成功 toast，最多等 6 秒
-      const successResult = await waitFor(() => {
-        if (location.href.includes('/portal/marketing/vouchers/list')) return 'redirected'
-        const bodyText = norm(document.body.innerText)
-        if (/创建成功|设置成功|已创建|优惠券已/.test(bodyText)) return 'toast'
-        const toasts = [...document.querySelectorAll('[role="alert"], .eds-message, .eds-toast, .eds-notification, .toast, .message')]
-          .filter(el => visible(el))
-          .map(el => textOf(el))
-          .join(' ')
-        if (/成功/.test(toasts)) return 'toast'
+      // 等待成功信号：跳回列表页 或 出现成功 toast
+      const ok = await waitFor(() => {
+        if (location.href.includes('/portal/marketing/vouchers/list') ||
+            location.href.includes('/portal/marketing/vouchers/') &&
+            !location.href.includes('/new')) return 'url'
+        const bt = norm(document.body.innerText)
+        if (/创建成功|设置成功|已创建/.test(bt)) return 'toast'
+        const alerts = [...document.querySelectorAll('[role=alert],.eds-toast,.eds-message,.eds-notification')]
+          .filter(visible).map(e => textOf(e)).join(' ')
+        if (/成功/.test(alerts)) return 'toast'
         return null
-      }, 6000, 300)
+      }, 8000, 300)
 
-      if (successResult) {
-        return finish(ctx.result)
-      }
+      if (ok) return finish(ctx.result)
 
       // 没有成功信号，检查错误
-      const bodyText = norm(document.body.innerText)
-      const inlineErrors = [...document.querySelectorAll('.eds-react-form-item__extra, .eds-react-form-item__help, [class*="form-item"][class*="error"], [class*="error-msg"], [class*="errorMsg"]')]
-        .filter(el => visible(el))
-        .map(el => textOf(el))
-        .filter(Boolean)
-      const alertTexts = [...document.querySelectorAll('[role="alert"], .eds-message, .eds-toast, .eds-notification, .toast, .message, .alert')]
-        .filter(el => visible(el))
-        .map(el => textOf(el))
-        .filter(Boolean)
-      const combinedErrors = [...new Set([...inlineErrors, ...alertTexts].filter(Boolean))]
+      const inlineErrors = [...document.querySelectorAll(
+        '.eds-react-form-item__extra,.eds-react-form-item__help,[class*="error-msg"],[class*="errorMsg"]'
+      )].filter(visible).map(e => textOf(e)).filter(Boolean)
 
-      if (combinedErrors.length) {
-        throw new Error(`提交后校验提示：${combinedErrors.join(' | ')}`)
+      const toastErrors = [...document.querySelectorAll('[role=alert],.eds-toast,.eds-message')
+      ].filter(visible).map(e => textOf(e)).filter(Boolean)
+
+      const errors = [...new Set([...inlineErrors, ...toastErrors])]
+      if (errors.length) throw new Error(`提交校验：${errors.join(' | ')}`)
+
+      const bt = norm(document.body.innerText)
+      if (/失败|必填|请输入|不能为空|格式不正确|无权限/.test(bt)) {
+        throw new Error('提交后页面有错误提示，请检查字段')
       }
-      if (/失败|错误|必填|请输入|不能为空|格式不正确|无权限/.test(bodyText)) {
-        throw new Error('提交后页面出现校验或错误提示，请检查字段填写、权限或页面控件定位')
-      }
-      // 仍在创建页说明提交未完成，等待更长时间后再判断
-      if (location.href.includes('/portal/marketing/vouchers/new')) {
-        const finalResult = await waitFor(() => {
-          if (location.href.includes('/portal/marketing/vouchers/list')) return 'redirected'
-          const bt = norm(document.body.innerText)
-          if (/创建成功|设置成功|已创建/.test(bt)) return 'toast'
-          return null
-        }, 5000, 400)
-        if (finalResult) return finish(ctx.result)
-        throw new Error('提交后等待超时，仍停留在创建页，请手动检查')
-      }
-      throw new Error('提交后未能确认创建成功或返回列表页')
+
+      // 再等 5s
+      const ok2 = await waitFor(() => {
+        if (!location.href.includes('/new')) return 'url'
+        const bt2 = norm(document.body.innerText)
+        if (/创建成功|设置成功/.test(bt2)) return 'toast'
+        return null
+      }, 5000, 400)
+      if (ok2) return finish(ctx.result)
+
+      throw new Error(`提交后未能确认成功，当前URL：${location.href.substring(0,100)}`)
     }
 
-    throw new Error(`未知执行阶段：${phase}`)
+    throw new Error(`未知 phase：${phase}`)
+
   } catch (e) {
-    const fallback = (shared && shared.result) ? shared.result : {
-      '序号': page,
-      '站点': row['站点'] || '',
-      '店铺': row['店铺'] || '',
-      '优惠券品类': row['优惠券品类'] || '',
-      '奖励类型': row['奖励类型'] || '',
-      '折扣类型': row['折扣类型'] || '',
-      '优惠限额': row['优惠限额'] || '',
-      '生成优惠券名称': shared.couponName || '',
-      '生成优惠码': shared.couponCode || '',
-      '执行状态': '失败',
-      '错误原因': ''
+    const fallback = (shared?.result) || {
+      '序号': page, '站点': row['站点'] || '', '店铺': row['店铺'] || '',
+      '优惠券品类': row['优惠券品类'] || '', '奖励类型': row['奖励类型'] || '',
+      '折扣类型': row['折扣类型'] || '', '优惠限额': '',
+      '生成优惠券名称': shared?.couponName || '', '生成优惠码': shared?.couponCode || '',
+      '执行状态': '失败', '错误原因': ''
     }
     return finish(fallback, e.message || String(e))
   }
