@@ -118,7 +118,7 @@
           :disabled="isRunning || missingRequired"
           @click="runTask"
         >
-          <span v-if="isRunning">⏳ 抓取中…</span>
+          <span v-if="isRunning">⏳ 进行中…</span>
           <span v-else>▶ 立即执行</span>
         </button>
         <span v-if="missingRequired" class="missing-hint">请填写必填项</span>
@@ -137,7 +137,7 @@
           :disabled="isRunning"
           @click="runTask"
         >
-          <span v-if="isRunning">⏳ 抓取中…</span>
+          <span v-if="isRunning">⏳ 进行中…</span>
           <span v-else>▶ 立即执行</span>
         </button>
       </div>
