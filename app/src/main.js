@@ -23,8 +23,8 @@ function getPythonBin() {
     const bundled = process.platform === 'win32' ? winBin : unixBin
     if (fs.existsSync(bundled)) return bundled
   }
-  // dev fallback
-  const venvPy = path.join(__dirname, '..', '..', 'core', '..', 'venv', 'bin', 'python3')
+  // dev fallback: __dirname = app/src, crawshrimp root = app/src/../..
+  const venvPy = path.join(__dirname, '..', '..', 'venv', 'bin', 'python3')
   if (fs.existsSync(venvPy)) return venvPy
   return process.platform === 'win32' ? 'python' : 'python3'
 }
