@@ -685,10 +685,14 @@
       if (ctx.rewardType) await setRewardType(ctx.rewardType)
 
       // 6. 折扣类型（下拉）
-      if (ctx.discountType) await setDiscountType(ctx.discountType)
+      let actualDiscountType = ctx.discountType
+      if (ctx.discountType) actualDiscountType = await setDiscountType(ctx.discountType)
 
       // 7. 优惠限额（折扣类型旁的数字框）
-      if (ctx.discountLimit) await fillDiscountLimit(ctx.discountLimit)
+      if (ctx.discountLimit) {
+        const limitValue = discountLimitValue(ctx.discountLimit, actualDiscountType || ctx.discountType)
+        await fillDiscountLimit(limitValue)
+      }
 
       // 8. 最高优惠金额
       if (ctx.maxDiscount) await fillMaxDiscount(ctx.maxDiscount)
