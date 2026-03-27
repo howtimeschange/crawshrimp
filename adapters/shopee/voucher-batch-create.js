@@ -1370,6 +1370,46 @@
         `pick_date_nav_${kind}`, 500)
     }
 
+    // ── pick_date_nav_year_{kind}：点击年份 span 后，在下拉中选目标年份 ─────
+    if (phase === 'pick_date_nav_year_start' || phase === 'pick_date_nav_year_end') {
+      const kind = phase.includes('start') ? 'start' : 'end'
+      const kindLabel = kind === 'start' ? '开始' : '结束'
+      const saved = shared[`_pick_${kind}_target`]
+      if (!saved) throw new Error(`丢失 ${kind} 目标年份数据`)
+      const target = saved.target
+
+      // 在整个 document 范围找可见的年份下拉
+      const allDropdowns = document.querySelectorAll('.eds-react-popover, [class*="dropdown"], [class*="picker-panel"], [class*="year-panel"], [class*="select-panel"]')
+      let yearOption = null
+      for (const dropdown of allDropdowns) {
+        if (!visible(dropdown)) continue
+        const candidates = dropdown.querySelectorAll('[class*="option"], [class*="year"], td, li, div, button, [class*="item"]')
+        for (const el of candidates) {
+          if (!visible(el)) continue
+          const txt = textOf(el).trim()
+          if (txt === String(target.year)) {
+            yearOption = el
+            break
+          }
+        }
+        if (yearOption) break
+      }
+
+      if (yearOption) {
+        const oc = rectCenter(yearOption)
+        if (oc) {
+          console.log(`[DATE] 选择年份 ${target.year}`)
+          return nextCdpClickPhase([{ ...oc, delay_ms: 300, label: `选年份${target.year}` }], `pick_date_nav_${kind}`, 100)
+        }
+      }
+
+      // 没找到年份下拉，关闭后回到 nav
+      console.log(`[DATE] 未找到年份下拉，关闭并继续逐月导航`)
+      try { document.body.click() } catch {}
+      await sleep(200)
+      return nextCdpClickPhase([], `pick_date_nav_${kind}`, 100)
+    }
+
     // ── pick_date_nav_{kind}：用 navigateDatePicker 导航年月 ─────────────────
     if (phase === 'pick_date_nav_start' || phase === 'pick_date_nav_end') {
       const kind = phase.includes('start') ? 'start' : 'end'
@@ -1407,25 +1447,22 @@
       const deltaY = target.year - header.year
       const deltaM = target.month - header.month
 
-      // 年份不同：优先用 prevYear / nextYear（每次跳转 1 年）
-      if (deltaY !== 0 && (nav.prevYear || nav.nextYear)) {
-        const yearBtn = deltaY < 0 ? nav.prevYear : nav.nextYear
-        if (yearBtn) {
-          const bc = rectCenter(yearBtn)
-          if (bc) {
-            console.log(`[DATE] 年份导航 click（${deltaY < 0 ? 'prevYear' : 'nextYear'}），剩余年份差: ${Math.abs(deltaY)}`)
-            return nextCdpClickPhase([{ ...bc, delay_ms: 200, label: `年份导航${deltaY < 0 ? '上一年' : '下一年'}` }], phase, 100)
-          }
+      // 年份不同：优先用 yearPicker span 下拉 → 跳到 pick_date_nav_year_{kind}
+      if (deltaY !== 0 && nav.yearPicker) {
+        const yc = rectCenter(nav.yearPicker)
+        if (yc) {
+          console.log(`[DATE] 点击年份文字 ${header.year} 打开年份下拉`)
+          return nextCdpClickPhase([{ ...yc, delay_ms: 400, label: '年份下拉' }], `pick_date_nav_year_${kind}`, 100)
         }
       }
 
-      // 月份不同或没有年份按钮：用 prevMonth / nextMonth
+      // 月份不同：直接用 nextMonth（可跨年），逐月前进直到目标年月
       const totalClicks = deltaY * 12 + deltaM
       const btn = totalClicks >= 0 ? nav.nextMonth : nav.prevMonth
       if (!btn) throw new Error(`${kindLabel}日期导航按钮未找到（prevYear=${!!nav.prevYear}, prevMonth=${!!nav.prevMonth}）`)
       const bc = rectCenter(btn)
       if (!bc) throw new Error(`${kindLabel}导航按钮坐标为空`)
-      console.log(`[DATE] 月份导航 click（${totalClicks >= 0 ? 'next' : 'prev'}），总差: ${totalClicks}`)
+      console.log(`[DATE] 月份导航（${totalClicks >= 0 ? 'next' : 'prev'}），总差: ${totalClicks} 次`)
       return nextCdpClickPhase([{ ...bc, delay_ms: 200, label: '月份导航' }], phase, 100)
     }
 
