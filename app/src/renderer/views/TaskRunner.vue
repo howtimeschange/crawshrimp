@@ -190,6 +190,7 @@ const outputFiles = ref([])
 const showFiles = ref(false)
 const excelLoading = ref({})
 let pollTimer = null
+let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 
 // 初始化默认值
 watch(() => props.task, (task) => {
@@ -276,6 +277,11 @@ async function runTask() {
   logs.value.push(`[${now()}] 任务已启动，等待执行…`)
   emit('status-change', { status: 'running' })
 
+  // 等一下让后端写入 run_id，再拿到本次任务的 run_id
+  await new Promise(res => setTimeout(res, 600))
+  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
+  currentRunId = initStatus?.live?.run_id ?? initStatus?.last_run?.id ?? null
+
   // 开始轮询日志
   pollTimer = setInterval(pollStatus, 800)
 }
@@ -288,16 +294,40 @@ async function pollStatus() {
   if (logR.logs) logs.value = logR.logs
   scrollToBottom()
 
-  if (!live || live.status === 'running') return
+  // live 有值且是当前任务正在跑 → 继续等
+  if (live && live.status === 'running') return
 
-  // 完成
+  // live 为 null 时：检查 last_run 是否是我们触发的这次（匹配 run_id）
+  if (!live) {
+    const last = r.last_run
+    // 还没有 run_id（任务刚提交还没写入）→ 继续等
+    if (!currentRunId) return
+    // last_run 不是当前任务 → 继续等
+    if (!last || last.id !== currentRunId) return
+    // last_run 是当前任务但还在跑 → 继续等
+    if (last.status === 'running') return
+    // last_run 是当前任务且已完成 → 用 last 作为结果
+    const syntheticLive = { status: last.status, records: last.records_count, error: last.error, run_id: last.id }
+    return finishRun(syntheticLive)
+  }
+
+  // live 有值且不是 running（done/error）且匹配当前 run_id
+  if (currentRunId && live.run_id && live.run_id !== currentRunId) return
+  finishRun(live)
+}
+
+function scrollToBottom() {
+  nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
+}
+
+async function finishRun(result) {
   clearInterval(pollTimer)
   isRunning.value = false
-  emit('status-change', live)
+  currentRunId = null
+  emit('status-change', result)
 
-  if (live.status === 'done') {
-    lastResult.value = { ok: true, msg: `✓ 完成，共 ${live.records} 条记录` }
-    // 加载输出文件
+  if (result.status === 'done') {
+    lastResult.value = { ok: true, msg: `✓ 完成，共 ${result.records ?? result.records_count ?? 0} 条记录` }
     const dataR = await window.cs.getData(props.adapterId, props.task.task_id)
     if (dataR.runs?.[0]?.output_files) {
       try {
@@ -308,13 +338,9 @@ async function pollStatus() {
         if (files?.length) showFiles.value = true
       } catch {}
     }
-  } else if (live.status === 'error') {
-    lastResult.value = { ok: false, msg: `✗ 失败: ${live.error || '未知错误'}` }
+  } else if (result.status === 'error') {
+    lastResult.value = { ok: false, msg: `✗ 失败: ${result.error || '未知错误'}` }
   }
-}
-
-function scrollToBottom() {
-  nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
 }
 
 function clearLogs() { logs.value = [] }
