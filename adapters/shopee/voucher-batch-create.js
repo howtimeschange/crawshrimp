@@ -74,20 +74,22 @@
   function click(el) {
     if (!el) return false
     try { el.scrollIntoView({ block: 'center' }) } catch {}
-    for (const ev of ['pointerdown','mousedown','mouseup','click']) {
-      try { el.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true, view: window })) } catch {}
+    try { el.focus?.() } catch {}
+    const mouseOpts = { bubbles: true, cancelable: true, view: window, button: 0, buttons: 1, detail: 1 }
+    try {
+      if (typeof PointerEvent === 'function') {
+        el.dispatchEvent(new PointerEvent('pointerdown', { ...mouseOpts, pointerType: 'mouse', isPrimary: true }))
+      }
+    } catch {}
+    for (const ev of ['mousedown','mouseup','click']) {
+      try { el.dispatchEvent(new MouseEvent(ev, mouseOpts)) } catch {}
     }
     try { el.click() } catch {}
     return true
   }
 
   function tap(el) {
-    if (!el) return false
-    try { el.scrollIntoView({ block: 'center' }) } catch {}
-    try { el.click() } catch {
-      try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })) } catch {}
-    }
-    return true
+    return click(el)
   }
 
   function setNativeValue(el, value) {
@@ -300,8 +302,10 @@
   }
 
   function getDatePickerPanel(item) {
-    return item?.querySelector('.eds-react-date-picker__panel-wrap') ||
-           item?.querySelector('.eds-react-popover.eds-react-date-picker__popup') || null
+    const local = item?.querySelector('.eds-react-date-picker__panel-wrap, .eds-react-popover.eds-react-date-picker__popup')
+    if (local && visible(local)) return local
+    return [...document.querySelectorAll('.eds-react-popover.eds-react-date-picker__popup, .eds-react-date-picker__panel-wrap')]
+      .find(el => visible(el) && /确认/.test(textOf(el))) || null
   }
 
   function getDatePickerHeader(panel) {
@@ -352,10 +356,15 @@
   async function pickDateTimeViaPanel(item, kind, dt) {
     const target = parseDateTimeValue(dt?.str)
     if (!target) throw new Error(`无法解析领取期限：${dt?.str || ''}`)
-    const trigger = item.querySelector(`.picker-item.${kind}-picker .eds-react-date-picker__input, .picker-item.${kind}-picker`)
+    const trigger = item.querySelector(
+      `.picker-item.${kind}-picker #${kind === 'start' ? 'startDate' : 'endDate'}, ` +
+      `.picker-item.${kind}-picker .eds-react-date-picker__input, ` +
+      `.picker-item.${kind}-picker .eds-react-date-picker, ` +
+      `.picker-item.${kind}-picker`
+    )
     if (!trigger) throw new Error(`未找到${kind === 'start' ? '开始' : '结束'}日期触发器`)
-    tap(trigger)
-    await sleep(250)
+    click(trigger)
+    await sleep(300)
     const panel = await waitFor(() => getDatePickerPanel(item), 2500, 120)
     if (!panel) throw new Error(`未展开${kind === 'start' ? '开始' : '结束'}日期面板`)
 
@@ -364,7 +373,7 @@
 
     const dayWrap = findCurrentMonthDayWrap(panel, target.day)
     if (!dayWrap) throw new Error(`未找到目标日期：${target.day}`)
-    tap(dayWrap)
+    click(dayWrap)
     await sleep(180)
 
     const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
@@ -373,9 +382,9 @@
       const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
       if (!hourBox) throw new Error(`未找到目标小时：${target.hour}`)
       if (!minuteBox) throw new Error(`未找到目标分钟：${target.minute}`)
-      tap(hourBox)
+      click(hourBox)
       await sleep(100)
-      tap(minuteBox)
+      click(minuteBox)
       await sleep(120)
     }
 
@@ -386,19 +395,27 @@
   }
 
   async function confirmDatePicker(scope = document) {
+    const popover = scope?.closest?.('.eds-react-popover.eds-react-date-picker__popup') ||
+      (scope?.matches?.('.eds-react-popover.eds-react-date-picker__popup') ? scope : null)
     const roots = [
+      popover,
       scope,
+      scope?.closest?.('.eds-react-date-picker__panel-wrap') || null,
       scope?.closest?.('.date-range-picker-container') || null,
-      scope?.closest?.('.eds-react-form-item') || null,
       document,
     ].filter(Boolean)
     for (const root of roots) {
       const okBtn = [...root.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')].find(b => {
         const txt = textOf(b)
-        return /^(确认|确定|OK)$/i.test(txt) && (visible(b) || root === document)
+        if (!/^(确认|确定|OK)$/i.test(txt)) return false
+        if (root === document) {
+          const popup = b.closest('.eds-react-popover.eds-react-date-picker__popup')
+          return visible(b) && (!popup || visible(popup))
+        }
+        return visible(b)
       })
       if (okBtn) {
-        tap(okBtn)
+        click(okBtn)
         await sleep(300)
         return true
       }
