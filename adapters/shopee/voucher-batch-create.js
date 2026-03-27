@@ -107,18 +107,22 @@
       try { el.remove() } catch {}
     }
     for (const btn of [...document.querySelectorAll('button')]) {
-      if (visible(btn) && /^(关闭|知道了|稍后|取消)$/.test(textOf(btn))) {
-        try { click(btn) } catch {}
-      }
+      const t = textOf(btn)
+      if (!visible(btn)) continue
+      if (!/^(关闭|知道了|稍后)$/.test(t)) continue
+      const scope = btn.closest('.fullstory-modal-wrapper, .diagnosis-result-modal, [role="dialog"], .eds-modal, .eds-drawer, .shopee-modal')
+      if (!scope) continue
+      try { click(btn) } catch {}
     }
     await sleep(100)
   }
 
-  // 找 .eds-react-form-item 表单项（按 label 文本）
   function getFormItem(labelText) {
-    return [...document.querySelectorAll('.eds-react-form-item')].find(el => {
-      const lbl = el.querySelector('.eds-react-form-item__label')
-      return lbl && norm(lbl.textContent).includes(labelText)
+    const labels = Array.isArray(labelText) ? labelText.map(norm) : [norm(labelText)]
+    return [...document.querySelectorAll('.eds-react-form-item, .eds-form-item')].find(el => {
+      const lbl = el.querySelector('.eds-react-form-item__label, .eds-form-item__label')
+      const t = norm(lbl?.textContent)
+      return t && labels.some(x => t.includes(x))
     }) || null
   }
 
@@ -135,6 +139,11 @@
     if (!el) throw new Error(`表单项"${labelText}"没有可编辑 input`)
     await typeInto(el, value)
     return true
+  }
+
+  function toIsoStringFromDt(dt) {
+    if (!dt) return ''
+    return new Date(`${dt.y}-${dt.mo}-${dt.d}T${dt.hh}:${dt.mm}:00+08:00`).toISOString()
   }
 
   // ─── 日期时间 Picker ─────────────────────────────────────────────────────────
@@ -172,8 +181,24 @@
   }
 
   async function setDateRange(startDt, endDt) {
-    const item = getFormItem('优惠券领取期限')
-    if (!item) throw new Error('未找到"优惠券领取期限"')
+    const item = getFormItem(['优惠券领取期限', 'Claim Period'])
+    if (!item) throw new Error('未找到"优惠券领取期限/Claim Period"')
+
+    const rangeComp = item.querySelector('.date-range-picker-container, .date-range-picker')?.__vueParentComponent || null
+    if (rangeComp?.ctx && (typeof rangeComp.ctx.handleStartChange === 'function' || typeof rangeComp.ctx.handleEndChange === 'function')) {
+      if (startDt && typeof rangeComp.ctx.handleStartChange === 'function') {
+        rangeComp.ctx.handleStartChange(toIsoStringFromDt(startDt))
+      }
+      if (endDt && typeof rangeComp.ctx.handleEndChange === 'function') {
+        rangeComp.ctx.handleEndChange(toIsoStringFromDt(endDt))
+      }
+      await sleep(150)
+      try { rangeComp.ctx.validate?.() } catch {}
+      try { document.body.click() } catch {}
+      await sleep(150)
+      return true
+    }
+
     const inputs = getTextInputs(item)
     if (inputs.length < 2) throw new Error(`领取期限 input 数量不足: ${inputs.length}`)
     if (startDt) await fillDatetimePicker(inputs[0], startDt)
@@ -189,6 +214,7 @@
       return visible(el) && textOf(el).includes('提前显示优惠券')
     })
     if (!target) {
+      if (location.href.includes('/portal/marketing/follow-prize/new')) return false
       if (desired) throw new Error('未找到"提前显示优惠券"复选框')
       return false
     }
@@ -239,23 +265,28 @@
     const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
     if (!item) throw new Error('未找到折扣类型表单项')
 
-    const trigger = item.querySelector('.trigger.trigger--normal')
-    if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器(.trigger.trigger--normal)')
+    const trigger = item.querySelector('.trigger.trigger--normal, .eds-selector')
+    if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器')
 
     trigger.scrollIntoView({ block: 'center' })
     await sleep(100)
+    const selectorComp = trigger.__vueParentComponent || null
+    if (selectorComp?.ctx?.handlerClick && typeof selectorComp.ctx.handlerClick === 'function') {
+      try { selectorComp.ctx.handlerClick() } catch {}
+    }
     for (const evtName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
       try {
         trigger.dispatchEvent(new MouseEvent(evtName, { bubbles: true, cancelable: true, view: window, buttons: 1 }))
       } catch (_) {}
     }
+    try { trigger.click?.() } catch {}
     await sleep(600)
 
     const options = await waitFor(() => {
-      const opts = [...document.querySelectorAll('.eds-react-select-option')].filter(visible)
+      const opts = [...document.querySelectorAll('.eds-react-select-option, .eds-option')].filter(visible)
       return opts.length > 0 ? opts : null
     }, 4000, 150)
-    if (!options) throw new Error('折扣类型下拉未展开（未找到 .eds-react-select-option）')
+    if (!options) throw new Error('折扣类型下拉未展开')
 
     let option = options.find(el => {
       const t = textOf(el).toLowerCase()
@@ -373,8 +404,10 @@
 
     const formReady = await waitFor(() => {
       const href = location.href || ''
-      if (!href.includes('/portal/marketing/vouchers/new')) return null
-      const item = getFormItem('优惠券名称')
+      const onVoucherNew = href.includes('/portal/marketing/vouchers/new')
+      const onFollowPrizeNew = href.includes('/portal/marketing/follow-prize/new')
+      if (!onVoucherNew && !onFollowPrizeNew) return null
+      const item = getFormItem(['优惠券名称'])
       return item && visible(item) ? item : null
     }, 12000, 200)
     if (!formReady) {
@@ -384,7 +417,7 @@
     updateProgress(ctx, 'enter_type', '进行中', { '下一阶段': 'form_fill' })
     await sleep(200)
     await fillField('优惠券名称', ctx.couponName)
-    await fillField('优惠码', ctx.couponCode)
+    try { await fillField('优惠码', ctx.couponCode) } catch {}
     updateProgress(ctx, 'form_fill', '进行中')
     return true
   }
@@ -458,14 +491,13 @@
   }
 
   function hasCreateFormMounted() {
-    return !![...document.querySelectorAll('.eds-react-form-item')].find(el => {
-      const lbl = el.querySelector('.eds-react-form-item__label')
-      return lbl && norm(lbl.textContent).includes('优惠券名称')
-    })
+    return !!getFormItem(['优惠券名称'])
   }
 
   function isOnCreatePage() {
-    return location.href.includes('/portal/marketing/vouchers/new') || hasCreateFormMounted()
+    return location.href.includes('/portal/marketing/vouchers/new') ||
+           location.href.includes('/portal/marketing/follow-prize/new') ||
+           hasCreateFormMounted()
   }
 
   function getUsecaseByVoucherType(voucherType) {
@@ -501,8 +533,11 @@
   function buildCreateUrl(voucherType) {
     const usecase = getUsecaseByVoucherType(voucherType)
     if (!usecase) throw new Error(`未配置 usecase：${voucherType}`)
-    const u = new URL('https://seller.shopee.cn/portal/marketing/vouchers/new')
-    u.searchParams.set('usecase', usecase)
+    const base = usecase === '999'
+      ? 'https://seller.shopee.cn/portal/marketing/follow-prize/new'
+      : 'https://seller.shopee.cn/portal/marketing/vouchers/new'
+    const u = new URL(base)
+    if (usecase !== '999') u.searchParams.set('usecase', usecase)
     try {
       const cur = new URL(location.href)
       const shopId = cur.searchParams.get('cnsc_shop_id')
@@ -646,6 +681,10 @@
       if (isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
+      if (ctx.usecase === '999') {
+        location.href = buildCreateUrl(ctx.voucherType)
+        return nextPhase('enter_type', ctx, 3000)
+      }
       await openCreatePageFromListAndPrimeForm(ctx)
       return nextPhase('form_fill', ctx, 80)
     }
@@ -661,13 +700,7 @@
     if (phase === 'form_fill') {
       updateProgress(ctx, 'form_fill', '进行中')
       // enter_type 已经在同一次 evaluate 中填过前两个关键字段，这里只做兜底与剩余字段填写
-      const formReady = await waitFor(() => {
-        const items = [...document.querySelectorAll('.eds-react-form-item')]
-        return items.find(el => {
-          const lbl = el.querySelector('.eds-react-form-item__label')
-          return lbl && norm(lbl.textContent).includes('优惠券名称')
-        }) || null
-      }, 10000, 400)
+      const formReady = await waitFor(() => getFormItem(['优惠券名称']) || null, 10000, 400)
       if (!formReady) throw new Error(`创建表单未出现，当前URL：${location.href.substring(0,100)}`)
       await sleep(300)
 
@@ -705,7 +738,7 @@
 
       // 10. 可使用总数
       if (ctx.totalCount) {
-        const item = getFormItem('可使用总数')
+        const item = getFormItem(['可使用总数', '优惠券可使用总数'])
         if (item) { const inp = getTextInputs(item)[0]; if (inp) await typeInto(inp, String(toNumber(ctx.totalCount))) }
       }
 
