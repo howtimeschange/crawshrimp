@@ -55,6 +55,33 @@ class JSRunner:
                 if msg.get("id") == msg_id:
                     return msg
 
+    async def _cdp_send(self, method: str, params: dict) -> dict:
+        """直接通过 CDP WebSocket 发送任意命令（非 Runtime.evaluate）"""
+        msg_id = self._next_id()
+        payload = json.dumps({"id": msg_id, "method": method, "params": params})
+        async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+            await ws.send(payload)
+            while True:
+                raw = await asyncio.wait_for(ws.recv(), timeout=10)
+                msg = json.loads(raw)
+                if msg.get("id") == msg_id:
+                    return msg
+
+    async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
+        """用 CDP Input.dispatchMouseEvent 在真实坐标上执行鼠标点击。
+        这能触发 React 合成事件，而 JS dispatchEvent 无法做到。
+        """
+        for evt_type in ("mouseMoved", "mousePressed", "mouseReleased"):
+            params: dict = {"type": evt_type, "x": x, "y": y, "modifiers": 0}
+            if evt_type == "mouseMoved":
+                params.update({"button": "none", "clickCount": 0})
+            elif evt_type == "mousePressed":
+                params.update({"button": "left", "clickCount": 1, "buttons": 1})
+            else:
+                params.update({"button": "left", "clickCount": 1, "buttons": 0})
+            await self._cdp_send("Input.dispatchMouseEvent", params)
+        await asyncio.sleep(delay_ms / 1000.0)
+
     async def evaluate(self, expression: str) -> JSResult:
         try:
             msg = await self._evaluate_raw(expression)
@@ -136,6 +163,21 @@ class JSRunner:
 
                 if result.data:
                     all_data.extend(result.data)
+
+                if action == "cdp_clicks":
+                    # JS 脚本请求用 CDP 真实鼠标点击一组坐标，然后继续当前 phase
+                    # meta.clicks = [{x, y, delay_ms?}, ...]
+                    # meta.next_phase (可选) = 点完后切换到哪个 phase
+                    clicks = meta.get("clicks") or []
+                    for c in clicks:
+                        await self.cdp_mouse_click(float(c["x"]), float(c["y"]), int(c.get("delay_ms", 80)))
+                    post_sleep = float(meta.get("sleep_ms", 300)) / 1000.0
+                    await asyncio.sleep(post_sleep)
+                    next_phase = meta.get("next_phase") or phase
+                    logger.info(f"cdp_clicks: page={page} phase={phase} 点击 {len(clicks)} 个坐标 -> {next_phase}")
+                    phase = str(next_phase)
+                    await self._refresh_ws_url()
+                    continue
 
                 if action == "next_phase":
                     next_phase = meta.get("next_phase")

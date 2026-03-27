@@ -382,45 +382,108 @@
     }) || null
   }
 
+  // CDP 鼠标点击协议：JS 算坐标 → return cdp_clicks → Python 用真实鼠标事件点 → 继续下一 phase
+  // 这是唯一能可靠触发 React 合成事件的方式（JS dispatchEvent 无效）
+  function rectCenter(el) {
+    if (!el) return null
+    const r = el.getBoundingClientRect()
+    if (r.width === 0 && r.height === 0) return null
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+  }
+
+  function nextCdpClickPhase(clicks, nextPhase, sleepMs = 300, ctx = null) {
+    const sharedPayload = {
+      ...(shared || {}),
+      ...(ctx ? {
+        couponName: ctx.couponName,
+        couponCode: ctx.couponCode,
+        result: ctx.result,
+      } : {}),
+    }
+    return {
+      success: true,
+      meta: { action: 'cdp_clicks', clicks, next_phase: nextPhase, sleep_ms: sleepMs, shared: sharedPayload },
+    }
+  }
+
+  // pick_date_open_panel：打开指定 kind(start/end) 的日期面板并切换年月
+  // pick_date_select_day：选择具体日期 cell（需要 CDP 点击）
+  // pick_date_select_time：选择时分
+  // pick_date_confirm：点确认
+
   async function pickDateTimeViaPanel(item, kind, dt) {
     const target = parseDateTimeValue(dt?.str)
     if (!target) throw new Error(`无法解析领取期限：${dt?.str || ''}`)
+    const kindLabel = kind === 'start' ? '开始' : '结束'
+
+    // 关闭可能已打开的面板
+    const existingPanel = document.querySelector('.eds-react-popover.eds-react-date-picker__popup:not(.eds-react-popover-hidden)')
+    if (existingPanel) { try { document.body.click() } catch {} ; await sleep(200) }
+
     const trigger = item.querySelector(
       `.picker-item.${kind}-picker #${kind === 'start' ? 'startDate' : 'endDate'}, ` +
-      `.picker-item.${kind}-picker .eds-react-date-picker__input, ` +
-      `.picker-item.${kind}-picker .eds-react-date-picker, ` +
-      `.picker-item.${kind}-picker`
+      `.picker-item.${kind}-picker .eds-react-date-picker__input`
     )
-    if (!trigger) throw new Error(`未找到${kind === 'start' ? '开始' : '结束'}日期触发器`)
-    click(trigger)
-    await sleep(300)
-    const panel = await waitFor(() => getDatePickerPanel(item), 2500, 120)
-    if (!panel) throw new Error(`未展开${kind === 'start' ? '开始' : '结束'}日期面板`)
+    if (!trigger) throw new Error(`未找到${kindLabel}日期触发器`)
 
+    // 滚动到可见再点
+    try { trigger.scrollIntoView({ block: 'center' }) } catch {}
+    await sleep(200)
+    click(trigger)
+    await sleep(600)
+
+    const panel = await waitFor(() => getDatePickerPanel(item), 3000, 150)
+    if (!panel) throw new Error(`未展开${kindLabel}日期面板`)
+
+    // 切换到目标年月
     const ok = await navigateDatePicker(panel, target)
     if (!ok) throw new Error(`无法切换到目标年月：${target.year}-${target.month}`)
 
-    const dayWrap = findCurrentMonthDayWrap(panel, target.day)
-    if (!dayWrap) throw new Error(`未找到目标日期：${target.day}`)
-    click(dayWrap)
-    await sleep(180)
+    // 找目标 cell（table-cell 本体，有 React onClick）
+    const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
+    const dayText = String(Number(target.day))
+    const targetCell = cells.find(c =>
+      norm(c.textContent) === dayText &&
+      !c.classList.contains('out-of-range') &&
+      !c.classList.contains('disabled')
+    )
+    if (!targetCell) throw new Error(`未找到目标日期 cell：${target.day}`)
 
+    const cellCenter = rectCenter(targetCell)
+    if (!cellCenter) throw new Error(`目标 cell getBoundingClientRect 为空`)
+
+    // 找时分元素坐标（在 CDP 点 cell 之前先算好，因为 CDP 点完后 context 还在）
     const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
+    let hourCenter = null, minuteCenter = null
     if (scrollbars.length >= 2) {
       const hourBox = [...scrollbars[0].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.hour)
       const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
-      if (!hourBox) throw new Error(`未找到目标小时：${target.hour}`)
-      if (!minuteBox) throw new Error(`未找到目标分钟：${target.minute}`)
-      click(hourBox)
-      await sleep(100)
-      click(minuteBox)
-      await sleep(120)
+      if (hourBox) hourCenter = rectCenter(hourBox)
+      if (minuteBox) minuteCenter = rectCenter(minuteBox)
     }
 
-    const confirmed = await confirmDatePicker(panel)
-    if (!confirmed) throw new Error('未找到日期面板确认按钮')
-    await sleep(250)
-    return true
+    // 找确认按钮坐标
+    const okBtn = [...panel.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')]
+      .find(b => /^(确认|确定|OK)$/i.test(textOf(b)) && visible(b))
+    const okCenter = rectCenter(okBtn)
+    if (!okCenter) throw new Error('未找到日期面板确认按钮')
+
+    // 组装 CDP 点击序列：cell → hour → minute → 确认
+    const clicks = [
+      { ...cellCenter, delay_ms: 350, label: `日期${target.day}` },
+    ]
+    if (hourCenter)   clicks.push({ ...hourCenter,   delay_ms: 150, label: `小时${target.hour}` })
+    if (minuteCenter) clicks.push({ ...minuteCenter, delay_ms: 150, label: `分钟${target.minute}` })
+    clicks.push({ ...okCenter, delay_ms: 350, label: '确认' })
+
+    // 将当前 kind/dt 信息存入 shared，供 confirm 阶段读取
+    const pickPhase = `pick_date_verify_${kind}`
+    shared[`_pick_${kind}`] = { target: dt.str, clicks }
+
+    // 返回 cdp_clicks，让 Python 用真实鼠标事件点击后继续 pick_date_verify phase
+    // 注：ctx 在此处已被 form_fill phase 的 buildContext() 构建，通过 shared 传给下一 phase
+    const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
+    return nextCdpClickPhase(clicks, pickPhase, 400, ctxForShared)
   }
 
   async function confirmDatePicker(scope = document) {
@@ -1069,9 +1132,73 @@
       try { await fillField('优惠券名称', ctx.couponName) } catch {}
       try { await fillField('优惠码', ctx.couponCode) } catch {}
 
-      // 3. 领取期限
-      if (ctx.startDt || ctx.endDt) await setDateRange(ctx.startDt, ctx.endDt)
+      // 3. 领取期限 —— 需要 CDP 真实鼠标点击，拆成独立 phase
+      if (ctx.startDt || ctx.endDt) {
+        const item = getFormItem(['优惠券领取期限', 'Claim Period'])
+        if (item && item.querySelector('.picker-item.start-picker, .eds-react-date-picker__input')) {
+          // 先处理 start
+          if (ctx.startDt) {
+            const cdpMeta = await pickDateTimeViaPanel(item, 'start', ctx.startDt)
+            // pickDateTimeViaPanel 返回 cdp_clicks meta，直接透传给 runner
+            return cdpMeta
+          }
+          // 没有 startDt，直接跳到 form_fill_end_date
+          return nextPhase('form_fill_end_date', ctx, 80)
+        }
+        // 走 Vue DateRangePicker 路径（关注礼等），不需要 CDP 点击
+        await setDateRange(ctx.startDt, ctx.endDt)
+      }
 
+      // 有 start 无 end 的情况，或跳过日期直接填剩余字段
+      return nextPhase('form_fill_rest', ctx, 80)
+    }
+
+    // ── pick_date_verify_start（CDP 点击完 start 日期后，验证并继续 end）───────
+    if (phase === 'pick_date_verify_start') {
+      await sleep(200)
+      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
+      const startInput = item?.querySelector('.picker-item.start-picker input.eds-react-input__input')
+      const startVal = norm(startInput?.value || '')
+      if (ctx.startDt && !startVal.includes(ctx.startDt.str)) {
+        // 写入失败，记录实际值但不中断，继续尝试 end
+        updateProgress(ctx, 'form_fill', '进行中', { 'start_date_actual': startVal, 'start_date_expected': ctx.startDt.str })
+      }
+      // 继续处理 end
+      if (ctx.endDt && item) {
+        const cdpMeta = await pickDateTimeViaPanel(item, 'end', ctx.endDt)
+        return cdpMeta
+      }
+      return nextPhase('form_fill_rest', ctx, 80)
+    }
+
+    // ── pick_date_verify_end（CDP 点击完 end 日期后，验证并继续剩余表单）────────
+    if (phase === 'pick_date_verify_end') {
+      await sleep(200)
+      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
+      const inputs = [...(item?.querySelectorAll('input.eds-react-input__input') || [])].filter(visible)
+      const startVal = norm(inputs[0]?.value || '')
+      const endVal   = norm(inputs[1]?.value || '')
+      if (ctx.startDt && !startVal.includes(ctx.startDt.str)) {
+        throw new Error(`领取期限开始时间未写入成功，期望：${ctx.startDt.str}，实际：${startVal || '(空)'}`)
+      }
+      if (ctx.endDt && !endVal.includes(ctx.endDt.str)) {
+        throw new Error(`领取期限结束时间未写入成功，期望：${ctx.endDt.str}，实际：${endVal || '(空)'}`)
+      }
+      return nextPhase('form_fill_rest', ctx, 80)
+    }
+
+    // ── form_fill_end_date（只有 endDt，跳过了 start，直接处理 end）────────────
+    if (phase === 'form_fill_end_date') {
+      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
+      if (ctx.endDt && item) {
+        const cdpMeta = await pickDateTimeViaPanel(item, 'end', ctx.endDt)
+        return cdpMeta
+      }
+      return nextPhase('form_fill_rest', ctx, 80)
+    }
+
+    // ── form_fill_rest（日期填完后继续其他字段）──────────────────────────────
+    if (phase === 'form_fill_rest') {
       // 4. 提前显示
       await setShowEarly(ctx.showEarly)
 
@@ -1082,7 +1209,7 @@
       let actualDiscountType = ctx.discountType
       if (ctx.discountType) actualDiscountType = await setDiscountType(ctx.discountType)
 
-      // 7. 优惠限额（折扣类型旁的数字框）
+      // 7. 优惠限额
       if (ctx.discountLimit) {
         const limitValue = discountLimitValue(ctx.discountLimit, actualDiscountType || ctx.discountType)
         await fillDiscountLimit(limitValue)
