@@ -283,9 +283,43 @@
   async function fillMaxDiscount(value) {
     for (const lbl of ['最高优惠金额', '最高折扣金额', '最高优惠', '最高减免']) {
       const item = getFormItem(lbl)
-      if (item) {
-        const inp = getTextInputs(item)[0]
-        if (inp && visible(inp)) { await typeInto(inp, String(toNumber(value))); return true }
+      if (!item) continue
+
+      // 若是 radio 结构，先切到“设置金额”
+      const setAmount = [...item.querySelectorAll('label, .eds-react-radio__label, span')].find(el => {
+        return visible(el) && textOf(el).includes('设置金额')
+      })
+      if (setAmount) {
+        click(setAmount.closest('label') || setAmount)
+        await sleep(300)
+      }
+
+      // 优先在当前 item 内找输入框
+      let inp = getTextInputs(item).find(el => visible(el))
+
+      // 某些 Shopee 布局会在切换 radio 后，把金额输入框渲染到 item 邻近区域
+      if (!inp) {
+        const scope = item.parentElement || document
+        inp = [...scope.querySelectorAll('input:not([type=radio]):not([type=checkbox]), textarea')]
+          .filter(visible)
+          .find(el => {
+            const wrapText = textOf(el.closest('.eds-react-input, .eds-react-form-item, .eds-react-form-item__control, div'))
+            return /最高优惠金额|最高折扣金额|最高优惠|最高减免|设置金额/.test(wrapText)
+          }) || null
+      }
+
+      if (!inp) {
+        // 最后兜底：找紧随当前 item 之后的第一个可见文本输入框
+        let sib = item.nextElementSibling
+        while (sib && !inp) {
+          inp = [...sib.querySelectorAll('input:not([type=radio]):not([type=checkbox]), textarea')].filter(visible)[0] || null
+          sib = inp ? null : sib.nextElementSibling
+        }
+      }
+
+      if (inp && visible(inp)) {
+        await typeInto(inp, String(toNumber(value)))
+        return true
       }
     }
     // 字段不存在时不抛错（可能是折扣金额类型，不需要这个字段）
@@ -308,6 +342,46 @@
       return visible(el) ? el : null
     }, 5000, 200)
     if (!btn) throw new Error(`展开后仍未找到 ${testId}`)
+    return true
+  }
+
+  async function ensureVoucherEntryVisible(voucherType) {
+    const meta = getVoucherEntryMeta(voucherType)
+    if (!meta.testId) throw new Error(`未配置优惠券入口：${voucherType}`)
+    await ensureBuyerEntries(meta.testId).catch(() => null)
+
+    let card = document.querySelector(`button[data-testid="${meta.testId}"]`)
+    if (card && visible(card)) return card
+
+    card = [...document.querySelectorAll('button[data-testid^="voucherEntry"]')].find(el => {
+      if (!visible(el)) return false
+      const t = textOf(el)
+      return meta.aliases.some(a => t.includes(a))
+    }) || null
+    if (!card) throw new Error(`未找到优惠券入口卡片：${voucherType}`)
+    return card
+  }
+
+  async function openCreatePageFromListAndPrimeForm(ctx) {
+    const card = await ensureVoucherEntryVisible(ctx.voucherType)
+    const createBtn = [...card.querySelectorAll('button')].find(el => visible(el) && /^(创建|去创建)$/.test(textOf(el))) || card
+    click(createBtn)
+
+    const formReady = await waitFor(() => {
+      const href = location.href || ''
+      if (!href.includes('/portal/marketing/vouchers/new')) return null
+      const item = getFormItem('优惠券名称')
+      return item && visible(item) ? item : null
+    }, 12000, 200)
+    if (!formReady) {
+      throw new Error(`点击创建后未进入可填写表单，当前URL：${location.href.substring(0,100)}`)
+    }
+
+    updateProgress(ctx, 'enter_type', '进行中', { '下一阶段': 'form_fill' })
+    await sleep(200)
+    await fillField('优惠券名称', ctx.couponName)
+    await fillField('优惠码', ctx.couponCode)
+    updateProgress(ctx, 'form_fill', '进行中')
     return true
   }
 
@@ -338,18 +412,34 @@
 
     const couponName = shared.couponName || (store + discountLimit)
     const couponCode = shared.couponCode || randCode(5)
+    const usecase = getUsecaseByVoucherType(voucherType)
     const result = shared.result || {
-      '序号': page, '站点': site, '店铺': store, '优惠券品类': voucherType,
+      '序号': page, '队列总数': rows.length, '站点': site, '店铺': store, '优惠券品类': voucherType,
       '奖励类型': rewardType, '折扣类型': discountType, '优惠限额': discountLimit,
-      '生成优惠券名称': couponName, '生成优惠码': couponCode,
+      '生成优惠券名称': couponName, '生成优惠码': couponCode, 'usecase': usecase,
+      '当前阶段': 'main', '当前URL': location.href || '',
+      '下一阶段': '',
       '执行状态': '待执行', '错误原因': ''
     }
     return { store, site, voucherType, rewardType, discountType, discountLimit,
              maxDiscount, minSpend, totalCount, perBuyer, showEarly,
-             startDt, endDt, couponName, couponCode, result }
+             startDt, endDt, couponName, couponCode, usecase, result }
+  }
+
+  function updateProgress(ctx, stage, status = '进行中', extras = {}) {
+    if (!ctx || !ctx.result) return ctx
+    ctx.result['当前阶段'] = stage
+    ctx.result['当前URL'] = location.href || ''
+    ctx.result['执行状态'] = status
+    for (const [k, v] of Object.entries(extras || {})) ctx.result[k] = v
+    return ctx
   }
 
   function nextPhase(np, ctx, sleepMs = 1200, extras = {}) {
+    if (ctx?.result) {
+      ctx.result['当前URL'] = location.href || ''
+      ctx.result['下一阶段'] = np
+    }
     return {
       success: true, data: [],
       meta: {
@@ -374,8 +464,53 @@
     return location.href.includes('/portal/marketing/vouchers/new') || hasCreateFormMounted()
   }
 
+  function getUsecaseByVoucherType(voucherType) {
+    const map = {
+      '商店优惠券': '1',
+      '新买家优惠券': '3',
+      '回购买家优惠券': '4',
+      '关注礼优惠券': '999',
+    }
+    return map[voucherType] || ''
+  }
+
+  function getVoucherEntryMeta(voucherType) {
+    const map = {
+      '商店优惠券': { testId: 'voucherEntry1', aliases: ['商店优惠券'] },
+      '新买家优惠券': { testId: 'voucherEntry3', aliases: ['新买家优惠券', '新买家'] },
+      '回购买家优惠券': { testId: 'voucherEntry4', aliases: ['回购买家优惠券', '回购'] },
+      '关注礼优惠券': { testId: 'voucherEntry999', aliases: ['关注礼优惠券', '关注礼'] },
+    }
+    return map[voucherType] || { testId: '', aliases: [voucherType] }
+  }
+
+  function buildVouchersListUrl() {
+    const u = new URL('https://seller.shopee.cn/portal/marketing/vouchers/list')
+    try {
+      const cur = new URL(location.href)
+      const shopId = cur.searchParams.get('cnsc_shop_id')
+      if (shopId) u.searchParams.set('cnsc_shop_id', shopId)
+    } catch {}
+    return u.toString()
+  }
+
+  function buildCreateUrl(voucherType) {
+    const usecase = getUsecaseByVoucherType(voucherType)
+    if (!usecase) throw new Error(`未配置 usecase：${voucherType}`)
+    const u = new URL('https://seller.shopee.cn/portal/marketing/vouchers/new')
+    u.searchParams.set('usecase', usecase)
+    try {
+      const cur = new URL(location.href)
+      const shopId = cur.searchParams.get('cnsc_shop_id')
+      if (shopId) u.searchParams.set('cnsc_shop_id', shopId)
+    } catch {}
+    return u.toString()
+  }
+
   function finish(result, error = '') {
     const out = { ...(result || {}) }
+    out['当前URL'] = location.href || out['当前URL'] || ''
+    out['下一阶段'] = ''
     out['执行状态'] = error ? '失败' : '成功'
     out['错误原因'] = error || ''
     return {
@@ -398,6 +533,7 @@
     // ── main ─────────────────────────────────────────────────────────────────
     // 入口：确保在营销中心页面（用于搜索店铺）
     if (phase === 'main') {
+      updateProgress(ctx, 'main', '进行中')
       if (isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
@@ -413,6 +549,7 @@
     // ── store_switch ─────────────────────────────────────────────────────────
     // 在营销中心搜索并切换到目标店铺
     if (phase === 'store_switch') {
+      updateProgress(ctx, 'store_switch', '进行中')
       // 如果已经进入创建页且表单已挂载，不要再拉回营销主页
       if (isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
@@ -486,88 +623,40 @@
         }
       }
 
-      // 店铺已匹配，进入优惠券菜单
-      // 方式一：侧边栏点"优惠券"菜单
-      const sidebarVoucherLink = [...document.querySelectorAll('a, [role=menuitem], li')].find(el =>
-        visible(el) && /^优惠券$/.test(textOf(el))
-      )
-      if (sidebarVoucherLink) {
-        click(sidebarVoucherLink)
-        return nextPhase('enter_type', ctx, 2000)
+      // 店铺已匹配，进入优惠券列表页，后续从真实"创建"按钮进入
+      if (!location.href.includes('/portal/marketing/vouchers/list')) {
+        location.href = buildVouchersListUrl()
+        return nextPhase('enter_type', ctx, 3000)
       }
-      // 方式二：直接导航
-      location.href = VOUCHERS_URL
-      return nextPhase('enter_type', ctx, 2500)
+      return nextPhase('enter_type', ctx, 200)
     }
 
     // ── enter_type ───────────────────────────────────────────────────────────
-    // 在优惠券列表页找到对应类型入口，点"创建"，等待表单出现
+    // 从列表页真实入口卡片的"创建"按钮进入，并在同一次 evaluate 内等待表单挂载
     if (phase === 'enter_type') {
-      // 已在创建页时直接续跑表单填写，避免再次点击入口造成状态重置
+      updateProgress(ctx, 'enter_type', '进行中')
+      if (!location.href.includes('/portal/marketing/vouchers/list') && !isOnCreatePage()) {
+        location.href = buildVouchersListUrl()
+        return nextPhase('enter_type', ctx, 3000)
+      }
       if (isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
+      await openCreatePageFromListAndPrimeForm(ctx)
+      return nextPhase('form_fill', ctx, 80)
+    }
 
-      // 确保在优惠券列表页
-      if (!location.href.includes('/portal/marketing/vouchers')) {
-        location.href = VOUCHERS_URL
-        return nextPhase('enter_type', ctx, 2500)
-      }
-
-      const entryMap = {
-        '商店优惠券':   'voucherEntry1',
-        '新买家优惠券': 'voucherEntry3',
-        '回购买家优惠券':'voucherEntry4',
-        '关注礼优惠券': 'voucherEntry999',
-      }
-      const testId = entryMap[ctx.voucherType]
-      if (!testId) throw new Error(`未配置入口：${ctx.voucherType}`)
-
-      // 特定买家类型需要展开
-      if (['voucherEntry3','voucherEntry4','voucherEntry999'].includes(testId)) {
-        await ensureBuyerEntries(testId)
-      }
-
-      // 找入口卡片
-      const card = await waitFor(() => {
-        const el = document.querySelector(`button[data-testid="${testId}"]`)
-        return visible(el) ? el : null
-      }, 5000, 200)
-      if (!card) throw new Error(`未找到优惠券入口卡片：${ctx.voucherType}`)
-
-      // 找卡片内的"创建"子按钮（必须点这个，不是点整张卡片）
-      const createBtn = [...card.querySelectorAll('button')].find(el =>
-        visible(el) && /^(创建|新建)$/.test(textOf(el))
-      )
-      const clickTarget = createBtn || card
-
-      // ★ 关键：同一次 evaluate 里 click 后 waitFor 等表单出现
-      // 不能 return nextPhase，因为 SPA 导航后旧 context 失效
-      // 但是：只要 evaluate 还在跑（awaitPromise=true），导航后 context 依然有效！
-      click(clickTarget)
-
-      // 等待创建表单出现（最多 12s）
-      const formItem = await waitFor(() => {
-        const items = document.querySelectorAll('.eds-react-form-item')
-        // 找"优惠券名称"这个 item 确认是创建页表单
-        return [...items].find(el => {
-          const lbl = el.querySelector('.eds-react-form-item__label')
-          return lbl && norm(lbl.textContent).includes('优惠券名称')
-        }) || null
-      }, 12000, 400)
-
-      if (!formItem) {
-        throw new Error(`点击"创建"后等待表单超时，当前URL：${location.href.substring(0,100)}`)
-      }
-
-      // 表单已出现，继续在当前 context 填写
-      await sleep(300)
-      return nextPhase('form_fill', ctx, 100)
+    // ── await_create_page ────────────────────────────────────────────────────
+    // 兼容旧 phase：统一回到 enter_type 使用真实入口重新进入
+    if (phase === 'await_create_page') {
+      updateProgress(ctx, 'await_create_page', '进行中')
+      return nextPhase('enter_type', ctx, 80)
     }
 
     // ── form_fill ────────────────────────────────────────────────────────────
     if (phase === 'form_fill') {
-      // 等表单确实可用（evaluate 在新 context 里，应该能直接找到）
+      updateProgress(ctx, 'form_fill', '进行中')
+      // enter_type 已经在同一次 evaluate 中填过前两个关键字段，这里只做兜底与剩余字段填写
       const formReady = await waitFor(() => {
         const items = [...document.querySelectorAll('.eds-react-form-item')]
         return items.find(el => {
@@ -578,11 +667,9 @@
       if (!formReady) throw new Error(`创建表单未出现，当前URL：${location.href.substring(0,100)}`)
       await sleep(300)
 
-      // 1. 优惠券名称
-      await fillField('优惠券名称', ctx.couponName)
-
-      // 2. 优惠码
-      await fillField('优惠码', ctx.couponCode)
+      // 兜底：若前一阶段未成功填入，则再次填写
+      try { await fillField('优惠券名称', ctx.couponName) } catch {}
+      try { await fillField('优惠码', ctx.couponCode) } catch {}
 
       // 3. 领取期限
       if (ctx.startDt || ctx.endDt) await setDateRange(ctx.startDt, ctx.endDt)
@@ -625,6 +712,7 @@
 
     // ── submit ───────────────────────────────────────────────────────────────
     if (phase === 'submit') {
+      updateProgress(ctx, 'submit', '进行中')
       const allBtns = [...document.querySelectorAll('button')].filter(visible)
       // 优先 primary 样式的"确认/确定"
       const confirmBtn =
@@ -642,6 +730,7 @@
 
     // ── post_submit ──────────────────────────────────────────────────────────
     if (phase === 'post_submit') {
+      updateProgress(ctx, 'post_submit', '进行中')
       // 等待成功信号：跳回列表页 或 出现成功 toast
       const ok = await waitFor(() => {
         if (location.href.includes('/portal/marketing/vouchers/list') ||

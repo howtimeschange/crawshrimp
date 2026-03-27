@@ -77,7 +77,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
 
         tab = None
         if mode == 'current':
-            tab = bridge.find_tab(m.entry_url)
+            # current 模式：优先选最贴近"当前进行中"状态的 tab
+            # Shopee 不能盲目优先 /new：浏览器里若残留旧的错误创建页，会把新任务吸过去
+            # 正确策略：优先营销中心主页 / 列表页；真正的 /new 由脚本按当前行 voucherType 主动导航进入
+            all_tabs = [t for t in bridge.get_tabs() if t.get('type') == 'page']
+            preferred_prefixes = [
+                'https://seller.shopee.cn/portal/marketing/vouchers/list',
+                m.entry_url,
+                'https://seller.shopee.cn/portal/marketing/vouchers/new',
+            ] if adapter_id == 'shopee' else [m.entry_url]
+
+            for prefix in preferred_prefixes:
+                tab = next((t for t in all_tabs if t.get('url', '').startswith(prefix)), None)
+                if tab:
+                    break
+
             if not tab:
                 raise RuntimeError(f"未找到已打开的目标页面：{m.entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
         else:
@@ -91,10 +105,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
                 raise RuntimeError(f"无法打开或找到目标页面：{m.entry_url}")
 
         log(f"Found tab: {tab.get('url', '')[:120]}")
-        runner = JSRunner(bridge.get_tab_ws_url(tab))
+        runner = JSRunner(
+            bridge.get_tab_ws_url(tab),
+            tab_id=str(tab.get('id') or ''),
+        )
+
+        # Shopee current 模式：如果已经命中 marketing 域内页面，直接视为当前会话可用，避免误判卡在登录等待
+        skip_auth_wait = (
+            adapter_id == 'shopee' and
+            mode == 'current' and
+            str(tab.get('url', '')).startswith('https://seller.shopee.cn/portal/marketing')
+        )
 
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
-        if m.auth and m.auth.check_script:
+        if (not skip_auth_wait) and m.auth and m.auth.check_script:
             adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
             auth_path = adapter_dir / m.auth.check_script
             if auth_path.exists():
