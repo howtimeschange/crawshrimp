@@ -843,12 +843,13 @@
         if (rewardType) await setRewardType(rewardType)
       } catch (e) { warnings.push(`奖励类型：${e.message}`) }
 
-      // 3. 折扣类型
+      // 3. 折扣类型 — 必须成功，不接受默认值继续
       const discountType = norm(row['折扣类型'] || '')
       let actualDiscountType = discountType
-      try {
-        if (discountType) actualDiscountType = await setDiscountType(discountType)
-      } catch (e) { warnings.push(`折扣类型：${e.message}`) }
+      if (discountType) {
+        // setDiscountType 失败时直接 throw，不走默认值继续（会导致提交错误类型）
+        actualDiscountType = await setDiscountType(discountType)
+      }
 
       // 4. 优惠限额
       try {
