@@ -5,12 +5,11 @@
   const mode = (params.mode || 'current').trim().toLowerCase()
 
   const ENTRY_URL = 'https://seller.shopee.cn/portal/marketing'
-  const VOUCHERS_URL = 'https://seller.shopee.cn/portal/marketing/vouchers/'
+  const VOUCHERS_LIST_URL = 'https://seller.shopee.cn/portal/marketing/vouchers/list'
   const row = rows[page - 1]
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
   function norm(s) { return String(s || '').replace(/\s+/g, ' ').trim() }
-  function esc(s) { return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&') }
   function digitsOnly(v) { return String(v ?? '').replace(/,/g, '').trim() }
   function boolLike(v) {
     const s = norm(v)
@@ -40,7 +39,7 @@
     if (!el) return false
     const style = getComputedStyle(el)
     const rect = el.getBoundingClientRect()
-    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width >= 0 && rect.height >= 0
+    return style && style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0
   }
 
   function textOf(el) {
@@ -55,6 +54,29 @@
     }
     try { el.click() } catch {}
     return true
+  }
+
+  function setNativeValue(el, value) {
+    if (!el) return false
+    const val = String(value ?? '')
+    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
+    const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+    if (desc?.set) desc.set.call(el, val)
+    else el.value = val
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    el.dispatchEvent(new Event('blur', { bubbles: true }))
+    return true
+  }
+
+  async function waitFor(fn, timeout = 12000, interval = 300) {
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeout) {
+      const res = fn()
+      if (res) return res
+      await sleep(interval)
+    }
+    return null
   }
 
   function allCandidates() {
@@ -86,158 +108,165 @@
     return false
   }
 
-  async function waitFor(fn, timeout = 12000, interval = 300) {
-    const t0 = Date.now()
-    while (Date.now() - t0 < timeout) {
-      const res = fn()
-      if (res) return res
-      await sleep(interval)
+  function getFormItemByLabel(labelText) {
+    const items = [...document.querySelectorAll('.eds-react-form-item')].filter(visible)
+    for (const item of items) {
+      const label = item.querySelector('.eds-react-form-item__label')
+      const t = textOf(label)
+      if (t === labelText || t.includes(labelText)) return item
     }
     return null
   }
 
-  function findInputByLabel(labelTexts) {
-    const labels = Array.isArray(labelTexts) ? labelTexts : [labelTexts]
-    const all = [...document.querySelectorAll('label, div, span, p')].filter(visible)
-    for (const lbl of all) {
-      const t = textOf(lbl)
-      if (!t) continue
-      if (!labels.some(x => t.includes(x))) continue
+  function getEditableInputs(container) {
+    return [...(container || document).querySelectorAll('input:not([type="radio"]):not([type="checkbox"]), textarea')]
+      .filter(visible)
+  }
 
-      let cur = lbl
-      for (let depth = 0; depth < 5 && cur; depth++, cur = cur.parentElement) {
-        const input = cur.querySelector('input:not([type="checkbox"]):not([type="radio"]), textarea')
-        if (input && visible(input)) return input
-      }
-
-      let sib = lbl.nextElementSibling
-      for (let i = 0; i < 3 && sib; i++, sib = sib.nextElementSibling) {
-        const input = sib.matches?.('input, textarea') ? sib : sib.querySelector?.('input, textarea')
-        if (input && visible(input)) return input
-      }
+  async function fillFormField(labelText, value, index = 0, required = true) {
+    const item = getFormItemByLabel(labelText)
+    if (!item) {
+      if (required) throw new Error(`未找到表单项：${labelText}`)
+      return false
     }
-    return null
-  }
-
-  function setNativeValue(el, value) {
-    if (!el) return false
-    const val = String(value ?? '')
-    const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value')
-    if (desc?.set) desc.set.call(el, val)
-    else el.value = val
-    el.dispatchEvent(new Event('input', { bubbles: true }))
-    el.dispatchEvent(new Event('change', { bubbles: true }))
-    el.dispatchEvent(new Event('blur', { bubbles: true }))
-    return true
-  }
-
-  async function fillField(labelTexts, value, required = true) {
-    const input = findInputByLabel(labelTexts)
+    const inputs = getEditableInputs(item)
+    const input = inputs[index]
     if (!input) {
-      if (required) throw new Error(`未找到输入框：${(Array.isArray(labelTexts) ? labelTexts.join('/') : labelTexts)}`)
+      if (required) throw new Error(`表单项“${labelText}”未找到输入框`)
       return false
     }
     click(input)
     await sleep(120)
     setNativeValue(input, value)
-    await sleep(220)
+    await sleep(260)
     return true
   }
 
-  async function setCheckboxNearText(labelTexts, desired) {
-    const labels = Array.isArray(labelTexts) ? labelTexts : [labelTexts]
-    for (const el of [...document.querySelectorAll('label, span, div')].filter(visible)) {
-      const t = textOf(el)
-      if (!t || !labels.some(x => t.includes(x))) continue
-      let cur = el
-      for (let i = 0; i < 4 && cur; i++, cur = cur.parentElement) {
-        const cb = cur.querySelector('input[type="checkbox"]')
-        if (cb) {
-          const checked = !!cb.checked
-          if (checked !== desired) click(cb)
-          await sleep(200)
-          return true
-        }
-      }
-    }
-    return false
+  async function setDateRange(startAt, endAt) {
+    const item = getFormItemByLabel('优惠券领取期限')
+    if (!item) throw new Error('未找到“优惠券领取期限”表单项')
+    const inputs = getEditableInputs(item)
+    if (inputs.length < 2) throw new Error('未找到领取期限开始/结束输入框')
+    click(inputs[0]); await sleep(100); setNativeValue(inputs[0], startAt); await sleep(220)
+    click(inputs[1]); await sleep(100); setNativeValue(inputs[1], endAt); await sleep(220)
   }
 
-  async function chooseByText(labelTexts, optionText) {
-    if (!optionText) return false
-    const labels = Array.isArray(labelTexts) ? labelTexts : [labelTexts]
-    const opener = findByText(labels[0], false)
-    if (opener) {
-      let cur = opener
-      for (let i = 0; i < 4 && cur; i++, cur = cur.parentElement) {
-        const trigger = cur.querySelector('[role="combobox"], input, .shopee-select, [class*="select"], [class*="Select"]')
-        if (trigger && visible(trigger)) {
-          click(trigger)
-          await sleep(300)
-          break
-        }
-      }
+  async function setCheckboxByLabel(labelText, desired) {
+    const label = [...document.querySelectorAll('.eds-react-checkbox__label, label, span, div')]
+      .find(el => visible(el) && textOf(el) === labelText)
+    if (!label) return false
+    const root = label.closest('label') || label.parentElement || label
+    const cb = root.querySelector('input[type="checkbox"]') || root.closest('label')?.querySelector('input[type="checkbox"]')
+    if (!cb) return false
+    if (!!cb.checked !== !!desired) {
+      click(root)
+      await sleep(220)
     }
-    const ok = await clickByTexts(optionText, true, 3000) || await clickByTexts(optionText, false, 3000)
-    if (!ok) throw new Error(`未找到选项：${optionText}`)
     return true
+  }
+
+  async function setRadioByLabel(labelText) {
+    const label = [...document.querySelectorAll('.eds-react-radio__label, label, span')]
+      .find(el => visible(el) && textOf(el) === labelText)
+    if (!label) throw new Error(`未找到单选项：${labelText}`)
+    click(label.closest('label') || label)
+    await sleep(260)
+  }
+
+  async function chooseDiscountType(optionText) {
+    const item = getFormItemByLabel('折扣类型 | 优惠限额')
+    if (!item) throw new Error('未找到“折扣类型 | 优惠限额”')
+    const trigger = item.querySelector('.eds-react-select .trigger') || item.querySelector('.eds-react-select')
+    if (!trigger) throw new Error('未找到折扣类型下拉框')
+    click(trigger)
+    await sleep(500)
+    const option = await waitFor(() => {
+      return [...document.querySelectorAll('.eds-react-select-option, [role="option"], div')]
+        .find(el => visible(el) && textOf(el) === optionText)
+    }, 4000, 200)
+    if (!option) throw new Error(`未找到折扣类型选项：${optionText}`)
+    click(option)
+    await sleep(500)
+  }
+
+  async function closeBlockingOverlays() {
+    for (const el of [...document.querySelectorAll('.fullstory-modal-wrapper, .diagnosis-result-modal, .eds-modal-mask')]) {
+      try { el.remove() } catch {}
+    }
+    const closers = [...document.querySelectorAll('button, span, div')]
+      .filter(el => visible(el) && /关闭|知道了|取消|稍后|×|x/i.test(textOf(el)))
+    for (const el of closers.slice(0, 6)) {
+      try { click(el) } catch {}
+    }
+    await sleep(200)
   }
 
   async function ensureAt(url, timeout = 12000) {
     if (!location.href.startsWith(url)) {
       location.href = url
       await waitFor(() => location.href.startsWith(url), timeout, 300)
-      await sleep(1500)
+      await sleep(1600)
     }
   }
 
   async function searchAndSwitchStore(site, store) {
-    await ensureAt(ENTRY_URL, 15000)
+    await ensureAt(VOUCHERS_LIST_URL, 15000)
+    await closeBlockingOverlays()
+
+    const shopInfo = document.querySelector('.shop-info')
+    const currentShopText = textOf(shopInfo || document.body)
+    if (currentShopText.includes(store) && (!site || currentShopText.includes(site)) && !/没有权限/.test(currentShopText)) {
+      return true
+    }
+
     const searchInput = await waitFor(() => {
-      const inputs = [...document.querySelectorAll('input, textarea')].filter(visible)
-      return inputs.find(el => {
-        const ph = norm(el.getAttribute('placeholder'))
-        const aria = norm(el.getAttribute('aria-label'))
-        const nearby = norm(el.parentElement?.innerText || '')
-        return /店铺|store|shop/i.test(ph + ' ' + aria + ' ' + nearby)
-      })
-    }, 8000)
-
+      return [...document.querySelectorAll('input, textarea')].find(el => visible(el) && norm(el.getAttribute('placeholder')) === '搜索店铺')
+    }, 8000, 250)
     if (!searchInput) throw new Error('未找到店铺搜索框')
+
     click(searchInput)
-    await sleep(120)
+    await sleep(100)
     setNativeValue(searchInput, store)
-    await sleep(800)
+    await sleep(1000)
 
-    const exactStore = await waitFor(() => {
-      return allCandidates().find(el => {
+    const candidate = await waitFor(() => {
+      const items = [...document.querySelectorAll('.search-item, .username, .shop-info, li, div, span')]
+        .filter(visible)
+      return items.find(el => {
         const t = textOf(el)
-        return t === store || t.includes(store)
+        if (!t || !t.includes(store)) return false
+        if (site && !t.includes(site) && !textOf(el.parentElement || {}).includes(site)) return false
+        return true
       })
-    }, 5000)
+    }, 6000, 250)
 
-    if (!exactStore) throw new Error(`未找到店铺候选项：${store}`)
-    click(exactStore)
-    await sleep(1500)
+    if (!candidate) throw new Error(`未找到店铺候选项：${store}`)
 
-    const pageText = norm(document.body.innerText)
-    if (site && pageText && !pageText.includes(site) && !pageText.includes(store)) {
-      // 站点有时不会明确展示，弱校验：站点和店铺至少命中一个
-      console.warn('站点/店铺校验较弱，继续执行')
+    const candidateText = textOf(candidate.closest('.search-item') || candidate)
+    if (/没有权限|无权限/.test(candidateText) || (candidate.closest('.search-item')?.className || '').includes('disabled')) {
+      throw new Error(`店铺“${store}”当前账号无权限切换`)
+    }
+
+    click(candidate.closest('.search-item') || candidate)
+    await sleep(1400)
+    await closeBlockingOverlays()
+
+    const verified = await waitFor(() => {
+      const txt = textOf(document.querySelector('.shop-info') || document.body)
+      return txt.includes(store) && (!site || txt.includes(site))
+    }, 5000, 250)
+    if (!verified) throw new Error(`切换店铺后校验失败：${store}`)
+
+    const finalShopText = textOf(document.querySelector('.shop-selector') || document.body)
+    if (/没有权限|无权限/.test(finalShopText)) {
+      throw new Error(`店铺“${store}”显示无权限，无法继续创建优惠券`)
     }
     return true
   }
 
   async function gotoVouchers() {
-    if (!location.href.startsWith(VOUCHERS_URL)) {
-      const clicked = await clickByTexts(['优惠券', 'Vouchers'], true, 4000) || await clickByTexts(['优惠券', 'Vouchers'], false, 4000)
-      if (!clicked) {
-        location.href = VOUCHERS_URL
-      }
-      await waitFor(() => location.href.includes('/marketing/vouchers'), 12000, 300)
-      await sleep(1500)
-    }
+    await ensureAt(VOUCHERS_LIST_URL, 15000)
+    await closeBlockingOverlays()
   }
 
   async function enterVoucherType(voucherType) {
@@ -248,20 +277,33 @@
       '关注礼优惠券': ['关注礼优惠券', '关注礼', 'Follow Prize Voucher']
     }
     const aliases = aliasMap[voucherType] || [voucherType]
-    const clicked = await clickByTexts(aliases, true, 4000) || await clickByTexts(aliases, false, 5000)
-    if (!clicked) throw new Error(`未找到优惠券类型入口：${voucherType}`)
-    await sleep(1200)
+
+    const btn = await waitFor(() => {
+      return [...document.querySelectorAll('button')].find(el => {
+        const t = textOf(el)
+        return aliases.some(a => t.includes(a)) && t.includes('创建')
+      })
+    }, 6000, 250)
+
+    if (!btn) throw new Error(`未找到优惠券类型创建入口：${voucherType}`)
+    click(btn)
+    await waitFor(() => location.href.includes('/portal/marketing/vouchers/new'), 12000, 300)
+    await sleep(1800)
+    await closeBlockingOverlays()
     return true
   }
 
   async function submitAndWait() {
-    const clicked = await clickByTexts(['确认', '提交', '创建', '保存'], true, 5000) || await clickByTexts(['确认', '提交', '创建', '保存'], false, 5000)
-    if (!clicked) throw new Error('未找到“确认/提交/创建/保存”按钮')
-    await sleep(2000)
+    await closeBlockingOverlays()
+    const confirmBtn = [...document.querySelectorAll('button')]
+      .find(el => visible(el) && textOf(el) === '确认')
+    if (!confirmBtn) throw new Error('未找到“确认”按钮')
+    click(confirmBtn)
+    await sleep(2500)
 
     const bodyText = norm(document.body.innerText)
-    if (/失败|错误|必填|请输入|不能为空|格式不正确/i.test(bodyText) && !/成功|已创建/i.test(bodyText)) {
-      throw new Error('提交后页面出现校验或错误提示，请检查字段填写或页面控件定位')
+    if (/失败|错误|必填|请输入|不能为空|格式不正确|无权限/.test(bodyText) && !/成功|已创建|创建成功/.test(bodyText)) {
+      throw new Error('提交后页面出现校验或错误提示，请检查字段填写、权限或页面控件定位')
     }
     return true
   }
@@ -315,23 +357,21 @@
     await gotoVouchers()
     await enterVoucherType(voucherType)
 
-    await fillField(['优惠券名称', '名称'], couponName)
-    await fillField(['优惠码', 'Voucher Code', '代码'], couponCode)
-    await fillField(['领取期限开始', '开始时间', '领取开始'], startAt, false)
-    await fillField(['领取期限结束', '结束时间', '领取结束'], endAt, false)
-    await setCheckboxNearText(['提前显示优惠券', '提前显示', '显示优惠券'], showEarly)
+    await fillFormField('优惠券名称', couponName)
+    await fillFormField('优惠码', couponCode)
+    await setDateRange(startAt, endAt)
+    await setCheckboxByLabel('提前显示优惠券', showEarly)
 
-    await clickByTexts([rewardType], true, 2000).catch?.(() => {})
-    if (rewardType) await clickByTexts([rewardType], false, 3000)
-    if (discountType) await chooseByText(['折扣类型', '优惠方式', '类型'], discountType).catch(async () => {
-      await clickByTexts([discountType], false, 3000)
-    })
+    if (rewardType) await setRadioByLabel(rewardType)
+    if (discountType) await chooseDiscountType(discountType)
 
-    await fillField(['优惠限额', '折扣值', '优惠力度'], discountLimit)
-    await fillField(['最高优惠金额', '最高折扣金额', '最高优惠'], maxDiscount, false)
-    await fillField(['最低消费金额', '最低消费', '门槛'], minSpend, false)
-    await fillField(['可使用总数', '总数', '发行量'], totalCount, false)
-    await fillField(['每个买家可用的优惠券数量上限', '每个买家', '每人限领'], perBuyerLimit, false)
+    await fillFormField('折扣类型 | 优惠限额', discountLimit, 0)
+    if (discountType === '扣除百分比' && maxDiscount) {
+      await fillFormField('最高优惠金额', maxDiscount, 0, false)
+    }
+    await fillFormField('最低消费金额', minSpend, 0, false)
+    await fillFormField('可使用总数', totalCount, 0, false)
+    await fillFormField('每个买家可用的优惠券数量上限', perBuyerLimit, 0, false)
 
     await submitAndWait()
     result['执行状态'] = '成功'
