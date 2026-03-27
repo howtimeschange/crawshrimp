@@ -98,7 +98,7 @@ async function startBackend() {
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: !IS_DEV
         ? path.join(process.resourcesPath, 'python-scripts')
-        : '',
+        : path.join(__dirname, '..', '..'),
     },
   })
 
