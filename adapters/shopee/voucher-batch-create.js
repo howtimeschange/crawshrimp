@@ -308,32 +308,131 @@
       .find(el => visible(el) && /确认/.test(textOf(el))) || null
   }
 
+  // ─── 日期面板解析（EDS date-picker 新版 DOM）───────────────────────────────
+  const MONTH_MAP = { january:1, february:2, march:3, april:4, may:5, june:6,
+                      july:7, august:8, september:9, october:10, november:11, december:12,
+                      '一月':1,'二月':2,'三月':3,'四月':4,'五月':5,'六月':6,
+                      '七月':7,'八月':8,'九月':9,'十月':10,'十一月':11,'十二月':12 }
+
+  /**
+   * 读取日期面板当前显示的年月。
+   * 兼容两种结构：
+   *   1. 月份英文名在 [.date-default-style] 或 [.date-box] 内
+   *   2. 年份在 [class*="year"] 的元素内
+   */
   function getDatePickerHeader(panel) {
-    const root = panel?.querySelector('.date-box') || panel
-    const year = Number((textOf(root?.querySelector('.year, .date-default-style.year')) || '').replace(/\D+/g, ''))
-    const month = Number((textOf(root?.querySelector('.month, .date-default-style.month')) || '').replace(/\D+/g, ''))
-    if (!year || !month) return null
-    return { year, month }
+    if (!panel) return null
+    // 找月份文本：可能是 .date-default-style 或直接包含英文月名的元素
+    const headerEl = panel.querySelector('.date-default-style, .date-box, .eds-react-date-picker__header')
+    if (!headerEl) return null
+    const headerText = textOf(headerEl)
+    // 提取英文月份
+    const monthName = headerText.match(/([A-Za-z]+)/)?.[1] || ''
+    const monthNum = MONTH_MAP[monthName.toLowerCase()] || null
+    // 年份：4位数字
+    const yearMatch = headerText.match(/(\d{4})/)
+    const year = yearMatch ? Number(yearMatch[1]) : null
+    if (!year || !monthNum) return null
+    return { year, month: monthNum }
   }
 
+  /**
+   * 找月份导航按钮和年份选择按钮。
+   * 月份导航：面板 header 区域内宽 < 60px 的按钮（包含 < > 箭头图标）
+   * 年份选择：标有 ">" 或年份数字的可点击元素
+   * 返回 { prevMonth, nextMonth, yearPicker }
+   */
   function getPickerNavButtons(panel) {
-    const btns = [...panel.querySelectorAll('.eds-react-date-picker__header .btn-arrow-default')].filter(visible)
-    if (btns.length >= 4) {
-      return {
-        prevYear: btns[0] || null,
-        prevMonth: btns[1] || null,
-        nextMonth: btns[2] || null,
-        nextYear: btns[3] || null,
-      }
+    if (!panel) return {}
+    const header = panel.querySelector('.date-default-style, .date-box, .eds-react-date-picker__header, .date-range-picker')
+    if (!header) return {}
+    // 找所有窄按钮（宽 < 80px），通常为导航箭头
+    const allBtns = [...(header.querySelectorAll('button'))]
+    const navBtns = allBtns.filter(b => {
+      const r = b.getBoundingClientRect()
+      return r.width > 0 && r.width < 80 && r.height < 80
+    })
+    // prevMonth = 第一个按钮, nextMonth = 第二个按钮（中间是月份文字）
+    const prevMonth = navBtns[0] || null
+    const nextMonth = navBtns[1] || null
+
+    // 年份选择器：查找显示 "> 2026" 样式的大按钮
+    const yearBtn = [...panel.querySelectorAll('button, [class*="year"]')].find(b => {
+      const r = b.getBoundingClientRect()
+      const txt = textOf(b)
+      return r.width > 0 && r.width < 200 && r.height < 60 &&
+             txt.match(/\d{4}/) && visible(b)
+    }) || null
+
+    return { prevMonth, nextMonth, yearPicker: yearBtn }
+  }
+
+  /**
+   * 找时间选择 spinner。
+   * 每个 spinner 有向上/向下箭头按钮，以及当前数值显示。
+   * 返回 [{ upBtn, downBtn, currentVal, targetVal }, ...]
+   */
+  function getTimeSpinners(panel, targetHour, targetMinute) {
+    if (!panel) return []
+    const spinners = []
+    // 找 spinner 容器：宽 < 100px，包含 up/down 图标
+    const containers = [...panel.querySelectorAll('.eds-react-time-picker__tp-column, [class*="spinner"], [class*="picker-column"], .time-box')]
+    const valid = containers.filter(c => {
+      const r = c.getBoundingClientRect()
+      return r.width > 0 && r.width < 120 && r.height > 0
+    })
+    // 前两个是 Hours 和 Minutes
+    for (let i = 0; i < Math.min(valid.length, 2); i++) {
+      const container = valid[i]
+      const allBtns = [...container.querySelectorAll('button, [class*="arrow"], .eds-react-icon')]
+      // upBtn = 距离 container 顶部更近的按钮，downBtn = 距离底部更近的按钮
+      const upBtn = allBtns.find(b => {
+        if (!visible(b)) return false
+        const r = b.getBoundingClientRect()
+        const cRect = container.getBoundingClientRect()
+        return r.width > 0 && r.width < 80 && r.height < 80 &&
+               Math.abs(r.y - cRect.y) <= Math.abs(r.y - (cRect.y + cRect.height))
+      })
+      const downBtn = allBtns.find(b => {
+        if (!visible(b)) return false
+        const r = b.getBoundingClientRect()
+        const cRect = container.getBoundingClientRect()
+        return r.width > 0 && r.width < 80 && r.height < 80 &&
+               Math.abs(r.y - (cRect.y + cRect.height)) <= Math.abs(r.y - cRect.y)
+      })
+      // 当前数值
+      const txt = textOf(container)
+      const numMatch = txt.match(/\d+/)
+      const currentVal = numMatch ? String(Number(numMatch[0])).padStart(2, '0') : null
+      const targetVal = i === 0 ? String(targetHour).padStart(2, '0') : String(targetMinute).padStart(2, '0')
+      spinners.push({ container, upBtn, downBtn, currentVal, targetVal })
     }
-    const icons = [...panel.querySelectorAll('.eds-react-date-picker__header .eds-react-icon')]
-    const fallback = icons.map(icon => icon.closest('span, button, div') || icon).filter(Boolean)
-    return {
-      prevYear: fallback[0] || null,
-      prevMonth: fallback[1] || null,
-      nextMonth: fallback[2] || null,
-      nextYear: fallback[3] || null,
+    return spinners
+  }
+
+  /**
+   * 找日历日 cell（月份内的可点击日期格）
+   */
+  function findDayCell(panel, day) {
+    if (!panel) return null
+    const dayText = String(Number(day))
+    // 尝试多种 cell 选择器
+    const selectors = [
+      '.eds-react-date-picker__table-cell-wrap',
+      '.eds-react-date-picker__table-cell',
+      'td',
+      '[class*="table-cell"]',
+    ]
+    for (const sel of selectors) {
+      const cells = [...panel.querySelectorAll(sel)]
+      const found = cells.find(c => {
+        if (!visible(c)) return false
+        const txt = textOf(c)
+        return txt === dayText && !/disabled|out-of-range/.test(c.className || '')
+      })
+      if (found) return found
     }
+    return null
   }
 
   async function clickNavAndVerify(panel, btn, expectedDirection) {
@@ -352,21 +451,75 @@
   }
 
   async function navigateDatePicker(panel, target) {
-    for (let i = 0; i < 48; i++) {
+    for (let i = 0; i < 60; i++) {
       const header = getDatePickerHeader(panel)
       if (!header) break
       if (header.year === target.year && header.month === target.month) return true
       const nav = getPickerNavButtons(panel)
       let moved = false
+
+      // 年份不同：先导航年份
       if (header.year !== target.year) {
-        const dir = header.year > target.year ? 'prevYear' : 'nextYear'
-        moved = await clickNavAndVerify(panel, nav[dir], dir)
-        if (!moved) throw new Error(`日期面板${dir}箭头点击后年月未变化`)
-      } else if (header.month !== target.month) {
-        const dir = header.month > target.month ? 'prevMonth' : 'nextMonth'
-        moved = await clickNavAndVerify(panel, nav[dir], dir)
-        if (!moved) throw new Error(`日期面板${dir}箭头点击后年月未变化`)
+        if (nav.yearPicker) {
+          // 年份是下拉，直接点击打开然后选择目标年份
+          click(nav.yearPicker)
+          await sleep(300)
+          // 在打开的年份下拉列表中找目标年份
+          const yearList = document.querySelector('.eds-react-select__dropdown-list, [class*="select-dropdown"], [class*="picker-option"]')
+          if (yearList) {
+            const yearOption = [...yearList.querySelectorAll('[class*="option"], li, div')].find(el => {
+              const txt = textOf(el)
+              return txt.trim() === String(target.year) && visible(el)
+            })
+            if (yearOption) {
+              click(yearOption)
+              await sleep(200)
+              moved = true
+            }
+          }
+          // 如果年份选择器是 input 类型（可编辑下拉）
+          const yearInput = document.querySelector('.eds-react-select__input, [class*="year"] input')
+          if (yearInput && !moved) {
+            click(yearInput)
+            await sleep(100)
+            setNativeValue(yearInput, String(target.year))
+            await sleep(200)
+            try { document.body.click() } catch {}
+            await sleep(300)
+            moved = true
+          }
+        }
+        if (!moved) {
+          // 如果没有年份下拉，尝试多次 prevYear / nextYear（用 prevMonth 按钮的多步）
+          const delta = target.year - header.year
+          const btn = delta < 0 ? nav.prevMonth : nav.nextMonth
+          // 每次点击prevMonth/nextMonth切1月，12次=1年（取巧方式）
+          if (btn) {
+            const steps = Math.abs(delta) * 12 + (delta < 0 ? (12 - header.month + 1) : (target.month - header.month))
+            const dir = delta < 0 ? 'prevMonth' : 'nextMonth'
+            for (let j = 0; j < Math.min(steps, 60); j++) {
+              click(btn)
+              await sleep(150)
+              moved = true
+            }
+          }
+        }
       }
+      // 年份相同，月不同：直接导航月份
+      if (header.year === target.year && header.month !== target.month) {
+        const delta = target.month - header.month
+        const btn = delta < 0 ? nav.prevMonth : nav.nextMonth
+        if (!btn) break
+        const dir = delta < 0 ? 'prevMonth' : 'nextMonth'
+        // 点击直到到达目标月
+        for (let j = 0; j < Math.abs(delta); j++) {
+          click(btn)
+          await sleep(150)
+        }
+        moved = true
+      }
+      if (!moved) break
+      await sleep(100)
     }
     const header = getDatePickerHeader(panel)
     return !!header && header.year === target.year && header.month === target.month
@@ -408,7 +561,7 @@
 
   // pick_date_open_panel：打开指定 kind(start/end) 的日期面板并切换年月
   // pick_date_select_day：选择具体日期 cell（需要 CDP 点击）
-  // pick_date_select_time：选择时分
+  // pick_date_select_time：选择时分（spinner 上下箭头）
   // pick_date_confirm：点确认
 
   async function pickDateTimeViaPanel(item, kind, dt) {
@@ -420,114 +573,87 @@
     const existingPanel = document.querySelector('.eds-react-popover.eds-react-date-picker__popup:not(.eds-react-popover-hidden)')
     if (existingPanel) { try { document.body.click() } catch {} ; await sleep(200) }
 
+    // 找触发器 input
     const trigger = item.querySelector(
-      `.picker-item.${kind}-picker #${kind === 'start' ? 'startDate' : 'endDate'}, ` +
-      `.picker-item.${kind}-picker .eds-react-date-picker__input`
+      `.picker-item.${kind}-picker input.eds-react-input__input, ` +
+      `.picker-item.${kind}-picker input.eds-react-date-picker__input`
     )
     if (!trigger) throw new Error(`未找到${kindLabel}日期触发器`)
 
-    // 滚动到可见再点
     try { trigger.scrollIntoView({ block: 'center' }) } catch {}
     await sleep(200)
     click(trigger)
-    await sleep(600)
+    await sleep(800)
 
-    const panel = await waitFor(() => getDatePickerPanel(item), 3000, 150)
+    const panel = await waitFor(() => getDatePickerPanel(item), 4000, 200)
     if (!panel) throw new Error(`未展开${kindLabel}日期面板`)
 
-    // 读当前 panel 年月，计算需要点多少次导航箭头
+    // ─── 阶段一：导航到目标年月 ───────────────────────────────────────────────
     const header = getDatePickerHeader(panel)
-    if (!header) throw new Error(`无法读取${kindLabel}日期面板标题年月`)
+    if (!header) throw new Error(`无法读取${kindLabel}日期面板标题年月，当前面板可能不在可见状态`)
+
+    // 年份导航（如果有 yearPicker 下拉）
     const nav = getPickerNavButtons(panel)
+    const navPhase = `pick_date_nav_${kind}`
+    const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
 
-    // 计算从 header.year/month 到 target.year/month 的步数和方向
-    const navClicks = []
-    let curYear = header.year, curMonth = header.month
-    const tY = target.year, tM = target.month
+    // 需要导航年 or 月时，先调用 navigateDatePicker（纯 JS click），然后再处理 cell/time/confirm CDP
+    const needsYearNav = header.year !== target.year
+    const needsMonthNav = header.month !== target.month
 
-    // 先按年切换（每次1年），再按月切换（每次1月），最多48步
-    const totalSteps = Math.abs(tY - curYear) * 12 + Math.abs(tM - curMonth)
-    if (totalSteps > 48) throw new Error(`${kindLabel}目标年月距当前过远（${totalSteps} 步）`)
-
-    // 年步
-    if (curYear !== tY) {
-      const btn = tY > curYear ? nav.nextYear : nav.prevYear
-      if (!btn) throw new Error(`未找到${tY > curYear ? '下一年' : '上一年'}按钮`)
-      const c = rectCenter(btn)
-      if (!c) throw new Error('年份导航按钮坐标为空')
-      for (let i = 0; i < Math.abs(tY - curYear); i++) {
-        navClicks.push({ ...c, delay_ms: 180, label: tY > curYear ? 'nextYear' : 'prevYear' })
-      }
-      curYear = tY
-    }
-    // 月步
-    if (curMonth !== tM) {
-      const btn = tM > curMonth ? nav.nextMonth : nav.prevMonth
-      if (!btn) throw new Error(`未找到${tM > curMonth ? '下一月' : '上一月'}按钮`)
-      const c = rectCenter(btn)
-      if (!c) throw new Error('月份导航按钮坐标为空')
-      for (let i = 0; i < Math.abs(tM - curMonth); i++) {
-        navClicks.push({ ...c, delay_ms: 180, label: tM > curMonth ? 'nextMonth' : 'prevMonth' })
-      }
+    if (needsYearNav || needsMonthNav) {
+      // 导航年月（JS click，不通过 CDP），navigateDatePicker 内部处理 yearPicker 下拉和月份箭头
+      const navOk = await navigateDatePicker(panel, { year: target.year, month: target.month })
+      if (!navOk) throw new Error(`${kindLabel}日期导航失败`)
+      await sleep(200)
     }
 
-    // 注意：导航箭头点击后 DOM 重新渲染，cell 坐标会变
-    // 所以 cell/hour/minute/确认的坐标需要在箭头点完之后再算
-    // 方案：如果有箭头需要点，先只返回箭头点击，进入 pick_date_nav_${kind} phase 再算 cell 坐标
-    // 如果不需要导航（已在目标年月），直接算 cell 坐标一次性返回
-    const pickPhase = `pick_date_verify_${kind}`
-    const navPhase  = `pick_date_nav_${kind}`
-
-    if (navClicks.length > 0) {
-      // 有导航步骤：先点完箭头，再由 pick_date_nav_${kind} phase 继续算 cell
-      const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
-      shared[`_pick_${kind}_target`] = { dt: dt.str, target }
-      return nextCdpClickPhase(navClicks, navPhase, 400, ctxForShared)
-    }
-
-    // 无需导航，已在目标年月，直接算 cell 坐标
-    const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
-    const dayText = String(Number(target.day))
-    const targetCell = cells.find(c =>
-      norm(c.textContent) === dayText &&
-      !c.classList.contains('out-of-range') &&
-      !c.classList.contains('disabled')
-    )
+    // ─── 阶段二：选择日期 cell ────────────────────────────────────────────────
+    const targetCell = findDayCell(panel, target.day)
     if (!targetCell) throw new Error(`未找到目标日期 cell：${target.day}`)
-
     const cellCenter = rectCenter(targetCell)
-    if (!cellCenter) throw new Error(`目标 cell getBoundingClientRect 为空`)
+    if (!cellCenter) throw new Error(`目标日期 cell getBoundingClientRect 为空`)
 
-    // 找时分元素坐标（在 CDP 点 cell 之前先算好，因为 CDP 点完后 context 还在）
-    const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
-    let hourCenter = null, minuteCenter = null
-    if (scrollbars.length >= 2) {
-      const hourBox = [...scrollbars[0].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.hour)
-      const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
-      if (hourBox) hourCenter = rectCenter(hourBox)
-      if (minuteBox) minuteCenter = rectCenter(minuteBox)
+    // ─── 阶段三：选择时分（spinner 方式）─────────────────────────────────────
+    const timeClicks = []
+    const spinners = getTimeSpinners(panel, target.hour, target.minute)
+    for (const sp of spinners) {
+      if (!sp.container || !sp.upBtn || !sp.downBtn) continue
+      const current = Number(sp.currentVal)
+      const dest = Number(sp.targetVal)
+      if (isNaN(current) || isNaN(dest)) continue
+      if (current === dest) continue
+      const diff = dest - current
+      const btn = diff > 0 ? sp.upBtn : sp.downBtn
+      const clicks_needed = Math.abs(diff)
+      const btnCenter = rectCenter(btn)
+      if (!btnCenter) continue
+      for (let i = 0; i < clicks_needed; i++) {
+        timeClicks.push({ ...btnCenter, delay_ms: 80, label: `time_${sp.targetVal}` })
+      }
     }
 
-    // 找确认按钮坐标
-    const okBtn = [...panel.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')]
-      .find(b => /^(确认|确定|OK)$/i.test(textOf(b)) && visible(b))
-    const okCenter = rectCenter(okBtn)
+    // ─── 阶段四：找确认按钮 ──────────────────────────────────────────────────
+    const allBtns = [...panel.querySelectorAll('button')].filter(visible)
+    const okBtn = allBtns.find(b => /^(确认|确定|OK)$/i.test(textOf(b)))
+    const okCenter = okBtn ? rectCenter(okBtn) : null
     if (!okCenter) throw new Error('未找到日期面板确认按钮')
 
-    // 组装 CDP 点击序列：cell → hour → minute → 确认
-    const clicks = [
-      { ...cellCenter, delay_ms: 350, label: `日期${target.day}` },
-    ]
-    if (hourCenter)   clicks.push({ ...hourCenter,   delay_ms: 150, label: `小时${target.hour}` })
-    if (minuteCenter) clicks.push({ ...minuteCenter, delay_ms: 150, label: `分钟${target.minute}` })
-    clicks.push({ ...okCenter, delay_ms: 350, label: '确认' })
+    // ─── 组装完整 CDP 点击序列 ───────────────────────────────────────────────
+    // cell 点击后需要等待 panel 关闭再重新打开（选择日期后自动进入时分状态）
+    // 为了简单：先点 cell → 等 → 再点 spinner → 等 → 点确认
+    const clicks = []
 
-    // 将当前 kind/dt 信息存入 shared，供 confirm 阶段读取
-    shared[`_pick_${kind}`] = { target: dt.str, clicks }
+    // 1. 日期 cell
+    clicks.push({ ...cellCenter, delay_ms: 300, label: `日期${target.day}` })
 
-    // 返回 cdp_clicks，让 Python 用真实鼠标事件点击后继续 pick_date_verify phase
-    // 注：ctx 在此处已被 form_fill phase 的 buildContext() 构建，通过 shared 传给下一 phase
-    const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
+    // 2. spinner 时间（每步 80ms）
+    timeClicks.forEach(c => clicks.push(c))
+
+    // 3. 确认
+    clicks.push({ ...okCenter, delay_ms: 400, label: '确认' })
+
+    shared[`_pick_${kind}`] = { target: dt.str, targetCell, spinners, clicks }
     return nextCdpClickPhase(clicks, `pick_date_verify_${kind}`, 400, ctxForShared)
   }
 
