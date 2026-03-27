@@ -167,8 +167,8 @@
   // ─── 表单工具 ───────────────────────────────────────────────────────────────────
   function getFormItem(labelText) {
     const labels = Array.isArray(labelText) ? labelText.map(norm) : [norm(labelText)]
-    return [...document.querySelectorAll('.eds-react-form-item, .eds-form-item')].find(el => {
-      const lbl = el.querySelector('.eds-react-form-item__label, .eds-form-item__label')
+    return [...document.querySelectorAll('.eds-react-form-item')].find(el => {
+      const lbl = el.querySelector('.eds-react-form-item__label')
       const t   = norm(lbl?.textContent)
       return t && labels.some(x => t.includes(x))
     }) || null
