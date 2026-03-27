@@ -147,6 +147,7 @@ GET  /tasks
 POST /tasks/{adapter_id}/{task_id}/run
 GET  /tasks/{adapter_id}/{task_id}/status
 GET  /tasks/{adapter_id}/{task_id}/logs
+DELETE /tasks/{adapter_id}/{task_id}/logs   # 清空任务日志
 GET  /data/{adapter_id}/{task_id}
 GET  /data/{adapter_id}/{task_id}/export?format=excel
 GET  /settings
