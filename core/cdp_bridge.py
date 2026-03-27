@@ -7,6 +7,7 @@ import logging
 from typing import Optional
 from urllib.request import urlopen
 from urllib.error import URLError
+from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +43,13 @@ class CDPBridge:
             return True
         except ConnectionError:
             return False
+
+    def new_tab(self, url: str) -> dict:
+        try:
+            resp = urlopen(f"{self.cdp_url}/json/new?{quote(url, safe=':/?&=_-%#')}", timeout=8)
+            return json.loads(resp.read())
+        except URLError as e:
+            raise ConnectionError(f"新建 Chrome tab 失败: {e}")
 
 
 _bridge: Optional[CDPBridge] = None

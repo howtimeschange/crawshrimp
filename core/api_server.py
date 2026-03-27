@@ -39,11 +39,12 @@ _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
 async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
     """
     Core task execution pipeline:
-    1. Find matching Chrome tab via CDP
-    2. Inject + execute JS script
-    3. Persist results (Excel/JSON)
-    4. Send notifications if configured
-    5. Record run state in SQLite
+    1. Find / create matching Chrome tab via CDP
+    2. Optional auth check + login wait
+    3. Inject + execute JS script
+    4. Persist results (Excel/JSON)
+    5. Send notifications if configured
+    6. Record run state in SQLite
     """
     from core.js_runner import JSRunner
     from core.models import OutputType
@@ -71,19 +72,77 @@ async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
         log(f"[{adapter_id}/{task_id}] Starting...")
 
         bridge = get_bridge()
-        tab = bridge.find_tab(m.entry_url)
-        if not tab:
-            raise RuntimeError(f"No Chrome tab open matching: {m.entry_url}")
-        log(f"Found tab: {tab.get('url', '')[:80]}")
+        run_params = params or {}
+        mode = (run_params.get('mode') or 'current').strip().lower()
+
+        tab = None
+        if mode == 'current':
+            tab = bridge.find_tab(m.entry_url)
+            if not tab:
+                raise RuntimeError(f"未找到已打开的目标页面：{m.entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
+        else:
+            log(f"mode=new，尝试新建页面：{m.entry_url}")
+            try:
+                tab = bridge.new_tab(m.entry_url)
+            except Exception as e:
+                log(f"新建 tab 失败，尝试复用现有 tab: {e}")
+                tab = bridge.find_tab(m.entry_url)
+            if not tab:
+                raise RuntimeError(f"无法打开或找到目标页面：{m.entry_url}")
+
+        log(f"Found tab: {tab.get('url', '')[:120]}")
+        runner = JSRunner(bridge.get_tab_ws_url(tab))
+
+        # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
+        if m.auth and m.auth.check_script:
+            adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
+            auth_path = adapter_dir / m.auth.check_script
+            if auth_path.exists():
+                log(f"运行登录检测：{m.auth.check_script}")
+                auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
+                logged_in = False
+                if auth_result.success:
+                    if isinstance(auth_result.meta, dict):
+                        logged_in = bool(auth_result.meta.get('logged_in'))
+                    if not logged_in and auth_result.data and isinstance(auth_result.data, list):
+                        logged_in = bool((auth_result.data[0] or {}).get('logged_in'))
+
+                if not logged_in:
+                    login_url = (m.auth.login_url or m.entry_url)
+                    log(f"检测到未登录，跳转登录页：{login_url}")
+                    await runner.evaluate(f"location.href = {login_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
+                    await asyncio.sleep(2)
+                    wait_seconds = 300
+                    for i in range(wait_seconds):
+                        auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
+                        ok = False
+                        if auth_result.success:
+                            if isinstance(auth_result.meta, dict):
+                                ok = bool(auth_result.meta.get('logged_in'))
+                            if not ok and auth_result.data and isinstance(auth_result.data, list):
+                                ok = bool((auth_result.data[0] or {}).get('logged_in'))
+                        if ok:
+                            log("用户已完成登录，继续执行任务")
+                            break
+                        if i in (0, 4) or (i + 1) % 15 == 0:
+                            log(f"等待用户登录 Shopee… {i + 1}/{wait_seconds}s")
+                        await asyncio.sleep(1)
+                    else:
+                        raise RuntimeError("等待登录超时（5分钟）。请完成 Shopee 登录后重试。")
+
+                if mode == 'new':
+                    # 登录完成后，重新导航回业务入口页
+                    log(f"导航回业务入口：{m.entry_url}")
+                    await runner.evaluate(f"location.href = {m.entry_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
+                    await asyncio.sleep(3)
 
         adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
         script_path = adapter_dir / task.script
         if not script_path.exists():
             raise FileNotFoundError(f"Script not found: {script_path}")
 
-        runner = JSRunner(bridge.get_tab_ws_url(tab))
         log(f"Injecting script: {task.script}")
-        data = await runner.run_script_file(script_path, params=params or {})
+        data = await runner.run_script_file(script_path, params=run_params)
         log(f"Script complete. Records: {len(data)}")
 
         # Process outputs
