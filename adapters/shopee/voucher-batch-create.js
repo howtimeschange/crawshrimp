@@ -180,6 +180,36 @@
     }
   }
 
+  function setNativeChecked(el, checked) {
+    if (!el) return false
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')
+    if (desc?.set) desc.set.call(el, !!checked)
+    else el.checked = !!checked
+    el.dispatchEvent(new Event('input',  { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  }
+
+  function reactPropsOf(el) {
+    const k = Object.keys(el || {}).find(x => x.startsWith('__reactProps'))
+    return k ? el[k] : null
+  }
+
+  async function setControlledInputValue(el, value) {
+    if (!el) return false
+    const val = String(value ?? '')
+    click(el)
+    await sleep(80)
+    try { el.focus() } catch {}
+    setNativeValue(el, val)
+    const props = reactPropsOf(el)
+    try { props?.onChange?.({ target: el, currentTarget: el }) } catch {}
+    try { props?.onBlur?.({ target: el, currentTarget: el }) } catch {}
+    try { el.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' })) } catch {}
+    await sleep(180)
+    return norm(el.value).includes(norm(val))
+  }
+
   function rangeDisplayText(item) {
     return {
       start: norm(item?.querySelector('.picker-item.start-picker, .start-picker')?.textContent),
@@ -224,12 +254,40 @@
       return true
     }
 
+    const visibleDateInputs = [...item.querySelectorAll('.picker-item input.eds-react-input__input, .eds-react-date-picker input.eds-react-input__input')].filter(visible)
+    if (visibleDateInputs.length >= 2) {
+      if (startDt) {
+        const ok = await setControlledInputValue(visibleDateInputs[0], startDt.str)
+        if (!ok) throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${visibleDateInputs[0].value || '(空)'}`)
+      }
+      if (endDt) {
+        const ok = await setControlledInputValue(visibleDateInputs[1], endDt.str)
+        if (!ok) throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${visibleDateInputs[1].value || '(空)'}`)
+      }
+      try { document.body.click() } catch {}
+      await sleep(200)
+      if (startDt && !norm(visibleDateInputs[0].value).includes(startDt.str)) {
+        throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${visibleDateInputs[0].value || '(空)'}`)
+      }
+      if (endDt && !norm(visibleDateInputs[1].value).includes(endDt.str)) {
+        throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${visibleDateInputs[1].value || '(空)'}`)
+      }
+      return true
+    }
+
     const inputs = getTextInputs(item)
     if (inputs.length < 2) throw new Error(`领取期限 input 数量不足: ${inputs.length}`)
     if (startDt) await fillDatetimePicker(inputs[0], startDt)
     if (endDt)   await fillDatetimePicker(inputs[1], endDt)
     try { document.body.click() } catch {}
     await sleep(200)
+    if (startDt && !norm(inputs[0].value).includes(startDt.str)) {
+      throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${inputs[0].value || '(空)'}`)
+    }
+    if (endDt && !norm(inputs[1].value).includes(endDt.str)) {
+      throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${inputs[1].value || '(空)'}`)
+    }
+    return true
   }
 
   // ─── 提前显示优惠券 checkbox ──────────────────────────────────────────────────
@@ -246,13 +304,24 @@
     const cb = target.querySelector?.('input[type=checkbox]') ||
                (target.tagName === 'INPUT' ? target : null)
     const isChecked = () => {
-      if (cb) return cb.checked
+      if (cb) return !!cb.checked
       return target.classList.contains('eds-react-checkbox--checked') ||
              target.getAttribute('aria-checked') === 'true'
     }
     if (isChecked() !== !!desired) {
-      click(target)
+      if (cb) {
+        setNativeChecked(cb, desired)
+        const props = reactPropsOf(cb)
+        try { props?.onChange?.({ target: cb, currentTarget: cb, nativeEvent: { target: cb } }) } catch {}
+        try { props?.onClick?.({ target: cb, currentTarget: cb, preventDefault(){}, stopPropagation(){} }) } catch {}
+      }
+      if (isChecked() !== !!desired) {
+        try { click(target) } catch {}
+      }
       await sleep(200)
+    }
+    if (isChecked() !== !!desired) {
+      throw new Error(`提前显示优惠券勾选状态不符合预期，期望：${!!desired}，实际：${isChecked()}`)
     }
     return true
   }
@@ -290,6 +359,22 @@
     const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
     if (!item) throw new Error('未找到折扣类型表单项')
 
+    const findOption = () => [...document.querySelectorAll('.eds-react-select-option, .eds-option')].find(el => {
+      const t = textOf(el).toLowerCase()
+      return keys.some(k => t === k || t.includes(k))
+    }) || null
+
+    // 优先直接点击 DOM 中已渲染的选项（即使 popover hidden 也可生效）
+    let option = findOption()
+    if (option) {
+      click(option)
+      await sleep(300)
+      const selectedText = textOf(item.querySelector('.eds-react-select__inner, .eds-selector, .trigger.trigger--normal'))
+      if (keys.some(k => selectedText.toLowerCase() === k || selectedText.toLowerCase().includes(k))) {
+        return selectedText
+      }
+    }
+
     const trigger = item.querySelector('.trigger.trigger--normal, .eds-selector')
     if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器')
 
@@ -299,32 +384,37 @@
     if (selectorComp?.ctx?.handlerClick && typeof selectorComp.ctx.handlerClick === 'function') {
       try { selectorComp.ctx.handlerClick() } catch {}
     }
+    const props = reactPropsOf(trigger)
+    try { props?.onMouseDown?.({ button: 0, buttons: 1, preventDefault(){}, stopPropagation(){}, currentTarget: trigger, target: trigger, nativeEvent: { button: 0, buttons: 1 } }) } catch {}
+    try { props?.onClick?.({ preventDefault(){}, stopPropagation(){}, currentTarget: trigger, target: trigger }) } catch {}
     for (const evtName of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
       try {
         trigger.dispatchEvent(new MouseEvent(evtName, { bubbles: true, cancelable: true, view: window, buttons: 1 }))
       } catch (_) {}
     }
     try { trigger.click?.() } catch {}
-    await sleep(600)
+    await sleep(400)
 
     const options = await waitFor(() => {
-      const opts = [...document.querySelectorAll('.eds-react-select-option, .eds-option')].filter(visible)
+      const opts = [...document.querySelectorAll('.eds-react-select-option, .eds-option')]
       return opts.length > 0 ? opts : null
-    }, 4000, 150)
+    }, 3000, 120)
     if (!options) throw new Error('折扣类型下拉未展开')
 
-    let option = options.find(el => {
+    option = options.find(el => {
       const t = textOf(el).toLowerCase()
       return keys.some(k => t === k || t.includes(k))
     })
-
-    // Shopee币回扣等页型可能只有“扣除百分比”一个选项；此时允许自动兼容
     if (!option && options.length === 1) option = options[0]
-
     if (!option) throw new Error(`未找到折扣类型选项：${text}（可选：${options.map(o=>textOf(o)).join('/')}）`)
     click(option)
-    await sleep(400)
-    return textOf(option)
+    await sleep(300)
+
+    const selectedText = textOf(item.querySelector('.eds-react-select__inner, .eds-selector, .trigger.trigger--normal'))
+    if (!keys.some(k => selectedText.toLowerCase() === k || selectedText.toLowerCase().includes(k))) {
+      throw new Error(`折扣类型选择失败，期望：${text}，实际：${selectedText || '(空)'}`)
+    }
+    return selectedText
   }
 
   // ─── 优惠限额（折扣类型旁边的数字框）────────────────────────────────────────
@@ -355,7 +445,7 @@
       }
 
       // 优先在当前 item 内找输入框
-      let inp = getTextInputs(item).find(el => visible(el))
+      let inp = await waitFor(() => getTextInputs(item).find(el => visible(el)) || null, 1500, 120)
 
       // 某些 Shopee 布局会在切换 radio 后，把金额输入框渲染到 item 邻近区域
       if (!inp) {
@@ -364,7 +454,7 @@
           .filter(visible)
           .find(el => {
             const wrapText = textOf(el.closest('.eds-react-input, .eds-react-form-item, .eds-react-form-item__control, div'))
-            return /最高优惠金额|最高折扣金额|最高优惠|最高减免|设置金额/.test(wrapText)
+            return /最高优惠金额|最高折扣金额|最高优惠|最高减免|最高上限数额|设置金额/.test(wrapText)
           }) || null
       }
 
@@ -515,6 +605,10 @@
     }
   }
 
+  function isResumeRun() {
+    return !!(shared && (shared.couponCode || shared.couponName || shared.result))
+  }
+
   function hasCreateFormMounted() {
     return !!getFormItem(['优惠券名称'])
   }
@@ -598,7 +692,7 @@
     // 入口：确保在营销中心页面（用于搜索店铺）
     if (phase === 'main') {
       updateProgress(ctx, 'main', '进行中')
-      if (isOnCreatePage()) {
+      if (isResumeRun() && isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
       if (mode === 'new' || !location.href.startsWith(MARKETING_URL)) {
@@ -614,8 +708,8 @@
     // 在营销中心搜索并切换到目标店铺
     if (phase === 'store_switch') {
       updateProgress(ctx, 'store_switch', '进行中')
-      // 如果已经进入创建页且表单已挂载，不要再拉回营销主页
-      if (isOnCreatePage()) {
+      // 只有同一条记录的续跑才允许直接复用已打开的创建页
+      if (isResumeRun() && isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
 
@@ -780,14 +874,18 @@
     if (phase === 'submit') {
       updateProgress(ctx, 'submit', '进行中')
       const allBtns = [...document.querySelectorAll('button')].filter(visible)
-      // 优先 primary 样式的"确认/确定"
+      const actionBtns = allBtns.filter(el => {
+        const t = textOf(el)
+        if (!/^(确认|确定)$/.test(t)) return false
+        if (/取消|预览|关闭/.test(t)) return false
+        const scopeText = textOf(el.closest('form, .footer, .page-footer, .voucher-footer, .footer-actions, .button-group, .actions, .eds-sticky, .sticky-footer, .footer-container'))
+        return /确认|确定/.test(scopeText) || (el.className || '').includes('primary')
+      })
       const confirmBtn =
-        allBtns.find(el => {
-          const t = textOf(el)
-          if (t !== '确认' && t !== '确定') return false
-          return (el.className || '').includes('primary')
-        }) ||
-        allBtns.find(el => textOf(el) === '确认' || textOf(el) === '确定')
+        actionBtns.find(el => (el.className || '').includes('primary')) ||
+        actionBtns[0] ||
+        allBtns.find(el => /^(确认|确定)$/.test(textOf(el)) && (el.className || '').includes('primary')) ||
+        allBtns.find(el => /^(确认|确定)$/.test(textOf(el)))
 
       if (!confirmBtn) throw new Error('未找到"确认"按钮')
       click(confirmBtn)
