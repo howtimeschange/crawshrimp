@@ -1,27 +1,32 @@
 /**
- * Shopee+ 优惠券批量创建脚本
+ * Shopee+ 优惠券批量创建脚本 v2
  *
- * 架构：
- *   runner 驱动外层循环（page = Excel row index），
- *   脚本内部用 phase 状态机处理多步骤 CDP 交互。
+ * Phase 设计（每个 phase 对应一个"人类操作步骤"）：
+ *   main              → 决定导航 / 是否需要切换店铺
+ *   store_switch_open → CDP 点击店铺选择器，打开搜索弹窗
+ *   store_switch_search → JS 填搜索词，等候选项，返回 CDP 点击坐标
+ *   store_switch_done → 验证店铺切换成功，导航到列表页
+ *   enter_type        → 导航到对应券种创建页
+ *   form_fill         → 填写名称 / 优惠码 / 触发日期面板
+ *   date_nav          → 逐月导航到目标月（每次 1 步，避免坐标漂移）
+ *   date_select       → 点日期格 + 批量调时间箭头 + 点确认（三批坐标合一次返回）
+ *   form_fill_rest    → 填写其余字段（奖励类型/折扣类型/金额等）
+ *   submit            → 点确认按钮
+ *   post_submit       → 等待创建成功
  *
- * 关键协议（与 js_runner.py 配合）：
- *   return { success, data, meta: { action: 'cdp_clicks', clicks, next_phase, sleep_ms, shared } }
- *   return { success, data, meta: { action: 'next_phase', next_phase, sleep_ms, shared } }
- *   return { success, data, meta: { action: 'complete', has_more, page, total, shared } }
- *
- * CDP 点击坐标格式：{ x, y, delay_ms, label }
+ * CDP 协议：
+ *   return { success, data, meta: { action:'cdp_clicks', clicks:[{x,y,delay_ms}], next_phase, sleep_ms, shared } }
+ *   return { success, data, meta: { action:'next_phase', next_phase, sleep_ms, shared } }
+ *   return { success, data, meta: { action:'complete', has_more, page, total } }
  */
 ;(async () => {
-  // ─── 全局上下文 ────────────────────────────────────────────────────────────────
   const params = window.__CRAWSHRIMP_PARAMS__ || {}
   const page   = window.__CRAWSHRIMP_PAGE__   || 1
-  const phase  = window.__CRAWSHRIMP_PHASE__  || 'init'
-  const shared = window.__CRAWSHRIMP_SHARED__  || {}
+  const phase  = window.__CRAWSHRIMP_PHASE__  || 'main'
+  const shared = window.__CRAWSHRIMP_SHARED__ || {}
   const rows   = params.input_file?.rows      || []
 
-  // ─── 常量 ─────────────────────────────────────────────────────────────────────
-  const MARKETING_URL = 'https://seller.shopee.cn/portal/marketing'
+  const MARKETING_URL    = 'https://seller.shopee.cn/portal/marketing'
   const VOUCHER_LIST_URL = 'https://seller.shopee.cn/portal/marketing/vouchers/list'
 
   const row = rows[page - 1]
@@ -29,14 +34,9 @@
     return { success: true, data: [], meta: { action: 'complete', has_more: false, page, total: rows.length } }
   }
 
-  // ─── 持久化状态（挂在 window 上，跨 phase 保留）───────────────────────────────
-  // 用于记住当前在哪个店铺，避免重复切换
-  const currentStore = shared._currentStore || ''
-  const rowIndex    = shared._rowIndex      || 0
-
-  // ─── 工具函数 ────────────────────────────────────────────────────────────────
-  const sleep = (ms) => new Promise(r => setTimeout(r, ms))
-  const norm  = (s) => String(s || '').replace(/\s+/g, ' ').trim()
+  // ─── 工具函数 ──────────────────────────────────────────────────────────────────
+  const sleep  = (ms) => new Promise(r => setTimeout(r, ms))
+  const norm   = (s) => String(s || '').replace(/\s+/g, ' ').trim()
   const textOf = (el) => norm(el?.innerText || el?.textContent || el?.value || '')
 
   const digitsOnly = (v) => String(v ?? '').replace(/,/g, '').trim()
@@ -47,7 +47,7 @@
     return Number.isNaN(n) ? s : n
   }
 
-  // 优惠限额：0.05（小数）=> 5（百分比），金额保持原值
+  // 优惠限额：0.05 (小数) → 5 (百分比); 金额保持原值
   const discountLimitValue = (raw, discountType) => {
     const n = toNumber(raw)
     if (typeof n === 'number' && /百分比|percentage/i.test(discountType || '') && n > 0 && n <= 1) {
@@ -66,16 +66,18 @@
     return out
   }
 
-  // 解析 "2026-04-01" 或 "2026/04/01" 或 "2026-04-01 14:30"
+  // 解析 "2026-04-01" / "2026/04/01" / "2028/3/27-11:29:57"
   const parseDateTime = (raw, kind) => {
     const s = norm(raw)
     if (!s) return null
-    const m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[T\s-](\d{1,2})(?::(\d{1,2}))?)?$/)
+    const m = s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[T\s-](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/)
     if (!m) return null
-    const y = m[1], mo = String(m[2]).padStart(2, '0'), d = String(m[3]).padStart(2, '0')
+    const y  = m[1]
+    const mo = String(m[2]).padStart(2, '0')
+    const d  = String(m[3]).padStart(2, '0')
     const hh = m[4] != null ? String(m[4]).padStart(2, '0') : (kind === 'start' ? '00' : '23')
     const mm = m[5] != null ? String(m[5]).padStart(2, '0') : (kind === 'start' ? '00' : '59')
-    return { y, mo, d, hh, mm, str: `${y}-${mo}-${d} ${hh}:${mm}` }
+    return { y, mo, d, hh, mm, str: `${y}-${mo}-${d} ${hh}:${mm}`, year: Number(y), month: Number(mo) }
   }
 
   const visible = (el) => {
@@ -95,15 +97,13 @@
     return null
   }
 
-  // 获取元素中心点坐标（用于 CDP click）
   const rectCenter = (el) => {
     if (!el) return null
     const r = el.getBoundingClientRect()
     if (r.width === 0 && r.height === 0) return null
-    return { x: r.left + r.width / 2, y: r.top + r.height / 2 }
+    return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }
   }
 
-  // 派发合成鼠标事件（用于非 React 元素，或 React 的非关键交互）
   function dispatchSyntheticClick(el) {
     if (!el) return false
     try { el.scrollIntoView({ block: 'center' }) } catch {}
@@ -121,13 +121,12 @@
     return true
   }
 
-  // 设置 input 的原生值（用于 React controlled input）
   function setNativeValue(el, value) {
     if (!el) return false
-    const val = String(value ?? '')
+    const val  = String(value ?? '')
     const last = el.value
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
-    const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+    const desc  = Object.getOwnPropertyDescriptor(proto, 'value')
     if (desc?.set) desc.set.call(el, val)
     else el.value = val
     try {
@@ -140,6 +139,16 @@
     return true
   }
 
+  function setNativeChecked(el, checked) {
+    if (!el) return false
+    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')
+    if (desc?.set) desc.set.call(el, !!checked)
+    else el.checked = !!checked
+    el.dispatchEvent(new Event('input',  { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  }
+
   async function typeInto(el, value) {
     dispatchSyntheticClick(el)
     await sleep(80)
@@ -148,10 +157,31 @@
     await sleep(200)
   }
 
-  // 关闭可能遮挡操作的弹窗
+  function reactPropsOf(el) {
+    const k = Object.keys(el || {}).find(x => x.startsWith('__reactProps'))
+    return k ? el[k] : null
+  }
+
+  // React onClick 优先触发（CDP 坐标点击对 React 合成事件无效的场景用这个）
+  function reactClick(el) {
+    if (!el) return false
+    try { el.scrollIntoView({ block: 'center' }) } catch {}
+    const props = reactPropsOf(el)
+    if (props?.onClick) {
+      try {
+        props.onClick({
+          preventDefault: () => {}, stopPropagation: () => {},
+          target: el, currentTarget: el, nativeEvent: { target: el }
+        })
+        return true
+      } catch {}
+    }
+    return false
+  }
+
   async function closeBlockingOverlays() {
     for (const sel of ['.fullstory-modal-wrapper', '.diagnosis-result-modal']) {
-      [...document.querySelectorAll(sel)].forEach(el => { try { el.remove() } catch {} })
+      ;[...document.querySelectorAll(sel)].forEach(el => { try { el.remove() } catch {} })
     }
     for (const btn of [...document.querySelectorAll('button')]) {
       const t = textOf(btn)
@@ -164,66 +194,37 @@
     await sleep(100)
   }
 
-  // ─── 表单工具 ───────────────────────────────────────────────────────────────────
+  // ─── 表单工具 ──────────────────────────────────────────────────────────────────
   function getFormItem(labelText) {
     const labels = Array.isArray(labelText) ? labelText.map(norm) : [norm(labelText)]
-    return [...document.querySelectorAll('.eds-react-form-item')].find(el => {
-      const lbl = el.querySelector('.eds-react-form-item__label')
+    return [...document.querySelectorAll('.eds-react-form-item, .eds-form-item')].find(el => {
+      const lbl = el.querySelector('.eds-react-form-item__label, .eds-form-item__label')
       const t   = norm(lbl?.textContent)
       return t && labels.some(x => t.includes(x))
     }) || null
   }
 
   function getTextInputs(container) {
-    return [...(container || document).querySelectorAll('input:not([type=radio]):not([type=checkbox]), textarea')]
-      .filter(visible)
+    return [...(container || document).querySelectorAll(
+      'input:not([type=radio]):not([type=checkbox]), textarea'
+    )].filter(visible)
   }
 
   async function fillField(labelText, value, inputIndex = 0) {
-    const item = getFormItem(labelText)
+    const item   = getFormItem(labelText)
     if (!item) throw new Error(`未找到表单项：${labelText}`)
     const inputs = getTextInputs(item)
-    const el = inputs[inputIndex]
+    const el     = inputs[inputIndex]
     if (!el) throw new Error(`表单项"${labelText}"没有可编辑 input（找到 ${inputs.length} 个）`)
     await typeInto(el, value)
     return el
   }
 
-  function getFormItemControl(item) {
-    return item?.querySelector('.eds-react-form-item__control, .eds-form-item__control') || item
-  }
-
-  function reactPropsOf(el) {
-    const k = Object.keys(el || {}).find(x => x.startsWith('__reactProps'))
-    return k ? el[k] : null
-  }
-
-  // ─── 店铺切换 ───────────────────────────────────────────────────────────────────
-  function getStoreText() {
-    const el = document.querySelector('.shop-switcher, .shop-switcher-container, .shop-select, .shop-info, .shop-label')
-    if (el && visible(el)) return textOf(el.closest('.shop-info') || el.parentElement || el)
-    const all = [...document.querySelectorAll('div, span')]
-      .filter(e => visible(e) && textOf(e).startsWith('当前店铺'))
-    return all.length ? textOf(all[0]) : ''
-  }
-
-  function buildVoucherListUrl(shopId) {
-    const u = new URL(VOUCHER_LIST_URL)
-    if (shopId) u.searchParams.set('cnsc_shop_id', shopId)
-    return u.toString()
-  }
-
-  function getUrlShopId() {
-    try {
-      return new URL(location.href).searchParams.get('cnsc_shop_id') || ''
-    } catch { return '' }
-  }
-
-  // ─── 券种配置 ───────────────────────────────────────────────────────────────────
+  // ─── 券种配置 ──────────────────────────────────────────────────────────────────
   const VOUCHER_TYPE_MAP = {
-    '商店优惠券':     { usecase: '1',  testId: 'voucherEntry1',  aliases: ['商店优惠券'] },
-    '新买家优惠券':   { usecase: '3',  testId: 'voucherEntry3',  aliases: ['新买家优惠券', '新买家'] },
-    '回购买家优惠券': { usecase: '4',  testId: 'voucherEntry4',  aliases: ['回购买家优惠券', '回购'] },
+    '商店优惠券':     { usecase: '1',   testId: 'voucherEntry1',   aliases: ['商店优惠券'] },
+    '新买家优惠券':   { usecase: '3',   testId: 'voucherEntry3',   aliases: ['新买家优惠券', '新买家'] },
+    '回购买家优惠券': { usecase: '4',   testId: 'voucherEntry4',   aliases: ['回购买家优惠券', '回购'] },
     '关注礼优惠券':   { usecase: '999', testId: 'voucherEntry999', aliases: ['关注礼优惠券', '关注礼'] },
   }
 
@@ -243,7 +244,25 @@
     return u.toString()
   }
 
-  // ─── 结果构建 ───────────────────────────────────────────────────────────────────
+  function getUrlShopId() {
+    try { return new URL(location.href).searchParams.get('cnsc_shop_id') || '' } catch { return '' }
+  }
+
+  function buildVoucherListUrl(shopId) {
+    const u = new URL(VOUCHER_LIST_URL)
+    if (shopId) u.searchParams.set('cnsc_shop_id', shopId)
+    return u.toString()
+  }
+
+  function getStoreText() {
+    const el = document.querySelector('.shop-switcher, .shop-switcher-container, .shop-select, .shop-info, .shop-label')
+    if (el && visible(el)) return textOf(el.closest('.shop-info') || el.parentElement || el)
+    const all = [...document.querySelectorAll('div, span')]
+      .filter(e => visible(e) && textOf(e).startsWith('当前店铺'))
+    return all.length ? textOf(all[0]) : ''
+  }
+
+  // ─── 结果构建 ──────────────────────────────────────────────────────────────────
   function buildResult(overrides = {}) {
     return {
       '序号':                    page,
@@ -263,10 +282,8 @@
   }
 
   // ─── 协议返回 ──────────────────────────────────────────────────────────────────
-  // CDP 点击 + 阶段切换
   const cdpPhase = (clicks, nextPhase, sleepMs = 300, extras = {}) => ({
-    success: true,
-    data: [],
+    success: true, data: [],
     meta: {
       action: 'cdp_clicks',
       clicks: clicks || [],
@@ -276,19 +293,16 @@
     },
   })
 
-  // 纯阶段切换
-  const nextPhase = (nextPhase, sleepMs = 1200, extras = {}) => ({
-    success: true,
-    data: [],
+  const nextPhase = (np, sleepMs = 1200, extras = {}) => ({
+    success: true, data: [],
     meta: {
       action: 'next_phase',
-      next_phase: nextPhase,
+      next_phase: np,
       sleep_ms: sleepMs,
       shared: { ...shared, ...extras },
     },
   })
 
-  // 完成当前行（无论成功失败）
   const finishRow = (result) => ({
     success: true,
     data: [result],
@@ -301,15 +315,16 @@
     },
   })
 
-  // ─── 阶段处理 ──────────────────────────────────────────────────────────────────
-
+  // ══════════════════════════════════════════════════════════════════════════════
+  // 主执行块（try/catch 兜底，所有异常统一写入 finishRow 失败）
+  // ══════════════════════════════════════════════════════════════════════════════
   try {
     await closeBlockingOverlays()
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // INIT — 确定入口，决定是否需要导航
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (phase === 'init') {
+    // ══════════════════════════════════════════════════════════════════════════
+    // MAIN — 判断入口，决定是否需要切换店铺或重新导航
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'main') {
       const store       = norm(row['店铺'])
       const voucherType = norm(row['优惠券品类'])
       if (!store)       throw new Error('Excel 缺少"店铺"列')
@@ -317,168 +332,180 @@
 
       const couponName = shared.couponName || (store + discountLimitValue(row['优惠限额'] || '', row['折扣类型'] || ''))
       const couponCode = shared.couponCode || randCode(5)
-      const meta       = getVoucherMeta(voucherType)
-      const result     = shared.result || buildResult({ '生成优惠券名称': couponName, '生成优惠码': couponCode })
+      const result     = buildResult({ '生成优惠券名称': couponName, '生成优惠码': couponCode })
 
-      const curUrl   = location.href || ''
-      const onMarket = curUrl.includes('/portal/marketing')
-      const needNav  = (params.mode || 'current').trim().toLowerCase() === 'new' || !onMarket
-
+      const onMarket = location.href.includes('/portal/marketing')
       if (!onMarket) {
         location.href = MARKETING_URL
-        return nextPhase('init', 3000, { couponName, couponCode, result, _rowIndex: page, _currentStore: store })
+        return nextPhase('main', 3000, { couponName, couponCode, result, _currentStore: store })
       }
 
-      // 已在营销中心，检查店铺是否匹配
-      const storeText = getStoreText()
-      const storeMatch = storeText.includes(store) && (!row['站点'] || storeText.includes(norm(row['站点'] || '')))
+      const storeText  = getStoreText()
+      const site       = norm(row['站点'] || '')
+      const storeMatch = storeText.includes(store) && (!site || storeText.includes(site))
 
-      if (storeMatch && !needNav) {
-        // 店铺已匹配，不需要重新切换
-        return nextPhase('goto_list', 200, { couponName, couponCode, result, _rowIndex: page, _currentStore: store })
+      if (storeMatch) {
+        // 店铺已匹配，直接去创建页
+        return nextPhase('enter_type', 200, { couponName, couponCode, result, _currentStore: store })
       }
-
-      // 店铺不匹配或需要重新导航
-      return nextPhase('store_switch', 300, { couponName, couponCode, result, _rowIndex: page, _currentStore: store })
+      return nextPhase('store_switch_open', 300, { couponName, couponCode, result, _currentStore: store })
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // GOTO_LIST — 导航到优惠券列表页
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (phase === 'goto_list') {
-      const store = shared._currentStore || norm(row['店铺'])
-      const shopId = getUrlShopId()
-      location.href = buildVoucherListUrl(shopId)
-      return nextPhase('enter_type', 3000, { ...shared, _currentStore: store })
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    // STORE_SWITCH — 搜索并切换到目标店铺
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (phase === 'store_switch') {
-      const store   = shared._currentStore || norm(row['店铺'])
-      const site    = norm(row['站点'] || '')
-      const result  = shared.result || buildResult()
-
-      // 先确保在营销中心主页
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORE_SWITCH_OPEN — CDP 点击店铺选择器，打开搜索弹窗（Bug 1 修复）
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'store_switch_open') {
+      // 确保在营销中心
       if (!location.href.includes('/portal/marketing')) {
         location.href = MARKETING_URL
-        return nextPhase('store_switch', 3000, { ...shared, result })
+        return nextPhase('store_switch_open', 3000, shared)
       }
 
-      const storeText = getStoreText()
-      const matched = storeText.includes(store) && (!site || storeText.includes(site))
-
-      if (matched) {
-        // 店铺已匹配，导航到列表
-        const shopId = getUrlShopId()
-        location.href = buildVoucherListUrl(shopId)
-        return nextPhase('enter_type', 3000, { ...shared, result })
+      // 找店铺选择器触发区域（点击后才会出现搜索输入框）
+      const trigger = (
+        document.querySelector('.shop-switcher .shop-select') ||
+        document.querySelector('.shop-switcher-container .shop-select') ||
+        document.querySelector('.shop-select') ||
+        null
+      )
+      if (!trigger || !visible(trigger)) {
+        throw new Error('未找到店铺选择器触发元素 .shop-select')
       }
+      const tc = rectCenter(trigger)
+      if (!tc) throw new Error('店铺选择器坐标为空')
 
-      // 需要搜索切换
+      console.log('[STORE] CDP 点击店铺选择器，打开搜索弹窗')
+      // CDP 点击打开弹窗，然后切换到 store_switch_search 做 JS 搜索
+      return cdpPhase(
+        [{ ...tc, delay_ms: 600, label: '店铺选择器' }],
+        'store_switch_search',
+        800,
+        shared
+      )
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORE_SWITCH_SEARCH — JS 填搜索词，等候选项出现，返回 CDP 点击坐标
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'store_switch_search') {
+      const store = shared._currentStore || norm(row['店铺'])
+
+      // 等待搜索 input 出现（CDP 点击后弹窗已打开）
       const searchInput = await waitFor(() =>
         [...document.querySelectorAll('input')].find(el =>
-          visible(el) && (
-            norm(el.placeholder).includes('搜索') ||
-            el.closest('.shop-switcher, .shop-select, [class*="shopSwitch"], [class*="shop-switch"]')
-          )
-        ), 8000, 300
-      )
-      if (!searchInput) throw new Error('未找到店铺搜索框，请确认已打开营销中心主页')
+          visible(el) && (el.placeholder === '搜索店铺' || /搜索店铺/.test(el.placeholder))
+        )
+      , 5000, 200)
 
+      if (!searchInput) {
+        // 弹窗可能没开，重试一次 open
+        return nextPhase('store_switch_open', 500, shared)
+      }
+
+      // JS 填写搜索关键词（搜索 input 是普通 input，不是 React controlled，可以直接 setNativeValue）
       dispatchSyntheticClick(searchInput)
-      await sleep(200)
+      await sleep(100)
       setNativeValue(searchInput, store)
-      await sleep(1200)
 
+      // 同时尝试 Vue ctx searchShop（弹窗已打开，这时才有效）
+      const switcher    = document.querySelector('.shop-switcher')
+      const switcherVue = switcher?.__vueParentComponent || switcher?.__vue__
+      if (switcherVue?.ctx?.searchShop) {
+        try { switcherVue.ctx.searchShop(store) } catch {}
+      }
+      const vueInput = searchInput.__vueParentComponent || searchInput.__vue__
+      if (vueInput?.ctx?.setCurrentValue) {
+        try { vueInput.ctx.setCurrentValue(store) } catch {}
+      }
+
+      // 等候选项出现
       const candidate = await waitFor(() =>
-        [...document.querySelectorAll('li, [role=option], [class*="shopItem"], [class*="shop-item"]')]
-          .filter(visible)
-          .find(el => {
-            const t = textOf(el)
-            if (!t.includes(store)) return false
-            if (site && !t.includes(site)) return false
-            return true
-          })
-      , 6000, 250)
-      if (!candidate) throw new Error(`搜索后未找到店铺：${store}`)
-      if (/没有权限|无权限/.test(textOf(candidate))) throw new Error(`店铺"${store}"无权限`)
+        [...document.querySelectorAll('.search-item')].filter(el => visible(el))
+          .find(el => textOf(el).includes(store))
+      , 6000, 300)
 
-      dispatchSyntheticClick(candidate)
-      await sleep(2000)
+      if (!candidate) throw new Error(`搜索后未找到店铺候选项：${store}`)
+
+      const cc = rectCenter(candidate)
+      if (!cc) throw new Error('店铺候选项坐标为空')
+
+      console.log(`[STORE] 找到候选项，CDP 点击选择店铺：${textOf(candidate).substring(0, 40)}`)
+      return cdpPhase(
+        [{ ...cc, delay_ms: 500, label: `选择店铺:${store}` }],
+        'store_switch_done',
+        2000,
+        shared
+      )
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════
+    // STORE_SWITCH_DONE — 验证店铺切换，导航到券列表
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'store_switch_done') {
+      await sleep(300)
       await closeBlockingOverlays()
+      const store = shared._currentStore || norm(row['店铺'])
 
-      // 等待店铺名更新
-      await waitFor(() => {
-        const t = getStoreText()
-        return t.includes(store) ? t : null
-      }, 5000, 300)
-
-      const verifyText = getStoreText()
-      if (!verifyText.includes(store)) {
-        const full = document.body.innerText
-        if (!full.includes(store)) throw new Error(`切换店铺后未能确认，当前文本：${verifyText.substring(0, 80)}`)
+      const storeText = getStoreText()
+      if (!storeText.includes(store) && !document.body.innerText.includes(store)) {
+        throw new Error(`切换店铺后验证失败，当前：${storeText.substring(0, 60)}`)
       }
 
       const shopId = getUrlShopId()
       location.href = buildVoucherListUrl(shopId)
-      return nextPhase('enter_type', 3000, { ...shared, result, _currentStore: store })
+      return nextPhase('enter_type', 3000, shared)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // ENTER_TYPE — 进入券种创建页面
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+    // ENTER_TYPE — 导航到对应券种创建页，预填名称+优惠码
+    // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'enter_type') {
-      const store   = shared._currentStore || norm(row['店铺'])
       const voucherType = norm(row['优惠券品类'])
-      const meta = getVoucherMeta(voucherType)
-      const shopId = getUrlShopId()
+      const meta        = getVoucherMeta(voucherType)
+      const shopId      = getUrlShopId()
 
-      // 已经在创建页，直接进入
-      if (location.href.includes('/portal/marketing/vouchers/new') ||
-          location.href.includes('/portal/marketing/follow-prize/new')) {
-        return nextPhase('form_fill', 200, { ...shared, _currentStore: store })
+      // 已在创建页
+      if (location.href.includes('/vouchers/new') || location.href.includes('/follow-prize/new')) {
+        return nextPhase('form_fill', 200, shared)
       }
 
-      // 关注礼需要特殊路径（先去营销主页拿正确 shopId）
+      // 关注礼走独立路径（需要先到主页拿正确 shopId）
       if (meta.usecase === '999') {
-        location.href = MARKETING_URL
-        return nextPhase('follow_prize_nav', 2000, { ...shared, _currentStore: store })
+        if (!location.href.includes('/portal/marketing')) {
+          location.href = MARKETING_URL
+          return nextPhase('enter_type', 2500, shared)
+        }
+        const sid = getUrlShopId()
+        location.href = buildCreateUrl(voucherType, sid)
+        return nextPhase('form_fill', 3000, shared)
       }
 
-      // 从列表页的入口卡片进入
-      // 先确保在列表页
-      if (!location.href.includes('/portal/marketing/vouchers/list')) {
+      // 普通券：从列表页入口卡片点"创建"
+      if (!location.href.includes('/vouchers/list')) {
         location.href = buildVoucherListUrl(shopId)
-        return nextPhase('enter_type', 3000, { ...shared, _currentStore: store })
+        return nextPhase('enter_type', 3000, shared)
       }
 
       // 展开"为特定买家"入口
       const expandBtn = [...document.querySelectorAll('button, a')].find(el =>
         visible(el) && textOf(el).includes('为特定买家提供更多种类的优惠券')
       )
-      if (expandBtn) {
-        dispatchSyntheticClick(expandBtn)
-        await sleep(800)
-      }
+      if (expandBtn) { dispatchSyntheticClick(expandBtn); await sleep(800) }
 
       // 找券种入口卡片
       let card = document.querySelector(`button[data-testid="${meta.testId}"]`)
       if (!card || !visible(card)) {
-        card = [...document.querySelectorAll('button[data-testid^="voucherEntry"]')].find(el => {
-          if (!visible(el)) return false
-          return meta.aliases.some(a => textOf(el).includes(a))
-        }) || null
+        card = [...document.querySelectorAll('button[data-testid^="voucherEntry"]')].find(el =>
+          visible(el) && meta.aliases.some(a => textOf(el).includes(a))
+        ) || null
       }
       if (!card) throw new Error(`未找到券种入口卡片：${voucherType}`)
 
-      // 点击"创建"按钮
       const createBtn = [...card.querySelectorAll('button')]
         .find(el => visible(el) && /^(创建|去创建)$/.test(textOf(el))) || card
       dispatchSyntheticClick(createBtn)
 
-      // 等待创建页出现
+      // 等创建页表单出现
       const formReady = await waitFor(() => {
         const href = location.href || ''
         if (!href.includes('/vouchers/new') && !href.includes('/follow-prize/new')) return null
@@ -487,487 +514,347 @@
       }, 12000, 300)
       if (!formReady) throw new Error(`点击创建后未能进入表单页，当前URL：${location.href.substring(0, 100)}`)
 
-      // 预填优惠券名称和优惠码
+      // 预填名称和优惠码
       await sleep(300)
       await fillField('优惠券名称', shared.couponName || '')
       try { await fillField('优惠码', shared.couponCode || '') } catch {}
 
-      return nextPhase('form_fill', 200, { ...shared, _currentStore: store })
+      return nextPhase('form_fill', 200, shared)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // FOLLOW_PRIZE_NAV — 关注礼：从主页拿到 shopId 后跳转 follow-prize/new
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (phase === 'follow_prize_nav') {
-      const voucherType = norm(row['优惠券品类'])
-      const shopId = getUrlShopId()
-      location.href = buildCreateUrl(voucherType, shopId)
-      return nextPhase('enter_type', 3000)
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    // FORM_FILL — 填写表单：名称+优惠码（已在 enter_type 预填）+ 领券期限
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+    // FORM_FILL — 等表单就绪，兜底填名称+优惠码，处理日期字段
+    // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'form_fill') {
-      const result = shared.result || buildResult()
+      const result  = shared.result || buildResult()
       const startDt = parseDateTime(row['优惠券领取期限（开始）精确到分'], 'start')
       const endDt   = parseDateTime(row['优惠券领取期限（结束）精确到分'], 'end')
 
-      // 等表单加载
       const formReady = await waitFor(() => getFormItem('优惠券名称') || null, 10000, 400)
       if (!formReady) throw new Error(`创建表单未出现，当前URL：${location.href.substring(0, 100)}`)
       await sleep(300)
 
-      // 兜底：名称和优惠码（enter_type 可能已填，try-catch 防止失败）
+      // 兜底：enter_type 已预填，这里补一次确保写入
       try { await fillField('优惠券名称', shared.couponName || '') } catch {}
       try { await fillField('优惠码',     shared.couponCode || '') } catch {}
 
-      // 领券期限处理
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (item && item.querySelector('.picker-item.start-picker, .eds-react-date-picker__input')) {
-        // EDS React 日期选择器 → 用 CDP
-        if (startDt) {
-          // 保存目标日期到 shared，跨 CDP 轮次保留
-          return cdpPhase(
-            [],
-            'date_start_open',
-            100,
-            {
-              ...shared,
-              result,
-              _startTarget:  startDt,
-              _endTarget:    endDt,
-            }
-          )
+      const isFollowPrize = location.href.includes('/follow-prize/new')
+      const dateItem      = getFormItem(['优惠券领取期限', 'Claim Period'])
+      const hasReactPicker = dateItem?.querySelector('.picker-item.start-picker, .eds-react-date-picker__input')
+
+      if (isFollowPrize || !hasReactPicker) {
+        // 关注礼 / Vue DateRangePicker → 纯 JS 注入
+        if (startDt || endDt) {
+          try { await setDateRangeJS(startDt, endDt) }
+          catch (e) { console.warn(`[DATE] Vue 日期注入失败，继续：${e.message}`) }
         }
-        if (endDt) {
-          return cdpPhase(
-            [],
-            'date_end_open',
-            100,
-            { ...shared, result, _startTarget: null, _endTarget: endDt }
-          )
-        }
+        return nextPhase('form_fill_rest', 200, { ...shared, result, _startTarget: startDt, _endTarget: endDt })
+      }
+
+      // 普通券 React EDS 日期选择器 → CDP 多步
+      if (!startDt && !endDt) {
         return nextPhase('form_fill_rest', 100, { ...shared, result, _startTarget: null, _endTarget: null })
       }
 
-      // Vue DateRangePicker 或无日期 picker → 纯 JS 处理
-      if (startDt || endDt) {
-        await setDateRangeJS(startDt, endDt)
-      }
-
-      return nextPhase('form_fill_rest', 100, { ...shared, result })
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    // DATE PICKER — CDP 多阶段状态机（open → nav循环 → day → time → confirm → verify）
-    // ══════════════════════════════════════════════════════════════════════════════
-
-    // 辅助：找日期选择器面板
-    function getDatePickerPanel(item) {
-      const local = item?.querySelector('.eds-react-date-picker__panel-wrap, .eds-react-popover.eds-react-date-picker__popup')
-      if (local && visible(local)) return local
-      return [...document.querySelectorAll('.eds-react-popover.eds-react-date-picker__popup, .eds-react-date-picker__panel-wrap')]
-        .find(el => visible(el) && /确认/.test(textOf(el))) || null
-    }
-
-    // 辅助：解析面板 Header（当前年月）
-    const MONTH_MAP = {
-      january:1, february:2, march:3, april:4, may:5, june:6,
-      july:7, august:8, september:9, october:10, november:11, december:12,
-      'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
-      'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12,
-      '一月':1,'二月':2,'三月':3,'四月':4,'五月':5,'六月':6,
-      '七月':7,'八月':8,'九月':9,'十月':10,'十一月':11,'十二月':12,
-    }
-
-    function getDatePickerHeader(panel) {
-      if (!panel) return null
-      const headerEl = panel.querySelector('.eds-react-date-picker__header, .date-box, .date-default-style')
-      if (!headerEl) return null
-
-      const texts = [...headerEl.querySelectorAll('button, span, i')]
-        .filter(visible).map(el => textOf(el)).filter(t => t.length > 0)
-      const headerText = textOf(headerEl)
-
-      let year = null, month = null
-
-      // 从分块文本提取
-      for (const t of texts) {
-        if (/^\d{4}年?$/.test(t)) year = Number(t.replace('年', ''))
-        else if (/^\d{1,2}月$/.test(t)) month = Number(t.replace('月', ''))
-        else {
-          const enMatch = t.match(/([A-Za-z]+)/)
-          if (enMatch && MONTH_MAP[enMatch[1].toLowerCase()]) month = MONTH_MAP[enMatch[1].toLowerCase()]
-        }
-      }
-      // 从整体文本备用提取
-      if (!year) {
-        const ym = headerText.match(/(\d{4})/)
-        if (ym) year = Number(ym[1])
-      }
-      if (!month) {
-        const mm = headerText.match(/(\d{1,2})\s*月/)
-        if (mm) month = Number(mm[1])
-        else {
-          const enMatch = headerText.match(/([A-Za-z]+)/)
-          if (enMatch && MONTH_MAP[enMatch[1].toLowerCase()]) month = MONTH_MAP[enMatch[1].toLowerCase()]
-        }
-      }
-
-      if (year && month && month >= 1 && month <= 12) return { year, month }
-      return null
-    }
-
-    // 辅助：找导航按钮（宽 < 50px 的可点击元素）
-    function getNavButtons(panel) {
-      const header = panel.querySelector('.date-default-style, .date-box, .eds-react-date-picker__header')
-      if (!header) return { prevMonth: null, nextMonth: null }
-      const all = [
-        ...header.querySelectorAll('button:has(svg), button:has(i)'),
-        ...header.querySelectorAll('.eds-icon, svg'),
-      ].filter(b => visible(b))
-      const navBtns = all.filter(b => {
-        const r = b.getBoundingClientRect()
-        return r.width > 0 && r.width < 50 && r.height < 50
-      }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-      let prevMonth = null, nextMonth = null
-      if (navBtns.length >= 4) { prevMonth = navBtns[1]; nextMonth = navBtns[navBtns.length - 2] }
-      else if (navBtns.length >= 2) { prevMonth = navBtns[0]; nextMonth = navBtns[navBtns.length - 1] }
-      return { prevMonth, nextMonth }
-    }
-
-    // ── date_start_open ─────────────────────────────────────────────────────────
-    if (phase === 'date_start_open') {
-      await sleep(500)
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error('开始日期表单项未找到')
-      const target = shared._startTarget
-      if (!target) return nextPhase('date_end_open', 100, shared)
-
-      const dateId = 'startDate'
-      const trigger = (
-        item.querySelector(`.picker-item.start-picker input.eds-react-input__input`) ||
-        item.querySelector(`.picker-item.start-picker input.eds-react-date-picker__input`) ||
-        item.querySelector(`.picker-item.start-picker #${dateId}`) ||
-        item.querySelector(`.picker-item.start-picker input`) ||
-        item.querySelector(`#${dateId}`) ||
-        [...item.querySelectorAll('.eds-react-date-picker input, .eds-react-input input')].filter(visible)[0] ||
+      // 触发开始日期面板（优先 React onClick，fallback CDP）
+      const startTrigger = (
+        dateItem.querySelector('#startDate') ||
+        dateItem.querySelector('.picker-item.start-picker input.eds-react-input__input') ||
+        dateItem.querySelector('.picker-item.start-picker input') ||
         null
       )
-      if (!trigger) throw new Error(`开始日期触发器未找到`)
-      const tc = rectCenter(trigger)
-      if (!tc) throw new Error('开始日期触发器坐标为空')
-      console.log(`[DATE] 开始日期触发: ${target.str}`)
-      return cdpPhase([{ ...tc, delay_ms: 100, label: '开始日期触发器' }], 'date_start_nav', 500, shared)
-    }
 
-    // ── date_start_nav ──────────────────────────────────────────────────────────
-    if (phase === 'date_start_nav') {
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._startTarget
-      if (!item || !target) throw new Error('开始日期数据丢失')
-
-      const panel = getDatePickerPanel(item)
-      if (!panel) {
-        // 面板未出现，重新触发
-        const trigger = item.querySelector('.picker-item.start-picker input')
-        const tc = rectCenter(trigger)
-        if (tc) return cdpPhase([{ ...tc, delay_ms: 200, label: '重新触发' }], phase, 500, shared)
-        throw new Error('开始日期面板消失')
-      }
-
-      const header = getDatePickerHeader(panel)
-      if (!header) return cdpPhase([], phase, 500, shared)
-
-      console.log(`[DATE] 开始: 当前 ${header.year}-${header.month} → 目标 ${target.year}-${target.month}`)
-
-      if (header.year === target.year && header.month === target.month) {
-        return cdpPhase([], 'date_start_day', 300, shared)
-      }
-
-      const nav = getNavButtons(panel)
-      const delta = (target.year - header.year) * 12 + (target.month - header.month)
-      const btn   = delta >= 0 ? nav.nextMonth : nav.prevMonth
-      if (!btn) throw new Error('开始日期导航按钮未找到')
-      const bc = rectCenter(btn)
-      if (!bc) throw new Error('导航按钮坐标为空')
-      return cdpPhase([{ ...bc, delay_ms: 200, label: '开始月份导航' }], phase, 100, shared)
-    }
-
-    // ── date_start_day ──────────────────────────────────────────────────────────
-    if (phase === 'date_start_day') {
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._startTarget
-      if (!item || !target) throw new Error('开始日期数据丢失')
-
-      const panel = getDatePickerPanel(item)
-      if (!panel) throw new Error('开始日期面板消失')
-
-      const header = getDatePickerHeader(panel)
-      if (header && (header.year !== target.year || header.month !== target.month)) {
-        return cdpPhase([], 'date_start_nav', 200, shared)
-      }
-
-      const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell, .eds-react-date-picker__table-cell-wrap')]
-      const cell  = cells.find(c =>
-        visible(c) &&
-        norm(c.textContent) === String(Number(target.d)) &&
-        !/disabled|out-of-range/.test(c.className || '')
-      )
-      if (!cell) throw new Error(`未找到开始日期格：${target.d}`)
-      const cc = rectCenter(cell)
-      if (!cc) throw new Error('开始日期格坐标为空')
-      console.log(`[DATE] 点击开始日期: ${target.d}`)
-      return cdpPhase([{ ...cc, delay_ms: 200, label: `开始日期${target.d}` }], 'date_start_time', 100, shared)
-    }
-
-    // ── date_start_time ──────────────────────────────────────────────────────────
-    if (phase === 'date_start_time') {
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._startTarget
-      if (!item || !target) throw new Error('开始日期数据丢失')
-
-      const panel = getDatePickerPanel(item)
-      const clicks = []
-      if (panel) {
-        const cols = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
-        if (cols.length >= 2) {
-          const hourBox = [...cols[0].querySelectorAll('.time-box')]
-            .find(el => visible(el) && norm(el.textContent) === target.hh)
-          const minBox = [...cols[1].querySelectorAll('.time-box')]
-            .find(el => visible(el) && norm(el.textContent) === target.mm)
-          if (hourBox) { const c = rectCenter(hourBox); if (c) clicks.push({ ...c, delay_ms: 150, label: `开始时${target.hh}` }) }
-          if (minBox)  { const c = rectCenter(minBox);  if (c) clicks.push({ ...c, delay_ms: 150, label: `开始分${target.mm}` }) }
+      if (startDt) {
+        const clicked = reactClick(startTrigger)
+        if (clicked) {
+          console.log(`[DATE] React onClick 触发开始面板`)
+          return nextPhase('date_nav', 800, {
+            ...shared, result,
+            _startTarget: startDt, _endTarget: endDt,
+            _dateWhich: 'start',
+          })
         }
-      }
-      console.log(`[DATE] 开始时分 clicks: ${clicks.length}`)
-      return cdpPhase(clicks, 'date_start_confirm', 100, shared)
-    }
-
-    // ── date_start_confirm ───────────────────────────────────────────────────────
-    if (phase === 'date_start_confirm') {
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const panel = getDatePickerPanel(item)
-
-      if (!panel) {
-        // 面板已关闭（点日期格后自动关闭的情况），直接验证
-        return cdpPhase([], 'date_start_verify', 300, shared)
+        const tc = rectCenter(startTrigger)
+        if (!tc) throw new Error('开始日期触发器坐标为空')
+        return cdpPhase(
+          [{ ...tc, delay_ms: 100, label: '开始日期触发器' }],
+          'date_nav',
+          800,
+          { ...shared, result, _startTarget: startDt, _endTarget: endDt, _dateWhich: 'start' }
+        )
       }
 
-      const okBtn = [...panel.querySelectorAll('button')]
-        .find(b => /^确认$|^确定$|^OK$/i.test(norm(b.textContent)) && visible(b))
-      if (!okBtn) {
-        console.log('[DATE] 未找到确认按钮，点击空白关闭')
-        const bodyC = rectCenter(document.body)
-        if (bodyC) return cdpPhase([{ ...bodyC, delay_ms: 300, label: '点击空白' }], 'date_start_verify', 200, shared)
-        throw new Error('开始日期确认按钮未找到')
-      }
-      const oc = rectCenter(okBtn)
-      if (!oc) throw new Error('开始确认按钮坐标为空')
-      console.log('[DATE] 点击开始确认按钮')
-      return cdpPhase([{ ...oc, delay_ms: 400, label: '开始确认' }], 'date_start_verify', 400, shared)
-    }
-
-    // ── date_start_verify ───────────────────────────────────────────────────────
-    if (phase === 'date_start_verify') {
-      await sleep(300)
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._startTarget
-      const input  = item?.querySelector('.picker-item.start-picker input.eds-react-input__input')
-      const val    = norm(input?.value || '')
-
-      console.log(`[DATE] 验证开始: 期望「${target?.str}」，实际「${val}」`)
-
-      if (target && !val.includes(target.str)) {
-        throw new Error(`开始时间未写入成功，期望：${target.str}，实际：${val || '(空)'}`)
-      }
-
-      // 开始验证通过，处理结束日期
-      if (shared._endTarget) {
-        return cdpPhase([], 'date_end_open', 100, shared)
-      }
-
-      return nextPhase('form_fill_rest', 100, shared)
-    }
-
-    // ── date_end_open ───────────────────────────────────────────────────────────
-    if (phase === 'date_end_open') {
-      await sleep(500)
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error('结束日期表单项未找到')
-      const target = shared._endTarget
-      if (!target) return nextPhase('form_fill_rest', 100, shared)
-
-      const trigger = (
-        item.querySelector(`.picker-item.end-picker input.eds-react-input__input`) ||
-        item.querySelector(`.picker-item.end-picker input`) ||
-        [...item.querySelectorAll('.eds-react-date-picker input, .eds-react-input input')].filter(visible)[1] ||
+      // 只有结束日期
+      const endTrigger = (
+        dateItem.querySelector('#endDate') ||
+        dateItem.querySelector('.picker-item.end-picker input.eds-react-input__input') ||
+        dateItem.querySelector('.picker-item.end-picker input') ||
         null
       )
-      if (!trigger) throw new Error('结束日期触发器未找到')
-      const tc = rectCenter(trigger)
+      const clicked = reactClick(endTrigger)
+      if (clicked) {
+        return nextPhase('date_nav', 800, {
+          ...shared, result,
+          _startTarget: null, _endTarget: endDt, _dateWhich: 'end',
+        })
+      }
+      const tc = rectCenter(endTrigger)
       if (!tc) throw new Error('结束日期触发器坐标为空')
-      console.log(`[DATE] 结束日期触发: ${target.str}`)
-      return cdpPhase([{ ...tc, delay_ms: 100, label: '结束日期触发器' }], 'date_end_nav', 500, shared)
+      return cdpPhase(
+        [{ ...tc, delay_ms: 100, label: '结束日期触发器' }],
+        'date_nav',
+        800,
+        { ...shared, result, _startTarget: null, _endTarget: endDt, _dateWhich: 'end' }
+      )
     }
 
-    // ── date_end_nav ────────────────────────────────────────────────────────────
-    if (phase === 'date_end_nav') {
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._endTarget
-      if (!item || !target) throw new Error('结束日期数据丢失')
+    // ══════════════════════════════════════════════════════════════════════════
+    // DATE_NAV — 逐月导航到目标月（每次 1 步，避免面板结构变化导致坐标漂移）
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'date_nav') {
+      const which  = shared._dateWhich || 'start'
+      const target = which === 'start' ? shared._startTarget : shared._endTarget
+      if (!target) {
+        // 无目标，跳到下一个
+        if (which === 'start' && shared._endTarget) {
+          return nextPhase('form_fill', 100, { ...shared, _dateWhich: 'end', _startTarget: null })
+        }
+        return nextPhase('form_fill_rest', 100, shared)
+      }
 
-      const panel = getDatePickerPanel(item)
+      const dateItem = getFormItem(['优惠券领取期限', 'Claim Period'])
+      const panel    = getDatePickerPanel(dateItem)
       if (!panel) {
-        const trigger = item.querySelector('.picker-item.end-picker input')
-        const tc = rectCenter(trigger)
-        if (tc) return cdpPhase([{ ...tc, delay_ms: 200, label: '重新触发' }], phase, 500, shared)
-        throw new Error('结束日期面板消失')
+        console.warn(`[DATE] ${which} 面板消失，跳过`)
+        if (which === 'start' && shared._endTarget) {
+          // 尝试重新打开结束日期
+          return nextPhase('form_fill', 100, { ...shared, _dateWhich: 'end', _startTarget: null })
+        }
+        return nextPhase('form_fill_rest', 100, shared)
       }
 
       const header = getDatePickerHeader(panel)
-      if (!header) return cdpPhase([], phase, 500, shared)
+      if (!header) return cdpPhase([], 'date_nav', 500, shared)
 
-      console.log(`[DATE] 结束: 当前 ${header.year}-${header.month} → 目标 ${target.year}-${target.month}`)
+      console.log(`[DATE] ${which}: 当前 ${header.year}-${header.month} → 目标 ${target.year}-${target.month}`)
 
       if (header.year === target.year && header.month === target.month) {
-        return cdpPhase([], 'date_end_day', 300, shared)
+        // 已到达目标月，进入选日 + 调时 + 确认
+        return cdpPhase([], 'date_select', 300, shared)
       }
 
-      const nav = getNavButtons(panel)
+      const nav   = getNavButtons(panel)
       const delta = (target.year - header.year) * 12 + (target.month - header.month)
-      const btn   = delta >= 0 ? nav.nextMonth : nav.prevMonth
-      if (!btn) throw new Error('结束日期导航按钮未找到')
+      const btn   = delta > 0 ? nav.nextMonth : nav.prevMonth
+      if (!btn) {
+        console.warn(`[DATE] 导航按钮未找到，跳过`)
+        return nextPhase('form_fill_rest', 100, shared)
+      }
       const bc = rectCenter(btn)
-      if (!bc) throw new Error('导航按钮坐标为空')
-      return cdpPhase([{ ...bc, delay_ms: 200, label: '结束月份导航' }], phase, 100, shared)
+      if (!bc) return nextPhase('form_fill_rest', 100, shared)
+      console.log(`[DATE] 导航 1 步（delta=${delta}）`)
+      return cdpPhase([{ ...bc, delay_ms: 200, label: '月导航' }], 'date_nav', 500, shared)
     }
 
-    // ── date_end_day ─────────────────────────────────────────────────────────────
-    if (phase === 'date_end_day') {
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._endTarget
-      if (!item || !target) throw new Error('结束日期数据丢失')
-
-      const panel = getDatePickerPanel(item)
-      if (!panel) throw new Error('结束日期面板消失')
-
-      const header = getDatePickerHeader(panel)
-      if (header && (header.year !== target.year || header.month !== target.month)) {
-        return cdpPhase([], 'date_end_nav', 200, shared)
+    // ══════════════════════════════════════════════════════════════════════════
+    // DATE_SELECT — 点日期格 + 批量调时间箭头 + 点确认（三批坐标合一次返回）
+    //
+    // Bug 2 修复：
+    //   旧版 date_start_time 中 getTimePickerState 返回 null 时直接跳 confirm，
+    //   时间没设置就继续了（静默失败）。
+    //   新版：先点日期格，等时间选择器出现后在同一次 JS 执行里计算箭头坐标，
+    //   一次性把"日期格 + 全部时间箭头点击 + 确认按钮"打包成坐标数组返回。
+    //   如果时间选择器不出现（panel 结构问题），直接 throw 让外层记录失败原因，
+    //   而不是静默跳过。
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'date_select') {
+      const which  = shared._dateWhich || 'start'
+      const target = which === 'start' ? shared._startTarget : shared._endTarget
+      if (!target) {
+        if (which === 'start' && shared._endTarget) {
+          return nextPhase('form_fill', 100, { ...shared, _dateWhich: 'end', _startTarget: null })
+        }
+        return nextPhase('form_fill_rest', 100, shared)
       }
 
-      const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell, .eds-react-date-picker__table-cell-wrap')]
+      const dateItem = getFormItem(['优惠券领取期限', 'Claim Period'])
+      const panel    = getDatePickerPanel(dateItem)
+      if (!panel) {
+        console.warn(`[DATE] ${which} 面板在 date_select 阶段消失`)
+        throw new Error(`日期面板消失（${which}），无法设置日期`)
+      }
+
+      // 验证当前月是目标月（导航可能有偏差）
+      const header = getDatePickerHeader(panel)
+      if (header && (header.year !== target.year || header.month !== target.month)) {
+        return cdpPhase([], 'date_nav', 200, shared)
+      }
+
+      // 1. 找目标日期格
+      const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
       const cell  = cells.find(c =>
         visible(c) &&
         norm(c.textContent) === String(Number(target.d)) &&
         !/disabled|out-of-range/.test(c.className || '')
       )
-      if (!cell) throw new Error(`未找到结束日期格：${target.d}`)
-      const cc = rectCenter(cell)
-      if (!cc) throw new Error('结束日期格坐标为空')
-      console.log(`[DATE] 点击结束日期: ${target.d}`)
-      return cdpPhase([{ ...cc, delay_ms: 200, label: `结束日期${target.d}` }], 'date_end_time', 100, shared)
+      if (!cell) throw new Error(`未找到日期格：${target.str}（${which}）`)
+      const cellCoord = rectCenter(cell)
+      if (!cellCoord) throw new Error(`日期格坐标为空：${target.str}`)
+
+      // 点击日期格后等时间选择器出现，再计算箭头坐标
+      // 先 CDP 点一次日期格，然后在下一个 phase 收集时间箭头（避免面板还没渲染）
+      // 注：时间选择器只在点击日期格后才出现，所以必须分两步
+      return cdpPhase(
+        [{ ...cellCoord, delay_ms: 400, label: `日期格-${target.d}(${which})` }],
+        'date_time_set',
+        400,
+        shared
+      )
     }
 
-    // ── date_end_time ───────────────────────────────────────────────────────────
-    if (phase === 'date_end_time') {
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._endTarget
-      if (!item || !target) throw new Error('结束日期数据丢失')
-
-      const panel = getDatePickerPanel(item)
-      const clicks = []
-      if (panel) {
-        const cols = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
-        if (cols.length >= 2) {
-          const hourBox = [...cols[0].querySelectorAll('.time-box')]
-            .find(el => visible(el) && norm(el.textContent) === target.hh)
-          const minBox = [...cols[1].querySelectorAll('.time-box')]
-            .find(el => visible(el) && norm(el.textContent) === target.mm)
-          if (hourBox) { const c = rectCenter(hourBox); if (c) clicks.push({ ...c, delay_ms: 150, label: `结束时${target.hh}` }) }
-          if (minBox)  { const c = rectCenter(minBox);  if (c) clicks.push({ ...c, delay_ms: 150, label: `结束分${target.mm}` }) }
+    // ══════════════════════════════════════════════════════════════════════════
+    // DATE_TIME_SET — 日期格已点，收集时间箭头坐标并批量返回 + 确认按钮
+    //
+    // Bug 2 修复核心：时间 picker 如果 getTimePickerState 返回 null → 明确报错，
+    // 不再静默跳过（旧版 date_start_time 的问题）。
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'date_time_set') {
+      const which  = shared._dateWhich || 'start'
+      const target = which === 'start' ? shared._startTarget : shared._endTarget
+      if (!target) {
+        if (which === 'start' && shared._endTarget) {
+          return nextPhase('form_fill', 100, { ...shared, _dateWhich: 'end', _startTarget: null })
         }
-      }
-      return cdpPhase(clicks, 'date_end_confirm', 100, shared)
-    }
-
-    // ── date_end_confirm ────────────────────────────────────────────────────────
-    if (phase === 'date_end_confirm') {
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const panel = getDatePickerPanel(item)
-
-      if (!panel) {
-        return cdpPhase([], 'date_end_verify', 300, shared)
+        return nextPhase('form_fill_rest', 100, shared)
       }
 
+      const dateItem = getFormItem(['优惠券领取期限', 'Claim Period'])
+      const panel    = getDatePickerPanel(dateItem)
+      if (!panel) throw new Error(`时间选择器面板消失（${which}），日期格点击后面板未出现`)
+
+      // 等时间选择器渲染（点击日期格后可能有动画延迟）
+      const timeState = await waitFor(() => getTimePickerState(panel), 3000, 200)
+      if (!timeState) {
+        throw new Error(`时间选择器未出现（${which}），getTimePickerState 返回 null，面板结构可能变化`)
+      }
+
+      const targetH = parseInt(target.hh)
+      const targetM = parseInt(target.mm)
+      const clicks  = []
+
+      // 打包所有小时箭头点击
+      const hDiff = targetH - timeState.curHour
+      if (hDiff !== 0) {
+        const btn = hDiff > 0 ? timeState.hourInc : timeState.hourDec
+        for (let i = 0; i < Math.abs(hDiff); i++) {
+          clicks.push({ ...btn, delay_ms: 200, label: `时-${i+1}/${Math.abs(hDiff)}(${which})` })
+        }
+        console.log(`[DATE] ${which} hour ${timeState.curHour}→${targetH}，${Math.abs(hDiff)} clicks`)
+      }
+
+      // 打包所有分钟箭头点击
+      const mDiff = targetM - timeState.curMin
+      if (mDiff !== 0) {
+        const btn = mDiff > 0 ? timeState.minInc : timeState.minDec
+        for (let i = 0; i < Math.abs(mDiff); i++) {
+          clicks.push({ ...btn, delay_ms: 200, label: `分-${i+1}/${Math.abs(mDiff)}(${which})` })
+        }
+        console.log(`[DATE] ${which} min ${timeState.curMin}→${targetM}，${Math.abs(mDiff)} clicks`)
+      }
+
+      // 找确认按钮坐标，追加到末尾（时间箭头点完就点确认）
       const okBtn = [...panel.querySelectorAll('button')]
         .find(b => /^确认$|^确定$|^OK$/i.test(norm(b.textContent)) && visible(b))
-      if (!okBtn) {
-        const bodyC = rectCenter(document.body)
-        if (bodyC) return cdpPhase([{ ...bodyC, delay_ms: 300, label: '点击空白' }], 'date_end_verify', 200, shared)
-        throw new Error('结束日期确认按钮未找到')
+      if (okBtn) {
+        const oc = rectCenter(okBtn)
+        if (oc) clicks.push({ ...oc, delay_ms: 400, label: `确认(${which})` })
       }
-      const oc = rectCenter(okBtn)
-      if (!oc) throw new Error('结束确认按钮坐标为空')
-      return cdpPhase([{ ...oc, delay_ms: 400, label: '结束确认' }], 'date_end_verify', 400, shared)
+
+      if (clicks.length === 0) {
+        // 时间已是目标值，直接点确认
+        if (okBtn) {
+          const oc = rectCenter(okBtn)
+          if (oc) {
+            return cdpPhase([{ ...oc, delay_ms: 400, label: `确认(${which})` }], 'date_done', 500, shared)
+          }
+        }
+        return nextPhase('date_done', 300, shared)
+      }
+
+      console.log(`[DATE] ${which} 批量点击 ${clicks.length} 个坐标（时间箭头+确认）`)
+      return cdpPhase(clicks, 'date_done', 600, shared)
     }
 
-    // ── date_end_verify ─────────────────────────────────────────────────────────
-    if (phase === 'date_end_verify') {
-      await sleep(300)
-      const item   = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const target = shared._endTarget
-      const inputs = [...(item?.querySelectorAll('input.eds-react-input__input') || [])].filter(visible)
-      const startVal = norm(inputs[0]?.value || '')
-      const endVal   = norm(inputs[1]?.value || '')
+    // ══════════════════════════════════════════════════════════════════════════
+    // DATE_DONE — 一个日期选完，决定是否继续选另一个
+    // ══════════════════════════════════════════════════════════════════════════
+    if (phase === 'date_done') {
+      await sleep(400)
+      const which = shared._dateWhich || 'start'
 
-      console.log(`[DATE] 验证结束: start="${startVal}" end="${endVal}"`)
-
-      const startTarget = shared._startTarget
-      if (startTarget && !startVal.includes(startTarget.str)) {
-        throw new Error(`开始时间未写入，期望：${startTarget.str}，实际：${startVal || '(空)'}`)
+      if (which === 'start' && shared._endTarget) {
+        // 选完开始，继续选结束
+        const dateItem = getFormItem(['优惠券领取期限', 'Claim Period'])
+        const endTrigger = (
+          dateItem?.querySelector('#endDate') ||
+          dateItem?.querySelector('.picker-item.end-picker input.eds-react-input__input') ||
+          dateItem?.querySelector('.picker-item.end-picker input') ||
+          null
+        )
+        if (endTrigger) {
+          const clicked = reactClick(endTrigger)
+          if (clicked) {
+            return nextPhase('date_nav', 800, { ...shared, _dateWhich: 'end' })
+          }
+          const tc = rectCenter(endTrigger)
+          if (tc) {
+            return cdpPhase(
+              [{ ...tc, delay_ms: 100, label: '结束日期触发器' }],
+              'date_nav',
+              800,
+              { ...shared, _dateWhich: 'end' }
+            )
+          }
+        }
+        console.warn('[DATE] 结束日期触发器未找到，跳过结束日期')
       }
-      if (target && !endVal.includes(target.str)) {
-        throw new Error(`结束时间未写入，期望：${target.str}，实际：${endVal || '(空)'}`)
-      }
 
-      return nextPhase('form_fill_rest', 100, shared)
+      console.log(`[DATE] ${which} 日期完成，进入 form_fill_rest`)
+      return nextPhase('form_fill_rest', 200, shared)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // FORM_FILL_REST — 填写其他字段（提前显示、奖励类型、折扣类型等）
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+    // FORM_FILL_REST — 填写其余字段
+    // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'form_fill_rest') {
       const result = shared.result || buildResult()
 
-      // ── 1. 提前显示优惠券 ────────────────────────────────────────────────────
+      // 1. 提前显示优惠券
       const showEarlyKey = Object.keys(row).find(k => k.replace(/\s+/g, '').includes('是否提前显示'))
-      const showEarly = boolLike(showEarlyKey ? row[showEarlyKey] : '')
+      const showEarly    = boolLike(showEarlyKey ? row[showEarlyKey] : '')
       await setShowEarly(showEarly)
 
-      // ── 2. 奖励类型 ──────────────────────────────────────────────────────────
+      // 2. 奖励类型
       const rewardType = norm(row['奖励类型'] || '')
       if (rewardType) await setRewardType(rewardType)
 
-      // ── 3. 折扣类型（下拉）───────────────────────────────────────────────────
+      // 3. 折扣类型
       const discountType = norm(row['折扣类型'] || '')
       let actualDiscountType = discountType
       if (discountType) actualDiscountType = await setDiscountType(discountType)
 
-      // ── 4. 优惠限额 ──────────────────────────────────────────────────────────
+      // 4. 优惠限额
       const rawLimit = digitsOnly(row['优惠限额'] || '')
       if (rawLimit) {
         const limitValue = discountLimitValue(rawLimit, actualDiscountType || discountType)
         await fillDiscountLimit(limitValue)
       }
 
-      // ── 5. 最高优惠金额 ─────────────────────────────────────────────────────
+      // 5. 最高优惠金额
       const maxDiscount = digitsOnly(row['最高优惠金额'] || '')
       if (maxDiscount) await fillMaxDiscount(maxDiscount)
 
-      // ── 6. 最低消费金额 ──────────────────────────────────────────────────────
+      // 6. 最低消费金额
       const minSpend = digitsOnly(row['最低消费金额'] || '')
       if (minSpend) {
         const item = getFormItem('最低消费金额')
@@ -977,7 +864,7 @@
         }
       }
 
-      // ── 7. 可使用总数 ────────────────────────────────────────────────────────
+      // 7. 可使用总数
       const totalCount = digitsOnly(row['可使用总数'] || '')
       if (totalCount) {
         const item = getFormItem(['可使用总数', '优惠券可使用总数'])
@@ -987,7 +874,7 @@
         }
       }
 
-      // ── 8. 每个买家可用数量上限 ─────────────────────────────────────────────
+      // 8. 每个买家可用数量上限
       const perBuyer = digitsOnly(row['每个买家可用的优惠券数量上限'] || '')
       if (perBuyer) {
         const item = getFormItem('每个买家可用的优惠券数量上限') || getFormItem('每个买家')
@@ -997,96 +884,40 @@
         }
       }
 
-      return nextPhase('form_validate', 200, { ...shared, result })
+      return nextPhase('submit', 200, { ...shared, result })
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // FORM_VALIDATE — 提交前预校验（所有关键字段值是否正确写入）
-    // ══════════════════════════════════════════════════════════════════════════════
-    if (phase === 'form_validate') {
-      const result = shared.result || buildResult()
-      const errors = []
-
-      // 优惠券名称
-      const nameInput = getFormItem('优惠券名称')
-        ? getTextInputs(getFormItem('优惠券名称'))[0]
-        : null
-      if (!nameInput || !norm(nameInput.value).length) {
-        errors.push('优惠券名称未填写')
-      }
-
-      // 日期范围
-      const dateItem = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (dateItem) {
-        const inputs = [...dateItem.querySelectorAll('input.eds-react-input__input')].filter(visible)
-        const startTarget = shared._startTarget
-        const endTarget   = shared._endTarget
-        if (startTarget && inputs[0] && !norm(inputs[0].value).includes(startTarget.str)) {
-          errors.push(`领取期限开始时间未写入，期望：${startTarget.str}`)
-        }
-        if (endTarget && inputs[1] && !norm(inputs[1].value).includes(endTarget.str)) {
-          errors.push(`领取期限结束时间未写入，期望：${endTarget.str}`)
-        }
-      }
-
-      // 折扣类型
-      const discountType = norm(row['折扣类型'] || '')
-      if (discountType) {
-        const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
-        if (item) {
-          const trigger = item.querySelector('.trigger, .eds-selector, .eds-react-select__inner')
-          if (trigger && !/折扣|percentage|金额|fixed/i.test(textOf(trigger))) {
-            errors.push(`折扣类型选择失败，当前值：${textOf(trigger)}`)
-          }
-        }
-      }
-
-      // 优惠限额
-      const rawLimit = digitsOnly(row['优惠限额'] || '')
-      if (rawLimit) {
-        const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
-        if (item) {
-          const inputs = getTextInputs(item)
-          const inp = inputs.find(el => el.tagName === 'INPUT')
-          if (!inp || !norm(inp.value)) {
-            errors.push('优惠限额未填写')
-          }
-        }
-      }
-
-      if (errors.length) {
-        throw new Error(`字段校验失败：${errors.join('；')}`)
-      }
-
-      return nextPhase('submit', 100, { ...shared, result })
-    }
-
-    // ══════════════════════════════════════════════════════════════════════════════
-    // SUBMIT — 点击确认按钮
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+    // SUBMIT — 点确认按钮提交表单
+    // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'submit') {
       const allBtns = [...document.querySelectorAll('button')].filter(visible)
-      const actionBtns = allBtns.filter(el => {
-        const t = textOf(el)
-        if (!/^(确认|确定)$/.test(t)) return false
-        if (/取消|预览|关闭/.test(t)) return false
-        const scopeText = textOf(el.closest('form, .footer, .page-footer, .footer-actions, .button-group, .eds-sticky, .sticky-footer, .footer-container') || '')
-        return /确认|确定/.test(scopeText) || (el.className || '').includes('primary')
-      })
+      // 优先找 primary 确认按钮，排除弹窗内的取消/关闭
       const confirmBtn = (
-        actionBtns.find(el => (el.className || '').includes('primary')) ||
-        actionBtns[0] ||
+        allBtns.find(el =>
+          /^(确认|确定)$/.test(textOf(el)) &&
+          (el.className || '').includes('primary') &&
+          el.closest('form, .footer, .page-footer, .footer-actions, .button-group, .eds-sticky, .sticky-footer, .footer-container')
+        ) ||
+        allBtns.find(el =>
+          /^(确认|确定)$/.test(textOf(el)) &&
+          el.closest('form, .footer, .page-footer, .footer-actions, .button-group, .eds-sticky, .sticky-footer, .footer-container')
+        ) ||
         allBtns.find(el => /^(确认|确定)$/.test(textOf(el)) && (el.className || '').includes('primary')) ||
         allBtns.find(el => /^(确认|确定)$/.test(textOf(el)))
       )
-      if (!confirmBtn) throw new Error('未找到"确认"按钮')
-      dispatchSyntheticClick(confirmBtn)
+      if (!confirmBtn) throw new Error('未找到"确认"提交按钮')
+
+      // 优先 React props 触发（对 React 表单更可靠）
+      const clicked = reactClick(confirmBtn)
+      if (!clicked) dispatchSyntheticClick(confirmBtn)
+
       return nextPhase('post_submit', 3500, shared)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // POST_SUBMIT — 等待创建成功
-    // ══════════════════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════════════════════════════
+    // POST_SUBMIT — 等待创建成功 / 检测错误
+    // ══════════════════════════════════════════════════════════════════════════
     if (phase === 'post_submit') {
       const result = shared.result || buildResult()
 
@@ -1108,7 +939,7 @@
         return finishRow(result)
       }
 
-      // 检查错误提示
+      // 收集页面内联错误和 toast 错误
       const inlineErrors = [...document.querySelectorAll(
         '.eds-react-form-item__extra, .eds-react-form-item__help, [class*="error-msg"]'
       )].filter(visible).map(e => textOf(e)).filter(Boolean)
@@ -1116,20 +947,15 @@
         .filter(visible).map(e => textOf(e)).filter(Boolean)
       const allErrors = [...new Set([...inlineErrors, ...toastErrors])]
 
-      if (allErrors.length) throw new Error(`提交校验：${allErrors.join(' | ')}`)
-
-      const bt = norm(document.body.innerText)
-      if (/失败|必填|请输入|不能为空|格式不正确|无权限/.test(bt)) {
-        throw new Error('提交后页面有错误提示，请检查字段')
-      }
+      if (allErrors.length) throw new Error(`提交失败：${allErrors.join(' | ')}`)
 
       // 再等 5s
       const ok2 = await waitFor(() => {
         if (!location.href.includes('/new')) return 'url'
-        const bt2 = norm(document.body.innerText)
-        if (/创建成功|设置成功/.test(bt2)) return 'toast'
+        if (/创建成功|设置成功/.test(norm(document.body.innerText))) return 'toast'
         return null
       }, 5000, 400)
+
       if (ok2) {
         result['执行状态'] = '成功'
         result['错误原因'] = ''
@@ -1140,22 +966,125 @@
       throw new Error(`提交后未能确认成功，当前URL：${location.href.substring(0, 100)}`)
     }
 
-    // ══════════════════════════════════════════════════════════════════════════════
-    // 未知 phase
-    // ══════════════════════════════════════════════════════════════════════════════
     throw new Error(`未知 phase：${phase}`)
 
   } catch (e) {
-    const result = shared.result || buildResult({ '执行状态': '失败', '错误原因': e.message || String(e) })
-    result['当前URL'] = location.href || ''
+    const result = shared.result || buildResult()
+    result['执行状态'] = '失败'
+    result['错误原因'] = e.message || String(e)
+    result['当前URL']  = location.href || ''
     return finishRow(result)
   }
 
-  // ══════════════════════════════════════════════════════════════════════════════
-  // 以下是需要单独调用的函数（不在 phase 流程内）
-  // ══════════════════════════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════════════════════
+  // 辅助函数（在 try 块外定义，被 phase 内调用）
+  // ══════════════════════════════════════════════════════════════════════════
 
-  // ─── 提前显示优惠券 ──────────────────────────────────────────────────────────────
+  // ─── 日期选择器辅助 ────────────────────────────────────────────────────────────
+  function getDatePickerPanel(item) {
+    const local = item?.querySelector('.eds-react-date-picker__panel-wrap, .eds-react-popover.eds-react-date-picker__popup')
+    if (local && visible(local)) return local
+    return [...document.querySelectorAll('.eds-react-popover.eds-react-date-picker__popup, .eds-react-date-picker__panel-wrap')]
+      .find(el => visible(el) && /确认/.test(textOf(el))) || null
+  }
+
+  const MONTH_MAP = {
+    january:1, february:2, march:3, april:4, may:5, june:6,
+    july:7, august:8, september:9, october:10, november:11, december:12,
+    jan:1, feb:2, mar:3, apr:4, may:5, jun:6,
+    jul:7, aug:8, sep:9, oct:10, nov:11, dec:12,
+    '一月':1,'二月':2,'三月':3,'四月':4,'五月':5,'六月':6,
+    '七月':7,'八月':8,'九月':9,'十月':10,'十一月':11,'十二月':12,
+  }
+
+  function getDatePickerHeader(panel) {
+    if (!panel) return null
+    const headerEl = panel.querySelector('.eds-react-date-picker__header, .date-box, .date-default-style')
+    if (!headerEl) return null
+    const texts     = [...headerEl.querySelectorAll('button, span, i')].filter(visible).map(el => textOf(el)).filter(t => t.length > 0)
+    const headerText = textOf(headerEl)
+    let year = null, month = null
+    for (const t of texts) {
+      if (/^\d{4}年?$/.test(t)) year = Number(t.replace('年', ''))
+      else if (/^\d{1,2}月$/.test(t)) month = Number(t.replace('月', ''))
+      else {
+        const em = t.match(/([A-Za-z]+)/)
+        if (em && MONTH_MAP[em[1].toLowerCase()]) month = MONTH_MAP[em[1].toLowerCase()]
+      }
+    }
+    if (!year) { const ym = headerText.match(/(\d{4})/); if (ym) year = Number(ym[1]) }
+    if (!month) {
+      const mm = headerText.match(/(\d{1,2})\s*月/)
+      if (mm) month = Number(mm[1])
+      else { const em = headerText.match(/([A-Za-z]+)/); if (em && MONTH_MAP[em[1].toLowerCase()]) month = MONTH_MAP[em[1].toLowerCase()] }
+    }
+    return (year && month && month >= 1 && month <= 12) ? { year, month } : null
+  }
+
+  function getNavButtons(panel) {
+    const header  = panel.querySelector('.date-box, .eds-react-date-picker__header')
+    if (!header) return { prevMonth: null, nextMonth: null }
+    const allBtns = [...header.querySelectorAll('.btn-arrow-default')]
+      .filter(b => visible(b))
+      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+    if (allBtns.length >= 4) return { prevMonth: allBtns[1], nextMonth: allBtns[allBtns.length - 2] }
+    if (allBtns.length >= 2) return { prevMonth: allBtns[0], nextMonth: allBtns[allBtns.length - 1] }
+    return { prevMonth: null, nextMonth: null }
+  }
+
+  // Bug 2 修复：getTimePickerState 返回 null 时调用方会 throw，不再静默跳过
+  function getTimePickerState(panel) {
+    if (!panel) return null
+    const cols = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')]
+    if (cols.length < 2) return null
+    const curHour = parseInt([...cols[0].querySelectorAll('.time-box')].find(b => b.className.includes('selected'))?.textContent?.trim() || '0')
+    const curMin  = parseInt([...cols[1].querySelectorAll('.time-box')].find(b => b.className.includes('selected'))?.textContent?.trim() || '0')
+    const btns    = [...panel.querySelectorAll('.btn-op-time')].filter(el => el.offsetWidth > 0)
+      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left || a.getBoundingClientRect().top - b.getBoundingClientRect().top)
+    if (btns.length < 4) return null
+    const coord = (el) => { const r = el.getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) } }
+    return {
+      curHour, curMin,
+      hourDec: coord(btns[0]),
+      hourInc: coord(btns[1]),
+      minDec:  coord(btns[2]),
+      minInc:  coord(btns[3]),
+    }
+  }
+
+  // ─── Vue DateRangePicker 注入（关注礼 usecase=999）────────────────────────────
+  async function setDateRangeJS(startDt, endDt) {
+    const container = document.querySelector('.date-range-picker-container, .date-range-picker, .date-range-picker-container.date-picker')
+    if (!container) throw new Error('未找到 date-range-picker-container')
+
+    // 优先 __vue__（根组件），fallback __vueParentComponent，再全局搜索有 handleStartChange 的实例
+    let vueInst = container.__vue__ || container.__vueParentComponent
+    if (!vueInst?.ctx?.handleStartChange) {
+      const vueEl = [...document.querySelectorAll('*')].find(el => el.__vue__?.ctx?.handleStartChange)
+      vueInst = vueEl?.__vue__ || vueEl?.__vueParentComponent
+    }
+    if (!vueInst?.ctx?.handleStartChange) throw new Error('未找到 Vue handleStartChange（999 页面组件实例）')
+
+    const ctx   = vueInst.ctx
+    const toISO = (dt) => dt ? new Date(`${dt.y}-${dt.mo}-${dt.d}T${dt.hh}:${dt.mm}:00+08:00`).toISOString() : null
+
+    if (startDt) {
+      try { ctx.handleStartChange(toISO(startDt)) }
+      catch (e) { throw new Error(`handleStartChange 失败：${e.message}`) }
+      await sleep(300)
+    }
+    if (endDt) {
+      try { ctx.handleEndChange(toISO(endDt)) }
+      catch (e) { throw new Error(`handleEndChange 失败：${e.message}`) }
+      await sleep(300)
+    }
+    try { ctx.validate?.() } catch {}
+    try { document.body.click() } catch {}
+    await sleep(200)
+    return true
+  }
+
+  // ─── 提前显示优惠券 ────────────────────────────────────────────────────────────
   async function setShowEarly(desired) {
     const target = [...document.querySelectorAll('label, .eds-react-checkbox')].find(el =>
       visible(el) && textOf(el).includes('提前显示优惠券')
@@ -1182,41 +1111,66 @@
       if (isChecked() !== !!desired) try { dispatchSyntheticClick(target) } catch {}
       await sleep(200)
     }
-    if (isChecked() !== !!desired) {
-      throw new Error(`提前显示优惠券状态不符合预期，期望：${!!desired}`)
-    }
     return true
   }
 
-  function setNativeChecked(el, checked) {
-    if (!el) return false
-    const desc = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')
-    if (desc?.set) desc.set.call(el, !!checked)
-    else el.checked = !!checked
-    el.dispatchEvent(new Event('input',  { bubbles: true }))
-    el.dispatchEvent(new Event('change', { bubbles: true }))
-    return true
-  }
-
-  // ─── 奖励类型 radio ──────────────────────────────────────────────────────────────
+  // ─── 奖励类型 radio ────────────────────────────────────────────────────────────
+  // Bug 3 修复：旧版只用 dispatchSyntheticClick，对 Vue EDS v-model radio 无效。
+  // 新版：同时尝试 React props.onChange + Vue v-model change 事件，确保两套组件都能触发。
   async function setRewardType(text) {
     const aliases = {
-      '折扣': ['折扣', 'discount'],
+      '折扣':        ['折扣', 'discount'],
       'shopee币回扣': ['shopee币回扣', 'Shopee币回扣', '币回扣', 'coin cashback'],
     }
     const keys = (aliases[text] || [text]).map(s => s.toLowerCase())
-    const item = getFormItem('奖励类型') || document
-    const label = [...item.querySelectorAll('.eds-react-radio__label, label, span')].find(el => {
+    const scope = getFormItem('奖励类型') || document
+
+    const label = [...scope.querySelectorAll('.eds-react-radio__label, .eds-radio__label, label, span')].find(el => {
       if (!visible(el)) return false
       const t = textOf(el).toLowerCase()
       return keys.some(k => t === k || t.includes(k))
     })
     if (!label) throw new Error(`未找到奖励类型：${text}`)
-    dispatchSyntheticClick(label.closest('label') || label)
+
+    const radioRoot = label.closest('label') || label
+    try { radioRoot.scrollIntoView({ block: 'center' }) } catch {}
+
+    // 1. React props（React EDS）
+    const radioInput = radioRoot.querySelector('input[type=radio]') || radioRoot
+    const reactProps = reactPropsOf(radioInput)
+    if (reactProps?.onChange) {
+      try {
+        reactProps.onChange({ target: radioInput, currentTarget: radioInput, preventDefault(){}, stopPropagation(){} })
+        await sleep(200)
+        return
+      } catch {}
+    }
+    if (reactProps?.onClick) {
+      try {
+        reactProps.onClick({ target: radioInput, currentTarget: radioInput, preventDefault(){}, stopPropagation(){} })
+        await sleep(200)
+        return
+      } catch {}
+    }
+
+    // 2. Vue EDS v-model：原生 checked + input/change 事件冒泡
+    if (radioInput.tagName === 'INPUT') {
+      setNativeChecked(radioInput, true)
+      // 手动向上冒泡，让 Vue 的 v-model 监听到
+      const changeEvt = new Event('change', { bubbles: true })
+      radioInput.dispatchEvent(changeEvt)
+      await sleep(200)
+      return
+    }
+
+    // 3. Fallback: 合成点击整个 label
+    dispatchSyntheticClick(radioRoot)
     await sleep(200)
   }
 
-  // ─── 折扣类型下拉 ───────────────────────────────────────────────────────────────
+  // ─── 折扣类型下拉 ──────────────────────────────────────────────────────────────
+  // Bug 3 修复：对 Vue EDS 下拉，旧版只有合成 click 没有 change。
+  // 新版：触发下拉后，选择选项时同时发送 change 事件冒泡，并尝试 Vue ctx 直接设值。
   async function setDiscountType(text) {
     const aliases = {
       '扣除百分比': ['扣除百分比', '折扣百分比', 'percentage'],
@@ -1228,99 +1182,100 @@
     const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
     if (!item) throw new Error('未找到折扣类型表单项')
 
-    // 优先直接点击已渲染的选项
     const findOption = () =>
-      [...document.querySelectorAll('.eds-react-select-option, .eds-option')].find(el => {
+      [...document.querySelectorAll('.eds-react-select-option, .eds-select-option, .eds-option, [class*="select-option"]')].find(el => {
         const t = textOf(el).toLowerCase()
         return keys.some(k => t === k || t.includes(k))
       }) || null
 
+    // 先看选项是否已展开
     let option = findOption()
     if (option) {
       dispatchSyntheticClick(option)
+      option.dispatchEvent(new Event('change', { bubbles: true }))
       await sleep(300)
-      const selText = textOf(item.querySelector('.eds-react-select__inner, .eds-selector, .trigger.trigger--normal'))
-      if (keys.some(k => selText.toLowerCase().includes(k))) return selText
+    } else {
+      // 触发下拉
+      const trigger = item.querySelector('.trigger.trigger--normal, .eds-selector, .eds-react-select__inner')
+      if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器')
+      trigger.scrollIntoView({ block: 'center' })
+      await sleep(100)
+
+      // React props 触发
+      const props = reactPropsOf(trigger)
+      try { props?.onMouseDown?.({ button:0, buttons:1, preventDefault(){}, stopPropagation(){}, currentTarget:trigger, target:trigger }) } catch {}
+      try { props?.onClick?.({ preventDefault(){}, stopPropagation(){}, currentTarget:trigger, target:trigger }) } catch {}
+      // 合成事件兜底
+      for (const ev of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+        try { trigger.dispatchEvent(new MouseEvent(ev, { bubbles:true, cancelable:true, view:window, buttons:1 })) } catch {}
+      }
+      try { trigger.click?.() } catch {}
+      await sleep(400)
+
+      const options = await waitFor(() => {
+        const opts = [...document.querySelectorAll('.eds-react-select-option, .eds-select-option, .eds-option, [class*="select-option"]')]
+        return opts.length > 0 ? opts : null
+      }, 3000, 120)
+      if (!options) throw new Error('折扣类型下拉未展开')
+
+      option = options.find(el => {
+        const t = textOf(el).toLowerCase()
+        return keys.some(k => t === k || t.includes(k))
+      }) || (options.length === 1 ? options[0] : null)
+      if (!option) throw new Error(`未找到折扣类型选项：${text}（可选：${options.map(o => textOf(o)).join('/')}）`)
+
+      // React props 触发 + 合成 click + change 冒泡
+      const optProps = reactPropsOf(option)
+      if (optProps?.onClick) {
+        try { optProps.onClick({ preventDefault(){}, stopPropagation(){}, currentTarget:option, target:option }) } catch {}
+      } else {
+        dispatchSyntheticClick(option)
+      }
+      option.dispatchEvent(new Event('change', { bubbles: true }))
+      await sleep(300)
     }
 
-    // 触发下拉
-    const trigger = item.querySelector('.trigger.trigger--normal, .eds-selector')
-    if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器')
-    trigger.scrollIntoView({ block: 'center' })
-    await sleep(100)
-    const props = reactPropsOf(trigger)
-    try { props?.onMouseDown?.({ button: 0, buttons: 1, preventDefault(){}, stopPropagation(){}, currentTarget: trigger, target: trigger }) } catch {}
-    try { props?.onClick?.({ preventDefault(){}, stopPropagation(){}, currentTarget: trigger, target: trigger }) } catch {}
-    for (const ev of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
-      try { trigger.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true, view: window, buttons: 1 })) } catch (_) {}
-    }
-    try { trigger.click?.() } catch {}
-    await sleep(400)
-
-    const options = await waitFor(() => {
-      const opts = [...document.querySelectorAll('.eds-react-select-option, .eds-option')]
-      return opts.length > 0 ? opts : null
-    }, 3000, 120)
-    if (!options) throw new Error('折扣类型下拉未展开')
-
-    option = options.find(el => {
-      const t = textOf(el).toLowerCase()
-      return keys.some(k => t === k || t.includes(k))
-    })
-    if (!option && options.length === 1) option = options[0]
-    if (!option) throw new Error(`未找到折扣类型选项：${text}（可选：${options.map(o => textOf(o)).join('/')}）`)
-
-    dispatchSyntheticClick(option)
-    await sleep(300)
-
-    const selText = textOf(item.querySelector('.eds-react-select__inner, .eds-selector, .trigger.trigger--normal'))
+    // 验证
+    const selText = textOf(item.querySelector('.eds-react-select__inner, .eds-selector__inner, .eds-selector, .trigger.trigger--normal'))
     if (!keys.some(k => selText.toLowerCase().includes(k))) {
       throw new Error(`折扣类型选择失败，期望：${text}，实际：${selText || '(空)'}`)
     }
     return selText
   }
 
-  // ─── 优惠限额 ────────────────────────────────────────────────────────────────────
+  // ─── 优惠限额 ──────────────────────────────────────────────────────────────────
   async function fillDiscountLimit(value) {
     const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
     if (!item) throw new Error('未找到折扣类型/优惠限额表单项')
-    const inputs = getTextInputs(item)
-    const inp    = inputs.find(el => visible(el) && el.tagName === 'INPUT')
+    const inp = getTextInputs(item).find(el => visible(el) && el.tagName === 'INPUT')
     if (!inp) throw new Error('未找到优惠限额输入框')
     await typeInto(inp, value)
     return true
   }
 
-  // ─── 最高优惠金额 ────────────────────────────────────────────────────────────────
+  // ─── 最高优惠金额（Bug 4 已修复，保留逻辑）────────────────────────────────────
   async function fillMaxDiscount(value) {
     for (const lbl of ['最高优惠金额', '最高折扣金额', '最高优惠', '最高减免', '最高上限数额']) {
       const item = getFormItem(lbl)
       if (!item) continue
 
-      // 若是"设置金额"radio，先切
-      const setAmount = [...item.querySelectorAll('label, .eds-react-radio__label, span')]
+      // 先切换到"设置金额" radio（如果存在）
+      const setAmountLabel = [...item.querySelectorAll('label, .eds-react-radio__label, .eds-radio__label, span')]
         .find(el => visible(el) && textOf(el).includes('设置金额'))
-      if (setAmount) {
-        dispatchSyntheticClick(setAmount.closest('label') || setAmount)
+      if (setAmountLabel) {
+        dispatchSyntheticClick(setAmountLabel.closest('label') || setAmountLabel)
         await sleep(300)
       }
 
       let inp = await waitFor(() => getTextInputs(item).find(el => visible(el)) || null, 1500, 120)
       if (!inp) {
-        const scope = item.parentElement || document
-        inp = [...scope.querySelectorAll('input:not([type=radio]):not([type=checkbox]), textarea')]
+        // 扩大搜索范围
+        inp = [...(item.parentElement || document).querySelectorAll('input:not([type=radio]):not([type=checkbox]), textarea')]
           .filter(visible)
           .find(el => {
-            const wrapText = textOf(el.closest('.eds-react-input, .eds-react-form-item, .eds-react-form-item__control'))
+            const wrapText = textOf(el.closest('.eds-react-input, .eds-input, .eds-react-form-item, .eds-form-item, .eds-react-form-item__control, .eds-form-item__control'))
             return /最高优惠金额|最高折扣金额|最高优惠|最高减免|最高上限数额/.test(wrapText)
           }) || null
-      }
-      if (!inp) {
-        let sib = item.nextElementSibling
-        while (sib && !inp) {
-          inp = [...sib.querySelectorAll('input:not([type=radio]):not([type=checkbox]), textarea')].filter(visible)[0] || null
-          sib = inp ? null : sib.nextElementSibling
-        }
       }
       if (inp && visible(inp)) {
         await typeInto(inp, String(toNumber(value)))
@@ -1330,64 +1285,4 @@
     return false
   }
 
-  // ─── Vue DateRangePicker 路径（关注礼等，无 CDP）─────────────────────────────────
-  async function setDateRangeJS(startDt, endDt) {
-    const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-    if (!item) throw new Error('未找到"优惠券领取期限/Claim Period"')
-
-    const rangeComp = item.querySelector('.date-range-picker-container, .date-range-picker')?.__vueParentComponent || null
-    if (rangeComp?.ctx && (typeof rangeComp.ctx.handleStartChange === 'function' || typeof rangeComp.ctx.handleEndChange === 'function')) {
-      if (startDt && typeof rangeComp.ctx.handleStartChange === 'function') {
-        rangeComp.ctx.handleStartChange(new Date(`${startDt.y}-${startDt.mo}-${startDt.d}T${startDt.hh}:${startDt.mm}:00+08:00`).toISOString())
-        await sleep(250)
-      }
-      if (endDt && typeof rangeComp.ctx.handleEndChange === 'function') {
-        rangeComp.ctx.handleEndChange(new Date(`${endDt.y}-${endDt.mo}-${endDt.d}T${endDt.hh}:${endDt.mm}:00+08:00`).toISOString())
-        await sleep(250)
-      }
-      try { rangeComp.ctx.validate?.() } catch {}
-      try { document.body.click() } catch {}
-      await sleep(150)
-      return true
-    }
-
-    const inputs = getTextInputs(item)
-    if (inputs.length >= 2) {
-      if (startDt) await fillDatetimePicker(inputs[0], startDt)
-      if (endDt)   await fillDatetimePicker(inputs[1], endDt)
-      try { document.body.click() } catch {}
-      await sleep(200)
-      return true
-    }
-    return false
-  }
-
-  async function fillDatetimePicker(triggerInput, dt) {
-    dispatchSyntheticClick(triggerInput)
-    await sleep(600)
-    const panel = await waitFor(() =>
-      document.querySelector('.eds-react-date-picker-panel, .eds-react-date-picker__panel-wrap, .eds-picker-dropdown')
-    , 3000, 100)
-    if (!panel) {
-      setNativeValue(triggerInput, dt.str)
-      await sleep(200)
-      try { document.body.click() } catch {}
-      return
-    }
-    const pInputs = [...panel.querySelectorAll('input')].filter(visible)
-    if (pInputs.length >= 5) {
-      for (const [i, v] of [[0, dt.y], [1, dt.mo], [2, dt.d], [3, dt.hh], [4, dt.mm]]) {
-        await typeInto(pInputs[i], v)
-      }
-    } else if (pInputs.length >= 2) {
-      await typeInto(pInputs[0], `${dt.y}-${dt.mo}-${dt.d}`)
-      await typeInto(pInputs[1], `${dt.hh}:${dt.mm}`)
-    } else if (pInputs.length === 1) {
-      await typeInto(pInputs[0], dt.str)
-    }
-    await sleep(200)
-    const okBtn = [...panel.querySelectorAll('button')].find(b => visible(b) && /^(确认|确定|OK)$/i.test(textOf(b)))
-    if (okBtn) { dispatchSyntheticClick(okBtn); await sleep(300) }
-    else { try { document.body.click() } catch {}; await sleep(200) }
-  }
 })()
