@@ -308,132 +308,32 @@
       .find(el => visible(el) && /确认/.test(textOf(el))) || null
   }
 
-  // ─── 日期面板解析（EDS date-picker 新版 DOM）───────────────────────────────
-  const MONTH_MAP = { january:1, february:2, march:3, april:4, may:5, june:6,
-                      july:7, august:8, september:9, october:10, november:11, december:12,
-                      'jan':1,'feb':2,'mar':3,'apr':4,'may':5,'jun':6,
-                      'jul':7,'aug':8,'sep':9,'oct':10,'nov':11,'dec':12,
-                      '一月':1,'二月':2,'三月':3,'四月':4,'五月':5,'六月':6,
-                      '七月':7,'八月':8,'九月':9,'十月':10,'十一月':11,'十二月':12 }
-
   function getDatePickerHeader(panel) {
-    if (!panel) return null
-    const headerEl = panel.querySelector('.eds-react-date-picker__header, .date-box, .date-default-style')
-    if (!headerEl) return null
-    
-    // 很多时候 year 和 month 被包在单独的 span/button 里
-    const texts = [...headerEl.querySelectorAll('button, span, i')]
-      .filter(visible)
-      .map(el => textOf(el))
-      .filter(t => t.length > 0)
-      
-    // 也能整体当作一句 text
-    const headerText = textOf(headerEl)
-    
-    let year = null, month = null
-    
-    // 1. 尝试从分块文本提取
-    for (const t of texts) {
-      if (/^\d{4}年?$/.test(t)) year = Number(t.replace('年', ''))
-      else if (/^\d{1,2}月$/.test(t)) month = Number(t.replace('月', ''))
-      else {
-        const enMatch = t.match(/([A-Za-z]+)/)
-        if (enMatch && MONTH_MAP[enMatch[1].toLowerCase()]) {
-          month = MONTH_MAP[enMatch[1].toLowerCase()]
-        }
-      }
-    }
-    
-    // 2. 备用：从整体文本提取
-    if (!year) {
-      const ym = headerText.match(/(\d{4})/)
-      if (ym) year = Number(ym[1])
-    }
-    if (!month) {
-      // 中文 3月
-      const mm = headerText.match(/(\d{1,2})\s*月/)
-      if (mm) month = Number(mm[1])
-      else {
-        const enMatch = headerText.match(/([A-Za-z]+)/)
-        if (enMatch && MONTH_MAP[enMatch[1].toLowerCase()]) {
-          month = MONTH_MAP[enMatch[1].toLowerCase()]
-        }
-      }
-    }
-    
-    if (year && month && month >= 1 && month <= 12) return { year, month }
-    return null
+    const root = panel?.querySelector('.date-box') || panel
+    const year = Number((textOf(root?.querySelector('.year, .date-default-style.year')) || '').replace(/\D+/g, ''))
+    const month = Number((textOf(root?.querySelector('.month, .date-default-style.month')) || '').replace(/\D+/g, ''))
+    if (!year || !month) return null
+    return { year, month }
   }
 
-  /**
-   * 找月份导航按钮和年份选择按钮。
-   * 月份导航：面板 header 区域内宽 < 80px 的可点击元素（按钮或 SVG 箭头）
-   * 年份选择：标有年份数字的可点击元素
-   * 返回 { prevMonth, nextMonth, yearPicker }
-   */
   function getPickerNavButtons(panel) {
-    if (!panel) return {}
-    const header = panel.querySelector('.date-default-style, .date-box, .eds-react-date-picker__header')
-    if (!header) return {}
-    // 找 header 区域内所有窄可点击元素（按钮或内含 SVG 的容器，排除文字节点）
-    const allClickable = [
-      ...header.querySelectorAll('button:has(svg), button:has(i)'),
-      ...header.querySelectorAll('.eds-icon, svg'),
-    ].filter(b => visible(b))
-    
-    // SVG 或 button 等，通常左右两边各两个（上年、上月；下月、下年）
-    // 或者左右各一个（上月、下月）。取最靠左和最靠右的两个作为 prev/next 月份。（保险起见）
-    const navBtns = allClickable.filter(b => {
-      const r = b.getBoundingClientRect()
-      return r.width > 0 && r.width < 50 && r.height < 50
-    })
-    
-    // Sort by x coordinate
-    navBtns.sort((a,b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-    
-    // 取中间的两个如果是4个（上年，上月，下月，下年），或者是唯二的两个（上月，下月）
-    let prevMonth = null, nextMonth = null
-    if (navBtns.length >= 4) {
-      prevMonth = navBtns[1]
-      nextMonth = navBtns[navBtns.length - 2]
-    } else if (navBtns.length >= 2) {
-      prevMonth = navBtns[0]
-      nextMonth = navBtns[navBtns.length - 1]
+    const btns = [...panel.querySelectorAll('.eds-react-date-picker__header .btn-arrow-default')].filter(visible)
+    if (btns.length >= 4) {
+      return {
+        prevYear: btns[0] || null,
+        prevMonth: btns[1] || null,
+        nextMonth: btns[2] || null,
+        nextYear: btns[3] || null,
+      }
     }
-    // 年份按钮：含有4位年份数字的可见元素
-    const yearBtn = [...panel.querySelectorAll('button, [class*="year"], [class*="Year"]')].find(b => {
-      const r = b.getBoundingClientRect()
-      const txt = textOf(b)
-      return r.width > 0 && r.width < 200 && r.height < 60 &&
-             txt.match(/\d{4}/) && visible(b)
-    }) || null
-    return { prevMonth, nextMonth, yearPicker: yearBtn }
-  }
-
-
-  /**
-   * 找日历日 cell（月份内的可点击日期格）
-   */
-  function findDayCell(panel, day) {
-    if (!panel) return null
-    const dayText = String(Number(day))
-    // 尝试多种 cell 选择器
-    const selectors = [
-      '.eds-react-date-picker__table-cell-wrap',
-      '.eds-react-date-picker__table-cell',
-      'td',
-      '[class*="table-cell"]',
-    ]
-    for (const sel of selectors) {
-      const cells = [...panel.querySelectorAll(sel)]
-      const found = cells.find(c => {
-        if (!visible(c)) return false
-        const txt = textOf(c)
-        return txt === dayText && !/disabled|out-of-range/.test(c.className || '')
-      })
-      if (found) return found
+    const icons = [...panel.querySelectorAll('.eds-react-date-picker__header .eds-react-icon')]
+    const fallback = icons.map(icon => icon.closest('span, button, div') || icon).filter(Boolean)
+    return {
+      prevYear: fallback[0] || null,
+      prevMonth: fallback[1] || null,
+      nextMonth: fallback[2] || null,
+      nextYear: fallback[3] || null,
     }
-    return null
   }
 
   async function clickNavAndVerify(panel, btn, expectedDirection) {
@@ -452,75 +352,21 @@
   }
 
   async function navigateDatePicker(panel, target) {
-    for (let i = 0; i < 60; i++) {
+    for (let i = 0; i < 48; i++) {
       const header = getDatePickerHeader(panel)
       if (!header) break
       if (header.year === target.year && header.month === target.month) return true
       const nav = getPickerNavButtons(panel)
       let moved = false
-
-      // 年份不同：先导航年份
       if (header.year !== target.year) {
-        if (nav.yearPicker) {
-          // 年份是下拉，直接点击打开然后选择目标年份
-          click(nav.yearPicker)
-          await sleep(300)
-          // 在打开的年份下拉列表中找目标年份
-          const yearList = document.querySelector('.eds-react-select__dropdown-list, [class*="select-dropdown"], [class*="picker-option"]')
-          if (yearList) {
-            const yearOption = [...yearList.querySelectorAll('[class*="option"], li, div')].find(el => {
-              const txt = textOf(el)
-              return txt.trim() === String(target.year) && visible(el)
-            })
-            if (yearOption) {
-              click(yearOption)
-              await sleep(200)
-              moved = true
-            }
-          }
-          // 如果年份选择器是 input 类型（可编辑下拉）
-          const yearInput = document.querySelector('.eds-react-select__input, [class*="year"] input')
-          if (yearInput && !moved) {
-            click(yearInput)
-            await sleep(100)
-            setNativeValue(yearInput, String(target.year))
-            await sleep(200)
-            try { document.body.click() } catch {}
-            await sleep(300)
-            moved = true
-          }
-        }
-        if (!moved) {
-          // 如果没有年份下拉，尝试多次 prevYear / nextYear（用 prevMonth 按钮的多步）
-          const delta = target.year - header.year
-          const btn = delta < 0 ? nav.prevMonth : nav.nextMonth
-          // 每次点击prevMonth/nextMonth切1月，12次=1年（取巧方式）
-          if (btn) {
-            const steps = Math.abs(delta) * 12 + (delta < 0 ? (12 - header.month + 1) : (target.month - header.month))
-            const dir = delta < 0 ? 'prevMonth' : 'nextMonth'
-            for (let j = 0; j < Math.min(steps, 60); j++) {
-              click(btn)
-              await sleep(150)
-              moved = true
-            }
-          }
-        }
+        const dir = header.year > target.year ? 'prevYear' : 'nextYear'
+        moved = await clickNavAndVerify(panel, nav[dir], dir)
+        if (!moved) throw new Error(`日期面板${dir}箭头点击后年月未变化`)
+      } else if (header.month !== target.month) {
+        const dir = header.month > target.month ? 'prevMonth' : 'nextMonth'
+        moved = await clickNavAndVerify(panel, nav[dir], dir)
+        if (!moved) throw new Error(`日期面板${dir}箭头点击后年月未变化`)
       }
-      // 年份相同，月不同：直接导航月份
-      if (header.year === target.year && header.month !== target.month) {
-        const delta = target.month - header.month
-        const btn = delta < 0 ? nav.prevMonth : nav.nextMonth
-        if (!btn) break
-        const dir = delta < 0 ? 'prevMonth' : 'nextMonth'
-        // 点击直到到达目标月
-        for (let j = 0; j < Math.abs(delta); j++) {
-          click(btn)
-          await sleep(150)
-        }
-        moved = true
-      }
-      if (!moved) break
-      await sleep(100)
     }
     const header = getDatePickerHeader(panel)
     return !!header && header.year === target.year && header.month === target.month
@@ -562,7 +408,7 @@
 
   // pick_date_open_panel：打开指定 kind(start/end) 的日期面板并切换年月
   // pick_date_select_day：选择具体日期 cell（需要 CDP 点击）
-  // pick_date_select_time：选择时分（spinner 上下箭头）
+  // pick_date_select_time：选择时分
   // pick_date_confirm：点确认
 
   async function pickDateTimeViaPanel(item, kind, dt) {
@@ -574,33 +420,115 @@
     const existingPanel = document.querySelector('.eds-react-popover.eds-react-date-picker__popup:not(.eds-react-popover-hidden)')
     if (existingPanel) { try { document.body.click() } catch {} ; await sleep(200) }
 
-    // 找触发器 input — 多重 fallback 兼容不同 Shopee 页面
-    const dateId = kind === 'start' ? 'startDate' : 'endDate'
-    const trigger = (
-      item.querySelector(`.picker-item.${kind}-picker input.eds-react-input__input`) ||
-      item.querySelector(`.picker-item.${kind}-picker input.eds-react-date-picker__input`) ||
-      item.querySelector(`.picker-item.${kind}-picker #${dateId}`) ||
-      item.querySelector(`.picker-item.${kind}-picker input`) ||
-      item.querySelector(`#${dateId}`) ||
-      [...item.querySelectorAll('.eds-react-date-picker input, .eds-react-input input')].filter(visible)[kind === 'start' ? 0 : 1] ||
-      null
+    const trigger = item.querySelector(
+      `.picker-item.${kind}-picker #${kind === 'start' ? 'startDate' : 'endDate'}, ` +
+      `.picker-item.${kind}-picker .eds-react-date-picker__input`
     )
-    if (!trigger) throw new Error(`未找到${kindLabel}日期触发器（选择器均未命中，item.innerHTML长度=${item?.innerHTML?.length}）`)
+    if (!trigger) throw new Error(`未找到${kindLabel}日期触发器`)
 
+    // 滚动到可见再点
     try { trigger.scrollIntoView({ block: 'center' }) } catch {}
     await sleep(200)
+    click(trigger)
+    await sleep(600)
 
-    const triggerCenter = rectCenter(trigger)
-    if (!triggerCenter) throw new Error(`${kindLabel}日期触发器坐标为空`)
+    const panel = await waitFor(() => getDatePickerPanel(item), 3000, 150)
+    if (!panel) throw new Error(`未展开${kindLabel}日期面板`)
 
+    // 读当前 panel 年月，计算需要点多少次导航箭头
+    const header = getDatePickerHeader(panel)
+    if (!header) throw new Error(`无法读取${kindLabel}日期面板标题年月`)
+    const nav = getPickerNavButtons(panel)
+
+    // 计算从 header.year/month 到 target.year/month 的步数和方向
+    const navClicks = []
+    let curYear = header.year, curMonth = header.month
+    const tY = target.year, tM = target.month
+
+    // 先按年切换（每次1年），再按月切换（每次1月），最多48步
+    const totalSteps = Math.abs(tY - curYear) * 12 + Math.abs(tM - curMonth)
+    if (totalSteps > 48) throw new Error(`${kindLabel}目标年月距当前过远（${totalSteps} 步）`)
+
+    // 年步
+    if (curYear !== tY) {
+      const btn = tY > curYear ? nav.nextYear : nav.prevYear
+      if (!btn) throw new Error(`未找到${tY > curYear ? '下一年' : '上一年'}按钮`)
+      const c = rectCenter(btn)
+      if (!c) throw new Error('年份导航按钮坐标为空')
+      for (let i = 0; i < Math.abs(tY - curYear); i++) {
+        navClicks.push({ ...c, delay_ms: 180, label: tY > curYear ? 'nextYear' : 'prevYear' })
+      }
+      curYear = tY
+    }
+    // 月步
+    if (curMonth !== tM) {
+      const btn = tM > curMonth ? nav.nextMonth : nav.prevMonth
+      if (!btn) throw new Error(`未找到${tM > curMonth ? '下一月' : '上一月'}按钮`)
+      const c = rectCenter(btn)
+      if (!c) throw new Error('月份导航按钮坐标为空')
+      for (let i = 0; i < Math.abs(tM - curMonth); i++) {
+        navClicks.push({ ...c, delay_ms: 180, label: tM > curMonth ? 'nextMonth' : 'prevMonth' })
+      }
+    }
+
+    // 注意：导航箭头点击后 DOM 重新渲染，cell 坐标会变
+    // 所以 cell/hour/minute/确认的坐标需要在箭头点完之后再算
+    // 方案：如果有箭头需要点，先只返回箭头点击，进入 pick_date_nav_${kind} phase 再算 cell 坐标
+    // 如果不需要导航（已在目标年月），直接算 cell 坐标一次性返回
+    const pickPhase = `pick_date_verify_${kind}`
+    const navPhase  = `pick_date_nav_${kind}`
+
+    if (navClicks.length > 0) {
+      // 有导航步骤：先点完箭头，再由 pick_date_nav_${kind} phase 继续算 cell
+      const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
+      shared[`_pick_${kind}_target`] = { dt: dt.str, target }
+      return nextCdpClickPhase(navClicks, navPhase, 400, ctxForShared)
+    }
+
+    // 无需导航，已在目标年月，直接算 cell 坐标
+    const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
+    const dayText = String(Number(target.day))
+    const targetCell = cells.find(c =>
+      norm(c.textContent) === dayText &&
+      !c.classList.contains('out-of-range') &&
+      !c.classList.contains('disabled')
+    )
+    if (!targetCell) throw new Error(`未找到目标日期 cell：${target.day}`)
+
+    const cellCenter = rectCenter(targetCell)
+    if (!cellCenter) throw new Error(`目标 cell getBoundingClientRect 为空`)
+
+    // 找时分元素坐标（在 CDP 点 cell 之前先算好，因为 CDP 点完后 context 还在）
+    const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
+    let hourCenter = null, minuteCenter = null
+    if (scrollbars.length >= 2) {
+      const hourBox = [...scrollbars[0].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.hour)
+      const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
+      if (hourBox) hourCenter = rectCenter(hourBox)
+      if (minuteBox) minuteCenter = rectCenter(minuteBox)
+    }
+
+    // 找确认按钮坐标
+    const okBtn = [...panel.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')]
+      .find(b => /^(确认|确定|OK)$/i.test(textOf(b)) && visible(b))
+    const okCenter = rectCenter(okBtn)
+    if (!okCenter) throw new Error('未找到日期面板确认按钮')
+
+    // 组装 CDP 点击序列：cell → hour → minute → 确认
     const clicks = [
-      { ...triggerCenter, delay_ms: 100, label: `${kindLabel}触发器` }
+      { ...cellCenter, delay_ms: 350, label: `日期${target.day}` },
     ]
+    if (hourCenter)   clicks.push({ ...hourCenter,   delay_ms: 150, label: `小时${target.hour}` })
+    if (minuteCenter) clicks.push({ ...minuteCenter, delay_ms: 150, label: `分钟${target.minute}` })
+    clicks.push({ ...okCenter, delay_ms: 350, label: '确认' })
 
-    shared[`_pick_${kind}_target`] = { dt: dt.str, target }
+    // 将当前 kind/dt 信息存入 shared，供 confirm 阶段读取
+    shared[`_pick_${kind}`] = { target: dt.str, clicks }
+
+    // 返回 cdp_clicks，让 Python 用真实鼠标事件点击后继续 pick_date_verify phase
+    // 注：ctx 在此处已被 form_fill phase 的 buildContext() 构建，通过 shared 传给下一 phase
     const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
-
-    return nextCdpClickPhase(clicks, `pick_date_open_${kind}`, 400, ctxForShared)
+    return nextCdpClickPhase(clicks, `pick_date_verify_${kind}`, 400, ctxForShared)
   }
 
   async function confirmDatePicker(scope = document) {
@@ -1117,15 +1045,12 @@
       if (isResumeRun() && isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
-      const curUrl = location.href || ''
-      // 如果已经在营销中心的凭证相关页面（包括 /vouchers/list 或 /vouchers/new），
-      // 不要重新跳转到营销中心主页，避免与 store_switch 形成 ping-pong 循环
-      const onVoucherPage = curUrl.includes('/portal/marketing/vouchers')
-      if (mode === 'new' || (!curUrl.startsWith(MARKETING_URL) && !onVoucherPage)) {
+      if (mode === 'new' || !location.href.startsWith(MARKETING_URL)) {
+        // 需要导航到营销中心
         location.href = MARKETING_URL
         return nextPhase('store_switch', ctx, 3000)
       }
-      // 已在营销中心域内（包括凭证列表页），直接进入 store_switch 做店铺校验
+      // 已在营销中心域内，直接切换店铺
       return nextPhase('store_switch', ctx, 200)
     }
 
@@ -1138,105 +1063,75 @@
         return nextPhase('form_fill', ctx, 80)
       }
 
-      const curUrl = location.href || ''
-
-      // 获取当前 URL 中的 shopId（从 vouchers/list 或营销中心主页的 ?cnsc_shop_id= 参数读取）
-      function getUrlShopId() {
-        try {
-          const u = new URL(curUrl)
-          return u.searchParams.get('cnsc_shop_id') || ''
-        } catch { return '' }
+      // 确保在营销中心主页（/portal/marketing 精确匹配，不是 /vouchers）
+      const url = location.href
+      if (!url.includes('/portal/marketing') ||
+          url.includes('/portal/marketing/vouchers')) {
+        location.href = MARKETING_URL
+        return nextPhase('store_switch', ctx, 3000)
       }
 
-      // 从 DOM 读取当前显示的店铺名
+      // 检查当前店铺是否已匹配
       function getStoreText() {
         const el = document.querySelector('.shop-switcher, .shop-switcher-container, .shop-select, .shop-info, .shop-label')
         if (el && visible(el)) return textOf(el.closest('.shop-info') || el.parentElement || el)
+        // fallback：找页面内含"当前店铺"的区域
         const all = [...document.querySelectorAll('div, span')].filter(e => visible(e) && textOf(e).startsWith('当前店铺'))
         return all.length ? textOf(all[0]) : ''
       }
 
       const storeText = getStoreText()
-      // matched 基于 DOM 显示的店铺名判断（DOM 更可靠，URL 可能未更新）
       const matched = storeText.includes(ctx.store) && (!ctx.site || storeText.includes(ctx.site))
 
-      // 如果当前不在 /portal/marketing 域，先导航到营销中心主页
-      if (!curUrl.includes('/portal/marketing')) {
-        location.href = MARKETING_URL
-        return nextPhase('store_switch', ctx, 3000)
-      }
-
-      // 已在营销中心域（包括 vouchers/list）。如果店铺已匹配，不需要搜索切换。
-      if (matched) {
-        // 已在本店凭证列表页，直接进入 enter_type
-        if (curUrl.includes('/portal/marketing/vouchers/list')) {
-          return nextPhase('enter_type', ctx, 200)
-        }
-        // 已在本店但不在凭证列表页，导航过去
-        location.href = buildVouchersListUrl()
-        return nextPhase('enter_type', ctx, 3000)
-      }
-
-      // 店铺未匹配：需要搜索切换。
-      // 注意：此时页面可能在 vouchers/list（错误的店铺），也可能刚导航到新的店铺，需要用 DOM 确认
-      const currentStoreText = getStoreText()
-      const nowMatched = currentStoreText.includes(ctx.store) && (!ctx.site || currentStoreText.includes(ctx.site))
-      if (nowMatched) {
-        // 切换完成，直接进入凭证列表
-        if (!curUrl.includes('/portal/marketing/vouchers/list')) {
-          location.href = buildVouchersListUrl()
-          return nextPhase('enter_type', ctx, 3000)
-        }
-        return nextPhase('enter_type', ctx, 200)
-      }
-
-      // 确实需要搜索切换。找搜索框
-      const searchInput = await waitFor(() =>
-        [...document.querySelectorAll('input')].find(el =>
-          visible(el) && (
-            norm(el.placeholder).includes('搜索') ||
-            el.closest('.shop-switcher, .shop-select, [class*="shopSwitch"], [class*="shop-switch"]')
+      if (!matched) {
+        // 找搜索框
+        const searchInput = await waitFor(() =>
+          [...document.querySelectorAll('input')].find(el =>
+            visible(el) && (
+              norm(el.placeholder).includes('搜索') ||
+              el.closest('.shop-switcher, .shop-select, [class*="shopSwitch"], [class*="shop-switch"]')
+            )
           )
-        )
-      , 8000, 300)
-      if (!searchInput) throw new Error('未找到店铺搜索框，请确认已打开营销中心主页')
+        , 8000, 300)
+        if (!searchInput) throw new Error('未找到店铺搜索框，请确认已打开营销中心主页')
 
-      click(searchInput)
-      await sleep(200)
-      setNativeValue(searchInput, ctx.store)
-      await sleep(1200)
+        click(searchInput)
+        await sleep(200)
+        setNativeValue(searchInput, ctx.store)
+        await sleep(1200)
 
-      // 找候选项
-      const candidate = await waitFor(() =>
-        [...document.querySelectorAll('li, [role=option], .search-item, [class*="shopItem"], [class*="shop-item"]')]
-          .filter(visible)
-          .find(el => {
-            const t = textOf(el)
-            if (!t.includes(ctx.store)) return false
-            if (ctx.site && !t.includes(ctx.site)) return false
-            return true
-          })
-      , 6000, 250)
-      if (!candidate) throw new Error(`搜索后未找到店铺：${ctx.store}`)
-      if (/没有权限|无权限/.test(textOf(candidate))) throw new Error(`店铺"${ctx.store}"无权限`)
+        // 找候选项
+        const candidate = await waitFor(() =>
+          [...document.querySelectorAll('li, [role=option], .search-item, [class*="shopItem"], [class*="shop-item"]')]
+            .filter(visible)
+            .find(el => {
+              const t = textOf(el)
+              if (!t.includes(ctx.store)) return false
+              if (ctx.site && !t.includes(ctx.site)) return false
+              return true
+            })
+        , 6000, 250)
+        if (!candidate) throw new Error(`搜索后未找到店铺：${ctx.store}`)
+        if (/没有权限|无权限/.test(textOf(candidate))) throw new Error(`店铺"${ctx.store}"无权限`)
 
-      click(candidate)
-      await sleep(2000)
-      await closeBlockingOverlays()
+        click(candidate)
+        await sleep(2000)
+        await closeBlockingOverlays()
 
-      // 等待店铺名更新
-      await waitFor(() => {
-        const t = getStoreText()
-        return t.includes(ctx.store) ? t : null
-      }, 5000, 300)
+        // 等待店铺名更新
+        await waitFor(() => {
+          const t = getStoreText()
+          return t.includes(ctx.store) ? t : null
+        }, 5000, 300)
 
-      const verifyText = getStoreText()
-      if (!verifyText.includes(ctx.store)) {
-        const full = document.body.innerText
-        if (!full.includes(ctx.store)) throw new Error(`切换店铺后未能确认：${verifyText.substring(0,80)}`)
+        const verifyText = getStoreText()
+        if (!verifyText.includes(ctx.store)) {
+          const full = document.body.innerText
+          if (!full.includes(ctx.store)) throw new Error(`切换店铺后未能确认：${verifyText.substring(0,80)}`)
+        }
       }
 
-      // 店铺已切换，进入优惠券列表页
+      // 店铺已匹配，进入优惠券列表页，后续从真实"创建"按钮进入
       if (!location.href.includes('/portal/marketing/vouchers/list')) {
         location.href = buildVouchersListUrl()
         return nextPhase('enter_type', ctx, 3000)
@@ -1248,35 +1143,19 @@
     // 从列表页真实入口卡片的"创建"按钮进入，并在同一次 evaluate 内等待表单挂载
     if (phase === 'enter_type') {
       updateProgress(ctx, 'enter_type', '进行中')
-      // 如果已经在创建页，直接进入表单填写
-      if (isOnCreatePage()) {
-        return nextPhase('form_fill', ctx, 80)
-      }
-      // 不在凭证列表页，先导航到列表页
-      if (!location.href.includes('/portal/marketing/vouchers/list')) {
+      if (!location.href.includes('/portal/marketing/vouchers/list') && !isOnCreatePage()) {
         location.href = buildVouchersListUrl()
         return nextPhase('enter_type', ctx, 3000)
       }
-      // 在凭证列表页
-      // 关注礼优惠券（usecase=999）没有标准入口卡片，需要直接构建 URL 跳转。
-      // 为避免当前 URL 中 shopId 不正确，先导航到营销中心主页（主页 URL 会带正确 shopId）再跳转。
-      if (ctx.usecase === '999') {
-        location.href = MARKETING_URL
-        return nextPhase('follow_prize_nav', ctx, 2000)
-      }
-      await openCreatePageFromListAndPrimeForm(ctx)
-      return nextPhase('form_fill', ctx, 80)
-    }
-
-    // ── follow_prize_nav ─────────────────────────────────────────────────────
-    // 关注礼：从营销中心主页拿到正确 shopId 后，再跳转到 follow-prize/new
-    if (phase === 'follow_prize_nav') {
-      updateProgress(ctx, 'follow_prize_nav', '进行中')
       if (isOnCreatePage()) {
         return nextPhase('form_fill', ctx, 80)
       }
-      location.href = buildCreateUrl(ctx.voucherType)
-      return nextPhase('enter_type', ctx, 3000)
+      if (ctx.usecase === '999') {
+        location.href = buildCreateUrl(ctx.voucherType)
+        return nextPhase('enter_type', ctx, 3000)
+      }
+      await openCreatePageFromListAndPrimeForm(ctx)
+      return nextPhase('form_fill', ctx, 80)
     }
 
     // ── await_create_page ────────────────────────────────────────────────────
@@ -1316,186 +1195,78 @@
       }
 
       // 有 start 无 end 的情况，或跳过日期直接填剩余字段
-      return nextPhase('form_fill_rest', { ...ctx, _datesChecked: true }, 80)
+      return nextPhase('form_fill_rest', ctx, 80)
     }
 
-    // ── submit_form ═══════════════════════════════════════════════════════════════════════
-    //  多阶段日期选择状态机（每 CDP click 之后重新进入 phase，重新读 DOM）
-    //  流程：open → nav(循环) → day → time → confirm → verify
-    // ═══════════════════════════════════════════════════════════════════════
-
-    // ── pick_date_open_{kind}：点击触发器打开面板 ────────────────────────
-    if (phase === 'pick_date_open_start' || phase === 'pick_date_open_end') {
-      await sleep(600)
-      const kind = phase.includes('start') ? 'start' : 'end'
-      const kindLabel = kind === 'start' ? '开始' : '结束'
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error(`${kindLabel}日期表单项`)
-      const saved = shared[`_pick_${kind}_target`]
-      if (!saved) throw new Error(`丢失 ${kind} 目标日期数据`)
-      const target = saved.target
-      console.log(`[DATE] ${kindLabel}日期目标: ${target.year}-${target.month}-${target.day} ${target.hour}:${target.minute}`)
-
-      // 触发器 CDP click
-      const trigger = (
-        item.querySelector(`.picker-item.${kind}-picker input.eds-react-input__input`) ||
-        item.querySelector(`.picker-item.${kind}-picker input`) ||
-        [...item.querySelectorAll('.eds-react-date-picker input, .eds-react-input input')].filter(visible)[kind === 'start' ? 0 : 1] ||
-        null
-      )
-      if (!trigger) throw new Error(`未找到${kindLabel}日期触发器`)
-      const tc = rectCenter(trigger)
-      if (!tc) throw new Error(`${kindLabel}触发器坐标为空`)
-      console.log(`[DATE] 触发器 clicked，切换到 nav`)
-      return nextCdpClickPhase([{ ...tc, delay_ms: 100, label: `${kindLabel}触发器` }],
-        `pick_date_nav_${kind}`, 500)
-    }
-
-    // ── pick_date_nav_{kind}：逐月导航，每 click 后重新读取 header ────────────
+    // ── pick_date_nav_start / pick_date_nav_end ─────────────────────────────
+    // 箭头点完后（panel 已在目标年月），计算 cell/hour/minute/确认坐标，返回第二批 cdp_clicks
     if (phase === 'pick_date_nav_start' || phase === 'pick_date_nav_end') {
-      const kind = phase.includes('start') ? 'start' : 'end'
+      await sleep(300)
+      const kind = phase === 'pick_date_nav_start' ? 'start' : 'end'
       const kindLabel = kind === 'start' ? '开始' : '结束'
       const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error(`${kindLabel}日期表单项`)
+      if (!item) throw new Error(`未找到${kindLabel}日期表单项`)
+      const panel = await waitFor(() => getDatePickerPanel(item), 2000, 100)
+      if (!panel) throw new Error(`${kindLabel}日期面板消失了`)
+
+      // 验证年月已切换到位
+      const hdr = getDatePickerHeader(panel)
       const saved = shared[`_pick_${kind}_target`]
-      if (!saved) throw new Error(`丢失 ${kind} 目标日期数据`)
-      const target = saved.target
-
-      const panel = getDatePickerPanel(item)
-      if (!panel) {
-        console.log(`[DATE] 面板未找到，重新触发`)
-        const trigger = item.querySelector(`.picker-item.${kind}-picker input`)
-        if (trigger) {
-          const tc = rectCenter(trigger)
-          if (tc) return nextCdpClickPhase([{ ...tc, delay_ms: 200, label: '重新触发' }], phase, 500)
-        }
-        throw new Error(`${kindLabel}日期面板消失`)
+      if (saved && hdr && (hdr.year !== saved.target.year || hdr.month !== saved.target.month)) {
+        throw new Error(`${kindLabel}年月切换未到位：期望${saved.target.year}-${saved.target.month}，实际${hdr.year}-${hdr.month}`)
       }
+      const target = saved ? saved.target : hdr
+      const dtStr  = saved ? saved.dt : null
 
-      const header = getDatePickerHeader(panel)
-      if (!header) {
-        console.log(`[DATE] 无法读取 header，等待后重试`)
-        return nextCdpClickPhase([], phase, 500)
-      }
-      console.log(`[DATE] 当前: ${header.year}-${header.month}，目标: ${target.year}-${target.month}`)
-
-      if (header.year === target.year && header.month === target.month) {
-        console.log(`[DATE] 年月匹配，进入 day 选择`)
-        return nextCdpClickPhase([], `pick_date_day_${kind}`, 300)
-      }
-
-      const nav = getPickerNavButtons(panel)
-      const deltaY = target.year - header.year
-      const deltaM = target.month - header.month
-      const totalClicks = deltaY * 12 + deltaM
-      const btn = totalClicks >= 0 ? nav.nextMonth : nav.prevMonth
-      if (!btn) throw new Error(`${kindLabel}日期导航按钮未找到`)
-      const bc = rectCenter(btn)
-      if (!bc) throw new Error(`${kindLabel}导航按钮坐标为空`)
-      console.log(`[DATE] 导航 click（${totalClicks >= 0 ? 'next' : 'prev'}），继续`)
-      return nextCdpClickPhase([{ ...bc, delay_ms: 200, label: '月份导航' }], phase, 100)
-    }
-
-    // ── pick_date_day_{kind}：点击日期格 ──────────────────────────────────
-    if (phase === 'pick_date_day_start' || phase === 'pick_date_day_end') {
-      const kind = phase.includes('start') ? 'start' : 'end'
-      const kindLabel = kind === 'start' ? '开始' : '结束'
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error(`${kindLabel}日期表单项`)
-      const saved = shared[`_pick_${kind}_target`]
-      if (!saved) throw new Error(`丢失 ${kind} 目标日期数据`)
-      const target = saved.target
-
-      const panel = getDatePickerPanel(item)
-      if (!panel) throw new Error(`${kindLabel}日期面板消失`)
-
-      const header = getDatePickerHeader(panel)
-      if (header && (header.year !== target.year || header.month !== target.month)) {
-        console.log(`[DATE] 年月不匹配，退回 nav`)
-        return nextCdpClickPhase([], `pick_date_nav_${kind}`, 200)
-      }
-
+      // 找目标 cell
       const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
+      const dayText = String(Number(target.day))
       const targetCell = cells.find(c =>
-        norm(c.textContent) === String(Number(target.day)) &&
-        !/disabled|out-of-range/.test(c.className || '')
+        norm(c.textContent) === dayText &&
+        !c.classList.contains('out-of-range') &&
+        !c.classList.contains('disabled')
       )
       if (!targetCell) throw new Error(`未找到目标日期 cell：${target.day}`)
-      const cc = rectCenter(targetCell)
-      if (!cc) throw new Error('目标 cell 坐标为空')
-      console.log(`[DATE] 点击日期格 ${target.day}`)
-      return nextCdpClickPhase([{ ...cc, delay_ms: 200, label: `日期${target.day}` }],
-        `pick_date_time_${kind}`, 100)
-    }
+      const cellCenter = rectCenter(targetCell)
+      if (!cellCenter) throw new Error('目标 cell 坐标为空')
 
-    // ── pick_date_time_{kind}：选择时分 ─────────────────────────────────
-    if (phase === 'pick_date_time_start' || phase === 'pick_date_time_end') {
-      const kind = phase.includes('start') ? 'start' : 'end'
-      const kindLabel = kind === 'start' ? '开始' : '结束'
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error(`${kindLabel}日期表单项`)
-      const saved = shared[`_pick_${kind}_target`]
-      if (!saved) throw new Error(`丢失 ${kind} 目标日期数据`)
-      const target = saved.target
-
-      const panel = getDatePickerPanel(item)
-      const clicks = []
-      if (panel) {
-        const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
-        if (scrollbars.length >= 2) {
-          const hourBox = [...scrollbars[0].querySelectorAll('.time-box')]
-            .find(el => visible(el) && norm(el.textContent) === target.hour)
-          const minBox = [...scrollbars[1].querySelectorAll('.time-box')]
-            .find(el => visible(el) && norm(el.textContent) === target.minute)
-          if (hourBox) { const c = rectCenter(hourBox); if (c) clicks.push({ ...c, delay_ms: 150, label: `小时${target.hour}` }) }
-          if (minBox)  { const c = rectCenter(minBox);  if (c) clicks.push({ ...c, delay_ms: 150, label: `分钟${target.minute}` }) }
-        }
-      }
-      console.log(`[DATE] 时分 clicks: ${clicks.length} 个`)
-      return nextCdpClickPhase(clicks, `pick_date_confirm_${kind}`, 100)
-    }
-
-    // ── pick_date_confirm_{kind}：点确认 ─────────────────────────────────
-    if (phase === 'pick_date_confirm_start' || phase === 'pick_date_confirm_end') {
-      const kind = phase.includes('start') ? 'start' : 'end'
-      const kindLabel = kind === 'start' ? '开始' : '结束'
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      if (!item) throw new Error(`${kindLabel}日期表单项`)
-
-      const panel = getDatePickerPanel(item)
-      if (!panel) {
-        console.log(`[DATE] 面板已关闭，直接验证`)
-        return nextCdpClickPhase([], `pick_date_verify_${kind}`, 300)
+      // hour / minute
+      const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
+      let hourCenter = null, minuteCenter = null
+      if (scrollbars.length >= 2) {
+        const hourBox   = [...scrollbars[0].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.hour)
+        const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
+        if (hourBox)   hourCenter   = rectCenter(hourBox)
+        if (minuteBox) minuteCenter = rectCenter(minuteBox)
       }
 
-      const okBtn = [...panel.querySelectorAll('button')]
-        .find(b => /^确认$|^确定$|^OK$/i.test(norm(b.textContent)) && visible(b))
-      if (!okBtn) {
-        console.log(`[DATE] 未找到确认按钮，点击空白关闭`)
-        const bodyC = rectCenter(document.body)
-        if (bodyC) {
-          return nextCdpClickPhase([{ ...bodyC, delay_ms: 300, label: '点击空白' }],
-            `pick_date_verify_${kind}`, 200)
-        }
-        throw new Error(`${kindLabel}日期确认按钮未找到`)
-      }
-      const oc = rectCenter(okBtn)
-      if (!oc) throw new Error(`${kindLabel}确认按钮坐标为空`)
-      console.log(`[DATE] 点击确认按钮`)
-      return nextCdpClickPhase([{ ...oc, delay_ms: 400, label: '确认' }],
-        `pick_date_verify_${kind}`, 400)
+      // 确认按钮
+      const okBtn = [...panel.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')]
+        .find(b => /^(确认|确定|OK)$/i.test(textOf(b)) && visible(b))
+      const okCenter = rectCenter(okBtn)
+      if (!okCenter) throw new Error('未找到日期面板确认按钮')
+
+      const clicks = [{ ...cellCenter, delay_ms: 350, label: `日期${target.day}` }]
+      if (hourCenter)   clicks.push({ ...hourCenter,   delay_ms: 150, label: `小时${target.hour}` })
+      if (minuteCenter) clicks.push({ ...minuteCenter, delay_ms: 150, label: `分钟${target.minute}` })
+      clicks.push({ ...okCenter, delay_ms: 350, label: '确认' })
+
+      const verifyPhase = `pick_date_verify_${kind}`
+      const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
+      return nextCdpClickPhase(clicks, verifyPhase, 400, ctxForShared)
     }
 
-    // ── pick_date_verify_{kind}：验证日期已写入 ─────────────────────────
+    // ── pick_date_verify_start（CDP 点击完 start 日期后，验证并继续 end）───────
     if (phase === 'pick_date_verify_start') {
-      await sleep(300)
+      await sleep(200)
       const item = getFormItem(['优惠券领取期限', 'Claim Period'])
       const startInput = item?.querySelector('.picker-item.start-picker input.eds-react-input__input')
       const startVal = norm(startInput?.value || '')
-      console.log(`[DATE] verify_start: 期望「${ctx.startDt?.str}」，实际「${startVal}」`)
-      if (!startVal.includes(ctx.startDt?.str)) {
-        throw new Error(`领取期限开始时间未写入成功，期望：${ctx.startDt?.str}，实际：${startVal || '(空)'}`)
+      if (ctx.startDt && !startVal.includes(ctx.startDt.str)) {
+        // 写入失败，记录实际值但不中断，继续尝试 end
+        updateProgress(ctx, 'form_fill', '进行中', { 'start_date_actual': startVal, 'start_date_expected': ctx.startDt.str })
       }
+      // 继续处理 end
       if (ctx.endDt && item) {
         const cdpMeta = await pickDateTimeViaPanel(item, 'end', ctx.endDt)
         return cdpMeta
@@ -1503,22 +1274,7 @@
       return nextPhase('form_fill_rest', ctx, 80)
     }
 
-    if (phase === 'pick_date_verify_end') {
-      await sleep(300)
-      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
-      const inputs = [...(item?.querySelectorAll('input.eds-react-input__input') || [])].filter(visible)
-      const startVal = norm(inputs[0]?.value || '')
-      const endVal   = norm(inputs[1]?.value || '')
-      console.log(`[DATE] verify_end: start="${startVal}" end="${endVal}"`)
-      if (ctx.startDt && !startVal.includes(ctx.startDt.str)) {
-        throw new Error(`领取期限开始时间未写入成功，期望：${ctx.startDt?.str}，实际：${startVal || '(空)'}`)
-      }
-      if (ctx.endDt && !endVal.includes(ctx.endDt.str)) {
-        throw new Error(`领取期限结束时间未写入成功，期望：${ctx.endDt?.str}，实际：${endVal || '(空)'}`)
-      }
-      return nextPhase('form_fill_rest', ctx, 80)
-    }
-
+    // ── pick_date_verify_end（CDP 点击完 end 日期后，验证并继续剩余表单）────────
     if (phase === 'pick_date_verify_end') {
       await sleep(200)
       const item = getFormItem(['优惠券领取期限', 'Claim Period'])
@@ -1531,20 +1287,20 @@
       if (ctx.endDt && !endVal.includes(ctx.endDt.str)) {
         throw new Error(`领取期限结束时间未写入成功，期望：${ctx.endDt.str}，实际：${endVal || '(空)'}`)
       }
-      return nextPhase('form_fill_rest', { ...ctx, _datesChecked: true }, 80)
+      return nextPhase('form_fill_rest', ctx, 80)
     }
 
-    // ── submit_form ── form_fill_end_date（只有 endDt，跳过了 start，直接处理 end）────────────
+    // ── form_fill_end_date（只有 endDt，跳过了 start，直接处理 end）────────────
     if (phase === 'form_fill_end_date') {
       const item = getFormItem(['优惠券领取期限', 'Claim Period'])
       if (ctx.endDt && item) {
         const cdpMeta = await pickDateTimeViaPanel(item, 'end', ctx.endDt)
         return cdpMeta
       }
-      return nextPhase('form_fill_rest', { ...ctx, _datesChecked: true }, 80)
+      return nextPhase('form_fill_rest', ctx, 80)
     }
 
-    // ── submit_form ── form_fill_rest（日期填完后继续其他字段）──────────────────────────────
+    // ── form_fill_rest（日期填完后继续其他字段）──────────────────────────────
     if (phase === 'form_fill_rest') {
       // 4. 提前显示
       await setShowEarly(ctx.showEarly)

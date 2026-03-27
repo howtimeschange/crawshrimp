@@ -36,7 +36,51 @@ _run_logs: dict = {}   # job_id -> list[str]
 _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
 
 
-async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
+def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 1):
+    """Internal helper to read Excel/CSV without raising HTTPExceptions"""
+    p = Path(path)
+    if not p.exists():
+        return {"error": f"File not found: {path}", "headers": [], "rows": [], "total": 0}
+
+    suffix = p.suffix.lower()
+    rows_raw = []
+    try:
+        if suffix in ('.xlsx', '.xls', '.xlsm'):
+            import openpyxl
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+            ws = wb[sheet] if sheet else wb.active
+            rows_raw = list(ws.iter_rows(values_only=True))
+            wb.close()
+        elif suffix == '.csv':
+            import csv
+            with open(p, newline='', encoding='utf-8-sig') as f:
+                reader = csv.reader(f)
+                rows_raw = list(reader)
+        else:
+            return {"error": f"Unsupported format: {suffix}", "headers": [], "rows": [], "total": 0}
+    except Exception as e:
+        return {"error": str(e), "headers": [], "rows": [], "total": 0}
+
+    if not rows_raw:
+        return {"headers": [], "rows": [], "total": 0}
+
+    hi = header_row - 1
+    if hi < 0 or hi >= len(rows_raw):
+         return {"error": f"Header row index {hi} out of range", "headers": [], "rows": [], "total": 0}
+
+    headers = [str(c) if c is not None else '' for c in rows_raw[hi]]
+    rows = []
+    for raw in rows_raw[hi + 1:]:
+        row = {}
+        for i, h in enumerate(headers):
+            v = raw[i] if i < len(raw) else None
+            row[h] = str(v) if v is not None else ''
+        rows.append(row)
+
+    return {"headers": headers, "rows": rows, "total": len(rows)}
+
+
+async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = None):
     """
     Core task execution pipeline:
     1. Find / create matching Chrome tab via CDP
@@ -74,6 +118,18 @@ async def _execute_task(adapter_id: str, task_id: str, params: dict = None):
         bridge = get_bridge()
         run_params = params or {}
         mode = (run_params.get('mode') or 'current').strip().lower()
+
+        # 自动解析 file_excel 参数：如果传了 path 但没有 rows，就在后台读出来注入
+        for pk, pv in run_params.items():
+            if isinstance(pv, dict) and pv.get('path') and not pv.get('rows'):
+                log(f"Resolving Excel rows for param '{pk}' from path: {pv['path']}")
+                resolved = _read_local_excel(pv['path'])
+                if "error" in resolved:
+                    log(f"[warn] Failed to resolve Excel rows: {resolved['error']}")
+                else:
+                    pv['rows'] = resolved['rows']
+                    pv['headers'] = resolved['headers']
+                    log(f"Successfully resolved {len(pv['rows'])} rows.")
 
         tab = None
         if mode == 'current':
@@ -415,48 +471,16 @@ class ReadExcelRequest(BaseModel):
     sheet: Optional[str] = None   # 不传则读第一个 sheet
     header_row: int = 1           # 第几行作为表头（1-indexed）
 
+
+
+
 @app.post("/files/read-excel")
 def read_excel(req: ReadExcelRequest):
     """读取本地 Excel / CSV 文件，返回 headers + rows 数组，供 JS 脚本批量处理"""
-    import json as _json
-    p = Path(req.path)
-    if not p.exists():
-        raise HTTPException(404, f"File not found: {req.path}")
-
-    suffix = p.suffix.lower()
-    try:
-        if suffix in ('.xlsx', '.xls', '.xlsm'):
-            import openpyxl
-            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
-            ws = wb[req.sheet] if req.sheet else wb.active
-            rows_raw = list(ws.iter_rows(values_only=True))
-            wb.close()
-        elif suffix == '.csv':
-            import csv
-            with open(p, newline='', encoding='utf-8-sig') as f:
-                reader = csv.reader(f)
-                rows_raw = list(reader)
-        else:
-            raise HTTPException(400, f"不支持的文件格式: {suffix}，请上传 .xlsx / .xls / .csv")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, f"读取文件失败: {e}")
-
-    if not rows_raw:
-        return {"headers": [], "rows": [], "total": 0}
-
-    hi = req.header_row - 1
-    headers = [str(c) if c is not None else '' for c in rows_raw[hi]]
-    rows = []
-    for raw in rows_raw[hi + 1:]:
-        row = {}
-        for i, h in enumerate(headers):
-            v = raw[i] if i < len(raw) else None
-            row[h] = str(v) if v is not None else ''
-        rows.append(row)
-
-    return {"headers": headers, "rows": rows, "total": len(rows)}
+    res = _read_local_excel(req.path, req.sheet, req.header_row)
+    if "error" in res:
+        raise HTTPException(400, res["error"])
+    return res
 
 
 # ─── Settings ───

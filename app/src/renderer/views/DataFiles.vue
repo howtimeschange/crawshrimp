@@ -200,7 +200,7 @@ onMounted(load)
 
 /* 文件浏览 */
 .placeholder { color: var(--text3); text-align: center; padding: 60px; font-size: 14px; }
-.file-browser { flex: 1; overflow-y: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 20px; }
+.file-browser { flex: 1; min-height: 0; overflow-y: auto; padding: 16px 24px; display: flex; flex-direction: column; gap: 20px; }
 .group { background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
 .group-header { display: flex; align-items: center; padding: 12px 16px; background: var(--bg3); border-bottom: 1px solid var(--border); gap: 8px; }
 .group-name { font-size: 13px; font-weight: 600; color: var(--text); flex: 1; }

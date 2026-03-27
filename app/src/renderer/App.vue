@@ -269,5 +269,5 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
 /* 主内容 */
-.content { overflow: hidden; background: var(--bg); }
+.content { overflow: hidden; background: var(--bg); height: 100%; }
 </style>

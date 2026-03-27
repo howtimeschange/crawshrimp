@@ -265,10 +265,9 @@ async function runTask() {
       delete params['_custom_start_' + p.id]
       delete params['_custom_end_'   + p.id]
     } else if (p.type === 'file_excel') {
+      // 仅发送 path，rows 和 headers 由后端在执行前自动读取，避免 IPC 负载过大导致 UI 卡死
       params[p.id] = {
-        path:    values.value[p.id + '_path'],
-        headers: values.value[p.id + '_headers'] || [],
-        rows:    values.value[p.id + '_rows'] || [],
+        path: values.value[p.id + '_path'],
       }
       delete params[p.id + '_path']
       delete params[p.id + '_rows']
@@ -514,7 +513,7 @@ onUnmounted(() => clearInterval(pollTimer))
 .file-open { font-size: 11px; color: var(--orange); }
 
 .log-body {
-  flex: 1; overflow-y: auto; padding: 12px 16px;
+  flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px;
   font-family: 'Menlo', 'Monaco', monospace; font-size: 12px; line-height: 1.7;
 }
 .log-empty { color: var(--text3); text-align: center; padding: 40px 0; }
