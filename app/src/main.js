@@ -327,7 +327,8 @@ ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks'))
 ipcMain.handle('run-task',        async (_, aid, tid, params) =>
   apiCall('POST', `/tasks/${aid}/${tid}/run`, { params: params || {} }))
 ipcMain.handle('get-task-status', async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/status`))
-ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/logs`))
+ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
+ipcMain.handle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
 ipcMain.handle('stop-task', async () => ({ ok: false, msg: 'Use task run to trigger' }))
 
 ipcMain.handle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))

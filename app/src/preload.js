@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('cs', {
   runTask:         (aid, tid, params) => ipcRenderer.invoke('run-task', aid, tid, params),
   getTaskStatus:   (aid, tid) => ipcRenderer.invoke('get-task-status', aid, tid),
   getTaskLogs:     (aid, tid) => ipcRenderer.invoke('get-task-logs', aid, tid),
+  clearTaskLogs:   (aid, tid) => ipcRenderer.invoke('clear-task-logs', aid, tid),
 
   getData:         (aid, tid) => ipcRenderer.invoke('get-data', aid, tid),
   exportData:      (aid, tid, fmt) => ipcRenderer.invoke('export-data', aid, tid, fmt),

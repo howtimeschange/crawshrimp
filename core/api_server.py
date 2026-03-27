@@ -71,6 +71,9 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
     headers = [str(c) if c is not None else '' for c in rows_raw[hi]]
     rows = []
     for raw in rows_raw[hi + 1:]:
+        # 跳过全空行（所有单元格都是 None 或空字符串）
+        if all(c is None or str(c).strip() == '' for c in raw):
+            continue
         row = {}
         for i, h in enumerate(headers):
             v = raw[i] if i < len(raw) else None
@@ -94,7 +97,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     from core.models import OutputType
 
     jid = f"{adapter_id}::{task_id}"
-    _run_logs[jid] = []
+    # 保留历史日志，新一轮运行用分隔线追加（不覆盖）
+    from datetime import datetime as _dt
+    _sep = f"─── 新运行 {_dt.now().strftime('%m-%d %H:%M:%S')} ───────────────────────"
+    if jid not in _run_logs:
+        _run_logs[jid] = []
+    else:
+        _run_logs[jid].append('')
+        _run_logs[jid].append(_sep)
     _run_status[jid] = {'status': 'running', 'run_id': None, 'records': 0}
 
     def log(msg: str):
@@ -438,6 +448,13 @@ def task_status(adapter_id: str, task_id: str):
 def task_logs(adapter_id: str, task_id: str):
     jid = f"{adapter_id}::{task_id}"
     return {"logs": _run_logs.get(jid, [])}
+
+
+@app.delete("/tasks/{adapter_id}/{task_id}/logs")
+def clear_task_logs(adapter_id: str, task_id: str):
+    jid = f"{adapter_id}::{task_id}"
+    _run_logs[jid] = []
+    return {"ok": True}
 
 
 # ─── Data ───

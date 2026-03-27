@@ -209,10 +209,18 @@ watch(() => props.task, (task) => {
     else v[p.id] = p.default ?? ''
   }
   values.value = v
-  logs.value = []
+  // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
   isRunning.value = false
   lastResult.value = null
+  // 异步加载该任务的历史日志
+  nextTick(async () => {
+    try {
+      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id)
+      if (logR.logs) logs.value = logR.logs
+      scrollToBottom()
+    } catch {}
+  })
 }, { immediate: true })
 
 const missingRequired = computed(() => {
@@ -235,7 +243,7 @@ async function runTask() {
   if (isRunning.value) return
   isRunning.value = true
   lastResult.value = null
-  logs.value = []
+  // 不清空日志，新一轮运行的分隔线由后端插入
   outputFiles.value = []
   showFiles.value = false
 
@@ -351,7 +359,12 @@ async function finishRun(result) {
   }
 }
 
-function clearLogs() { logs.value = [] }
+async function clearLogs() {
+  logs.value = []
+  try {
+    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id)
+  } catch {}
+}
 
 function logClass(line) {
   if (line.includes('ERROR') || line.includes('错误') || line.includes('失败')) return 'err'
