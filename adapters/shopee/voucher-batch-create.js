@@ -84,10 +84,15 @@
   function setNativeValue(el, value) {
     if (!el) return false
     const val = String(value ?? '')
+    const last = el.value
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
     const desc = Object.getOwnPropertyDescriptor(proto, 'value')
     if (desc?.set) desc.set.call(el, val)
     else el.value = val
+    try {
+      const tracker = el._valueTracker
+      if (tracker && typeof tracker.setValue === 'function') tracker.setValue(last)
+    } catch {}
     el.dispatchEvent(new Event('input',  { bubbles: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
     el.dispatchEvent(new Event('blur',   { bubbles: true }))
@@ -201,9 +206,10 @@
     click(el)
     await sleep(80)
     try { el.focus() } catch {}
-    setNativeValue(el, val)
     const props = reactPropsOf(el)
-    try { props?.onChange?.({ target: el, currentTarget: el }) } catch {}
+    try { props?.onFocus?.({ target: el, currentTarget: el }) } catch {}
+    setNativeValue(el, val)
+    try { props?.onChange?.({ target: el, currentTarget: el, nativeEvent: { target: el } }) } catch {}
     try { props?.onBlur?.({ target: el, currentTarget: el }) } catch {}
     try { el.dispatchEvent(new KeyboardEvent('keypress', { bubbles: true, key: 'Enter', code: 'Enter' })) } catch {}
     await sleep(180)
@@ -215,6 +221,16 @@
       start: norm(item?.querySelector('.picker-item.start-picker, .start-picker')?.textContent),
       end: norm(item?.querySelector('.picker-item.end-picker, .end-picker')?.textContent),
     }
+  }
+
+  async function confirmDatePicker(scope = document) {
+    const okBtn = [...scope.querySelectorAll('button')].find(b => visible(b) && /^(确认|确定|OK)$/i.test(textOf(b)))
+    if (okBtn) {
+      click(okBtn)
+      await sleep(300)
+      return true
+    }
+    return false
   }
 
   async function setDateRange(startDt, endDt) {
@@ -264,8 +280,9 @@
         const ok = await setControlledInputValue(visibleDateInputs[1], endDt.str)
         if (!ok) throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${visibleDateInputs[1].value || '(空)'}`)
       }
+      await confirmDatePicker(item)
       try { document.body.click() } catch {}
-      await sleep(200)
+      await sleep(300)
       if (startDt && !norm(visibleDateInputs[0].value).includes(startDt.str)) {
         throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${visibleDateInputs[0].value || '(空)'}`)
       }
