@@ -371,43 +371,49 @@
    * 年份选择：标有年份数字的可点击元素
    * 返回 { prevMonth, nextMonth, yearPicker }
    */
+  /**
+   * 找月份导航按钮和年份选择器。
+   *
+   * 导航按钮结构（根据真实 DOM 确认）：
+   *   <div class="btn-arrow-default double"> << </div>   ← prevYear  (x 最左)
+   *   <div class="btn-arrow-default">        <       </div>   ← prevMonth
+   *   <div class="btn-arrow-default">        >       </div>   ← nextMonth
+   *   <div class="btn-arrow-default double"> >> </div>   ← nextYear (x 最右)
+   *
+   * 年份选择器：<span class="date-default-style year">2028年</span>
+   * 点击该 span 打开年份下拉列表
+   */
   function getPickerNavButtons(panel) {
     if (!panel) return {}
-    const header = panel.querySelector('.date-default-style, .date-box, .eds-react-date-picker__header')
+    const header = panel.querySelector('.eds-react-date-picker__header')
     if (!header) return {}
-    // 找 header 区域内所有窄可点击元素（按钮或内含 SVG 的容器，排除文字节点）
-    const allClickable = [
-      ...header.querySelectorAll('button:has(svg), button:has(i)'),
-      ...header.querySelectorAll('.eds-icon, svg'),
-    ].filter(b => visible(b))
-    
-    // SVG 或 button 等，通常左右两边各两个（上年、上月；下月、下年）
-    // 或者左右各一个（上月、下月）。取最靠左和最靠右的两个作为 prev/next 月份。（保险起见）
-    const navBtns = allClickable.filter(b => {
-      const r = b.getBoundingClientRect()
-      return r.width > 0 && r.width < 50 && r.height < 50
-    })
-    
-    // Sort by x coordinate
-    navBtns.sort((a,b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
-    
-    // 取中间的两个如果是4个（上年，上月，下月，下年），或者是唯二的两个（上月，下月）
-    let prevMonth = null, nextMonth = null
-    if (navBtns.length >= 4) {
-      prevMonth = navBtns[1]
-      nextMonth = navBtns[navBtns.length - 2]
-    } else if (navBtns.length >= 2) {
-      prevMonth = navBtns[0]
-      nextMonth = navBtns[navBtns.length - 1]
+
+    // 找 .btn-arrow-default div（可点击容器，内含 SVG），按 x 坐标从左到右排序
+    const allArrowDivs = [...header.querySelectorAll('.btn-arrow-default')]
+      .filter(b => {
+        const r = b.getBoundingClientRect()
+        return r.width > 0 && r.height > 0 && visible(b)
+      })
+      .sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)
+
+    // allArrowDivs 从左到右：[prevYear, prevMonth, nextMonth, nextYear]
+    let prevYear = null, prevMonth = null, nextMonth = null, nextYear = null
+    if (allArrowDivs.length === 4) {
+      [prevYear, prevMonth, nextMonth, nextYear] = allArrowDivs
+    } else if (allArrowDivs.length === 2) {
+      [prevMonth, nextMonth] = allArrowDivs
+    } else if (allArrowDivs.length >= 3) {
+      prevYear = allArrowDivs[0]
+      nextYear = allArrowDivs[allArrowDivs.length - 1]
+      prevMonth = allArrowDivs[Math.floor(allArrowDivs.length / 2 - 1)]
+      nextMonth = allArrowDivs[Math.floor(allArrowDivs.length / 2)]
     }
-    // 年份按钮：含有4位年份数字的可见元素
-    const yearBtn = [...panel.querySelectorAll('button, [class*="year"], [class*="Year"]')].find(b => {
-      const r = b.getBoundingClientRect()
-      const txt = textOf(b)
-      return r.width > 0 && r.width < 200 && r.height < 60 &&
-             txt.match(/\d{4}/) && visible(b)
-    }) || null
-    return { prevMonth, nextMonth, yearPicker: yearBtn }
+
+    // 年份选择器：<span class="date-default-style year">2028年</span>
+    const yearSpan = panel.querySelector('.date-default-style.year, [class*="date-default-style"][class*="year"]')
+    const yearPicker = (yearSpan && visible(yearSpan)) ? yearSpan : null
+
+    return { prevMonth, nextMonth, prevYear, nextYear, yearPicker }
   }
 
 
@@ -461,14 +467,13 @@
 
       // 年份不同：先导航年份
       if (header.year !== target.year) {
+        // 优先方案 1：年份 span 下拉（点击 span 打开下拉列表）
         if (nav.yearPicker) {
-          // 年份是下拉，直接点击打开然后选择目标年份
           click(nav.yearPicker)
           await sleep(300)
-          // 在打开的年份下拉列表中找目标年份
-          const yearList = document.querySelector('.eds-react-select__dropdown-list, [class*="select-dropdown"], [class*="picker-option"]')
+          const yearList = document.querySelector('.eds-react-select__dropdown-list, [class*="select-dropdown"], [class*="year-option"], [class*="picker-option"], [class*="option-list"]')
           if (yearList) {
-            const yearOption = [...yearList.querySelectorAll('[class*="option"], li, div')].find(el => {
+            const yearOption = [...yearList.querySelectorAll('[class*="option"], li, div, [class*="year"]')].find(el => {
               const txt = textOf(el)
               return txt.trim() === String(target.year) && visible(el)
             })
@@ -478,26 +483,40 @@
               moved = true
             }
           }
-          // 如果年份选择器是 input 类型（可编辑下拉）
-          const yearInput = document.querySelector('.eds-react-select__input, [class*="year"] input')
-          if (yearInput && !moved) {
-            click(yearInput)
-            await sleep(100)
-            setNativeValue(yearInput, String(target.year))
-            await sleep(200)
-            try { document.body.click() } catch {}
-            await sleep(300)
-            moved = true
+          // 如果下拉是 input 类型（可编辑下拉）
+          if (!moved) {
+            const yearInput = document.querySelector('.eds-react-select__input, [class*="year"] input')
+            if (yearInput) {
+              click(yearInput)
+              await sleep(100)
+              setNativeValue(yearInput, String(target.year))
+              await sleep(200)
+              try { document.body.click() } catch {}
+              await sleep(300)
+              moved = true
+            }
           }
         }
+        // 优先方案 2：直接用 prevYear/nextYear 箭头按钮（4 箭头布局）
+        if (!moved && (nav.prevYear || nav.nextYear)) {
+          const delta = target.year - header.year
+          const btn = delta < 0 ? nav.prevYear : nav.nextYear
+          if (btn) {
+            // 年份箭头每次跳转 1 年
+            const steps = Math.abs(delta)
+            for (let j = 0; j < Math.min(steps, 60); j++) {
+              click(btn)
+              await sleep(150)
+              moved = true
+            }
+          }
+        }
+        // 最终 fallback：每月箭头 12 次跳转 1 年
         if (!moved) {
-          // 如果没有年份下拉，尝试多次 prevYear / nextYear（用 prevMonth 按钮的多步）
           const delta = target.year - header.year
           const btn = delta < 0 ? nav.prevMonth : nav.nextMonth
-          // 每次点击prevMonth/nextMonth切1月，12次=1年（取巧方式）
           if (btn) {
             const steps = Math.abs(delta) * 12 + (delta < 0 ? (12 - header.month + 1) : (target.month - header.month))
-            const dir = delta < 0 ? 'prevMonth' : 'nextMonth'
             for (let j = 0; j < Math.min(steps, 60); j++) {
               click(btn)
               await sleep(150)
@@ -1351,7 +1370,7 @@
         `pick_date_nav_${kind}`, 500)
     }
 
-    // ── pick_date_nav_{kind}：逐月导航，每 click 后重新读取 header ────────────
+    // ── pick_date_nav_{kind}：用 navigateDatePicker 导航年月 ─────────────────
     if (phase === 'pick_date_nav_start' || phase === 'pick_date_nav_end') {
       const kind = phase.includes('start') ? 'start' : 'end'
       const kindLabel = kind === 'start' ? '开始' : '结束'
@@ -1387,12 +1406,26 @@
       const nav = getPickerNavButtons(panel)
       const deltaY = target.year - header.year
       const deltaM = target.month - header.month
+
+      // 年份不同：优先用 prevYear / nextYear（每次跳转 1 年）
+      if (deltaY !== 0 && (nav.prevYear || nav.nextYear)) {
+        const yearBtn = deltaY < 0 ? nav.prevYear : nav.nextYear
+        if (yearBtn) {
+          const bc = rectCenter(yearBtn)
+          if (bc) {
+            console.log(`[DATE] 年份导航 click（${deltaY < 0 ? 'prevYear' : 'nextYear'}），剩余年份差: ${Math.abs(deltaY)}`)
+            return nextCdpClickPhase([{ ...bc, delay_ms: 200, label: `年份导航${deltaY < 0 ? '上一年' : '下一年'}` }], phase, 100)
+          }
+        }
+      }
+
+      // 月份不同或没有年份按钮：用 prevMonth / nextMonth
       const totalClicks = deltaY * 12 + deltaM
       const btn = totalClicks >= 0 ? nav.nextMonth : nav.prevMonth
-      if (!btn) throw new Error(`${kindLabel}日期导航按钮未找到`)
+      if (!btn) throw new Error(`${kindLabel}日期导航按钮未找到（prevYear=${!!nav.prevYear}, prevMonth=${!!nav.prevMonth}）`)
       const bc = rectCenter(btn)
       if (!bc) throw new Error(`${kindLabel}导航按钮坐标为空`)
-      console.log(`[DATE] 导航 click（${totalClicks >= 0 ? 'next' : 'prev'}），继续`)
+      console.log(`[DATE] 月份导航 click（${totalClicks >= 0 ? 'next' : 'prev'}），总差: ${totalClicks}`)
       return nextCdpClickPhase([{ ...bc, delay_ms: 200, label: '月份导航' }], phase, 100)
     }
 
