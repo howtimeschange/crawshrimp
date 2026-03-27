@@ -180,6 +180,13 @@
     }
   }
 
+  function rangeDisplayText(item) {
+    return {
+      start: norm(item?.querySelector('.picker-item.start-picker, .start-picker')?.textContent),
+      end: norm(item?.querySelector('.picker-item.end-picker, .end-picker')?.textContent),
+    }
+  }
+
   async function setDateRange(startDt, endDt) {
     const item = getFormItem(['优惠券领取期限', 'Claim Period'])
     if (!item) throw new Error('未找到"优惠券领取期限/Claim Period"')
@@ -188,14 +195,32 @@
     if (rangeComp?.ctx && (typeof rangeComp.ctx.handleStartChange === 'function' || typeof rangeComp.ctx.handleEndChange === 'function')) {
       if (startDt && typeof rangeComp.ctx.handleStartChange === 'function') {
         rangeComp.ctx.handleStartChange(toIsoStringFromDt(startDt))
+        await sleep(250)
       }
       if (endDt && typeof rangeComp.ctx.handleEndChange === 'function') {
         rangeComp.ctx.handleEndChange(toIsoStringFromDt(endDt))
+        await sleep(250)
       }
-      await sleep(150)
+      const display1 = rangeDisplayText(item)
+      if (startDt && typeof rangeComp.ctx.handleStartChange === 'function' && !display1.start.includes(startDt.str)) {
+        rangeComp.ctx.handleStartChange(toIsoStringFromDt(startDt))
+        await sleep(250)
+      }
+      if (endDt && typeof rangeComp.ctx.handleEndChange === 'function' && !display1.end.includes(endDt.str)) {
+        rangeComp.ctx.handleEndChange(toIsoStringFromDt(endDt))
+        await sleep(250)
+      }
       try { rangeComp.ctx.validate?.() } catch {}
       try { document.body.click() } catch {}
       await sleep(150)
+
+      const display2 = rangeDisplayText(item)
+      if (startDt && !display2.start.includes(startDt.str)) {
+        throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${display2.start || '(空)'}`)
+      }
+      if (endDt && !display2.end.includes(endDt.str)) {
+        throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${display2.end || '(空)'}`)
+      }
       return true
     }
 
