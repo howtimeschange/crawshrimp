@@ -81,6 +81,15 @@
     return true
   }
 
+  function tap(el) {
+    if (!el) return false
+    try { el.scrollIntoView({ block: 'center' }) } catch {}
+    try { el.click() } catch {
+      try { el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })) } catch {}
+    }
+    return true
+  }
+
   function setNativeValue(el, value) {
     if (!el) return false
     const val = String(value ?? '')
@@ -158,7 +167,7 @@
 
     // 等面板出现
     const panel = await waitFor(() =>
-      document.querySelector('.eds-react-date-picker-panel, .eds-picker-dropdown, [class*="date-picker"][class*="panel"], [class*="datepicker"][class*="dropdown"]')
+      document.querySelector('.eds-react-date-picker-panel, .eds-react-date-picker__panel-wrap, .eds-picker-dropdown, [class*="date-picker"][class*="panel"], [class*="datepicker"][class*="dropdown"]')
     , 3000, 100)
 
     if (panel) {
@@ -172,6 +181,63 @@
         await typeInto(pInputs[1], `${dt.hh}:${dt.mm}`)
       } else if (pInputs.length === 1) {
         await typeInto(pInputs[0], dt.str)
+      } else {
+        const wrap = panel.closest('.eds-react-popover, .eds-react-date-picker__popup') || panel
+        const header = wrap.querySelector('.eds-react-date-picker__header')
+        const btns = header?.querySelectorAll('.btn-arrow-default') || []
+        const getHead = () => ({
+          year: Number((wrap.querySelector('.date-box .year')?.textContent || '').replace(/\D+/g, '')),
+          month: Number((wrap.querySelector('.date-box .month')?.textContent || '').replace(/\D+/g, '')),
+        })
+        const fire = (el) => {
+          if (!el) return false
+          for (const ev of ['pointerdown','mousedown','mouseup','click']) {
+            try { el.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true, view: window, buttons: 1 })) } catch {}
+          }
+          try { el.click?.() } catch {}
+          return true
+        }
+
+        const cur = getHead()
+        if (cur.year && cur.month && btns.length >= 4) {
+          const yearDelta = Number(dt.y) - cur.year
+          const monthDelta = Number(dt.mo) - cur.month
+          const dbl = yearDelta > 0 ? btns[3] : btns[0]
+          const single = monthDelta > 0 ? btns[2] : btns[1]
+          for (let i = 0; i < Math.abs(yearDelta); i++) {
+            fire(dbl)
+            await sleep(120)
+          }
+          for (let i = 0; i < Math.abs(monthDelta); i++) {
+            fire(single)
+            await sleep(120)
+          }
+        }
+
+        const day = [...wrap.querySelectorAll('.eds-react-date-picker__table-cell')].find(el => {
+          const t = norm(el.textContent)
+          return t === String(Number(dt.d)) &&
+                 !el.classList.contains('disabled') &&
+                 !el.classList.contains('out-of-range')
+        })
+        if (day) {
+          fire(day)
+          await sleep(120)
+        }
+
+        const cols = wrap.querySelectorAll('.eds-react-time-picker__tp-scrollbar')
+        if (cols.length >= 2) {
+          const hour = [...cols[0].querySelectorAll('.time-box')].find(el => norm(el.textContent) === dt.hh)
+          const minute = [...cols[1].querySelectorAll('.time-box')].find(el => norm(el.textContent) === dt.mm)
+          if (hour) { fire(hour); await sleep(100) }
+          if (minute) { fire(minute); await sleep(100) }
+        }
+
+        const okBtn = [...wrap.querySelectorAll('button')].find(b => /^(确认|确定|OK)$/i.test(textOf(b)))
+        if (okBtn) {
+          fire(okBtn)
+          await sleep(250)
+        }
       }
       await sleep(200)
       const okBtn = [...panel.querySelectorAll('button')].find(b => visible(b) && /^(确认|确定|OK)$/i.test(textOf(b)))
@@ -223,12 +289,119 @@
     }
   }
 
+  function parseDateTimeValue(str) {
+    const m = String(str || '').match(/^(\d{4})-(\d{1,2})-(\d{1,2})\s+(\d{1,2}):(\d{1,2})$/)
+    if (!m) return null
+    return {
+      year: Number(m[1]), month: Number(m[2]), day: Number(m[3]),
+      hour: String(Number(m[4])).padStart(2, '0'), minute: String(Number(m[5])).padStart(2, '0'),
+      text: `${m[1]}-${String(Number(m[2])).padStart(2,'0')}-${String(Number(m[3])).padStart(2,'0')} ${String(Number(m[4])).padStart(2,'0')}:${String(Number(m[5])).padStart(2,'0')}`
+    }
+  }
+
+  function getDatePickerPanel(item) {
+    return item?.querySelector('.eds-react-date-picker__panel-wrap') ||
+           item?.querySelector('.eds-react-popover.eds-react-date-picker__popup') || null
+  }
+
+  function getDatePickerHeader(panel) {
+    const year = Number((textOf(panel?.querySelector('.date-default-style.year')) || '').replace(/\D+/g, ''))
+    const month = Number((textOf(panel?.querySelector('.date-default-style.month')) || '').replace(/\D+/g, ''))
+    if (!year || !month) return null
+    return { year, month }
+  }
+
+  function getPickerNavButtons(panel) {
+    const icons = [...panel.querySelectorAll('.eds-react-date-picker__header .eds-react-icon')]
+    const btns = icons.map(icon => icon.closest('span, button, div') || icon).filter(Boolean)
+    return {
+      prevYear: btns[0] || null,
+      prevMonth: btns[1] || null,
+      nextMonth: btns[2] || null,
+      nextYear: btns[3] || null,
+    }
+  }
+
+  async function navigateDatePicker(panel, target) {
+    for (let i = 0; i < 48; i++) {
+      const header = getDatePickerHeader(panel)
+      if (!header) break
+      if (header.year === target.year && header.month === target.month) return true
+      const nav = getPickerNavButtons(panel)
+      if (header.year !== target.year) {
+        tap(header.year > target.year ? nav.prevYear : nav.nextYear)
+      } else if (header.month !== target.month) {
+        tap(header.month > target.month ? nav.prevMonth : nav.nextMonth)
+      }
+      await sleep(180)
+    }
+    const header = getDatePickerHeader(panel)
+    return !!header && header.year === target.year && header.month === target.month
+  }
+
+  function findCurrentMonthDayWrap(panel, day) {
+    const dayText = String(Number(day))
+    return [...panel.querySelectorAll('.eds-react-date-picker__table-cell-wrap')].find(wrap => {
+      if (textOf(wrap) !== dayText) return false
+      const cell = wrap.querySelector('.eds-react-date-picker__table-cell')
+      if (!cell) return false
+      return !/disabled/.test(cell.className || '')
+    }) || null
+  }
+
+  async function pickDateTimeViaPanel(item, kind, dt) {
+    const target = parseDateTimeValue(dt?.str)
+    if (!target) throw new Error(`无法解析领取期限：${dt?.str || ''}`)
+    const trigger = item.querySelector(`.picker-item.${kind}-picker .eds-react-date-picker__input, .picker-item.${kind}-picker`)
+    if (!trigger) throw new Error(`未找到${kind === 'start' ? '开始' : '结束'}日期触发器`)
+    tap(trigger)
+    await sleep(250)
+    const panel = await waitFor(() => getDatePickerPanel(item), 2500, 120)
+    if (!panel) throw new Error(`未展开${kind === 'start' ? '开始' : '结束'}日期面板`)
+
+    const ok = await navigateDatePicker(panel, target)
+    if (!ok) throw new Error(`无法切换到目标年月：${target.year}-${target.month}`)
+
+    const dayWrap = findCurrentMonthDayWrap(panel, target.day)
+    if (!dayWrap) throw new Error(`未找到目标日期：${target.day}`)
+    tap(dayWrap)
+    await sleep(180)
+
+    const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
+    if (scrollbars.length >= 2) {
+      const hourBox = [...scrollbars[0].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.hour)
+      const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
+      if (!hourBox) throw new Error(`未找到目标小时：${target.hour}`)
+      if (!minuteBox) throw new Error(`未找到目标分钟：${target.minute}`)
+      tap(hourBox)
+      await sleep(100)
+      tap(minuteBox)
+      await sleep(120)
+    }
+
+    const confirmed = await confirmDatePicker(panel)
+    if (!confirmed) throw new Error('未找到日期面板确认按钮')
+    await sleep(250)
+    return true
+  }
+
   async function confirmDatePicker(scope = document) {
-    const okBtn = [...scope.querySelectorAll('button')].find(b => visible(b) && /^(确认|确定|OK)$/i.test(textOf(b)))
-    if (okBtn) {
-      click(okBtn)
-      await sleep(300)
-      return true
+    const roots = [
+      scope,
+      scope?.closest?.('.date-range-picker-container') || null,
+      scope?.closest?.('.eds-react-form-item') || null,
+      document,
+    ].filter(Boolean)
+    for (const root of roots) {
+      const okBtn = [...root.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')].find(b => {
+        const txt = textOf(b)
+        return /^(确认|确定|OK)$/i.test(txt) && (visible(b) || root === document)
+      })
+      if (okBtn) {
+        tap(okBtn)
+        await sleep(300)
+        return true
+      }
     }
     return false
   }
@@ -236,6 +409,19 @@
   async function setDateRange(startDt, endDt) {
     const item = getFormItem(['优惠券领取期限', 'Claim Period'])
     if (!item) throw new Error('未找到"优惠券领取期限/Claim Period"')
+
+    if (item.querySelector('.picker-item.start-picker, .picker-item.end-picker, .eds-react-date-picker__input')) {
+      if (startDt) await pickDateTimeViaPanel(item, 'start', startDt)
+      if (endDt) await pickDateTimeViaPanel(item, 'end', endDt)
+      const inputs = [...item.querySelectorAll('input.eds-react-input__input')].filter(visible)
+      if (startDt && inputs[0] && !norm(inputs[0].value).includes(startDt.str)) {
+        throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${inputs[0].value || '(空)'}`)
+      }
+      if (endDt && inputs[1] && !norm(inputs[1].value).includes(endDt.str)) {
+        throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${inputs[1].value || '(空)'}`)
+      }
+      return true
+    }
 
     const rangeComp = item.querySelector('.date-range-picker-container, .date-range-picker')?.__vueParentComponent || null
     if (rangeComp?.ctx && (typeof rangeComp.ctx.handleStartChange === 'function' || typeof rangeComp.ctx.handleEndChange === 'function')) {
@@ -272,15 +458,8 @@
 
     const visibleDateInputs = [...item.querySelectorAll('.picker-item input.eds-react-input__input, .eds-react-date-picker input.eds-react-input__input')].filter(visible)
     if (visibleDateInputs.length >= 2) {
-      if (startDt) {
-        const ok = await setControlledInputValue(visibleDateInputs[0], startDt.str)
-        if (!ok) throw new Error(`领取期限开始时间未写入成功，期望：${startDt.str}，实际：${visibleDateInputs[0].value || '(空)'}`)
-      }
-      if (endDt) {
-        const ok = await setControlledInputValue(visibleDateInputs[1], endDt.str)
-        if (!ok) throw new Error(`领取期限结束时间未写入成功，期望：${endDt.str}，实际：${visibleDateInputs[1].value || '(空)'}`)
-      }
-      await confirmDatePicker(item)
+      if (startDt) await pickDateTimeViaPanel(item, 'start', startDt)
+      if (endDt)   await pickDateTimeViaPanel(item, 'end', endDt)
       try { document.body.click() } catch {}
       await sleep(300)
       if (startDt && !norm(visibleDateInputs[0].value).includes(startDt.str)) {
