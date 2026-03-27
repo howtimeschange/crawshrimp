@@ -233,12 +233,12 @@
       '扣除百分比': ['扣除百分比','折扣百分比','percentage'],
       '折扣金额':   ['折扣金额','固定金额','fixed amount'],
     }
-    const keys = (aliases[text] || [text]).map(s => s.toLowerCase())
+    const desired = String(text || '').trim()
+    const keys = (aliases[desired] || [desired]).map(s => s.toLowerCase())
 
     const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
     if (!item) throw new Error('未找到折扣类型表单项')
 
-    // 触发器是 .trigger.trigger--normal，必须用完整事件序列
     const trigger = item.querySelector('.trigger.trigger--normal')
     if (!trigger || !visible(trigger)) throw new Error('未找到折扣类型下拉触发器(.trigger.trigger--normal)')
 
@@ -251,20 +251,24 @@
     }
     await sleep(600)
 
-    // 等选项出现（.eds-react-select-option）
     const options = await waitFor(() => {
       const opts = [...document.querySelectorAll('.eds-react-select-option')].filter(visible)
       return opts.length > 0 ? opts : null
     }, 4000, 150)
     if (!options) throw new Error('折扣类型下拉未展开（未找到 .eds-react-select-option）')
 
-    const option = options.find(el => {
+    let option = options.find(el => {
       const t = textOf(el).toLowerCase()
       return keys.some(k => t === k || t.includes(k))
     })
+
+    // Shopee币回扣等页型可能只有“扣除百分比”一个选项；此时允许自动兼容
+    if (!option && options.length === 1) option = options[0]
+
     if (!option) throw new Error(`未找到折扣类型选项：${text}（可选：${options.map(o=>textOf(o)).join('/')}）`)
     click(option)
     await sleep(400)
+    return textOf(option)
   }
 
   // ─── 优惠限额（折扣类型旁边的数字框）────────────────────────────────────────
@@ -281,7 +285,7 @@
 
   // ─── 最高优惠金额（条件字段：选了"扣除百分比"后才出现）────────────────────────
   async function fillMaxDiscount(value) {
-    for (const lbl of ['最高优惠金额', '最高折扣金额', '最高优惠', '最高减免']) {
+    for (const lbl of ['最高优惠金额', '最高折扣金额', '最高优惠', '最高减免', '最高上限数额']) {
       const item = getFormItem(lbl)
       if (!item) continue
 
