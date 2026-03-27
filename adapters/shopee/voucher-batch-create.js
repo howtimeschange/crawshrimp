@@ -476,7 +476,9 @@
     const minSpend = digitsOnly(row['最低消费金额'])
     const totalCount = digitsOnly(row['可使用总数'])
     const perBuyerLimit = digitsOnly(row['每个买家可用的优惠券数量上限'])
-    const showEarly = boolLike(row['是否提前显示\n优惠券（是：1/否：0）'] || row['是否提前显示优惠券（是：1/否：0）'])
+    // 兼容 Excel 列名中换行符/空格/变体写法
+    const showEarlyKey = Object.keys(row).find(k => k.replace(/\s+/g, '').includes('是否提前显示'))
+    const showEarly = boolLike(showEarlyKey ? row[showEarlyKey] : '')
     const startDt = parseDateTime(row['优惠券领取期限（开始）精确到分'], 'start')
     const endDt = parseDateTime(row['优惠券领取期限（结束）精确到分'], 'end')
 
@@ -582,51 +584,93 @@
 
     // ── phase: store_switch ──────────────────────────────────────────────────
     if (phase === 'store_switch') {
-      if (!location.href.includes('/portal/marketing/vouchers')) {
-        scheduleNavigate(VOUCHERS_ROOT_URL)
-        return nextPhase('store_switch', ctx, 2200)
+      // 检查"当前店铺"显示区域（营销中心所有页面都有）
+      // DOM 结构：<div class="当前店铺容器"><span>马来西亚 / semir2022.my</span></div>
+      // 也可能是 URL 参数里带有 cnsc_shop_id，但没有直接映射到店铺名
+      // 最稳定：找页面上明文含 ctx.store 的当前店铺文本区域
+      function getCurrentStoreText() {
+        // 营销中心所有页面均有 .shop-switcher 容器，文本如 "当前店铺 马来西亚 / semir2022.my"
+        const switcher = document.querySelector('.shop-switcher, .shop-switcher-container, .shop-select')
+        if (switcher && visible(switcher)) return textOf(switcher)
+        // fallback：找 .shop-label 的父级
+        const label = document.querySelector('.shop-label')
+        if (label && label.parentElement) return textOf(label.parentElement)
+        return ''
       }
 
-      const shopInfo = document.querySelector('.shop-info')
-      const currentShopText = textOf(shopInfo || document.body)
-      if (!(currentShopText.includes(ctx.store) && (!ctx.site || currentShopText.includes(ctx.site)) && !/没有权限/.test(currentShopText))) {
-        const searchInput = await waitFor(() => {
-          return [...document.querySelectorAll('input, textarea')].find(el => visible(el) && norm(el.getAttribute('placeholder')) === '搜索店铺')
-        }, 8000, 250)
-        if (!searchInput) throw new Error('未找到店铺搜索框')
+      const currentStoreText = getCurrentStoreText()
+      const alreadyOnStore = currentStoreText.includes(ctx.store) &&
+        (!ctx.site || currentStoreText.includes(ctx.site))
 
-        click(searchInput)
-        await sleep(100)
-        setNativeValue(searchInput, ctx.store)
-        await sleep(1000)
-
-        const candidate = await waitFor(() => {
-          const items = [...document.querySelectorAll('.search-item, .username, .shop-info, li, [role="option"]')].filter(visible)
-          return items.find(el => {
-            const t = textOf(el)
-            if (!t || !t.includes(ctx.store)) return false
-            if (ctx.site && !t.includes(ctx.site) && !textOf(el.parentElement || {}).includes(ctx.site)) return false
-            return true
-          })
-        }, 6000, 250)
-
-        if (!candidate) throw new Error(`未找到店铺候选项：${ctx.store}`)
-        const candidateText = textOf(candidate.closest('.search-item') || candidate)
-        if (/没有权限|无权限/.test(candidateText) || (candidate.closest('.search-item')?.className || '').includes('disabled')) {
-          throw new Error(`店铺"${ctx.store}"当前账号无权限切换`)
+      if (!alreadyOnStore) {
+        // 需要切换店铺：在 /portal/marketing 主页找搜索框
+        if (!location.href.includes('/portal/marketing')) {
+          scheduleNavigate(ENTRY_URL)
+          return nextPhase('store_switch', ctx, 2500)
         }
 
-        click(candidate.closest('.search-item') || candidate)
-        await sleep(1400)
+        // 等待搜索框出现（营销中心主页的店铺搜索输入框）
+        const searchInput = await waitFor(() => {
+          return [...document.querySelectorAll('input')].find(el => {
+            if (!visible(el)) return false
+            const ph = norm(el.placeholder)
+            if (ph.includes('搜索店铺') || ph.includes('搜索') && el.closest('[class*="shop"]')) return true
+            // 兜底：找在 shop-switcher 区域内的 input
+            if (el.closest('.shop-switcher, .shop-switcher-container, .shop-select, [class*="shopSwitch"], [class*="shop-switch"]')) return true
+            return false
+          })
+        }, 8000, 250)
+        if (!searchInput) throw new Error('未找到店铺搜索框（请确认已打开营销中心主页）')
+
+        click(searchInput)
+        await sleep(200)
+        setNativeValue(searchInput, ctx.store)
+        await sleep(1200)
+
+        const candidate = await waitFor(() => {
+          return [...document.querySelectorAll('li, [role="option"], .search-item, [class*="shopItem"], [class*="shop-item"]')]
+            .filter(visible)
+            .find(el => {
+              const t = textOf(el)
+              if (!t.includes(ctx.store)) return false
+              if (ctx.site && !t.includes(ctx.site)) return false
+              return true
+            })
+        }, 6000, 250)
+
+        if (!candidate) throw new Error(`搜索后未找到店铺候选项：${ctx.store}`)
+        if (/没有权限|无权限/.test(textOf(candidate))) {
+          throw new Error(`店铺"${ctx.store}"当前账号无权限`)
+        }
+
+        click(candidate)
+        await sleep(2000)  // 等待切换完成，店铺切换后 Shopee 会重新加载页面内容
         await closeBlockingOverlays()
       }
 
-      const verified = await waitFor(() => {
-        const txt = textOf(document.querySelector('.shop-info') || document.body)
-        return txt.includes(ctx.store) && (!ctx.site || txt.includes(ctx.site))
-      }, 5000, 250)
-      if (!verified) throw new Error(`切换店铺后校验失败：${ctx.store}`)
+      // 校验：当前店铺文字包含目标店铺名，或直接继续（已匹配则直接跳过校验）
+      if (!alreadyOnStore) {
+        // 等待店铺切换后页面刷新完毕
+        await waitFor(() => {
+          const t = getCurrentStoreText()
+          return t.includes(ctx.store) ? t : null
+        }, 5000, 300)
+        const verifyText = getCurrentStoreText()
+        // 店铺名短时可能还未更新，不做硬阻断，仅打印警告
+        if (!verifyText.includes(ctx.store)) {
+          // 尝试从页面全文找店铺名，部分页面有多处展示
+          const fullText = norm(document.body.innerText)
+          if (!fullText.includes(ctx.store)) {
+            throw new Error(`切换店铺后校验失败，当前店铺区域：${verifyText.substring(0, 80)}`)
+          }
+        }
+      }
 
+      // 确保在 vouchers 页面
+      if (!location.href.includes('/portal/marketing/vouchers')) {
+        scheduleNavigate(VOUCHERS_ROOT_URL)
+        return nextPhase('enter_type', ctx, 2200)
+      }
       return nextPhase('enter_type', ctx, 50)
     }
 
@@ -651,10 +695,28 @@
         await ensureBuyerSpecificEntriesVisible(testId)
       }
 
-      const cardBtn = await waitFor(() => {
+      // 找优惠券入口卡片：优先 data-testid，找不到则按文字匹配
+      let cardBtn = await waitFor(() => {
         const el = document.querySelector(`button[data-testid="${testId}"]`)
         return visible(el) ? el : null
-      }, 5000, 150)
+      }, 3000, 150)
+
+      if (!cardBtn) {
+        // fallback：按文字匹配入口卡片/按钮
+        const textAliases = {
+          '商店优惠券': ['商店优惠券', '店铺优惠券'],
+          '新买家优惠券': ['新买家优惠券', '新买家'],
+          '回购买家优惠券': ['回购买家优惠券', '回购买家', '老买家优惠券'],
+          '关注礼优惠券': ['关注礼优惠券', '关注礼', '关注者优惠券'],
+        }
+        const targets = textAliases[ctx.voucherType] || [ctx.voucherType]
+        cardBtn = [...document.querySelectorAll('button, [role="button"], .voucher-entry-card')]
+          .find(el => {
+            if (!visible(el)) return false
+            const t = textOf(el)
+            return targets.some(alias => t.includes(alias))
+          })
+      }
       if (!cardBtn) throw new Error(`未找到优惠券类型入口：${ctx.voucherType}`)
 
       // 点击卡片后等待页面跳转到创建页
@@ -678,14 +740,22 @@
         }
       }
 
-      return nextPhase('form_fill', ctx, 800)
+      return nextPhase('form_fill', ctx, 4000)
     }
 
     // ── phase: form_fill ─────────────────────────────────────────────────────
     if (phase === 'form_fill') {
-      if (!location.href.includes('/portal/marketing/vouchers/new')) {
-        throw new Error('未进入优惠券创建页')
+      // 等待页面导航到创建页（允许最多 6 秒，CDP 注入时 context 可能还未稳定）
+      // enter_type 末尾已等 4s，这里主要是确保 React 表单已挂载
+      const onNewPage = await waitFor(() =>
+        location.href.includes('/portal/marketing/vouchers/new') ? true : null
+      , 6000, 300)
+      if (!onNewPage) {
+        throw new Error(`未进入优惠券创建页，当前URL：${location.href}`)
       }
+      // 额外等待表单控件完全渲染（Shopee React 表单较慢）
+      await waitFor(() => document.querySelector('.eds-react-form-item') ? true : null, 5000, 300)
+      await sleep(500)
 
       // 1. 基础信息
       await fillFormField('优惠券名称', ctx.couponName)
@@ -723,15 +793,22 @@
 
     // ── phase: submit ────────────────────────────────────────────────────────
     if (phase === 'submit') {
-      // 找"确认"按钮：优先 primary 样式，文本精确匹配
-      const confirmBtn = [...document.querySelectorAll('button')].find(el => {
-        if (!visible(el)) return false
-        const t = textOf(el)
-        if (t !== '确认' && t !== '确定') return false
-        const cls = el.className || ''
-        // 优先 primary 按钮
-        return cls.includes('primary') || cls.includes('confirm') || cls.includes('submit') || true
-      })
+      // 找"确认"按钮：优先 primary 样式
+      const allBtns = [...document.querySelectorAll('button')].filter(visible)
+      const confirmBtn =
+        // 1. primary 样式 + 确认/确定文字
+        allBtns.find(el => {
+          const t = textOf(el)
+          if (t !== '确认' && t !== '确定') return false
+          const cls = el.className || ''
+          return cls.includes('primary') || cls.includes('confirm') || cls.includes('submit')
+        }) ||
+        // 2. 兜底：只按文字匹配
+        allBtns.find(el => {
+          const t = textOf(el)
+          return t === '确认' || t === '确定'
+        })
+
       if (!confirmBtn) throw new Error('未找到"确认"按钮')
       scheduleClick(confirmBtn)
       return nextPhase('post_submit', ctx, 3200)
@@ -739,25 +816,51 @@
 
     // ── phase: post_submit ───────────────────────────────────────────────────
     if (phase === 'post_submit') {
+      // 等待：要么成功跳转列表页，要么出现成功 toast，最多等 6 秒
+      const successResult = await waitFor(() => {
+        if (location.href.includes('/portal/marketing/vouchers/list')) return 'redirected'
+        const bodyText = norm(document.body.innerText)
+        if (/创建成功|设置成功|已创建|优惠券已/.test(bodyText)) return 'toast'
+        const toasts = [...document.querySelectorAll('[role="alert"], .eds-message, .eds-toast, .eds-notification, .toast, .message')]
+          .filter(el => visible(el))
+          .map(el => textOf(el))
+          .join(' ')
+        if (/成功/.test(toasts)) return 'toast'
+        return null
+      }, 6000, 300)
+
+      if (successResult) {
+        return finish(ctx.result)
+      }
+
+      // 没有成功信号，检查错误
       const bodyText = norm(document.body.innerText)
-      const inlineErrors = [...document.querySelectorAll('.eds-react-form-item__extra, .eds-react-form-item__help, .error, [class*="error"], [class*="Error"]')]
+      const inlineErrors = [...document.querySelectorAll('.eds-react-form-item__extra, .eds-react-form-item__help, [class*="form-item"][class*="error"], [class*="error-msg"], [class*="errorMsg"]')]
         .filter(el => visible(el))
         .map(el => textOf(el))
         .filter(Boolean)
-      const alertTexts = [...document.querySelectorAll('[role="alert"], .eds-message, .eds-toast, .toast, .message, .alert')]
+      const alertTexts = [...document.querySelectorAll('[role="alert"], .eds-message, .eds-toast, .eds-notification, .toast, .message, .alert')]
         .filter(el => visible(el))
         .map(el => textOf(el))
         .filter(Boolean)
       const combinedErrors = [...new Set([...inlineErrors, ...alertTexts].filter(Boolean))]
 
-      if (location.href.includes('/portal/marketing/vouchers/list') || /成功|已创建|创建成功/.test(bodyText)) {
-        return finish(ctx.result)
-      }
       if (combinedErrors.length) {
         throw new Error(`提交后校验提示：${combinedErrors.join(' | ')}`)
       }
       if (/失败|错误|必填|请输入|不能为空|格式不正确|无权限/.test(bodyText)) {
         throw new Error('提交后页面出现校验或错误提示，请检查字段填写、权限或页面控件定位')
+      }
+      // 仍在创建页说明提交未完成，等待更长时间后再判断
+      if (location.href.includes('/portal/marketing/vouchers/new')) {
+        const finalResult = await waitFor(() => {
+          if (location.href.includes('/portal/marketing/vouchers/list')) return 'redirected'
+          const bt = norm(document.body.innerText)
+          if (/创建成功|设置成功|已创建/.test(bt)) return 'toast'
+          return null
+        }, 5000, 400)
+        if (finalResult) return finish(ctx.result)
+        throw new Error('提交后等待超时，仍停留在创建页，请手动检查')
       }
       throw new Error('提交后未能确认创建成功或返回列表页')
     }
