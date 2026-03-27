@@ -435,11 +435,57 @@
     const panel = await waitFor(() => getDatePickerPanel(item), 3000, 150)
     if (!panel) throw new Error(`未展开${kindLabel}日期面板`)
 
-    // 切换到目标年月
-    const ok = await navigateDatePicker(panel, target)
-    if (!ok) throw new Error(`无法切换到目标年月：${target.year}-${target.month}`)
+    // 读当前 panel 年月，计算需要点多少次导航箭头
+    const header = getDatePickerHeader(panel)
+    if (!header) throw new Error(`无法读取${kindLabel}日期面板标题年月`)
+    const nav = getPickerNavButtons(panel)
 
-    // 找目标 cell（table-cell 本体，有 React onClick）
+    // 计算从 header.year/month 到 target.year/month 的步数和方向
+    const navClicks = []
+    let curYear = header.year, curMonth = header.month
+    const tY = target.year, tM = target.month
+
+    // 先按年切换（每次1年），再按月切换（每次1月），最多48步
+    const totalSteps = Math.abs(tY - curYear) * 12 + Math.abs(tM - curMonth)
+    if (totalSteps > 48) throw new Error(`${kindLabel}目标年月距当前过远（${totalSteps} 步）`)
+
+    // 年步
+    if (curYear !== tY) {
+      const btn = tY > curYear ? nav.nextYear : nav.prevYear
+      if (!btn) throw new Error(`未找到${tY > curYear ? '下一年' : '上一年'}按钮`)
+      const c = rectCenter(btn)
+      if (!c) throw new Error('年份导航按钮坐标为空')
+      for (let i = 0; i < Math.abs(tY - curYear); i++) {
+        navClicks.push({ ...c, delay_ms: 180, label: tY > curYear ? 'nextYear' : 'prevYear' })
+      }
+      curYear = tY
+    }
+    // 月步
+    if (curMonth !== tM) {
+      const btn = tM > curMonth ? nav.nextMonth : nav.prevMonth
+      if (!btn) throw new Error(`未找到${tM > curMonth ? '下一月' : '上一月'}按钮`)
+      const c = rectCenter(btn)
+      if (!c) throw new Error('月份导航按钮坐标为空')
+      for (let i = 0; i < Math.abs(tM - curMonth); i++) {
+        navClicks.push({ ...c, delay_ms: 180, label: tM > curMonth ? 'nextMonth' : 'prevMonth' })
+      }
+    }
+
+    // 注意：导航箭头点击后 DOM 重新渲染，cell 坐标会变
+    // 所以 cell/hour/minute/确认的坐标需要在箭头点完之后再算
+    // 方案：如果有箭头需要点，先只返回箭头点击，进入 pick_date_nav_${kind} phase 再算 cell 坐标
+    // 如果不需要导航（已在目标年月），直接算 cell 坐标一次性返回
+    const pickPhase = `pick_date_verify_${kind}`
+    const navPhase  = `pick_date_nav_${kind}`
+
+    if (navClicks.length > 0) {
+      // 有导航步骤：先点完箭头，再由 pick_date_nav_${kind} phase 继续算 cell
+      const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
+      shared[`_pick_${kind}_target`] = { dt: dt.str, target }
+      return nextCdpClickPhase(navClicks, navPhase, 400, ctxForShared)
+    }
+
+    // 无需导航，已在目标年月，直接算 cell 坐标
     const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
     const dayText = String(Number(target.day))
     const targetCell = cells.find(c =>
@@ -477,13 +523,12 @@
     clicks.push({ ...okCenter, delay_ms: 350, label: '确认' })
 
     // 将当前 kind/dt 信息存入 shared，供 confirm 阶段读取
-    const pickPhase = `pick_date_verify_${kind}`
     shared[`_pick_${kind}`] = { target: dt.str, clicks }
 
     // 返回 cdp_clicks，让 Python 用真实鼠标事件点击后继续 pick_date_verify phase
     // 注：ctx 在此处已被 form_fill phase 的 buildContext() 构建，通过 shared 传给下一 phase
     const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
-    return nextCdpClickPhase(clicks, pickPhase, 400, ctxForShared)
+    return nextCdpClickPhase(clicks, `pick_date_verify_${kind}`, 400, ctxForShared)
   }
 
   async function confirmDatePicker(scope = document) {
@@ -1151,6 +1196,64 @@
 
       // 有 start 无 end 的情况，或跳过日期直接填剩余字段
       return nextPhase('form_fill_rest', ctx, 80)
+    }
+
+    // ── pick_date_nav_start / pick_date_nav_end ─────────────────────────────
+    // 箭头点完后（panel 已在目标年月），计算 cell/hour/minute/确认坐标，返回第二批 cdp_clicks
+    if (phase === 'pick_date_nav_start' || phase === 'pick_date_nav_end') {
+      await sleep(300)
+      const kind = phase === 'pick_date_nav_start' ? 'start' : 'end'
+      const kindLabel = kind === 'start' ? '开始' : '结束'
+      const item = getFormItem(['优惠券领取期限', 'Claim Period'])
+      if (!item) throw new Error(`未找到${kindLabel}日期表单项`)
+      const panel = await waitFor(() => getDatePickerPanel(item), 2000, 100)
+      if (!panel) throw new Error(`${kindLabel}日期面板消失了`)
+
+      // 验证年月已切换到位
+      const hdr = getDatePickerHeader(panel)
+      const saved = shared[`_pick_${kind}_target`]
+      if (saved && hdr && (hdr.year !== saved.target.year || hdr.month !== saved.target.month)) {
+        throw new Error(`${kindLabel}年月切换未到位：期望${saved.target.year}-${saved.target.month}，实际${hdr.year}-${hdr.month}`)
+      }
+      const target = saved ? saved.target : hdr
+      const dtStr  = saved ? saved.dt : null
+
+      // 找目标 cell
+      const cells = [...panel.querySelectorAll('.eds-react-date-picker__table-cell')]
+      const dayText = String(Number(target.day))
+      const targetCell = cells.find(c =>
+        norm(c.textContent) === dayText &&
+        !c.classList.contains('out-of-range') &&
+        !c.classList.contains('disabled')
+      )
+      if (!targetCell) throw new Error(`未找到目标日期 cell：${target.day}`)
+      const cellCenter = rectCenter(targetCell)
+      if (!cellCenter) throw new Error('目标 cell 坐标为空')
+
+      // hour / minute
+      const scrollbars = [...panel.querySelectorAll('.eds-react-time-picker__tp-scrollbar')].filter(visible)
+      let hourCenter = null, minuteCenter = null
+      if (scrollbars.length >= 2) {
+        const hourBox   = [...scrollbars[0].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.hour)
+        const minuteBox = [...scrollbars[1].querySelectorAll('.time-box')].find(el => visible(el) && textOf(el) === target.minute)
+        if (hourBox)   hourCenter   = rectCenter(hourBox)
+        if (minuteBox) minuteCenter = rectCenter(minuteBox)
+      }
+
+      // 确认按钮
+      const okBtn = [...panel.querySelectorAll('.eds-react-date-picker__btn-wrap button, button')]
+        .find(b => /^(确认|确定|OK)$/i.test(textOf(b)) && visible(b))
+      const okCenter = rectCenter(okBtn)
+      if (!okCenter) throw new Error('未找到日期面板确认按钮')
+
+      const clicks = [{ ...cellCenter, delay_ms: 350, label: `日期${target.day}` }]
+      if (hourCenter)   clicks.push({ ...hourCenter,   delay_ms: 150, label: `小时${target.hour}` })
+      if (minuteCenter) clicks.push({ ...minuteCenter, delay_ms: 150, label: `分钟${target.minute}` })
+      clicks.push({ ...okCenter, delay_ms: 350, label: '确认' })
+
+      const verifyPhase = `pick_date_verify_${kind}`
+      const ctxForShared = { couponName: shared.couponName, couponCode: shared.couponCode, result: shared.result }
+      return nextCdpClickPhase(clicks, verifyPhase, 400, ctxForShared)
     }
 
     // ── pick_date_verify_start（CDP 点击完 start 日期后，验证并继续 end）───────

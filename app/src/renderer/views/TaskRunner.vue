@@ -121,6 +121,7 @@
           <span v-if="isRunning">⏳ 进行中…</span>
           <span v-else>▶ 立即执行</span>
         </button>
+        <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
         <span v-if="missingRequired" class="missing-hint">请填写必填项</span>
         <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
           {{ lastResult.msg }}
@@ -140,6 +141,7 @@
           <span v-if="isRunning">⏳ 进行中…</span>
           <span v-else>▶ 立即执行</span>
         </button>
+        <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
       </div>
     </div>
 
@@ -221,6 +223,13 @@ const missingRequired = computed(() => {
     return !values.value[p.id]
   })
 })
+
+function forceReset() {
+  clearInterval(pollTimer)
+  isRunning.value = false
+  currentRunId = null
+  logs.value.push('[重置] 已强制重置运行状态')
+}
 
 async function runTask() {
   if (isRunning.value) return
@@ -466,6 +475,8 @@ onUnmounted(() => clearInterval(pollTimer))
 .run-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .run-btn.running { background: #555; }
 .missing-hint { font-size: 12px; color: var(--text3); }
+.reset-link { font-size: 12px; color: var(--text3); cursor: pointer; text-decoration: underline; }
+.reset-link:hover { color: #f87171; }
 .result-badge { font-size: 12px; padding: 4px 10px; border-radius: 6px; }
 .result-badge.ok  { background: rgba(74,222,128,0.12); color: #4ade80; }
 .result-badge.err { background: rgba(248,113,113,0.12); color: #f87171; }
