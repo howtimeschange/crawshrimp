@@ -5,7 +5,7 @@ Chrome 启动参数：--remote-debugging-port=9222
 import json
 import logging
 from typing import Optional
-from urllib.request import urlopen
+from urllib.request import urlopen, Request
 from urllib.error import URLError
 from urllib.parse import quote
 
@@ -28,6 +28,12 @@ class CDPBridge:
                 f"请以 --remote-debugging-port=9222 启动 Chrome. 详情: {e}"
             )
 
+    def get_tab(self, tab_id: str) -> Optional[dict]:
+        for tab in self.get_tabs():
+            if str(tab.get("id")) == str(tab_id):
+                return tab
+        return None
+
     def find_tab(self, url_pattern: str) -> Optional[dict]:
         for tab in self.get_tabs():
             if tab.get("type") == "page" and tab.get("url", "").startswith(url_pattern):
@@ -45,8 +51,10 @@ class CDPBridge:
             return False
 
     def new_tab(self, url: str) -> dict:
+        encoded = quote(url, safe=':/?&=_-%#')
+        req = Request(f"{self.cdp_url}/json/new?{encoded}", method="PUT")
         try:
-            resp = urlopen(f"{self.cdp_url}/json/new?{quote(url, safe=':/?&=_-%#')}", timeout=8)
+            resp = urlopen(req, timeout=8)
             return json.loads(resp.read())
         except URLError as e:
             raise ConnectionError(f"新建 Chrome tab 失败: {e}")
