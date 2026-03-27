@@ -172,7 +172,9 @@ async function browseDir() {
 async function save() {
   saving.value = true; saveMsg.value = ''
   try {
-    await window.cs.saveSettings(cfg.value)
+    // Vue 响应式 Proxy 无法被 IPC 序列化，需先转成纯对象
+    const plain = JSON.parse(JSON.stringify(cfg.value))
+    await window.cs.saveSettings(plain)
     saveMsg.value = '已保存'; saveErr.value = false
   } catch (e) {
     saveMsg.value = e.message; saveErr.value = true
@@ -194,8 +196,8 @@ async function doLaunchChrome() {
 }
 
 async function testNotify(channel) {
-  // 先保存当前配置，确保 webhook 已写入
-  await window.cs.saveSettings(cfg.value)
+  // 先保存当前配置，确保 webhook 已写入（Proxy → 纯对象）
+  await window.cs.saveSettings(JSON.parse(JSON.stringify(cfg.value)))
 
   testing[channel] = true
   testMsg[channel] = ''

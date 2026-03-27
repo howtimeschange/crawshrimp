@@ -26,6 +26,11 @@ contextBridge.exposeInMainWorld('cs', {
   saveSettings:    (cfg) => ipcRenderer.invoke('save-settings', cfg),
   browseFile:      (opts) => ipcRenderer.invoke('browse-file', opts),
 
+  statFile:        (path) => ipcRenderer.invoke('stat-file', path),
+  revealFile:      (path) => ipcRenderer.invoke('reveal-file', path),
+  deleteFile:      (path) => ipcRenderer.invoke('delete-file', path),
+  saveAsFile:      (path) => ipcRenderer.invoke('save-as-file', path),
+
   onLog:    (cb) => ipcRenderer.on('log', (_, msg) => cb(msg)),
   onStatus: (cb) => ipcRenderer.on('status', (_, data) => cb(data)),
   offLog:   ()   => ipcRenderer.removeAllListeners('log'),

@@ -348,6 +348,44 @@ ipcMain.handle('open-file', async (_, filePath) => {
 ipcMain.handle('get-settings',  async () => apiCall('GET', '/settings'))
 ipcMain.handle('save-settings', async (_, cfg) => apiCall('PUT', '/settings', cfg))
 
+ipcMain.handle('stat-file', async (_, filePath) => {
+  try {
+    const stat = fs.statSync(filePath)
+    return { size: stat.size, ctime: stat.birthtime.toISOString(), mtime: stat.mtime.toISOString() }
+  } catch { return null }
+})
+
+ipcMain.handle('reveal-file', async (_, filePath) => {
+  shell.showItemInFolder(filePath)
+  return { ok: true }
+})
+
+ipcMain.handle('delete-file', async (_, filePath) => {
+  try {
+    fs.unlinkSync(filePath)
+    return { ok: true }
+  } catch (e) {
+    throw new Error(e.message)
+  }
+})
+
+ipcMain.handle('save-as-file', async (_, srcPath) => {
+  const name = path.basename(srcPath)
+  const ext  = path.extname(srcPath).replace('.', '') || '*'
+  const res  = await dialog.showSaveDialog(mainWindow, {
+    title: '另存为',
+    defaultPath: name,
+    filters: [{ name: '文件', extensions: [ext] }, { name: '所有文件', extensions: ['*'] }],
+  })
+  if (res.canceled || !res.filePath) return { ok: false }
+  try {
+    fs.copyFileSync(srcPath, res.filePath)
+    return { ok: true, dest: res.filePath }
+  } catch (e) {
+    throw new Error(e.message)
+  }
+})
+
 ipcMain.handle('browse-file', async (_, opts = {}) => {
   const props = opts.directory ? ['openDirectory'] : ['openFile']
   const filters = opts.filters || (opts.excel
