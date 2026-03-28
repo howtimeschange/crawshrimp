@@ -21,8 +21,11 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 | 适配包 | 平台 | 功能 |
 |--------|------|------|
+| `shopee-plus-v2` | Shopee 卖家后台 | 多门店多券型优惠券批量创建（商店 / 新买家 / 回购买家 / 关注礼） |
 | `temu` | Temu 卖家后台 | 商品数据 / 售后管理 / 店铺评价 / 站点商品 |
 | `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
+
+> 当前仓库内只保留一条 Shopee 适配线：`shopee-plus-v2`。旧 `shopee` / `shopee-plus` 已移除。
 
 ---
 
@@ -69,17 +72,16 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-crawshrim
 ### 3. 启动抓虾
 
 ```bash
-# 方式一：开发模式（前端热重载）
-bash dev.sh
-
-# 方式二：分步启动
-PYTHONPATH=. venv/bin/python3 core/api_server.py &   # 后端
-cd app && npm run dev                                  # Vite dev server
+# 方式一：开发模式（推荐）
+bash dev.sh                 # 后端 API
 # 另开终端
-cd app && npm run electron                             # Electron
+cd app && npm run dev       # Vite + Electron
+
+# 方式二：仅启动后端
+PYTHONPATH=. venv/bin/python3 core/api_server.py
 ```
 
-API 服务默认运行在 `http://127.0.0.1:18765`，可通过环境变量 `CRAWSHRIMP_PORT` 修改。
+API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认运行在 `http://127.0.0.1:5173`。可通过环境变量 `CRAWSHRIMP_PORT` 修改后端端口。
 
 ---
 
@@ -102,6 +104,7 @@ crawshrimp/
 │   ├── src/preload.js        # IPC bridge（window.cs.*）
 │   └── src/renderer/         # Vue 3 视图
 ├── adapters/                 # 内置适配包
+│   ├── shopee-plus-v2/       # Shopee 优惠券批量创建
 │   ├── temu/                 # Temu 运营助手
 │   └── jd/                   # 京东价格监控
 └── sdk/                      # 开发工具 & 规范
@@ -116,7 +119,7 @@ crawshrimp/
 ### 从本地目录安装
 
 ```bash
-curl -X POST http://localhost:18765/adapters/install \
+curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/path/to/my-adapter"}'
 ```
@@ -124,7 +127,7 @@ curl -X POST http://localhost:18765/adapters/install \
 ### 从 ZIP 包安装
 
 ```bash
-curl -X POST http://localhost:18765/adapters/install \
+curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/path/to/adapter.zip"}'
 ```

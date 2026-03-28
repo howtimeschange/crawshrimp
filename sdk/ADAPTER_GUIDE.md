@@ -123,7 +123,7 @@ tasks:
 # 打开抓虾 → 我的脚本 → 安装适配包 → 选择文件夹
 
 # 方式二：API 安装
-curl -X POST http://localhost:18765/adapters/install \
+curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/my-adapter"}'
 ```
@@ -233,6 +233,18 @@ tasks:
 
 底座会重复注入同一脚本，通过 `window.__CRAWSHRIMP_PHASE__` 区分当前阶段，脚本返回 `action: "next_phase"` / `action: "cdp_clicks"` / `action: "complete"` 来驱动状态机。
 
+#### 推荐的 Phase 粒度（最佳实践）
+
+推荐按**业务步骤**拆 phase，而不是按“字段 / 按钮 / 单次点击”拆 phase。经验上，下面这种粒度更稳：
+
+- `ensure_auth` / `ensure_store`
+- `open_form`
+- `fill_form`
+- `submit`
+- `post_submit`
+
+不建议把“填日期”“点月份箭头”“切下拉框”“点确认按钮”都拆成独立 phase。字段级 phase 会让脚本在重渲染、弹层消失、节点失效时变得很脆弱，也更难处理多门店、多行循环。
+
 ```
 底座注入脚本 (phase="init")
   ↓
@@ -339,6 +351,17 @@ function coord(el) {
 }
 ```
 
+#### 前端框架页面的交互优先级（最佳实践）
+
+对于 React / Vue 驱动的后台页面，推荐按下面顺序尝试交互：
+
+1. **组件状态注入 / 组件事件调用**
+2. **组件内部真实 click 事件**
+3. **原生 DOM click / input / change**
+4. **CDP 坐标点击**
+
+如果某个控件可以通过 `onChange`、`modelValue`、Fiber props、Vue component instance 等方式稳定改值，优先使用注入方案；只有在状态注入不可达时，再退回 DOM 点击或 CDP 坐标点击。
+
 #### 提交前校验红字检测（最佳实践）
 
 表单类脚本在 `submit` phase 点确认前，应先扫描页面上的校验错误，避免无效点击：
@@ -360,6 +383,16 @@ if (phase === 'submit') {
 }
 ```
 
+#### 成功信号不要只看跳转（最佳实践）
+
+很多后台页面提交成功后，不一定立刻跳转。建议同时检查以下信号：
+
+- URL 已切到成功页 / 列表页
+- Toast / Message 成功提示
+- 页内成功卡片、成功标题、`返回列表页面` / `查看详情` 等按钮或文案
+
+如果只认跳转，容易把“已成功但仍停留在当前页”的情况误判为失败。
+
 #### 字段填写独立 try-catch（最佳实践）
 
 `form_fill` 类 phase 里，每个字段的填写应独立 try-catch，避免单个字段失败阻断后续字段：
@@ -378,6 +411,14 @@ if (phase === 'form_fill') {
   return nextPhase('submit', 300)
 }
 ```
+
+#### 动态字段与重渲染（最佳实践）
+
+- 某个字段切换后会触发后续字段出现 / 消失时，必须先等待依赖字段真正渲染出来，再继续填写。
+- 组件发生重渲染后，**重新获取 DOM 节点**，不要复用旧引用。
+- 对下拉、日期、radio 等组件，回读时优先读取当前展示区的值，而不是容器全文本，避免把 portal / 弹层里的文本也算进去。
+
+这类问题在 Vue / React 的 Select、DatePicker、依赖型表单区块里非常常见。
 
 ---
 
@@ -682,6 +723,36 @@ auth:
 - `logged_in: false` → GUI 提示用户去登录，可选自动打开 `login_url`
 - 未声明 `auth` → 底座不做检查，直接执行脚本
 
+#### `current` 模式最佳实践
+
+- `current` 模式应绑定用户真实当前 tab，而不是“随便找一个 URL 匹配的 tab”。
+- `current` 模式也应执行 `auth_check.js`，不要因为 URL 看起来对就跳过登录检查。
+- 如果当前浏览器里同时开了多个同平台页面，优先要求前端把当前 tab id 传给后端，而不是在后端猜测。
+
+这样可以显著降低“跑错页”“半登录态误执行”“多标签页串线”的风险。
+
+#### 本地开发地址一致性（最佳实践）
+
+如果项目使用 Electron + Vite，开发环境里的地址要统一：
+
+- Vite `server.host`
+- Electron `loadURL(...)`
+- `wait-on` 或其他启动探活脚本
+
+建议统一使用 `127.0.0.1`，避免一部分走 `localhost`、一部分走 IPv4 / IPv6，导致前端明明启动了但 Electron 仍然连不上。
+
+#### 业务失败 vs 脚本失败（最佳实践）
+
+像“时间区间重复”“平台规则不允许创建”“已有活动冲突”这类情况，通常属于**业务规则拒绝**，不是脚本崩溃。
+
+建议：
+
+- 在结果 Excel 里把它们写成业务失败原因
+- 不要把这类错误都归结为 timeout / exception
+- 批量任务里让后续行继续执行
+
+这样结果更利于运营人员理解和处理。
+
 ---
 
 ## 9. 输出与通知
@@ -943,7 +1014,7 @@ for (const row of file.rows) {
 
 ## 13. 底座 HTTP API 参考
 
-底座 FastAPI 服务运行在 `http://localhost:18765`，适配开发阶段可直接调用调试。
+底座 FastAPI 服务运行在 `http://127.0.0.1:18765`，适配开发阶段可直接调用调试。
 
 ### 任务管理
 
@@ -966,13 +1037,13 @@ for (const row of file.rows) {
 
 ```bash
 # 查看任务日志
-curl http://localhost:18765/tasks/shopee-plus/voucher_batch_create/logs
+curl http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
 
 # 清空任务日志
-curl -X DELETE http://localhost:18765/tasks/shopee-plus/voucher_batch_create/logs
+curl -X DELETE http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
 
 # 运行任务（传 file_excel 参数）
-curl -X POST http://localhost:18765/tasks/shopee-plus/voucher_batch_create/run \
+curl -X POST http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/run \
   -H 'Content-Type: application/json' \
   -d '{"input_file": {"path": "/Users/me/vouchers.xlsx"}}'
 ```
@@ -984,7 +1055,7 @@ curl -X POST http://localhost:18765/tasks/shopee-plus/voucher_batch_create/run \
 | `POST` | `/read-excel` | 读取 Excel/CSV 文件，返回 headers + rows |
 
 ```bash
-curl -X POST http://localhost:18765/read-excel \
+curl -X POST http://127.0.0.1:18765/read-excel \
   -H 'Content-Type: application/json' \
   -d '{"path": "/Users/me/data.xlsx", "header_row": 1}'
 ```
