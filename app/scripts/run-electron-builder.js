@@ -1,5 +1,4 @@
 const fs = require('fs')
-const os = require('os')
 const path = require('path')
 const { spawnSync } = require('child_process')
 
@@ -48,11 +47,29 @@ const builderBin = path.join(
 )
 
 const args = ['--config', 'build.yml', ...process.argv.slice(2)]
-const result = spawnSync(builderBin, args, {
-  cwd: path.join(__dirname, '..'),
-  env,
-  stdio: 'inherit',
-})
+
+function quoteWindowsArg(value) {
+  if (value === '') return '""'
+  if (!/[ \t"]/u.test(value)) return value
+  return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1')}"`
+}
+
+function runBuilder() {
+  const options = {
+    cwd: path.join(__dirname, '..'),
+    env,
+    stdio: 'inherit',
+  }
+
+  if (process.platform !== 'win32') {
+    return spawnSync(builderBin, args, options)
+  }
+
+  const command = [builderBin, ...args].map(quoteWindowsArg).join(' ')
+  return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command], options)
+}
+
+const result = runBuilder()
 
 if (result.error) {
   console.error(result.error.message)
