@@ -31,13 +31,39 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 ## 快速开始
 
-### 前置条件
+### 方式一：下载桌面版（推荐）
+
+直接前往 GitHub Releases 下载已经打包好的桌面程序：
+
+- **滚动桌面构建**：[`desktop-latest`](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
+- **所有发布列表**：[`Releases`](https://github.com/howtimeschange/crawshrimp/releases)
+
+当前 Release 会自动包含：
+
+- macOS 桌面包（zip）
+- Windows 安装包（exe）
+- 内置 Python 运行时
+
+也就是说，**普通用户不需要自己安装 Python / Node.js**，下载后即可使用。
+
+使用方式：
+
+1. 下载对应平台安装包
+2. 启动 Chrome，并带上 `--remote-debugging-port=9222`
+3. 打开抓虾桌面程序
+4. 在 Chrome 中登录目标平台后运行任务
+
+> `desktop-latest` 是自动刷新的滚动预发布，只要 `main` 分支桌面构建成功，就会自动更新为最新可下载版本。
+
+### 方式二：从源码启动（开发者）
+
+#### 前置条件
 
 - Chrome 浏览器（用 `--remote-debugging-port=9222` 启动，见下）
 - Python 3.10+
 - Node.js 18+
 
-### 1. 克隆并安装
+#### 1. 克隆并安装
 
 ```bash
 git clone https://github.com/howtimeschange/crawshrimp
@@ -52,7 +78,7 @@ pip install -r core/requirements.txt
 cd app && npm install && cd ..
 ```
 
-### 2. 启动带 CDP 的 Chrome
+#### 2. 启动带 CDP 的 Chrome
 
 ```bash
 # macOS
@@ -69,7 +95,7 @@ google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-crawshrim
 
 > 提示：启动后在浏览器里正常登录目标平台，之后才能运行脚本。
 
-### 3. 启动抓虾
+#### 3. 启动抓虾
 
 ```bash
 # 方式一：开发模式（推荐）
@@ -82,6 +108,14 @@ PYTHONPATH=. venv/bin/python3 core/api_server.py
 ```
 
 API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认运行在 `http://127.0.0.1:5173`。可通过环境变量 `CRAWSHRIMP_PORT` 修改后端端口。
+
+### 桌面构建与发布
+
+仓库已接入 GitHub Actions 桌面构建：
+
+- `main` 分支每次提交都会自动构建 macOS / Windows 桌面包
+- 构建成功后会自动刷新 [`desktop-latest`](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
+- Release 中的桌面包已内置 Python runtime，目标是“下载即可运行”
 
 ---
 
