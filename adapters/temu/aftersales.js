@@ -19,6 +19,14 @@
     }
   }
 
+  function cdpClicks(clicks, nextPhaseName, sleepMs = 800, newShared = shared) {
+    return {
+      success: true,
+      data: [],
+      meta: { action: 'cdp_clicks', clicks, next_phase: nextPhaseName, sleep_ms: sleepMs, shared: newShared }
+    }
+  }
+
   function complete(data, hasMore = false, newShared = shared) {
     return {
       success: true,
@@ -43,6 +51,23 @@
       }
     }
     return false
+  }
+
+  function getRegionClick(regionText) {
+    const items = document.querySelectorAll('a.index-module__drItem___3eLtO')
+    for (const a of items) {
+      if (a.innerText.trim() === regionText && !a.classList.contains('index-module__disabled___3n06o')) {
+        const rect = a.getBoundingClientRect()
+        if (rect.width > 0 && rect.height > 0) {
+          return {
+            x: rect.left + rect.width / 2,
+            y: rect.top + rect.height / 2,
+            delay_ms: 120
+          }
+        }
+      }
+    }
+    return null
   }
 
   function scrapePage(regionText) {
@@ -118,6 +143,15 @@
     return false
   }
 
+  async function waitForRegions(timeout = 12000) {
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeout) {
+      if (getAvailableRegions().length > 0) return true
+      await sleep(500)
+    }
+    return false
+  }
+
   function getActiveRegion() {
     const active = document.querySelector('a.index-module__drItem___3eLtO.index-module__active___2QJPF')
     return active?.innerText.trim() || ''
@@ -147,9 +181,7 @@
 
   try {
     if (phase === 'main') {
-      if (page === 1) {
-        return nextPhase('ensure_target', 0)
-      }
+      if (page === 1) return nextPhase('ensure_target', 0)
       return nextPhase('advance_cursor', 0)
     }
 
@@ -163,20 +195,27 @@
       }
       const ok = await waitForTable(12000)
       if (!ok) return { success: false, error: 'Temu 售后页面未加载，请确认已登录并能打开售后列表' }
+      await waitForRegions(12000)
       return nextPhase('prepare_page1', 200)
     }
 
     if (phase === 'prepare_page1') {
       const ok = await waitForTable(12000)
       if (!ok) return { success: false, error: 'Temu 售后列表加载超时' }
+      const regionReady = await waitForRegions(12000)
+      if (!regionReady) return { success: false, error: '售后地区列表加载超时' }
 
       const { available, target } = buildTargetRegions()
       if (!target.length) return { success: false, error: '没有可用的地区可供抓取' }
 
       if (target[0] !== getActiveRegion()) {
-        switchRegion(target[0])
-        await sleep(2500)
-        await waitForTable(10000)
+        const click = getRegionClick(target[0])
+        if (!click) return { success: false, error: `切换售后地区失败：${target[0]}` }
+        return cdpClicks([click], 'prepare_page1_wait_region', 2500, {
+          availableRegions: available,
+          targetRegions: target,
+          targetRegion: target[0],
+        })
       }
 
       const pageResetOk = await ensureFirstPage(12000)
@@ -185,52 +224,83 @@
       return nextPhase('collect', 200, {
         availableRegions: available,
         targetRegions: target,
-        regionIdx: 0,
-        initialized: true
+      })
+    }
+
+    if (phase === 'prepare_page1_wait_region') {
+      const targetRegion = shared.targetRegion || ''
+      const tableOk = await waitForTable(12000)
+      if (!tableOk) return { success: false, error: `切换地区后列表未加载：${targetRegion || '未知地区'}` }
+      const pageResetOk = await ensureFirstPage(12000)
+      if (!pageResetOk) return { success: false, error: `切换地区后无法回到第一页：${targetRegion || '未知地区'}` }
+      return nextPhase('collect', 200, {
+        availableRegions: shared.availableRegions || [],
+        targetRegions: shared.targetRegions || [],
       })
     }
 
     if (phase === 'advance_cursor') {
-      const state = shared
-      if (!state || !state.initialized) return { success: false, error: '售后抓取状态丢失，请重新运行任务' }
-
       const ok = await waitForTable(12000)
       if (!ok) return { success: false, error: 'Temu 售后列表加载超时' }
+      const regionReady = await waitForRegions(12000)
+      if (!regionReady) return { success: false, error: '售后地区列表加载超时' }
+      const { available, target } = buildTargetRegions()
+      if (!target.length) return { success: false, error: '没有可用的地区可供抓取' }
+      const currentRegion = getActiveRegion() || target[0]
+      const currentIdx = target.indexOf(currentRegion)
+      if (currentIdx < 0) return { success: false, error: `当前售后地区不在目标列表中：${currentRegion || '未知'}` }
 
       if (hasNextPage()) {
         const sig = getPageSignature()
         clickNextPage()
         const changed = await waitPageChange(sig, 10000)
         if (!changed) return { success: false, error: '售后列表翻页失败' }
-        return nextPhase('collect', 200, state)
+        return nextPhase('collect', 200, {
+          availableRegions: available,
+          targetRegions: target,
+        })
       }
 
-      const nextState = {
-        ...state,
-        regionIdx: (state.regionIdx || 0) + 1,
-      }
-      if (nextState.regionIdx >= nextState.targetRegions.length) {
+      if (currentIdx + 1 >= target.length) {
         return complete([], false)
       }
 
-      const nextRegion = nextState.targetRegions[nextState.regionIdx]
-      const switched = switchRegion(nextRegion)
-      if (!switched) return { success: false, error: `切换售后地区失败：${nextRegion}` }
-      await sleep(2500)
+      const nextRegion = target[currentIdx + 1]
+      const click = getRegionClick(nextRegion)
+      if (!click) return { success: false, error: `切换售后地区失败：${nextRegion}` }
+      return cdpClicks([click], 'after_region_switch', 2500, {
+        availableRegions: available,
+        targetRegions: target,
+        targetRegion: nextRegion,
+      })
+    }
+
+    if (phase === 'after_region_switch') {
+      const targetRegion = shared.targetRegion || ''
       const tableOk = await waitForTable(12000)
-      if (!tableOk) return { success: false, error: `切换地区后列表未加载：${nextRegion}` }
+      if (!tableOk) return { success: false, error: `切换地区后列表未加载：${targetRegion || '未知地区'}` }
       const pageResetOk = await ensureFirstPage(12000)
-      if (!pageResetOk) return { success: false, error: `切换地区后无法回到第一页：${nextRegion}` }
-      return nextPhase('collect', 200, nextState)
+      if (!pageResetOk) return { success: false, error: `切换地区后无法回到第一页：${targetRegion || '未知地区'}` }
+      return nextPhase('collect', 200, {
+        availableRegions: shared.availableRegions || [],
+        targetRegions: shared.targetRegions || [],
+      })
     }
 
     if (phase === 'collect') {
-      const state = shared
-      if (!state || !state.initialized) return { success: false, error: '售后抓取状态丢失，请重新运行任务' }
-      const curRegion = state.targetRegions[state.regionIdx]
+      const regionReady = await waitForRegions(12000)
+      if (!regionReady) return { success: false, error: '售后地区列表加载超时' }
+      const { available, target } = buildTargetRegions()
+      if (!target.length) return { success: false, error: '没有可用的地区可供抓取' }
+      const curRegion = getActiveRegion() || target[0]
+      const curIdx = target.indexOf(curRegion)
+      if (curIdx < 0) return { success: false, error: `当前售后地区不在目标列表中：${curRegion || '未知'}` }
       const data = scrapePage(curRegion)
-      const more = hasNextPage() || (state.regionIdx + 1 < state.targetRegions.length)
-      return complete(data, more, state)
+      const more = hasNextPage() || (curIdx + 1 < target.length)
+      return complete(data, more, {
+        availableRegions: available,
+        targetRegions: target,
+      })
     }
 
     return { success: false, error: `未知 phase: ${phase}` }

@@ -16,6 +16,7 @@ import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +35,38 @@ logger = logging.getLogger(__name__)
 # In-memory task run state for live status / logs
 _run_logs: dict = {}   # job_id -> list[str]
 _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
+
+
+def _url_matches_prefix(url: str, prefix: str) -> bool:
+    if not url or not prefix:
+        return False
+    if url.startswith(prefix):
+        return True
+
+    try:
+        url_p = urlparse(url)
+        prefix_p = urlparse(prefix)
+    except Exception:
+        return False
+
+    url_host = (url_p.hostname or '').lower()
+    prefix_host = (prefix_p.hostname or '').lower()
+    url_path = url_p.path or '/'
+    prefix_path = prefix_p.path or '/'
+
+    if not url_host or not prefix_host:
+        return False
+
+    if url_host == prefix_host:
+        return url_path.startswith(prefix_path)
+
+    # Temu seller 现在会按区域切到 agentseller-us.temu.com / agentseller-xx.temu.com
+    if prefix_host == 'agentseller.temu.com' and url_host.endswith('.temu.com') and url_host.startswith('agentseller'):
+        normalized_prefix = prefix_path if prefix_path.endswith('/') else prefix_path + '/'
+        normalized_url = url_path if url_path.endswith('/') else url_path + '/'
+        return normalized_url.startswith(normalized_prefix) or normalized_prefix == '//'
+
+    return False
 
 
 def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 1):
@@ -165,21 +198,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if current_tab_id:
                 tab = next((t for t in all_tabs if str(t.get('id')) == current_tab_id), None)
                 if not tab:
-                    raise RuntimeError("未找到当前页面对应的 Chrome 标签页。请重新聚焦目标 Shopee 页面后重试。")
+                    raise RuntimeError("未找到当前页面对应的 Chrome 标签页。请重新聚焦目标业务页面后重试。")
                 tab_url = str(tab.get('url', ''))
-                if not any(tab_url.startswith(prefix) for prefix in preferred_prefixes):
+                if not any(_url_matches_prefix(tab_url, prefix) for prefix in preferred_prefixes):
                     raise RuntimeError(f"当前页面不是目标业务页：{tab_url[:120]}")
             else:
                 candidate_tabs = [
                     t for t in all_tabs
-                    if any(str(t.get('url', '')).startswith(prefix) for prefix in preferred_prefixes)
+                    if any(_url_matches_prefix(str(t.get('url', '')), prefix) for prefix in preferred_prefixes)
                 ]
                 if len(candidate_tabs) == 1:
                     tab = candidate_tabs[0]
                 elif len(candidate_tabs) > 1:
                     raise RuntimeError(
-                        "current 模式检测到多个 Shopee 页面，无法判断当前标签页。"
-                        "请关闭多余 Shopee 标签页后重试，或改用“全新页面（重新导航）”。"
+                        "current 模式检测到多个目标页面，无法判断当前标签页。"
+                        "请关闭多余相关标签页后重试，或改用“全新页面（重新导航）”。"
                     )
                 else:
                     raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
