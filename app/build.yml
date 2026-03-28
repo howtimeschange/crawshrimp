@@ -19,7 +19,7 @@ mac:
         - x64
 
 win:
-  icon: assets/icon.png
+  icon: assets/icon.ico
   target:
     - target: nsis
       arch:
@@ -36,6 +36,7 @@ nsis:
 
 dmg:
   title: CrawShrimp
+  backgroundColor: "#ffffff"
   window:
     width: 540
     height: 380

@@ -17,7 +17,17 @@ BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download
 
 mkdir -p "$OUT_DIR"
 
-for KEY in "${!TARGETS[@]}"; do
+if [ -n "${PYTHON_TARGETS:-}" ]; then
+  IFS=',' read -r -a SELECTED_TARGETS <<< "${PYTHON_TARGETS}"
+else
+  SELECTED_TARGETS=("${!TARGETS[@]}")
+fi
+
+for KEY in "${SELECTED_TARGETS[@]}"; do
+  if [ -z "${TARGETS[$KEY]:-}" ]; then
+    echo "[error] Unknown Python target: $KEY"
+    exit 1
+  fi
   FILE="${TARGETS[$KEY]}"
   URL="${BASE_URL}/${FILE}"
   DEST="${OUT_DIR}/${KEY}"

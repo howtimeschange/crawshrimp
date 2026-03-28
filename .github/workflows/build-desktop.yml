@@ -1,0 +1,65 @@
+name: Build Desktop App
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            python_target: mac-arm64,mac-x64
+            artifact_suffix: mac
+            build_script: build:mac:ci
+            artifact_glob: |
+              app/dist/*.zip
+          - name: Windows x64
+            os: windows-2022
+            python_target: win-x64
+            artifact_suffix: win-x64
+            build_script: build:win
+            artifact_glob: |
+              app/dist/*.exe
+              app/dist/*.blockmap
+              app/dist/*.yml
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install app deps
+        working-directory: app
+        run: npm ci
+
+      - name: Download bundled Python
+        working-directory: app
+        shell: bash
+        env:
+          PYTHON_TARGETS: ${{ matrix.python_target }}
+        run: bash scripts/download-python.sh
+
+      - name: Build desktop package
+        working-directory: app
+        run: npm run ${{ matrix.build_script }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: crawshrimp-${{ matrix.artifact_suffix }}
+          path: ${{ matrix.artifact_glob }}
+          if-no-files-found: error
