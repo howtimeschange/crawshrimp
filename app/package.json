@@ -4,7 +4,7 @@
   "description": "Universal web automation desktop app",
   "main": "src/main.js",
   "scripts": {
-    "dev": "concurrently \"vite\" \"electron .\"",
+    "dev": "concurrently \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build && electron-builder",
     "build:mac": "vite build && electron-builder --mac",
     "build:win": "vite build && electron-builder --win",
@@ -19,6 +19,7 @@
     "electron": "29.4.6",
     "electron-builder": "^24.13.3",
     "vite": "^5.2.0",
-    "vue": "^3.4.21"
+    "vue": "^3.4.21",
+    "wait-on": "^9.0.4"
   }
 }

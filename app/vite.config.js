@@ -12,5 +12,6 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    host: '127.0.0.1',  // 强制 IPv4，避免 macOS 上 Vite 绑到 IPv6 导致 Electron ERR_CONNECTION_REFUSED
   },
 })
