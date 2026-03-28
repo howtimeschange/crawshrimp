@@ -283,7 +283,17 @@ async function runTask() {
     }
   }
 
-  const r = await window.cs.runTask(props.adapterId, props.task.task_id, params)
+  let currentTabId = ''
+  if (String(params.mode || '').trim().toLowerCase() === 'current') {
+    try {
+      const tab = await window.cs.getCurrentChromeTab?.()
+      if (tab?.id) currentTabId = String(tab.id)
+    } catch {}
+  }
+
+  const r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
+    current_tab_id: currentTabId,
+  })
   if (!r.ok) {
     logs.value.push(`[错误] ${r.message || JSON.stringify(r)}`)
     isRunning.value = false

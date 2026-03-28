@@ -14,6 +14,74 @@ const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 
+function normalizeUrlForMatch(raw) {
+  try {
+    const url = new URL(String(raw || ''))
+    url.hash = ''
+    return url.toString()
+  } catch {
+    return String(raw || '').trim()
+  }
+}
+
+function getFrontChromeTabMeta() {
+  if (process.platform !== 'darwin') return null
+
+  const chromeApps = ['Google Chrome', 'Chromium', 'Google Chrome for Testing']
+  for (const appName of chromeApps) {
+    const script = [
+      `tell application "${appName}"`,
+      '  if not running then return ""',
+      '  if (count of windows) = 0 then return ""',
+      '  set activeTab to active tab of front window',
+      '  return (URL of activeTab as text) & linefeed & (title of activeTab as text)',
+      'end tell',
+    ].join('\n')
+
+    try {
+      const output = execSync(`osascript <<'APPLESCRIPT'\n${script}\nAPPLESCRIPT`, {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim()
+      if (!output) continue
+      const [url, ...titleLines] = output.split('\n')
+      if (!url) continue
+      return {
+        appName,
+        url: url.trim(),
+        title: titleLines.join('\n').trim(),
+      }
+    } catch {}
+  }
+
+  return null
+}
+
+async function resolveCurrentChromeTab() {
+  const frontTab = getFrontChromeTabMeta()
+  if (!frontTab?.url) return null
+
+  const tabs = await apiCall('GET', '/settings/chrome-tabs')
+  if (!Array.isArray(tabs) || !tabs.length) return null
+
+  const normalizedUrl = normalizeUrlForMatch(frontTab.url)
+  const normalizedTitle = String(frontTab.title || '').trim()
+
+  const byUrl = tabs.filter(t => normalizeUrlForMatch(t.url) === normalizedUrl)
+  if (normalizedTitle) {
+    const exactUrlTitle = byUrl.find(t => String(t.title || '').trim() === normalizedTitle)
+    if (exactUrlTitle) return exactUrlTitle
+  }
+  if (byUrl.length === 1) return byUrl[0]
+
+  if (normalizedTitle) {
+    const byTitle = tabs.filter(t => String(t.title || '').trim() === normalizedTitle)
+    if (byTitle.length === 1) return byTitle[0]
+  }
+
+  return null
+}
+
 // ── Path helpers ──────────────────────────────────────────────────────────────
 
 function getPythonBin() {
@@ -306,6 +374,13 @@ ipcMain.handle('check-chrome', async () => ({ ok: await probeTcp(CDP_PORT) }))
 ipcMain.handle('get-chrome-tabs', async () => {
   try { return await apiCall('GET', '/settings/chrome-tabs') } catch { return [] }
 })
+ipcMain.handle('get-current-chrome-tab', async () => {
+  try {
+    return await resolveCurrentChromeTab()
+  } catch {
+    return null
+  }
+})
 
 ipcMain.handle('get-adapters',     async () => apiCall('GET',    '/adapters'))
 ipcMain.handle('uninstall-adapter',async (_, id) => apiCall('DELETE', `/adapters/${id}`))
@@ -324,8 +399,11 @@ ipcMain.handle('install-adapter', async (_, payload) => {
 })
 
 ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks'))
-ipcMain.handle('run-task',        async (_, aid, tid, params) =>
-  apiCall('POST', `/tasks/${aid}/${tid}/run`, { params: params || {} }))
+ipcMain.handle('run-task',        async (_, aid, tid, params, options) =>
+  apiCall('POST', `/tasks/${aid}/${tid}/run`, {
+    params: params || {},
+    current_tab_id: options?.current_tab_id || '',
+  }))
 ipcMain.handle('get-task-status', async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/status`))
 ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
 ipcMain.handle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))

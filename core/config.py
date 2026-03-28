@@ -7,7 +7,7 @@ from typing import Any
 DEFAULT_CONFIG = {
     "chrome": {
         "cdp_port": 9222,
-        "remote_debugging_url": "http://localhost:9222",
+        "remote_debugging_url": "http://127.0.0.1:9222",
     },
     "adapters_dir": "adapters",
     "data_dir": "data",

@@ -5,6 +5,7 @@ contextBridge.exposeInMainWorld('cs', {
   getStatus:       () => ipcRenderer.invoke('get-status'),
   launchChrome:    (path) => ipcRenderer.invoke('launch-chrome', path),
   checkChrome:     () => ipcRenderer.invoke('check-chrome'),
+  getCurrentChromeTab: () => ipcRenderer.invoke('get-current-chrome-tab'),
 
   getAdapters:     () => ipcRenderer.invoke('get-adapters'),
   installAdapter:  (payload) => ipcRenderer.invoke('install-adapter', payload),
@@ -12,7 +13,7 @@ contextBridge.exposeInMainWorld('cs', {
   enableAdapter:   (id, enabled) => ipcRenderer.invoke('enable-adapter', id, enabled),
 
   getTasks:        () => ipcRenderer.invoke('get-tasks'),
-  runTask:         (aid, tid, params) => ipcRenderer.invoke('run-task', aid, tid, params),
+  runTask:         (aid, tid, params, options) => ipcRenderer.invoke('run-task', aid, tid, params, options),
   getTaskStatus:   (aid, tid) => ipcRenderer.invoke('get-task-status', aid, tid),
   getTaskLogs:     (aid, tid) => ipcRenderer.invoke('get-task-logs', aid, tid),
   clearTaskLogs:   (aid, tid) => ipcRenderer.invoke('clear-task-logs', aid, tid),

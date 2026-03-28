@@ -17,10 +17,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 120
 MAX_PAGES = 100
-MAX_PHASES = 1000
+MAX_PHASES = 9999
 NAVIGATION_ERROR_MARKERS = (
     "Inspected target navigated or closed",
     "Cannot find context with specified id",
+    "Promise was collected",
 )
 
 

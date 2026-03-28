@@ -83,7 +83,7 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
     return {"headers": headers, "rows": rows, "total": len(rows)}
 
 
-async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = None):
+async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
     """
     Core task execution pipeline:
     1. Find / create matching Chrome tab via CDP
@@ -127,7 +127,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         bridge = get_bridge()
         run_params = params or {}
+        runtime_options = runtime_options or {}
         mode = (run_params.get('mode') or 'current').strip().lower()
+        current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
 
         # 自动解析 file_excel 参数：如果传了 path 但没有 rows，就在后台读出来注入
         for pk, pv in run_params.items():
@@ -141,25 +143,39 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     pv['headers'] = resolved['headers']
                     log(f"Successfully resolved {len(pv['rows'])} rows.")
 
+        is_shopee_marketing_adapter = str(m.entry_url or '').startswith('https://seller.shopee.cn/portal/marketing')
+
         tab = None
         if mode == 'current':
-            # current 模式：优先选最贴近"当前进行中"状态的 tab
-            # Shopee 不能盲目优先 /new：浏览器里若残留旧的错误创建页，会把新任务吸过去
-            # 正确策略：优先营销中心主页 / 列表页；真正的 /new 由脚本按当前行 voucherType 主动导航进入
             all_tabs = [t for t in bridge.get_tabs() if t.get('type') == 'page']
             preferred_prefixes = [
+                'https://seller.shopee.cn/portal/marketing',
                 'https://seller.shopee.cn/portal/marketing/vouchers/list',
-                m.entry_url,
                 'https://seller.shopee.cn/portal/marketing/vouchers/new',
-            ] if adapter_id == 'shopee' else [m.entry_url]
+                'https://seller.shopee.cn/portal/marketing/follow-prize/new',
+            ] if is_shopee_marketing_adapter else [m.entry_url]
 
-            for prefix in preferred_prefixes:
-                tab = next((t for t in all_tabs if t.get('url', '').startswith(prefix)), None)
-                if tab:
-                    break
-
-            if not tab:
-                raise RuntimeError(f"未找到已打开的目标页面：{m.entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
+            if current_tab_id:
+                tab = next((t for t in all_tabs if str(t.get('id')) == current_tab_id), None)
+                if not tab:
+                    raise RuntimeError("未找到当前页面对应的 Chrome 标签页。请重新聚焦目标 Shopee 页面后重试。")
+                tab_url = str(tab.get('url', ''))
+                if not any(tab_url.startswith(prefix) for prefix in preferred_prefixes):
+                    raise RuntimeError(f"当前页面不是目标业务页：{tab_url[:120]}")
+            else:
+                candidate_tabs = [
+                    t for t in all_tabs
+                    if any(str(t.get('url', '')).startswith(prefix) for prefix in preferred_prefixes)
+                ]
+                if len(candidate_tabs) == 1:
+                    tab = candidate_tabs[0]
+                elif len(candidate_tabs) > 1:
+                    raise RuntimeError(
+                        "current 模式检测到多个 Shopee 页面，无法判断当前标签页。"
+                        "请关闭多余 Shopee 标签页后重试，或改用“全新页面（重新导航）”。"
+                    )
+                else:
+                    raise RuntimeError(f"未找到已打开的目标页面：{m.entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
         else:
             log(f"mode=new，尝试新建页面：{m.entry_url}")
             try:
@@ -176,15 +192,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             tab_id=str(tab.get('id') or ''),
         )
 
-        # Shopee current 模式：如果已经命中 marketing 域内页面，直接视为当前会话可用，避免误判卡在登录等待
-        skip_auth_wait = (
-            adapter_id == 'shopee' and
-            mode == 'current' and
-            str(tab.get('url', '')).startswith('https://seller.shopee.cn/portal/marketing')
-        )
-
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
-        if (not skip_auth_wait) and m.auth and m.auth.check_script:
+        if m.auth and m.auth.check_script:
             adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
             auth_path = adapter_dir / m.auth.check_script
             if auth_path.exists():
@@ -199,9 +208,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
                 if not logged_in:
                     login_url = (m.auth.login_url or m.entry_url)
-                    log(f"检测到未登录，跳转登录页：{login_url}")
-                    await runner.evaluate(f"location.href = {login_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
-                    await asyncio.sleep(2)
+                    if mode == 'new':
+                        log(f"检测到未登录，跳转登录页：{login_url}")
+                        await runner.evaluate(f"location.href = {login_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
+                        await asyncio.sleep(2)
+                    else:
+                        log("检测到未登录，请在当前页面完成 Shopee 登录…")
                     wait_seconds = 300
                     for i in range(wait_seconds):
                         auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
@@ -423,6 +435,7 @@ def list_tasks():
 
 class RunTaskRequest(BaseModel):
     params: Optional[dict] = None
+    current_tab_id: Optional[str] = None
 
 
 @app.post("/tasks/{adapter_id}/{task_id}/run")
@@ -432,7 +445,13 @@ async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskR
         raise HTTPException(404, f"Adapter not found: {adapter_id}")
     if not any(t.id == task_id for t in m.tasks):
         raise HTTPException(404, f"Task not found: {task_id}")
-    background_tasks.add_task(_execute_task, adapter_id, task_id, req.params or {})
+    background_tasks.add_task(
+        _execute_task,
+        adapter_id,
+        task_id,
+        req.params or {},
+        {"current_tab_id": req.current_tab_id},
+    )
     return {"ok": True, "message": "Task started in background"}
 
 

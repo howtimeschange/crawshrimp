@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 
 
 class CDPBridge:
-    def __init__(self, cdp_url: str = "http://localhost:9222"):
+    def __init__(self, cdp_url: str = "http://127.0.0.1:9222"):
         self.cdp_url = cdp_url.rstrip("/")
         self._tabs: list = []
 
@@ -67,7 +67,10 @@ def get_bridge() -> CDPBridge:
     global _bridge
     from core.config import get
     if _bridge is None:
-        _bridge = CDPBridge(get("chrome.remote_debugging_url", "http://localhost:9222"))
+        cdp_url = get("chrome.remote_debugging_url", "http://127.0.0.1:9222")
+        if isinstance(cdp_url, str) and "://localhost:" in cdp_url:
+            cdp_url = cdp_url.replace("://localhost:", "://127.0.0.1:")
+        _bridge = CDPBridge(cdp_url)
     return _bridge
 
 
