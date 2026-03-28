@@ -73,8 +73,7 @@ tasks:
         hint: 请填写 Temu 店铺主页链接（mall.html?mall_id=...），脚本会自动点击「Reviews/评价」tab
         required: true
     trigger:
-      type: interval
-      interval_minutes: 60
+      type: manual
     output:
       - type: excel
         filename: "店铺评价_{date}.xlsx"
@@ -105,8 +104,7 @@ tasks:
           - value: 欧区
             label: 欧区
     trigger:
-      type: interval
-      interval_minutes: 30
+      type: manual
     output:
       - type: excel
         filename: "售后数据_{date}.xlsx"

@@ -75,8 +75,7 @@ tasks:
         min: 1
         max: 99
     trigger:
-      type: interval
-      interval_minutes: 120
+      type: manual
     output:
       - type: excel
         filename: "JD破价记录_{date}.xlsx"

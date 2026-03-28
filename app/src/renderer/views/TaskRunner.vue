@@ -46,8 +46,7 @@
               {{ opt.label }}
             </option>
           </select>
-          <!-- 联动：选了「自定义日期/自定义」时，显示日期区间控件 -->
-          <template v-if="isCustomDateSelected(param.id)">
+          <template v-if="shouldShowInlineCustomDate(param)">
             <div class="custom-date-hint">自定义范围</div>
             <div class="date-range" style="margin-top:6px">
               <input type="date" v-model="values['_custom_start_' + param.id]" class="input" />
@@ -74,10 +73,24 @@
 
         <!-- 日期区间 -->
         <template v-else-if="param.type === 'date_range'">
-          <div class="date-range">
-            <input type="date" v-model="values[param.id + '_start']" class="input" />
-            <span class="date-sep">至</span>
-            <input type="date" v-model="values[param.id + '_end']" class="input" />
+          <div v-if="shouldShowDateRangeParam(param)" class="date-range-panel">
+            <div class="date-range">
+              <label class="date-card">
+                <input type="date" v-model="values[param.id + '_start']" class="date-card-input" />
+                <span :class="['date-card-value', { placeholder: !values[param.id + '_start'] }]">
+                  {{ formatDateDisplay(values[param.id + '_start']) }}
+                </span>
+                <span class="date-card-icon" aria-hidden="true">选择</span>
+              </label>
+              <span class="date-sep">至</span>
+              <label class="date-card">
+                <input type="date" v-model="values[param.id + '_end']" class="date-card-input" />
+                <span :class="['date-card-value', { placeholder: !values[param.id + '_end'] }]">
+                  {{ formatDateDisplay(values[param.id + '_end']) }}
+                </span>
+                <span class="date-card-icon" aria-hidden="true">选择</span>
+              </label>
+            </div>
           </div>
         </template>
 
@@ -261,8 +274,11 @@ async function runTask() {
       // 如果选了「自定义」，把对应的日期也打进去
       const v = values.value[p.id]
       if (v === '自定义') {
-        params['custom_start'] = values.value['_custom_start_' + p.id] || ''
-        params['custom_end']   = values.value['_custom_end_'   + p.id] || ''
+        const linkedRangeId = getLinkedDateRangeIdForSelect(p.id)
+        const startKey = linkedRangeId ? linkedRangeId + '_start' : '_custom_start_' + p.id
+        const endKey = linkedRangeId ? linkedRangeId + '_end' : '_custom_end_' + p.id
+        params['custom_start'] = values.value[startKey] || ''
+        params['custom_end']   = values.value[endKey] || ''
         // 同时把 custom_range 填进去（兼容 manifest 里单独声明的 date_range）
         params['custom_range'] = {
           start: params['custom_start'],
@@ -400,6 +416,47 @@ function isCustomDateSelected(paramId) {
   return v === '自定义' || v === 'custom'
 }
 
+function selectSupportsCustom(param) {
+  return (param?.options || []).some(opt =>
+    opt?.value === '自定义' ||
+    opt?.value === 'custom' ||
+    String(opt?.label || '').includes('自定义')
+  )
+}
+
+function getLinkedDateRangeIdForSelect(paramId) {
+  const params = props.task?.params || []
+  const selectParam = params.find(p => p.id === paramId)
+  if (!selectSupportsCustom(selectParam)) return null
+  const explicit = params.find(p => p.type === 'date_range' && p.id === 'custom_range')
+  if (explicit) return explicit.id
+  const dateRanges = params.filter(p => p.type === 'date_range')
+  return dateRanges.length === 1 ? dateRanges[0].id : null
+}
+
+function getControllerSelectForDateRange(paramId) {
+  const params = props.task?.params || []
+  if (paramId === 'custom_range') {
+    return params.find(p => p.type === 'select' && selectSupportsCustom(p)) || null
+  }
+  return null
+}
+
+function shouldShowInlineCustomDate(param) {
+  return isCustomDateSelected(param.id) && !getLinkedDateRangeIdForSelect(param.id)
+}
+
+function shouldShowDateRangeParam(param) {
+  const controller = getControllerSelectForDateRange(param.id)
+  if (!controller) return true
+  return isCustomDateSelected(controller.id)
+}
+
+function formatDateDisplay(value) {
+  if (!value) return '年 / 月 / 日'
+  return String(value).replace(/-/g, ' / ')
+}
+
 async function pickExcel(paramId) {
   const path = await window.cs.browseFile({
     title: '选择 Excel 或 CSV 文件',
@@ -480,10 +537,56 @@ onUnmounted(() => clearInterval(pollTimer))
 .checkbox-item input[type=checkbox] { accent-color: var(--orange); width: 14px; height: 14px; cursor: pointer; }
 .checkbox-label { font-size: 13px; color: var(--text); }
 
-.date-range { display: flex; align-items: center; gap: 10px; }
+.date-range-panel {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg3);
+}
+.date-range { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .date-sep { font-size: 12px; color: var(--text2); }
 .date-range .input { width: 160px; }
 .custom-date-hint { font-size: 11px; color: var(--text3); margin-top: 10px; font-weight: 600; letter-spacing: 0.04em; }
+.date-card {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 180px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+  overflow: hidden;
+}
+.date-card:hover { border-color: var(--orange); background: rgba(255,255,255,0.04); transform: translateY(-1px); }
+.date-card:focus-within { border-color: var(--orange); box-shadow: 0 0 0 3px rgba(255, 106, 41, 0.12); }
+.date-card-input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+.date-card-value {
+  font-size: 13px;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.date-card-value.placeholder { color: var(--text3); }
+.date-card-icon {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--text3);
+  pointer-events: none;
+}
 
 /* 执行按钮 */
 .action-row { display: flex; align-items: center; gap: 12px; padding-top: 4px; }

@@ -12,6 +12,8 @@
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
+  const SEEN_ROWS_KEY = '__CRAWSHRIMP_TEMU_GOODS_SEEN__'
+
   function nextPhase(name, sleepMs = 800, newShared = shared) {
     return {
       success: true,
@@ -20,12 +22,77 @@
     }
   }
 
-  function complete(data, hasMore = false, newShared = shared) {
+  function complete(data, hasMore = false, newShared = shared, extraMeta = {}) {
     return {
       success: true,
       data,
-      meta: { action: 'complete', has_more: hasMore, shared: newShared }
+      meta: { action: 'complete', has_more: hasMore, shared: newShared, ...extraMeta }
     }
+  }
+
+  function getSeenRows() {
+    if (!window[SEEN_ROWS_KEY] || typeof window[SEEN_ROWS_KEY] !== 'object') {
+      window[SEEN_ROWS_KEY] = Object.create(null)
+    }
+    return window[SEEN_ROWS_KEY]
+  }
+
+  function resetSeenRows() {
+    window[SEEN_ROWS_KEY] = Object.create(null)
+  }
+
+  function makeRowKey(row) {
+    return row.map(v => String(v || '').trim()).join('\u001f')
+  }
+
+  function dedupeRows(rows) {
+    const seen = getSeenRows()
+    const result = []
+    for (const row of rows) {
+      const key = makeRowKey(row)
+      if (seen[key]) continue
+      seen[key] = 1
+      result.push(row)
+    }
+    return result
+  }
+
+  function getTimeRangeRow() {
+    return [...document.querySelectorAll('.index-module__row___3r4Dw')]
+      .find(row => row.querySelector('.index-module__row_label___1OVcV')?.textContent?.trim() === '时间区间') || null
+  }
+
+  function getTimeRangeSelect() {
+    return getTimeRangeRow()?.querySelector('.ST_outerWrapper_5-120-1') || null
+  }
+
+  function getTimeRangeSelectInput() {
+    return getTimeRangeSelect()?.querySelector('input[data-testid="beast-core-select-htmlInput"], input') || null
+  }
+
+  function getTimeRangeRangeInput() {
+    return getTimeRangeRow()?.querySelector('input.RPR_input_5-120-1') || document.querySelector('input.RPR_input_5-120-1')
+  }
+
+  function readTimeRangeValue() {
+    return getTimeRangeSelectInput()?.value?.trim() || ''
+  }
+
+  function readCustomRangeValue() {
+    return getTimeRangeRangeInput()?.value?.trim() || ''
+  }
+
+  async function waitForValue(readValue, expected, timeout = 5000) {
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeout) {
+      if (readValue() === expected) return true
+      await sleep(200)
+    }
+    return false
+  }
+
+  function formatDateRangeValue(startDate, endDate) {
+    return `${startDate} ~ ${endDate}`
   }
 
   async function waitForTable(timeout = 15000) {
@@ -42,21 +109,12 @@
   }
 
   function openTimeDropdown() {
-    const all = document.querySelectorAll('*')
-    for (const el of all) {
-      if (el.children.length === 0 && el.textContent.trim() === '时间区间') {
-        let parent = el.parentElement
-        for (let d = 0; d < 6 && parent; d++) {
-          const trigger = parent.querySelector('[class*="ST_selector_"],[class*="ST_selector"],[class*="SLT_selector"]')
-          if (trigger) { trigger.click(); return true }
-          const arr = parent.querySelector('[class*="arrow"],[class*="Arrow"],[class*="suffix"]')
-          if (arr) { (arr.parentElement || arr).click(); return true }
-          parent = parent.parentElement
-        }
-      }
+    const select = getTimeRangeSelect()
+    if (select) {
+      const head = select.querySelector('[data-testid="beast-core-select-header"], .ST_head_5-120-1') || select
+      head.click()
+      return true
     }
-    const fb = document.querySelector('[class*="ST_selector_"],[class*="ST_selector"]')
-    if (fb) { fb.click(); return true }
     return false
   }
 
@@ -66,7 +124,8 @@
       '[class*="Select_option"]', '[role="option"]', 'li[class*="option"]'
     ]
     for (const sel of selectors) {
-      for (const opt of document.querySelectorAll(sel)) {
+      const options = [...document.querySelectorAll(sel)]
+      for (const opt of options) {
         if (opt.textContent.trim() === optionText) {
           opt.click()
           return true
@@ -191,9 +250,11 @@
     if (!openTimeDropdown()) return false
     await sleep(500)
     if (!clickOption('自定义')) return false
+    const selectReady = await waitForValue(readTimeRangeValue, '自定义', 3000)
+    if (!selectReady) return false
     await sleep(800)
 
-    const rprInput = document.querySelector('input.RPR_input_5-120-1')
+    const rprInput = getTimeRangeRangeInput()
     if (rprInput) rprInput.click()
     await sleep(1200)
 
@@ -223,7 +284,10 @@
     if (!okEnd) return false
     await sleep(300)
 
-    return clickConfirmButton()
+    if (!clickConfirmButton()) return false
+
+    const expectedRange = formatDateRangeValue(startDate, endDate)
+    return await waitForValue(readCustomRangeValue, expectedRange, 5000)
   }
 
   function scrapePage() {
@@ -288,6 +352,7 @@
 
   try {
     if (phase === 'main') {
+      if (page === 1) resetSeenRows()
       if (page === 1) return nextPhase('ensure_target', 0)
       return nextPhase('turn_page', 0)
     }
@@ -316,15 +381,18 @@
         if (timeRange === '自定义') {
           const start = customRange.start || ''
           const end = customRange.end || ''
-          if (start && end) {
-            const ok = await setCustomDateRange(start, end)
-            if (!ok) return { success: false, error: '设置自定义日期失败，请检查日期区间或页面状态' }
-            await sleep(500)
-          }
+          if (!start || !end) return { success: false, error: '请选择完整的自定义日期范围' }
+          const ok = await setCustomDateRange(start, end)
+          if (!ok) return { success: false, error: '设置自定义日期失败，请检查日期区间或页面状态' }
+          await sleep(500)
         } else if (openTimeDropdown()) {
           await sleep(500)
-          clickOption(timeRange)
+          if (!clickOption(timeRange)) return { success: false, error: `选择时间区间失败：${timeRange}` }
+          const selected = await waitForValue(readTimeRangeValue, timeRange, 3000)
+          if (!selected) return { success: false, error: `时间区间未生效：${timeRange}` }
           await sleep(500)
+        } else {
+          return { success: false, error: '无法打开时间区间下拉框' }
         }
       }
 
@@ -348,7 +416,7 @@
     }
 
     if (phase === 'collect') {
-      const rows = scrapePage()
+      const rows = dedupeRows(scrapePage())
       const headers = ['商品名称', '商品分类', 'SPU', 'SKC', '国家/地区', '支付件数', '销售趋势']
       const data = rows.map(r => {
         const obj = {}

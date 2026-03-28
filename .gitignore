@@ -1,5 +1,7 @@
 node_modules/
 dist/
+app/.builder-bin/
+app/python-dist/
 python/bundle/
 python-vendor/
 *.pyc
