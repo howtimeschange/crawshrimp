@@ -52,5 +52,11 @@ This skill is optimized for **new pages and flaky controls**, not just pure tabl
 For the full playbook and checklist, read:
 
 - [references/dom-lab-playbook.md](references/dom-lab-playbook.md)
+- [references/dom-report-template.md](references/dom-report-template.md)
+- [references/react-vue-troubleshooting-checklist.md](references/react-vue-troubleshooting-checklist.md)
 
-Load it when you need the detailed DOM Lab workflow, output checklist, failure taxonomy, or regression ladder.
+Load them when you need:
+
+- the detailed DOM Lab workflow and regression ladder
+- a standard DOM experiment report template
+- a React / Vue control troubleshooting checklist

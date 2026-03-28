@@ -153,3 +153,12 @@ Useful artifact naming:
 - `<adapter>/notes/<usecase>-dom-findings.md`
 
 The exact path can vary, but the habit should stay the same: keep evidence of what actually worked.
+
+## Recommended Companions
+
+Use these references together with this playbook:
+
+- [dom-report-template.md](dom-report-template.md)
+  - Use when you want a clean report skeleton for page-level findings.
+- [react-vue-troubleshooting-checklist.md](react-vue-troubleshooting-checklist.md)
+  - Use when the failing control is a React / Vue date picker, select, radio group, dependent block, or portal popover.
