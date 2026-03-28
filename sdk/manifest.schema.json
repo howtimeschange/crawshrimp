@@ -29,6 +29,8 @@
           "name": { "type": "string" },
           "description": { "type": "string" },
           "script": { "type": "string" },
+          "entry_url": { "type": "string", "format": "uri" },
+          "skip_auth": { "type": "boolean" },
           "trigger": {
             "type": "object",
             "properties": {

@@ -1,6 +1,6 @@
 id: jd
 name: 京东价格监控
-version: 1.0.0
+version: 1.1.0
 author: howtimeschange
 description: "京东店铺全品价格抓取 + 破价检测，支持单次导出和定时巡检"
 entry_url: https://mall.jd.com
@@ -14,7 +14,17 @@ tasks:
     name: 导出全店价格
     description: 抓取店铺全部 SKU 的页面价和吊牌价，导出 Excel，支持自动翻页
     script: price-export.js
+    skip_auth: true
     params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 全新页面（推荐）
+          - value: current
+            label: 在当前页面
       - id: shop_url
         type: text
         label: 店铺主页链接
@@ -40,7 +50,17 @@ tasks:
     name: 破价巡检
     description: 将当前价格与吊牌价对比，按阈值检测破价 SKU，触发钉钉通知
     script: price-check.js
+    skip_auth: true
     params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 全新页面（推荐）
+          - value: current
+            label: 在当前页面
       - id: shop_url
         type: text
         label: 店铺主页链接
@@ -62,4 +82,4 @@ tasks:
         filename: "JD破价记录_{date}.xlsx"
       - type: notify
         channel: dingtalk
-        condition: violations > 0
+        condition: "data.length > 0"

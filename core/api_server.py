@@ -126,10 +126,17 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         log(f"[{adapter_id}/{task_id}] Starting...")
 
         bridge = get_bridge()
-        run_params = params or {}
+        run_params = dict(params or {})
         runtime_options = runtime_options or {}
-        mode = (run_params.get('mode') or 'current').strip().lower()
+        task_param_ids = {p.id for p in task.params}
+        for p in task.params:
+            if p.id not in run_params and p.default is not None:
+                run_params[p.id] = p.default
+
+        mode = str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
         current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
+        target_entry_url = str(task.entry_url or m.entry_url or '').strip()
+        platform_name = m.name or adapter_id
 
         # 自动解析 file_excel 参数：如果传了 path 但没有 rows，就在后台读出来注入
         for pk, pv in run_params.items():
@@ -143,7 +150,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     pv['headers'] = resolved['headers']
                     log(f"Successfully resolved {len(pv['rows'])} rows.")
 
-        is_shopee_marketing_adapter = str(m.entry_url or '').startswith('https://seller.shopee.cn/portal/marketing')
+        is_shopee_marketing_adapter = target_entry_url.startswith('https://seller.shopee.cn/portal/marketing')
 
         tab = None
         if mode == 'current':
@@ -153,7 +160,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 'https://seller.shopee.cn/portal/marketing/vouchers/list',
                 'https://seller.shopee.cn/portal/marketing/vouchers/new',
                 'https://seller.shopee.cn/portal/marketing/follow-prize/new',
-            ] if is_shopee_marketing_adapter else [m.entry_url]
+            ] if is_shopee_marketing_adapter else [target_entry_url]
 
             if current_tab_id:
                 tab = next((t for t in all_tabs if str(t.get('id')) == current_tab_id), None)
@@ -175,16 +182,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         "请关闭多余 Shopee 标签页后重试，或改用“全新页面（重新导航）”。"
                     )
                 else:
-                    raise RuntimeError(f"未找到已打开的目标页面：{m.entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
+                    raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
         else:
-            log(f"mode=new，尝试新建页面：{m.entry_url}")
+            log(f"mode=new，尝试新建页面：{target_entry_url}")
             try:
-                tab = bridge.new_tab(m.entry_url)
+                tab = bridge.new_tab(target_entry_url)
             except Exception as e:
                 log(f"新建 tab 失败，尝试复用现有 tab: {e}")
-                tab = bridge.find_tab(m.entry_url)
+                tab = bridge.find_tab(target_entry_url)
             if not tab:
-                raise RuntimeError(f"无法打开或找到目标页面：{m.entry_url}")
+                raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 
         log(f"Found tab: {tab.get('url', '')[:120]}")
         runner = JSRunner(
@@ -193,7 +200,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         )
 
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
-        if m.auth and m.auth.check_script:
+        if not task.skip_auth and m.auth and m.auth.check_script:
             adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
             auth_path = adapter_dir / m.auth.check_script
             if auth_path.exists():
@@ -207,13 +214,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         logged_in = bool((auth_result.data[0] or {}).get('logged_in'))
 
                 if not logged_in:
-                    login_url = (m.auth.login_url or m.entry_url)
+                    login_url = (m.auth.login_url or target_entry_url)
                     if mode == 'new':
                         log(f"检测到未登录，跳转登录页：{login_url}")
                         await runner.evaluate(f"location.href = {login_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
                         await asyncio.sleep(2)
                     else:
-                        log("检测到未登录，请在当前页面完成 Shopee 登录…")
+                        log(f"检测到未登录，请在当前页面完成 {platform_name} 登录…")
                     wait_seconds = 300
                     for i in range(wait_seconds):
                         auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
@@ -227,15 +234,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                             log("用户已完成登录，继续执行任务")
                             break
                         if i in (0, 4) or (i + 1) % 15 == 0:
-                            log(f"等待用户登录 Shopee… {i + 1}/{wait_seconds}s")
+                            log(f"等待用户登录 {platform_name}… {i + 1}/{wait_seconds}s")
                         await asyncio.sleep(1)
                     else:
-                        raise RuntimeError("等待登录超时（5分钟）。请完成 Shopee 登录后重试。")
+                        raise RuntimeError(f"等待登录超时（5分钟）。请完成 {platform_name} 登录后重试。")
 
                 if mode == 'new':
                     # 登录完成后，重新导航回业务入口页
-                    log(f"导航回业务入口：{m.entry_url}")
-                    await runner.evaluate(f"location.href = {m.entry_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
+                    log(f"导航回业务入口：{target_entry_url}")
+                    await runner.evaluate(f"location.href = {target_entry_url!r}; ({'{'} success: true, data: [], meta: {{ has_more: false }} {'}'})")
                     await asyncio.sleep(3)
 
         adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
@@ -251,6 +258,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         output_files = []
         for out in task.output:
             if out.type == OutputType.excel:
+                if not data:
+                    log("No data rows returned, skip Excel export")
+                    continue
                 fname = out.filename or "{task_id}_{date}.xlsx"
                 path = data_sink.export_excel(data, adapter_id, task_id, fname)
                 output_files.append(path)

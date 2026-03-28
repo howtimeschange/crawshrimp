@@ -64,6 +64,8 @@ class TaskDefinition(BaseModel):
     name: str
     description: Optional[str] = None
     script: str
+    entry_url: Optional[str] = None   # 可选：覆盖 adapter 级入口，适用于同 adapter 下的不同站点
+    skip_auth: bool = False           # 可选：跳过 adapter 级 auth_check
     params: List[TaskParam] = []       # 脚本声明的 UI 输入参数
     trigger: TaskTrigger = TaskTrigger()
     output: List[TaskOutput] = []

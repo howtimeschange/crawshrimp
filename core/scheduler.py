@@ -68,6 +68,14 @@ def register_adapter(manifest: AdapterManifest, run_callback: Callable) -> int:
             _task_callbacks[jid] = run_callback
             continue
 
+        missing_required = [p.id for p in task.params if p.required and p.default is None]
+        if missing_required:
+            logger.warning(
+                f"Task {jid} 需要运行参数 {missing_required}，当前调度器无持久化参数来源，跳过自动注册"
+            )
+            _task_callbacks[jid] = run_callback
+            continue
+
         if trigger.type == TriggerType.interval:
             minutes = trigger.interval_minutes or 30
             apc_trigger = IntervalTrigger(minutes=minutes)

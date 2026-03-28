@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.1.0
+version: 1.2.0
 author: howtimeschange
 description: "Temu 卖家后台数据抓取：商品数据、售后、评价、店铺商品"
 entry_url: https://agentseller.temu.com
@@ -18,7 +18,7 @@ tasks:
       - id: mode
         type: radio
         label: 登录模式
-        default: current
+        default: new
         options:
           - value: current
             label: 在当前页面（已登录）
@@ -40,6 +40,10 @@ tasks:
           - value: "自定义"
             label: 自定义日期
         hint: 选择「自定义日期」后将出现日期选择器，区间不超过 31 天
+      - id: custom_range
+        type: date_range
+        label: 自定义日期
+        hint: 仅在「时间区间」选择“自定义”时生效，区间不超过 31 天
     trigger:
       type: manual
     output:
@@ -50,7 +54,18 @@ tasks:
     name: 店铺评价
     description: 抓取 Temu 店铺评价列表（评分/文字/时间/图片），支持中英文双语页面
     script: reviews.js
+    entry_url: https://www.temu.com
+    skip_auth: true
     params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 全新页面（推荐）
+          - value: current
+            label: 在当前页面
       - id: shop_url
         type: text
         label: 店铺链接
@@ -72,7 +87,7 @@ tasks:
       - id: mode
         type: radio
         label: 登录模式
-        default: current
+        default: new
         options:
           - value: current
             label: 在当前页面（已登录）
@@ -100,7 +115,18 @@ tasks:
     name: 站点商品
     description: 抓取 Temu 店铺商品列表（商品名/价格/评分/链接），自动加载全量
     script: store-items.js
+    entry_url: https://www.temu.com
+    skip_auth: true
     params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 全新页面（推荐）
+          - value: current
+            label: 在当前页面
       - id: shop_url
         type: text
         label: 店铺链接
