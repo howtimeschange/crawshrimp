@@ -75,21 +75,45 @@
         <template v-else-if="param.type === 'date_range'">
           <div v-if="shouldShowDateRangeParam(param)" class="date-range-panel">
             <div class="date-range">
-              <label class="date-card">
-                <input type="date" v-model="values[param.id + '_start']" class="date-card-input" />
+              <div
+                class="date-card"
+                role="button"
+                tabindex="0"
+                @click="openDatePicker(param.id + '_start')"
+                @keydown.enter.prevent="openDatePicker(param.id + '_start')"
+                @keydown.space.prevent="openDatePicker(param.id + '_start')"
+              >
+                <input
+                  :ref="el => setDateInputRef(param.id + '_start', el)"
+                  type="date"
+                  v-model="values[param.id + '_start']"
+                  class="date-card-input"
+                />
                 <span :class="['date-card-value', { placeholder: !values[param.id + '_start'] }]">
                   {{ formatDateDisplay(values[param.id + '_start']) }}
                 </span>
                 <span class="date-card-icon" aria-hidden="true">选择</span>
-              </label>
+              </div>
               <span class="date-sep">至</span>
-              <label class="date-card">
-                <input type="date" v-model="values[param.id + '_end']" class="date-card-input" />
+              <div
+                class="date-card"
+                role="button"
+                tabindex="0"
+                @click="openDatePicker(param.id + '_end')"
+                @keydown.enter.prevent="openDatePicker(param.id + '_end')"
+                @keydown.space.prevent="openDatePicker(param.id + '_end')"
+              >
+                <input
+                  :ref="el => setDateInputRef(param.id + '_end', el)"
+                  type="date"
+                  v-model="values[param.id + '_end']"
+                  class="date-card-input"
+                />
                 <span :class="['date-card-value', { placeholder: !values[param.id + '_end'] }]">
                   {{ formatDateDisplay(values[param.id + '_end']) }}
                 </span>
                 <span class="date-card-icon" aria-hidden="true">选择</span>
-              </label>
+              </div>
             </div>
           </div>
         </template>
@@ -204,6 +228,7 @@ const logEl = ref(null)
 const outputFiles = ref([])
 const showFiles = ref(false)
 const excelLoading = ref({})
+const dateInputRefs = new Map()
 let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 
@@ -457,6 +482,25 @@ function formatDateDisplay(value) {
   return String(value).replace(/-/g, ' / ')
 }
 
+function setDateInputRef(key, el) {
+  if (el) {
+    dateInputRefs.set(key, el)
+  } else {
+    dateInputRefs.delete(key)
+  }
+}
+
+function openDatePicker(key) {
+  const input = dateInputRefs.get(key)
+  if (!input) return
+  input.focus({ preventScroll: true })
+  if (typeof input.showPicker === 'function') {
+    input.showPicker()
+    return
+  }
+  input.click()
+}
+
 async function pickExcel(paramId) {
   const path = await window.cs.browseFile({
     title: '选择 Excel 或 CSV 文件',
@@ -570,7 +614,7 @@ onUnmounted(() => clearInterval(pollTimer))
   width: 100%;
   height: 100%;
   opacity: 0;
-  cursor: pointer;
+  pointer-events: none;
 }
 .date-card-value {
   font-size: 13px;
