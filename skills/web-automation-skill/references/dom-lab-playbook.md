@@ -160,5 +160,7 @@ Use these references together with this playbook:
 
 - [dom-report-template.md](dom-report-template.md)
   - Use when you want a clean report skeleton for page-level findings.
+- [dom-snippet-library.md](dom-snippet-library.md)
+  - Use when you need ready-to-adapt snippets for DOM probing, readback, or single-control experiments.
 - [react-vue-troubleshooting-checklist.md](react-vue-troubleshooting-checklist.md)
   - Use when the failing control is a React / Vue date picker, select, radio group, dependent block, or portal popover.

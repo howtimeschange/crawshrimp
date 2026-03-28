@@ -53,10 +53,12 @@ For the full playbook and checklist, read:
 
 - [references/dom-lab-playbook.md](references/dom-lab-playbook.md)
 - [references/dom-report-template.md](references/dom-report-template.md)
+- [references/dom-snippet-library.md](references/dom-snippet-library.md)
 - [references/react-vue-troubleshooting-checklist.md](references/react-vue-troubleshooting-checklist.md)
 
 Load them when you need:
 
 - the detailed DOM Lab workflow and regression ladder
 - a standard DOM experiment report template
+- a reusable snippet library for probing DOM, reading values, and running mini experiments
 - a React / Vue control troubleshooting checklist
