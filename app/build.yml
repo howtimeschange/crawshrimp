@@ -1,5 +1,5 @@
 appId: com.crawshrimp.app
-productName: CrawShrimp
+productName: 抓虾
 copyright: "Copyright © 2025"
 electronVersion: "29.4.6"
 
@@ -32,10 +32,10 @@ nsis:
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: CrawShrimp
+  shortcutName: 抓虾
 
 dmg:
-  title: CrawShrimp
+  title: 抓虾
   backgroundColor: "#ffffff"
   window:
     width: 540

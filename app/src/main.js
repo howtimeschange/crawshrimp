@@ -430,7 +430,13 @@ ipcMain.handle('save-settings', async (_, cfg) => apiCall('PUT', '/settings', cf
 ipcMain.handle('stat-file', async (_, filePath) => {
   try {
     const stat = fs.statSync(filePath)
-    return { size: stat.size, ctime: stat.birthtime.toISOString(), mtime: stat.mtime.toISOString() }
+    return {
+      size: stat.size,
+      ctime: stat.birthtime.toISOString(),
+      mtime: stat.mtime.toISOString(),
+      isFile: stat.isFile(),
+      isDirectory: stat.isDirectory(),
+    }
   } catch { return null }
 })
 

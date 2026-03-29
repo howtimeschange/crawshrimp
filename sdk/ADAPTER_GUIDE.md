@@ -120,7 +120,9 @@ tasks:
 
 ```bash
 # 方式一：GUI 安装
-# 打开抓虾 → 我的脚本 → 安装适配包 → 选择文件夹
+# 打开抓虾 → 我的脚本 → 导入脚本
+# - 选择包含 manifest.yaml 的适配包目录
+# - 或选择 / 拖入打包好的 .zip 包
 
 # 方式二：API 安装
 curl -X POST http://127.0.0.1:18765/adapters/install \
@@ -132,6 +134,46 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 
 1. 在 Chrome 里打开目标网站（确保已登录）
 2. 打开抓虾 GUI → 选择你的适配包 → 点击任务 → 运行
+
+### 第六步：打包与发行（推荐）
+
+推荐把适配包发布为一个 `.zip` 文件，文件名建议带上适配包 ID 和版本号，例如：
+
+```text
+my-adapter-v1.0.0.zip
+```
+
+当前导入器支持两种 zip 结构：
+
+1. zip 根目录下直接就是 `manifest.yaml` 和脚本文件
+2. zip 根目录下只有一个一级目录，该目录内包含 `manifest.yaml`
+
+更推荐第二种，便于用户解压查看，也更适合在 GitHub Release / 飞书 / 钉钉里直接分发。
+
+macOS / Linux 打包示例：
+
+```bash
+cd /path/to/parent
+zip -r my-adapter-v1.0.0.zip my-adapter
+```
+
+Windows PowerShell 打包示例：
+
+```powershell
+Compress-Archive -Path .\my-adapter -DestinationPath .\my-adapter-v1.0.0.zip -Force
+```
+
+发布前建议检查：
+
+- `manifest.yaml` 的 `id` 稳定且唯一
+- `version` 已更新
+- zip 解压后仍能在根目录或唯一一级目录下找到 `manifest.yaml`
+- 至少用一次 GUI 的“导入脚本”或 `/adapters/install` 验证包体可安装
+
+升级规则：
+
+- 同一个 `id` 重新导入，会覆盖旧版本
+- 想并存两套脚本，请使用不同的 `id`
 
 ---
 
@@ -1070,7 +1112,7 @@ for (const row of file.rows) {
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/adapters` | 列出所有已安装适配包 |
-| `POST` | `/adapters/install` | 安装适配包（`{"path": "/abs/path"}` 或 zip） |
+| `POST` | `/adapters/install` | 安装适配包（`{"path": "/abs/path"}` 或 `{"zip_base64": "..."}`） |
 | `DELETE` | `/adapters/{adapter_id}` | 卸载适配包 |
 | `GET` | `/tasks` | 列出所有任务 |
 | `POST` | `/tasks/{adapter_id}/{task_id}/run` | 运行任务（body 为 params JSON） |
@@ -1085,6 +1127,14 @@ for (const row of file.rows) {
 - **DELETE /logs**：清空该任务日志（在内存中，进程重启后自动清空）
 
 ```bash
+# 按目录安装
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/absolute/path/to/my-adapter"}'
+
+# 按 zip 安装（示意；实际可由 GUI 直接选择或拖入 zip）
+# body 里的 zip_base64 为 zip 文件内容的 base64 编码
+
 # 查看任务日志
 curl http://127.0.0.1:18765/tasks/shopee-plus-v2/voucher_batch_create/logs
 

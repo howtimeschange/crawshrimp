@@ -3,7 +3,6 @@
     <!-- 标题栏 -->
     <div class="titlebar">
       <span class="logo">🦐 抓虾</span>
-      <span class="subtitle">CrawShrimp</span>
       <div class="status-bar">
         <span class="dot" :class="status.api ? 'on' : 'off'">
           <i></i>核心
@@ -207,8 +206,7 @@ input, select, textarea { font-family: inherit; }
   padding: 0 20px 0 88px;
   gap: 8px;
 }
-.logo { font-size: 18px; }
-.subtitle { font-size: 13px; font-weight: 700; color: var(--orange); letter-spacing: 0.05em; }
+.logo { font-size: 18px; font-weight: 800; color: var(--text); }
 .status-bar { margin-left: auto; display: flex; gap: 16px; -webkit-app-region: no-drag; }
 .dot { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text3); }
 .dot i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text3); }

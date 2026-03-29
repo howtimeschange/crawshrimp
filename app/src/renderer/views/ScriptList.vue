@@ -3,7 +3,7 @@
     <header class="view-header">
       <h2>我的脚本</h2>
       <div class="header-actions">
-        <button class="btn-ghost" @click="showInstall = true">+ 导入脚本</button>
+        <button class="btn-ghost" @click="openInstallModal">+ 导入脚本</button>
       </div>
     </header>
 
@@ -41,18 +41,43 @@
     </div>
 
     <!-- 导入弹窗 -->
-    <div v-if="showInstall" class="modal-backdrop" @click.self="showInstall = false">
-      <div class="modal">
+    <div
+      v-if="showInstall"
+      class="modal-backdrop"
+      @click.self="closeInstallModal"
+      @dragenter.prevent="handleDragEnter"
+      @dragover.prevent="handleDragOver"
+      @dragleave.prevent="handleDragLeave"
+      @drop.prevent="handleDrop"
+    >
+      <div class="modal install-modal">
         <h3>导入脚本包</h3>
-        <p class="modal-sub">选择包含 manifest.yaml 的适配包文件夹，或直接拖入 .zip 包</p>
-        <div class="input-row">
-          <input v-model="installPath" placeholder="/path/to/adapter-folder" class="input" />
-          <button class="btn-orange-sm" @click="browsePath">选择目录</button>
+        <p class="modal-sub">支持导入两种来源：包含 manifest.yaml 的适配包目录，或已经打包好的 .zip 适配包</p>
+        <div class="drop-zone" :class="{ active: isDragging, ready: !!installPath }">
+          <div class="drop-title">{{ isDragging ? '松开即可导入' : '拖拽适配包目录或 .zip 包到这里' }}</div>
+          <div class="drop-sub">{{ installSummary }}</div>
+        </div>
+        <div class="picker-row">
+          <button class="btn-orange-sm" :disabled="installing" @click="browseDirectory">选择目录</button>
+          <button class="btn-ghost" :disabled="installing" @click="browseZip">选择 ZIP</button>
+        </div>
+        <div class="input-row install-input-row">
+          <input
+            v-model="installPath"
+            placeholder="也可以直接粘贴目录路径或 .zip 文件路径"
+            class="input"
+            :disabled="installing"
+            @change="handleManualPathChange"
+          />
+          <span v-if="installType" class="path-kind">{{ installType === 'zip' ? 'ZIP' : '目录' }}</span>
+          <button v-if="installPath" class="clear-inline" :disabled="installing" @click="clearInstallSelection">清空</button>
         </div>
         <p v-if="msg" :class="['msg', msgErr ? 'err' : 'ok']">{{ msg }}</p>
         <div class="modal-actions">
-          <button class="btn-orange" :disabled="!installPath" @click="doInstall">导入</button>
-          <button class="btn-ghost" @click="showInstall = false">取消</button>
+          <button class="btn-orange" :disabled="!installPath || installing" @click="doInstall">
+            {{ installing ? '导入中…' : '导入' }}
+          </button>
+          <button class="btn-ghost" :disabled="installing" @click="closeInstallModal">取消</button>
         </div>
       </div>
     </div>
@@ -60,7 +85,7 @@
 </template>
 
 <script setup>
-import { ref, inject, onMounted } from 'vue'
+import { computed, ref, inject, onMounted } from 'vue'
 
 const emit = defineEmits(['open-script', 'reload'])
 const scriptGroups = inject('scriptGroups')
@@ -69,6 +94,10 @@ const loadScriptGroups = inject('loadScriptGroups')
 const loading = ref(false)
 const showInstall = ref(false)
 const installPath = ref('')
+const installType = ref('')
+const installing = ref(false)
+const isDragging = ref(false)
+const dragDepth = ref(0)
 const msg = ref('')
 const msgErr = ref(false)
 
@@ -91,28 +120,181 @@ function lastStatus(g) {
   return null
 }
 
+const zipFilters = [
+  { name: 'ZIP 适配包', extensions: ['zip'] },
+  { name: '所有文件', extensions: ['*'] },
+]
+
+const installSummary = computed(() => {
+  if (installType.value === 'zip' && installPath.value) {
+    return '已选择 ZIP 包，导入时会自动解压并安装'
+  }
+  if (installType.value === 'directory' && installPath.value) {
+    return '已选择适配包目录，目录根下需要包含 manifest.yaml'
+  }
+  return '支持拖入单个目录或单个 .zip 包，也可以点击下方按钮选择'
+})
+
 async function removeAdapter(id) {
   if (!confirm(`确认移除「${id}」？相关数据不会删除。`)) return
   await window.cs.uninstallAdapter(id)
   await loadScriptGroups()
 }
 
-async function browsePath() {
+function resetDragState() {
+  dragDepth.value = 0
+  isDragging.value = false
+}
+
+function openInstallModal() {
+  clearInstallSelection()
+  showInstall.value = true
+}
+
+function closeInstallModal() {
+  if (installing.value) return
+  showInstall.value = false
+  clearInstallSelection()
+}
+
+function clearInstallSelection() {
+  installPath.value = ''
+  installType.value = ''
+  msg.value = ''
+  msgErr.value = false
+  resetDragState()
+}
+
+async function resolveInstallTarget(targetPath, expectedKind = '') {
+  const normalized = String(targetPath || '').trim()
+  if (!normalized) return { ok: false, error: '请选择适配包目录或 .zip 包' }
+
+  const stat = await window.cs.statFile(normalized)
+  const lower = normalized.toLowerCase()
+
+  if (expectedKind === 'zip') {
+    if (!stat?.isFile || !lower.endsWith('.zip')) {
+      return { ok: false, error: '请选择一个 .zip 适配包文件' }
+    }
+    return { ok: true, kind: 'zip', path: normalized }
+  }
+
+  if (expectedKind === 'directory') {
+    if (!stat?.isDirectory) {
+      return { ok: false, error: '请选择包含 manifest.yaml 的适配包目录' }
+    }
+    return { ok: true, kind: 'directory', path: normalized }
+  }
+
+  if (stat?.isDirectory) return { ok: true, kind: 'directory', path: normalized }
+  if (stat?.isFile && lower.endsWith('.zip')) return { ok: true, kind: 'zip', path: normalized }
+
+  return { ok: false, error: '仅支持适配包目录或 .zip 包' }
+}
+
+async function setInstallTarget(targetPath, expectedKind = '') {
+  const result = await resolveInstallTarget(targetPath, expectedKind)
+  installPath.value = String(targetPath || '').trim()
+  if (!result.ok) {
+    installType.value = ''
+    msg.value = result.error
+    msgErr.value = true
+    return false
+  }
+  installPath.value = result.path
+  installType.value = result.kind
+  msg.value = ''
+  msgErr.value = false
+  return true
+}
+
+async function browseDirectory() {
   const p = await window.cs.browseFile({ directory: true, title: '选择适配包文件夹' })
-  if (p) installPath.value = p
+  if (p) await setInstallTarget(p, 'directory')
+}
+
+async function browseZip() {
+  const p = await window.cs.browseFile({ title: '选择 ZIP 适配包', filters: zipFilters })
+  if (p) await setInstallTarget(p, 'zip')
+}
+
+async function handleManualPathChange() {
+  if (!installPath.value.trim()) {
+    clearInstallSelection()
+    return
+  }
+  await setInstallTarget(installPath.value)
+}
+
+function hasDraggedFiles(event) {
+  return Array.from(event.dataTransfer?.types || []).includes('Files')
+}
+
+function handleDragEnter(event) {
+  if (!hasDraggedFiles(event)) return
+  dragDepth.value += 1
+  isDragging.value = true
+}
+
+function handleDragOver(event) {
+  if (!hasDraggedFiles(event)) return
+  event.dataTransfer.dropEffect = 'copy'
+  isDragging.value = true
+}
+
+function handleDragLeave(event) {
+  if (!hasDraggedFiles(event)) return
+  dragDepth.value = Math.max(0, dragDepth.value - 1)
+  if (dragDepth.value === 0) isDragging.value = false
+}
+
+async function handleDrop(event) {
+  resetDragState()
+  const files = Array.from(event.dataTransfer?.files || []).filter(file => file.path)
+  if (!files.length) return
+  if (files.length > 1) {
+    msg.value = '一次只能导入一个适配包目录或一个 .zip 包'
+    msgErr.value = true
+    return
+  }
+  await setInstallTarget(files[0].path)
 }
 
 async function doInstall() {
-  msg.value = ''; msgErr.value = false
-  const r = await window.cs.installAdapter({ path: installPath.value })
-  if (r.ok) {
-    msg.value = `已导入：${r.adapter?.name || installPath.value}`
-    installPath.value = ''
-    await loadScriptGroups()
-    emit('reload')
-  } else {
+  const resolved = await resolveInstallTarget(installPath.value, installType.value)
+  if (!resolved.ok) {
+    msg.value = resolved.error
+    msgErr.value = true
+    return
+  }
+
+  installPath.value = resolved.path
+  installType.value = resolved.kind
+  msg.value = ''
+  msgErr.value = false
+  installing.value = true
+
+  const payload = resolved.kind === 'zip'
+    ? { file: resolved.path }
+    : { path: resolved.path }
+
+  try {
+    const r = await window.cs.installAdapter(payload)
+    if (r.ok) {
+      msg.value = `已导入：${r.adapter?.name || resolved.path}`
+      await loadScriptGroups()
+      emit('reload')
+      installing.value = false
+      closeInstallModal()
+      return
+    }
     msg.value = r.detail || r.error || '导入失败'
     msgErr.value = true
+  } catch (error) {
+    msg.value = error?.message || '导入失败'
+    msgErr.value = true
+  } finally {
+    installing.value = false
   }
 }
 </script>
@@ -164,11 +346,52 @@ async function doInstall() {
 /* Modal */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 16px; padding: 28px; width: 500px; display: flex; flex-direction: column; gap: 16px; }
+.install-modal { width: 560px; }
 .modal h3 { font-size: 16px; font-weight: 700; }
-.modal-sub { font-size: 12px; color: var(--text3); margin-top: -8px; }
+.modal-sub { font-size: 12px; color: var(--text3); margin-top: -8px; line-height: 1.6; }
+.drop-zone {
+  border: 1px dashed var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  background: rgba(255,255,255,0.02);
+  transition: border-color 0.15s, background 0.15s, transform 0.15s;
+}
+.drop-zone.active {
+  border-color: var(--orange);
+  background: rgba(255, 106, 41, 0.08);
+  transform: translateY(-1px);
+}
+.drop-zone.ready {
+  border-style: solid;
+  border-color: rgba(255, 106, 41, 0.45);
+}
+.drop-title { font-size: 14px; font-weight: 700; color: var(--text); }
+.drop-sub { margin-top: 6px; font-size: 12px; color: var(--text3); line-height: 1.6; }
+.picker-row { display: flex; gap: 10px; }
 .input-row { display: flex; gap: 8px; }
+.install-input-row { align-items: center; }
 .input { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 13px; outline: none; }
 .input:focus { border-color: var(--orange); }
+.path-kind {
+  flex-shrink: 0;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(255, 106, 41, 0.12);
+  color: var(--orange);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+.clear-inline {
+  flex-shrink: 0;
+  border: none;
+  background: transparent;
+  color: var(--text3);
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+}
+.clear-inline:hover:not(:disabled) { color: #f87171; background: rgba(248,113,113,0.1); }
 .msg { font-size: 12px; padding: 6px 10px; border-radius: 6px; }
 .msg.ok  { background: rgba(74,222,128,0.1); color: #4ade80; }
 .msg.err { background: rgba(248,113,113,0.1); color: #f87171; }

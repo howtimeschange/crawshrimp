@@ -1,6 +1,6 @@
 {
   "name": "crawshrimp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Universal web automation desktop app",
   "author": "howtimeschange",
   "main": "src/main.js",
@@ -8,7 +8,7 @@
     "dev": "concurrently \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
     "build": "vite build && node scripts/run-electron-builder.js",
     "build:mac": "vite build && node scripts/run-electron-builder.js --mac",
-    "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac zip",
+    "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac",
     "build:win": "vite build && node scripts/run-electron-builder.js --win",
     "vite:build": "vite build"
   },
