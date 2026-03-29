@@ -136,7 +136,38 @@
               <span class="f-label">{{ values[param.id + '_path'] ? fileName(values[param.id + '_path']) : '点击选择 Excel / CSV 文件…' }}</span>
               <span v-if="values[param.id + '_path']" class="f-clear" @click.stop="clearExcel(param.id)">✕</span>
             </div>
-            <button class="btn-pick" @click="pickExcel(param.id)">选择文件</button>
+            <div class="file-picker-actions">
+              <button class="btn-pick" @click="pickExcel(param.id)">选择文件</button>
+            </div>
+          </div>
+          <div v-if="getParamTemplates(param).length" class="template-list">
+            <div
+              v-for="(template, index) in getParamTemplates(param)"
+              :key="template.file || index"
+              class="template-card"
+            >
+              <div class="template-main">
+                <div class="template-title-row">
+                  <span class="template-name">{{ template.label || fileName(template.file || '') }}</span>
+                  <span class="template-ext">{{ templateExtension(template) }}</span>
+                  <span v-if="template.version" class="template-version">v{{ template.version }}</span>
+                </div>
+                <p v-if="template.description" class="template-desc">{{ template.description }}</p>
+              </div>
+              <button
+                class="btn-template"
+                :disabled="!template.path"
+                @click="downloadTemplate(param, template)"
+              >
+                下载
+              </button>
+            </div>
+          </div>
+          <div
+            v-if="templateFeedback[param.id]"
+            :class="['template-feedback', templateFeedback[param.id].ok ? 'ok' : 'err']"
+          >
+            {{ templateFeedback[param.id].msg }}
           </div>
           <div v-if="values[param.id + '_rows']?.length" class="excel-preview">
             <span class="preview-count">已读取 {{ values[param.id + '_rows'].length }} 行</span>
@@ -228,6 +259,7 @@ const logEl = ref(null)
 const outputFiles = ref([])
 const showFiles = ref(false)
 const excelLoading = ref({})
+const templateFeedback = ref({})
 const dateInputRefs = new Map()
 let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
@@ -247,6 +279,7 @@ watch(() => props.task, (task) => {
     else v[p.id] = p.default ?? ''
   }
   values.value = v
+  templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
   isRunning.value = false
@@ -530,6 +563,44 @@ function clearExcel(paramId) {
   values.value[paramId + '_headers'] = []
 }
 
+function getParamTemplates(param) {
+  const templates = Array.isArray(param?.templates) ? param.templates.filter(Boolean) : []
+  if (templates.length) return templates
+  if (param?.template_file) {
+    return [{
+      file: param.template_file,
+      label: param.template_label,
+      path: param.template_path,
+    }]
+  }
+  return []
+}
+
+function templateExtension(template) {
+  const raw = template?.file || template?.path || ''
+  const ext = raw.split('.').pop()?.toUpperCase()
+  return ext ? `.${ext}` : '模板'
+}
+
+async function downloadTemplate(param, template) {
+  if (!template?.path) return
+  delete templateFeedback.value[param.id]
+  try {
+    const r = await window.cs.saveAsFile(template.path)
+    if (r?.ok && r.dest) {
+      templateFeedback.value[param.id] = {
+        ok: true,
+        msg: `${template.label || fileName(template.file || template.path)} 已保存：${fileName(r.dest)}`,
+      }
+    }
+  } catch (e) {
+    templateFeedback.value[param.id] = {
+      ok: false,
+      msg: `模板下载失败：${e?.message || String(e)}`,
+    }
+  }
+}
+
 onUnmounted(() => clearInterval(pollTimer))
 </script>
 
@@ -693,7 +764,7 @@ onUnmounted(() => clearInterval(pollTimer))
 .log-line.warn { color: #fbbf24; }
 
 /* Excel 文件选择控件 */
-.file-picker { display: flex; gap: 8px; align-items: center; }
+.file-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .file-chosen {
   flex: 1; display: flex; align-items: center; gap: 8px;
   background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
@@ -702,6 +773,7 @@ onUnmounted(() => clearInterval(pollTimer))
 }
 .file-chosen:hover { border-color: var(--orange); }
 .file-chosen.empty .f-label { color: var(--text3); }
+.file-picker-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .f-ico { font-size: 15px; flex-shrink: 0; }
 .f-label { flex: 1; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .f-clear { font-size: 12px; color: var(--text3); flex-shrink: 0; line-height: 1; }
@@ -711,6 +783,62 @@ onUnmounted(() => clearInterval(pollTimer))
   background: var(--bg3); color: var(--text2); font-size: 12px; white-space: nowrap;
 }
 .btn-pick:hover { background: var(--orange-bg); color: var(--orange); border-color: var(--orange); }
+.btn-template {
+  padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(255, 106, 41, 0.28);
+  background: rgba(255, 106, 41, 0.1); color: var(--orange); font-size: 12px; font-weight: 600;
+  white-space: nowrap;
+}
+.btn-template:hover { background: rgba(255, 106, 41, 0.16); border-color: rgba(255, 106, 41, 0.42); }
+.btn-template:disabled { opacity: 0.45; cursor: not-allowed; }
+.template-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 2px;
+}
+.template-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.03);
+}
+.template-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.template-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.template-name {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text);
+}
+.template-ext,
+.template-version {
+  font-size: 10px;
+  color: var(--text3);
+  padding: 2px 6px;
+  border-radius: 999px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  letter-spacing: 0.04em;
+}
+.template-desc {
+  margin: 0;
+  font-size: 11px;
+  color: var(--text3);
+  line-height: 1.45;
+}
 .excel-preview {
   display: flex; gap: 12px; align-items: center;
   padding: 5px 10px; background: rgba(74,222,128,0.07); border-radius: 6px;
@@ -718,4 +846,7 @@ onUnmounted(() => clearInterval(pollTimer))
 .preview-count { font-size: 12px; color: #4ade80; font-weight: 600; }
 .preview-cols { font-size: 11px; color: var(--text3); }
 .excel-loading { font-size: 12px; color: var(--text3); padding: 4px 0; }
+.template-feedback { font-size: 12px; padding: 4px 0; }
+.template-feedback.ok { color: #4ade80; }
+.template-feedback.err { color: #f87171; }
 </style>

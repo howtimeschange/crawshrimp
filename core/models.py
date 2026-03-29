@@ -45,12 +45,24 @@ class ParamOption(BaseModel):
     label: str
 
 
+class TaskTemplate(BaseModel):
+    file: str                            # 适配包内模板文件相对路径
+    label: Optional[str] = None          # GUI 显示名
+    description: Optional[str] = None    # 模板说明文案
+    version: Optional[str] = None        # 模板版本
+    path: Optional[str] = None           # 运行时解析出的模板绝对路径（由后端填充）
+
+
 class TaskParam(BaseModel):
     id: str                            # 参数 key，注入到 window.__CRAWSHRIMP_PARAMS__
     type: ParamType
     label: str
     placeholder: Optional[str] = None
     hint: Optional[str] = None
+    template_file: Optional[str] = None   # file_excel: 适配包内模板文件相对路径
+    template_label: Optional[str] = None  # file_excel: GUI 下载模板按钮文案
+    template_path: Optional[str] = None   # 运行时解析出的模板绝对路径（由后端填充）
+    templates: Optional[List[TaskTemplate]] = None  # 多模板下载配置
     default: Optional[Any] = None
     options: Optional[List[ParamOption]] = None  # radio / select / checkbox 用
     required: bool = False

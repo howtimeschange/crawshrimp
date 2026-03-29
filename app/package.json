@@ -1,6 +1,6 @@
 {
   "name": "crawshrimp",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Universal web automation desktop app",
   "author": "howtimeschange",
   "main": "src/main.js",

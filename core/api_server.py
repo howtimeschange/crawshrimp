@@ -116,6 +116,48 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
     return {"headers": headers, "rows": rows, "total": len(rows)}
 
 
+def _resolve_template_path(adapter_id: str, template_file: Optional[str]) -> Optional[str]:
+    if not template_file:
+        return None
+
+    adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
+    if not adapter_dir:
+        return None
+
+    try:
+        base_dir = adapter_dir.resolve()
+        candidate = (adapter_dir / template_file).resolve()
+        candidate.relative_to(base_dir)
+    except Exception:
+        return None
+
+    if not candidate.exists() or not candidate.is_file():
+        return None
+    return str(candidate)
+
+
+def _serialize_task_param(adapter_id: str, param) -> dict:
+    data = param.model_dump()
+    templates = []
+    for template in data.get("templates") or []:
+        t = dict(template)
+        t["path"] = _resolve_template_path(adapter_id, t.get("file"))
+        templates.append(t)
+
+    if not templates and data.get("template_file"):
+        templates.append({
+            "file": data.get("template_file"),
+            "label": data.get("template_label"),
+            "description": None,
+            "version": None,
+            "path": _resolve_template_path(adapter_id, data.get("template_file")),
+        })
+
+    data["templates"] = templates
+    data["template_path"] = next((t.get("path") for t in templates if t.get("path")), None)
+    return data
+
+
 async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
     """
     Core task execution pipeline:
@@ -466,7 +508,7 @@ def list_tasks():
                 "task_id": task.id,
                 "task_name": task.name,
                 "description": task.description,
-                "params": [p.model_dump() for p in task.params],
+                "params": [_serialize_task_param(m.id, p) for p in task.params],
                 "trigger": task.trigger.model_dump(),
                 "enabled": item['enabled'],
                 "next_run": scheduled.get(jid, {}).get('next_run'),

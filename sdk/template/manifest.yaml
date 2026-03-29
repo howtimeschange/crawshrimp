@@ -9,6 +9,21 @@ tasks:
   - id: my_task
     name: My Task
     script: example-task.js
+    # params:
+    #   - id: input_file
+    #     type: file_excel
+    #     label: Upload Excel
+    #     required: true
+    #     templates:
+    #       - file: templates/input-template.xlsx
+    #         label: Excel 填写模板
+    #         description: 按字段要求填写后再上传
+    #         version: "2026.03"
+    #       - file: docs/field-guide.csv
+    #         label: CSV 字段说明
+    #         description: 字段解释与填写示例
+    #         version: "2026.03"
+    #     hint: "可先下载模板，按要求填写后再上传"
     trigger:
       type: manual
     output:
