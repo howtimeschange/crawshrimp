@@ -116,24 +116,43 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
     return {"headers": headers, "rows": rows, "total": len(rows)}
 
 
+def _template_search_roots(adapter_id: str) -> List[Path]:
+    roots: List[Path] = []
+
+    adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
+    if adapter_dir:
+        roots.append(adapter_dir.resolve())
+
+    built_in_dir = (Path(__file__).parent.parent / "adapters" / adapter_id).resolve()
+    if built_in_dir.exists():
+        roots.append(built_in_dir)
+
+    seen = set()
+    deduped = []
+    for root in roots:
+        marker = str(root)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        deduped.append(root)
+    return deduped
+
+
 def _resolve_template_path(adapter_id: str, template_file: Optional[str]) -> Optional[str]:
     if not template_file:
         return None
 
-    adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
-    if not adapter_dir:
-        return None
+    for base_dir in _template_search_roots(adapter_id):
+        try:
+            candidate = (base_dir / template_file).resolve()
+            candidate.relative_to(base_dir)
+        except Exception:
+            continue
 
-    try:
-        base_dir = adapter_dir.resolve()
-        candidate = (adapter_dir / template_file).resolve()
-        candidate.relative_to(base_dir)
-    except Exception:
-        return None
+        if candidate.exists() and candidate.is_file():
+            return str(candidate)
 
-    if not candidate.exists() or not candidate.is_file():
-        return None
-    return str(candidate)
+    return None
 
 
 def _serialize_task_param(adapter_id: str, param) -> dict:

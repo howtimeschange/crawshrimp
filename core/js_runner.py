@@ -5,6 +5,8 @@ JS 注入执行器
 import asyncio
 import json
 import logging
+import secrets
+import time
 from pathlib import Path
 from typing import List, Optional
 
@@ -139,6 +141,7 @@ class JSRunner:
         script = script_path.read_text(encoding="utf-8")
         all_data: List[dict] = []
         params_json = json.dumps(params or {}, ensure_ascii=False)
+        run_token = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}"
 
         for page in range(1, MAX_PAGES + 1):
             phase = "main"
@@ -149,6 +152,7 @@ class JSRunner:
                     f"window.__CRAWSHRIMP_PAGE__ = {page};\n"
                     f"window.__CRAWSHRIMP_PARAMS__ = {params_json};\n"
                     f"window.__CRAWSHRIMP_PHASE__ = {json.dumps(phase, ensure_ascii=False)};\n"
+                    f"window.__CRAWSHRIMP_RUN_TOKEN__ = {json.dumps(run_token, ensure_ascii=False)};\n"
                     f"window.__CRAWSHRIMP_SHARED__ = {json.dumps(shared, ensure_ascii=False)};\n"
                 )
                 payload = preamble + script

@@ -19,6 +19,7 @@
     submit: 'submit_form',
   }
   const currentPhase = phaseAliasMap[phase] || phase
+  const runToken = window.__CRAWSHRIMP_RUN_TOKEN__ || ''
   const shared = window.__CRAWSHRIMP_SHARED__ || {}
   const rawRows = params.input_file?.rows || []
 
@@ -42,6 +43,25 @@
   function norm(value) { return String(value || '').replace(/\s+/g, ' ').trim() }
   function textOf(el) { return norm(el?.innerText || el?.textContent || el?.value || '') }
   function digitsOnly(value) { return String(value ?? '').replace(/,/g, '').trim() }
+  function normalizeHeaderKey(value) {
+    return String(value || '')
+      .replace(/\s+/g, '')
+      .replace(/[()（）:：]/g, '')
+      .toLowerCase()
+  }
+
+  function getRowValue(row, aliases = [], options = {}) {
+    const keys = Object.keys(row || {})
+    if (!keys.length) return options.defaultValue ?? ''
+    const normalizedAliases = aliases.map(alias => normalizeHeaderKey(alias)).filter(Boolean)
+    const matchedKey = keys.find(key => {
+      const normalizedKey = normalizeHeaderKey(key)
+      return normalizedAliases.some(alias => {
+        return options.includes ? normalizedKey.includes(alias) : normalizedKey === alias
+      })
+    })
+    return matchedKey ? row[matchedKey] : (options.defaultValue ?? '')
+  }
 
   function toNumber(value) {
     const raw = digitsOnly(value).replace(/%$/, '').trim()
@@ -69,13 +89,88 @@
     return `${typeText}：${limitText}${suffix}`
   }
 
-  function randCode(length = 5) {
+  function isNoCapValue(value) {
+    const compact = norm(value).replace(/\s+/g, '').toLowerCase()
+    return /^(nocap|unlimited|不限|无限制|无上限|无封顶)$/.test(compact)
+  }
+
+  function parseMaxDiscountSpec(raw) {
+    const value = norm(raw)
+    if (!value) return { mode: '', value: '', raw: '' }
+    if (isNoCapValue(value)) return { mode: 'nocap', value: 'nocap', raw: value }
+    return { mode: 'amount', value: digitsOnly(value), raw: value }
+  }
+
+  function getMaxDiscountRaw(row) {
+    return getRowValue(
+      row,
+      ['最高优惠金额', '最高优惠金额无限制填nocap', '最高折扣金额', '最高优惠', '最高减免', 'max discount'],
+      { includes: true, defaultValue: '' }
+    )
+  }
+
+  function hashString(value) {
+    const text = String(value || '')
+    let hash = 2166136261
+    for (let i = 0; i < text.length; i += 1) {
+      hash ^= text.charCodeAt(i)
+      hash = Math.imul(hash, 16777619) >>> 0
+    }
+    return hash >>> 0
+  }
+
+  function encodeCouponCode(num, length = 5) {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    const base = chars.length
+    const max = base ** length
+    let value = Math.abs(Number(num) || 0) % max
     let out = ''
     for (let i = 0; i < length; i += 1) {
-      out += chars[Math.floor(Math.random() * chars.length)]
+      out = chars[value % base] + out
+      value = Math.floor(value / base)
     }
     return out
+  }
+
+  function buildCodeSeed(execItem) {
+    const row = execItem?.row || {}
+    return [
+      runToken,
+      execItem?.sourceIndex || '',
+      norm(row['站点']),
+      norm(row['店铺']),
+      norm(row['优惠券品类']),
+      norm(row['奖励类型']),
+      norm(row['折扣类型']),
+      digitsOnly(row['优惠限额']),
+      digitsOnly(getMaxDiscountRaw(row)),
+      digitsOnly(row['最低消费金额']),
+      digitsOnly(row['可使用总数']),
+      digitsOnly(row['每个买家可用的优惠券数量上限']),
+    ].join('|')
+  }
+
+  function buildGeneratedCouponCode(currentExecRow) {
+    if (!currentExecRow) return ''
+    const currentIndex = executionRows.findIndex(item => item?.sourceIndex === currentExecRow?.sourceIndex)
+    if (currentIndex < 0) return ''
+
+    const used = new Set()
+    for (let index = 0; index <= currentIndex; index += 1) {
+      const execItem = executionRows[index]
+      const baseSeed = buildCodeSeed(execItem)
+      let salt = 0
+      let code = ''
+      while (salt < 2048) {
+        code = encodeCouponCode(hashString(`${baseSeed}|${salt}`))
+        if (!used.has(code)) break
+        salt += 1
+      }
+      if (!code) throw new Error('未能生成唯一优惠码')
+      used.add(code)
+      if (index === currentIndex) return code
+    }
+    return ''
   }
 
   function parseDateTime(raw, kind) {
@@ -296,7 +391,7 @@
     return dispatchSyntheticClick(el)
   }
 
-  function setNativeValue(el, value) {
+  function setNativeValue(el, value, options = {}) {
     if (!el) return false
     const val = String(value ?? '')
     const proto = el.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype
@@ -305,7 +400,9 @@
     else el.value = val
     el.dispatchEvent(new Event('input', { bubbles: true }))
     el.dispatchEvent(new Event('change', { bubbles: true }))
-    el.dispatchEvent(new Event('blur', { bubbles: true }))
+    if (options.blur !== false) {
+      el.dispatchEvent(new Event('blur', { bubbles: true }))
+    }
     return true
   }
 
@@ -319,16 +416,20 @@
     return true
   }
 
-  async function typeInto(el, value) {
+  async function typeInto(el, value, options = {}) {
     if (!el) return false
     dispatchSyntheticClick(el)
     await sleep(100)
     try { el.focus() } catch {}
-    setNativeValue(el, value)
+    setNativeValue(el, value, options)
     await sleep(180)
     if (norm(el.value) === '' && String(value || '') !== '') {
       el.value = String(value)
       el.dispatchEvent(new Event('input', { bubbles: true }))
+      el.dispatchEvent(new Event('change', { bubbles: true }))
+      if (options.blur !== false) {
+        el.dispatchEvent(new Event('blur', { bubbles: true }))
+      }
       await sleep(100)
     }
     return true
@@ -496,29 +597,59 @@
     )
   }
 
-  function findStoreCandidate(ctx) {
-    const selectors = '.search-item, [role="option"], li, [class*="shop-item"], [class*="shopItem"]'
-    const siteAliases = getSiteAliases(ctx.site, ctx.store)
-    return [...document.querySelectorAll(selectors)]
-      .filter(visible)
-      .map(el => {
-        const text = textOf(el)
-        const lower = text.toLowerCase()
-        const storeLower = ctx.store.toLowerCase()
-        if (!storeLower || !lower.includes(storeLower)) return null
+  function isVisibleStoreCandidate(el, options = {}) {
+    if (!el) return false
+    if (visible(el)) return true
+    if (visible(el.closest('.search-popper'))) return true
+    return !!options.includeHidden
+  }
 
-        let score = 1
-        if (lower === storeLower) score += 4
-        if (text.includes(ctx.store)) score += 3
-        if (aliasMatch(text, siteAliases)) score += 3
-        if (/当前店铺|current|selected/i.test(text)) score -= 2
-        return { el, score, len: text.length }
-      })
-      .filter(Boolean)
+  function findStoreCandidate(ctx, options = {}) {
+    const selectors = '.search-item, .search-item .shop, [role="option"], li, [class*="shop-item"], [class*="shopItem"]'
+    const siteAliases = getSiteAliases(ctx.site, ctx.store)
+    const candidates = new Map()
+
+    for (const el of [...document.querySelectorAll(selectors)]) {
+      const target = el.closest('.search-item, [role="option"], li, [class*="shop-item"], [class*="shopItem"]') || el
+      if (!isVisibleStoreCandidate(target, options)) continue
+
+      const text = textOf(target) || textOf(el)
+      const lower = text.toLowerCase()
+      const storeLower = ctx.store.toLowerCase()
+      if (!storeLower || !lower.includes(storeLower)) continue
+
+      let score = 1
+      if (lower === storeLower) score += 4
+      if (text.includes(ctx.store)) score += 3
+      if (aliasMatch(text, siteAliases)) score += 3
+      if (/当前店铺|current|selected/i.test(text)) score -= 2
+      const existing = candidates.get(target)
+      if (!existing || score > existing.score || (score === existing.score && text.length < existing.len)) {
+        candidates.set(target, { el: target, score, len: text.length })
+      }
+    }
+
+    return [...candidates.values()]
       .sort((a, b) => {
         if (a.score !== b.score) return b.score - a.score
         return a.len - b.len
       })[0]?.el || null
+  }
+
+  async function prepareStoreSearch(searchInput, switcherVue, keyword) {
+    if (!searchInput) return false
+    await typeInto(searchInput, keyword, { blur: false })
+    try { searchInput.focus() } catch {}
+    if (switcherVue?.ctx?.showSearchPopper) {
+      try { switcherVue.ctx.showSearchPopper() } catch {}
+    } else {
+      dispatchSyntheticClick(searchInput)
+    }
+    if (switcherVue?.ctx?.searchShop) {
+      try { switcherVue.ctx.searchShop(keyword) } catch {}
+    }
+    await sleep(300)
+    return true
   }
 
   function getNextExecRow() {
@@ -551,6 +682,34 @@
     return [...(container || document).querySelectorAll(
       'input:not([type=radio]):not([type=checkbox]), textarea'
     )].filter(visible)
+  }
+
+  function isSelectLikeInput(el) {
+    if (!el) return false
+    const role = String(el.getAttribute('role') || '').toLowerCase()
+    const autoComplete = String(el.getAttribute('aria-autocomplete') || '').toLowerCase()
+    const popup = String(el.getAttribute('aria-haspopup') || '').toLowerCase()
+    const className = String(el.className || '').toLowerCase()
+    return !!el.closest('.eds-react-select, .eds-selector, [role="combobox"], .trigger.trigger--normal') ||
+      role === 'combobox' ||
+      autoComplete === 'list' ||
+      popup === 'listbox' ||
+      className.includes('select')
+  }
+
+  function findDiscountLimitInput(item) {
+    if (!item) return null
+    const triggerRect = findSelectTrigger(item)?.getBoundingClientRect()
+    const candidates = getTextInputs(item)
+      .filter(el => !el.readOnly && !el.disabled && !isSelectLikeInput(el))
+      .map(el => ({ el, rect: el.getBoundingClientRect() }))
+      .sort((left, right) => {
+        if (!triggerRect) return left.rect.left - right.rect.left
+        const leftScore = Math.abs(left.rect.left - triggerRect.right) + Math.abs(left.rect.top - triggerRect.top)
+        const rightScore = Math.abs(right.rect.left - triggerRect.right) + Math.abs(right.rect.top - triggerRect.top)
+        return leftScore - rightScore
+      })
+    return candidates[0]?.el || null
   }
 
   function hasCreateFormMounted() {
@@ -587,6 +746,7 @@
     if (!currentExecRow) return null
     const row = currentExecRow.row || {}
     const showEarlyKey = Object.keys(row).find(key => key.replace(/\s+/g, '').includes('是否提前显示'))
+    const maxDiscountSpec = parseMaxDiscountSpec(getMaxDiscountRaw(row))
     const store = norm(row['店铺'])
     const site = norm(row['站点'])
     const voucherType = norm(row['优惠券品类'])
@@ -604,7 +764,9 @@
       discountType,
       discountLimit,
       rawLimit,
-      maxDiscount: digitsOnly(row['最高优惠金额']),
+      maxDiscount: maxDiscountSpec.mode === 'amount' ? digitsOnly(maxDiscountSpec.value) : '',
+      maxDiscountMode: maxDiscountSpec.mode,
+      maxDiscountRaw: maxDiscountSpec.raw,
       minSpend: digitsOnly(row['最低消费金额']),
       totalCount: digitsOnly(row['可使用总数']),
       perBuyer: digitsOnly(row['每个买家可用的优惠券数量上限']),
@@ -612,7 +774,7 @@
       startDt: parseDateTime(row['优惠券领取期限（开始）精确到分'], 'start'),
       endDt: parseDateTime(row['优惠券领取期限（结束）精确到分'], 'end'),
       couponName: shared.couponName || buildCouponName(discountType, discountLimit),
-      couponCode: shared.couponCode || randCode(5),
+      couponCode: shared.couponCode || buildGeneratedCouponCode(currentExecRow),
       shopId: shared.shopId || getUrlShopId(),
     }
     ctx.usecase = getUsecaseByVoucherType(ctx.voucherType)
@@ -1200,7 +1362,7 @@
     const resolved = await waitFor(() => {
       const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
       if (!item) return null
-      const input = getTextInputs(item).find(el => visible(el))
+      const input = findDiscountLimitInput(item)
       return input ? { item, input } : null
     }, 5000, 150)
     if (!resolved) throw new Error('未找到优惠限额输入框')
@@ -1217,6 +1379,10 @@
 
   function getMaxDiscountLabels() {
     return ['最高优惠金额', '最高折扣金额', '最高优惠', '最高减免', '最高上限数额', 'Max Discount']
+  }
+
+  function getNoCapAliases() {
+    return ['无限制', '无上限', '无封顶', 'nocap', 'no cap', 'unlimited']
   }
 
   function findMaxDiscountItem() {
@@ -1295,6 +1461,26 @@
     }
     if (!sameNumeric(norm(input.value), String(toNumber(value)))) {
       throw new Error(`最高优惠金额校验失败，期望：${value}，实际：${input.value || '(空)'}`)
+    }
+    return true
+  }
+
+  function isNoCapSelected(item) {
+    return aliasMatch(readSelectedRadioText(item), getNoCapAliases())
+  }
+
+  async function fillMaxDiscountNoCapAndVerify() {
+    const item = await waitFor(() => findMaxDiscountItem(), 5000, 150)
+    if (!item) throw new Error('未找到最高优惠金额表单项')
+
+    await setRadioAndVerify(null, '无限制', {
+      scope: item,
+      aliases: getNoCapAliases(),
+    })
+    await sleep(250)
+
+    if (!isNoCapSelected(item)) {
+      throw new Error('最高优惠金额未切换为无限制')
     }
     return true
   }
@@ -1488,13 +1674,19 @@
     }
 
     if (ctx.discountLimit) {
-      const actual = readInputValueFromItem(getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型'))
+      const discountItem = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
+      const actual = norm(findDiscountLimitInput(discountItem)?.value || '')
       if (!sameNumeric(actual, ctx.discountLimit)) {
         issues.push(`优惠限额不匹配（期望：${ctx.discountLimit}，实际：${actual || '(空)'}）`)
       }
     }
 
-    if (ctx.maxDiscount) {
+    if (ctx.maxDiscountMode === 'nocap') {
+      const maxItem = findMaxDiscountItem()
+      if (!maxItem || !isNoCapSelected(maxItem)) {
+        issues.push('最高优惠金额未设置为无限制')
+      }
+    } else if (ctx.maxDiscount) {
       const maxItem = findMaxDiscountItem()
       const maxInput = findMaxDiscountInput(maxItem)
       const actual = norm(maxInput?.value || '')
@@ -1597,13 +1789,18 @@
         '折扣金额': ['折扣金额', '固定金额', 'fixed amount'],
       }
       await openSelectAndChoose(['折扣类型 | 优惠限额', '折扣类型'], ctx.discountType, aliases[ctx.discountType] || [ctx.discountType])
+      await waitForDiscountFields(ctx, {
+        requireMaxDiscount: ctx.maxDiscountMode === 'nocap' || !!ctx.maxDiscount,
+      })
     }
 
     if (ctx.discountLimit) {
       await fillDiscountLimitAndVerify(ctx.discountLimit)
     }
 
-    if (ctx.maxDiscount) {
+    if (ctx.maxDiscountMode === 'nocap') {
+      await fillMaxDiscountNoCapAndVerify()
+    } else if (ctx.maxDiscount) {
       await fillMaxDiscountAndVerify(ctx.maxDiscount)
     }
 
@@ -1629,28 +1826,28 @@
     }
   }
 
-  async function waitForFollowPrizeDiscountFields(ctx) {
+  async function waitForDiscountFields(ctx, options = {}) {
     if (!ctx.discountType) return true
     const aliases = {
       '扣除百分比': ['扣除百分比', '折扣百分比', 'percentage'],
       '折扣金额': ['折扣金额', '固定金额', 'fixed amount'],
     }
     const allAliases = aliases[ctx.discountType] || [ctx.discountType]
-    const needMaxDiscount = /百分比|percentage/i.test(ctx.discountType || '') && !!ctx.maxDiscount
+    const needMaxDiscount = !!options.requireMaxDiscount && /百分比|percentage/i.test(ctx.discountType || '')
 
     const ready = await waitFor(() => {
       const item = getFormItem('折扣类型 | 优惠限额') || getFormItem('折扣类型')
       if (!item) return null
       const matched = aliasMatch(readSelectValue(item), allAliases) || discountTypeMatches(item, ctx.discountType, allAliases)
       if (!matched) return null
-      const discountInput = getTextInputs(item).find(el => visible(el))
+      const discountInput = findDiscountLimitInput(item)
       if (!discountInput) return null
       if (needMaxDiscount && !findMaxDiscountItem()) return null
       return true
     }, 5000, 150)
 
     if (!ready) {
-      throw new Error(`关注礼折扣设置未完成渲染：${ctx.discountType}`)
+      throw new Error(`折扣设置未完成渲染：${ctx.discountType}`)
     }
     return true
   }
@@ -1666,14 +1863,18 @@
         '折扣金额': ['折扣金额', '固定金额', 'fixed amount'],
       }
       await openSelectAndChoose(['折扣类型 | 优惠限额', '折扣类型'], ctx.discountType, aliases[ctx.discountType] || [ctx.discountType])
-      await waitForFollowPrizeDiscountFields(ctx)
+      await waitForDiscountFields(ctx, {
+        requireMaxDiscount: ctx.maxDiscountMode === 'nocap' || !!ctx.maxDiscount,
+      })
     }
 
     if (ctx.discountLimit) {
       await fillDiscountLimitAndVerify(ctx.discountLimit)
     }
 
-    if (ctx.maxDiscount && /百分比|percentage/i.test(ctx.discountType || '')) {
+    if (ctx.maxDiscountMode === 'nocap' && /百分比|percentage/i.test(ctx.discountType || '')) {
+      await fillMaxDiscountNoCapAndVerify()
+    } else if (ctx.maxDiscount && /百分比|percentage/i.test(ctx.discountType || '')) {
       await fillMaxDiscountAndVerify(ctx.maxDiscount)
     }
 
@@ -1835,19 +2036,19 @@
         return cdpPhase([{ ...coord, delay_ms: 500, label: '店铺切换入口' }], 'ensure_store', 800, ctx)
       }
 
-      await typeInto(searchInput, ctx.store)
       const switcher = document.querySelector('.shop-switcher')
       const switcherVue = switcher?.__vueParentComponent || switcher?.__vue__
-      if (switcherVue?.ctx?.searchShop) {
-        try { switcherVue.ctx.searchShop(ctx.store) } catch {}
-      }
-      await sleep(300)
+      await prepareStoreSearch(searchInput, switcherVue, ctx.store)
 
-      const candidate = await waitFor(() => findStoreCandidate(ctx), 5000, 200)
+      let candidate = await waitFor(() => findStoreCandidate(ctx), 5000, 200)
+      if (!candidate) {
+        await prepareStoreSearch(searchInput, switcherVue, ctx.store)
+        candidate = await waitFor(() => findStoreCandidate(ctx, { includeHidden: true }), 3000, 150)
+      }
       if (!candidate) throw new Error(`搜索后未找到店铺：${ctx.store}`)
-      const coord = rectCenter(candidate)
-      if (!coord) throw new Error('店铺候选项坐标为空')
-      return cdpPhase([{ ...coord, delay_ms: 600, label: `选择店铺:${ctx.store}` }], 'ensure_store', 1800, ctx, {
+
+      pageClick(candidate)
+      return nextPhase('ensure_store', 1800, ctx, {
         previous_shop_id: getUrlShopId(),
         awaiting_store_switch: true,
       })

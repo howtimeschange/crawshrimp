@@ -108,6 +108,38 @@ function getApiServerScript() {
   return path.join(__dirname, '..', '..', 'core', 'api_server.py')
 }
 
+function candidateTemplatePaths(srcPath = '') {
+  const raw = String(srcPath || '').trim()
+  if (!raw) return []
+
+  const candidates = [raw]
+  const normalized = raw.replace(/\\/g, '/')
+  const marker = '/adapters/'
+  const idx = normalized.lastIndexOf(marker)
+  const scriptsDir = getPythonScriptsDir()
+
+  if (idx >= 0) {
+    const relative = normalized.slice(idx + 1)
+    candidates.push(path.join(scriptsDir, relative))
+  }
+
+  const fileName = path.basename(raw)
+  if (fileName) {
+    candidates.push(path.join(scriptsDir, 'adapters', fileName))
+  }
+
+  return [...new Set(candidates)]
+}
+
+function resolveExistingFilePath(srcPath = '') {
+  for (const candidate of candidateTemplatePaths(srcPath)) {
+    if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return candidate
+    }
+  }
+  return ''
+}
+
 // ── Window ────────────────────────────────────────────────────────────────────
 let mainWindow = null
 
@@ -455,16 +487,22 @@ ipcMain.handle('delete-file', async (_, filePath) => {
 })
 
 ipcMain.handle('save-as-file', async (_, srcPath) => {
-  const name = path.basename(srcPath)
+  const resolvedSrcPath = resolveExistingFilePath(srcPath)
+  if (!resolvedSrcPath) {
+    throw new Error(`源文件不存在：${srcPath}`)
+  }
+
+  const name = path.basename(resolvedSrcPath)
   const ext  = path.extname(srcPath).replace('.', '') || '*'
+  const downloadDir = app.getPath('downloads') || app.getPath('documents')
   const res  = await dialog.showSaveDialog(mainWindow, {
     title: '另存为',
-    defaultPath: name,
+    defaultPath: path.join(downloadDir, name),
     filters: [{ name: '文件', extensions: [ext] }, { name: '所有文件', extensions: ['*'] }],
   })
   if (res.canceled || !res.filePath) return { ok: false }
   try {
-    fs.copyFileSync(srcPath, res.filePath)
+    fs.copyFileSync(resolvedSrcPath, res.filePath)
     return { ok: true, dest: res.filePath }
   } catch (e) {
     throw new Error(e.message)
