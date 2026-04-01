@@ -1,6 +1,6 @@
 id: shopee-plus-v2
 name: Shopee 运营助手
-version: 2.0.2
+version: 2.0.3
 author: crawshrimp
 description: "Shopee 卖家后台优惠券批量创建 V2 — 按 SDK 规范重构的稳定版"
 entry_url: https://seller.shopee.cn/portal/marketing
@@ -29,10 +29,10 @@ tasks:
         label: 优惠券设置 Excel
         required: true
         templates:
-          - file: Shopee优惠券批量设置模板.xlsx
+          - file: Shopee优惠券批量设置模板（26.4.1）.xlsx
             label: Excel 填写模板
             description: 标准批量导入模板，支持“是否覆盖已有券”字段；填写优惠券参数后上传到当前任务执行。
-            version: "2026.04.01"
+            version: "26.4.1"
         hint: 先下载模板并按列填写，再上传包含“站点、店铺、优惠券领取期限（开始/结束）精确到分、是否提前显示优惠券、优惠券品类、奖励类型、折扣类型、优惠限额、最高优惠金额（无限制填 nocap）、最低消费金额、可使用总数、每个买家可用的优惠券数量上限、是否覆盖已有券”等列的 Excel 文件
     trigger:
       type: manual
