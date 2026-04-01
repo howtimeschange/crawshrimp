@@ -405,6 +405,17 @@
     return true
   }
 
+  function nativeClickOnce(el) {
+    if (!el) return false
+    try { el.scrollIntoView({ block: 'center' }) } catch {}
+    try { el.focus?.() } catch {}
+    try {
+      el.click?.()
+      return true
+    } catch {}
+    return singleDispatchClick(el)
+  }
+
   function openPageClick(el) {
     return reactClick(el) || dispatchSyntheticClick(el)
   }
@@ -1101,6 +1112,10 @@
       shopId: extras.shopId != null ? extras.shopId : (ctx?.shopId || shared.shopId || ''),
       ...extras,
     }
+  }
+
+  function buildSubmitLockKey(ctx) {
+    return `__CRAWSHRIMP_SUBMIT_LOCK__${runToken || 'run'}_${ctx?.sourceIndex || page}_${ctx?.voucherType || ''}`
   }
 
   function shouldRunPostCreateCleanup(ctx) {
@@ -2386,6 +2401,11 @@
     return [...document.querySelectorAll('button')].filter(visible).find(el => /^(确认|确定)$/.test(textOf(el))) || null
   }
 
+  function clickSubmitConfirmButton(confirmBtn) {
+    if (!confirmBtn) return false
+    return reactClick(confirmBtn) || nativeClickOnce(confirmBtn)
+  }
+
   if (!execRow) {
     return completeNoRow()
   }
@@ -2545,7 +2565,12 @@
       }
       const confirmBtn = findSubmitConfirmButton()
       if (!confirmBtn) throw new Error('未找到提交确认按钮')
-      reactClick(confirmBtn) || dispatchSyntheticClick(confirmBtn)
+      const submitLockKey = buildSubmitLockKey(ctx)
+      if (!window[submitLockKey]) {
+        window[submitLockKey] = Date.now()
+        const clicked = clickSubmitConfirmButton(confirmBtn)
+        if (!clicked) throw new Error('提交确认按钮点击失败')
+      }
       return nextPhase('post_submit', 3200, ctx)
     }
 
