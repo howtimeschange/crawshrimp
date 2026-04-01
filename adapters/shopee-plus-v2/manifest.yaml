@@ -1,6 +1,6 @@
 id: shopee-plus-v2
 name: Shopee 运营助手
-version: 2.0.1
+version: 2.0.2
 author: crawshrimp
 description: "Shopee 卖家后台优惠券批量创建 V2 — 按 SDK 规范重构的稳定版"
 entry_url: https://seller.shopee.cn/portal/marketing

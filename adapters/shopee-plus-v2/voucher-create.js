@@ -1103,6 +1103,16 @@
     }
   }
 
+  function shouldRunPostCreateCleanup(ctx) {
+    if (!ctx?.overwriteExisting) return false
+    // Follow-prize rows are assigned a platform-generated SFP code after submit.
+    // That code does not match our prefilled 5-char coupon code, so the generic
+    // post-create cleanup cannot reliably distinguish the newly created row from
+    // an old conflicting row and may delete the fresh voucher by mistake.
+    if (ctx.usecase === '999') return false
+    return true
+  }
+
   function navigateSoon(url, delayMs = 30) {
     const target = String(url || '').trim()
     if (!target) return false
@@ -2562,7 +2572,7 @@
       }, 18000, 300)
 
       if (ok) {
-        if (ctx.overwriteExisting) {
+        if (shouldRunPostCreateCleanup(ctx)) {
           const shopId = shared.shopId || ctx.shopId || getUrlShopId()
           if (!shopId) throw new Error('提交成功后未解析到店铺 shopId')
           ctx.shopId = shopId
@@ -2594,6 +2604,9 @@
 
     if (currentPhase === 'post_create_cleanup') {
       markStage(ctx, 'post_create_cleanup')
+      if (!shouldRunPostCreateCleanup(ctx)) {
+        return finishRow(ctx, '')
+      }
       const shopId = shared.shopId || ctx.shopId || getUrlShopId()
       if (!shopId) throw new Error('未解析到店铺 shopId')
       ctx.shopId = shopId
