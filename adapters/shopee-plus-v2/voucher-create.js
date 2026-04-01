@@ -3,14 +3,15 @@
  *
  * SDK-aligned phase flow:
  *   main -> prepare_row -> ensure_marketing -> ensure_store
- *   -> open_usecase_form -> fill_usecase_form -> submit_form -> post_submit
+ *   -> resolve_existing_vouchers -> open_usecase_form
+ *   -> fill_usecase_form -> submit_form -> post_submit -> post_create_cleanup
  */
 ;(async () => {
   const params = window.__CRAWSHRIMP_PARAMS__ || {}
   const page = window.__CRAWSHRIMP_PAGE__ || 1
   const phase = window.__CRAWSHRIMP_PHASE__ || 'main'
   const phaseAliasMap = {
-    ensure_voucher_list: 'open_usecase_form',
+    ensure_voucher_list: 'resolve_existing_vouchers',
     open_create_page: 'open_usecase_form',
     fill_basic: 'fill_usecase_form',
     fill_dates: 'fill_usecase_form',
@@ -25,6 +26,7 @@
 
   const MARKETING_URL = 'https://seller.shopee.cn/portal/marketing'
   const VOUCHERS_LIST_URL = 'https://seller.shopee.cn/portal/marketing/vouchers/list'
+  const VOUCHER_LIST_TABS = ['接下来的活动', '进行中的活动']
   const SITE_ALIAS_MAP = {
     '马来西亚': ['马来西亚', '马来', 'malaysia', 'my'],
     '新加坡': ['新加坡', 'singapore', 'sg'],
@@ -250,6 +252,26 @@
     const nb = parseComparableNumber(expected)
     if (na != null && nb != null) return na === nb
     return a === b
+  }
+
+  function toTimestamp(dt) {
+    if (!dt) return NaN
+    return new Date(dt.year, dt.month - 1, dt.day, Number(dt.hh || 0), Number(dt.mm || 0), 0, 0).getTime()
+  }
+
+  function parseDateRangeText(raw) {
+    const matches = String(raw || '').match(/\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}/g) || []
+    if (matches.length < 2) return null
+    const start = parseDateTime(matches[0], 'start')
+    const end = parseDateTime(matches[1], 'end')
+    if (!start || !end) return null
+    return { start, end }
+  }
+
+  function dateRangesOverlap(leftStart, leftEnd, rightStart, rightEnd) {
+    const values = [leftStart, leftEnd, rightStart, rightEnd].map(toTimestamp)
+    if (values.some(value => Number.isNaN(value))) return false
+    return Math.max(values[0], values[2]) <= Math.min(values[1], values[3])
   }
 
   function aliasMatch(actual, aliases) {
@@ -483,7 +505,7 @@
 
   function getVoucherMeta(voucherType) {
     const map = {
-      '商店优惠券': { usecase: '1', testId: 'voucherEntry1', aliases: ['商店优惠券'] },
+      '商店优惠券': { usecase: '1', testId: 'voucherEntry1', aliases: ['商店优惠券', '店铺优惠券', '店铺券', 'shop voucher'] },
       '新买家优惠券': { usecase: '3', testId: 'voucherEntry3', aliases: ['新买家优惠券', '新买家'] },
       '回购买家优惠券': { usecase: '4', testId: 'voucherEntry4', aliases: ['回购买家优惠券', '回购'] },
       '关注礼优惠券': { usecase: '999', testId: 'voucherEntry999', aliases: ['关注礼优惠券', '关注礼'] },
@@ -555,9 +577,7 @@
     return fallback ? textOf(fallback) : ''
   }
 
-  function isStoreMatched(ctx) {
-    const info = getCurrentStoreInfo()
-    const storeText = info.text || getStoreText()
+  function storeTextMatchesContext(storeText, ctx) {
     if (!storeNameMatch(storeText, ctx.store)) return false
 
     const siteAliases = getSiteAliases(ctx.site, ctx.store)
@@ -566,6 +586,13 @@
       const compactStore = norm(ctx.store).toLowerCase()
       if (!compactStore || norm(storeText).toLowerCase() !== compactStore) return false
     }
+    return true
+  }
+
+  function isStoreMatched(ctx) {
+    const info = getCurrentStoreInfo()
+    const storeText = info.text || getStoreText()
+    let matched = storeTextMatchesContext(storeText, ctx)
 
     if (shared.awaiting_store_switch) {
       const previousShopId = String(shared.previous_shop_id || '')
@@ -573,17 +600,26 @@
       if (previousShopId && currentShopId && previousShopId === currentShopId) {
         return false
       }
+
+      if (!matched && previousShopId && currentShopId && previousShopId !== currentShopId) {
+        matched = [...document.querySelectorAll('.shop-selector, .shop-selector .shop-info, .shop-selector .shop-select, .shop-info, .shop-select')]
+          .map(textOf)
+          .some(text => storeTextMatchesContext(text, ctx))
+      }
     }
 
-    return true
+    return matched
   }
 
   function findStoreSearchInput() {
-    return [...document.querySelectorAll('input')].find(el => {
-      if (!visible(el)) return false
-      const placeholder = norm(el.placeholder)
-      return placeholder.includes('搜索店铺') || placeholder.includes('搜索')
-    }) || null
+    const inputs = [...document.querySelectorAll('input')].filter(visible)
+    return inputs.find(el => norm(el.placeholder).includes('搜索店铺')) ||
+      inputs.find(el => {
+        const placeholder = norm(el.placeholder)
+        if (!placeholder.includes('搜索')) return false
+        const scopeText = textOf(el.closest('.shop-switcher, .shop-switcher-container, .shop-selector, .search-popper, [class*="shop"]'))
+        return /店铺|shop/i.test(scopeText)
+      }) || null
   }
 
   function findStoreSwitcherTrigger() {
@@ -605,12 +641,12 @@
   }
 
   function findStoreCandidate(ctx, options = {}) {
-    const selectors = '.search-item, .search-item .shop, [role="option"], li, [class*="shop-item"], [class*="shopItem"]'
+    const selectors = '.search-item, .search-item .shop, [role="option"], li, [class*="shop-item"], [class*="shopItem"], .shop-selector, .shop-selector .shop-info, .shop-selector .shop-select, .shop-info, .shop-select'
     const siteAliases = getSiteAliases(ctx.site, ctx.store)
     const candidates = new Map()
 
     for (const el of [...document.querySelectorAll(selectors)]) {
-      const target = el.closest('.search-item, [role="option"], li, [class*="shop-item"], [class*="shopItem"]') || el
+      const target = el.closest('.search-item, [role="option"], li, [class*="shop-item"], [class*="shopItem"], .shop-selector') || el
       if (!isVisibleStoreCandidate(target, options)) continue
 
       const text = textOf(target) || textOf(el)
@@ -678,6 +714,263 @@
     }) || null
   }
 
+  function isOnVouchersListPage() {
+    return location.href.includes('/portal/marketing/vouchers/list')
+  }
+
+  function getVoucherListActiveTab() {
+    const active = [...document.querySelectorAll('.eds-react-tabs-tab-active')]
+      .find(el => visible(el) && VOUCHER_LIST_TABS.includes(textOf(el)))
+    return textOf(active)
+  }
+
+  function findVoucherListTab(label) {
+    return [...document.querySelectorAll('.eds-react-tabs-tab')]
+      .find(el => visible(el) && textOf(el) === label) || null
+  }
+
+  async function switchVoucherListTab(label) {
+    if (getVoucherListActiveTab() === label) return true
+    const tab = await waitFor(() => findVoucherListTab(label), 5000, 150)
+    if (!tab) throw new Error(`未找到优惠券列表标签：${label}`)
+    openPageClick(tab)
+    const switched = await waitFor(() => getVoucherListActiveTab() === label, 5000, 150)
+    if (!switched) throw new Error(`切换优惠券列表标签失败：${label}`)
+    await waitForVoucherListReady(8000)
+    await sleep(300)
+    return true
+  }
+
+  function getVoucherListRows() {
+    return [...document.querySelectorAll('tbody tr, [role="row"]')]
+      .filter(el => visible(el) && /优惠券码[:：]/.test(textOf(el)))
+  }
+
+  function hasVoucherListEmptyState() {
+    return [...document.querySelectorAll(
+      '.eds-react-empty, .eds-empty, [class*="empty"], [class*="no-data"], [class*="empty-state"]'
+    )]
+      .filter(visible)
+      .some(el => /暂无|无数据|empty|no data|no result/i.test(textOf(el)))
+  }
+
+  function hasVoucherListLoading() {
+    return [...document.querySelectorAll(
+      '.eds-react-spin, .eds-spin, [class*="loading"], [class*="skeleton"], [class*="placeholder"]'
+    )]
+      .filter(visible)
+      .some(el => {
+        const text = textOf(el)
+        return !text || /加载|loading/i.test(text)
+      })
+  }
+
+  async function waitForVoucherListReady(timeout = 8000) {
+    const ready = await waitFor(() => {
+      if (getVoucherListRows().length > 0) return true
+      if (hasVoucherListEmptyState()) return true
+      if (hasVoucherListLoading()) return null
+      return document.querySelector('tbody, .eds-react-table-body') ? true : null
+    }, timeout, 200)
+    return !!ready
+  }
+
+  function getVoucherRowCode(text) {
+    const match = String(text || '').match(/优惠券码[:：]\s*([A-Z0-9-]+)/i)
+    return match ? match[1] : ''
+  }
+
+  function getVoucherRowInfo(row) {
+    const text = textOf(row).replace(/\s+/g, ' ')
+    return {
+      el: row,
+      text,
+      code: getVoucherRowCode(text),
+      range: parseDateRangeText(text),
+    }
+  }
+
+  function voucherCodeMatchesCurrentRow(rowCode, couponCode) {
+    const actual = norm(rowCode).toUpperCase()
+    const expected = norm(couponCode).toUpperCase()
+    if (!actual || !expected) return false
+    return actual === expected || actual.endsWith(expected)
+  }
+
+  function voucherRowMatchesContext(rowText, ctx) {
+    const meta = getVoucherMeta(ctx.voucherType)
+    const aliases = [ctx.voucherType, ...(meta.aliases || [])].filter(Boolean)
+    return aliases.some(alias => rowText.includes(alias))
+  }
+
+  function findConflictingVoucherRow(ctx, options = {}) {
+    return getVoucherListRows()
+      .map(getVoucherRowInfo)
+      .find(info => {
+        if (!voucherRowMatchesContext(info.text, ctx)) return false
+        if (options.excludeCurrentGenerated && voucherCodeMatchesCurrentRow(info.code, ctx.couponCode)) return false
+        if (!info.range?.start || !info.range?.end || !ctx.startDt || !ctx.endDt) return false
+        return dateRangesOverlap(info.range.start, info.range.end, ctx.startDt, ctx.endDt)
+      }) || null
+  }
+
+  function findRowActionButton(row, text) {
+    return [...row.querySelectorAll('button, a, [role="button"]')]
+      .find(el => visible(el) && textOf(el) === text) || null
+  }
+
+  function findVisibleActionButton(texts, selectors = 'button, a, div, li, [role="button"], [role="menuitem"], .eds-react-dropdown-item') {
+    const expected = (Array.isArray(texts) ? texts : [texts]).map(norm)
+    return [...document.querySelectorAll(selectors)].find(el => {
+      if (!visible(el)) return false
+      return expected.includes(textOf(el))
+    }) || null
+  }
+
+  function findVisibleOverlayActionButton(texts) {
+    const expected = (Array.isArray(texts) ? texts : [texts]).map(norm)
+    return [...document.querySelectorAll('button, a, [role="button"]')]
+      .filter(visible)
+      .filter(el => expected.includes(textOf(el)))
+      .filter(el => !el.closest('tbody tr, [role="row"]'))
+      .map(el => {
+        const rect = el.getBoundingClientRect()
+        const className = String(el.className || '')
+        return {
+          el,
+          primary: /primary|danger/i.test(className),
+          area: Math.round(rect.width * rect.height),
+          top: rect.top,
+        }
+      })
+      .sort((a, b) => {
+        if (a.primary !== b.primary) return a.primary ? -1 : 1
+        if (a.area !== b.area) return b.area - a.area
+        return b.top - a.top
+      })[0]?.el || null
+  }
+
+  function getVisibleDialogRoots() {
+    return [...document.querySelectorAll('[role="dialog"], .eds-modal, .shopee-modal, .eds-react-modal')]
+      .filter(visible)
+  }
+
+  function findVisibleDialogButton(texts) {
+    const expected = (Array.isArray(texts) ? texts : [texts]).map(norm)
+    for (const dialog of getVisibleDialogRoots()) {
+      const button = [...dialog.querySelectorAll('button, a, [role="button"]')].find(el => {
+        return visible(el) && expected.includes(textOf(el))
+      })
+      if (button) return button
+    }
+    return null
+  }
+
+  function findVisibleConfirmButton(texts = ['确认', '确定']) {
+    return findVisibleDialogButton(texts) || findVisibleActionButton(texts)
+  }
+
+  async function waitForOverlayActionButtonGone(texts, timeout = 8000) {
+    const hidden = await waitFor(() => !findVisibleOverlayActionButton(texts), timeout, 150)
+    return !!hidden
+  }
+
+  function buildConflictRetryState(sharedState, phaseName, info, tab) {
+    const rowKey = info.code || info.text
+    const key = `${phaseName}|${tab}|${rowKey}`
+    const previousKey = String(sharedState?.conflict_retry_key || '')
+    const previousCount = Number(sharedState?.conflict_retry_count || 0)
+    const count = previousKey === key ? previousCount + 1 : 1
+    if (count > 3) {
+      throw new Error(`刷新后仍重复命中同一张冲突券：${rowKey}`)
+    }
+    return {
+      conflict_retry_key: key,
+      conflict_retry_count: count,
+    }
+  }
+
+  async function confirmVoucherRowAction(info, actionTexts, timeout = 8000) {
+    const confirmBtn = await waitFor(() => findVisibleOverlayActionButton(actionTexts), 4000, 150)
+    if (!confirmBtn) throw new Error(`未找到${actionTexts[0]}确认按钮：${info.code || info.text}`)
+    reactClick(confirmBtn) || dispatchSyntheticClick(confirmBtn)
+    await waitForOverlayActionButtonGone(actionTexts, timeout)
+    await sleep(1200)
+    return true
+  }
+
+  async function deleteVoucherRow(info) {
+    const deleteBtn = findRowActionButton(info.el, '删除')
+    if (!deleteBtn) throw new Error(`未找到删除按钮：${info.code || info.text}`)
+    openPageClick(deleteBtn)
+    await sleep(300)
+    await confirmVoucherRowAction(info, ['删除', 'Delete'])
+    return true
+  }
+
+  async function endVoucherRow(info) {
+    const moreBtn = findRowActionButton(info.el, '更多')
+    if (!moreBtn) throw new Error(`未找到更多按钮：${info.code || info.text}`)
+
+    const moreProps = reactPropsOf(moreBtn)
+    const event = {
+      preventDefault() {},
+      stopPropagation() {},
+      target: moreBtn,
+      currentTarget: moreBtn,
+      nativeEvent: { target: moreBtn },
+    }
+    try { moreProps?.onMouseEnter?.(event) } catch {}
+    try { moreProps?.onMouseDown?.(event) } catch {}
+    try { moreProps?.onClick?.(event) } catch {}
+    reactClick(moreBtn) || dispatchSyntheticClick(moreBtn)
+
+    const endBtn = await waitFor(() => findVisibleActionButton('结束'), 4000, 150)
+    if (!endBtn) throw new Error(`未找到结束菜单：${info.code || info.text}`)
+    reactClick(endBtn) || dispatchSyntheticClick(endBtn)
+
+    await confirmVoucherRowAction(info, ['结束', 'End'])
+    return true
+  }
+
+  async function resolveOneVoucherConflict(ctx, sharedState, options = {}) {
+    if (!ctx.overwriteExisting) return { handled: false, sharedExtras: { conflict_retry_key: '', conflict_retry_count: 0 } }
+    if (!ctx.startDt || !ctx.endDt) return { handled: false, sharedExtras: { conflict_retry_key: '', conflict_retry_count: 0 } }
+
+    const phaseName = options.phaseName || 'resolve_existing_vouchers'
+    const matchOptions = options.excludeCurrentGenerated ? { excludeCurrentGenerated: true } : {}
+
+    for (const tab of VOUCHER_LIST_TABS) {
+      await switchVoucherListTab(tab)
+      await waitForVoucherListReady(8000)
+      let duplicate = findConflictingVoucherRow(ctx, matchOptions)
+      if (!duplicate) {
+        await sleep(600)
+        duplicate = findConflictingVoucherRow(ctx, matchOptions)
+      }
+      if (!duplicate) continue
+
+      if (tab === '接下来的活动') {
+        await deleteVoucherRow(duplicate)
+      } else {
+        await endVoucherRow(duplicate)
+      }
+
+      return {
+        handled: true,
+        sharedExtras: buildConflictRetryState(sharedState, phaseName, duplicate, tab),
+      }
+    }
+
+    return {
+      handled: false,
+      sharedExtras: {
+        conflict_retry_key: '',
+        conflict_retry_count: 0,
+      },
+    }
+  }
+
   function getTextInputs(container) {
     return [...(container || document).querySelectorAll(
       'input:not([type=radio]):not([type=checkbox]), textarea'
@@ -725,11 +1018,14 @@
   }
 
   function buildResultBase(ctx) {
+    const overwriteHeader = Object.keys(ctx?.row || {}).find(key => normalizeHeaderKey(key).includes(normalizeHeaderKey('是否覆盖已有券')))
     return {
       '序号': ctx.sourceIndex,
       '队列总数': executionRows.length,
       '站点': ctx.site,
       '店铺': ctx.store,
+      '是否覆盖已有券': ctx.overwriteExisting ? '1' : '0',
+      ...(overwriteHeader ? { [overwriteHeader]: ctx.overwriteExisting ? '1' : '0' } : {}),
       '优惠券品类': ctx.voucherType,
       '奖励类型': ctx.rewardType,
       '折扣类型': ctx.discountType,
@@ -759,6 +1055,7 @@
       sourceIndex: currentExecRow.sourceIndex,
       site,
       store,
+      overwriteExisting: boolLike(getRowValue(row, ['是否覆盖已有券', '覆盖已有券'], { includes: true, defaultValue: '' })),
       voucherType,
       rewardType,
       discountType,
@@ -1062,8 +1359,7 @@
     return Number(state.modelValue) === targetValue || Number(state.voucherValue) === targetValue
   }
 
-  function getSelectControllerProps(item) {
-    const root = findSelectDisplay(item) || findSelectTrigger(item)
+  function getSelectControllerPropsFromRoot(root) {
     if (!root) return null
     const fiberKey = Object.keys(root).find(key => key.startsWith('__reactFiber'))
     let fiber = fiberKey ? root[fiberKey] : null
@@ -1075,6 +1371,11 @@
       fiber = fiber.return
     }
     return null
+  }
+
+  function getSelectControllerProps(item) {
+    const root = findSelectDisplay(item) || findSelectTrigger(item)
+    return getSelectControllerPropsFromRoot(root)
   }
 
   function selectOptionLabel(option) {
@@ -1356,6 +1657,68 @@
     }
 
     throw new Error(`下拉选择失败，期望：${desiredText}，实际：${readCurrentValue() || '(空)'}`)
+  }
+
+  function readSelectTriggerValue(trigger) {
+    return textOf(
+      trigger?.querySelector('.eds-react-select__inner, .eds-selector__inner, .line-clamp--1') ||
+      trigger
+    )
+  }
+
+  async function chooseOptionFromTrigger(trigger, desiredText, aliases = [desiredText]) {
+    if (!trigger) throw new Error(`未找到下拉触发器：${desiredText}`)
+    const allAliases = aliases.map(alias => String(alias || '').toLowerCase()).filter(Boolean)
+    const selectRoot = trigger.closest('.eds-react-select, .eds-selector, [role="combobox"], .trigger.trigger--normal') || trigger
+    const readCurrent = () => readSelectTriggerValue(trigger)
+    if (aliasMatch(readCurrent(), allAliases)) return readCurrent()
+
+    const injectedProps = getSelectControllerPropsFromRoot(selectRoot)
+    if (injectedProps?.onChange && Array.isArray(injectedProps?.options)) {
+      const targetOption = injectedProps.options.find(option => {
+        const label = selectOptionLabel(option).toLowerCase()
+        return allAliases.some(alias => label === alias || label.includes(alias))
+      })
+      if (targetOption) {
+        for (const candidate of [targetOption.value, String(targetOption.value)]) {
+          try {
+            injectedProps.onChange(candidate)
+          } catch {
+            continue
+          }
+          await sleep(260)
+          if (aliasMatch(readCurrent(), allAliases)) return readCurrent()
+        }
+      }
+    }
+
+    const openTrigger = () => {
+      const props = reactPropsOf(selectRoot) || reactPropsOf(trigger)
+      const event = {
+        preventDefault() {},
+        stopPropagation() {},
+        target: selectRoot,
+        currentTarget: selectRoot,
+        nativeEvent: { target: selectRoot },
+      }
+      try { props?.onMouseDown?.(event) } catch {}
+      try { props?.onClick?.(event) } catch {}
+      clickSequence(selectRoot)
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      openTrigger()
+      const option = await waitFor(() => {
+        return [...document.querySelectorAll('.eds-react-select-option, .eds-select-option, [role="option"], [class*="select-option"]')]
+          .find(el => visible(el) && aliasMatch(textOf(el), allAliases)) || null
+      }, 3000, 150)
+      if (!option) continue
+      reactClick(option) || dispatchSyntheticClick(option)
+      await sleep(300)
+      if (aliasMatch(readCurrent(), allAliases)) return readCurrent()
+    }
+
+    throw new Error(`下拉选择失败，期望：${desiredText}，实际：${readCurrent() || '(空)'}`)
   }
 
   async function fillDiscountLimitAndVerify(value) {
@@ -1719,6 +2082,16 @@
       }
     }
 
+    if (ctx.usecase === '4') {
+      const repurchase = readRepurchaseBuyerState()
+      if (!repurchase.item || !/重复购买买家/.test(repurchase.text)) {
+        issues.push('目标买家不是重复购买买家')
+      }
+      if (repurchase.item && !sameNumeric(repurchase.days, '90')) {
+        issues.push(`回购买家优惠券过去天数不匹配（期望：90，实际：${repurchase.days || '(空)'}）`)
+      }
+    }
+
     return issues
   }
 
@@ -1898,6 +2271,43 @@
     await fillCommonRuleFields(ctx)
   }
 
+  function readRepurchaseBuyerState() {
+    const item = getFormItem('目标买家')
+    const triggers = [...(item?.querySelectorAll('.trigger.trigger--normal, .eds-selector, [role="combobox"]') || [])]
+      .filter(visible)
+    return {
+      item,
+      text: textOf(item),
+      days: readSelectTriggerValue(triggers[0]),
+      times: readSelectTriggerValue(triggers[1]),
+      triggers,
+    }
+  }
+
+  async function ensureRepurchaseBuyerDefaults() {
+    const state = readRepurchaseBuyerState()
+    if (!state.item) throw new Error('未找到目标买家表单项')
+    if (!/重复购买买家/.test(state.text)) {
+      throw new Error(`目标买家不是重复购买买家，当前：${state.text || '(空)'}`)
+    }
+    if (sameNumeric(state.days, '90')) return true
+    await chooseOptionFromTrigger(state.triggers[0], '90')
+    const verified = await waitFor(() => {
+      const next = readRepurchaseBuyerState()
+      return sameNumeric(next.days, '90') ? next : null
+    }, 5000, 150)
+    if (!verified) throw new Error('回购买家优惠券过去天数未设置为90')
+    return true
+  }
+
+  async function fillRepurchaseVoucherUsecase(ctx) {
+    await ensureCreateFormReady(ctx)
+    await fillCouponIdentity(ctx)
+    await fillVoucherDates(ctx, { mode: 'react' })
+    await ensureRepurchaseBuyerDefaults()
+    await fillCommonRuleFields(ctx)
+  }
+
   async function fillFollowPrizeUsecase(ctx) {
     await ensureCreateFormReady(ctx)
     await fillCouponIdentity(ctx)
@@ -1908,6 +2318,8 @@
   async function fillVoucherFormByUsecase(ctx) {
     if (ctx.usecase === '999') {
       await fillFollowPrizeUsecase(ctx)
+    } else if (ctx.usecase === '4') {
+      await fillRepurchaseVoucherUsecase(ctx)
     } else {
       await fillNormalVoucherUsecase(ctx)
     }
@@ -2012,7 +2424,7 @@
           return nextPhase('ensure_store', 1800, ctx, { awaiting_store_switch: false })
         }
         ctx.shopId = shopId
-        return nextPhase('open_usecase_form', 100, ctx, {
+        return nextPhase('resolve_existing_vouchers', 100, ctx, {
           shopId,
           awaiting_store_switch: false,
           previous_shop_id: '',
@@ -2045,12 +2457,51 @@
         await prepareStoreSearch(searchInput, switcherVue, ctx.store)
         candidate = await waitFor(() => findStoreCandidate(ctx, { includeHidden: true }), 3000, 150)
       }
-      if (!candidate) throw new Error(`搜索后未找到店铺：${ctx.store}`)
+      if (!candidate) {
+        if (isStoreMatched(ctx)) {
+          const shopId = getUrlShopId() || shared.shopId || ctx.shopId
+          if (!shopId) throw new Error('店铺已切换但未解析到 shopId')
+          ctx.shopId = shopId
+          return nextPhase('resolve_existing_vouchers', 100, ctx, {
+            shopId,
+            awaiting_store_switch: false,
+            previous_shop_id: '',
+          })
+        }
+        throw new Error(`搜索后未找到店铺：${ctx.store}`)
+      }
 
       pageClick(candidate)
       return nextPhase('ensure_store', 1800, ctx, {
         previous_shop_id: getUrlShopId(),
         awaiting_store_switch: true,
+      })
+    }
+
+    if (currentPhase === 'resolve_existing_vouchers') {
+      markStage(ctx, 'resolve_existing_vouchers')
+      const shopId = shared.shopId || ctx.shopId || getUrlShopId()
+      if (!shopId) throw new Error('未解析到店铺 shopId')
+      ctx.shopId = shopId
+      const listUrl = buildVouchersListUrl(shopId)
+      if (!isOnVouchersListPage() || getUrlShopId() !== shopId) {
+        navigateSoon(listUrl)
+        return nextPhase('resolve_existing_vouchers', 2500, ctx, { shopId })
+      }
+      const conflictResult = await resolveOneVoucherConflict(ctx, shared, {
+        phaseName: 'resolve_existing_vouchers',
+      })
+      if (conflictResult.handled) {
+        navigateSoon(listUrl)
+        return nextPhase('resolve_existing_vouchers', 2500, ctx, {
+          shopId,
+          ...conflictResult.sharedExtras,
+        })
+      }
+      return nextPhase('open_usecase_form', 100, ctx, {
+        shopId,
+        conflict_retry_key: '',
+        conflict_retry_count: 0,
       })
     }
 
@@ -2111,6 +2562,12 @@
       }, 18000, 300)
 
       if (ok) {
+        if (ctx.overwriteExisting) {
+          const shopId = shared.shopId || ctx.shopId || getUrlShopId()
+          if (!shopId) throw new Error('提交成功后未解析到店铺 shopId')
+          ctx.shopId = shopId
+          return nextPhase('post_create_cleanup', 120, ctx, { shopId })
+        }
         return finishRow(ctx, '')
       }
 
@@ -2133,6 +2590,30 @@
       }
 
       throw new Error(`提交后未能确认成功，当前URL：${location.href.substring(0, 120)}`)
+    }
+
+    if (currentPhase === 'post_create_cleanup') {
+      markStage(ctx, 'post_create_cleanup')
+      const shopId = shared.shopId || ctx.shopId || getUrlShopId()
+      if (!shopId) throw new Error('未解析到店铺 shopId')
+      ctx.shopId = shopId
+      const listUrl = buildVouchersListUrl(shopId)
+      if (!isOnVouchersListPage() || getUrlShopId() !== shopId) {
+        navigateSoon(listUrl)
+        return nextPhase('post_create_cleanup', 2500, ctx, { shopId })
+      }
+      const cleanupResult = await resolveOneVoucherConflict(ctx, shared, {
+        phaseName: 'post_create_cleanup',
+        excludeCurrentGenerated: true,
+      })
+      if (cleanupResult.handled) {
+        navigateSoon(listUrl)
+        return nextPhase('post_create_cleanup', 2500, ctx, {
+          shopId,
+          ...cleanupResult.sharedExtras,
+        })
+      }
+      return finishRow(ctx, '')
     }
 
     throw new Error(`未知 phase：${phase}`)
