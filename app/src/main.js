@@ -296,11 +296,111 @@ const CHROME_PATHS_WIN = [
 const CHROME_PATHS_MAC = [
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
   '/Applications/Chromium.app/Contents/MacOS/Chromium',
+  '/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing',
 ]
+
+let managedChromeProcess = null
+
+function getChromeCandidates() {
+  if (process.platform === 'win32') return CHROME_PATHS_WIN
+  return CHROME_PATHS_MAC
+}
+
+function getManagedChromeProfileDir() {
+  return path.join(getCrawshrimpDataDir(), 'chrome-profile')
+}
+
+function getManagedChromeStateFile() {
+  return path.join(getCrawshrimpDataDir(), 'chrome-instance.json')
+}
+
+function writeManagedChromeState(state) {
+  const filePath = getManagedChromeStateFile()
+  fs.mkdirSync(path.dirname(filePath), { recursive: true })
+  fs.writeFileSync(filePath, JSON.stringify(state, null, 2), 'utf8')
+}
+
+function clearManagedChromeState() {
+  try { fs.unlinkSync(getManagedChromeStateFile()) } catch (_) {}
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+function probeChromeCdp(timeoutMs = 800) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (result) => {
+      if (done) return
+      done = true
+      resolve(result)
+    }
+
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: CDP_PORT,
+      path: '/json/version',
+      method: 'GET',
+      timeout: timeoutMs,
+    }, (res) => {
+      let data = ''
+      res.on('data', (chunk) => { data += chunk })
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          finish({ ok: false, statusCode: res.statusCode || 0 })
+          return
+        }
+        try {
+          const parsed = JSON.parse(data || '{}')
+          const browser = String(parsed.Browser || '')
+          finish({
+            ok: Boolean(browser),
+            browser,
+            protocolVersion: String(parsed['Protocol-Version'] || ''),
+            webSocketDebuggerUrl: String(parsed.webSocketDebuggerUrl || ''),
+          })
+        } catch (error) {
+          finish({ ok: false, error: error.message })
+        }
+      })
+    })
+
+    req.on('error', (error) => finish({ ok: false, error: error.message }))
+    req.on('timeout', () => {
+      req.destroy(new Error('timeout'))
+      finish({ ok: false, error: 'timeout' })
+    })
+    req.end()
+  })
+}
+
+function rememberManagedChromeProcess(proc, chromePath, profileDir) {
+  managedChromeProcess = proc
+  writeManagedChromeState({
+    pid: proc.pid,
+    chromePath,
+    profileDir,
+    cdpPort: CDP_PORT,
+    launchedAt: new Date().toISOString(),
+  })
+  proc.on('exit', () => {
+    if (managedChromeProcess?.pid === proc.pid) {
+      managedChromeProcess = null
+      clearManagedChromeState()
+    }
+  })
+}
 
 async function launchChrome(customPath = '') {
   const isWin = process.platform === 'win32'
-  const candidates = isWin ? CHROME_PATHS_WIN : CHROME_PATHS_MAC
+  const candidates = getChromeCandidates()
 
   let chromePath = customPath && fs.existsSync(customPath) ? customPath : null
   if (!chromePath) {
@@ -319,39 +419,66 @@ async function launchChrome(customPath = '') {
     chromePath = res.filePaths[0]
   }
 
-  if (await probeTcp(CDP_PORT)) {
+  const ready = await probeChromeCdp()
+  if (ready.ok) {
     sendStatus('chrome', true)
     return { ok: true, msg: `Chrome CDP already ready (port ${CDP_PORT})` }
   }
 
-  // Kill existing Chrome instances
-  try {
-    if (isWin) execSync('taskkill /F /IM chrome.exe /T', { timeout: 5000 })
-    else execSync(`osascript -e 'quit app "Google Chrome"'`, { timeout: 5000 })
-    await new Promise(r => setTimeout(r, 2000))
-  } catch (_) {}
-
-  const os = require('os')
-  const profileDir = path.join(os.homedir(), '.crawshrimp', 'chrome-profile')
+  const profileDir = getManagedChromeProfileDir()
   fs.mkdirSync(profileDir, { recursive: true })
 
-  log(`[chrome] launching with --remote-debugging-port=${CDP_PORT}`)
-  const proc = spawn(chromePath, [
+  const args = [
     `--remote-debugging-port=${CDP_PORT}`,
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
     '--no-default-browser-check',
-  ], { detached: !isWin, stdio: 'ignore' })
-  if (!isWin) proc.unref()
+    '--new-window',
+    'about:blank',
+  ]
+
+  if (managedChromeProcess?.pid && isPidAlive(managedChromeProcess.pid)) {
+    log(`[chrome] managed Chrome pid=${managedChromeProcess.pid} still alive, waiting for CDP`)
+  }
+
+  // Keep automation traffic in an isolated browser profile and never close
+  // the user's existing Chrome windows.
+  log(`[chrome] launching dedicated instance with isolated profile ${profileDir}`)
+  const proc = spawn(chromePath, [
+    ...args,
+  ], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  })
+  let spawnError = ''
+  proc.once('error', (error) => {
+    spawnError = error.message
+    log(`[chrome] failed to launch: ${error.message}`)
+    if (managedChromeProcess?.pid === proc.pid) managedChromeProcess = null
+    clearManagedChromeState()
+  })
+  proc.unref()
+  if (proc.pid) rememberManagedChromeProcess(proc, chromePath, profileDir)
 
   for (let i = 0; i < 50; i++) {
+    if (spawnError) {
+      return { ok: false, msg: `Failed to launch Chrome: ${spawnError}` }
+    }
     await new Promise(r => setTimeout(r, 600))
-    if (await probeTcp(CDP_PORT)) {
+    const cdp = await probeChromeCdp()
+    if (cdp.ok) {
       sendStatus('chrome', true)
       return { ok: true, msg: `Chrome started, CDP port ${CDP_PORT}` }
     }
   }
-  return { ok: false, msg: 'Chrome started but CDP not responding' }
+  if (spawnError) {
+    return { ok: false, msg: `Failed to launch Chrome: ${spawnError}` }
+  }
+  return {
+    ok: false,
+    msg: 'Chrome launched but CDP did not become ready. Check whether the dedicated browser window started normally.',
+  }
 }
 
 // ── HTTP helper (call FastAPI) ─────────────────────────────────────────────────
@@ -422,8 +549,8 @@ app.whenReady().then(async () => {
   await startBackend()
 
   // Auto-launch Chrome with CDP on startup
-  const chromeOk = await probeTcp(CDP_PORT)
-  if (chromeOk) {
+  const chromeState = await probeChromeCdp()
+  if (chromeState.ok) {
     log('[chrome] CDP already ready on port ' + CDP_PORT)
     sendStatus('chrome', true)
   } else {
@@ -443,7 +570,7 @@ app.on('window-all-closed', () => {
 
 ipcMain.handle('get-status', async () => ({
   api:     await probeTcp(API_PORT),
-  chrome:  await probeTcp(CDP_PORT),
+  chrome:  (await probeChromeCdp()).ok,
   apiPort: API_PORT,
   cdpPort: CDP_PORT,
   pythonBin: getPythonBin(),
@@ -451,7 +578,7 @@ ipcMain.handle('get-status', async () => ({
 }))
 
 ipcMain.handle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
-ipcMain.handle('check-chrome', async () => ({ ok: await probeTcp(CDP_PORT) }))
+ipcMain.handle('check-chrome', async () => ({ ok: (await probeChromeCdp()).ok }))
 
 ipcMain.handle('get-chrome-tabs', async () => {
   try { return await apiCall('GET', '/settings/chrome-tabs') } catch { return [] }

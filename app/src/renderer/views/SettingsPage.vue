@@ -16,11 +16,11 @@
             {{ props.status?.chrome ? '已连接' : '未连接' }}
           </span>
           <button class="btn-orange-sm" :disabled="launching" @click="doLaunchChrome">
-            {{ launching ? '启动中…' : props.status?.chrome ? '重新连接' : '启动 Chrome' }}
+            {{ launching ? '启动中…' : props.status?.chrome ? '重新连接' : '启动专用 Chrome' }}
           </button>
         </div>
         <p v-if="chromeMsg" :class="['hint-msg', chromeMsgOk ? 'ok' : 'err']">{{ chromeMsg }}</p>
-        <p class="hint">应用启动时会自动尝试拉起 Chrome，此按钮用于手动重试</p>
+        <p class="hint">应用启动时会自动尝试拉起专用 Chrome 实例，不会关闭你已经打开的浏览器窗口；此按钮用于手动重试</p>
       </section>
 
       <!-- 通知设置 -->
