@@ -22,10 +22,20 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 | 适配包 | 平台 | 功能 |
 |--------|------|------|
 | `shopee-plus-v2` | Shopee 卖家后台 | 多门店多券型优惠券批量创建（商店 / 新买家 / 回购买家 / 关注礼） |
+| `lazada-plus-v1` | Lazada Seller Center | 多站点优惠券/促销批量创建（Regular / Flexi Combo / 新买家 / 粉丝券） |
 | `temu` | Temu 卖家后台 | 商品数据 / 售后管理 / 店铺评价 / 站点商品 |
 | `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
 
 > 当前仓库内只保留一条 Shopee 适配线：`shopee-plus-v2`。旧 `shopee` / `shopee-plus` 已移除。
+
+### 最近更新
+
+- 新增内置适配包 `lazada-plus-v1`
+- 桌面端任务页支持适配包内置模板下载
+- `file_excel` 支持多 sheet 工作簿注入
+- Lazada 模板已内置 `Vouchers / FlexiTiers / Instructions / 填写说明`
+- Lazada 模板主要枚举字段已预置 Excel 下拉框
+- 桌面端新增“新页面开启”登录模式，并修复 Windows 下模板下载不可点击问题
 
 ---
 
@@ -40,7 +50,7 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 当前 Release 会自动包含：
 
-- macOS 桌面包（zip）
+- macOS 桌面包（dmg）
 - Windows 安装包（exe）
 - 内置 Python 运行时
 
@@ -51,7 +61,8 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 1. 下载对应平台安装包
 2. 启动 Chrome，并带上 `--remote-debugging-port=9222`
 3. 打开抓虾桌面程序
-4. 在 Chrome 中登录目标平台后运行任务
+4. 在任务页按需下载 Excel / CSV 模板并填写
+5. 在 Chrome 中登录目标平台后运行任务
 
 > `desktop-latest` 是自动刷新的滚动预发布，只要 `main` 分支桌面构建成功，就会自动更新为最新可下载版本。
 
@@ -139,6 +150,7 @@ crawshrimp/
 │   └── src/renderer/         # Vue 3 视图
 ├── adapters/                 # 内置适配包
 │   ├── shopee-plus-v2/       # Shopee 优惠券批量创建
+│   ├── lazada-plus-v1/       # Lazada 优惠券/促销批量创建
 │   ├── temu/                 # Temu 运营助手
 │   └── jd/                   # 京东价格监控
 └── sdk/                      # 开发工具 & 规范
@@ -213,6 +225,21 @@ tasks:
 ```
 
 详细开发文档见 → **[sdk/ADAPTER_GUIDE.md](sdk/ADAPTER_GUIDE.md)**
+
+### `file_excel` 模板能力
+
+`file_excel` 现在支持直接在任务页下载适配包自带模板：
+
+- 可配置多个模板入口，比如 Excel 主模板 + 字段说明 CSV
+- 运行时会自动解析模板真实路径，兼容开发环境、内置资源和 `~/.crawshrimp/adapters/`
+- `.xlsx/.xls/.xlsm` 会额外注入 `file.sheets`
+
+以 Lazada 为例，一个模板工作簿可以同时包含：
+
+- `Vouchers` 主表
+- `FlexiTiers` 阶梯表
+- `Instructions` 概览页
+- `填写说明` 逐列说明页
 
 ---
 
