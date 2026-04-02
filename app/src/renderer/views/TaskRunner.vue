@@ -7,8 +7,8 @@
     </header>
 
     <!-- 参数面板 -->
-    <div class="params-panel" v-if="task?.params?.length">
-      <div v-for="param in task.params" :key="param.id" class="param-group">
+    <div class="params-panel" v-if="visibleParams.length">
+      <div v-for="param in visibleParams" :key="param.id" class="param-group">
         <label class="param-label">
           {{ param.label }}
           <span v-if="param.required" class="required">*</span>
@@ -186,9 +186,18 @@
           :disabled="isRunning || missingRequired"
           @click="runTask"
         >
-          <span v-if="isRunning">⏳ 进行中…</span>
+          <span v-if="isRunning">{{ runningLabel }}</span>
           <span v-else>▶ 立即执行</span>
         </button>
+        <button
+          v-if="autoPrecheckFlow"
+          class="run-sub-btn"
+          :disabled="isRunning || missingRequired"
+          @click="runValidationOnly"
+        >
+          {{ validationOnlyLabel }}
+        </button>
+        <span v-if="autoPrecheckFlow" class="action-note">{{ autoPrecheckNote }}</span>
         <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
         <span v-if="missingRequired" class="missing-hint">请填写必填项</span>
         <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
@@ -260,9 +269,11 @@ const outputFiles = ref([])
 const showFiles = ref(false)
 const excelLoading = ref({})
 const templateFeedback = ref({})
+const runStage = ref('')
 const dateInputRefs = new Map()
 let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
+let runAbortToken = 0
 
 // 初始化默认值
 watch(() => props.task, (task) => {
@@ -284,6 +295,7 @@ watch(() => props.task, (task) => {
   outputFiles.value = []
   isRunning.value = false
   lastResult.value = null
+  runStage.value = ''
   // 异步加载该任务的历史日志
   nextTick(async () => {
     try {
@@ -294,9 +306,40 @@ watch(() => props.task, (task) => {
   })
 }, { immediate: true })
 
+const executeModeParam = computed(() =>
+  (props.task?.params || []).find(p =>
+    p?.id === 'execute_mode' &&
+    p?.type === 'radio' &&
+    (p?.options || []).some(opt => opt?.value === 'plan') &&
+    (p?.options || []).some(opt => opt?.value === 'live')
+  ) || null
+)
+
+const autoPrecheckFlow = computed(() =>
+  props.task?.execution_ui_mode === 'precheck_before_live' && !!executeModeParam.value
+)
+
+const visibleParams = computed(() =>
+  (props.task?.params || []).filter(p => !(autoPrecheckFlow.value && p.id === 'execute_mode'))
+)
+
+const validationOnlyLabel = computed(() =>
+  props.task?.validation_only_label || '仅校验 Excel'
+)
+
+const autoPrecheckNote = computed(() =>
+  props.task?.auto_precheck_note || '执行前会自动做 Excel 预检'
+)
+
+const runningLabel = computed(() => {
+  if (runStage.value === 'plan') return '⏳ 预检中…'
+  if (runStage.value === 'live') return '⏳ live 执行中…'
+  return '⏳ 进行中…'
+})
+
 const missingRequired = computed(() => {
   if (!props.task) return false
-  return (props.task.params || []).some(p => {
+  return visibleParams.value.some(p => {
     if (!p.required) return false
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
     return !values.value[p.id]
@@ -305,19 +348,15 @@ const missingRequired = computed(() => {
 
 function forceReset() {
   clearInterval(pollTimer)
+  pollTimer = null
+  runAbortToken += 1
   isRunning.value = false
   currentRunId = null
+  runStage.value = ''
   logs.value.push('[重置] 已强制重置运行状态')
 }
 
-async function runTask() {
-  if (isRunning.value) return
-  isRunning.value = true
-  lastResult.value = null
-  // 不清空日志，新一轮运行的分隔线由后端插入
-  outputFiles.value = []
-  showFiles.value = false
-
+function buildRunParams(overrides = {}) {
   // 整理 params
   const params = { ...values.value }
   for (const p of (props.task.params || [])) {
@@ -356,7 +395,10 @@ async function runTask() {
       delete params[p.id + '_headers']
     }
   }
+  return { ...params, ...overrides }
+}
 
+async function resolveCurrentTabId(params) {
   let currentTabId = ''
   if (String(params.mode || '').trim().toLowerCase() === 'current') {
     try {
@@ -364,29 +406,45 @@ async function runTask() {
       if (tab?.id) currentTabId = String(tab.id)
     } catch {}
   }
+  return currentTabId
+}
 
+function resetRunUi() {
+  lastResult.value = null
+  outputFiles.value = []
+  showFiles.value = false
+}
+
+async function startTaskRun(params, pendingMessage) {
+  const currentTabId = await resolveCurrentTabId(params)
   const r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
     current_tab_id: currentTabId,
   })
-  if (!r.ok) {
-    logs.value.push(`[错误] ${r.message || JSON.stringify(r)}`)
-    isRunning.value = false
-    return
-  }
-
-  logs.value.push(`[${now()}] 任务已启动，等待执行…`)
+  if (!r.ok) throw new Error(r.message || JSON.stringify(r))
+  logs.value.push(`[${now()}] ${pendingMessage}`)
   emit('status-change', { status: 'running' })
-
-  // 等一下让后端写入 run_id，再拿到本次任务的 run_id
   await new Promise(res => setTimeout(res, 600))
   const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
   currentRunId = initStatus?.live?.run_id ?? initStatus?.last_run?.id ?? null
-
-  // 开始轮询日志
-  pollTimer = setInterval(pollStatus, 800)
+  const token = runAbortToken
+  return await new Promise((resolve) => {
+    pollTimer = setInterval(async () => {
+      if (token !== runAbortToken) {
+        clearInterval(pollTimer)
+        pollTimer = null
+        resolve({ status: 'cancelled' })
+        return
+      }
+      const result = await pollStatusOnce()
+      if (!result) return
+      clearInterval(pollTimer)
+      pollTimer = null
+      resolve(result)
+    }, 800)
+  })
 }
 
-async function pollStatus() {
+async function pollStatusOnce() {
   const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
   const live = r.live
   const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id)
@@ -395,51 +453,174 @@ async function pollStatus() {
   scrollToBottom()
 
   // live 有值且是当前任务正在跑 → 继续等
-  if (live && live.status === 'running') return
+  if (live && live.status === 'running') return null
 
   // live 为 null 时：检查 last_run 是否是我们触发的这次（匹配 run_id）
   if (!live) {
     const last = r.last_run
     // 还没有 run_id（任务刚提交还没写入）→ 继续等
-    if (!currentRunId) return
+    if (!currentRunId) return null
     // last_run 不是当前任务 → 继续等
-    if (!last || last.id !== currentRunId) return
+    if (!last || last.id !== currentRunId) return null
     // last_run 是当前任务但还在跑 → 继续等
-    if (last.status === 'running') return
+    if (last.status === 'running') return null
     // last_run 是当前任务且已完成 → 用 last 作为结果
     const syntheticLive = { status: last.status, records: last.records_count, error: last.error, run_id: last.id }
-    return finishRun(syntheticLive)
+    return syntheticLive
   }
 
   // live 有值且不是 running（done/error）且匹配当前 run_id
-  if (currentRunId && live.run_id && live.run_id !== currentRunId) return
-  finishRun(live)
+  if (currentRunId && live.run_id && live.run_id !== currentRunId) return null
+  return live
 }
 
 function scrollToBottom() {
   nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
 }
 
-async function finishRun(result) {
+async function refreshOutputFiles() {
+  const dataR = await window.cs.getData(props.adapterId, props.task.task_id)
+  if (!dataR.runs?.[0]?.output_files) return []
+  try {
+    const files = typeof dataR.runs[0].output_files === 'string'
+      ? JSON.parse(dataR.runs[0].output_files)
+      : dataR.runs[0].output_files
+    outputFiles.value = files || []
+    if (files?.length) showFiles.value = true
+    return files || []
+  } catch {
+    return []
+  }
+}
+
+async function finishRun(result, options = {}) {
   clearInterval(pollTimer)
-  isRunning.value = false
-  currentRunId = null
+  pollTimer = null
+  const keepRunning = !!options.keepRunning
+  if (!keepRunning) {
+    isRunning.value = false
+    currentRunId = null
+    runStage.value = ''
+  } else {
+    currentRunId = null
+  }
   emit('status-change', result)
 
   if (result.status === 'done') {
-    lastResult.value = { ok: true, msg: `✓ 完成，共 ${result.records ?? result.records_count ?? 0} 条记录` }
-    const dataR = await window.cs.getData(props.adapterId, props.task.task_id)
-    if (dataR.runs?.[0]?.output_files) {
-      try {
-        const files = typeof dataR.runs[0].output_files === 'string'
-          ? JSON.parse(dataR.runs[0].output_files)
-          : dataR.runs[0].output_files
-        outputFiles.value = files || []
-        if (files?.length) showFiles.value = true
-      } catch {}
+    await refreshOutputFiles()
+    if (options.message) {
+      lastResult.value = { ok: !!options.ok, msg: options.message }
+    } else {
+      lastResult.value = { ok: true, msg: `✓ 完成，共 ${result.records ?? result.records_count ?? 0} 条记录` }
     }
   } else if (result.status === 'error') {
-    lastResult.value = { ok: false, msg: `✗ 失败: ${result.error || '未知错误'}` }
+    lastResult.value = { ok: false, msg: options.message || `✗ 失败: ${result.error || '未知错误'}` }
+  }
+}
+
+async function inspectLatestPlanOutput() {
+  const files = await refreshOutputFiles()
+  const xlsx = files.find(f => String(f || '').toLowerCase().endsWith('.xlsx'))
+  if (!xlsx) {
+    return { pass: false, summary: '未找到预检结果文件' }
+  }
+  const sheet = await window.cs.readExcel(xlsx)
+  const rows = Array.isArray(sheet?.rows) ? sheet.rows : []
+  if (!rows.length) {
+    return { pass: false, summary: '预检结果为空' }
+  }
+  const invalid = rows.filter(row => String(row['状态'] || '') === 'invalid')
+  const outOfScope = rows.filter(row => String(row['状态'] || '') === 'ready_but_out_of_current_live_scope')
+  const ready = rows.filter(row => String(row['状态'] || '') === 'ready_for_live')
+  const parts = []
+  if (ready.length) parts.push(`${ready.length} 行可直接执行`)
+  if (invalid.length) parts.push(`${invalid.length} 行配置有误`)
+  if (outOfScope.length) parts.push(`${outOfScope.length} 行超出当前 live 范围`)
+  return {
+    pass: !invalid.length && !outOfScope.length,
+    summary: parts.join('，') || '未识别到有效预检结果',
+  }
+}
+
+async function runValidationOnly() {
+  if (isRunning.value) return
+  isRunning.value = true
+  resetRunUi()
+  runStage.value = 'plan'
+  try {
+    const result = await startTaskRun(buildRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
+    if (result.status === 'cancelled') return
+    const gate = result.status === 'done' ? await inspectLatestPlanOutput() : null
+    if (result.status === 'done') {
+      await finishRun(result, {
+        ok: gate?.pass !== false,
+        message: gate?.summary
+          ? `${gate?.pass === false ? '✗' : '✓'} 预检${gate?.pass === false ? '未通过' : '完成'}：${gate.summary}`
+          : `✓ 预检完成，共 ${result.records ?? result.records_count ?? 0} 条记录`,
+      })
+      return
+    }
+    await finishRun(result)
+  } catch (e) {
+    isRunning.value = false
+    runStage.value = ''
+    currentRunId = null
+    lastResult.value = { ok: false, msg: `✗ 失败: ${e?.message || String(e)}` }
+    logs.value.push(`[错误] ${e?.message || String(e)}`)
+  }
+}
+
+async function runTask() {
+  if (isRunning.value) return
+  if (!autoPrecheckFlow.value) {
+    isRunning.value = true
+    resetRunUi()
+    runStage.value = 'live'
+    try {
+      const result = await startTaskRun(buildRunParams(), '任务已启动，等待执行…')
+      if (result.status === 'cancelled') return
+      await finishRun(result)
+    } catch (e) {
+      isRunning.value = false
+      runStage.value = ''
+      currentRunId = null
+      lastResult.value = { ok: false, msg: `✗ 失败: ${e?.message || String(e)}` }
+      logs.value.push(`[错误] ${e?.message || String(e)}`)
+    }
+    return
+  }
+
+  isRunning.value = true
+  resetRunUi()
+  try {
+    runStage.value = 'plan'
+    const planResult = await startTaskRun(buildRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
+    if (planResult.status === 'cancelled') return
+    if (planResult.status !== 'done') {
+      await finishRun(planResult)
+      return
+    }
+    const gate = await inspectLatestPlanOutput()
+    logs.value.push(`[${now()}] 预检结果：${gate.summary}`)
+    scrollToBottom()
+    if (!gate.pass) {
+      await finishRun(planResult, {
+        ok: false,
+        message: `✗ 预检未通过：${gate.summary}`,
+      })
+      return
+    }
+
+    runStage.value = 'live'
+    const liveResult = await startTaskRun(buildRunParams({ execute_mode: 'live' }), '预检通过，开始 live 执行…')
+    if (liveResult.status === 'cancelled') return
+    await finishRun(liveResult)
+  } catch (e) {
+    isRunning.value = false
+    runStage.value = ''
+    currentRunId = null
+    lastResult.value = { ok: false, msg: `✗ 失败: ${e?.message || String(e)}` }
+    logs.value.push(`[错误] ${e?.message || String(e)}`)
   }
 }
 
@@ -718,6 +899,19 @@ onUnmounted(() => clearInterval(pollTimer))
 .run-btn:hover:not(:disabled) { background: var(--orange-dim); transform: translateY(-1px); }
 .run-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .run-btn.running { background: #555; }
+.run-sub-btn {
+  padding: 10px 18px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.15s;
+}
+.run-sub-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); transform: translateY(-1px); }
+.run-sub-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.action-note { font-size: 12px; color: var(--text3); }
 .missing-hint { font-size: 12px; color: var(--text3); }
 .reset-link { font-size: 12px; color: var(--text3); cursor: pointer; text-decoration: underline; }
 .reset-link:hover { color: #f87171; }

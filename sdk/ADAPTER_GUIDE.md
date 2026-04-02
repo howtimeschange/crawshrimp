@@ -205,6 +205,9 @@ tasks:
     name: 任务名称           # 必填
     description: "说明文字"  # 可选
     script: task.js         # 必填。相对于适配包目录的 JS 文件路径
+    execution_ui_mode: precheck_before_live  # 可选。声明桌面端执行交互
+    validation_only_label: 仅校验 Excel      # 可选。仅校验按钮文案
+    auto_precheck_note: 执行前会自动做 Excel 预检  # 可选。按钮旁提示文案
 
     # ── 参数（可选）──────────────────────────────
     params:
@@ -245,6 +248,45 @@ tasks:
         channel: dingtalk    # dingtalk | feishu | webhook
         condition: "data.length > 0"  # 可选，满足条件才发送
 ```
+
+### 任务执行 UI 声明字段
+
+这 3 个字段用于声明“桌面端应该如何呈现任务执行交互”，不会改变脚本本身的参数协议：
+
+- `execution_ui_mode`
+  - 可选，当前支持 `precheck_before_live`
+  - 当值为 `precheck_before_live` 时，桌面端会把 `execute_mode` 的单选项收起，改成“主按钮先预检，再自动 live” + “次按钮仅校验”
+- `validation_only_label`
+  - 可选，覆盖“仅校验”按钮文案
+- `auto_precheck_note`
+  - 可选，显示在执行按钮旁的提示文案
+
+推荐接入方式：
+
+```yaml
+tasks:
+  - id: voucher_batch_create
+    script: voucher-create.js
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel
+    auto_precheck_note: 执行前会自动做 Excel 预检
+    params:
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做 Excel 预检
+          - value: live
+            label: 进入 live 执行
+```
+
+说明：
+
+- 这是一组**前端交互声明**，不是新的运行协议
+- 脚本和后端仍建议保留 `execute_mode=plan/live`，因为桌面端只是自动帮你先跑 `plan`，通过后再发起 `live`
+- 如果不声明这 3 个字段，桌面端继续按普通任务交互渲染，不会有额外行为
 
 ---
 

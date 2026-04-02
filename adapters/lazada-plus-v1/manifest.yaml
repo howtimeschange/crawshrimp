@@ -16,6 +16,9 @@ tasks:
     name: 批量创建优惠券
     description: 根据 Excel 模板批量创建 Lazada 优惠券/促销。模板支持 Regular Voucher、Flexi Combo、Store New Buyer Voucher、Store Follower Voucher；Flexi Combo 通过同一工作簿里的 FlexiTiers sheet 维护阶梯规则。
     script: voucher-create.js
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel
+    auto_precheck_note: 执行前会自动做 Excel 预检
     params:
       - id: mode
         type: radio

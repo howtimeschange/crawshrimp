@@ -464,6 +464,7 @@
       } else {
         if (!row.flexi_criteria_type) issues.push('Flexi Combo 缺少“Flexi条件类型”')
         if (!item.tiers.length) issues.push('Flexi Combo 缺少 FlexiTiers sheet 阶梯数据')
+        if (item.tiers.length > 3) issues.push('Flexi Combo 当前最多支持 3 个阶梯，请把 FlexiTiers 控制在 1-3 行')
       }
 
       if (row.flexi_main_type === 'MONEY_DISCOUNT_OFF' && !row.flexi_subtype) {
@@ -1050,6 +1051,15 @@
     return true
   }
 
+  function singleClickSoon(el, delayMs = 30) {
+    if (!el) return false
+    setTimeout(() => {
+      try { el.focus?.() } catch {}
+      try { el.click() } catch {}
+    }, delayMs)
+    return true
+  }
+
   function findFiberProps(node, predicate) {
     const key = Object.keys(node || {}).find(item => item.startsWith('__reactInternalInstance') || item.startsWith('__reactFiber'))
     let fiber = key ? node[key] : null
@@ -1153,30 +1163,109 @@
       .find(el => isVisible(el) && expected.includes(textOf(el))) || null
   }
 
-  function listDialogButtons(texts) {
-    const expected = (Array.isArray(texts) ? texts : [texts]).map(item => norm(item))
+  function isSemanticButton(node) {
+    if (!node) return false
+    const tag = String(node.tagName || '').toLowerCase()
+    const role = String(node.getAttribute?.('role') || '').toLowerCase()
+    return tag === 'button' || tag === 'a' || role === 'button'
+  }
+
+  function resolveDialogButtonTarget(node, dialog) {
+    if (!node) return null
+    if (isSemanticButton(node) && isVisible(node)) return node
+    const nested = node.querySelector?.('button, a, [role="button"]')
+    if (nested && isVisible(nested)) return nested
+    const closest = node.closest?.('button, a, [role="button"]')
+    if (closest && dialog?.contains(closest) && isVisible(closest)) return closest
+    const clickable = findClickableAncestor(node, dialog)
+    return clickable && isVisible(clickable) ? clickable : node
+  }
+
+  function listDialogButtonHits(texts) {
+    const expected = (Array.isArray(texts) ? texts : [texts]).map(item => norm(item)).filter(Boolean)
     const dialogs = [...document.querySelectorAll('.next-dialog-wrapper, [role="dialog"], .next-overlay-wrapper')]
       .filter(el => isVisible(el))
+    const labelOrder = new Map(expected.map((item, index) => [item, index]))
     const hits = []
-    for (const dialog of dialogs) {
-      const buttons = [...dialog.querySelectorAll('button, a, [role="button"]')]
-        .filter(el => isVisible(el) && expected.includes(textOf(el)))
-      for (const button of buttons) {
-        const rect = button.getBoundingClientRect()
+    const seen = new Set()
+    dialogs.forEach((dialog, dialogIndex) => {
+      for (const node of [...dialog.querySelectorAll('button, a, [role="button"], .next-btn, .next-dialog-btn')]) {
+        if (!isVisible(node)) continue
+        const label = textOf(node)
+        if (!expected.includes(label)) continue
+        const clickable = resolveDialogButtonTarget(node, dialog)
+        if (!clickable || !isVisible(clickable)) continue
+        const point = coordOf(clickable)
+        const key = `${dialogIndex}::${label}::${point.x}::${point.y}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        const rect = clickable.getBoundingClientRect()
+        const classText = `${String(node.className || '')} ${String(clickable.className || '')}`
         hits.push({
-          el: button,
-          primary: /primary|ok/i.test(String(button.className || '')),
+          dialog,
+          label,
+          el: node,
+          clickable,
+          primary: /primary|ok/i.test(classText),
+          labelRank: labelOrder.has(label) ? labelOrder.get(label) : expected.length,
           top: rect.top,
           left: rect.left,
         })
       }
-    }
+    })
     hits.sort((left, right) => {
+      if (left.labelRank !== right.labelRank) return left.labelRank - right.labelRank
       if (left.primary !== right.primary) return left.primary ? -1 : 1
       if (left.top !== right.top) return right.top - left.top
       return right.left - left.left
     })
-    return hits.map(item => item.el)
+    return hits
+  }
+
+  function listDialogButtons(texts) {
+    return listDialogButtonHits(texts).map(item => item.clickable || item.el)
+  }
+
+  async function waitForDialogDismiss(dialog, texts, timeout = 1200) {
+    return !!(await waitFor(() => {
+      if (!dialog || !document.contains(dialog) || !isVisible(dialog)) return true
+      const remaining = listDialogButtonHits(texts).filter(item => item.dialog === dialog)
+      return remaining.length ? null : true
+    }, timeout, 120))
+  }
+
+  async function waitForAllDialogsDismiss(texts, timeout = 1800) {
+    return !!(await waitFor(() => {
+      return listDialogButtonHits(texts).length ? null : true
+    }, timeout, 120))
+  }
+
+  async function confirmDialogAction(actionText) {
+    const labels = ['OK', 'Confirm', 'Yes']
+    if (norm(actionText)) labels.push(norm(actionText))
+    for (let round = 0; round < 3; round += 1) {
+      const hits = listDialogButtonHits(labels)
+      if (!hits.length) return true
+      for (const hit of hits) {
+        const targets = [hit.clickable, hit.el].filter(Boolean).filter((target, index, arr) => arr.indexOf(target) === index)
+        for (const target of targets) {
+          try { target.focus?.() } catch {}
+          clickElement(target)
+          if (await waitForAllDialogsDismiss(labels, 1600)) return true
+          const usedReact = reactClickSoon(target, 30)
+          await sleep(usedReact ? 180 : 100)
+          if (!usedReact) clickSoon(target, 30)
+          if (await waitForAllDialogsDismiss(labels, 1800)) return true
+          try {
+            target.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+            target.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }))
+          } catch {}
+          if (await waitForAllDialogsDismiss(labels, 2000)) return true
+        }
+      }
+      await sleep(350)
+    }
+    return !listDialogButtonHits(labels).length
   }
 
   function listSignature() {
@@ -1291,17 +1380,14 @@
     clickElement(actionBtn)
     await sleep(500)
 
-    const confirmButtons = await waitFor(() => {
-      const buttons = listDialogButtons([actionText, 'OK', 'Confirm', 'Yes'])
-      return buttons.length ? buttons : null
+    const confirmVisible = await waitFor(() => {
+      const buttons = listDialogButtons(['OK', 'Confirm', 'Yes', actionText])
+      return buttons.length ? true : null
     }, 5000, 150)
 
-    if (confirmButtons?.length) {
-      const firstButton = listDialogButtons([actionText, 'OK', 'Confirm', 'Yes'])[0]
-      if (firstButton) {
-        clickElement(firstButton)
-        await sleep(1200)
-      }
+    if (confirmVisible) {
+      const clicked = await confirmDialogAction(actionText)
+      if (clicked) await sleep(900)
     }
 
     let verified = await waitFor(() => {
@@ -1398,13 +1484,41 @@
     return [...document.querySelectorAll('.tier-card-item')].filter(el => isVisible(el))
   }
 
+  function addTierButton() {
+    return [...document.querySelectorAll('button, a, [role="button"], .next-btn')]
+      .find(el => isVisible(el) && /Add Tier/i.test(textOf(el))) || null
+  }
+
+  async function clickAddTier() {
+    const button = await waitFor(() => {
+      const direct = addTierButton()
+      if (direct) return direct
+      const node = smallestTextNode(/Add Tier/i, document)
+      const clickable = node ? findClickableAncestor(node, document) : null
+      return clickable && isVisible(clickable) ? clickable : null
+    }, 3000, 150)
+    if (!button) throw new Error('未找到文本：Add Tier')
+    const target = findClickableAncestor(button, document) || button
+    if (reactClickSoon(target, 30)) {
+      await sleep(220)
+      return true
+    }
+    clickElement(target)
+    await sleep(220)
+    return true
+  }
+
   async function syncFlexiTierCount(expectedCount) {
     if (!expectedCount || expectedCount < 1) throw new Error('Flexi Combo 至少需要 1 个阶梯')
     let cards = currentTierCards()
     let safety = 0
     while (cards.length < expectedCount && safety < 8) {
-      await clickByText('Add Tier', document, { exact: true, sleepMs: 180 })
-      cards = currentTierCards()
+      const before = cards.length
+      await clickAddTier()
+      cards = await waitFor(() => {
+        const nextCards = currentTierCards()
+        return nextCards.length > before ? nextCards : null
+      }, 2500, 120) || currentTierCards()
       safety += 1
     }
     if (cards.length < expectedCount) {
@@ -1592,16 +1706,23 @@
           submit_mode: 'cdp_click',
         })
       }
-      clickSoon(button)
+      if (reactClickSoon(button)) {
+        return nextPhase('post_submit', 1800, ctx, {
+          submit_clicked: Number(shared.submit_clicked || 0) + 1,
+          submit_mode: 'react_onclick',
+        })
+      }
+      singleClickSoon(button)
       return nextPhase('post_submit', 1800, ctx, {
         submit_clicked: Number(shared.submit_clicked || 0) + 1,
+        submit_mode: 'single_click',
       })
     }
 
     if (phase === 'post_submit') {
       const confirmBtn = dialogConfirmButton()
       if (confirmBtn && Number(shared.dialog_confirm_clicked || 0) < 2) {
-        clickSoon(confirmBtn)
+        if (!reactClickSoon(confirmBtn)) singleClickSoon(confirmBtn)
         return nextPhase('post_submit', 1500, ctx, {
           dialog_confirm_clicked: Number(shared.dialog_confirm_clicked || 0) + 1,
         })

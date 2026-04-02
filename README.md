@@ -233,6 +233,8 @@ tasks:
 - 可配置多个模板入口，比如 Excel 主模板 + 字段说明 CSV
 - 运行时会自动解析模板真实路径，兼容开发环境、内置资源和 `~/.crawshrimp/adapters/`
 - `.xlsx/.xls/.xlsm` 会额外注入 `file.sheets`
+- 任务可通过 `execution_ui_mode: precheck_before_live` 声明“先预检再 live”的执行交互
+- 可配合 `validation_only_label` / `auto_precheck_note` 自定义“仅校验”按钮文案和执行提示
 
 以 Lazada 为例，一个模板工作簿可以同时包含：
 
@@ -240,6 +242,23 @@ tasks:
 - `FlexiTiers` 阶梯表
 - `Instructions` 概览页
 - `填写说明` 逐列说明页
+
+如果任务声明了：
+
+```yaml
+tasks:
+  - id: voucher_batch_create
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel
+    auto_precheck_note: 执行前会自动做 Excel 预检
+```
+
+桌面端会把原本的 `execute_mode` 单选收起，改成：
+
+- 主按钮：先跑 `plan` 预检，通过后再自动进入 `live`
+- 次按钮：只跑一次预检，不执行 live
+
+脚本侧的参数契约不变，仍建议保留 `execute_mode=plan/live` 供后端和脚本识别。
 
 ---
 
