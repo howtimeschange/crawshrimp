@@ -268,6 +268,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         mode = str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
         current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
         target_entry_url = str(task.entry_url or m.entry_url or '').strip()
+        configured_match_prefixes = list(task.tab_match_prefixes or m.tab_match_prefixes or [])
         platform_name = m.name or adapter_id
 
         # 自动解析 file_excel 参数：如果传了 path 但没有 rows，就在后台读出来注入
@@ -291,12 +292,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         tab = None
         if mode == 'current':
             all_tabs = [t for t in bridge.get_tabs() if t.get('type') == 'page']
-            preferred_prefixes = [
+            preferred_prefixes = configured_match_prefixes or [
                 'https://seller.shopee.cn/portal/marketing',
                 'https://seller.shopee.cn/portal/marketing/vouchers/list',
                 'https://seller.shopee.cn/portal/marketing/vouchers/new',
                 'https://seller.shopee.cn/portal/marketing/follow-prize/new',
-            ] if is_shopee_marketing_adapter else [target_entry_url]
+            ] if is_shopee_marketing_adapter else configured_match_prefixes or [target_entry_url]
 
             if current_tab_id:
                 tab = next((t for t in all_tabs if str(t.get('id')) == current_tab_id), None)

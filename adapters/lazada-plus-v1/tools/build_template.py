@@ -2,10 +2,15 @@ from pathlib import Path
 
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.utils import get_column_letter
+from openpyxl.workbook.defined_name import DefinedName
+from openpyxl.worksheet.datavalidation import DataValidation
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "templates" / "lazada-voucher-template.xlsx"
+ENTRY_MAX_ROW = 500
+ENUM_SHEET_TITLE = "_枚举值"
 
 
 VOUCHER_HEADERS = [
@@ -185,6 +190,7 @@ FLEXI_TIER_EXAMPLES = [
 
 INSTRUCTION_ROWS = [
     ["Sheet", "字段", "说明"],
+    ["Vouchers", "枚举型字段", "模板里的站点、优惠工具、领取生效类型、适用范围、折扣类型、预算模式、Flexi 主玩法 / 子玩法 / 条件类型等字段已预置下拉框。"],
     ["Vouchers", "站点", "页面右侧国家栏可切换 Indonesia / Malaysia / Philippine / Singapore / Thailand / Vietnam；当前 live 已回归 MY / SG。"],
     ["Vouchers", "优惠工具", "支持填写 Regular Voucher、Flexi Combo、Store New Buyer Voucher、Store Follower Voucher。"],
     ["Vouchers", "启用", "已移除。导入模板里的每一行默认都会参与执行。"],
@@ -241,6 +247,52 @@ FILL_GUIDE_ROWS = [
     ["FlexiTiers", "备注", "阶梯备注。", "选填", "文本", "买 2 件打 5%", "不参与页面填写。"],
 ]
 
+ENUM_LISTS = {
+    "Enum_SiteCodes": ["ID", "MY", "PH", "SG", "TH", "VN"],
+    "Enum_ToolLabels": ["Regular Voucher", "Flexi Combo", "Store New Buyer Voucher", "Store Follower Voucher"],
+    "Enum_UseTimeTypes": ["FIXED_TIME", "USE_AFTER_COLLECTION"],
+    "Enum_ApplyScopes": ["ENTIRE_SHOP", "SPECIFIC_PRODUCTS"],
+    "Enum_DiscountTypes": ["MONEY_OFF", "PERCENT_OFF"],
+    "Enum_BudgetModes": ["LIMITED", "UNLIMITED"],
+    "Enum_FlexiMainTypes": ["MONEY_DISCOUNT_OFF", "FREE_GIFT_SAMPLE", "COMBO_BUY", "FIXED_PRICE"],
+    "Enum_FlexiCriteriaTypes": ["ITEM_QUANTITY", "ORDER_VALUE"],
+    "Enum_BooleanFlags": ["1", "0"],
+    "FlexiSubtype_MONEY_DISCOUNT_OFF": ["MoneyValueOff", "PercentageDiscountOff"],
+    "FlexiSubtype_FREE_GIFT_SAMPLE": [
+        "FreeGiftsOnly",
+        "FreeSamplesOnly",
+        "PercentOffAndFreeGift",
+        "MoneyOffAndFreeGift",
+        "PercentOffAndFreeSample",
+        "MoneyOffAndFreeSample",
+    ],
+    "FlexiSubtype_COMBO_BUY": [
+        "MoneyValueOff",
+        "PercentageDiscountOff",
+        "FreeGiftsOnly",
+        "FreeSamplesOnly",
+        "PercentOffAndFreeGift",
+        "MoneyOffAndFreeGift",
+        "PercentOffAndFreeSample",
+        "MoneyOffAndFreeSample",
+    ],
+    "FlexiSubtype_FIXED_PRICE": [""],
+}
+
+VOUCHER_DROPDOWNS = {
+    "站点": "=Enum_SiteCodes",
+    "优惠工具": "=Enum_ToolLabels",
+    "领取生效类型": "=Enum_UseTimeTypes",
+    "适用范围": "=Enum_ApplyScopes",
+    "折扣类型": "=Enum_DiscountTypes",
+    "预算模式": "=Enum_BudgetModes",
+    "Flexi主玩法": "=Enum_FlexiMainTypes",
+    "Flexi子玩法": '=INDIRECT("FlexiSubtype_"&$U2)',
+    "Flexi条件类型": "=Enum_FlexiCriteriaTypes",
+    "Flexi是否叠加折扣": "=Enum_BooleanFlags",
+    "Flexi赠品是否免邮": "=Enum_BooleanFlags",
+}
+
 
 def style_header(ws):
     fill = PatternFill("solid", fgColor="1A71FF")
@@ -261,6 +313,44 @@ def autosize(ws):
         ws.column_dimensions[column_letter].width = min(max(max_len + 2, 12), 36)
 
 
+def build_enum_sheet(wb):
+    enum_ws = wb.create_sheet(ENUM_SHEET_TITLE)
+    for col_idx, (range_name, values) in enumerate(ENUM_LISTS.items(), start=1):
+        col_letter = get_column_letter(col_idx)
+        enum_ws.cell(row=1, column=col_idx, value=range_name)
+        for row_idx, value in enumerate(values, start=2):
+            enum_ws.cell(row=row_idx, column=col_idx, value=value)
+        end_row = max(len(values) + 1, 2)
+        wb.defined_names.add(
+            DefinedName(
+                range_name,
+                attr_text=f"'{ENUM_SHEET_TITLE}'!${col_letter}$2:${col_letter}${end_row}",
+            )
+        )
+    enum_ws.sheet_state = "hidden"
+
+
+def add_dropdowns(ws, headers, dropdowns, max_row=ENTRY_MAX_ROW):
+    header_to_col = {header: idx + 1 for idx, header in enumerate(headers)}
+    for header, formula in dropdowns.items():
+        col_idx = header_to_col.get(header)
+        if not col_idx:
+            continue
+        col_letter = get_column_letter(col_idx)
+        dv = DataValidation(
+            type="list",
+            formula1=formula,
+            allow_blank=True,
+            showDropDown=False,
+        )
+        dv.promptTitle = f"{header} 可选值"
+        dv.prompt = "请优先从下拉框中选择枚举值。"
+        dv.errorTitle = "无效选项"
+        dv.error = f"{header} 请输入下拉列表中的有效枚举值。"
+        ws.add_data_validation(dv)
+        dv.add(f"{col_letter}2:{col_letter}{max_row}")
+
+
 def build():
     wb = Workbook()
 
@@ -272,6 +362,9 @@ def build():
     ws.freeze_panes = "A2"
     style_header(ws)
     autosize(ws)
+
+    build_enum_sheet(wb)
+    add_dropdowns(ws, VOUCHER_HEADERS, VOUCHER_DROPDOWNS)
 
     flexi = wb.create_sheet("FlexiTiers")
     flexi.append(FLEXI_TIER_HEADERS)

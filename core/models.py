@@ -77,6 +77,7 @@ class TaskDefinition(BaseModel):
     description: Optional[str] = None
     script: str
     entry_url: Optional[str] = None   # 可选：覆盖 adapter 级入口，适用于同 adapter 下的不同站点
+    tab_match_prefixes: Optional[List[str]] = None  # 可选：current 模式下用于匹配已有标签页的 URL 前缀
     skip_auth: bool = False           # 可选：跳过 adapter 级 auth_check
     params: List[TaskParam] = []       # 脚本声明的 UI 输入参数
     trigger: TaskTrigger = TaskTrigger()
@@ -96,6 +97,7 @@ class AdapterManifest(BaseModel):
     author: Optional[str] = None
     description: Optional[str] = None
     entry_url: str
+    tab_match_prefixes: Optional[List[str]] = None  # 可选：current 模式下用于匹配已有标签页的 URL 前缀
     auth: Optional[AdapterAuth] = None
     tasks: List[TaskDefinition] = []
 

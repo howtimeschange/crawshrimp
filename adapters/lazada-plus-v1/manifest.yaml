@@ -1,13 +1,15 @@
 id: lazada-plus-v1
 name: Lazada 运营助手
-version: 0.1.2
+version: 0.1.4
 author: crawshrimp
 description: "Lazada 优惠券/促销批量创建：页面右侧站点栏可切换 ID/MY/PH/SG/TH/VN，当前已回归 MY/SG 的 live 提交；模板包含 Vouchers 主表、FlexiTiers 阶梯表和填写说明。"
-entry_url: https://sellercenter.lazada
+entry_url: https://sellercenter.lazada.sg/
+tab_match_prefixes:
+  - https://sellercenter.lazada
 
 auth:
   check_script: auth_check.js
-  login_url: https://sellercenter.lazada.com.my/apps/promotion/home
+  login_url: https://sellercenter.lazada.sg/
 
 tasks:
   - id: voucher_batch_create
@@ -40,12 +42,12 @@ tasks:
         templates:
           - file: templates/lazada-voucher-template.xlsx
             label: Excel 填写模板
-            description: 一份工作簿包含 Vouchers 主表、FlexiTiers 阶梯表、Instructions 概览页和填写说明页。
-            version: "2026.04.01.2"
+            description: 一份工作簿包含 Vouchers 主表、FlexiTiers 阶梯表、Instructions 概览页和填写说明页；枚举字段已预置下拉选项。
+            version: "2026.04.02.1"
           - file: templates/lazada-voucher-field-guide.csv
             label: 字段说明 CSV
             description: 列名、可选值和条件必填说明。
-            version: "2026.04.01.2"
+            version: "2026.04.02.1"
         hint: 先填写 Vouchers sheet；Flexi Combo 的阶梯规则填写在 FlexiTiers sheet，并用“唯一键”关联主表；填写细则见“填写说明”sheet。
     trigger:
       type: manual
