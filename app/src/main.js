@@ -103,6 +103,10 @@ function getPythonScriptsDir() {
   return path.join(__dirname, '..', '..')
 }
 
+function getCrawshrimpDataDir() {
+  return process.env.CRAWSHRIMP_DATA || path.join(app.getPath('home'), '.crawshrimp')
+}
+
 function getApiServerScript() {
   if (!IS_DEV) return path.join(process.resourcesPath, 'python-scripts', 'core', 'api_server.py')
   return path.join(__dirname, '..', '..', 'core', 'api_server.py')
@@ -138,6 +142,52 @@ function resolveExistingFilePath(srcPath = '') {
     }
   }
   return ''
+}
+
+function candidateAdapterTemplatePaths(adapterId = '', templateFile = '', templatePath = '') {
+  const candidates = []
+  if (templatePath) candidates.push(...candidateTemplatePaths(templatePath))
+  if (templateFile) candidates.push(...candidateTemplatePaths(templateFile))
+
+  const normalizedFile = String(templateFile || '').trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  if (adapterId && normalizedFile) {
+    const parts = normalizedFile.split('/').filter(Boolean)
+    const scriptsDir = getPythonScriptsDir()
+    const dataDir = getCrawshrimpDataDir()
+    candidates.push(path.join(scriptsDir, 'adapters', adapterId, ...parts))
+    candidates.push(path.join(dataDir, 'adapters', adapterId, ...parts))
+
+    const fileName = parts[parts.length - 1]
+    if (fileName) {
+      candidates.push(path.join(scriptsDir, 'adapters', adapterId, fileName))
+      candidates.push(path.join(dataDir, 'adapters', adapterId, fileName))
+    }
+  }
+
+  return [...new Set(candidates)]
+}
+
+function resolveAdapterTemplatePath(adapterId = '', templateFile = '', templatePath = '') {
+  for (const candidate of candidateAdapterTemplatePaths(adapterId, templateFile, templatePath)) {
+    if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+      return candidate
+    }
+  }
+  return ''
+}
+
+async function saveExistingFileAs(resolvedSrcPath) {
+  const name = path.basename(resolvedSrcPath)
+  const ext = path.extname(resolvedSrcPath).replace('.', '') || '*'
+  const downloadDir = app.getPath('downloads') || app.getPath('documents')
+  const res = await dialog.showSaveDialog(mainWindow, {
+    title: '另存为',
+    defaultPath: path.join(downloadDir, name),
+    filters: [{ name: '文件', extensions: [ext] }, { name: '所有文件', extensions: ['*'] }],
+  })
+  if (res.canceled || !res.filePath) return { ok: false }
+  fs.copyFileSync(resolvedSrcPath, res.filePath)
+  return { ok: true, dest: res.filePath }
 }
 
 // ── Window ────────────────────────────────────────────────────────────────────
@@ -491,19 +541,20 @@ ipcMain.handle('save-as-file', async (_, srcPath) => {
   if (!resolvedSrcPath) {
     throw new Error(`源文件不存在：${srcPath}`)
   }
-
-  const name = path.basename(resolvedSrcPath)
-  const ext  = path.extname(srcPath).replace('.', '') || '*'
-  const downloadDir = app.getPath('downloads') || app.getPath('documents')
-  const res  = await dialog.showSaveDialog(mainWindow, {
-    title: '另存为',
-    defaultPath: path.join(downloadDir, name),
-    filters: [{ name: '文件', extensions: [ext] }, { name: '所有文件', extensions: ['*'] }],
-  })
-  if (res.canceled || !res.filePath) return { ok: false }
   try {
-    fs.copyFileSync(resolvedSrcPath, res.filePath)
-    return { ok: true, dest: res.filePath }
+    return await saveExistingFileAs(resolvedSrcPath)
+  } catch (e) {
+    throw new Error(e.message)
+  }
+})
+
+ipcMain.handle('save-adapter-template', async (_, adapterId, templateFile, templatePath = '') => {
+  const resolvedSrcPath = resolveAdapterTemplatePath(adapterId, templateFile, templatePath)
+  if (!resolvedSrcPath) {
+    throw new Error(`模板文件不存在：${templateFile || templatePath}`)
+  }
+  try {
+    return await saveExistingFileAs(resolvedSrcPath)
   } catch (e) {
     throw new Error(e.message)
   }

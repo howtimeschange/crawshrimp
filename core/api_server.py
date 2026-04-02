@@ -69,42 +69,17 @@ def _url_matches_prefix(url: str, prefix: str) -> bool:
     return False
 
 
-def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 1):
-    """Internal helper to read Excel/CSV without raising HTTPExceptions"""
-    p = Path(path)
-    if not p.exists():
-        return {"error": f"File not found: {path}", "headers": [], "rows": [], "total": 0}
-
-    suffix = p.suffix.lower()
-    rows_raw = []
-    try:
-        if suffix in ('.xlsx', '.xls', '.xlsm'):
-            import openpyxl
-            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
-            ws = wb[sheet] if sheet else wb.active
-            rows_raw = list(ws.iter_rows(values_only=True))
-            wb.close()
-        elif suffix == '.csv':
-            import csv
-            with open(p, newline='', encoding='utf-8-sig') as f:
-                reader = csv.reader(f)
-                rows_raw = list(reader)
-        else:
-            return {"error": f"Unsupported format: {suffix}", "headers": [], "rows": [], "total": 0}
-    except Exception as e:
-        return {"error": str(e), "headers": [], "rows": [], "total": 0}
-
+def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if not rows_raw:
         return {"headers": [], "rows": [], "total": 0}
 
     hi = header_row - 1
     if hi < 0 or hi >= len(rows_raw):
-         return {"error": f"Header row index {hi} out of range", "headers": [], "rows": [], "total": 0}
+        return {"error": f"Header row index {hi} out of range", "headers": [], "rows": [], "total": 0}
 
     headers = [str(c) if c is not None else '' for c in rows_raw[hi]]
     rows = []
     for raw in rows_raw[hi + 1:]:
-        # 跳过全空行（所有单元格都是 None 或空字符串）
         if all(c is None or str(c).strip() == '' for c in raw):
             continue
         row = {}
@@ -114,6 +89,69 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
         rows.append(row)
 
     return {"headers": headers, "rows": rows, "total": len(rows)}
+
+
+def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 1):
+    """Internal helper to read Excel/CSV without raising HTTPExceptions"""
+    p = Path(path)
+    if not p.exists():
+        return {"error": f"File not found: {path}", "headers": [], "rows": [], "total": 0}
+
+    suffix = p.suffix.lower()
+    try:
+        if suffix in ('.xlsx', '.xls', '.xlsm'):
+            import openpyxl
+
+            wb = openpyxl.load_workbook(p, read_only=True, data_only=True)
+            try:
+                if sheet:
+                    ws = wb[sheet]
+                    table = _rows_raw_to_table(list(ws.iter_rows(values_only=True)), header_row)
+                    table["sheet_name"] = ws.title
+                    table["sheets"] = {
+                        ws.title: {
+                            "headers": table.get("headers", []),
+                            "rows": table.get("rows", []),
+                            "total": table.get("total", 0),
+                        }
+                    }
+                    return table
+
+                workbook_tables = {}
+                for ws in wb.worksheets:
+                    workbook_tables[ws.title] = _rows_raw_to_table(list(ws.iter_rows(values_only=True)), header_row)
+
+                active_name = wb.active.title if wb.active else (wb.sheetnames[0] if wb.sheetnames else "Sheet1")
+                active_table = workbook_tables.get(active_name) or {"headers": [], "rows": [], "total": 0}
+                return {
+                    "headers": active_table.get("headers", []),
+                    "rows": active_table.get("rows", []),
+                    "total": active_table.get("total", 0),
+                    "sheet_name": active_name,
+                    "sheets": workbook_tables,
+                }
+            finally:
+                wb.close()
+
+        if suffix == '.csv':
+            import csv
+
+            with open(p, newline='', encoding='utf-8-sig') as f:
+                rows_raw = list(csv.reader(f))
+            table = _rows_raw_to_table(rows_raw, header_row)
+            table["sheet_name"] = "Sheet1"
+            table["sheets"] = {
+                "Sheet1": {
+                    "headers": table.get("headers", []),
+                    "rows": table.get("rows", []),
+                    "total": table.get("total", 0),
+                }
+            }
+            return table
+
+        return {"error": f"Unsupported format: {suffix}", "headers": [], "rows": [], "total": 0}
+    except Exception as e:
+        return {"error": str(e), "headers": [], "rows": [], "total": 0}
 
 
 def _template_search_roots(adapter_id: str) -> List[Path]:
@@ -242,6 +280,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 else:
                     pv['rows'] = resolved['rows']
                     pv['headers'] = resolved['headers']
+                    if resolved.get('sheet_name') is not None:
+                        pv['sheet_name'] = resolved['sheet_name']
+                    if resolved.get('sheets') is not None:
+                        pv['sheets'] = resolved['sheets']
                     log(f"Successfully resolved {len(pv['rows'])} rows.")
 
         is_shopee_marketing_adapter = target_entry_url.startswith('https://seller.shopee.cn/portal/marketing')
@@ -273,10 +315,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 elif len(candidate_tabs) > 1:
                     raise RuntimeError(
                         "current 模式检测到多个目标页面，无法判断当前标签页。"
-                        "请关闭多余相关标签页后重试，或改用“全新页面（重新导航）”。"
+                        "请关闭多余相关标签页后重试，或改用“新页面开启（重新导航）”。"
                     )
                 else:
-                    raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}。请选择“全新页面（重新导航）”或先手动打开并登录。")
+                    raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}。请选择“新页面开启（重新导航）”或先手动打开并登录。")
         else:
             log(f"mode=new，尝试新建页面：{target_entry_url}")
             try:

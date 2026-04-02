@@ -156,8 +156,8 @@
               </div>
               <button
                 class="btn-template"
-                :disabled="!template.path"
-                @click="downloadTemplate(param, template)"
+                :disabled="!canDownloadTemplate(template)"
+                @click="downloadTemplate(task, param, template)"
               >
                 下载
               </button>
@@ -582,11 +582,15 @@ function templateExtension(template) {
   return ext ? `.${ext}` : '模板'
 }
 
-async function downloadTemplate(param, template) {
-  if (!template?.path) return
+function canDownloadTemplate(template) {
+  return Boolean(template?.path || template?.file)
+}
+
+async function downloadTemplate(task, param, template) {
+  if (!canDownloadTemplate(template)) return
   delete templateFeedback.value[param.id]
   try {
-    const r = await window.cs.saveAsFile(template.path)
+    const r = await window.cs.saveAdapterTemplate(props.adapterId, template.file || '', template.path || '')
     if (r?.ok && r.dest) {
       templateFeedback.value[param.id] = {
         ok: true,

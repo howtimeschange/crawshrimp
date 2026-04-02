@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('cs', {
   revealFile:      (path) => ipcRenderer.invoke('reveal-file', path),
   deleteFile:      (path) => ipcRenderer.invoke('delete-file', path),
   saveAsFile:      (path) => ipcRenderer.invoke('save-as-file', path),
+  saveAdapterTemplate: (adapterId, templateFile, templatePath) => ipcRenderer.invoke('save-adapter-template', adapterId, templateFile, templatePath),
 
   onLog:    (cb) => ipcRenderer.on('log', (_, msg) => cb(msg)),
   onStatus: (cb) => ipcRenderer.on('status', (_, data) => cb(data)),
