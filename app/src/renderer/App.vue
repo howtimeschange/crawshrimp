@@ -139,10 +139,20 @@ async function launchChrome() {
 let pollTimer = null
 onMounted(async () => {
   window.cs.onStatus(({ key, value }) => { status.value[key] = value })
-  const s = await window.cs.getStatus()
-  status.value.api = s.api
-  status.value.chrome = s.chrome
-  await loadScriptGroups()
+  try {
+    const s = await window.cs.getStatus()
+    status.value.api = s.api
+    status.value.chrome = s.chrome
+  } catch (error) {
+    console.error('Failed to get initial status', error)
+  }
+
+  try {
+    await loadScriptGroups()
+  } catch (error) {
+    console.error('Failed to load initial script groups', error)
+  }
+
   pollTimer = setInterval(async () => {
     const s = await window.cs.getStatus()
     status.value.api = s.api

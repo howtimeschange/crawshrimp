@@ -9,6 +9,10 @@
 
     <div class="script-grid">
       <div v-if="loading" class="placeholder">加载中…</div>
+      <div v-else-if="loadError && !groups.length" class="placeholder placeholder-stack">
+        <span>{{ loadError }}</span>
+        <button class="btn-ghost" @click="loadGroups">重试</button>
+      </div>
       <div v-else-if="!groups.length" class="placeholder">
         还没有脚本。点击「导入脚本」安装你的第一个适配包。
       </div>
@@ -92,6 +96,7 @@ const scriptGroups = inject('scriptGroups')
 const loadScriptGroups = inject('loadScriptGroups')
 
 const loading = ref(false)
+const loadError = ref('')
 const showInstall = ref(false)
 const installPath = ref('')
 const installType = ref('')
@@ -103,11 +108,20 @@ const msgErr = ref(false)
 
 const groups = scriptGroups
 
-onMounted(async () => {
+onMounted(loadGroups)
+
+async function loadGroups() {
   loading.value = true
-  await loadScriptGroups()
-  loading.value = false
-})
+  loadError.value = ''
+  try {
+    await loadScriptGroups()
+  } catch (error) {
+    console.error('Failed to load script groups', error)
+    loadError.value = error?.message || '脚本列表加载失败，请稍后重试'
+  } finally {
+    loading.value = false
+  }
+}
 
 function anyRunning(g) {
   return g.tasks.some(t => t.live?.status === 'running')
@@ -307,6 +321,7 @@ async function doInstall() {
 }
 .view-header h2 { font-size: 18px; font-weight: 700; flex: 1; }
 .placeholder { color: var(--text3); text-align: center; padding: 60px; font-size: 14px; grid-column: 1/-1; }
+.placeholder-stack { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 
 .script-grid {
   flex: 1; overflow-y: auto; padding: 20px 24px;

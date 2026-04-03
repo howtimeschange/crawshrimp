@@ -483,8 +483,11 @@ async function launchChrome(customPath = '') {
 
 // ── HTTP helper (call FastAPI) ─────────────────────────────────────────────────
 
-function apiCall(method, urlPath, body = null) {
-  return new Promise((resolve, reject) => {
+function apiCall(method, urlPath, body = null, options = {}) {
+  const retries = Math.max(0, Number(options.retries || 0))
+  const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 0))
+
+  const doRequest = () => new Promise((resolve, reject) => {
     const bodyStr = body ? JSON.stringify(body) : null
     const opts = {
       hostname: '127.0.0.1',
@@ -507,6 +510,24 @@ function apiCall(method, urlPath, body = null) {
     if (bodyStr) req.write(bodyStr)
     req.end()
   })
+
+  const retryableCodes = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE'])
+
+  return (async () => {
+    let lastError = null
+    for (let attempt = 0; attempt <= retries; attempt++) {
+      try {
+        return await doRequest()
+      } catch (error) {
+        lastError = error
+        if (!retryableCodes.has(error?.code) || attempt === retries) {
+          throw error
+        }
+        await new Promise(resolve => setTimeout(resolve, retryDelayMs))
+      }
+    }
+    throw lastError
+  })()
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -607,7 +628,10 @@ ipcMain.handle('install-adapter', async (_, payload) => {
   return { ok: false, error: 'No path or file provided' }
 })
 
-ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks'))
+ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
+  retries: 20,
+  retryDelayMs: 500,
+}))
 ipcMain.handle('run-task',        async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/run`, {
     params: params || {},
