@@ -25,6 +25,62 @@
     }
   }
 
+  function textOf(el) {
+    return (el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim()
+  }
+
+  function isReviewMetaText(text) {
+    return (
+      !text ||
+      /^Purchased:/i.test(text) ||
+      /^购买[:：]/.test(text) ||
+      /^Color:/i.test(text) ||
+      /^Style:/i.test(text) ||
+      /^规格[:：]/.test(text) ||
+      /^Overall fit:/i.test(text) ||
+      /^Share\b/i.test(text) ||
+      /^Helpful\b/i.test(text) ||
+      /^Report\b/i.test(text) ||
+      /^Review before translation:/i.test(text)
+    )
+  }
+
+  function extractReviewContent(card) {
+    const blocks = [...card.children].map(el => ({ el, text: textOf(el) }))
+    const originalBlock = blocks.find(b => /^Review before translation:/i.test(b.text))
+    const reviewBlock = [...blocks].reverse().find(b => {
+      if (!b.text || b.text.length <= 10) return false
+      if (b.el.tagName === 'A') return false
+      if (b.el.querySelector('.XTEkYdlM, ._1tSRIohB')) return false
+      if (isReviewMetaText(b.text)) return false
+      return true
+    })
+
+    return {
+      reviewText: reviewBlock?.text || '',
+      reviewOriginal: originalBlock
+        ? originalBlock.text.replace(/^Review before translation:/i, '').trim()
+        : '',
+    }
+  }
+
+  function extractOverallFit(card) {
+    const fitEl = card.querySelector('._35Cqvk-G') ||
+      [...card.querySelectorAll('*')].find(el => /^Overall fit:/i.test(textOf(el)))
+    return fitEl ? textOf(fitEl).replace(/^Overall fit:/i, '').trim() : ''
+  }
+
+  function extractReviewImages(card) {
+    const carousel = [...card.children].find(el => String(el.className || '').includes('splide'))
+    if (!carousel) return []
+
+    const urls = [...carousel.querySelectorAll('img')]
+      .map(img => img.getAttribute('src') || img.src || '')
+      .filter(src => src && /rewimg/i.test(src))
+
+    return [...new Set(urls)]
+  }
+
   function isSameShopPage() {
     try {
       const target = new URL(shopUrl)
@@ -99,12 +155,24 @@
     return true
   }
 
-  async function waitUserChange(oldUser, timeout = 10000) {
+  function getCardsSignature() {
+    const activePage =
+      document.querySelector('li.temu-pagination-item-active,[aria-current="page"]')?.innerText.trim() || ''
+    const cards = [...document.querySelectorAll('div._9WTBQrvq')].slice(0, 3)
+    const summary = cards.map(card => {
+      const username = textOf(card.querySelector('.XTEkYdlM'))
+      const content = extractReviewContent(card)
+      return `${username}::${content.reviewText.slice(0, 120)}::${content.reviewOriginal.slice(0, 120)}`
+    }).join('||')
+    return `${activePage}::${summary}`
+  }
+
+  async function waitCardsChange(oldSignature, timeout = 10000) {
     const t0 = Date.now()
     while (Date.now() - t0 < timeout) {
       await sleep(400)
-      const newUser = document.querySelector('div._9WTBQrvq .XTEkYdlM')?.innerText.trim() || ''
-      if (newUser && newUser !== oldUser) return true
+      const newSignature = getCardsSignature()
+      if (newSignature && newSignature !== oldSignature) return true
     }
     return false
   }
@@ -172,38 +240,27 @@
         }
       }
       r.spec = specEl?.innerText.trim() || ''
+      r.overallFit = extractOverallFit(card)
 
-      const leafTexts = []
-      for (const el of card.querySelectorAll('*')) {
-        const t = el.children.length === 0 ? el.innerText?.trim() : ''
-        if (!t || t.length <= 10) continue
-        if (t === r.username || t === r.spec) continue
-        if (t.startsWith('购买于') || t.startsWith('Purchased on')) continue
-        if (/^[0-9.]+星/.test(t) || /^[0-9.]+ out of/i.test(t) || /^Rated [0-9]/i.test(t)) continue
-        if (/^已售/.test(t) || /^Sold\s/i.test(t)) continue
-        leafTexts.push(t)
-      }
+      const content = extractReviewContent(card)
+      r.reviewText = content.reviewText
+      r.reviewOriginal = content.reviewOriginal
 
-      const translated = leafTexts.filter(x => !x.startsWith('Review before translation:'))
-      r.reviewText = translated.sort((a, b) => b.length - a.length)[0] || ''
-      const origArr = leafTexts.filter(x => x.startsWith('Review before translation:'))
-      r.reviewOriginal = origArr[0] ? origArr[0].replace('Review before translation:', '').trim() : ''
-
-      const imgs = [...card.querySelectorAll('img')]
-        .map(img => img.src)
-        .filter(src => src && !src.includes('avatar.') && !src.includes('/flags/') && !src.includes('aimg.kwcdn'))
-      r.images = imgs.join('|')
-
-      if (r.username || r.reviewText) results.push({
+      const row = {
         '用户名': r.username,
         '来源国家': r.country,
         '购买日期': r.purchaseDate,
         '购买规格': r.spec,
+        'Overall fit': r.overallFit,
         '评价内容': r.reviewText,
         '原文': r.reviewOriginal,
         '星级': r.stars,
-        '评价图片': r.images,
+      }
+      extractReviewImages(card).forEach((src, index) => {
+        row[`评价图片${index + 1}`] = src
       })
+
+      if (r.username || r.reviewText) results.push(row)
     }
 
     return results
@@ -254,9 +311,9 @@
       const ok = await waitForCards(10000)
       if (!ok) return { success: false, error: '评价列表未加载' }
       if (!hasNextPage()) return complete([], false)
-      const firstUser = document.querySelector('div._9WTBQrvq .XTEkYdlM')?.innerText.trim() || ''
+      const pageSignature = getCardsSignature()
       clickNextPage()
-      const changed = await waitUserChange(firstUser, 10000)
+      const changed = await waitCardsChange(pageSignature, 10000)
       if (!changed) return { success: false, error: '评价列表翻页失败' }
       return nextPhase('collect', 200)
     }

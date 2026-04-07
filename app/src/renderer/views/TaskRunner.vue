@@ -395,7 +395,7 @@ function buildRunParams(overrides = {}) {
       delete params[p.id + '_headers']
     }
   }
-  return { ...params, ...overrides }
+  return JSON.parse(JSON.stringify({ ...params, ...overrides }))
 }
 
 async function resolveCurrentTabId(params) {

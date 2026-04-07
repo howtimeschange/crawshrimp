@@ -35,17 +35,23 @@
     }
   }
 
+  function getRegionNodes() {
+    return [...document.querySelectorAll('a[class*="index-module__drItem___"]')]
+      .filter(a => a.innerText && a.getClientRects().length > 0)
+  }
+
   function getAvailableRegions() {
-    const items = document.querySelectorAll('a.index-module__drItem___3eLtO')
-    return [...items]
-      .filter(a => !a.classList.contains('index-module__disabled___3n06o'))
-      .map(a => ({ text: a.innerText.trim(), active: a.classList.contains('index-module__active___2QJPF') }))
+    return getRegionNodes()
+      .filter(a => !String(a.className || '').includes('index-module__disabled___'))
+      .map(a => ({
+        text: a.innerText.trim(),
+        active: String(a.className || '').includes('index-module__active___')
+      }))
   }
 
   function switchRegion(regionText) {
-    const items = document.querySelectorAll('a.index-module__drItem___3eLtO')
-    for (const a of items) {
-      if (a.innerText.trim() === regionText && !a.classList.contains('index-module__disabled___3n06o')) {
+    for (const a of getRegionNodes()) {
+      if (a.innerText.trim() === regionText && !String(a.className || '').includes('index-module__disabled___')) {
         a.click()
         return true
       }
@@ -54,9 +60,8 @@
   }
 
   function getRegionClick(regionText) {
-    const items = document.querySelectorAll('a.index-module__drItem___3eLtO')
-    for (const a of items) {
-      if (a.innerText.trim() === regionText && !a.classList.contains('index-module__disabled___3n06o')) {
+    for (const a of getRegionNodes()) {
+      if (a.innerText.trim() === regionText && !String(a.className || '').includes('index-module__disabled___')) {
         const rect = a.getBoundingClientRect()
         if (rect.width > 0 && rect.height > 0) {
           return {
@@ -153,7 +158,7 @@
   }
 
   function getActiveRegion() {
-    const active = document.querySelector('a.index-module__drItem___3eLtO.index-module__active___2QJPF')
+    const active = document.querySelector('a[class*="index-module__drItem___"][class*="index-module__active___"]')
     return active?.innerText.trim() || ''
   }
 

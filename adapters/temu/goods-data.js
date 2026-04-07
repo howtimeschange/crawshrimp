@@ -171,6 +171,18 @@
     return { years, months, cells: tds }
   }
 
+  function getVisibleCalendarPanel(year, month, state = getCalendarState()) {
+    if (!state || !state.years.length || !state.months.length) return null
+    const leftYear = state.years[0]
+    const leftMonth = state.months[0]
+    const rightYear = state.years[1] || leftYear
+    const rightMonth = state.months[1] || leftMonth
+
+    if (year === leftYear && month === leftMonth) return 'left'
+    if (year === rightYear && month === rightMonth) return 'right'
+    return null
+  }
+
   async function clickCalendarArrow(direction, panelSide) {
     const testid = direction === 'next' ? 'beast-core-icon-right' : 'beast-core-icon-left'
     const idx = panelSide === 'left' ? 0 : 1
@@ -197,6 +209,24 @@
     }
     await sleep(200)
     return true
+  }
+
+  function openRangePicker() {
+    const row = getTimeRangeRow()
+    const targets = [
+      row?.querySelector('.RPR_inputWrapper_5-120-1'),
+      row?.querySelector('[data-testid="beast-core-rangePicker-input"]'),
+      row?.querySelector('input.RPR_input_5-120-1'),
+      row?.querySelector('[data-testid="beast-core-icon-calendar"]')?.closest('[class*="ICN_outerWrapper"]'),
+    ].filter(Boolean)
+
+    for (const el of targets) {
+      for (const ev of ['mouseenter', 'mousedown', 'mouseup', 'click']) {
+        el.dispatchEvent(new MouseEvent(ev, { bubbles: true, cancelable: true }))
+      }
+    }
+
+    return targets.length > 0
   }
 
   async function clickDayInCalendar(year, month, day) {
@@ -254,32 +284,36 @@
     if (!selectReady) return false
     await sleep(800)
 
-    const rprInput = getTimeRangeRangeInput()
-    if (rprInput) rprInput.click()
+    if (!openRangePicker()) return false
     await sleep(1200)
 
     let state = getCalendarState()
     if (!state) return false
 
-    if (!(s.getFullYear() === state.years[0] && s.getMonth() + 1 === state.months[0])) {
+    if (!getVisibleCalendarPanel(s.getFullYear(), s.getMonth() + 1, state)) {
       const ok = await navigatePanelToMonth('left', state.years[0], state.months[0], s.getFullYear(), s.getMonth() + 1)
       if (!ok) return false
       await sleep(400)
     }
 
     state = getCalendarState()
-    if (state && state.years.length > 1) {
-      const ry = state.years[1], rm = state.months[1]
-      if (!(e.getFullYear() === ry && e.getMonth() + 1 === rm)) {
-        const ok = await navigatePanelToMonth('right', ry, rm, e.getFullYear(), e.getMonth() + 1)
-        if (!ok) return false
-        await sleep(400)
-      }
+    if (!state) return false
+
+    if (!getVisibleCalendarPanel(e.getFullYear(), e.getMonth() + 1, state)) {
+      const ry = state.years[1] || state.years[0]
+      const rm = state.months[1] || state.months[0]
+      const ok = await navigatePanelToMonth('right', ry, rm, e.getFullYear(), e.getMonth() + 1)
+      if (!ok) return false
+      await sleep(400)
     }
 
     const okStart = await clickDayInCalendar(s.getFullYear(), s.getMonth() + 1, s.getDate())
     if (!okStart) return false
     await sleep(300)
+
+    state = getCalendarState()
+    if (!getVisibleCalendarPanel(e.getFullYear(), e.getMonth() + 1, state)) return false
+
     const okEnd = await clickDayInCalendar(e.getFullYear(), e.getMonth() + 1, e.getDate())
     if (!okEnd) return false
     await sleep(300)
