@@ -143,8 +143,15 @@ def export_excel(data: List[dict], adapter_id: str, task_id: str,
     ws = wb.active
     ws.title = task_id[:31]  # Sheet name max 31 chars
 
-    # Write headers from first record's keys
-    headers = list(data[0].keys())
+    # Write headers from all records so sparse later columns are not lost
+    headers = []
+    seen_headers = set()
+    for row in data:
+        for key in row.keys():
+            if key in seen_headers:
+                continue
+            seen_headers.add(key)
+            headers.append(key)
     ws.append(headers)
 
     # Write rows
