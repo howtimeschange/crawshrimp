@@ -111,7 +111,7 @@ tasks:
 
   - id: store_items
     name: 站点商品
-    description: 抓取 Temu 店铺商品列表（商品名/价格/评分/链接），自动加载全量
+    description: 抓取 Temu 店铺商品列表（商品名/图片/角标/价格/评分/评价数/链接），自动加载全量
     script: store-items.js
     entry_url: https://www.temu.com
     skip_auth: true
@@ -136,3 +136,16 @@ tasks:
     output:
       - type: excel
         filename: "{shop_name}_站点商品_{timestamp}.xlsx"
+        columns:
+          - 商品链接
+          - 商品名称
+          - 商品图片
+          - 商品角标
+          - 价格
+          - 原价
+          - 价格备注
+          - 销量
+          - 评分
+          - 评价数
+          - 品牌/店铺标签
+          - goods_id

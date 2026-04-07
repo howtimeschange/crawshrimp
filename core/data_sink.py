@@ -157,9 +157,14 @@ def _ensure_unique_path(path: Path) -> Path:
         idx += 1
 
 
-def export_excel(data: List[dict], adapter_id: str, task_id: str,
-                 filename_template: str = "{task_id}_{date}.xlsx",
-                 filename_vars: Optional[Mapping[str, Any]] = None) -> str:
+def export_excel(
+    data: List[dict],
+    adapter_id: str,
+    task_id: str,
+    filename_template: str = "{task_id}_{date}.xlsx",
+    filename_vars: Optional[Mapping[str, Any]] = None,
+    column_order: Optional[List[str]] = None,
+) -> str:
     """
     Export data to Excel file.
     Returns absolute path of written file.
@@ -178,15 +183,23 @@ def export_excel(data: List[dict], adapter_id: str, task_id: str,
     ws = wb.active
     ws.title = task_id[:31]  # Sheet name max 31 chars
 
-    # Write headers from all records so sparse later columns are not lost
+    # Write headers from explicit order first, then append any unexpected keys
     headers = []
     seen_headers = set()
+    if column_order:
+        for key in column_order:
+            k = str(key or "").strip()
+            if not k or k in seen_headers:
+                continue
+            seen_headers.add(k)
+            headers.append(k)
     for row in data:
         for key in row.keys():
-            if key in seen_headers:
+            k = str(key)
+            if k in seen_headers:
                 continue
-            seen_headers.add(key)
-            headers.append(key)
+            seen_headers.add(k)
+            headers.append(k)
     ws.append(headers)
 
     # Write rows

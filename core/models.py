@@ -22,6 +22,7 @@ class TaskOutput(BaseModel):
     filename: Optional[str] = None
     channel: Optional[str] = None
     condition: Optional[str] = None
+    columns: Optional[List[str]] = None  # excel 用：显式列顺序；未填则按 data 字段顺序导出
 
 
 class TaskTrigger(BaseModel):

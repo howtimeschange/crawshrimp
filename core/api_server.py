@@ -374,6 +374,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         logger.info(msg)
         _run_logs[jid].append(msg)
 
+    # 任务执行前重扫一次适配包，确保磁盘上的 manifest 改动立即生效
+    adapter_loader.scan_all()
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
         raise ValueError(f"Adapter not found: {adapter_id}")
@@ -398,7 +400,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         mode = str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
         current_tab_id = str(runtime_options.get('current_tab_id') or '').strip()
-        target_entry_url = str(task.entry_url or m.entry_url or '').strip()
+        shop_url = str(run_params.get('shop_url') or '').strip()
+        target_entry_url = shop_url or str(task.entry_url or m.entry_url or '').strip()
         configured_match_prefixes = list(task.tab_match_prefixes or m.tab_match_prefixes or [])
         platform_name = m.name or adapter_id
 
@@ -429,6 +432,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 'https://seller.shopee.cn/portal/marketing/vouchers/new',
                 'https://seller.shopee.cn/portal/marketing/follow-prize/new',
             ] if is_shopee_marketing_adapter else configured_match_prefixes or [target_entry_url]
+            if adapter_id == 'temu' and shop_url:
+                preferred_prefixes = list(dict.fromkeys([
+                    *preferred_prefixes,
+                    'https://www.temu.com/bgn_verification.html',
+                ]))
 
             if current_tab_id:
                 tab = next((t for t in all_tabs if str(t.get('id')) == current_tab_id), None)
@@ -531,7 +539,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log("No data rows returned, skip Excel export")
                     continue
                 fname = out.filename or "{task_id}_{date}.xlsx"
-                path = data_sink.export_excel(data, adapter_id, task_id, fname, filename_vars=filename_vars)
+                path = data_sink.export_excel(
+                    data,
+                    adapter_id,
+                    task_id,
+                    fname,
+                    filename_vars=filename_vars,
+                    column_order=getattr(out, 'columns', None),
+                )
                 output_files.append(path)
                 log(f"Excel exported: {path}")
 
