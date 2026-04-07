@@ -48,7 +48,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "商品数据_{date}.xlsx"
+        filename: "{shop_name}_商品数据_{time_scope}_{date_range}_{timestamp}.xlsx"
 
   - id: reviews
     name: 店铺评价
@@ -76,7 +76,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "店铺评价_{date}.xlsx"
+        filename: "{shop_name}_店铺评价_{timestamp}.xlsx"
 
   - id: aftersales
     name: 售后数据
@@ -107,7 +107,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "售后数据_{date}.xlsx"
+        filename: "{shop_name}_售后数据_{region_scope}_{timestamp}.xlsx"
 
   - id: store_items
     name: 站点商品
@@ -135,4 +135,4 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "站点商品_{date}.xlsx"
+        filename: "{shop_name}_站点商品_{timestamp}.xlsx"

@@ -14,9 +14,10 @@ import logging
 import os
 import tempfile
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,6 +36,136 @@ logger = logging.getLogger(__name__)
 # In-memory task run state for live status / logs
 _run_logs: dict = {}   # job_id -> list[str]
 _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
+
+
+async def _evaluate_filename_context(runner, expression: str) -> dict:
+    try:
+        result = await runner.evaluate(expression)
+    except Exception:
+        return {}
+    if not result.success or not result.data or not isinstance(result.data, list):
+        return {}
+    row = result.data[0] or {}
+    return row if isinstance(row, dict) else {}
+
+
+async def _build_export_filename_context(adapter_id: str, task_id: str, run_params: dict, runner) -> dict:
+    if adapter_id != 'temu':
+        return {}
+
+    backend_context_js = r"""
+(() => {
+  const textOf = el => (el?.textContent || '').replace(/\s+/g, ' ').trim()
+  const root = document.querySelector('[class*="userInfo"], [class*="seller-name"], [class*="account-info_userInfo"]')
+  const blacklist = new Set(['服务市场', '履约中心', '学习', '运营对接', '规则中心', '消息', '客服', '反馈', '99+', '首页', '数据中心', '商品数据'])
+  const seen = new Set()
+  const candidates = []
+  const push = text => {
+    const clean = String(text || '').replace(/\s+/g, ' ').trim()
+    if (!clean || seen.has(clean)) return
+    seen.add(clean)
+    candidates.push(clean)
+  }
+  if (root) {
+    push(textOf(root.querySelector('[class*="elli_outerWrapper"], [class*="seller-name"], [class*="shopName"], [class*="userName"]')))
+    for (const el of root.querySelectorAll('*')) {
+      const text = textOf(el)
+      if (!text || text.length > 80) continue
+      if ([...el.children].some(c => textOf(c) === text)) continue
+      push(text)
+    }
+  }
+  const shopName =
+    candidates.find(text => /shop/i.test(text)) ||
+    candidates.find(text => /[A-Za-z]/.test(text) && !blacklist.has(text)) ||
+    candidates.find(text => !blacklist.has(text)) ||
+    ''
+  const timeRow = [...document.querySelectorAll('[class*="index-module__row___"]')].find(row => {
+    return textOf(row.querySelector('[class*="index-module__row_label___"]')) === '时间区间'
+  }) || null
+  const timeScope = textOf(timeRow?.querySelector('input[data-testid="beast-core-select-htmlInput"]'))
+  const dateRange = textOf(timeRow?.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]'))
+  return {
+    success: true,
+    data: [{ shop_name: shopName, time_scope: timeScope, date_range: dateRange }],
+    meta: { has_more: false }
+  }
+})()
+"""
+
+    storefront_context_js = r"""
+(() => {
+  const textOf = el => (el?.textContent || '').replace(/\s+/g, ' ').trim()
+  const h1 = textOf(document.querySelector('h1'))
+  const title = String(document.title || '').replace(/\s*-\s*Great Offers.*$/i, '').trim()
+  return {
+    success: true,
+    data: [{ shop_name: h1 || title || '' }],
+    meta: { has_more: false }
+  }
+})()
+"""
+
+    page_ctx = {}
+    if task_id in {'goods_data', 'aftersales'}:
+        page_ctx = await _evaluate_filename_context(runner, backend_context_js)
+    elif task_id in {'reviews', 'store_items'}:
+        page_ctx = await _evaluate_filename_context(runner, storefront_context_js)
+
+    shop_name = str(page_ctx.get('shop_name') or '').strip()
+    if not shop_name and task_id in {'reviews', 'store_items'}:
+        shop_url = str(run_params.get('shop_url') or '').strip()
+        if shop_url:
+            try:
+                parsed = urlparse(shop_url)
+                shop_name = parse_qs(parsed.query).get('mall_id', [''])[0].strip()
+            except Exception:
+                shop_name = ''
+
+    ctx = {'shop_name': shop_name or 'Temu店铺'}
+
+    if task_id == 'goods_data':
+        def resolve_relative_range(label: str) -> str:
+            today = datetime.now().date()
+            if label == '昨日':
+                day = today - timedelta(days=1)
+                return f"{day.isoformat()}~{day.isoformat()}"
+            if label == '近7日':
+                start_day = today - timedelta(days=6)
+                return f"{start_day.isoformat()}~{today.isoformat()}"
+            if label == '近30日':
+                start_day = today - timedelta(days=29)
+                return f"{start_day.isoformat()}~{today.isoformat()}"
+            return ''
+
+        time_range = str(run_params.get('time_range') or '').strip()
+        custom_range = run_params.get('custom_range') or {}
+        start = str(custom_range.get('start') or '').strip()
+        end = str(custom_range.get('end') or '').strip()
+        page_time_scope = str(page_ctx.get('time_scope') or '').strip()
+        page_date_range = str(page_ctx.get('date_range') or '').strip()
+
+        if time_range == '自定义':
+            ctx['time_scope'] = '自定义'
+            ctx['date_range'] = f"{start}~{end}" if start and end else (page_date_range or '自定义')
+        elif time_range:
+            ctx['time_scope'] = time_range
+            ctx['date_range'] = page_date_range if '~' in page_date_range else (resolve_relative_range(time_range) or page_date_range or time_range)
+        else:
+            ctx['time_scope'] = page_time_scope or '当前筛选'
+            if '~' in page_date_range:
+                ctx['date_range'] = page_date_range
+            else:
+                ctx['date_range'] = resolve_relative_range(page_time_scope) or page_date_range or page_time_scope or '当前筛选'
+
+    if task_id == 'aftersales':
+        regions = run_params.get('regions') or []
+        if not isinstance(regions, list):
+            regions = []
+        clean_regions = [str(r).strip() for r in regions if str(r).strip()]
+        ctx['region_scope'] = '+'.join(clean_regions) if clean_regions else '全部地区'
+
+    return ctx
 
 
 def _url_matches_prefix(url: str, prefix: str) -> bool:
@@ -393,19 +524,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         # Process outputs
         output_files = []
+        filename_vars = await _build_export_filename_context(adapter_id, task_id, run_params, runner)
         for out in task.output:
             if out.type == OutputType.excel:
                 if not data:
                     log("No data rows returned, skip Excel export")
                     continue
                 fname = out.filename or "{task_id}_{date}.xlsx"
-                path = data_sink.export_excel(data, adapter_id, task_id, fname)
+                path = data_sink.export_excel(data, adapter_id, task_id, fname, filename_vars=filename_vars)
                 output_files.append(path)
                 log(f"Excel exported: {path}")
 
             elif out.type == OutputType.json:
                 fname = out.filename or "{task_id}_{date}.json"
-                path = data_sink.export_json(data, adapter_id, task_id, fname)
+                path = data_sink.export_json(data, adapter_id, task_id, fname, filename_vars=filename_vars)
                 output_files.append(path)
                 log(f"JSON exported: {path}")
 
