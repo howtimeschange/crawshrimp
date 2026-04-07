@@ -2,19 +2,25 @@
 Data persistence layer
 - Task run state stored in SQLite
 - Data records exported to Excel / JSON
-- Filename templates support {date}, {adapter_id}, {task_id}
+- Filename templates support {date}, {datetime}, {timestamp}, {adapter_id}, {task_id}
 """
 import json
 import logging
 import os
+import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, List, Mapping, Optional
 
 from core.models import TaskRun, TaskStatus
 
 logger = logging.getLogger(__name__)
+
+
+class _SafeTemplateVars(dict):
+    def __missing__(self, key):
+        return ""
 
 
 def _data_root() -> Path:
@@ -113,18 +119,47 @@ def list_runs(adapter_id: str, task_id: str, limit: int = 20) -> List[dict]:
 
 # ─── Export functions ───
 
-def _render_filename(template: str, adapter_id: str, task_id: str) -> str:
+def _sanitize_filename(text: Any, fallback: str = "output") -> str:
+    value = str(text or "").strip()
+    value = re.sub(r"\s+", " ", value)
+    value = re.sub(r"[\x00-\x1f]+", "", value)
+    value = re.sub(r'[\\/:*?"<>|]+', "_", value)
+    value = value.strip(" .")
+    return value or fallback
+
+
+def _render_filename(template: str, adapter_id: str, task_id: str,
+                     filename_vars: Optional[Mapping[str, Any]] = None) -> str:
     now = datetime.now()
-    return template.format(
-        date=now.strftime("%Y%m%d"),
-        datetime=now.strftime("%Y%m%d_%H%M%S"),
-        adapter_id=adapter_id,
-        task_id=task_id,
-    )
+    vars_map = {
+        "date": now.strftime("%Y%m%d"),
+        "datetime": now.strftime("%Y%m%d_%H%M%S"),
+        "timestamp": now.strftime("%Y%m%d-%H%M%S"),
+        "adapter_id": adapter_id,
+        "task_id": task_id,
+    }
+    if filename_vars:
+        for key, value in filename_vars.items():
+            vars_map[str(key)] = _sanitize_filename(value, "")
+    return _sanitize_filename(template.format_map(_SafeTemplateVars(vars_map)))
+
+
+def _ensure_unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    idx = 2
+    while True:
+        candidate = path.with_name(f"{stem}_{idx}{suffix}")
+        if not candidate.exists():
+            return candidate
+        idx += 1
 
 
 def export_excel(data: List[dict], adapter_id: str, task_id: str,
-                 filename_template: str = "{task_id}_{date}.xlsx") -> str:
+                 filename_template: str = "{task_id}_{date}.xlsx",
+                 filename_vars: Optional[Mapping[str, Any]] = None) -> str:
     """
     Export data to Excel file.
     Returns absolute path of written file.
@@ -134,10 +169,10 @@ def export_excel(data: List[dict], adapter_id: str, task_id: str,
     if not data:
         raise ValueError("No data to export")
 
-    filename = _render_filename(filename_template, adapter_id, task_id)
+    filename = _render_filename(filename_template, adapter_id, task_id, filename_vars)
     out_dir = _data_root() / adapter_id / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / filename
+    out_path = _ensure_unique_path(out_dir / filename)
 
     wb = Workbook()
     ws = wb.active
@@ -169,15 +204,16 @@ def export_excel(data: List[dict], adapter_id: str, task_id: str,
 
 
 def export_json(data: List[dict], adapter_id: str, task_id: str,
-                filename_template: str = "{task_id}_{date}.json") -> str:
+                filename_template: str = "{task_id}_{date}.json",
+                filename_vars: Optional[Mapping[str, Any]] = None) -> str:
     """
     Export data to JSON file.
     Returns absolute path of written file.
     """
-    filename = _render_filename(filename_template, adapter_id, task_id)
+    filename = _render_filename(filename_template, adapter_id, task_id, filename_vars)
     out_dir = _data_root() / adapter_id / task_id
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = out_dir / filename
+    out_path = _ensure_unique_path(out_dir / filename)
 
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
@@ -187,12 +223,13 @@ def export_json(data: List[dict], adapter_id: str, task_id: str,
 
 
 def export_desktop_excel(data: List[dict], adapter_id: str, task_id: str,
-                         filename_template: str = "{task_id}_{date}.xlsx") -> str:
+                         filename_template: str = "{task_id}_{date}.xlsx",
+                         filename_vars: Optional[Mapping[str, Any]] = None) -> str:
     """Export to user Desktop (mirrors temu-assistant behavior)"""
     from openpyxl import Workbook
     desktop = Path.home() / "Desktop"
-    filename = _render_filename(filename_template, adapter_id, task_id)
-    out_path = desktop / filename
+    filename = _render_filename(filename_template, adapter_id, task_id, filename_vars)
+    out_path = _ensure_unique_path(desktop / filename)
     wb = Workbook()
     ws = wb.active
     ws.title = task_id[:31]
