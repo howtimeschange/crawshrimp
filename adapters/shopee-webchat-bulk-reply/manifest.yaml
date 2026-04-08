@@ -1,0 +1,50 @@
+﻿id: shopee-webchat-bulk-reply
+name: Shopee Webchat Bulk Reply
+version: 0.2.2
+author: codex
+description: "Search buyer ID, match site/store from the result list, and preview or send messages in Shopee Webchat."
+entry_url: https://seller.shopee.cn/webchat/conversations
+
+auth:
+  check_script: auth_check.js
+  login_url: https://seller.shopee.cn/webchat/conversations
+
+tasks:
+  - id: bulk_reply
+    name: Bulk Reply
+    description: Search buyer ID row by row, match site/store from the result list, and preview or send messages.
+    script: bulk-send.js
+    params:
+      - id: mode
+        type: radio
+        label: Login Mode
+        default: current
+        options:
+          - value: current
+            label: Use Current Tab
+          - value: new
+            label: Open Fresh Tab
+      - id: run_mode
+        type: radio
+        label: Run Mode
+        default: preview
+        options:
+          - value: preview
+            label: Preview Only
+          - value: send
+            label: Send Messages
+      - id: input_file
+        type: file_excel
+        label: Input Excel
+        required: true
+        templates:
+          - file: templates/message-template.csv
+            label: CSV Template
+            description: Fill site, store, buyer ID, and message before upload.
+            version: "2026.04"
+        hint: Must include columns for site, store, buyer ID, and message. Output is an Excel result file.
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "ShopeeWebchatBulkReply_{datetime}.xlsx"
