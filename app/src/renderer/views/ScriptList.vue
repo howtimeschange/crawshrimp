@@ -37,7 +37,7 @@
         <div class="card-bottom">
           <span v-if="anyRunning(g)" class="running-badge">运行中</span>
           <span v-else-if="lastStatus(g)" :class="['status-badge', lastStatus(g)]">
-            {{ lastStatus(g) === 'done' ? '上次成功' : '上次失败' }}
+            {{ lastStatusLabel(lastStatus(g)) }}
           </span>
           <button class="remove-btn" @click.stop="removeAdapter(g.adapter_id)">移除</button>
         </div>
@@ -124,7 +124,7 @@ async function loadGroups() {
 }
 
 function anyRunning(g) {
-  return g.tasks.some(t => t.live?.status === 'running')
+  return g.tasks.some(t => ['running', 'pausing', 'paused', 'stopping'].includes(t.live?.status))
 }
 
 function lastStatus(g) {
@@ -132,6 +132,12 @@ function lastStatus(g) {
     if (t.last_run?.status) return t.last_run.status
   }
   return null
+}
+
+function lastStatusLabel(status) {
+  if (status === 'done') return '上次成功'
+  if (status === 'stopped') return '上次停止'
+  return '上次失败'
 }
 
 const zipFilters = [
@@ -351,6 +357,7 @@ async function doInstall() {
 .running-badge { font-size: 11px; padding: 2px 8px; border-radius: 5px; background: var(--orange-bg); color: var(--orange); }
 .status-badge { font-size: 11px; padding: 2px 8px; border-radius: 5px; }
 .status-badge.done  { background: rgba(74,222,128,0.1); color: #4ade80; }
+.status-badge.stopped { background: rgba(251,191,36,0.1); color: #fbbf24; }
 .status-badge.error { background: rgba(248,113,113,0.1); color: #f87171; }
 .remove-btn {
   font-size: 11px; color: var(--text3); background: transparent; border: none;

@@ -43,7 +43,7 @@
             @click="activeTaskId = t.task_id"
           >
             {{ t.task_name }}
-            <span v-if="t.live?.status === 'running'" class="running-dot"></span>
+            <span v-if="isTaskLiveActive(t.live?.status)" class="running-dot"></span>
           </button>
         </div>
       </div>
@@ -130,6 +130,10 @@ function onTaskStatusChange(status) {
     const t = activeScript.value.tasks.find(x => x.task_id === activeTaskId.value)
     if (t) t.live = status
   }
+}
+
+function isTaskLiveActive(status) {
+  return ['running', 'pausing', 'paused', 'stopping'].includes(status)
 }
 
 async function launchChrome() {
@@ -277,5 +281,5 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
 /* 主内容 */
-.content { overflow: hidden; background: var(--bg); height: 100%; }
+.content { overflow: hidden; background: var(--bg); height: 100%; min-height: 0; }
 </style>

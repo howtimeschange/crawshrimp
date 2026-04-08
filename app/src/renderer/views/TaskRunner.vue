@@ -6,246 +6,303 @@
       <p v-if="task?.description" class="desc">{{ task.description }}</p>
     </header>
 
-    <!-- 参数面板 -->
-    <div class="params-panel" v-if="visibleParams.length">
-      <div v-for="param in visibleParams" :key="param.id" class="param-group">
-        <label class="param-label">
-          {{ param.label }}
-          <span v-if="param.required" class="required">*</span>
-        </label>
-
-        <!-- 文本输入 -->
-        <template v-if="param.type === 'text'">
-          <input
-            v-model="values[param.id]"
-            :placeholder="param.placeholder || ''"
-            class="input"
-          />
-          <p v-if="param.hint" class="hint">{{ param.hint }}</p>
-        </template>
-
-        <!-- 单选框 -->
-        <template v-else-if="param.type === 'radio'">
-          <div class="radio-group">
-            <label v-for="opt in param.options" :key="opt.value" class="radio-item">
-              <input
-                type="radio"
-                :name="param.id"
-                :value="opt.value"
-                v-model="values[param.id]"
-              />
-              <span class="radio-label">{{ opt.label }}</span>
+    <div class="runner-body">
+      <!-- 参数面板 -->
+      <div class="params-panel" v-if="visibleParams.length">
+        <div :class="['params-grid', paramsGridClass]">
+          <div v-for="param in visibleParams" :key="param.id" :class="['param-group', paramLayoutClass(param)]">
+            <label class="param-label">
+              {{ param.label }}
+              <span v-if="param.required" class="required">*</span>
             </label>
-          </div>
-        </template>
 
-        <!-- 下拉选择 -->
-        <template v-else-if="param.type === 'select'">
-          <select v-model="values[param.id]" class="select">
-            <option v-for="opt in param.options" :key="opt.value" :value="opt.value">
-              {{ opt.label }}
-            </option>
-          </select>
-          <template v-if="shouldShowInlineCustomDate(param)">
-            <div class="custom-date-hint">自定义范围</div>
-            <div class="date-range" style="margin-top:6px">
-              <input type="date" v-model="values['_custom_start_' + param.id]" class="input" />
-              <span class="date-sep">~</span>
-              <input type="date" v-model="values['_custom_end_' + param.id]" class="input" />
-            </div>
-          </template>
-        </template>
-
-        <!-- 复选框组 -->
-        <template v-else-if="param.type === 'checkbox'">
-          <div class="checkbox-group">
-            <label v-for="opt in param.options" :key="opt.value" class="checkbox-item">
+            <!-- 文本输入 -->
+            <template v-if="param.type === 'text'">
               <input
-                type="checkbox"
-                :value="opt.value"
                 v-model="values[param.id]"
+                :placeholder="param.placeholder || ''"
+                class="input"
               />
-              <span class="checkbox-label">{{ opt.label }}</span>
-            </label>
-          </div>
-          <p v-if="param.hint" class="hint">{{ param.hint }}</p>
-        </template>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
 
-        <!-- 日期区间 -->
-        <template v-else-if="param.type === 'date_range'">
-          <div v-if="shouldShowDateRangeParam(param)" class="date-range-panel">
-            <div class="date-range">
-              <div
-                class="date-card"
-                role="button"
-                tabindex="0"
-                @click="openDatePicker(param.id + '_start')"
-                @keydown.enter.prevent="openDatePicker(param.id + '_start')"
-                @keydown.space.prevent="openDatePicker(param.id + '_start')"
-              >
-                <input
-                  :ref="el => setDateInputRef(param.id + '_start', el)"
-                  type="date"
-                  v-model="values[param.id + '_start']"
-                  class="date-card-input"
-                />
-                <span :class="['date-card-value', { placeholder: !values[param.id + '_start'] }]">
-                  {{ formatDateDisplay(values[param.id + '_start']) }}
-                </span>
-                <span class="date-card-icon" aria-hidden="true">选择</span>
+            <!-- 单选框 -->
+            <template v-else-if="param.type === 'radio'">
+              <div class="radio-group">
+                <label v-for="opt in param.options" :key="opt.value" class="radio-item">
+                  <input
+                    type="radio"
+                    :name="param.id"
+                    :value="opt.value"
+                    v-model="values[param.id]"
+                  />
+                  <span class="radio-label">{{ opt.label }}</span>
+                </label>
               </div>
-              <span class="date-sep">至</span>
-              <div
-                class="date-card"
-                role="button"
-                tabindex="0"
-                @click="openDatePicker(param.id + '_end')"
-                @keydown.enter.prevent="openDatePicker(param.id + '_end')"
-                @keydown.space.prevent="openDatePicker(param.id + '_end')"
-              >
-                <input
-                  :ref="el => setDateInputRef(param.id + '_end', el)"
-                  type="date"
-                  v-model="values[param.id + '_end']"
-                  class="date-card-input"
-                />
-                <span :class="['date-card-value', { placeholder: !values[param.id + '_end'] }]">
-                  {{ formatDateDisplay(values[param.id + '_end']) }}
-                </span>
-                <span class="date-card-icon" aria-hidden="true">选择</span>
-              </div>
-            </div>
-          </div>
-        </template>
+            </template>
 
-        <!-- 数字 -->
-        <template v-else-if="param.type === 'number'">
-          <input
-            type="number"
-            v-model.number="values[param.id]"
-            :min="param.min" :max="param.max" :step="param.step || 1"
-            class="input input-number"
-          />
-        </template>
-
-        <!-- Excel / CSV 文件上传 -->
-        <template v-else-if="param.type === 'file_excel'">
-          <div class="file-picker">
-            <div class="file-chosen" :class="{ empty: !values[param.id + '_path'] }" @click="pickExcel(param.id)">
-              <span class="f-ico">📊</span>
-              <span class="f-label">{{ values[param.id + '_path'] ? fileName(values[param.id + '_path']) : '点击选择 Excel / CSV 文件…' }}</span>
-              <span v-if="values[param.id + '_path']" class="f-clear" @click.stop="clearExcel(param.id)">✕</span>
-            </div>
-            <div class="file-picker-actions">
-              <button class="btn-pick" @click="pickExcel(param.id)">选择文件</button>
-            </div>
-          </div>
-          <div v-if="getParamTemplates(param).length" class="template-list">
-            <div
-              v-for="(template, index) in getParamTemplates(param)"
-              :key="template.file || index"
-              class="template-card"
-            >
-              <div class="template-main">
-                <div class="template-title-row">
-                  <span class="template-name">{{ template.label || fileName(template.file || '') }}</span>
-                  <span class="template-ext">{{ templateExtension(template) }}</span>
-                  <span v-if="template.version" class="template-version">v{{ template.version }}</span>
+            <!-- 下拉选择 -->
+            <template v-else-if="param.type === 'select'">
+              <select v-model="values[param.id]" class="select">
+                <option v-for="opt in param.options" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+              <template v-if="shouldShowInlineCustomDate(param)">
+                <div class="custom-date-hint">自定义范围</div>
+                <div class="date-range" style="margin-top:6px">
+                  <input type="date" v-model="values['_custom_start_' + param.id]" class="input" />
+                  <span class="date-sep">~</span>
+                  <input type="date" v-model="values['_custom_end_' + param.id]" class="input" />
                 </div>
-                <p v-if="template.description" class="template-desc">{{ template.description }}</p>
+              </template>
+            </template>
+
+            <!-- 复选框组 -->
+            <template v-else-if="param.type === 'checkbox'">
+              <div class="checkbox-group">
+                <label v-for="opt in param.options" :key="opt.value" class="checkbox-item">
+                  <input
+                    type="checkbox"
+                    :value="opt.value"
+                    v-model="values[param.id]"
+                  />
+                  <span class="checkbox-label">{{ opt.label }}</span>
+                </label>
               </div>
-              <button
-                class="btn-template"
-                :disabled="!canDownloadTemplate(template)"
-                @click="downloadTemplate(task, param, template)"
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
+            <!-- 日期区间 -->
+            <template v-else-if="param.type === 'date_range'">
+              <div v-if="shouldShowDateRangeParam(param)" class="date-range-panel">
+                <div class="date-range">
+                  <div
+                    class="date-card"
+                    role="button"
+                    tabindex="0"
+                    @click="openDatePicker(param.id + '_start')"
+                    @keydown.enter.prevent="openDatePicker(param.id + '_start')"
+                    @keydown.space.prevent="openDatePicker(param.id + '_start')"
+                  >
+                    <input
+                      :ref="el => setDateInputRef(param.id + '_start', el)"
+                      type="date"
+                      v-model="values[param.id + '_start']"
+                      class="date-card-input"
+                    />
+                    <span :class="['date-card-value', { placeholder: !values[param.id + '_start'] }]">
+                      {{ formatDateDisplay(values[param.id + '_start']) }}
+                    </span>
+                    <span class="date-card-icon" aria-hidden="true">选择</span>
+                  </div>
+                  <span class="date-sep">至</span>
+                  <div
+                    class="date-card"
+                    role="button"
+                    tabindex="0"
+                    @click="openDatePicker(param.id + '_end')"
+                    @keydown.enter.prevent="openDatePicker(param.id + '_end')"
+                    @keydown.space.prevent="openDatePicker(param.id + '_end')"
+                  >
+                    <input
+                      :ref="el => setDateInputRef(param.id + '_end', el)"
+                      type="date"
+                      v-model="values[param.id + '_end']"
+                      class="date-card-input"
+                    />
+                    <span :class="['date-card-value', { placeholder: !values[param.id + '_end'] }]">
+                      {{ formatDateDisplay(values[param.id + '_end']) }}
+                    </span>
+                    <span class="date-card-icon" aria-hidden="true">选择</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- 数字 -->
+            <template v-else-if="param.type === 'number'">
+              <input
+                type="number"
+                v-model.number="values[param.id]"
+                :min="param.min" :max="param.max" :step="param.step || 1"
+                class="input input-number"
+              />
+            </template>
+
+            <!-- Excel / CSV 文件上传 -->
+            <template v-else-if="param.type === 'file_excel'">
+              <div class="file-picker">
+                <div class="file-chosen" :class="{ empty: !values[param.id + '_path'] }" @click="pickExcel(param.id)">
+                  <span class="f-ico">📊</span>
+                  <span class="f-label">{{ values[param.id + '_path'] ? fileName(values[param.id + '_path']) : '点击选择 Excel / CSV 文件…' }}</span>
+                  <span v-if="values[param.id + '_path']" class="f-clear" @click.stop="clearExcel(param.id)">✕</span>
+                </div>
+                <div class="file-picker-actions">
+                  <button class="btn-pick" @click="pickExcel(param.id)">选择文件</button>
+                </div>
+              </div>
+              <div v-if="getParamTemplates(param).length" class="template-list">
+                <div
+                  v-for="(template, index) in getParamTemplates(param)"
+                  :key="template.file || index"
+                  class="template-card"
+                >
+                  <div class="template-main">
+                    <div class="template-title-row">
+                      <span class="template-name">{{ template.label || fileName(template.file || '') }}</span>
+                      <span class="template-ext">{{ templateExtension(template) }}</span>
+                      <span v-if="template.version" class="template-version">v{{ template.version }}</span>
+                    </div>
+                    <p v-if="template.description" class="template-desc">{{ template.description }}</p>
+                  </div>
+                  <button
+                    class="btn-template"
+                    :disabled="!canDownloadTemplate(template)"
+                    @click="downloadTemplate(task, param, template)"
+                  >
+                    下载
+                  </button>
+                </div>
+              </div>
+              <div
+                v-if="templateFeedback[param.id]"
+                :class="['template-feedback', templateFeedback[param.id].ok ? 'ok' : 'err']"
               >
-                下载
-              </button>
-            </div>
+                {{ templateFeedback[param.id].msg }}
+              </div>
+              <div v-if="values[param.id + '_rows']?.length" class="excel-preview">
+                <span class="preview-count">已读取 {{ values[param.id + '_rows'].length }} 行</span>
+                <span class="preview-cols">列：{{ values[param.id + '_headers']?.join(' / ') }}</span>
+              </div>
+              <div v-if="excelLoading[param.id]" class="excel-loading">读取文件中…</div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
           </div>
-          <div
-            v-if="templateFeedback[param.id]"
-            :class="['template-feedback', templateFeedback[param.id].ok ? 'ok' : 'err']"
+        </div>
+
+        <!-- 执行按钮 -->
+        <div class="action-row">
+          <button
+            class="run-btn"
+            :class="{ running: isRunning }"
+            :disabled="isRunning || missingRequired"
+            @click="runTask"
           >
-            {{ templateFeedback[param.id].msg }}
-          </div>
-          <div v-if="values[param.id + '_rows']?.length" class="excel-preview">
-            <span class="preview-count">已读取 {{ values[param.id + '_rows'].length }} 行</span>
-            <span class="preview-cols">列：{{ values[param.id + '_headers']?.join(' / ') }}</span>
-          </div>
-          <div v-if="excelLoading[param.id]" class="excel-loading">读取文件中…</div>
-          <p v-if="param.hint" class="hint">{{ param.hint }}</p>
-        </template>
-      </div>
-
-      <!-- 执行按钮 -->
-      <div class="action-row">
-        <button
-          class="run-btn"
-          :class="{ running: isRunning }"
-          :disabled="isRunning || missingRequired"
-          @click="runTask"
-        >
-          <span v-if="isRunning">{{ runningLabel }}</span>
-          <span v-else>▶ 立即执行</span>
-        </button>
-        <button
-          v-if="autoPrecheckFlow"
-          class="run-sub-btn"
-          :disabled="isRunning || missingRequired"
-          @click="runValidationOnly"
-        >
-          {{ validationOnlyLabel }}
-        </button>
-        <span v-if="autoPrecheckFlow" class="action-note">{{ autoPrecheckNote }}</span>
-        <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
-        <span v-if="missingRequired" class="missing-hint">请填写必填项</span>
-        <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
-          {{ lastResult.msg }}
-        </span>
-      </div>
-    </div>
-
-    <!-- 无参数任务的执行按钮 -->
-    <div v-else class="params-panel">
-      <div class="action-row">
-        <button
-          class="run-btn"
-          :class="{ running: isRunning }"
-          :disabled="isRunning"
-          @click="runTask"
-        >
-          <span v-if="isRunning">⏳ 进行中…</span>
-          <span v-else>▶ 立即执行</span>
-        </button>
-        <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
-      </div>
-    </div>
-
-    <!-- 运行日志 -->
-    <div class="log-panel">
-      <div class="log-header">
-        <span>运行日志</span>
-        <div class="log-actions">
-          <span v-if="outputFiles.length" class="output-count" @click="showFiles = !showFiles">
-            📁 {{ outputFiles.length }} 个输出文件
+            <span v-if="isRunning">{{ runningLabel }}</span>
+            <span v-else>▶ 立即执行</span>
+          </button>
+          <button
+            v-if="autoPrecheckFlow"
+            class="run-sub-btn"
+            :disabled="isRunning || missingRequired"
+            @click="runValidationOnly"
+          >
+            {{ validationOnlyLabel }}
+          </button>
+          <button
+            v-if="isRunning && liveStatus === 'running'"
+            class="run-sub-btn"
+            @click="pauseCurrentTask"
+          >
+            暂停
+          </button>
+          <button
+            v-if="isRunning && (liveStatus === 'paused' || liveStatus === 'pausing')"
+            class="run-sub-btn"
+            @click="resumeCurrentTask"
+          >
+            继续
+          </button>
+          <button
+            v-if="isRunning"
+            class="run-sub-btn run-sub-btn-stop"
+            :disabled="liveStatus === 'stopping'"
+            @click="stopCurrentTask"
+          >
+            停止
+          </button>
+          <span v-if="autoPrecheckFlow" class="action-note">{{ autoPrecheckNote }}</span>
+          <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
+          <span v-if="missingRequired" class="missing-hint">请填写必填项</span>
+          <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
+            {{ lastResult.msg }}
           </span>
-          <button class="clear-btn" @click="clearLogs">清空</button>
         </div>
       </div>
 
-      <!-- 输出文件列表 -->
-      <div v-if="showFiles && outputFiles.length" class="file-list">
-        <div v-for="f in outputFiles" :key="f" class="file-item" @click="openFile(f)">
-          <span class="file-icon">{{ f.endsWith('.xlsx') ? '📊' : '📄' }}</span>
-          <span class="file-name">{{ fileName(f) }}</span>
-          <span class="file-open">打开 →</span>
+      <!-- 无参数任务的执行按钮 -->
+      <div v-else class="params-panel">
+        <div class="action-row">
+          <button
+            class="run-btn"
+            :class="{ running: isRunning }"
+            :disabled="isRunning"
+            @click="runTask"
+          >
+            <span v-if="isRunning">{{ runningLabel }}</span>
+            <span v-else>▶ 立即执行</span>
+          </button>
+          <button
+            v-if="isRunning && liveStatus === 'running'"
+            class="run-sub-btn"
+            @click="pauseCurrentTask"
+          >
+            暂停
+          </button>
+          <button
+            v-if="isRunning && (liveStatus === 'paused' || liveStatus === 'pausing')"
+            class="run-sub-btn"
+            @click="resumeCurrentTask"
+          >
+            继续
+          </button>
+          <button
+            v-if="isRunning"
+            class="run-sub-btn run-sub-btn-stop"
+            :disabled="liveStatus === 'stopping'"
+            @click="stopCurrentTask"
+          >
+            停止
+          </button>
+          <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
         </div>
       </div>
 
-      <div class="log-body" ref="logEl">
-        <div v-if="!logs.length" class="log-empty">等待任务执行…</div>
-        <div v-for="(line, i) in logs" :key="i" :class="['log-line', logClass(line)]">{{ line }}</div>
+      <!-- 运行日志 -->
+      <div class="log-panel">
+        <div class="log-header">
+          <span>运行日志</span>
+          <div class="log-actions">
+            <span v-if="outputFiles.length" class="output-count" @click="showFiles = !showFiles">
+              📁 {{ outputFiles.length }} 个输出文件
+            </span>
+            <button class="clear-btn" @click="clearLogs">清空</button>
+          </div>
+        </div>
+
+        <div v-if="progressSummary" class="progress-strip">
+          <div class="progress-strip-main">
+            <span class="progress-strip-title">进度</span>
+            <span class="progress-strip-value">{{ progressSummary.main }}</span>
+            <span v-if="progressSummary.percent" class="progress-strip-percent">{{ progressSummary.percent }}</span>
+          </div>
+          <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
+        </div>
+
+        <!-- 输出文件列表 -->
+        <div v-if="showFiles && outputFiles.length" class="file-list">
+          <div v-for="f in outputFiles" :key="f" class="file-item" @click="openFile(f)">
+            <span class="file-icon">{{ f.endsWith('.xlsx') ? '📊' : '📄' }}</span>
+            <span class="file-name">{{ fileName(f) }}</span>
+            <span class="file-open">打开 →</span>
+          </div>
+        </div>
+
+        <div class="log-body" ref="logEl">
+          <div v-if="!logs.length" class="log-empty">等待任务执行…</div>
+          <div v-for="(line, i) in logs" :key="i" :class="['log-line', logClass(line)]">{{ line }}</div>
+        </div>
       </div>
     </div>
   </div>
@@ -320,7 +377,7 @@ const autoPrecheckFlow = computed(() =>
 )
 
 const visibleParams = computed(() =>
-  (props.task?.params || []).filter(p => !(autoPrecheckFlow.value && p.id === 'execute_mode'))
+  orderVisibleParams((props.task?.params || []).filter(p => !(autoPrecheckFlow.value && p.id === 'execute_mode')))
 )
 
 const validationOnlyLabel = computed(() =>
@@ -331,7 +388,20 @@ const autoPrecheckNote = computed(() =>
   props.task?.auto_precheck_note || '执行前会自动做 Excel 预检'
 )
 
+const liveStatus = computed(() => props.task?.live?.status || '')
+const liveProgress = computed(() => props.task?.live || {})
+const paramsGridClass = computed(() =>
+  props.adapterId === 'shopee-webchat-bulk-reply' ? 'params-grid-shopee-bulk' : ''
+)
+
+function isTaskActiveStatus(status) {
+  return ['running', 'pausing', 'paused', 'stopping'].includes(status)
+}
+
 const runningLabel = computed(() => {
+  if (liveStatus.value === 'pausing') return '⏳ 暂停中…'
+  if (liveStatus.value === 'paused') return '⏸ 已暂停'
+  if (liveStatus.value === 'stopping') return '⏳ 停止中…'
   if (runStage.value === 'plan') return '⏳ 预检中…'
   if (runStage.value === 'live') return '⏳ live 执行中…'
   return '⏳ 进行中…'
@@ -345,6 +415,72 @@ const missingRequired = computed(() => {
     return !values.value[p.id]
   })
 })
+
+const progressSummary = computed(() => {
+  const current = Number(liveProgress.value?.current || 0)
+  const total = Number(liveProgress.value?.total || 0)
+  if (!isRunning.value || current <= 0 || total <= 0) return null
+
+  const completed = Number(liveProgress.value?.completed || liveProgress.value?.records || 0)
+  const batchNo = Number(liveProgress.value?.batch_no || 0)
+  const totalBatches = Number(liveProgress.value?.total_batches || 0)
+  const rowNo = Number(liveProgress.value?.row_no || 0)
+  const buyerId = String(liveProgress.value?.buyer_id || '').trim()
+  const phase = String(liveProgress.value?.phase || '').trim()
+  const percent = Number(liveProgress.value?.percent || 0)
+
+  const parts = [`已完成 ${completed} 条`]
+  if (batchNo > 0 && totalBatches > 0) parts.push(`批次 ${batchNo}/${totalBatches}`)
+  if (rowNo > 0) parts.push(`源表行 ${rowNo}`)
+  if (buyerId) parts.push(`买家 ${buyerId}`)
+  if (phase) parts.push(`阶段 ${phase}`)
+
+  return {
+    main: `${current} / ${total}`,
+    percent: percent > 0 ? `${percent}%` : '',
+    sub: parts.join(' · '),
+  }
+})
+
+function paramLayoutClass(param) {
+  if (!param) return 'param-span-compact'
+  if (props.adapterId === 'shopee-webchat-bulk-reply') {
+    if (['mode', 'run_mode'].includes(param.id)) {
+      return 'param-span-half'
+    }
+    if (['start_row', 'end_row', 'batch_size'].includes(param.id)) {
+      return 'param-span-third'
+    }
+  }
+  if (param.type === 'file_excel' || param.type === 'checkbox' || param.type === 'date_range') {
+    return 'param-span-full'
+  }
+  if (param.type === 'radio' && (param.options?.length || 0) > 2) {
+    return 'param-span-full'
+  }
+  return 'param-span-compact'
+}
+
+function orderVisibleParams(params) {
+  const list = [...(params || [])]
+  if (props.adapterId !== 'shopee-webchat-bulk-reply') return list
+
+  const order = {
+    mode: 1,
+    run_mode: 2,
+    start_row: 3,
+    end_row: 4,
+    batch_size: 5,
+    input_file: 6,
+  }
+
+  return list.sort((a, b) => {
+    const ao = order[a.id] ?? 999
+    const bo = order[b.id] ?? 999
+    if (ao !== bo) return ao - bo
+    return String(a.label || '').localeCompare(String(b.label || ''), 'zh-CN')
+  })
+}
 
 function forceReset() {
   clearInterval(pollTimer)
@@ -415,6 +551,42 @@ function resetRunUi() {
   showFiles.value = false
 }
 
+async function pauseCurrentTask() {
+  if (!isRunning.value || liveStatus.value !== 'running') return
+  try {
+    await window.cs.pauseTask(props.adapterId, props.task.task_id)
+    logs.value.push(`[${now()}] 已发送暂停指令`)
+    emit('status-change', { status: 'pausing', run_id: currentRunId })
+    scrollToBottom()
+  } catch (e) {
+    logs.value.push(`[错误] ${e?.message || String(e)}`)
+  }
+}
+
+async function resumeCurrentTask() {
+  if (!isRunning.value || !['paused', 'pausing'].includes(liveStatus.value)) return
+  try {
+    await window.cs.resumeTask(props.adapterId, props.task.task_id)
+    logs.value.push(`[${now()}] 已发送继续指令`)
+    emit('status-change', { status: 'running', run_id: currentRunId })
+    scrollToBottom()
+  } catch (e) {
+    logs.value.push(`[错误] ${e?.message || String(e)}`)
+  }
+}
+
+async function stopCurrentTask() {
+  if (!isRunning.value || liveStatus.value === 'stopping') return
+  try {
+    await window.cs.stopTask(props.adapterId, props.task.task_id)
+    logs.value.push(`[${now()}] 已发送停止指令`)
+    emit('status-change', { status: 'stopping', run_id: currentRunId })
+    scrollToBottom()
+  } catch (e) {
+    logs.value.push(`[错误] ${e?.message || String(e)}`)
+  }
+}
+
 async function startTaskRun(params, pendingMessage) {
   const currentTabId = await resolveCurrentTabId(params)
   const r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
@@ -450,10 +622,11 @@ async function pollStatusOnce() {
   const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id)
 
   if (logR.logs) logs.value = logR.logs
+  if (live) emit('status-change', live)
   scrollToBottom()
 
   // live 有值且是当前任务正在跑 → 继续等
-  if (live && live.status === 'running') return null
+  if (live && isTaskActiveStatus(live.status)) return null
 
   // live 为 null 时：检查 last_run 是否是我们触发的这次（匹配 run_id）
   if (!live) {
@@ -463,7 +636,7 @@ async function pollStatusOnce() {
     // last_run 不是当前任务 → 继续等
     if (!last || last.id !== currentRunId) return null
     // last_run 是当前任务但还在跑 → 继续等
-    if (last.status === 'running') return null
+    if (isTaskActiveStatus(last.status)) return null
     // last_run 是当前任务且已完成 → 用 last 作为结果
     const syntheticLive = { status: last.status, records: last.records_count, error: last.error, run_id: last.id }
     return syntheticLive
@@ -512,6 +685,12 @@ async function finishRun(result, options = {}) {
       lastResult.value = { ok: !!options.ok, msg: options.message }
     } else {
       lastResult.value = { ok: true, msg: `✓ 完成，共 ${result.records ?? result.records_count ?? 0} 条记录` }
+    }
+  } else if (result.status === 'stopped') {
+    await refreshOutputFiles()
+    lastResult.value = {
+      ok: false,
+      msg: options.message || `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果`,
     }
   } else if (result.status === 'error') {
     lastResult.value = { ok: false, msg: options.message || `✗ 失败: ${result.error || '未知错误'}` }
@@ -790,7 +969,7 @@ onUnmounted(() => clearInterval(pollTimer))
 </script>
 
 <style scoped>
-.runner { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
+.runner { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 
 .runner-header {
   padding: 20px 24px 14px;
@@ -798,6 +977,12 @@ onUnmounted(() => clearInterval(pollTimer))
 }
 .runner-header h2 { font-size: 18px; font-weight: 700; color: var(--text); }
 .desc { font-size: 12px; color: var(--text3); margin-top: 4px; }
+
+.runner-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
 
 /* 参数面板 */
 .params-panel {
@@ -808,7 +993,20 @@ onUnmounted(() => clearInterval(pollTimer))
   flex-direction: column;
   gap: 16px;
 }
-.param-group { display: flex; flex-direction: column; gap: 7px; }
+.params-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px 20px;
+  align-items: start;
+}
+.params-grid-shopee-bulk {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+.param-group { min-width: 0; display: flex; flex-direction: column; gap: 7px; }
+.param-span-full { grid-column: 1 / -1; }
+.param-span-compact { grid-column: span 1; }
+.param-span-half { grid-column: span 3; }
+.param-span-third { grid-column: span 2; }
 .param-label { font-size: 12px; color: var(--text2); font-weight: 500; }
 .required { color: var(--orange); margin-left: 3px; }
 .hint { font-size: 11px; color: var(--text3); line-height: 1.5; }
@@ -819,11 +1017,11 @@ onUnmounted(() => clearInterval(pollTimer))
   transition: border-color 0.15s; width: 100%;
 }
 .input:focus { border-color: var(--orange); }
-.input-number { width: 120px; }
+.input-number { width: 100%; }
 .select {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
   padding: 9px 12px; color: var(--text); font-size: 13px; outline: none;
-  cursor: pointer; width: 240px;
+  cursor: pointer; width: 100%;
 }
 .select:focus { border-color: var(--orange); }
 
@@ -911,6 +1109,8 @@ onUnmounted(() => clearInterval(pollTimer))
 }
 .run-sub-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); transform: translateY(-1px); }
 .run-sub-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.run-sub-btn-stop { border-color: rgba(248,113,113,0.35); color: #fca5a5; }
+.run-sub-btn-stop:hover:not(:disabled) { border-color: #f87171; color: #f87171; }
 .action-note { font-size: 12px; color: var(--text3); }
 .missing-hint { font-size: 12px; color: var(--text3); }
 .reset-link { font-size: 12px; color: var(--text3); cursor: pointer; text-decoration: underline; }
@@ -920,13 +1120,58 @@ onUnmounted(() => clearInterval(pollTimer))
 .result-badge.err { background: rgba(248,113,113,0.12); color: #f87171; }
 
 /* 日志面板 */
-.log-panel { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.log-panel {
+  min-height: 280px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
 .log-header {
   display: flex; align-items: center; justify-content: space-between;
   padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
 }
 .log-header > span { font-size: 12px; color: var(--text2); font-weight: 600; }
 .log-actions { display: flex; align-items: center; gap: 12px; }
+.progress-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: linear-gradient(90deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
+}
+.progress-strip-main {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+.progress-strip-title {
+  font-size: 11px;
+  color: var(--text3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.progress-strip-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.progress-strip-percent {
+  font-size: 12px;
+  color: var(--orange);
+  font-weight: 700;
+}
+.progress-strip-sub {
+  font-size: 12px;
+  color: var(--text2);
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .output-count {
   font-size: 11px; color: var(--orange); cursor: pointer;
   padding: 2px 8px; border-radius: 5px; background: var(--orange-bg);
@@ -1047,4 +1292,35 @@ onUnmounted(() => clearInterval(pollTimer))
 .template-feedback { font-size: 12px; padding: 4px 0; }
 .template-feedback.ok { color: #4ade80; }
 .template-feedback.err { color: #f87171; }
+
+@media (max-width: 1040px) {
+  .params-grid {
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  }
+  .params-grid-shopee-bulk {
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+  }
+
+  .progress-strip {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .progress-strip-sub {
+    text-align: left;
+    white-space: normal;
+  }
+}
+
+@media (max-width: 900px) {
+  .params-grid-shopee-bulk {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .param-span-half,
+  .param-span-third { grid-column: span 1; }
+}
+
+@media (max-width: 640px) {
+  .params-grid-shopee-bulk { grid-template-columns: minmax(0, 1fr); }
+}
 </style>

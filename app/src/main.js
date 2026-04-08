@@ -637,10 +637,12 @@ ipcMain.handle('run-task',        async (_, aid, tid, params, options) =>
     params: params || {},
     current_tab_id: options?.current_tab_id || '',
   }))
+ipcMain.handle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
+ipcMain.handle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
+ipcMain.handle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
 ipcMain.handle('get-task-status', async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/status`))
 ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
 ipcMain.handle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
-ipcMain.handle('stop-task', async () => ({ ok: false, msg: 'Use task run to trigger' }))
 
 ipcMain.handle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
 ipcMain.handle('export-data', async (_, aid, tid, fmt) => {

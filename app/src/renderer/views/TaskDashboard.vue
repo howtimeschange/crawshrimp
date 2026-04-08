@@ -22,8 +22,8 @@
           </div>
         </div>
         <div class="task-actions">
-          <button class="btn btn-sm btn-run" :disabled="t.live?.status === 'running'" @click="runTask(t)">
-            {{ t.live?.status === 'running' ? 'Running...' : 'Run' }}
+          <button class="btn btn-sm btn-run" :disabled="isActiveStatus(t.live?.status)" @click="runTask(t)">
+            {{ isActiveStatus(t.live?.status) ? 'Running...' : 'Run' }}
           </button>
           <button class="btn btn-sm btn-ghost" @click="openLogs(t)">Logs</button>
         </div>
@@ -48,6 +48,7 @@ const logsTask = ref(null); const taskLogs = ref([]); const logsEl = ref(null)
 let pollTimer = null; let logsTimer = null
 async function loadTasks() { loading.value = true; tasks.value = await window.cs.getTasks(); loading.value = false }
 async function runTask(t) { await window.cs.runTask(t.adapter_id, t.task_id); await loadTasks() }
+function isActiveStatus(status) { return ['running', 'pausing', 'paused', 'stopping'].includes(status) }
 async function openLogs(t) {
   logsTask.value = t; taskLogs.value = []; await pollLogs()
   clearInterval(logsTimer); logsTimer = setInterval(pollLogs, 1500)
@@ -80,6 +81,10 @@ onUnmounted(() => { clearInterval(pollTimer); clearInterval(logsTimer) })
 .status-badge.done { background: #14532d33; color: #4ade80; }
 .status-badge.error { background: #450a0a33; color: #f87171; }
 .status-badge.running { background: #1e3a5f33; color: #60a5fa; }
+.status-badge.pausing,
+.status-badge.paused { background: #3f2d1233; color: #fbbf24; }
+.status-badge.stopping,
+.status-badge.stopped { background: #3f1d1d33; color: #fca5a5; }
 .next-run { font-size: 11px; color: #475569; }
 .task-actions { display: flex; gap: 8px; }
 .log-drawer { border-top: 1px solid #2d3148; height: 220px; display: flex; flex-direction: column; }

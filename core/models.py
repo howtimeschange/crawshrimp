@@ -109,6 +109,8 @@ class AdapterManifest(BaseModel):
 class TaskStatus(str, Enum):
     idle = "idle"
     running = "running"
+    paused = "paused"
+    stopped = "stopped"
     done = "done"
     error = "error"
 

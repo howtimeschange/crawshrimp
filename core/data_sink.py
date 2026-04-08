@@ -97,6 +97,16 @@ def fail_run(run_id: int, error: str):
         conn.commit()
 
 
+def stop_run(run_id: int, records_count: int, output_files: List[str], error: str = ""):
+    with _get_conn() as conn:
+        conn.execute("""
+            UPDATE task_runs
+            SET status='stopped', finished_at=?, records_count=?, output_files=?, error=?
+            WHERE id=?
+        """, (datetime.now().isoformat(), records_count, json.dumps(output_files), error, run_id))
+        conn.commit()
+
+
 def get_latest_run(adapter_id: str, task_id: str) -> Optional[dict]:
     with _get_conn() as conn:
         row = conn.execute("""

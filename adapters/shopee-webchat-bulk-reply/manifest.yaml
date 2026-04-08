@@ -1,8 +1,8 @@
 ﻿id: shopee-webchat-bulk-reply
-name: Shopee Webchat Bulk Reply
-version: 0.2.2
+name: Shopee 聊聊批量发信
+version: 0.3.0
 author: codex
-description: "Search buyer ID, match site/store from the result list, and preview or send messages in Shopee Webchat."
+description: "按表格逐行搜索买家会话，并在 Shopee 聊聊中预演或批量发送消息。"
 entry_url: https://seller.shopee.cn/webchat/conversations
 
 auth:
@@ -11,38 +11,58 @@ auth:
 
 tasks:
   - id: bulk_reply
-    name: Bulk Reply
-    description: Search buyer ID row by row, match site/store from the result list, and preview or send messages.
+    name: 批量发信
+    description: 按 Excel 逐行搜索买家会话，并在 Shopee 聊聊中预演或发送消息。
     script: bulk-send.js
     params:
       - id: mode
         type: radio
-        label: Login Mode
+        label: 打开方式
         default: current
         options:
           - value: current
-            label: Use Current Tab
+            label: 使用当前标签页
           - value: new
-            label: Open Fresh Tab
+            label: 新开标签页
       - id: run_mode
         type: radio
-        label: Run Mode
+        label: 运行模式
         default: preview
         options:
           - value: preview
-            label: Preview Only
+            label: 仅预演
           - value: send
-            label: Send Messages
+            label: 实际发送
+      - id: start_row
+        type: number
+        label: 起始行
+        default: 1
+        min: 1
+        step: 1
+      - id: end_row
+        type: number
+        label: 结束行
+        min: 1
+        step: 1
+        hint: 留空则默认执行到表格最后一行。
+      - id: batch_size
+        type: number
+        label: 批次大小
+        default: 200
+        min: 20
+        max: 500
+        step: 10
+        hint: 大表会按批次拆分队列执行，默认每批 200 行。
       - id: input_file
         type: file_excel
-        label: Input Excel
+        label: 导入 Excel
         required: true
         templates:
           - file: templates/message-template.csv
-            label: CSV Template
-            description: Fill site, store, buyer ID, and message before upload.
+            label: CSV 模板
+            description: 上传前请填写站点、店铺、买家 ID 和发送话术。
             version: "2026.04"
-        hint: Must include columns for site, store, buyer ID, and message. Output is an Excel result file.
+        hint: 必须包含站点、店铺、买家ID、发送话术列。执行完成后会导出结果 Excel。
     trigger:
       type: manual
     output:

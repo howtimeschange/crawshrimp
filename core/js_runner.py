@@ -28,6 +28,13 @@ NAVIGATION_ERROR_MARKERS = (
 )
 
 
+class RunAbortedError(RuntimeError):
+    def __init__(self, reason: str = "任务已停止", partial_data: Optional[List[dict]] = None):
+        super().__init__(reason)
+        self.reason = reason
+        self.partial_data = list(partial_data or [])
+
+
 class JSRunner:
     def __init__(self, ws_url: str, timeout: int = DEFAULT_TIMEOUT, tab_id: Optional[str] = None):
         self.ws_url = ws_url
@@ -211,7 +218,7 @@ class JSRunner:
             result = await self.evaluate(expression)
         return result
 
-    async def run_script_file(self, script_path: Path, params: dict = None) -> List[dict]:
+    async def run_script_file(self, script_path: Path, params: dict = None, control_hook=None) -> List[dict]:
         """执行脚本文件，支持自动分页 + 多阶段重入，返回合并后的所有 data 记录
         params: 用户填写的参数，注入为 window.__CRAWSHRIMP_PARAMS__
         """
@@ -222,68 +229,97 @@ class JSRunner:
 
         await self._persist_run_params(run_token, params_json)
 
+        async def cooperate(kind: str, page: int, phase: str, shared: Optional[dict] = None, extra: Optional[dict] = None) -> None:
+            if control_hook is None:
+                return
+            payload = {
+                "kind": kind,
+                "page": page,
+                "phase": phase,
+                "shared": shared or {},
+                "records": len(all_data),
+            }
+            if extra:
+                payload.update(extra)
+            await control_hook(payload)
+
         try:
-            for page in range(1, MAX_PAGES + 1):
-                phase = "main"
-                shared = {}
+            try:
+                for page in range(1, MAX_PAGES + 1):
+                    phase = "main"
+                    shared = {}
 
-                for phase_index in range(1, MAX_PHASES + 1):
-                    preamble = self._build_phase_preamble(page, phase, run_token, shared)
-                    payload = preamble + script
-                    result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=(phase != "main"))
+                    for phase_index in range(1, MAX_PHASES + 1):
+                        await cooperate("before_phase", page, phase, shared)
+                        preamble = self._build_phase_preamble(page, phase, run_token, shared)
+                        payload = preamble + script
+                        result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=(phase != "main"))
 
-                    if not result.success:
-                        logger.error(f"脚本执行失败 (page={page}, phase={phase}): {result.error}")
-                        raise RuntimeError(result.error)
+                        if not result.success:
+                            logger.error(f"脚本执行失败 (page={page}, phase={phase}): {result.error}")
+                            raise RuntimeError(result.error)
 
-                    meta = result.meta or {}
-                    action = meta.get("action") or "complete"
-                    shared = meta.get("shared") or shared
+                        meta = result.meta or {}
+                        action = meta.get("action") or "complete"
+                        shared = meta.get("shared") or shared
 
-                    if result.data:
-                        all_data.extend(result.data)
+                        if result.data:
+                            all_data.extend(result.data)
 
-                    if action == "cdp_clicks":
-                        # JS 脚本请求用 CDP 真实鼠标点击一组坐标，然后继续当前 phase
-                        # meta.clicks = [{x, y, delay_ms?}, ...]
-                        # meta.next_phase (可选) = 点完后切换到哪个 phase
-                        clicks = meta.get("clicks") or []
-                        for c in clicks:
-                            await self.cdp_mouse_click(float(c["x"]), float(c["y"]), int(c.get("delay_ms", 80)))
-                        post_sleep = float(meta.get("sleep_ms", 300)) / 1000.0
-                        await asyncio.sleep(post_sleep)
-                        next_phase = meta.get("next_phase") or phase
-                        logger.info(f"cdp_clicks: page={page} phase={phase} 点击 {len(clicks)} 个坐标 -> {next_phase}")
-                        phase = str(next_phase)
-                        await self._refresh_ws_url()
-                        continue
+                        if action == "cdp_clicks":
+                            # JS 脚本请求用 CDP 真实鼠标点击一组坐标，然后继续当前 phase
+                            # meta.clicks = [{x, y, delay_ms?}, ...]
+                            # meta.next_phase (可选) = 点完后切换到哪个 phase
+                            clicks = meta.get("clicks") or []
+                            for idx, c in enumerate(clicks):
+                                await cooperate("before_click", page, phase, shared, {
+                                    "click_index": idx,
+                                    "click_total": len(clicks),
+                                })
+                                await self.cdp_mouse_click(float(c["x"]), float(c["y"]), int(c.get("delay_ms", 80)))
+                            post_sleep = float(meta.get("sleep_ms", 300)) / 1000.0
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
+                            await asyncio.sleep(post_sleep)
+                            next_phase = meta.get("next_phase") or phase
+                            logger.info(f"cdp_clicks: page={page} phase={phase} 点击 {len(clicks)} 个坐标 -> {next_phase}")
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
 
-                    if action == "next_phase":
-                        next_phase = meta.get("next_phase")
-                        if not next_phase:
-                            raise RuntimeError(f"脚本返回 next_phase 但缺少 next_phase 值 (page={page}, phase={phase})")
-                        if next_phase == "wait_verification" and phase == "wait_verification":
-                            rounds = int((shared or {}).get("captcha_wait_rounds") or 0)
-                            if rounds <= 1 or rounds % 3 == 0:
-                                reason = (shared or {}).get("captcha_reason") or "captcha"
-                                logger.info(f"等待用户验证码验证中: page={page} rounds={rounds} reason={reason}")
-                        else:
-                            logger.info(f"阶段切换: page={page} {phase} -> {next_phase}")
-                        phase = str(next_phase)
-                        await asyncio.sleep(float(meta.get("sleep_ms", 1200)) / 1000.0)
-                        await self._refresh_ws_url()
-                        continue
+                        if action == "next_phase":
+                            next_phase = meta.get("next_phase")
+                            if not next_phase:
+                                raise RuntimeError(f"脚本返回 next_phase 但缺少 next_phase 值 (page={page}, phase={phase})")
+                            if next_phase == "wait_verification" and phase == "wait_verification":
+                                rounds = int((shared or {}).get("captcha_wait_rounds") or 0)
+                                if rounds <= 1 or rounds % 3 == 0:
+                                    reason = (shared or {}).get("captcha_reason") or "captcha"
+                                    logger.info(f"等待用户验证码验证中: page={page} rounds={rounds} reason={reason}")
+                            else:
+                                logger.info(f"阶段切换: page={page} {phase} -> {next_phase}")
+                            phase = str(next_phase)
+                            sleep_ms = float(meta.get("sleep_ms", 1200))
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                            await asyncio.sleep(sleep_ms / 1000.0)
+                            await self._refresh_ws_url()
+                            continue
 
-                    if action == "complete":
-                        if not meta.get("has_more", False):
-                            return all_data
-                        logger.info(f"分页: 已获取 {len(all_data)} 条，继续第 {page + 1} 页...")
-                        break
+                        if action == "complete":
+                            if not meta.get("has_more", False):
+                                return all_data
+                            logger.info(f"分页: 已获取 {len(all_data)} 条，继续第 {page + 1} 页...")
+                            break
 
-                    raise RuntimeError(f"未知脚本阶段动作: {action}")
-                else:
-                    raise RuntimeError(f"脚本阶段执行超过上限 ({MAX_PHASES})，page={page}")
+                        raise RuntimeError(f"未知脚本阶段动作: {action}")
+                    else:
+                        raise RuntimeError(f"脚本阶段执行超过上限 ({MAX_PHASES})，page={page}")
 
-            return all_data
+                return all_data
+            except RunAbortedError as e:
+                if not e.partial_data:
+                    e.partial_data = list(all_data)
+                raise
+            except asyncio.CancelledError:
+                raise RunAbortedError("任务已停止", partial_data=list(all_data))
         finally:
             await self._clear_run_params(run_token)

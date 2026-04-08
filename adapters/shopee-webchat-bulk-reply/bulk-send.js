@@ -2,12 +2,18 @@
   const params = window.__CRAWSHRIMP_PARAMS__ || {}
   const phase = window.__CRAWSHRIMP_PHASE__ || 'main'
   const shared = window.__CRAWSHRIMP_SHARED__ || {}
+  const page = Number(window.__CRAWSHRIMP_PAGE__ || 1)
 
   const runMode = String(params.run_mode || 'preview').trim().toLowerCase()
   const previewOnly = runMode !== 'send'
   const WEBCHAT_URL = 'https://seller.shopee.cn/webchat/conversations'
   const LEFT_PANE_MAX_X = 380
   const FILTER_TRIGGER_ID = 'regionShopSelector'
+  const DEFAULT_BATCH_SIZE = 200
+  const MIN_BATCH_SIZE = 20
+  const MAX_BATCH_SIZE = 500
+  const MAX_SEARCH_WAIT_RETRY = 6
+  const MAX_OPEN_RETRY = 2
   const TEXT = {
     selectAll: '选择全部',
     confirm: '确认',
@@ -15,11 +21,20 @@
     searchStore: '搜索店铺用户名',
     searchBuyerPrefixA: '搜寻',
     searchBuyerPrefixB: '搜索',
-    sendMessage: '发送讯息',
   }
 
   function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value))
+  }
+
+  function parseOptionalPositiveInt(value) {
+    const num = Number(value)
+    if (!Number.isFinite(num) || num <= 0) return null
+    return Math.floor(num)
   }
 
   function readText(el) {
@@ -79,14 +94,14 @@
     }
   }
 
-  function complete(data, newShared = shared) {
+  function completePage(data, hasMore) {
     return {
       success: true,
       data,
       meta: {
         action: 'complete',
-        has_more: false,
-        shared: newShared,
+        has_more: hasMore,
+        shared: {},
       },
     }
   }
@@ -161,20 +176,60 @@
     })
   }
 
+  function buildExecutionRows() {
+    const rows = normalizeRows()
+    const rawStart = parseOptionalPositiveInt(params.start_row) || 1
+    const rawEnd = parseOptionalPositiveInt(params.end_row)
+    const startIndex = rawStart - 1
+    const endIndex = rawEnd ? Math.min(rows.length, rawEnd) : rows.length
+
+    if (!rows.length || startIndex >= rows.length || endIndex <= startIndex) return []
+
+    return rows.slice(startIndex, endIndex).map((row, index) => ({
+      ...row,
+      exec_no: index + 1,
+    }))
+  }
+
   function getRows() {
     const runToken = String(window.__CRAWSHRIMP_RUN_TOKEN__ || '')
     if (window.__CRAWSHRIMP_ROWS_RUN_TOKEN__ === runToken && Array.isArray(window.__CRAWSHRIMP_ROWS__)) {
       return window.__CRAWSHRIMP_ROWS__
     }
-    const rows = normalizeRows()
+    const rows = buildExecutionRows()
     window.__CRAWSHRIMP_ROWS__ = rows
     window.__CRAWSHRIMP_ROWS_RUN_TOKEN__ = runToken
     return rows
   }
 
-  function buildResult(row, status, reason, extras = {}) {
+  function getBatchSize() {
+    const raw = parseOptionalPositiveInt(params.batch_size) || DEFAULT_BATCH_SIZE
+    return clamp(raw, MIN_BATCH_SIZE, MAX_BATCH_SIZE)
+  }
+
+  function getChunk(rows) {
+    const batchSize = getBatchSize()
+    const totalBatches = Math.max(1, Math.ceil(rows.length / batchSize))
+    const chunkStart = (page - 1) * batchSize
+    const chunkEnd = Math.min(rows.length, chunkStart + batchSize)
     return {
-      序号: row?.row_no ?? '',
+      batch_size: batchSize,
+      batch_no: page,
+      total_batches: totalBatches,
+      chunk_start: chunkStart,
+      chunk_end: chunkEnd,
+      has_rows: chunkStart < rows.length,
+      has_more: chunkEnd < rows.length,
+    }
+  }
+
+  function buildResult(row, status, reason, extras = {}) {
+    const batchOffset = Number(shared.index || 0) - Number(shared.chunk_start || 0) + 1
+    return {
+      执行序号: row?.exec_no ?? '',
+      源表行号: row?.row_no ?? '',
+      批次: shared.batch_no ?? page,
+      批次内序号: Number.isFinite(batchOffset) && batchOffset > 0 ? batchOffset : '',
       站点: row?.site || '',
       店铺: row?.store || '',
       买家ID: row?.buyer_id || '',
@@ -229,7 +284,7 @@
     if (!el?.querySelectorAll) return null
     return [...el.querySelectorAll('button,label,a,[role="button"],i,span,div')]
       .filter(visible)
-      .find(node => hasReactClick(node) || /^(BUTTON|LABEL|A)$/i.test(node.tagName || '') || String(node.getAttribute?.('role') || '').toLowerCase() === 'button') || null
+      .find(node => hasReactClick(node) || /^(BUTTON|LABEL|A)$/i.test(node.tagName || '') || String(node.getAttribute('role') || '').toLowerCase() === 'button') || null
   }
 
   function activateElement(el) {
@@ -432,18 +487,6 @@
         .sort((a, b) => b.box.x - a.box.x || b.box.y - a.box.y)[0]?.el || null
   }
 
-  function findConversationClickTarget(el) {
-    let node = el
-    for (let i = 0; i < 8 && node; i += 1) {
-      const box = boxOf(node)
-      if (box && box.x <= LEFT_PANE_MAX_X && box.y >= 150 && box.w >= 180 && hasReactClick(node)) {
-        return node
-      }
-      node = node.parentElement
-    }
-    return null
-  }
-
   function findConversationSearchInput() {
     const candidates = [...document.querySelectorAll('input,textarea')]
       .filter(visible)
@@ -580,15 +623,6 @@
     return { match: strongest, cards: scored }
   }
 
-  function getActiveHeaderText() {
-    return [...document.querySelectorAll('div,span,h1,h2')]
-      .filter(visible)
-      .map(el => ({ text: readText(el), box: boxOf(el) }))
-      .filter(item => item.box && item.box.x > LEFT_PANE_MAX_X && item.box.y < 180 && item.text)
-      .map(item => item.text)
-      .join(' ')
-  }
-
   function findRestartButton() {
     const candidates = [...document.querySelectorAll('button,div,span')]
       .filter(visible)
@@ -666,30 +700,84 @@
       .join(' | ')
   }
 
+  function collectRightPaneTexts(maxY = 260) {
+    return [...document.querySelectorAll('div,span,h1,h2,h3,p')]
+      .filter(visible)
+      .map(el => ({ text: readText(el), box: boxOf(el) }))
+      .filter(item => item.box && item.box.x > LEFT_PANE_MAX_X && item.box.y >= 40 && item.box.y <= maxY && item.text)
+      .map(item => item.text)
+      .join(' ')
+  }
+
+  function getConversationState(row) {
+    const headerText = collectRightPaneTexts(200)
+    const contextText = collectRightPaneTexts(320)
+    const combinedText = compact(`${headerText} ${contextText}`)
+    const matchedName = String(shared.last_match_name || '').trim()
+    const matchedStore = String(shared.last_match_store || '').trim()
+
+    const buyerCandidates = [row?.buyer_id, matchedName]
+      .map(value => compact(value))
+      .filter(Boolean)
+    const storeCandidates = [row?.store, matchedStore]
+      .map(value => compact(value))
+      .filter(Boolean)
+    const siteCandidate = compact(row?.site_code || '')
+
+    const buyerOk = buyerCandidates.some(value => combinedText.includes(value))
+    const storeOk = !storeCandidates.length || storeCandidates.some(value => combinedText.includes(value))
+    const siteOk = !siteCandidate || combinedText.includes(siteCandidate)
+
+    return {
+      buyerOk,
+      storeOk,
+      siteOk,
+      matched: buyerOk && storeOk && siteOk,
+      headerText,
+      contextText,
+    }
+  }
+
   try {
+    const rows = getRows()
+    const chunk = getChunk(rows)
+    const index = Number(shared.index ?? chunk.chunk_start)
+    const row = rows[index]
+
     if (phase === 'main') {
-      const rows = getRows()
       if (!rows.length) {
-        return fail('Excel 中没有可执行的行')
+        return fail('Excel 中没有可执行的行；请检查数据或起止行设置')
       }
       if (!location.href.startsWith(WEBCHAT_URL)) {
         location.href = WEBCHAT_URL
         return nextPhase('main', 2200, shared)
       }
+      if (!chunk.has_rows) {
+        return completePage([], false)
+      }
       return nextPhase('prepare_row', 100, {
-        index: 0,
+        batch_no: chunk.batch_no,
+        total_batches: chunk.total_batches,
+        batch_size: chunk.batch_size,
+        total_rows: rows.length,
+        chunk_start: chunk.chunk_start,
+        chunk_end: chunk.chunk_end,
+        index: chunk.chunk_start,
         last_filter_key: '',
+        filter_retry: 0,
+        wait_retry: 0,
         send_retry: 0,
+        composer_retry: 0,
+        search_retry: 0,
+        search_retype_retry: 0,
+        search_signature: '',
+        open_retry: 0,
       })
     }
 
-    const rows = getRows()
-    const index = Number(shared.index || 0)
-    const row = rows[index]
-
     if (phase === 'prepare_row') {
-      if (index >= rows.length) {
-        return complete([], shared)
+      if (index >= Number(shared.chunk_end || 0)) {
+        return completePage([], !!chunk.has_more)
       }
       if (!row?.buyer_id || !row?.message) {
         return emitRowAndAdvance(row || { row_no: index + 1 }, 'failed', '缺少必填列：买家ID或发送话术')
@@ -697,8 +785,22 @@
 
       return nextPhase('search_buyer', 100, {
         ...shared,
+        total_rows: rows.length,
+        current_exec_no: row.exec_no,
+        current_row_no: row.row_no,
+        current_buyer_id: row.buyer_id,
+        current_store: row.store,
+        current_site: row.site_code,
         wait_retry: 0,
         send_retry: 0,
+        composer_retry: 0,
+        search_retry: 0,
+        search_retype_retry: 0,
+        search_signature: '',
+        open_retry: 0,
+        last_match_name: '',
+        last_match_store: '',
+        last_match_text: '',
       })
     }
 
@@ -957,9 +1059,72 @@
       }
       input.focus()
       setNativeValue(input, '')
+      await sleep(120)
       setNativeValue(input, row.buyer_id)
       input.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: row.buyer_id.slice(-1) || '0' }))
-      return nextPhase('pick_buyer', 2200, shared)
+      return nextPhase('wait_search_results', 900, {
+        ...shared,
+        search_retry: 0,
+        search_signature: '',
+      })
+    }
+
+    if (phase === 'wait_search_results') {
+      const input = findConversationSearchInput()
+      if (!input) {
+        return emitRowAndAdvance(row, 'failed', '未找到买家搜索框')
+      }
+
+      const inputValue = compact(input.value || '')
+      if (inputValue !== compact(row.buyer_id)) {
+        const retry = Number(shared.search_retype_retry || 0)
+        if (retry < 2) {
+          return nextPhase('search_buyer', 300, {
+            ...shared,
+            search_retype_retry: retry + 1,
+          })
+        }
+        return emitRowAndAdvance(row, 'failed', `买家搜索框值异常：${input.value || '(空)'}`)
+      }
+
+      const cards = collectBuyerResultCards()
+      const buyerCards = cards.filter(item =>
+        textMatchesNeedle(item.name, row.buyer_id) ||
+        textMatchesNeedle(item.summary, row.buyer_id) ||
+        textMatchesNeedle(item.text, row.buyer_id)
+      )
+
+      const retry = Number(shared.search_retry || 0)
+      if (!buyerCards.length) {
+        if (cards.length && retry < 2) {
+          return nextPhase('search_buyer', 350, {
+            ...shared,
+            search_retry: retry + 1,
+          })
+        }
+        if (retry < MAX_SEARCH_WAIT_RETRY) {
+          return nextPhase('wait_search_results', 650, {
+            ...shared,
+            search_retry: retry + 1,
+          })
+        }
+        return emitRowAndAdvance(row, 'failed', cards.length ? `搜索结果未匹配到当前买家：${availableTexts(cards)}` : `未搜索到买家：${row.buyer_id}`)
+      }
+
+      const signature = buyerCards.slice(0, 4).map(item => compact(item.summary || item.text)).join('|')
+      if (shared.search_signature !== signature && retry < MAX_SEARCH_WAIT_RETRY) {
+        return nextPhase('wait_search_results', 350, {
+          ...shared,
+          search_retry: retry + 1,
+          search_signature: signature,
+        })
+      }
+
+      return nextPhase('pick_buyer', 100, {
+        ...shared,
+        search_retry: 0,
+        search_signature: signature,
+      })
     }
 
     if (phase === 'pick_buyer') {
@@ -970,48 +1135,61 @@
           : `未搜索到买家：${row.buyer_id}`
         return emitRowAndAdvance(row, 'failed', reason)
       }
-      if (activateElement(match.card)) {
-        return nextPhase('wait_conversation', 1800, {
+
+      const coord = rectCenter(match.card) || (match.box ? { x: match.box.x + match.box.w / 2, y: match.box.y + match.box.h / 2 } : null)
+      if (coord) {
+        return cdpPhase([
+          {
+            ...coord,
+            delay_ms: 150,
+            label: `打开买家会话 ${row.buyer_id}`,
+          }
+        ], 'wait_conversation', 1400, {
           ...shared,
+          last_match_name: match.name,
+          last_match_store: match.store,
           last_match_text: match.summary,
           wait_retry: 0,
         })
       }
-      return cdpPhase([
-        {
-          x: match.box.x + match.box.w / 2,
-          y: match.box.y + match.box.h / 2,
-          delay_ms: 150,
-          label: `选中买家 ${row.buyer_id}`,
-        }
-      ], 'wait_conversation', 1800, {
-        ...shared,
-        last_match_text: match.summary,
-        wait_retry: 0,
-      })
+
+      if (activateElement(match.card)) {
+        return nextPhase('wait_conversation', 1400, {
+          ...shared,
+          last_match_name: match.name,
+          last_match_store: match.store,
+          last_match_text: match.summary,
+          wait_retry: 0,
+        })
+      }
+
+      return emitRowAndAdvance(row, 'failed', '未能点击目标买家会话')
     }
 
     if (phase === 'wait_conversation') {
-      const headerText = compact(getActiveHeaderText())
-      const matchedCardText = compact(shared.last_match_text || '')
-      const buyerOk = headerText.includes(compact(row.buyer_id))
-      const storeOk = !row.store || headerText.includes(compact(row.store)) || matchedCardText.includes(compact(row.store))
-      const siteOk = !row.site_code || headerText.includes(compact(row.site_code)) || matchedCardText.includes(compact(`(${row.site_code})`)) || matchedCardText.includes(compact(row.site_code))
-      const restartButton = findRestartButton()
-      const textarea = findMessageTextarea()
-      const readyByComposer = !!restartButton || !!textarea
-
-      if ((!buyerOk || !storeOk || !siteOk) && !readyByComposer) {
+      const state = getConversationState(row)
+      if (!state.matched) {
         const retryCount = Number(shared.wait_retry || 0)
-        if (retryCount < 3) {
-          return nextPhase('wait_conversation', 1200, {
+        if (retryCount < 2) {
+          return nextPhase('wait_conversation', 900, {
             ...shared,
             wait_retry: retryCount + 1,
           })
         }
-        return emitRowAndAdvance(row, 'failed', `会话未正常打开：${shared.last_match_text || row.buyer_id}`)
+
+        const openRetry = Number(shared.open_retry || 0)
+        if (openRetry < MAX_OPEN_RETRY) {
+          return nextPhase('pick_buyer', 350, {
+            ...shared,
+            open_retry: openRetry + 1,
+            wait_retry: 0,
+          })
+        }
+
+        return emitRowAndAdvance(row, 'failed', `会话未稳定打开；头部信息：${state.headerText || state.contextText || '(空)'}`)
       }
 
+      const restartButton = findRestartButton()
       if (restartButton) {
         const coord = rectCenter(restartButton)
         if (coord) {
@@ -1019,7 +1197,6 @@
             ...shared,
             send_retry: Number(shared.send_retry || 0),
             composer_retry: 0,
-            preview_restart_clicked: previewOnly,
           })
         }
         if (activateElement(restartButton)) {
@@ -1027,16 +1204,20 @@
             ...shared,
             send_retry: Number(shared.send_retry || 0),
             composer_retry: 0,
-            preview_restart_clicked: previewOnly,
           })
         }
-        return emitRowAndAdvance(row, 'failed', '找到“重新启动对话”，但按钮坐标为空')
+        return emitRowAndAdvance(row, 'failed', '找到“重新启动对话”，但按钮无法点击')
       }
 
       return nextPhase('prepare_message', 100, shared)
     }
 
     if (phase === 'wait_composer') {
+      const state = getConversationState(row)
+      if (!state.matched) {
+        return emitRowAndAdvance(row, 'failed', `重新启动对话后会话上下文异常：${state.headerText || state.contextText || '(空)'}`)
+      }
+
       const textarea = findMessageTextarea()
       if (!textarea) {
         const retry = Number(shared.composer_retry || 0)
@@ -1049,13 +1230,18 @@
         return emitRowAndAdvance(row, 'failed', '点击“重新启动对话”后未出现发送输入框')
       }
       return nextPhase('prepare_message', 100, {
-          ...shared,
-          send_retry: Number(shared.send_retry || 0),
-          composer_retry: 0,
+        ...shared,
+        send_retry: Number(shared.send_retry || 0),
+        composer_retry: 0,
       })
     }
 
     if (phase === 'prepare_message') {
+      const state = getConversationState(row)
+      if (!state.matched) {
+        return emitRowAndAdvance(row, 'failed', `准备发送前会话校验失败：${state.headerText || state.contextText || '(空)'}`)
+      }
+
       const textarea = findMessageTextarea()
       if (!textarea) {
         return emitRowAndAdvance(row, 'failed', '未找到消息输入框')
@@ -1079,23 +1265,34 @@
     }
 
     if (phase === 'send_message') {
+      const state = getConversationState(row)
+      if (!state.matched) {
+        return emitRowAndAdvance(row, 'failed', `发送前会话目标不一致：${state.headerText || state.contextText || '(空)'}`)
+      }
+
       const sendIcon = findSendIcon()
       if (!sendIcon) {
         return emitRowAndAdvance(row, 'failed', '未定位到发送按钮/图标')
       }
+
+      const coord = rectCenter(sendIcon)
+      if (coord) {
+        return cdpPhase([{ ...coord, delay_ms: 150, label: '发送消息' }], 'post_send', 900, shared)
+      }
+
       if (activateElement(sendIcon)) {
         return nextPhase('post_send', 900, shared)
       }
-      const coord = rectCenter(sendIcon)
-      if (!coord) {
-        return emitRowAndAdvance(row, 'failed', '发送按钮坐标为空')
-      }
-      return cdpPhase([{ ...coord, delay_ms: 150, label: '发送消息' }], 'post_send', 900, shared)
+
+      return emitRowAndAdvance(row, 'failed', '发送按钮坐标为空')
     }
 
     if (phase === 'post_send') {
-      // Failed sends can still leave the outgoing bubble in the DOM.
-      // If the restart button is visible, it takes priority over echo checks.
+      const state = getConversationState(row)
+      if (!state.matched) {
+        return emitRowAndAdvance(row, 'failed', `发送后会话目标异常：${state.headerText || state.contextText || '(空)'}`)
+      }
+
       const restartButton = findRestartButton()
       if (restartButton) {
         const retry = Number(shared.send_retry || 0)
@@ -1130,12 +1327,20 @@
     }
 
     if (phase === 'advance_row') {
+      const nextIndex = index + 1
+      if (nextIndex >= Number(shared.chunk_end || 0)) {
+        return completePage([], !!chunk.has_more)
+      }
       return nextPhase('prepare_row', 200, {
         ...shared,
-        index: index + 1,
+        index: nextIndex,
         wait_retry: 0,
         send_retry: 0,
         composer_retry: 0,
+        search_retry: 0,
+        search_retype_retry: 0,
+        search_signature: '',
+        open_retry: 0,
       })
     }
 
