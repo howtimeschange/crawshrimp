@@ -681,12 +681,14 @@ ipcMain.handle('reveal-file', async (_, filePath) => {
 })
 
 ipcMain.handle('delete-file', async (_, filePath) => {
-  try {
-    fs.unlinkSync(filePath)
-    return { ok: true }
-  } catch (e) {
-    throw new Error(e.message)
-  }
+  return apiCall('POST', '/files/delete', { paths: [filePath] })
+})
+
+ipcMain.handle('delete-files', async (_, filePaths) => {
+  const paths = Array.isArray(filePaths) ? filePaths : [filePaths]
+  return apiCall('POST', '/files/delete', {
+    paths: paths.filter(Boolean),
+  })
 })
 
 ipcMain.handle('save-as-file', async (_, srcPath) => {

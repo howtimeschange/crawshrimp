@@ -12,6 +12,7 @@ import asyncio
 import base64
 import logging
 import os
+import shutil
 import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -451,11 +452,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'progress_text': progress['progress_text'],
         }
 
+        # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。
         if (
             (payload or {}).get('kind') == 'before_phase' and
             progress['current'] > 0 and
             progress['total'] > 0 and
-            str((payload or {}).get('phase') or '') == 'search_buyer' and
             progress['current'] != int(run_control.get('last_progress_exec_no') or 0)
         ):
             extra_parts = []
@@ -464,7 +465,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if progress['row_no'] > 0:
                 extra_parts.append(f"源表行 {progress['row_no']}")
             if progress['buyer_id']:
-                extra_parts.append(f"买家 {progress['buyer_id']}")
+                extra_parts.append(f"目标 {progress['buyer_id']}")
             suffix = f" · {' · '.join(extra_parts)}" if extra_parts else ""
             log(f"[progress] 第 {progress['current']}/{progress['total']} 条 · 已完成 {records} 条{suffix}")
             run_control['last_progress_exec_no'] = progress['current']
@@ -1047,6 +1048,10 @@ class ReadExcelRequest(BaseModel):
     header_row: int = 1           # 第几行作为表头（1-indexed）
 
 
+class DeleteFilesRequest(BaseModel):
+    paths: List[str]
+
+
 
 
 @app.post("/files/read-excel")
@@ -1056,6 +1061,58 @@ def read_excel(req: ReadExcelRequest):
     if "error" in res:
         raise HTTPException(400, res["error"])
     return res
+
+
+@app.post("/files/delete")
+def delete_files(req: DeleteFilesRequest):
+    raw_paths = [str(path).strip() for path in (req.paths or []) if str(path).strip()]
+    if not raw_paths:
+        return {"ok": False, "error": "No file paths provided"}
+
+    seen = set()
+    normalized_paths = []
+    for raw in raw_paths:
+        try:
+            normalized = str(Path(raw).expanduser().resolve(strict=False))
+        except Exception:
+            normalized = raw
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        normalized_paths.append(normalized)
+
+    deleted_paths = []
+    missing_paths = []
+    failed_paths = []
+
+    for item in normalized_paths:
+        path = Path(item)
+        try:
+            if not path.exists():
+                missing_paths.append(item)
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+            deleted_paths.append(item)
+        except Exception as e:
+            failed_paths.append({"path": item, "error": str(e)})
+
+    prune_targets = deleted_paths + missing_paths
+    prune_result = data_sink.remove_output_files(prune_targets) if prune_targets else {"updated_runs": 0, "removed_refs": 0}
+
+    return {
+        "ok": bool(deleted_paths or missing_paths),
+        "deleted_count": len(deleted_paths),
+        "missing_count": len(missing_paths),
+        "failed_count": len(failed_paths),
+        "deleted_paths": deleted_paths,
+        "missing_paths": missing_paths,
+        "failed": failed_paths,
+        "updated_runs": prune_result.get("updated_runs", 0),
+        "removed_refs": prune_result.get("removed_refs", 0),
+    }
 
 
 # ─── Settings ───

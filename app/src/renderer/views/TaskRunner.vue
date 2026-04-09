@@ -307,11 +307,29 @@
           </div>
         </div>
 
-        <div v-if="progressSummary" class="progress-strip">
-          <div class="progress-strip-main">
-            <span class="progress-strip-title">进度</span>
-            <span class="progress-strip-value">{{ progressSummary.main }}</span>
-            <span v-if="progressSummary.percent" class="progress-strip-percent">{{ progressSummary.percent }}</span>
+        <div v-if="progressSummary" class="progress-strip" aria-live="polite">
+          <div class="progress-strip-head">
+            <div class="progress-strip-main">
+              <span class="progress-strip-title">批处理进度</span>
+              <span class="progress-strip-value">{{ progressSummary.main }}</span>
+              <span class="progress-strip-percent">{{ progressSummary.percentLabel }}</span>
+            </div>
+            <div class="progress-strip-meta">
+              <span>已完成 {{ progressSummary.completed }} 条</span>
+              <span v-if="progressSummary.batchText">{{ progressSummary.batchText }}</span>
+              <span v-if="progressSummary.rowText">{{ progressSummary.rowText }}</span>
+              <span v-if="progressSummary.targetText">{{ progressSummary.targetText }}</span>
+            </div>
+          </div>
+          <div
+            class="progress-strip-bar"
+            role="progressbar"
+            :aria-label="progressSummary.ariaLabel"
+            :aria-valuenow="progressSummary.percentValue"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <div class="progress-strip-bar-fill" :style="{ width: `${progressSummary.percentValue}%` }"></div>
           </div>
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>
@@ -449,25 +467,34 @@ const missingRequired = computed(() => {
 const progressSummary = computed(() => {
   const current = Number(liveProgress.value?.current || 0)
   const total = Number(liveProgress.value?.total || 0)
-  if (!isRunning.value || current <= 0 || total <= 0) return null
+  if (!isRunning.value || total <= 0) return null
 
   const completed = Number(liveProgress.value?.completed || liveProgress.value?.records || 0)
   const batchNo = Number(liveProgress.value?.batch_no || 0)
   const totalBatches = Number(liveProgress.value?.total_batches || 0)
   const rowNo = Number(liveProgress.value?.row_no || 0)
-  const buyerId = String(liveProgress.value?.buyer_id || '').trim()
+  const targetId = String(liveProgress.value?.buyer_id || '').trim()
   const phase = String(liveProgress.value?.phase || '').trim()
-  const percent = Number(liveProgress.value?.percent || 0)
+  const rawPercent = Number(liveProgress.value?.percent)
+  const percentValue = Number.isFinite(rawPercent) && rawPercent > 0
+    ? Math.min(100, Math.max(0, Number(rawPercent.toFixed(1))))
+    : Math.min(100, Math.max(0, Number(((current / total) * 100).toFixed(1))))
 
   const parts = [`已完成 ${completed} 条`]
   if (batchNo > 0 && totalBatches > 0) parts.push(`批次 ${batchNo}/${totalBatches}`)
   if (rowNo > 0) parts.push(`源表行 ${rowNo}`)
-  if (buyerId) parts.push(`买家 ${buyerId}`)
+  if (targetId) parts.push(`目标 ${targetId}`)
   if (phase) parts.push(`阶段 ${phase}`)
 
   return {
-    main: `${current} / ${total}`,
-    percent: percent > 0 ? `${percent}%` : '',
+    main: `第 ${current} / ${total} 条`,
+    percentValue,
+    percentLabel: `${percentValue}%`,
+    completed,
+    batchText: batchNo > 0 && totalBatches > 0 ? `批次 ${batchNo}/${totalBatches}` : '',
+    rowText: rowNo > 0 ? `源表行 ${rowNo}` : '',
+    targetText: targetId ? `目标 ${targetId}` : '',
+    ariaLabel: `批处理进度 第 ${current} / ${total} 条`,
     sub: parts.join(' · '),
   }
 })
@@ -1209,18 +1236,35 @@ onUnmounted(() => clearInterval(pollTimer))
 .log-actions { display: flex; align-items: center; gap: 12px; }
 .progress-strip {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(90deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
+  background: linear-gradient(180deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
+}
+.progress-strip-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 .progress-strip-main {
   display: flex;
   align-items: baseline;
   gap: 10px;
   min-width: 0;
+  flex-wrap: wrap;
+}
+.progress-strip-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text2);
 }
 .progress-strip-title {
   font-size: 11px;
@@ -1238,6 +1282,21 @@ onUnmounted(() => clearInterval(pollTimer))
   font-size: 12px;
   color: var(--orange);
   font-weight: 700;
+}
+.progress-strip-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,106,41,0.18);
+}
+.progress-strip-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--orange), #ff9a5f);
+  box-shadow: 0 0 12px rgba(255,106,41,0.25);
+  transition: width 180ms ease;
 }
 .progress-strip-sub {
   font-size: 12px;
@@ -1394,8 +1453,17 @@ onUnmounted(() => clearInterval(pollTimer))
   }
 
   .progress-strip {
+    gap: 8px;
+  }
+
+  .progress-strip-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .progress-strip-meta {
+    justify-content: flex-start;
+    text-align: left;
   }
 
   .progress-strip-sub {
