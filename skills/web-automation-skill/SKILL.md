@@ -47,6 +47,19 @@ This skill is optimized for **new pages and flaky controls**, not just pure tabl
 - Separate **script failure**, **auth/session failure**, **environment issue**, and **business-rule rejection**.
 - Back up any proven injection path before large refactors.
 
+## Live-Page Probing Notes
+
+- Build a lightweight **page state map** before coding: list the visible states, the blockers in each state, and the expected transitions.
+- When portals, drawers, or stacked modals exist, first lock the **active interactive container**, then search for controls inside it.
+- Treat a candidate row/button/control as **provisional** until the moment of execution. Re-query right before the action; if it disappeared, treat it as a re-render race and retry the current page instead of advancing.
+- Distinguish **"no target on current page"** from **"target existed but action failed"**.
+  - No target: continue pagination / next scope.
+  - Action failed: retry current page, refresh if needed, and restore the same business context.
+- Judge success with **multiple signals** when the UI is asynchronous: count changes, preview changes, status class, and success text should agree when possible.
+- If the page freezes or loses state, refresh is allowed as a recovery step, but preserve the current filter/page/target context before doing so.
+- Regress in a ladder: **single control -> single page -> single row -> small batch -> full run**.
+- Classify failures explicitly: **script**, **auth/session**, **environment**, **business-rule rejection**, or **re-render race**.
+
 ## Use This Reference
 
 For the full playbook and checklist, read:
@@ -55,6 +68,7 @@ For the full playbook and checklist, read:
 - [references/dom-report-template.md](references/dom-report-template.md)
 - [references/dom-snippet-library.md](references/dom-snippet-library.md)
 - [references/react-vue-troubleshooting-checklist.md](references/react-vue-troubleshooting-checklist.md)
+- [references/live-page-probing-notes.md](references/live-page-probing-notes.md)
 
 Load them when you need:
 
@@ -62,3 +76,4 @@ Load them when you need:
 - a standard DOM experiment report template
 - a reusable snippet library for probing DOM, reading values, and running mini experiments
 - a React / Vue control troubleshooting checklist
+- live-page state mapping, container scoping, retry / recovery, and failure classification notes
