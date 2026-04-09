@@ -9,7 +9,13 @@
   const QUICK_FILTERS = ['待传图', '图中标签有异常', '仓库实收商品不合规']
   const GOODS_STATUS_OPTIONS = ['在售中', '未发布到站点', '已下架', '已终止', '已删除']
   const URGENT_TEXT = '请立即处理异常，确保实物标签符合适用法律法规，避免影响商品发货入库'
+  const ROW_ACTION_TEXTS = ['上传', '修改', '重新上传']
   const DRAWER_SELECTOR = '.rocket-drawer-content-wrapper'
+  const DRAWER_CANDIDATE_SELECTORS = [
+    '.rocket-drawer.rocket-drawer-open',
+    '.rocket-drawer-content-wrapper',
+    '.rocket-drawer-content',
+  ]
   const OVERLAY_SELECTOR = '.rocket-modal, .rocket-dialog, [role="dialog"], .rocket-modal-wrap, .rocket-drawer-content-wrapper'
   const FILE_INPUT_MARK = 'data-crawshrimp-upload-key'
 
@@ -237,8 +243,66 @@
     return limit > 0 && nextCount >= limit
   }
 
-  function classifyProduct(name) {
-    return String(name || '').includes('鞋') ? 'shoes' : 'clothing'
+  const SHOE_KEYWORD_PATTERNS = [
+    /鞋/,
+    /靴/,
+    /凉鞋/,
+    /拖鞋/,
+    /凉拖/,
+    /洞洞鞋/,
+    /高跟鞋/,
+    /高帮/,
+    /板鞋/,
+    /运动鞋/,
+    /跑鞋/,
+    /球鞋/,
+    /帆布鞋/,
+    /皮鞋/,
+    /童鞋/,
+    /学步鞋/,
+    /芭蕾鞋/,
+    /舞蹈鞋/,
+    /乐福鞋/,
+    /玛丽珍/,
+    /穆勒/,
+    /雨靴/,
+    /雪地靴/,
+    /马丁靴/,
+    /短靴/,
+    /中筒靴/,
+    /长靴/,
+    /\bsneaker(?:s)?\b/i,
+    /\btrainer(?:s)?\b/i,
+    /\bboot(?:s|ies)?\b/i,
+    /\bsandal(?:s)?\b/i,
+    /\bslipper(?:s)?\b/i,
+    /\bloafer(?:s)?\b/i,
+    /\bflat(?:s)?\b/i,
+    /\bheel(?:s)?\b/i,
+    /\bpump(?:s)?\b/i,
+    /\bmule(?:s)?\b/i,
+    /\bclog(?:s)?\b/i,
+    /\bslide(?:s)?\b/i,
+    /\bflip[\s-]?flop(?:s)?\b/i,
+    /\boxford(?:s)?\b/i,
+    /\bderb(?:y|ies)\b/i,
+    /\bbrogue(?:s)?\b/i,
+    /\bespadrille(?:s)?\b/i,
+    /\bmoccasin(?:s)?\b/i,
+    /\bmary[\s-]?jane(?:s)?\b/i,
+    /\bcourt[\s-]?shoe(?:s)?\b/i,
+    /\brunning[\s-]?shoe(?:s)?\b/i,
+    /\bbasketball[\s-]?shoe(?:s)?\b/i,
+    /\bhiking[\s-]?shoe(?:s)?\b/i,
+    /\bwalking[\s-]?shoe(?:s)?\b/i,
+    /\bsoccer[\s-]?shoe(?:s)?\b/i,
+    /\btennis[\s-]?shoe(?:s)?\b/i,
+    /\bskate[\s-]?shoe(?:s)?\b/i,
+  ]
+
+  function classifyProduct(name, rowText = '') {
+    const text = `${name || ''} ${rowText || ''}`.replace(/\s+/g, ' ').trim()
+    return SHOE_KEYWORD_PATTERNS.some(pattern => pattern.test(text)) ? 'shoes' : 'clothing'
   }
 
   function parseSpu(text) {
@@ -298,6 +362,7 @@
           current_row_no: processedCount,
           current_buyer_id: row?.spu || '',
           current_store: shared.scope_name || '',
+          current_row_text: '',
           current_spu: '',
           current_name: '',
           current_action_text: '',
@@ -397,7 +462,7 @@
     return [...document.querySelectorAll('table tbody tr')]
       .map(tr => {
         const cells = [...tr.querySelectorAll('td')]
-        const actionButton = [...tr.querySelectorAll('button')].find(btn => visible(btn) && ['上传', '修改'].includes(textOf(btn)))
+        const actionButton = [...tr.querySelectorAll('button')].find(btn => visible(btn) && ROW_ACTION_TEXTS.includes(textOf(btn)))
         if (!cells.length || !actionButton) return null
 
         const cellTexts = cells.map(td => textOf(td))
@@ -409,7 +474,7 @@
           tr,
           spu,
           name: cleanProductName(productCellText),
-          product_kind: classifyProduct(productCellText),
+          product_kind: classifyProduct(productCellText, tr.innerText || ''),
           actionButton,
           actionText: textOf(actionButton),
           requirementType: cellTexts[1] || '',
@@ -426,7 +491,7 @@
   function isProcessableStatus(row) {
     const status = compact(row?.status || '')
     if (!status) return true
-    if (/识别成功|系统识别能力待建设|深度识别中/.test(status)) return false
+    if (/识别成功|深度识别中/.test(status)) return false
     return true
   }
 
@@ -440,7 +505,7 @@
       row?.spu &&
       !processed[row.spu] &&
       isProcessableStatus(row) &&
-      ['上传', '修改'].includes(row.actionText)
+      ROW_ACTION_TEXTS.includes(row.actionText)
     )
 
     if (!eligible.length) return null
@@ -526,17 +591,98 @@
   }
 
   function getOpenDrawer() {
-    return [...document.querySelectorAll(DRAWER_SELECTOR)]
-      .find(el => {
+    const seen = new Set()
+    const candidates = []
+
+    for (const selector of DRAWER_CANDIDATE_SELECTORS) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (seen.has(el)) continue
+        seen.add(el)
+
         const box = boxOf(el)
-        return visible(el) && box && box.w > 200
-      }) || null
+        if (!visible(el) || !box || box.w <= 200 || box.h <= 120) continue
+
+        const text = textOf(el)
+        let score = 0
+        if (selector === '.rocket-drawer.rocket-drawer-open') score += 320
+        if (el.matches?.('.rocket-drawer.rocket-drawer-open')) score += 180
+        if (el.closest?.('.rocket-drawer.rocket-drawer-open')) score += 120
+        if (text.includes('上传并识别')) score += 260
+        if (text.includes('商品主体实拍图') || text.includes('商品外包装实拍图')) score += 240
+        if (/SPU\s*ID/i.test(text) || text.includes('商品信息') || text.includes('商品名称')) score += 120
+        score += Math.min(140, Math.floor(text.length / 8))
+        score += Math.min(120, Math.floor(box.w / 10))
+        score += Math.max(0, parseZIndex(styleOf(el)?.zIndex))
+
+        candidates.push({ el, box, score })
+      }
+    }
+
+    return candidates
+      .sort((left, right) => {
+        if (right.score !== left.score) return right.score - left.score
+        if (right.box.w !== left.box.w) return right.box.w - left.box.w
+        if (right.box.h !== left.box.h) return right.box.h - left.box.h
+        return left.box.x - right.box.x
+      })[0]?.el || null
+  }
+
+  function readDrawerState(spu) {
+    const drawer = getOpenDrawer()
+    if (!drawer) {
+      return {
+        drawer: null,
+        hasVisibleDrawer: false,
+        hasSpu: false,
+        hasProductInfo: false,
+        hasUploadButton: false,
+        hasSubjectSection: false,
+        hasPackageSection: false,
+        hasUploadSection: false,
+        hasFileInput: false,
+        ready: false,
+      }
+    }
+
+    const text = textOf(drawer)
+    const normalizedSpu = compact(spu)
+    const hasSpu = normalizedSpu ? compact(text).includes(normalizedSpu) : false
+    const hasProductInfo = /SPU\s*ID/i.test(text) || text.includes('商品信息') || text.includes('商品名称')
+    const hasUploadButton = [...drawer.querySelectorAll('button,span,div,a,[role="button"]')]
+      .some(el => visible(el) && compact(textOf(el)) === compact('上传并识别'))
+    const hasSubjectSection = text.includes('商品主体实拍图')
+    const hasPackageSection = text.includes('商品外包装实拍图')
+    const hasUploadSection = hasSubjectSection || hasPackageSection
+    const hasFileInput = !!drawer.querySelector('input[type=file]')
+
+    return {
+      drawer,
+      hasVisibleDrawer: true,
+      hasSpu,
+      hasProductInfo,
+      hasUploadButton,
+      hasSubjectSection,
+      hasPackageSection,
+      hasUploadSection,
+      hasFileInput,
+      ready: hasUploadSection || hasUploadButton || hasFileInput || (hasProductInfo && hasSpu),
+    }
   }
 
   function isDrawerOpenForSpu(spu) {
-    const drawer = getOpenDrawer()
-    if (!drawer) return false
-    return textOf(drawer).includes(String(spu || ''))
+    return readDrawerState(spu).ready
+  }
+
+  function drawerStateSummary(state) {
+    if (!state?.hasVisibleDrawer) return 'drawer=未出现'
+    return [
+      'drawer=已出现',
+      `spu=${state.hasSpu ? 'yes' : 'no'}`,
+      `商品信息=${state.hasProductInfo ? 'yes' : 'no'}`,
+      `上传按钮=${state.hasUploadButton ? 'yes' : 'no'}`,
+      `上传区=${state.hasUploadSection ? 'yes' : 'no'}`,
+      `file=${state.hasFileInput ? 'yes' : 'no'}`,
+    ].join('，')
   }
 
   function findUploadLabel(input) {
@@ -787,6 +933,30 @@
     return findDialogByTextPatterns(['识别结果有异常']) ||
       findDialogByTextPatterns(['申请深度识别']) ||
       findDialogByTextPatterns(['深度识别'])
+  }
+
+  function findUploadLaterDialog() {
+    return findDialogByTextPatterns(['先传图，稍后再传资质']) ||
+      findDialogByTextPatterns(['稍后再传资质']) ||
+      findDialogByTextPatterns(['先去上传资质'])
+  }
+
+  function findUploadLaterButton() {
+    const dialog = findUploadLaterDialog()
+    return findScopedButtonByText(dialog, '先传图，稍后再传资质', { preferPrimary: false, preferActionArea: true }) ||
+      findScopedButtonByText(dialog, '稍后再传资质', { preferPrimary: false, preferActionArea: true, allowContains: true })
+  }
+
+  function findSaveLivePhotosDialog() {
+    return findDialogByTextPatterns(['保存实拍图，暂不处理异常']) ||
+      findDialogByTextPatterns(['暂不处理异常', '立即修改']) ||
+      findDialogByTextPatterns(['识别结果有异常', '防止影响商品售卖'])
+  }
+
+  function findSaveLivePhotosButton() {
+    const dialog = findSaveLivePhotosDialog()
+    return findScopedButtonByText(dialog, '保存实拍图，暂不处理异常', { preferPrimary: false, preferActionArea: true }) ||
+      findScopedButtonByText(dialog, '暂不处理异常', { preferPrimary: false, preferActionArea: true, allowContains: true })
   }
 
   function findDeepRecognitionButton() {
@@ -1125,10 +1295,27 @@
       }
 
       const rows = getProductRows()
+      if (!rows.length) {
+        const retry = Number(shared.scope_retry || 0)
+        const tableReady = await waitForTable(1200)
+        if (tableReady) {
+          return nextPhase('pick_row', 150, {
+            ...shared,
+            scope_retry: 0,
+          })
+        }
+        if (retry < 8) {
+          return nextPhase('pick_row', 700, {
+            ...shared,
+            scope_retry: retry + 1,
+          })
+        }
+      }
+
       const candidate = chooseCandidate(rows)
       if (candidate) {
         const nextCount = Number(shared.processed_count || 0) + 1
-        const kind = String(candidate.product_kind || classifyProduct(candidate.name))
+        const kind = String(candidate.product_kind || classifyProduct(candidate.name, candidate.rowText))
         const request = getUploadRequest(kind)
         if (!request.subjectRequested && !request.packageRequested) {
           return emitRowResult(
@@ -1146,6 +1333,7 @@
           current_row_no: nextCount,
           current_buyer_id: candidate.spu,
           current_store: shared.scope_name || '',
+          current_row_text: candidate.rowText || '',
           current_spu: candidate.spu,
           current_name: candidate.name,
           current_action_text: candidate.actionText,
@@ -1153,6 +1341,7 @@
           current_suggestion: candidate.suggestion,
           current_priority: isUrgentRow(candidate),
           product_kind: kind,
+          scope_retry: 0,
           open_retry: 0,
           upload_retry: 0,
           field_retry: 0,
@@ -1248,12 +1437,34 @@
     }
 
     if (phase === 'wait_drawer') {
-      if (isDrawerOpenForSpu(shared.current_spu)) {
-        return nextPhase('prepare_upload', 100, shared)
+      if (findUploadLaterDialog()) {
+        return nextPhase('accept_upload_later_dialog', 100, shared)
+      }
+
+      const drawerState = readDrawerState(shared.current_spu)
+      if (drawerState.ready) {
+        return nextPhase('prepare_upload', drawerState.hasUploadSection || drawerState.hasFileInput ? 100 : 400, {
+          ...shared,
+          open_retry: 0,
+        })
       }
 
       const retry = Number(shared.open_retry || 0)
+      if (drawerState.hasVisibleDrawer && retry < 8) {
+        return nextPhase('wait_drawer', 600, {
+          ...shared,
+          open_retry: retry + 1,
+        })
+      }
+
       if (retry < 2) {
+        return nextPhase('wait_drawer', 600, {
+          ...shared,
+          open_retry: retry + 1,
+        })
+      }
+
+      if (retry < 4) {
         return nextPhase('open_row', 500, {
           ...shared,
           open_retry: retry + 1,
@@ -1270,12 +1481,59 @@
           product_kind: shared.product_kind,
         },
         'failed',
-        '未成功打开上传抽屉',
+        `未成功打开上传抽屉（${drawerStateSummary(drawerState)}）`,
+      )
+    }
+
+    if (phase === 'accept_upload_later_dialog') {
+      const button = findUploadLaterButton()
+      if (!button) {
+        const retry = Number(shared.open_retry || 0)
+        if (retry < 6) {
+          return nextPhase('wait_drawer', 700, {
+            ...shared,
+            open_retry: retry + 1,
+          })
+        }
+
+        return emitRowResult(
+          {
+            spu: shared.current_spu,
+            name: shared.current_name,
+            actionText: shared.current_action_text,
+            status: shared.current_status_text,
+            suggestion: shared.current_suggestion,
+            product_kind: shared.product_kind,
+          },
+          'failed',
+          '未找到“先传图，稍后再传资质”按钮',
+        )
+      }
+
+      const click = centerClick(button, 120)
+      if (click) {
+        return cdpClicks([click], 'wait_drawer', 1000, shared)
+      }
+      if (gentleClick(button)) {
+        return nextPhase('wait_drawer', 1000, shared)
+      }
+
+      return emitRowResult(
+        {
+          spu: shared.current_spu,
+          name: shared.current_name,
+          actionText: shared.current_action_text,
+          status: shared.current_status_text,
+          suggestion: shared.current_suggestion,
+          product_kind: shared.product_kind,
+        },
+        'failed',
+        '点击“先传图，稍后再传资质”失败',
       )
     }
 
     if (phase === 'prepare_upload') {
-      const kind = String(shared.product_kind || classifyProduct(shared.current_name))
+      const kind = String(shared.product_kind || classifyProduct(shared.current_name, shared.current_row_text))
       const request = getUploadRequest(kind)
 
       if (!request.subjectRequested && !request.packageRequested) {
@@ -1400,7 +1658,7 @@
     }
 
     if (phase === 'wait_upload_ready') {
-      const kind = String(shared.product_kind || classifyProduct(shared.current_name))
+      const kind = String(shared.product_kind || classifyProduct(shared.current_name, shared.current_row_text))
       const request = getUploadRequest(kind)
       if (!request.subjectRequested && !request.packageRequested) {
         return emitRowResult(
@@ -1505,6 +1763,16 @@
         )
       }
 
+      const saveLivePhotosDialog = findSaveLivePhotosDialog()
+      if (saveLivePhotosDialog) {
+        return nextPhase('save_live_photos_without_fix', 200, {
+          ...shared,
+          submit_retry: 0,
+          confirm_retry: 0,
+          toast_retry: 0,
+        })
+      }
+
       const confirmDialog = findDeepRecognitionConfirmDialog()
       if (confirmDialog) {
         return nextPhase('confirm_deep_recognition', 500, {
@@ -1561,6 +1829,101 @@
         },
         'failed',
         '点击“上传并识别”后未进入异常/深度识别流程',
+      )
+    }
+
+    if (phase === 'save_live_photos_without_fix') {
+      const button = findSaveLivePhotosButton()
+      if (!button) {
+        const retry = Number(shared.confirm_retry || 0)
+        if (retry < 8) {
+          return nextPhase('save_live_photos_without_fix', 800, {
+            ...shared,
+            confirm_retry: retry + 1,
+          })
+        }
+
+        return emitRowResult(
+          {
+            spu: shared.current_spu,
+            name: shared.current_name,
+            actionText: shared.current_action_text,
+            status: shared.current_status_text,
+            suggestion: shared.current_suggestion,
+            product_kind: shared.product_kind,
+          },
+          'failed',
+          '未找到“保存实拍图，暂不处理异常”按钮',
+        )
+      }
+
+      const click = centerClick(button, 120)
+      if (click) {
+        return cdpClicks([click], 'wait_saved_live_photos', 1200, {
+          ...shared,
+          confirm_retry: 0,
+        })
+      }
+      if (gentleClick(button)) {
+        return nextPhase('wait_saved_live_photos', 1200, {
+          ...shared,
+          confirm_retry: 0,
+        })
+      }
+
+      return emitRowResult(
+        {
+          spu: shared.current_spu,
+          name: shared.current_name,
+          actionText: shared.current_action_text,
+          status: shared.current_status_text,
+          suggestion: shared.current_suggestion,
+          product_kind: shared.product_kind,
+        },
+        'failed',
+        '点击“保存实拍图，暂不处理异常”失败',
+      )
+    }
+
+    if (phase === 'wait_saved_live_photos') {
+      const dialog = findSaveLivePhotosDialog()
+      const drawerState = readDrawerState(shared.current_spu)
+      if (!dialog && (!drawerState.hasVisibleDrawer || !drawerState.hasUploadButton)) {
+        return emitRowResult(
+          {
+            spu: shared.current_spu,
+            name: shared.current_name,
+            actionText: shared.current_action_text,
+            status: shared.current_status_text,
+            suggestion: shared.current_suggestion,
+            product_kind: shared.product_kind,
+          },
+          'submitted',
+          '已保存实拍图，暂不处理异常',
+          { 深度识别结果: '暂不处理异常' },
+          1400,
+        )
+      }
+
+      const retry = Number(shared.confirm_retry || 0)
+      if (retry < 10) {
+        return nextPhase('wait_saved_live_photos', 800, {
+          ...shared,
+          confirm_retry: retry + 1,
+        })
+      }
+
+      return emitRowResult(
+        {
+          spu: shared.current_spu,
+          name: shared.current_name,
+          actionText: shared.current_action_text,
+          status: shared.current_status_text,
+          suggestion: shared.current_suggestion,
+          product_kind: shared.product_kind,
+        },
+        'failed',
+        '保存实拍图后页面未回到可继续处理状态',
       )
     }
 
