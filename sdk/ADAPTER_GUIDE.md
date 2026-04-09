@@ -132,6 +132,45 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
   -d '{"path": "/absolute/path/to/my-adapter"}'
 ```
 
+### 重要：运行的是“已安装副本”，不是你的源码目录
+
+`/adapters/install` 不会直接让底座执行你的源码目录。安装时，底座会把适配包复制到：
+
+- 默认：`~/.crawshrimp/adapters/<adapter_id>/`
+- 如果设置了 `CRAWSHRIMP_DATA`：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
+
+底座后续运行、扫描、加载的都是这个“已安装副本”。
+
+这意味着：
+
+- 你在仓库目录里改了 `manifest.yaml` / `*.js`，**不会自动生效**
+- 改完后如果不重新安装，GUI / API 继续跑的还是旧代码
+- 出现“我明明改了代码，但运行结果像旧版本”时，先检查是不是没重新安装，不要先怀疑业务逻辑
+
+开发阶段建议把下面这组动作当成固定流程：
+
+```bash
+# 1. 改源码
+
+# 2. 重新安装到本地执行环境
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/absolute/path/to/repo/adapters/my-adapter"}'
+
+# 3. 验证源码目录和执行副本一致
+diff -qr /absolute/path/to/repo/adapters/my-adapter ~/.crawshrimp/adapters/my-adapter
+
+# 4. 再运行任务
+```
+
+如果只想快速确认关键脚本是否同步，也可以直接比哈希：
+
+```bash
+shasum -a 256 \
+  /absolute/path/to/repo/adapters/my-adapter/task.js \
+  ~/.crawshrimp/adapters/my-adapter/task.js
+```
+
 ### 第五步：运行
 
 1. 在 Chrome 里打开目标网站（确保已登录）
@@ -1205,6 +1244,40 @@ window.__CRAWSHRIMP_PAGE__ = 1
 
 // 然后粘贴你的 async IIFE 并执行
 // 在 Console 里可以实时看到返回值
+```
+
+**Q：我刚改了仓库里的脚本，为什么运行的还是旧代码？**
+
+因为底座执行的是“已安装副本”，不是你的源码目录。
+
+安装逻辑会把适配包复制到：
+
+- 默认：`~/.crawshrimp/adapters/<adapter_id>/`
+- 或：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
+
+所以开发阶段的正确顺序是：
+
+1. 改仓库源码
+2. 重新调用一次 `/adapters/install`
+3. 用 `diff -qr` 或 `shasum` 确认源码目录和执行副本一致
+4. 再运行任务
+
+示例：
+
+```bash
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/Users/me/project/crawshrimp/adapters/temu"}'
+
+diff -qr \
+  /Users/me/project/crawshrimp/adapters/temu \
+  ~/.crawshrimp/adapters/temu
+```
+
+如果你在用 AI agent / Codex 开发适配包，建议把这条写进自定义 Prompt：
+
+```text
+修改 crawshrimp 适配包后，不要假设运行环境会直接读取仓库源码目录。底座执行的是已安装副本（默认 ~/.crawshrimp/adapters/<adapter_id>/，或 $CRAWSHRIMP_DATA/adapters/<adapter_id>/）。每次修改 adapter 后，必须重新调用 POST /adapters/install 安装当前目录，并用 diff/shasum 校验源码目录与执行副本一致，再进行任务运行或问题排查。
 ```
 
 **Q：`entry_url` 应该填什么？**

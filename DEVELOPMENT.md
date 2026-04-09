@@ -35,6 +35,28 @@ python api_server.py
 # Docs at http://localhost:18765/docs
 ```
 
+## Adapter Dev Caveat
+
+适配包开发时，底座运行的不是仓库里的源码目录，而是“已安装副本”：
+
+- 默认路径：`~/.crawshrimp/adapters/<adapter_id>/`
+- 如果设置了 `CRAWSHRIMP_DATA`：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
+
+`POST /adapters/install` 会把你的适配包目录复制到上面的执行目录。  
+因此修改 `adapters/<id>/` 下的脚本后，必须重新安装；否则任务仍会执行旧代码。
+
+建议固定使用下面的开发闭环：
+
+```bash
+# 改完源码后重新安装
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/absolute/path/to/repo/adapters/<adapter_id>"}'
+
+# 验证源码目录和执行副本一致
+diff -qr /absolute/path/to/repo/adapters/<adapter_id> ~/.crawshrimp/adapters/<adapter_id>
+```
+
 ## Phase 2: Electron + Vue GUI
 
 Next up:
