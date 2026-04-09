@@ -715,15 +715,19 @@ ipcMain.handle('save-adapter-template', async (_, adapterId, templateFile, templ
 
 ipcMain.handle('browse-file', async (_, opts = {}) => {
   const props = opts.directory ? ['openDirectory'] : ['openFile']
+  if (opts.multi && !opts.directory) props.push('multiSelections')
   const filters = opts.filters || (opts.excel
     ? [{ name: 'Excel / CSV', extensions: ['xlsx', 'xls', 'csv'] }, { name: '所有文件', extensions: ['*'] }]
+    : opts.images
+      ? [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg'] }, { name: '所有文件', extensions: ['*'] }]
     : [{ name: '所有文件', extensions: ['*'] }])
   const res = await dialog.showOpenDialog(mainWindow, {
     title: opts.title || '选择文件',
     properties: props,
     filters,
   })
-  return res.canceled ? '' : res.filePaths[0] || ''
+  if (res.canceled) return opts.multi ? [] : ''
+  return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
 })
 
 ipcMain.handle('read-excel', async (_, filePath) => {

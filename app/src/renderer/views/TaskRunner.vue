@@ -178,6 +178,32 @@
               <div v-if="excelLoading[param.id]" class="excel-loading">读取文件中…</div>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
+
+            <!-- 多图上传 -->
+            <template v-else-if="param.type === 'file_images'">
+              <div class="file-picker">
+                <div class="file-chosen" :class="{ empty: !(values[param.id + '_paths'] || []).length }" @click="pickImages(param)">
+                  <span class="f-ico">🖼</span>
+                  <span class="f-label">
+                    {{ imageSummary(param) }}
+                  </span>
+                  <span v-if="(values[param.id + '_paths'] || []).length" class="f-clear" @click.stop="clearImages(param.id)">✕</span>
+                </div>
+                <div class="file-picker-actions">
+                  <button class="btn-pick" @click="pickImages(param)">选择图片</button>
+                </div>
+              </div>
+              <div v-if="(values[param.id + '_paths'] || []).length" class="image-file-list">
+                <span
+                  v-for="path in values[param.id + '_paths']"
+                  :key="path"
+                  class="image-file-chip"
+                >
+                  {{ fileName(path) }}
+                </span>
+              </div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
           </div>
         </div>
 
@@ -344,6 +370,9 @@ watch(() => props.task, (task) => {
       v[p.id + '_rows'] = []
       v[p.id + '_headers'] = []
     }
+    else if (p.type === 'file_images') {
+      v[p.id + '_paths'] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
+    }
     else v[p.id] = p.default ?? ''
   }
   values.value = v
@@ -412,6 +441,7 @@ const missingRequired = computed(() => {
   return visibleParams.value.some(p => {
     if (!p.required) return false
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
+    if (p.type === 'file_images') return !(values.value[p.id + '_paths'] || []).length
     return !values.value[p.id]
   })
 })
@@ -452,13 +482,36 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'file_excel' || param.type === 'checkbox' || param.type === 'date_range') {
+  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'date_range') {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
     return 'param-span-full'
   }
   return 'param-span-compact'
+}
+
+function imageParamLimit(param) {
+  const value = Number(param?.max || 0)
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function normalizeImagePaths(paths, maxCount = 0) {
+  const normalized = Array.isArray(paths)
+    ? paths.map(path => String(path || '').trim()).filter(Boolean)
+    : []
+  return maxCount > 0 ? normalized.slice(0, maxCount) : normalized
+}
+
+function imageSummary(param) {
+  const count = (values.value[param.id + '_paths'] || []).length
+  const maxCount = imageParamLimit(param)
+  if (!count) {
+    return maxCount > 0
+      ? `点击选择图片（支持多选，最多 ${maxCount} 张）…`
+      : '点击选择图片（支持多选）…'
+  }
+  return maxCount > 0 ? `${count} / ${maxCount} 张图片` : `${count} 张图片`
 }
 
 function orderVisibleParams(params) {
@@ -529,6 +582,12 @@ function buildRunParams(overrides = {}) {
       delete params[p.id + '_path']
       delete params[p.id + '_rows']
       delete params[p.id + '_headers']
+    } else if (p.type === 'file_images') {
+      const maxCount = imageParamLimit(p)
+      params[p.id] = {
+        paths: normalizeImagePaths(values.value[p.id + '_paths'], maxCount),
+      }
+      delete params[p.id + '_paths']
     }
   }
   return JSON.parse(JSON.stringify({ ...params, ...overrides }))
@@ -923,6 +982,22 @@ function clearExcel(paramId) {
   values.value[paramId + '_headers'] = []
 }
 
+async function pickImages(param) {
+  const paramId = param?.id
+  if (!paramId) return
+  const paths = await window.cs.browseFile({
+    title: '选择图片文件',
+    images: true,
+    multi: true,
+  })
+  if (!Array.isArray(paths) || !paths.length) return
+  values.value[paramId + '_paths'] = normalizeImagePaths(paths, imageParamLimit(param))
+}
+
+function clearImages(paramId) {
+  values.value[paramId + '_paths'] = []
+}
+
 function getParamTemplates(param) {
   const templates = Array.isArray(param?.templates) ? param.templates.filter(Boolean) : []
   if (templates.length) return templates
@@ -1206,7 +1281,7 @@ onUnmounted(() => clearInterval(pollTimer))
 .log-line.err  { color: #f87171; }
 .log-line.warn { color: #fbbf24; }
 
-/* Excel 文件选择控件 */
+/* 文件选择控件 */
 .file-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .file-chosen {
   flex: 1; display: flex; align-items: center; gap: 8px;
@@ -1292,6 +1367,23 @@ onUnmounted(() => clearInterval(pollTimer))
 .template-feedback { font-size: 12px; padding: 4px 0; }
 .template-feedback.ok { color: #4ade80; }
 .template-feedback.err { color: #f87171; }
+.image-file-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.image-file-chip {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--text2);
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 @media (max-width: 1040px) {
   .params-grid {

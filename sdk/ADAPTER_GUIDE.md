@@ -629,6 +629,7 @@ manifest 里 `params[].type` 支持以下类型：
 | `checkbox` | 多选（复选框组） | 地区、类别 |
 | `date_range` | 日期区间（开始日期 + 结束日期） | 自定义时间段 |
 | `file_excel` | Excel/CSV 文件选择器（底座读取后注入 rows） | 批量任务用的 SKU 列表 |
+| `file_images` | 多图文件选择器（底座注入 paths 数组） | 标签图、实拍图、素材图 |
 
 ### text 示例
 
@@ -755,6 +756,29 @@ const skuIds = file.rows.map(row => row['SKU ID'])
 这样一个 Excel 模板就可以同时承载主表、子表、阶梯表和说明页，脚本里按 sheet 名自行读取即可。
 
 **批量操作模式**：`file_excel` 结合多 Phase 状态机，实现逐行自动化（如批量创建优惠券）。底座将每行数据通过 `window.__CRAWSHRIMP_PARAMS__` 注入，脚本完成一行后返回 `action: "complete"`，底座自动推进到下一行。
+
+### file_images 示例
+
+```yaml
+- id: label_images
+  type: file_images
+  label: 标签图
+  required: true
+  hint: 支持多选，适合图片上传类任务
+```
+
+脚本里读取：
+
+```js
+const files = window.__CRAWSHRIMP_PARAMS__.label_images?.paths || []
+// files => ['/Users/me/Downloads/a.jpg', '/Users/me/Downloads/b.jpg']
+```
+
+说明：
+
+- `file_images` 当前支持 `.png/.jpg/.jpeg`
+- GUI 会把多选结果注入成 `{ paths: [] }`
+- 适合和自定义 Phase 状态机配合，用于页面图片上传、标签图补传等任务
 ```
 
 ---
@@ -1230,6 +1254,27 @@ for (const row of file.rows) {
 ```
 
 并把这些模板文件一起放进适配包目录或 zip 包里。
+
+**Q：`file_images` 参数如何使用？**
+
+底座会把用户选择的图片路径注入成 `paths` 数组：
+
+```js
+const labelImages = window.__CRAWSHRIMP_PARAMS__.label_images?.paths || []
+for (const filePath of labelImages) {
+  console.log('待上传图片', filePath)
+}
+```
+
+manifest 示例：
+
+```yaml
+- id: label_images
+  type: file_images
+  label: 标签图
+  required: true
+  hint: 选择一张或多张图片
+```
 
 ---
 

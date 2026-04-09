@@ -592,6 +592,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         runner = JSRunner(
             bridge.get_tab_ws_url(tab),
             tab_id=str(tab.get('id') or ''),
+            tab_url=str(tab.get('url') or ''),
         )
 
         async def export_outputs(data_rows):

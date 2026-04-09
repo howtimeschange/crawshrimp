@@ -39,6 +39,7 @@ class ParamType(str, Enum):
     date_range = "date_range"  # 日期区间（start_date / end_date）
     number     = "number"      # 数字输入
     file_excel = "file_excel"  # Excel 文件选择（.xlsx/.xls/.csv），注入 rows 数组
+    file_images = "file_images"  # 多图文件选择（png/jpg/jpeg），注入 paths 数组
 
 
 class ParamOption(BaseModel):
