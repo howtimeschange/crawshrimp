@@ -1,0 +1,18 @@
+id: demo_import_success
+name: 导入测试脚本包
+version: 0.1.0
+author: codex
+description: "用于测试脚本包导入成功态的最小样例包。"
+entry_url: https://example.com
+skip_auth: true
+
+tasks:
+  - id: hello
+    name: 样例任务
+    description: 输出一行样例数据，用于验证导入后任务卡片、执行流程和导出是否正常。
+    script: hello.js
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Demo_导入测试_{timestamp}.xlsx"

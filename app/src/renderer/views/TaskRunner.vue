@@ -178,6 +178,32 @@
               <div v-if="excelLoading[param.id]" class="excel-loading">读取文件中…</div>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
+
+            <!-- 多图上传 -->
+            <template v-else-if="param.type === 'file_images'">
+              <div class="file-picker">
+                <div class="file-chosen" :class="{ empty: !(values[param.id + '_paths'] || []).length }" @click="pickImages(param)">
+                  <span class="f-ico">🖼</span>
+                  <span class="f-label">
+                    {{ imageSummary(param) }}
+                  </span>
+                  <span v-if="(values[param.id + '_paths'] || []).length" class="f-clear" @click.stop="clearImages(param.id)">✕</span>
+                </div>
+                <div class="file-picker-actions">
+                  <button class="btn-pick" @click="pickImages(param)">选择图片</button>
+                </div>
+              </div>
+              <div v-if="(values[param.id + '_paths'] || []).length" class="image-file-list">
+                <span
+                  v-for="path in values[param.id + '_paths']"
+                  :key="path"
+                  class="image-file-chip"
+                >
+                  {{ fileName(path) }}
+                </span>
+              </div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
           </div>
         </div>
 
@@ -281,11 +307,29 @@
           </div>
         </div>
 
-        <div v-if="progressSummary" class="progress-strip">
-          <div class="progress-strip-main">
-            <span class="progress-strip-title">进度</span>
-            <span class="progress-strip-value">{{ progressSummary.main }}</span>
-            <span v-if="progressSummary.percent" class="progress-strip-percent">{{ progressSummary.percent }}</span>
+        <div v-if="progressSummary" class="progress-strip" aria-live="polite">
+          <div class="progress-strip-head">
+            <div class="progress-strip-main">
+              <span class="progress-strip-title">批处理进度</span>
+              <span class="progress-strip-value">{{ progressSummary.main }}</span>
+              <span class="progress-strip-percent">{{ progressSummary.percentLabel }}</span>
+            </div>
+            <div class="progress-strip-meta">
+              <span>已完成 {{ progressSummary.completed }} 条</span>
+              <span v-if="progressSummary.batchText">{{ progressSummary.batchText }}</span>
+              <span v-if="progressSummary.rowText">{{ progressSummary.rowText }}</span>
+              <span v-if="progressSummary.targetText">{{ progressSummary.targetText }}</span>
+            </div>
+          </div>
+          <div
+            class="progress-strip-bar"
+            role="progressbar"
+            :aria-label="progressSummary.ariaLabel"
+            :aria-valuenow="progressSummary.percentValue"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <div class="progress-strip-bar-fill" :style="{ width: `${progressSummary.percentValue}%` }"></div>
           </div>
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>
@@ -343,6 +387,9 @@ watch(() => props.task, (task) => {
       v[p.id + '_path'] = ''
       v[p.id + '_rows'] = []
       v[p.id + '_headers'] = []
+    }
+    else if (p.type === 'file_images') {
+      v[p.id + '_paths'] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
     }
     else v[p.id] = p.default ?? ''
   }
@@ -412,6 +459,7 @@ const missingRequired = computed(() => {
   return visibleParams.value.some(p => {
     if (!p.required) return false
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
+    if (p.type === 'file_images') return !(values.value[p.id + '_paths'] || []).length
     return !values.value[p.id]
   })
 })
@@ -419,25 +467,34 @@ const missingRequired = computed(() => {
 const progressSummary = computed(() => {
   const current = Number(liveProgress.value?.current || 0)
   const total = Number(liveProgress.value?.total || 0)
-  if (!isRunning.value || current <= 0 || total <= 0) return null
+  if (!isRunning.value || total <= 0) return null
 
   const completed = Number(liveProgress.value?.completed || liveProgress.value?.records || 0)
   const batchNo = Number(liveProgress.value?.batch_no || 0)
   const totalBatches = Number(liveProgress.value?.total_batches || 0)
   const rowNo = Number(liveProgress.value?.row_no || 0)
-  const buyerId = String(liveProgress.value?.buyer_id || '').trim()
+  const targetId = String(liveProgress.value?.buyer_id || '').trim()
   const phase = String(liveProgress.value?.phase || '').trim()
-  const percent = Number(liveProgress.value?.percent || 0)
+  const rawPercent = Number(liveProgress.value?.percent)
+  const percentValue = Number.isFinite(rawPercent) && rawPercent > 0
+    ? Math.min(100, Math.max(0, Number(rawPercent.toFixed(1))))
+    : Math.min(100, Math.max(0, Number(((current / total) * 100).toFixed(1))))
 
   const parts = [`已完成 ${completed} 条`]
   if (batchNo > 0 && totalBatches > 0) parts.push(`批次 ${batchNo}/${totalBatches}`)
   if (rowNo > 0) parts.push(`源表行 ${rowNo}`)
-  if (buyerId) parts.push(`买家 ${buyerId}`)
+  if (targetId) parts.push(`目标 ${targetId}`)
   if (phase) parts.push(`阶段 ${phase}`)
 
   return {
-    main: `${current} / ${total}`,
-    percent: percent > 0 ? `${percent}%` : '',
+    main: `第 ${current} / ${total} 条`,
+    percentValue,
+    percentLabel: `${percentValue}%`,
+    completed,
+    batchText: batchNo > 0 && totalBatches > 0 ? `批次 ${batchNo}/${totalBatches}` : '',
+    rowText: rowNo > 0 ? `源表行 ${rowNo}` : '',
+    targetText: targetId ? `目标 ${targetId}` : '',
+    ariaLabel: `批处理进度 第 ${current} / ${total} 条`,
     sub: parts.join(' · '),
   }
 })
@@ -452,13 +509,36 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'file_excel' || param.type === 'checkbox' || param.type === 'date_range') {
+  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'date_range') {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
     return 'param-span-full'
   }
   return 'param-span-compact'
+}
+
+function imageParamLimit(param) {
+  const value = Number(param?.max || 0)
+  return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0
+}
+
+function normalizeImagePaths(paths, maxCount = 0) {
+  const normalized = Array.isArray(paths)
+    ? paths.map(path => String(path || '').trim()).filter(Boolean)
+    : []
+  return maxCount > 0 ? normalized.slice(0, maxCount) : normalized
+}
+
+function imageSummary(param) {
+  const count = (values.value[param.id + '_paths'] || []).length
+  const maxCount = imageParamLimit(param)
+  if (!count) {
+    return maxCount > 0
+      ? `点击选择图片（支持多选，最多 ${maxCount} 张）…`
+      : '点击选择图片（支持多选）…'
+  }
+  return maxCount > 0 ? `${count} / ${maxCount} 张图片` : `${count} 张图片`
 }
 
 function orderVisibleParams(params) {
@@ -529,6 +609,12 @@ function buildRunParams(overrides = {}) {
       delete params[p.id + '_path']
       delete params[p.id + '_rows']
       delete params[p.id + '_headers']
+    } else if (p.type === 'file_images') {
+      const maxCount = imageParamLimit(p)
+      params[p.id] = {
+        paths: normalizeImagePaths(values.value[p.id + '_paths'], maxCount),
+      }
+      delete params[p.id + '_paths']
     }
   }
   return JSON.parse(JSON.stringify({ ...params, ...overrides }))
@@ -923,6 +1009,22 @@ function clearExcel(paramId) {
   values.value[paramId + '_headers'] = []
 }
 
+async function pickImages(param) {
+  const paramId = param?.id
+  if (!paramId) return
+  const paths = await window.cs.browseFile({
+    title: '选择图片文件',
+    images: true,
+    multi: true,
+  })
+  if (!Array.isArray(paths) || !paths.length) return
+  values.value[paramId + '_paths'] = normalizeImagePaths(paths, imageParamLimit(param))
+}
+
+function clearImages(paramId) {
+  values.value[paramId + '_paths'] = []
+}
+
 function getParamTemplates(param) {
   const templates = Array.isArray(param?.templates) ? param.templates.filter(Boolean) : []
   if (templates.length) return templates
@@ -1134,18 +1236,35 @@ onUnmounted(() => clearInterval(pollTimer))
 .log-actions { display: flex; align-items: center; gap: 12px; }
 .progress-strip {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px;
   border-bottom: 1px solid var(--border);
-  background: linear-gradient(90deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
+  background: linear-gradient(180deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
+}
+.progress-strip-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
 }
 .progress-strip-main {
   display: flex;
   align-items: baseline;
   gap: 10px;
   min-width: 0;
+  flex-wrap: wrap;
+}
+.progress-strip-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px 16px;
+  flex-wrap: wrap;
+  min-width: 0;
+  text-align: right;
+  font-size: 12px;
+  color: var(--text2);
 }
 .progress-strip-title {
   font-size: 11px;
@@ -1163,6 +1282,21 @@ onUnmounted(() => clearInterval(pollTimer))
   font-size: 12px;
   color: var(--orange);
   font-weight: 700;
+}
+.progress-strip-bar {
+  position: relative;
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255,106,41,0.18);
+}
+.progress-strip-bar-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--orange), #ff9a5f);
+  box-shadow: 0 0 12px rgba(255,106,41,0.25);
+  transition: width 180ms ease;
 }
 .progress-strip-sub {
   font-size: 12px;
@@ -1206,7 +1340,7 @@ onUnmounted(() => clearInterval(pollTimer))
 .log-line.err  { color: #f87171; }
 .log-line.warn { color: #fbbf24; }
 
-/* Excel 文件选择控件 */
+/* 文件选择控件 */
 .file-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .file-chosen {
   flex: 1; display: flex; align-items: center; gap: 8px;
@@ -1292,6 +1426,23 @@ onUnmounted(() => clearInterval(pollTimer))
 .template-feedback { font-size: 12px; padding: 4px 0; }
 .template-feedback.ok { color: #4ade80; }
 .template-feedback.err { color: #f87171; }
+.image-file-list {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.image-file-chip {
+  max-width: 100%;
+  font-size: 11px;
+  color: var(--text2);
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 @media (max-width: 1040px) {
   .params-grid {
@@ -1302,8 +1453,17 @@ onUnmounted(() => clearInterval(pollTimer))
   }
 
   .progress-strip {
+    gap: 8px;
+  }
+
+  .progress-strip-head {
     flex-direction: column;
     align-items: flex-start;
+  }
+
+  .progress-strip-meta {
+    justify-content: flex-start;
+    text-align: left;
   }
 
   .progress-strip-sub {

@@ -127,6 +127,67 @@ def list_runs(adapter_id: str, task_id: str, limit: int = 20) -> List[dict]:
         return [dict(r) for r in rows]
 
 
+def _normalize_output_file_path(path: str) -> str:
+    try:
+        return str(Path(str(path)).expanduser().resolve(strict=False))
+    except Exception:
+        return str(path or '').strip()
+
+
+def remove_output_files(paths: List[str]) -> dict:
+    target_paths = {
+        _normalize_output_file_path(path)
+        for path in (paths or [])
+        if str(path or '').strip()
+    }
+    target_paths.discard('')
+    if not target_paths:
+        return {"updated_runs": 0, "removed_refs": 0}
+
+    updated_runs = 0
+    removed_refs = 0
+
+    with _get_conn() as conn:
+        rows = conn.execute("""
+            SELECT id, output_files
+            FROM task_runs
+            WHERE output_files IS NOT NULL AND output_files != '[]'
+        """).fetchall()
+
+        for row in rows:
+            raw_files = row["output_files"]
+            try:
+                files = json.loads(raw_files) if isinstance(raw_files, str) else raw_files
+            except Exception:
+                continue
+            if not isinstance(files, list):
+                continue
+
+            kept_files = []
+            changed = False
+            for item in files:
+                file_path = str(item or '').strip()
+                if not file_path:
+                    changed = True
+                    continue
+                if _normalize_output_file_path(file_path) in target_paths:
+                    removed_refs += 1
+                    changed = True
+                    continue
+                kept_files.append(file_path)
+
+            if changed:
+                conn.execute(
+                    "UPDATE task_runs SET output_files=? WHERE id=?",
+                    (json.dumps(kept_files), row["id"]),
+                )
+                updated_runs += 1
+
+        conn.commit()
+
+    return {"updated_runs": updated_runs, "removed_refs": removed_refs}
+
+
 # ─── Export functions ───
 
 def _sanitize_filename(text: Any, fallback: str = "output") -> str:

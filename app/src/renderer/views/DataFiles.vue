@@ -25,6 +25,28 @@
       </div>
     </div>
 
+    <div v-if="groups.length" class="df-toolbar" :class="{ active: selectedCount > 0 }">
+      <div class="df-toolbar-left">
+        <label class="df-select-all">
+          <input
+            type="checkbox"
+            :checked="allSelected"
+            @change="toggleSelectAll"
+          />
+          <span>{{ allSelected ? '取消全选' : '全选当前列表' }}</span>
+        </label>
+        <span class="df-toolbar-count">已选 {{ selectedCount }} 个文件</span>
+      </div>
+      <div class="df-toolbar-actions">
+        <button class="btn-ghost-sm" :disabled="!selectedCount || deleting" @click="clearSelection">清空选择</button>
+        <button class="btn-danger-sm" :disabled="!selectedCount || deleting" @click="openBatchDeleteConfirm">批量删除</button>
+      </div>
+    </div>
+
+    <div v-if="noticeMsg" class="df-notice" :class="noticeType">
+      {{ noticeMsg }}
+    </div>
+
     <!-- 滚动内容区 -->
     <div class="df-body">
       <div v-if="!groups.length" class="df-placeholder">还没有输出文件。执行一个抓取任务后文件会出现在这里。</div>
@@ -34,7 +56,15 @@
           <span class="df-group-count">{{ g.files.length }} 个文件</span>
         </div>
         <div class="df-group-body">
-          <div v-for="f in g.files" :key="f.path" class="df-file-row">
+          <div v-for="f in g.files" :key="f.path" class="df-file-row" :class="{ selected: isSelected(f.path) }">
+            <label class="df-file-check" @click.stop>
+              <input
+                type="checkbox"
+                :checked="isSelected(f.path)"
+                :disabled="deleting"
+                @change="toggleSelection(f, $event.target.checked)"
+              />
+            </label>
             <span class="df-file-icon">{{ f.path.endsWith('.xlsx') || f.path.endsWith('.xls') ? '📊' : f.path.endsWith('.json') ? '📋' : '📄' }}</span>
             <div class="df-file-info" @click="openFile(f.path)">
               <span class="df-file-name">{{ f.name }}</span>
@@ -46,7 +76,7 @@
             <div class="df-file-actions">
               <button class="df-btn" @click="revealFile(f.path)">显示</button>
               <button class="df-btn" @click="saveAs(f.path)">另存为</button>
-              <button class="df-btn df-btn-danger" @click="deleteFile(f)">删除</button>
+              <button class="df-btn df-btn-danger" @click="openDeleteConfirm([f])">删除</button>
             </div>
           </div>
         </div>
@@ -54,13 +84,22 @@
     </div>
 
     <!-- 删除确认 -->
-    <div v-if="confirmFile" class="df-modal-overlay" @click.self="confirmFile = null">
-      <div class="df-modal">
-        <p class="df-modal-title">确认删除</p>
-        <p class="df-modal-body">将永久删除文件：<br><strong>{{ confirmFile.name }}</strong></p>
+    <div v-if="showDeleteConfirm" class="df-modal-overlay" @click.self="closeDeleteConfirm">
+      <div class="df-modal df-modal-danger">
+        <p class="df-modal-title">确认删除 {{ deleteTargets.length }} 个文件</p>
+        <p class="df-modal-body">将从磁盘永久删除这些表格文件，并同步从运行记录中移除。此操作无法撤销。</p>
+        <div class="df-delete-preview">
+          <div v-for="file in deleteTargets.slice(0, 5)" :key="file.path" class="df-delete-item">
+            <span class="df-delete-item-name">{{ file.name }}</span>
+            <span class="df-delete-item-path">{{ file.path }}</span>
+          </div>
+          <div v-if="deleteTargets.length > 5" class="df-delete-more">
+            还有 {{ deleteTargets.length - 5 }} 个文件未显示
+          </div>
+        </div>
         <div class="df-modal-actions">
-          <button class="btn-ghost-sm" @click="confirmFile = null">取消</button>
-          <button class="btn-danger-sm" :disabled="deleting" @click="doDelete">
+          <button class="btn-ghost-sm" :disabled="deleting" @click="closeDeleteConfirm">取消</button>
+          <button class="btn-danger-sm" :disabled="deleting || !deleteTargets.length" @click="doDelete">
             {{ deleting ? '删除中…' : '确认删除' }}
           </button>
         </div>
@@ -70,7 +109,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 
 const groups         = ref([])
 const showDirSetting = ref(false)
@@ -78,8 +117,30 @@ const dataDir        = ref('')
 const savingDir      = ref(false)
 const dirMsg         = ref('')
 const dirOk          = ref(true)
-const confirmFile    = ref(null)
 const deleting       = ref(false)
+const showDeleteConfirm = ref(false)
+const deleteTargets   = ref([])
+const selectedPaths   = ref([])
+const noticeMsg       = ref('')
+const noticeType      = ref('ok')
+let noticeTimer       = null
+
+const allFiles = computed(() => groups.value.flatMap(g => g.files || []))
+const visiblePaths = computed(() => [...new Set(allFiles.value.map(f => f.path).filter(Boolean))])
+const selectedFiles = computed(() => {
+  const selected = new Set(selectedPaths.value)
+  const seen = new Set()
+  const files = []
+  for (const file of allFiles.value) {
+    const path = file?.path
+    if (!path || !selected.has(path) || seen.has(path)) continue
+    seen.add(path)
+    files.push(file)
+  }
+  return files
+})
+const selectedCount = computed(() => selectedFiles.value.length)
+const allSelected = computed(() => visiblePaths.value.length > 0 && selectedCount.value === visiblePaths.value.length)
 
 async function load() {
   try {
@@ -101,10 +162,9 @@ async function load() {
           let size = '', ctime = ''
           try {
             const stat = await window.cs.statFile(p)
-            if (stat) {
-              size  = stat.size  ? formatSize(stat.size)  : ''
-              ctime = stat.ctime ? formatDate(stat.ctime) : ''
-            }
+            if (!stat?.isFile) continue
+            size  = stat.size  ? formatSize(stat.size)  : ''
+            ctime = stat.ctime ? formatDate(stat.ctime) : ''
           } catch (_) {}
           files.push({ path: p, name: p.split('/').pop().split('\\').pop(), size, ctime })
         }
@@ -113,6 +173,7 @@ async function load() {
     }
   }
   groups.value = result
+  syncSelection()
 }
 
 function formatSize(bytes) {
@@ -131,23 +192,101 @@ function formatDate(iso) {
 function openFile(path)   { window.cs.openFile(path) }
 function revealFile(path) { window.cs.revealFile(path) }
 async function saveAs(srcPath) { await window.cs.saveAsFile(srcPath) }
-function deleteFile(f) { confirmFile.value = f }
+
+function isSelected(path) {
+  return selectedPaths.value.includes(path)
+}
+
+function toggleSelection(file, checked) {
+  const path = file?.path
+  if (!path) return
+  if (checked) {
+    if (!selectedPaths.value.includes(path)) selectedPaths.value = [...selectedPaths.value, path]
+  } else {
+    selectedPaths.value = selectedPaths.value.filter(p => p !== path)
+  }
+}
+
+function clearSelection() {
+  selectedPaths.value = []
+}
+
+function toggleSelectAll() {
+  if (allSelected.value) {
+    clearSelection()
+    return
+  }
+  selectedPaths.value = [...visiblePaths.value]
+}
+
+function syncSelection() {
+  const visible = new Set(visiblePaths.value)
+  selectedPaths.value = selectedPaths.value.filter(path => visible.has(path))
+}
+
+function clearNoticeTimer() {
+  if (noticeTimer) {
+    clearTimeout(noticeTimer)
+    noticeTimer = null
+  }
+}
+
+function setNotice(message, type = 'ok', ttlMs = 2600) {
+  clearNoticeTimer()
+  noticeMsg.value = message
+  noticeType.value = type
+  if (ttlMs > 0) {
+    noticeTimer = window.setTimeout(() => {
+      noticeMsg.value = ''
+      noticeTimer = null
+    }, ttlMs)
+  }
+}
+
+function openDeleteConfirm(files) {
+  deleteTargets.value = [...(files || [])]
+  showDeleteConfirm.value = true
+}
+
+function openBatchDeleteConfirm() {
+  openDeleteConfirm(selectedFiles.value)
+}
+
+function closeDeleteConfirm() {
+  if (deleting.value) return
+  showDeleteConfirm.value = false
+  deleteTargets.value = []
+}
 
 async function doDelete() {
-  if (!confirmFile.value) return
+  const targets = [...deleteTargets.value]
+  if (!targets.length) return
   deleting.value = true
   try {
-    await window.cs.deleteFile(confirmFile.value.path)
-    for (const g of groups.value) {
-      const idx = g.files.findIndex(f => f.path === confirmFile.value.path)
-      if (idx !== -1) { g.files.splice(idx, 1); break }
+    const paths = targets.map(f => f.path).filter(Boolean)
+    const r = await window.cs.deleteFiles(paths)
+    const deletedCount = Number(r?.deleted_count || 0)
+    const missingCount = Number(r?.missing_count || 0)
+    const failedCount = Number(r?.failed_count || (Array.isArray(r?.failed) ? r.failed.length : 0) || 0)
+    if (!r?.ok && !deletedCount && !missingCount) {
+      throw new Error(r?.error || '删除失败')
     }
-    groups.value = groups.value.filter(g => g.files.length > 0)
+
+    await load()
+    const deletedSet = new Set(paths)
+    selectedPaths.value = selectedPaths.value.filter(path => !deletedSet.has(path))
+    showDeleteConfirm.value = false
+    deleteTargets.value = []
+
+    const parts = []
+    if (deletedCount > 0) parts.push(`已删除 ${deletedCount} 个文件`)
+    if (missingCount > 0) parts.push(`${missingCount} 个文件已不存在`)
+    if (failedCount > 0) parts.push(`${failedCount} 个文件删除失败`)
+    setNotice(parts.join('，') || '删除完成', failedCount > 0 ? 'warn' : 'ok')
   } catch (e) {
-    alert('删除失败：' + e.message)
+    setNotice('删除失败：' + (e.message || e), 'err', 3600)
   }
   deleting.value = false
-  confirmFile.value = null
 }
 
 async function browseDir() {
@@ -169,6 +308,7 @@ async function saveDir() {
 }
 
 onMounted(load)
+onUnmounted(clearNoticeTimer)
 </script>
 
 <style scoped>
@@ -214,6 +354,72 @@ onMounted(load)
 .df-dir-msg.err { background: rgba(248,113,113,0.1); color: #f87171; }
 .df-dir-hint { font-size: 11px; color: var(--text3); margin: 0; }
 
+/* === 批量工具条 === */
+.df-toolbar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+.df-toolbar.active {
+  background: rgba(249, 115, 22, 0.08);
+}
+.df-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.df-select-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text2);
+  user-select: none;
+}
+.df-select-all input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--orange);
+}
+.df-toolbar-count {
+  font-size: 12px;
+  color: var(--text3);
+}
+.df-toolbar-actions {
+  display: flex;
+  gap: 8px;
+}
+
+/* === 轻提示 === */
+.df-notice {
+  margin: 10px 24px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.df-notice.ok {
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  background: rgba(74, 222, 128, 0.08);
+  color: #86efac;
+}
+.df-notice.warn {
+  border: 1px solid rgba(251, 191, 36, 0.25);
+  background: rgba(251, 191, 36, 0.08);
+  color: #fcd34d;
+}
+.df-notice.err {
+  border: 1px solid rgba(248, 113, 113, 0.25);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fca5a5;
+}
+
 /* === 滚动区 === */
 .df-body {
   flex: 1;
@@ -236,6 +442,18 @@ onMounted(load)
 .df-file-row { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); transition: background 0.1s; }
 .df-file-row:last-child { border-bottom: none; }
 .df-file-row:hover { background: var(--bg3); }
+.df-file-row.selected { background: rgba(249, 115, 22, 0.08); }
+.df-file-check {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.df-file-check input {
+  width: 14px;
+  height: 14px;
+  accent-color: var(--orange);
+}
 .df-file-icon { font-size: 18px; flex-shrink: 0; }
 .df-file-info { flex: 1; display: flex; flex-direction: column; gap: 3px; cursor: pointer; min-width: 0; }
 .df-file-name { font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -251,10 +469,40 @@ onMounted(load)
 /* === 模态框 === */
 .df-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .df-modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 14px; padding: 24px; min-width: 320px; max-width: 440px; display: flex; flex-direction: column; gap: 14px; }
+.df-modal-danger { border-color: rgba(248, 113, 113, 0.35); box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35); }
 .df-modal-title { font-size: 15px; font-weight: 700; }
 .df-modal-body { font-size: 13px; color: var(--text2); line-height: 1.6; }
 .df-modal-body strong { color: var(--text); }
 .df-modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+.df-delete-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding: 8px 0 0;
+}
+.df-delete-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+}
+.df-delete-item-name {
+  font-size: 12px;
+  color: var(--text);
+  word-break: break-all;
+}
+.df-delete-item-path,
+.df-delete-more {
+  font-size: 11px;
+  color: var(--text3);
+  word-break: break-all;
+}
 
 /* === 按钮 === */
 .btn-ghost-sm { padding: 6px 12px; border-radius: 7px; border: 1px solid var(--border); background: transparent; color: var(--text2); font-size: 12px; cursor: pointer; }

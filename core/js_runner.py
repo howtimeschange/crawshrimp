@@ -2,9 +2,12 @@
 JS 注入执行器
 特性：超时控制 / 错误捕获 / 分页支持 / 多阶段重入支持
 """
+import base64
 import asyncio
+import hashlib
 import json
 import logging
+import mimetypes
 import secrets
 import time
 from pathlib import Path
@@ -36,11 +39,14 @@ class RunAbortedError(RuntimeError):
 
 
 class JSRunner:
-    def __init__(self, ws_url: str, timeout: int = DEFAULT_TIMEOUT, tab_id: Optional[str] = None):
+    def __init__(self, ws_url: str, timeout: int = DEFAULT_TIMEOUT, tab_id: Optional[str] = None, tab_url: Optional[str] = None):
         self.ws_url = ws_url
         self.timeout = min(timeout, MAX_TIMEOUT)
         self.tab_id = tab_id
+        self.tab_url = tab_url
         self._msg_id = 0
+        self._file_payload_cache: dict[str, dict] = {}
+        self._page_file_cache_keys: set[str] = set()
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -93,6 +99,134 @@ class JSRunner:
             await self._cdp_send("Input.dispatchMouseEvent", params)
         await asyncio.sleep(delay_ms / 1000.0)
 
+    def _resolve_local_file(self, raw_path: str) -> Path:
+        path = Path(str(raw_path or "")).expanduser()
+        if not path.is_absolute():
+            path = path.resolve()
+        if not path.exists() or not path.is_file():
+            raise FileNotFoundError(f"文件不存在：{path}")
+        return path
+
+    def _build_file_payload(self, raw_path: str) -> dict:
+        path = self._resolve_local_file(raw_path)
+        cache_key = str(path)
+        cached = self._file_payload_cache.get(cache_key)
+        stat = path.stat()
+        version = f"{stat.st_size}:{stat.st_mtime_ns}"
+        if cached and cached.get("version") == version:
+            return cached
+
+        digest = hashlib.sha1(f"{path}:{version}".encode("utf-8")).hexdigest()[:20]
+        payload = {
+            "path": str(path),
+            "version": version,
+            "cache_key": f"file:{digest}",
+            "name": path.name,
+            "mime": mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+            "b64": base64.b64encode(path.read_bytes()).decode("ascii"),
+        }
+        self._file_payload_cache[cache_key] = payload
+        return payload
+
+    def _build_file_inject_expression(self, items: list[dict], seed_payloads: list[dict]) -> str:
+        seed = {
+            item["cache_key"]: {
+                "name": item["name"],
+                "mime": item["mime"],
+                "b64": item["b64"],
+            }
+            for item in seed_payloads
+        }
+        return (
+            "(() => {\n"
+            "  try {\n"
+            "    if (typeof DataTransfer === 'undefined') {\n"
+            "      return { success: false, error: '当前页面环境不支持 DataTransfer 文件注入' };\n"
+            "    }\n"
+            "    window.__CRAWSHRIMP_FILE_CACHE__ = window.__CRAWSHRIMP_FILE_CACHE__ || Object.create(null);\n"
+            f"    const seed = {json.dumps(seed, ensure_ascii=False)};\n"
+            "    for (const [key, meta] of Object.entries(seed)) {\n"
+            "      if (!window.__CRAWSHRIMP_FILE_CACHE__[key]) {\n"
+            "        window.__CRAWSHRIMP_FILE_CACHE__[key] = meta;\n"
+            "      }\n"
+            "    }\n"
+            "    const items = " + json.dumps(items, ensure_ascii=False) + ";\n"
+            "    const decode = (b64) => {\n"
+            "      const binary = atob(String(b64 || ''));\n"
+            "      const bytes = new Uint8Array(binary.length);\n"
+            "      for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);\n"
+            "      return bytes;\n"
+            "    };\n"
+            "    const results = [];\n"
+            "    for (const item of items) {\n"
+            "      const input = document.querySelector(item.selector);\n"
+            "      if (!input) {\n"
+            "        return { success: false, error: `文件输入不存在: ${item.selector}` };\n"
+            "      }\n"
+            "      const dt = new DataTransfer();\n"
+            "      for (const cacheKey of item.cache_keys || []) {\n"
+            "        const meta = window.__CRAWSHRIMP_FILE_CACHE__[cacheKey];\n"
+            "        if (!meta) {\n"
+            "          return { success: false, error: `文件缓存不存在: ${cacheKey}` };\n"
+            "        }\n"
+            "        const file = new File([decode(meta.b64)], meta.name || 'upload.bin', { type: meta.mime || 'application/octet-stream' });\n"
+            "        dt.items.add(file);\n"
+            "      }\n"
+            "      input.files = dt.files;\n"
+            "      input.dispatchEvent(new Event('input', { bubbles: true }));\n"
+            "      input.dispatchEvent(new Event('change', { bubbles: true }));\n"
+            "      results.push({ selector: item.selector, count: dt.files.length });\n"
+            "    }\n"
+            "    return { success: true, data: results, meta: { has_more: false } };\n"
+            "  } catch (error) {\n"
+            "    return { success: false, error: String(error?.message || error) };\n"
+            "  }\n"
+            "})()\n"
+        )
+
+    async def inject_files(self, items: list[dict], retry_with_full_seed: bool = True) -> JSResult:
+        normalized_items: list[dict] = []
+        seed_payloads: list[dict] = []
+
+        for item in items or []:
+            selector = str(item.get("selector") or "").strip()
+            raw_files = item.get("files") or []
+            if not selector:
+                return JSResult(success=False, error="inject_files 缺少 selector")
+            if not isinstance(raw_files, list) or not raw_files:
+                return JSResult(success=False, error=f"inject_files 缺少文件列表: {selector}")
+
+            cache_keys = []
+            for raw_path in raw_files:
+                payload = self._build_file_payload(str(raw_path))
+                cache_keys.append(payload["cache_key"])
+                if payload["cache_key"] not in self._page_file_cache_keys:
+                    seed_payloads.append(payload)
+
+            normalized_items.append({
+                "selector": selector,
+                "cache_keys": cache_keys,
+            })
+
+        expression = self._build_file_inject_expression(normalized_items, seed_payloads)
+        result = await self.evaluate_with_reconnect(expression, allow_navigation_retry=True)
+        if result.success:
+            for payload in seed_payloads:
+                self._page_file_cache_keys.add(payload["cache_key"])
+            return result
+
+        missing_cache = "文件缓存不存在" in (result.error or "")
+        if retry_with_full_seed and missing_cache:
+            fallback_seed = [self._build_file_payload(path) for item in items or [] for path in (item.get("files") or [])]
+            expression = self._build_file_inject_expression(normalized_items, fallback_seed)
+            retry_result = await self.evaluate_with_reconnect(expression, allow_navigation_retry=True)
+            if retry_result.success:
+                for payload in fallback_seed:
+                    self._page_file_cache_keys.add(payload["cache_key"])
+            return retry_result
+
+        return result
+
     async def evaluate(self, expression: str) -> JSResult:
         try:
             msg = await self._evaluate_raw(expression)
@@ -120,15 +254,28 @@ class JSRunner:
         )
 
     async def _refresh_ws_url(self) -> None:
-        if not self.tab_id:
-            return
         from core.cdp_bridge import get_bridge
-        tab = get_bridge().get_tab(self.tab_id)
+        bridge = get_bridge()
+        tab = None
+        if self.tab_id:
+            tab = bridge.get_tab(self.tab_id)
+        if not tab and self.tab_url:
+            prefix = str(self.tab_url).strip()
+            if prefix:
+                candidates = [
+                    candidate for candidate in bridge.get_tabs()
+                    if candidate.get("type") == "page" and str(candidate.get("url", "")).startswith(prefix)
+                ]
+                if len(candidates) == 1:
+                    tab = candidates[0]
+                elif len(candidates) > 1:
+                    tab = candidates[0]
         if not tab:
             raise RuntimeError(f"导航后找不到原标签页: {self.tab_id}")
         ws_url = tab.get("webSocketDebuggerUrl", "")
         if not ws_url:
             raise RuntimeError(f"标签页缺少 webSocketDebuggerUrl: {self.tab_id}")
+        self.tab_id = str(tab.get("id") or self.tab_id or "")
         self.ws_url = ws_url
 
     def _is_navigation_error(self, error: str) -> bool:
@@ -226,6 +373,8 @@ class JSRunner:
         all_data: List[dict] = []
         params_json = json.dumps(params or {}, ensure_ascii=False)
         run_token = f"{int(time.time() * 1000)}-{secrets.token_hex(4)}"
+        self._file_payload_cache = {}
+        self._page_file_cache_keys = set()
 
         await self._persist_run_params(run_token, params_json)
 
@@ -286,6 +435,37 @@ class JSRunner:
                             await self._refresh_ws_url()
                             continue
 
+                        if action == "inject_files":
+                            items = meta.get("items") or []
+                            await cooperate("before_file_inject", page, phase, shared, {
+                                "file_item_total": len(items),
+                            })
+                            inject_result = await self.inject_files(items)
+                            if not inject_result.success:
+                                raise RuntimeError(inject_result.error or "文件注入失败")
+                            post_sleep = float(meta.get("sleep_ms", 500)) / 1000.0
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
+                            await asyncio.sleep(post_sleep)
+                            next_phase = meta.get("next_phase") or phase
+                            logger.info(f"inject_files: page={page} phase={phase} 注入 {len(items)} 个文件输入 -> {next_phase}")
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "reload_page":
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 1000))
+                            logger.info(f"reload_page: page={page} phase={phase} -> {next_phase}")
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                            try:
+                                await self._cdp_send("Page.reload", {"ignoreCache": True})
+                            except Exception as e:
+                                logger.info(f"Page.reload 失败，尝试继续等待页面重载: {e}")
+                            await asyncio.sleep(sleep_ms / 1000.0)
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
                         if action == "next_phase":
                             next_phase = meta.get("next_phase")
                             if not next_phase:
@@ -323,3 +503,4 @@ class JSRunner:
                 raise RunAbortedError("任务已停止", partial_data=list(all_data))
         finally:
             await self._clear_run_params(run_token)
+            self._page_file_cache_keys = set()

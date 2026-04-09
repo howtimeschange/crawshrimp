@@ -33,6 +33,7 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 - 新增内置适配包 `lazada-plus-v1`
 - 桌面端任务页支持适配包内置模板下载
 - `file_excel` 支持多 sheet 工作簿注入
+- 新增 `file_images` 多图参数，适合标签图/素材图批量上传任务
 - Lazada 模板已内置 `Vouchers / FlexiTiers / Instructions / 填写说明`
 - Lazada 模板主要枚举字段已预置 Excel 下拉框
 - 桌面端新增“新页面开启”登录模式，并修复 Windows 下模板下载不可点击问题
@@ -259,6 +260,24 @@ tasks:
 - 次按钮：只跑一次预检，不执行 live
 
 脚本侧的参数契约不变，仍建议保留 `execute_mode=plan/live` 供后端和脚本识别。
+
+### `file_images` 多图参数
+
+任务参数现在也支持 `file_images`：
+
+- GUI 侧可一次选择多张 `png/jpg/jpeg`
+- 脚本收到的是 `paths` 数组，适合传给上传控件
+- 底座内置了浏览器侧 `File + DataTransfer` 注入流程，适合图片类批量上传任务
+
+示例：
+
+```yaml
+- id: label_images
+  type: file_images
+  label: 标签图
+  required: true
+  hint: 可多选，脚本里会收到本地文件路径数组
+```
 
 ---
 

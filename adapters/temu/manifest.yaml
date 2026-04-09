@@ -1,8 +1,8 @@
 id: temu
 name: Temu 运营助手
-version: 1.2.0
+version: 1.3.1
 author: howtimeschange
-description: "Temu 卖家后台数据抓取：商品数据、售后、评价、店铺商品"
+description: "Temu 卖家后台数据抓取与批量自动化：商品数据、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
 
 auth:
@@ -108,6 +108,84 @@ tasks:
     output:
       - type: excel
         filename: "{shop_name}_售后数据_{region_scope}_{timestamp}.xlsx"
+
+  - id: compliant_live_photos_label
+    name: 商品实拍图洗唛合规
+    description: 批量处理 Temu 合规中心「商品实拍图」页的标签图上传，优先处理“避免影响商品发货入库”的异常款，并自动提交深度识别。
+    script: compliant-live-photos-label.js
+    entry_url: https://agentseller.temu.com/govern/compliant-live-photos
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: max_products
+        type: number
+        label: 最大处理款数
+        min: 1
+        step: 1
+        hint: 留空表示持续执行，直到三个快速筛选 tab 中没有待处理商品。
+      - id: goods_statuses
+        type: checkbox
+        label: 商品状态
+        hint: 默认仅处理「在售中」；可多选，全部取消则不过滤商品状态。
+        default:
+          - 在售中
+        options:
+          - value: 在售中
+            label: 在售中
+          - value: 未发布到站点
+            label: 未发布到站点
+          - value: 已下架
+            label: 已下架
+          - value: 已终止
+            label: 已终止
+          - value: 已删除
+            label: 已删除
+      - id: clothing_subject_label_images
+        type: file_images
+        label: 服装主体标签图
+        max: 5
+        hint: 上传到「商品主体实拍图 > 标签图」，可不传；支持多选，最多 5 张 jpg/png/jpeg。
+      - id: clothing_package_label_images
+        type: file_images
+        label: 服装外包装标签图
+        max: 5
+        hint: 上传到「商品外包装实拍图 > 标签图」，可不传；支持多选，最多 5 张 jpg/png/jpeg。
+      - id: shoe_subject_label_images
+        type: file_images
+        label: 鞋品主体标签图
+        max: 5
+        hint: 上传到「商品主体实拍图 > 标签图」，可不传；支持多选，最多 5 张 jpg/png/jpeg。
+      - id: shoe_package_label_images
+        type: file_images
+        label: 鞋品外包装标签图
+        max: 5
+        hint: 上传到「商品外包装实拍图 > 标签图」，可不传；支持多选，最多 5 张 jpg/png/jpeg。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Temu_商品实拍图洗唛合规_{timestamp}.xlsx"
+        columns:
+          - 执行序号
+          - 快速筛选
+          - SPU
+          - 商品名称
+          - 商品分类判断
+          - 操作按钮
+          - 当前识别状态
+          - 售卖影响及建议
+          - 处理结果
+          - 原因
+          - 主体标签图文件数
+          - 外包装标签图文件数
+          - 深度识别结果
 
   - id: store_items
     name: 站点商品

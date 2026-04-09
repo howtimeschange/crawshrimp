@@ -54,42 +54,59 @@
       @dragleave.prevent="handleDragLeave"
       @drop.prevent="handleDrop"
     >
-      <div class="modal install-modal">
-        <h3>导入脚本包</h3>
-        <p class="modal-sub">支持导入两种来源：包含 manifest.yaml 的适配包目录，或已经打包好的 .zip 适配包</p>
-        <div class="drop-zone" :class="{ active: isDragging, ready: !!installPath }">
-          <div class="drop-title">{{ isDragging ? '松开即可导入' : '拖拽适配包目录或 .zip 包到这里' }}</div>
-          <div class="drop-sub">{{ installSummary }}</div>
-        </div>
-        <div class="picker-row">
-          <button class="btn-orange-sm" :disabled="installing" @click="browseDirectory">选择目录</button>
-          <button class="btn-ghost" :disabled="installing" @click="browseZip">选择 ZIP</button>
-        </div>
-        <div class="input-row install-input-row">
-          <input
-            v-model="installPath"
-            placeholder="也可以直接粘贴目录路径或 .zip 文件路径"
-            class="input"
-            :disabled="installing"
-            @change="handleManualPathChange"
-          />
-          <span v-if="installType" class="path-kind">{{ installType === 'zip' ? 'ZIP' : '目录' }}</span>
-          <button v-if="installPath" class="clear-inline" :disabled="installing" @click="clearInstallSelection">清空</button>
-        </div>
-        <p v-if="msg" :class="['msg', msgErr ? 'err' : 'ok']">{{ msg }}</p>
-        <div class="modal-actions">
-          <button class="btn-orange" :disabled="!installPath || installing" @click="doInstall">
-            {{ installing ? '导入中…' : '导入' }}
-          </button>
-          <button class="btn-ghost" :disabled="installing" @click="closeInstallModal">取消</button>
-        </div>
+      <div class="modal install-modal" :class="{ success: installState === 'success' }">
+        <template v-if="installState === 'success'">
+          <div class="success-panel" aria-live="polite">
+            <div class="success-badge">✓</div>
+            <h3>导入成功</h3>
+            <p class="success-copy">
+              <strong>{{ successAdapterName }}</strong> {{ successDetail }}
+            </p>
+            <div class="success-meta">
+              <span class="success-pill">列表已刷新</span>
+              <span v-if="successAdapterVersion" class="success-pill">v{{ successAdapterVersion }}</span>
+            </div>
+            <button class="btn-success" @click="closeInstallModal">完成</button>
+          </div>
+        </template>
+
+        <template v-else>
+          <h3>导入脚本包</h3>
+          <p class="modal-sub">支持导入两种来源：包含 manifest.yaml 的适配包目录，或已经打包好的 .zip 适配包</p>
+          <div class="drop-zone" :class="{ active: isDragging, ready: !!installPath }">
+            <div class="drop-title">{{ isDragging ? '松开即可导入' : '拖拽适配包目录或 .zip 包到这里' }}</div>
+            <div class="drop-sub">{{ installSummary }}</div>
+          </div>
+          <div class="picker-row">
+            <button class="btn-orange-sm" :disabled="installing" @click="browseDirectory">选择目录</button>
+            <button class="btn-ghost" :disabled="installing" @click="browseZip">选择 ZIP</button>
+          </div>
+          <div class="input-row install-input-row">
+            <input
+              v-model="installPath"
+              placeholder="也可以直接粘贴目录路径或 .zip 文件路径"
+              class="input"
+              :disabled="installing"
+              @change="handleManualPathChange"
+            />
+            <span v-if="installType" class="path-kind">{{ installType === 'zip' ? 'ZIP' : '目录' }}</span>
+            <button v-if="installPath" class="clear-inline" :disabled="installing" @click="clearInstallSelection">清空</button>
+          </div>
+          <p v-if="msg" :class="['msg', msgErr ? 'err' : 'ok']">{{ msg }}</p>
+          <div class="modal-actions">
+            <button class="btn-orange" :disabled="!installPath || installing" @click="doInstall">
+              {{ installing ? '导入中…' : '导入' }}
+            </button>
+            <button class="btn-ghost" :disabled="installing" @click="closeInstallModal">取消</button>
+          </div>
+        </template>
       </div>
     </div>
   </div>
 </template>
 
 <script setup>
-import { computed, ref, inject, onMounted } from 'vue'
+import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
 
 const emit = defineEmits(['open-script', 'reload'])
 const scriptGroups = inject('scriptGroups')
@@ -105,6 +122,11 @@ const isDragging = ref(false)
 const dragDepth = ref(0)
 const msg = ref('')
 const msgErr = ref(false)
+const installState = ref('idle')
+const successAdapterName = ref('')
+const successAdapterVersion = ref('')
+const successDetail = ref('')
+const successCloseTimer = ref(null)
 
 const groups = scriptGroups
 
@@ -167,13 +189,16 @@ function resetDragState() {
 }
 
 function openInstallModal() {
+  resetInstallFeedback()
   clearInstallSelection()
   showInstall.value = true
 }
 
 function closeInstallModal() {
   if (installing.value) return
+  clearSuccessTimer()
   showInstall.value = false
+  resetInstallFeedback()
   clearInstallSelection()
 }
 
@@ -183,6 +208,23 @@ function clearInstallSelection() {
   msg.value = ''
   msgErr.value = false
   resetDragState()
+}
+
+function clearSuccessTimer() {
+  if (successCloseTimer.value) {
+    clearTimeout(successCloseTimer.value)
+    successCloseTimer.value = null
+  }
+}
+
+function resetInstallFeedback() {
+  clearSuccessTimer()
+  msg.value = ''
+  msgErr.value = false
+  installState.value = 'idle'
+  successAdapterName.value = ''
+  successAdapterVersion.value = ''
+  successDetail.value = ''
 }
 
 async function resolveInstallTarget(targetPath, expectedKind = '') {
@@ -292,6 +334,7 @@ async function doInstall() {
   installType.value = resolved.kind
   msg.value = ''
   msgErr.value = false
+  installState.value = 'idle'
   installing.value = true
 
   const payload = resolved.kind === 'zip'
@@ -301,11 +344,28 @@ async function doInstall() {
   try {
     const r = await window.cs.installAdapter(payload)
     if (r.ok) {
-      msg.value = `已导入：${r.adapter?.name || resolved.path}`
-      await loadScriptGroups()
-      emit('reload')
+      let refreshFailed = false
+      try {
+        await loadScriptGroups()
+        emit('reload')
+      } catch (error) {
+        refreshFailed = true
+        console.warn('Failed to reload script groups after install', error)
+      }
       installing.value = false
-      closeInstallModal()
+      successAdapterName.value = r.adapter?.name || resolved.path
+      successAdapterVersion.value = r.adapter?.version || ''
+      successDetail.value = refreshFailed
+        ? '已成功导入，但脚本列表刷新失败，请稍后手动刷新。'
+        : '已成功导入，脚本列表已更新。'
+      installState.value = 'success'
+      clearInstallSelection()
+      clearSuccessTimer()
+      successCloseTimer.value = window.setTimeout(() => {
+        if (showInstall.value && installState.value === 'success') {
+          closeInstallModal()
+        }
+      }, 1800)
       return
     }
     msg.value = r.detail || r.error || '导入失败'
@@ -317,6 +377,10 @@ async function doInstall() {
     installing.value = false
   }
 }
+
+onUnmounted(() => {
+  clearSuccessTimer()
+})
 </script>
 
 <style scoped>
@@ -369,6 +433,10 @@ async function doInstall() {
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 100; }
 .modal { background: var(--bg2); border: 1px solid var(--border); border-radius: 16px; padding: 28px; width: 500px; display: flex; flex-direction: column; gap: 16px; }
 .install-modal { width: 560px; }
+.install-modal.success {
+  border-color: rgba(74, 222, 128, 0.25);
+  background: linear-gradient(180deg, rgba(22, 101, 52, 0.24), rgba(15, 23, 42, 0.98));
+}
 .modal h3 { font-size: 16px; font-weight: 700; }
 .modal-sub { font-size: 12px; color: var(--text3); margin-top: -8px; line-height: 1.6; }
 .drop-zone {
@@ -418,6 +486,68 @@ async function doInstall() {
 .msg.ok  { background: rgba(74,222,128,0.1); color: #4ade80; }
 .msg.err { background: rgba(248,113,113,0.1); color: #f87171; }
 .modal-actions { display: flex; gap: 8px; }
+
+.success-panel {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 12px;
+  padding: 18px 8px 4px;
+}
+.success-badge {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  font-size: 24px;
+  font-weight: 800;
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.3);
+  background: radial-gradient(circle at top, rgba(74, 222, 128, 0.24), rgba(74, 222, 128, 0.08));
+  box-shadow: 0 0 0 6px rgba(74, 222, 128, 0.06);
+}
+.success-panel h3 {
+  font-size: 18px;
+  font-weight: 800;
+  color: var(--text);
+}
+.success-copy {
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text2);
+  max-width: 420px;
+}
+.success-copy strong {
+  color: #e2e8f0;
+}
+.success-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+.success-pill {
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.12);
+  border: 1px solid rgba(74, 222, 128, 0.18);
+  color: #4ade80;
+}
+.btn-success {
+  margin-top: 6px;
+  padding: 10px 20px;
+  border-radius: 10px;
+  border: 1px solid rgba(74, 222, 128, 0.25);
+  background: linear-gradient(180deg, rgba(34, 197, 94, 0.95), rgba(22, 163, 74, 0.95));
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.btn-success:hover { filter: brightness(1.05); }
 
 /* Buttons */
 .btn-orange { padding: 9px 20px; border-radius: 9px; border: none; background: var(--orange); color: white; font-size: 13px; font-weight: 700; }
