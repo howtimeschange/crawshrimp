@@ -1763,16 +1763,6 @@
         )
       }
 
-      const saveLivePhotosDialog = findSaveLivePhotosDialog()
-      if (saveLivePhotosDialog) {
-        return nextPhase('save_live_photos_without_fix', 200, {
-          ...shared,
-          submit_retry: 0,
-          confirm_retry: 0,
-          toast_retry: 0,
-        })
-      }
-
       const confirmDialog = findDeepRecognitionConfirmDialog()
       if (confirmDialog) {
         return nextPhase('confirm_deep_recognition', 500, {
@@ -1808,6 +1798,16 @@
       const deepButton = findDeepRecognitionButton()
       if (deepButton) {
         return nextPhase('request_deep_recognition', Number(shared.deep_recognition_request_count || 0) > 0 ? 600 : 100, shared)
+      }
+
+      const saveLivePhotosDialog = findSaveLivePhotosDialog()
+      if (saveLivePhotosDialog) {
+        return nextPhase('save_live_photos_without_fix', 200, {
+          ...shared,
+          submit_retry: 0,
+          confirm_retry: 0,
+          toast_retry: 0,
+        })
       }
 
       const retry = Number(shared.submit_retry || 0)

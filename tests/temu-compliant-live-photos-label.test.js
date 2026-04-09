@@ -553,3 +553,68 @@ test('wait_after_submit diverts to the save-live-photos flow when the exception 
   assert.equal(result.success, true)
   assert.equal(result.meta.next_phase, 'save_live_photos_without_fix')
 })
+
+test('wait_after_submit prioritizes deep recognition when the exception dialog also exposes a deep-recognition entry', async () => {
+  const deepButton = new FakeElement({
+    tagName: 'button',
+    text: '深度识别',
+    style: { cursor: 'pointer' },
+    rect: { x: 1080, y: 630, width: 96, height: 32 },
+  })
+  const saveButton = new FakeElement({
+    tagName: 'button',
+    text: '保存实拍图，暂不处理异常',
+    style: { cursor: 'pointer' },
+    rect: { x: 560, y: 720, width: 220, height: 40 },
+  })
+  const saveDialog = new FakeElement({
+    className: 'rocket-modal',
+    text: '识别结果有异常，请及时整改实物后重新上传，防止影响商品售卖！ 保存实拍图，暂不处理异常 立即修改 如果您坚信实拍图清晰且信息完整，可以申请深度识别',
+    rect: { x: 380, y: 110, width: 1160, height: 620 },
+    style: { zIndex: '1300' },
+    attrs: { role: 'dialog' },
+  })
+  saveDialog.setSelector('button,span,div,a,[role="button"]', [saveButton, deepButton])
+
+  const drawer = new FakeElement({
+    className: 'rocket-drawer rocket-drawer-right rocket-drawer-open',
+    text: '上传并识别 商品主体实拍图 商品外包装实拍图',
+    rect: { x: 192, y: 0, width: 1728, height: 893 },
+    style: { zIndex: '1000' },
+  })
+  drawer.setSelector('button,span,div,a,[role="button"]', [
+    new FakeElement({
+      tagName: 'button',
+      text: '上传并识别',
+      style: { cursor: 'pointer' },
+      rect: { x: 1500, y: 820, width: 120, height: 36 },
+    }),
+  ])
+  drawer.setSelector('input[type=file]', [])
+
+  const document = new FakeDocument()
+  document.setSelector('.rocket-modal, .rocket-dialog, [role="dialog"], .rocket-modal-wrap, .rocket-drawer-content-wrapper', [saveDialog, drawer])
+  document.setSelector('.rocket-drawer.rocket-drawer-open', [drawer])
+  document.setSelector('.rocket-drawer-content-wrapper', [drawer])
+  document.setSelector('.rocket-drawer-content', [drawer])
+
+  const result = await runAdapter({
+    phase: 'wait_after_submit',
+    document,
+    shared: {
+      current_spu: '123456',
+      current_name: '鞋品测试款',
+      current_action_text: '修改',
+      current_status_text: '系统识别能力待建设',
+      current_suggestion: '--',
+      product_kind: 'shoes',
+      submit_retry: 0,
+      confirm_retry: 0,
+      toast_retry: 0,
+      deep_recognition_request_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'request_deep_recognition')
+})
