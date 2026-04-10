@@ -130,6 +130,20 @@ tasks:
         min: 1
         step: 1
         hint: 留空表示持续执行，直到三个快速筛选 tab 中没有待处理商品。
+      - id: compensation_mode
+        type: radio
+        label: 执行范围
+        default: normal
+        options:
+          - value: normal
+            label: 正常扫描（可跳过历史已提交 SPU）
+          - value: retry_failed_from_file
+            label: 仅补偿重试结果文件中的失败 SPU
+        hint: 如选择结果文件，脚本会自动按 SPU 跳过其中“已提交/跳过”的历史记录；补偿模式下仅处理文件里“失败”的 SPU。
+      - id: retry_result_file
+        type: file_excel
+        label: 历史结果文件
+        hint: 可选。选择上一次导出的结果表（Excel / CSV）后，脚本会按 SPU 跳过已成功的款，并可按失败 SPU 做补偿重试。
       - id: goods_statuses
         type: checkbox
         label: 商品状态

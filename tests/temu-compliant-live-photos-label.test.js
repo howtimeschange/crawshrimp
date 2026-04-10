@@ -305,6 +305,200 @@ test('pick_row waits for table rows before advancing scope when the table is tem
   assert.ok(Date.now() - startedAt >= 1000)
 })
 
+test('main seeds processed and retry-target SPUs from the compensation result file', async () => {
+  const document = new FakeDocument()
+
+  const result = await runAdapter({
+    phase: 'main',
+    document,
+    params: {
+      compensation_mode: 'retry_failed_from_file',
+      retry_result_file: {
+        rows: [
+          { SPU: '111111', 处理结果: '已提交' },
+          { SPU: '222222', 处理结果: '失败' },
+          { SPU: '333333', 处理结果: '跳过' },
+        ],
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'ensure_target')
+  assert.deepEqual(Object.keys(result.meta.shared.processed_spus).sort(), ['111111', '333333'])
+  assert.deepEqual(Object.keys(result.meta.shared.retry_target_spus).sort(), ['222222'])
+  assert.equal(result.meta.shared.compensation_mode, 'retry_failed_from_file')
+})
+
+test('pick_row diverts retry-only mode into the exact SPU retry flow', async () => {
+  const document = new FakeDocument()
+  const processedRow = buildRow({
+    spu: '111111',
+    name: '已提交旧款',
+  })
+  const retryRow = buildRow({
+    spu: '222222',
+    name: '待补偿失败款',
+  })
+  const newRow = buildRow({
+    spu: '333333',
+    name: '新出现的未处理款',
+  })
+  document.setSelector('table tbody tr', [processedRow, retryRow, newRow])
+
+  const result = await runAdapter({
+    phase: 'pick_row',
+    document,
+    params: {
+      compensation_mode: 'retry_failed_from_file',
+      clothing_subject_label_images: { paths: ['/tmp/clothing-subject.jpg'] },
+      clothing_package_label_images: { paths: ['/tmp/clothing-package.jpg'] },
+    },
+    shared: {
+      scope_name: '图中标签有异常',
+      compensation_mode: 'retry_failed_from_file',
+      processed_spus: { '111111': 1 },
+      retry_target_spus: { '222222': 1 },
+      pending_retry_spus: {},
+      processed_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'prepare_retry_target')
+})
+
+test('prepare_retry_target picks the failed SPU and reuses scope metadata from the compensation file', async () => {
+  const document = new FakeDocument()
+
+  const result = await runAdapter({
+    phase: 'prepare_retry_target',
+    document,
+    params: {
+      compensation_mode: 'retry_failed_from_file',
+    },
+    shared: {
+      compensation_mode: 'retry_failed_from_file',
+      processed_spus: { '111111': 1 },
+      retry_target_spus: { '222222': 1, '333333': 1 },
+      retry_target_rows: {
+        '222222': { spu: '222222', name: '待补偿失败款', scope_name: '图中标签有异常', product_kind: 'clothing' },
+        '333333': { spu: '333333', name: '另一条失败款', scope_name: '待传图', product_kind: 'clothing' },
+      },
+      retry_target_order: ['111111', '222222', '333333'],
+      pending_retry_spus: {},
+      processed_count: 0,
+      scope_name: '待传图',
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'switch_retry_scope')
+  assert.equal(result.meta.shared.current_spu, '222222')
+  assert.equal(result.meta.shared.current_name, '待补偿失败款')
+  assert.equal(result.meta.shared.scope_name, '图中标签有异常')
+})
+
+test('prepare_retry_target does not refresh the page after a successful retry item completes', async () => {
+  const document = new FakeDocument()
+
+  const result = await runAdapter({
+    phase: 'prepare_retry_target',
+    document,
+    params: {
+      compensation_mode: 'retry_failed_from_file',
+    },
+    shared: {
+      compensation_mode: 'retry_failed_from_file',
+      processed_spus: { '111111': 1 },
+      retry_target_spus: { '222222': 1 },
+      retry_target_rows: {
+        '222222': { spu: '222222', name: '待补偿失败款', scope_name: '图中标签有异常', product_kind: 'clothing' },
+      },
+      retry_target_order: ['222222'],
+      pending_retry_spus: {},
+      processed_count: 1,
+      scope_name: '图中标签有异常',
+      retry_page_refresh_needed: true,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.notEqual(result.meta.action, 'reload_page')
+  assert.equal(result.meta.next_phase, 'run_retry_spu_query')
+  assert.equal(result.meta.shared.current_spu, '222222')
+})
+
+test('wait_retry_spu_query opens the exact queried row instead of falling back to pagination', async () => {
+  const document = new FakeDocument()
+  const retryRow = buildRow({
+    spu: '222222',
+    name: '待补偿失败款',
+  })
+  document.setSelector('table tbody tr', [retryRow])
+
+  const result = await runAdapter({
+    phase: 'wait_retry_spu_query',
+    document,
+    params: {
+      compensation_mode: 'retry_failed_from_file',
+      clothing_subject_label_images: { paths: ['/tmp/clothing-subject.jpg'] },
+      clothing_package_label_images: { paths: ['/tmp/clothing-package.jpg'] },
+    },
+    shared: {
+      compensation_mode: 'retry_failed_from_file',
+      current_spu: '222222',
+      current_name: '待补偿失败款',
+      scope_name: '图中标签有异常',
+      processed_spus: {},
+      retry_target_spus: { '222222': 1 },
+      retry_target_rows: {
+        '222222': { spu: '222222', name: '待补偿失败款', scope_name: '图中标签有异常', product_kind: 'clothing' },
+      },
+      retry_target_order: ['222222'],
+      processed_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'open_row')
+  assert.equal(result.meta.shared.current_spu, '222222')
+})
+
+test('wait_retry_spu_query reloads the page and retries the same SPU when the exact query returns no row', async () => {
+  const document = new FakeDocument()
+  document.setSelector('table tbody tr', [])
+
+  const result = await runAdapter({
+    phase: 'wait_retry_spu_query',
+    document,
+    params: {
+      compensation_mode: 'retry_failed_from_file',
+    },
+    shared: {
+      compensation_mode: 'retry_failed_from_file',
+      current_spu: '222222',
+      current_name: '待补偿失败款',
+      scope_name: '图中标签有异常',
+      processed_spus: {},
+      retry_target_spus: { '222222': 1 },
+      retry_target_rows: {
+        '222222': { spu: '222222', name: '待补偿失败款', scope_name: '图中标签有异常', product_kind: 'clothing' },
+      },
+      retry_target_order: ['222222'],
+      pending_retry_spus: {},
+      spu_retry_attempts: {},
+      processed_count: 0,
+      page_recovery_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'reload_page')
+  assert.equal(result.meta.next_phase, 'ensure_target')
+  assert.equal(result.meta.shared.pending_retry_spus['222222'], 1)
+})
+
 test('wait_drawer accepts a drawer that exposes upload controls even without SPU text', async () => {
   const document = new FakeDocument()
   const uploadButton = new FakeElement({
@@ -369,6 +563,79 @@ test('wait_drawer keeps waiting before it gives up when no drawer is visible', a
   assert.equal(result.meta.shared.open_retry, 1)
 })
 
+test('wait_drawer schedules page recovery and SPU compensation instead of failing immediately after repeated open misses', async () => {
+  const document = new FakeDocument()
+  document.setSelector('.rocket-drawer.rocket-drawer-open', [])
+  document.setSelector('.rocket-drawer-content-wrapper', [])
+  document.setSelector('.rocket-drawer-content', [])
+
+  const result = await runAdapter({
+    phase: 'wait_drawer',
+    document,
+    shared: {
+      current_spu: '123456',
+      current_name: '鞋品测试款',
+      current_action_text: '修改',
+      current_status_text: '系统识别能力待建设',
+      current_suggestion: '--',
+      product_kind: 'shoes',
+      open_retry: 4,
+      open_failure_streak: 1,
+      page_recovery_count: 0,
+      processed_spus: {},
+      retry_target_spus: {},
+      pending_retry_spus: {},
+      spu_retry_attempts: {},
+      processed_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'reload_page')
+  assert.equal(result.meta.next_phase, 'ensure_target')
+  assert.equal(result.meta.shared.pending_retry_spus['123456'], 1)
+  assert.equal(result.meta.shared.retry_target_spus['123456'], 1)
+  assert.equal(result.meta.shared.spu_retry_attempts['123456'], 1)
+  assert.equal(result.meta.shared.page_recovery_count, 1)
+})
+
+test('wait_drawer ignores drawer wrappers that have been translated outside the viewport', async () => {
+  const document = new FakeDocument()
+  const offscreenDrawer = new FakeElement({
+    className: 'rocket-drawer-content-wrapper',
+    text: '',
+    rect: { x: 1920, y: 0, width: 1728, height: 893 },
+    style: { zIndex: '1000' },
+  })
+  document.setSelector('.rocket-drawer.rocket-drawer-open', [])
+  document.setSelector('.rocket-drawer-content-wrapper', [offscreenDrawer])
+  document.setSelector('.rocket-drawer-content', [])
+
+  const result = await runAdapter({
+    phase: 'wait_drawer',
+    document,
+    shared: {
+      current_spu: '123456',
+      current_name: '鞋品测试款',
+      current_action_text: '修改',
+      current_status_text: '系统识别能力待建设',
+      current_suggestion: '--',
+      product_kind: 'shoes',
+      open_retry: 4,
+      open_failure_streak: 1,
+      page_recovery_count: 3,
+      processed_spus: {},
+      retry_target_spus: {},
+      pending_retry_spus: {},
+      spu_retry_attempts: { '123456': 2 },
+      processed_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.match(result.data[0].原因, /drawer=未出现/)
+})
+
 test('wait_drawer failure reason includes drawer diagnostics after retries are exhausted', async () => {
   const document = new FakeDocument()
   document.setSelector('.rocket-drawer.rocket-drawer-open', [])
@@ -386,13 +653,19 @@ test('wait_drawer failure reason includes drawer diagnostics after retries are e
       current_suggestion: '--',
       product_kind: 'shoes',
       open_retry: 4,
+      open_failure_streak: 1,
+      page_recovery_count: 3,
       processed_spus: {},
+      retry_target_spus: {},
+      pending_retry_spus: {},
+      spu_retry_attempts: { '123456': 2 },
       processed_count: 0,
     },
   })
 
   assert.equal(result.success, true)
   assert.match(result.data[0].原因, /drawer=未出现/)
+  assert.match(result.data[0].原因, /SPU补偿重试 3 次仍失败/)
 })
 
 test('wait_drawer diverts to the upload-later dialog flow when qualification gating modal appears', async () => {

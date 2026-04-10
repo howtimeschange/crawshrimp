@@ -18,6 +18,9 @@
   ]
   const OVERLAY_SELECTOR = '.rocket-modal, .rocket-dialog, [role="dialog"], .rocket-modal-wrap, .rocket-drawer-content-wrapper'
   const FILE_INPUT_MARK = 'data-crawshrimp-upload-key'
+  const SPU_RETRY_LIMIT = 3
+  const OPEN_FAILURE_STREAK_LIMIT = 2
+  const PAGE_RECOVERY_LIMIT = 3
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 
@@ -45,6 +48,14 @@
     }
   }
 
+  function reloadPage(nextPhaseName, sleepMs = 1200, newShared = shared) {
+    return {
+      success: true,
+      data: [],
+      meta: { action: 'reload_page', next_phase: nextPhaseName, sleep_ms: sleepMs, shared: newShared },
+    }
+  }
+
   function complete(data, hasMore = false, newShared = shared) {
     return {
       success: true,
@@ -63,6 +74,15 @@
 
   function compact(value) {
     return String(value || '').replace(/\s+/g, '').trim()
+  }
+
+  function lowerText(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().toLowerCase()
+  }
+
+  function normalizeQuickFilterName(value) {
+    const normalized = compact(value)
+    return QUICK_FILTERS.find(label => compact(label) === normalized) || ''
   }
 
   function visible(el) {
@@ -88,6 +108,13 @@
       w: Math.round(rect.width),
       h: Math.round(rect.height),
     }
+  }
+
+  function intersectsViewport(box) {
+    if (!box) return false
+    const viewportWidth = Number(window.innerWidth || document.documentElement?.clientWidth || 1920)
+    const viewportHeight = Number(window.innerHeight || document.documentElement?.clientHeight || 1080)
+    return box.x < viewportWidth && (box.x + box.w) > 0 && box.y < viewportHeight && (box.y + box.h) > 0
   }
 
   function parseZIndex(value) {
@@ -170,6 +197,67 @@
       : (value && Array.isArray(value.paths) ? value.paths : [])
     const normalized = [...new Set(raw.map(v => String(v || '').trim()).filter(Boolean))]
     return limit > 0 ? normalized.slice(0, limit) : normalized
+  }
+
+  function parseExcelRows(paramId) {
+    const value = params[paramId]
+    const raw = Array.isArray(value)
+      ? value
+      : (value && Array.isArray(value.rows) ? value.rows : [])
+    return raw.filter(item => item && typeof item === 'object')
+  }
+
+  function compensationMode() {
+    const value = String(params.compensation_mode || 'normal').trim().toLowerCase()
+    return value === 'retry_failed_from_file' ? value : 'normal'
+  }
+
+  function buildCompensationSeed() {
+    const rows = parseExcelRows('retry_result_file')
+    const processedSpus = {}
+    const retryTargetSpus = {}
+    const retryTargetRows = {}
+    const retryTargetOrder = []
+
+    for (const item of rows) {
+      const spu = compact(item?.SPU || item?.spu || item?.款号 || item?.spu_id || '')
+      const result = compact(item?.处理结果 || item?.result || item?.status || '')
+      const name = String(item?.商品名称 || item?.name || '').trim()
+      const scopeName = normalizeQuickFilterName(item?.快速筛选 || item?.scope || item?.quick_filter || '')
+      const rawKind = String(item?.商品分类判断 || item?.product_kind || item?.category || '').trim()
+      const productKind = /鞋/.test(rawKind || name) ? 'shoes' : ((rawKind || name) ? 'clothing' : '')
+      if (!spu || !result) continue
+
+      if (result === compact('已提交') || result === compact('跳过')) {
+        processedSpus[spu] = 1
+        delete retryTargetSpus[spu]
+        delete retryTargetRows[spu]
+        continue
+      }
+
+      if (result === compact('失败')) {
+        if (!processedSpus[spu]) {
+          retryTargetSpus[spu] = 1
+          if (!retryTargetRows[spu]) retryTargetOrder.push(spu)
+          retryTargetRows[spu] = {
+            spu,
+            name,
+            scope_name: scopeName,
+            product_kind: productKind,
+          }
+        }
+      }
+    }
+
+    return {
+      rowCount: rows.length,
+      processedSpus,
+      retryTargetSpus,
+      retryTargetRows,
+      retryTargetOrder,
+      processedCount: Object.keys(processedSpus).length,
+      retryCount: Object.keys(retryTargetSpus).length,
+    }
   }
 
   function parseCheckboxValues(paramId, allowedValues = []) {
@@ -323,6 +411,90 @@
       : {}
   }
 
+  function getRetryTargetMap() {
+    return shared.retry_target_spus && typeof shared.retry_target_spus === 'object'
+      ? shared.retry_target_spus
+      : {}
+  }
+
+  function getRetryTargetRowsMap() {
+    return shared.retry_target_rows && typeof shared.retry_target_rows === 'object'
+      ? shared.retry_target_rows
+      : {}
+  }
+
+  function getRetryTargetOrder() {
+    return Array.isArray(shared.retry_target_order)
+      ? shared.retry_target_order.map(item => compact(item)).filter(Boolean)
+      : []
+  }
+
+  function getPendingRetryMap() {
+    return shared.pending_retry_spus && typeof shared.pending_retry_spus === 'object'
+      ? shared.pending_retry_spus
+      : {}
+  }
+
+  function getSpuRetryAttempts() {
+    return shared.spu_retry_attempts && typeof shared.spu_retry_attempts === 'object'
+      ? shared.spu_retry_attempts
+      : {}
+  }
+
+  function isRetryOnlyMode() {
+    return String(shared.compensation_mode || compensationMode()) === 'retry_failed_from_file'
+  }
+
+  function getRetryTargetMeta(spu) {
+    const targetSpu = compact(spu)
+    if (!targetSpu) return null
+    const meta = getRetryTargetRowsMap()[targetSpu]
+    return meta && typeof meta === 'object' ? meta : null
+  }
+
+  function getOrderedRetrySpus() {
+    const keys = [
+      ...getRetryTargetOrder(),
+      ...Object.keys(getPendingRetryMap()),
+      ...Object.keys(getRetryTargetMap()),
+    ]
+    return [...new Set(keys.map(item => compact(item)).filter(Boolean))]
+  }
+
+  function pickRetryTargetSpu() {
+    const processed = getProcessedMap()
+    const pending = getPendingRetryMap()
+    const targets = getRetryTargetMap()
+    const currentSpu = compact(shared.current_spu || '')
+
+    if (currentSpu && !processed[currentSpu] && (pending[currentSpu] || targets[currentSpu])) {
+      return currentSpu
+    }
+
+    const ordered = getOrderedRetrySpus()
+    for (const source of [pending, targets]) {
+      for (const spu of ordered) {
+        if (source[spu] && !processed[spu]) return spu
+      }
+    }
+
+    return ''
+  }
+
+  function currentRowSnapshot(overrides = {}) {
+    const snapshotSpu = compact(overrides.spu || shared.current_spu || '')
+    const meta = getRetryTargetMeta(snapshotSpu)
+    return {
+      spu: snapshotSpu,
+      name: shared.current_name || meta?.name || '',
+      actionText: shared.current_action_text || '',
+      status: shared.current_status_text || '',
+      suggestion: shared.current_suggestion || '',
+      product_kind: shared.product_kind || meta?.product_kind || '',
+      ...overrides,
+    }
+  }
+
   function buildResult(row, status, reason, extras = {}) {
     return {
       执行序号: Number(shared.processed_count || 0) + 1,
@@ -343,20 +515,37 @@
 
   function emitRowResult(row, status, reason, extras = {}, sleepMs = 1200, overrides = {}) {
     const processedSpus = { ...getProcessedMap() }
-    if (row?.spu) processedSpus[row.spu] = 1
+    const retryTargets = { ...getRetryTargetMap() }
+    const retryTargetRows = { ...getRetryTargetRowsMap() }
+    const pendingRetries = { ...getPendingRetryMap() }
+    const retryAttempts = { ...getSpuRetryAttempts() }
+    const spu = compact(row?.spu || shared.current_spu || '')
+    if (spu) {
+      processedSpus[spu] = 1
+      delete retryTargets[spu]
+      delete retryTargetRows[spu]
+      delete pendingRetries[spu]
+    }
     const processedCount = Number(shared.processed_count || 0) + 1
-    const limitReached = hasReachedLimit(processedCount)
+    const retryOnly = isRetryOnlyMode()
+    const remainingRetryCount = Object.keys(retryTargets).length
+    const limitReached = hasReachedLimit(processedCount) || (retryOnly && remainingRetryCount <= 0)
+    const nextPhaseName = limitReached ? 'complete_run' : (retryOnly ? 'prepare_retry_target' : 'pick_row')
 
     return {
       success: true,
       data: [buildResult(row, status, reason, extras)],
       meta: {
         action: 'next_phase',
-        next_phase: limitReached ? 'complete_run' : 'pick_row',
+        next_phase: nextPhaseName,
         sleep_ms: sleepMs,
         shared: {
           ...shared,
           processed_spus: processedSpus,
+          retry_target_spus: retryTargets,
+          retry_target_rows: retryTargetRows,
+          pending_retry_spus: pendingRetries,
+          spu_retry_attempts: retryAttempts,
           processed_count: processedCount,
           current_exec_no: processedCount,
           current_row_no: processedCount,
@@ -378,6 +567,7 @@
           open_retry: 0,
           scope_retry: 0,
           upload_retry: 0,
+          search_retry: 0,
           query_retry: 0,
           field_retry: 0,
           submit_retry: 0,
@@ -389,11 +579,176 @@
           confirm_click_count: 0,
           toast_retry: 0,
           cleanup_retry: 0,
+          open_failure_streak: 0,
+          page_recovery_count: 0,
+          blocker_reason: '',
+          blocker_wait_rounds: 0,
+          resume_phase: '',
           page_signature: '',
           ...overrides,
         },
       },
     }
+  }
+
+  function detectPageBlockerState() {
+    const bodyText = lowerText(document.body?.innerText || '')
+    const titleText = lowerText(document.title || '')
+
+    const textPatterns = [
+      /验证码/,
+      /安全验证/,
+      /人机验证/,
+      /滑块验证/,
+      /请完成验证/,
+      /验证后继续/,
+      /captcha/,
+      /security check/,
+      /verify you are human/,
+      /human verification/,
+      /access denied/,
+      /blocked for security reasons/,
+    ]
+
+    for (const pattern of textPatterns) {
+      if (pattern.test(bodyText) || pattern.test(titleText)) {
+        return { present: true, reason: `text:${pattern.source}` }
+      }
+    }
+
+    const selectors = [
+      'iframe[src*="captcha"]',
+      'iframe[src*="challenge"]',
+      'iframe[src*="verify"]',
+      'iframe[src*="recaptcha"]',
+      'iframe[src*="hcaptcha"]',
+      '[id*="captcha"]',
+      '[class*="captcha"]',
+      '[id*="challenge"]',
+      '[class*="challenge"]',
+      'input[name*="captcha"]',
+      'form[action*="captcha"]',
+    ]
+
+    for (const selector of selectors) {
+      try {
+        if (document.querySelector(selector)) {
+          return { present: true, reason: `selector:${selector}` }
+        }
+      } catch (e) {}
+    }
+
+    return { present: false, reason: '' }
+  }
+
+  function pauseForPageBlocker(resumePhase, sleepMs = 2800, newShared = shared) {
+    const blocker = detectPageBlockerState()
+    if (!blocker.present) return null
+    return nextPhase('wait_verification', sleepMs, {
+      ...newShared,
+      pause_reason: 'verification',
+      blocker_reason: blocker.reason,
+      resume_phase: resumePhase,
+      blocker_wait_rounds: Number(newShared?.blocker_wait_rounds || 0),
+    })
+  }
+
+  function scheduleRetryableOpenRecovery(row, reason, options = {}) {
+    const snapshot = currentRowSnapshot(row)
+    const spu = compact(snapshot.spu)
+    const forceReload = !!options.forceReload
+    if (!spu) {
+      return emitRowResult(snapshot, 'failed', reason)
+    }
+
+    const retryAttempts = { ...getSpuRetryAttempts() }
+    const retryTargets = { ...getRetryTargetMap() }
+    const retryTargetRows = { ...getRetryTargetRowsMap() }
+    const pendingRetries = { ...getPendingRetryMap() }
+    const nextAttempt = Number(retryAttempts[spu] || 0) + 1
+    const openFailureStreak = Number(shared.open_failure_streak || 0) + 1
+
+    retryAttempts[spu] = nextAttempt
+    retryTargets[spu] = 1
+    retryTargetRows[spu] = {
+      ...(getRetryTargetMeta(spu) || {}),
+      spu,
+      name: snapshot.name || getRetryTargetMeta(spu)?.name || '',
+      scope_name: normalizeQuickFilterName(shared.scope_name || getRetryTargetMeta(spu)?.scope_name || ''),
+      product_kind: snapshot.product_kind || getRetryTargetMeta(spu)?.product_kind || '',
+    }
+    pendingRetries[spu] = 1
+
+    if (nextAttempt >= SPU_RETRY_LIMIT) {
+      delete pendingRetries[spu]
+      return emitRowResult(
+        snapshot,
+        'failed',
+        `${reason}；SPU补偿重试 ${nextAttempt} 次仍失败`,
+        {},
+        1200,
+        {
+          retry_target_spus: retryTargets,
+          retry_target_rows: retryTargetRows,
+          pending_retry_spus: pendingRetries,
+          spu_retry_attempts: retryAttempts,
+          open_failure_streak: openFailureStreak,
+          page_recovery_count: Number(shared.page_recovery_count || 0),
+        },
+      )
+    }
+
+    const nextShared = {
+      ...shared,
+      retry_target_spus: retryTargets,
+      retry_target_rows: retryTargetRows,
+      pending_retry_spus: pendingRetries,
+      spu_retry_attempts: retryAttempts,
+      open_failure_streak: openFailureStreak,
+      current_exec_no: Number(shared.processed_count || 0),
+      current_row_no: Number(shared.processed_count || 0),
+      current_buyer_id: '',
+      current_store: shared.scope_name || '',
+      current_row_text: '',
+      current_spu: '',
+      current_name: '',
+      current_action_text: '',
+      current_status_text: '',
+      current_suggestion: '',
+      current_priority: false,
+      product_kind: '',
+      subject_before: 0,
+      package_before: 0,
+      subject_asset_count: 0,
+      package_asset_count: 0,
+      row_retry: 0,
+      open_retry: 0,
+      upload_retry: 0,
+      search_retry: 0,
+      field_retry: 0,
+      submit_retry: 0,
+      confirm_retry: 0,
+      deep_request_retry: 0,
+      deep_recognition_request_count: 0,
+      deep_recognition_requested_at: 0,
+      confirm_clicked_at: 0,
+      confirm_click_count: 0,
+      toast_retry: 0,
+      cleanup_retry: 0,
+      page_signature: '',
+    }
+
+    const recoveryCount = Number(shared.page_recovery_count || 0)
+    if ((forceReload || openFailureStreak >= OPEN_FAILURE_STREAK_LIMIT) && recoveryCount < PAGE_RECOVERY_LIMIT) {
+      return reloadPage('ensure_target', 1800, {
+        ...nextShared,
+        page_recovery_count: recoveryCount + 1,
+        scope_retry: 0,
+        query_retry: 0,
+      })
+    }
+
+    return nextPhase(isRetryOnlyMode() ? 'prepare_retry_target' : 'pick_row', 500, nextShared)
   }
 
   function currentPageNo() {
@@ -501,9 +856,13 @@
 
   function chooseCandidate(rows) {
     const processed = getProcessedMap()
+    const retryTargets = getRetryTargetMap()
+    const pendingRetries = getPendingRetryMap()
+    const retryOnly = isRetryOnlyMode()
     const eligible = rows.filter(row =>
       row?.spu &&
       !processed[row.spu] &&
+      (!retryOnly || pendingRetries[row.spu] || retryTargets[row.spu]) &&
       isProcessableStatus(row) &&
       ROW_ACTION_TEXTS.includes(row.actionText)
     )
@@ -511,6 +870,10 @@
     if (!eligible.length) return null
 
     return [...eligible].sort((left, right) => {
+      const pendingDiff = Number(!!pendingRetries[right.spu]) - Number(!!pendingRetries[left.spu])
+      if (pendingDiff) return pendingDiff
+      const retryDiff = Number(!!retryTargets[right.spu]) - Number(!!retryTargets[left.spu])
+      if (retryDiff) return retryDiff
       const urgentDiff = Number(isUrgentRow(right)) - Number(isUrgentRow(left))
       if (urgentDiff) return urgentDiff
       const uploadDiff = Number(right.actionText === '上传') - Number(left.actionText === '上传')
@@ -600,7 +963,7 @@
         seen.add(el)
 
         const box = boxOf(el)
-        if (!visible(el) || !box || box.w <= 200 || box.h <= 120) continue
+        if (!visible(el) || !box || !intersectsViewport(box) || box.w <= 200 || box.h <= 120) continue
 
         const text = textOf(el)
         let score = 0
@@ -1068,6 +1431,91 @@
     return centerClick(field?.selector, 120)
   }
 
+  function setNativeValue(el, value) {
+    if (!el) return false
+    const nextValue = String(value ?? '')
+    const proto = String(el.tagName || '').toUpperCase() === 'TEXTAREA'
+      ? window.HTMLTextAreaElement?.prototype
+      : window.HTMLInputElement?.prototype
+    const setter = proto ? Object.getOwnPropertyDescriptor(proto, 'value')?.set : null
+    try {
+      if (setter) setter.call(el, nextValue)
+      else el.value = nextValue
+    } catch (e) {
+      try { el.value = nextValue } catch (err) {}
+    }
+    try { el.focus?.() } catch (e) {}
+    try { el.dispatchEvent(new Event('input', { bubbles: true })) } catch (e) {}
+    try { el.dispatchEvent(new Event('change', { bubbles: true })) } catch (e) {}
+    return String(el.value || '') === nextValue
+  }
+
+  function getSpuQueryField() {
+    const input = [...document.querySelectorAll('input.rocket-input, input[type="text"], textarea')]
+      .filter(visible)
+      .map(el => {
+        const box = boxOf(el)
+        if (!box || box.w < 160 || box.w > 700 || box.h < 16 || box.h > 64) return null
+        const placeholder = String(el.getAttribute?.('placeholder') || '')
+        let score = 0
+        if (placeholder.includes('多个请逗号') || placeholder.includes('空格分隔')) score += 600
+        if (placeholder.includes('请输入')) score -= 180
+        if (box.x >= 480 && box.x <= 860) score += 120
+        if (box.y >= 300 && box.y <= 380) score += 120
+        score += Math.max(0, 320 - Math.abs(box.w - 270))
+        return { el, box, score }
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score)[0]
+
+    if (!input?.el) return { input: null, select: null, selector: null }
+
+    const select = [...document.querySelectorAll('.rocket-select')]
+      .filter(visible)
+      .map(el => {
+        const box = boxOf(el)
+        if (!box || box.h < 16 || box.h > 64) return null
+        const text = textOf(el)
+        let score = 0
+        if (box.y >= input.box.y - 20 && box.y <= input.box.y + 20) score += 160
+        if (box.x + box.w <= input.box.x + 30 && input.box.x - (box.x + box.w) <= 60) score += 220
+        if (text.includes('SPU')) score += 280
+        if (text.includes('SKU') || text.includes('商品')) score += 80
+        return { el, box, score }
+      })
+      .filter(Boolean)
+      .sort((left, right) => right.score - left.score)[0]
+
+    const selector = select?.el?.querySelector?.('.rocket-select-selector') || select?.el || null
+
+    return {
+      input: input.el,
+      select: select?.el || null,
+      selector,
+    }
+  }
+
+  function isSpuQueryModeSelected() {
+    const field = getSpuQueryField()
+    return compact(textOf(field.select)).includes(compact('SPU'))
+  }
+
+  function findVisibleSelectOptionByText(label) {
+    const normalized = compact(label)
+    return [...document.querySelectorAll('.rocket-select-dropdown .rocket-select-item-option')]
+      .find(el => visible(el) && compact(textOf(el)) === normalized) || null
+  }
+
+  async function waitForQueryResultState(timeout = 8000) {
+    const startedAt = Date.now()
+    while (Date.now() - startedAt < timeout) {
+      if (getProductRows().length > 0) return true
+      if (String(document.body?.innerText || '').includes('暂无数据')) return true
+      await sleep(300)
+    }
+    return false
+  }
+
   function queryButtonClick() {
     const button = findQueryButton()
     return centerClick(button, 120)
@@ -1075,12 +1523,31 @@
 
   try {
     if (phase === 'main') {
+      const retryMode = compensationMode()
+      const compensation = buildCompensationSeed()
+      if (retryMode === 'retry_failed_from_file' && !compensation.rowCount) {
+        return fail('补偿重试模式需要选择历史结果文件（Excel / CSV）')
+      }
+      if (retryMode === 'retry_failed_from_file' && !compensation.retryCount) {
+        return fail('补偿结果文件中未找到“处理结果=失败”的 SPU')
+      }
       return nextPhase('ensure_target', 0, {
         scope_index: 0,
         scope_name: QUICK_FILTERS[0],
-        processed_spus: {},
+        compensation_mode: retryMode,
+        compensation_source_rows: compensation.rowCount,
+        compensation_skipped_spus: compensation.processedCount,
+        compensation_retry_spus: compensation.retryCount,
+        processed_spus: compensation.processedSpus,
+        retry_target_spus: compensation.retryTargetSpus,
+        retry_target_rows: compensation.retryTargetRows,
+        retry_target_order: compensation.retryTargetOrder,
+        pending_retry_spus: {},
+        spu_retry_attempts: {},
         processed_count: 0,
-        total_rows: maxProducts(),
+        total_rows: retryMode === 'retry_failed_from_file' && compensation.retryCount
+          ? compensation.retryCount
+          : maxProducts(),
         current_exec_no: 0,
         current_row_no: 0,
         current_buyer_id: '',
@@ -1100,6 +1567,7 @@
         scope_retry: 0,
         open_retry: 0,
         upload_retry: 0,
+        search_retry: 0,
         query_retry: 0,
         field_retry: 0,
         submit_retry: 0,
@@ -1111,10 +1579,40 @@
         confirm_click_count: 0,
         toast_retry: 0,
         cleanup_retry: 0,
+        open_failure_streak: 0,
+        page_recovery_count: 0,
+        blocker_reason: '',
+        blocker_wait_rounds: 0,
+        resume_phase: '',
+      })
+    }
+
+    if (phase === 'wait_verification') {
+      const blocker = detectPageBlockerState()
+      const rounds = Number(shared.blocker_wait_rounds || 0) + 1
+      if (blocker.present) {
+        if (rounds < 40) {
+          return nextPhase('wait_verification', 3000, {
+            ...shared,
+            pause_reason: 'verification',
+            blocker_reason: blocker.reason,
+            blocker_wait_rounds: rounds,
+          })
+        }
+        return fail(`Temu 页面进入安全验证/风控状态，请人工处理后重试（${blocker.reason || shared.blocker_reason || 'unknown'}）`)
+      }
+      return reloadPage(shared.resume_phase || 'ensure_target', 1200, {
+        ...shared,
+        pause_reason: '',
+        blocker_reason: '',
+        blocker_wait_rounds: 0,
+        resume_phase: '',
       })
     }
 
     if (phase === 'ensure_target') {
+      const blockerPause = pauseForPageBlocker('ensure_target', 2800, shared)
+      if (blockerPause) return blockerPause
       if (!location.href.startsWith(TARGET_URL)) {
         location.href = TARGET_URL
         return nextPhase('ensure_target', mode === 'new' ? 2200 : 1600, shared)
@@ -1186,8 +1684,8 @@
           return nextPhase('wait_goods_status_filter_query', 700, {
             ...shared,
             page_signature: pageSignature(),
-            scope_index: 0,
-            scope_name: QUICK_FILTERS[0],
+            scope_index: Number(shared.scope_index || 0),
+            scope_name: QUICK_FILTERS[Number(shared.scope_index || 0)] || shared.scope_name || QUICK_FILTERS[0],
             query_retry: 0,
           })
         }
@@ -1203,8 +1701,8 @@
       return cdpClicks([click], 'wait_goods_status_filter_query', 700, {
         ...shared,
         page_signature: pageSignature(),
-        scope_index: 0,
-        scope_name: QUICK_FILTERS[0],
+        scope_index: Number(shared.scope_index || 0),
+        scope_name: QUICK_FILTERS[Number(shared.scope_index || 0)] || shared.scope_name || QUICK_FILTERS[0],
         query_retry: 0,
       })
     }
@@ -1214,10 +1712,18 @@
       if (previousSignature) {
         await waitPageChange(previousSignature, 4500)
       }
+      if (isRetryOnlyMode()) {
+        return nextPhase('prepare_retry_target', 300, {
+          ...shared,
+          page_signature: '',
+          query_retry: 0,
+        })
+      }
+      const scopeIndex = Number(shared.scope_index || 0)
       return nextPhase('switch_scope', 1200, {
         ...shared,
-        scope_index: 0,
-        scope_name: QUICK_FILTERS[0],
+        scope_index: scopeIndex,
+        scope_name: QUICK_FILTERS[scopeIndex] || shared.scope_name || QUICK_FILTERS[0],
         page_signature: '',
         query_retry: 0,
       })
@@ -1258,6 +1764,185 @@
       })
     }
 
+    if (phase === 'prepare_retry_target') {
+      if (!isRetryOnlyMode()) return nextPhase('pick_row', 0, shared)
+      if (hasReachedLimit(Number(shared.processed_count || 0))) {
+        return nextPhase('complete_run', 0, shared)
+      }
+
+      const targetSpu = pickRetryTargetSpu()
+      if (!targetSpu) return nextPhase('complete_run', 0, shared)
+
+      const meta = getRetryTargetMeta(targetSpu) || {}
+      const scopeName = normalizeQuickFilterName(meta.scope_name || shared.scope_name || '')
+      const kind = meta.product_kind || classifyProduct(meta.name || '', meta.name || '')
+      const nextShared = {
+        ...shared,
+        current_spu: targetSpu,
+        current_name: meta.name || shared.current_name || '',
+        current_action_text: '',
+        current_status_text: '',
+        current_suggestion: '',
+        current_priority: false,
+        current_store: scopeName || shared.current_store || '',
+        scope_name: scopeName || shared.scope_name || '',
+        scope_index: scopeName ? Math.max(0, QUICK_FILTERS.findIndex(label => compact(label) === compact(scopeName))) : Number(shared.scope_index || 0),
+        product_kind: kind || shared.product_kind || '',
+        page_signature: '',
+        row_retry: 0,
+        open_retry: 0,
+        upload_retry: 0,
+        search_retry: 0,
+        field_retry: 0,
+        submit_retry: 0,
+        confirm_retry: 0,
+        deep_request_retry: 0,
+        deep_recognition_request_count: 0,
+        deep_recognition_requested_at: 0,
+        confirm_clicked_at: 0,
+        confirm_click_count: 0,
+        toast_retry: 0,
+        cleanup_retry: 0,
+        open_failure_streak: 0,
+        page_recovery_count: 0,
+      }
+
+      if (scopeName && compact(scopeName) !== compact(shared.scope_name || '')) {
+        return nextPhase('switch_retry_scope', 0, nextShared)
+      }
+
+      return nextPhase('run_retry_spu_query', 100, nextShared)
+    }
+
+    if (phase === 'switch_retry_scope') {
+      const blockerPause = pauseForPageBlocker('switch_retry_scope', 2800, shared)
+      if (blockerPause) return blockerPause
+      const scopeName = normalizeQuickFilterName(shared.scope_name || getRetryTargetMeta(shared.current_spu || '')?.scope_name || '')
+      const tab = scopeName ? findQuickFilterTab(scopeName) : null
+      if (!scopeName || !tab) {
+        return nextPhase('run_retry_spu_query', 100, shared)
+      }
+      const click = centerClick(tab, 120)
+      if (!click) return nextPhase('run_retry_spu_query', 100, shared)
+      return cdpClicks([click], 'wait_retry_scope', 800, {
+        ...shared,
+        page_signature: pageSignature(),
+      })
+    }
+
+    if (phase === 'wait_retry_scope') {
+      const previousSignature = String(shared.page_signature || '')
+      if (previousSignature) await waitPageChange(previousSignature, 4000)
+      return nextPhase('run_retry_spu_query', 300, {
+        ...shared,
+        page_signature: '',
+      })
+    }
+
+    if (phase === 'select_retry_query_type') {
+      const option = findVisibleSelectOptionByText('SPU')
+      if (!option) return fail('未找到商品ID查询类型“SPU”选项')
+      const click = centerClick(option, 100)
+      if (!click) {
+        if (clickLike(option)) return nextPhase('run_retry_spu_query', 300, shared)
+        return fail('未获取到商品ID查询类型“SPU”选项坐标')
+      }
+      return cdpClicks([click], 'run_retry_spu_query', 400, shared)
+    }
+
+    if (phase === 'run_retry_spu_query') {
+      const blockerPause = pauseForPageBlocker('run_retry_spu_query', 2800, shared)
+      if (blockerPause) return blockerPause
+      const targetSpu = compact(shared.current_spu || '')
+      if (!targetSpu) return nextPhase('prepare_retry_target', 0, shared)
+
+      const field = getSpuQueryField()
+      if (!field.input) return fail('未找到商品ID查询输入框')
+      if (field.select && !isSpuQueryModeSelected()) {
+        const selectClick = centerClick(field.selector || field.select, 100)
+        if (!selectClick) return fail('未获取到商品ID查询类型选择器坐标')
+        return cdpClicks([selectClick], 'select_retry_query_type', 260, shared)
+      }
+      setNativeValue(field.input, '')
+      if (!setNativeValue(field.input, targetSpu)) return fail(`未能写入 SPU 查询值：${targetSpu}`)
+
+      const click = queryButtonClick()
+      if (!click) {
+        const button = findQueryButton()
+        if (clickLike(button)) {
+          return nextPhase('wait_retry_spu_query', 900, {
+            ...shared,
+            page_signature: pageSignature(),
+          })
+        }
+        return fail('未找到 SPU 查询按钮')
+      }
+      return cdpClicks([click], 'wait_retry_spu_query', 900, {
+        ...shared,
+        page_signature: pageSignature(),
+      })
+    }
+
+    if (phase === 'wait_retry_spu_query') {
+      const previousSignature = String(shared.page_signature || '')
+      if (previousSignature) await waitPageChange(previousSignature, 4000)
+      await waitForQueryResultState(5000)
+
+      const row = getProductRows().find(item => item.spu === String(shared.current_spu || ''))
+      if (!row) {
+        return scheduleRetryableOpenRecovery(
+          currentRowSnapshot(),
+          `按SPU查询未找到目标商品行（scope=${shared.scope_name || 'unknown'}）`,
+          { forceReload: true },
+        )
+      }
+
+      const nextCount = Number(shared.processed_count || 0) + 1
+      const kind = String(row.product_kind || shared.product_kind || classifyProduct(row.name, row.rowText))
+      const request = getUploadRequest(kind)
+      if (!request.subjectRequested && !request.packageRequested) {
+        return emitRowResult(
+          {
+            ...row,
+            product_kind: kind,
+          },
+          'skipped',
+          `${productKindLabel(kind)}未提供任何标签图素材，已跳过`,
+        )
+      }
+
+      return nextPhase('open_row', 100, {
+        ...shared,
+        current_exec_no: nextCount,
+        current_row_no: nextCount,
+        current_buyer_id: row.spu,
+        current_store: shared.scope_name || '',
+        current_row_text: row.rowText || '',
+        current_spu: row.spu,
+        current_name: row.name,
+        current_action_text: row.actionText,
+        current_status_text: row.status,
+        current_suggestion: row.suggestion,
+        current_priority: isUrgentRow(row),
+        product_kind: kind,
+        row_retry: 0,
+        open_retry: 0,
+        upload_retry: 0,
+        search_retry: 0,
+        field_retry: 0,
+        submit_retry: 0,
+        confirm_retry: 0,
+        deep_request_retry: 0,
+        deep_recognition_request_count: 0,
+        deep_recognition_requested_at: 0,
+        confirm_clicked_at: 0,
+        confirm_click_count: 0,
+        toast_retry: 0,
+        cleanup_retry: 0,
+        open_failure_streak: 0,
+      })
+    }
+
     if (phase === 'ensure_first_page') {
       const pageNo = currentPageNo()
       if (pageNo <= 1) return nextPhase('pick_row', 100, shared)
@@ -1290,8 +1975,13 @@
     }
 
     if (phase === 'pick_row') {
+      const blockerPause = pauseForPageBlocker('pick_row', 2800, shared)
+      if (blockerPause) return blockerPause
       if (hasReachedLimit(Number(shared.processed_count || 0))) {
         return nextPhase('complete_run', 0, shared)
+      }
+      if (isRetryOnlyMode()) {
+        return nextPhase('prepare_retry_target', 0, shared)
       }
 
       const rows = getProductRows()
@@ -1410,21 +2100,31 @@
     }
 
     if (phase === 'open_row') {
+      const blockerPause = pauseForPageBlocker('open_row', 2800, shared)
+      if (blockerPause) return blockerPause
       const row = getProductRows().find(item => item.spu === String(shared.current_spu || ''))
       if (!row) {
         const retry = Number(shared.row_retry || 0)
         if (retry < 3) {
-          return nextPhase('pick_row', 300, {
+          return nextPhase(isRetryOnlyMode() ? 'run_retry_spu_query' : 'pick_row', 300, {
             ...shared,
             row_retry: retry + 1,
             page_signature: pageSignature(),
           })
         }
 
-        return nextPhase('pick_row', 300, {
+        return scheduleRetryableOpenRecovery(
+          currentRowSnapshot(),
+          'SPU查询结果中的目标商品行已丢失',
+          { forceReload: isRetryOnlyMode() },
+        )
+      }
+
+      const useDomClickFirst = Number(shared.open_retry || 0) % 2 === 0
+      if (useDomClickFirst && clickLike(row.actionButton)) {
+        return nextPhase('wait_drawer', 700, {
           ...shared,
-          row_retry: 0,
-          page_signature: pageSignature(),
+          last_open_strategy: 'dom',
         })
       }
 
@@ -1433,10 +2133,15 @@
         return emitRowResult(row, 'failed', '未获取到上传按钮坐标')
       }
 
-      return cdpClicks([click], 'wait_drawer', 900, shared)
+      return cdpClicks([click], 'wait_drawer', 900, {
+        ...shared,
+        last_open_strategy: 'cdp',
+      })
     }
 
     if (phase === 'wait_drawer') {
+      const blockerPause = pauseForPageBlocker('wait_drawer', 2800, shared)
+      if (blockerPause) return blockerPause
       if (findUploadLaterDialog()) {
         return nextPhase('accept_upload_later_dialog', 100, shared)
       }
@@ -1446,6 +2151,8 @@
         return nextPhase('prepare_upload', drawerState.hasUploadSection || drawerState.hasFileInput ? 100 : 400, {
           ...shared,
           open_retry: 0,
+          open_failure_streak: 0,
+          page_recovery_count: 0,
         })
       }
 
@@ -1471,16 +2178,8 @@
         })
       }
 
-      return emitRowResult(
-        {
-          spu: shared.current_spu,
-          name: shared.current_name,
-          actionText: shared.current_action_text,
-          status: shared.current_status_text,
-          suggestion: shared.current_suggestion,
-          product_kind: shared.product_kind,
-        },
-        'failed',
+      return scheduleRetryableOpenRecovery(
+        currentRowSnapshot(),
         `未成功打开上传抽屉（${drawerStateSummary(drawerState)}）`,
       )
     }
