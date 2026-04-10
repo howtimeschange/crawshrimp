@@ -17,7 +17,10 @@
   const TEXT = {
     selectAll: '选择全部',
     confirm: '确认',
+    edit: '编辑',
+    send: '发送',
     restartConversation: '重新启动对话',
+    duplicateMessageTitle: '检测到重复消息',
     searchStore: '搜索店铺用户名',
     searchBuyerPrefixA: '搜寻',
     searchBuyerPrefixB: '搜索',
@@ -487,6 +490,37 @@
         .sort((a, b) => b.box.x - a.box.x || b.box.y - a.box.y)[0]?.el || null
   }
 
+  function isDuplicateMessageText(text) {
+    return /检测到重复消息|消息可能重复或不当|请检查并编辑您?的消息/.test(String(text || ''))
+  }
+
+  function findDuplicateMessageDialog() {
+    return [...document.querySelectorAll('[role="dialog"], .shopee-react-popover, .shopee-modal, .eds-modal, .eds-react-modal, div, section')]
+      .filter(visible)
+      .map(el => ({
+        el,
+        text: readText(el),
+        box: boxOf(el),
+      }))
+      .filter(item => item.box && item.box.x >= LEFT_PANE_MAX_X - 40 && item.box.w >= 260 && item.box.h >= 140)
+      .filter(item => isDuplicateMessageText(item.text))
+      .filter(item => item.text.includes(TEXT.edit) && item.text.includes(TEXT.send))
+      .sort((a, b) => ((a.box.w || 0) * (a.box.h || 0)) - ((b.box.w || 0) * (b.box.h || 0)) || b.box.y - a.box.y)[0]?.el || null
+  }
+
+  function findDialogActionButton(dialog, label) {
+    if (!dialog) return null
+    return [...dialog.querySelectorAll('button,div,span,a')]
+      .filter(visible)
+      .map(el => ({
+        el,
+        text: readText(el),
+        box: boxOf(el),
+      }))
+      .filter(item => item.box && compact(item.text) === compact(label))
+      .sort((a, b) => ((a.box.w || 0) * (a.box.h || 0)) - ((b.box.w || 0) * (b.box.h || 0)) || b.box.x - a.box.x)[0]?.el || null
+  }
+
   function findConversationSearchInput() {
     const candidates = [...document.querySelectorAll('input,textarea')]
       .filter(visible)
@@ -772,6 +806,7 @@
         search_retype_retry: 0,
         search_signature: '',
         open_retry: 0,
+        duplicate_retry: 0,
       })
     }
 
@@ -798,6 +833,7 @@
         search_retype_retry: 0,
         search_signature: '',
         open_retry: 0,
+        duplicate_retry: 0,
         last_match_name: '',
         last_match_store: '',
         last_match_text: '',
@@ -1316,6 +1352,31 @@
         return emitRowAndAdvance(row, 'failed', '发送后需要重新启动对话，但重试后仍未恢复')
       }
 
+      const duplicateDialog = findDuplicateMessageDialog()
+      if (duplicateDialog) {
+        const editButton = findDialogActionButton(duplicateDialog, TEXT.edit)
+        if (!editButton) {
+          return emitRowAndAdvance(row, 'failed', `检测到${TEXT.duplicateMessageTitle}弹窗，但未找到“${TEXT.edit}”按钮`)
+        }
+
+        const coord = rectCenter(editButton)
+        if (coord) {
+          return cdpPhase([{ ...coord, delay_ms: 150, label: `关闭${TEXT.duplicateMessageTitle}弹窗（${TEXT.edit}）` }], 'verify_duplicate_message_dismissed', 700, {
+            ...shared,
+            duplicate_retry: 0,
+          })
+        }
+
+        if (activateElement(editButton)) {
+          return nextPhase('verify_duplicate_message_dismissed', 700, {
+            ...shared,
+            duplicate_retry: 0,
+          })
+        }
+
+        return emitRowAndAdvance(row, 'failed', `检测到${TEXT.duplicateMessageTitle}弹窗，但“${TEXT.edit}”按钮无法点击`)
+      }
+
       const textarea = findMessageTextarea()
       const cleared = textarea ? String(textarea.value || '') === '' : false
       const echoed = !!findOutgoingMessage(row.message)
@@ -1324,6 +1385,39 @@
       }
 
       return emitRowAndAdvance(row, 'failed', '点击发送后未观察到成功信号')
+    }
+
+    if (phase === 'verify_duplicate_message_dismissed') {
+      const state = getConversationState(row)
+      if (!state.matched) {
+        return emitRowAndAdvance(row, 'failed', `关闭重复消息弹窗后会话目标异常：${state.headerText || state.contextText || '(空)'}`)
+      }
+
+      const duplicateDialog = findDuplicateMessageDialog()
+      if (!duplicateDialog) {
+        return emitRowAndAdvance(row, 'success', '检测到重复消息弹窗，已点击“编辑”关闭并跳过重复发送')
+      }
+
+      const retry = Number(shared.duplicate_retry || 0)
+      const editButton = findDialogActionButton(duplicateDialog, TEXT.edit)
+      if (editButton && retry < 2) {
+        const coord = rectCenter(editButton)
+        if (coord) {
+          return cdpPhase([{ ...coord, delay_ms: 150, label: `重试关闭${TEXT.duplicateMessageTitle}弹窗（${TEXT.edit}）` }], 'verify_duplicate_message_dismissed', 700, {
+            ...shared,
+            duplicate_retry: retry + 1,
+          })
+        }
+
+        if (activateElement(editButton)) {
+          return nextPhase('verify_duplicate_message_dismissed', 700, {
+            ...shared,
+            duplicate_retry: retry + 1,
+          })
+        }
+      }
+
+      return emitRowAndAdvance(row, 'failed', `检测到${TEXT.duplicateMessageTitle}弹窗，但关闭失败`)
     }
 
     if (phase === 'advance_row') {
@@ -1341,6 +1435,7 @@
         search_retype_retry: 0,
         search_signature: '',
         open_retry: 0,
+        duplicate_retry: 0,
       })
     }
 
