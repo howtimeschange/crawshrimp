@@ -796,6 +796,8 @@ const skuIds = file.rows.map(row => row['SKU ID'])
 
 **批量操作模式**：`file_excel` 结合多 Phase 状态机，实现逐行自动化（如批量创建优惠券）。底座将每行数据通过 `window.__CRAWSHRIMP_PARAMS__` 注入，脚本完成一行后返回 `action: "complete"`，底座自动推进到下一行。
 
+**超时恢复边界**：如果页面只是短暂卡死、刷新后可继续，优先让底座执行器处理恢复，不要把这类逻辑散到每个脚本里。脚本应继续专注于业务状态机；执行器负责超时、重连和必要的页面刷新重试。
+
 ### file_images 示例
 
 ```yaml

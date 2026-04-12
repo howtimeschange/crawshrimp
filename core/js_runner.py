@@ -346,6 +346,41 @@ class JSRunner:
         except Exception:
             logger.debug("Failed to clear persisted run params", exc_info=True)
 
+    async def _reload_current_page(self) -> None:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        tab = None
+        if self.tab_id:
+            try:
+                tab = bridge.get_tab(self.tab_id)
+            except Exception:
+                tab = None
+
+        if not tab and self.tab_url:
+            prefix = str(self.tab_url).strip()
+            if prefix:
+                candidates = [
+                    candidate for candidate in bridge.get_tabs()
+                    if candidate.get("type") == "page" and str(candidate.get("url", "")).startswith(prefix)
+                ]
+                if candidates:
+                    tab = candidates[0]
+
+        logger.info(
+            "页面超时，尝试刷新当前标签页: tab=%s url=%s",
+            self.tab_id or "(unknown)",
+            str((tab or {}).get("url") or self.tab_url or "(unknown)"),
+        )
+
+        try:
+            await self._cdp_send("Page.reload", {"ignoreCache": True})
+        except Exception as e:
+            logger.info(f"Page.reload 失败，继续尝试恢复连接: {e}")
+
+        await asyncio.sleep(2.0)
+        await self._refresh_ws_url()
+
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
         result = await self.evaluate(expression)
         if not allow_navigation_retry:
@@ -402,7 +437,20 @@ class JSRunner:
                         await cooperate("before_phase", page, phase, shared)
                         preamble = self._build_phase_preamble(page, phase, run_token, shared)
                         payload = preamble + script
-                        result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=(phase != "main"))
+                        timeout_retry = False
+                        while True:
+                            result = await self.evaluate_with_reconnect(payload, allow_navigation_retry=(phase != "main"))
+                            if result.success:
+                                break
+                            if result.error != "timeout" or timeout_retry:
+                                break
+                            timeout_retry = True
+                            logger.info(f"脚本超时，先刷新当前页面后重试 (page={page}, phase={phase})")
+                            try:
+                                await self._reload_current_page()
+                            except Exception as e:
+                                logger.info(f"刷新当前页面失败，放弃本次超时重试: {e}")
+                                break
 
                         if not result.success:
                             logger.error(f"脚本执行失败 (page={page}, phase={phase}): {result.error}")
