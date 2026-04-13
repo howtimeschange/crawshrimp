@@ -633,6 +633,225 @@ test('goods-traffic-list api payload falls back to current active time capsule',
   assert.equal(hook.buildListApiRequestPayload(1, 40, {}).timeDimension, 6)
 })
 
+test('goods-traffic-list maps every explicit time label to the expected api dimension', async () => {
+  const labelMap = new Map([
+    ['昨日', 1],
+    ['今日', 2],
+    ['近7日', 3],
+    ['近30日', 4],
+    ['本周', 5],
+    ['本月', 6],
+  ])
+
+  for (const [label, value] of labelMap.entries()) {
+    const { hook } = await loadHook(
+      'adapters/temu/goods-traffic-list.js',
+      ['resolveTimeDimensionState', 'buildListApiRequestPayload'],
+      {
+        href: 'https://agentseller.temu.com/main/flux-analysis-full',
+        document: buildStatefulDocument({ bodyText: '商品流量列表', activeGrain: '今日' }),
+        params: { list_time_range: label },
+      },
+    )
+
+    const timeState = hook.resolveTimeDimensionState({})
+    assert.equal(timeState.label, label)
+    assert.equal(timeState.value, value)
+    assert.equal(hook.buildListApiRequestPayload(1, 100, {}).timeDimension, value)
+  }
+})
+
+test('goods-traffic-list carries switched outer-site context into the next phase', async () => {
+  const document = buildStatefulDocument({
+    bodyText: '商品明细 商品流量列表',
+    activeGrain: '今日',
+    rows: ['row-a'],
+    pageNo: 1,
+    totalCount: 1,
+  })
+  const siteGlobal = new DynamicElement({
+    tagName: 'a',
+    text: '全球',
+    className: 'index-module__drItem___ index-module__active___',
+  })
+  const siteUs = new DynamicElement({
+    tagName: 'a',
+    text: '美国',
+    className: 'index-module__drItem___',
+  })
+  const queryButton = new DynamicElement({ tagName: 'button', text: '查询' })
+  const resetButton = new DynamicElement({ tagName: 'button', text: '重置' })
+  document.setSelector('a[class*="index-module__drItem___"]', () => [siteGlobal, siteUs])
+  document.setSelector('button', () => [queryButton, resetButton])
+
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'after_outer_site_switch',
+    href: 'https://agentseller-us.temu.com/main/flux-analysis-full',
+    document,
+    shared: {
+      targetOuterSite: '美国',
+      targetOuterSites: ['全球', '美国', '欧区'],
+      currentOuterSite: '全球',
+      resume_phase: 'prepare_current_site',
+      listBusyRetry: 3,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'prepare_current_site')
+  assert.equal(result.meta.shared.currentOuterSite, '美国')
+  assert.equal(result.meta.shared.switchedOuterSite, true)
+  assert.equal(result.meta.shared.listBusyRetry, 0)
+})
+
+test('goods-traffic-list resolves outer-site from hostname when url-driven switch is in progress', async () => {
+  const { hook } = await loadHook(
+    'adapters/temu/goods-traffic-list.js',
+    ['getResolvedOuterSite', 'getOuterSiteUrl'],
+    {
+      href: 'https://agentseller-eu.temu.com/main/flux-analysis-full',
+      document: buildStatefulDocument({ bodyText: '商品流量列表', activeGrain: '今日' }),
+    },
+  )
+
+  assert.equal(hook.getResolvedOuterSite(), '欧区')
+  assert.equal(hook.getOuterSiteUrl('美国'), 'https://agentseller-us.temu.com/main/flux-analysis-full')
+})
+
+test('goods-traffic-list preserves explicit time-range state when advancing to the next outer site', async () => {
+  const document = buildStatefulDocument({
+    bodyText: '商品明细 商品流量列表',
+    activeGrain: '昨日',
+    rows: ['row-a'],
+    pageNo: 6,
+    totalCount: 593,
+  })
+  const siteGlobal = new DynamicElement({
+    tagName: 'a',
+    text: '全球',
+    className: 'index-module__drItem___ index-module__active___',
+  })
+  const siteUs = new DynamicElement({
+    tagName: 'a',
+    text: '美国',
+    className: 'index-module__drItem___',
+  })
+  const siteEu = new DynamicElement({
+    tagName: 'a',
+    text: '欧区',
+    className: 'index-module__drItem___',
+  })
+  const queryButton = new DynamicElement({ tagName: 'button', text: '查询' })
+  const resetButton = new DynamicElement({ tagName: 'button', text: '重置' })
+  document.setSelector('a[class*="index-module__drItem___"]', () => [siteGlobal, siteUs, siteEu])
+  document.setSelector('button', () => [queryButton, resetButton])
+
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'advance_cursor',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document,
+    shared: {
+      targetOuterSites: ['全球', '美国', '欧区'],
+      currentOuterSite: '全球',
+      currentPageNo: 6,
+      totalPages: 6,
+      timeDimension: 2,
+      timeDimensionLabel: '今日',
+      categoryLeafId: 9988,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'after_outer_site_switch')
+  assert.equal(result.meta.shared.targetOuterSite, '美国')
+  assert.equal(result.meta.shared.timeDimension, 2)
+  assert.equal(result.meta.shared.timeDimensionLabel, '今日')
+  assert.equal(result.meta.shared.categoryLeafId, 9988)
+})
+
+test('goods-traffic-list preserves explicit time-range state when switching to the first requested outer site', async () => {
+  const document = buildStatefulDocument({
+    bodyText: '商品明细 商品流量列表',
+    activeGrain: '昨日',
+    rows: ['row-a'],
+    pageNo: 1,
+    totalCount: 1,
+  })
+  const siteGlobal = new DynamicElement({
+    tagName: 'a',
+    text: '全球',
+    className: 'index-module__drItem___',
+  })
+  const siteUs = new DynamicElement({
+    tagName: 'a',
+    text: '美国',
+    className: 'index-module__drItem___ index-module__active___',
+  })
+  const siteEu = new DynamicElement({
+    tagName: 'a',
+    text: '欧区',
+    className: 'index-module__drItem___',
+  })
+  const queryButton = new DynamicElement({ tagName: 'button', text: '查询' })
+  const resetButton = new DynamicElement({ tagName: 'button', text: '重置' })
+  document.setSelector('a[class*="index-module__drItem___"]', () => [siteGlobal, siteUs, siteEu])
+  document.setSelector('button', () => [queryButton, resetButton])
+
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'ensure_target',
+    href: 'https://agentseller-us.temu.com/main/flux-analysis-full',
+    document,
+    params: {
+      outer_sites: ['全球', '美国', '欧区'],
+      list_time_range: '今日',
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'after_outer_site_switch')
+  assert.equal(result.meta.shared.targetOuterSite, '全球')
+  assert.equal(result.meta.shared.timeDimension, 2)
+  assert.equal(result.meta.shared.timeDimensionLabel, '今日')
+})
+
+test('goods-traffic-list exposes conservative retry and collect pacing helpers', async () => {
+  const { hook } = await loadHook(
+    'adapters/temu/goods-traffic-list.js',
+    ['getListApiRetryBackoffMs', 'getListApiCollectDelayMs', 'getListPageRecoveryCooldownMs'],
+    {
+      href: 'https://agentseller.temu.com/main/flux-analysis-full',
+      document: buildStatefulDocument({ bodyText: '商品流量列表', activeGrain: '今日' }),
+    },
+  )
+
+  assert.equal(
+    hook.getListApiRetryBackoffMs({ errorCode: 4000004, errorMsg: 'Too many visitors, please try again later.' }, 1),
+    20000,
+  )
+  assert.equal(
+    hook.getListApiRetryBackoffMs({ errorCode: 40002, errorMsg: 'Network Timeout, Please Try Again Later' }, 2),
+    30000,
+  )
+  assert.equal(hook.getListApiCollectDelayMs({ lastApiAttempt: 1 }, {}), 12000)
+  assert.equal(hook.getListApiCollectDelayMs({ lastApiAttempt: 3 }, {}), 28000)
+  assert.equal(hook.getListApiCollectDelayMs({ lastApiAttempt: 1 }, { nextPageNo: 3 }), 72000)
+  assert.equal(
+    hook.getListApiCollectDelayMs({ switchedOuterSite: true, lastApiAttempt: 1 }, { afterSiteSwitch: true }),
+    15000,
+  )
+  assert.equal(
+    hook.getListApiCollectDelayMs({ pendingCollectDelayMs: 20000, recoveredListPage: true }, { afterRecovery: true }),
+    20000,
+  )
+  assert.equal(
+    hook.getListPageRecoveryCooldownMs({ listPageRetry: 1 }, '商品流量列表 API 抓取失败：Network Timeout'),
+    40000,
+  )
+})
+
 test('goods-traffic-list collect phase reads rows from api helper and tracks pagination', async () => {
   const windowProps = {
     chunkLoadingGlobal_bgb_sca_main: createWebpackChunkRuntime(id => {
@@ -640,12 +859,12 @@ test('goods-traffic-list collect phase reads rows from api helper and tracks pag
         return {
           bE: async (endpoint, payload) => {
             assert.equal(endpoint, '/api/seller/full/flow/analysis/goods/list')
-            assert.equal(payload.pageSize, 40)
+            assert.equal(payload.pageSize, 100)
             assert.equal(payload.pageNum, 2)
             assert.equal(payload.timeDimension, 2)
             assert.equal(payload.quickFilterType, 1)
             return {
-              total: 81,
+              total: 281,
               updateAt: 1776047296966,
               list: [
                 {
@@ -706,6 +925,7 @@ test('goods-traffic-list collect phase reads rows from api helper and tracks pag
   assert.equal(result.meta.action, 'complete')
   assert.equal(result.meta.has_more, true)
   assert.equal(result.meta.shared.totalPages, 3)
+  assert.equal(result.meta.shared.lastApiAttempt, 1)
   assert.equal(result.data.length, 1)
   assert.equal(result.data[0].SPU, '1234567890')
   assert.equal(result.data[0]['商品分类'], '服装 > 上衣')

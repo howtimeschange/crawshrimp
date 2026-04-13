@@ -7,8 +7,26 @@
   const TARGET_URL = 'https://agentseller.temu.com/main/flux-analysis-full'
   const LIST_BUSY_RETRY_LIMIT = 30
   const LIST_PAGE_RECOVERY_LIMIT = 30
+  const LIST_API_PAGE_SIZE = 100
+  const LIST_API_RETRY_LIMIT = 4
+  const LIST_API_RETRY_BACKOFF_MS = 800
+  const LIST_API_RATE_LIMIT_BACKOFF_MS = 20000
+  const LIST_API_TIMEOUT_BACKOFF_MS = 15000
+  const LIST_API_REQUEST_THROTTLE_MS = 12000
+  const LIST_API_SITE_SWITCH_THROTTLE_MS = 15000
+  const LIST_API_RECOVERY_THROTTLE_MS = 18000
+  const LIST_API_POST_RETRY_COOLDOWN_MS = 8000
+  const LIST_API_PAGE_BURST_SIZE = 2
+  const LIST_API_PAGE_BURST_COOLDOWN_MS = 60000
+  const LIST_API_MAX_BACKOFF_MS = 60000
+  const LIST_API_TIMEOUT_MS = 20000
+  const LIST_READY_TIMEOUT_MS = 30000
   const SAFE_PAGE_LOOP_LIMIT = 120
   const PAGER_THROTTLE_MS = 2200
+  const TEMU_REQUEST_MODULE_ID = '3204'
+  const TEMU_LIST_ENDPOINT = '/api/seller/full/flow/analysis/goods/list'
+  const TEMU_CATEGORY_CHILDREN_ENDPOINT = '/bg-anniston-agent-seller/category/children/list'
+  const TEMU_TOO_MANY_VISITORS_CODE = 4000004
 
   const mode = String(params.mode || 'current').trim().toLowerCase()
   const outerSitesParam = normalizeArray(params.outer_sites)
@@ -23,6 +41,28 @@
 
   const OUTER_SITE_BLACKLIST = new Set(['商家中心'])
   const QUICK_FILTER_OPTIONS = ['流量待增长', '短期增长中', '长期增长中']
+  const LIST_TIME_DIMENSION_MAP = Object.freeze({
+    昨日: 1,
+    今日: 2,
+    本周: 5,
+    本月: 6,
+    近7日: 3,
+    近30日: 4,
+  })
+  const QUICK_FILTER_TYPE_MAP = Object.freeze({
+    流量待增长: 1,
+    短期增长中: 2,
+    长期增长中: 3,
+  })
+  const PRODUCT_ID_FIELD_MAP = Object.freeze({
+    SPU: 'productIdList',
+    SKC: 'productSkcIdList',
+    SKU: 'productSkuIdList',
+  })
+  const GOODS_NO_FIELD_MAP = Object.freeze({
+    SKC货号: 'skcExtCodeList',
+    SKU货号: 'skuExtCodeList',
+  })
   const LIST_METRIC_COLUMN_KEYS = [
     '流量情况/曝光量',
     '流量情况/点击量',
@@ -51,6 +91,19 @@
   function normalizeArray(value) {
     if (!Array.isArray(value)) return []
     return value.map(item => String(item || '').trim()).filter(Boolean)
+  }
+
+  function splitMultiValueText(value) {
+    return String(value || '')
+      .split(/[\s,\uFF0C\u3001]+/g)
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+  }
+
+  function parseNumericValueList(value) {
+    return splitMultiValueText(value)
+      .map(item => Number(item))
+      .filter(item => Number.isFinite(item))
   }
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
@@ -112,6 +165,136 @@
 
   function fail(message) {
     return { success: false, error: message }
+  }
+
+  function getTemuWebpackRequire() {
+    if (window.__CRAWSHRIMP_TEMU_WEBPACK_REQUIRE__) return window.__CRAWSHRIMP_TEMU_WEBPACK_REQUIRE__
+    const chunk = window.chunkLoadingGlobal_bgb_sca_main || window.webpackChunktemu_sca_container
+    if (!chunk || typeof chunk.push !== 'function') return null
+    try {
+      chunk.push([[`crawshrimp_temu_${Date.now()}`], {}, req => {
+        window.__CRAWSHRIMP_TEMU_WEBPACK_REQUIRE__ = req
+      }])
+    } catch (e) {}
+    return window.__CRAWSHRIMP_TEMU_WEBPACK_REQUIRE__ || null
+  }
+
+  function getTemuRequestClient() {
+    const req = getTemuWebpackRequire()
+    if (!req) return null
+    try {
+      return req(TEMU_REQUEST_MODULE_ID)
+    } catch (e) {
+      return null
+    }
+  }
+
+  function normalizeTemuApiError(error) {
+    const plain = error && typeof error === 'object'
+      ? { ...error }
+      : { errorMsg: String(error || '') }
+    const nested = plain?.response && typeof plain.response === 'object' ? plain.response : null
+    const errorCode = Number(plain.errorCode || nested?.errorCode || 0) || 0
+    const errorMsg = String(
+      plain.errorMsg ||
+      plain.message ||
+      nested?.errorMsg ||
+      nested?.message ||
+      error ||
+      '',
+    ).trim()
+    return {
+      errorCode,
+      errorMsg,
+      raw: plain,
+    }
+  }
+
+  function isTooManyVisitorsError(errorLike) {
+    const info = normalizeTemuApiError(errorLike)
+    return info.errorCode === TEMU_TOO_MANY_VISITORS_CODE || /Too many visitors/i.test(info.errorMsg)
+  }
+
+  function isNetworkTimeoutError(errorLike) {
+    const info = normalizeTemuApiError(errorLike)
+    return info.errorCode === 40002 || /Network Timeout/i.test(info.errorMsg)
+  }
+
+  function isRetriableListApiError(errorLike) {
+    return isTooManyVisitorsError(errorLike) || isNetworkTimeoutError(errorLike)
+  }
+
+  function getListApiRetryBackoffMs(errorLike, attempt = 1) {
+    const safeAttempt = Math.max(1, Number(attempt || 1))
+    if (isTooManyVisitorsError(errorLike)) {
+      return Math.min(LIST_API_MAX_BACKOFF_MS, LIST_API_RATE_LIMIT_BACKOFF_MS * safeAttempt)
+    }
+    if (isNetworkTimeoutError(errorLike)) {
+      return Math.min(LIST_API_MAX_BACKOFF_MS, LIST_API_TIMEOUT_BACKOFF_MS * safeAttempt)
+    }
+    return LIST_API_RETRY_BACKOFF_MS * safeAttempt
+  }
+
+  function getListApiCollectDelayMs(sharedState = shared, options = {}) {
+    const nextPageNo = Math.max(1, Number(options.nextPageNo || sharedState.currentPageNo || 1))
+    let delayMs = LIST_API_REQUEST_THROTTLE_MS
+    if (options.afterSiteSwitch || sharedState.switchedOuterSite) {
+      delayMs = Math.max(delayMs, LIST_API_SITE_SWITCH_THROTTLE_MS)
+    }
+    if (options.afterRecovery || sharedState.recoveredListPage) {
+      delayMs = Math.max(delayMs, LIST_API_RECOVERY_THROTTLE_MS)
+    }
+    const lastApiAttempt = Math.max(1, Number(sharedState.lastApiAttempt || 1))
+    if (lastApiAttempt > 1) {
+      delayMs += (lastApiAttempt - 1) * LIST_API_POST_RETRY_COOLDOWN_MS
+    }
+    const pendingCollectDelayMs = Math.max(0, Number(sharedState.pendingCollectDelayMs || 0))
+    if (pendingCollectDelayMs > delayMs) delayMs = pendingCollectDelayMs
+    if (
+      LIST_API_PAGE_BURST_SIZE > 0 &&
+      nextPageNo > LIST_API_PAGE_BURST_SIZE &&
+      (nextPageNo - 1) % LIST_API_PAGE_BURST_SIZE === 0
+    ) {
+      delayMs += LIST_API_PAGE_BURST_COOLDOWN_MS
+    }
+    return delayMs
+  }
+
+  function getListPageRecoveryCooldownMs(sharedState = shared, reason = '') {
+    if (!/Too many visitors|Network Timeout|请求超时/i.test(String(reason || ''))) return 2200
+    const retryIndex = Math.max(1, Number(sharedState.listPageRetry || 0) + 1)
+    return Math.min(LIST_API_MAX_BACKOFF_MS, LIST_API_RATE_LIMIT_BACKOFF_MS * retryIndex)
+  }
+
+  async function callTemuApi(endpoint, body = {}, options = {}) {
+    const client = getTemuRequestClient()
+    if (!client || typeof client.bE !== 'function') {
+      return {
+        ok: false,
+        error: {
+          errorCode: 0,
+          errorMsg: '未找到 Temu 页面内置请求客户端，无法切换到 API 抓取',
+        },
+      }
+    }
+    try {
+      const result = await Promise.race([
+        client.bE(endpoint, body, options),
+        new Promise((_, reject) => {
+          setTimeout(() => {
+            reject({
+              errorCode: 0,
+              errorMsg: `Temu API 请求超时（>${Math.round(LIST_API_TIMEOUT_MS / 1000)} 秒）`,
+              success: false,
+              result: null,
+            })
+          }, LIST_API_TIMEOUT_MS)
+        }),
+      ])
+      return { ok: true, result }
+    } catch (error) {
+      return { ok: false, error: normalizeTemuApiError(error) }
+    }
   }
 
   function clickLike(el) {
@@ -208,6 +391,16 @@
     return textOf(node)
   }
 
+  async function waitForTargetOuterSite(targetSite, timeout = 30000) {
+    if (!targetSite) return true
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeout) {
+      if (getResolvedOuterSite() === targetSite) return true
+      await sleep(200)
+    }
+    return false
+  }
+
   function buildTargetOuterSites() {
     const available = getAvailableOuterSites().map(item => item.text)
     const requested = outerSitesParam.length ? outerSitesParam.filter(item => available.includes(item)) : available
@@ -222,14 +415,70 @@
     return getCenterClick(node)
   }
 
+  function getOuterSiteUrl(siteLabel) {
+    const hostMap = {
+      全球: 'agentseller.temu.com',
+      美国: 'agentseller-us.temu.com',
+      欧区: 'agentseller-eu.temu.com',
+    }
+    const host = hostMap[siteLabel]
+    if (!host) return ''
+    const url = new URL(TARGET_URL)
+    url.hostname = host
+    return url.toString()
+  }
+
+  function getOuterSiteFromHostname() {
+    const host = String(location.hostname || '').trim()
+    if (host === 'agentseller.temu.com') return '全球'
+    if (host === 'agentseller-us.temu.com') return '美国'
+    if (host === 'agentseller-eu.temu.com') return '欧区'
+    return ''
+  }
+
+  function getResolvedOuterSite() {
+    return getOuterSiteFromHostname() || getActiveOuterSite() || ''
+  }
+
+  function getActiveTimeRangeLabel() {
+    const active = [...document.querySelectorAll('[class*="TAB_capsule_"][class*="TAB_active_"]')]
+      .filter(isVisible)
+      .find(el => !isInsideVisibleDrawer(el) && LIST_TIME_DIMENSION_MAP[textOf(el)])
+    return textOf(active)
+  }
+
+  function resolveTimeDimensionState(sharedState = shared) {
+    const explicitLabel = listTimeRange && LIST_TIME_DIMENSION_MAP[listTimeRange] ? listTimeRange : ''
+    if (explicitLabel) {
+      return {
+        label: explicitLabel,
+        value: LIST_TIME_DIMENSION_MAP[explicitLabel],
+      }
+    }
+    const sharedLabel = String(sharedState.timeDimensionLabel || '').trim()
+    const sharedValue = Number(sharedState.timeDimension || 0) || 0
+    if (sharedValue > 0) {
+      return {
+        label: sharedLabel,
+        value: sharedValue,
+      }
+    }
+    const activeLabel = getActiveTimeRangeLabel()
+    return {
+      label: activeLabel,
+      value: LIST_TIME_DIMENSION_MAP[activeLabel] || 0,
+    }
+  }
+
   async function waitForTargetReady(timeout = 15000) {
     const t0 = Date.now()
     while (Date.now() - t0 < timeout) {
       const hasSites = getAvailableOuterSites().length > 0
       const hasProductSection = /商品明细/.test(textOf(document.body))
-      const hasQuery = !!findMainButton('查询')
-      if (hasSites && hasProductSection && hasQuery) return true
-      await sleep(600)
+      const hasButtons = !!findMainButton('查询') && !!findMainButton('重置')
+      const hasTable = !!getMainListTable() || !!getMainListHeaderTable() || hasVisibleMainListEmpty() || hasBusyWarning()
+      if (hasSites && hasProductSection && hasButtons && hasTable) return true
+      await sleep(400)
     }
     return false
   }
@@ -311,6 +560,16 @@
     return next?.closest('[class*="PGT_outerWrapper_"], [class*="PGT_pagerWrapper_"], ul, div') || document
   }
 
+  function getVisibleMainListEmptyNode() {
+    return [...document.querySelectorAll('[class*="TB_empty_"]')]
+      .filter(isVisible)
+      .find(node => !isInsideVisibleDrawer(node)) || null
+  }
+
+  function hasVisibleMainListEmpty() {
+    return !!getVisibleMainListEmptyNode()
+  }
+
   function getListPageNo() {
     const active = getMainPagerRoot().querySelector('li[class*="PGT_pagerItemActive_"]')
     const value = parseInt(textOf(active), 10)
@@ -339,40 +598,132 @@
     return clickPagerLike(prev)
   }
 
+  function getListRowSampleTexts(rows, sampleSize = 3) {
+    if (!rows.length) return []
+    const indexes = []
+    const headCount = Math.min(sampleSize, rows.length)
+    const tailStart = Math.max(headCount, rows.length - sampleSize)
+    for (let index = 0; index < headCount; index += 1) indexes.push(index)
+    for (let index = tailStart; index < rows.length; index += 1) indexes.push(index)
+    return [...new Set(indexes)]
+      .map(index => compact(textOf(rows[index])).slice(0, 120))
+      .filter(Boolean)
+  }
+
   function getListPageSignature() {
     const rows = getMainListRows()
     if (!rows.length) {
       return `list:empty:${compact(textOf(getMainListTable() || getMainListHeaderTable())).slice(0, 120)}`
     }
-    const first = compact(textOf(rows[0])).slice(0, 120)
-    const last = compact(textOf(rows[rows.length - 1])).slice(0, 120)
-    return `list:${rows.length}:${first}:${last}`
+    return `list:${rows.length}:${getListRowSampleTexts(rows).join('|')}`
   }
 
   async function waitForListReady(timeout = 15000) {
     const t0 = Date.now()
     while (Date.now() - t0 < timeout) {
       const rows = getMainListRows()
-      const empty = !!document.querySelector('[class*="TB_empty_"]')
-      const busy = hasBusyWarning() && rows.length === 0
+      const empty = hasVisibleMainListEmpty()
+      const busy = hasBusyWarning() && rows.length === 0 && !empty
       if (rows.length > 0 || empty || busy) {
         return { ready: true, rows, empty, busy }
       }
-      await sleep(700)
+      await sleep(500)
     }
     return {
       ready: false,
       rows: getMainListRows(),
-      empty: !!document.querySelector('[class*="TB_empty_"]'),
-      busy: hasBusyWarning(),
+      empty: hasVisibleMainListEmpty(),
+      busy: hasBusyWarning() && getMainListRows().length === 0 && !hasVisibleMainListEmpty(),
     }
   }
 
-  async function waitListPageChange(oldSignature, oldPageNo = 0, timeout = 10000) {
-    return await waitFor(() => {
-      if (oldPageNo > 0 && getListPageNo() !== oldPageNo) return true
-      return getListPageSignature() !== oldSignature
-    }, timeout, 700)
+  async function waitForQueryResultRefresh(baseline = {}, timeout = 30000, unchangedSettleMs = 4000) {
+    const deadline = Date.now() + timeout
+    let stableMarker = ''
+    let stableHits = 0
+    let stableSince = 0
+    while (Date.now() < deadline) {
+      const rows = getMainListRows()
+      const empty = hasVisibleMainListEmpty()
+      const busy = hasBusyWarning() && rows.length === 0 && !empty
+      if (busy) {
+        return { ready: true, rows, empty, busy, signatureChanged: false }
+      }
+
+      const currentPageNo = getListPageNo()
+      const currentSignature = rows.length > 0 || empty ? getListPageSignature() : ''
+      const signatureChanged = !!currentSignature && currentSignature !== String(baseline.signature || '')
+      const pageOk = currentPageNo === 1
+      const resultReady = rows.length > 0 || empty
+
+      if (pageOk && resultReady) {
+        const marker = `${currentPageNo}:${currentSignature}:${empty ? 'empty' : 'rows'}:${signatureChanged ? 'changed' : 'same'}`
+        if (stableMarker === marker) {
+          stableHits += 1
+        } else {
+          stableMarker = marker
+          stableHits = 1
+          stableSince = Date.now()
+        }
+
+        if (signatureChanged && stableHits >= 2) {
+          return { ready: true, rows, empty, busy: false, signatureChanged: true }
+        }
+
+        if (!signatureChanged && Date.now() - stableSince >= unchangedSettleMs) {
+          return { ready: true, rows, empty, busy: false, signatureChanged: false }
+        }
+      } else {
+        stableMarker = ''
+        stableHits = 0
+        stableSince = 0
+      }
+
+      await sleep(400)
+    }
+
+    return {
+      ready: false,
+      rows: getMainListRows(),
+      empty: hasVisibleMainListEmpty(),
+      busy: hasBusyWarning() && getMainListRows().length === 0 && !hasVisibleMainListEmpty(),
+      signatureChanged: false,
+    }
+  }
+
+  async function waitListPageChange(oldSignature, oldPageNo = 0, timeout = 10000, expectedPageNo = 0) {
+    const deadline = Date.now() + timeout
+    let stableSignature = ''
+    let stableHits = 0
+    while (Date.now() < deadline) {
+      const rows = getMainListRows()
+      const empty = hasVisibleMainListEmpty()
+      const busy = hasBusyWarning() && rows.length === 0 && !empty
+      if (busy) return false
+
+      const currentPageNo = getListPageNo()
+      const currentSignature = rows.length > 0 || empty ? getListPageSignature() : ''
+      const pageChanged = expectedPageNo > 0
+        ? currentPageNo === expectedPageNo
+        : (oldPageNo > 0 ? currentPageNo !== oldPageNo : true)
+      const signatureChanged = !!currentSignature && currentSignature !== oldSignature
+
+      if (pageChanged && signatureChanged) {
+        if (stableSignature === currentSignature) {
+          stableHits += 1
+        } else {
+          stableSignature = currentSignature
+          stableHits = 1
+        }
+        if (stableHits >= 2) return true
+      } else {
+        stableSignature = ''
+        stableHits = 0
+      }
+
+      await sleep(300)
+    }
+    return false
   }
 
   async function ensureListPageNo(targetPage, timeout = 30000) {
@@ -384,10 +735,11 @@
       if (current === targetPage) return true
       const oldSig = getListPageSignature()
       const oldPageNo = current
+      const expectedPageNo = current < targetPage ? oldPageNo + 1 : oldPageNo - 1
       await sleep(PAGER_THROTTLE_MS)
       const moved = current < targetPage ? clickNextListPage() : clickPrevListPage()
       if (!moved) return false
-      const changed = await waitListPageChange(oldSig, oldPageNo, 10000)
+      const changed = await waitListPageChange(oldSig, oldPageNo, 10000, expectedPageNo)
       if (!changed) return false
       const ready = await waitForListReady(12000)
       if (!ready.ready || ready.busy) return false
@@ -407,13 +759,22 @@
   }
 
   function getLabeledContainer(labelText) {
+    const rowCandidates = [...document.querySelectorAll('div[class*="index-module__row___"]')]
+      .filter(isVisible)
+    for (const row of rowCandidates) {
+      const label = [...row.querySelectorAll('div, label, span')]
+        .filter(isVisible)
+        .find(el => textOf(el) === labelText)
+      if (label) return row
+    }
+
     const candidates = [...document.querySelectorAll('div, label, span')]
       .filter(isVisible)
       .filter(el => textOf(el) === labelText)
     for (const label of candidates) {
       let cursor = label
       for (let depth = 0; depth < 4 && cursor; depth += 1) {
-        if (cursor.querySelector?.('input, [class*="ST_outerWrapper_"], [class*="CSD_cascaderWrapper_"]')) {
+        if (cursor.querySelector?.('input, [class*="ST_outerWrapper_"], [class*="CSD_cascaderWrapper_"], [class*="RPR_inputWrapper_"]')) {
           return cursor
         }
         cursor = cursor.parentElement
@@ -606,6 +967,184 @@
     return mapped
   }
 
+  async function resolveCategoryLeafId(pathText) {
+    const segments = String(pathText || '')
+      .split(/>|\/|｜|\|/g)
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+    if (!segments.length) return { ok: true, leafId: 0, segments: [] }
+
+    let parentCatId = 0
+    let leafId = 0
+    for (const segment of segments) {
+      const body = parentCatId > 0 ? { parentCatId } : {}
+      const response = await callTemuApi(TEMU_CATEGORY_CHILDREN_ENDPOINT, body, {})
+      if (!response.ok) return { ok: false, error: response.error }
+      const nodes = Array.isArray(response.result?.categoryNodeVOS)
+        ? response.result.categoryNodeVOS
+        : Array.isArray(response.result)
+          ? response.result
+          : []
+      const matched = nodes.find(item => compact(item?.catName) === compact(segment))
+      if (!matched) {
+        return {
+          ok: false,
+          error: {
+            errorCode: 0,
+            errorMsg: `未匹配到分类路径节点：${segment}`,
+          },
+        }
+      }
+      leafId = Number(matched.catId || 0) || 0
+      parentCatId = leafId
+    }
+
+    return {
+      ok: true,
+      leafId,
+      segments,
+    }
+  }
+
+  function buildListApiRequestPayload(pageNo = 1, pageSize = LIST_API_PAGE_SIZE, sharedState = shared) {
+    const payload = {
+      pageSize,
+      pageNum: Math.max(1, Number(pageNo || 1)),
+    }
+
+    const timeState = resolveTimeDimensionState(sharedState)
+    if (timeState.value > 0) payload.timeDimension = timeState.value
+
+    const quickFilterType = QUICK_FILTER_TYPE_MAP[quickFilter]
+    if (quickFilterType) payload.quickFilterType = quickFilterType
+
+    const productIdField = PRODUCT_ID_FIELD_MAP[productIdType]
+    const productIds = parseNumericValueList(productIdQuery)
+    if (productIdField && productIds.length) payload[productIdField] = productIds
+
+    const goodsNoField = GOODS_NO_FIELD_MAP[goodsNoType]
+    const goodsNos = splitMultiValueText(goodsNoQuery)
+    if (goodsNoField && goodsNos.length) payload[goodsNoField] = goodsNos
+
+    const categoryLeafId = Number(sharedState.categoryLeafId || 0) || 0
+    if (categoryLeafId > 0) payload.catIdList = [categoryLeafId]
+
+    if (productName) payload.goodsName = productName
+
+    return payload
+  }
+
+  function formatApiCategoryPath(category) {
+    if (!category || typeof category !== 'object') return ''
+    const names = []
+    for (let index = 1; index <= 10; index += 1) {
+      const name = String(category[`cat${index}Name`] || '').trim()
+      if (name && names[names.length - 1] !== name) names.push(name)
+    }
+    if (!names.length) {
+      const fallback = String(category.catName || '').trim()
+      if (fallback) names.push(fallback)
+    }
+    return names.join(' > ')
+  }
+
+  function formatApiPercent(value) {
+    if (value == null || value === '') return ''
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return String(value)
+    return `${(numeric * 100).toFixed(2)}%`
+  }
+
+  function formatApiMetric(value) {
+    if (value == null || value === '') return ''
+    return String(value)
+  }
+
+  async function fetchListApiPage(pageNo = 1, sharedState = shared) {
+    const payload = buildListApiRequestPayload(pageNo, LIST_API_PAGE_SIZE, sharedState)
+    let lastError = null
+    for (let attempt = 1; attempt <= LIST_API_RETRY_LIMIT; attempt += 1) {
+      const response = await callTemuApi(TEMU_LIST_ENDPOINT, payload, {})
+      if (response.ok) {
+        const result = response.result && typeof response.result === 'object' ? response.result : {}
+        const list = Array.isArray(result.list) ? result.list : []
+        return {
+          ok: true,
+          pageNo: Math.max(1, Number(pageNo || 1)),
+          pageSize: LIST_API_PAGE_SIZE,
+          payload,
+          result,
+          list,
+          total: Math.max(0, Number(result.total || 0) || 0),
+          updateAt: Number(result.updateAt || 0) || 0,
+          attempt,
+        }
+      }
+
+      lastError = response.error
+      if (attempt < LIST_API_RETRY_LIMIT) {
+        const backoffMs = getListApiRetryBackoffMs(lastError, attempt)
+        await sleep(backoffMs)
+      }
+    }
+
+    return {
+      ok: false,
+      pageNo: Math.max(1, Number(pageNo || 1)),
+      pageSize: LIST_API_PAGE_SIZE,
+      payload,
+      error: normalizeTemuApiError(lastError),
+    }
+  }
+
+  function mapApiItemToListRow(item, currentOuterSite, pageNo, index, sharedState = shared) {
+    const spu = item?.productSpuId != null ? String(item.productSpuId) : ''
+    const goodsNameText = String(item?.goodsName || '').trim()
+    const categoryText = formatApiCategoryPath(item?.category)
+    const timeLabel = String(sharedState.timeDimensionLabel || listTimeRange || '当前页面').trim() || '当前页面'
+    return {
+      外层站点: currentOuterSite,
+      列表页码: Math.max(1, Number(pageNo || 1)),
+      抓取时间: localNow(),
+      列表时间范围: timeLabel,
+      快速筛选: quickFilter || '全部',
+      列表行号: index + 1,
+      商品名称: goodsNameText,
+      商品分类: categoryText,
+      SPU: spu,
+      商品图片: String(item?.goodsImageUrl || '').trim(),
+      商品信息: [goodsNameText, spu ? `SPU: ${spu}` : ''].filter(Boolean).join(' '),
+      '流量情况/曝光量': formatApiMetric(item?.exposeNum),
+      '流量情况/点击量': formatApiMetric(item?.clickNum),
+      '流量情况/访客数': formatApiMetric(item?.goodsDetailVisitorNum),
+      '流量情况/浏览量': formatApiMetric(item?.goodsDetailVisitNum),
+      '流量情况/加购人数': formatApiMetric(item?.addToCartUserNum),
+      '流量情况/收藏人数': formatApiMetric(item?.collectUserNum),
+      '流量情况/支付件数': formatApiMetric(item?.payGoodsNum),
+      '支付情况/支付订单数': formatApiMetric(item?.payOrderNum),
+      '支付情况/买家数': formatApiMetric(item?.buyerNum),
+      '转化情况/转化率': formatApiPercent(item?.exposePayConversionRate),
+      '转化情况/点击率': formatApiPercent(item?.exposeClickConversionRate),
+      '转化情况/点击后支付率': formatApiPercent(item?.clickPayConversionRate),
+      '搜索数据/曝光量': formatApiMetric(item?.searchExposeNum),
+      '搜索数据/点击量': formatApiMetric(item?.searchClickNum),
+      '搜索数据/支付订单数': formatApiMetric(item?.searchPayOrderNum),
+      '搜索数据/支付件数': formatApiMetric(item?.searchPayGoodsNum),
+      '推荐数据/曝光量': formatApiMetric(item?.recommendExposeNum),
+      '推荐数据/点击量': formatApiMetric(item?.recommendClickNum),
+      '推荐数据/支付订单数': formatApiMetric(item?.recommendPayOrderNum),
+      '推荐数据/支付件数': formatApiMetric(item?.recommendPayGoodsNum),
+      增长潜力: String(item?.growDataText || '').trim(),
+      操作: spu ? '查看详情' : '',
+    }
+  }
+
+  function mapApiPageToRows(apiPage, currentOuterSite, sharedState = shared) {
+    const pageNo = Math.max(1, Number(apiPage?.pageNo || 1))
+    const list = Array.isArray(apiPage?.list) ? apiPage.list : []
+    return list.map((item, index) => mapApiItemToListRow(item, currentOuterSite, pageNo, index, sharedState))
+  }
+
   function scrapeCurrentPage(currentOuterSite) {
     const rows = getMainListRows()
     return rows.map((row, index) => {
@@ -639,8 +1178,8 @@
 
   function buildBusyReload(nextPhaseName, sharedState) {
     const retry = Number(sharedState.listBusyRetry || 0)
-    const currentPageNo = Math.max(1, Number(sharedState.lastCollectedPageNo || getListPageNo() || 1))
-    const currentSite = sharedState.targetOuterSite || sharedState.currentOuterSite || getActiveOuterSite() || ''
+    const currentPageNo = Math.max(1, Number(sharedState.lastCollectedPageNo || sharedState.currentPageNo || getListPageNo() || 1))
+    const currentSite = sharedState.targetOuterSite || sharedState.currentOuterSite || getResolvedOuterSite() || ''
     if (retry >= LIST_BUSY_RETRY_LIMIT) {
       return fail('Temu 商品流量列表连续出现 “Too many visitors...” 空表，刷新补偿后仍未恢复')
     }
@@ -653,66 +1192,56 @@
   }
 
   async function prepareCurrentSite(sharedState, nextPhaseName = 'collect', extraShared = {}) {
+    const currentSite = sharedState.currentOuterSite || sharedState.targetOuterSite || getResolvedOuterSite() || ''
+    const currentPageNo = Math.max(1, Number(sharedState.currentPageNo || sharedState.recoverPageNo || 1))
     const productOk = await ensureProductTrafficSection()
     if (!productOk) return fail('未能切回「商品流量」tab')
 
-    const state = await waitForListReady(12000)
-    if (!state.ready) return fail('商品流量列表加载超时')
-    if (state.busy) return buildBusyReload('prepare_current_site', sharedState)
-
-    if (!clickLike(findMainButton('重置'))) {
-      return fail('未找到商品流量列表的「重置」按钮')
-    }
-    await sleep(1200)
-
-    if (listTimeRange) {
-      const timeOk = await clickCapsule(listTimeRange)
-      if (!timeOk) return fail(`列表统计时间切换失败：${listTimeRange}`)
+    const ready = await waitForTargetReady(LIST_READY_TIMEOUT_MS)
+    if (!ready) {
+      return scheduleListPageRecovery(sharedState, '商品流量列表初始加载超时', currentPageNo, currentSite)
     }
 
-    if (productIdQuery) {
-      const typeOk = await setMainSelectByLabel('商品ID查询', productIdType)
-      if (!typeOk) return fail(`商品ID查询类型切换失败：${productIdType}`)
-      const inputOk = await setMainTextInput('商品ID查询', productIdQuery)
-      if (!inputOk) return fail('填写「商品ID查询」失败')
+    const timeState = resolveTimeDimensionState(sharedState)
+    if (listTimeRange && timeState.value <= 0) {
+      return fail(`列表统计时间切换失败：${listTimeRange}`)
     }
 
-    if (goodsNoQuery) {
-      const typeOk = await setMainSelectByLabel('货号查询', goodsNoType)
-      if (!typeOk) return fail(`货号查询类型切换失败：${goodsNoType}`)
-      const inputOk = await setMainTextInput('货号查询', goodsNoQuery)
-      if (!inputOk) return fail('填写「货号查询」失败')
+    let categoryLeafId = Number(sharedState.categoryLeafId || 0) || 0
+    let categoryPathDisplay = String(sharedState.categoryPathDisplay || '').trim()
+    if (categoryPath && (!categoryLeafId || sharedState.categoryPathSource !== categoryPath)) {
+      const resolved = await resolveCategoryLeafId(categoryPath)
+      if (!resolved.ok) {
+        return fail(`商品分类设置失败：${categoryPath}${resolved.error?.errorMsg ? ` (${resolved.error.errorMsg})` : ''}`)
+      }
+      categoryLeafId = Number(resolved.leafId || 0) || 0
+      categoryPathDisplay = resolved.segments.join(' > ')
     }
 
-    if (categoryPath) {
-      const categoryOk = await setCategoryPath(categoryPath)
-      if (!categoryOk) return fail(`商品分类设置失败：${categoryPath}`)
-    }
+    const collectDelayMs = getListApiCollectDelayMs({
+      ...sharedState,
+      ...extraShared,
+    }, {
+      afterSiteSwitch: !!sharedState.switchedOuterSite,
+      afterRecovery: !!sharedState.recoveredListPage,
+    })
 
-    if (productName) {
-      const nameOk = await setMainTextInput('商品名称', productName)
-      if (!nameOk) return fail('填写「商品名称」失败')
-    }
-
-    const quickOk = await clickQuickFilter(quickFilter)
-    if (!quickOk) return fail(`快速筛选切换失败：${quickFilter}`)
-
-    if (!clickLike(findMainButton('查询'))) {
-      return fail('未找到商品流量列表的「查询」按钮')
-    }
-    await sleep(1800)
-
-    const afterQuery = await waitForListReady(15000)
-    if (!afterQuery.ready) return fail('列表查询后加载超时')
-    if (afterQuery.busy) return buildBusyReload('prepare_current_site', sharedState)
-
-    const pageResetOk = await ensureListPageNo(1, 30000)
-    if (!pageResetOk) return fail('商品流量列表未能回到第一页')
-
-    return nextPhase(nextPhaseName, 400, {
+    return nextPhase(nextPhaseName, nextPhaseName === 'collect' ? collectDelayMs : 400, {
       ...sharedState,
       ...extraShared,
       listBusyRetry: 0,
+      currentOuterSite: currentSite,
+      currentPageNo: Math.max(1, Number(extraShared.currentPageNo || sharedState.currentPageNo || 1)),
+      timeDimension: timeState.value,
+      timeDimensionLabel: timeState.label || listTimeRange || '当前页面',
+      categoryLeafId,
+      categoryPathDisplay,
+      categoryPathSource: categoryPath || '',
+      pendingCollectDelayMs: nextPhaseName === 'collect'
+        ? 0
+        : Math.max(0, Number(sharedState.pendingCollectDelayMs || 0)),
+      recoveredListPage: nextPhaseName === 'collect' ? false : !!sharedState.recoveredListPage,
+      switchedOuterSite: nextPhaseName === 'collect' ? false : !!sharedState.switchedOuterSite,
     })
   }
 
@@ -721,13 +1250,18 @@
     if (retry >= LIST_PAGE_RECOVERY_LIMIT) {
       return fail(`商品流量列表分页重试 ${retry} 次后仍失败：${reason}`)
     }
-    return reloadPage('recover_list_page', 2200, {
+    const sleepMs = getListPageRecoveryCooldownMs(sharedState, reason)
+    return reloadPage('recover_list_page', sleepMs, {
       ...sharedState,
       listBusyRetry: 0,
       listPageRetry: retry + 1,
       listPageRetryReason: reason,
       recoverPageNo: Math.max(1, Number(targetPageNo || 1)),
-      recoverOuterSite: targetSite || sharedState.currentOuterSite || getActiveOuterSite() || '',
+      recoverOuterSite: targetSite || sharedState.currentOuterSite || getResolvedOuterSite() || '',
+      pendingCollectDelayMs: /Too many visitors|Network Timeout|请求超时/i.test(String(reason || ''))
+        ? Math.max(LIST_API_RECOVERY_THROTTLE_MS, Math.round(sleepMs / 2))
+        : Math.max(0, Number(sharedState.pendingCollectDelayMs || 0)),
+      recoveredListPage: /Too many visitors|Network Timeout|请求超时/i.test(String(reason || '')),
     })
   }
 
@@ -749,32 +1283,51 @@
       const { available, target } = buildTargetOuterSites()
       if (!target.length) return fail(`未找到可抓取的外层站点，可用站点：${available.join(' / ') || '无'}`)
 
-      const activeSite = getActiveOuterSite() || target[0]
+      const initialTimeState = resolveTimeDimensionState(shared)
+      const activeSite = getResolvedOuterSite() || target[0]
       if (activeSite !== target[0]) {
-        const click = getOuterSiteClick(target[0])
-        if (!click) return fail(`外层站点切换失败：${target[0]}`)
-        return cdpClicks([click], 'after_outer_site_switch', 3600, {
+        const targetUrl = getOuterSiteUrl(target[0])
+        if (!targetUrl) return fail(`外层站点切换失败：${target[0]}`)
+        location.href = targetUrl
+        return nextPhase('after_outer_site_switch', 3600, {
+          ...shared,
           targetOuterSites: target,
           targetOuterSite: target[0],
+          currentPageNo: 1,
+          totalPages: 1,
+          switchedOuterSite: true,
+          lastApiAttempt: 1,
+          timeDimension: initialTimeState.value || Number(shared.timeDimension || 0) || 0,
+          timeDimensionLabel: initialTimeState.label || listTimeRange || String(shared.timeDimensionLabel || '').trim(),
         })
       }
 
       return nextPhase('prepare_current_site', 400, {
+        ...shared,
         targetOuterSites: target,
+        currentPageNo: 1,
         listPageRetry: 0,
+        switchedOuterSite: false,
+        lastApiAttempt: 1,
+        timeDimension: initialTimeState.value || Number(shared.timeDimension || 0) || 0,
+        timeDimensionLabel: initialTimeState.label || listTimeRange || String(shared.timeDimensionLabel || '').trim(),
       })
     }
 
     if (phase === 'after_outer_site_switch') {
+      const targetSite = shared.targetOuterSite || ''
+      const switched = await waitForTargetOuterSite(targetSite, 30000)
+      if (!switched) {
+        return fail(`外层站点切换未生效：期望 ${targetSite || '未知站点'}，当前 ${getResolvedOuterSite() || '未知站点'}`)
+      }
       const ready = await waitForTargetReady(15000)
-      if (!ready) return fail(`切换外层站点后页面未恢复：${shared.targetOuterSite || '未知站点'}`)
-      const state = await waitForListReady(12000)
-      if (!state.ready) return fail(`切换外层站点后列表未加载：${shared.targetOuterSite || '未知站点'}`)
-      if (state.busy) return buildBusyReload('after_outer_site_switch', shared)
+      if (!ready) return fail(`切换外层站点后页面未恢复：${targetSite || '未知站点'}`)
       return nextPhase(shared.resume_phase || 'prepare_current_site', 400, {
         ...shared,
         listBusyRetry: 0,
+        currentOuterSite: getResolvedOuterSite() || targetSite || '',
         resume_phase: '',
+        switchedOuterSite: true,
       })
     }
 
@@ -783,77 +1336,42 @@
     }
 
     if (phase === 'recover_list_page') {
-      if (!location.href.includes('/main/flux-analysis-full')) {
-        location.href = TARGET_URL
+      const targetSite = shared.recoverOuterSite || shared.currentOuterSite || getResolvedOuterSite() || ''
+      const targetUrl = getOuterSiteUrl(targetSite) || TARGET_URL
+      if (location.href !== targetUrl) {
+        location.href = targetUrl
         return nextPhase('recover_list_page', mode === 'new' ? 3000 : 2200, shared)
       }
 
+      const switched = await waitForTargetOuterSite(targetSite, 30000)
+      if (!switched) return fail(`商品流量页面恢复失败：未能切回站点 ${targetSite || '未知站点'}`)
+
       const ready = await waitForTargetReady(15000)
       if (!ready) return fail('商品流量页面恢复失败：页面未完成加载')
-
-      const targetSite = shared.recoverOuterSite || shared.currentOuterSite || getActiveOuterSite() || ''
-      if (targetSite && getActiveOuterSite() !== targetSite) {
-        const click = getOuterSiteClick(targetSite)
-        if (!click) {
-          return fail(`商品流量页面恢复失败：无法切换到站点 ${targetSite}`)
-        }
-        return cdpClicks([click], 'after_outer_site_switch', 3600, {
-          ...shared,
-          targetOuterSite: targetSite,
-          resume_phase: 'recover_list_page_prepare',
-        })
-      }
 
       return nextPhase('recover_list_page_prepare', 0, shared)
     }
 
     if (phase === 'recover_list_page_prepare') {
       return await prepareCurrentSite(shared, 'restore_list_page', {
-        currentOuterSite: shared.recoverOuterSite || shared.currentOuterSite || getActiveOuterSite() || '',
+        currentOuterSite: shared.recoverOuterSite || shared.currentOuterSite || getResolvedOuterSite() || '',
       })
     }
 
     if (phase === 'restore_list_page') {
       const targetPageNo = Math.max(1, Number(shared.recoverPageNo || 1))
-      const targetSite = shared.recoverOuterSite || shared.currentOuterSite || getActiveOuterSite() || ''
-      if (targetPageNo > 1) {
-        await sleep(PAGER_THROTTLE_MS)
-        const restored = await ensureListPageNo(targetPageNo, 60000)
-        if (!restored) {
-          return scheduleListPageRecovery(
-            shared,
-            `恢复到第 ${targetPageNo} 页失败`,
-            targetPageNo,
-            targetSite,
-          )
-        }
-      }
-
-      const state = await waitForListReady(15000)
-      if (!state.ready) {
-        return scheduleListPageRecovery(
-          shared,
-          `恢复后的第 ${targetPageNo} 页加载超时`,
-          targetPageNo,
-          targetSite,
-        )
-      }
-      if (state.busy) {
-        return scheduleListPageRecovery(
-          shared,
-          `恢复后的第 ${targetPageNo} 页出现 Too many visitors`,
-          targetPageNo,
-          targetSite,
-        )
-      }
-
-      return nextPhase('collect', 400, {
+      const targetSite = shared.recoverOuterSite || shared.currentOuterSite || getResolvedOuterSite() || ''
+      return nextPhase('collect', getListApiCollectDelayMs(shared, { afterRecovery: true }), {
         ...shared,
         currentOuterSite: targetSite,
+        currentPageNo: targetPageNo,
         recoverPageNo: 0,
         recoverOuterSite: '',
         listPageRetry: 0,
         listPageRetryReason: '',
+        pendingCollectDelayMs: 0,
+        recoveredListPage: false,
+        switchedOuterSite: false,
       })
     }
 
@@ -864,56 +1382,40 @@
       const { available, target } = buildTargetOuterSites()
       if (!target.length) return fail(`未找到可抓取的外层站点，可用站点：${available.join(' / ') || '无'}`)
 
-      const currentSite = getActiveOuterSite() || target[0]
-      if (hasNextListPage()) {
-        const oldSig = getListPageSignature()
-        const oldPageNo = getListPageNo()
-        await sleep(PAGER_THROTTLE_MS)
-        if (!clickNextListPage()) {
-          return scheduleListPageRecovery(
-            shared,
-            '商品流量列表翻页失败：无法点击下一页',
-            oldPageNo + 1,
-            currentSite,
-          )
-        }
-        const changed = await waitListPageChange(oldSig, oldPageNo, 10000)
-        if (!changed) {
-          return scheduleListPageRecovery(
-            shared,
-            '商品流量列表翻页后页码/数据未更新',
-            oldPageNo + 1,
-            currentSite,
-          )
-        }
-        return nextPhase('after_list_page_turn', 400, {
+      const currentSite = getResolvedOuterSite() || target[0]
+      const currentPageNo = Math.max(1, Number(shared.currentPageNo || shared.lastCollectedPageNo || 1))
+      const totalPages = Math.max(1, Number(shared.totalPages || 1))
+      if (currentPageNo < totalPages) {
+        return nextPhase('collect', getListApiCollectDelayMs(shared, { nextPageNo: currentPageNo + 1 }), {
+          ...shared,
           targetOuterSites: target,
           currentOuterSite: currentSite,
-          lastCollectedPageNo: Number(shared.lastCollectedPageNo || oldPageNo),
+          currentPageNo: currentPageNo + 1,
+          lastCollectedPageNo: currentPageNo,
+          pendingCollectDelayMs: 0,
+          recoveredListPage: false,
+          switchedOuterSite: false,
         })
       }
 
       const nextSite = nextOuterSite(target, currentSite)
       if (!nextSite) return complete([], false)
 
-      const click = getOuterSiteClick(nextSite)
-      if (!click) return fail(`切换外层站点失败：${nextSite}`)
-      return cdpClicks([click], 'after_outer_site_switch', 3600, {
+      const targetUrl = getOuterSiteUrl(nextSite)
+      if (!targetUrl) return fail(`切换外层站点失败：${nextSite}`)
+      location.href = targetUrl
+      return nextPhase('after_outer_site_switch', 3600, {
+        ...shared,
         targetOuterSites: target,
         targetOuterSite: nextSite,
+        currentPageNo: 1,
+        totalPages: 1,
+        switchedOuterSite: true,
+        lastApiAttempt: 1,
       })
     }
 
     if (phase === 'after_list_page_turn') {
-      const state = await waitForListReady(15000)
-      const targetPageNo = Number(shared.lastCollectedPageNo || 0) + 1 || getListPageNo()
-      const targetSite = shared.currentOuterSite || getActiveOuterSite()
-      if (!state.ready) {
-        return scheduleListPageRecovery(shared, '商品流量列表翻页后加载超时', targetPageNo, targetSite)
-      }
-      if (state.busy) {
-        return scheduleListPageRecovery(shared, '商品流量列表翻页后出现 Too many visitors', targetPageNo, targetSite)
-      }
       return nextPhase('collect', 400, {
         ...shared,
         listBusyRetry: 0,
@@ -922,17 +1424,41 @@
     }
 
     if (phase === 'collect') {
-      const currentOuterSite = shared.currentOuterSite || getActiveOuterSite()
+      const currentOuterSite = shared.currentOuterSite || getResolvedOuterSite()
       const targetOuterSites = shared.targetOuterSites || buildTargetOuterSites().target
-      const currentPageNo = getListPageNo()
-      const data = scrapeCurrentPage(currentOuterSite)
-      const more = hasNextListPage() || moreOuterSitesRemain(targetOuterSites, currentOuterSite)
+      const currentPageNo = Math.max(1, Number(shared.currentPageNo || shared.recoverPageNo || 1))
+      const apiPage = await fetchListApiPage(currentPageNo, shared)
+      if (!apiPage.ok) {
+        const errorInfo = normalizeTemuApiError(apiPage.error)
+        const reason = isTooManyVisitorsError(errorInfo)
+          ? `商品流量列表 API 连续重试 ${LIST_API_RETRY_LIMIT} 次后仍返回 Too many visitors`
+          : `商品流量列表 API 抓取失败：${errorInfo.errorMsg || errorInfo.errorCode || '未知错误'}`
+        return scheduleListPageRecovery(shared, reason, currentPageNo, currentOuterSite)
+      }
+
+      const totalPages = apiPage.total > 0
+        ? Math.max(1, Math.ceil(apiPage.total / apiPage.pageSize))
+        : 1
+      const data = mapApiPageToRows(apiPage, currentOuterSite, {
+        ...shared,
+        currentPageNo,
+      })
+      const more = currentPageNo < totalPages || moreOuterSitesRemain(targetOuterSites, currentOuterSite)
       return complete(data, more, {
+        ...shared,
         targetOuterSites,
         currentOuterSite,
+        currentPageNo,
         lastCollectedPageNo: currentPageNo,
+        lastApiAttempt: Math.max(1, Number(apiPage.attempt || 1)),
+        totalPages,
+        totalCount: apiPage.total,
         recoverPageNo: 0,
         recoverOuterSite: '',
+        pendingCollectDelayMs: 0,
+        recoveredListPage: false,
+        switchedOuterSite: false,
+        listBusyRetry: 0,
         listPageRetry: 0,
         listPageRetryReason: '',
       })
