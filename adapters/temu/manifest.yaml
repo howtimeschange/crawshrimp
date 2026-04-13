@@ -435,27 +435,6 @@ tasks:
           - 店铺数据/店铺页支付买家数
           - 店铺数据/店铺页支付转化率
 
-  - id: mall_flux_probe
-    name: 后台-店铺流量-探针
-    description: 调试用：读取当前店铺流量页面的粒度、日期控件和值班表首列状态
-    script: mall-flux-probe.js
-    entry_url: https://agentseller.temu.com/main/mall-flux-analysis-full
-    params:
-      - id: mode
-        type: radio
-        label: 打开方式
-        default: current
-        options:
-          - value: current
-            label: 使用当前标签页
-          - value: new
-            label: 新开标签页
-    trigger:
-      type: manual
-    output:
-      - type: json
-        filename: "Temu_店铺流量_探针_{timestamp}.json"
-
   - id: goods_traffic_detail
     name: 后台-商品流量-详情
     description: 基于已导出的商品流量列表结果或 SPU 款号导入表，逐商品打开「查看详情」抽屉，按站点与日/周/月维度抓取详情数据并自动翻页

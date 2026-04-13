@@ -11,13 +11,6 @@
   const SAFE_PAGE_LOOP_LIMIT = 120
   const PAGER_THROTTLE_MS = 1200
 
-  const mode = String(params.mode || 'current').trim().toLowerCase()
-  const outerSitesParam = normalizeArray(params.outer_sites)
-  const statDateRange = params.stat_date_range || {}
-  const statWeekParam = params.stat_week ?? params.stat_week_range ?? ''
-  const statMonthParam = params.stat_month ?? params.stat_month_range ?? ''
-  const statGrainParam = String(params.stat_grain || '').trim()
-
   const OUTER_SITE_BLACKLIST = new Set(['商家中心'])
   const CANONICAL_OUTER_SITE_ORDER = ['全球', '美国', '欧区']
   const GRAIN_OPTIONS = ['按日', '按周', '按月']
@@ -26,6 +19,41 @@
     if (!Array.isArray(value)) return []
     return value.map(item => String(item || '').trim()).filter(Boolean)
   }
+
+  function normalizeDateRangeParam(value) {
+    if (!value || typeof value !== 'object') return {}
+    const start = String(value.start || '').trim()
+    const end = String(value.end || '').trim()
+    if (start && !end) return { start, end: start }
+    if (end && !start) return { start: end, end }
+    if (!start || !end) return {}
+    return { start, end }
+  }
+
+  function normalizeSingleTemporalRequest(value) {
+    if (typeof value === 'string') return String(value || '').trim()
+    if (!value || typeof value !== 'object') return ''
+    const direct = String(value.value || '').trim()
+    const start = String(value.start || '').trim()
+    const end = String(value.end || '').trim()
+    return direct || start || end
+  }
+
+  const persistedRequestShared = {
+    requestedMode: String(shared.requestedMode || params.mode || 'current').trim().toLowerCase(),
+    requestedOuterSites: normalizeArray(shared.requestedOuterSites || params.outer_sites),
+    requestedStatGrain: String(shared.requestedStatGrain || params.stat_grain || '').trim(),
+    requestedStatDateRange: normalizeDateRangeParam(shared.requestedStatDateRange || params.stat_date_range),
+    requestedStatWeek: normalizeSingleTemporalRequest(shared.requestedStatWeek || params.stat_week || params.stat_week_range),
+    requestedStatMonth: normalizeSingleTemporalRequest(shared.requestedStatMonth || params.stat_month || params.stat_month_range),
+  }
+
+  const mode = persistedRequestShared.requestedMode
+  const outerSitesParam = persistedRequestShared.requestedOuterSites
+  const statDateRange = persistedRequestShared.requestedStatDateRange
+  const statWeekParam = persistedRequestShared.requestedStatWeek
+  const statMonthParam = persistedRequestShared.requestedStatMonth
+  const statGrainParam = persistedRequestShared.requestedStatGrain
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 
@@ -52,11 +80,18 @@
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   }
 
+  function mergeShared(newShared = shared) {
+    return {
+      ...persistedRequestShared,
+      ...(newShared || {}),
+    }
+  }
+
   function nextPhase(name, sleepMs = 800, newShared = shared) {
     return {
       success: true,
       data: [],
-      meta: { action: 'next_phase', next_phase: name, sleep_ms: sleepMs, shared: newShared },
+      meta: { action: 'next_phase', next_phase: name, sleep_ms: sleepMs, shared: mergeShared(newShared) },
     }
   }
 
@@ -64,7 +99,7 @@
     return {
       success: true,
       data: [],
-      meta: { action: 'cdp_clicks', clicks, next_phase: nextPhaseName, sleep_ms: sleepMs, shared: newShared },
+      meta: { action: 'cdp_clicks', clicks, next_phase: nextPhaseName, sleep_ms: sleepMs, shared: mergeShared(newShared) },
     }
   }
 
@@ -72,7 +107,7 @@
     return {
       success: true,
       data: [],
-      meta: { action: 'reload_page', next_phase: nextPhaseName, sleep_ms: sleepMs, shared: newShared },
+      meta: { action: 'reload_page', next_phase: nextPhaseName, sleep_ms: sleepMs, shared: mergeShared(newShared) },
     }
   }
 
@@ -80,7 +115,7 @@
     return {
       success: true,
       data,
-      meta: { action: 'complete', has_more: hasMore, shared: newShared },
+      meta: { action: 'complete', has_more: hasMore, shared: mergeShared(newShared) },
     }
   }
 
@@ -308,6 +343,16 @@
     return next?.closest('[class*="PGT_outerWrapper_"], [class*="PGT_pagerWrapper_"], ul, div') || document
   }
 
+  function getVisibleMainListEmptyNode() {
+    return [...document.querySelectorAll('[class*="TB_empty_"]')]
+      .filter(isVisible)
+      .find(node => !isInsideVisibleDrawer(node)) || null
+  }
+
+  function hasVisibleMainListEmpty() {
+    return !!getVisibleMainListEmptyNode()
+  }
+
   function getListPageNo() {
     const active = getMainPagerRoot().querySelector('li[class*="PGT_pagerItemActive_"]')
     const value = parseInt(textOf(active), 10)
@@ -355,7 +400,7 @@
     const t0 = Date.now()
     while (Date.now() - t0 < timeout) {
       const rows = getMainListRows()
-      const empty = !!document.querySelector('[class*="TB_empty_"]')
+      const empty = hasVisibleMainListEmpty()
       const busy = hasBusyWarning() && rows.length === 0
       if (rows.length > 0 || empty || busy) {
         return { ready: true, rows, empty, busy }
@@ -365,7 +410,7 @@
     return {
       ready: false,
       rows: getMainListRows(),
-      empty: !!document.querySelector('[class*="TB_empty_"]'),
+      empty: hasVisibleMainListEmpty(),
       busy: hasBusyWarning(),
     }
   }
@@ -376,7 +421,7 @@
     let stableHits = 0
     while (Date.now() < deadline) {
       const rows = getMainListRows()
-      const empty = !!document.querySelector('[class*="TB_empty_"]')
+      const empty = hasVisibleMainListEmpty()
       const busy = hasBusyWarning() && rows.length === 0
       if (busy) return false
 
@@ -1285,7 +1330,7 @@
   }
 
   function doesCurrentRowsMatchRange(startDate, endDate, grain) {
-    const empty = !!document.querySelector('[class*="TB_empty_"]')
+    const empty = hasVisibleMainListEmpty()
     const rows = getMainListRows()
     if (!rows.length) return empty
 
@@ -1326,7 +1371,7 @@
       }
 
       const rowDates = getCurrentRowDates()
-      const empty = !!document.querySelector('[class*="TB_empty_"]')
+      const empty = hasVisibleMainListEmpty()
       if (!rowDates.length && empty) return true
       if (rowDates.length && rowDates.every(dateText => parseDateCellRange(dateText)?.kind === expectedKind)) {
         return true
@@ -1354,7 +1399,7 @@
       if (ready.busy) return false
 
       const rows = getMainListRows()
-      const empty = !!document.querySelector('[class*="TB_empty_"]')
+      const empty = hasVisibleMainListEmpty()
       const signature = rows.length > 0 || empty ? getListPageSignature() : ''
       const currentPageNo = getListPageNo()
       const totalCount = getListTotalCount()
