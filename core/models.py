@@ -17,12 +17,18 @@ class OutputType(str, Enum):
     notify = "notify"
 
 
+class TaskOutputColumnGroup(BaseModel):
+    label: str
+    columns: List[str]
+
+
 class TaskOutput(BaseModel):
     type: OutputType
     filename: Optional[str] = None
     channel: Optional[str] = None
     condition: Optional[str] = None
     columns: Optional[List[str]] = None  # excel 用：显式列顺序；未填则按 data 字段顺序导出
+    column_groups: Optional[List[TaskOutputColumnGroup]] = None  # excel 用：两层表头分组定义
 
 
 class TaskTrigger(BaseModel):
@@ -36,7 +42,11 @@ class ParamType(str, Enum):
     radio      = "radio"       # 单选框组
     select     = "select"      # 下拉选择
     checkbox   = "checkbox"    # 复选框组（多选）
+    week       = "week"        # 单周选择（YYYY-Www）
+    month      = "month"       # 单月选择（YYYY-MM）
     date_range = "date_range"  # 日期区间（start_date / end_date）
+    week_range = "week_range"  # 周区间（start_week / end_week）
+    month_range = "month_range"  # 月区间（start_month / end_month）
     number     = "number"      # 数字输入
     file_excel = "file_excel"  # Excel 文件选择（.xlsx/.xls/.csv），注入 rows 数组
     file_images = "file_images"  # 多图文件选择（png/jpg/jpeg），注入 paths 数组
@@ -67,6 +77,7 @@ class TaskParam(BaseModel):
     templates: Optional[List[TaskTemplate]] = None  # 多模板下载配置
     default: Optional[Any] = None
     options: Optional[List[ParamOption]] = None  # radio / select / checkbox 用
+    visible_when: Optional[dict[str, Any]] = None  # GUI 可选：按其他字段值控制显示
     required: bool = False
     min: Optional[float] = None        # number 用
     max: Optional[float] = None

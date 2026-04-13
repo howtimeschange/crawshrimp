@@ -56,6 +56,7 @@
                   <input type="date" v-model="values['_custom_end_' + param.id]" class="input" />
                 </div>
               </template>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
             <!-- 复选框组 -->
@@ -74,7 +75,7 @@
             </template>
 
             <!-- 日期区间 -->
-            <template v-else-if="param.type === 'date_range'">
+            <template v-else-if="isRangeParamType(param.type)">
               <div v-if="shouldShowDateRangeParam(param)" class="date-range-panel">
                 <div class="date-range">
                   <div
@@ -87,12 +88,12 @@
                   >
                     <input
                       :ref="el => setDateInputRef(param.id + '_start', el)"
-                      type="date"
+                      :type="getTemporalInputType(param.type)"
                       v-model="values[param.id + '_start']"
                       class="date-card-input"
                     />
                     <span :class="['date-card-value', { placeholder: !values[param.id + '_start'] }]">
-                      {{ formatDateDisplay(values[param.id + '_start']) }}
+                      {{ formatTemporalDisplay(values[param.id + '_start'], param.type) }}
                     </span>
                     <span class="date-card-icon" aria-hidden="true">选择</span>
                   </div>
@@ -107,16 +108,43 @@
                   >
                     <input
                       :ref="el => setDateInputRef(param.id + '_end', el)"
-                      type="date"
+                      :type="getTemporalInputType(param.type)"
                       v-model="values[param.id + '_end']"
                       class="date-card-input"
                     />
                     <span :class="['date-card-value', { placeholder: !values[param.id + '_end'] }]">
-                      {{ formatDateDisplay(values[param.id + '_end']) }}
+                      {{ formatTemporalDisplay(values[param.id + '_end'], param.type) }}
                     </span>
                     <span class="date-card-icon" aria-hidden="true">选择</span>
                   </div>
                 </div>
+              </div>
+            </template>
+
+            <template v-else-if="isSingleTemporalParamType(param.type)">
+              <div class="date-range-panel">
+                <div class="date-range">
+                  <div
+                    class="date-card"
+                    role="button"
+                    tabindex="0"
+                    @click="openDatePicker(param.id)"
+                    @keydown.enter.prevent="openDatePicker(param.id)"
+                    @keydown.space.prevent="openDatePicker(param.id)"
+                  >
+                    <input
+                      :ref="el => setDateInputRef(param.id, el)"
+                      :type="getTemporalInputType(param.type)"
+                      v-model="values[param.id]"
+                      class="date-card-input"
+                    />
+                    <span :class="['date-card-value', { placeholder: !values[param.id] }]">
+                      {{ formatTemporalDisplay(values[param.id], param.type) }}
+                    </span>
+                    <span class="date-card-icon" aria-hidden="true">选择</span>
+                  </div>
+                </div>
+                <p v-if="param.hint" class="hint">{{ param.hint }}</p>
               </div>
             </template>
 
@@ -382,7 +410,8 @@ watch(() => props.task, (task) => {
   const v = {}
   for (const p of (task.params || [])) {
     if (p.type === 'checkbox') v[p.id] = p.default || []
-    else if (p.type === 'date_range') { v[p.id + '_start'] = ''; v[p.id + '_end'] = '' }
+    else if (isSingleTemporalParamType(p.type)) v[p.id] = p.default ?? ''
+    else if (isRangeParamType(p.type)) { v[p.id + '_start'] = ''; v[p.id + '_end'] = '' }
     else if (p.type === 'file_excel') {
       v[p.id + '_path'] = ''
       v[p.id + '_rows'] = []
@@ -424,7 +453,7 @@ const autoPrecheckFlow = computed(() =>
 )
 
 const visibleParams = computed(() =>
-  orderVisibleParams((props.task?.params || []).filter(p => !(autoPrecheckFlow.value && p.id === 'execute_mode')))
+  orderVisibleParams((props.task?.params || []).filter(isParamVisibleInForm))
 )
 
 const validationOnlyLabel = computed(() =>
@@ -460,6 +489,10 @@ const missingRequired = computed(() => {
     if (!p.required) return false
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
     if (p.type === 'file_images') return !(values.value[p.id + '_paths'] || []).length
+    if (isSingleTemporalParamType(p.type)) return !values.value[p.id]
+    if (isRangeParamType(p.type)) {
+      return !values.value[p.id + '_start'] || !values.value[p.id + '_end']
+    }
     return !values.value[p.id]
   })
 })
@@ -509,7 +542,7 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'date_range') {
+  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
@@ -562,6 +595,54 @@ function orderVisibleParams(params) {
   })
 }
 
+function isRangeParamType(type) {
+  return ['date_range'].includes(String(type || ''))
+}
+
+function isSingleTemporalParamType(type) {
+  return ['week', 'month', 'week_range', 'month_range'].includes(String(type || ''))
+}
+
+function normalizeRuleValues(value) {
+  if (Array.isArray(value)) return value
+  if (value === undefined || value === null) return []
+  return [value]
+}
+
+function matchesVisibleWhen(rule) {
+  if (!rule || typeof rule !== 'object') return true
+  const field = String(rule.field || rule.param_id || rule.id || '').trim()
+  if (!field) return true
+
+  const currentValue = values.value[field]
+  if (Object.prototype.hasOwnProperty.call(rule, 'equals')) {
+    return currentValue === rule.equals
+  }
+  if (Object.prototype.hasOwnProperty.call(rule, 'not_equals')) {
+    return currentValue !== rule.not_equals
+  }
+
+  const oneOf = normalizeRuleValues(rule.in ?? rule.one_of)
+  if (oneOf.length) return oneOf.includes(currentValue)
+
+  const notIn = normalizeRuleValues(rule.not_in)
+  if (notIn.length) return !notIn.includes(currentValue)
+
+  return true
+}
+
+function isParamVisibleByRule(param) {
+  const visibleWhen = param?.visible_when
+  if (!visibleWhen) return true
+  const rules = Array.isArray(visibleWhen) ? visibleWhen : [visibleWhen]
+  return rules.every(matchesVisibleWhen)
+}
+
+function isParamVisibleInForm(param) {
+  if (autoPrecheckFlow.value && param?.id === 'execute_mode') return false
+  return isParamVisibleByRule(param)
+}
+
 function forceReset() {
   clearInterval(pollTimer)
   pollTimer = null
@@ -573,49 +654,56 @@ function forceReset() {
 }
 
 function buildRunParams(overrides = {}) {
-  // 整理 params
-  const params = { ...values.value }
+  const params = {}
   for (const p of (props.task.params || [])) {
-    if (p.type === 'date_range') {
+    if (!isParamVisibleInForm(p)) continue
+
+    if (isSingleTemporalParamType(p.type)) {
+      params[p.id] = values.value[p.id] || ''
+      continue
+    }
+
+    if (isRangeParamType(p.type)) {
       params[p.id] = {
-        start: values.value[p.id + '_start'],
-        end:   values.value[p.id + '_end'],
+        start: values.value[p.id + '_start'] || '',
+        end: values.value[p.id + '_end'] || '',
       }
-      delete params[p.id + '_start']
-      delete params[p.id + '_end']
-    } else if (p.type === 'select') {
-      // 如果选了「自定义」，把对应的日期也打进去
+      continue
+    }
+
+    if (p.type === 'select') {
       const v = values.value[p.id]
+      params[p.id] = v
       if (v === '自定义') {
         const linkedRangeId = getLinkedDateRangeIdForSelect(p.id)
         const startKey = linkedRangeId ? linkedRangeId + '_start' : '_custom_start_' + p.id
         const endKey = linkedRangeId ? linkedRangeId + '_end' : '_custom_end_' + p.id
         params['custom_start'] = values.value[startKey] || ''
-        params['custom_end']   = values.value[endKey] || ''
-        // 同时把 custom_range 填进去（兼容 manifest 里单独声明的 date_range）
+        params['custom_end'] = values.value[endKey] || ''
         params['custom_range'] = {
           start: params['custom_start'],
-          end:   params['custom_end'],
+          end: params['custom_end'],
         }
       }
-      // 清理联动临时字段
-      delete params['_custom_start_' + p.id]
-      delete params['_custom_end_'   + p.id]
-    } else if (p.type === 'file_excel') {
-      // 仅发送 path，rows 和 headers 由后端在执行前自动读取，避免 IPC 负载过大导致 UI 卡死
+      continue
+    }
+
+    if (p.type === 'file_excel') {
       params[p.id] = {
         path: values.value[p.id + '_path'],
       }
-      delete params[p.id + '_path']
-      delete params[p.id + '_rows']
-      delete params[p.id + '_headers']
-    } else if (p.type === 'file_images') {
+      continue
+    }
+
+    if (p.type === 'file_images') {
       const maxCount = imageParamLimit(p)
       params[p.id] = {
         paths: normalizeImagePaths(values.value[p.id + '_paths'], maxCount),
       }
-      delete params[p.id + '_paths']
+      continue
     }
+
+    params[p.id] = values.value[p.id]
   }
   return JSON.parse(JSON.stringify({ ...params, ...overrides }))
 }
@@ -932,9 +1020,9 @@ function getLinkedDateRangeIdForSelect(paramId) {
   const params = props.task?.params || []
   const selectParam = params.find(p => p.id === paramId)
   if (!selectSupportsCustom(selectParam)) return null
-  const explicit = params.find(p => p.type === 'date_range' && p.id === 'custom_range')
+  const explicit = params.find(p => isRangeParamType(p.type) && p.id === 'custom_range')
   if (explicit) return explicit.id
-  const dateRanges = params.filter(p => p.type === 'date_range')
+  const dateRanges = params.filter(p => isRangeParamType(p.type))
   return dateRanges.length === 1 ? dateRanges[0].id : null
 }
 
@@ -951,13 +1039,47 @@ function shouldShowInlineCustomDate(param) {
 }
 
 function shouldShowDateRangeParam(param) {
+  if (!isParamVisibleByRule(param)) return false
   const controller = getControllerSelectForDateRange(param.id)
   if (!controller) return true
   return isCustomDateSelected(controller.id)
 }
 
-function formatDateDisplay(value) {
-  if (!value) return '年 / 月 / 日'
+function getTemporalInputType(type) {
+  if (type === 'week') return 'week'
+  if (type === 'month') return 'month'
+  if (type === 'week_range') return 'week'
+  if (type === 'month_range') return 'month'
+  return 'date'
+}
+
+function formatTemporalDisplay(value, type) {
+  if (!value) {
+    if (type === 'week') return '年 / 第几周'
+    if (type === 'month') return '年 / 月'
+    if (type === 'week_range') return '年 / 第几周'
+    if (type === 'month_range') return '年 / 月'
+    return '年 / 月 / 日'
+  }
+
+  if (type === 'week') {
+    const match = String(value).match(/^(\d{4})-W(\d{2})$/i)
+    if (match) return `${match[1]} / 第 ${match[2]} 周`
+  }
+
+  if (type === 'month') {
+    return String(value).replace(/-/g, ' / ')
+  }
+
+  if (type === 'week_range') {
+    const match = String(value).match(/^(\d{4})-W(\d{2})$/i)
+    if (match) return `${match[1]} / 第 ${match[2]} 周`
+  }
+
+  if (type === 'month_range') {
+    return String(value).replace(/-/g, ' / ')
+  }
+
   return String(value).replace(/-/g, ' / ')
 }
 

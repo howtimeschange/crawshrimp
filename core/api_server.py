@@ -219,6 +219,54 @@ def _url_matches_prefix(url: str, prefix: str) -> bool:
     return False
 
 
+def _normalize_export_guard_value(value) -> str:
+    return str(value or '').strip()
+
+
+def _dedupe_temu_goods_traffic_detail_rows(data_rows):
+    if not isinstance(data_rows, list):
+        return data_rows
+
+    deduped = []
+    seen = set()
+
+    for row in data_rows:
+        if not isinstance(row, dict):
+            deduped.append(row)
+            continue
+
+        if _normalize_export_guard_value(row.get('记录类型')) != '明细':
+            deduped.append(row)
+            continue
+
+        outer_site = _normalize_export_guard_value(row.get('外层站点'))
+        spu = _normalize_export_guard_value(row.get('SPU'))
+        detail_site = _normalize_export_guard_value(row.get('详情站点筛选'))
+        detail_grain = _normalize_export_guard_value(row.get('详情时间粒度'))
+        date = _normalize_export_guard_value(row.get('日期'))
+        site = _normalize_export_guard_value(row.get('站点'))
+
+        # 仅对明细行做最终去重保险，避免误伤异常行或上下文不完整的记录。
+        if not all([spu, detail_site, detail_grain, date, site]):
+            deduped.append(row)
+            continue
+
+        key = (outer_site, spu, detail_site, detail_grain, date, site)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+
+    return deduped
+
+
+def _apply_final_export_guards(adapter_id: str, task_id: str, data_rows):
+    guarded = data_rows if isinstance(data_rows, list) else list(data_rows or [])
+    if adapter_id == 'temu' and task_id == 'goods_traffic_detail':
+        guarded = _dedupe_temu_goods_traffic_detail_rows(guarded)
+    return guarded
+
+
 def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if not rows_raw:
         return {"headers": [], "rows": [], "total": 0}
@@ -227,9 +275,52 @@ def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if hi < 0 or hi >= len(rows_raw):
         return {"error": f"Header row index {hi} out of range", "headers": [], "rows": [], "total": 0}
 
-    headers = [str(c) if c is not None else '' for c in rows_raw[hi]]
+    def _stringify_row(raw_row):
+        return [str(c) if c is not None else '' for c in raw_row]
+
+    def _dedupe_headers(raw_headers):
+        used = {}
+        headers = []
+        for index, raw_header in enumerate(raw_headers):
+            header = str(raw_header or '').strip() or f"列{index + 1}"
+            if header not in used:
+                used[header] = 1
+                headers.append(header)
+                continue
+            used[header] += 1
+            headers.append(f"{header}_{used[header]}")
+        return headers
+
+    def _build_headers():
+        primary = _stringify_row(rows_raw[hi])
+        if hi + 1 >= len(rows_raw):
+            return _dedupe_headers(primary), hi + 1
+
+        secondary = _stringify_row(rows_raw[hi + 1])
+        has_primary_gaps = any(not str(cell).strip() for cell in primary)
+        has_secondary_labels = any(str(cell).strip() for cell in secondary)
+        if not (has_primary_gaps and has_secondary_labels):
+            return _dedupe_headers(primary), hi + 1
+
+        merged_headers = []
+        last_parent = ''
+        width = max(len(primary), len(secondary))
+        for index in range(width):
+            parent = str(primary[index] if index < len(primary) else '').strip()
+            child = str(secondary[index] if index < len(secondary) else '').strip()
+            if parent:
+                last_parent = parent
+            effective_parent = parent or (last_parent if child else '')
+            if child and effective_parent and child != effective_parent:
+                merged_headers.append(f"{effective_parent}/{child}")
+            else:
+                merged_headers.append(effective_parent or child or f"列{index + 1}")
+
+        return _dedupe_headers(merged_headers), hi + 2
+
+    headers, data_start_index = _build_headers()
     rows = []
-    for raw in rows_raw[hi + 1:]:
+    for raw in rows_raw[data_start_index:]:
         if all(c is None or str(c).strip() == '' for c in raw):
             continue
         row = {}
@@ -612,6 +703,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         fname,
                         filename_vars=filename_vars,
                         column_order=getattr(out, 'columns', None),
+                        column_groups=getattr(out, 'column_groups', None),
                     )
                     files.append(path)
                     log(f"Excel exported: {path}")
@@ -698,7 +790,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         await wait_for_control({"records": 0})
         log(f"Injecting script: {task.script}")
         data = await runner.run_script_file(script_path, params=run_params, control_hook=wait_for_control)
-        log(f"Script complete. Records: {len(data)}")
+        raw_count = len(data)
+        data = _apply_final_export_guards(adapter_id, task_id, data)
+        deduped_count = len(data)
+        log(f"Script complete. Records: {raw_count}")
+        if deduped_count != raw_count:
+            log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before export")
 
         output_files = await export_outputs(data)
         data_sink.finish_run(run_id, len(data), output_files)
@@ -708,6 +805,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     except RunAbortedError as e:
         err = e.reason or str(e)
         data = list(e.partial_data or data or [])
+        raw_count = len(data)
+        data = _apply_final_export_guards(adapter_id, task_id, data)
+        deduped_count = len(data)
+        if deduped_count != raw_count:
+            log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
         if run_control:
             run_control['pause_requested'] = False
             run_control['stop_requested'] = False
@@ -731,6 +833,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             run_control['stop_requested'] = False
             run_control['resume_event'].set()
             run_control['pause_logged'] = False
+        raw_count = len(data)
+        data = _apply_final_export_guards(adapter_id, task_id, data)
+        deduped_count = len(data)
+        if deduped_count != raw_count:
+            log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
         try:
             output_files = await export_outputs(data) if runner else []
         except Exception as export_error:

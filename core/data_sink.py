@@ -235,12 +235,15 @@ def export_excel(
     filename_template: str = "{task_id}_{date}.xlsx",
     filename_vars: Optional[Mapping[str, Any]] = None,
     column_order: Optional[List[str]] = None,
+    column_groups: Optional[List[Mapping[str, Any]]] = None,
 ) -> str:
     """
     Export data to Excel file.
     Returns absolute path of written file.
     """
     from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
 
     if not data:
         raise ValueError("No data to export")
@@ -271,16 +274,95 @@ def export_excel(
                 continue
             seen_headers.add(k)
             headers.append(k)
-    ws.append(headers)
+
+    header_fill = PatternFill(fill_type="solid", fgColor="F5F7FA")
+    header_font = Font(bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center")
+
+    def _leaf_header_label(column_key: str) -> str:
+        value = str(column_key or "").strip()
+        if "/" in value:
+            return value.split("/")[-1].strip() or value
+        return value
+
+    normalized_groups = []
+    group_lookup = {}
+    for group in column_groups or []:
+        if hasattr(group, "model_dump"):
+            group = group.model_dump()
+        label = str((group or {}).get("label") or "").strip()
+        columns = [
+            str(col or "").strip()
+            for col in ((group or {}).get("columns") or [])
+            if str(col or "").strip()
+        ]
+        if not label or not columns:
+            continue
+        normalized_groups.append({"label": label, "columns": columns})
+        for column in columns:
+            group_lookup[column] = label
+
+    has_grouped_header = bool(normalized_groups)
+    data_start_row = 2
+
+    if has_grouped_header:
+        top_row = []
+        leaf_row = []
+        for header in headers:
+            group_label = group_lookup.get(header, "")
+            if group_label:
+                top_row.append(group_label)
+                leaf_row.append(_leaf_header_label(header))
+            else:
+                top_row.append(_leaf_header_label(header))
+                leaf_row.append("")
+
+        ws.append(top_row)
+        ws.append(leaf_row)
+        data_start_row = 3
+
+        col_index = 1
+        while col_index <= len(headers):
+            header = headers[col_index - 1]
+            group_label = group_lookup.get(header, "")
+            if not group_label:
+                ws.merge_cells(start_row=1, start_column=col_index, end_row=2, end_column=col_index)
+                col_index += 1
+                continue
+
+            end_col = col_index
+            while end_col < len(headers) and group_lookup.get(headers[end_col], "") == group_label:
+                end_col += 1
+            if end_col > col_index:
+                ws.merge_cells(start_row=1, start_column=col_index, end_row=1, end_column=end_col)
+            col_index = end_col + 1
+
+        for row_no in (1, 2):
+            for cell in ws[row_no]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = header_alignment
+        ws.freeze_panes = "A3"
+    else:
+        ws.append(headers)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = header_alignment
+        ws.freeze_panes = "A2"
 
     # Write rows
     for row in data:
         ws.append([str(row.get(h, "")) for h in headers])
 
     # Auto column width
-    for col in ws.columns:
-        max_len = max((len(str(cell.value or "")) for cell in col), default=10)
-        ws.column_dimensions[col[0].column_letter].width = min(max_len + 4, 60)
+    for col_idx in range(1, ws.max_column + 1):
+        letter = get_column_letter(col_idx)
+        max_len = 10
+        for row_idx in range(1, ws.max_row + 1):
+            value = ws.cell(row=row_idx, column=col_idx).value
+            max_len = max(max_len, len(str(value or "")))
+        ws.column_dimensions[letter].width = min(max_len + 4, 60)
 
     wb.save(str(out_path))
     logger.info(f"Excel exported: {out_path} ({len(data)} rows)")

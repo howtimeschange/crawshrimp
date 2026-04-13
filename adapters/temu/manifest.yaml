@@ -1,8 +1,8 @@
 id: temu
 name: Temu 运营助手
-version: 1.3.1
+version: 1.5.1
 author: howtimeschange
-description: "Temu 卖家后台数据抓取与批量自动化：商品数据、售后、评价、站点商品、商品实拍图洗唛合规"
+description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
 
 auth:
@@ -108,6 +108,526 @@ tasks:
     output:
       - type: excel
         filename: "{shop_name}_售后数据_{region_scope}_{timestamp}.xlsx"
+
+  - id: goods_traffic_list
+    name: 后台-商品流量-列表
+    description: 抓取 Temu 后台「商品流量 > 商品明细」列表数据，支持外层站点与页面筛选，并自动全量翻页
+    script: goods-traffic-list.js
+    entry_url: https://agentseller.temu.com/main/flux-analysis-full
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: outer_sites
+        type: checkbox
+        label: 外层站点
+        hint: 不选默认抓取全部可用站点
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+      - id: list_time_range
+        type: select
+        label: 列表统计时间
+        default: ""
+        options:
+          - value: ""
+            label: 当前页面
+          - value: 昨日
+            label: 昨日
+          - value: 今日
+            label: 今日
+          - value: 本周
+            label: 本周
+          - value: 本月
+            label: 本月
+          - value: 近7日
+            label: 近 7 日
+          - value: 近30日
+            label: 近 30 日
+      - id: quick_filter
+        type: select
+        label: 快速筛选
+        default: 全部
+        options:
+          - value: 全部
+            label: 全部
+          - value: 流量待增长
+            label: 流量待增长
+          - value: 短期增长中
+            label: 短期增长中
+          - value: 长期增长中
+            label: 长期增长中
+      - id: product_id_type
+        type: select
+        label: 商品 ID 类型
+        default: SPU
+        options:
+          - value: SPU
+            label: SPU
+          - value: SKC
+            label: SKC
+          - value: SKU
+            label: SKU
+      - id: product_id_query
+        type: text
+        label: 商品 ID 查询
+        placeholder: "支持多值，空格或逗号分隔"
+        hint: 对应页面「商品ID查询」输入框，留空则不过滤
+      - id: goods_no_type
+        type: select
+        label: 货号类型
+        default: SKC货号
+        options:
+          - value: SKC货号
+            label: SKC货号
+          - value: SKU货号
+            label: SKU货号
+      - id: goods_no_query
+        type: text
+        label: 货号查询
+        placeholder: "支持多值，空格或逗号分隔"
+        hint: 对应页面「货号查询」输入框，留空则不过滤
+      - id: category_path
+        type: text
+        label: 商品分类路径
+        placeholder: "例：服装、鞋靴和珠宝饰品 > 女童童装 > 女童裤装"
+        hint: 用 > 分隔级联分类路径，需与页面分类文案一致
+      - id: product_name
+        type: text
+        label: 商品名称
+        placeholder: "输入商品名称关键字"
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Temu_商品流量列表_{timestamp}.xlsx"
+        columns:
+          - 外层站点
+          - 列表页码
+          - 抓取时间
+          - 列表时间范围
+          - 快速筛选
+          - 列表行号
+          - 商品名称
+          - 商品分类
+          - SPU
+          - 商品图片
+          - 商品信息
+          - 流量情况/曝光量
+          - 流量情况/点击量
+          - 流量情况/访客数
+          - 流量情况/浏览量
+          - 流量情况/加购人数
+          - 流量情况/收藏人数
+          - 流量情况/支付件数
+          - 支付情况/支付订单数
+          - 支付情况/买家数
+          - 转化情况/转化率
+          - 转化情况/点击率
+          - 转化情况/点击后支付率
+          - 搜索数据/曝光量
+          - 搜索数据/点击量
+          - 搜索数据/支付订单数
+          - 搜索数据/支付件数
+          - 推荐数据/曝光量
+          - 推荐数据/点击量
+          - 推荐数据/支付订单数
+          - 推荐数据/支付件数
+          - 增长潜力
+          - 操作
+        column_groups:
+          - label: 流量情况
+            columns:
+              - 流量情况/曝光量
+              - 流量情况/点击量
+              - 流量情况/访客数
+              - 流量情况/浏览量
+              - 流量情况/加购人数
+              - 流量情况/收藏人数
+              - 流量情况/支付件数
+          - label: 支付情况
+            columns:
+              - 支付情况/支付订单数
+              - 支付情况/买家数
+          - label: 转化情况
+            columns:
+              - 转化情况/转化率
+              - 转化情况/点击率
+              - 转化情况/点击后支付率
+          - label: 搜索数据
+            columns:
+              - 搜索数据/曝光量
+              - 搜索数据/点击量
+              - 搜索数据/支付订单数
+              - 搜索数据/支付件数
+          - label: 推荐数据
+            columns:
+              - 推荐数据/曝光量
+              - 推荐数据/点击量
+              - 推荐数据/支付订单数
+              - 推荐数据/支付件数
+
+  - id: activity_data
+    name: 后台-活动数据
+    description: 抓取 Temu 后台「活动数据」列表数据，支持外层站点切换、活动类型/主题、SPU ID 与统计日期筛选，并自动全量翻页
+    script: activity-data.js
+    entry_url: https://agentseller.temu.com/main/act/data-full
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: outer_sites
+        type: checkbox
+        label: 外层站点
+        hint: 不选默认抓取全部可用站点
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+      - id: activity_type
+        type: text
+        label: 活动类型
+        placeholder: "填写页面下拉里的选项文本"
+        hint: 对应页面「活动类型」下拉，留空则不修改
+      - id: activity_theme
+        type: text
+        label: 活动主题
+        placeholder: "填写页面下拉里的选项文本"
+        hint: 需先选择活动类型，留空则不修改
+      - id: spu_id_query
+        type: text
+        label: SPU ID
+        placeholder: "支持多值，空格或逗号分隔"
+        hint: 对应页面「SPU ID」输入框，留空则不过滤
+      - id: stat_date_range
+        type: date_range
+        label: 统计日期
+        hint: 仅在需要调整统计日期时使用，留空则保持当前页面
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Temu_活动数据_{timestamp}.xlsx"
+        columns:
+          - 外层站点
+          - 活动类型
+          - 活动主题
+          - 统计日期范围
+          - 列表页码
+          - 抓取时间
+          - 列表行号
+          - 商品名称
+          - SPU
+          - 商品信息
+          - 活动成交额
+          - 活动销量
+          - 总访客数
+          - 点击访客数
+          - 支付访客数
+          - 访客点击转化率
+          - 访客支付转化率
+          - 销量趋势
+
+  - id: mall_flux
+    name: 后台-店铺流量
+    description: 抓取 Temu 后台「店铺流量」按日/周/月数据，支持外层站点切换、统计日期与粒度筛选，并自动全量翻页
+    script: mall-flux.js
+    entry_url: https://agentseller.temu.com/main/mall-flux-analysis-full
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: outer_sites
+        type: checkbox
+        label: 外层站点
+        hint: 不选默认抓取全部可用站点
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+      - id: stat_grain
+        type: select
+        label: 统计粒度
+        default: ""
+        hint: 选择按日/按周/按月后，会显示对应的日期范围控件；留在“当前页面”则保持页面现状
+        options:
+          - value: ""
+            label: 当前页面
+          - value: 按日
+            label: 按日
+          - value: 按周
+            label: 按周
+          - value: 按月
+            label: 按月
+      - id: stat_date_range
+        type: date_range
+        label: 统计日期
+        hint: 按日维度使用，留空则保持当前页面显示的日期范围
+        visible_when:
+          field: stat_grain
+          equals: 按日
+      - id: stat_week
+        type: week_range
+        label: 统计周
+        hint: 按周维度使用，对应页面单周选择器，脚本会优先通过注入方式切换到所选周
+        visible_when:
+          field: stat_grain
+          equals: 按周
+      - id: stat_month
+        type: month_range
+        label: 统计月
+        hint: 按月维度使用，对应页面单月选择器，脚本会优先通过注入方式切换到所选月份
+        visible_when:
+          field: stat_grain
+          equals: 按月
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Temu_店铺流量_{timestamp}.xlsx"
+        columns:
+          - 外层站点
+          - 统计日期范围
+          - 统计粒度
+          - 列表页码
+          - 抓取时间
+          - 列表行号
+          - 日期
+          - 总数据/总浏览量
+          - 总数据/总访客数
+          - 总数据/总支付买家数
+          - 总数据/总支付转化率
+          - 总数据/总支付件数
+          - 商品数据/商品浏览量
+          - 商品数据/商品访客数
+          - 商品数据/商详支付买家数
+          - 商品数据/商详支付转化率
+          - 店铺数据/店铺页浏览量
+          - 店铺数据/店铺页面访客数
+          - 店铺数据/店铺页支付买家数
+          - 店铺数据/店铺页支付转化率
+
+  - id: mall_flux_probe
+    name: 后台-店铺流量-探针
+    description: 调试用：读取当前店铺流量页面的粒度、日期控件和值班表首列状态
+    script: mall-flux-probe.js
+    entry_url: https://agentseller.temu.com/main/mall-flux-analysis-full
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+    trigger:
+      type: manual
+    output:
+      - type: json
+        filename: "Temu_店铺流量_探针_{timestamp}.json"
+
+  - id: goods_traffic_detail
+    name: 后台-商品流量-详情
+    description: 基于已导出的商品流量列表结果或 SPU 款号导入表，逐商品打开「查看详情」抽屉，按站点与日/周/月维度抓取详情数据并自动翻页
+    script: goods-traffic-detail.js
+    entry_url: https://agentseller.temu.com/main/flux-analysis-full
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: list_result_file
+        type: file_excel
+        label: 导入文件
+        required: true
+        templates:
+          - file: templates/temu-goods-traffic-detail-spu-template.xlsx
+            label: SPU 导入模板
+            description: 仅需填写「SPU」列；可选补充「外层站点 / 商品名称 / 列表时间范围」。未填外层站点时，默认按当前页面外层站点执行。
+            version: "2026.04.10"
+        hint: 可上传「后台-商品流量-列表」结果文件，或下载下方 SPU 模板填写后上传；SPU 模板至少需要「SPU」列。
+      - id: outer_sites
+        type: checkbox
+        label: 外层站点范围
+        hint: 可选。列表结果模式下用于筛选源文件中的外层站点；SPU 模板模式下若勾选则按所选站点逐个执行，不勾选则默认使用当前页面外层站点。
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+      - id: detail_sites
+        type: checkbox
+        label: 详情站点范围
+        hint: 不选默认抓取全部可用站点（含“全部”）
+        options:
+          - value: 全部
+            label: 全部
+          - value: 加拿大
+            label: 加拿大
+          - value: 澳大利亚
+            label: 澳大利亚
+          - value: 日本
+            label: 日本
+          - value: 韩国
+            label: 韩国
+      - id: detail_time_range
+        type: select
+        label: 详情统计时间
+        default: ""
+        options:
+          - value: ""
+            label: 当前页面
+          - value: 近7日
+            label: 近 7 日
+          - value: 近30日
+            label: 近 30 日
+          - value: 本周
+            label: 本周
+          - value: 本月
+            label: 本月
+      - id: detail_grains
+        type: checkbox
+        label: 详情时间粒度
+        hint: 不选默认抓取全部维度
+        options:
+          - value: 按日
+            label: 按日
+          - value: 按周
+            label: 按周
+          - value: 按月
+            label: 按月
+      - id: detail_page_size
+        type: select
+        label: 详情每页条数
+        default: "40"
+        hint: 默认切到 40 条/页，尽量减少详情翻页次数；若页面异常可临时改回 10 或 20
+        options:
+          - value: "40"
+            label: 40 条/页（推荐）
+          - value: "20"
+            label: 20 条/页
+          - value: "10"
+            label: 10 条/页
+      - id: detail_full_paging
+        type: radio
+        label: 详情是否全量翻页
+        default: "yes"
+        options:
+          - value: "yes"
+            label: 全量翻页
+          - value: "no"
+            label: 仅抓当前页
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Temu_商品流量详情_{timestamp}.xlsx"
+        columns:
+          - 记录类型
+          - 外层站点
+          - 源列表序号
+          - SPU
+          - 商品名称
+          - 详情站点筛选
+          - 详情时间粒度
+          - 详情时间范围
+          - 详情页码
+          - 抓取时间
+          - 抽屉商品信息
+          - 抽屉统计时间
+          - 抽屉SPU
+          - 错误阶段
+          - 原因
+          - 日期
+          - 站点
+          - 流量情况/曝光量
+          - 流量情况/点击量
+          - 流量情况/商品访问量
+          - 流量情况/商详访客数
+          - 流量情况/加购人数
+          - 流量情况/收藏人数
+          - 支付情况/支付件数
+          - 支付情况/支付订单数
+          - 支付情况/买家数
+          - 转化情况/转化率
+          - 转化情况/点击率
+          - 转化情况/点击后支付率
+          - 搜索数据/曝光量
+          - 搜索数据/点击量
+          - 搜索数据/支付单量
+          - 搜索数据/支付件数
+          - 推荐数据/曝光量
+          - 推荐数据/点击量
+          - 推荐数据/支付单量
+          - 推荐数据/支付件数
+        column_groups:
+          - label: 流量情况
+            columns:
+              - 流量情况/曝光量
+              - 流量情况/点击量
+              - 流量情况/商品访问量
+              - 流量情况/商详访客数
+              - 流量情况/加购人数
+              - 流量情况/收藏人数
+          - label: 支付情况
+            columns:
+              - 支付情况/支付件数
+              - 支付情况/支付订单数
+              - 支付情况/买家数
+          - label: 转化情况
+            columns:
+              - 转化情况/转化率
+              - 转化情况/点击率
+              - 转化情况/点击后支付率
+          - label: 搜索数据
+            columns:
+              - 搜索数据/曝光量
+              - 搜索数据/点击量
+              - 搜索数据/支付单量
+              - 搜索数据/支付件数
+          - label: 推荐数据
+            columns:
+              - 推荐数据/曝光量
+              - 推荐数据/点击量
+              - 推荐数据/支付单量
+              - 推荐数据/支付件数
 
   - id: compliant_live_photos_label
     name: 商品实拍图洗唛合规
