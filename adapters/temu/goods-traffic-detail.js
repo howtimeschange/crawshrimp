@@ -8,8 +8,14 @@
   const DETAIL_OPEN_RETRY_LIMIT = 2
   const DETAIL_CLOSE_RETRY_LIMIT = 2
   const DETAIL_PAGE_RECOVERY_LIMIT = 12
+  const DETAIL_PAGE_SIZE_OPEN_RETRY_LIMIT = 2
   const SAFE_PAGE_LOOP_LIMIT = 120
   const DETAIL_PAGER_THROTTLE_MS = 2200
+  const DETAIL_FILTER_SETTLE_MS = 1300
+  const DETAIL_COMBO_SWITCH_DELAY_MS = 900
+  const PREPARE_QUERY_RETRY_LIMIT = 3
+  const PREPARE_QUERY_RETRY_BASE_DELAY_MS = 1800
+  const DETAIL_QUERY_RECOVERY_LIMIT = 2
   const LIST_TIME_OPTIONS = ['昨日', '今日', '本周', '本月', '近7日', '近30日']
   const OUTER_SITE_BLACKLIST = new Set(['商家中心'])
   const DETAIL_GRAIN_OPTIONS = ['按日', '按周', '按月']
@@ -166,6 +172,31 @@
     if (!rect.width || !rect.height) return null
     return {
       x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      delay_ms: delayMs,
+    }
+  }
+
+  function getElementPointClick(el, xRatio = 0.5, yRatio = 0.5, delayMs = 120) {
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    const safeXRatio = Math.min(1, Math.max(0, Number(xRatio)))
+    const safeYRatio = Math.min(1, Math.max(0, Number(yRatio)))
+    return {
+      x: rect.left + rect.width * safeXRatio,
+      y: rect.top + rect.height * safeYRatio,
+      delay_ms: delayMs,
+    }
+  }
+
+  function getRightEdgeClick(el, delayMs = 120) {
+    if (!el) return null
+    const rect = el.getBoundingClientRect()
+    if (!rect.width || !rect.height) return null
+    const inset = Math.max(6, Math.min(16, rect.width / 4))
+    return {
+      x: rect.left + rect.width - inset,
       y: rect.top + rect.height / 2,
       delay_ms: delayMs,
     }
@@ -334,6 +365,13 @@
 
   function isDetailDrawerOpen() {
     return !!getVisibleDrawer()
+  }
+
+  function getVisibleDrawerSpu() {
+    const drawer = getVisibleDrawer()
+    if (!drawer) return ''
+    const match = textOf(drawer).match(/SPU ID[:：]?\s*([0-9]+)/i)
+    return String(match?.[1] || '').trim()
   }
 
   function isInsideVisibleDrawer(el) {
@@ -655,33 +693,52 @@
       .filter(row => isVisible(row) && row.querySelectorAll('td').length > 0)
   }
 
+  function getVisibleDetailPagerNodes(selector) {
+    const drawer = getVisibleDrawer()
+    if (!drawer) return []
+    return [...drawer.querySelectorAll(selector)].filter(isVisible)
+  }
+
   function getDetailPagerRoot() {
     const drawer = getVisibleDrawer()
     if (!drawer) return document
-    const next = [...drawer.querySelectorAll('li[class*="PGT_next_"]')]
-      .filter(isVisible)[0]
-    return next?.closest('[class*="PGT_outerWrapper_"], [class*="PGT_pagerWrapper_"], ul, div') || drawer
+    const anchor = (
+      getVisibleDetailPagerNodes('li[class*="PGT_next_"]')[0] ||
+      getVisibleDetailPagerNodes('li[class*="PGT_pagerItemActive_"]')[0] ||
+      getVisibleDetailPagerNodes('li[class*="PGT_prev_"]')[0] ||
+      null
+    )
+    return anchor?.closest('[class*="PGT_outerWrapper_"], [class*="PGT_pagerWrapper_"], ul, div') || drawer
   }
 
   function getDetailPageNo() {
-    const active = getDetailPagerRoot().querySelector('li[class*="PGT_pagerItemActive_"]')
+    const active = (
+      getDetailPagerRoot().querySelector('li[class*="PGT_pagerItemActive_"]') ||
+      getVisibleDetailPagerNodes('li[class*="PGT_pagerItemActive_"]')[0] ||
+      null
+    )
     const value = parseInt(textOf(active), 10)
     return Number.isFinite(value) && value > 0 ? value : 1
   }
 
+  function getDetailPagerButton(kind) {
+    const selector = `li[class*="PGT_${kind}_"]`
+    return getDetailPagerRoot().querySelector(selector) || getVisibleDetailPagerNodes(selector)[0] || null
+  }
+
   function hasNextDetailPage() {
-    const next = getDetailPagerRoot().querySelector('li[class*="PGT_next_"]')
+    const next = getDetailPagerButton('next')
     return !!(next && !hasClassFragment(next, 'PGT_disabled_'))
   }
 
   function clickNextDetailPage() {
-    const next = getDetailPagerRoot().querySelector('li[class*="PGT_next_"]')
+    const next = getDetailPagerButton('next')
     if (!next || hasClassFragment(next, 'PGT_disabled_')) return false
     return clickPagerLike(next)
   }
 
   function clickPrevDetailPage() {
-    const prev = getDetailPagerRoot().querySelector('li[class*="PGT_prev_"]')
+    const prev = getDetailPagerButton('prev')
     if (!prev || hasClassFragment(prev, 'PGT_disabled_')) return false
     return clickPagerLike(prev)
   }
@@ -717,6 +774,39 @@
     return { ready: false, rows: getDetailRows(), empty: false, busy: false }
   }
 
+  function captureDetailSnapshot() {
+    const drawer = getVisibleDrawer()
+    const rows = getDetailRows()
+    return {
+      drawerOpen: !!drawer,
+      pageNo: getDetailPageNo(),
+      rowCount: rows.length,
+      busy: !!(drawer && hasBusyWarning() && rows.length === 0),
+      empty: !!drawer?.querySelector('[class*="TB_empty_"]'),
+      signature: drawer ? getDetailPageSignature() : '',
+    }
+  }
+
+  function hasDetailSnapshotChanged(snapshot) {
+    const current = captureDetailSnapshot()
+    return (
+      !!snapshot?.drawerOpen !== !!current.drawerOpen ||
+      Number(snapshot?.pageNo || 0) !== current.pageNo ||
+      Number(snapshot?.rowCount || 0) !== current.rowCount ||
+      !!snapshot?.busy !== current.busy ||
+      !!snapshot?.empty !== current.empty ||
+      String(snapshot?.signature || '') !== current.signature
+    )
+  }
+
+  async function waitForDetailTransition(snapshot, changeTimeout = 4500, readyTimeout = 12000) {
+    if (snapshot?.drawerOpen) {
+      await waitFor(() => hasDetailSnapshotChanged(snapshot), changeTimeout, 300)
+    }
+    await sleep(DETAIL_FILTER_SETTLE_MS)
+    return await waitForDetailReady(readyTimeout)
+  }
+
   async function ensureDetailPageNo(targetPage, timeout = 20000) {
     const deadline = Date.now() + timeout
     let guard = 0
@@ -734,6 +824,14 @@
       if (!ready.ready) return false
     }
     return getDetailPageNo() === targetPage
+  }
+
+  function getDetailCapsuleNode(label) {
+    const drawer = getVisibleDrawer()
+    if (!drawer) return null
+    return [...drawer.querySelectorAll('[class*="TAB_capsule_"]')]
+      .filter(isVisible)
+      .find(el => textOf(el) === label) || null
   }
 
   function getVisibleDrawerSelectInputs() {
@@ -779,6 +877,36 @@
     return readSelectInputValue(getDetailSiteSelectInput())
   }
 
+  function getPreferredDetailTargetSites() {
+    const current = String(getDetailSiteValue() || '').trim()
+    const preferred = buildDetailTargetSites(DETAIL_SITE_OPTIONS.slice())
+    if (!preferred.length) return [current].filter(Boolean)
+    if (current && preferred.includes(current)) {
+      return [current, ...preferred.filter(site => site !== current)]
+    }
+    return preferred
+  }
+
+  function hasReliableDetailSiteOptions(options) {
+    const normalized = normalizeArray(options)
+    if (!getDetailSiteSelectWrapper()) return normalized.length > 0
+    const current = String(getDetailSiteValue() || '').trim()
+    if (!normalized.length) return false
+    return !(normalized.length === 1 && current && normalized[0] === current)
+  }
+
+  async function openDetailSiteDropdown() {
+    const wrapper = getDetailSiteSelectWrapper()
+    if (!wrapper) return false
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      clickLike(wrapper)
+      const opened = await waitFor(() => getVisibleOptionNodes().length > 0, 2800 + attempt * 600, 200)
+      if (opened) return true
+      await sleep(300)
+    }
+    return false
+  }
+
   function getDetailPageSizeInput() {
     const inputs = getVisibleDrawerSelectInputs()
     if (!inputs.length) return null
@@ -807,6 +935,23 @@
     )
   }
 
+  function getDetailPageSizeOpenClick() {
+    const wrapper = getDetailPageSizeWrapper()
+    if (!wrapper) return null
+    const suffix = (
+      wrapper.querySelector('[data-testid="beast-core-input-suffix"]') ||
+      wrapper.querySelector('svg[data-testid="beast-core-icon-down"]')?.parentElement ||
+      wrapper.querySelector('[class*="suffix"]')
+    )
+    return getElementPointClick(suffix, 0.5, 0.5, 120) || getRightEdgeClick(wrapper, 120)
+  }
+
+  function requestDetailPageSizeDropdownOpen(nextPhaseName, sharedState, sleepMs = 1000) {
+    const click = getDetailPageSizeOpenClick()
+    if (!click) return null
+    return cdpClicks([click], nextPhaseName, sleepMs, sharedState)
+  }
+
   async function openDetailPageSizeDropdown() {
     const wrapper = getDetailPageSizeWrapper()
     const candidates = [getDetailPageSizeTrigger(), wrapper].filter(Boolean)
@@ -830,14 +975,15 @@
     })
   }
 
-  async function ensureDetailPageSize(targetSize = detailPageSize) {
+  async function applyDetailPageSize(targetSize = detailPageSize) {
     const wanted = normalizePageSizeParam(targetSize, detailPageSize)
-    const currentValue = getDetailPageSizeValue()
-    if (parsePositiveInt(currentValue) === parsePositiveInt(wanted)) return true
+    if (parsePositiveInt(getDetailPageSizeValue()) === parsePositiveInt(wanted)) {
+      const ready = await waitForDetailReady(15000)
+      return !!(ready.ready && !ready.busy)
+    }
 
-    const oldSig = getDetailPageSignature()
-    const oldPageNo = getDetailPageNo()
-    const opened = await openDetailPageSizeDropdown()
+    const snapshot = captureDetailSnapshot()
+    const opened = await waitFor(() => getVisibleOptionNodes().length > 0, 2200, 200)
     if (!opened) return false
     if (!clickDetailPageSizeOption(wanted)) {
       clickLike(document.body)
@@ -854,15 +1000,19 @@
       return false
     }
 
-    await waitFor(() => {
-      const pageChanged = getDetailPageNo() !== oldPageNo
-      const dataChanged = getDetailPageSignature() !== oldSig
-      return pageChanged || dataChanged || parsePositiveInt(getDetailPageSizeValue()) === parsePositiveInt(wanted)
-    }, 5000, 400)
+    const state = await waitForDetailTransition(snapshot, 5000, 15000)
+    return !!(state.ready && !state.busy && parsePositiveInt(getDetailPageSizeValue()) === parsePositiveInt(wanted))
+  }
 
-    const ready = await waitForDetailReady(15000)
-    if (!ready.ready || ready.busy) return false
-    return parsePositiveInt(getDetailPageSizeValue()) === parsePositiveInt(wanted)
+  async function ensureDetailPageSize(targetSize = detailPageSize) {
+    const wanted = normalizePageSizeParam(targetSize, detailPageSize)
+    if (parsePositiveInt(getDetailPageSizeValue()) === parsePositiveInt(wanted)) {
+      const ready = await waitForDetailReady(15000)
+      return !!(ready.ready && !ready.busy)
+    }
+    const opened = await openDetailPageSizeDropdown()
+    if (!opened) return false
+    return await applyDetailPageSize(wanted)
   }
 
   function getVisibleOptionTexts(allowedOptions = []) {
@@ -884,9 +1034,8 @@
       const rowSites = getDetailRowSites()
       return rowSites.length ? rowSites : [getDetailSiteValue()].filter(Boolean)
     }
-    clickLike(wrapper)
-    await sleep(700)
-    const options = getVisibleOptionTexts(DETAIL_SITE_OPTIONS)
+    const opened = await openDetailSiteDropdown()
+    const options = opened ? getVisibleOptionTexts(DETAIL_SITE_OPTIONS) : []
     clickLike(document.body)
     await sleep(400)
     if (options.length) return options
@@ -896,33 +1045,62 @@
 
   async function ensureDetailSiteSelected(siteLabel) {
     if (!siteLabel) return true
-    if (getDetailSiteValue() === siteLabel) return true
+    if (getDetailSiteValue() === siteLabel) {
+      const state = await waitForDetailReady(12000)
+      await sleep(DETAIL_FILTER_SETTLE_MS)
+      return !!(state.ready && !state.busy)
+    }
     const wrapper = getDetailSiteSelectWrapper()
     if (!wrapper) {
       const rowSites = getDetailRowSites()
-      return !rowSites.length || rowSites.includes(siteLabel)
+      const state = await waitForDetailReady(12000)
+      await sleep(DETAIL_FILTER_SETTLE_MS)
+      return !!(state.ready && !state.busy && (!rowSites.length || rowSites.includes(siteLabel)))
     }
-    if (!wrapper) return false
-    clickLike(wrapper)
-    await sleep(600)
-    if (!clickOption(siteLabel)) {
+    const snapshot = captureDetailSnapshot()
+    let picked = false
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const opened = await openDetailSiteDropdown()
+      if (opened && clickOption(siteLabel)) {
+        picked = true
+        break
+      }
       clickLike(document.body)
-      return false
+      await sleep(300)
     }
-    return await waitFor(() => getDetailSiteValue() === siteLabel, 4000, 400)
+    if (!picked) return false
+    const selected = await waitFor(() => getDetailSiteValue() === siteLabel, 4000, 400)
+    if (!selected) return false
+    const state = await waitForDetailTransition(snapshot, 4500, 12000)
+    return !!(state.ready && !state.busy)
   }
 
   async function clickDetailCapsule(label) {
     const drawer = getVisibleDrawer()
     if (!drawer) return false
-    const capsule = [...drawer.querySelectorAll('[class*="TAB_capsule_"]')]
-      .filter(isVisible)
-      .find(el => textOf(el) === label)
+    const capsule = getDetailCapsuleNode(label)
     if (!capsule) return false
     if (hasClassFragment(capsule, 'TAB_active_')) return true
     clickLike(capsule)
     await sleep(800)
     return true
+  }
+
+  async function ensureDetailCapsuleSelected(label, readyTimeout = 12000) {
+    const capsule = getDetailCapsuleNode(label)
+    if (!capsule) return { ok: false, changed: false, state: { ready: false, busy: false, rows: [], empty: false } }
+
+    if (hasClassFragment(capsule, 'TAB_active_')) {
+      const state = await waitForDetailReady(readyTimeout)
+      await sleep(DETAIL_FILTER_SETTLE_MS)
+      return { ok: !!state.ready, changed: false, state }
+    }
+
+    const snapshot = captureDetailSnapshot()
+    clickLike(capsule)
+    await sleep(800)
+    const state = await waitForDetailTransition(snapshot, 4500, readyTimeout)
+    return { ok: !!state.ready, changed: true, state }
   }
 
   function getTableHeaders(table) {
@@ -1083,6 +1261,37 @@
     return reloadPage(nextPhaseName, 3000, {
       ...sharedState,
       listBusyRetry: retry + 1,
+      prepareQueryRetry: 0,
+      detailRequeryRetry: 0,
+    })
+  }
+
+  function canRetryPrepareQuery(sharedState) {
+    return Number(sharedState.prepareQueryRetry || 0) + 1 < PREPARE_QUERY_RETRY_LIMIT
+  }
+
+  function getPrepareQueryRetryDelay(sharedState) {
+    const retry = Number(sharedState.prepareQueryRetry || 0)
+    return PREPARE_QUERY_RETRY_BASE_DELAY_MS + retry * 900
+  }
+
+  function schedulePrepareQueryRetry(sharedState, reason) {
+    const retry = Number(sharedState.prepareQueryRetry || 0)
+    if (retry + 1 >= PREPARE_QUERY_RETRY_LIMIT) {
+      return reloadPage('prepare_query', 3600, {
+        ...sharedState,
+        prepareQueryRetry: 0,
+        detailRequeryRetry: 0,
+        detailCloseRetry: 0,
+        detailOpenRetry: 0,
+      })
+    }
+    return nextPhase('prepare_query', getPrepareQueryRetryDelay(sharedState), {
+      ...sharedState,
+      prepareQueryRetry: retry + 1,
+      lastPrepareQueryError: reason,
+      detailCloseRetry: 0,
+      detailOpenRetry: 0,
     })
   }
 
@@ -1099,14 +1308,17 @@
   async function buildDetailTargetSitesByGrain(targetGrains) {
     const map = {}
     for (const grain of targetGrains) {
-      const grainOk = await clickDetailCapsule(grain)
-      if (!grainOk) {
+      const grainResult = await ensureDetailCapsuleSelected(grain, 12000)
+      if (!grainResult.ok) {
         map[grain] = []
         continue
       }
-      const ready = await waitForDetailReady(12000)
-      if (!ready.ready || ready.busy) {
+      if (grainResult.state?.busy) {
         map[grain] = []
+        continue
+      }
+      if (getDetailSiteSelectWrapper()) {
+        map[grain] = getPreferredDetailTargetSites()
         continue
       }
       map[grain] = buildDetailTargetSites(await readDetailSiteOptions())
@@ -1174,7 +1386,7 @@
     if (!nextCursor) {
       return nextPhase('close_detail', 0, sharedState, data)
     }
-    return nextPhase('collect_detail_combo', 0, {
+    return nextPhase('collect_detail_combo', DETAIL_COMBO_SWITCH_DELAY_MS, {
       ...sharedState,
       ...nextCursor,
       detailResumePageNo: 1,
@@ -1217,7 +1429,22 @@
       return nextPhase('restore_detail_combo', 1500, nextShared, data)
     }
 
-    return reloadPage('prepare_query', 3600, nextShared, data)
+    const requeryRetry = Number(sharedState.detailRequeryRetry || 0)
+    if (requeryRetry < DETAIL_QUERY_RECOVERY_LIMIT) {
+      return nextPhase(isDetailDrawerOpen() ? 'recover_detail_query' : 'prepare_query', 800, {
+        ...nextShared,
+        detailRequeryRetry: requeryRetry + 1,
+        prepareQueryRetry: 0,
+        detailCloseRetry: 0,
+      }, data)
+    }
+
+    return reloadPage('prepare_query', 3600, {
+      ...nextShared,
+      detailRequeryRetry: 0,
+      prepareQueryRetry: 0,
+      detailCloseRetry: 0,
+    }, data)
   }
 
   function getDetailComboProgress(sharedState) {
@@ -1231,6 +1458,116 @@
     }
     if (total > 0) current += siteIndex + 1
     return { current, total }
+  }
+
+  async function finishRestoreDetailCombo(sharedState) {
+    const combo = getDetailCombo(sharedState)
+    const comboProgress = getDetailComboProgress(sharedState)
+    if (!combo.site || !combo.grain) {
+      return scheduleDetailComboRecovery(sharedState, '详情组合游标异常，无法恢复抓取', 1)
+    }
+
+    const resumePageNo = Math.max(1, Number(sharedState.detailResumePageNo || 1))
+    if (resumePageNo > 1) {
+      await sleep(DETAIL_PAGER_THROTTLE_MS)
+      const pageResetOk = await ensureDetailPageNo(resumePageNo, 45000)
+      if (!pageResetOk) {
+        return scheduleDetailComboRecovery(sharedState, `详情恢复到第 ${resumePageNo} 页失败`, resumePageNo)
+      }
+    }
+
+    const state = await waitForDetailReady(15000)
+    if (!state.ready) {
+      return scheduleDetailComboRecovery(sharedState, `详情恢复后的第 ${resumePageNo} 页加载超时`, resumePageNo)
+    }
+    if (state.busy) {
+      return scheduleDetailComboRecovery(sharedState, `详情恢复后的第 ${resumePageNo} 页出现 Too many visitors`, resumePageNo)
+    }
+
+    return nextPhase('collect_detail_combo', DETAIL_COMBO_SWITCH_DELAY_MS, {
+      ...sharedState,
+      currentDetailSite: combo.site,
+      currentDetailGrain: combo.grain,
+      detailRequeryRetry: 0,
+      batch_no: comboProgress.current,
+      total_batches: comboProgress.total,
+      current_store: [sharedState.currentOuterSite || '', combo.site || '', combo.grain || '']
+        .filter(Boolean)
+        .join(' / '),
+      current_buyer_id: sharedState.currentSpu || '',
+    })
+  }
+
+  async function finishCollectDetailCombo(sharedState) {
+    const combo = getDetailCombo(sharedState)
+    const comboProgress = getDetailComboProgress(sharedState)
+    if (!combo.site || !combo.grain) {
+      return nextPhase('close_detail', 0, {
+        ...sharedState,
+        detailError: true,
+      }, [
+        buildErrorRow('详情组合游标异常，无法继续抓取', sharedState),
+      ])
+    }
+
+    const pageResetOk = await ensureDetailPageNo(1, 20000)
+    if (!pageResetOk) {
+      return nextPhase('close_detail', 0, {
+        ...sharedState,
+        detailError: true,
+        currentDetailSite: combo.site,
+        currentDetailGrain: combo.grain,
+      }, [
+        buildErrorRow('详情过滤后未能回到第一页', {
+          ...sharedState,
+          currentDetailSite: combo.site,
+          currentDetailGrain: combo.grain,
+        }),
+      ])
+    }
+
+    const comboState = {
+      ...sharedState,
+      currentDetailSite: combo.site,
+      currentDetailGrain: combo.grain,
+      detailRequeryRetry: 0,
+      detailResumePageNo: Math.max(1, Number(sharedState.detailResumePageNo || 1)),
+      detailSeenRowKeys: normalizeSharedStringArray(sharedState.detailSeenRowKeys),
+      detailSeenPageFingerprints: normalizeSharedStringArray(sharedState.detailSeenPageFingerprints),
+      batch_no: comboProgress.current,
+      total_batches: comboProgress.total,
+      current_store: [sharedState.currentOuterSite || '', combo.site || '', combo.grain || '']
+        .filter(Boolean)
+        .join(' / '),
+      current_buyer_id: sharedState.currentSpu || '',
+      lastAppliedDetailSite: combo.site,
+      lastAppliedDetailGrain: combo.grain,
+    }
+    const result = await collectCurrentDetailCombo(comboState)
+    const comboStateWithCollected = {
+      ...comboState,
+      detailSeenRowKeys: normalizeSharedStringArray(result.seenRowKeys),
+      detailSeenPageFingerprints: normalizeSharedStringArray(result.seenPageFingerprints),
+    }
+    if (!result.ok) {
+      if (result.retryable) {
+        return scheduleDetailComboRecovery(
+          comboStateWithCollected,
+          result.error || '详情抓取失败',
+          Number(result.resumePageNo || comboStateWithCollected.detailResumePageNo || 1),
+          result.data || [],
+        )
+      }
+      return nextPhase('close_detail', 0, {
+        ...comboStateWithCollected,
+        detailError: true,
+      }, [
+        ...(result.data || []),
+        buildErrorRow(result.error || '详情抓取失败', comboStateWithCollected),
+      ])
+    }
+
+    return advanceToNextDetailCombo(comboStateWithCollected, result.data)
   }
 
   async function collectCurrentDetailCombo(sharedState) {
@@ -1293,7 +1630,28 @@
 
       if (pageFingerprint) seenPageFingerprints.add(pageFingerprint)
       data.push(...uniqueRows)
-      if (!detailFullPaging || !hasNextDetailPage()) {
+      const nextPageAvailable = hasNextDetailPage()
+      if (!detailFullPaging || !nextPageAvailable) {
+        const currentPageSize = parsePositiveInt(getDetailPageSizeValue())
+        const wantedPageSize = parsePositiveInt(detailPageSize)
+        if (
+          detailFullPaging &&
+          !nextPageAvailable &&
+          currentPageNo === 1 &&
+          currentPageSize > 0 &&
+          wantedPageSize > currentPageSize &&
+          pageRows.length >= currentPageSize
+        ) {
+          return {
+            ok: false,
+            retryable: true,
+            error: `详情当前仍停留在 ${currentPageSize} 条/页且第一页已满，疑似页容量或分页未稳定`,
+            resumePageNo: currentPageNo,
+            data,
+            seenRowKeys: [...seenRowKeys],
+            seenPageFingerprints: [...seenPageFingerprints],
+          }
+        }
         return {
           ok: true,
           data,
@@ -1341,9 +1699,31 @@
     const productOk = await ensureProductTrafficSection()
     if (!productOk) return fail('未能切回「商品流量」tab')
 
+    if (isDetailDrawerOpen()) {
+      const closeBtn = getDetailCloseButton()
+      if (!closeBtn) {
+        return reloadPage('prepare_query', 3600, {
+          ...sharedState,
+          detailCloseRetry: 0,
+          detailOpenRetry: 0,
+          detailRequeryRetry: 0,
+        })
+      }
+      clickLike(closeBtn)
+      const closed = await waitFor(() => !isDetailDrawerOpen(), 6000, 400)
+      if (!closed) {
+        return nextPhase('recover_detail_query', 800, {
+          ...sharedState,
+          detailCloseRetry: 0,
+          detailOpenRetry: 0,
+          detailRequeryRetry: 0,
+        })
+      }
+      await sleep(600)
+    }
+
     const listState = await waitForListReady(12000)
     if (!listState.ready) return fail('商品流量列表加载超时')
-    if (listState.busy) return buildBusyReload('prepare_query', sharedState)
 
     if (!clickLike(findMainButton('重置'))) {
       return fail('未找到商品流量列表的「重置」按钮')
@@ -1372,18 +1752,22 @@
     await sleep(1800)
 
     const afterQuery = await waitForListReady(15000)
-    if (!afterQuery.ready) return fail('按 SPU 查询后列表加载超时')
-    if (afterQuery.busy) return buildBusyReload('prepare_query', sharedState)
+    if (!afterQuery.ready) return schedulePrepareQueryRetry(sharedState, '按 SPU 查询后列表加载超时')
+    if (afterQuery.busy) return schedulePrepareQueryRetry(sharedState, '按 SPU 查询后出现 Too many visitors')
 
     const pageResetOk = await ensureListPageNo(1, 20000)
-    if (!pageResetOk) return fail('SPU 查询后列表未能回到第一页')
+    if (!pageResetOk) return schedulePrepareQueryRetry(sharedState, 'SPU 查询后列表未能回到第一页')
 
     const click = getDetailOpenClickForSpu(sharedState.currentSpu || '')
     if (!click) {
+      if (canRetryPrepareQuery(sharedState)) {
+        return schedulePrepareQueryRetry(sharedState, '按 SPU 查询后未找到可打开的详情行')
+      }
       return nextPhase('process_source_row', 0, {
         ...sharedState,
         rowIndex: Number(sharedState.rowIndex || 0) + 1,
         listBusyRetry: 0,
+        prepareQueryRetry: 0,
       }, [
         buildErrorRow('按 SPU 查询后未找到可打开的详情行，已跳过当前商品', sharedState),
       ])
@@ -1393,6 +1777,8 @@
       ...sharedState,
       detailOpenRetry: 0,
       listBusyRetry: 0,
+      prepareQueryRetry: 0,
+      detailRequeryRetry: 0,
     })
   }
 
@@ -1448,6 +1834,9 @@
         currentSpu: current.spu || '',
         currentProductName: current.productName || '',
         currentListTimeRange: current.listTimeRange || '',
+        prepareQueryRetry: 0,
+        detailRequeryRetry: 0,
+        detailCloseRetry: 0,
         batch_no: 0,
         total_batches: 0,
       }
@@ -1479,7 +1868,13 @@
       if (!ready) return fail(`切换外层站点后页面未恢复：${shared.targetOuterSite || '未知站点'}`)
       const state = await waitForListReady(12000)
       if (!state.ready) return fail(`切换外层站点后列表未加载：${shared.targetOuterSite || '未知站点'}`)
-      if (state.busy) return buildBusyReload('after_outer_site_switch', shared)
+      if (state.busy) {
+        return nextPhase(shared.resume_phase || 'prepare_query', 600, {
+          ...shared,
+          listBusyRetry: 0,
+          prepareQueryRetry: 0,
+        })
+      }
       return nextPhase(shared.resume_phase || 'prepare_query', 400, {
         ...shared,
         listBusyRetry: 0,
@@ -1490,9 +1885,62 @@
       return await prepareSearchForCurrentSource(shared)
     }
 
+    if (phase === 'recover_detail_query') {
+      if (!isDetailDrawerOpen()) {
+        return nextPhase('prepare_query', 700, {
+          ...shared,
+          detailCloseRetry: 0,
+        })
+      }
+
+      const closeBtn = getDetailCloseButton()
+      if (!closeBtn) {
+        return reloadPage('prepare_query', 3600, {
+          ...shared,
+          detailCloseRetry: 0,
+          prepareQueryRetry: 0,
+          detailRequeryRetry: 0,
+        })
+      }
+      clickLike(closeBtn)
+      const closed = await waitFor(() => !isDetailDrawerOpen(), 6000, 400)
+      if (!closed) {
+        const retry = Number(shared.detailCloseRetry || 0)
+        if (retry + 1 < DETAIL_CLOSE_RETRY_LIMIT) {
+          return nextPhase('recover_detail_query', 800, {
+            ...shared,
+            detailCloseRetry: retry + 1,
+          })
+        }
+        return reloadPage('prepare_query', 3600, {
+          ...shared,
+          detailCloseRetry: 0,
+          prepareQueryRetry: 0,
+          detailRequeryRetry: 0,
+        })
+      }
+
+      return nextPhase('prepare_query', 700, {
+        ...shared,
+        detailCloseRetry: 0,
+      })
+    }
+
     if (phase === 'after_open_detail') {
-      const opened = await waitFor(() => isDetailDrawerOpen(), 10000, 500)
+      const expectedDrawerSpu = String(shared.currentSpu || '').trim()
+      const opened = await waitFor(() => {
+        if (!isDetailDrawerOpen()) return false
+        if (!expectedDrawerSpu) return true
+        return getVisibleDrawerSpu() === expectedDrawerSpu
+      }, 12000, 400)
       if (!opened) {
+        if (isDetailDrawerOpen()) {
+          return nextPhase('recover_detail_query', 800, {
+            ...shared,
+            detailOpenRetry: 0,
+            detailCloseRetry: 0,
+          })
+        }
         const retry = Number(shared.detailOpenRetry || 0)
         if (retry + 1 < DETAIL_OPEN_RETRY_LIMIT) {
           const click = getDetailOpenClickForSpu(shared.currentSpu || '')
@@ -1518,7 +1966,15 @@
           buildErrorRow('查看详情抽屉打开失败，已跳过当前商品', shared),
         ])
       }
-      return nextPhase(shared.resume_phase || 'prepare_detail', 400, {
+      const detailState = await waitForDetailReady(15000)
+      if (!detailState.ready || detailState.busy) {
+        return nextPhase('recover_detail_query', 800, {
+          ...shared,
+          detailOpenRetry: 0,
+          detailCloseRetry: 0,
+        })
+      }
+      return nextPhase(shared.resume_phase || 'prepare_detail', DETAIL_COMBO_SWITCH_DELAY_MS, {
         ...shared,
         detailOpenRetry: 0,
         resume_phase: '',
@@ -1529,14 +1985,20 @@
       if (!isDetailDrawerOpen()) return fail('详情抽屉状态丢失，无法继续抓取')
 
       if (detailTimeRange) {
-        const timeOk = await clickDetailCapsule(detailTimeRange)
-        if (!timeOk) {
+        const timeResult = await ensureDetailCapsuleSelected(detailTimeRange, 12000)
+        if (!timeResult.ok) {
           return nextPhase('close_detail', 0, {
             ...shared,
             detailError: true,
           }, [
             buildErrorRow(`详情时间范围切换失败：${detailTimeRange}`, shared),
           ])
+        }
+        if (timeResult.state?.busy) {
+          return nextPhase('recover_detail_query', 800, {
+            ...shared,
+            detailCloseRetry: 0,
+          })
         }
       }
 
@@ -1566,7 +2028,7 @@
         ])
       }
 
-      return nextPhase('collect_detail_combo', 0, {
+      return nextPhase('collect_detail_combo', DETAIL_COMBO_SWITCH_DELAY_MS, {
         ...shared,
         targetDetailSites: firstGrainSites,
         targetDetailSitesByGrain,
@@ -1575,6 +2037,7 @@
         detailGrainIndex: 0,
         detailResumePageNo: 1,
         detailPageRetry: 0,
+        detailRequeryRetry: 0,
         batch_no: 1,
         total_batches: totalDetailCombos,
       })
@@ -1595,18 +2058,20 @@
       }
 
       if (detailTimeRange) {
-        const timeOk = await clickDetailCapsule(detailTimeRange)
-        if (!timeOk) {
+        const timeResult = await ensureDetailCapsuleSelected(detailTimeRange, 12000)
+        if (!timeResult.ok) {
           return scheduleDetailComboRecovery(shared, `详情时间范围切换失败：${detailTimeRange}`, 1)
+        }
+        if (timeResult.state?.busy) {
+          return scheduleDetailComboRecovery(shared, `详情时间范围切换后出现 Too many visitors：${detailTimeRange}`, 1)
         }
       }
 
-      const grainOk = await clickDetailCapsule(combo.grain)
-      if (!grainOk) {
+      const grainResult = await ensureDetailCapsuleSelected(combo.grain, 12000)
+      if (!grainResult.ok) {
         return scheduleDetailComboRecovery(shared, `详情时间粒度恢复失败：${combo.grain}`, Number(shared.detailResumePageNo || 1))
       }
-
-      const grainState = await waitForDetailReady(12000)
+      const grainState = grainResult.state || await waitForDetailReady(12000)
       if (!grainState.ready) {
         return scheduleDetailComboRecovery(shared, `详情时间粒度恢复后加载超时：${combo.grain}`, Number(shared.detailResumePageNo || 1))
       }
@@ -1615,7 +2080,7 @@
       }
 
       const availableDetailSites = await readDetailSiteOptions()
-      if (!availableDetailSites.includes(combo.site)) {
+      if (hasReliableDetailSiteOptions(availableDetailSites) && !availableDetailSites.includes(combo.site)) {
         return skipCurrentDetailCombo({
           ...shared,
           currentDetailSite: combo.site,
@@ -1631,6 +2096,20 @@
 
       const siteOk = await ensureDetailSiteSelected(combo.site)
       if (!siteOk) {
+        const refreshedSites = await readDetailSiteOptions()
+        if (hasReliableDetailSiteOptions(refreshedSites) && !refreshedSites.includes(combo.site)) {
+          return skipCurrentDetailCombo({
+            ...shared,
+            currentDetailSite: combo.site,
+            currentDetailGrain: combo.grain,
+            batch_no: comboProgress.current,
+            total_batches: comboProgress.total,
+            current_store: [shared.currentOuterSite || '', combo.site || '', combo.grain || '']
+              .filter(Boolean)
+              .join(' / '),
+            current_buyer_id: shared.currentSpu || '',
+          }, `当前粒度下详情站点不可用，已跳过：${combo.site}`)
+        }
         return scheduleDetailComboRecovery({
           ...shared,
           currentDetailSite: combo.site,
@@ -1638,35 +2117,49 @@
         }, `详情站点切换失败：${combo.site}`, Number(shared.detailResumePageNo || 1))
       }
 
-      await ensureDetailPageSize(detailPageSize)
-
-      const resumePageNo = Math.max(1, Number(shared.detailResumePageNo || 1))
-      if (resumePageNo > 1) {
-        await sleep(DETAIL_PAGER_THROTTLE_MS)
-        const pageResetOk = await ensureDetailPageNo(resumePageNo, 45000)
-        if (!pageResetOk) {
-          return scheduleDetailComboRecovery(shared, `详情恢复到第 ${resumePageNo} 页失败`, resumePageNo)
-        }
-      }
-
-      const state = await waitForDetailReady(15000)
-      if (!state.ready) {
-        return scheduleDetailComboRecovery(shared, `详情恢复后的第 ${resumePageNo} 页加载超时`, resumePageNo)
-      }
-      if (state.busy) {
-        return scheduleDetailComboRecovery(shared, `详情恢复后的第 ${resumePageNo} 页出现 Too many visitors`, resumePageNo)
-      }
-
-      return nextPhase('collect_detail_combo', 400, {
+      const restoreState = {
         ...shared,
         currentDetailSite: combo.site,
         currentDetailGrain: combo.grain,
-        batch_no: comboProgress.current,
-        total_batches: comboProgress.total,
-        current_store: [shared.currentOuterSite || '', combo.site || '', combo.grain || '']
-          .filter(Boolean)
-          .join(' / '),
-        current_buyer_id: shared.currentSpu || '',
+      }
+      const pageSizeOk = await ensureDetailPageSize(detailPageSize)
+      if (!pageSizeOk) {
+        const openAction = requestDetailPageSizeDropdownOpen('after_restore_detail_page_size_open', {
+          ...restoreState,
+          detailPageSizeTarget: detailPageSize,
+          detailPageSizeOpenRetry: 0,
+        }, DETAIL_COMBO_SWITCH_DELAY_MS)
+        if (!openAction) {
+          return scheduleDetailComboRecovery(restoreState, `详情每页条数切换失败：${detailPageSize}`, Number(shared.detailResumePageNo || 1))
+        }
+        return openAction
+      }
+
+      return await finishRestoreDetailCombo(restoreState)
+    }
+
+    if (phase === 'after_restore_detail_page_size_open') {
+      const pageSizeTarget = normalizePageSizeParam(shared.detailPageSizeTarget, detailPageSize)
+      const restoreState = {
+        ...shared,
+        detailPageSizeTarget: pageSizeTarget,
+      }
+      const pageSizeOk = await applyDetailPageSize(pageSizeTarget)
+      if (!pageSizeOk) {
+        const retry = Number(shared.detailPageSizeOpenRetry || 0)
+        if (retry + 1 < DETAIL_PAGE_SIZE_OPEN_RETRY_LIMIT) {
+          const retryAction = requestDetailPageSizeDropdownOpen('after_restore_detail_page_size_open', {
+            ...restoreState,
+            detailPageSizeOpenRetry: retry + 1,
+          }, DETAIL_COMBO_SWITCH_DELAY_MS)
+          if (retryAction) return retryAction
+        }
+        return scheduleDetailComboRecovery(restoreState, `详情每页条数切换失败：${pageSizeTarget}`, Number(shared.detailResumePageNo || 1))
+      }
+
+      return await finishRestoreDetailCombo({
+        ...restoreState,
+        detailPageSizeOpenRetry: 0,
       })
     }
 
@@ -1710,8 +2203,8 @@
         }
       }
 
-      const grainOk = await clickDetailCapsule(combo.grain)
-      if (!grainOk) {
+      const grainResult = await ensureDetailCapsuleSelected(combo.grain, 12000)
+      if (!grainResult.ok) {
         return nextPhase('close_detail', 0, {
           ...shared,
           detailError: true,
@@ -1725,8 +2218,7 @@
           }),
         ])
       }
-
-      const grainState = await waitForDetailReady(12000)
+      const grainState = grainResult.state || await waitForDetailReady(12000)
       if (!grainState.ready) {
         return nextPhase('close_detail', 0, {
           ...shared,
@@ -1750,7 +2242,7 @@
       }
 
       const availableDetailSites = await readDetailSiteOptions()
-      if (!availableDetailSites.includes(combo.site)) {
+      if (hasReliableDetailSiteOptions(availableDetailSites) && !availableDetailSites.includes(combo.site)) {
         return skipCurrentDetailCombo({
           ...shared,
           currentDetailSite: combo.site,
@@ -1767,7 +2259,7 @@
       const siteOk = await ensureDetailSiteSelected(combo.site)
       if (!siteOk) {
         const refreshedSites = await readDetailSiteOptions()
-        if (!refreshedSites.includes(combo.site)) {
+        if (hasReliableDetailSiteOptions(refreshedSites) && !refreshedSites.includes(combo.site)) {
           return skipCurrentDetailCombo({
             ...shared,
             currentDetailSite: combo.site,
@@ -1794,65 +2286,60 @@
         ])
       }
 
-      await ensureDetailPageSize(detailPageSize)
-
-      const pageResetOk = await ensureDetailPageNo(1, 20000)
-      if (!pageResetOk) {
-        return nextPhase('close_detail', 0, {
-          ...shared,
-          detailError: true,
-          currentDetailSite: combo.site,
-          currentDetailGrain: combo.grain,
-        }, [
-          buildErrorRow('详情过滤后未能回到第一页', {
-            ...shared,
-            currentDetailSite: combo.site,
-            currentDetailGrain: combo.grain,
-          }),
-        ])
-      }
-
-      const comboState = {
+      const collectState = {
         ...shared,
         currentDetailSite: combo.site,
         currentDetailGrain: combo.grain,
-        detailResumePageNo: Math.max(1, Number(shared.detailResumePageNo || 1)),
-        detailSeenRowKeys: normalizeSharedStringArray(shared.detailSeenRowKeys),
-        detailSeenPageFingerprints: normalizeSharedStringArray(shared.detailSeenPageFingerprints),
-        batch_no: comboProgress.current,
-        total_batches: comboProgress.total,
-        current_store: [shared.currentOuterSite || '', combo.site || '', combo.grain || '']
-          .filter(Boolean)
-          .join(' / '),
-        current_buyer_id: shared.currentSpu || '',
-        lastAppliedDetailSite: combo.site,
-        lastAppliedDetailGrain: combo.grain,
       }
-      const result = await collectCurrentDetailCombo(comboState)
-      const comboStateWithCollected = {
-        ...comboState,
-        detailSeenRowKeys: normalizeSharedStringArray(result.seenRowKeys),
-        detailSeenPageFingerprints: normalizeSharedStringArray(result.seenPageFingerprints),
+      const pageSizeOk = await ensureDetailPageSize(detailPageSize)
+      if (!pageSizeOk) {
+        const openAction = requestDetailPageSizeDropdownOpen('after_collect_detail_page_size_open', {
+          ...collectState,
+          detailPageSizeTarget: detailPageSize,
+          detailPageSizeOpenRetry: 0,
+        }, DETAIL_COMBO_SWITCH_DELAY_MS)
+        if (!openAction) {
+          return nextPhase('close_detail', 0, {
+            ...collectState,
+            detailError: true,
+          }, [
+            buildErrorRow(`详情每页条数切换失败：${detailPageSize}`, collectState),
+          ])
+        }
+        return openAction
       }
-      if (!result.ok) {
-        if (result.retryable) {
-          return scheduleDetailComboRecovery(
-            comboStateWithCollected,
-            result.error || '详情抓取失败',
-            Number(result.resumePageNo || comboStateWithCollected.detailResumePageNo || 1),
-            result.data || [],
-          )
+
+      return await finishCollectDetailCombo(collectState)
+    }
+
+    if (phase === 'after_collect_detail_page_size_open') {
+      const pageSizeTarget = normalizePageSizeParam(shared.detailPageSizeTarget, detailPageSize)
+      const collectState = {
+        ...shared,
+        detailPageSizeTarget: pageSizeTarget,
+      }
+      const pageSizeOk = await applyDetailPageSize(pageSizeTarget)
+      if (!pageSizeOk) {
+        const retry = Number(shared.detailPageSizeOpenRetry || 0)
+        if (retry + 1 < DETAIL_PAGE_SIZE_OPEN_RETRY_LIMIT) {
+          const retryAction = requestDetailPageSizeDropdownOpen('after_collect_detail_page_size_open', {
+            ...collectState,
+            detailPageSizeOpenRetry: retry + 1,
+          }, DETAIL_COMBO_SWITCH_DELAY_MS)
+          if (retryAction) return retryAction
         }
         return nextPhase('close_detail', 0, {
-          ...comboStateWithCollected,
+          ...collectState,
           detailError: true,
         }, [
-          ...(result.data || []),
-          buildErrorRow(result.error || '详情抓取失败', comboStateWithCollected),
+          buildErrorRow(`详情每页条数切换失败：${pageSizeTarget}`, collectState),
         ])
       }
 
-      return advanceToNextDetailCombo(comboStateWithCollected, result.data)
+      return await finishCollectDetailCombo({
+        ...collectState,
+        detailPageSizeOpenRetry: 0,
+      })
     }
 
     if (phase === 'close_detail') {

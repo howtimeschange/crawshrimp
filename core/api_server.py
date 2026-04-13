@@ -597,6 +597,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     runner = None
     data = []
     output_files = []
+    runtime_artifact_dir = data_sink.prepare_artifact_dir(adapter_id, task_id, run_id, "runtime")
 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
@@ -685,7 +686,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             bridge.get_tab_ws_url(tab),
             tab_id=str(tab.get('id') or ''),
             tab_url=str(tab.get('url') or ''),
+            artifact_dir=runtime_artifact_dir,
         )
+
+        def merge_output_file_refs(*groups):
+            merged = []
+            seen = set()
+            for group in groups:
+                for item in group or []:
+                    path = str(item or '').strip()
+                    if not path or path in seen:
+                        continue
+                    seen.add(path)
+                    merged.append(path)
+            return merged
 
         async def export_outputs(data_rows):
             files = []
@@ -797,7 +811,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         if deduped_count != raw_count:
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before export")
 
-        output_files = await export_outputs(data)
+        runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
+        output_files = merge_output_file_refs(runtime_files, await export_outputs(data))
         data_sink.finish_run(run_id, len(data), output_files)
         _run_status[jid] = {'status': 'done', 'run_id': run_id, 'records': len(data)}
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
@@ -817,7 +832,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             run_control['pause_logged'] = False
 
         try:
-            output_files = await export_outputs(data) if runner else []
+            runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
+            exported = await export_outputs(data) if runner else []
+            output_files = merge_output_file_refs(runtime_files, exported)
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
@@ -839,7 +856,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         if deduped_count != raw_count:
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
         try:
-            output_files = await export_outputs(data) if runner else []
+            runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
+            exported = await export_outputs(data) if runner else []
+            output_files = merge_output_file_refs(runtime_files, exported)
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")

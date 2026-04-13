@@ -335,7 +335,69 @@
           </div>
         </div>
 
-        <div v-if="progressSummary" class="progress-strip" aria-live="polite">
+        <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip" aria-live="polite">
+          <div class="progress-strip-head">
+            <div class="progress-strip-main">
+              <span class="progress-strip-title">{{ progressSummary.title }}</span>
+              <span class="progress-strip-value">{{ progressSummary.main }}</span>
+              <span class="progress-strip-percent">{{ progressSummary.percentLabel }}</span>
+            </div>
+            <div class="progress-strip-meta">
+              <span v-if="progressSummary.completedText">{{ progressSummary.completedText }}</span>
+              <span v-if="progressSummary.batchText">{{ progressSummary.batchText }}</span>
+              <span v-if="progressSummary.rowText">{{ progressSummary.rowText }}</span>
+              <span v-if="progressSummary.targetText">{{ progressSummary.targetText }}</span>
+              <span v-if="progressSummary.storeText">{{ progressSummary.storeText }}</span>
+              <span v-if="progressSummary.phaseText">{{ progressSummary.phaseText }}</span>
+            </div>
+          </div>
+          <div class="progress-strip-stack">
+            <div class="progress-track">
+              <div class="progress-track-label">
+                <span>{{ progressSummary.trackTitle }}</span>
+                <span>{{ progressSummary.percentLabel }}</span>
+              </div>
+              <div
+                :class="['progress-strip-bar', { indeterminate: progressSummary.indeterminate }]"
+                role="progressbar"
+                :aria-label="progressSummary.ariaLabel"
+                :aria-valuenow="progressSummary.indeterminate ? null : progressSummary.percentValue"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                :aria-valuetext="progressSummary.ariaText"
+                :aria-busy="progressSummary.indeterminate ? 'true' : 'false'"
+              >
+                <div
+                  :class="['progress-strip-bar-fill', { indeterminate: progressSummary.indeterminate }]"
+                  :style="progressSummary.indeterminate ? undefined : { width: `${progressSummary.percentValue}%` }"
+                ></div>
+              </div>
+            </div>
+            <div v-if="progressSummary.batchPercentValue > 0" class="progress-track progress-track-secondary">
+              <div class="progress-track-label">
+                <span>当前条目</span>
+                <span>{{ progressSummary.batchText }}</span>
+              </div>
+              <div
+                class="progress-strip-bar progress-strip-bar-secondary"
+                role="progressbar"
+                aria-label="当前条目进度"
+                :aria-valuenow="progressSummary.batchPercentValue"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                :aria-valuetext="`${progressSummary.batchText}，${progressSummary.batchPercentValue}%`"
+              >
+                <div
+                  class="progress-strip-bar-fill progress-strip-bar-fill-secondary"
+                  :style="{ width: `${progressSummary.batchPercentValue}%` }"
+                ></div>
+              </div>
+            </div>
+          </div>
+          <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
+        </div>
+
+        <div v-else-if="progressSummary" class="progress-strip" aria-live="polite">
           <div class="progress-strip-head">
             <div class="progress-strip-main">
               <span class="progress-strip-title">批处理进度</span>
@@ -356,6 +418,7 @@
             :aria-valuenow="progressSummary.percentValue"
             aria-valuemin="0"
             aria-valuemax="100"
+            :aria-valuetext="progressSummary.ariaText"
           >
             <div class="progress-strip-bar-fill" :style="{ width: `${progressSummary.percentValue}%` }"></div>
           </div>
@@ -382,6 +445,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 
 const props = defineProps({
   adapterId: String,
@@ -434,6 +498,23 @@ watch(() => props.task, (task) => {
     try {
       const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id)
       if (logR.logs) logs.value = logR.logs
+      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id)
+      const live = taskStatus?.live
+      const last = taskStatus?.last_run
+      if (live && isTaskActiveStatus(live.status)) {
+        isRunning.value = true
+        currentRunId = live.run_id ?? last?.id ?? null
+        emit('status-change', live)
+      } else if (!live && last && isTaskActiveStatus(last.status)) {
+        isRunning.value = true
+        currentRunId = last.id ?? null
+        emit('status-change', {
+          status: last.status,
+          records: last.records_count,
+          error: last.error,
+          run_id: last.id,
+        })
+      }
       scrollToBottom()
     } catch {}
   })
@@ -469,6 +550,9 @@ const liveProgress = computed(() => props.task?.live || {})
 const paramsGridClass = computed(() =>
   props.adapterId === 'shopee-webchat-bulk-reply' ? 'params-grid-shopee-bulk' : ''
 )
+const useEnhancedProgressUi = computed(() =>
+  resolveTaskProgressConfig(props.adapterId, props.task?.task_id).usage.taskRunner === 'enhanced'
+)
 
 function isTaskActiveStatus(status) {
   return ['running', 'pausing', 'paused', 'stopping'].includes(status)
@@ -497,40 +581,15 @@ const missingRequired = computed(() => {
   })
 })
 
-const progressSummary = computed(() => {
-  const current = Number(liveProgress.value?.current || 0)
-  const total = Number(liveProgress.value?.total || 0)
-  if (!isRunning.value || total <= 0) return null
-
-  const completed = Number(liveProgress.value?.completed || liveProgress.value?.records || 0)
-  const batchNo = Number(liveProgress.value?.batch_no || 0)
-  const totalBatches = Number(liveProgress.value?.total_batches || 0)
-  const rowNo = Number(liveProgress.value?.row_no || 0)
-  const targetId = String(liveProgress.value?.buyer_id || '').trim()
-  const phase = String(liveProgress.value?.phase || '').trim()
-  const rawPercent = Number(liveProgress.value?.percent)
-  const percentValue = Number.isFinite(rawPercent) && rawPercent > 0
-    ? Math.min(100, Math.max(0, Number(rawPercent.toFixed(1))))
-    : Math.min(100, Math.max(0, Number(((current / total) * 100).toFixed(1))))
-
-  const parts = [`已完成 ${completed} 条`]
-  if (batchNo > 0 && totalBatches > 0) parts.push(`批次 ${batchNo}/${totalBatches}`)
-  if (rowNo > 0) parts.push(`源表行 ${rowNo}`)
-  if (targetId) parts.push(`目标 ${targetId}`)
-  if (phase) parts.push(`阶段 ${phase}`)
-
-  return {
-    main: `第 ${current} / ${total} 条`,
-    percentValue,
-    percentLabel: `${percentValue}%`,
-    completed,
-    batchText: batchNo > 0 && totalBatches > 0 ? `批次 ${batchNo}/${totalBatches}` : '',
-    rowText: rowNo > 0 ? `源表行 ${rowNo}` : '',
-    targetText: targetId ? `目标 ${targetId}` : '',
-    ariaLabel: `批处理进度 第 ${current} / ${total} 条`,
-    sub: parts.join(' · '),
-  }
-})
+const progressSummary = computed(() =>
+  buildTaskRunnerProgressSummary({
+    adapterId: props.adapterId,
+    taskId: props.task?.task_id,
+    live: liveProgress.value,
+    liveStatus: liveStatus.value,
+    isRunning: isRunning.value,
+  })
+)
 
 function paramLayoutClass(param) {
   if (!param) return 'param-span-compact'
@@ -1405,6 +1464,28 @@ onUnmounted(() => clearInterval(pollTimer))
   color: var(--orange);
   font-weight: 700;
 }
+.progress-strip-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.progress-track {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.progress-track-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+.progress-track-secondary .progress-track-label {
+  color: var(--text3);
+}
 .progress-strip-bar {
   position: relative;
   height: 8px;
@@ -1413,12 +1494,29 @@ onUnmounted(() => clearInterval(pollTimer))
   background: rgba(255,255,255,0.08);
   border: 1px solid rgba(255,106,41,0.18);
 }
+.progress-strip-bar.indeterminate {
+  background: rgba(255,255,255,0.06);
+}
 .progress-strip-bar-fill {
   height: 100%;
   border-radius: inherit;
   background: linear-gradient(90deg, var(--orange), #ff9a5f);
   box-shadow: 0 0 12px rgba(255,106,41,0.25);
   transition: width 180ms ease;
+}
+.progress-strip-bar-secondary {
+  border-color: rgba(124, 139, 255, 0.18);
+  background: rgba(124, 139, 255, 0.08);
+}
+.progress-strip-bar-fill-secondary {
+  background: linear-gradient(90deg, #7c8bff, #9dc1ff);
+  box-shadow: 0 0 12px rgba(124, 139, 255, 0.22);
+}
+.progress-strip-bar-fill.indeterminate {
+  width: 36%;
+  min-width: 120px;
+  border-radius: 999px;
+  animation: progress-slide 1.6s ease-in-out infinite;
 }
 .progress-strip-sub {
   font-size: 12px;
@@ -1427,6 +1525,11 @@ onUnmounted(() => clearInterval(pollTimer))
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+@keyframes progress-slide {
+  0% { transform: translateX(-110%); }
+  50% { transform: translateX(90%); }
+  100% { transform: translateX(240%); }
 }
 .output-count {
   font-size: 11px; color: var(--orange); cursor: pointer;

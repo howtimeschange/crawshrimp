@@ -39,11 +39,38 @@
         <div class="task-list">
           <button
             v-for="t in activeScript.tasks" :key="t.task_id"
-            :class="['task-btn', { active: activeTaskId === t.task_id }]"
+            :class="['task-btn', { active: activeTaskId === t.task_id, 'task-btn-detailed': hasEnhancedSidebarProgress(t) }]"
             @click="activeTaskId = t.task_id"
           >
-            {{ t.task_name }}
-            <span v-if="isTaskLiveActive(t.live?.status)" class="running-dot"></span>
+            <template v-if="hasEnhancedSidebarProgress(t)">
+              <div class="task-btn-main">
+                <span class="task-btn-label">{{ t.task_name }}</span>
+                <span class="task-btn-status">
+                  <span v-if="taskProgressSummary(t)?.percentLabel" class="task-btn-percent">
+                    {{ taskProgressSummary(t)?.percentLabel }}
+                  </span>
+                  <span class="running-dot"></span>
+                </span>
+              </div>
+              <div
+                v-if="taskProgressSummary(t)?.overall"
+                class="task-btn-progress"
+                role="progressbar"
+                :aria-label="taskProgressSummary(t)?.overall?.ariaLabel"
+                :aria-valuenow="taskProgressSummary(t)?.overall?.percentValue"
+                aria-valuemin="0"
+                aria-valuemax="100"
+              >
+                <div class="task-btn-progress-fill" :style="{ width: `${taskProgressSummary(t)?.overall?.percentValue || 0}%` }"></div>
+              </div>
+              <div v-if="taskProgressSummary(t)?.batch" class="task-btn-sub">
+                {{ taskProgressSummary(t).batch.main }}
+              </div>
+            </template>
+            <template v-else>
+              {{ t.task_name }}
+              <span v-if="isTaskLiveActive(t.live?.status)" class="running-dot"></span>
+            </template>
           </button>
         </div>
       </div>
@@ -81,6 +108,8 @@ import TaskRunner  from './views/TaskRunner.vue'
 import MarketPage  from './views/MarketPage.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
+import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
+import { formatTasksForDisplay } from './utils/taskDisplay'
 
 const currentView = ref('scripts')
 const status = ref({ api: false, chrome: false })
@@ -110,7 +139,10 @@ async function loadScriptGroups() {
     }
     map[t.adapter_id].tasks.push(t)
   }
-  scriptGroups.value = Object.values(map)
+  scriptGroups.value = Object.values(map).map(group => ({
+    ...group,
+    tasks: formatTasksForDisplay(group.adapter_id, group.tasks),
+  }))
   return scriptGroups.value
 }
 
@@ -132,8 +164,13 @@ function onTaskStatusChange(status) {
   }
 }
 
-function isTaskLiveActive(status) {
-  return ['running', 'pausing', 'paused', 'stopping'].includes(status)
+function hasEnhancedSidebarProgress(task) {
+  return isTaskLiveActive(task?.live?.status) &&
+    resolveTaskProgressConfig(activeScript.value?.adapter_id, task?.task_id).usage.sidebar === 'enhanced'
+}
+
+function taskProgressSummary(task) {
+  return buildTaskOverviewProgress(activeScript.value?.adapter_id, task?.task_id, task?.live || {})
 }
 
 async function launchChrome() {
@@ -274,9 +311,55 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
 }
 .task-btn:hover { background: var(--bg3); color: var(--text); }
 .task-btn.active { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
+.task-btn-detailed {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+.task-btn-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.task-btn-label {
+  min-width: 0;
+  flex: 1;
+}
+.task-btn-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.task-btn-percent {
+  font-size: 11px;
+  color: var(--orange);
+  font-variant-numeric: tabular-nums;
+}
 .running-dot {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--orange); animation: pulse 1s infinite;
+}
+.task-btn-progress {
+  position: relative;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255, 107, 43, 0.16);
+}
+.task-btn-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--orange), #ff9a5f);
+}
+.task-btn-sub {
+  font-size: 11px;
+  color: var(--text3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 

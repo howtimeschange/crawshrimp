@@ -228,6 +228,14 @@ def _ensure_unique_path(path: Path) -> Path:
         idx += 1
 
 
+def prepare_artifact_dir(adapter_id: str, task_id: str, run_id: int, kind: str = "artifacts") -> str:
+    """Create and return a per-run artifact directory."""
+    safe_kind = _sanitize_filename(kind, "artifacts")
+    out_dir = _data_root() / adapter_id / task_id / safe_kind / str(run_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return str(out_dir)
+
+
 def export_excel(
     data: List[dict],
     adapter_id: str,

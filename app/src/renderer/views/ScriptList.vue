@@ -18,28 +18,52 @@
       </div>
 
       <div
-        v-for="g in groups" :key="g.adapter_id"
+        v-for="entry in displayGroups" :key="entry.group.adapter_id"
         class="script-card"
-        :class="{ disabled: !g.enabled }"
-        @click="$emit('open-script', g)"
+        :class="{ disabled: !entry.group.enabled }"
+        @click="$emit('open-script', entry.group)"
       >
         <div class="card-top">
           <span class="card-icon">🦐</span>
           <div class="card-info">
-            <strong>{{ g.adapter_name }}</strong>
-            <span class="task-count">{{ g.tasks.length }} 个任务</span>
+            <strong>{{ entry.group.adapter_name }}</strong>
+            <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
           </div>
           <span class="arrow">→</span>
         </div>
         <div class="task-chips">
-          <span v-for="t in g.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
+          <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
+        </div>
+        <div v-if="entry.isEnhancedProgress && entry.progress" class="card-progress">
+          <div class="card-progress-head">
+            <span class="running-badge">运行中</span>
+            <span class="card-progress-task">{{ entry.runningTask.task_name }}</span>
+            <span class="card-progress-percent">{{ entry.progress.percentLabel }}</span>
+          </div>
+          <div
+            v-if="entry.progress.overall"
+            class="card-progress-bar"
+            role="progressbar"
+            :aria-label="entry.progress.overall.ariaLabel"
+            :aria-valuenow="entry.progress.overall.percentValue"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <div class="card-progress-fill" :style="{ width: `${entry.progress.overall.percentValue}%` }"></div>
+          </div>
+          <div v-if="entry.progress.batch" class="card-progress-sub">
+            {{ entry.progress.batch.main }}
+          </div>
+          <div v-if="entry.progress.metaLine" class="card-progress-sub muted">
+            {{ entry.progress.metaLine }}
+          </div>
         </div>
         <div class="card-bottom">
-          <span v-if="anyRunning(g)" class="running-badge">运行中</span>
-          <span v-else-if="lastStatus(g)" :class="['status-badge', lastStatus(g)]">
-            {{ lastStatusLabel(lastStatus(g)) }}
+          <span v-if="entry.runningTask" class="running-badge">运行中</span>
+          <span v-else-if="lastStatus(entry.group)" :class="['status-badge', lastStatus(entry.group)]">
+            {{ lastStatusLabel(lastStatus(entry.group)) }}
           </span>
-          <button class="remove-btn" @click.stop="removeAdapter(g.adapter_id)">移除</button>
+          <button class="remove-btn" @click.stop="removeAdapter(entry.group.adapter_id)">移除</button>
         </div>
       </div>
     </div>
@@ -107,6 +131,7 @@
 
 <script setup>
 import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
+import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
 
 const emit = defineEmits(['open-script', 'reload'])
 const scriptGroups = inject('scriptGroups')
@@ -127,26 +152,53 @@ const successAdapterName = ref('')
 const successAdapterVersion = ref('')
 const successDetail = ref('')
 const successCloseTimer = ref(null)
+let pollTimer = null
 
 const groups = scriptGroups
 
-onMounted(loadGroups)
+const displayGroups = computed(() =>
+  (groups.value || []).map(group => {
+    const runningTask = group.tasks.find(task => isTaskLiveActive(task.live?.status)) || null
+    const isEnhancedProgress = !!runningTask &&
+      resolveTaskProgressConfig(group.adapter_id, runningTask.task_id).usage.scriptList === 'enhanced'
+    return {
+      group,
+      runningTask,
+      isEnhancedProgress,
+      progress: isEnhancedProgress
+        ? buildTaskOverviewProgress(group.adapter_id, runningTask.task_id, runningTask.live || {})
+        : null,
+    }
+  })
+)
 
-async function loadGroups() {
-  loading.value = true
-  loadError.value = ''
+onMounted(async () => {
+  await loadGroups()
+  pollTimer = window.setInterval(() => {
+    loadGroups({ quiet: true }).catch(() => {})
+  }, 2000)
+})
+
+async function loadGroups(options = {}) {
+  const quiet = !!options.quiet
+  if (!quiet) {
+    loading.value = true
+    loadError.value = ''
+  }
   try {
     await loadScriptGroups()
   } catch (error) {
-    console.error('Failed to load script groups', error)
-    loadError.value = error?.message || '脚本列表加载失败，请稍后重试'
+    if (!quiet) {
+      console.error('Failed to load script groups', error)
+    }
+    if (!quiet) {
+      loadError.value = error?.message || '脚本列表加载失败，请稍后重试'
+    }
   } finally {
-    loading.value = false
+    if (!quiet) {
+      loading.value = false
+    }
   }
-}
-
-function anyRunning(g) {
-  return g.tasks.some(t => ['running', 'pausing', 'paused', 'stopping'].includes(t.live?.status))
 }
 
 function lastStatus(g) {
@@ -379,6 +431,10 @@ async function doInstall() {
 }
 
 onUnmounted(() => {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
+  }
   clearSuccessTimer()
 })
 </script>
@@ -416,6 +472,59 @@ onUnmounted(() => {
 .chip {
   font-size: 11px; padding: 3px 9px; border-radius: 20px;
   background: var(--bg3); border: 1px solid var(--border); color: var(--text2);
+}
+.card-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(255, 106, 41, 0.06);
+  border: 1px solid rgba(255, 106, 41, 0.12);
+}
+.card-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.card-progress-task {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-progress-percent {
+  font-size: 11px;
+  color: var(--orange);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+.card-progress-bar {
+  position: relative;
+  height: 7px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255,255,255,0.08);
+  border: 1px solid rgba(255, 106, 41, 0.16);
+}
+.card-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, var(--orange), #ff9a5f);
+}
+.card-progress-sub {
+  font-size: 11px;
+  color: var(--text2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-progress-sub.muted {
+  color: var(--text3);
 }
 .card-bottom { display: flex; align-items: center; justify-content: space-between; }
 .running-badge { font-size: 11px; padding: 2px 8px; border-radius: 5px; background: var(--orange-bg); color: var(--orange); }

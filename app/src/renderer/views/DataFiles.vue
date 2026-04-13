@@ -110,6 +110,7 @@
 
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
+import { formatTaskForDisplay } from '../utils/taskDisplay'
 
 const groups         = ref([])
 const showDirSetting = ref(false)
@@ -150,9 +151,9 @@ async function load() {
 
   const adapters = await window.cs.getAdapters()
   const result = []
+  const allTasks = (await window.cs.getTasks()).map(formatTaskForDisplay)
   for (const a of adapters) {
-    const tasks = await window.cs.getTasks()
-    for (const t of tasks.filter(x => x.adapter_id === a.id)) {
+    for (const t of allTasks.filter(x => x.adapter_id === a.id)) {
       const data = await window.cs.getData(a.id, t.task_id)
       const files = []
       for (const run of (data.runs || [])) {

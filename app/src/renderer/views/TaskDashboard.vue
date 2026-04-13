@@ -43,10 +43,15 @@
 </template>
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
+import { formatTaskForDisplay } from '../utils/taskDisplay'
 const tasks = ref([]); const loading = ref(true)
 const logsTask = ref(null); const taskLogs = ref([]); const logsEl = ref(null)
 let pollTimer = null; let logsTimer = null
-async function loadTasks() { loading.value = true; tasks.value = await window.cs.getTasks(); loading.value = false }
+async function loadTasks() {
+  loading.value = true
+  tasks.value = (await window.cs.getTasks()).map(formatTaskForDisplay)
+  loading.value = false
+}
 async function runTask(t) { await window.cs.runTask(t.adapter_id, t.task_id); await loadTasks() }
 function isActiveStatus(status) { return ['running', 'pausing', 'paused', 'stopping'].includes(status) }
 async function openLogs(t) {

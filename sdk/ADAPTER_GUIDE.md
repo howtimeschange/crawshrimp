@@ -372,7 +372,7 @@ tasks:
 
 对于需要依次完成多个交互步骤的任务（如表单填写、店铺切换、日期选择），使用 **多 Phase 状态机**。
 
-底座会重复注入同一脚本，通过 `window.__CRAWSHRIMP_PHASE__` 区分当前阶段，脚本返回 `action: "next_phase"` / `action: "cdp_clicks"` / `action: "complete"` 来驱动状态机。
+底座会重复注入同一脚本，通过 `window.__CRAWSHRIMP_PHASE__` 区分当前阶段，脚本通过 `meta.action` 返回 `next_phase` / `cdp_clicks` / `complete` 来驱动状态机。
 
 #### 推荐的 Phase 粒度（最佳实践）
 
@@ -389,17 +389,17 @@ tasks:
 ```
 底座注入脚本 (phase="init")
   ↓
-返回 { action: "next_phase", next_phase: "fill_form" }
+返回 { success: true, data: [], meta: { action: "next_phase", next_phase: "fill_form" } }
   ↓
 底座注入脚本 (phase="fill_form")
   ↓
-返回 { action: "cdp_clicks", clicks: [{x,y}, ...], next_phase: "submit", sleep_ms: 500 }
+返回 { success: true, data: [], meta: { action: "cdp_clicks", clicks: [{x,y}, ...], next_phase: "submit", sleep_ms: 500 } }
   ↓
 底座执行 CDP 坐标点击
   ↓
 底座注入脚本 (phase="submit")
   ↓
-返回 { action: "complete", data: [...] }  ← 本行完成，继续下一行
+返回 { success: true, data: [...], meta: { action: "complete", has_more: false } }  ← 本行完成，继续下一行
 ```
 
 #### `action` 值说明
@@ -423,13 +423,31 @@ tasks:
 
   // 辅助：返回 next_phase 并带等待时间
   function nextPhase(name, sleepMs, newShared) {
-    window.__CRAWSHRIMP_SHARED__ = newShared ?? shared
-    return { action: 'next_phase', next_phase: name, meta: { sleep_ms: sleepMs || 0 } }
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'next_phase',
+        next_phase: name,
+        sleep_ms: sleepMs || 0,
+        shared: newShared ?? shared,
+      },
+    }
   }
 
   // 辅助：返回 cdp_clicks
   function cdpClicks(clicks, nextPhaseName, sleepMs) {
-    return { action: 'cdp_clicks', clicks, next_phase: nextPhaseName, meta: { sleep_ms: sleepMs || 300 } }
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'cdp_clicks',
+        clicks,
+        next_phase: nextPhaseName,
+        sleep_ms: sleepMs || 300,
+        shared,
+      },
+    }
   }
 
   try {
@@ -451,12 +469,16 @@ tasks:
     if (phase === 'post_submit') {
       // 等待成功，收集结果
       const result = { '执行状态': '成功', '错误原因': '' }
-      return { action: 'complete', data: [result] }
+      return { success: true, data: [result], meta: { action: 'complete', has_more: false, shared } }
     }
 
   } catch (e) {
     // phase 失败，记录错误原因并结束本行
-    return { action: 'complete', data: [{ '执行状态': '失败', '错误原因': e.message }] }
+    return {
+      success: true,
+      data: [{ '执行状态': '失败', '错误原因': e.message }],
+      meta: { action: 'complete', has_more: false, shared },
+    }
   }
 })()
 ```
@@ -471,13 +493,15 @@ tasks:
 
 ```js
 {
-  action: 'cdp_clicks',
-  clicks: [
-    { x: 320, y: 480 },  // 相对于 viewport 的坐标，单位 px
-    { x: 400, y: 480 },
-  ],
-  next_phase: 'submit',     // 点完后切换到哪个 phase
+  success: true,
+  data: [],
   meta: {
+    action: 'cdp_clicks',
+    clicks: [
+      { x: 320, y: 480 },  // 相对于 viewport 的坐标，单位 px
+      { x: 400, y: 480 },
+    ],
+    next_phase: 'submit',  // 点完后切换到哪个 phase
     sleep_ms: 500           // 所有坐标点完后统一等待时长（ms）
   }
 }
@@ -610,6 +634,103 @@ if (phase === 'form_fill') {
 
 这类问题在 Vue / React 的 Select、DatePicker、依赖型表单区块里非常常见。
 
+#### 任务进度与前端进度条
+
+批量任务的进度条不是脚本直接回传一整坨 UI 数据，而是底座根据 `meta.shared` 里的运行上下文统一推导出来的。
+
+脚本侧最常用的进度字段：
+
+| 字段 | 放置位置 | 含义 |
+|------|------|------|
+| `total_rows` | `meta.shared.total_rows` | 本次任务总共有多少条源数据 |
+| `current_exec_no` | `meta.shared.current_exec_no` | 当前正在处理第几条逻辑任务，`1` 开始 |
+| `current_row_no` | `meta.shared.current_row_no` | 当前源表行号；如果和逻辑序号一致，也可以填同一个值 |
+| `current_buyer_id` | `meta.shared.current_buyer_id` | 当前目标标识，例如 SPU、买家 ID、商品 ID |
+| `current_store` | `meta.shared.current_store` | 当前店铺 / 站点 / 账号标识 |
+| `batch_no` | `meta.shared.batch_no` | 当前条目内部的子批次 / 子分页序号 |
+| `total_batches` | `meta.shared.total_batches` | 当前条目内部总共有多少子批次 / 子分页 |
+
+底座会自动补齐并向前端下发这些展示字段，你通常**不需要手工维护**：
+
+- `current` / `total`
+- `completed`
+- `percent`
+- `progress_text`
+- `phase`
+
+也就是说，脚本开发者只需要维护 `meta.shared` 里的“业务上下文”，不要自己拼百分比，更不要把进度条文案写死在脚本里。
+
+推荐模式：
+
+```js
+function nextPhase(name, sleepMs = 800, newShared = shared, data = []) {
+  return {
+    success: true,
+    data,
+    meta: {
+      action: 'next_phase',
+      next_phase: name,
+      sleep_ms: sleepMs,
+      shared: newShared,
+    },
+  }
+}
+
+if (phase === 'main') {
+  return nextPhase('prepare_row', 0, {
+    ...shared,
+    total_rows: rows.length,
+    current_exec_no: 0,
+    current_row_no: 0,
+    current_buyer_id: '',
+    current_store: '',
+    batch_no: 0,
+    total_batches: 0,
+  })
+}
+
+if (phase === 'prepare_row') {
+  const current = rows[rowIndex]
+  return nextPhase('collect_detail', 200, {
+    ...shared,
+    total_rows: rows.length,
+    current_exec_no: rowIndex + 1,
+    current_row_no: Number(current.row_no || rowIndex + 1),
+    current_buyer_id: current.spu || '',
+    current_store: current.store || current.outerSite || '',
+    batch_no: 0,
+    total_batches: 0,
+  })
+}
+
+if (phase === 'collect_detail_page') {
+  return nextPhase('collect_detail_page', 600, {
+    ...shared,
+    batch_no: pageNo,
+    total_batches: totalPages,
+  })
+}
+```
+
+使用约定：
+
+- `current_exec_no` 只在“切到下一条逻辑任务”时递增，不要在同一条的重试、刷新、等待阶段里反复增加。
+- `batch_no` / `total_batches` 只描述“当前条目内部”的二级进度，例如弹窗翻页、站点切换、粒度组合遍历。
+- 页面超时恢复、查询重试、弹窗重开时，应尽量复用当前 `shared`，这样前端不会把同一条任务误判成跳号。
+- 如果任务只是单页抓取，没有逐行/逐批处理，也可以完全不写这些字段，前端会退回普通运行态。
+
+前端展示策略说明：
+
+- 默认所有任务都走经典进度 UI。
+- 只有前端显式配置为 enhanced 的任务，才会显示更丰富的双层进度条和状态文案。
+- 当前 enhanced 仅用于 `temu / goods_traffic_list`、`temu / goods_traffic_detail`；这不是 manifest 配置项，而是桌面端策略配置。
+
+如果你在开发新的批量任务：
+
+1. 先按上面的 shared 字段把**标准进度**喂完整。
+2. 确认经典进度 UI 已经够用，再决定是否真的需要 enhanced。
+3. 如果确实需要 enhanced，不要在页面组件里硬编码任务 ID，而是走桌面端的统一进度配置。
+
 ---
 
 ## 5. 内置变量与工具
@@ -638,6 +759,72 @@ if (page === 1) {
   // 后续页：直接抓当前页内容
 }
 ```
+
+### `window.__CRAWSHRIMP_SHARED__`
+
+多 Phase 任务里，跨 phase / 跨页共享的运行状态建议统一放这里。
+脚本每次返回 `meta.shared` 时，底座会把它带到下一次注入；前端 live 进度也会从这里读取关键字段。
+
+```js
+const shared = window.__CRAWSHRIMP_SHARED__ || {}
+
+function nextPhase(name, sleepMs = 300, newShared = shared) {
+  return {
+    success: true,
+    data: [],
+    meta: { action: 'next_phase', next_phase: name, sleep_ms: sleepMs, shared: newShared },
+  }
+}
+```
+
+### 批量任务实时进度（live）协议
+
+桌面端看到的 `live.current / live.total / live.records / live.percent` 不是脚本直接返回的字段。
+底座会在每次 phase 执行前读取 `shared` 和当前累计产出条数，自动组装 live 状态。
+
+推荐把下面这些字段写进 `meta.shared`：
+
+| shared 字段 | live 字段 | 用途 |
+|------|------|------|
+| `total_rows` | `live.total` | 本轮总任务数 |
+| `current_exec_no` | `live.current` | 当前执行到第几条 |
+| `current_row_no` | `live.row_no` | 源表行号 |
+| `batch_no` | `live.batch_no` | 当前批次序号 |
+| `total_batches` | `live.total_batches` | 总批次数 |
+| `current_buyer_id` | `live.buyer_id` | 当前目标标识 |
+| `current_store` | `live.store` | 当前店铺 / 站点 / 维度上下文 |
+
+说明：
+
+- `live.completed` / `live.records` 由底座根据当前累计 `data.length` 自动计算
+- `live.phase` 由当前 phase 名自动带出
+- `live.percent` / `live.progress_text` 由底座根据 `current_exec_no / total_rows` 自动计算
+- `current_buyer_id` / `current_store` 是历史命名，实际也可以承载 SPU、店铺、站点、粒度等“当前处理对象”
+
+经典有界进度写法：
+
+```js
+function withRowProgress(shared, row, index, totalRows) {
+  return {
+    ...shared,
+    total_rows: totalRows,
+    current_exec_no: index + 1,
+    current_row_no: Number(row?.row_no || index + 1),
+    current_buyer_id: row?.buyer_id || row?.spu || '',
+    current_store: row?.store || row?.outerSite || '',
+  }
+}
+
+return nextPhase('run_row', 300, withRowProgress(shared, currentRow, rowIndex, rows.length))
+```
+
+未知总量任务的写法：
+
+- 不要伪造 `total_rows` / `current_exec_no`
+- 只要脚本持续产出 `data`，底座的 `live.records` 就会增长
+- 如果有批次、站点、当前目标等上下文，仍然建议继续写 `batch_no / total_batches / current_store / current_buyer_id`
+
+这类任务的增强进度条是否启用，由前端白名单决定；SDK 侧只需要保证 live 元数据真实、稳定，不要为了“显示百分比”去硬凑总量。
 
 ### `window.__CRAWSHRIMP_STATE__`（自定义状态）
 
