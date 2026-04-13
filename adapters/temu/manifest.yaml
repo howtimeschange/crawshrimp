@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.5.1
+version: 1.5.2
 author: howtimeschange
 description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
@@ -276,6 +276,30 @@ tasks:
               - 推荐数据/点击量
               - 推荐数据/支付订单数
               - 推荐数据/支付件数
+
+  - id: bill_center
+    name: 后台-对账中心
+    description: 导出 Temu 卖家中心「对账中心」账务/财务明细文件，支持自定义日期并自动下载四个明细文件
+    script: bill-center.js
+    entry_url: https://seller.kuajingmaihuo.com/labor/bill
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: bill_date_range
+        type: date_range
+        label: 对账日期
+        required: true
+        hint: 对应页面账务明细查询时间，脚本会按所选日期点击查询并导出，再下载卖家中心/全球/欧区/美国四个文件
+    trigger:
+      type: manual
+    output: []
 
   - id: activity_data
     name: 后台-活动数据

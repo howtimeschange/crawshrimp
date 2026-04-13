@@ -8,10 +8,16 @@ import hashlib
 import json
 import logging
 import mimetypes
+import re
 import secrets
+import shutil
+import tempfile
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
 
 import websockets
 
@@ -39,7 +45,14 @@ class RunAbortedError(RuntimeError):
 
 
 class JSRunner:
-    def __init__(self, ws_url: str, timeout: int = DEFAULT_TIMEOUT, tab_id: Optional[str] = None, tab_url: Optional[str] = None):
+    def __init__(
+        self,
+        ws_url: str,
+        timeout: int = DEFAULT_TIMEOUT,
+        tab_id: Optional[str] = None,
+        tab_url: Optional[str] = None,
+        artifact_dir: Optional[str] = None,
+    ):
         self.ws_url = ws_url
         self.timeout = min(timeout, MAX_TIMEOUT)
         self.tab_id = tab_id
@@ -47,6 +60,9 @@ class JSRunner:
         self._msg_id = 0
         self._file_payload_cache: dict[str, dict] = {}
         self._page_file_cache_keys: set[str] = set()
+        self.artifact_dir = Path(artifact_dir).expanduser() if artifact_dir else Path(tempfile.mkdtemp(prefix="crawshrimp-runtime-"))
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        self.runtime_output_files: list[str] = []
 
     def _next_id(self) -> int:
         self._msg_id += 1
@@ -226,6 +242,963 @@ class JSRunner:
             return retry_result
 
         return result
+
+    def _sanitize_artifact_filename(self, raw_name: str, fallback: str = "download.bin") -> str:
+        name = Path(str(raw_name or "")).name
+        name = re.sub(r"[\x00-\x1f]+", "", name)
+        name = re.sub(r'[\\/:*?"<>|]+', "_", name).strip(" .")
+        return name or fallback
+
+    def _derive_url_filename(self, source_url: str, fallback: str = "download.bin") -> str:
+        try:
+            candidate = Path(urlsplit(str(source_url or "")).path).name
+        except Exception:
+            candidate = ""
+        return self._sanitize_artifact_filename(candidate or fallback, fallback)
+
+    def _ensure_unique_artifact_path(self, path: Path) -> Path:
+        if not path.exists():
+            return path
+        stem = path.stem
+        suffix = path.suffix
+        index = 2
+        while True:
+            candidate = path.with_name(f"{stem}_{index}{suffix}")
+            if not candidate.exists():
+                return candidate
+            index += 1
+
+    def _build_download_candidate_regex(self, source_url: str) -> Optional[re.Pattern[str]]:
+        original_name = self._derive_url_filename(source_url, "")
+        if not original_name:
+            return None
+
+        original_path = Path(original_name)
+        stem = original_path.stem
+        suffix = original_path.suffix
+        if not stem:
+            return None
+
+        if suffix:
+            pattern = rf"^{re.escape(stem)}(?: \(\d+\))?{re.escape(suffix)}$"
+        else:
+            pattern = rf"^{re.escape(original_name)}(?: \(\d+\))?$"
+        return re.compile(pattern, re.IGNORECASE)
+
+    def _snapshot_download_state(
+        self,
+        directories: list[Path],
+        name_pattern: Optional[re.Pattern[str]],
+    ) -> dict[str, tuple[int, int]]:
+        snapshot: dict[str, tuple[int, int]] = {}
+        for directory in directories:
+            if not directory.exists() or not directory.is_dir():
+                continue
+            for path in directory.iterdir():
+                if not path.is_file() or path.name.endswith(".crdownload"):
+                    continue
+                if name_pattern and not name_pattern.match(path.name):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+                snapshot[str(path)] = (stat.st_mtime_ns, stat.st_size)
+        return snapshot
+
+    def _find_new_downloaded_file(
+        self,
+        directories: list[Path],
+        baseline: dict[str, tuple[int, int]],
+        name_pattern: Optional[re.Pattern[str]],
+        started_at_ns: int,
+    ) -> Optional[Path]:
+        newest: Optional[tuple[int, Path]] = None
+        threshold_ns = max(started_at_ns - 2_000_000_000, 0)
+
+        for directory in directories:
+            if not directory.exists() or not directory.is_dir():
+                continue
+            for path in directory.iterdir():
+                if not path.is_file() or path.name.endswith(".crdownload"):
+                    continue
+                if name_pattern and not name_pattern.match(path.name):
+                    continue
+                try:
+                    stat = path.stat()
+                except OSError:
+                    continue
+
+                previous = baseline.get(str(path))
+                if previous and stat.st_mtime_ns <= previous[0] and stat.st_size == previous[1]:
+                    continue
+                if stat.st_mtime_ns < threshold_ns:
+                    continue
+                if newest is None or stat.st_mtime_ns > newest[0]:
+                    newest = (stat.st_mtime_ns, path)
+
+        return newest[1] if newest else None
+
+    def _build_artifact_target_path(self, filename: str = "", source_url: str = "") -> Path:
+        raw_name = str(filename or "").strip() or self._derive_url_filename(source_url)
+        clean_name = self._sanitize_artifact_filename(raw_name)
+        source_suffix = ""
+        if source_url:
+            try:
+                source_suffix = Path(urlsplit(source_url).path).suffix
+            except Exception:
+                source_suffix = ""
+        if source_suffix and not Path(clean_name).suffix:
+            clean_name = f"{clean_name}{source_suffix}"
+        return self._ensure_unique_artifact_path(self.artifact_dir / clean_name)
+
+    def _merge_runtime_shared(self, shared: Optional[dict], shared_key: str, value: Any, append: bool = False) -> dict:
+        merged = dict(shared or {})
+        if not shared_key:
+            return merged
+        if not append:
+            merged[shared_key] = value
+            return merged
+
+        existing = merged.get(shared_key)
+        if isinstance(existing, list):
+            base = list(existing)
+        elif existing is None:
+            base = []
+        else:
+            base = [existing]
+
+        if isinstance(value, list):
+            base.extend(value)
+        else:
+            base.append(value)
+        merged[shared_key] = base
+        return merged
+
+    def _request_matches(self, meta: dict, matches: Optional[list[dict]]) -> bool:
+        if not matches:
+            return True
+
+        url = str(meta.get("url") or meta.get("responseUrl") or "")
+        method = str(meta.get("method") or "").upper()
+        mime_type = str(meta.get("mimeType") or "")
+        body = str(meta.get("body") or "")
+        status = meta.get("status")
+
+        for matcher in matches:
+            if not isinstance(matcher, dict):
+                continue
+
+            url_contains = str(matcher.get("url_contains") or "").strip()
+            if url_contains and url_contains not in url:
+                continue
+
+            url_regex = str(matcher.get("url_regex") or "").strip()
+            if url_regex:
+                try:
+                    if not re.search(url_regex, url):
+                        continue
+                except re.error:
+                    continue
+
+            expected_method = str(matcher.get("method") or "").strip().upper()
+            if expected_method and method != expected_method:
+                continue
+
+            expected_status = matcher.get("status")
+            if expected_status is not None:
+                try:
+                    if int(status) != int(expected_status):
+                        continue
+                except Exception:
+                    continue
+
+            mime_contains = str(matcher.get("mime_type_contains") or "").strip()
+            if mime_contains and mime_contains not in mime_type:
+                continue
+
+            body_contains = str(matcher.get("body_contains") or "").strip()
+            if body_contains and body_contains not in body:
+                continue
+
+            return True
+
+        return False
+
+    def _snapshot_captured_request(self, meta: dict) -> dict:
+        snapshot = {
+            "url": str(meta.get("url") or ""),
+            "responseUrl": str(meta.get("responseUrl") or meta.get("url") or ""),
+            "method": str(meta.get("method") or ""),
+            "status": meta.get("status"),
+            "mimeType": str(meta.get("mimeType") or ""),
+            "postData": meta.get("postData"),
+            "headers": dict(meta.get("headers") or {}),
+            "responseHeaders": dict(meta.get("responseHeaders") or {}),
+            "body": meta.get("body"),
+            "base64Encoded": bool(meta.get("base64Encoded")),
+        }
+        if meta.get("error"):
+            snapshot["error"] = str(meta.get("error"))
+        return snapshot
+
+    async def _capture_requests_on_ws(
+        self,
+        ws_url: str,
+        *,
+        clicks: Optional[list[dict]] = None,
+        url: str = "",
+        matches: Optional[list[dict]] = None,
+        timeout_ms: int = 8000,
+        settle_ms: int = 1000,
+        min_matches: int = 1,
+        include_response_body: bool = True,
+    ) -> dict:
+        requests_by_id: dict[str, dict] = {}
+        captured_request_ids: set[str] = set()
+        matched_requests: list[dict] = []
+        last_match_at = 0.0
+        message_id = 0
+        response_buffer: dict[int, dict] = {}
+
+        async with websockets.connect(ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+            async def process_event(message: dict) -> None:
+                nonlocal last_match_at
+
+                method = message.get("method")
+                params = message.get("params", {})
+
+                if method == "Network.requestWillBeSent":
+                    request_id = str(params.get("requestId") or "")
+                    request = params.get("request", {}) or {}
+                    meta = requests_by_id.setdefault(request_id, {})
+                    meta.update({
+                        "requestId": request_id,
+                        "url": request.get("url"),
+                        "method": request.get("method"),
+                        "postData": request.get("postData"),
+                        "headers": request.get("headers", {}),
+                    })
+                    return
+
+                if method == "Network.responseReceived":
+                    request_id = str(params.get("requestId") or "")
+                    response = params.get("response", {}) or {}
+                    meta = requests_by_id.setdefault(request_id, {})
+                    meta.update({
+                        "requestId": request_id,
+                        "status": response.get("status"),
+                        "mimeType": response.get("mimeType"),
+                        "responseHeaders": response.get("headers", {}),
+                        "responseUrl": response.get("url"),
+                    })
+                    return
+
+                if method == "Network.loadingFailed":
+                    request_id = str(params.get("requestId") or "")
+                    meta = requests_by_id.setdefault(request_id, {})
+                    meta["error"] = str(params.get("errorText") or "Network.loadingFailed")
+                    return
+
+                if method != "Network.loadingFinished":
+                    return
+
+                request_id = str(params.get("requestId") or "")
+                meta = requests_by_id.get(request_id) or {}
+                if request_id in captured_request_ids or not meta.get("url") or not self._request_matches(meta, matches):
+                    return
+
+                if include_response_body:
+                    try:
+                        body_result = await send("Network.getResponseBody", {"requestId": request_id}, timeout_seconds=5.0)
+                        body_payload = body_result.get("result", {}) if isinstance(body_result, dict) else {}
+                        body = body_payload.get("body")
+                        if isinstance(body, str) and len(body) > 2_000_000:
+                            body = body[:2_000_000]
+                        meta["body"] = body
+                        meta["base64Encoded"] = bool(body_payload.get("base64Encoded"))
+                    except Exception as e:
+                        meta["error"] = str(e)
+
+                captured_request_ids.add(request_id)
+                matched_requests.append(self._snapshot_captured_request(meta))
+                last_match_at = time.monotonic()
+
+            async def send(method: str, params: Optional[dict] = None, timeout_seconds: float = 10.0) -> dict:
+                nonlocal message_id
+                message_id += 1
+                current_id = message_id
+                await ws.send(json.dumps({
+                    "id": current_id,
+                    "method": method,
+                    "params": params or {},
+                }))
+
+                deadline = time.monotonic() + max(timeout_seconds, 0.1)
+                while True:
+                    buffered = response_buffer.pop(current_id, None)
+                    if buffered is not None:
+                        return buffered
+
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError(f"CDP command timeout: {method}")
+
+                    raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                    message = json.loads(raw)
+                    if message.get("id") == current_id:
+                        return message
+                    if message.get("id") is not None:
+                        response_buffer[int(message["id"])] = message
+                        continue
+                    if message.get("method"):
+                        await process_event(message)
+
+            try:
+                await send("Page.enable")
+            except Exception:
+                logger.debug("Page.enable failed during request capture", exc_info=True)
+            await send("Network.enable", {"maxPostDataSize": 1024 * 1024})
+
+            try:
+                await send("Page.bringToFront")
+            except Exception:
+                logger.debug("Page.bringToFront failed during request capture", exc_info=True)
+
+            if url:
+                await send("Page.navigate", {"url": str(url)})
+            elif clicks:
+                await asyncio.sleep(0.3)
+                for click in clicks:
+                    x = float(click["x"])
+                    y = float(click["y"])
+                    delay_ms = int(click.get("delay_ms", 80))
+                    for evt_type in ("mouseMoved", "mousePressed", "mouseReleased"):
+                        params = {"type": evt_type, "x": x, "y": y, "modifiers": 0}
+                        if evt_type == "mouseMoved":
+                            params.update({"button": "none", "clickCount": 0})
+                        elif evt_type == "mousePressed":
+                            params.update({"button": "left", "clickCount": 1, "buttons": 1})
+                        else:
+                            params.update({"button": "left", "clickCount": 1, "buttons": 0})
+                        await send("Input.dispatchMouseEvent", params)
+                    await asyncio.sleep(delay_ms / 1000.0)
+
+            deadline = time.monotonic() + max(timeout_ms, 1000) / 1000.0
+            settle_seconds = max(settle_ms, 0) / 1000.0
+            required_matches = max(int(min_matches or 0), 1) if matches else 0
+
+            while time.monotonic() < deadline:
+                if (
+                    required_matches
+                    and len(matched_requests) >= required_matches
+                    and last_match_at
+                    and time.monotonic() - last_match_at >= settle_seconds
+                ):
+                    break
+
+                wait_timeout = min(1.0, max(0.05, deadline - time.monotonic()))
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=wait_timeout)
+                except asyncio.TimeoutError:
+                    continue
+
+                message = json.loads(raw)
+                if message.get("method"):
+                    await process_event(message)
+                elif message.get("id") is not None:
+                    response_buffer[int(message["id"])] = message
+
+        ok = len(matched_requests) >= required_matches if required_matches else True
+        return {
+            "ok": ok,
+            "matches": matched_requests,
+            "requestedUrl": str(url or ""),
+            "clickTotal": len(clicks or []),
+        }
+
+    async def capture_click_requests(
+        self,
+        clicks: list[dict],
+        *,
+        matches: Optional[list[dict]] = None,
+        timeout_ms: int = 8000,
+        settle_ms: int = 1000,
+        min_matches: int = 1,
+        include_response_body: bool = True,
+    ) -> dict:
+        try:
+            await self._refresh_ws_url()
+        except Exception:
+            logger.debug("refresh_ws_url skipped before capture_click_requests", exc_info=True)
+        result = await self._capture_requests_on_ws(
+            self.ws_url,
+            clicks=clicks,
+            matches=matches,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            min_matches=min_matches,
+            include_response_body=include_response_body,
+        )
+        result["mode"] = "click"
+        return result
+
+    async def capture_url_requests(
+        self,
+        url: str,
+        *,
+        matches: Optional[list[dict]] = None,
+        timeout_ms: int = 12000,
+        settle_ms: int = 1000,
+        min_matches: int = 1,
+        include_response_body: bool = True,
+    ) -> dict:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        temp_tab = bridge.new_tab("about:blank")
+        temp_tab_id = str(temp_tab.get("id") or "")
+        temp_ws_url = bridge.get_tab_ws_url(temp_tab)
+        if not temp_ws_url:
+            raise RuntimeError("capture_url_requests 打开的标签页缺少 webSocketDebuggerUrl")
+
+        try:
+            result = await self._capture_requests_on_ws(
+                temp_ws_url,
+                url=str(url or ""),
+                matches=matches,
+                timeout_ms=timeout_ms,
+                settle_ms=settle_ms,
+                min_matches=min_matches,
+                include_response_body=include_response_body,
+            )
+            result["mode"] = "url"
+            result["openedTabId"] = temp_tab_id
+            return result
+        finally:
+            if temp_tab_id:
+                try:
+                    urlopen(f"{bridge.cdp_url}/json/close/{temp_tab_id}", timeout=3)
+                except Exception:
+                    logger.debug("Failed to close temporary capture tab %s", temp_tab_id, exc_info=True)
+
+    def _download_url_sync(self, url: str, target_path: Path, headers: Optional[dict[str, str]] = None, timeout: int = 60) -> dict:
+        request = Request(url, headers=headers or {})
+        try:
+            with urlopen(request, timeout=max(timeout, 1)) as response:
+                target_path.parent.mkdir(parents=True, exist_ok=True)
+                target_path.write_bytes(response.read())
+                content_type = response.headers.get("Content-Type", "")
+                return {
+                    "success": True,
+                    "path": str(target_path),
+                    "finalUrl": response.geturl(),
+                    "contentType": content_type,
+                }
+        except HTTPError as e:
+            body = ""
+            try:
+                body = e.read().decode("utf-8", "ignore")[:500]
+            except Exception:
+                body = ""
+            return {
+                "success": False,
+                "error": f"HTTP {e.code}: {body or e.reason}",
+                "status": e.code,
+                "path": str(target_path),
+            }
+        except URLError as e:
+            return {
+                "success": False,
+                "error": f"URL error: {e.reason}",
+                "path": str(target_path),
+            }
+
+    async def _download_via_browser_session(self, url: str, target_path: Path, timeout_ms: int = 15000) -> dict:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        temp_tab = bridge.new_tab("about:blank")
+        temp_tab_id = str(temp_tab.get("id") or "")
+        temp_ws_url = bridge.get_tab_ws_url(temp_tab)
+        if not temp_ws_url:
+            raise RuntimeError("browser session download 打开的标签页缺少 webSocketDebuggerUrl")
+
+        temp_download_dir = Path(tempfile.mkdtemp(prefix="browser-download-", dir=str(self.artifact_dir)))
+        watch_dirs = [temp_download_dir]
+        default_download_dir = Path.home() / "Downloads"
+        if default_download_dir != temp_download_dir:
+            watch_dirs.append(default_download_dir)
+        name_pattern = self._build_download_candidate_regex(url)
+        baseline = self._snapshot_download_state(watch_dirs, name_pattern)
+
+        try:
+            async with websockets.connect(temp_ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+                message_id = 0
+
+                async def send(method: str, params: Optional[dict] = None, timeout_seconds: float = 10.0) -> dict:
+                    nonlocal message_id
+                    message_id += 1
+                    current_id = message_id
+                    await ws.send(json.dumps({
+                        "id": current_id,
+                        "method": method,
+                        "params": params or {},
+                    }))
+                    deadline = time.monotonic() + max(timeout_seconds, 0.1)
+                    while True:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError(f"CDP command timeout: {method}")
+                        raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+                        message = json.loads(raw)
+                        if message.get("id") == current_id:
+                            return message
+
+                await send("Page.enable")
+                await send("Page.setDownloadBehavior", {
+                    "behavior": "allow",
+                    "downloadPath": str(temp_download_dir),
+                })
+                started_at_ns = time.time_ns()
+                await send("Page.navigate", {"url": str(url)})
+
+                deadline = time.monotonic() + max(timeout_ms, 5000) / 1000.0
+                while time.monotonic() < deadline:
+                    downloaded = self._find_new_downloaded_file(
+                        watch_dirs,
+                        baseline,
+                        name_pattern,
+                        started_at_ns,
+                    )
+                    if downloaded:
+                        final_path = self._ensure_unique_artifact_path(target_path)
+                        final_path.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.move(str(downloaded), str(final_path))
+                        return {
+                            "success": True,
+                            "path": str(final_path),
+                            "finalUrl": str(url),
+                            "contentType": "",
+                            "browserSession": True,
+                        }
+                    await asyncio.sleep(0.5)
+
+            return {
+                "success": False,
+                "error": "浏览器会话下载超时",
+                "path": str(target_path),
+            }
+        finally:
+            if temp_tab_id:
+                try:
+                    urlopen(f"{bridge.cdp_url}/json/close/{temp_tab_id}", timeout=3)
+                except Exception:
+                    logger.debug("Failed to close temporary browser download tab %s", temp_tab_id, exc_info=True)
+            shutil.rmtree(temp_download_dir, ignore_errors=True)
+
+    def _list_page_tab_ids(self) -> set[str]:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        return {
+            str(tab.get("id") or "")
+            for tab in bridge.get_tabs()
+            if tab.get("type") == "page" and str(tab.get("id") or "")
+        }
+
+    def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        for tab in bridge.get_tabs():
+            if tab.get("type") != "page":
+                continue
+            tab_id = str(tab.get("id") or "")
+            if not tab_id or tab_id in baseline_tab_ids or tab_id == str(self.tab_id or ""):
+                continue
+            url = str(tab.get("url") or "")
+            if "bill-download-with-detail" not in url and "agentseller" not in url and url != "about:blank":
+                continue
+            try:
+                urlopen(f"{bridge.cdp_url}/json/close/{tab_id}", timeout=3)
+            except Exception:
+                logger.debug("Failed to close click-opened tab %s", tab_id, exc_info=True)
+
+    def _close_transient_download_tabs(self) -> None:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        for tab in bridge.get_tabs():
+            if tab.get("type") != "page":
+                continue
+            tab_id = str(tab.get("id") or "")
+            if not tab_id or tab_id == str(self.tab_id or ""):
+                continue
+            url = str(tab.get("url") or "")
+            if (
+                "link-agent-seller" not in url
+                and "bill-download-with-detail" not in url
+                and "/main/authentication" not in url
+            ):
+                continue
+            try:
+                urlopen(f"{bridge.cdp_url}/json/close/{tab_id}", timeout=3)
+            except Exception:
+                logger.debug("Failed to close transient download tab %s", tab_id, exc_info=True)
+
+    def _build_region_switch_confirm_expression(self) -> str:
+        return """
+(() => {
+  try {
+    const textOf = (el) => String(el?.innerText || el?.textContent || '').replace(/\\s+/g, ' ').trim();
+    const isVisible = (el) => !!(el && typeof el.getClientRects === 'function' && el.getClientRects().length > 0);
+    const bodyText = textOf(document.body);
+    const modalPresent = /即将前往\\s*Seller\\s*Central/i.test(bodyText) || bodyText.includes('确认授权并前往');
+    const url = String(location.href || '');
+    const title = String(document.title || '');
+
+    const clickLike = (el) => {
+      if (!el) return false;
+      try { el.scrollIntoView({ block: 'center', inline: 'center' }); } catch (e) {}
+      try { el.focus?.(); } catch (e) {}
+      try { el.click?.(); } catch (e) {}
+      for (const type of ['pointerdown', 'pointerup', 'mousedown', 'mouseup', 'click']) {
+        try {
+          const Ctor = type.startsWith('pointer') && typeof PointerEvent !== 'undefined' ? PointerEvent : MouseEvent;
+          el.dispatchEvent(new Ctor(type, { bubbles: true, cancelable: true }));
+        } catch (e) {}
+      }
+      return true;
+    };
+
+    const resolveCheckboxNode = (node) => {
+      if (!node) return null;
+      if (node.matches?.('input[type="checkbox"], [role="checkbox"]')) return node;
+      return node.querySelector?.('input[type="checkbox"], [role="checkbox"]') || null;
+    };
+
+    const isChecked = (node) => {
+      const checkbox = resolveCheckboxNode(node) || node;
+      if (!checkbox) return false;
+      if (checkbox.matches?.('input[type="checkbox"]')) return !!checkbox.checked;
+      const aria = String(checkbox.getAttribute?.('aria-checked') || '').toLowerCase();
+      return aria === 'true' || aria === 'checked';
+    };
+
+    const resolveCheckboxTarget = (pattern) => {
+      const selectors = 'label, div, span, p, li, section, article, [role="checkbox"], input[type="checkbox"]';
+      const candidates = [...document.querySelectorAll(selectors)]
+        .filter(isVisible)
+        .filter((el) => pattern.test(textOf(el)));
+      for (const candidate of candidates) {
+        const checkbox = resolveCheckboxNode(candidate);
+        if (checkbox) return checkbox;
+        const label = candidate.closest?.('label');
+        if (label) return label;
+        if (candidate.matches?.('[role="checkbox"]')) return candidate;
+      }
+      return null;
+    };
+
+    const ensureChecked = (pattern) => {
+      const target = resolveCheckboxTarget(pattern);
+      if (!target) return { found: false, checked: false };
+      if (!isChecked(target)) {
+        clickLike(target);
+      }
+      if (!isChecked(target)) {
+        const wrapper = target.closest?.('label, [role="checkbox"], div, span, p, li') || target.parentElement || target;
+        if (wrapper && wrapper !== target) clickLike(wrapper);
+      }
+      return { found: true, checked: isChecked(target) };
+    };
+
+    if (!modalPresent) {
+      return {
+        success: true,
+        data: [{
+          handled: false,
+          modalPresent: false,
+          title,
+          url,
+        }],
+        meta: { has_more: false },
+      };
+    }
+
+    const share = ensureChecked(/账号ID.*店铺名称.*隐私政策/);
+    const remind = ensureChecked(/今日不再提醒/);
+    const confirmButton = [...document.querySelectorAll('button, a, [role="button"]')]
+      .filter(isVisible)
+      .find((el) => /确认授权并前往/.test(textOf(el)) || /确认授权/.test(textOf(el)));
+
+    let confirmClicked = false;
+    if (confirmButton) {
+      confirmClicked = clickLike(confirmButton);
+    }
+
+    return {
+      success: true,
+      data: [{
+        handled: true,
+        modalPresent: true,
+        title,
+        url,
+        shareChecked: !!share.checked,
+        remindChecked: !!remind.checked,
+        confirmClicked,
+      }],
+      meta: { has_more: false },
+    };
+  } catch (error) {
+    return { success: false, error: String(error?.message || error) };
+  }
+})()
+"""
+
+    async def _handle_transient_download_tabs(self) -> list[dict]:
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        actions: list[dict] = []
+        expression = self._build_region_switch_confirm_expression()
+
+        for tab in bridge.get_tabs():
+            if tab.get("type") != "page":
+                continue
+            tab_id = str(tab.get("id") or "")
+            if not tab_id or tab_id == str(self.tab_id or ""):
+                continue
+
+            url = str(tab.get("url") or "")
+            if (
+                "link-agent-seller" not in url
+                and "bill-download-with-detail" not in url
+                and "/main/authentication" not in url
+            ):
+                continue
+
+            ws_url = str(tab.get("webSocketDebuggerUrl") or "").strip()
+            if not ws_url:
+                continue
+
+            tab_runner = JSRunner(
+                ws_url,
+                timeout=self.timeout,
+                tab_id=tab_id,
+                tab_url=url,
+                artifact_dir=str(self.artifact_dir),
+            )
+            try:
+                result = await tab_runner.evaluate_with_reconnect(expression, allow_navigation_retry=True)
+            except Exception:
+                logger.debug("Failed to inspect transient download tab %s", tab_id, exc_info=True)
+                continue
+
+            if not result.success or not result.data:
+                continue
+
+            payload = dict(result.data[0] or {})
+            payload["tabId"] = tab_id
+            if payload.get("handled") or payload.get("modalPresent"):
+                actions.append(payload)
+
+        return actions
+
+    async def download_clicks(self, items: list[dict], strict: bool = False) -> dict:
+        results: list[dict] = []
+        downloads_dir = Path.home() / "Downloads"
+        fallback_xlsx_pattern = re.compile(r".+\.xlsx$", re.IGNORECASE)
+
+        for item in items or []:
+            clicks = (item or {}).get("clicks") or []
+            filename = str((item or {}).get("filename") or "").strip()
+            label = str((item or {}).get("label") or filename or "download").strip()
+            expected_url = str((item or {}).get("expected_url") or (item or {}).get("url") or "").strip()
+            timeout_ms = int((item or {}).get("timeout_ms") or max(self.timeout, 30) * 1000)
+            regex_text = str((item or {}).get("expected_name_regex") or "").strip()
+
+            if regex_text:
+                try:
+                    name_pattern = re.compile(regex_text, re.IGNORECASE)
+                except re.error:
+                    name_pattern = None
+            else:
+                name_pattern = self._build_download_candidate_regex(expected_url)
+            if name_pattern is None:
+                name_pattern = re.compile(r".+\.xlsx$", re.IGNORECASE)
+
+            if not clicks:
+                result = {
+                    "success": False,
+                    "label": label,
+                    "filename": filename,
+                    "error": "download_clicks 缺少 clicks",
+                }
+                results.append(result)
+                if strict:
+                    raise RuntimeError(result["error"])
+                continue
+
+            if not downloads_dir.exists():
+                result = {
+                    "success": False,
+                    "label": label,
+                    "filename": filename,
+                    "error": f"系统下载目录不存在: {downloads_dir}",
+                }
+                results.append(result)
+                if strict:
+                    raise RuntimeError(result["error"])
+                continue
+
+            self._close_transient_download_tabs()
+            baseline = self._snapshot_download_state([downloads_dir], name_pattern)
+            fallback_baseline = self._snapshot_download_state([downloads_dir], fallback_xlsx_pattern)
+            baseline_tab_ids = self._list_page_tab_ids()
+            started_at_ns = time.time_ns()
+            transient_actions: list[dict] = []
+            transient_action_keys: set[str] = set()
+            matched_by = "expected_name"
+
+            try:
+                await self._refresh_ws_url()
+            except Exception:
+                logger.debug("refresh_ws_url skipped before download_clicks", exc_info=True)
+
+            for click in clicks:
+                await self.cdp_mouse_click(
+                    float(click["x"]),
+                    float(click["y"]),
+                    int(click.get("delay_ms", 120)),
+                )
+
+            deadline = time.monotonic() + max(timeout_ms, 5000) / 1000.0
+            downloaded: Optional[Path] = None
+            try:
+                while time.monotonic() < deadline:
+                    for action in await self._handle_transient_download_tabs():
+                        action_key = json.dumps(action, ensure_ascii=False, sort_keys=True)
+                        if action_key in transient_action_keys:
+                            continue
+                        transient_action_keys.add(action_key)
+                        transient_actions.append(action)
+                    downloaded = self._find_new_downloaded_file(
+                        [downloads_dir],
+                        baseline,
+                        name_pattern,
+                        started_at_ns,
+                    )
+                    if not downloaded:
+                        downloaded = self._find_new_downloaded_file(
+                            [downloads_dir],
+                            fallback_baseline,
+                            fallback_xlsx_pattern,
+                            started_at_ns,
+                        )
+                        if downloaded:
+                            matched_by = "fallback_any_xlsx"
+                    if downloaded:
+                        break
+                    await asyncio.sleep(0.5)
+            finally:
+                self._close_new_page_tabs(baseline_tab_ids)
+
+            if downloaded:
+                target_path = self._build_artifact_target_path(filename, expected_url)
+                final_path = self._ensure_unique_artifact_path(target_path)
+                final_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(downloaded), str(final_path))
+                saved_path = str(final_path)
+                if saved_path not in self.runtime_output_files:
+                    self.runtime_output_files.append(saved_path)
+                results.append({
+                    "success": True,
+                    "label": label,
+                    "filename": final_path.name,
+                    "path": saved_path,
+                    "url": expected_url,
+                    "sourcePath": str(downloaded),
+                    "matchedBy": matched_by,
+                    "transientActions": transient_actions,
+                })
+                continue
+
+            result = {
+                "success": False,
+                "label": label,
+                "filename": filename,
+                "url": expected_url,
+                "error": "点击后未检测到新下载文件",
+                "transientActions": transient_actions,
+            }
+            results.append(result)
+            if strict:
+                raise RuntimeError(result["error"])
+
+        return {
+            "ok": all(bool(item.get("success")) for item in results) if results else True,
+            "items": results,
+        }
+
+    async def download_urls(self, items: list[dict], strict: bool = False) -> dict:
+        results: list[dict] = []
+
+        for item in items or []:
+            url = str((item or {}).get("url") or "").strip()
+            filename = str((item or {}).get("filename") or "").strip()
+            label = str((item or {}).get("label") or filename or self._derive_url_filename(url)).strip()
+            browser_session = bool((item or {}).get("browser_session") or (item or {}).get("browserSession"))
+            headers_raw = (item or {}).get("headers") or {}
+            headers = {
+                str(key): str(value)
+                for key, value in headers_raw.items()
+                if str(key or "").strip() and value is not None
+            } if isinstance(headers_raw, dict) else {}
+
+            if not url:
+                result = {
+                    "success": False,
+                    "label": label or "download",
+                    "filename": filename,
+                    "error": "download_urls 缺少 url",
+                }
+                results.append(result)
+                if strict:
+                    raise RuntimeError(result["error"])
+                continue
+
+            target_path = self._build_artifact_target_path(filename, url)
+            if browser_session:
+                result = await self._download_via_browser_session(
+                    url,
+                    target_path,
+                    timeout_ms=max(self.timeout, 30) * 1000,
+                )
+            else:
+                result = await asyncio.to_thread(
+                    self._download_url_sync,
+                    url,
+                    target_path,
+                    headers,
+                    max(self.timeout, 30),
+                )
+            result["label"] = label or target_path.name
+            result["filename"] = Path(str(result.get("path") or target_path)).name
+            result["url"] = url
+            if result.get("success"):
+                saved_path = str(result.get("path") or target_path)
+                if saved_path not in self.runtime_output_files:
+                    self.runtime_output_files.append(saved_path)
+            elif strict:
+                raise RuntimeError(str(result.get("error") or f"下载失败: {label or url}"))
+            results.append(result)
+
+        return {
+            "ok": all(bool(item.get("success")) for item in results) if results else True,
+            "items": results,
+        }
 
     async def evaluate(self, expression: str) -> JSResult:
         try:
@@ -497,6 +1470,148 @@ class JSRunner:
                             await asyncio.sleep(post_sleep)
                             next_phase = meta.get("next_phase") or phase
                             logger.info(f"inject_files: page={page} phase={phase} 注入 {len(items)} 个文件输入 -> {next_phase}")
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "capture_click_requests":
+                            clicks = meta.get("clicks") or []
+                            matches = meta.get("matches") or []
+                            timeout_ms = int(meta.get("timeout_ms") or 8000)
+                            settle_ms = int(meta.get("settle_ms") or 1000)
+                            min_matches = int(meta.get("min_matches") or 1)
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+                            strict = bool(meta.get("strict"))
+
+                            await cooperate("before_capture_click_requests", page, phase, shared, {
+                                "click_total": len(clicks),
+                                "match_total": len(matches),
+                            })
+                            capture_result = await self.capture_click_requests(
+                                clicks,
+                                matches=matches,
+                                timeout_ms=timeout_ms,
+                                settle_ms=settle_ms,
+                                min_matches=min_matches,
+                                include_response_body=bool(meta.get("include_response_body", True)),
+                            )
+                            if strict and not capture_result.get("ok"):
+                                raise RuntimeError(f"capture_click_requests 未捕获到匹配请求: {matches}")
+
+                            shared = self._merge_runtime_shared(shared, shared_key, capture_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "capture_click_requests: page=%s phase=%s 匹配 %s 条 -> %s",
+                                page,
+                                phase,
+                                len(capture_result.get("matches") or []),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "capture_url_requests":
+                            target_url = str(meta.get("url") or "").strip()
+                            matches = meta.get("matches") or []
+                            timeout_ms = int(meta.get("timeout_ms") or 12000)
+                            settle_ms = int(meta.get("settle_ms") or 1000)
+                            min_matches = int(meta.get("min_matches") or 1)
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+                            strict = bool(meta.get("strict"))
+                            if not target_url:
+                                raise RuntimeError("capture_url_requests 缺少 url")
+
+                            await cooperate("before_capture_url_requests", page, phase, shared, {
+                                "target_url": target_url,
+                                "match_total": len(matches),
+                            })
+                            capture_result = await self.capture_url_requests(
+                                target_url,
+                                matches=matches,
+                                timeout_ms=timeout_ms,
+                                settle_ms=settle_ms,
+                                min_matches=min_matches,
+                                include_response_body=bool(meta.get("include_response_body", True)),
+                            )
+                            if strict and not capture_result.get("ok"):
+                                raise RuntimeError(f"capture_url_requests 未捕获到匹配请求: {matches}")
+
+                            shared = self._merge_runtime_shared(shared, shared_key, capture_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "capture_url_requests: page=%s phase=%s 匹配 %s 条 -> %s",
+                                page,
+                                phase,
+                                len(capture_result.get("matches") or []),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "download_urls":
+                            items = meta.get("items") or []
+                            strict = bool(meta.get("strict"))
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+
+                            await cooperate("before_download_urls", page, phase, shared, {
+                                "download_item_total": len(items),
+                            })
+                            download_result = await self.download_urls(items, strict=strict)
+                            shared = self._merge_runtime_shared(shared, shared_key, download_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "download_urls: page=%s phase=%s 成功 %s/%s -> %s",
+                                page,
+                                phase,
+                                len([item for item in download_result.get("items", []) if item.get("success")]),
+                                len(download_result.get("items", [])),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "download_clicks":
+                            items = meta.get("items") or []
+                            strict = bool(meta.get("strict"))
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+
+                            await cooperate("before_download_clicks", page, phase, shared, {
+                                "download_click_item_total": len(items),
+                            })
+                            download_result = await self.download_clicks(items, strict=strict)
+                            shared = self._merge_runtime_shared(shared, shared_key, download_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "download_clicks: page=%s phase=%s 成功 %s/%s -> %s",
+                                page,
+                                phase,
+                                len([item for item in download_result.get("items", []) if item.get("success")]),
+                                len(download_result.get("items", [])),
+                                next_phase,
+                            )
                             phase = str(next_phase)
                             await self._refresh_ws_url()
                             continue
