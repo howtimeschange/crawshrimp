@@ -65,6 +65,17 @@ Do not paste them blindly into production adapter code. First prove them on a li
 })()
 ```
 
+### Basic host and route context
+
+```js
+(() => ({
+  href: location.href,
+  host: location.host,
+  pathname: location.pathname,
+  search: location.search,
+}))
+```
+
 ## 2. Framework Clue Probes
 
 ### Probe React props-like keys on an element
@@ -164,7 +175,119 @@ const normalizeNumberText = value =>
     .trim()
 ```
 
-## 4. Minimal Write Experiments
+## 4. Refresh Evidence Snippets
+
+### Build a simple page signature
+
+```js
+(() => {
+  const text = [...document.querySelectorAll('table tbody tr, [role="row"], li, .row')]
+    .slice(0, 20)
+    .map(el => (el.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .join(' || ')
+  return {
+    host: location.host,
+    title: document.title,
+    signature: text.slice(0, 400),
+  }
+})()
+```
+
+### Build a row signature list
+
+```js
+(() => {
+  return [...document.querySelectorAll('table tbody tr, [role="row"], li, .row')]
+    .filter(el => el.getClientRects().length)
+    .slice(0, 30)
+    .map(el => (el.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+})()
+```
+
+### Snapshot visible busy / empty / rows together
+
+```js
+(() => {
+  const isVisible = el => !!(el && el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+  const bodyText = (document.body?.innerText || '').replace(/\s+/g, ' ')
+  const rows = [...document.querySelectorAll('table tbody tr, [role="row"], li, .row')]
+    .filter(isVisible)
+    .slice(0, 20)
+    .map(el => (el.textContent || '').replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+
+  return {
+    rowCount: rows.length,
+    rows,
+    hasBusyHint: /Too many visitors|timeout|loading|请稍后/i.test(bodyText),
+    hasEmptyHint: /暂无数据|无数据|empty/i.test(bodyText),
+  }
+})()
+```
+
+## 5. API-First Probes
+
+### Probe page-owned webpack require or chunk runtime
+
+```js
+(() => {
+  const chunk = window.chunkLoadingGlobal_bgb_sca_main || window.webpackChunktemu_sca_container || window.webpackChunkbuild || null
+  return {
+    hasChunkRuntime: Boolean(chunk && typeof chunk.push === 'function'),
+    chunkType: chunk ? Object.prototype.toString.call(chunk) : '',
+  }
+})()
+```
+
+### Capture fetch and XHR requests briefly
+
+```js
+(() => {
+  if (window.__DOM_LAB_NET_CAPTURE__) return 'already-installed'
+  window.__DOM_LAB_NET_CAPTURE__ = { fetches: [], xhrs: [] }
+
+  const rawFetch = window.fetch
+  window.fetch = async (...args) => {
+    try {
+      window.__DOM_LAB_NET_CAPTURE__.fetches.push({
+        url: String(args[0] || ''),
+        at: Date.now(),
+      })
+    } catch {}
+    return rawFetch.apply(window, args)
+  }
+
+  const rawOpen = XMLHttpRequest.prototype.open
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    try {
+      window.__DOM_LAB_NET_CAPTURE__.xhrs.push({
+        method: String(method || ''),
+        url: String(url || ''),
+        at: Date.now(),
+      })
+    } catch {}
+    return rawOpen.call(this, method, url, ...rest)
+  }
+
+  return 'installed'
+})()
+```
+
+### Read captured network summary
+
+```js
+(() => {
+  const cap = window.__DOM_LAB_NET_CAPTURE__ || { fetches: [], xhrs: [] }
+  return {
+    fetches: cap.fetches.slice(-20),
+    xhrs: cap.xhrs.slice(-20),
+  }
+})()
+```
+
+## 6. Minimal Write Experiments
 
 ### Native input setter + events
 
@@ -211,7 +334,7 @@ async function waitForVisible(selector, timeoutMs = 3000) {
 }
 ```
 
-## 5. Select / Portal Mini Experiments
+## 7. Select / Portal Mini Experiments
 
 ### Open trigger and list visible options
 
@@ -255,7 +378,7 @@ async function waitForVisible(selector, timeoutMs = 3000) {
 })()
 ```
 
-## 6. Date Picker Mini Experiments
+## 8. Date Picker Mini Experiments
 
 ### Read current visible date input values
 
@@ -299,7 +422,7 @@ async function waitForVisible(selector, timeoutMs = 3000) {
 })()
 ```
 
-## 7. Page-Level Closed Loop Skeleton
+## 9. Page-Level Closed Loop Skeleton
 
 ### Fill one field and read it back
 
@@ -336,10 +459,11 @@ async function waitForVisible(selector, timeoutMs = 3000) {
 })()
 ```
 
-## 8. Practical Rules for Using These Snippets
+## 10. Practical Rules for Using These Snippets
 
 - Run one snippet at a time.
 - Capture the output into your DOM report.
 - If a snippet proves a path works, turn that path into a dedicated helper.
 - If a snippet only proves visual click but not state change, do not stop there.
+- For list and export flows, capture before/after signatures instead of trusting one banner or one click.
 - Treat this file as a starter kit, not a finished adapter.
