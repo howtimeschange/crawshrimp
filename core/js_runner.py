@@ -429,9 +429,10 @@ class JSRunner:
 
         try:
             try:
+                page_shared: dict = {}
                 for page in range(1, MAX_PAGES + 1):
                     phase = "main"
-                    shared = {}
+                    shared = dict(page_shared)
 
                     for phase_index in range(1, MAX_PHASES + 1):
                         await cooperate("before_phase", page, phase, shared)
@@ -535,6 +536,7 @@ class JSRunner:
                         if action == "complete":
                             if not meta.get("has_more", False):
                                 return all_data
+                            page_shared = dict(shared or {})
                             logger.info(f"分页: 已获取 {len(all_data)} 条，继续第 {page + 1} 页...")
                             break
 

@@ -321,6 +321,7 @@ async function loadHook(scriptRelativePath, exportNames, options = {}) {
       __CRAWSHRIMP_PAGE__: 1,
       __CRAWSHRIMP_TEST_HOOK__: hook,
       HTMLInputElement: class HTMLInputElement {},
+      ...(options.windowProps || {}),
     },
     document: options.document || new DynamicDocument({ bodyText: '' }),
     location,
@@ -384,6 +385,7 @@ async function runScript(scriptRelativePath, options = {}) {
       __CRAWSHRIMP_SHARED__: options.shared || {},
       __CRAWSHRIMP_PAGE__: 1,
       HTMLInputElement: class HTMLInputElement {},
+      ...(options.windowProps || {}),
     },
     document: options.document || new DynamicDocument({ bodyText: '' }),
     location,
@@ -430,6 +432,18 @@ async function runScript(scriptRelativePath, options = {}) {
   return await vm.runInNewContext(source, context, { filename: scriptPath })
 }
 
+function createWebpackChunkRuntime(moduleFactory) {
+  const req = id => moduleFactory(String(id))
+  return {
+    push(payload) {
+      if (Array.isArray(payload) && typeof payload[2] === 'function') {
+        payload[2](req)
+      }
+      return 1
+    },
+  }
+}
+
 async function assertStrictPageTurn(scriptRelativePath, href) {
   const state = {
     pageNo: 1,
@@ -468,6 +482,235 @@ test('activity-data waits for row refresh after pager number changes', async () 
 
 test('mall-flux waits for row refresh after pager number changes', async () => {
   await assertStrictPageTurn('adapters/temu/mall-flux.js', 'https://agentseller.temu.com/main/mall-flux-analysis-full')
+})
+
+test('goods-traffic-list waits for row refresh after pager number changes', async () => {
+  await assertStrictPageTurn('adapters/temu/goods-traffic-list.js', 'https://agentseller.temu.com/main/flux-analysis-full')
+})
+
+test('goods-traffic-list prefers visible empty state over stale busy warning', async () => {
+  const state = {
+    pageNo: 1,
+    rows: [],
+    totalCount: 0,
+    bodyText: '商品流量列表',
+    busy: true,
+    empty: true,
+  }
+  const document = buildStatefulDocument(state)
+
+  const buttonQuery = new DynamicElement({ tagName: 'button', text: '查询' })
+  const buttonReset = new DynamicElement({ tagName: 'button', text: '重置' })
+  document.setSelector('button', () => [buttonQuery, buttonReset])
+
+  const { hook } = await loadHook(
+    'adapters/temu/goods-traffic-list.js',
+    ['waitForListReady'],
+    {
+      href: 'https://agentseller.temu.com/main/flux-analysis-full',
+      document,
+    },
+  )
+
+  const readyState = await hook.waitForListReady(200)
+  assert.equal(readyState.ready, true)
+  assert.equal(readyState.empty, true)
+  assert.equal(readyState.busy, false)
+
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'after_list_page_turn',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document,
+    shared: {
+      currentOuterSite: '全球',
+      targetOuterSites: ['全球'],
+      lastCollectedPageNo: 1,
+      listBusyRetry: 0,
+      listPageRetry: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect')
+})
+
+test('goods-traffic-list query wait requires refreshed evidence beyond stale empty baseline', async () => {
+  const state = {
+    pageNo: 1,
+    rows: [],
+    totalCount: 0,
+    bodyText: '商品流量列表',
+    empty: true,
+  }
+  const document = buildStatefulDocument(state)
+  const { hook } = await loadHook(
+    'adapters/temu/goods-traffic-list.js',
+    ['getListPageSignature', 'waitForQueryResultRefresh'],
+    {
+      href: 'https://agentseller.temu.com/main/flux-analysis-full',
+      document,
+    },
+  )
+
+  const baseline = {
+    signature: hook.getListPageSignature(),
+  }
+  const refreshPromise = hook.waitForQueryResultRefresh(baseline, 2200, 1600)
+
+  const earlyResult = await Promise.race([
+    refreshPromise.then(() => 'resolved'),
+    sleep(350).then(() => 'timeout'),
+  ])
+  assert.equal(earlyResult, 'timeout')
+
+  setTimeout(() => {
+    state.empty = false
+    state.totalCount = 2
+    state.rows = ['page1-row-a', 'page1-row-b']
+  }, 520)
+
+  const refreshed = await refreshPromise
+  assert.equal(refreshed.ready, true)
+  assert.equal(refreshed.signatureChanged, true)
+  assert.equal(refreshed.rows.length, 2)
+})
+
+test('goods-traffic-list builds api payload from filters', async () => {
+  const document = buildStatefulDocument({
+    bodyText: '商品流量列表',
+    activeGrain: '今日',
+  })
+  const { hook } = await loadHook(
+    'adapters/temu/goods-traffic-list.js',
+    ['buildListApiRequestPayload'],
+    {
+      href: 'https://agentseller.temu.com/main/flux-analysis-full',
+      document,
+      params: {
+        list_time_range: '近7日',
+        quick_filter: '短期增长中',
+        product_id_type: 'SPU',
+        product_id_query: '123 456，789',
+        goods_no_type: 'SKU货号',
+        goods_no_query: 'SKU-A, SKU-B',
+        product_name: '卫衣',
+      },
+    },
+  )
+
+  const payload = JSON.parse(JSON.stringify(hook.buildListApiRequestPayload(3, 40, { categoryLeafId: 9988 })))
+  assert.deepEqual(payload, {
+    pageSize: 40,
+    pageNum: 3,
+    timeDimension: 3,
+    quickFilterType: 2,
+    productIdList: [123, 456, 789],
+    skuExtCodeList: ['SKU-A', 'SKU-B'],
+    catIdList: [9988],
+    goodsName: '卫衣',
+  })
+})
+
+test('goods-traffic-list api payload falls back to current active time capsule', async () => {
+  const document = buildStatefulDocument({
+    bodyText: '商品流量列表',
+    activeGrain: '本月',
+  })
+  const { hook } = await loadHook(
+    'adapters/temu/goods-traffic-list.js',
+    ['resolveTimeDimensionState', 'buildListApiRequestPayload'],
+    {
+      href: 'https://agentseller.temu.com/main/flux-analysis-full',
+      document,
+      params: {},
+    },
+  )
+
+  const timeState = hook.resolveTimeDimensionState({})
+  assert.equal(timeState.label, '本月')
+  assert.equal(timeState.value, 6)
+  assert.equal(hook.buildListApiRequestPayload(1, 40, {}).timeDimension, 6)
+})
+
+test('goods-traffic-list collect phase reads rows from api helper and tracks pagination', async () => {
+  const windowProps = {
+    chunkLoadingGlobal_bgb_sca_main: createWebpackChunkRuntime(id => {
+      if (id === '3204') {
+        return {
+          bE: async (endpoint, payload) => {
+            assert.equal(endpoint, '/api/seller/full/flow/analysis/goods/list')
+            assert.equal(payload.pageSize, 40)
+            assert.equal(payload.pageNum, 2)
+            assert.equal(payload.timeDimension, 2)
+            assert.equal(payload.quickFilterType, 1)
+            return {
+              total: 81,
+              updateAt: 1776047296966,
+              list: [
+                {
+                  goodsName: '测试商品A',
+                  goodsImageUrl: 'https://img.example.com/a.jpg',
+                  category: { cat1Name: '服装', cat2Name: '上衣' },
+                  productSpuId: 1234567890,
+                  exposeNum: 100,
+                  clickNum: 10,
+                  goodsDetailVisitorNum: 9,
+                  goodsDetailVisitNum: 12,
+                  addToCartUserNum: 2,
+                  collectUserNum: 1,
+                  payGoodsNum: 3,
+                  payOrderNum: 2,
+                  buyerNum: 2,
+                  exposePayConversionRate: 0.03,
+                  exposeClickConversionRate: 0.1,
+                  clickPayConversionRate: 0.3,
+                  searchExposeNum: 50,
+                  searchClickNum: 5,
+                  searchPayOrderNum: 1,
+                  searchPayGoodsNum: 1,
+                  recommendExposeNum: 40,
+                  recommendClickNum: 4,
+                  recommendPayOrderNum: 1,
+                  recommendPayGoodsNum: 2,
+                  growDataText: '流量待增长',
+                },
+              ],
+            }
+          },
+        }
+      }
+      throw new Error(`unknown module ${id}`)
+    }),
+  }
+
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'collect',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document: buildStatefulDocument({ bodyText: '商品流量列表', activeGrain: '今日' }),
+    params: {
+      list_time_range: '今日',
+      quick_filter: '流量待增长',
+    },
+    shared: {
+      currentOuterSite: '全球',
+      targetOuterSites: ['全球', '美国'],
+      currentPageNo: 2,
+      timeDimension: 2,
+      timeDimensionLabel: '今日',
+    },
+    windowProps,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.meta.has_more, true)
+  assert.equal(result.meta.shared.totalPages, 3)
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].SPU, '1234567890')
+  assert.equal(result.data[0]['商品分类'], '服装 > 上衣')
+  assert.equal(result.data[0]['转化情况/点击率'], '10.00%')
+  assert.equal(result.data[0]['操作'], '查看详情')
 })
 
 test('activity-data date filter wait requires refreshed evidence beyond input echo', async () => {
@@ -823,6 +1066,48 @@ test('mall-flux week date filter wait requires refreshed row evidence beyond inp
   assert.equal(await filteredPromise, true)
 })
 
+test('mall-flux waitForListReady ignores hidden empty markers until visible rows arrive', async () => {
+  const state = {
+    pageNo: 1,
+    rows: [],
+    totalCount: 6,
+    bodyText: '店铺流量列表',
+    activeGrain: '按日',
+  }
+  const document = buildStatefulDocument(state, { includeDateRange: true })
+  const hiddenEmpty = new DynamicElement({
+    tagName: 'div',
+    text: 'empty',
+    rect: { x: 0, y: 0, width: 0, height: 0 },
+  })
+  document.setSelector('[class*="TB_empty_"]', () => [hiddenEmpty])
+
+  const { hook } = await loadHook(
+    'adapters/temu/mall-flux.js',
+    ['waitForListReady'],
+    {
+      href: 'https://agentseller-us.temu.com/main/mall-flux-analysis-full',
+      document,
+    },
+  )
+
+  const readyPromise = hook.waitForListReady(1600)
+  const earlyResult = await Promise.race([
+    readyPromise.then(() => 'resolved'),
+    sleep(260).then(() => 'timeout'),
+  ])
+  assert.equal(earlyResult, 'timeout')
+
+  setTimeout(() => {
+    state.rows = ['2026-04-12', '2026-04-11']
+  }, 320)
+
+  const readyState = await readyPromise
+  assert.equal(readyState.ready, true)
+  assert.equal(readyState.empty, false)
+  assert.equal(readyState.rows.length, 2)
+})
+
 test('mall-flux falls back to requested week and month labels when picker display is empty', async () => {
   const monthState = {
     pageNo: 1,
@@ -869,6 +1154,41 @@ test('mall-flux falls back to requested week and month labels when picker displa
     },
   )
   assert.equal(weekHook.getStatDateRangeValue(), '2026-W14')
+})
+
+test('mall-flux restores requested filters from shared state after cross-site navigation', async () => {
+  const state = {
+    pageNo: 1,
+    rows: ['2026-04-12'],
+    totalCount: 1,
+    bodyText: '店铺流量列表',
+    activeGrain: '按日',
+  }
+  const document = buildStatefulDocument(state, { includeDateRange: true })
+  const { hook } = await loadHook(
+    'adapters/temu/mall-flux.js',
+    ['resolveRequestedStatGrain', 'resolveRequestedStatRange', 'resolveRequestedStatWeekValue', 'resolveRequestedStatMonthValue'],
+    {
+      href: 'https://agentseller-us.temu.com/main/mall-flux-analysis-full',
+      document,
+      params: {},
+      shared: {
+        requestedMode: 'current',
+        requestedOuterSites: ['美国'],
+        requestedStatGrain: '按日',
+        requestedStatDateRange: { start: '2026-04-07', end: '2026-04-09' },
+        requestedStatWeek: '2026-W15',
+        requestedStatMonth: '2026-04',
+      },
+    },
+  )
+
+  assert.equal(hook.resolveRequestedStatGrain(), '按日')
+  const restoredRange = hook.resolveRequestedStatRange('按日')
+  assert.equal(restoredRange.start, '2026-04-07')
+  assert.equal(restoredRange.end, '2026-04-09')
+  assert.equal(hook.resolveRequestedStatWeekValue(), '2026-W15')
+  assert.equal(hook.resolveRequestedStatMonthValue(), '2026-04')
 })
 
 test('mall-flux target readiness does not require a visible date input in month view', async () => {
@@ -942,4 +1262,41 @@ test('activity-data does not switch outer site when total count implies more pag
   assert.equal(result.meta.next_phase, 'recover_list_page')
   assert.equal(result.meta.shared.recoverOuterSite, '全球')
   assert.equal(result.meta.shared.recoverPageNo, 1)
+})
+
+test('activity-data restores requested outer sites from shared state after cross-site navigation', async () => {
+  const document = new DynamicDocument({ bodyText: '活动数据列表' })
+  const outerSiteGlobal = new DynamicElement({
+    tagName: 'a',
+    text: '全球',
+    className: 'index-module__drItem___ index-module__active___',
+  })
+  const outerSiteUs = new DynamicElement({
+    tagName: 'a',
+    text: '美国',
+    className: 'index-module__drItem___',
+  })
+  const outerSiteEu = new DynamicElement({
+    tagName: 'a',
+    text: '欧区',
+    className: 'index-module__drItem___',
+  })
+  document.setSelector('a[class*="index-module__drItem___"]', () => [outerSiteGlobal, outerSiteUs, outerSiteEu])
+
+  const { hook } = await loadHook(
+    'adapters/temu/activity-data.js',
+    ['buildTargetOuterSites'],
+    {
+      href: 'https://agentseller.temu.com/main/act/data-full',
+      document,
+      params: {},
+      shared: {
+        requestedOuterSites: ['全球', '美国'],
+      },
+    },
+  )
+
+  const { available, target } = hook.buildTargetOuterSites()
+  assert.deepEqual(Array.from(available), ['全球', '美国', '欧区'])
+  assert.deepEqual(Array.from(target), ['全球', '美国'])
 })

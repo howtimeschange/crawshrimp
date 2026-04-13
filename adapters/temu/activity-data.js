@@ -10,13 +10,6 @@
   const SAFE_PAGE_LOOP_LIMIT = 120
   const PAGER_THROTTLE_MS = 1200
 
-  const mode = String(params.mode || 'current').trim().toLowerCase()
-  const outerSitesParam = normalizeArray(params.outer_sites)
-  const activityTypeParam = String(params.activity_type || '').trim()
-  const activityThemeParam = String(params.activity_theme || '').trim()
-  const spuIdQuery = String(params.spu_id_query || '').trim()
-  const statDateRange = params.stat_date_range || {}
-
   const OUTER_SITE_BLACKLIST = new Set(['商家中心'])
   const CANONICAL_OUTER_SITE_ORDER = ['全球', '美国', '欧区']
   const ACTIVITY_METRIC_COLUMN_KEYS = [
@@ -34,6 +27,29 @@
     if (!Array.isArray(value)) return []
     return value.map(item => String(item || '').trim()).filter(Boolean)
   }
+
+  function normalizeDateRangeParam(value) {
+    if (!value || typeof value !== 'object') return {}
+    const start = String(value.start || '').trim()
+    const end = String(value.end || '').trim()
+    if (!start || !end) return {}
+    return { start, end }
+  }
+
+  const persistedRequestShared = {
+    requestedOuterSites: normalizeArray(shared.requestedOuterSites || params.outer_sites),
+    requestedActivityType: String(shared.requestedActivityType || params.activity_type || '').trim(),
+    requestedActivityTheme: String(shared.requestedActivityTheme || params.activity_theme || '').trim(),
+    requestedSpuIdQuery: String(shared.requestedSpuIdQuery || params.spu_id_query || '').trim(),
+    requestedStatDateRange: normalizeDateRangeParam(shared.requestedStatDateRange || params.stat_date_range),
+  }
+
+  const mode = String(params.mode || 'current').trim().toLowerCase()
+  const outerSitesParam = persistedRequestShared.requestedOuterSites
+  const activityTypeParam = persistedRequestShared.requestedActivityType
+  const activityThemeParam = persistedRequestShared.requestedActivityTheme
+  const spuIdQuery = persistedRequestShared.requestedSpuIdQuery
+  const statDateRange = persistedRequestShared.requestedStatDateRange
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
 
@@ -60,11 +76,18 @@
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
   }
 
+  function mergeShared(newShared = shared) {
+    return {
+      ...persistedRequestShared,
+      ...(newShared || {}),
+    }
+  }
+
   function nextPhase(name, sleepMs = 800, newShared = shared) {
     return {
       success: true,
       data: [],
-      meta: { action: 'next_phase', next_phase: name, sleep_ms: sleepMs, shared: newShared },
+      meta: { action: 'next_phase', next_phase: name, sleep_ms: sleepMs, shared: mergeShared(newShared) },
     }
   }
 
@@ -72,7 +95,7 @@
     return {
       success: true,
       data: [],
-      meta: { action: 'cdp_clicks', clicks, next_phase: nextPhaseName, sleep_ms: sleepMs, shared: newShared },
+      meta: { action: 'cdp_clicks', clicks, next_phase: nextPhaseName, sleep_ms: sleepMs, shared: mergeShared(newShared) },
     }
   }
 
@@ -80,7 +103,7 @@
     return {
       success: true,
       data: [],
-      meta: { action: 'reload_page', next_phase: nextPhaseName, sleep_ms: sleepMs, shared: newShared },
+      meta: { action: 'reload_page', next_phase: nextPhaseName, sleep_ms: sleepMs, shared: mergeShared(newShared) },
     }
   }
 
@@ -88,7 +111,7 @@
     return {
       success: true,
       data,
-      meta: { action: 'complete', has_more: hasMore, shared: newShared },
+      meta: { action: 'complete', has_more: hasMore, shared: mergeShared(newShared) },
     }
   }
 
@@ -1163,8 +1186,6 @@
       const state = await waitForListReady(12000)
       if (!state.ready) return fail(`切换外层站点后活动数据列表未加载：${targetSite || '未知站点'}`)
       if (state.busy) return buildBusyReload('after_outer_site_switch', shared)
-      const stable = await waitForFilterSurfaceStable(10000)
-      if (!stable) return fail(`切换外层站点后活动数据筛选面板未稳定：${targetSite || '未知站点'}`)
       return nextPhase(shared.resume_phase || 'prepare_current_site', 200, {
         ...shared,
         currentOuterSite: getResolvedOuterSite() || targetSite || '',
