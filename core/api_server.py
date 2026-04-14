@@ -31,6 +31,8 @@ from core import data_sink
 from core import notifier
 from core import scheduler as sched_module
 from core.cdp_bridge import get_bridge, reset_bridge
+from core.probe_models import ProbeRequest
+from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 
 logger = logging.getLogger(__name__)
 
@@ -1029,6 +1031,35 @@ def list_tasks():
 class RunTaskRequest(BaseModel):
     params: Optional[dict] = None
     current_tab_id: Optional[str] = None
+
+
+@app.post("/probe/run")
+async def run_probe(req: ProbeRequest):
+    try:
+        result = await run_probe_request(req)
+        return result.model_dump()
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/probe/{probe_id}")
+def get_probe(probe_id: str):
+    try:
+        result = read_probe_bundle(probe_id)
+        return result.model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/probe/{probe_id}/bundle")
+def get_probe_bundle(probe_id: str):
+    try:
+        result = read_probe_bundle_full(probe_id)
+        return result.model_dump()
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
 
 
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):

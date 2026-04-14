@@ -19,6 +19,19 @@ This skill is the right fit when the hard part is one of these:
 
 If the current blocker is a **new page**, **flaky control**, **portal popup**, or **React/Vue DOM experiment**, use this skill together with [../web-automation-skill/SKILL.md](../web-automation-skill/SKILL.md).
 
+If a standard `crawshrimp probe` bundle exists, treat it as the input evidence layer for this skill. Probe should tell you the page state map, candidate API surfaces, and recovery clues; this skill turns those findings into phases, `shared`, runtime actions, export guards, and regressions.
+
+Preferred probe entry in this repo:
+
+```bash
+./venv/bin/python scripts/crawshrimp_probe.py run \
+  --adapter <adapter_id> \
+  --task <task_id> \
+  --goal "<what you need to prove>"
+```
+
+If the page is not yet well-mapped, run that wrapper first instead of hand-rolling DOM reconnaissance from scratch.
+
 ## Quick Workflow
 
 1. Classify the task first.
@@ -35,16 +48,19 @@ If the current blocker is a **new page**, **flaky control**, **portal popup**, o
 4. Stabilize state inheritance and recovery next.
    - If the task switches site, time range, page, drawer, or host, read [references/state-recovery.md](references/state-recovery.md).
 
-5. Add export guards and acceptance criteria.
+5. If a probe bundle or DOM findings note already exists, translate it into adapter design before editing code.
+   - Read [references/probe-to-adapter.md](references/probe-to-adapter.md).
+
+6. Add export guards and acceptance criteria.
    - If duplicate rows, missing last page, or wrong scope labels are possible, read [references/export-and-validation.md](references/export-and-validation.md).
 
-6. Touch frontend progress only if the task truly needs it.
+7. Touch frontend progress only if the task truly needs it.
    - If the task is long-running and users need richer progress visibility, read [references/progress-ui-whitelist.md](references/progress-ui-whitelist.md).
 
-7. Add runner-facing regression before live verification.
+8. Add runner-facing regression before live verification.
    - If you are fixing protocol bugs, recovery branches, runtime artifacts, or adapter regressions, read [references/js-runner-and-regression.md](references/js-runner-and-regression.md).
 
-8. Run the regression ladder before staging or committing.
+9. Run the regression ladder before staging or committing.
    - Always finish with [references/regression-checklist.md](references/regression-checklist.md).
 
 ## Core Guardrails
@@ -95,6 +111,9 @@ These files are the usual places to inspect before editing:
 
 - [references/js-runner-and-regression.md](references/js-runner-and-regression.md)
   Use when writing or updating Node regressions, deciding when `core/js_runner.py` tests are required, and proving a bugfix before install.
+
+- [references/probe-to-adapter.md](references/probe-to-adapter.md)
+  Use when a probe bundle or DOM findings note already exists and you need to translate it into phase boundaries, `shared`, runtime actions, and recoverable adapter behavior.
 
 - [references/regression-checklist.md](references/regression-checklist.md)
   Use before install, live regression, staging, and commit.

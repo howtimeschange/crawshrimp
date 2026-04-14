@@ -643,6 +643,29 @@ class JSRunner:
         result["mode"] = "click"
         return result
 
+    async def capture_passive_requests(
+        self,
+        *,
+        matches: Optional[list[dict]] = None,
+        timeout_ms: int = 5000,
+        settle_ms: int = 800,
+        include_response_body: bool = True,
+    ) -> dict:
+        try:
+            await self._refresh_ws_url()
+        except Exception:
+            logger.debug("refresh_ws_url skipped before capture_passive_requests", exc_info=True)
+        result = await self._capture_requests_on_ws(
+            self.ws_url,
+            matches=matches,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            min_matches=0,
+            include_response_body=include_response_body,
+        )
+        result["mode"] = "passive"
+        return result
+
     async def capture_url_requests(
         self,
         url: str,

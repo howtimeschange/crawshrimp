@@ -1,0 +1,17 @@
+{
+  "entry_url": "https://sellercenter.lazada.sg/apps/promotion/home",
+  "tab_match_prefixes": [
+    "https://sellercenter.lazada"
+  ],
+  "safe_click_labels": [
+    "Regular Voucher",
+    "Flexi Combo",
+    "Store New Buyer Voucher",
+    "Store Follower Voucher"
+  ],
+  "safe_click_selectors": [
+    "[class*=\"promotion\"] a",
+    "[role=\"button\"]"
+  ],
+  "safe_click_limit": 4
+}

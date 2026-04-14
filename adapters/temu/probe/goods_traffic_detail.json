@@ -1,0 +1,18 @@
+{
+  "entry_url": "https://agentseller.temu.com/main/flux-analysis-full",
+  "safe_click_labels": [
+    "查看详情",
+    "近7日",
+    "近30日",
+    "本周",
+    "本月",
+    "按日",
+    "按周",
+    "按月"
+  ],
+  "safe_click_selectors": [
+    "[data-testid=\"beast-core-button-link\"]",
+    "[role=\"tab\"]"
+  ],
+  "safe_click_limit": 3
+}

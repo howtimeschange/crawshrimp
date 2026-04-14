@@ -19,27 +19,41 @@ Typical triggers:
 
 This skill is optimized for **new pages and flaky controls**, not just pure table scraping.
 
+If the repo has a standard `crawshrimp probe` flow available, use it as the first reconnaissance pass before deeper DOM Lab work. Probe should give you the initial page map, endpoint clues, and a first `dom_first / api_first / mixed` judgment; this skill still owns the single-control experiments and the page-level closed loop.
+
+Preferred probe entry in this repo:
+
+```bash
+./venv/bin/python scripts/crawshrimp_probe.py run \
+  --adapter <adapter_id> \
+  --task <task_id> \
+  --goal "<what you need to prove>"
+```
+
+Use that wrapper before manual DOM exploration when the page is still unknown. It can auto-resolve the current Chrome tab on macOS and applies task-level probe profiles when available.
+
 ## Quick Start
 
 1. Confirm the live page, account/store context, and exact business step under test.
 2. Decide whether the flow should stay **DOM-first**, switch to **API-first**, or use a mixed strategy.
 3. For list/detail, drawer, modal, or paginator flows, do a **full DOM sweep** of the critical states before writing batch loops.
 4. Build a small DOM report before writing batch logic.
-5. Run **single-control experiments** for stubborn controls such as date pickers, selects, radios, and dependent fields.
-6. After every important interaction, **read back the resulting UI state** before advancing.
-7. Choose the most stable interaction path using this priority:
+5. If a probe bundle exists, read `strategy.json`, `page-map.json`, and `dom.json` before choosing the next experiment.
+6. Run **single-control experiments** for stubborn controls such as date pickers, selects, radios, and dependent fields.
+7. After every important interaction, **read back the resulting UI state** before advancing.
+8. Choose the most stable interaction path using this priority:
    - state injection
    - component event
    - native DOM event
    - CDP click
-8. For list or export flows, wait on **refresh evidence** such as row signature, active container, host, or real result change, not just a click or input echo.
-9. Achieve a **page-level closed loop**:
+9. For list or export flows, wait on **refresh evidence** such as row signature, active container, host, or real result change, not just a click or input echo.
+10. Achieve a **page-level closed loop**:
    - fill
    - read back
    - submit
    - detect success or business failure
-10. Only after the page-level loop is stable, write it back into the adapter.
-11. Regress in stages:
+11. Only after the page-level loop is stable, write it back into the adapter.
+12. Regress in stages:
    - single control
    - single page
    - single row
@@ -75,6 +89,7 @@ For the full playbook and checklist, read:
 - [references/api-first-fallback-playbook.md](references/api-first-fallback-playbook.md)
 - [references/rate-limit-and-soak-playbook.md](references/rate-limit-and-soak-playbook.md)
 - [references/download-export-stability-playbook.md](references/download-export-stability-playbook.md)
+- [references/crawshrimp-probe-workflow.md](references/crawshrimp-probe-workflow.md)
 
 Load them when you need:
 
@@ -87,3 +102,4 @@ Load them when you need:
 - API-first fallback rules for false busy/empty pages, page-owned request clients, and mixed DOM/API collection
 - conservative pacing, bounded backoff, and soak-test patterns for throttled pages
 - export/download stabilization rules for task-history pages, multi-file exports, transient tabs, and runtime artifact verification
+- the handoff from a standard probe bundle into DOM Lab and single-control experiments

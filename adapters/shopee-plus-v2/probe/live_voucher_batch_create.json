@@ -1,0 +1,13 @@
+{
+  "entry_url": "https://seller.shopee.cn/portal/marketing",
+  "safe_click_labels": [
+    "直播优惠券",
+    "限定的主播优惠券",
+    "全部商品"
+  ],
+  "safe_click_selectors": [
+    "[data-testid]",
+    "[role=\"button\"]"
+  ],
+  "safe_click_limit": 3
+}

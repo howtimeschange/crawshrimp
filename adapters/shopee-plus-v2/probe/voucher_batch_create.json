@@ -1,0 +1,15 @@
+{
+  "entry_url": "https://seller.shopee.cn/portal/marketing/vouchers/list",
+  "safe_click_labels": [
+    "新建优惠券",
+    "商店优惠券",
+    "新买家优惠券",
+    "回购买家优惠券",
+    "关注礼优惠券"
+  ],
+  "safe_click_selectors": [
+    "[data-testid]",
+    "[role=\"button\"]"
+  ],
+  "safe_click_limit": 3
+}
