@@ -109,6 +109,84 @@ tasks:
       - type: excel
         filename: "{shop_name}_售后数据_{region_scope}_{timestamp}.xlsx"
 
+  - id: evaluate_list
+    name: 后台-商品评价
+    description: 抓取 Temu 后台「商品评价」列表数据，支持地区切换、评价时间快捷切换与自定义时间范围，并自动全量翻页
+    script: evaluate-list.js
+    entry_url: https://agentseller.temu.com/main/evaluate/evaluate-list
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: regions
+        type: checkbox
+        label: 地区
+        hint: 不选默认抓取全部可用地区
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+      - id: review_time_range
+        type: select
+        label: 评价时间
+        default: ""
+        options:
+          - value: ""
+            label: 当前页面
+          - value: 近30天
+            label: 近 30 天
+          - value: 近60天
+            label: 近 60 天
+          - value: 近90天
+            label: 近 90 天
+          - value: 自定义
+            label: 自定义
+        hint: 选择「自定义」后将显示日期范围输入框；留在“当前页面”则不修改现有筛选
+      - id: custom_review_time_range
+        type: date_range
+        label: 自定义评价时间
+        hint: 仅在「评价时间」选择“自定义”时生效
+        visible_when:
+          field: review_time_range
+          equals: 自定义
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_商品评价_{time_scope}_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 地区
+          - 评价时间范围
+          - 列表页码
+          - 抓取时间
+          - 列表行号
+          - 商品名称
+          - 商品类目
+          - SPU
+          - SKC
+          - SKU属性
+          - SKU
+          - 评价星级
+          - 评价星级文本
+          - 评价内容
+          - 合身情况
+          - 不合身原因
+          - 评价图片
+          - 商品图片
+          - 评价时间
+          - 审核状态
+          - 操作
+          - 原始行文本
+
   - id: goods_traffic_list
     name: 后台-商品流量-列表
     description: 抓取 Temu 后台「商品流量 > 商品明细」列表数据，支持外层站点与页面筛选，并自动全量翻页
@@ -210,7 +288,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "Temu_商品流量列表_{timestamp}.xlsx"
+        filename: "{shop_name}_商品流量列表_{site_scope}_{time_scope}_{date_range}_{timestamp}.xlsx"
         columns:
           - 外层站点
           - 列表页码
@@ -350,7 +428,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "Temu_活动数据_{timestamp}.xlsx"
+        filename: "{shop_name}_活动数据_{site_scope}_{date_range}_{timestamp}.xlsx"
         columns:
           - 外层站点
           - 活动类型
@@ -436,7 +514,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "Temu_店铺流量_{timestamp}.xlsx"
+        filename: "{shop_name}_店铺流量_{site_scope}_{grain_scope}_{date_range}_{timestamp}.xlsx"
         columns:
           - 外层站点
           - 统计日期范围
@@ -561,7 +639,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "Temu_商品流量详情_{timestamp}.xlsx"
+        filename: "{shop_name}_商品流量详情_{site_scope}_{detail_site_scope}_{time_scope}_{detail_grain_scope}_{timestamp}.xlsx"
         columns:
           - 记录类型
           - 外层站点
@@ -708,7 +786,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "Temu_商品实拍图洗唛合规_{timestamp}.xlsx"
+        filename: "{shop_name}_商品实拍图洗唛合规_{timestamp}.xlsx"
         columns:
           - 执行序号
           - 快速筛选

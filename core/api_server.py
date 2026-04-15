@@ -101,14 +101,38 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
     candidates.find(text => /[A-Za-z]/.test(text) && !blacklist.has(text)) ||
     candidates.find(text => !blacklist.has(text)) ||
     ''
+  const rowContainsLabel = (row, label) => {
+    if (!row || !label) return false
+    if (textOf(row).includes(label)) return true
+    return [...row.querySelectorAll('div, label, span, td, th, button, a')]
+      .some(node => textOf(node).includes(label))
+  }
   const timeRow = [...document.querySelectorAll('[class*="index-module__row___"]')].find(row => {
     return textOf(row.querySelector('[class*="index-module__row_label___"]')) === '时间区间'
   }) || null
+  const reviewTimeRow = [...document.querySelectorAll('[class*="flat-field_item__"]')]
+    .find(row => rowContainsLabel(row, '评价时间')) || null
   const timeScope = textOf(timeRow?.querySelector('input[data-testid="beast-core-select-htmlInput"]'))
   const dateRange = textOf(timeRow?.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]'))
+  const reviewActive = [...(reviewTimeRow?.querySelectorAll('[class*="flat-field_capsule__"]') || [])]
+    .find(el => String(el.className || '').includes('flat-field_active__')) || null
+  const reviewTimeScope = textOf(reviewActive)
+  const reviewInput = reviewTimeRow?.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]') || null
+  const reviewDateRange = String(reviewInput?.value || '').trim() || (/^\d{4}-\d{2}-\d{2}\s*~\s*\d{4}-\d{2}-\d{2}$/.test(reviewTimeScope) ? reviewTimeScope : '')
+  const activeOuterSite = textOf(
+    [...document.querySelectorAll('a[class*="index-module__drItem___"]')]
+      .find(el => String(el.className || '').includes('index-module__active___')) || null
+  )
   return {
     success: true,
-    data: [{ shop_name: shopName, time_scope: timeScope, date_range: dateRange }],
+    data: [{
+      shop_name: shopName,
+      time_scope: timeScope,
+      date_range: dateRange,
+      review_time_scope: reviewTimeScope,
+      review_date_range: reviewDateRange,
+      active_outer_site: activeOuterSite,
+    }],
     meta: { has_more: false }
   }
 })()
@@ -128,7 +152,7 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
 """
 
     page_ctx = {}
-    if task_id in {'goods_data', 'aftersales'}:
+    if task_id not in {'reviews', 'store_items'}:
         page_ctx = await _evaluate_filename_context(runner, backend_context_js)
     elif task_id in {'reviews', 'store_items'}:
         page_ctx = await _evaluate_filename_context(runner, storefront_context_js)
@@ -145,46 +169,147 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
 
     ctx = {'shop_name': shop_name or 'Temu店铺'}
 
-    if task_id == 'goods_data':
-        def resolve_relative_range(label: str) -> str:
-            today = datetime.now().date()
-            if label == '昨日':
-                day = today - timedelta(days=1)
-                return f"{day.isoformat()}~{day.isoformat()}"
-            if label == '近7日':
-                start_day = today - timedelta(days=6)
-                return f"{start_day.isoformat()}~{today.isoformat()}"
-            if label == '近30日':
-                start_day = today - timedelta(days=29)
-                return f"{start_day.isoformat()}~{today.isoformat()}"
+    def normalize_range_text(value: str) -> str:
+        return str(value or '').strip().replace(' ~ ', '~')
+
+    def normalize_temporal_value(value) -> str:
+        if isinstance(value, str):
+            return str(value or '').strip()
+        if not value or not isinstance(value, dict):
             return ''
+        direct = str(value.get('value') or '').strip()
+        start = str(value.get('start') or '').strip()
+        end = str(value.get('end') or '').strip()
+        if direct:
+            return direct
+        if start and end:
+            return f"{start}~{end}"
+        return start or end
 
-        time_range = str(run_params.get('time_range') or '').strip()
-        custom_range = run_params.get('custom_range') or {}
-        start = str(custom_range.get('start') or '').strip()
-        end = str(custom_range.get('end') or '').strip()
-        page_time_scope = str(page_ctx.get('time_scope') or '').strip()
-        page_date_range = str(page_ctx.get('date_range') or '').strip()
+    def resolve_relative_range(label: str, mapping: dict[str, int]) -> str:
+        label = str(label or '').strip()
+        if not label:
+            return ''
+        today = datetime.now().date()
+        if label == '今日':
+            return f"{today.isoformat()}~{today.isoformat()}"
+        if label == '昨日':
+            day = today - timedelta(days=1)
+            return f"{day.isoformat()}~{day.isoformat()}"
+        if label == '本周':
+            start_day = today - timedelta(days=today.weekday())
+            return f"{start_day.isoformat()}~{today.isoformat()}"
+        if label == '本月':
+            start_day = today.replace(day=1)
+            return f"{start_day.isoformat()}~{today.isoformat()}"
+        days = mapping.get(label)
+        if not days:
+            return ''
+        start_day = today - timedelta(days=days - 1)
+        return f"{start_day.isoformat()}~{today.isoformat()}"
 
-        if time_range == '自定义':
-            ctx['time_scope'] = '自定义'
-            ctx['date_range'] = f"{start}~{end}" if start and end else (page_date_range or '自定义')
-        elif time_range:
-            ctx['time_scope'] = time_range
-            ctx['date_range'] = page_date_range if '~' in page_date_range else (resolve_relative_range(time_range) or page_date_range or time_range)
-        else:
-            ctx['time_scope'] = page_time_scope or '当前筛选'
-            if '~' in page_date_range:
-                ctx['date_range'] = page_date_range
-            else:
-                ctx['date_range'] = resolve_relative_range(page_time_scope) or page_date_range or page_time_scope or '当前筛选'
+    def resolve_time_filename_context() -> dict:
+        candidates = [
+            {
+                'time_param': 'review_time_range',
+                'custom_param': 'custom_review_time_range',
+                'page_scope_key': 'review_time_scope',
+                'page_range_key': 'review_date_range',
+                'relative_map': {'近30天': 30, '近60天': 60, '近90天': 90},
+            },
+            {
+                'time_param': 'time_range',
+                'custom_param': 'custom_range',
+                'page_scope_key': 'time_scope',
+                'page_range_key': 'date_range',
+                'relative_map': {'昨日': 1, '近7日': 7, '近30日': 30},
+            },
+            {
+                'time_param': 'list_time_range',
+                'custom_param': None,
+                'page_scope_key': '',
+                'page_range_key': '',
+                'relative_map': {'近7日': 7, '近30日': 30},
+            },
+            {
+                'time_param': 'detail_time_range',
+                'custom_param': None,
+                'page_scope_key': '',
+                'page_range_key': '',
+                'relative_map': {'近7日': 7, '近30日': 30},
+            },
+        ]
 
-    if task_id == 'aftersales':
-        regions = run_params.get('regions') or []
-        if not isinstance(regions, list):
-            regions = []
-        clean_regions = [str(r).strip() for r in regions if str(r).strip()]
-        ctx['region_scope'] = '+'.join(clean_regions) if clean_regions else '全部地区'
+        for spec in candidates:
+            time_param = spec['time_param']
+            custom_param = spec['custom_param']
+            if time_param not in run_params and custom_param not in run_params:
+                continue
+
+            time_range = str(run_params.get(time_param) or '').strip()
+            custom_range = run_params.get(custom_param) or {}
+            start = str(custom_range.get('start') or '').strip()
+            end = str(custom_range.get('end') or '').strip()
+            page_time_scope = str(page_ctx.get(spec['page_scope_key']) or '').strip()
+            page_date_range = normalize_range_text(page_ctx.get(spec['page_range_key']) or '')
+
+            if time_range == '自定义':
+                return {
+                    'time_scope': '自定义',
+                    'date_range': f"{start}~{end}" if start and end else (page_date_range or '自定义'),
+                }
+            if time_range:
+                return {
+                    'time_scope': time_range,
+                    'date_range': page_date_range or resolve_relative_range(time_range, spec['relative_map']) or time_range,
+                }
+            return {
+                'time_scope': page_time_scope or '当前筛选',
+                'date_range': page_date_range or resolve_relative_range(page_time_scope, spec['relative_map']) or page_time_scope or '当前筛选',
+            }
+
+        date_range_specs = [
+            ('stat_date_range', '统计日期'),
+            ('stat_week', '按周'),
+            ('stat_month', '按月'),
+            ('bill_date_range', '对账日期'),
+        ]
+        for param_key, scope_label in date_range_specs:
+            if param_key not in run_params:
+                continue
+            value = normalize_temporal_value(run_params.get(param_key))
+            if not value:
+                continue
+            return {'time_scope': scope_label, 'date_range': normalize_range_text(value)}
+
+        return {}
+
+    ctx.update(resolve_time_filename_context())
+    ctx.setdefault('time_scope', '当前筛选')
+    ctx.setdefault('date_range', '当前筛选')
+
+    def normalize_list_scope(value, empty_label: str) -> str:
+        if not isinstance(value, list):
+            return empty_label
+        clean_values = [str(item).strip() for item in value if str(item).strip()]
+        return '+'.join(clean_values) if clean_values else empty_label
+
+    regions = run_params.get('regions') or []
+    ctx['region_scope'] = normalize_list_scope(regions, '全部地区')
+    ctx['site_scope'] = normalize_list_scope(run_params.get('outer_sites') or [], '全部站点')
+    ctx['detail_site_scope'] = normalize_list_scope(run_params.get('detail_sites') or [], '全部详情站点')
+    ctx['detail_grain_scope'] = normalize_list_scope(run_params.get('detail_grains') or [], '全部粒度')
+
+    stat_grain = str(run_params.get('stat_grain') or '').strip()
+    if stat_grain:
+        ctx['grain_scope'] = stat_grain
+    elif 'stat_grain' in run_params:
+        ctx['grain_scope'] = '当前粒度'
+    else:
+        ctx['grain_scope'] = '当前粒度'
+
+    goods_statuses = run_params.get('goods_statuses') or []
+    ctx['goods_status_scope'] = normalize_list_scope(goods_statuses, '全部状态')
 
     return ctx
 

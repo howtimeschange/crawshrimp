@@ -115,7 +115,8 @@
   }
 
   function getTimeRangeRangeInput() {
-    return getTimeRangeRow()?.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]') ||
+    return getRangePickerInputCandidates()[0] ||
+      getTimeRangeRow()?.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]') ||
       document.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]')
   }
 
@@ -195,6 +196,34 @@
       if (p.querySelector('[class*="RPR_outerPickerWrapper"]')) return p
     }
     return null
+  }
+
+  function getRangePickerInputCandidates() {
+    const row = getTimeRangeRow()
+    const roots = [
+      ...(row ? row.querySelectorAll('[data-testid="beast-core-rangePicker-input"], [class*="RPR_inputWrapper_"]') : []),
+      ...document.querySelectorAll('[data-testid="beast-core-rangePicker-input"], [class*="RPR_inputWrapper_"]'),
+    ]
+
+    const inputs = []
+    const seen = new Set()
+    const pushInput = input => {
+      if (!input || seen.has(input)) return
+      seen.add(input)
+      inputs.push(input)
+    }
+
+    for (const root of roots) {
+      const rootInputs = [...root.querySelectorAll('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]')]
+      rootInputs.forEach(pushInput)
+    }
+
+    const fallbackInputs = [
+      ...(row ? row.querySelectorAll('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]') : []),
+      ...document.querySelectorAll('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]'),
+    ]
+    fallbackInputs.forEach(pushInput)
+    return inputs
   }
 
   function getTimeRangeSelectReactProps() {
@@ -304,47 +333,80 @@
 
   function getRangePickerOpenClick() {
     const row = getTimeRangeRow()
+    const input = getTimeRangeRangeInput()
     return getCenterClick(
+      input?.closest('[data-testid="beast-core-rangePicker-input"]') ||
+      input?.closest('[class*="RPR_inputWrapper_"]') ||
       row?.querySelector('[class*="RPR_inputWrapper_"]') ||
       row?.querySelector('[data-testid="beast-core-rangePicker-input"]') ||
       row?.querySelector('[data-testid="beast-core-icon-calendar"]')?.closest('[class*="ICN_outerWrapper"]') ||
+      input ||
       row?.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"], input[class*="RPR_input_"]')
     )
   }
 
-  function getRangePickerReactProps() {
-    const row = getTimeRangeRow()
-    const root = row?.querySelector('[data-testid="beast-core-rangePicker-input"]') || null
-    if (!root) return null
+  function getRangePickerReactPropsFromInput(input) {
+    const roots = [
+      input,
+      input?.closest('[data-testid="beast-core-rangePicker-input"]') || null,
+      input?.closest('[class*="RPR_inputWrapper_"]') || null,
+      input?.parentElement || null,
+    ].filter(Boolean)
 
-    const fiberKey = Object.keys(root).find(k => k.startsWith('__reactFiber')) || ''
-    let fiber = fiberKey ? root[fiberKey] : null
-    while (fiber) {
-      const props = fiber.memoizedProps || null
-      if (props && typeof props.onChange === 'function' && Array.isArray(props.value) && props.value.length === 2) {
-        return props
+    for (const root of roots) {
+      const fiberKey = Object.keys(root).find(k => k.startsWith('__reactFiber')) || ''
+      let fiber = fiberKey ? root[fiberKey] : null
+      while (fiber) {
+        const props = fiber.memoizedProps || null
+        if (props && typeof props.onChange === 'function' && Array.isArray(props.value) && props.value.length === 2) {
+          return props
+        }
+        fiber = fiber.return
       }
-      fiber = fiber.return
     }
     return null
   }
 
-  async function injectCustomDateRange(startDate, endDate) {
-    const props = getRangePickerReactProps()
+  function getRangePickerReactProps() {
+    const candidates = getRangePickerInputCandidates()
+    for (const input of candidates) {
+      const props = getRangePickerReactPropsFromInput(input)
+      if (props) return props
+    }
+    return null
+  }
+
+  async function waitForRangePickerReactProps(timeout = 4000) {
+    const deadline = Date.now() + timeout
+    while (Date.now() < deadline) {
+      const props = getRangePickerReactProps()
+      if (props) return props
+      await sleep(200)
+    }
+    return null
+  }
+
+  async function injectCustomDateRange(startDate, endDate, timeout = 4000) {
+    const props = await waitForRangePickerReactProps(timeout)
     if (!props || typeof props.onChange !== 'function') return false
 
     const start = new Date(`${startDate}T00:00:00`)
     const end = new Date(`${endDate}T00:00:00`)
     if (isNaN(start) || isNaN(end)) return false
 
-    try {
-      props.onChange([start, end])
-    } catch (e) {
-      return false
+    const expectedRange = formatDateRangeValue(startDate, endDate)
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        props.onChange([start, end])
+      } catch (e) {
+        return false
+      }
+
+      if (await waitForValue(readCustomRangeValue, expectedRange, 2000)) return true
+      await sleep(250)
     }
 
-    const expectedRange = formatDateRangeValue(startDate, endDate)
-    return await waitForValue(readCustomRangeValue, expectedRange, 3000)
+    return false
   }
 
   async function clickDayInCalendar(year, month, day) {
@@ -442,6 +504,8 @@
     const e = new Date(endDate)
     if (isNaN(s) || isNaN(e) || e < s) return false
     if ((e - s) / 86400000 > 31) return false
+    const expectedRange = formatDateRangeValue(startDate, endDate)
+    if (readCustomRangeValue() === expectedRange) return true
 
     let state = getCalendarState()
     if (!state) return false
@@ -466,17 +530,19 @@
     const okStart = await clickDayInCalendar(s.getFullYear(), s.getMonth() + 1, s.getDate())
     if (!okStart) return false
     await sleep(300)
+    if (readCustomRangeValue() === expectedRange) return true
 
     state = getCalendarState()
+    if (!state) return readCustomRangeValue() === expectedRange
     if (!getVisibleCalendarPanel(e.getFullYear(), e.getMonth() + 1, state)) return false
 
     const okEnd = await clickDayInCalendar(e.getFullYear(), e.getMonth() + 1, e.getDate())
     if (!okEnd) return false
     await sleep(300)
+    if (readCustomRangeValue() === expectedRange) return true
 
-    if (!clickConfirmButton()) return false
+    if (!clickConfirmButton()) return readCustomRangeValue() === expectedRange
 
-    const expectedRange = formatDateRangeValue(startDate, endDate)
     return await waitForValue(readCustomRangeValue, expectedRange, 5000)
   }
 
@@ -615,7 +681,7 @@
       const end = shared.customRange?.end || customRange.end || ''
       if (!start || !end) return { success: false, error: '缺少自定义日期范围参数' }
 
-      const injected = await injectCustomDateRange(start, end)
+      const injected = await injectCustomDateRange(start, end, 6000)
       if (injected) return nextPhase('run_query', 500, shared)
 
       if (!getRPRPanel()) {
@@ -632,8 +698,14 @@
         })
       }
 
+      const reinjected = await injectCustomDateRange(start, end, 8000)
+      if (reinjected) return nextPhase('run_query', 500, shared)
+
       const ok = await applyCustomDateRange(start, end)
-      if (!ok) return { success: false, error: '设置自定义日期失败，请检查日期区间或页面状态' }
+      if (!ok) {
+        const repaired = await injectCustomDateRange(start, end, 8000)
+        if (!repaired) return { success: false, error: '设置自定义日期失败，请检查日期区间或页面状态' }
+      }
       return nextPhase('run_query', 500)
     }
 
