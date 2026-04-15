@@ -10,6 +10,7 @@ directories:
 mac:
   category: public.app-category.business
   icon: assets/icon.icns
+  artifactName: crawshrimp-v${version}-mac-${arch}.${ext}
   hardenedRuntime: false
   gatekeeperAssess: false
   target:
@@ -20,6 +21,7 @@ mac:
 
 win:
   icon: assets/icon.ico
+  artifactName: crawshrimp-v${version}-win-${arch}.${ext}
   target:
     - target: nsis
       arch:

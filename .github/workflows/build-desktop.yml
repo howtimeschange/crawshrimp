@@ -35,8 +35,8 @@ jobs:
             build_script: build:win
             artifact_glob: |
               app/dist/*.exe
-              app/dist/*.blockmap
-              app/dist/*.yml
+              app/dist/*.exe.blockmap
+              app/dist/latest*.yml
 
     steps:
       - name: Checkout
@@ -98,16 +98,18 @@ jobs:
       - name: Prepare release metadata
         run: |
           APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
-          cat > release-notes.md <<EOF
-          Automated desktop build for commit ${GITHUB_SHA}.
-
-          Included assets:
-          - macOS DMG packages (Apple Silicon + Intel)
-          - Windows installer and update metadata
-
-          Source workflow: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          App version: ${APP_VERSION}
-          EOF
+          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
+          NOTES_FILE="release-notes/v${APP_VERSION}.md"
+          if [ -f "${NOTES_FILE}" ]; then
+            cp "${NOTES_FILE}" release-notes.md
+          else
+            printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
+          fi
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG（Apple Silicon / Intel）、Windows 安装包\n' \
+            "${GITHUB_SHA}" \
+            "${GITHUB_SERVER_URL}" \
+            "${GITHUB_REPOSITORY}" \
+            "${GITHUB_RUN_ID}" >> release-notes.md
 
       - name: Delete previous rolling release
         env:
@@ -129,6 +131,6 @@ jobs:
           gh release create desktop-latest \
             release-assets/macos/* \
             release-assets/windows/* \
-            --title "Desktop Latest Build" \
+            --title "抓虾 Desktop Latest v${APP_VERSION}" \
             --notes-file release-notes.md \
             --prerelease

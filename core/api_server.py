@@ -1038,7 +1038,7 @@ async def lifespan(app: FastAPI):
     sched_module.shutdown()
 
 
-app = FastAPI(title="crawshrimp", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="crawshrimp", version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
