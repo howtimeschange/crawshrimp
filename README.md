@@ -7,7 +7,16 @@
 
 ---
 
-## 本次大更新（2026-04-15 / v1.1.0）
+## 本次大更新（2026-04-16）
+
+- Temu 运营助手升级到 `1.5.3`，补齐 `后台-保税仓退货`、`后台-资金限制`、`后台-建议零售价爬取`、`后台-建议零售价填写`、`后台-抽检结果明细`、`后台-商品品质分析` 六条新链路。
+- `保税仓退货 / 建议零售价 / 商品品质分析` 等链路补强了注入优先、页面 API 读数和字段对位，导出不再只剩原始行文本或出现列错位。
+- `资金限制 / 抽检结果明细 / 商品品质分析` 现在支持按业务结构拆成多 sheet 导出，适合列表 + 详情、分析 + 优化这类复合结果。
+- `建议零售价爬取`、`商品品质分析`、`资金限制` 已接入统一增强进度 UI，任务页、脚本列表和总览侧边栏都会显示页级/批次进度。
+- 左侧脚本树已支持独立上下滚动，脚本数量继续增长时不会把返回按钮和标题一起挤出可视区。
+- 后端导出链路新增 Excel 多 sheet 配置能力，后台任务早崩也会正确回落到 `error` 状态，方便 UI 和日志判断真实失败。
+
+## 上次大更新（2026-04-15 / v1.1.0）
 
 - 桌面端版本升级到 `v1.1.0`，GitHub 滚动发布会直接显示当前桌面版本号。
 - 桌面安装包改成稳定 ASCII 命名，避免 GitHub Release 上出现 `-1.0.2.dmg`、`Setup.1.0.2.exe` 这类不可读产物名。
@@ -16,7 +25,7 @@
 - 商品数据自定义日历链路补强了注入优先、读回校验和失败回退，自定义日期范围更稳定。
 - GitHub Release 更新说明改为读取仓库内版本化 release notes，滚动发布文案不再是纯模板。
 
-## 上次大更新（2026-04-13）
+## 更早大更新（2026-04-13）
 
 - Temu 适配包补齐 `后台-活动数据`、`后台-店铺流量`、`后台-商品流量-列表`、`后台-商品流量-详情` 四条核心数据链路，支持多站点、多时间范围与全量分页采集。
 - 新增 Temu `后台-对账中心` 导出适配包，可直接从账单中心页面抓取并导出结果。
@@ -41,16 +50,18 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 |--------|------|------|
 | `shopee-plus-v2` | Shopee 卖家后台 | 多门店多券型优惠券批量创建（商店 / 新买家 / 回购买家 / 关注礼） |
 | `lazada-plus-v1` | Lazada Seller Center | 多站点优惠券/促销批量创建（Regular / Flexi Combo / 新买家 / 粉丝券） |
-| `temu` | Temu 卖家后台 | 商品数据 / 活动数据 / 店铺流量 / 商品流量（列表/详情） / 对账中心 / 售后管理 / 店铺评价 / 站点商品 / 商品实拍图洗唛合规 |
+| `temu` | Temu 卖家后台 | 商品数据 / 活动数据 / 店铺流量 / 商品流量（列表/详情） / 对账中心 / 售后管理 / 商品评价 / 保税仓退货 / 资金限制 / 建议零售价（爬取/填写） / 抽检结果明细 / 商品品质分析 / 站点商品 / 商品实拍图洗唛合规 |
 | `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
 
 > 当前仓库内只保留一条 Shopee 适配线：`shopee-plus-v2`。旧 `shopee` / `shopee-plus` 已移除。
 
 ### 最近更新
 
-- Temu 适配包升级到 `1.5.2`，新增 `bill_center`，并显著增强 `activity_data`、`mall_flux`、`goods_traffic_list`、`goods_traffic_detail`
-- 商品流量详情支持从列表导出结果继续跑明细，适合批量追打 SPU 详情数据
-- 桌面端任务进度展示已集中到统一工具层，脚本列表、任务页、总览页的状态文案更一致
+- Temu 适配包升级到 `1.5.3`，新增 `tax_free_return_confirm`、`fund_limited_list`、`recommended_retail_price`、`recommended_retail_price_fill`、`qc_detail`、`quality_dashboard`
+- `recommended_retail_price` 已切到页面 API 驱动的行展开，批量 SKU 不再跨商品串行错位
+- `fund_limited_list`、`qc_detail`、`quality_dashboard` 支持多 sheet 导出，复杂结果会按“列表/详情/分析/优化”拆开
+- 大批量任务进度已集中到统一工具层，`recommended_retail_price`、`quality_dashboard`、`fund_limited_list` 会显示增强进度条
+- 左侧脚本侧边栏已支持独立滚动，脚本数量增长后仍可稳定浏览
 - `file_excel` 继续支持多 sheet 工作簿注入和模板下载，适合复杂运营表单导入
 - 仓库仍内置 `lazada-plus-v1`、`shopee-plus-v2`、`jd`、`temu` 四条主要适配线
 
@@ -258,6 +269,7 @@ tasks:
 - `.xlsx/.xls/.xlsm` 会额外注入 `file.sheets`
 - 任务可通过 `execution_ui_mode: precheck_before_live` 声明“先预检再 live”的执行交互
 - 可配合 `validation_only_label` / `auto_precheck_note` 自定义“仅校验”按钮文案和执行提示
+- Excel 导出侧也支持通过 `sheet_key + sheets` 声明多 sheet 工作簿，并为每个 sheet 单独配置列顺序和分组表头
 
 以 Lazada 为例，一个模板工作簿可以同时包含：
 
