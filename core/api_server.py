@@ -78,7 +78,7 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
 (() => {
   const textOf = el => (el?.textContent || '').replace(/\s+/g, ' ').trim()
   const root = document.querySelector('[class*="userInfo"], [class*="seller-name"], [class*="account-info_userInfo"]')
-  const blacklist = new Set(['服务市场', '履约中心', '学习', '运营对接', '规则中心', '消息', '客服', '反馈', '99+', '首页', '数据中心', '商品数据'])
+  const blacklist = new Set(['服务市场', '履约中心', '学习', '运营对接', '规则中心', '消息', '客服', '反馈', '99+', '首页', '数据中心', '商品数据', 'TEMU Agent Center', 'Beta', 'Seller Central'])
   const seen = new Set()
   const candidates = []
   const push = text => {
@@ -96,6 +96,13 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
       push(text)
     }
   }
+  for (const el of document.querySelectorAll(
+    '[class*="elli_outerWrapper"], [class*="mallInfo"], [class*="accountInfo"], [class*="account-info_mallInfo"], [class*="account-info_accountInfo"]'
+  )) {
+    const text = textOf(el)
+    if (!text || text.length > 80) continue
+    push(text)
+  }
   const shopName =
     candidates.find(text => /shop/i.test(text)) ||
     candidates.find(text => /[A-Za-z]/.test(text) && !blacklist.has(text)) ||
@@ -108,7 +115,10 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
       .some(node => textOf(node).includes(label))
   }
   const timeRow = [...document.querySelectorAll('[class*="index-module__row___"]')].find(row => {
-    return textOf(row.querySelector('[class*="index-module__row_label___"]')) === '时间区间'
+    const label = textOf(row.querySelector('[class*="index-module__row_label___"]'))
+    if (label === '时间区间') return true
+    if (label === '时间' && row.querySelector('input[data-testid="beast-core-rangePicker-htmlInput"]')) return true
+    return false
   }) || null
   const reviewTimeRow = [...document.querySelectorAll('[class*="flat-field_item__"]')]
     .find(row => rowContainsLabel(row, '评价时间')) || null
@@ -216,6 +226,8 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 'page_scope_key': 'review_time_scope',
                 'page_range_key': 'review_date_range',
                 'relative_map': {'近30天': 30, '近60天': 60, '近90天': 90},
+                'custom_scope_key': '',
+                'custom_scope_label': '自定义',
             },
             {
                 'time_param': 'time_range',
@@ -223,6 +235,44 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 'page_scope_key': 'time_scope',
                 'page_range_key': 'date_range',
                 'relative_map': {'昨日': 1, '近7日': 7, '近30日': 30},
+                'custom_scope_key': '',
+                'custom_scope_label': '自定义',
+            },
+            {
+                'time_param': 'return_time_range',
+                'custom_param': 'custom_return_time_range',
+                'page_scope_key': 'time_scope',
+                'page_range_key': 'date_range',
+                'relative_map': {'今日': 0, '昨日': 1, '近7日': 7, '近30日': 30},
+                'custom_scope_key': 'return_time_field',
+                'custom_scope_label': '自定义',
+            },
+            {
+                'time_param': 'qc_time_range',
+                'custom_param': 'custom_qc_time_range',
+                'page_scope_key': 'time_scope',
+                'page_range_key': 'date_range',
+                'relative_map': {'今日': 0, '昨日': 1, '近7日': 7, '近30日': 30},
+                'custom_scope_key': '',
+                'custom_scope_label': '最新抽检时间',
+            },
+            {
+                'time_param': '',
+                'custom_param': 'custom_qc_time_range',
+                'page_scope_key': '',
+                'page_range_key': '',
+                'relative_map': {},
+                'custom_scope_key': '',
+                'custom_scope_label': '最新抽检时间',
+            },
+            {
+                'time_param': '',
+                'custom_param': 'custom_return_time_range',
+                'page_scope_key': '',
+                'page_range_key': '',
+                'relative_map': {},
+                'custom_scope_key': 'return_time_field',
+                'custom_scope_label': '自定义',
             },
             {
                 'time_param': 'list_time_range',
@@ -230,6 +280,8 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 'page_scope_key': '',
                 'page_range_key': '',
                 'relative_map': {'近7日': 7, '近30日': 30},
+                'custom_scope_key': '',
+                'custom_scope_label': '自定义',
             },
             {
                 'time_param': 'detail_time_range',
@@ -237,6 +289,8 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 'page_scope_key': '',
                 'page_range_key': '',
                 'relative_map': {'近7日': 7, '近30日': 30},
+                'custom_scope_key': '',
+                'custom_scope_label': '自定义',
             },
         ]
 
@@ -246,16 +300,23 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
             if time_param not in run_params and custom_param not in run_params:
                 continue
 
-            time_range = str(run_params.get(time_param) or '').strip()
+            time_range = str(run_params.get(time_param) or '').strip() if time_param else ''
             custom_range = run_params.get(custom_param) or {}
             start = str(custom_range.get('start') or '').strip()
             end = str(custom_range.get('end') or '').strip()
             page_time_scope = str(page_ctx.get(spec['page_scope_key']) or '').strip()
             page_date_range = normalize_range_text(page_ctx.get(spec['page_range_key']) or '')
+            custom_scope = str(run_params.get(spec.get('custom_scope_key') or '') or '').strip()
+
+            if start and end:
+                return {
+                    'time_scope': custom_scope or page_time_scope or spec.get('custom_scope_label') or '自定义',
+                    'date_range': f"{start}~{end}",
+                }
 
             if time_range == '自定义':
                 return {
-                    'time_scope': '自定义',
+                    'time_scope': custom_scope or page_time_scope or spec.get('custom_scope_label') or '自定义',
                     'date_range': f"{start}~{end}" if start and end else (page_date_range or '自定义'),
                 }
             if time_range:
@@ -310,6 +371,12 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
 
     goods_statuses = run_params.get('goods_statuses') or []
     ctx['goods_status_scope'] = normalize_list_scope(goods_statuses, '全部状态')
+    qc_statuses = run_params.get('qc_statuses') or []
+    ctx['qc_status_scope'] = normalize_list_scope(qc_statuses, '全部结果')
+    if task_id == 'recommended_retail_price':
+        ctx['status_scope'] = '全部状态'
+    if task_id == 'quality_dashboard':
+        ctx['quality_tab_scope'] = '品质分析+品质优化'
 
     return ctx
 
@@ -845,6 +912,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         filename_vars=filename_vars,
                         column_order=getattr(out, 'columns', None),
                         column_groups=getattr(out, 'column_groups', None),
+                        sheet_key=getattr(out, 'sheet_key', None),
+                        sheet_configs=getattr(out, 'sheets', None),
                     )
                     files.append(path)
                     log(f"Excel exported: {path}")
@@ -1188,10 +1257,22 @@ def get_probe_bundle(probe_id: str):
 
 
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
+    jid = f"{adapter_id}::{task_id}"
     try:
         await _execute_task(adapter_id, task_id, params, runtime_options, run_control=run_control)
-    except Exception:
-        logger.debug("Background task exited with recorded failure", exc_info=True)
+    except Exception as exc:
+        live = dict(_run_status.get(jid) or {})
+        if live.get('status') in ACTIVE_LIVE_STATUSES or not live:
+            _run_status[jid] = {
+                'status': 'error',
+                'run_id': live.get('run_id'),
+                'records': int(live.get('records') or 0),
+                'error': str(exc),
+            }
+        _run_logs.setdefault(jid, []).append(f"[{adapter_id}/{task_id}] FATAL: {exc}")
+        logger.exception("Background task crashed before cleanup: %s", jid)
+    finally:
+        _run_controls.pop(jid, None)
 
 
 @app.post("/tasks/{adapter_id}/{task_id}/run")

@@ -33,6 +33,21 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'goods_traffic_detail',
     config: ENHANCED_PROGRESS_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'temu',
+    taskId: 'recommended_retail_price',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
+  Object.freeze({
+    adapterId: 'temu',
+    taskId: 'quality_dashboard',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
+  Object.freeze({
+    adapterId: 'temu',
+    taskId: 'fund_limited_list',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {

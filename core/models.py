@@ -22,6 +22,12 @@ class TaskOutputColumnGroup(BaseModel):
     columns: List[str]
 
 
+class TaskOutputSheet(BaseModel):
+    name: str
+    columns: Optional[List[str]] = None
+    column_groups: Optional[List[TaskOutputColumnGroup]] = None
+
+
 class TaskOutput(BaseModel):
     type: OutputType
     filename: Optional[str] = None
@@ -29,6 +35,8 @@ class TaskOutput(BaseModel):
     condition: Optional[str] = None
     columns: Optional[List[str]] = None  # excel 用：显式列顺序；未填则按 data 字段顺序导出
     column_groups: Optional[List[TaskOutputColumnGroup]] = None  # excel 用：两层表头分组定义
+    sheet_key: Optional[str] = None  # excel 用：按行字段拆分多 sheet
+    sheets: Optional[List[TaskOutputSheet]] = None  # excel 用：多 sheet 列定义
 
 
 class TaskTrigger(BaseModel):

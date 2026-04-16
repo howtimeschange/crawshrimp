@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.5.2
+version: 1.5.3
 author: howtimeschange
 description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
@@ -709,6 +709,388 @@ tasks:
               - 推荐数据/点击量
               - 推荐数据/支付单量
               - 推荐数据/支付件数
+
+  - id: tax_free_return_confirm
+    name: 后台-保税仓退货
+    description: 抓取 Temu 卖家后台「保税仓退货 > 退货确认单」待确认与已确认列表，支持时间筛选与全量翻页
+    script: tax-free-return-confirm.js
+    entry_url: https://seller.kuajingmaihuo.com/wms/tax-free-return-mgt/return-confirm
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: return_time_field
+        type: select
+        label: 时间
+        default: 发起确认时间
+        options:
+          - value: 发起确认时间
+            label: 发起确认时间
+          - value: 确认完成时间
+            label: 确认完成时间
+        hint: 选择页面时间类型，后续时间范围统一按自定义区间筛选
+      - id: custom_return_time_range
+        type: date_range
+        label: 自定义时间范围
+        hint: 留空则保持页面当前筛选；填写后按自定义区间抓取待确认与已确认
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_保税仓退货_{time_scope}_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 状态标签
+          - 列表页码
+          - 抓取时间
+          - 列表行号
+          - 时间筛选字段
+          - 确认单号
+          - SKU
+          - SPU
+          - 商品信息
+          - 申报价（元）
+          - 件数
+          - 发起确认时间
+          - 确认完成时间
+          - 剩余确认时间
+          - 处理方式
+          - 是否默认弃货
+          - 是否逾期视为同意弃货
+          - 原始行文本
+
+  - id: fund_limited_list
+    name: 后台-资金限制
+    description: 抓取 Temu 卖家后台「资金限制」列表与限制详情，支持区域切换与详情弹窗采集
+    script: fund-limited-list.js
+    entry_url: https://agentseller.temu.com/labor/limited/list
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: regions
+        type: checkbox
+        label: 地区
+        hint: 不选默认抓取全部可用地区
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_资金限制_{region_scope}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 列表
+            columns:
+              - 地区
+              - 列表页码
+              - 抓取时间
+              - 列表行号
+              - 限制原因
+              - 当前限制总金额(CNY)
+              - 当前限制总金额
+              - 限制金额说明
+              - 操作
+          - name: 详情
+            columns:
+              - 地区
+              - 列表页码
+              - 抓取时间
+              - 列表行号
+              - 限制原因
+              - 当前限制总金额(CNY)
+              - 当前限制总金额
+              - 限制金额说明
+              - 限制解除条件
+              - 区域限制金额明细
+              - 明细分组
+              - 明细序号
+              - 运单号
+              - 限制开始时间
+              - 地区明细
+              - 限制金额(CNY)
+              - 错误信息
+
+  - id: recommended_retail_price
+    name: 后台-建议零售价爬取
+    description: 抓取 Temu 后台「建议零售价合规中心」四个状态 tab 的全量列表数据，支持区域切换与全量翻页
+    script: recommended-retail-price.js
+    entry_url: https://agentseller.temu.com/goods/recommended-retail-price
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: regions
+        type: checkbox
+        label: 地区
+        hint: 不选默认抓取全部可用地区
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_建议零售价_{region_scope}_{status_scope}_{timestamp}.xlsx"
+        columns:
+          - 地区
+          - 状态标签
+          - 列表页码
+          - 抓取时间
+          - 列表行号
+          - 商品名称
+          - Goods ID
+          - SKC ID
+          - SKU属性
+          - SKU ID
+          - 日常价格范围
+          - 同款品市场价参考
+          - 站点
+          - 建议零售价
+          - 建议零售价币种
+          - 建议零售价范围
+          - 同款品数
+          - 建议零售价明细
+          - 建议零售价操作
+          - 建议零售价单元格文本
+
+  - id: qc_detail
+    name: 后台-抽检结果明细
+    description: 抓取 Temu 卖家后台「抽检结果明细」列表与抽检记录弹窗明细，支持时间筛选与全量翻页
+    script: qc-detail.js
+    entry_url: https://seller.kuajingmaihuo.com/wms/qc-detail
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: qc_statuses
+        type: checkbox
+        label: 抽检结果 Tab
+        hint: 默认只抓取「抽检不合格」；可多选，全部取消则仍按「抽检不合格」处理。
+        default:
+          - 抽检不合格
+        options:
+          - value: 抽检不合格
+            label: 抽检不合格
+          - value: 抽检完成
+            label: 抽检完成
+      - id: custom_qc_time_range
+        type: date_range
+        label: 最新抽检时间
+        hint: 页面仅支持自定义时间区间；留空则保持页面当前筛选
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_抽检结果明细_{time_scope}_{date_range}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 列表
+            columns:
+              - 状态标签
+              - 列表页码
+              - 抓取时间
+              - 列表行号
+              - 商品信息
+              - SKU 信息
+              - 备货单号
+              - 最新抽检时间
+          - name: 详情
+            columns:
+              - 状态标签
+              - 列表页码
+              - 列表行号
+              - 抓取时间
+              - 商品信息
+              - SKU 信息
+              - 备货单号
+              - 最新抽检时间
+              - 抽检记录类型
+              - 明细序号
+              - SKU ID
+              - 抽检记录备货单号
+              - 抽检时间
+              - 抽检结果
+              - 字段名
+              - 字段值
+              - 尺寸/cm
+              - 尺码SKU
+              - 尺码检查/标
+              - 尺码检查/测
+              - 尺码检查/偏差
+              - 疵点序号
+              - 疵点
+              - 程度
+              - 问题备注
+              - 疵点证明
+              - 操作指引
+            column_groups:
+              - label: 尺码检查
+                columns:
+                  - 尺码检查/标
+                  - 尺码检查/测
+                  - 尺码检查/偏差
+
+  - id: recommended_retail_price_fill
+    name: 后台-建议零售价填写
+    description: 预研 Temu 后台「建议零售价合规中心」批量导入与建议零售价填写流程，读取模板后仅做页面能力探查与导入预检查，不实际提交价格
+    script: recommended-retail-price-fill.js
+    entry_url: https://agentseller.temu.com/goods/recommended-retail-price
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: import_file
+        type: file_excel
+        label: 导入模板
+        required: true
+        templates:
+          - file: templates/temu-recommended-retail-price-fill-template.csv
+            label: 建议零售价预研模板
+            description: 仅用于批量填写预研，不会实际提交价格
+            version: "2026.04.15"
+        hint: 上传建议零售价模板文件做预检查；本任务不会实际提交价格，仅输出预研结果
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_建议零售价填写预研_{timestamp}.xlsx"
+
+  - id: quality_dashboard
+    name: 后台-商品品质分析
+    description: 抓取 Temu 后台「商品品质分析」品质分析/品质优化两个 tab 及全部品质分子 tab 的全量列表数据，支持区域切换与筛选继承
+    script: quality-dashboard.js
+    entry_url: https://agentseller.temu.com/main/quality/dashboard
+    tab_match_prefixes:
+      - https://agentseller.temu.com/main/quality/dashboard
+      - https://agentseller.temu.com/main/quality/optimize
+      - https://agentseller-us.temu.com/main/quality/dashboard
+      - https://agentseller-us.temu.com/main/quality/optimize
+      - https://agentseller-eu.temu.com/main/quality/dashboard
+      - https://agentseller-eu.temu.com/main/quality/optimize
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: regions
+        type: checkbox
+        label: 地区
+        hint: 不选默认抓取全部可用地区
+        options:
+          - value: 全球
+            label: 全球
+          - value: 美国
+            label: 美国
+          - value: 欧区
+            label: 欧区
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_商品品质分析_{region_scope}_{quality_tab_scope}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 品质分析
+            columns:
+              - 地区
+              - 子Tab标签
+              - 列表页码
+              - 抓取时间
+              - 列表行号
+              - 商品信息
+              - SPU
+              - 品质分
+              - 主要品质问题/售后问题
+              - 主要品质问题/负向评价类型
+              - 建议优化方案
+              - 售后情况/品质售后率
+              - 售后情况/品质售后次数
+              - 售后情况/尺码售后率
+              - 售后情况/尺码售后次数
+              - 用户评价情况/评价数
+              - 用户评价情况/评价均分
+              - 用户评价情况/合身情况
+              - 用户评价情况/负向评价关键词
+              - 原始行文本
+            column_groups:
+              - label: 主要品质问题
+                columns:
+                  - 主要品质问题/售后问题
+                  - 主要品质问题/负向评价类型
+              - label: 售后情况
+                columns:
+                  - 售后情况/品质售后率
+                  - 售后情况/品质售后次数
+                  - 售后情况/尺码售后率
+                  - 售后情况/尺码售后次数
+              - label: 用户评价情况
+                columns:
+                  - 用户评价情况/评价数
+                  - 用户评价情况/评价均分
+                  - 用户评价情况/合身情况
+                  - 用户评价情况/负向评价关键词
+          - name: 品质优化
+            columns:
+              - 地区
+              - 子Tab标签
+              - 列表页码
+              - 抓取时间
+              - 列表行号
+              - 商品信息
+              - SPU
+              - 状态
+              - 参考完成时间
+              - 优化方式
+              - 问题描述
+              - 参考优化内容
+              - 是否优化
+              - 操作
+              - 原始行文本
 
   - id: compliant_live_photos_label
     name: 商品实拍图洗唛合规

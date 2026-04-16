@@ -272,9 +272,17 @@ input, select, textarea { font-family: inherit; }
   display: flex;
   flex-direction: column;
   padding: 10px 0;
+  min-height: 0;
+  overflow: hidden;
+}
+nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0 8px;
+  min-height: 0;
   overflow-y: auto;
 }
-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
 .nav-btn {
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 8px;
@@ -287,7 +295,12 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
 .icon { font-size: 15px; width: 20px; }
 
 /* 二级菜单 */
-.sub-nav { display: flex; flex-direction: column; height: 100%; }
+.sub-nav {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
 .back-btn {
   margin: 0 8px 8px; padding: 8px 12px; border-radius: 8px;
   background: transparent; border: 1px solid var(--border);
@@ -301,7 +314,17 @@ nav { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
   color: var(--text3); text-transform: uppercase; letter-spacing: 0.06em;
   display: flex; align-items: center; gap: 6px;
 }
-.task-list { display: flex; flex-direction: column; gap: 2px; padding: 0 8px; }
+.task-list {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 8px 12px;
+  scrollbar-gutter: stable;
+}
 .task-btn {
   display: flex; align-items: center; justify-content: space-between;
   padding: 9px 12px; border-radius: 8px;

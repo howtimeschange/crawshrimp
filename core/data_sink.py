@@ -11,7 +11,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any, List, Mapping, Optional
+from typing import Any, Iterable, List, Mapping, Optional
 
 from core.models import TaskRun, TaskStatus
 
@@ -228,73 +228,25 @@ def _ensure_unique_path(path: Path) -> Path:
         idx += 1
 
 
-def prepare_artifact_dir(adapter_id: str, task_id: str, run_id: int, kind: str = "artifacts") -> str:
-    """Create and return a per-run artifact directory."""
-    safe_kind = _sanitize_filename(kind, "artifacts")
-    out_dir = _data_root() / adapter_id / task_id / safe_kind / str(run_id)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return str(out_dir)
+def _normalize_sheet_title(name: Any, fallback: str) -> str:
+    value = _sanitize_filename(name, fallback).strip()
+    if not value:
+        value = fallback
+    return value[:31] or fallback[:31] or "Sheet1"
 
 
-def export_excel(
-    data: List[dict],
-    adapter_id: str,
-    task_id: str,
-    filename_template: str = "{task_id}_{date}.xlsx",
-    filename_vars: Optional[Mapping[str, Any]] = None,
-    column_order: Optional[List[str]] = None,
-    column_groups: Optional[List[Mapping[str, Any]]] = None,
-) -> str:
-    """
-    Export data to Excel file.
-    Returns absolute path of written file.
-    """
-    from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Font, PatternFill
-    from openpyxl.utils import get_column_letter
+def _clean_excel_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    cleaned: dict[str, Any] = {}
+    for key, value in (row or {}).items():
+        key_text = str(key or "")
+        if key_text.startswith("__"):
+            continue
+        cleaned[key_text] = value
+    return cleaned
 
-    if not data:
-        raise ValueError("No data to export")
 
-    filename = _render_filename(filename_template, adapter_id, task_id, filename_vars)
-    out_dir = _data_root() / adapter_id / task_id
-    out_dir.mkdir(parents=True, exist_ok=True)
-    out_path = _ensure_unique_path(out_dir / filename)
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = task_id[:31]  # Sheet name max 31 chars
-
-    # Write headers from explicit order first, then append any unexpected keys
-    headers = []
-    seen_headers = set()
-    if column_order:
-        for key in column_order:
-            k = str(key or "").strip()
-            if not k or k in seen_headers:
-                continue
-            seen_headers.add(k)
-            headers.append(k)
-    for row in data:
-        for key in row.keys():
-            k = str(key)
-            if k in seen_headers:
-                continue
-            seen_headers.add(k)
-            headers.append(k)
-
-    header_fill = PatternFill(fill_type="solid", fgColor="F5F7FA")
-    header_font = Font(bold=True)
-    header_alignment = Alignment(horizontal="center", vertical="center")
-
-    def _leaf_header_label(column_key: str) -> str:
-        value = str(column_key or "").strip()
-        if "/" in value:
-            return value.split("/")[-1].strip() or value
-        return value
-
+def _normalize_column_groups(column_groups: Optional[Iterable[Mapping[str, Any]]]) -> list[dict[str, Any]]:
     normalized_groups = []
-    group_lookup = {}
     for group in column_groups or []:
         if hasattr(group, "model_dump"):
             group = group.model_dump()
@@ -307,12 +259,55 @@ def export_excel(
         if not label or not columns:
             continue
         normalized_groups.append({"label": label, "columns": columns})
-        for column in columns:
-            group_lookup[column] = label
+    return normalized_groups
+
+
+def _resolve_headers(data: List[dict], column_order: Optional[List[str]] = None) -> list[str]:
+    headers: list[str] = []
+    seen_headers = set()
+    for key in column_order or []:
+        key_text = str(key or "").strip()
+        if not key_text or key_text.startswith("__") or key_text in seen_headers:
+            continue
+        seen_headers.add(key_text)
+        headers.append(key_text)
+    for row in data:
+        for key in row.keys():
+            key_text = str(key or "").strip()
+            if not key_text or key_text.startswith("__") or key_text in seen_headers:
+                continue
+            seen_headers.add(key_text)
+            headers.append(key_text)
+    return headers
+
+
+def _write_excel_sheet(ws, data: List[dict], column_order: Optional[List[str]] = None,
+                       column_groups: Optional[Iterable[Mapping[str, Any]]] = None) -> None:
+    from openpyxl.styles import Alignment, Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    headers = _resolve_headers(data, column_order)
+    if not headers:
+        headers = ["提示"]
+        data = [{"提示": "无数据"}]
+
+    header_fill = PatternFill(fill_type="solid", fgColor="F5F7FA")
+    header_font = Font(bold=True)
+    header_alignment = Alignment(horizontal="center", vertical="center")
+
+    def _leaf_header_label(column_key: str) -> str:
+        value = str(column_key or "").strip()
+        if "/" in value:
+            return value.split("/")[-1].strip() or value
+        return value
+
+    normalized_groups = _normalize_column_groups(column_groups)
+    group_lookup = {}
+    for group in normalized_groups:
+        for column in group["columns"]:
+            group_lookup[column] = group["label"]
 
     has_grouped_header = bool(normalized_groups)
-    data_start_row = 2
-
     if has_grouped_header:
         top_row = []
         leaf_row = []
@@ -327,7 +322,6 @@ def export_excel(
 
         ws.append(top_row)
         ws.append(leaf_row)
-        data_start_row = 3
 
         col_index = 1
         while col_index <= len(headers):
@@ -359,11 +353,9 @@ def export_excel(
             cell.alignment = header_alignment
         ws.freeze_panes = "A2"
 
-    # Write rows
     for row in data:
         ws.append([str(row.get(h, "")) for h in headers])
 
-    # Auto column width
     for col_idx in range(1, ws.max_column + 1):
         letter = get_column_letter(col_idx)
         max_len = 10
@@ -372,8 +364,101 @@ def export_excel(
             max_len = max(max_len, len(str(value or "")))
         ws.column_dimensions[letter].width = min(max_len + 4, 60)
 
+
+def prepare_artifact_dir(adapter_id: str, task_id: str, run_id: int, kind: str = "artifacts") -> str:
+    """Create and return a per-run artifact directory."""
+    safe_kind = _sanitize_filename(kind, "artifacts")
+    out_dir = _data_root() / adapter_id / task_id / safe_kind / str(run_id)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return str(out_dir)
+
+
+def export_excel(
+    data: List[dict],
+    adapter_id: str,
+    task_id: str,
+    filename_template: str = "{task_id}_{date}.xlsx",
+    filename_vars: Optional[Mapping[str, Any]] = None,
+    column_order: Optional[List[str]] = None,
+    column_groups: Optional[List[Mapping[str, Any]]] = None,
+    sheet_key: Optional[str] = None,
+    sheet_configs: Optional[List[Mapping[str, Any]]] = None,
+) -> str:
+    """
+    Export data to Excel file.
+    Returns absolute path of written file.
+    """
+    from openpyxl import Workbook
+
+    if not data:
+        raise ValueError("No data to export")
+
+    filename = _render_filename(filename_template, adapter_id, task_id, filename_vars)
+    out_dir = _data_root() / adapter_id / task_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = _ensure_unique_path(out_dir / filename)
+
+    wb = Workbook()
+    cleaned_data = [_clean_excel_row(row) for row in data]
+    normalized_sheet_key = str(sheet_key or "").strip()
+
+    if not normalized_sheet_key:
+        ws = wb.active
+        ws.title = _normalize_sheet_title(task_id, task_id[:31] or "Sheet1")
+        _write_excel_sheet(ws, cleaned_data, column_order, column_groups)
+        total_rows = len(cleaned_data)
+    else:
+        sheet_rows: dict[str, list[dict[str, Any]]] = {}
+        sheet_order: list[str] = []
+        for raw_row in data:
+            sheet_name = str((raw_row or {}).get(normalized_sheet_key) or "").strip() or "Sheet1"
+            if sheet_name not in sheet_rows:
+                sheet_rows[sheet_name] = []
+                sheet_order.append(sheet_name)
+            sheet_rows[sheet_name].append(_clean_excel_row(raw_row))
+
+        config_by_name: dict[str, Mapping[str, Any]] = {}
+        ordered_names: list[str] = []
+        for config in sheet_configs or []:
+            if hasattr(config, "model_dump"):
+                config = config.model_dump()
+            name = str((config or {}).get("name") or "").strip()
+            if not name:
+                continue
+            config_by_name[name] = config
+            ordered_names.append(name)
+
+        final_sheet_names = [name for name in ordered_names if name in sheet_rows]
+        final_sheet_names.extend(name for name in sheet_order if name not in final_sheet_names)
+        if not final_sheet_names:
+            final_sheet_names = ["Sheet1"]
+            sheet_rows["Sheet1"] = cleaned_data
+
+        ws = wb.active
+        first_name = final_sheet_names[0]
+        ws.title = _normalize_sheet_title(first_name, "Sheet1")
+        first_config = config_by_name.get(first_name) or {}
+        _write_excel_sheet(
+            ws,
+            sheet_rows.get(first_name) or [],
+            list((first_config or {}).get("columns") or column_order or []),
+            (first_config or {}).get("column_groups") or column_groups,
+        )
+
+        for name in final_sheet_names[1:]:
+            config = config_by_name.get(name) or {}
+            sheet = wb.create_sheet(title=_normalize_sheet_title(name, "Sheet"))
+            _write_excel_sheet(
+                sheet,
+                sheet_rows.get(name) or [],
+                list((config or {}).get("columns") or column_order or []),
+                (config or {}).get("column_groups") or column_groups,
+            )
+
+        total_rows = sum(len(rows) for rows in sheet_rows.values())
+
     wb.save(str(out_path))
-    logger.info(f"Excel exported: {out_path} ({len(data)} rows)")
+    logger.info(f"Excel exported: {out_path} ({total_rows} rows)")
     return str(out_path)
 
 
