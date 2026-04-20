@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.5.3
+version: 1.5.4
 author: howtimeschange
 description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com

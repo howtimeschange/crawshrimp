@@ -9,7 +9,7 @@ class DummyRunner:
 
 
 class ExportFilenameContextTests(unittest.IsolatedAsyncioTestCase):
-    async def _build_ctx(self, task_id: str, run_params: dict, page_ctx: dict | None = None):
+    async def _build_ctx(self, task_id: str, run_params: dict, page_ctx: dict | None = None, adapter_id: str = "temu"):
         mocked_page_ctx = {"shop_name": "SEMIR Official Shop"}
         if page_ctx:
             mocked_page_ctx.update(page_ctx)
@@ -18,7 +18,7 @@ class ExportFilenameContextTests(unittest.IsolatedAsyncioTestCase):
             new=AsyncMock(return_value=mocked_page_ctx),
         ):
             return await api_server._build_export_filename_context(
-                "temu",
+                adapter_id,
                 task_id,
                 run_params,
                 DummyRunner(),
@@ -69,6 +69,39 @@ class ExportFilenameContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retail_ctx["status_scope"], "全部状态")
         self.assertEqual(quality_ctx["region_scope"], "全球+欧区")
         self.assertEqual(quality_ctx["quality_tab_scope"], "品质分析+品质优化")
+
+    async def test_shein_product_feedback_context_uses_fixed_shop_name_and_custom_review_range(self):
+        ctx = await self._build_ctx(
+            "product_feedback",
+            {
+                "review_date_range": {"start": "2026-04-18", "end": "2026-04-20"},
+            },
+            page_ctx={"shop_name": "SHEIN测试店"},
+            adapter_id="shein-helper",
+        )
+
+        self.assertEqual(ctx["shop_name"], "Shein")
+        self.assertEqual(ctx["time_scope"], "自定义")
+        self.assertEqual(ctx["date_range"], "2026-04-18~2026-04-20")
+
+    async def test_shein_merchandise_details_context_uses_fixed_shop_name_and_current_page_time_scope(self):
+        ctx = await self._build_ctx(
+            "merchandise_details",
+            {
+                "time_mode": "current",
+                "dimension_scope": "both",
+            },
+            page_ctx={
+                "shop_name": "SHEIN测试店",
+                "merch_time_scope": "近7天",
+                "merch_date_range": "2026-04-13~2026-04-19",
+            },
+            adapter_id="shein-helper",
+        )
+
+        self.assertEqual(ctx["shop_name"], "Shein")
+        self.assertEqual(ctx["time_scope"], "近7天")
+        self.assertEqual(ctx["date_range"], "2026-04-13~2026-04-19")
 
 
 if __name__ == "__main__":

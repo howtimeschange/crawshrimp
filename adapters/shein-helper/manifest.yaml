@@ -1,0 +1,166 @@
+id: shein-helper
+name: Shein 运营助手
+version: 0.1.0
+author: crawshrimp
+description: "SHEIN 全球商家中心数据抓取与全量导出：商品评价、商品明细"
+entry_url: https://sso.geiwohuo.com
+
+auth:
+  check_script: auth_check.js
+  login_url: https://sso.geiwohuo.com
+
+tasks:
+  - id: product_feedback
+    name: 商品评价
+    description: 抓取 SHEIN 全球商家中心商品评价列表，继承当前页面筛选并自动全量翻页导出
+    script: product-feedback.js
+    entry_url: https://sso.geiwohuo.com/#/mgs/store-management/product-feedback
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页（继承当前筛选）
+          - value: new
+            label: 新开标签页
+      - id: review_date_range
+        type: date_range
+        label: 评价时间
+        hint: 留空则继承当前页面评价时间；填写后会优先尝试按页面时间控件注入，失败时回退到请求体时间覆写
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_商品评价_{time_scope}_{date_range}_{timestamp}.xlsx"
+
+  - id: merchandise_details
+    name: 商品分析-商品明细
+    description: 抓取 SHEIN 全球商家中心商品分析-商品明细列表，继承当前页面筛选并自动全量翻页导出
+    script: merchandise-details.js
+    entry_url: https://sso.geiwohuo.com/#/sbn/merchandise/details
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        hint: current 模式会继承当前页面已选站点、品类、活动标签与统计时间
+        options:
+          - value: current
+            label: 使用当前标签页（继承当前筛选）
+          - value: new
+            label: 新开标签页
+      - id: dimension_scope
+        type: radio
+        label: 导出维度
+        default: current
+        options:
+          - value: current
+            label: 当前列表
+          - value: skc
+            label: 仅 SKC 列表
+          - value: spu
+            label: 仅 SPU 列表
+          - value: both
+            label: SKC + SPU
+      - id: time_mode
+        type: select
+        label: 统计时间
+        default: current
+        hint: 默认继承当前页面统计时间；切换到昨天/近7天/近30天/自定义时，会在继承其余筛选项的前提下覆盖时间范围
+        options:
+          - value: current
+            label: 继承当前页面
+          - value: yesterday
+            label: 昨天
+          - value: last7
+            label: 近7天
+          - value: last30
+            label: 近30天
+          - value: custom
+            label: 自定义
+      - id: custom_date_range
+        type: date_range
+        label: 自定义统计时间
+        hint: 仅在选择“自定义”后生效，脚本会优先按页面时间控件注入，必要时回退到请求体时间覆写
+        visible_when:
+          field: time_mode
+          equals: custom
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_商品分析-商品明细_{time_scope}_{date_range}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: SKC列表
+            columns:
+              - 商品字段/商品名称
+              - 商品字段/SKC
+              - 商品字段/SPU
+              - 商品字段/货号
+              - 商品字段/品类
+              - 商品字段/标签
+              - 商品基本信息/活动标签
+              - 商品基本信息/是否35天转备货
+              - 交易/销量
+              - 交易/支付订单数
+              - 流量/商品访客数
+              - 流量/支付人数
+              - 备货/备货订单数
+              - 备货/备货件数
+              - 操作
+              - 筛选摘要
+            column_groups:
+              - label: 商品字段
+                columns:
+                  - 商品字段/商品名称
+                  - 商品字段/SKC
+                  - 商品字段/SPU
+                  - 商品字段/货号
+                  - 商品字段/品类
+                  - 商品字段/标签
+              - label: 商品基本信息
+                columns:
+                  - 商品基本信息/活动标签
+                  - 商品基本信息/是否35天转备货
+              - label: 交易
+                columns:
+                  - 交易/销量
+                  - 交易/支付订单数
+              - label: 流量
+                columns:
+                  - 流量/商品访客数
+                  - 流量/支付人数
+              - label: 备货
+                columns:
+                  - 备货/备货订单数
+                  - 备货/备货件数
+          - name: SPU列表
+            columns:
+              - 商品字段/商品名称
+              - 商品字段/SPU
+              - 商品基本信息/活动标签
+              - 交易/销量
+              - 交易/支付订单数
+              - 流量/商详访客
+              - 流量/支付人数
+              - 操作
+              - 筛选摘要
+            column_groups:
+              - label: 商品字段
+                columns:
+                  - 商品字段/商品名称
+                  - 商品字段/SPU
+              - label: 商品基本信息
+                columns:
+                  - 商品基本信息/活动标签
+              - label: 交易
+                columns:
+                  - 交易/销量
+                  - 交易/支付订单数
+              - label: 流量
+                columns:
+                  - 流量/商详访客
+                  - 流量/支付人数

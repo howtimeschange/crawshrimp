@@ -309,6 +309,9 @@ async function loadHook(scriptRelativePath, exportNames, options = {}) {
 
   const hook = {}
   const href = options.href || 'https://agentseller.temu.com/main/act/data-full'
+  const timerSetTimeout = options.setTimeout || setTimeout
+  const timerClearTimeout = options.clearTimeout || clearTimeout
+  const RuntimeDate = options.Date || Date
   const location = {
     href,
     hostname: new URL(href).hostname,
@@ -345,10 +348,10 @@ async function loadHook(scriptRelativePath, exportNames, options = {}) {
       }
     },
     console,
-    setTimeout,
-    clearTimeout,
+    setTimeout: timerSetTimeout,
+    clearTimeout: timerClearTimeout,
     Promise,
-    Date,
+    Date: RuntimeDate,
     Math,
     Number,
     String,
@@ -374,6 +377,9 @@ async function runScript(scriptRelativePath, options = {}) {
   const scriptPath = path.resolve(scriptRelativePath)
   const source = fs.readFileSync(scriptPath, 'utf8')
   const href = options.href || 'https://agentseller.temu.com/main/act/data-full'
+  const timerSetTimeout = options.setTimeout || setTimeout
+  const timerClearTimeout = options.clearTimeout || clearTimeout
+  const RuntimeDate = options.Date || Date
   const location = {
     href,
     hostname: new URL(href).hostname,
@@ -409,10 +415,10 @@ async function runScript(scriptRelativePath, options = {}) {
       }
     },
     console,
-    setTimeout,
-    clearTimeout,
+    setTimeout: timerSetTimeout,
+    clearTimeout: timerClearTimeout,
     Promise,
-    Date,
+    Date: RuntimeDate,
     Math,
     Number,
     String,
@@ -442,6 +448,77 @@ function createWebpackChunkRuntime(moduleFactory) {
       return 1
     },
   }
+}
+
+function createMicrotaskTimers() {
+  let nextId = 1
+  const pending = new Set()
+  return {
+    setTimeout(handler, ...args) {
+      const id = nextId
+      nextId += 1
+      pending.add(id)
+      Promise.resolve().then(() => {
+        if (!pending.has(id)) return
+        pending.delete(id)
+        handler(...args)
+      })
+      return id
+    },
+    clearTimeout(id) {
+      pending.delete(id)
+    },
+  }
+}
+
+function buildGoodsTrafficSkeletonDocument(state = {}) {
+  const document = new DynamicDocument({
+    bodyText: state.bodyText || '商品明细 商品流量列表',
+    busy: !!state.busy,
+  })
+
+  const makeCell = text => new DynamicElement({ tagName: 'td', text })
+  const makeRow = text => {
+    const row = new DynamicElement({ tagName: 'tr', className: 'TB_tr_mock', text })
+    row.setSelector('td', [makeCell(text)])
+    return row
+  }
+
+  const headerRow = new DynamicElement({
+    tagName: 'tr',
+    children: [
+      new DynamicElement({ tagName: 'th', text: '商品信息' }),
+      new DynamicElement({ tagName: 'th', text: '流量情况' }),
+      new DynamicElement({ tagName: 'th', text: '增长潜力' }),
+      new DynamicElement({ tagName: 'th', text: '操作' }),
+    ],
+  })
+
+  const table = new DynamicElement({
+    tagName: 'table',
+    text: () => `商品信息 流量情况 增长潜力 操作 ${(state.rows || []).join(' ')}`,
+  })
+  table.setSelector('thead tr', () => [headerRow])
+  table.setSelector('tbody tr[class*="TB_tr_"], tr[class*="TB_tr_"]', () => (state.rows || []).map(makeRow))
+
+  const siteNode = new DynamicElement({
+    tagName: 'a',
+    text: state.siteText || '全球',
+    className: 'index-module__drItem___ index-module__active___',
+  })
+  const queryButton = new DynamicElement({ tagName: 'button', text: '查询' })
+  const resetButton = new DynamicElement({ tagName: 'button', text: '重置' })
+
+  document.setSelector('table', () => [table])
+  document.setSelector('a[class*="index-module__drItem___"]', () => [siteNode])
+  document.setSelector('button', () => [queryButton, resetButton])
+  document.setSelector('[class*="TB_empty_"]', () => (state.empty ? [new DynamicElement({ text: 'empty' })] : []))
+  document.setSelector('[class*="Drawer_content_"]', [])
+  document.setSelector('[class*="Drawer_outerWrapper_"]', [])
+  document.setSelector('[class*="TAB_capsule_"][class*="TAB_active_"]', [])
+  document.setSelector('li[class*="PGT_next_"]', [])
+
+  return document
 }
 
 async function assertStrictPageTurn(scriptRelativePath, href) {
@@ -852,6 +929,100 @@ test('goods-traffic-list exposes conservative retry and collect pacing helpers',
   )
 })
 
+test('goods-traffic-list collect phase retries retriable api errors in the next phase', async () => {
+  const timers = createMicrotaskTimers()
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'collect',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document: buildStatefulDocument({ bodyText: '商品流量列表', activeGrain: '今日' }),
+    shared: {
+      currentOuterSite: '全球',
+      targetOuterSites: ['全球'],
+      currentPageNo: 3,
+      lastApiAttempt: 1,
+      timeDimension: 2,
+      timeDimensionLabel: '今日',
+    },
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    windowProps: {
+      chunkLoadingGlobal_bgb_sca_main: createWebpackChunkRuntime(id => {
+        if (id === '3204') {
+          return {
+            bE: async () => {
+              throw {
+                errorCode: 40002,
+                errorMsg: 'Network Timeout, Please Try Again Later',
+              }
+            },
+          }
+        }
+        throw new Error(`unknown module ${id}`)
+      }),
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect')
+  assert.equal(result.meta.sleep_ms, 15000)
+  assert.equal(result.meta.shared.currentPageNo, 3)
+  assert.equal(result.meta.shared.lastApiAttempt, 2)
+})
+
+test('goods-traffic-list recover_list_page waits for real list readiness before continuing', async () => {
+  const state = {
+    rows: [],
+    bodyText: '商品明细 商品流量列表',
+  }
+  const document = buildGoodsTrafficSkeletonDocument(state)
+  const resultPromise = runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'recover_list_page',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document,
+    shared: {
+      recoverOuterSite: '全球',
+      currentOuterSite: '全球',
+      recoverPageNo: 5,
+    },
+  })
+
+  setTimeout(() => {
+    state.rows = ['page5-row-a']
+  }, 520)
+
+  const earlyResult = await Promise.race([
+    resultPromise.then(() => 'resolved'),
+    sleep(350).then(() => 'timeout'),
+  ])
+
+  assert.equal(earlyResult, 'timeout')
+
+  const result = await resultPromise
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'recover_list_page_prepare')
+})
+
+test('goods-traffic-list restore_list_page resets api retry budget after recovery', async () => {
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'restore_list_page',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document: buildStatefulDocument({ bodyText: '商品流量列表', activeGrain: '近7日' }),
+    shared: {
+      currentOuterSite: '全球',
+      recoverOuterSite: '全球',
+      recoverPageNo: 9,
+      lastApiAttempt: 4,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect')
+  assert.equal(result.meta.shared.lastApiAttempt, 1)
+})
+
 test('goods-traffic-list collect phase reads rows from api helper and tracks pagination', async () => {
   const windowProps = {
     chunkLoadingGlobal_bgb_sca_main: createWebpackChunkRuntime(id => {
@@ -859,12 +1030,12 @@ test('goods-traffic-list collect phase reads rows from api helper and tracks pag
         return {
           bE: async (endpoint, payload) => {
             assert.equal(endpoint, '/api/seller/full/flow/analysis/goods/list')
-            assert.equal(payload.pageSize, 100)
+            assert.equal(payload.pageSize, 500)
             assert.equal(payload.pageNum, 2)
             assert.equal(payload.timeDimension, 2)
             assert.equal(payload.quickFilterType, 1)
             return {
-              total: 281,
+              total: 1281,
               updateAt: 1776047296966,
               list: [
                 {

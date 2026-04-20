@@ -71,6 +71,121 @@ async def _evaluate_filename_context(runner, expression: str) -> dict:
 
 
 async def _build_export_filename_context(adapter_id: str, task_id: str, run_params: dict, runner) -> dict:
+    def normalize_range_text(value: str) -> str:
+        return str(value or '').strip().replace(' ~ ', '~')
+
+    if adapter_id == 'shein-helper':
+        shein_context_js = r"""
+(() => {
+  const textOf = el => (el?.textContent || '').replace(/\s+/g, ' ').trim()
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim()
+  const normalizeHyphenDate = value => {
+    const match = clean(value).match(/\d{4}[-/]\d{2}[-/]\d{2}/)
+    return match ? match[0].replace(/\//g, '-') : ''
+  }
+  const normalizeCompactDate = value => {
+    const digits = clean(value).replace(/[^\d]/g, '')
+    return digits.length >= 8
+      ? `${digits.slice(0, 4)}-${digits.slice(4, 6)}-${digits.slice(6, 8)}`
+      : ''
+  }
+  const formatRange = (start, end) => {
+    if (start && end) return `${start}~${end}`
+    return start || end || ''
+  }
+  const shared = window.__CRAWSHRIMP_SHARED__ || {}
+  const feedbackTemplate = shared.api_template && typeof shared.api_template === 'object'
+    ? shared.api_template
+    : {}
+  const feedbackFilter = feedbackTemplate.filter_payload && typeof feedbackTemplate.filter_payload === 'object'
+    ? feedbackTemplate.filter_payload
+    : (feedbackTemplate.payload && typeof feedbackTemplate.payload === 'object' ? feedbackTemplate.payload : {})
+  const feedbackStart = normalizeHyphenDate(feedbackFilter.startCommentTime || feedbackFilter.commentStartTime || '')
+  const feedbackEnd = normalizeHyphenDate(feedbackFilter.commentEndTime || feedbackFilter.endCommentTime || '')
+
+  const templateQueue = Array.isArray(shared.api_templates)
+    ? shared.api_templates.filter(item => item && typeof item === 'object')
+    : []
+  const merchandiseTemplate = templateQueue[0]
+    || (shared.api_template && typeof shared.api_template === 'object' ? shared.api_template : {})
+  const merchandiseFilter = merchandiseTemplate.filter_payload && typeof merchandiseTemplate.filter_payload === 'object'
+    ? merchandiseTemplate.filter_payload
+    : (merchandiseTemplate.payload && typeof merchandiseTemplate.payload === 'object' ? merchandiseTemplate.payload : {})
+  const merchandiseStart = normalizeCompactDate(merchandiseFilter.startDate || merchandiseFilter.dt || '')
+  const merchandiseEnd = normalizeCompactDate(merchandiseFilter.endDate || merchandiseFilter.dt || merchandiseFilter.startDate || '')
+
+  const isCheckedButton = button => {
+    if (!button) return false
+    const className = String(button.className || '')
+    if (/checked|Checked|active|Active/.test(className)) return true
+    const ariaPressed = String(button.getAttribute?.('aria-pressed') || '').toLowerCase()
+    if (ariaPressed === 'true') return true
+    const radio = button.querySelector?.('input[type="radio"], input')
+    return !!radio?.checked
+  }
+  const merchTimeScope = [...document.querySelectorAll('button')]
+    .map(button => ({ button, label: clean(textOf(button)) }))
+    .find(item => ['昨天', '近7天', '近30天', '自定义'].includes(item.label) && isCheckedButton(item.button))
+    ?.label || ''
+
+  return {
+    success: true,
+    data: [{
+      review_date_range: formatRange(feedbackStart, feedbackEnd),
+      merch_time_scope: merchTimeScope,
+      merch_date_range: formatRange(merchandiseStart, merchandiseEnd),
+    }],
+    meta: { has_more: false }
+  }
+})()
+"""
+
+        page_ctx = await _evaluate_filename_context(runner, shein_context_js)
+        ctx = {'shop_name': 'Shein'}
+
+        if task_id == 'product_feedback':
+            custom_range = run_params.get('review_date_range') or {}
+            start = str(custom_range.get('start') or '').strip()
+            end = str(custom_range.get('end') or '').strip()
+            if start and end:
+                ctx.update({
+                    'time_scope': '自定义',
+                    'date_range': f"{start}~{end}",
+                })
+            else:
+                ctx.update({
+                    'time_scope': '当前筛选',
+                    'date_range': normalize_range_text(page_ctx.get('review_date_range') or '') or '当前筛选',
+                })
+            return ctx
+
+        if task_id == 'merchandise_details':
+            time_mode = str(run_params.get('time_mode') or '').strip().lower()
+            scope_map = {
+                'yesterday': '昨天',
+                'last7': '近7天',
+                'last30': '近30天',
+                'custom': '自定义',
+            }
+            custom_range = run_params.get('custom_date_range') or {}
+            start = str(custom_range.get('start') or '').strip()
+            end = str(custom_range.get('end') or '').strip()
+            if time_mode == 'custom' and start and end:
+                ctx.update({
+                    'time_scope': '自定义',
+                    'date_range': f"{start}~{end}",
+                })
+            else:
+                ctx.update({
+                    'time_scope': scope_map.get(time_mode) or str(page_ctx.get('merch_time_scope') or '').strip() or '当前筛选',
+                    'date_range': normalize_range_text(page_ctx.get('merch_date_range') or '') or '当前筛选',
+                })
+            return ctx
+
+        ctx.setdefault('time_scope', '当前筛选')
+        ctx.setdefault('date_range', '当前筛选')
+        return ctx
+
     if adapter_id != 'temu':
         return {}
 
@@ -178,9 +293,6 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 shop_name = ''
 
     ctx = {'shop_name': shop_name or 'Temu店铺'}
-
-    def normalize_range_text(value: str) -> str:
-        return str(value or '').strip().replace(' ~ ', '~')
 
     def normalize_temporal_value(value) -> str:
         if isinstance(value, str):
@@ -1107,7 +1219,7 @@ async def lifespan(app: FastAPI):
     sched_module.shutdown()
 
 
-app = FastAPI(title="crawshrimp", version="1.1.0", lifespan=lifespan)
+app = FastAPI(title="crawshrimp", version="1.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )

@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 120
-MAX_PAGES = 100
+MAX_PAGES = 1000
 MAX_PHASES = 9999
 NAVIGATION_ERROR_MARKERS = (
     "Inspected target navigated or closed",
@@ -1682,7 +1682,7 @@ class JSRunner:
                     else:
                         raise RuntimeError(f"脚本阶段执行超过上限 ({MAX_PHASES})，page={page}")
 
-                return all_data
+                raise RuntimeError(f"脚本分页超过上限 ({MAX_PAGES})，最近一页仍返回 has_more=true")
             except RunAbortedError as e:
                 if not e.partial_data:
                     e.partial_data = list(all_data)

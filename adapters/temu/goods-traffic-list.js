@@ -7,7 +7,7 @@
   const TARGET_URL = 'https://agentseller.temu.com/main/flux-analysis-full'
   const LIST_BUSY_RETRY_LIMIT = 30
   const LIST_PAGE_RECOVERY_LIMIT = 30
-  const LIST_API_PAGE_SIZE = 100
+  const LIST_API_PAGE_SIZE = 500
   const LIST_API_RETRY_LIMIT = 4
   const LIST_API_RETRY_BACKOFF_MS = 800
   const LIST_API_RATE_LIMIT_BACKOFF_MS = 20000
@@ -217,7 +217,7 @@
 
   function isNetworkTimeoutError(errorLike) {
     const info = normalizeTemuApiError(errorLike)
-    return info.errorCode === 40002 || /Network Timeout/i.test(info.errorMsg)
+    return info.errorCode === 40002 || /Network Timeout|请求超时|API 请求超时/i.test(info.errorMsg)
   }
 
   function isRetriableListApiError(errorLike) {
@@ -1062,29 +1062,21 @@
 
   async function fetchListApiPage(pageNo = 1, sharedState = shared) {
     const payload = buildListApiRequestPayload(pageNo, LIST_API_PAGE_SIZE, sharedState)
-    let lastError = null
-    for (let attempt = 1; attempt <= LIST_API_RETRY_LIMIT; attempt += 1) {
-      const response = await callTemuApi(TEMU_LIST_ENDPOINT, payload, {})
-      if (response.ok) {
-        const result = response.result && typeof response.result === 'object' ? response.result : {}
-        const list = Array.isArray(result.list) ? result.list : []
-        return {
-          ok: true,
-          pageNo: Math.max(1, Number(pageNo || 1)),
-          pageSize: LIST_API_PAGE_SIZE,
-          payload,
-          result,
-          list,
-          total: Math.max(0, Number(result.total || 0) || 0),
-          updateAt: Number(result.updateAt || 0) || 0,
-          attempt,
-        }
-      }
-
-      lastError = response.error
-      if (attempt < LIST_API_RETRY_LIMIT) {
-        const backoffMs = getListApiRetryBackoffMs(lastError, attempt)
-        await sleep(backoffMs)
+    const attempt = Math.max(1, Number(sharedState.lastApiAttempt || 1))
+    const response = await callTemuApi(TEMU_LIST_ENDPOINT, payload, {})
+    if (response.ok) {
+      const result = response.result && typeof response.result === 'object' ? response.result : {}
+      const list = Array.isArray(result.list) ? result.list : []
+      return {
+        ok: true,
+        pageNo: Math.max(1, Number(pageNo || 1)),
+        pageSize: LIST_API_PAGE_SIZE,
+        payload,
+        result,
+        list,
+        total: Math.max(0, Number(result.total || 0) || 0),
+        updateAt: Number(result.updateAt || 0) || 0,
+        attempt,
       }
     }
 
@@ -1093,7 +1085,8 @@
       pageNo: Math.max(1, Number(pageNo || 1)),
       pageSize: LIST_API_PAGE_SIZE,
       payload,
-      error: normalizeTemuApiError(lastError),
+      error: normalizeTemuApiError(response.error),
+      attempt,
     }
   }
 
@@ -1202,6 +1195,12 @@
       return scheduleListPageRecovery(sharedState, '商品流量列表初始加载超时', currentPageNo, currentSite)
     }
 
+    const listState = await waitForListReady(LIST_READY_TIMEOUT_MS)
+    if (!listState.ready) {
+      return scheduleListPageRecovery(sharedState, '商品流量列表初始加载超时', currentPageNo, currentSite)
+    }
+    if (listState.busy) return buildBusyReload(nextPhaseName, sharedState)
+
     const timeState = resolveTimeDimensionState(sharedState)
     if (listTimeRange && timeState.value <= 0) {
       return fail(`列表统计时间切换失败：${listTimeRange}`)
@@ -1256,6 +1255,7 @@
       listBusyRetry: 0,
       listPageRetry: retry + 1,
       listPageRetryReason: reason,
+      lastApiAttempt: 1,
       recoverPageNo: Math.max(1, Number(targetPageNo || 1)),
       recoverOuterSite: targetSite || sharedState.currentOuterSite || getResolvedOuterSite() || '',
       pendingCollectDelayMs: /Too many visitors|Network Timeout|请求超时/i.test(String(reason || ''))
@@ -1320,8 +1320,13 @@
       if (!switched) {
         return fail(`外层站点切换未生效：期望 ${targetSite || '未知站点'}，当前 ${getResolvedOuterSite() || '未知站点'}`)
       }
-      const ready = await waitForTargetReady(15000)
+      const ready = await waitForTargetReady(30000)
       if (!ready) return fail(`切换外层站点后页面未恢复：${targetSite || '未知站点'}`)
+      const state = await waitForListReady(LIST_READY_TIMEOUT_MS)
+      if (!state.ready) {
+        return scheduleListPageRecovery(shared, `切换外层站点后商品流量列表未加载：${targetSite || '未知站点'}`, 1, targetSite)
+      }
+      if (state.busy) return buildBusyReload('after_outer_site_switch', shared)
       return nextPhase(shared.resume_phase || 'prepare_current_site', 400, {
         ...shared,
         listBusyRetry: 0,
@@ -1346,8 +1351,13 @@
       const switched = await waitForTargetOuterSite(targetSite, 30000)
       if (!switched) return fail(`商品流量页面恢复失败：未能切回站点 ${targetSite || '未知站点'}`)
 
-      const ready = await waitForTargetReady(15000)
+      const ready = await waitForTargetReady(30000)
       if (!ready) return fail('商品流量页面恢复失败：页面未完成加载')
+      const state = await waitForListReady(LIST_READY_TIMEOUT_MS)
+      if (!state.ready) {
+        return scheduleListPageRecovery(shared, `恢复后的商品流量列表未加载：${targetSite || '未知站点'}`, shared.recoverPageNo || 1, targetSite)
+      }
+      if (state.busy) return buildBusyReload('recover_list_page', shared)
 
       return nextPhase('recover_list_page_prepare', 0, shared)
     }
@@ -1365,6 +1375,7 @@
         ...shared,
         currentOuterSite: targetSite,
         currentPageNo: targetPageNo,
+        lastApiAttempt: 1,
         recoverPageNo: 0,
         recoverOuterSite: '',
         listPageRetry: 0,
@@ -1430,10 +1441,27 @@
       const apiPage = await fetchListApiPage(currentPageNo, shared)
       if (!apiPage.ok) {
         const errorInfo = normalizeTemuApiError(apiPage.error)
+        const attempt = Math.max(1, Number(apiPage.attempt || shared.lastApiAttempt || 1))
+        if (isRetriableListApiError(errorInfo) && attempt < LIST_API_RETRY_LIMIT) {
+          const backoffMs = getListApiRetryBackoffMs(errorInfo, attempt)
+          return nextPhase('collect', backoffMs, {
+            ...shared,
+            targetOuterSites,
+            currentOuterSite,
+            currentPageNo,
+            lastApiAttempt: attempt + 1,
+            pendingCollectDelayMs: 0,
+            recoveredListPage: false,
+            switchedOuterSite: false,
+          })
+        }
         const reason = isTooManyVisitorsError(errorInfo)
           ? `商品流量列表 API 连续重试 ${LIST_API_RETRY_LIMIT} 次后仍返回 Too many visitors`
           : `商品流量列表 API 抓取失败：${errorInfo.errorMsg || errorInfo.errorCode || '未知错误'}`
-        return scheduleListPageRecovery(shared, reason, currentPageNo, currentOuterSite)
+        return scheduleListPageRecovery({
+          ...shared,
+          lastApiAttempt: attempt,
+        }, reason, currentPageNo, currentOuterSite)
       }
 
       const totalPages = apiPage.total > 0

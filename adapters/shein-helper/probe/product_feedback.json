@@ -1,0 +1,13 @@
+{
+  "entry_url": "https://sso.geiwohuo.com/#/mgs/store-management/product-feedback",
+  "safe_click_labels": [
+    "搜索",
+    "查询",
+    "导出"
+  ],
+  "safe_click_selectors": [
+    "button",
+    "[role=\"button\"]"
+  ],
+  "safe_click_limit": 2
+}

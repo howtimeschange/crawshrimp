@@ -73,6 +73,80 @@ class SharedCarryRunner(JSRunner):
         )
 
 
+class LongPaginationRunner(JSRunner):
+    def __init__(self, total_pages: int):
+        super().__init__("ws://example.invalid")
+        self.total_pages = total_pages
+        self.calls = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        page = None
+        for line in expression.splitlines():
+            if line.startswith("window.__CRAWSHRIMP_PAGE__ = "):
+                page = int(line.split("=", 1)[1].strip().rstrip(";"))
+                break
+
+        self.calls.append(page)
+        has_more = bool(page and page < self.total_pages)
+        return JSResult(
+            success=True,
+            data=[{"page": page}],
+            meta={
+                "action": "complete",
+                "has_more": has_more,
+                "shared": {},
+            },
+        )
+
+
+class EndlessPaginationRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        page = None
+        for line in expression.splitlines():
+            if line.startswith("window.__CRAWSHRIMP_PAGE__ = "):
+                page = int(line.split("=", 1)[1].strip().rstrip(";"))
+                break
+
+        self.calls.append(page)
+        return JSResult(
+            success=True,
+            data=[{"page": page}],
+            meta={
+                "action": "complete",
+                "has_more": True,
+                "shared": {},
+            },
+        )
+
+
 class RuntimeActionRunner(JSRunner):
     def __init__(self, artifact_dir: str):
         super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
@@ -409,6 +483,32 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
                 },
             },
         )
+
+    async def test_run_script_file_supports_long_pagination_sequences(self):
+        runner = LongPaginationRunner(total_pages=117)
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(len(data), 117)
+        self.assertEqual(data[0]["page"], 1)
+        self.assertEqual(data[-1]["page"], 117)
+        self.assertEqual(runner.calls[0], 1)
+        self.assertEqual(runner.calls[-1], 117)
+
+    async def test_run_script_file_raises_when_pagination_exceeds_limit(self):
+        runner = EndlessPaginationRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            with patch("core.js_runner.MAX_PAGES", 3):
+                with self.assertRaisesRegex(RuntimeError, "分页超过上限"):
+                    await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(runner.calls, [1, 2, 3])
 
     async def test_run_script_file_handles_runtime_capture_and_download_actions(self):
         with tempfile.TemporaryDirectory() as tmpdir:

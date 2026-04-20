@@ -7,7 +7,16 @@
 
 ---
 
-## 本次大更新（2026-04-16）
+## 本次大更新（2026-04-20 / v1.2.0）
+
+- 桌面端版本升级到 `v1.2.0`，滚动发布 `desktop-latest` 会直接带出本次 SHEIN + Temu 更新说明。
+- 新增 `shein-helper` 适配包，首版支持 `商品评价` 与 `商品分析-商品明细` 两条链路，默认继承当前页面筛选并全量分页导出。
+- SHEIN `商品分析-商品明细` 支持 `当前列表 / 仅 SKC / 仅 SPU / SKC + SPU` 维度导出，以及 `昨天 / 近7天 / 近30天 / 自定义` 统计时间覆盖；导出按 `SKC列表 / SPU列表` 双 sheet 落盘。
+- 导出文件命名上下文新增 SHEIN 识别逻辑，会稳定输出 `Shein_脚本名_时间范围_时间区间`，不再依赖页面店铺文案。
+- Temu 运营助手升级到 `1.5.4`，`后台-商品流量-列表` 已补齐 API 超时重试预算、列表真实 ready 校验和恢复后重置重试次数，单页 API 拉取上限提升到 `500`。
+- JS 执行器分页上限提升到 `1000` 页，并在脚本持续返回 `has_more=true` 时显式报错，避免长任务静默截断。
+
+## 上次大更新（2026-04-16）
 
 - Temu 运营助手升级到 `1.5.3`，补齐 `后台-保税仓退货`、`后台-资金限制`、`后台-建议零售价爬取`、`后台-建议零售价填写`、`后台-抽检结果明细`、`后台-商品品质分析` 六条新链路。
 - `保税仓退货 / 建议零售价 / 商品品质分析` 等链路补强了注入优先、页面 API 读数和字段对位，导出不再只剩原始行文本或出现列错位。
@@ -16,7 +25,7 @@
 - 左侧脚本树已支持独立上下滚动，脚本数量继续增长时不会把返回按钮和标题一起挤出可视区。
 - 后端导出链路新增 Excel 多 sheet 配置能力，后台任务早崩也会正确回落到 `error` 状态，方便 UI 和日志判断真实失败。
 
-## 上次大更新（2026-04-15 / v1.1.0）
+## 上上次大更新（2026-04-15 / v1.1.0）
 
 - 桌面端版本升级到 `v1.1.0`，GitHub 滚动发布会直接显示当前桌面版本号。
 - 桌面安装包改成稳定 ASCII 命名，避免 GitHub Release 上出现 `-1.0.2.dmg`、`Setup.1.0.2.exe` 这类不可读产物名。
@@ -51,19 +60,20 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 | `shopee-plus-v2` | Shopee 卖家后台 | 多门店多券型优惠券批量创建（商店 / 新买家 / 回购买家 / 关注礼） |
 | `lazada-plus-v1` | Lazada Seller Center | 多站点优惠券/促销批量创建（Regular / Flexi Combo / 新买家 / 粉丝券） |
 | `temu` | Temu 卖家后台 | 商品数据 / 活动数据 / 店铺流量 / 商品流量（列表/详情） / 对账中心 / 售后管理 / 商品评价 / 保税仓退货 / 资金限制 / 建议零售价（爬取/填写） / 抽检结果明细 / 商品品质分析 / 站点商品 / 商品实拍图洗唛合规 |
+| `shein-helper` | SHEIN 全球商家中心 | 商品评价 / 商品分析-商品明细（支持继承当前筛选、维度切换与多 sheet 导出） |
 | `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
 
 > 当前仓库内只保留一条 Shopee 适配线：`shopee-plus-v2`。旧 `shopee` / `shopee-plus` 已移除。
 
 ### 最近更新
 
-- Temu 适配包升级到 `1.5.3`，新增 `tax_free_return_confirm`、`fund_limited_list`、`recommended_retail_price`、`recommended_retail_price_fill`、`qc_detail`、`quality_dashboard`
-- `recommended_retail_price` 已切到页面 API 驱动的行展开，批量 SKU 不再跨商品串行错位
-- `fund_limited_list`、`qc_detail`、`quality_dashboard` 支持多 sheet 导出，复杂结果会按“列表/详情/分析/优化”拆开
-- 大批量任务进度已集中到统一工具层，`recommended_retail_price`、`quality_dashboard`、`fund_limited_list` 会显示增强进度条
-- 左侧脚本侧边栏已支持独立滚动，脚本数量增长后仍可稳定浏览
-- `file_excel` 继续支持多 sheet 工作簿注入和模板下载，适合复杂运营表单导入
-- 仓库仍内置 `lazada-plus-v1`、`shopee-plus-v2`、`jd`、`temu` 四条主要适配线
+- 桌面端升级到 `v1.2.0`，GitHub `desktop-latest` 会展示本次发布说明并输出 `crawshrimp-v1.2.0-*` 命名的桌面安装包。
+- 新增 `shein-helper@0.1.0`，支持 `商品评价` 与 `商品分析-商品明细` 全量导出，默认继承当前页面筛选。
+- SHEIN `商品分析-商品明细` 已支持 SKC / SPU 双维度导出和多 sheet Excel 列分组。
+- SHEIN / Temu 导出文件名上下文已统一补强，时间范围会优先回填当前页面或自定义参数。
+- Temu 适配包升级到 `1.5.4`，`后台-商品流量-列表` 已补强 API 超时重试、页面恢复后的真实列表 ready 校验和大分页抓取。
+- JS 执行器分页上限提升到 `1000`，并新增超限显式报错与回归测试。
+- 仓库当前内置 `lazada-plus-v1`、`shopee-plus-v2`、`jd`、`temu`、`shein-helper` 五条主要适配线。
 
 ---
 
@@ -186,6 +196,7 @@ crawshrimp/
 │   ├── shopee-plus-v2/       # Shopee 优惠券批量创建
 │   ├── lazada-plus-v1/       # Lazada 优惠券/促销批量创建
 │   ├── temu/                 # Temu 运营助手
+│   ├── shein-helper/         # SHEIN 商品评价 / 商品明细导出
 │   └── jd/                   # 京东价格监控
 └── sdk/                      # 开发工具 & 规范
     ├── ADAPTER_GUIDE.md      # 开发文档（详细版）
