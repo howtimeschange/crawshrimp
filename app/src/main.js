@@ -662,6 +662,11 @@ ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
   retries: 20,
   retryDelayMs: 500,
 }))
+ipcMain.handle('probe-task-params', async (_, aid, tid, params, options) =>
+  apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
+    params: params || {},
+    current_tab_id: options?.current_tab_id || '',
+  }))
 ipcMain.handle('run-task',        async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/run`, {
     params: params || {},

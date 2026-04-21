@@ -47,6 +47,7 @@ class TaskTrigger(BaseModel):
 
 class ParamType(str, Enum):
     text       = "text"        # 单行文本输入
+    textarea   = "textarea"    # 多行文本输入
     radio      = "radio"       # 单选框组
     select     = "select"      # 下拉选择
     checkbox   = "checkbox"    # 复选框组（多选）
@@ -79,6 +80,9 @@ class TaskParam(BaseModel):
     label: str
     placeholder: Optional[str] = None
     hint: Optional[str] = None
+    rows: Optional[int] = None           # textarea 用：显示行数
+    ui_span: Optional[str] = None        # GUI 可选：compact / full / half / third
+    ui_variant: Optional[str] = None     # GUI 可选：dropdown_multi 等渲染变体
     template_file: Optional[str] = None   # file_excel: 适配包内模板文件相对路径
     template_label: Optional[str] = None  # file_excel: GUI 下载模板按钮文案
     template_path: Optional[str] = None   # 运行时解析出的模板绝对路径（由后端填充）
@@ -97,6 +101,7 @@ class TaskDefinition(BaseModel):
     name: str
     description: Optional[str] = None
     script: str
+    param_probe_script: Optional[str] = None  # 可选：运行前动态探测参数选项/默认值
     execution_ui_mode: Optional[str] = None  # 可选：precheck_before_live 等前端执行交互模式
     validation_only_label: Optional[str] = None  # 可选：仅校验按钮文案
     auto_precheck_note: Optional[str] = None  # 可选：执行按钮旁提示文案

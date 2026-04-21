@@ -343,8 +343,22 @@ test('merchandise details SKC rows split product fields from live payload shape'
               },
               saleCnt: 23,
               payOrderCnt: 20,
+              epsUvIdx: 10937,
               goodsUv: 572,
-              payUv: 18,
+              epsGdsCtrIdx: 0.0559,
+              cartUvIdx: 103,
+              cartPvIdx: 111,
+              gdsCartCtrIdx: 0.1686,
+              payUvIdx: 18,
+              gdsPayCtrIdx: 0.0295,
+              totalQualityLevel: 'A1',
+              totalCommentCnt: 4,
+              badCommentRate: 0,
+              payCommentCnt: 2,
+              payBadCommentRate: 0.125,
+              returnOrderCnt: 1,
+              returnQty: 3,
+              quantityDeductedAmount: 88.5,
               pcsOrderCnt: 8,
               pcsQty: 273,
               newCate1Nm: '婴儿',
@@ -407,6 +421,23 @@ test('merchandise details SKC rows split product fields from live payload shape'
   assert.equal(result.data[0]['商品字段/标签'], '新品畅销 / 备货款A / 在售 / 上架')
   assert.equal(result.data[0]['商品基本信息/活动标签'], '活动中 / 即将开始活动')
   assert.equal(result.data[0]['商品基本信息/是否35天转备货'], '是')
+  assert.equal(result.data[0]['流量/曝光人数'], 10937)
+  assert.equal(result.data[0]['流量/商品访客数'], 572)
+  assert.equal(result.data[0]['流量/点击率'], '5.59%')
+  assert.equal(result.data[0]['流量/加车访客'], 103)
+  assert.equal(result.data[0]['流量/加车次数'], 111)
+  assert.equal(result.data[0]['流量/加车率'], '16.86%')
+  assert.equal(result.data[0]['流量/支付人数'], 18)
+  assert.equal(result.data[0]['流量/支付率'], '2.95%')
+  assert.equal(result.data[0]['质量/质量等级'], 'A1')
+  assert.equal(result.data[0]['质量/评论数'], 4)
+  assert.equal(result.data[0]['质量/差评率'], '0.00%')
+  assert.equal(result.data[0]['质量/评论数（支付口径）'], 2)
+  assert.equal(result.data[0]['质量/差评率（支付口径）'], '12.50%')
+  assert.equal(result.data[0]['质量/客单退货单数'], 1)
+  assert.equal(result.data[0]['质量/客单退货件数'], 3)
+  assert.equal(result.data[0]['质量/质量扣款（CNY）'], 88.5)
+  assert.equal(Object.hasOwn(result.data[0], '操作'), false)
   assert.equal(Object.hasOwn(result.data[0], '商品'), false)
   assert.equal(Object.hasOwn(result.data[0], '商品基本信息'), false)
 })
@@ -511,4 +542,97 @@ test('merchandise details prepare_template keeps per-dimension captures and appl
   assert.equal(result.meta.shared.total_batches, 0)
   assert.equal(result.meta.shared.active_template_index, 0)
   assert.equal(result.meta.shared.local_page, 1)
+})
+
+test('merchandise details prepare_template overrides requested page filters into API template payload', async () => {
+  const document = new FakeDocument('商品分析')
+  const shared = {
+    current_dimension: 'SKC列表',
+    captureResult: {
+      matches: [
+        {
+          url: 'https://sso.geiwohuo.com/sbn/new_goods/get_skc_diagnose_list',
+          responseUrl: 'https://sso.geiwohuo.com/sbn/new_goods/get_skc_diagnose_list',
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+            'x-gw-auth': 'skc-token',
+          },
+          postData: JSON.stringify({
+            areaCd: 'cn',
+            dt: '20260419',
+            countrySite: ['legacy-site'],
+            startDate: '20260419',
+            endDate: '20260419',
+            skuCate1Id: ['legacy-category'],
+            activityTag: ['legacy-activity'],
+            onsaleFlag: '0',
+            saleFlag: '1',
+            localFrstSaleBeginDate: '2026-03-01',
+            localFrstSaleEndDate: '2026-03-07',
+            newGoodsTag: ['1'],
+            layerNm: ['旧层次'],
+            totalQualityLevel: ['B2'],
+            skc: ['OLD-SKC'],
+            spu: ['OLD-SPU'],
+            pageNum: 1,
+            pageSize: 10,
+          }),
+          body: JSON.stringify({
+            code: '0',
+            info: {
+              data: [],
+              meta: { count: 12 },
+            },
+          }),
+        },
+      ],
+    },
+  }
+
+  const result = await runScript({
+    phase: 'prepare_template',
+    params: {
+      country_site: 'shein-all',
+      filter_skc: 'sk-a\nsk-b',
+      filter_spu: 'spu-a\nspu-b',
+      onsale_flag: '1',
+      sale_flag: '0',
+      listing_date_range: { start: '2026-04-01', end: '2026-04-20' },
+      new_goods_tag: ['2', '4'],
+      layer_nm: ['备货款A'],
+      total_quality_level: ['A1'],
+    },
+    shared,
+    document,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'collect_page')
+
+  const template = result.meta.shared.api_template
+  assert.deepEqual(template.payload.countrySite, ['shein-all'])
+  assert.deepEqual(template.payload.skc, ['sk-a', 'sk-b'])
+  assert.deepEqual(template.payload.spu, ['spu-a', 'spu-b'])
+  assert.equal(template.payload.onsaleFlag, '1')
+  assert.equal(template.payload.saleFlag, '0')
+  assert.equal(template.payload.localFrstSaleBeginDate, '2026-04-01')
+  assert.equal(template.payload.localFrstSaleEndDate, '2026-04-20')
+  assert.deepEqual(template.payload.newGoodsTag, ['2', '4'])
+  assert.deepEqual(template.payload.layerNm, ['备货款A'])
+  assert.deepEqual(template.payload.totalQualityLevel, ['A1'])
+  assert.equal(Object.hasOwn(template.payload, 'skuCate1Id'), false)
+  assert.equal(Object.hasOwn(template.payload, 'activityTag'), false)
+
+  assert.equal(template.filter_summary.includes('站点=shein-all'), true)
+  assert.equal(template.filter_summary.includes('上架日期=2026-04-01~2026-04-20'), true)
+  assert.equal(template.filter_summary.includes('在售状态=在售'), true)
+  assert.equal(template.filter_summary.includes('在架状态=下架'), true)
+  assert.equal(template.filter_summary.includes('新品标签=新品畅销,新品'), true)
+  assert.equal(template.filter_summary.includes('商品层次=备货款A'), true)
+  assert.equal(template.filter_summary.includes('质量等级=A1'), true)
+  assert.equal(template.filter_summary.includes('SKC=2项'), true)
+  assert.equal(template.filter_summary.includes('SPU=2项'), true)
 })

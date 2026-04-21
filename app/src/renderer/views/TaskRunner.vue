@@ -9,6 +9,10 @@
     <div class="runner-body">
       <!-- 参数面板 -->
       <div class="params-panel" v-if="visibleParams.length">
+        <div v-if="hasParamProbeScript && (dynamicParamProbeLoading || dynamicParamProbeError)" class="probe-note">
+          <span v-if="dynamicParamProbeLoading">正在探测页面筛选项…</span>
+          <span v-else>{{ dynamicParamProbeError }}</span>
+        </div>
         <div :class="['params-grid', paramsGridClass]">
           <div v-for="param in visibleParams" :key="param.id" :class="['param-group', paramLayoutClass(param)]">
             <label class="param-label">
@@ -23,6 +27,16 @@
                 :placeholder="param.placeholder || ''"
                 class="input"
               />
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
+            <template v-else-if="param.type === 'textarea'">
+              <textarea
+                v-model="values[param.id]"
+                :placeholder="param.placeholder || ''"
+                :class="['textarea', { 'textarea-compact': getTextareaRows(param) <= 3 }]"
+                :rows="getTextareaRows(param)"
+              ></textarea>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
@@ -61,7 +75,40 @@
 
             <!-- 复选框组 -->
             <template v-else-if="param.type === 'checkbox'">
-              <div class="checkbox-group">
+              <div v-if="isCheckboxDropdown(param)" class="multi-select" data-multi-select-root>
+                <button
+                  type="button"
+                  :class="['multi-select-trigger', { open: isMultiSelectOpen(param.id), empty: !(values[param.id] || []).length }]"
+                  @click="toggleMultiSelect(param.id)"
+                >
+                  <span class="multi-select-trigger-text">{{ getCheckboxSelectionSummary(param) }}</span>
+                  <span class="multi-select-trigger-icon">{{ isMultiSelectOpen(param.id) ? '▴' : '▾' }}</span>
+                </button>
+                <div v-if="isMultiSelectOpen(param.id)" class="multi-select-panel">
+                  <div class="multi-select-head">
+                    <span>支持复选</span>
+                    <button
+                      v-if="(values[param.id] || []).length"
+                      type="button"
+                      class="multi-select-clear"
+                      @click.stop="clearCheckboxSelection(param.id)"
+                    >
+                      清空
+                    </button>
+                  </div>
+                  <div class="multi-select-options">
+                    <label v-for="opt in param.options" :key="opt.value" class="multi-select-option">
+                      <input
+                        type="checkbox"
+                        :value="opt.value"
+                        v-model="values[param.id]"
+                      />
+                      <span class="multi-select-option-label">{{ opt.label }}</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+              <div v-else class="checkbox-group">
                 <label v-for="opt in param.options" :key="opt.value" class="checkbox-item">
                   <input
                     type="checkbox"
@@ -463,30 +510,148 @@ const showFiles = ref(false)
 const excelLoading = ref({})
 const templateFeedback = ref({})
 const runStage = ref('')
+const dynamicParamPatches = ref({})
+const dynamicParamProbeLoading = ref(false)
+const dynamicParamProbeError = ref('')
+const multiSelectOpenId = ref('')
 const dateInputRefs = new Map()
 let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 let runAbortToken = 0
+let dynamicParamProbeToken = 0
+
+function buildDefaultValues(params = []) {
+  const next = {}
+  for (const p of (params || [])) {
+    if (p.type === 'checkbox') next[p.id] = Array.isArray(p.default) ? [...p.default] : []
+    else if (isSingleTemporalParamType(p.type)) next[p.id] = p.default ?? ''
+    else if (isRangeParamType(p.type)) { next[p.id + '_start'] = ''; next[p.id + '_end'] = '' }
+    else if (p.type === 'file_excel') {
+      next[p.id + '_path'] = ''
+      next[p.id + '_rows'] = []
+      next[p.id + '_headers'] = []
+    }
+    else if (p.type === 'file_images') {
+      next[p.id + '_paths'] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
+    }
+    else next[p.id] = p.default ?? ''
+  }
+  return next
+}
+
+function getTextareaRows(param) {
+  const rows = Number(param?.rows || 0)
+  if (Number.isFinite(rows) && rows > 0) return Math.max(2, Math.min(8, Math.floor(rows)))
+  return 4
+}
+
+function mergeTaskParams(baseParams = [], patchMap = {}) {
+  return (baseParams || []).map(param => {
+    const patch = patchMap?.[param.id]
+    return patch ? { ...param, ...patch } : param
+  })
+}
+
+function normalizeSelectFallback(param) {
+  const options = Array.isArray(param?.options) ? param.options : []
+  const defaultValue = param?.default ?? ''
+  if (options.some(opt => opt?.value === defaultValue)) return defaultValue
+  if (options.some(opt => opt?.value === '')) return ''
+  return options[0]?.value ?? ''
+}
+
+function reconcileValuesWithParams(params = []) {
+  const next = { ...values.value }
+  let changed = false
+
+  for (const p of (params || [])) {
+    if (p.type === 'checkbox') {
+      const current = Array.isArray(next[p.id]) ? next[p.id].map(v => String(v)) : []
+      const valid = new Set((p.options || []).map(opt => String(opt?.value ?? '')))
+      const filtered = valid.size ? current.filter(value => valid.has(value)) : current
+      const normalized = Array.isArray(next[p.id]) ? filtered : (Array.isArray(p.default) ? [...p.default] : [])
+      if (JSON.stringify(next[p.id]) !== JSON.stringify(normalized)) {
+        next[p.id] = normalized
+        changed = true
+      }
+      continue
+    }
+
+    if (isRangeParamType(p.type)) {
+      if (!Object.prototype.hasOwnProperty.call(next, p.id + '_start')) {
+        next[p.id + '_start'] = ''
+        changed = true
+      }
+      if (!Object.prototype.hasOwnProperty.call(next, p.id + '_end')) {
+        next[p.id + '_end'] = ''
+        changed = true
+      }
+      continue
+    }
+
+    if (isSingleTemporalParamType(p.type)) {
+      if (!Object.prototype.hasOwnProperty.call(next, p.id)) {
+        next[p.id] = p.default ?? ''
+        changed = true
+      }
+      continue
+    }
+
+    if (p.type === 'file_excel') {
+      for (const suffix of ['_path', '_rows', '_headers']) {
+        const key = p.id + suffix
+        if (!Object.prototype.hasOwnProperty.call(next, key)) {
+          next[key] = suffix === '_path' ? '' : []
+          changed = true
+        }
+      }
+      continue
+    }
+
+    if (p.type === 'file_images') {
+      const key = p.id + '_paths'
+      if (!Object.prototype.hasOwnProperty.call(next, key)) {
+        next[key] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
+        changed = true
+      }
+      continue
+    }
+
+    if (!Object.prototype.hasOwnProperty.call(next, p.id)) {
+      next[p.id] = p.default ?? ''
+      changed = true
+      continue
+    }
+
+    if (p.type === 'select') {
+      const current = next[p.id]
+      const valid = new Set((p.options || []).map(opt => opt?.value))
+      if (valid.size && !valid.has(current)) {
+        next[p.id] = normalizeSelectFallback(p)
+        changed = true
+      }
+    }
+  }
+
+  if (changed) values.value = next
+}
+
+const taskParams = computed(() =>
+  mergeTaskParams(props.task?.params || [], dynamicParamPatches.value)
+)
+
+const hasParamProbeScript = computed(() =>
+  !!String(props.task?.param_probe_script || '').trim()
+)
 
 // 初始化默认值
 watch(() => props.task, (task) => {
   if (!task) return
-  const v = {}
-  for (const p of (task.params || [])) {
-    if (p.type === 'checkbox') v[p.id] = p.default || []
-    else if (isSingleTemporalParamType(p.type)) v[p.id] = p.default ?? ''
-    else if (isRangeParamType(p.type)) { v[p.id + '_start'] = ''; v[p.id + '_end'] = '' }
-    else if (p.type === 'file_excel') {
-      v[p.id + '_path'] = ''
-      v[p.id + '_rows'] = []
-      v[p.id + '_headers'] = []
-    }
-    else if (p.type === 'file_images') {
-      v[p.id + '_paths'] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
-    }
-    else v[p.id] = p.default ?? ''
-  }
-  values.value = v
+  dynamicParamProbeToken += 1
+  dynamicParamPatches.value = {}
+  dynamicParamProbeLoading.value = false
+  dynamicParamProbeError.value = ''
+  values.value = buildDefaultValues(task.params || [])
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
@@ -517,11 +682,14 @@ watch(() => props.task, (task) => {
       }
       scrollToBottom()
     } catch {}
+    if (hasParamProbeScript.value) {
+      void refreshDynamicParamPatches()
+    }
   })
 }, { immediate: true })
 
 const executeModeParam = computed(() =>
-  (props.task?.params || []).find(p =>
+  taskParams.value.find(p =>
     p?.id === 'execute_mode' &&
     p?.type === 'radio' &&
     (p?.options || []).some(opt => opt?.value === 'plan') &&
@@ -534,7 +702,7 @@ const autoPrecheckFlow = computed(() =>
 )
 
 const visibleParams = computed(() =>
-  orderVisibleParams((props.task?.params || []).filter(isParamVisibleInForm))
+  orderVisibleParams(taskParams.value.filter(isParamVisibleInForm))
 )
 
 const validationOnlyLabel = computed(() =>
@@ -571,6 +739,7 @@ const missingRequired = computed(() => {
   if (!props.task) return false
   return visibleParams.value.some(p => {
     if (!p.required) return false
+    if (p.type === 'checkbox') return !(values.value[p.id] || []).length
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
     if (p.type === 'file_images') return !(values.value[p.id + '_paths'] || []).length
     if (isSingleTemporalParamType(p.type)) return !values.value[p.id]
@@ -593,6 +762,8 @@ const progressSummary = computed(() =>
 
 function paramLayoutClass(param) {
   if (!param) return 'param-span-compact'
+  const explicitSpan = normalizeParamUiSpan(param.ui_span)
+  if (explicitSpan) return explicitSpan
   if (props.adapterId === 'shopee-webchat-bulk-reply') {
     if (['mode', 'run_mode'].includes(param.id)) {
       return 'param-span-half'
@@ -601,13 +772,101 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
+  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'textarea' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
     return 'param-span-full'
   }
   return 'param-span-compact'
+}
+
+function normalizeParamUiSpan(uiSpan) {
+  const raw = String(uiSpan || '').trim().toLowerCase()
+  if (raw === 'full') return 'param-span-full'
+  if (raw === 'half') return 'param-span-half'
+  if (raw === 'third') return 'param-span-third'
+  if (raw === 'compact') return 'param-span-compact'
+  return ''
+}
+
+function isCheckboxDropdown(param) {
+  return param?.type === 'checkbox' && String(param?.ui_variant || '').trim().toLowerCase() === 'dropdown_multi'
+}
+
+function getCheckboxSelectedLabels(param) {
+  const selected = Array.isArray(values.value[param?.id]) ? values.value[param.id].map(v => String(v)) : []
+  if (!selected.length) return []
+  const optionMap = new Map((param?.options || []).map(opt => [String(opt?.value ?? ''), String(opt?.label ?? opt?.value ?? '')]))
+  return selected
+    .map(value => optionMap.get(value) || value)
+    .filter(Boolean)
+}
+
+function getCheckboxSelectionSummary(param) {
+  const labels = getCheckboxSelectedLabels(param)
+  if (!labels.length) return param?.placeholder || '请选择，可多选'
+  if (labels.length <= 2) return labels.join('、')
+  return `已选 ${labels.length} 项：${labels.slice(0, 2).join('、')}…`
+}
+
+function isMultiSelectOpen(paramId) {
+  return multiSelectOpenId.value === paramId
+}
+
+function toggleMultiSelect(paramId) {
+  multiSelectOpenId.value = multiSelectOpenId.value === paramId ? '' : paramId
+}
+
+function clearCheckboxSelection(paramId) {
+  values.value[paramId] = []
+}
+
+function closeMultiSelect() {
+  multiSelectOpenId.value = ''
+}
+
+function extractProbeErrorMessage(payload) {
+  if (!payload) return ''
+  if (typeof payload === 'string') return payload.trim()
+  if (typeof payload?.detail === 'string' && payload.detail.trim()) return payload.detail.trim()
+  if (typeof payload?.error === 'string' && payload.error.trim()) return payload.error.trim()
+  if (typeof payload?.message === 'string' && payload.message.trim()) return payload.message.trim()
+  return ''
+}
+
+function shouldSilenceProbeError(rawMessage) {
+  const text = String(rawMessage || '').trim()
+  if (!text) return true
+  return (
+    text.includes('请先登录后再运行 probe') ||
+    text.includes('当前页面未登录') ||
+    text.includes('未登录 Shein 运营助手')
+  )
+}
+
+function formatProbeErrorMessage(error) {
+  const raw = extractProbeErrorMessage(error) || String(error?.message || error || '').trim()
+  if (shouldSilenceProbeError(raw)) return ''
+  if (!raw) {
+    return '页面筛选项探测失败，请确认当前标签页已打开 SHEIN 商品分析-商品明细页并已完成加载'
+  }
+  if (raw.startsWith('页面筛选项探测失败：')) return raw
+  if (raw === '页面筛选项探测失败') {
+    return '页面筛选项探测失败，请确认当前标签页已打开 SHEIN 商品分析-商品明细页并已完成加载'
+  }
+  return `页面筛选项探测失败：${raw}`
+}
+
+function handleDocumentPointerDown(event) {
+  if (!multiSelectOpenId.value) return
+  const target = event?.target
+  if (typeof target?.closest === 'function' && target.closest('[data-multi-select-root]')) return
+  closeMultiSelect()
+}
+
+function handleDocumentKeydown(event) {
+  if (event?.key === 'Escape') closeMultiSelect()
 }
 
 function imageParamLimit(param) {
@@ -712,9 +971,69 @@ function forceReset() {
   logs.value.push('[重置] 已强制重置运行状态')
 }
 
+watch(taskParams, (params) => {
+  if (!props.task) return
+  reconcileValuesWithParams(params || [])
+}, { deep: true })
+
+watch(() => `${props.adapterId || ''}::${props.task?.task_id || ''}::${values.value.mode || ''}`, () => {
+  if (!props.task || !hasParamProbeScript.value) return
+  void refreshDynamicParamPatches()
+})
+
+watch(() => props.task?.task_id, () => {
+  closeMultiSelect()
+})
+
+async function refreshDynamicParamPatches() {
+  const task = props.task
+  if (!task || !hasParamProbeScript.value) {
+    dynamicParamPatches.value = {}
+    dynamicParamProbeLoading.value = false
+    dynamicParamProbeError.value = ''
+    return
+  }
+
+  const requestToken = ++dynamicParamProbeToken
+  dynamicParamProbeLoading.value = true
+  dynamicParamProbeError.value = ''
+
+  try {
+    const probeParams = buildRunParams()
+    const mode = String(probeParams.mode || '').trim().toLowerCase() || 'current'
+    if (mode === 'new') {
+      dynamicParamProbeLoading.value = false
+      dynamicParamProbeError.value = ''
+      return
+    }
+    const currentTabId = await resolveCurrentTabId(probeParams)
+    if (mode === 'current' && !currentTabId) {
+      dynamicParamPatches.value = {}
+      dynamicParamProbeError.value = ''
+      return
+    }
+    const res = await window.cs.probeTaskParams(props.adapterId, task.task_id, probeParams, {
+      current_tab_id: currentTabId,
+    })
+    if (requestToken !== dynamicParamProbeToken) return
+    if (!res?.ok) throw new Error(extractProbeErrorMessage(res) || '页面筛选项探测失败')
+    dynamicParamPatches.value = Object.fromEntries((res.patches || [])
+      .filter(item => item && item.id)
+      .map(item => [item.id, item]))
+  } catch (error) {
+    if (requestToken !== dynamicParamProbeToken) return
+    dynamicParamPatches.value = {}
+    dynamicParamProbeError.value = formatProbeErrorMessage(error)
+  } finally {
+    if (requestToken === dynamicParamProbeToken) {
+      dynamicParamProbeLoading.value = false
+    }
+  }
+}
+
 function buildRunParams(overrides = {}) {
   const params = {}
-  for (const p of (props.task.params || [])) {
+  for (const p of taskParams.value) {
     if (!isParamVisibleInForm(p)) continue
 
     if (isSingleTemporalParamType(p.type)) {
@@ -1248,7 +1567,16 @@ async function downloadTemplate(task, param, template) {
   }
 }
 
-onUnmounted(() => clearInterval(pollTimer))
+onMounted(() => {
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+  document.addEventListener('keydown', handleDocumentKeydown)
+})
+
+onUnmounted(() => {
+  clearInterval(pollTimer)
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  document.removeEventListener('keydown', handleDocumentKeydown)
+})
 </script>
 
 <style scoped>
@@ -1293,6 +1621,14 @@ onUnmounted(() => clearInterval(pollTimer))
 .param-label { font-size: 12px; color: var(--text2); font-weight: 500; }
 .required { color: var(--orange); margin-left: 3px; }
 .hint { font-size: 11px; color: var(--text3); line-height: 1.5; }
+.probe-note {
+  font-size: 12px;
+  color: var(--text2);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
 
 .input {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
@@ -1300,6 +1636,21 @@ onUnmounted(() => clearInterval(pollTimer))
   transition: border-color 0.15s; width: 100%;
 }
 .input:focus { border-color: var(--orange); }
+.textarea {
+  min-height: 104px;
+  resize: vertical;
+  background: var(--bg3);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  outline: none;
+  width: 100%;
+}
+.textarea:focus { border-color: var(--orange); }
+.textarea-compact { min-height: 78px; }
 .input-number { width: 100%; }
 .select {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;
@@ -1307,6 +1658,104 @@ onUnmounted(() => clearInterval(pollTimer))
   cursor: pointer; width: 100%;
 }
 .select:focus { border-color: var(--orange); }
+
+.multi-select {
+  position: relative;
+}
+.multi-select-trigger {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 42px;
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.multi-select-trigger:hover,
+.multi-select-trigger.open {
+  border-color: var(--orange);
+}
+.multi-select-trigger:focus-visible {
+  border-color: var(--orange);
+  outline: none;
+}
+.multi-select-trigger.empty {
+  color: var(--text3);
+}
+.multi-select-trigger-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.multi-select-trigger-icon {
+  flex-shrink: 0;
+  color: var(--text2);
+  font-size: 14px;
+  line-height: 1;
+}
+.multi-select-panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  padding: 10px 12px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.28);
+}
+.multi-select-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--text2);
+}
+.multi-select-clear {
+  border: none;
+  background: transparent;
+  color: var(--orange);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 0;
+}
+.multi-select-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  padding-right: 2px;
+}
+.multi-select-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+}
+.multi-select-option input[type=checkbox] {
+  accent-color: var(--orange);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.multi-select-option-label {
+  min-width: 0;
+}
 
 .radio-group { display: flex; gap: 20px; flex-wrap: wrap; }
 .radio-item { display: flex; align-items: center; gap: 7px; cursor: pointer; }

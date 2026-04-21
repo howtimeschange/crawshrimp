@@ -86,11 +86,24 @@ class SheinMerchandiseExcelTest(unittest.TestCase):
             "商品基本信息/是否35天转备货": "是",
             "交易/销量": 23,
             "交易/支付订单数": 20,
+            "流量/曝光人数": 10937,
             "流量/商品访客数": 572,
+            "流量/点击率": "5.59%",
+            "流量/加车访客": 103,
+            "流量/加车次数": 111,
+            "流量/加车率": "16.86%",
             "流量/支付人数": 18,
+            "流量/支付率": "2.95%",
+            "质量/质量等级": "A1",
+            "质量/评论数": 4,
+            "质量/差评率": "0.00%",
+            "质量/评论数（支付口径）": 2,
+            "质量/差评率（支付口径）": "12.50%",
+            "质量/客单退货单数": 1,
+            "质量/客单退货件数": 3,
+            "质量/质量扣款（CNY）": 88.5,
             "备货/备货订单数": 8,
             "备货/备货件数": 273,
-            "操作": "查看趋势 / 质量分析",
             "筛选摘要": "站点=shein-all; 统计区间=20260413~20260419",
         }]
 
@@ -110,9 +123,9 @@ class SheinMerchandiseExcelTest(unittest.TestCase):
             self.assertEqual(cells["G1"], "商品基本信息")
             self.assertEqual(cells["I1"], "交易")
             self.assertEqual(cells["K1"], "流量")
-            self.assertEqual(cells["M1"], "备货")
-            self.assertEqual(cells["O1"], "操作")
-            self.assertEqual(cells["P1"], "筛选摘要")
+            self.assertEqual(cells["S1"], "质量")
+            self.assertEqual(cells["AA1"], "备货")
+            self.assertEqual(cells["AC1"], "筛选摘要")
 
             self.assertEqual(cells["A2"], "商品名称")
             self.assertEqual(cells["B2"], "SKC")
@@ -122,12 +135,23 @@ class SheinMerchandiseExcelTest(unittest.TestCase):
             self.assertEqual(cells["F2"], "标签")
             self.assertEqual(cells["G2"], "活动标签")
             self.assertEqual(cells["H2"], "是否35天转备货")
-            self.assertEqual(cells["N2"], "备货件数")
+            self.assertEqual(cells["K2"], "曝光人数")
+            self.assertEqual(cells["R2"], "支付率")
+            self.assertEqual(cells["S2"], "质量等级")
+            self.assertEqual(cells["Z2"], "质量扣款（CNY）")
+            self.assertEqual(cells["AB2"], "备货件数")
 
             self.assertEqual(cells["A3"], "100%纯棉儿童字母印花T恤柔软透气轻便短袖休闲夏季上衣2-6岁")
             self.assertEqual(cells["B3"], "sa260303103351937770319")
             self.assertEqual(cells["F3"], "新品畅销 / 备货款A / 在售 / 上架")
-            self.assertNotIn("Q1", cells)
+            self.assertEqual(cells["K3"], "10937")
+            self.assertEqual(cells["M3"], "5.59%")
+            self.assertEqual(cells["Q3"], "18")
+            self.assertEqual(cells["R3"], "2.95%")
+            self.assertEqual(cells["S3"], "A1")
+            self.assertEqual(cells["V3"], "2")
+            self.assertEqual(cells["Z3"], "88.5")
+            self.assertNotIn("AD1", cells)
 
 
 if __name__ == "__main__":

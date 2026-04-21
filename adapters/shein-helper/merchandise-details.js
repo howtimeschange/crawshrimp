@@ -18,12 +18,45 @@
     'referer',
     'user-agent',
   ])
+  const ONSALE_FLAG_LABELS = { '1': '在售', '0': '非在售' }
+  const SALE_FLAG_LABELS = { '1': '上架', '0': '下架' }
+  const NEW_GOODS_TAG_LABELS = {
+    '1': '新品爆款',
+    '2': '新品畅销',
+    '3': '潜力新品',
+    '4': '新品',
+  }
+  const FILTER_KEYS_CLEAR_ON_UI_APPLY = [
+    'skuCate1Id',
+    'activityTag',
+    'layerNm35dFlag',
+    'multicolorFlag',
+    'trendsFlag',
+    'skc',
+    'spu',
+    'onsaleFlag',
+    'saleFlag',
+    'localFrstSaleBeginDate',
+    'localFrstSaleEndDate',
+    'newGoodsTag',
+    'layerNm',
+    'totalQualityLevel',
+  ]
 
   const persistedRequestShared = {
     requestedMode: String(shared.requestedMode || params.mode || 'current').trim().toLowerCase() || 'current',
     requestedDimensionScope: normalizeDimensionScope(shared.requestedDimensionScope || params.dimension_scope),
     requestedTimeMode: normalizeTimeMode(shared.requestedTimeMode || params.time_mode),
     requestedCustomDateRange: normalizeDateRangeParam(shared.requestedCustomDateRange || params.custom_date_range),
+    requestedCountrySite: normalizeOptionalValue(shared.requestedCountrySite || params.country_site),
+    requestedSkcList: normalizeMultilineParam(shared.requestedSkcList || params.filter_skc),
+    requestedSpuList: normalizeMultilineParam(shared.requestedSpuList || params.filter_spu),
+    requestedOnsaleFlag: normalizeOptionalValue(shared.requestedOnsaleFlag || params.onsale_flag),
+    requestedSaleFlag: normalizeOptionalValue(shared.requestedSaleFlag || params.sale_flag),
+    requestedListingDateRange: normalizeDateRangeParam(shared.requestedListingDateRange || params.listing_date_range),
+    requestedNewGoodsTag: normalizeStringArrayParam(shared.requestedNewGoodsTag || params.new_goods_tag),
+    requestedLayerNm: normalizeStringArrayParam(shared.requestedLayerNm || params.layer_nm),
+    requestedQualityLevels: normalizeStringArrayParam(shared.requestedQualityLevels || params.total_quality_level),
   }
 
   function normalizeDimensionScope(value) {
@@ -40,12 +73,48 @@
     return 'current'
   }
 
+  function normalizeOptionalValue(value) {
+    return String(value || '').trim()
+  }
+
   function normalizeDateRangeParam(value) {
     if (!value || typeof value !== 'object') return {}
     const start = String(value.start || '').trim()
     const end = String(value.end || '').trim()
     if (!start || !end) return {}
     return { start, end }
+  }
+
+  function normalizeStringArrayParam(value) {
+    if (Array.isArray(value)) {
+      return value.map(item => String(item || '').trim()).filter(Boolean)
+    }
+    return String(value || '')
+      .split(/[\n,，]/)
+      .map(item => item.trim())
+      .filter(Boolean)
+  }
+
+  function normalizeMultilineParam(value) {
+    if (Array.isArray(value)) return normalizeStringArrayParam(value)
+    return String(value || '')
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean)
+  }
+
+  function hasRequestedPageFilters() {
+    return !!(
+      persistedRequestShared.requestedCountrySite ||
+      persistedRequestShared.requestedSkcList.length ||
+      persistedRequestShared.requestedSpuList.length ||
+      persistedRequestShared.requestedOnsaleFlag ||
+      persistedRequestShared.requestedSaleFlag ||
+      persistedRequestShared.requestedListingDateRange.start ||
+      persistedRequestShared.requestedNewGoodsTag.length ||
+      persistedRequestShared.requestedLayerNm.length ||
+      persistedRequestShared.requestedQualityLevels.length
+    )
   }
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
@@ -763,6 +832,284 @@
     }
   }
 
+  function collectReactControllerProps(predicate) {
+    const matches = []
+    const seen = new Set()
+    for (const node of document.querySelectorAll('body *')) {
+      if (!isVisible(node)) continue
+      let fiber = getReactFiber(node)
+      let depth = 0
+      while (fiber && depth < 24) {
+        const props = fiber.memoizedProps || {}
+        if (!seen.has(props) && predicate(props, node)) {
+          seen.add(props)
+          matches.push({ props, node })
+          break
+        }
+        fiber = fiber.return
+        depth += 1
+      }
+    }
+    return matches
+  }
+
+  function normalizeFilterItemRoot(node) {
+    let current = node || null
+    let depth = 0
+    while (current && depth < 6) {
+      if (current.querySelector?.('input, textarea, button, [role="button"], svg')) {
+        return current
+      }
+      current = current.parentElement || null
+      depth += 1
+    }
+    return node || null
+  }
+
+  function findFilterItemByLabel(label) {
+    const target = String(label || '').trim()
+    if (!target) return null
+    const nodes = [...document.querySelectorAll('div, span, label')]
+      .filter(isVisible)
+      .filter(node => textOf(node) === target)
+    for (const node of nodes) {
+      const root = normalizeFilterItemRoot(node)
+      if (root) return root
+    }
+    return null
+  }
+
+  function getResetButton() {
+    return [...document.querySelectorAll('button')]
+      .filter(isVisible)
+      .find(button => /^重置$/i.test(textOf(button))) || null
+  }
+
+  async function expandFilterPanelIfNeeded() {
+    const expandButton = [...document.querySelectorAll('button')]
+      .filter(isVisible)
+      .find(button => /^展开$/i.test(textOf(button)))
+    if (!expandButton) return false
+    try { expandButton.click?.() } catch (error) {}
+    await sleep(220)
+    return true
+  }
+
+  async function attemptResetPageFilters() {
+    await expandFilterPanelIfNeeded()
+    const button = getResetButton()
+    if (!button) return { attempted: false, applied: false, reason: 'missing_reset_button' }
+    try { button.click?.() } catch (error) {}
+    await sleep(500)
+    return { attempted: true, applied: true }
+  }
+
+  function invokeMatchingOnChange(predicate, candidates = []) {
+    const matches = collectReactControllerProps((props, node) =>
+      typeof props?.onChange === 'function' && predicate(props, node),
+    )
+    let applied = false
+    for (const match of matches) {
+      for (const candidate of candidates) {
+        try {
+          match.props.onChange(candidate)
+          applied = true
+        } catch (error) {}
+      }
+    }
+    return { count: matches.length, applied }
+  }
+
+  async function attemptInjectSimpleField(fieldName, candidates = []) {
+    const result = invokeMatchingOnChange(props => props?.name === fieldName, candidates)
+    await sleep(result.applied ? 160 : 0)
+    return result
+  }
+
+  async function attemptInjectRangeField(fieldNames = [], range = {}) {
+    const names = Array.isArray(fieldNames) ? fieldNames.map(item => String(item || '').trim()).filter(Boolean) : []
+    const start = slashDateToken(range?.start)
+    const end = slashDateToken(range?.end)
+    if (!names.length || !start || !end) {
+      return { count: 0, applied: false }
+    }
+    const candidates = [
+      [start, end],
+      [hyphenDateToken(start), hyphenDateToken(end)],
+      [new Date(`${hyphenDateToken(start)}T00:00:00+08:00`), new Date(`${hyphenDateToken(end)}T00:00:00+08:00`)],
+    ].filter(item => item[0] && item[1])
+    const result = invokeMatchingOnChange(props => Array.isArray(props?.name) && names.every(name => props.name.includes(name)), candidates)
+    await sleep(result.applied ? 180 : 0)
+    return result
+  }
+
+  function setNativeValue(input, nextValue) {
+    const value = String(nextValue ?? '')
+    const descriptor = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), 'value')
+    try {
+      descriptor?.set ? descriptor.set.call(input, value) : (input.value = value)
+    } catch (error) {
+      try { input.value = value } catch (e) {}
+    }
+    try { input.dispatchEvent(new Event('input', { bubbles: true })) } catch (error) {}
+    try { input.dispatchEvent(new Event('change', { bubbles: true })) } catch (error) {}
+    try { getReactProps(input)?.onChange?.({ target: input, currentTarget: input }) } catch (error) {}
+  }
+
+  async function attemptInjectBatchLines(label, lines = []) {
+    const values = Array.isArray(lines) ? lines.map(item => String(item || '').trim()).filter(Boolean) : []
+    if (!values.length) return { attempted: false, applied: false, reason: 'empty_lines' }
+
+    const fieldRoot = findFilterItemByLabel(label)
+    if (!fieldRoot) return { attempted: true, applied: false, reason: `missing_${label}_field` }
+
+    const trigger = [...fieldRoot.querySelectorAll('button, [role="button"], span, div')]
+      .filter(isVisible)
+      .find(node => node.querySelector?.('svg'))
+    if (!trigger) return { attempted: true, applied: false, reason: `missing_${label}_batch_trigger` }
+
+    try { trigger.click?.() } catch (error) {}
+    const modalReady = await waitFor(() =>
+      [...document.querySelectorAll('textarea')]
+        .filter(isVisible)
+        .some(node => /批量输入/i.test(textOf(node.closest?.('[role="dialog"], .soui-modal, .merchant-ui-modal, body') || null))),
+    4000, 120)
+    if (!modalReady) {
+      return { attempted: true, applied: false, reason: `missing_${label}_batch_modal` }
+    }
+
+    const textarea = [...document.querySelectorAll('textarea')].filter(isVisible).pop() || null
+    if (!textarea) return { attempted: true, applied: false, reason: `missing_${label}_textarea` }
+
+    textarea.focus?.()
+    setNativeValue(textarea, '')
+    setNativeValue(textarea, values.join('\n'))
+    await sleep(120)
+
+    const modalRoot = textarea.closest?.('[role="dialog"], .soui-modal, .merchant-ui-modal') || document.body
+    const confirmButton = [...modalRoot.querySelectorAll('button')]
+      .filter(isVisible)
+      .find(button => /^确定$/i.test(textOf(button))) || null
+    if (!confirmButton) {
+      return { attempted: true, applied: false, reason: `missing_${label}_confirm` }
+    }
+    try { confirmButton.click?.() } catch (error) {}
+    await sleep(300)
+    return { attempted: true, applied: true, count: values.length }
+  }
+
+  async function attemptApplyRequestedPageFilters() {
+    await expandFilterPanelIfNeeded()
+
+    const meta = {
+      site: { attempted: false, applied: false },
+      skc: { attempted: false, applied: false },
+      spu: { attempted: false, applied: false },
+      onsaleFlag: { attempted: false, applied: false },
+      saleFlag: { attempted: false, applied: false },
+      listingDateRange: { attempted: false, applied: false },
+      newGoodsTag: { attempted: false, applied: false },
+      layerNm: { attempted: false, applied: false },
+      totalQualityLevel: { attempted: false, applied: false },
+    }
+
+    if (persistedRequestShared.requestedCountrySite) {
+      meta.site.attempted = true
+      const siteResult = await attemptInjectSimpleField('countrySite', [
+        persistedRequestShared.requestedCountrySite,
+        [persistedRequestShared.requestedCountrySite],
+      ])
+      meta.site = { attempted: true, applied: !!siteResult.applied, count: siteResult.count || 0 }
+    }
+
+    if (persistedRequestShared.requestedSkcList.length) {
+      meta.skc = await attemptInjectBatchLines('SKC', persistedRequestShared.requestedSkcList)
+    }
+
+    if (persistedRequestShared.requestedSpuList.length) {
+      meta.spu = await attemptInjectBatchLines('SPU', persistedRequestShared.requestedSpuList)
+    }
+
+    if (persistedRequestShared.requestedOnsaleFlag) {
+      meta.onsaleFlag.attempted = true
+      const result = await attemptInjectSimpleField('onsaleFlag', [persistedRequestShared.requestedOnsaleFlag])
+      meta.onsaleFlag = { attempted: true, applied: !!result.applied, count: result.count || 0 }
+    }
+
+    if (persistedRequestShared.requestedSaleFlag) {
+      meta.saleFlag.attempted = true
+      const result = await attemptInjectSimpleField('saleFlag', [persistedRequestShared.requestedSaleFlag])
+      meta.saleFlag = { attempted: true, applied: !!result.applied, count: result.count || 0 }
+    }
+
+    if (persistedRequestShared.requestedListingDateRange.start && persistedRequestShared.requestedListingDateRange.end) {
+      meta.listingDateRange.attempted = true
+      const result = await attemptInjectRangeField(['localFrstSaleBeginDate', 'localFrstSaleEndDate'], persistedRequestShared.requestedListingDateRange)
+      meta.listingDateRange = { attempted: true, applied: !!result.applied, count: result.count || 0 }
+    }
+
+    if (persistedRequestShared.requestedNewGoodsTag.length) {
+      meta.newGoodsTag.attempted = true
+      const result = await attemptInjectSimpleField('newGoodsTag', [persistedRequestShared.requestedNewGoodsTag])
+      meta.newGoodsTag = { attempted: true, applied: !!result.applied, count: result.count || 0 }
+    }
+
+    if (persistedRequestShared.requestedLayerNm.length) {
+      meta.layerNm.attempted = true
+      const result = await attemptInjectSimpleField('layerNm', [persistedRequestShared.requestedLayerNm])
+      meta.layerNm = { attempted: true, applied: !!result.applied, count: result.count || 0 }
+    }
+
+    if (persistedRequestShared.requestedQualityLevels.length) {
+      meta.totalQualityLevel.attempted = true
+      const result = await attemptInjectSimpleField('totalQualityLevel', [persistedRequestShared.requestedQualityLevels])
+      meta.totalQualityLevel = { attempted: true, applied: !!result.applied, count: result.count || 0 }
+    }
+
+    return meta
+  }
+
+  function applyRequestedFilterOverrides(payload) {
+    const next = deepClone(payload, {})
+
+    if (hasRequestedPageFilters()) {
+      for (const key of FILTER_KEYS_CLEAR_ON_UI_APPLY) {
+        delete next[key]
+      }
+    }
+
+    if (persistedRequestShared.requestedCountrySite) {
+      next.countrySite = [persistedRequestShared.requestedCountrySite]
+    }
+    if (persistedRequestShared.requestedSkcList.length) {
+      next.skc = deepClone(persistedRequestShared.requestedSkcList, [])
+    }
+    if (persistedRequestShared.requestedSpuList.length) {
+      next.spu = deepClone(persistedRequestShared.requestedSpuList, [])
+    }
+    if (persistedRequestShared.requestedOnsaleFlag) {
+      next.onsaleFlag = persistedRequestShared.requestedOnsaleFlag
+    }
+    if (persistedRequestShared.requestedSaleFlag) {
+      next.saleFlag = persistedRequestShared.requestedSaleFlag
+    }
+    if (persistedRequestShared.requestedListingDateRange.start && persistedRequestShared.requestedListingDateRange.end) {
+      next.localFrstSaleBeginDate = hyphenDateToken(persistedRequestShared.requestedListingDateRange.start)
+      next.localFrstSaleEndDate = hyphenDateToken(persistedRequestShared.requestedListingDateRange.end)
+    }
+    if (persistedRequestShared.requestedNewGoodsTag.length) {
+      next.newGoodsTag = deepClone(persistedRequestShared.requestedNewGoodsTag, [])
+    }
+    if (persistedRequestShared.requestedLayerNm.length) {
+      next.layerNm = deepClone(persistedRequestShared.requestedLayerNm, [])
+    }
+    if (persistedRequestShared.requestedQualityLevels.length) {
+      next.totalQualityLevel = deepClone(persistedRequestShared.requestedQualityLevels, [])
+    }
+
+    return next
+  }
+
   function summarizeFilters(payload) {
     const parts = []
     const sites = Array.isArray(payload.countrySite)
@@ -779,6 +1126,49 @@
       parts.push(startDate === endDate ? `统计日期=${startDate}` : `统计区间=${startDate}~${endDate}`)
     } else if (dt) {
       parts.push(`统计日期=${dt}`)
+    }
+
+    const listingStart = hyphenDateToken(payload.localFrstSaleBeginDate)
+    const listingEnd = hyphenDateToken(payload.localFrstSaleEndDate)
+    if (listingStart && listingEnd) {
+      parts.push(listingStart === listingEnd ? `上架日期=${listingStart}` : `上架日期=${listingStart}~${listingEnd}`)
+    }
+
+    const onsaleLabel = ONSALE_FLAG_LABELS[String(payload.onsaleFlag || '').trim()] || ''
+    if (onsaleLabel) parts.push(`在售状态=${onsaleLabel}`)
+
+    const saleLabel = SALE_FLAG_LABELS[String(payload.saleFlag || '').trim()] || ''
+    if (saleLabel) parts.push(`在架状态=${saleLabel}`)
+
+    const newGoodsTags = (Array.isArray(payload.newGoodsTag) ? payload.newGoodsTag : [])
+      .map(item => NEW_GOODS_TAG_LABELS[String(item || '').trim()] || String(item || '').trim())
+      .filter(Boolean)
+    if (newGoodsTags.length) {
+      parts.push(`新品标签=${newGoodsTags.join(',')}`)
+    }
+
+    const layerNames = (Array.isArray(payload.layerNm) ? payload.layerNm : [])
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+    if (layerNames.length) {
+      parts.push(`商品层次=${layerNames.join(',')}`)
+    }
+
+    const qualityLevels = (Array.isArray(payload.totalQualityLevel) ? payload.totalQualityLevel : [])
+      .map(item => String(item || '').trim())
+      .filter(Boolean)
+    if (qualityLevels.length) {
+      parts.push(`质量等级=${qualityLevels.join(',')}`)
+    }
+
+    const skcValues = (Array.isArray(payload.skc) ? payload.skc : []).map(item => String(item || '').trim()).filter(Boolean)
+    if (skcValues.length) {
+      parts.push(`SKC=${skcValues.length}项`)
+    }
+
+    const spuValues = (Array.isArray(payload.spu) ? payload.spu : []).map(item => String(item || '').trim()).filter(Boolean)
+    if (spuValues.length) {
+      parts.push(`SPU=${spuValues.length}项`)
     }
 
     return parts.join('; ')
@@ -848,6 +1238,20 @@
     return value
   }
 
+  function firstValue(...values) {
+    for (const value of values) {
+      if (value != null && value !== '') return value
+    }
+    return undefined
+  }
+
+  function percentCell(value) {
+    if (value == null || value === '') return ''
+    const numeric = Number(value)
+    if (!Number.isFinite(numeric)) return String(value)
+    return `${(numeric * 100).toFixed(2)}%`
+  }
+
   function formatFlag(value) {
     const text = String(value || '').trim()
     if (!text) return ''
@@ -914,7 +1318,6 @@
       '商品字段/商品名称': String(item?.goodsName || item?.title || '').trim(),
       '商品字段/SPU': String(item?.spu || '').trim(),
       '商品字段/标签': buildGoodsTags(item, dimension),
-      操作: dimension === 'SKC列表' ? '查看趋势 / 质量分析' : '查看趋势',
       筛选摘要: filterSummary || '',
     }
 
@@ -926,8 +1329,22 @@
       row['商品基本信息/是否35天转备货'] = formatFlag(item?.layerNm35dFlag)
       row['交易/销量'] = numericCell(item?.saleCnt ?? item?.c1dSaleCnt)
       row['交易/支付订单数'] = numericCell(item?.payOrderCnt ?? item?.c1dOrderCnt ?? item?.c1dPmsOrderCnt)
+      row['流量/曝光人数'] = numericCell(firstValue(item?.epsUv, item?.epsUvIdx, item?.exposeUv, item?.exposeUvIdx))
       row['流量/商品访客数'] = numericCell(item?.goodsUv ?? item?.c1dGoodsUvAgg ?? item?.c1dGoodsUvAggIntfAgg)
-      row['流量/支付人数'] = numericCell(item?.payUv ?? item?.payUserCnt ?? item?.payUserCntIntfAgg)
+      row['流量/点击率'] = percentCell(firstValue(item?.epsGdsCtr, item?.epsGdsCtrIdx, item?.clickRate, item?.goodsClickRate))
+      row['流量/加车访客'] = numericCell(firstValue(item?.cartUv, item?.cartUvIdx, item?.c1dCartUvAgg, item?.c1dCartUvAggIntfAgg))
+      row['流量/加车次数'] = numericCell(firstValue(item?.cartPv, item?.cartPvIdx, item?.c1dCartPv, item?.c1dCartCnt))
+      row['流量/加车率'] = percentCell(firstValue(item?.gdsCartCtr, item?.gdsCartCtrIdx, item?.cartUvRate, item?.cartRate))
+      row['流量/支付人数'] = numericCell(firstValue(item?.payUv, item?.payUvIdx, item?.payUserCnt, item?.payUserCntIntfAgg, item?.c1dPayUvAgg))
+      row['流量/支付率'] = percentCell(firstValue(item?.gdsPayCtr, item?.gdsPayCtrIdx, item?.payUvRate, item?.payRate))
+      row['质量/质量等级'] = String(firstValue(item?.totalQualityLevel, item?.totalQualityLevelBbl, item?.qualityLevel, item?.qualityGrade) || '').trim()
+      row['质量/评论数'] = numericCell(firstValue(item?.totalCommentCnt, item?.commentCnt, item?.commentCount))
+      row['质量/差评率'] = percentCell(firstValue(item?.badCommentRate, item?.commentBadRate))
+      row['质量/评论数（支付口径）'] = numericCell(firstValue(item?.payCommentCnt, item?.payCommentCount))
+      row['质量/差评率（支付口径）'] = percentCell(firstValue(item?.payBadCommentRate, item?.payCommentBadRate))
+      row['质量/客单退货单数'] = numericCell(firstValue(item?.returnOrderCnt, item?.returnOrderCount))
+      row['质量/客单退货件数'] = numericCell(firstValue(item?.returnQty, item?.returnQuantity))
+      row['质量/质量扣款（CNY）'] = numericCell(firstValue(item?.quantityDeductedAmount, item?.qualityDeductAmount))
       row['备货/备货订单数'] = numericCell(item?.pcsOrderCnt ?? item?.stockOrderCnt ?? item?.prepareOrderCnt)
       row['备货/备货件数'] = numericCell(item?.pcsQty ?? item?.stockQty ?? item?.prepareQty)
       return row
@@ -937,7 +1354,7 @@
     row['交易/销量'] = numericCell(item?.saleCnt ?? item?.c1dSaleCnt)
     row['交易/支付订单数'] = numericCell(item?.payOrderCnt ?? item?.c1dOrderCnt ?? item?.c1dPmsOrderCnt)
     row['流量/商详访客'] = numericCell(item?.goodsUv ?? item?.c1dGoodsUvAgg ?? item?.c1dGoodsUvAggIntfAgg)
-    row['流量/支付人数'] = numericCell(item?.payUv ?? item?.payUserCnt ?? item?.payUserCntIntfAgg)
+    row['流量/支付人数'] = numericCell(firstValue(item?.payUv, item?.payUvIdx, item?.payUserCnt, item?.payUserCntIntfAgg, item?.c1dPayUvAgg))
     return row
   }
 
@@ -952,7 +1369,7 @@
 
     const endpoint = extractPathname(match?.responseUrl || match?.url || '')
     const responsePayload = safeJsonParse(match?.body) || {}
-    const filterPayload = stripPagingFields(payload)
+    const filterPayload = applyRequestedFilterOverrides(stripPagingFields(payload))
     const dimension = inferDimensionFromEndpoint(endpoint, payload, preferredDimension || 'SKC列表') || preferredDimension || 'SKC列表'
     const filterSummary = summarizeFilters(filterPayload)
     const totalRows = resolveTotalRows(responsePayload)
@@ -963,7 +1380,7 @@
         endpoint,
         method: String(match?.method || 'POST').trim().toUpperCase() || 'POST',
         headers: sanitizeHeaders(match?.headers),
-        payload: deepClone(payload, {}),
+        payload: deepClone(filterPayload, {}),
         dimension,
         filter_summary: filterSummary,
         filter_payload: filterPayload,
@@ -1146,6 +1563,16 @@
         return fail('SHEIN 商品分析-商品明细页面未加载完成，请确认已登录并打开页面')
       }
 
+      await expandFilterPanelIfNeeded()
+
+      if (hasRequestedPageFilters() && !shared.page_filters_reset) {
+        return nextPhase('reset_page_filters', 0)
+      }
+
+      if (hasRequestedPageFilters() && !shared.page_filters_applied) {
+        return nextPhase('apply_page_filters', 0)
+      }
+
       if (shouldAttemptRequestedTimeInjection() && !shared.time_injection_attempted) {
         return nextPhase('inject_time_range', 0)
       }
@@ -1178,6 +1605,34 @@
         capture_source: captured.source || capturePlan.source,
         current_dimension: currentDimension,
         [CAPTURE_KEY]: captured.captureResult,
+      })
+    }
+
+    if (phase === 'reset_page_filters') {
+      const ready = await waitFor(pageReady, 10000, 250)
+      if (!ready) {
+        return fail('SHEIN 商品分析-商品明细页面未加载完成，无法重置筛选项')
+      }
+
+      const resetMeta = await attemptResetPageFilters()
+      return nextPhase('main', 260, {
+        ...shared,
+        page_filters_reset: true,
+        page_filters_reset_meta: resetMeta,
+      })
+    }
+
+    if (phase === 'apply_page_filters') {
+      const ready = await waitFor(pageReady, 10000, 250)
+      if (!ready) {
+        return fail('SHEIN 商品分析-商品明细页面未加载完成，无法填充筛选项')
+      }
+
+      const applyMeta = await attemptApplyRequestedPageFilters()
+      return nextPhase('main', 260, {
+        ...shared,
+        page_filters_applied: true,
+        page_filter_apply_meta: applyMeta,
       })
     }
 

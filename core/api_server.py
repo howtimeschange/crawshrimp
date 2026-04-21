@@ -10,6 +10,7 @@ Bundling notes (for electron-builder / python-build-standalone):
 """
 import asyncio
 import base64
+import json
 import logging
 import os
 import shutil
@@ -31,6 +32,7 @@ from core import data_sink
 from core import notifier
 from core import scheduler as sched_module
 from core.cdp_bridge import get_bridge, reset_bridge
+from core.browser_session import open_browser_session
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 
@@ -1321,6 +1323,7 @@ def list_tasks():
                 "task_id": task.id,
                 "task_name": task.name,
                 "description": task.description,
+                "param_probe_script": task.param_probe_script,
                 "execution_ui_mode": task.execution_ui_mode,
                 "validation_only_label": task.validation_only_label,
                 "auto_precheck_note": task.auto_precheck_note,
@@ -1335,6 +1338,11 @@ def list_tasks():
 
 
 class RunTaskRequest(BaseModel):
+    params: Optional[dict] = None
+    current_tab_id: Optional[str] = None
+
+
+class ProbeTaskParamsRequest(BaseModel):
     params: Optional[dict] = None
     current_tab_id: Optional[str] = None
 
@@ -1366,6 +1374,64 @@ def get_probe_bundle(probe_id: str):
         return result.model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/params/probe")
+async def probe_task_params(adapter_id: str, task_id: str, req: ProbeTaskParamsRequest):
+    adapter_loader.scan_all()
+    adapter = adapter_loader.get_adapter(adapter_id)
+    if not adapter:
+        raise HTTPException(404, f"Adapter not found: {adapter_id}")
+
+    task = next((item for item in adapter.tasks if item.id == task_id), None)
+    if not task:
+        raise HTTPException(404, f"Task not found: {task_id}")
+
+    probe_script = str(task.param_probe_script or "").strip()
+    if not probe_script:
+        raise HTTPException(404, f"Task does not declare param_probe_script: {adapter_id}/{task_id}")
+
+    adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
+    if not adapter_dir:
+        raise HTTPException(404, f"Adapter directory not found: {adapter_id}")
+
+    script_path = Path(adapter_dir) / probe_script
+    if not script_path.exists() or not script_path.is_file():
+        raise HTTPException(404, f"Param probe script not found: {probe_script}")
+
+    run_params = dict(req.params or {})
+    current_tab_id = str(req.current_tab_id or "").strip()
+
+    try:
+        session = await open_browser_session(
+            adapter_id,
+            task_id,
+            mode=str(run_params.get("mode") or "current").strip().lower() or "current",
+            current_tab_id=current_tab_id,
+        )
+        prelude = (
+            f"window.__CRAWSHRIMP_PARAMS__ = {json.dumps(run_params, ensure_ascii=False)};\n"
+            f"window.__CRAWSHRIMP_PARAM_PROBE__ = true;\n"
+        )
+        result = await session.runner.evaluate_with_reconnect(
+            prelude + script_path.read_text(encoding="utf-8"),
+            allow_navigation_retry=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+
+    if not result.success:
+        raise HTTPException(400, result.error or "task param probe failed")
+
+    return {
+        "ok": True,
+        "patches": result.data if isinstance(result.data, list) else [],
+        "meta": result.meta or {},
+    }
 
 
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):

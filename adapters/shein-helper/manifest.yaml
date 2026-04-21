@@ -39,6 +39,7 @@ tasks:
     name: 商品分析-商品明细
     description: 抓取 SHEIN 全球商家中心商品分析-商品明细列表，继承当前页面筛选并自动全量翻页导出
     script: merchandise-details.js
+    param_probe_script: merchandise-details-param-probe.js
     entry_url: https://sso.geiwohuo.com/#/sbn/merchandise/details
     params:
       - id: mode
@@ -87,6 +88,146 @@ tasks:
         visible_when:
           field: time_mode
           equals: custom
+      - id: country_site
+        type: select
+        label: 站点
+        default: ""
+        hint: 留空则使用页面默认站点；可选项会按当前页面实时探测
+        options:
+          - value: ""
+            label: 使用页面默认站点
+      - id: filter_skc
+        type: textarea
+        label: SKC
+        rows: 3
+        ui_span: compact
+        hint: 支持批量搜索，一行一个；留空则不额外指定
+        placeholder: "例如：\nsk25021051271714212\nsa260303103351937770319"
+      - id: filter_spu
+        type: textarea
+        label: SPU
+        rows: 3
+        ui_span: compact
+        hint: 支持批量搜索，一行一个；留空则不额外指定
+        placeholder: "例如：\nk250210512717\na2603031033519377"
+      - id: onsale_flag
+        type: select
+        label: 在售状态
+        default: ""
+        options:
+          - value: ""
+            label: 不额外指定
+          - value: "1"
+            label: 在售
+          - value: "0"
+            label: 非在售
+      - id: sale_flag
+        type: select
+        label: 在架状态
+        default: ""
+        options:
+          - value: ""
+            label: 不额外指定
+          - value: "1"
+            label: 上架
+          - value: "0"
+            label: 下架
+      - id: listing_date_range
+        type: date_range
+        label: 上架日期
+        hint: 留空则不额外指定
+      - id: new_goods_tag
+        type: checkbox
+        label: 新品标签
+        default: []
+        ui_span: compact
+        ui_variant: dropdown_multi
+        placeholder: 请选择，可多选
+        options:
+          - value: "1"
+            label: 新品爆款
+          - value: "2"
+            label: 新品畅销
+          - value: "3"
+            label: 潜力新品
+          - value: "4"
+            label: 新品
+      - id: layer_nm
+        type: checkbox
+        label: 商品层次
+        default: []
+        ui_span: compact
+        ui_variant: dropdown_multi
+        placeholder: 请选择，可多选
+        options:
+          - value: "QQK"
+            label: QQK
+          - value: "保证在售款"
+            label: 保证在售款
+          - value: "加码"
+            label: 加码
+          - value: "售完下架"
+            label: 售完下架
+          - value: "备货款A"
+            label: 备货款A
+          - value: "备货款B"
+            label: 备货款B
+          - value: "待处理议价"
+            label: 待处理议价
+          - value: "新款"
+            label: 新款
+          - value: "新款A"
+            label: 新款A
+          - value: "新款未上架"
+            label: 新款未上架
+          - value: "春夏款"
+            label: 春夏款
+          - value: "暂不下单"
+            label: 暂不下单
+          - value: "清仓款"
+            label: 清仓款
+          - value: "热销断码款"
+            label: 热销断码款
+          - value: "特殊-赠品"
+            label: 特殊-赠品
+          - value: "自主下架"
+            label: 自主下架
+          - value: "自主停产"
+            label: 自主停产
+          - value: "退供款"
+            label: 退供款
+          - value: "重复款"
+            label: 重复款
+          - value: "问题款"
+            label: 问题款
+      - id: total_quality_level
+        type: checkbox
+        label: 质量等级
+        default: []
+        ui_span: compact
+        ui_variant: dropdown_multi
+        placeholder: 请选择，可多选
+        options:
+          - value: "A1"
+            label: A1
+          - value: "A2"
+            label: A2
+          - value: "B1"
+            label: B1
+          - value: "B2"
+            label: B2
+          - value: "C1"
+            label: C1
+          - value: "C2"
+            label: C2
+          - value: "D1"
+            label: D1
+          - value: "D2"
+            label: D2
+          - value: "不合格-D"
+            label: 不合格-D
+          - value: "无判断"
+            label: 无判断
     trigger:
       type: manual
     output:
@@ -106,11 +247,24 @@ tasks:
               - 商品基本信息/是否35天转备货
               - 交易/销量
               - 交易/支付订单数
+              - 流量/曝光人数
               - 流量/商品访客数
+              - 流量/点击率
+              - 流量/加车访客
+              - 流量/加车次数
+              - 流量/加车率
               - 流量/支付人数
+              - 流量/支付率
+              - 质量/质量等级
+              - 质量/评论数
+              - 质量/差评率
+              - 质量/评论数（支付口径）
+              - 质量/差评率（支付口径）
+              - 质量/客单退货单数
+              - 质量/客单退货件数
+              - 质量/质量扣款（CNY）
               - 备货/备货订单数
               - 备货/备货件数
-              - 操作
               - 筛选摘要
             column_groups:
               - label: 商品字段
@@ -131,8 +285,24 @@ tasks:
                   - 交易/支付订单数
               - label: 流量
                 columns:
+                  - 流量/曝光人数
                   - 流量/商品访客数
+                  - 流量/点击率
+                  - 流量/加车访客
+                  - 流量/加车次数
+                  - 流量/加车率
                   - 流量/支付人数
+                  - 流量/支付率
+              - label: 质量
+                columns:
+                  - 质量/质量等级
+                  - 质量/评论数
+                  - 质量/差评率
+                  - 质量/评论数（支付口径）
+                  - 质量/差评率（支付口径）
+                  - 质量/客单退货单数
+                  - 质量/客单退货件数
+                  - 质量/质量扣款（CNY）
               - label: 备货
                 columns:
                   - 备货/备货订单数
@@ -146,7 +316,6 @@ tasks:
               - 交易/支付订单数
               - 流量/商详访客
               - 流量/支付人数
-              - 操作
               - 筛选摘要
             column_groups:
               - label: 商品字段

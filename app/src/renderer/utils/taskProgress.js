@@ -48,6 +48,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'fund_limited_list',
     config: ENHANCED_PROGRESS_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'shein-helper',
+    taskId: 'merchandise_details',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {
