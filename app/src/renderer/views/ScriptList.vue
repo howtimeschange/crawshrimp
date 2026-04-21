@@ -105,6 +105,20 @@
             <button class="btn-orange-sm" :disabled="installing" @click="browseDirectory">选择目录</button>
             <button class="btn-ghost" :disabled="installing" @click="browseZip">选择 ZIP</button>
           </div>
+          <div v-if="installType !== 'zip'" class="install-mode-row">
+            <span class="install-mode-label">目录导入模式</span>
+            <label class="install-mode-option">
+              <input v-model="installMode" type="radio" value="copy" :disabled="installing" />
+              <span>复制</span>
+            </label>
+            <label class="install-mode-option">
+              <input v-model="installMode" type="radio" value="link" :disabled="installing" />
+              <span>link 开发模式</span>
+            </label>
+          </div>
+          <p v-if="installType !== 'zip'" class="install-mode-hint">
+            `link` 会让运行时直接指向源码目录；改完脚本后无需重新导入。ZIP 仍固定为复制安装。
+          </p>
           <div class="input-row install-input-row">
             <input
               v-model="installPath"
@@ -142,6 +156,7 @@ const loadError = ref('')
 const showInstall = ref(false)
 const installPath = ref('')
 const installType = ref('')
+const installMode = ref('copy')
 const installing = ref(false)
 const isDragging = ref(false)
 const dragDepth = ref(0)
@@ -257,6 +272,7 @@ function closeInstallModal() {
 function clearInstallSelection() {
   installPath.value = ''
   installType.value = ''
+  installMode.value = 'copy'
   msg.value = ''
   msgErr.value = false
   resetDragState()
@@ -390,8 +406,8 @@ async function doInstall() {
   installing.value = true
 
   const payload = resolved.kind === 'zip'
-    ? { file: resolved.path }
-    : { path: resolved.path }
+    ? { file: resolved.path, install_mode: 'copy' }
+    : { path: resolved.path, install_mode: installMode.value }
 
   try {
     const r = await window.cs.installAdapter(payload)
@@ -409,7 +425,7 @@ async function doInstall() {
       successAdapterVersion.value = r.adapter?.version || ''
       successDetail.value = refreshFailed
         ? '已成功导入，但脚本列表刷新失败，请稍后手动刷新。'
-        : '已成功导入，脚本列表已更新。'
+        : `已成功以「${r.adapter?.install_mode === 'link' ? 'link 开发模式' : '复制'}」导入，脚本列表已更新。`
       installState.value = 'success'
       clearInstallSelection()
       clearSuccessTimer()
@@ -567,6 +583,10 @@ onUnmounted(() => {
 .drop-title { font-size: 14px; font-weight: 700; color: var(--text); }
 .drop-sub { margin-top: 6px; font-size: 12px; color: var(--text3); line-height: 1.6; }
 .picker-row { display: flex; gap: 10px; }
+.install-mode-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.install-mode-label { font-size: 12px; color: var(--text2); }
+.install-mode-option { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text); }
+.install-mode-hint { margin: 6px 0 0; font-size: 12px; color: var(--text3); line-height: 1.5; }
 .input-row { display: flex; gap: 8px; }
 .install-input-row { align-items: center; }
 .input { flex: 1; background: var(--bg3); border: 1px solid var(--border); border-radius: 8px; padding: 9px 12px; color: var(--text); font-size: 13px; outline: none; }

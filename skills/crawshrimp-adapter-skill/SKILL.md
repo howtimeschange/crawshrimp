@@ -19,18 +19,17 @@ This skill is the right fit when the hard part is one of these:
 
 If the current blocker is a **new page**, **flaky control**, **portal popup**, or **React/Vue DOM experiment**, use this skill together with [../web-automation-skill/SKILL.md](../web-automation-skill/SKILL.md).
 
-If a standard `crawshrimp probe` bundle exists, treat it as the input evidence layer for this skill. Probe should tell you the page state map, candidate API surfaces, and recovery clues; this skill turns those findings into phases, `shared`, runtime actions, export guards, and regressions.
+If `dev harness` evidence already exists, treat it as the input evidence layer for this skill. Harness snapshots, generated knowledge hits, and optional probe bundles should tell you the page state map, candidate API surfaces, and recovery clues; this skill turns those findings into phases, `shared`, runtime actions, export guards, and regressions.
 
-Preferred probe entry in this repo:
+Preferred evidence entry in this repo:
 
 ```bash
-./venv/bin/python scripts/crawshrimp_probe.py run \
+./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
   --adapter <adapter_id> \
-  --task <task_id> \
-  --goal "<what you need to prove>"
+  --task <task_id>
 ```
 
-If the page is not yet well-mapped, run that wrapper first instead of hand-rolling DOM reconnaissance from scratch.
+If the page is not yet well-mapped, run that harness first instead of hand-rolling DOM reconnaissance from scratch. Add `knowledge` and `probe` only when the first snapshot is not enough.
 
 ## Quick Workflow
 
@@ -48,7 +47,7 @@ If the page is not yet well-mapped, run that wrapper first instead of hand-rolli
 4. Stabilize state inheritance and recovery next.
    - If the task switches site, time range, page, drawer, or host, read [references/state-recovery.md](references/state-recovery.md).
 
-5. If a probe bundle or DOM findings note already exists, translate it into adapter design before editing code.
+5. If a harness snapshot, generated knowledge skill, probe bundle, or DOM findings note already exists, translate it into adapter design before editing code.
    - Read [references/probe-to-adapter.md](references/probe-to-adapter.md).
 
 6. Add export guards and acceptance criteria.
@@ -70,7 +69,7 @@ If the page is not yet well-mapped, run that wrapper first instead of hand-rolli
 - Treat `no target on current page/scope` differently from `target existed but action failed`.
 - Do not fake `total_rows` just to make a percent bar look good.
 - `manifest.yaml` is part of the adapter contract; do not hide progress-mode or task-specific UI policy inside manifest flags.
-- Crawshrimp executes the installed adapter copy, not the repo file you just edited; verify runtime sync before live testing.
+- Local development should prefer `install_mode=link`; if you stay on `copy`, verify runtime sync before live testing.
 - If you change phase/shared/progress protocol behavior, add or update JS regression first, then Python runner coverage if the backend contract moved.
 - Export-time dedupe is a **final safety net**, not the primary correctness mechanism.
 - Shared frontend files are cross-task touchpoints; stage them carefully when another session is modifying a sibling task.

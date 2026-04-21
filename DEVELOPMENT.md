@@ -35,25 +35,67 @@ python api_server.py
 # Docs at http://localhost:18765/docs
 ```
 
-## Adapter Dev Caveat
+## Adapter Dev Loop
 
-适配包开发时，底座运行的不是仓库里的源码目录，而是“已安装副本”：
+适配包开发现在推荐固定走这条闭环：
 
-- 默认路径：`~/.crawshrimp/adapters/<adapter_id>/`
-- 如果设置了 `CRAWSHRIMP_DATA`：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
+1. 目录 `link` 安装一次，让运行时直接指向源码目录
+2. 用 `scripts/crawshrimp_dev_harness.py snapshot / knowledge / capture / eval / probe` 摸页面
+3. 写 adapter 逻辑、phase/shared、回归测试
+4. 只有在发包或验证用户态安装时，才切回默认 `copy` / ZIP
 
-`POST /adapters/install` 会把你的适配包目录复制到上面的执行目录。  
-因此修改 `adapters/<id>/` 下的脚本后，必须重新安装；否则任务仍会执行旧代码。
-
-建议固定使用下面的开发闭环：
+本地开发建议先执行：
 
 ```bash
-# 改完源码后重新安装
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/absolute/path/to/repo/adapters/<adapter_id>", "install_mode": "link"}'
+
+./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
+  --adapter <adapter_id> \
+  --task <task_id>
+```
+
+`dev harness` 是新的标准开发入口：
+
+- `snapshot`：看当前页面结构和知识命中
+- `knowledge`：查 notes / probe 自动物化出的经验卡片
+- `capture`：抓被动请求、点击请求或指定 URL 请求
+- `eval`：在当前页直接跑临时 JS
+- `probe`：只在需要结构化 bundle 时再用
+
+知识索引默认写到：
+
+- `~/.crawshrimp/knowledge/cards.json`
+- `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`
+
+如果你改的是 `adapters/<id>/notes/*.md` 或手工补了 probe 产物，可以运行：
+
+```bash
+./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
+```
+
+### Runtime Truth
+
+底座运行的不是仓库路径本身，而是“已安装运行时”：
+
+- `link` 模式：`~/.crawshrimp/adapters/<adapter_id>` 是指向源码目录的符号链接
+- `copy` 模式：底座会复制一份执行副本到 `~/.crawshrimp/adapters/<adapter_id>/`
+- 如果设置了 `CRAWSHRIMP_DATA`：路径会变成 `$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
+
+这意味着：
+
+- 本地开发优先使用 `link`
+- 如果你刻意使用 `copy`，改完脚本后必须重新安装
+- 出现“明明改了代码但运行结果还是旧的”时，先检查安装模式和运行时目录，不要先怀疑业务逻辑
+
+`copy` 模式下的验证方式：
+
+```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/repo/adapters/<adapter_id>"}'
 
-# 验证源码目录和执行副本一致
 diff -qr /absolute/path/to/repo/adapters/<adapter_id> ~/.crawshrimp/adapters/<adapter_id>
 ```
 

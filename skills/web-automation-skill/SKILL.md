@@ -19,18 +19,17 @@ Typical triggers:
 
 This skill is optimized for **new pages and flaky controls**, not just pure table scraping.
 
-If the repo has a standard `crawshrimp probe` flow available, use it as the first reconnaissance pass before deeper DOM Lab work. Probe should give you the initial page map, endpoint clues, and a first `dom_first / api_first / mixed` judgment; this skill still owns the single-control experiments and the page-level closed loop.
+If the page is still unknown, start with the repo's `dev harness` instead of hand-rolling DOM exploration. Use `snapshot` for page map + knowledge hits, `capture` / `eval` for focused experiments, and `probe` only when you need a reusable structured bundle. This skill still owns the single-control experiments and the page-level closed loop.
 
-Preferred probe entry in this repo:
+Preferred reconnaissance entry in this repo:
 
 ```bash
-./venv/bin/python scripts/crawshrimp_probe.py run \
+./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
   --adapter <adapter_id> \
-  --task <task_id> \
-  --goal "<what you need to prove>"
+  --task <task_id>
 ```
 
-Use that wrapper before manual DOM exploration when the page is still unknown. It can auto-resolve the current Chrome tab on macOS and applies task-level probe profiles when available.
+Use that harness before manual DOM exploration when the page is still unknown. It can auto-resolve the current Chrome tab on macOS, search generated knowledge, and exposes the old probe flow as a subcommand when needed.
 
 ## Quick Start
 
@@ -38,7 +37,7 @@ Use that wrapper before manual DOM exploration when the page is still unknown. I
 2. Decide whether the flow should stay **DOM-first**, switch to **API-first**, or use a mixed strategy.
 3. For list/detail, drawer, modal, or paginator flows, do a **full DOM sweep** of the critical states before writing batch loops.
 4. Build a small DOM report before writing batch logic.
-5. If a probe bundle exists, read `strategy.json`, `page-map.json`, and `dom.json` before choosing the next experiment.
+5. If a harness snapshot, generated knowledge hit, or probe bundle exists, read that evidence before choosing the next experiment.
 6. Run **single-control experiments** for stubborn controls such as date pickers, selects, radios, and dependent fields.
 7. After every important interaction, **read back the resulting UI state** before advancing.
 8. Choose the most stable interaction path using this priority:
@@ -102,4 +101,4 @@ Load them when you need:
 - API-first fallback rules for false busy/empty pages, page-owned request clients, and mixed DOM/API collection
 - conservative pacing, bounded backoff, and soak-test patterns for throttled pages
 - export/download stabilization rules for task-history pages, multi-file exports, transient tabs, and runtime artifact verification
-- the handoff from a standard probe bundle into DOM Lab and single-control experiments
+- the handoff from dev harness reconnaissance and structured probe bundles into DOM Lab and single-control experiments

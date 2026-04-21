@@ -1,19 +1,18 @@
-# Probe To Adapter Translation
+# Dev Harness Evidence To Adapter Translation
 
-Use this note when a probe bundle already exists and the next question is how to convert that reconnaissance into a stable crawshrimp adapter design.
+Use this note when a harness snapshot, generated knowledge hit, or probe bundle already exists and the next question is how to convert that reconnaissance into a stable crawshrimp adapter design.
 
-## 1. Start from the probe bundle, not from memory
+## 1. Start from the evidence package, not from memory
 
 Read these artifacts first:
 
-- `page-map.json`
-- `dom.json`
-- `endpoints.json`
-- `strategy.json`
-- `recommendations.json`
+- `scripts/crawshrimp_dev_harness.py snapshot ...` output
+- `scripts/crawshrimp_dev_harness.py knowledge ...` hits
+- generated skill doc under `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`
+- `page-map.json` / `dom.json` / `endpoints.json` / `strategy.json` / `recommendations.json` if a probe bundle exists
 - curated repo note under `adapters/<adapter_id>/notes/`
 
-Treat the curated note as the human summary and the bundle as the raw evidence.
+Treat the generated knowledge as the searchable index, the curated note as the human summary, and the bundle as the raw evidence.
 
 ## 2. Translate page states into phases
 
@@ -46,7 +45,7 @@ Wait on a business-visible state change.
 
 ## 4. Translate network evidence into runtime actions
 
-From `endpoints.json` and `recommendations.json`, decide whether the adapter should use:
+From generated knowledge cards, `endpoints.json`, and `recommendations.json`, decide whether the adapter should use:
 
 - plain DOM flow
 - `capture_click_requests`
@@ -62,11 +61,11 @@ Rules:
 
 ## 5. Translate strategy into adapter shape
 
-If `strategy.json` says:
+If the harness evidence says:
 
 - `dom_first`
   - keep the main loop in DOM
-  - use probe outputs to build stronger readback and recovery
+  - use snapshot / bundle outputs to build stronger readback and recovery
 - `api_first`
   - reduce UI work to navigation / auth / trigger only
   - move the real collection into replayable requests
@@ -74,9 +73,9 @@ If `strategy.json` says:
   - let DOM hold context and scope
   - let API or runtime capture hold the heavy payload / export / artifact step
 
-## 6. Translate probe findings into `shared`
+## 6. Translate harness findings into `shared`
 
-Probe usually exposes the real context keys you need to carry.
+Harness evidence usually exposes the real context keys you need to carry.
 
 Common mappings:
 
@@ -87,9 +86,9 @@ Common mappings:
 
 Store explicit user choices once, then restore from `shared`.
 
-## 7. Translate probe risks into recovery branches
+## 7. Translate evidence risks into recovery branches
 
-Probe should reveal unstable points such as:
+The evidence layer should reveal unstable points such as:
 
 - portal popover disappears after re-render
 - displayed value changes before table data changes
@@ -98,9 +97,9 @@ Probe should reveal unstable points such as:
 
 Those findings should become explicit recovery branches, not comments.
 
-## 8. Translate probe into regression cases
+## 8. Translate evidence into regression cases
 
-Every important probe conclusion should lead to at least one regression target:
+Every important conclusion should lead to at least one regression target:
 
 - stable selector / container assumption
 - transition evidence assumption
@@ -108,4 +107,4 @@ Every important probe conclusion should lead to at least one regression target:
 - export artifact acceptance rule
 - state restore after retry
 
-If the probe changes the strategy, the regression surface probably changed too.
+If the harness changes the strategy, the regression surface probably changed too.

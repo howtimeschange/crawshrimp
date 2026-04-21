@@ -132,44 +132,101 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
   -d '{"path": "/absolute/path/to/my-adapter"}'
 ```
 
+开发阶段如果想让“仓库里的改动立刻影响运行时”，可以使用目录 `link` 安装：
+
+```bash
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/absolute/path/to/my-adapter", "install_mode": "link"}'
+```
+
+说明：
+
+- `install_mode=link` 只支持目录安装，不支持 zip
+- `link` 模式下，运行时目录会直接指向源码目录
+- 适合本地开发、dev harness 调试、回归和反复调整 phase/shared 逻辑
+- 发包和交付用户时，仍建议使用默认 `copy` 或 zip 安装
+
+### 开发前先用 dev harness 摸页面
+
+写 adapter 之前，先用仓库内置的 `scripts/crawshrimp_dev_harness.py` 建立页面认知。推荐顺序：
+
+1. `snapshot` 看当前页面结构和已有知识命中
+2. `knowledge` 查 notes / probe 自动生成的经验卡片
+3. `capture` / `eval` 做局部 DOM 或请求实验
+4. `probe` 只在需要结构化 bundle 时再跑
+
+常用命令：
+
+```bash
+./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
+  --adapter my-adapter \
+  --task scrape_table
+
+./venv/bin/python scripts/crawshrimp_dev_harness.py knowledge \
+  --adapter my-adapter \
+  --task scrape_table \
+  --query table
+
+./venv/bin/python scripts/crawshrimp_dev_harness.py capture \
+  --adapter my-adapter \
+  --task scrape_table \
+  --capture-mode passive
+```
+
+如果 notes 或 probe 产物有新增，但知识搜索还没更新，可以手动重建：
+
+```bash
+./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
+```
+
+知识索引默认写到：
+
+- `~/.crawshrimp/knowledge/cards.json`
+- `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`
+
 ### 重要：运行的是“已安装副本”，不是你的源码目录
 
-`/adapters/install` 不会直接让底座执行你的源码目录。安装时，底座会把适配包复制到：
+默认 `copy` 模式下，`/adapters/install` 不会直接让底座执行你的源码目录。安装时，底座会把适配包复制到：
 
 - 默认：`~/.crawshrimp/adapters/<adapter_id>/`
 - 如果设置了 `CRAWSHRIMP_DATA`：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
 
 底座后续运行、扫描、加载的都是这个“已安装副本”。
 
-这意味着：
+这意味着（默认 `copy` 模式）：
 
 - 你在仓库目录里改了 `manifest.yaml` / `*.js`，**不会自动生效**
 - 改完后如果不重新安装，GUI / API 继续跑的还是旧代码
 - 出现“我明明改了代码，但运行结果像旧版本”时，先检查是不是没重新安装，不要先怀疑业务逻辑
 
-开发阶段建议把下面这组动作当成固定流程：
+开发阶段更推荐把下面这组动作当成固定流程：
 
 ```bash
-# 1. 改源码
+# 1. 安装成 link，一次即可
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/absolute/path/to/repo/adapters/my-adapter", "install_mode": "link"}'
 
-# 2. 重新安装到本地执行环境
+# 2. 先用 dev harness 摸页面
+./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
+  --adapter my-adapter \
+  --task scrape_table
+
+# 3. 再写 adapter / 跑任务
+```
+
+如果你刻意保留 `copy` 模式来验证真实交付语义，再使用下面的重装校验：
+
+```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/repo/adapters/my-adapter"}'
 
-# 3. 验证源码目录和执行副本一致
 diff -qr /absolute/path/to/repo/adapters/my-adapter ~/.crawshrimp/adapters/my-adapter
-
-# 4. 再运行任务
 ```
 
-如果只想快速确认关键脚本是否同步，也可以直接比哈希：
-
-```bash
-shasum -a 256 \
-  /absolute/path/to/repo/adapters/my-adapter/task.js \
-  ~/.crawshrimp/adapters/my-adapter/task.js
-```
+如果使用的是 `install_mode=link`，则无需重复安装；运行时直接读取源码目录，但仍建议在 live 验证前确认当前脚本就是你预期的 checkout/branch。
 
 ### 第五步：运行
 

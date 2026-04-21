@@ -648,12 +648,13 @@ ipcMain.handle('enable-adapter',   async (_, id, enabled) =>
   apiCall('PATCH', `/adapters/${id}/enable`, { enabled }))
 
 ipcMain.handle('install-adapter', async (_, payload) => {
+  const installMode = payload?.install_mode || 'copy'
   if (payload.path) {
-    return apiCall('POST', '/adapters/install', { path: payload.path })
+    return apiCall('POST', '/adapters/install', { path: payload.path, install_mode: installMode })
   }
   if (payload.file) {
     const raw = fs.readFileSync(payload.file)
-    return apiCall('POST', '/adapters/install', { zip_base64: raw.toString('base64') })
+    return apiCall('POST', '/adapters/install', { zip_base64: raw.toString('base64'), install_mode: installMode })
   }
   return { ok: false, error: 'No path or file provided' }
 })

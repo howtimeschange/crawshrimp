@@ -148,6 +148,56 @@ PYTHONPATH=. venv/bin/python3 core/api_server.py
 
 API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认运行在 `http://127.0.0.1:5173`。可通过环境变量 `CRAWSHRIMP_PORT` 修改后端端口。
 
+### 开发态 Harness
+
+仓库现在把适配器开发入口统一到 `scripts/crawshrimp_dev_harness.py`。它直接复用现有 `probe`、`browser_session` 和 `js_runner` 原语，推荐闭环是：
+
+1. `snapshot` 看当前页面结构和命中的知识卡片
+2. `knowledge` 查历史 notes / probe 物化出来的经验
+3. `capture` / `eval` 做单点 DOM、请求和运行时实验
+4. `probe` 只在需要结构化 bundle 时再跑
+
+常用命令：
+
+```bash
+# 当前页面快照 + 命中的知识卡片
+./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
+  --adapter temu \
+  --task goods_traffic_detail
+
+# 直接抓当前页的请求线索
+./venv/bin/python scripts/crawshrimp_dev_harness.py capture \
+  --adapter temu \
+  --task goods_traffic_detail \
+  --capture-mode passive
+
+# 在当前业务页执行临时 JS
+./venv/bin/python scripts/crawshrimp_dev_harness.py eval \
+  --adapter temu \
+  --task goods_traffic_detail \
+  --file /absolute/path/to/check.js \
+  --allow-navigation-retry
+
+# 搜索当前 adapter/task 的经验卡片
+./venv/bin/python scripts/crawshrimp_dev_harness.py knowledge \
+  --adapter temu \
+  --task goods_traffic_detail \
+  --query drawer
+
+# 需要结构化 bundle 时再跑 probe
+./venv/bin/python scripts/crawshrimp_dev_harness.py probe \
+  --adapter temu \
+  --task goods_traffic_detail \
+  --goal "识别详情抽屉与导出触发链路"
+
+# notes 更新后可手动重建知识索引
+./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
+```
+
+知识索引会落在 `~/.crawshrimp/knowledge/`，分组后的 skill 文档会写到 `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`。
+
+`scripts/crawshrimp_dev_harness.py` 是标准开发入口。旧的 `scripts/crawshrimp_probe.py` 只保留给历史脚本和按 `probe_id` 直接查看 bundle 的兼容场景。
+
 ### 桌面构建与发布
 
 仓库已接入 GitHub Actions 桌面构建：
@@ -198,6 +248,16 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/path/to/my-adapter"}'
 ```
+
+本地开发如果希望“改完源码立即生效”，推荐直接用 `link` 安装：
+
+```bash
+curl -X POST http://127.0.0.1:18765/adapters/install \
+  -H 'Content-Type: application/json' \
+  -d '{"path": "/path/to/my-adapter", "install_mode": "link"}'
+```
+
+`link` 只支持目录安装，不支持 ZIP。运行时会直接指向源码目录，适合本地开发、harness 调试和反复修改 phase/shared 逻辑。发包或模拟用户安装时，再切回默认 `copy` 或 ZIP。
 
 ### 从 ZIP 包安装
 

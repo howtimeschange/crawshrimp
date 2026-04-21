@@ -33,6 +33,9 @@ from core import notifier
 from core import scheduler as sched_module
 from core.cdp_bridge import get_bridge, reset_bridge
 from core.browser_session import open_browser_session
+from core.dev_harness import run_harness_capture, run_harness_eval, run_harness_snapshot
+from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequest, DevHarnessSnapshotRequest
+from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_index, search_knowledge
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 
@@ -1222,11 +1225,12 @@ async def lifespan(app: FastAPI):
         for d in built_in.iterdir():
             if d.is_dir() and (d / "manifest.yaml").exists():
                 try:
-                    adapter_loader.install_from_dir(str(d))
+                    adapter_loader.install_from_dir(str(d), install_mode="copy", preserve_existing_link=True)
                 except Exception as e:
                     logger.warning(f"Built-in adapter failed {d.name}: {e}")
 
     adapter_loader.scan_all()
+    ensure_knowledge_index()
 
     # Register scheduled tasks
     for item in adapter_loader.list_all():
@@ -1272,20 +1276,21 @@ def list_adapters():
 class InstallRequest(BaseModel):
     path: Optional[str] = None
     zip_base64: Optional[str] = None
+    install_mode: Optional[str] = None
 
 
 @app.post("/adapters/install")
 def install_adapter(req: InstallRequest):
     try:
         if req.path:
-            m = adapter_loader.install_from_dir(req.path)
+            m = adapter_loader.install_from_dir(req.path, install_mode=str(req.install_mode or "copy"))
         elif req.zip_base64:
             raw = base64.b64decode(req.zip_base64)
             with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as f:
                 f.write(raw)
                 tmp = f.name
             try:
-                m = adapter_loader.install_from_zip(tmp)
+                m = adapter_loader.install_from_zip(tmp, install_mode=str(req.install_mode or "copy"))
             finally:
                 os.unlink(tmp)
         else:
@@ -1293,7 +1298,18 @@ def install_adapter(req: InstallRequest):
 
         # Register scheduler jobs for newly installed adapter
         sched_module.register_adapter(m, _execute_task)
-        return {"ok": True, "adapter": {"id": m.id, "name": m.name, "version": m.version}}
+        adapter_meta = adapter_loader.get_install_metadata(m.id)
+        return {
+            "ok": True,
+            "adapter": {
+                "id": m.id,
+                "name": m.name,
+                "version": m.version,
+                "install_mode": adapter_meta.get("install_mode", "copy"),
+                "source_path": adapter_meta.get("source_path", ""),
+                "runtime_path": adapter_meta.get("runtime_path", ""),
+            }
+        }
     except Exception as e:
         raise HTTPException(400, str(e))
 
@@ -1371,6 +1387,10 @@ class ProbeTaskParamsRequest(BaseModel):
 async def run_probe(req: ProbeRequest):
     try:
         result = await run_probe_request(req)
+        try:
+            rebuild_knowledge_index()
+        except Exception as knowledge_error:
+            logger.warning("probe 完成后重建知识索引失败: %s", knowledge_error)
         return result.model_dump()
     except ValueError as exc:
         raise HTTPException(404, str(exc))
@@ -1394,6 +1414,58 @@ def get_probe_bundle(probe_id: str):
         return result.model_dump()
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc))
+
+
+@app.post("/knowledge/rebuild")
+def rebuild_knowledge():
+    try:
+        return rebuild_knowledge_index()
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.get("/knowledge/search")
+def get_knowledge(
+    q: str = "",
+    adapter_id: str = "",
+    task_id: str = "",
+    url: str = "",
+    limit: int = 8,
+):
+    try:
+        return search_knowledge(q, adapter_id=adapter_id, task_id=task_id, url=url, limit=limit)
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/dev-harness/snapshot")
+async def dev_harness_snapshot(req: DevHarnessSnapshotRequest):
+    try:
+        return await run_harness_snapshot(req)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/dev-harness/eval")
+async def dev_harness_eval(req: DevHarnessEvalRequest):
+    try:
+        return await run_harness_eval(req)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
+
+
+@app.post("/dev-harness/capture")
+async def dev_harness_capture(req: DevHarnessCaptureRequest):
+    try:
+        return await run_harness_capture(req)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(400, str(exc))
 
 
 @app.post("/tasks/{adapter_id}/{task_id}/params/probe")

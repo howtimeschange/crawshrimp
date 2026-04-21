@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Convenience wrapper for crawshrimp probe APIs.
+"""Legacy convenience wrapper for crawshrimp probe APIs.
+
+Prefer `scripts/crawshrimp_dev_harness.py probe ...` for new work. This script
+is kept for compatibility and direct `probe_id` bundle inspection.
 
 Examples:
+  ./venv/bin/python scripts/crawshrimp_dev_harness.py probe --adapter temu --task goods_traffic_detail --goal "识别详情抽屉"
   ./venv/bin/python scripts/crawshrimp_probe.py run --adapter temu --task goods_traffic_detail --goal "识别详情抽屉"
   ./venv/bin/python scripts/crawshrimp_probe.py show --probe-id 2026-04-14T10-00-00Z-current
 """
@@ -163,7 +167,9 @@ def show_command(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run or inspect crawshrimp probe bundles.")
+    parser = argparse.ArgumentParser(
+        description="Legacy wrapper for crawshrimp probe bundles. Prefer crawshrimp_dev_harness.py for new work."
+    )
     parser.add_argument("--api", default=DEFAULT_API, help=f"crawshrimp API base URL (default: {DEFAULT_API})")
     sub = parser.add_subparsers(dest="command", required=True)
 
