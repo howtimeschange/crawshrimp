@@ -70,6 +70,23 @@ class ExportFilenameContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quality_ctx["region_scope"], "全球+欧区")
         self.assertEqual(quality_ctx["quality_tab_scope"], "品质分析+品质优化")
 
+    async def test_goods_traffic_list_context_prefers_shared_shop_name_over_broad_page_guess(self):
+        ctx = await self._build_ctx(
+            "goods_traffic_list",
+            {
+                "outer_sites": ["全球", "欧区", "美国"],
+                "list_time_range": "今日",
+            },
+            page_ctx={
+                "shop_name": "SEMIR Official Shop",
+                "shared_shop_name": "Balabala Official Shop",
+            },
+        )
+
+        self.assertEqual(ctx["shop_name"], "Balabala Official Shop")
+        self.assertEqual(ctx["site_scope"], "全球+欧区+美国")
+        self.assertEqual(ctx["time_scope"], "今日")
+
     async def test_shein_product_feedback_context_uses_fixed_shop_name_and_custom_review_range(self):
         ctx = await self._build_ctx(
             "product_feedback",

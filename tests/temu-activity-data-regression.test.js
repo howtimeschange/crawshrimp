@@ -894,6 +894,52 @@ test('goods-traffic-list preserves explicit time-range state when switching to t
   assert.equal(result.meta.shared.timeDimensionLabel, '今日')
 })
 
+test('goods-traffic-list captures the current shop name from the strict account header', async () => {
+  const document = buildStatefulDocument({
+    bodyText: '商品明细 商品流量列表',
+    activeGrain: '今日',
+    rows: ['row-a'],
+    pageNo: 1,
+    totalCount: 1,
+  })
+  const siteGlobal = new DynamicElement({
+    tagName: 'a',
+    text: '全球',
+    className: 'index-module__drItem___ index-module__active___',
+  })
+  const queryButton = new DynamicElement({ tagName: 'button', text: '查询' })
+  const resetButton = new DynamicElement({ tagName: 'button', text: '重置' })
+  const strictShop = new DynamicElement({
+    tagName: 'div',
+    className: 'account-info_mallInfo__mock',
+    text: 'Balabala Official Shop 123 人关注',
+  })
+  const staleShop = new DynamicElement({
+    tagName: 'div',
+    className: 'elli_outerWrapper__mock',
+    text: 'SEMIR Official Shop',
+  })
+  const userRoot = new DynamicElement({ tagName: 'div', className: 'account-info_userInfo__mock' })
+  userRoot.setSelector('[class*="account-info_mallInfo__"], [class*="account-info_accountInfo__"], [class*="elli_outerWrapper"], [class*="shopName"], [class*="seller-name"]', () => [staleShop])
+  userRoot.setSelector('*', () => [staleShop])
+
+  document.setSelector('a[class*="index-module__drItem___"]', () => [siteGlobal])
+  document.setSelector('button', () => [queryButton, resetButton])
+  document.setSelector('[class*="account-info_mallInfo__"], [class*="account-info_accountInfo__"]', () => [strictShop])
+  document.setSelector('[class*="userInfo"], [class*="seller-name"], [class*="account-info_userInfo"]', () => [userRoot])
+
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'ensure_target',
+    href: 'https://agentseller.temu.com/main/flux-analysis-full',
+    document,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'prepare_current_site')
+  assert.equal(result.meta.shared.shopName, 'Balabala Official Shop')
+})
+
 test('goods-traffic-list exposes conservative retry and collect pacing helpers', async () => {
   const { hook } = await loadHook(
     'adapters/temu/goods-traffic-list.js',

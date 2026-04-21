@@ -87,6 +87,23 @@
     '增长潜力',
     '操作',
   ]
+  const SHOP_NAME_BLACKLIST = new Set([
+    '服务市场',
+    '履约中心',
+    '学习',
+    '运营对接',
+    '规则中心',
+    '消息',
+    '客服',
+    '反馈',
+    '99+',
+    '首页',
+    '数据中心',
+    '商品数据',
+    'TEMU Agent Center',
+    'Beta',
+    'Seller Central',
+  ])
 
   function normalizeArray(value) {
     if (!Array.isArray(value)) return []
@@ -114,6 +131,43 @@
 
   function compact(value) {
     return String(value || '').replace(/\s+/g, '').trim()
+  }
+
+  function normalizeShopNameText(value) {
+    return String(value || '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+\d+\s*人关注.*$/, '')
+      .trim()
+  }
+
+  function isUsableShopName(value) {
+    const clean = normalizeShopNameText(value)
+    if (!clean || clean.length > 80) return false
+    return !SHOP_NAME_BLACKLIST.has(clean)
+  }
+
+  function getCurrentShopName() {
+    const strictNodes = [
+      ...document.querySelectorAll('[class*="account-info_mallInfo__"], [class*="account-info_accountInfo__"]'),
+    ]
+    for (const node of strictNodes) {
+      const text = normalizeShopNameText(textOf(node))
+      if (isUsableShopName(text)) return text
+    }
+
+    const root = document.querySelector('[class*="userInfo"], [class*="seller-name"], [class*="account-info_userInfo"]')
+    const primary = normalizeShopNameText(textOf(
+      root?.querySelector?.('[class*="account-info_mallInfo__"], [class*="account-info_accountInfo__"], [class*="elli_outerWrapper"], [class*="shopName"], [class*="seller-name"]'),
+    ))
+    if (isUsableShopName(primary)) return primary
+    return ''
+  }
+
+  function resolveSharedShopName(sharedState = shared, explicitName = '') {
+    return normalizeShopNameText(explicitName) ||
+      getCurrentShopName() ||
+      normalizeShopNameText(sharedState.shopName || '') ||
+      ''
   }
 
   function isVisible(el) {
@@ -1187,6 +1241,7 @@
   async function prepareCurrentSite(sharedState, nextPhaseName = 'collect', extraShared = {}) {
     const currentSite = sharedState.currentOuterSite || sharedState.targetOuterSite || getResolvedOuterSite() || ''
     const currentPageNo = Math.max(1, Number(sharedState.currentPageNo || sharedState.recoverPageNo || 1))
+    const shopName = resolveSharedShopName({ ...sharedState, ...extraShared })
     const productOk = await ensureProductTrafficSection()
     if (!productOk) return fail('未能切回「商品流量」tab')
 
@@ -1228,6 +1283,7 @@
     return nextPhase(nextPhaseName, nextPhaseName === 'collect' ? collectDelayMs : 400, {
       ...sharedState,
       ...extraShared,
+      ...(shopName ? { shopName } : {}),
       listBusyRetry: 0,
       currentOuterSite: currentSite,
       currentPageNo: Math.max(1, Number(extraShared.currentPageNo || sharedState.currentPageNo || 1)),
@@ -1284,6 +1340,7 @@
       if (!target.length) return fail(`未找到可抓取的外层站点，可用站点：${available.join(' / ') || '无'}`)
 
       const initialTimeState = resolveTimeDimensionState(shared)
+      const shopName = resolveSharedShopName(shared)
       const activeSite = getResolvedOuterSite() || target[0]
       if (activeSite !== target[0]) {
         const targetUrl = getOuterSiteUrl(target[0])
@@ -1296,6 +1353,7 @@
           currentPageNo: 1,
           totalPages: 1,
           switchedOuterSite: true,
+          ...(shopName ? { shopName } : {}),
           lastApiAttempt: 1,
           timeDimension: initialTimeState.value || Number(shared.timeDimension || 0) || 0,
           timeDimensionLabel: initialTimeState.label || listTimeRange || String(shared.timeDimensionLabel || '').trim(),
@@ -1308,6 +1366,7 @@
         currentPageNo: 1,
         listPageRetry: 0,
         switchedOuterSite: false,
+        ...(shopName ? { shopName } : {}),
         lastApiAttempt: 1,
         timeDimension: initialTimeState.value || Number(shared.timeDimension || 0) || 0,
         timeDimensionLabel: initialTimeState.label || listTimeRange || String(shared.timeDimensionLabel || '').trim(),
@@ -1327,12 +1386,14 @@
         return scheduleListPageRecovery(shared, `切换外层站点后商品流量列表未加载：${targetSite || '未知站点'}`, 1, targetSite)
       }
       if (state.busy) return buildBusyReload('after_outer_site_switch', shared)
+      const shopName = resolveSharedShopName(shared)
       return nextPhase(shared.resume_phase || 'prepare_current_site', 400, {
         ...shared,
         listBusyRetry: 0,
         currentOuterSite: getResolvedOuterSite() || targetSite || '',
         resume_phase: '',
         switchedOuterSite: true,
+        ...(shopName ? { shopName } : {}),
       })
     }
 

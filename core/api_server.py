@@ -194,16 +194,25 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
     backend_context_js = r"""
 (() => {
   const textOf = el => (el?.textContent || '').replace(/\s+/g, ' ').trim()
+  const normalizeShopName = value => String(value || '')
+    .replace(/\s+/g, ' ')
+    .replace(/\s+\d+\s*人关注.*$/, '')
+    .trim()
+  const shared = window.__CRAWSHRIMP_SHARED__ || {}
   const root = document.querySelector('[class*="userInfo"], [class*="seller-name"], [class*="account-info_userInfo"]')
   const blacklist = new Set(['服务市场', '履约中心', '学习', '运营对接', '规则中心', '消息', '客服', '反馈', '99+', '首页', '数据中心', '商品数据', 'TEMU Agent Center', 'Beta', 'Seller Central'])
   const seen = new Set()
   const candidates = []
   const push = text => {
-    const clean = String(text || '').replace(/\s+/g, ' ').trim()
+    const clean = normalizeShopName(text)
     if (!clean || seen.has(clean)) return
     seen.add(clean)
     candidates.push(clean)
   }
+  const sharedShopName = normalizeShopName(shared.shopName || shared.shop_name || '')
+  const strictShopName = [...document.querySelectorAll('[class*="account-info_mallInfo__"], [class*="account-info_accountInfo__"]')]
+    .map(el => normalizeShopName(textOf(el)))
+    .find(text => text && text.length <= 80 && !blacklist.has(text)) || ''
   if (root) {
     push(textOf(root.querySelector('[class*="elli_outerWrapper"], [class*="seller-name"], [class*="shopName"], [class*="userName"]')))
     for (const el of root.querySelectorAll('*')) {
@@ -221,6 +230,8 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
     push(text)
   }
   const shopName =
+    sharedShopName ||
+    strictShopName ||
     candidates.find(text => /shop/i.test(text)) ||
     candidates.find(text => /[A-Za-z]/.test(text) && !blacklist.has(text)) ||
     candidates.find(text => !blacklist.has(text)) ||
@@ -253,6 +264,8 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
   return {
     success: true,
     data: [{
+      shared_shop_name: sharedShopName,
+      strict_shop_name: strictShopName,
       shop_name: shopName,
       time_scope: timeScope,
       date_range: dateRange,
@@ -284,7 +297,9 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
     elif task_id in {'reviews', 'store_items'}:
         page_ctx = await _evaluate_filename_context(runner, storefront_context_js)
 
-    shop_name = str(page_ctx.get('shop_name') or '').strip()
+    shared_shop_name = str(page_ctx.get('shared_shop_name') or '').strip()
+    strict_shop_name = str(page_ctx.get('strict_shop_name') or '').strip()
+    shop_name = shared_shop_name or strict_shop_name or str(page_ctx.get('shop_name') or '').strip()
     if not shop_name and task_id in {'reviews', 'store_items'}:
         shop_url = str(run_params.get('shop_url') or '').strip()
         if shop_url:
