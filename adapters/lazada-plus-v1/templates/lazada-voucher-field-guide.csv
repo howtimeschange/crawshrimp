@@ -1,6 +1,6 @@
 sheet,column,required_when,allowed_values,notes
 Vouchers,唯一键,Always,自定义唯一值,"主表和 FlexiTiers 通过该字段关联"
-Vouchers,站点,Always,"ID,MY,PH,SG,TH,VN","页面右侧国家栏实测可选 Indonesia / Malaysia / Philippine / Singapore / Thailand / Vietnam；当前 live 已回归 MY/SG"
+Vouchers,站点,Always,"ID,MY,PH,SG,TH,VN","页面右侧国家栏实测可选 Indonesia / Malaysia / Philippine / Singapore / Thailand / Vietnam；当前版本支持六站点切换，建议先按小批量首跑"
 Vouchers,优惠工具,Always,"Regular Voucher,Flexi Combo,Store New Buyer Voucher,Store Follower Voucher","四种目标工具"
 Vouchers,促销名称,Always,文本,"Promotion Name"
 Vouchers,领取生效类型,"Regular / New Buyer / Follower","FIXED_TIME,USE_AFTER_COLLECTION","对应 Voucher Use Time Type"

@@ -92,7 +92,7 @@
     flexiTiers: ['FlexiTiers', 'Flexi Tier', 'Flexi Combo Tiers', '阶梯', 'Flexi阶梯'],
   }
 
-  const VERIFIED_SITES = new Set(['MY', 'SG'])
+  const VERIFIED_SITES = new Set(['MY', 'PH', 'SG', 'TH', 'VN'])
   const truthyRe = /^(1|true|yes|y|是)$/i
   const falsyRe = /^(0|false|no|n|否)$/i
   const VOUCHER_TOOL_KEYS = ['REGULAR_VOUCHER', 'STORE_NEW_BUYER_VOUCHER', 'STORE_FOLLOWER_VOUCHER']
@@ -207,6 +207,68 @@
       Number(minute),
       Number(second)
     ).getTime()
+  }
+
+  function safeUrl(raw, base) {
+    const text = norm(raw)
+    if (!text) return null
+    try {
+      if (/^https?:\/\//i.test(text)) return new URL(text)
+      if (base) return new URL(text, base)
+      return new URL(text, location.href)
+    } catch {
+      return null
+    }
+  }
+
+  function normalizedPathname(pathname) {
+    const text = norm(pathname || '')
+    if (!text || text === '/') return '/'
+    return text.replace(/\/+$/, '') || '/'
+  }
+
+  function urlSemanticallyMatches(currentHref, targetHref) {
+    const current = safeUrl(currentHref)
+    const target = safeUrl(targetHref, currentHref)
+    if (!current || !target) return norm(currentHref) === norm(targetHref)
+    if (current.origin !== target.origin) return false
+    if (normalizedPathname(current.pathname) !== normalizedPathname(target.pathname)) return false
+    for (const [key, value] of target.searchParams.entries()) {
+      if (current.searchParams.get(key) !== value) return false
+    }
+    return true
+  }
+
+  function siteCodeFromHref(href) {
+    const url = safeUrl(href)
+    const host = norm(url?.hostname || '').toLowerCase()
+    if (!host) return ''
+    return Object.values(SITE_MAP).find(site => {
+      const siteHost = norm(safeUrl(site.domain)?.hostname || '').toLowerCase()
+      return siteHost && siteHost === host
+    })?.code || ''
+  }
+
+  function nextNavigationState(sharedState, scope, target) {
+    const normalizedScope = norm(scope)
+    const normalizedTarget = norm(target)
+    const prevScope = norm(sharedState?.nav_scope)
+    const prevTarget = norm(sharedState?.nav_target_url)
+    const prevCount = Number(sharedState?.nav_retry_count || 0)
+    const sameTarget = prevScope === normalizedScope && prevTarget === normalizedTarget
+    return {
+      nav_scope: normalizedScope,
+      nav_target_url: normalizedTarget,
+      nav_retry_count: sameTarget ? prevCount + 1 : 1,
+    }
+  }
+
+  function clearNavigationState() {
+    return {
+      nav_scope: '',
+      nav_target_url: '',
+      nav_retry_count: 0,
+    }
   }
 
   function rangesOverlap(leftStart, leftEnd, rightStart, rightEnd) {
@@ -376,6 +438,10 @@
   }
 
   function liveSupportIssue(row) {
+    if (!VERIFIED_SITES.has(row.site_code)) {
+      if (row.site_code === 'ID') return '当前账号在 ID 站进入 create URL 会被重定向到 account health，暂不支持 live 创建'
+      return `当前 live 未验证站点：${row.site_code || row.site_label || 'UNKNOWN'}`
+    }
     if (row.apply_scope !== 'ENTIRE_SHOP') return '当前 live 仅支持 Entire Shop'
     if (VOUCHER_TOOL_KEYS.includes(row.tool_key)) {
       if (row.use_time_type !== 'FIXED_TIME') return '当前 live 仅支持 FIXED_TIME'
@@ -399,9 +465,6 @@
     if (!row.site_code) issues.push('站点无法识别')
     if (!row.tool_key) issues.push('优惠工具无法识别')
     if (!row.promotion_name) issues.push('缺少“促销名称”')
-    if (row.site_code && !VERIFIED_SITES.has(row.site_code)) {
-      warnings.push(`站点 ${row.site_code} 尚未在 2026-04-01 的实测名单里，目前仅验证 MY/SG`)
-    }
     if (row.apply_scope === 'SPECIFIC_PRODUCTS') {
       warnings.push('Specific Products 需要提交后再选商品，本轮 live 先只接 Entire Shop')
     }
@@ -779,6 +842,11 @@
     return exact ? actual === expected : actual.includes(expected)
   }
 
+  function asArray(value) {
+    if (Array.isArray(value)) return value.filter(Boolean)
+    return value ? [value] : []
+  }
+
   function smallestTextNode(pattern, root = document, options = {}) {
     const exact = !!options.exact
     const nodes = [...root.querySelectorAll('*')].filter(el => {
@@ -797,12 +865,47 @@
     return nodes[0] || null
   }
 
+  function matchingTextNodes(patterns, root = document, options = {}) {
+    const nodes = []
+    const seen = new Set()
+    for (const pattern of asArray(patterns)) {
+      const exact = !!options.exact
+      const matches = [...root.querySelectorAll('*')].filter(el => {
+        if (!isVisible(el)) return false
+        if (el === document.documentElement || el === document.body) return false
+        const text = textOf(el)
+        if (!textMatches(text, pattern, exact)) return false
+        const childHasMatch = [...el.children].some(child => isVisible(child) && textMatches(textOf(child), pattern, exact))
+        return !childHasMatch
+      })
+      for (const match of matches) {
+        if (seen.has(match)) continue
+        seen.add(match)
+        nodes.push(match)
+      }
+    }
+    nodes.sort((left, right) => {
+      const textLen = textOf(left).length - textOf(right).length
+      if (textLen !== 0) return textLen
+      return nodeDepth(right) - nodeDepth(left)
+    })
+    return nodes
+  }
+
+  function firstMatchingTextNode(patterns, root = document, options = {}) {
+    return matchingTextNodes(patterns, root, options)[0] || null
+  }
+
   function findClickableAncestor(el, stopRoot = document.body) {
     let cur = el
     while (cur && cur !== stopRoot && cur !== document.body?.parentElement) {
       const className = String(cur.className || '')
       const tag = String(cur.tagName || '').toLowerCase()
       const role = cur.getAttribute?.('role') || ''
+      if (/(next-radio-label|next-checkbox-label|check-card-item-label|check-card-item-content)/i.test(className)) {
+        cur = cur.parentElement
+        continue
+      }
       if (
         tag === 'button' ||
         tag === 'a' ||
@@ -830,9 +933,9 @@
     })
   }
 
-  async function clickByText(pattern, root = document, options = {}) {
-    const node = smallestTextNode(pattern, root, options)
-    if (!node) throw new Error(`未找到文本：${pattern}`)
+  async function clickByText(patterns, root = document, options = {}) {
+    const node = firstMatchingTextNode(patterns, root, options)
+    if (!node) throw new Error(`未找到文本：${asArray(patterns).join(' | ')}`)
     const clickable = findClickableAncestor(node, root)
     clickElement(clickable)
     await sleep(options.sleepMs == null ? 120 : options.sleepMs)
@@ -854,21 +957,38 @@
     input.dispatchEvent(new Event('blur', { bubbles: true }))
   }
 
-  function findFieldContainer(labelPattern, root = document) {
-    const labelNode = smallestTextNode(labelPattern, root)
-    if (!labelNode) return null
-    return (
-      labelNode.closest('.next-formily-item') ||
-      labelNode.closest('.next-form-item') ||
-      labelNode.closest('.next-box') ||
-      labelNode.parentElement
-    )
+  function findFieldContainer(labelPatterns, root = document) {
+    let fallback = null
+    for (const labelNode of matchingTextNodes(labelPatterns, root)) {
+      const container = (
+        labelNode.closest('.next-formily-item') ||
+        labelNode.closest('.next-form-item') ||
+        labelNode.closest('.next-box') ||
+        labelNode.parentElement
+      )
+      if (!container) continue
+      if (!fallback) fallback = container
+      if (visibleTextInputs(container).length) return container
+    }
+    return fallback
   }
 
-  function findInputInField(labelPattern, root = document) {
-    const container = findFieldContainer(labelPattern, root)
+  function findInputInField(labelPatterns, root = document) {
+    const container = findFieldContainer(labelPatterns, root)
     if (!container) return null
     return visibleTextInputs(container)[0] || null
+  }
+
+  function findInputByPlaceholder(placeholders, root = document) {
+    const inputs = visibleTextInputs(root)
+    for (const pattern of asArray(placeholders)) {
+      const match = inputs.find(input => {
+        const placeholder = input.getAttribute?.('placeholder') || ''
+        return textMatches(placeholder, pattern, !(pattern instanceof RegExp))
+      })
+      if (match) return match
+    }
+    return null
   }
 
   function findIMaskStateNode(input) {
@@ -895,18 +1015,49 @@
     await sleep(80)
     const actual = norm(input.value)
     const expected = norm(verifyText || textValue)
+    const actualNumberish = /^[\d,.-]+$/.test(actual) ? actual.replace(/,/g, '') : actual
+    const expectedNumberish = /^[\d,.-]+$/.test(expected) ? expected.replace(/,/g, '') : expected
     if (expected && actual !== expected) {
-      if (!(actual.includes(expected) || expected.includes(actual))) {
+      if (!(actual.includes(expected) || expected.includes(actual) || actualNumberish === expectedNumberish)) {
         throw new Error(`输入回写校验失败：expected=${expected}, actual=${actual}`)
       }
     }
   }
 
-  async function setInputByLabel(labelPattern, value) {
+  async function setInputByLabel(labelPatterns, value) {
     if (value == null || norm(value) === '') return
-    const input = findInputInField(labelPattern)
-    if (!input) throw new Error(`未找到字段输入框：${labelPattern}`)
+    const input = findInputInField(labelPatterns)
+    if (!input) throw new Error(`未找到字段输入框：${asArray(labelPatterns).join(' | ')}`)
     await setTextInput(input, value)
+  }
+
+  async function waitForFieldInput(labelPatterns, timeout = 2600, interval = 120) {
+    return await waitFor(() => findInputInField(labelPatterns), timeout, interval)
+  }
+
+  function findSectionCardByHeading(patterns, root = document) {
+    const heading = firstMatchingTextNode(patterns, root)
+    if (!heading) return null
+    return (
+      heading.closest('.next-card.next-card-free.next-card-hide-divider') ||
+      heading.closest('.next-card') ||
+      heading.parentElement
+    )
+  }
+
+  function findVoucherPercentInputsBySection(row, root = document) {
+    if (norm(row?.site_code).toUpperCase() !== 'VN') return null
+    const section = findSectionCardByHeading([/Discount Setting/i], root)
+    if (!section) return null
+    const inputs = visibleTextInputs(section)
+    if (inputs.length < 5) return null
+    return {
+      minSpendInput: inputs[0] || null,
+      discountInput: inputs[1] || null,
+      maxDiscountInput: inputs[2] || null,
+      totalIssuedInput: inputs[3] || null,
+      perCustomerInput: inputs[4] || null,
+    }
   }
 
   function findComponentProps(node, componentName) {
@@ -920,20 +1071,20 @@
     return null
   }
 
-  async function setRangePicker(startPlaceholder, startAt, endAt) {
+  async function setRangePicker(startPlaceholders, endPlaceholders, startAt, endAt) {
     if (!startAt || !endAt) throw new Error('RangePicker 缺少起止时间')
-    const startInput = document.querySelector(`input[placeholder="${startPlaceholder}"]`)
-    if (!startInput) throw new Error(`未找到 RangePicker 输入框：${startPlaceholder}`)
+    const startInput = findInputByPlaceholder(startPlaceholders)
+    if (!startInput) throw new Error(`未找到 RangePicker 输入框：${asArray(startPlaceholders).join(' | ')}`)
     const props = findComponentProps(startInput, 'RangePicker')
-    if (!props?.onChange) throw new Error(`未找到 RangePicker onChange：${startPlaceholder}`)
+    if (!props?.onChange) throw new Error(`未找到 RangePicker onChange：${asArray(startPlaceholders).join(' | ')}`)
     const startText = normalizeDateTimeInput(startAt)
     const endText = normalizeDateTimeInput(endAt)
     const m = window.moment
     if (typeof m !== 'function') throw new Error('页面未暴露 moment，无法回写日期组件')
     props.onChange([m(startText), m(endText)], [startText, endText])
     await sleep(150)
-    const actualStart = normalizeDateTimeForCompare(document.querySelector(`input[placeholder="${startPlaceholder}"]`)?.value)
-    const actualEnd = normalizeDateTimeForCompare(document.querySelector('input[placeholder="End Date"]')?.value)
+    const actualStart = normalizeDateTimeForCompare(findInputByPlaceholder(startPlaceholders)?.value)
+    const actualEnd = normalizeDateTimeForCompare(findInputByPlaceholder(endPlaceholders)?.value)
     if (actualStart !== normalizeDateTimeForCompare(startText)) {
       throw new Error(`开始时间回写失败：expected=${startText}, actual=${actualStart}`)
     }
@@ -942,18 +1093,18 @@
     }
   }
 
-  async function setDatePicker(placeholder, value) {
+  async function setDatePicker(placeholders, value) {
     if (!value) return
-    const input = document.querySelector(`input[placeholder="${placeholder}"]`)
-    if (!input) throw new Error(`未找到 DatePicker 输入框：${placeholder}`)
+    const input = findInputByPlaceholder(placeholders)
+    if (!input) throw new Error(`未找到 DatePicker 输入框：${asArray(placeholders).join(' | ')}`)
     const props = findComponentProps(input, 'DatePicker')
-    if (!props?.onChange) throw new Error(`未找到 DatePicker onChange：${placeholder}`)
+    if (!props?.onChange) throw new Error(`未找到 DatePicker onChange：${asArray(placeholders).join(' | ')}`)
     const text = normalizeDateTimeInput(value)
     const m = window.moment
     if (typeof m !== 'function') throw new Error('页面未暴露 moment，无法回写日期组件')
     props.onChange(m(text), text)
     await sleep(150)
-    const actual = normalizeDateTimeForCompare(document.querySelector(`input[placeholder="${placeholder}"]`)?.value)
+    const actual = normalizeDateTimeForCompare(findInputByPlaceholder(placeholders)?.value)
     if (actual !== normalizeDateTimeForCompare(text)) {
       throw new Error(`日期回写失败：expected=${text}, actual=${actual}`)
     }
@@ -984,17 +1135,85 @@
     return messages
   }
 
-  function submitButton() {
-    const button = smallestTextNode('Submit', document, { exact: true })
+  function voucherUiSpec(row) {
+    const base = {
+      createReady: [/Create Regular Voucher/i, /Promotion Name/i],
+      promotionNameLabels: [/Promotion Name/i],
+      rangeStartPlaceholders: ['Start Date'],
+      rangeEndPlaceholders: ['End Date'],
+      collectPlaceholders: ['Select Date And Time'],
+      entireShopTexts: [/Entire Shop/i],
+      percentageTexts: [/Percentage Discount Off/i],
+      minSpendLabels: [/If Order Min\\.Spend/i, /Required minimum spend/i],
+      discountLabels: [/Discount would be/i, /Applicable discount/i],
+      maxDiscountLabels: [/Maximum Discount per Order/i],
+      totalIssuedLabels: [/Total Vouchers? to be Issued/i],
+      perCustomerLabels: [/Voucher Limit per Customer/i],
+      submitTexts: ['Submit', 'Confirm', 'OK', 'Yes'],
+      confirmTexts: ['Submit', 'Confirm', 'OK', 'Yes'],
+    }
+    const siteCode = norm(row?.site_code).toUpperCase()
+    if (siteCode === 'VN') {
+      return {
+        ...base,
+        createReady: [/Tạo Mã giảm giá/i, /Tên khuyến mãi/i, /Create Regular Voucher/i],
+        promotionNameLabels: [/Tên khuyến mãi/i, /Promotion Name/i],
+        rangeStartPlaceholders: ['Ngày bắt đầu', 'Start Date'],
+        rangeEndPlaceholders: ['Ngày kết thúc', 'End Date'],
+        collectPlaceholders: ['Chọn ngày và thời gian', 'Select Date And Time'],
+        entireShopTexts: [/Toàn gian hàng/i, /Entire Shop/i],
+        percentageTexts: [/Giảm giá theo phần trăm/i, /Percentage Discount Off/i],
+        minSpendLabels: [/Nếu giá trị đơn hàng đạt tới/i, /If Order Min\\.Spend/i, /Required minimum spend/i],
+        discountLabels: [/Giảm giá %giảm/i, /Discount would be/i, /Applicable discount/i],
+        maxDiscountLabels: [/Giá trị tối đa cho mỗi đơn hàng/i, /Maximum Discount per Order/i],
+        totalIssuedLabels: [/Số lượng mã giảm giá/i, /Total Vouchers? to be Issued/i],
+        perCustomerLabels: [/Số lượt sử dụng cho mỗi khách/i, /Voucher Limit per Customer/i],
+        submitTexts: ['Submit', 'Xác nhận', 'Confirm', 'OK', 'Yes'],
+        confirmTexts: ['Submit', 'Xác nhận', 'Confirm', 'OK', 'Yes'],
+      }
+    }
+    if (siteCode === 'TH') {
+      return {
+        ...base,
+        createReady: [/สร้าง คูปองส่วนลดร้านค้า/i, /ชื่อโปรโมชั่น/i, /Create Regular Voucher/i],
+        promotionNameLabels: [/ชื่อโปรโมชั่น/i, /Promotion Name/i],
+        rangeStartPlaceholders: ['วันที่เริ่มต้น', 'Start Date'],
+        rangeEndPlaceholders: ['วันที่สิ้นสุด', 'End Date'],
+        collectPlaceholders: ['โปรดเลือกวันที่และเวลา', 'Select Date And Time'],
+        entireShopTexts: [/ทั้งร้าน/i, /Entire Shop/i],
+        percentageTexts: [/ส่วนลดแบบเปอเซนต์/i, /Percentage Discount Off/i],
+        minSpendLabels: [/เมื่อสั่งซื้อขั้นต่ำ/i, /If Order Min\\.Spend/i, /Required minimum spend/i],
+        discountLabels: [/ส่วนลดจะเป็น/i, /Discount would be/i, /Applicable discount/i],
+        maxDiscountLabels: [/ส่วนลดสูงสุดต่อการสั่งซื้อ/i, /Maximum Discount per Order/i],
+        totalIssuedLabels: [/จำนวนคูปองที่จะสร้างทั้งหมด/i, /Total Vouchers? to be Issued/i],
+        perCustomerLabels: [/จำกัด การใช้คูปองต่อลูกค้าหนึ่งคน/i, /Voucher Limit per Customer/i],
+        submitTexts: ['ยืนยัน', 'Submit', 'Confirm', 'OK', 'Yes'],
+        confirmTexts: ['ยืนยัน', 'Submit', 'Confirm', 'OK', 'Yes'],
+      }
+    }
+    if (siteCode === 'PH') {
+      return {
+        ...base,
+        minSpendLabels: [/Required minimum spend/i, /If Order Min\\.Spend/i],
+        discountLabels: [/Applicable discount/i, /Discount would be/i],
+      }
+    }
+    return base
+  }
+
+  function submitButton(row) {
+    const ui = voucherUiSpec(row)
+    const button = firstMatchingTextNode(ui.submitTexts, document, { exact: true })
     const clickable = button ? findClickableAncestor(button) : null
     return clickable && isVisible(clickable) ? clickable : null
   }
 
-  function dialogConfirmButton() {
+  function dialogConfirmButton(row) {
+    const ui = voucherUiSpec(row)
     const dialog = [...document.querySelectorAll('.next-dialog-wrapper, [role="dialog"], .next-overlay-wrapper')]
-      .find(el => isVisible(el) && /submit|confirm|ok|yes/i.test(textOf(el)))
+      .find(el => isVisible(el) && ui.confirmTexts.some(text => textMatches(textOf(el), text)))
     if (!dialog) return null
-    const texts = ['Submit', 'Confirm', 'OK', 'Yes']
+    const texts = ui.confirmTexts
     for (const text of texts) {
       const node = smallestTextNode(text, dialog, { exact: true })
       if (node) return findClickableAncestor(node, dialog)
@@ -1036,6 +1255,13 @@
     if (!target) return false
     setTimeout(() => {
       try { location.href = target } catch {}
+    }, delayMs)
+    return true
+  }
+
+  function reloadSoon(delayMs = 30) {
+    setTimeout(() => {
+      try { location.reload() } catch {}
     }, delayMs)
     return true
   }
@@ -1458,26 +1684,48 @@
   }
 
   function pageHeaderReady(row) {
+    if (!isCreatePage(row)) return false
+    if (row.tool_key === 'FLEXI_COMBO') {
+      const title = norm(document.title)
+      const body = norm(document.body?.innerText || '')
+      return /Flexi Combo/i.test(title) || /Flexi Combo/i.test(body)
+    }
+    const ui = voucherUiSpec(row)
     const title = norm(document.title)
     const body = norm(document.body?.innerText || '')
-    if (row.tool_key === 'REGULAR_VOUCHER') return /regular voucher/i.test(title) || /Create Regular Voucher/i.test(body)
-    if (row.tool_key === 'STORE_NEW_BUYER_VOUCHER') return /new buyer/i.test(title) || /Store New Buyer Voucher/i.test(body)
-    if (row.tool_key === 'STORE_FOLLOWER_VOUCHER') return /follower/i.test(title) || /Store Follower Voucher/i.test(body)
-    if (row.tool_key === 'FLEXI_COMBO') return /Flexi Combo/i.test(title) || /Flexi Combo/i.test(body)
-    return false
+    if (ui.createReady.some(pattern => textMatches(title, pattern) || textMatches(body, pattern))) return true
+    return Boolean(findInputInField(ui.promotionNameLabels) && findInputByPlaceholder(ui.rangeStartPlaceholders))
   }
 
-  async function fillVoucherPercentOffFixed(row) {
-    await setInputByLabel(/Promotion Name/i, row.promotion_name)
-    await setRangePicker('Start Date', row.voucher_start_at, row.voucher_end_at)
-    if (row.collect_start_at) await setDatePicker('Select Date And Time', row.collect_start_at)
-    await clickByText(/Entire Shop/i, document, { sleepMs: 80 })
-    await clickByText(/Percentage Discount Off/i, document, { sleepMs: 180 })
-    await setInputByLabel(/If Order Min\.Spend/i, row.min_spend_amount)
-    await setInputByLabel(/Discount would be/i, row.discount_value)
-    await setInputByLabel(/Maximum Discount per Order/i, row.max_discount_amount)
-    await setInputByLabel(/Total Voucher to be Issued/i, row.total_issued)
-    await setInputByLabel(/Voucher Limit per Customer/i, row.per_customer_limit)
+  async function fillVoucherPercentOffFixed(row, options = {}) {
+    const ui = voucherUiSpec(row)
+    const siteCode = norm(row?.site_code).toUpperCase()
+    const prepareOptions = options.prepareOptions !== false
+    await setInputByLabel(ui.promotionNameLabels, row.promotion_name)
+    await setRangePicker(ui.rangeStartPlaceholders, ui.rangeEndPlaceholders, row.voucher_start_at, row.voucher_end_at)
+    if (row.collect_start_at) await setDatePicker(ui.collectPlaceholders, row.collect_start_at)
+    if (prepareOptions) {
+      await clickByText(ui.entireShopTexts, document, { sleepMs: 80 })
+      await clickByText(ui.percentageTexts, document, { sleepMs: 180 })
+    }
+    const sectionInputs = siteCode === 'VN'
+      ? await waitFor(() => findVoucherPercentInputsBySection(row), 2600, 120)
+      : null
+    const minSpendInput = sectionInputs?.minSpendInput || await waitForFieldInput(ui.minSpendLabels)
+    const discountInput = sectionInputs?.discountInput || await waitForFieldInput(ui.discountLabels)
+    const maxDiscountInput = sectionInputs?.maxDiscountInput || await waitForFieldInput(ui.maxDiscountLabels)
+    const totalIssuedInput = sectionInputs?.totalIssuedInput || await waitForFieldInput(ui.totalIssuedLabels)
+    const perCustomerInput = sectionInputs?.perCustomerInput || await waitForFieldInput(ui.perCustomerLabels)
+    if (!minSpendInput) throw new Error(`未找到字段输入框：${asArray(ui.minSpendLabels).join(' | ')}`)
+    if (!discountInput) throw new Error(`未找到字段输入框：${asArray(ui.discountLabels).join(' | ')}`)
+    if (!maxDiscountInput) throw new Error(`未找到字段输入框：${asArray(ui.maxDiscountLabels).join(' | ')}`)
+    if (!totalIssuedInput) throw new Error(`未找到字段输入框：${asArray(ui.totalIssuedLabels).join(' | ')}`)
+    if (!perCustomerInput) throw new Error(`未找到字段输入框：${asArray(ui.perCustomerLabels).join(' | ')}`)
+    await setTextInput(minSpendInput, row.min_spend_amount)
+    await setTextInput(discountInput, row.discount_value)
+    await setTextInput(maxDiscountInput, row.max_discount_amount)
+    await setTextInput(totalIssuedInput, row.total_issued)
+    await setTextInput(perCustomerInput, row.per_customer_limit)
   }
 
   function currentTierCards() {
@@ -1583,19 +1831,47 @@
     if (phase === 'ensure_site_home') {
       const target = ctx.row.home_url
       if (!target) return finishRow(ctx, '缺少 home_url')
-      if (location.href !== target) {
+      if (!urlSemanticallyMatches(location.href, target)) {
+        const navState = nextNavigationState(shared, 'ensure_site_home', target)
+        if (navState.nav_retry_count > 8) {
+          return finishRow(ctx, `站点主页切换超时：期望 ${target}，当前 ${location.href}`)
+        }
         navigateSoon(target)
-        return nextPhase('resolve_existing_promotions', 2200, ctx, { last_target_url: target })
+        return nextPhase('ensure_site_home', 2200, ctx, {
+          last_target_url: target,
+          ...navState,
+        })
       }
-      return nextPhase('resolve_existing_promotions', 600, ctx)
+      return nextPhase('resolve_existing_promotions', 600, ctx, clearNavigationState())
     }
 
     if (phase === 'resolve_existing_promotions') {
       const target = ctx.row.list_url
       if (!target) return nextPhase('open_create_page', 0, ctx)
-      if (location.href !== target) {
+      if (!urlSemanticallyMatches(location.href, target)) {
+        const navState = nextNavigationState(shared, 'resolve_existing_promotions', target)
+        const currentSite = siteCodeFromHref(location.href)
+        if (
+          navState.nav_retry_count > 4 &&
+          ctx.row.site_code &&
+          currentSite &&
+          currentSite !== ctx.row.site_code
+        ) {
+          return nextPhase('ensure_site_home', 1200, ctx, {
+            runtime_warnings: [
+              `列表页跨站切换未落到目标站点（期望 ${ctx.row.site_code}，实际 ${currentSite || '(空)'}），回退到站点主页重新进入。`,
+            ],
+            ...clearNavigationState(),
+          })
+        }
+        if (navState.nav_retry_count > 8) {
+          return finishRow(ctx, `冲突列表页切换超时：期望 ${target}，当前 ${location.href}`)
+        }
         navigateSoon(target)
-        return nextPhase('resolve_existing_promotions', 2600, ctx, { last_target_url: target })
+        return nextPhase('resolve_existing_promotions', 2600, ctx, {
+          last_target_url: target,
+          ...navState,
+        })
       }
 
       const listRetry = Number(shared.list_ready_retry || 0)
@@ -1623,6 +1899,7 @@
         return nextPhase('open_create_page', 200, ctx, {
           list_ready_retry: 0,
           conflict_cleanup_count: cleanupCount,
+          ...clearNavigationState(),
           ...clearConflictRetryState(),
         })
       }
@@ -1635,6 +1912,7 @@
             post_submit_retry: 0,
             dialog_confirm_clicked: 0,
             submit_clicked: 0,
+            ...clearNavigationState(),
             ...clearConflictRetryState(),
           })
         }
@@ -1655,6 +1933,7 @@
           dialog_confirm_clicked: 0,
           submit_clicked: 0,
           runtime_warnings: conflictResolution?.warnings || [],
+          ...clearNavigationState(),
           ...clearConflictRetryState(),
         })
       }
@@ -1668,12 +1947,37 @@
 
     if (phase === 'open_create_page') {
       const target = ctx.row.create_url
+      const reloadCount = Number(shared.create_page_reload_count || 0)
       if (!target) return finishRow(ctx, '缺少 create_url')
-      if (location.href !== target) {
+      if (!urlSemanticallyMatches(location.href, target)) {
+        const navState = nextNavigationState(shared, 'open_create_page', target)
+        if (navState.nav_retry_count > 6) {
+          return nextPhase('ensure_site_home', 1200, ctx, {
+            runtime_warnings: [
+              `创建页跳转多次仍未到达目标 URL，回退到站点主页重新进入。期望 ${target}，当前 ${location.href}`,
+            ],
+            ...clearNavigationState(),
+          })
+        }
         navigateSoon(target)
-        return nextPhase('fill_form', 2600, ctx, { last_target_url: target })
+        return nextPhase('open_create_page', 2600, ctx, {
+          last_target_url: target,
+          create_page_reload_count: 0,
+          ...navState,
+        })
       }
-      return nextPhase('fill_form', 800, ctx)
+      if (page > 1 && reloadCount < 1) {
+        reloadSoon()
+        return nextPhase('open_create_page', 2400, ctx, {
+          last_target_url: target,
+          create_page_reload_count: reloadCount + 1,
+          ...clearNavigationState(),
+        })
+      }
+      return nextPhase('fill_form', 800, ctx, {
+        create_page_reload_count: 0,
+        ...clearNavigationState(),
+      })
     }
 
     if (phase === 'fill_form') {
@@ -1683,16 +1987,27 @@
         return finishRow(ctx, '创建页加载超时，未检测到目标表单')
       }
 
-      if (ctx.row.tool_key === 'FLEXI_COMBO') {
-        await fillFlexiPercentOff(ctx.row, execItem.tiers)
-      } else {
-        await fillVoucherPercentOffFixed(ctx.row)
+      try {
+        if (ctx.row.tool_key === 'FLEXI_COMBO') {
+          await fillFlexiPercentOff(ctx.row, execItem.tiers)
+        } else {
+          await fillVoucherPercentOffFixed(ctx.row, { prepareOptions: fillRetry === 0 })
+        }
+      } catch (error) {
+        const message = error?.message || String(error)
+        if (
+          fillRetry < 10 &&
+          /未找到字段输入框|未找到文本|未找到 DatePicker 输入框|未找到 RangePicker 输入框|未找到 DatePicker onChange|未找到 RangePicker onChange|输入回写校验失败/.test(message)
+        ) {
+          return nextPhase('fill_form', 900, ctx, { fill_retry: fillRetry + 1 })
+        }
+        return finishRow(ctx, message)
       }
-      return nextPhase('submit', 400, ctx)
+      return nextPhase('submit', 400, ctx, { fill_retry: 0 })
     }
 
     if (phase === 'submit') {
-      const button = submitButton()
+      const button = submitButton(ctx.row)
       if (!button) return finishRow(ctx, '未找到 Submit 按钮')
       if (ctx.row.tool_key === 'FLEXI_COMBO') {
         if (reactClickSoon(button)) {
@@ -1720,7 +2035,7 @@
     }
 
     if (phase === 'post_submit') {
-      const confirmBtn = dialogConfirmButton()
+      const confirmBtn = dialogConfirmButton(ctx.row)
       if (confirmBtn && Number(shared.dialog_confirm_clicked || 0) < 2) {
         if (!reactClickSoon(confirmBtn)) singleClickSoon(confirmBtn)
         return nextPhase('post_submit', 1500, ctx, {

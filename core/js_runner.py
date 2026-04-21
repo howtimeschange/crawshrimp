@@ -1234,7 +1234,17 @@ class JSRunner:
         if "error" in msg:
             return JSResult(success=False, error=str(msg["error"]))
 
-        result = msg.get("result", {}).get("result", {})
+        payload = msg.get("result", {})
+        exception = payload.get("exceptionDetails") or {}
+        if exception:
+            description = (
+                str((exception.get("exception") or {}).get("description") or "").strip()
+                or str(exception.get("text") or "").strip()
+                or "JavaScript execution failed"
+            )
+            return JSResult(success=False, error=description)
+
+        result = payload.get("result", {})
         if result.get("type") == "undefined":
             return JSResult(success=False, error="脚本未返回值（忘记 return？）")
 
@@ -1303,24 +1313,35 @@ class JSRunner:
         if not result.success:
             raise RuntimeError(result.error or "failed to persist run params")
 
-    def _build_phase_preamble(self, page: int, phase: str, run_token: str, shared: dict) -> str:
+    def _build_phase_preamble(self, page: int, phase: str, run_token: str, shared: dict, params_json: str) -> str:
         storage_key = json.dumps(self._params_storage_key(run_token), ensure_ascii=False)
+        payload_json = json.dumps(params_json, ensure_ascii=False)
         return (
-            f"window.__CRAWSHRIMP_PAGE__ = {page};\n"
-            f"window.__CRAWSHRIMP_PHASE__ = {json.dumps(phase, ensure_ascii=False)};\n"
-            f"window.__CRAWSHRIMP_RUN_TOKEN__ = {json.dumps(run_token, ensure_ascii=False)};\n"
-            f"window.__CRAWSHRIMP_SHARED__ = {json.dumps(shared, ensure_ascii=False)};\n"
-            "try {\n"
-            "  if (!window.__CRAWSHRIMP_PARAMS__) {\n"
-            f"    const storageKey = {storage_key};\n"
-            "    let raw = null;\n"
-            "    try { raw = window.sessionStorage.getItem(storageKey); } catch (e) {}\n"
-            "    if (!raw && typeof window.name === 'string' && window.name.startsWith(storageKey + '\\n')) {\n"
-            "      raw = window.name.slice(storageKey.length + 1);\n"
+            "(() => {\n"
+            f"  window.__CRAWSHRIMP_PAGE__ = {page};\n"
+            f"  window.__CRAWSHRIMP_PHASE__ = {json.dumps(phase, ensure_ascii=False)};\n"
+            f"  window.__CRAWSHRIMP_RUN_TOKEN__ = {json.dumps(run_token, ensure_ascii=False)};\n"
+            f"  window.__CRAWSHRIMP_SHARED__ = {json.dumps(shared, ensure_ascii=False)};\n"
+            f"  const __crawshrimpStorageKey = {storage_key};\n"
+            f"  const __crawshrimpParamsPayload = {payload_json};\n"
+            "  try {\n"
+            "    try {\n"
+            "      window.sessionStorage.setItem(__crawshrimpStorageKey, __crawshrimpParamsPayload);\n"
+            "    } catch (storageError) {\n"
+            "      window.name = __crawshrimpStorageKey + '\\n' + __crawshrimpParamsPayload;\n"
             "    }\n"
-            "    if (raw) window.__CRAWSHRIMP_PARAMS__ = JSON.parse(raw);\n"
+            "    window.__CRAWSHRIMP_PARAMS__ = JSON.parse(__crawshrimpParamsPayload);\n"
+            "  } catch (e) {\n"
+            "    if (!window.__CRAWSHRIMP_PARAMS__) {\n"
+            "      let raw = null;\n"
+            "      try { raw = window.sessionStorage.getItem(__crawshrimpStorageKey); } catch (storageError) {}\n"
+            "      if (!raw && typeof window.name === 'string' && window.name.startsWith(__crawshrimpStorageKey + '\\n')) {\n"
+            "        raw = window.name.slice(__crawshrimpStorageKey.length + 1);\n"
+            "      }\n"
+            "      if (raw) window.__CRAWSHRIMP_PARAMS__ = JSON.parse(raw);\n"
+            "    }\n"
             "  }\n"
-            "} catch (e) {}\n"
+            "})();\n"
         )
 
     async def _clear_run_params(self, run_token: str) -> None:
@@ -1432,7 +1453,7 @@ class JSRunner:
 
                     for phase_index in range(1, MAX_PHASES + 1):
                         await cooperate("before_phase", page, phase, shared)
-                        preamble = self._build_phase_preamble(page, phase, run_token, shared)
+                        preamble = self._build_phase_preamble(page, phase, run_token, shared, params_json)
                         payload = preamble + script
                         timeout_retry = False
                         while True:

@@ -191,7 +191,7 @@ FLEXI_TIER_EXAMPLES = [
 INSTRUCTION_ROWS = [
     ["Sheet", "字段", "说明"],
     ["Vouchers", "枚举型字段", "模板里的站点、优惠工具、领取生效类型、适用范围、折扣类型、预算模式、Flexi 主玩法 / 子玩法 / 条件类型等字段已预置下拉框。"],
-    ["Vouchers", "站点", "页面右侧国家栏可切换 Indonesia / Malaysia / Philippine / Singapore / Thailand / Vietnam；当前 live 已回归 MY / SG。"],
+    ["Vouchers", "站点", "页面右侧国家栏可切换 Indonesia / Malaysia / Philippine / Singapore / Thailand / Vietnam；当前版本支持六站点切换，建议先按小批量首跑。"],
     ["Vouchers", "优惠工具", "支持填写 Regular Voucher、Flexi Combo、Store New Buyer Voucher、Store Follower Voucher。"],
     ["Vouchers", "启用", "已移除。导入模板里的每一行默认都会参与执行。"],
     ["Vouchers", "领取生效类型", "仅 Voucher 类工具使用；FIXED_TIME 对应固定时间生效，USE_AFTER_COLLECTION 对应领取后生效。"],
@@ -209,7 +209,7 @@ FILL_GUIDE_HEADERS = ["Sheet", "字段", "中文解释", "何时必填", "可选
 
 FILL_GUIDE_ROWS = [
     ["Vouchers", "唯一键", "主表唯一标识；FlexiTiers 用它关联回主表。", "每行必填", "自定义唯一值", "REGULAR_MY_001", "不要重复。建议用 券类型_站点_序号。"],
-    ["Vouchers", "站点", "要在哪个 Lazada 站点创建活动。", "每行必填", "ID, MY, PH, SG, TH, VN", "MY", "页面右侧国家栏实测可见 6 个站点；当前 live 已回归 MY / SG。"],
+    ["Vouchers", "站点", "要在哪个 Lazada 站点创建活动。", "每行必填", "ID, MY, PH, SG, TH, VN", "MY", "页面右侧国家栏实测可见 6 个站点；当前版本支持六站点切换，建议先按小批量首跑。"],
     ["Vouchers", "优惠工具", "活动类型。", "每行必填", "Regular Voucher, Flexi Combo, Store New Buyer Voucher, Store Follower Voucher", "Regular Voucher", "四种工具共用同一张主表。"],
     ["Vouchers", "促销名称", "页面里的 Promotion Name。", "每行必填", "文本", "MY Regular Voucher Demo", "建议同站点内保持可识别且唯一。"],
     ["Vouchers", "领取生效类型", "Voucher Use Time Type。", "Regular / New Buyer / Follower 必填", "FIXED_TIME, USE_AFTER_COLLECTION", "FIXED_TIME", "Flexi Combo 留空。当前 live 最稳的是 FIXED_TIME。"],

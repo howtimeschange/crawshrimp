@@ -1,5 +1,7 @@
 import asyncio
 import json
+import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -8,6 +10,15 @@ from unittest.mock import patch
 
 from core.js_runner import JSRunner
 from core.models import JSResult
+
+
+def _extract_window_assignment(expression: str, key: str):
+    prefix = f"window.{key} = "
+    for line in expression.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            return stripped.split("=", 1)[1].strip().rstrip(";")
+    return None
 
 
 class SharedCarryRunner(JSRunner):
@@ -28,16 +39,12 @@ class SharedCarryRunner(JSRunner):
         return None
 
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
-        page = None
-        phase = None
-        shared = None
-        for line in expression.splitlines():
-            if line.startswith("window.__CRAWSHRIMP_PAGE__ = "):
-                page = int(line.split("=", 1)[1].strip().rstrip(";"))
-            elif line.startswith("window.__CRAWSHRIMP_PHASE__ = "):
-                phase = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
-            elif line.startswith("window.__CRAWSHRIMP_SHARED__ = "):
-                shared = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
+        page_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PAGE__")
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        page = int(page_raw) if page_raw is not None else None
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
 
         self.calls.append({
             "page": page,
@@ -92,11 +99,8 @@ class LongPaginationRunner(JSRunner):
         return None
 
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
-        page = None
-        for line in expression.splitlines():
-            if line.startswith("window.__CRAWSHRIMP_PAGE__ = "):
-                page = int(line.split("=", 1)[1].strip().rstrip(";"))
-                break
+        page_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PAGE__")
+        page = int(page_raw) if page_raw is not None else None
 
         self.calls.append(page)
         has_more = bool(page and page < self.total_pages)
@@ -129,11 +133,8 @@ class EndlessPaginationRunner(JSRunner):
         return None
 
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
-        page = None
-        for line in expression.splitlines():
-            if line.startswith("window.__CRAWSHRIMP_PAGE__ = "):
-                page = int(line.split("=", 1)[1].strip().rstrip(";"))
-                break
+        page_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PAGE__")
+        page = int(page_raw) if page_raw is not None else None
 
         self.calls.append(page)
         return JSResult(
@@ -167,16 +168,12 @@ class RuntimeActionRunner(JSRunner):
         return None
 
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
-        page = None
-        phase = None
-        shared = None
-        for line in expression.splitlines():
-            if line.startswith("window.__CRAWSHRIMP_PAGE__ = "):
-                page = int(line.split("=", 1)[1].strip().rstrip(";"))
-            elif line.startswith("window.__CRAWSHRIMP_PHASE__ = "):
-                phase = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
-            elif line.startswith("window.__CRAWSHRIMP_SHARED__ = "):
-                shared = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
+        page_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PAGE__")
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        page = int(page_raw) if page_raw is not None else None
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
 
         self.calls.append({
             "page": page,
@@ -260,6 +257,59 @@ class RuntimeActionRunner(JSRunner):
         }
 
 
+class ParamReinjectRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str, params_json: str = "") -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        has_embedded_param_payload = "REGULAR_VN_001" in expression
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+
+        self.calls.append({
+            "phase": phase,
+            "has_embedded_param_payload": has_embedded_param_payload,
+        })
+
+        if len(self.calls) == 1:
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "next_phase",
+                    "next_phase": "ensure_site_home",
+                    "sleep_ms": 0,
+                    "shared": {},
+                },
+            )
+
+        if not has_embedded_param_payload:
+            return JSResult(success=False, error="second phase missing embedded param payload")
+
+        return JSResult(
+            success=True,
+            data=[{"ok": True}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": {},
+            },
+        )
+
+
 class RuntimeUrlCaptureRunner(JSRunner):
     def __init__(self):
         super().__init__("ws://example.invalid")
@@ -279,13 +329,10 @@ class RuntimeUrlCaptureRunner(JSRunner):
         return None
 
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
-        phase = None
-        shared = None
-        for line in expression.splitlines():
-            if line.startswith("window.__CRAWSHRIMP_PHASE__ = "):
-                phase = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
-            elif line.startswith("window.__CRAWSHRIMP_SHARED__ = "):
-                shared = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
 
         self.calls.append({
             "phase": phase,
@@ -350,13 +397,10 @@ class RuntimeClickDownloadRunner(JSRunner):
         return None
 
     async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
-        phase = None
-        shared = None
-        for line in expression.splitlines():
-            if line.startswith("window.__CRAWSHRIMP_PHASE__ = "):
-                phase = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
-            elif line.startswith("window.__CRAWSHRIMP_SHARED__ = "):
-                shared = json.loads(line.split("=", 1)[1].strip().rstrip(";"))
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
 
         self.calls.append({
             "phase": phase,
@@ -527,6 +571,83 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("downloads", runner.calls[2]["shared"])
         self.assertEqual(len(runner.runtime_output_files), 1)
         self.assertEqual(Path(runner.runtime_output_files[0]).name, "demo.xlsx")
+
+    async def test_run_script_file_reinjects_params_on_followup_phases(self):
+        runner = ParamReinjectRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(
+                script_path,
+                params={"input_file": {"rows": [{"唯一键": "REGULAR_VN_001"}]}},
+            )
+
+        self.assertEqual(data, [{"ok": True}])
+        self.assertEqual([call["phase"] for call in runner.calls], ["main", "ensure_site_home"])
+        self.assertTrue(runner.calls[0]["has_embedded_param_payload"])
+        self.assertTrue(runner.calls[1]["has_embedded_param_payload"])
+
+    def test_build_phase_preamble_can_run_twice_in_same_node_context(self):
+        if shutil.which("node") is None:
+            self.skipTest("node not installed")
+
+        runner = JSRunner("ws://example.invalid")
+        params_json = json.dumps(
+            {"input_file": {"rows": [{"唯一键": "REGULAR_VN_001"}]}},
+            ensure_ascii=False,
+        )
+        preamble = runner._build_phase_preamble(1, "main", "run-token", {}, params_json)
+        script = (
+            "globalThis.window = {\n"
+            "  sessionStorage: {\n"
+            "    _store: new Map(),\n"
+            "    setItem(key, value) { this._store.set(String(key), String(value)); },\n"
+            "    getItem(key) { return this._store.has(String(key)) ? this._store.get(String(key)) : null; },\n"
+            "  },\n"
+            "  name: '',\n"
+            "};\n"
+            f"{preamble}"
+            f"{preamble}"
+            "(() => ({ success: true, data: [], meta: { has_more: false } }))();\n"
+        )
+
+        result = subprocess.run(
+            ["node", "-e", script],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    async def test_evaluate_surfaces_browser_exception_details(self):
+        runner = JSRunner("ws://example.invalid")
+        fake_ws = FakeCDPWebSocket([
+            {
+                "id": 1,
+                "result": {
+                    "result": {
+                        "type": "object",
+                        "subtype": "error",
+                        "className": "SyntaxError",
+                        "description": "SyntaxError: Unexpected token 'catch'",
+                    },
+                    "exceptionDetails": {
+                        "text": "Uncaught",
+                        "exception": {
+                            "description": "SyntaxError: Unexpected token 'catch'",
+                        },
+                    },
+                },
+            },
+        ])
+
+        with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+            result = await runner.evaluate("broken()")
+
+        self.assertFalse(result.success)
+        self.assertEqual(result.error, "SyntaxError: Unexpected token 'catch'")
 
     async def test_run_script_file_handles_runtime_url_capture_action(self):
         runner = RuntimeUrlCaptureRunner()

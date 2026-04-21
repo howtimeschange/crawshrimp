@@ -1,8 +1,8 @@
 id: lazada-plus-v1
 name: Lazada 运营助手
-version: 0.1.4
+version: 0.1.5
 author: crawshrimp
-description: "Lazada 优惠券/促销批量创建：页面右侧站点栏可切换 ID/MY/PH/SG/TH/VN，当前已回归 MY/SG 的 live 提交；模板包含 Vouchers 主表、FlexiTiers 阶梯表和填写说明。"
+description: "Lazada 优惠券/促销批量创建：模板覆盖 ID/MY/PH/SG/TH/VN 六站点；当前 create-flow 已探查并验证 MY/PH/SG/TH/VN，ID 站当前账号会被重定向到 account health，live 创建暂不支持。跨站会先回站点主页再进入目标工具页；模板包含 Vouchers 主表、FlexiTiers 阶梯表和填写说明。"
 entry_url: https://sellercenter.lazada.sg/
 tab_match_prefixes:
   - https://sellercenter.lazada
