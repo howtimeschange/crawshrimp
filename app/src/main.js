@@ -6,13 +6,14 @@ delete process.env.ELECTRON_RUN_AS_NODE
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
 const path   = require('path')
 const fs     = require('fs')
-const net    = require('net')
 const http   = require('http')
 const { spawn, execSync } = require('child_process')
+const { createBackendController } = require('./backendController')
 
 const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
+const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
 
 function normalizeUrlForMatch(raw) {
   try {
@@ -222,22 +223,16 @@ function createWindow() {
 // ── FastAPI backend ────────────────────────────────────────────────────────────
 let backendProcess = null
 
-async function startBackend() {
-  if (await probeTcp(API_PORT)) {
-    log(`[api] already running on port ${API_PORT}`)
-    return
-  }
-
+function spawnBackendProcess() {
   const pythonBin  = getPythonBin()
   const serverScript = getApiServerScript()
 
   if (!fs.existsSync(serverScript)) {
-    log(`[warn] api_server.py not found: ${serverScript}`)
-    return
+    throw new Error(`api_server.py not found: ${serverScript}`)
   }
 
   log(`[api] starting: ${pythonBin} ${serverScript}`)
-  backendProcess = spawn(pythonBin, [serverScript], {
+  const proc = spawn(pythonBin, [serverScript], {
     cwd: getPythonScriptsDir(),
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
@@ -251,37 +246,29 @@ async function startBackend() {
         : path.join(__dirname, '..', '..'),
     },
   })
+  backendProcess = proc
 
   const fwd = (prefix) => (d) =>
     d.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => log(`[${prefix}] ${l}`))
 
-  backendProcess.stdout.on('data', fwd('api'))
-  backendProcess.stderr.on('data', fwd('api'))
-  backendProcess.on('exit', (code) => {
+  proc.stdout.on('data', fwd('api'))
+  proc.stderr.on('data', fwd('api'))
+  proc.on('exit', (code) => {
     log(`[api] process exited code=${code}`)
-    backendProcess = null
+    if (backendProcess === proc) backendProcess = null
   })
 
-  // Wait up to 10s for API to be ready
-  for (let i = 0; i < 20; i++) {
-    await new Promise(r => setTimeout(r, 500))
-    if (await probeTcp(API_PORT)) {
-      log(`[api] ready on port ${API_PORT}`)
-      sendStatus('api', true)
-      return
-    }
-  }
-  log('[warn] API server startup timeout')
+  return proc
 }
 
-function stopBackend() {
-  if (!backendProcess) return
+function stopBackendProcess(proc = backendProcess) {
+  if (!proc) return
   if (process.platform === 'win32') {
-    try { execSync(`taskkill /F /T /PID ${backendProcess.pid}`, { timeout: 3000 }) } catch (_) {}
+    try { execSync(`taskkill /F /T /PID ${proc.pid}`, { timeout: 3000 }) } catch (_) {}
   } else {
-    backendProcess.kill('SIGTERM')
+    proc.kill('SIGTERM')
   }
-  backendProcess = null
+  if (backendProcess === proc) backendProcess = null
 }
 
 // ── Chrome / CDP ──────────────────────────────────────────────────────────────
@@ -514,6 +501,9 @@ function apiCall(method, urlPath, body = null, options = {}) {
   const retryableCodes = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE'])
 
   return (async () => {
+    if (options.ensureReady !== false) {
+      await backendController.ensureReady()
+    }
     let lastError = null
     for (let attempt = 0; attempt <= retries; attempt++) {
       try {
@@ -532,15 +522,32 @@ function apiCall(method, urlPath, body = null, options = {}) {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function probeTcp(port, host = '127.0.0.1', ms = 500) {
+function probeApiReady(timeoutMs = 800) {
   return new Promise((resolve) => {
-    const sock = new net.Socket()
-    const done = (ok) => { try { sock.destroy() } catch (_) {} resolve(ok) }
-    sock.setTimeout(ms)
-    sock.once('connect', () => done(true))
-    sock.once('error', () => done(false))
-    sock.once('timeout', () => done(false))
-    sock.connect(port, host)
+    let done = false
+    const finish = (result) => {
+      if (done) return
+      done = true
+      resolve(result)
+    }
+
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: API_PORT,
+      path: '/health',
+      method: 'GET',
+      timeout: timeoutMs,
+    }, (res) => {
+      res.resume()
+      res.on('end', () => finish(res.statusCode === 200))
+    })
+
+    req.on('error', () => finish(false))
+    req.on('timeout', () => {
+      req.destroy(new Error('timeout'))
+      finish(false)
+    })
+    req.end()
   })
 }
 
@@ -559,6 +566,24 @@ function sendStatus(key, value) {
   }
 }
 
+const backendController = createBackendController({
+  log,
+  sendStatus,
+  probeReady: () => probeApiReady(),
+  startProcess: () => spawnBackendProcess(),
+  stopProcess: (proc) => stopBackendProcess(proc),
+  intervalMs: 500,
+  attempts: BACKEND_STARTUP_ATTEMPTS,
+})
+
+async function startBackend() {
+  await backendController.ensureReady()
+}
+
+function stopBackend() {
+  backendController.stop()
+}
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -567,7 +592,12 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 
-  await startBackend()
+  try {
+    await startBackend()
+    log(`[api] ready on port ${API_PORT}`)
+  } catch (error) {
+    log(`[warn] API backend failed to start: ${error.message}`)
+  }
 
   // Auto-launch Chrome with CDP on startup
   const chromeState = await probeChromeCdp()
@@ -590,7 +620,7 @@ app.on('window-all-closed', () => {
 // ── IPC handlers ──────────────────────────────────────────────────────────────
 
 ipcMain.handle('get-status', async () => ({
-  api:     await probeTcp(API_PORT),
+  api:     await probeApiReady(),
   chrome:  (await probeChromeCdp()).ok,
   apiPort: API_PORT,
   cdpPort: CDP_PORT,
