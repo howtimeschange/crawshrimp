@@ -80,6 +80,74 @@ class SharedCarryRunner(JSRunner):
         )
 
 
+class SharedResetRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        page_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PAGE__")
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        page = int(page_raw) if page_raw is not None else None
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
+
+        self.calls.append({
+            "page": page,
+            "phase": phase,
+            "shared": shared,
+        })
+
+        if page == 1 and phase == "main":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "next_phase",
+                    "next_phase": "prepare_row",
+                    "sleep_ms": 0,
+                    "shared": {
+                        "couponName": "KEEP-ME",
+                        "couponCode": "ABCDE",
+                    },
+                },
+            )
+
+        if page == 1 and phase == "prepare_row":
+            return JSResult(
+                success=True,
+                data=[{"page": 1, "phase": phase}],
+                meta={
+                    "action": "complete",
+                    "has_more": True,
+                    "shared": {},
+                },
+            )
+
+        return JSResult(
+            success=True,
+            data=[{"page": page, "phase": phase}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": shared or {},
+            },
+        )
+
+
 class LongPaginationRunner(JSRunner):
     def __init__(self, total_pages: int):
         super().__init__("ws://example.invalid")
@@ -553,6 +621,31 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
                     await runner.run_script_file(script_path, params={})
 
         self.assertEqual(runner.calls, [1, 2, 3])
+
+    async def test_run_script_file_allows_empty_shared_to_clear_page_state(self):
+        runner = SharedResetRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(
+            data,
+            [
+                {"page": 1, "phase": "prepare_row"},
+                {"page": 2, "phase": "main"},
+            ],
+        )
+        self.assertEqual(runner.calls[0]["shared"], {})
+        self.assertEqual(
+            runner.calls[1]["shared"],
+            {
+                "couponName": "KEEP-ME",
+                "couponCode": "ABCDE",
+            },
+        )
+        self.assertEqual(runner.calls[2]["shared"], {})
 
     async def test_run_script_file_handles_runtime_capture_and_download_actions(self):
         with tempfile.TemporaryDirectory() as tmpdir:

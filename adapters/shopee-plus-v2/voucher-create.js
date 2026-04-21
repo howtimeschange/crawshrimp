@@ -37,6 +37,21 @@
     '台湾': ['台湾', 'taiwan', 'tw'],
     '印尼': ['印尼', 'indonesia', 'id'],
   }
+  const ROW_ALIASES = {
+    site: ['站点'],
+    store: ['店铺'],
+    couponName: ['优惠券名称'],
+    couponCode: ['优惠码'],
+    voucherType: ['优惠券品类'],
+    rewardType: ['奖励类型'],
+    discountType: ['折扣类型'],
+    discountLimit: ['优惠限额'],
+    minSpend: ['最低消费金额'],
+    totalCount: ['可使用总数'],
+    perBuyer: ['每个买家可用的优惠券数量上限'],
+    startDt: ['优惠券领取期限（开始）精确到分'],
+    endDt: ['优惠券领取期限（结束）精确到分'],
+  }
 
   const executionRows = buildExecutionRows(rawRows)
   const execRow = executionRows[page - 1]
@@ -65,6 +80,30 @@
     return matchedKey ? row[matchedKey] : (options.defaultValue ?? '')
   }
 
+  function getVoucherRowValue(row, aliases, defaultValue = '') {
+    return getRowValue(row, aliases, { includes: true, defaultValue })
+  }
+
+  function getCustomCouponName(row) {
+    return norm(getVoucherRowValue(row, ROW_ALIASES.couponName))
+  }
+
+  function normalizeCouponCode(value) {
+    return String(value || '').toUpperCase().replace(/\s+/g, '').trim()
+  }
+
+  function getCustomCouponCode(row) {
+    return normalizeCouponCode(getVoucherRowValue(row, ROW_ALIASES.couponCode))
+  }
+
+  function validateCustomCouponCode(code) {
+    if (!code) return ''
+    if (!/^[A-Z0-9]{1,5}$/.test(code)) {
+      throw new Error('自定义优惠码格式不正确：最多 5 位，仅支持英文字母 A-Z 和数字 0-9')
+    }
+    return code
+  }
+
   function toNumber(value) {
     const raw = digitsOnly(value).replace(/%$/, '').trim()
     const num = Number(raw)
@@ -83,12 +122,23 @@
     return String(numeric || '')
   }
 
-  function buildCouponName(discountType, discountLimit) {
-    const typeText = norm(discountType)
-    const limitText = norm(discountLimit)
-    if (!typeText || !limitText) return ''
+  function buildCouponName(spec = {}) {
+    const voucherType = norm(spec.voucherType)
+    const typeText = norm(spec.discountType)
+    const limitText = norm(spec.discountLimit)
+    const minSpend = digitsOnly(spec.minSpend)
+    const maxDiscount = digitsOnly(spec.maxDiscount)
+    const maxDiscountMode = norm(spec.maxDiscountMode)
+    const sourceIndex = String(spec.sourceIndex || '').trim()
+    if (!voucherType || !typeText || !limitText) return ''
     const suffix = /百分比|percentage/i.test(typeText) ? '%' : ''
-    return `${typeText}：${limitText}${suffix}`
+    const discountLabel = `${typeText}${limitText}${suffix}`
+    const minSpendLabel = minSpend ? `满${minSpend}` : ''
+    const maxDiscountLabel = maxDiscountMode === 'nocap'
+      ? '无上限'
+      : (maxDiscount ? `封顶${maxDiscount}` : '')
+    const rowLabel = sourceIndex ? `R${sourceIndex}` : ''
+    return [voucherType, discountLabel, minSpendLabel, maxDiscountLabel, rowLabel].filter(Boolean).join('-')
   }
 
   function isNoCapValue(value) {
@@ -122,7 +172,7 @@
   }
 
   function encodeCouponCode(num, length = 5) {
-    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
     const base = chars.length
     const max = base ** length
     let value = Math.abs(Number(num) || 0) % max
@@ -139,16 +189,16 @@
     return [
       runToken,
       execItem?.sourceIndex || '',
-      norm(row['站点']),
-      norm(row['店铺']),
-      norm(row['优惠券品类']),
-      norm(row['奖励类型']),
-      norm(row['折扣类型']),
-      digitsOnly(row['优惠限额']),
+      norm(getVoucherRowValue(row, ROW_ALIASES.site)),
+      norm(getVoucherRowValue(row, ROW_ALIASES.store)),
+      norm(getVoucherRowValue(row, ROW_ALIASES.voucherType)),
+      norm(getVoucherRowValue(row, ROW_ALIASES.rewardType)),
+      norm(getVoucherRowValue(row, ROW_ALIASES.discountType)),
+      digitsOnly(getVoucherRowValue(row, ROW_ALIASES.discountLimit)),
       digitsOnly(getMaxDiscountRaw(row)),
-      digitsOnly(row['最低消费金额']),
-      digitsOnly(row['可使用总数']),
-      digitsOnly(row['每个买家可用的优惠券数量上限']),
+      digitsOnly(getVoucherRowValue(row, ROW_ALIASES.minSpend)),
+      digitsOnly(getVoucherRowValue(row, ROW_ALIASES.totalCount)),
+      digitsOnly(getVoucherRowValue(row, ROW_ALIASES.perBuyer)),
     ].join('|')
   }
 
@@ -160,6 +210,13 @@
     const used = new Set()
     for (let index = 0; index <= currentIndex; index += 1) {
       const execItem = executionRows[index]
+      const customCode = validateCustomCouponCode(getCustomCouponCode(execItem?.row || {}))
+      if (customCode) {
+        if (used.has(customCode)) throw new Error(`优惠码重复：${customCode}`)
+        used.add(customCode)
+        if (index === currentIndex) return customCode
+        continue
+      }
       const baseSeed = buildCodeSeed(execItem)
       let salt = 0
       let code = ''
@@ -492,8 +549,8 @@
     const groups = new Map()
     const order = []
     rows.forEach((row, index) => {
-      const site = norm(row?.['站点'])
-      const store = norm(row?.['店铺'])
+      const site = norm(getVoucherRowValue(row, ROW_ALIASES.site))
+      const store = norm(getVoucherRowValue(row, ROW_ALIASES.store))
       const key = store ? `${site}::${store}` : `__row__${index + 1}`
       if (!groups.has(key)) {
         groups.set(key, [])
@@ -1054,13 +1111,14 @@
     const row = currentExecRow.row || {}
     const showEarlyKey = Object.keys(row).find(key => key.replace(/\s+/g, '').includes('是否提前显示'))
     const maxDiscountSpec = parseMaxDiscountSpec(getMaxDiscountRaw(row))
-    const store = norm(row['店铺'])
-    const site = norm(row['站点'])
-    const voucherType = norm(row['优惠券品类'])
-    const rewardType = norm(row['奖励类型'])
-    const discountType = norm(row['折扣类型'])
-    const rawLimit = digitsOnly(row['优惠限额'])
+    const store = norm(getVoucherRowValue(row, ROW_ALIASES.store))
+    const site = norm(getVoucherRowValue(row, ROW_ALIASES.site))
+    const voucherType = norm(getVoucherRowValue(row, ROW_ALIASES.voucherType))
+    const rewardType = norm(getVoucherRowValue(row, ROW_ALIASES.rewardType))
+    const discountType = norm(getVoucherRowValue(row, ROW_ALIASES.discountType))
+    const rawLimit = digitsOnly(getVoucherRowValue(row, ROW_ALIASES.discountLimit))
     const discountLimit = rawLimit ? discountLimitValue(rawLimit, discountType) : ''
+    const customCouponName = getCustomCouponName(row)
     const ctx = {
       row,
       sourceIndex: currentExecRow.sourceIndex,
@@ -1075,13 +1133,21 @@
       maxDiscount: maxDiscountSpec.mode === 'amount' ? digitsOnly(maxDiscountSpec.value) : '',
       maxDiscountMode: maxDiscountSpec.mode,
       maxDiscountRaw: maxDiscountSpec.raw,
-      minSpend: digitsOnly(row['最低消费金额']),
-      totalCount: digitsOnly(row['可使用总数']),
-      perBuyer: digitsOnly(row['每个买家可用的优惠券数量上限']),
+      minSpend: digitsOnly(getVoucherRowValue(row, ROW_ALIASES.minSpend)),
+      totalCount: digitsOnly(getVoucherRowValue(row, ROW_ALIASES.totalCount)),
+      perBuyer: digitsOnly(getVoucherRowValue(row, ROW_ALIASES.perBuyer)),
       showEarly: boolLike(showEarlyKey ? row[showEarlyKey] : ''),
-      startDt: parseDateTime(row['优惠券领取期限（开始）精确到分'], 'start'),
-      endDt: parseDateTime(row['优惠券领取期限（结束）精确到分'], 'end'),
-      couponName: shared.couponName || buildCouponName(discountType, discountLimit),
+      startDt: parseDateTime(getVoucherRowValue(row, ROW_ALIASES.startDt), 'start'),
+      endDt: parseDateTime(getVoucherRowValue(row, ROW_ALIASES.endDt), 'end'),
+      couponName: shared.couponName || customCouponName || buildCouponName({
+        voucherType,
+        discountType,
+        discountLimit,
+        minSpend: getVoucherRowValue(row, ROW_ALIASES.minSpend),
+        maxDiscount: maxDiscountSpec.value,
+        maxDiscountMode: maxDiscountSpec.mode,
+        sourceIndex: currentExecRow.sourceIndex,
+      }),
       couponCode: shared.couponCode || buildGeneratedCouponCode(currentExecRow),
       shopId: shared.shopId || getUrlShopId(),
     }

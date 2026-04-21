@@ -1476,7 +1476,8 @@ class JSRunner:
 
                         meta = result.meta or {}
                         action = meta.get("action") or "complete"
-                        shared = meta.get("shared") or shared
+                        if "shared" in meta:
+                            shared = meta.get("shared")
 
                         if result.data:
                             all_data.extend(result.data)

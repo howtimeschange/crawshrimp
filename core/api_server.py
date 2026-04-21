@@ -620,14 +620,19 @@ def _rows_raw_to_table(rows_raw, header_row: int = 1):
             return _dedupe_headers(primary), hi + 1
 
         secondary = _stringify_row(rows_raw[hi + 1])
-        has_primary_gaps = any(not str(cell).strip() for cell in primary)
-        has_secondary_labels = any(str(cell).strip() for cell in secondary)
-        if not (has_primary_gaps and has_secondary_labels):
+        width = max(len(primary), len(secondary))
+        # Only collapse when row 2 is clearly filling blanks from row 1.
+        # Trailing blank header cells in wide templates should not treat row 2 as another header row.
+        has_grouped_children = any(
+            not str(primary[index] if index < len(primary) else '').strip()
+            and str(secondary[index] if index < len(secondary) else '').strip()
+            for index in range(width)
+        )
+        if not has_grouped_children:
             return _dedupe_headers(primary), hi + 1
 
         merged_headers = []
         last_parent = ''
-        width = max(len(primary), len(secondary))
         for index in range(width):
             parent = str(primary[index] if index < len(primary) else '').strip()
             child = str(secondary[index] if index < len(secondary) else '').strip()
