@@ -132,5 +132,4 @@ jobs:
             release-assets/macos/* \
             release-assets/windows/* \
             --title "抓虾 Desktop Latest v${APP_VERSION}" \
-            --notes-file release-notes.md \
-            --prerelease
+            --notes-file release-notes.md
