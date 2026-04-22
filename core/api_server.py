@@ -693,6 +693,94 @@ def _cleanup_semir_runtime_artifacts(runtime_files: list, package_root: Optional
         logger.debug("Failed to clean semir package root %s", package_root, exc_info=True)
 
 
+def _build_semir_ai_material_entries(data_rows: list) -> list[dict]:
+    entries = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        input_code = _safe_local_name(str(row.get("输入编码") or "").strip(), "未分类")
+        materials = row.get("__素材明细") or []
+        if not isinstance(materials, list):
+            continue
+        for material in materials:
+            if not isinstance(material, dict):
+                continue
+            local_path = Path(str(material.get("local_path") or "")).expanduser()
+            if not local_path.is_file():
+                continue
+            entries.append({
+                "input_code": input_code,
+                "filename": str(material.get("filename") or local_path.name).strip() or local_path.name,
+                "cloud_path": str(material.get("cloud_path") or "").strip(),
+                "local_path": local_path,
+                "preserve_path": True,
+            })
+    return entries
+
+
+def _build_semir_ai_generated_entries(data_rows: list) -> list[dict]:
+    entries = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        input_code = _safe_local_name(str(row.get("输入编码") or "").strip(), "未分类")
+        generated = row.get("__生成图明细") or []
+        if not isinstance(generated, list):
+            continue
+        for item in generated:
+            if not isinstance(item, dict):
+                continue
+            local_path = Path(str(item.get("local_path") or "")).expanduser()
+            if not local_path.is_file():
+                continue
+            entries.append({
+                "input_code": input_code,
+                "filename": str(item.get("filename") or local_path.name).strip() or local_path.name,
+                "cloud_path": "",
+                "local_path": local_path,
+                "preserve_path": False,
+            })
+    return entries
+
+
+def _create_semir_ai_zip(
+    entries: list[dict],
+    *,
+    runtime_dir: Path,
+    output_root: Path,
+    package_base: str,
+    relative_path: str,
+    flatten_code_folder: bool,
+    log,
+) -> Optional[str]:
+    if not entries:
+        return None
+
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+    for entry in entries:
+        folder_name, clean_filename = _semir_output_folder_and_filename(
+            entry.get("cloud_path") or "",
+            relative_path,
+            entry.get("filename") or entry["local_path"].name,
+        )
+        if entry.get("preserve_path") and not flatten_code_folder:
+            target = package_root / entry["input_code"] / folder_name / clean_filename
+        else:
+            target = package_root / entry["input_code"] / clean_filename
+        _copy_file_to_unique_target(entry["local_path"], target)
+
+    output_root.mkdir(parents=True, exist_ok=True)
+    zip_path = _ensure_unique_local_path(output_root / f"{package_root.name}.zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        for file_path in package_root.rglob("*"):
+            if not file_path.is_file():
+                continue
+            archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+    shutil.rmtree(package_root, ignore_errors=True)
+    log(f"Semir AI package created: {zip_path}")
+    return str(zip_path)
+
+
 def _finalize_semir_cloud_drive_outputs(
     task_id: str,
     data_rows: list,
@@ -703,6 +791,53 @@ def _finalize_semir_cloud_drive_outputs(
     log,
 ) -> list[str]:
     if task_id != "batch_image_download":
+        if task_id == "batch_ai_generate":
+            runtime_dir = Path(runtime_artifact_dir)
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+            output_root = Path(str(exported_refs[0])).expanduser().parent if exported_refs else runtime_dir
+            cloud = _parse_semir_cloud_path(run_params.get("cloud_path"))
+            relative_path = cloud.get("relative_path") or ""
+            duplicate_mode = str(run_params.get("duplicate_mode") or "first_per_stem").strip().lower()
+            flatten_code_folder = duplicate_mode != "all"
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            final_refs: list[str] = []
+
+            generated_zip = _create_semir_ai_zip(
+                _build_semir_ai_generated_entries(data_rows),
+                runtime_dir=runtime_dir,
+                output_root=output_root,
+                package_base=_safe_local_name(
+                    run_params.get("generated_package_name") or f"森马云盘AI生成图包_{timestamp}",
+                    f"森马云盘AI生成图包_{timestamp}",
+                ),
+                relative_path="",
+                flatten_code_folder=True,
+                log=log,
+            )
+            if generated_zip:
+                final_refs.append(generated_zip)
+
+            package_mode = str(run_params.get("material_package_mode") or "discard").strip().lower()
+            if package_mode == "zip":
+                material_zip = _create_semir_ai_zip(
+                    _build_semir_ai_material_entries(data_rows),
+                    runtime_dir=runtime_dir,
+                    output_root=output_root,
+                    package_base=_safe_local_name(
+                        run_params.get("material_package_name") or f"森马云盘AI素材包_{timestamp}",
+                        f"森马云盘AI素材包_{timestamp}",
+                    ),
+                    relative_path=relative_path,
+                    flatten_code_folder=flatten_code_folder,
+                    log=log,
+                )
+                if material_zip:
+                    final_refs.append(material_zip)
+
+            _cleanup_semir_runtime_artifacts(runtime_files, None)
+            return [*final_refs, *exported_refs]
+
         return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
 
     runtime_dir = Path(runtime_artifact_dir)
@@ -1015,8 +1150,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         current_row_no = int(shared_state.get('current_row_no') or 0)
         batch_no = int(shared_state.get('batch_no') or 0)
         total_batches = int(shared_state.get('total_batches') or 0)
+        search_total_codes = int(shared_state.get('search_total_codes') or 0)
+        search_completed_codes = int(shared_state.get('search_completed_codes') or 0)
+        generation_total_jobs = int(shared_state.get('generation_total_jobs') or 0)
+        generation_completed_jobs = int(shared_state.get('generation_completed_jobs') or 0)
         buyer_id = str(shared_state.get('current_buyer_id') or '').strip()
         store = str(shared_state.get('current_store') or '').strip()
+        current_source_filename = str(shared_state.get('current_source_filename') or '').strip()
         phase_name = str((payload or {}).get('phase') or '').strip()
         records = int((payload or {}).get('records') or 0)
         download_total = int(run_control.get('download_total') or 0) if run_control else int((payload or {}).get('download_total') or (payload or {}).get('download_item_total') or 0)
@@ -1046,8 +1186,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             "row_no": current_row_no,
             "batch_no": batch_no,
             "total_batches": total_batches,
+            "search_total_codes": search_total_codes,
+            "search_completed_codes": search_completed_codes,
+            "generation_total_jobs": generation_total_jobs,
+            "generation_completed_jobs": generation_completed_jobs,
             "buyer_id": buyer_id,
             "store": store,
+            "current_source_filename": current_source_filename,
             "phase": phase_name,
             "completed": records,
             "percent": percent,
@@ -1108,8 +1253,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'row_no': progress['row_no'],
             'batch_no': progress['batch_no'],
             'total_batches': progress['total_batches'],
+            'search_total_codes': progress['search_total_codes'],
+            'search_completed_codes': progress['search_completed_codes'],
+            'generation_total_jobs': progress['generation_total_jobs'],
+            'generation_completed_jobs': progress['generation_completed_jobs'],
             'buyer_id': progress['buyer_id'],
             'store': progress['store'],
+            'current_source_filename': progress['current_source_filename'],
             'phase': progress['phase'],
             'completed': progress['completed'],
             'percent': progress['percent'],

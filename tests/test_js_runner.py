@@ -303,10 +303,11 @@ class RuntimeActionRunner(JSRunner):
             }],
         }
 
-    async def download_urls(self, items, strict: bool = False):
+    async def download_urls(self, items, strict: bool = False, **kwargs):
         self.download_payloads.append({
             "items": items,
             "strict": strict,
+            "kwargs": kwargs,
         })
         path = self.artifact_dir / "demo.xlsx"
         path.write_text("ok", encoding="utf-8")
@@ -521,6 +522,78 @@ class RuntimeClickDownloadRunner(JSRunner):
                 "filename": path.name,
                 "path": saved_path,
                 "url": "https://example.com/FundDetail-demo.xlsx",
+            }],
+        }
+
+
+class RuntimeFileChooserRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+        self.file_chooser_payloads = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
+
+        self.calls.append({
+            "phase": phase,
+            "shared": shared,
+        })
+
+        if phase == "main":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "file_chooser_upload",
+                    "items": [{
+                        "label": "Gemini upload",
+                        "clicks": [{"x": 12, "y": 34}, {"x": 56, "y": 78}],
+                        "files": ["/tmp/demo.png"],
+                    }],
+                    "shared_key": "chooser_uploads",
+                    "next_phase": "after_upload",
+                    "shared": shared or {},
+                },
+            )
+
+        return JSResult(
+            success=True,
+            data=[shared or {}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": shared or {},
+            },
+        )
+
+    async def upload_via_file_chooser(self, items, strict: bool = False):
+        self.file_chooser_payloads.append({
+            "items": items,
+            "strict": strict,
+        })
+        return {
+            "ok": True,
+            "items": [{
+                "success": True,
+                "label": "Gemini upload",
+                "fileCount": 1,
+                "backendNodeId": 5958,
             }],
         }
 
@@ -842,6 +915,23 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runner.runtime_output_files), 1)
         self.assertEqual(Path(runner.runtime_output_files[0]).name, "clicked.xlsx")
 
+    async def test_run_script_file_handles_runtime_file_chooser_upload_action(self):
+        runner = RuntimeFileChooserRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(len(data), 1)
+        self.assertEqual(len(runner.file_chooser_payloads), 1)
+        self.assertEqual(runner.file_chooser_payloads[0]["items"][0]["label"], "Gemini upload")
+        self.assertIn("chooser_uploads", runner.calls[1]["shared"])
+        self.assertEqual(
+            runner.calls[1]["shared"]["chooser_uploads"]["items"][0]["backendNodeId"],
+            5958,
+        )
+
     def test_find_new_downloaded_file_detects_default_downloads_fallback(self):
         runner = JSRunner("ws://example.invalid")
 
@@ -894,6 +984,55 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["items"][0]["matchedBy"], "fallback_any_xlsx")
             self.assertTrue(Path(result["items"][0]["path"]).exists())
             self.assertEqual(Path(result["items"][0]["path"]).name, "eu.xlsx")
+
+    async def test_upload_via_file_chooser_sets_files_after_native_chooser_event(self):
+        runner = JSRunner("ws://example.invalid")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            sample = Path(tmpdir) / "demo.png"
+            sample.write_bytes(b"png")
+            fake_ws = FakeCDPWebSocket([
+                {"id": 1, "result": {}},
+                {"id": 2, "result": {}},
+                {"id": 3, "result": {}},
+                {"id": 4, "result": {}},
+                {"id": 5, "result": {}},
+                {"id": 6, "result": {}},
+                {"id": 7, "result": {}},
+                {"method": "Page.fileChooserOpened", "params": {"mode": "selectMultiple", "backendNodeId": 5958}},
+                {"id": 8, "result": {}},
+                {"id": 9, "result": {}},
+                {"id": 10, "result": {}},
+            ])
+
+            with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+                result = await runner.upload_via_file_chooser([{
+                    "label": "Gemini upload",
+                    "clicks": [{"x": 12, "y": 34}],
+                    "files": [str(sample)],
+                    "settle_ms": 0,
+                }], strict=True)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(result["items"]), 1)
+        self.assertTrue(result["items"][0]["success"])
+        self.assertEqual(result["items"][0]["backendNodeId"], 5958)
+        self.assertEqual(result["items"][0]["mode"], "selectMultiple")
+        self.assertEqual(
+            [item["method"] for item in fake_ws.sent],
+            [
+                "Page.enable",
+                "DOM.enable",
+                "Runtime.enable",
+                "Page.bringToFront",
+                "Page.setInterceptFileChooserDialog",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent",
+                "DOM.setFileInputFiles",
+                "Page.setInterceptFileChooserDialog",
+            ],
+        )
 
 
 if __name__ == "__main__":

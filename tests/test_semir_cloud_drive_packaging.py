@@ -27,6 +27,26 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             },
         ]
 
+    def _build_ai_rows(self, material_file: Path, generated_file: Path):
+        return [
+            {
+                "输入编码": "208226111002",
+                "__素材明细": [
+                    {
+                        "filename": "208226111002-00316.jpg",
+                        "cloud_path": "巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/平拍原图/A/208226111002-00316.jpg",
+                        "local_path": str(material_file),
+                    }
+                ],
+                "__生成图明细": [
+                    {
+                        "filename": "gemini__208226111002__1.png",
+                        "local_path": str(generated_file),
+                    }
+                ],
+            }
+        ]
+
     def test_finalize_outputs_flattens_to_code_folder_when_duplicate_mode_is_first_per_stem(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
@@ -193,6 +213,94 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             self.assertFalse(file_b.exists())
             self.assertFalse((runtime_dir / "清理测试包").exists())
             self.assertTrue((runtime_dir / "清理测试包.zip").exists())
+
+    def test_batch_ai_generate_keeps_only_exported_excel_and_cleans_runtime_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            source = runtime_dir / "material-a.jpg"
+            source.write_bytes(b"a")
+            generated = runtime_dir / "generated-a.png"
+            generated.write_bytes(b"g")
+            exported = base / "ai-result.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="batch_ai_generate",
+                data_rows=self._build_ai_rows(source, generated),
+                runtime_files=[str(source), str(generated)],
+                exported_files=[str(exported)],
+                run_params={},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            self.assertTrue(Path(result[0]).is_file())
+            self.assertEqual(Path(result[1]), exported)
+            self.assertFalse(source.exists())
+            self.assertFalse(generated.exists())
+
+            with zipfile.ZipFile(result[0]) as archive:
+                names = archive.namelist()
+                self.assertTrue(
+                    any(name.endswith("208226111002/gemini__208226111002__1.png") for name in names)
+                )
+
+    def test_batch_ai_generate_can_export_material_zip_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            source = runtime_dir / "material-a.jpg"
+            source.write_bytes(b"a")
+            generated = runtime_dir / "generated-a.png"
+            generated.write_bytes(b"g")
+            exported = base / "ai-result.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="batch_ai_generate",
+                data_rows=self._build_ai_rows(source, generated),
+                runtime_files=[str(source), str(generated)],
+                exported_files=[str(exported)],
+                run_params={
+                    "cloud_path": "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/",
+                    "duplicate_mode": "all",
+                    "material_package_mode": "zip",
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 3)
+            generated_zip = Path(result[0])
+            material_zip = Path(result[1])
+            self.assertEqual(Path(result[2]), exported)
+            self.assertTrue(generated_zip.is_file())
+            self.assertTrue(material_zip.is_file())
+            self.assertFalse(source.exists())
+            self.assertFalse(generated.exists())
+
+            with zipfile.ZipFile(generated_zip) as archive:
+                names = archive.namelist()
+                self.assertTrue(
+                    any(name.endswith("208226111002/gemini__208226111002__1.png") for name in names)
+                )
+
+            with zipfile.ZipFile(material_zip) as archive:
+                names = archive.namelist()
+                self.assertTrue(
+                    any(
+                        name.endswith(
+                            "208226111002/巴拉货控__02 产品上新模块__2-2 巴拉产品上新__2026年巴拉夏__平拍原图__A/208226111002-00316.jpg"
+                        )
+                        for name in names
+                    )
+                )
 
 
 if __name__ == "__main__":

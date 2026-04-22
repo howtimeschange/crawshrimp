@@ -104,6 +104,10 @@ class JSRunner:
         """用 CDP Input.dispatchMouseEvent 在真实坐标上执行鼠标点击。
         这能触发 React 合成事件，而 JS dispatchEvent 无法做到。
         """
+        try:
+            await self._cdp_send("Page.bringToFront", {})
+        except Exception:
+            logger.debug("Page.bringToFront failed before cdp_mouse_click", exc_info=True)
         for evt_type in ("mouseMoved", "mousePressed", "mouseReleased"):
             params: dict = {"type": evt_type, "x": x, "y": y, "modifiers": 0}
             if evt_type == "mouseMoved":
@@ -242,6 +246,165 @@ class JSRunner:
             return retry_result
 
         return result
+
+    async def _cdp_send_on_ws(
+        self,
+        method: str,
+        params: dict,
+        *,
+        ws,
+        timeout: float = 10.0,
+        event_handler: Optional[Callable[[dict], None]] = None,
+    ) -> dict:
+        msg_id = self._next_id()
+        await ws.send(json.dumps({
+            "id": msg_id,
+            "method": method,
+            "params": params,
+        }))
+
+        while True:
+            raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            msg = json.loads(raw)
+            if msg.get("id") == msg_id:
+                return msg
+            if event_handler is not None and isinstance(msg, dict):
+                try:
+                    event_handler(msg)
+                except Exception:
+                    logger.debug("file chooser event handler failed", exc_info=True)
+
+    async def _upload_via_file_chooser_item(self, item: dict) -> dict:
+        clicks = (item or {}).get("clicks") or []
+        raw_files = (item or {}).get("files") or []
+        label = str((item or {}).get("label") or "file_chooser_upload").strip() or "file_chooser_upload"
+        timeout_ms = max(int((item or {}).get("timeout_ms") or 12000), 1000)
+        settle_ms = max(int((item or {}).get("settle_ms") or 500), 0)
+
+        if not clicks:
+            return {
+                "success": False,
+                "label": label,
+                "error": "file_chooser_upload 缺少 clicks",
+            }
+        if not isinstance(raw_files, list) or not raw_files:
+            return {
+                "success": False,
+                "label": label,
+                "error": "file_chooser_upload 缺少文件列表",
+            }
+
+        files = [str(self._resolve_local_file(path)) for path in raw_files]
+        chooser_event: dict[str, Any] = {}
+
+        def capture_event(message: dict) -> None:
+            nonlocal chooser_event
+            if message.get("method") == "Page.fileChooserOpened" and not chooser_event:
+                chooser_event = dict(message.get("params") or {})
+
+        async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
+            await self._cdp_send_on_ws("Page.enable", {}, timeout=10, ws=ws, event_handler=capture_event)
+            await self._cdp_send_on_ws("DOM.enable", {}, timeout=10, ws=ws, event_handler=capture_event)
+            await self._cdp_send_on_ws("Runtime.enable", {}, timeout=10, ws=ws, event_handler=capture_event)
+            await self._cdp_send_on_ws("Page.bringToFront", {}, timeout=10, ws=ws, event_handler=capture_event)
+            await self._cdp_send_on_ws(
+                "Page.setInterceptFileChooserDialog",
+                {"enabled": True},
+                timeout=10,
+                ws=ws,
+                event_handler=capture_event,
+            )
+
+            try:
+                for click in clicks:
+                    x = float(click["x"])
+                    y = float(click["y"])
+                    delay_ms = int(click.get("delay_ms", 120))
+                    for evt_type in ("mouseMoved", "mousePressed", "mouseReleased"):
+                        params: dict[str, Any] = {"type": evt_type, "x": x, "y": y, "modifiers": 0}
+                        if evt_type == "mouseMoved":
+                            params.update({"button": "none", "clickCount": 0})
+                        elif evt_type == "mousePressed":
+                            params.update({"button": "left", "clickCount": 1, "buttons": 1})
+                        else:
+                            params.update({"button": "left", "clickCount": 1, "buttons": 0})
+                        await self._cdp_send_on_ws(
+                            "Input.dispatchMouseEvent",
+                            params,
+                            timeout=10,
+                            ws=ws,
+                            event_handler=capture_event,
+                        )
+                    if delay_ms > 0:
+                        await asyncio.sleep(delay_ms / 1000.0)
+
+                deadline = time.monotonic() + (timeout_ms / 1000.0)
+                while not chooser_event and time.monotonic() < deadline:
+                    try:
+                        raw = await asyncio.wait_for(ws.recv(), timeout=0.25)
+                    except asyncio.TimeoutError:
+                        continue
+                    capture_event(json.loads(raw))
+
+                backend_node_id = int(chooser_event.get("backendNodeId") or 0)
+                if backend_node_id <= 0:
+                    return {
+                        "success": False,
+                        "label": label,
+                        "error": "未捕获到原生文件选择器",
+                    }
+
+                response = await self._cdp_send_on_ws(
+                    "DOM.setFileInputFiles",
+                    {
+                        "files": files,
+                        "backendNodeId": backend_node_id,
+                    },
+                    timeout=10,
+                    ws=ws,
+                    event_handler=capture_event,
+                )
+                if "error" in response:
+                    return {
+                        "success": False,
+                        "label": label,
+                        "error": str(response.get("error") or "DOM.setFileInputFiles 失败"),
+                    }
+
+                if settle_ms > 0:
+                    await asyncio.sleep(settle_ms / 1000.0)
+
+                return {
+                    "success": True,
+                    "label": label,
+                    "files": files,
+                    "fileCount": len(files),
+                    "mode": str(chooser_event.get("mode") or "").strip(),
+                    "backendNodeId": backend_node_id,
+                }
+            finally:
+                try:
+                    await self._cdp_send_on_ws(
+                        "Page.setInterceptFileChooserDialog",
+                        {"enabled": False},
+                        timeout=5,
+                        ws=ws,
+                        event_handler=capture_event,
+                    )
+                except Exception:
+                    logger.debug("failed to disable file chooser interception", exc_info=True)
+
+    async def upload_via_file_chooser(self, items: list[dict], strict: bool = False) -> dict:
+        results: list[dict] = []
+        for item in items or []:
+            result = await self._upload_via_file_chooser_item(item or {})
+            results.append(result)
+            if strict and not result.get("success"):
+                raise RuntimeError(str(result.get("error") or "file chooser upload failed"))
+        return {
+            "ok": all(bool(item.get("success")) for item in results) if results else True,
+            "items": results,
+        }
 
     def _sanitize_artifact_filename(self, raw_name: str, fallback: str = "download.bin") -> str:
         name = Path(str(raw_name or "")).name
@@ -1617,6 +1780,32 @@ class JSRunner:
                             await asyncio.sleep(post_sleep)
                             next_phase = meta.get("next_phase") or phase
                             logger.info(f"inject_files: page={page} phase={phase} 注入 {len(items)} 个文件输入 -> {next_phase}")
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "file_chooser_upload":
+                            items = meta.get("items") or []
+                            strict = bool(meta.get("strict"))
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+
+                            await cooperate("before_file_chooser_upload", page, phase, shared, {
+                                "file_item_total": len(items),
+                            })
+                            upload_result = await self.upload_via_file_chooser(items, strict=strict)
+                            shared = self._merge_runtime_shared(shared, shared_key, upload_result, append=shared_append)
+                            post_sleep = float(meta.get("sleep_ms", 500)) / 1000.0
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
+                            await asyncio.sleep(post_sleep)
+                            next_phase = meta.get("next_phase") or phase
+                            logger.info(
+                                "file_chooser_upload: page=%s phase=%s 上传 %s 组文件 -> %s",
+                                page,
+                                phase,
+                                len(items),
+                                next_phase,
+                            )
                             phase = str(next_phase)
                             await self._refresh_ws_url()
                             continue

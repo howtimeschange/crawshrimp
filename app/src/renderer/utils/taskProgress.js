@@ -67,6 +67,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'batch_image_download',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'semir-cloud-drive',
+    taskId: 'batch_ai_generate',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {
@@ -340,6 +345,10 @@ function isSemirBatchImageDownloadTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && normalizeKeyPart(taskId) === 'batch_image_download'
 }
 
+function isSemirBatchAiGenerateTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && normalizeKeyPart(taskId) === 'batch_ai_generate'
+}
+
 function getSemirPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
   const normalizedPhase = normalizeKeyPart(phase)
   if (normalizedPhase === 'finalize_all') return '整理打包'
@@ -469,6 +478,161 @@ function buildSemirBatchImageDownloadProgress(live = {}, liveStatus = '', isRunn
   }
 }
 
+function isSemirAiSearchPhase(phase) {
+  return ['semir_plan_code', 'semir_ensure_search', 'semir_collect_code', 'semir_finalize_downloads', 'build_job_queue'].includes(normalizeKeyPart(phase))
+}
+
+function getSemirAiSourcePhaseLabel(phase, searchDone, downloadActive, downloadCompleted, downloadTotal) {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (downloadActive) return '批量下载素材'
+  if (searchDone && downloadTotal > 0 && downloadCompleted >= downloadTotal) return '素材已就绪'
+  if (normalizedPhase === 'build_job_queue') return '整理执行队列'
+  if (['semir_plan_code', 'semir_ensure_search', 'semir_collect_code'].includes(normalizedPhase)) return '检索素材图'
+  return searchDone ? '素材已就绪' : '准备中'
+}
+
+function getSemirAiGenerationPhaseLabel(phase, generationCompleted, generationTotal) {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (normalizedPhase === 'finalize_all') return '整理结果'
+  if (['provider_open_home', 'provider_wait_ready'].includes(normalizedPhase)) return '打开 AI 站点'
+  if (['ai_plan_job', 'doubao_reset_job', 'gemini_reset_job', 'doubao_wait_ready', 'gemini_wait_ready', 'gemini_wait_tool'].includes(normalizedPhase)) return '准备生图画布'
+  if (['doubao_fill_prompt', 'doubao_wait_submit', 'gemini_open_upload_menu', 'gemini_wait_upload_menu', 'gemini_fill_prompt', 'gemini_wait_submit'].includes(normalizedPhase)) return '上传素材并提交'
+  if (['doubao_wait_completion', 'gemini_wait_completion'].includes(normalizedPhase)) return 'AI 生图中'
+  if (['doubao_finalize_downloads', 'gemini_finalize_downloads'].includes(normalizedPhase)) return '下载结果图'
+  if (generationTotal > 0 && generationCompleted >= generationTotal) return '生图完成'
+  return '待开始'
+}
+
+function buildSemirBatchAiGenerateProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const phase = String(live?.phase || '').trim()
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const currentCode = String(live?.buyer_id || '').trim()
+  const store = String(live?.store || '').trim()
+  const currentSourceFilename = String(live?.current_source_filename || '').trim()
+
+  const searchTotal = toInt(live?.search_total_codes)
+  const searchCompletedRaw = toInt(live?.search_completed_codes)
+  const searchCompleted = searchTotal > 0 ? Math.min(searchCompletedRaw, searchTotal) : searchCompletedRaw
+  const searchPercent = searchTotal > 0 ? clampPercent((searchCompleted / searchTotal) * 100) : 0
+
+  const downloadTotal = toInt(live?.download_total)
+  const downloadCompletedRaw = toInt(live?.download_completed)
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadSuccess = toInt(live?.download_success)
+  const downloadFailed = toInt(live?.download_failed)
+  const downloadConcurrency = toInt(live?.download_concurrency)
+  const downloadRetryAttempts = toInt(live?.download_retry_attempts)
+  const downloadLastLabel = String(live?.download_last_label || '').trim()
+  const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0
+  const downloadActive = Boolean(live?.download_active)
+  const downloadPercent = downloadTotal > 0
+    ? clampPercent((downloadCompleted / downloadTotal) * 100)
+    : (downloadStarted && !downloadActive ? 100 : 0)
+
+  const sourceStagePercent = downloadStarted
+    ? clampPercent((searchPercent * 0.45) + (downloadPercent * 0.55))
+    : searchPercent
+  const searchDone = searchTotal > 0 && searchCompleted >= searchTotal
+  const sourcePhaseLabel = getSemirAiSourcePhaseLabel(phase, searchDone, downloadActive, downloadCompleted, downloadTotal)
+  const sourceStageComplete = searchDone && (!downloadStarted || downloadTotal <= 0 || downloadCompleted >= downloadTotal) && !isSemirAiSearchPhase(phase)
+  const sourceStageState = sourceStageComplete
+    ? 'complete'
+    : (searchCompleted > 0 || downloadStarted || isSemirAiSearchPhase(phase))
+      ? 'active'
+      : 'pending'
+
+  const generationTotal = toInt(live?.generation_total_jobs)
+  const generationCompletedRaw = toInt(live?.generation_completed_jobs)
+  const generationCompleted = generationTotal > 0 ? Math.min(generationCompletedRaw, generationTotal) : generationCompletedRaw
+  const generationCurrent = toInt(live?.current)
+  const generationPercent = generationTotal > 0 ? clampPercent((generationCompleted / generationTotal) * 100) : 0
+  const generationPhaseLabel = getSemirAiGenerationPhaseLabel(phase, generationCompleted, generationTotal)
+  const generationStageActive = generationTotal > 0 && !isSemirAiSearchPhase(phase) && normalizeKeyPart(phase) !== 'finalize_all'
+  const generationStageState = generationTotal <= 0
+    ? (sourceStageComplete ? 'complete' : 'pending')
+    : generationCompleted >= generationTotal
+      ? 'complete'
+      : generationStageActive
+        ? 'active'
+        : 'pending'
+
+  const sourceCaptionParts = []
+  if (downloadTotal > 0) sourceCaptionParts.push(`素材 ${downloadCompleted}/${downloadTotal}`)
+  if (downloadSuccess > 0) sourceCaptionParts.push(`成功 ${downloadSuccess}`)
+  if (downloadFailed > 0) sourceCaptionParts.push(`失败 ${downloadFailed}`)
+  if (downloadConcurrency > 0) sourceCaptionParts.push(`并发 ${downloadConcurrency}`)
+  if (downloadRetryAttempts > 1) sourceCaptionParts.push(`重试 ${downloadRetryAttempts} 次`)
+
+  const generationCaptionParts = []
+  if (generationTotal > 0) generationCaptionParts.push(`已完成 ${generationCompleted}/${generationTotal}`)
+  if (currentCode) generationCaptionParts.push(`当前 ${currentCode}`)
+
+  const tracks = [
+    buildTrack({
+      id: 'semir-ai-source',
+      title: '上层 · 找图和下图',
+      main: searchTotal > 0 ? `${searchCompleted} / ${searchTotal} 个编码` : (sourcePhaseLabel || statusLabel),
+      percentValue: sourceStagePercent,
+      percentLabel: `${sourceStagePercent}%`,
+      caption: sourceCaptionParts.join(' · ') || (downloadStarted ? '正在汇总素材下载结果' : '先按编码检索云盘素材'),
+      detail: [currentCode ? `当前目标 ${currentCode}` : '', downloadLastLabel ? `最近素材 ${downloadLastLabel}` : ''].filter(Boolean).join(' · '),
+      status: sourceStageState === 'complete' ? '已完成' : sourceStageState === 'active' ? '进行中' : '待开始',
+      tone: 'primary',
+      state: sourceStageState,
+      ariaLabel: '找图和下图进度',
+      ariaText: [sourcePhaseLabel, `${sourceStagePercent}%`, searchTotal > 0 ? `${searchCompleted}/${searchTotal} 个编码` : '', downloadTotal > 0 ? `${downloadCompleted}/${downloadTotal} 个素材` : ''].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'semir-ai-generate',
+      title: '下层 · AI 生图',
+      main: generationTotal > 0 ? `${generationCompleted} / ${generationTotal} 张已完成` : (sourceStageComplete ? '等待生图队列' : '素材完成后自动开始'),
+      percentValue: generationPercent,
+      percentLabel: generationTotal > 0 ? `${generationPercent}%` : '待开始',
+      caption: generationCaptionParts.join(' · ') || generationPhaseLabel,
+      detail: [currentSourceFilename ? `当前素材 ${currentSourceFilename}` : '', store ? store : ''].filter(Boolean).join(' · '),
+      status: generationStageState === 'complete' ? '已完成' : generationStageState === 'active' ? generationPhaseLabel : '待开始',
+      tone: 'secondary',
+      state: generationStageState,
+      ariaLabel: 'AI 生图进度',
+      ariaText: [generationPhaseLabel, generationTotal > 0 ? `${generationCompleted}/${generationTotal}` : '待开始', currentSourceFilename].filter(Boolean).join('，'),
+    }),
+  ]
+
+  const overallLabel = generationStageActive || generationStageState === 'complete'
+    ? generationPhaseLabel
+    : sourcePhaseLabel
+  const overallPercent = generationTotal > 0
+    ? clampPercent(50 + generationPercent * 0.5)
+    : clampPercent(sourceStagePercent * 0.5)
+
+  return {
+    title: '双阶段进度',
+    main: overallLabel,
+    percentValue: overallPercent,
+    percentLabel: overallLabel,
+    completed: generationCompleted,
+    completedText: generationCompleted > 0 ? `已生图 ${generationCompleted} 张` : '',
+    batchText: '',
+    rowText: '',
+    targetText: currentCode ? `目标 ${currentCode}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: '森马云盘 AI 双阶段进度',
+    ariaText: [overallLabel, `${searchCompleted}/${searchTotal} 个编码`, generationTotal > 0 ? `${generationCompleted}/${generationTotal} 张生图` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      searchTotal > 0 ? `编码 ${searchCompleted}/${searchTotal}` : '',
+      downloadTotal > 0 ? `素材 ${downloadCompleted}/${downloadTotal}` : '',
+      generationTotal > 0 ? `生图 ${generationCompleted}/${generationTotal}` : '',
+      currentCode ? `目标 ${currentCode}` : '',
+    ]),
+    tracks,
+    sub: [overallLabel, currentSourceFilename ? `当前素材 ${currentSourceFilename}` : '', downloadFailed > 0 ? `素材失败 ${downloadFailed} 张` : ''].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
 export function isTaskLiveActive(status) {
   return ACTIVE_STATUSES.includes(normalizeKeyPart(status))
 }
@@ -505,6 +669,9 @@ export function buildTaskRunnerProgressSummary({
   const config = resolveTaskProgressConfig(adapterId, taskId)
   if (config.mode === 'enhanced' && isSemirBatchImageDownloadTask(adapterId, taskId)) {
     return buildSemirBatchImageDownloadProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isSemirBatchAiGenerateTask(adapterId, taskId)) {
+    return buildSemirBatchAiGenerateProgress(live, liveStatus, isRunning)
   }
   return config.mode === 'enhanced'
     ? buildEnhancedTaskRunnerProgress(live, liveStatus, isRunning)
