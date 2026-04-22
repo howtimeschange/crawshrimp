@@ -937,7 +937,9 @@
     const node = firstMatchingTextNode(patterns, root, options)
     if (!node) throw new Error(`未找到文本：${asArray(patterns).join(' | ')}`)
     const clickable = findClickableAncestor(node, root)
-    clickElement(clickable)
+    if (!reactClickSoon(clickable, 30)) {
+      clickElement(clickable)
+    }
     await sleep(options.sleepMs == null ? 120 : options.sleepMs)
     return clickable
   }
@@ -1046,7 +1048,8 @@
   }
 
   function findVoucherPercentInputsBySection(row, root = document) {
-    if (norm(row?.site_code).toUpperCase() !== 'VN') return null
+    const siteCode = norm(row?.site_code).toUpperCase()
+    if (!VERIFIED_SITES.has(siteCode)) return null
     const section = findSectionCardByHeading([/Discount Setting/i], root)
     if (!section) return null
     const inputs = visibleTextInputs(section)
@@ -1708,7 +1711,7 @@
       await clickByText(ui.entireShopTexts, document, { sleepMs: 80 })
       await clickByText(ui.percentageTexts, document, { sleepMs: 180 })
     }
-    const sectionInputs = siteCode === 'VN'
+    const sectionInputs = VERIFIED_SITES.has(siteCode)
       ? await waitFor(() => findVoucherPercentInputsBySection(row), 2600, 120)
       : null
     const minSpendInput = sectionInputs?.minSpendInput || await waitForFieldInput(ui.minSpendLabels)
@@ -1777,7 +1780,7 @@
 
   async function fillFlexiPercentOff(row, tiers) {
     await setInputByLabel(/Promotion Name/i, row.promotion_name)
-    await setRangePicker('Start Date', row.voucher_start_at, row.voucher_end_at)
+    await setRangePicker('Start Date', 'End Date', row.voucher_start_at, row.voucher_end_at)
     await clickByText(/Money\/Discount Off/i, document, { sleepMs: 120 })
     await clickByText(/Percentage Discount Off/i, document, { sleepMs: 180 })
     const criteriaText = row.flexi_criteria_type === 'ORDER_VALUE' ? /Order Value Reaches X/i : /Item Quantity Reaches X/i
