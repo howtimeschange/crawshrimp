@@ -19,6 +19,7 @@
     verify_all_fields: 'fill_usecase_form',
     submit: 'submit_form',
   }
+  const DIALOG_ROOT_SELECTOR = '[role="dialog"], .eds-modal, .shopee-modal, .eds-react-modal, .eds-react-modal__container'
   const currentPhase = phaseAliasMap[phase] || phase
   const runToken = window.__CRAWSHRIMP_RUN_TOKEN__ || ''
   const shared = window.__CRAWSHRIMP_SHARED__ || {}
@@ -236,12 +237,33 @@
     const value = norm(raw)
     if (!value) return null
     const match = value.match(
-      /^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})(?:[T\s-](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/
+      /^(\d{1,4})[\/-](\d{1,2})[\/-](\d{1,4})(?:[T\s-](\d{1,2})(?::(\d{1,2}))?(?::(\d{1,2}))?)?$/
     )
     if (!match) return null
-    const year = match[1]
-    const month = String(match[2]).padStart(2, '0')
-    const day = String(match[3]).padStart(2, '0')
+
+    let year = ''
+    let month = ''
+    let day = ''
+    if (match[1].length === 4) {
+      year = match[1]
+      month = match[2]
+      day = match[3]
+    } else if (match[3].length === 4) {
+      year = match[3]
+      month = match[1]
+      day = match[2]
+    } else {
+      return null
+    }
+
+    const monthNo = Number(month)
+    const dayNo = Number(day)
+    if (!Number.isFinite(monthNo) || !Number.isFinite(dayNo) || monthNo < 1 || monthNo > 12 || dayNo < 1 || dayNo > 31) {
+      return null
+    }
+
+    month = String(month).padStart(2, '0')
+    day = String(day).padStart(2, '0')
     const hour = match[4] != null ? String(match[4]).padStart(2, '0') : (kind === 'start' ? '00' : '23')
     const minute = match[5] != null ? String(match[5]).padStart(2, '0') : (kind === 'start' ? '00' : '59')
     return {
@@ -260,14 +282,10 @@
   function parseLooseDateTime(text) {
     const value = norm(text)
     if (!value) return ''
-    const match = value.match(/(\d{4})[\/-](\d{1,2})[\/-](\d{1,2}).*?(\d{1,2}):(\d{1,2})/)
+    const match = value.match(/((?:\d{4}|\d{1,2})[\/-]\d{1,2}[\/-](?:\d{4}|\d{1,2})\s+\d{1,2}:\d{1,2})/)
     if (!match) return value
-    const year = match[1]
-    const month = String(match[2]).padStart(2, '0')
-    const day = String(match[3]).padStart(2, '0')
-    const hour = String(match[4]).padStart(2, '0')
-    const minute = String(match[5]).padStart(2, '0')
-    return `${year}-${month}-${day} ${hour}:${minute}`
+    const parsed = parseDateTime(match[1], 'start')
+    return parsed ? parsed.str : value
   }
 
   function sameDateTime(actual, expected) {
@@ -317,7 +335,7 @@
   }
 
   function parseDateRangeText(raw) {
-    const matches = String(raw || '').match(/\d{4}[/-]\d{1,2}[/-]\d{1,2}\s+\d{1,2}:\d{2}/g) || []
+    const matches = String(raw || '').match(/(?:\d{4}|\d{1,2})[/-]\d{1,2}[/-](?:\d{4}|\d{1,2})\s+\d{1,2}:\d{2}/g) || []
     if (matches.length < 2) return null
     const start = parseDateTime(matches[0], 'start')
     const end = parseDateTime(matches[1], 'end')
@@ -376,6 +394,13 @@
     const style = getComputedStyle(el)
     const rect = el.getBoundingClientRect()
     return style.visibility !== 'hidden' && style.display !== 'none' && rect.width > 0 && rect.height > 0
+  }
+
+  function isDisabledish(el) {
+    if (!el) return true
+    if (el.disabled) return true
+    if (String(el.getAttribute('aria-disabled') || '').toLowerCase() === 'true') return true
+    return /(^|\s)disabled(\s|$)/i.test(String(el.className || ''))
   }
 
   async function waitFor(fn, timeout = 10000, interval = 300) {
@@ -536,7 +561,7 @@
       const text = textOf(btn)
       if (!visible(btn)) continue
       if (!/^(关闭|知道了|稍后)$/.test(text)) continue
-      const scope = btn.closest('[role="dialog"], .eds-modal, .eds-drawer, .shopee-modal')
+      const scope = btn.closest(`${DIALOG_ROOT_SELECTOR}, .eds-drawer`)
       if (!scope) continue
       try {
         reactClick(btn) || dispatchSyntheticClick(btn)
@@ -551,12 +576,16 @@
     rows.forEach((row, index) => {
       const site = norm(getVoucherRowValue(row, ROW_ALIASES.site))
       const store = norm(getVoucherRowValue(row, ROW_ALIASES.store))
+      const explicitSourceIndex = Number(String(row?.__source_index__ || '').trim())
+      const sourceIndex = Number.isFinite(explicitSourceIndex) && explicitSourceIndex > 0
+        ? explicitSourceIndex
+        : (index + 1)
       const key = store ? `${site}::${store}` : `__row__${index + 1}`
       if (!groups.has(key)) {
         groups.set(key, [])
         order.push(key)
       }
-      groups.get(key).push({ sourceIndex: index + 1, row })
+      groups.get(key).push({ sourceIndex, row })
     })
     return order.flatMap(key => groups.get(key) || [])
   }
@@ -573,12 +602,32 @@
 
   function getVoucherMeta(voucherType) {
     const map = {
-      '商店优惠券': { usecase: '1', testId: 'voucherEntry1', aliases: ['商店优惠券', '店铺优惠券', '店铺券', 'shop voucher'] },
-      '新买家优惠券': { usecase: '3', testId: 'voucherEntry3', aliases: ['新买家优惠券', '新买家'] },
-      '回购买家优惠券': { usecase: '4', testId: 'voucherEntry4', aliases: ['回购买家优惠券', '回购'] },
-      '关注礼优惠券': { usecase: '999', testId: 'voucherEntry999', aliases: ['关注礼优惠券', '关注礼'] },
+      '商店优惠券': {
+        usecase: '1',
+        testId: 'voucherEntry1',
+        aliases: ['商店优惠券', '店铺优惠券', '店铺券', 'shop voucher'],
+        listAliases: ['商店优惠券', '店铺优惠券', '店铺券'],
+      },
+      '新买家优惠券': {
+        usecase: '3',
+        testId: 'voucherEntry3',
+        aliases: ['新买家优惠券', '新买家'],
+        listAliases: ['新买家优惠券'],
+      },
+      '回购买家优惠券': {
+        usecase: '4',
+        testId: 'voucherEntry4',
+        aliases: ['回购买家优惠券', '回购'],
+        listAliases: ['回购买家优惠券'],
+      },
+      '关注礼优惠券': {
+        usecase: '999',
+        testId: 'voucherEntry999',
+        aliases: ['关注礼优惠券', '关注礼'],
+        listAliases: ['关注礼优惠券'],
+      },
     }
-    return map[voucherType] || { usecase: '', testId: '', aliases: [voucherType] }
+    return map[voucherType] || { usecase: '', testId: '', aliases: [voucherType], listAliases: [voucherType] }
   }
 
   function getUrlShopId() {
@@ -843,19 +892,173 @@
     return !!ready
   }
 
+  function getVoucherListPagerRoot() {
+    return [...document.querySelectorAll(
+      '.eds-react-pagination, .eds-react-table-pagination, .eds-pagination, [class*="pagination"], [class*="pager"]'
+    )]
+      .filter(visible)
+      .find(el => {
+        const text = textOf(el)
+        const className = String(el.className || '')
+        return /pagination|pager/i.test(className) && (/\b\d+\b/.test(text) || /Go to page|上一页|下一页|next|prev/i.test(text))
+      }) || null
+  }
+
+  function getVoucherListPagerNodes(selector = 'button, a, li, [role="button"], [aria-current="page"]') {
+    const root = getVoucherListPagerRoot()
+    return [...(root?.querySelectorAll(selector) || [])].filter(visible)
+  }
+
+  function getVoucherListActivePageNo() {
+    const active = getVoucherListPagerNodes()
+      .find(el => {
+        const current = String(el.getAttribute('aria-current') || '').toLowerCase()
+        const selected = String(el.getAttribute('aria-selected') || '').toLowerCase()
+        const className = String(el.className || '')
+        return current === 'page' || selected === 'true' || /(^|\s)active(\s|$)/i.test(className)
+      }) || null
+    const match = textOf(active).match(/^\d+$/)
+    return match ? Number(match[0]) : null
+  }
+
+  function findVoucherListPageButton(pageNo) {
+    const expected = String(pageNo)
+    return getVoucherListPagerNodes('li, button, a, [role="button"]')
+      .find(el => {
+        if (textOf(el) !== expected) return false
+        return /pagination-pager__page|pagination|pager/i.test(String(el.className || ''))
+      }) || null
+  }
+
+  function findVoucherListPagerButton(kind) {
+    const pattern = kind === 'prev'
+      ? /pagination-pager__button-prev|previous|prev|上一页|‹|«/i
+      : /pagination-pager__button-next|next|下一页|›|»/i
+    return getVoucherListPagerNodes('button, a, li, [role="button"]')
+      .find(el => {
+        if (isDisabledish(el)) return false
+        const marker = [
+          String(el.className || ''),
+          textOf(el),
+          String(el.getAttribute('aria-label') || ''),
+          String(el.getAttribute('title') || ''),
+        ].join(' ')
+        return pattern.test(marker)
+      }) || null
+  }
+
+  function getVoucherListPageSignature() {
+    const pageNo = getVoucherListActivePageNo()
+    const rows = getVoucherListRows()
+      .map(getVoucherRowInfo)
+      .slice(0, 6)
+      .map(info => info.code || info.text.slice(0, 120))
+      .join('||')
+    return `${pageNo || ''}::${rows}`
+  }
+
+  async function waitForVoucherListPageAdvance(previousSignature, expectedPageNo = null, timeout = 8000) {
+    const changed = await waitFor(() => {
+      if (hasVoucherListLoading()) return null
+      const currentSignature = getVoucherListPageSignature()
+      const currentPageNo = getVoucherListActivePageNo()
+      if (expectedPageNo != null && currentPageNo === expectedPageNo) {
+        return currentSignature || `page:${currentPageNo}`
+      }
+      if (currentSignature && currentSignature !== previousSignature) return currentSignature
+      return null
+    }, timeout, 150)
+    if (!changed) return false
+    await waitForVoucherListReady(timeout)
+    await sleep(300)
+    return true
+  }
+
+  async function ensureVoucherListOnFirstPage() {
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const currentPageNo = getVoucherListActivePageNo()
+      if (!currentPageNo || currentPageNo <= 1) return true
+
+      const directFirst = findVoucherListPageButton(1)
+      const fallbackPrev = directFirst ? null : findVoucherListPagerButton('prev')
+      const target = directFirst || fallbackPrev
+      if (!target) throw new Error('未找到优惠券列表回到第一页的分页控件')
+
+      const previousSignature = getVoucherListPageSignature() || `page:${currentPageNo}`
+      const expectedPageNo = directFirst ? 1 : Math.max(currentPageNo - 1, 1)
+      if (!(openPageClick(target) || dispatchSyntheticClick(target))) {
+        throw new Error('点击优惠券列表分页控件失败')
+      }
+      const changed = await waitForVoucherListPageAdvance(previousSignature, expectedPageNo, 8000)
+      if (!changed) throw new Error('优惠券列表回到第一页超时')
+    }
+    throw new Error('优惠券列表回到第一页超过安全上限')
+  }
+
   function getVoucherRowCode(text) {
     const match = String(text || '').match(/优惠券码[:：]\s*([A-Z0-9-]+)/i)
     return match ? match[1] : ''
   }
 
+  function normalizeVoucherTypeLabel(value) {
+    return norm(value).replace(/优惠劵/g, '优惠券')
+  }
+
+  function getVoucherConflictAliases(voucherType, options = {}) {
+    const meta = getVoucherMeta(voucherType)
+    const aliases = options.fallback
+      ? (meta.listAliases || [voucherType])
+      : [voucherType, ...(meta.aliases || [])]
+    return aliases.map(normalizeVoucherTypeLabel).filter(Boolean)
+  }
+
+  function getVoucherRowCells(row) {
+    return [...row.querySelectorAll('td, [role="cell"]')]
+      .map(cell => normalizeVoucherTypeLabel(textOf(cell)))
+      .filter(Boolean)
+  }
+
+  function looksLikeVoucherTypeCellText(text) {
+    const value = normalizeVoucherTypeLabel(text)
+    if (!value) return false
+    if (/优惠券码[:：]/.test(value)) return false
+    if (!/优惠券/.test(value)) return false
+    if (/\d{4}[/-]\d{1,2}[/-]\d{1,2}/.test(value)) return false
+    if (/%|折扣|满\d|减\d|\bgo\b/i.test(value)) return false
+    return value.length <= 24
+  }
+
+  function getVoucherRowTypeText(cells) {
+    return cells.find(cell => looksLikeVoucherTypeCellText(cell)) || ''
+  }
+
   function getVoucherRowInfo(row) {
     const text = textOf(row).replace(/\s+/g, ' ')
+    const cells = getVoucherRowCells(row)
     return {
       el: row,
       text,
+      cells,
+      typeText: getVoucherRowTypeText(cells),
       code: getVoucherRowCode(text),
       range: parseDateRangeText(text),
     }
+  }
+
+  function getVoucherConflictRowKey(info) {
+    return norm(info?.code || info?.text || '')
+  }
+
+  function readVoucherConflictRowKeys(sharedState, field = 'resolved_conflict_row_keys') {
+    const raw = sharedState?.[field]
+    if (!raw) return []
+    const list = Array.isArray(raw) ? raw : [raw]
+    return [...new Set(list.map(item => norm(item)).filter(Boolean))]
+  }
+
+  function mergeVoucherConflictRowKeys(sharedState, additions = [], field = 'resolved_conflict_row_keys') {
+    const current = readVoucherConflictRowKeys(sharedState, field)
+    return [...new Set([...current, ...additions.map(item => norm(item)).filter(Boolean)])].slice(-30)
   }
 
   function voucherCodeMatchesCurrentRow(rowCode, couponCode) {
@@ -865,26 +1068,120 @@
     return actual === expected || actual.endsWith(expected)
   }
 
-  function voucherRowMatchesContext(rowText, ctx) {
-    const meta = getVoucherMeta(ctx.voucherType)
-    const aliases = [ctx.voucherType, ...(meta.aliases || [])].filter(Boolean)
-    return aliases.some(alias => rowText.includes(alias))
+  function voucherRowMatchesContext(info, ctx) {
+    if (info.typeText) {
+      return aliasMatch(info.typeText, getVoucherConflictAliases(ctx.voucherType))
+    }
+    return aliasMatch(info.text, getVoucherConflictAliases(ctx.voucherType, { fallback: true }))
   }
 
   function findConflictingVoucherRow(ctx, options = {}) {
+    const ignoreConflictKeys = options.ignoreConflictKeys instanceof Set
+      ? options.ignoreConflictKeys
+      : new Set((options.ignoreConflictKeys || []).map(item => norm(item)).filter(Boolean))
     return getVoucherListRows()
       .map(getVoucherRowInfo)
       .find(info => {
-        if (!voucherRowMatchesContext(info.text, ctx)) return false
+        const rowKey = getVoucherConflictRowKey(info)
+        if (rowKey && ignoreConflictKeys.has(rowKey)) return false
+        if (!voucherRowMatchesContext(info, ctx)) return false
         if (options.excludeCurrentGenerated && voucherCodeMatchesCurrentRow(info.code, ctx.couponCode)) return false
         if (!info.range?.start || !info.range?.end || !ctx.startDt || !ctx.endDt) return false
         return dateRangesOverlap(info.range.start, info.range.end, ctx.startDt, ctx.endDt)
       }) || null
   }
 
+  async function findConflictingVoucherRowAcrossPages(ctx, options = {}) {
+    const visited = new Set()
+    const maxPages = Number(options.maxPages || 100)
+    for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+      await waitForVoucherListReady(8000)
+
+      let duplicate = findConflictingVoucherRow(ctx, options)
+      if (!duplicate) {
+        await sleep(600)
+        duplicate = findConflictingVoucherRow(ctx, options)
+      }
+      if (duplicate) return duplicate
+
+      const currentPageNo = getVoucherListActivePageNo() || (pageIndex + 1)
+      const signature = getVoucherListPageSignature() || `page:${currentPageNo}:rows:${getVoucherListRows().length}`
+      if (visited.has(signature)) {
+        throw new Error(`优惠券列表翻页重复停留在同一页：${signature}`)
+      }
+      visited.add(signature)
+
+      const nextBtn = findVoucherListPagerButton('next')
+      if (!nextBtn) return null
+
+      const expectedPageNo = getVoucherListActivePageNo()
+      if (!(openPageClick(nextBtn) || dispatchSyntheticClick(nextBtn))) {
+        throw new Error('优惠券列表翻页失败：无法点击下一页')
+      }
+      const changed = await waitForVoucherListPageAdvance(signature, expectedPageNo != null ? expectedPageNo + 1 : null, 8000)
+      if (!changed) throw new Error('优惠券列表翻页后页码/数据未更新')
+    }
+    throw new Error(`优惠券列表分页超过安全上限：${maxPages}`)
+  }
+
   function findRowActionButton(row, text) {
+    const expected = (Array.isArray(text) ? text : [text]).map(norm)
     return [...row.querySelectorAll('button, a, [role="button"]')]
-      .find(el => visible(el) && textOf(el) === text) || null
+      .find(el => visible(el) && expected.includes(textOf(el))) || null
+  }
+
+  function getRowActionButtonCandidates(row, text) {
+    const expected = (Array.isArray(text) ? text : [text]).map(norm)
+    const seen = new Set()
+    const candidates = [...row.querySelectorAll('button, a, div, span, [role="button"], .eds-react-dropdown, .eds-react-dropdown-item')]
+      .filter(visible)
+      .filter(el => expected.includes(textOf(el)))
+      .flatMap(el => {
+        return [
+          el,
+          el.parentElement,
+          el.closest('.eds-react-dropdown'),
+          el.closest('.eds-react-dropdown-item'),
+        ].filter(Boolean)
+      })
+      .filter(visible)
+      .filter(el => expected.includes(textOf(el)))
+      .filter(el => {
+        if (seen.has(el)) return false
+        seen.add(el)
+        return true
+      })
+
+    return candidates
+      .map(el => {
+        const rect = el.getBoundingClientRect()
+        const tag = String(el.tagName || '').toUpperCase()
+        const role = String(el.getAttribute('role') || '').toLowerCase()
+        const markers = [
+          String(el.className || ''),
+          String(el.parentElement?.className || ''),
+          String(el.closest('.eds-react-dropdown, .eds-react-dropdown-item, [role="menu"], [class*="dropdown"], [class*="popover"], [class*="menu"]')?.className || ''),
+        ].join(' ')
+        return {
+          el,
+          tag,
+          clickable: /^(BUTTON|A)$/i.test(tag) || role === 'button' || role === 'menuitem',
+          containerLike: ['DIV', 'LI'].includes(tag),
+          dropdownLike: ['DIV', 'LI', 'BUTTON', 'A'].includes(tag) && /dropdown|popover|menu/i.test(markers),
+          area: Math.round(rect.width * rect.height),
+          top: rect.top,
+          left: rect.left,
+        }
+      })
+      .sort((a, b) => {
+        if (a.dropdownLike !== b.dropdownLike) return a.dropdownLike ? -1 : 1
+        if (a.containerLike !== b.containerLike) return a.containerLike ? -1 : 1
+        if (a.clickable !== b.clickable) return a.clickable ? 1 : -1
+        if (a.area !== b.area) return b.area - a.area
+        if (a.top !== b.top) return a.top - b.top
+        return a.left - b.left
+      })
+      .map(item => item.el)
   }
 
   function findVisibleActionButton(texts, selectors = 'button, a, div, li, [role="button"], [role="menuitem"], .eds-react-dropdown-item') {
@@ -893,6 +1190,62 @@
       if (!visible(el)) return false
       return expected.includes(textOf(el))
     }) || null
+  }
+
+  function getVisibleMenuActionButtons(texts) {
+    const expected = (Array.isArray(texts) ? texts : [texts]).map(norm)
+    const seen = new Set()
+    const candidates = [...document.querySelectorAll('button, a, div, li, [role="button"], [role="menuitem"], .eds-react-dropdown-item')]
+      .filter(visible)
+      .filter(el => expected.includes(textOf(el)))
+      .flatMap(el => {
+        const children = [...el.querySelectorAll('button, a, [role="button"], [role="menuitem"]')]
+          .filter(visible)
+          .filter(child => expected.includes(textOf(child)))
+        return children.length ? [...children, el] : [el]
+      })
+      .filter(el => !el.closest('tbody tr, [role="row"]'))
+      .filter(el => !el.closest(`${DIALOG_ROOT_SELECTOR}, [class*="modal"]`))
+      .filter(el => {
+        if (seen.has(el)) return false
+        seen.add(el)
+        return true
+      })
+
+    return candidates
+      .map(el => {
+        const rect = el.getBoundingClientRect()
+        const role = String(el.getAttribute('role') || '').toLowerCase()
+        const markers = [
+          String(el.className || ''),
+          String(el.parentElement?.className || ''),
+          String(el.closest('[role="menu"], [class*="dropdown"], [class*="popover"], [class*="menu"]')?.className || ''),
+        ].join(' ')
+        return {
+          el,
+          tag: String(el.tagName || '').toUpperCase(),
+          clickable: /^(BUTTON|A)$/i.test(String(el.tagName || '')) || role === 'button' || role === 'menuitem',
+          menuLike: role === 'menuitem' || /dropdown-item|menuitem|dropdown|popover|menu/i.test(markers),
+          wrapperLike: ['DIV', 'LI'].includes(String(el.tagName || '').toUpperCase()) && (role === 'menuitem' || /dropdown-item|menuitem|dropdown|popover|menu/i.test(markers)),
+          area: Math.round(rect.width * rect.height),
+          top: rect.top,
+          left: rect.left,
+        }
+      })
+      .sort((a, b) => {
+        if (a.menuLike !== b.menuLike) return a.menuLike ? -1 : 1
+        if (a.wrapperLike !== b.wrapperLike) return a.wrapperLike ? -1 : 1
+        if (a.clickable !== b.clickable) return a.clickable ? 1 : -1
+        if (a.area !== b.area) return b.area - a.area
+        if (a.top !== b.top) return b.top - a.top
+        if (a.left !== b.left) return a.left - b.left
+        return 0
+      })
+      .map(item => item.el)
+  }
+
+  function findVisibleMenuActionButton(texts) {
+    return getVisibleMenuActionButtons(texts)[0] || null
   }
 
   function findVisibleOverlayActionButton(texts) {
@@ -919,19 +1272,85 @@
   }
 
   function getVisibleDialogRoots() {
-    return [...document.querySelectorAll('[role="dialog"], .eds-modal, .shopee-modal, .eds-react-modal')]
+    return [...document.querySelectorAll(DIALOG_ROOT_SELECTOR)]
       .filter(visible)
   }
 
   function findVisibleDialogButton(texts) {
     const expected = (Array.isArray(texts) ? texts : [texts]).map(norm)
-    for (const dialog of getVisibleDialogRoots()) {
-      const button = [...dialog.querySelectorAll('button, a, [role="button"]')].find(el => {
-        return visible(el) && expected.includes(textOf(el))
+    const seen = new Set()
+    return getVisibleDialogRoots()
+      .flatMap((dialog, index) => {
+        return [...dialog.querySelectorAll('button, a, div, [role="button"]')]
+          .filter(visible)
+          .filter(el => expected.includes(textOf(el)))
+          .flatMap(el => [el, el.parentElement].filter(Boolean))
+          .filter(visible)
+          .filter(el => expected.includes(textOf(el)))
+          .filter(el => {
+            if (seen.has(el)) return false
+            seen.add(el)
+            return true
+          })
+          .map(el => {
+            const rect = el.getBoundingClientRect()
+            const role = String(el.getAttribute('role') || '').toLowerCase()
+            const className = String(el.className || '')
+            return {
+              el,
+              dialogOrder: index,
+              primary: /primary|danger/i.test(className),
+              containerLike: ['DIV', 'LI'].includes(String(el.tagName || '').toUpperCase()),
+              clickable: /^(BUTTON|A)$/i.test(String(el.tagName || '')) || role === 'button',
+              area: Math.round(rect.width * rect.height),
+              top: rect.top,
+              left: rect.left,
+            }
+          })
       })
-      if (button) return button
-    }
-    return null
+      .sort((a, b) => {
+        if (a.dialogOrder !== b.dialogOrder) return b.dialogOrder - a.dialogOrder
+        if (a.primary !== b.primary) return a.primary ? -1 : 1
+        if (a.containerLike !== b.containerLike) return a.containerLike ? -1 : 1
+        if (a.clickable !== b.clickable) return a.clickable ? 1 : -1
+        if (a.area !== b.area) return b.area - a.area
+        if (a.top !== b.top) return b.top - a.top
+        return a.left - b.left
+      })[0]?.el || null
+  }
+
+  function findVisibleConfirmActionButton(texts) {
+    const expected = (Array.isArray(texts) ? texts : [texts]).map(norm)
+    const dialogBtn = findVisibleDialogButton(expected)
+    if (dialogBtn) return dialogBtn
+
+    return [...document.querySelectorAll('button, a, [role="button"]')]
+      .filter(visible)
+      .filter(el => expected.includes(textOf(el)))
+      .filter(el => !el.closest('tbody tr, [role="row"]'))
+      .map(el => {
+        const rect = el.getBoundingClientRect()
+        const markers = [
+          String(el.className || ''),
+          String(el.parentElement?.className || ''),
+          String(el.closest('[role="menu"], [class*="dropdown"], [class*="popover"], [class*="menu"]')?.className || ''),
+        ].join(' ')
+        return {
+          el,
+          inDialog: !!el.closest(`${DIALOG_ROOT_SELECTOR}, [class*="modal"]`),
+          primary: /primary|danger/i.test(String(el.className || '')),
+          menuLike: /dropdown-item|menuitem|dropdown|popover|menu/i.test(markers),
+          area: Math.round(rect.width * rect.height),
+          top: rect.top,
+        }
+      })
+      .sort((a, b) => {
+        if (a.inDialog !== b.inDialog) return a.inDialog ? -1 : 1
+        if (a.primary !== b.primary) return a.primary ? -1 : 1
+        if (a.menuLike !== b.menuLike) return a.menuLike ? 1 : -1
+        if (a.area !== b.area) return b.area - a.area
+        return b.top - a.top
+      })[0]?.el || null
   }
 
   function findVisibleConfirmButton(texts = ['确认', '确定']) {
@@ -943,13 +1362,18 @@
     return !!hidden
   }
 
+  async function waitForConfirmActionButtonGone(texts, timeout = 8000) {
+    const hidden = await waitFor(() => !findVisibleConfirmActionButton(texts), timeout, 150)
+    return !!hidden
+  }
+
   function buildConflictRetryState(sharedState, phaseName, info, tab) {
-    const rowKey = info.code || info.text
+    const rowKey = getVoucherConflictRowKey(info)
     const key = `${phaseName}|${tab}|${rowKey}`
     const previousKey = String(sharedState?.conflict_retry_key || '')
     const previousCount = Number(sharedState?.conflict_retry_count || 0)
     const count = previousKey === key ? previousCount + 1 : 1
-    if (count > 3) {
+    if (count > 6) {
       throw new Error(`刷新后仍重复命中同一张冲突券：${rowKey}`)
     }
     return {
@@ -958,75 +1382,440 @@
     }
   }
 
-  async function confirmVoucherRowAction(info, actionTexts, timeout = 8000) {
-    const confirmBtn = await waitFor(() => findVisibleOverlayActionButton(actionTexts), 4000, 150)
-    if (!confirmBtn) throw new Error(`未找到${actionTexts[0]}确认按钮：${info.code || info.text}`)
-    reactClick(confirmBtn) || dispatchSyntheticClick(confirmBtn)
-    await waitForOverlayActionButtonGone(actionTexts, timeout)
-    await sleep(1200)
-    return true
-  }
-
-  async function deleteVoucherRow(info) {
-    const deleteBtn = findRowActionButton(info.el, '删除')
-    if (!deleteBtn) throw new Error(`未找到删除按钮：${info.code || info.text}`)
-    openPageClick(deleteBtn)
-    await sleep(300)
-    await confirmVoucherRowAction(info, ['删除', 'Delete'])
-    return true
-  }
-
-  async function endVoucherRow(info) {
-    const moreBtn = findRowActionButton(info.el, '更多')
-    if (!moreBtn) throw new Error(`未找到更多按钮：${info.code || info.text}`)
-
-    const moreProps = reactPropsOf(moreBtn)
-    const event = {
-      preventDefault() {},
-      stopPropagation() {},
-      target: moreBtn,
-      currentTarget: moreBtn,
-      nativeEvent: { target: moreBtn },
+  function buildResolvedConflictRowExtras(sharedState, info) {
+    const rowKey = getVoucherConflictRowKey(info)
+    return {
+      resolved_conflict_row_keys: mergeVoucherConflictRowKeys(sharedState, rowKey ? [rowKey] : []),
     }
-    try { moreProps?.onMouseEnter?.(event) } catch {}
-    try { moreProps?.onMouseDown?.(event) } catch {}
-    try { moreProps?.onClick?.(event) } catch {}
-    reactClick(moreBtn) || dispatchSyntheticClick(moreBtn)
-
-    const endBtn = await waitFor(() => findVisibleActionButton('结束'), 4000, 150)
-    if (!endBtn) throw new Error(`未找到结束菜单：${info.code || info.text}`)
-    reactClick(endBtn) || dispatchSyntheticClick(endBtn)
-
-    await confirmVoucherRowAction(info, ['结束', 'End'])
-    return true
   }
 
-  async function resolveOneVoucherConflict(ctx, sharedState, options = {}) {
-    if (!ctx.overwriteExisting) return { handled: false, sharedExtras: { conflict_retry_key: '', conflict_retry_count: 0 } }
-    if (!ctx.startDt || !ctx.endDt) return { handled: false, sharedExtras: { conflict_retry_key: '', conflict_retry_count: 0 } }
+  function clearVoucherConflictCdpExtras() {
+    return {
+      conflict_cdp_row_key: '',
+      conflict_cdp_step: '',
+    }
+  }
 
-    const phaseName = options.phaseName || 'resolve_existing_vouchers'
+  function readVoucherConflictCdpState(sharedState, info) {
+    const rowKey = norm(sharedState?.conflict_cdp_row_key || '')
+    const currentRowKey = norm(getVoucherConflictRowKey(info))
+    if (!rowKey || !currentRowKey || rowKey !== currentRowKey) return ''
+    return String(sharedState?.conflict_cdp_step || '')
+  }
+
+  function buildVoucherConflictCdpExtras(info, step) {
+    return {
+      conflict_cdp_row_key: getVoucherConflictRowKey(info),
+      conflict_cdp_step: String(step || ''),
+    }
+  }
+
+  function buildCdpClickPlan(elements, options = {}) {
+    const delayMs = Number(options.delayMs || 140)
+    const limit = Math.max(1, Number(options.limit || 1))
+    const seen = new Set()
+    return (elements || [])
+      .map(item => item?.el || item)
+      .filter(Boolean)
+      .map(el => ({ el, center: rectCenter(el) }))
+      .filter(item => item.center?.x != null && item.center?.y != null)
+      .filter(item => {
+        const key = `${item.center.x},${item.center.y}`
+        if (seen.has(key)) return false
+        seen.add(key)
+        return true
+      })
+      .slice(0, limit)
+      .map(item => ({
+        x: item.center.x,
+        y: item.center.y,
+        delay_ms: delayMs,
+      }))
+  }
+
+  function shouldPreferCdpConflictClick(options = {}) {
+    if (options.preferCdpClick != null) return !!options.preferCdpClick
+    if (options.forceDomClick) return false
+    const userAgent = String(window?.navigator?.userAgent || navigator?.userAgent || '')
+    return !/node-test/i.test(userAgent)
+  }
+
+  async function confirmVoucherRowAction(info, actionTexts, timeout = 8000, options = {}) {
+    const confirmBtn = await waitFor(() => findVisibleConfirmActionButton(actionTexts), 4000, 150)
+    if (!confirmBtn) throw new Error(`未找到${actionTexts[0]}确认按钮：${info.code || info.text}`)
+    if (shouldPreferCdpConflictClick(options)) {
+      const cdpClicks = buildCdpClickPlan([confirmBtn], { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) return { cdpClicks }
+    }
+    const clicked = clickSubmitConfirmButton(confirmBtn) || openPageClick(confirmBtn) || nativeClickOnce(confirmBtn)
+    if (!clicked) throw new Error(`点击${actionTexts[0]}确认按钮失败：${info.code || info.text}`)
+    const hidden = await waitForConfirmActionButtonGone(actionTexts, timeout)
+    if (!hidden && options.enableCdpFallback) {
+      const cdpClicks = buildCdpClickPlan([confirmBtn], { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return { cdpClicks }
+      }
+    }
+    if (!hidden) throw new Error(`点击${actionTexts[0]}确认按钮后弹窗未关闭：${info.code || info.text}`)
+    await sleep(1200)
+    return { done: true }
+  }
+
+  async function deleteVoucherRow(info, sharedState = {}) {
+    const pendingCdpStep = readVoucherConflictCdpState(sharedState, info)
+    if (findVisibleDialogButton(['删除', 'Delete'])) {
+      const confirmResult = await confirmVoucherRowAction(info, ['删除', 'Delete'], 8000, {
+        preferCdpClick: pendingCdpStep !== 'delete_confirm_pending' && shouldPreferCdpConflictClick(),
+        enableCdpFallback: true,
+      })
+      if (confirmResult?.cdpClicks?.length) {
+        return {
+          cdpClicks: confirmResult.cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'delete_confirm_pending'),
+        }
+      }
+      return {
+        done: true,
+        sharedExtras: clearVoucherConflictCdpExtras(),
+      }
+    }
+    if (pendingCdpStep === 'delete_confirm_pending') {
+      return {
+        done: true,
+        sharedExtras: clearVoucherConflictCdpExtras(),
+      }
+    }
+
+    const deleteBtns = getRowActionButtonCandidates(info.el, '删除')
+    if (deleteBtns.length === 0) throw new Error(`未找到删除按钮：${info.code || info.text}`)
+
+    if (pendingCdpStep !== 'delete_dialog_opened' && shouldPreferCdpConflictClick()) {
+      const cdpClicks = buildCdpClickPlan(deleteBtns, { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return {
+          cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'delete_dialog_opened'),
+        }
+      }
+    }
+
+    let dialogVisible = false
+    for (const deleteBtn of deleteBtns) {
+      const clicked = openPageClick(deleteBtn) || reactClick(deleteBtn) || nativeClickOnce(deleteBtn) || dispatchSyntheticClick(deleteBtn)
+      if (!clicked) continue
+      const dialogBtn = await waitFor(() => findVisibleDialogButton(['删除', 'Delete']), 1200, 100)
+      if (dialogBtn) {
+        dialogVisible = true
+        break
+      }
+    }
+    if (!dialogVisible) {
+      const cdpClicks = buildCdpClickPlan(deleteBtns, { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return {
+          cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'delete_dialog_opened'),
+        }
+      }
+      throw new Error(`点击删除按钮失败：${info.code || info.text}`)
+    }
+
+    const confirmResult = await confirmVoucherRowAction(info, ['删除', 'Delete'], 8000, {
+      preferCdpClick: shouldPreferCdpConflictClick(),
+      enableCdpFallback: true,
+    })
+    if (confirmResult?.cdpClicks?.length) {
+      return {
+        cdpClicks: confirmResult.cdpClicks,
+        sharedExtras: buildVoucherConflictCdpExtras(info, 'delete_confirm_pending'),
+      }
+    }
+    return {
+      done: true,
+      sharedExtras: clearVoucherConflictCdpExtras(),
+    }
+  }
+
+  async function endVoucherRow(info, sharedState = {}) {
+    const pendingCdpStep = readVoucherConflictCdpState(sharedState, info)
+    if ((pendingCdpStep === 'dialog_opened' || pendingCdpStep === 'confirm_pending') && findVisibleDialogButton(['结束', 'End'])) {
+      const confirmResult = await confirmVoucherRowAction(info, ['结束', 'End'], 8000, {
+        preferCdpClick: pendingCdpStep !== 'confirm_pending' && shouldPreferCdpConflictClick(),
+        enableCdpFallback: true,
+      })
+      if (confirmResult?.cdpClicks?.length) {
+        return {
+          cdpClicks: confirmResult.cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'confirm_pending'),
+        }
+      }
+      return {
+        done: true,
+        sharedExtras: clearVoucherConflictCdpExtras(),
+      }
+    }
+    if (pendingCdpStep === 'confirm_pending') {
+      return {
+        done: true,
+        sharedExtras: clearVoucherConflictCdpExtras(),
+      }
+    }
+
+    const directEndBtn = findRowActionButton(info.el, ['结束', 'End'])
+    if (directEndBtn) {
+      openPageClick(directEndBtn) || reactClick(directEndBtn) || dispatchSyntheticClick(directEndBtn)
+      await sleep(300)
+      const confirmResult = await confirmVoucherRowAction(info, ['结束', 'End'], 8000, {
+        preferCdpClick: shouldPreferCdpConflictClick(),
+        enableCdpFallback: true,
+      })
+      if (confirmResult?.cdpClicks?.length) {
+        return {
+          cdpClicks: confirmResult.cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'confirm_pending'),
+        }
+      }
+      return {
+        done: true,
+        sharedExtras: clearVoucherConflictCdpExtras(),
+      }
+    }
+
+    const moreBtns = getRowActionButtonCandidates(info.el, '更多')
+    if (moreBtns.length === 0) throw new Error(`未找到更多按钮：${info.code || info.text}`)
+
+    let menuVisible = getVisibleMenuActionButtons(['结束', 'End']).length > 0
+    if (!menuVisible && pendingCdpStep !== 'menu_opened' && shouldPreferCdpConflictClick()) {
+      const cdpClicks = buildCdpClickPlan(moreBtns, { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return {
+          cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'menu_opened'),
+        }
+      }
+    }
+    if (!menuVisible || pendingCdpStep !== 'menu_opened') {
+      for (const moreBtn of moreBtns) {
+        const moreProps = reactPropsOf(moreBtn)
+        const event = {
+          preventDefault() {},
+          stopPropagation() {},
+          target: moreBtn,
+          currentTarget: moreBtn,
+          nativeEvent: { target: moreBtn },
+        }
+        try { moreProps?.onMouseEnter?.(event) } catch {}
+        try { moreProps?.onMouseDown?.(event) } catch {}
+        try { moreProps?.onClick?.(event) } catch {}
+        reactClick(moreBtn) || dispatchSyntheticClick(moreBtn) || nativeClickOnce(moreBtn)
+        const opened = await waitFor(() => getVisibleMenuActionButtons(['结束', 'End']).length > 0, 2000, 100)
+        if (opened) {
+          menuVisible = true
+          break
+        }
+      }
+    }
+    if (!menuVisible) {
+      const cdpClicks = buildCdpClickPlan(moreBtns, { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return {
+          cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'menu_opened'),
+        }
+      }
+      throw new Error(`未找到结束菜单：${info.code || info.text}`)
+    }
+
+    const endBtns = await waitFor(() => getVisibleMenuActionButtons('结束'), 4000, 150)
+    if (!endBtns || endBtns.length === 0) throw new Error(`未找到结束菜单：${info.code || info.text}`)
+
+    if (pendingCdpStep !== 'dialog_opened' && shouldPreferCdpConflictClick()) {
+      const cdpClicks = buildCdpClickPlan(endBtns, { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return {
+          cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'dialog_opened'),
+        }
+      }
+    }
+
+    let menuTriggered = false
+    for (const endBtn of endBtns) {
+      const clicked = openPageClick(endBtn) || reactClick(endBtn) || nativeClickOnce(endBtn) || dispatchSyntheticClick(endBtn)
+      if (!clicked) continue
+      const dialogBtn = await waitFor(() => findVisibleDialogButton(['结束', 'End']), 1200, 100)
+      if (dialogBtn) {
+        menuTriggered = true
+        break
+      }
+    }
+    if (!menuTriggered) {
+      const cdpClicks = buildCdpClickPlan(endBtns, { limit: 1, delayMs: 180 })
+      if (cdpClicks.length > 0) {
+        return {
+          cdpClicks,
+          sharedExtras: buildVoucherConflictCdpExtras(info, 'dialog_opened'),
+        }
+      }
+      throw new Error(`点击结束菜单失败：${info.code || info.text}`)
+    }
+
+    const confirmResult = await confirmVoucherRowAction(info, ['结束', 'End'], 8000, {
+      preferCdpClick: shouldPreferCdpConflictClick(),
+      enableCdpFallback: true,
+    })
+    if (confirmResult?.cdpClicks?.length) {
+      return {
+        cdpClicks: confirmResult.cdpClicks,
+        sharedExtras: buildVoucherConflictCdpExtras(info, 'confirm_pending'),
+      }
+    }
+    return {
+      done: true,
+      sharedExtras: clearVoucherConflictCdpExtras(),
+    }
+  }
+
+  async function resolveAllVoucherConflicts(ctx, sharedState, options = {}) {
+    if (!ctx.overwriteExisting || !ctx.startDt || !ctx.endDt) {
+      return {
+        handledCount: 0,
+        sharedExtras: {
+          conflict_retry_key: '',
+          conflict_retry_count: 0,
+          resolved_conflict_row_keys: [],
+        },
+      }
+    }
+
+    const handledKeys = new Set(readVoucherConflictRowKeys(sharedState))
     const matchOptions = options.excludeCurrentGenerated ? { excludeCurrentGenerated: true } : {}
+    let handledCount = 0
 
     for (const tab of VOUCHER_LIST_TABS) {
       await switchVoucherListTab(tab)
       await waitForVoucherListReady(8000)
-      let duplicate = findConflictingVoucherRow(ctx, matchOptions)
-      if (!duplicate) {
-        await sleep(600)
-        duplicate = findConflictingVoucherRow(ctx, matchOptions)
+      await ensureVoucherListOnFirstPage()
+
+      const visited = new Set()
+      const maxPages = Number(options.maxPages || 100)
+
+      for (let pageIndex = 0; pageIndex < maxPages; pageIndex += 1) {
+        await waitForVoucherListReady(8000)
+
+        let duplicate = findConflictingVoucherRow(ctx, {
+          ...matchOptions,
+          ignoreConflictKeys: handledKeys,
+        })
+        if (!duplicate) {
+          await sleep(600)
+          duplicate = findConflictingVoucherRow(ctx, {
+            ...matchOptions,
+            ignoreConflictKeys: handledKeys,
+          })
+        }
+
+        if (duplicate) {
+          let rowResult = { done: true, sharedExtras: clearVoucherConflictCdpExtras() }
+          if (tab === '接下来的活动') {
+            rowResult = await deleteVoucherRow(duplicate, sharedState)
+          } else {
+            rowResult = await endVoucherRow(duplicate, sharedState)
+          }
+          if (rowResult?.cdpClicks?.length) {
+            return {
+              handledCount,
+              cdpClicks: rowResult.cdpClicks,
+              sharedExtras: {
+                conflict_retry_key: '',
+                conflict_retry_count: 0,
+                resolved_conflict_row_keys: [...handledKeys],
+                ...rowResult.sharedExtras,
+              },
+            }
+          }
+          const rowKey = getVoucherConflictRowKey(duplicate)
+          if (rowKey) handledKeys.add(rowKey)
+          handledCount += 1
+          await sleep(900)
+          pageIndex -= 1
+          continue
+        }
+
+        const currentPageNo = getVoucherListActivePageNo() || (pageIndex + 1)
+        const signature = getVoucherListPageSignature() || `page:${currentPageNo}:rows:${getVoucherListRows().length}`
+        if (visited.has(signature)) {
+          throw new Error(`优惠券列表翻页重复停留在同一页：${signature}`)
+        }
+        visited.add(signature)
+
+        const nextBtn = findVoucherListPagerButton('next')
+        if (!nextBtn) break
+
+        const expectedPageNo = getVoucherListActivePageNo()
+        if (!(openPageClick(nextBtn) || dispatchSyntheticClick(nextBtn))) {
+          throw new Error('优惠券列表翻页失败：无法点击下一页')
+        }
+        const changed = await waitForVoucherListPageAdvance(signature, expectedPageNo != null ? expectedPageNo + 1 : null, 8000)
+        if (!changed) throw new Error('优惠券列表翻页后页码/数据未更新')
       }
+    }
+
+    return {
+      handledCount,
+      sharedExtras: {
+        conflict_retry_key: '',
+        conflict_retry_count: 0,
+        resolved_conflict_row_keys: [...handledKeys],
+      },
+    }
+  }
+
+  async function resolveOneVoucherConflict(ctx, sharedState, options = {}) {
+    if (!ctx.overwriteExisting) return { handled: false, sharedExtras: { conflict_retry_key: '', conflict_retry_count: 0, resolved_conflict_row_keys: [] } }
+    if (!ctx.startDt || !ctx.endDt) return { handled: false, sharedExtras: { conflict_retry_key: '', conflict_retry_count: 0, resolved_conflict_row_keys: [] } }
+
+    const phaseName = options.phaseName || 'resolve_existing_vouchers'
+    const matchOptions = options.excludeCurrentGenerated ? { excludeCurrentGenerated: true } : {}
+    const ignoreConflictKeys = new Set(readVoucherConflictRowKeys(sharedState))
+
+    for (const tab of VOUCHER_LIST_TABS) {
+      await switchVoucherListTab(tab)
+      await waitForVoucherListReady(8000)
+      await ensureVoucherListOnFirstPage()
+      const duplicate = await findConflictingVoucherRowAcrossPages(ctx, {
+        ...matchOptions,
+        ignoreConflictKeys,
+      })
       if (!duplicate) continue
 
+      let rowResult = {
+        done: true,
+        sharedExtras: clearVoucherConflictCdpExtras(),
+      }
       if (tab === '接下来的活动') {
-        await deleteVoucherRow(duplicate)
+        rowResult = await deleteVoucherRow(duplicate, sharedState)
       } else {
-        await endVoucherRow(duplicate)
+        rowResult = await endVoucherRow(duplicate, sharedState)
+      }
+      if (rowResult?.cdpClicks?.length) {
+        return {
+          handled: true,
+          cdpClicks: rowResult.cdpClicks,
+          sharedExtras: {
+            ...buildConflictRetryState(sharedState, phaseName, duplicate, tab),
+            ...rowResult.sharedExtras,
+          },
+        }
       }
 
       return {
         handled: true,
-        sharedExtras: buildConflictRetryState(sharedState, phaseName, duplicate, tab),
+        sharedExtras: {
+          ...buildConflictRetryState(sharedState, phaseName, duplicate, tab),
+          ...buildResolvedConflictRowExtras(sharedState, duplicate),
+          ...rowResult.sharedExtras,
+        },
       }
     }
 
@@ -1035,6 +1824,8 @@
       sharedExtras: {
         conflict_retry_key: '',
         conflict_retry_count: 0,
+        resolved_conflict_row_keys: [],
+        ...clearVoucherConflictCdpExtras(),
       },
     }
   }
@@ -1171,11 +1962,22 @@
   }
 
   function buildShared(ctx, extras = {}) {
+    const readExtra = (key, fallback) => {
+      if (Object.prototype.hasOwnProperty.call(extras, key)) return extras[key]
+      return shared?.[key] != null ? shared[key] : fallback
+    }
     return {
       couponName: ctx?.couponName || shared.couponName || '',
       couponCode: ctx?.couponCode || shared.couponCode || '',
       result: ctx?.result || shared.result || {},
       shopId: extras.shopId != null ? extras.shopId : (ctx?.shopId || shared.shopId || ''),
+      conflict_retry_key: readExtra('conflict_retry_key', ''),
+      conflict_retry_count: readExtra('conflict_retry_count', 0),
+      conflict_cdp_row_key: readExtra('conflict_cdp_row_key', ''),
+      conflict_cdp_step: readExtra('conflict_cdp_step', ''),
+      resolved_conflict_row_keys: readExtra('resolved_conflict_row_keys', []),
+      submit_conflict_retry_count: readExtra('submit_conflict_retry_count', 0),
+      submit_conflict_cleanup_round: readExtra('submit_conflict_cleanup_round', 0),
       ...extras,
     }
   }
@@ -2427,6 +3229,28 @@
     return /错误|失败|不能为空|不可|不能|无效|必填|至少|最多|超出|已存在|不支持|请.+(输入|选择|填写)|must|invalid|required|failed|error/i.test(msg)
   }
 
+  function extractKnownConflictRetryableMessage(text) {
+    const msg = norm(text)
+    if (!msg) return ''
+    const exactPatterns = [
+      /Please create a new second order voucher after the existing one is expired/i,
+      /Please create a new shop welcome voucher after the existing one is expired/i,
+      /这个时段已存在另一个关注礼优惠券，请选择另一时段。?/,
+    ]
+    for (const pattern of exactPatterns) {
+      const matched = msg.match(pattern)
+      if (matched?.[0]) return matched[0]
+    }
+    return ''
+  }
+
+  function looksLikeConflictRetryableError(text) {
+    const msg = norm(text)
+    if (!msg) return false
+    if (extractKnownConflictRetryableMessage(msg)) return true
+    return /冲突|重叠|重复|同一时间|同时段|已有.*优惠券|已存在.*优惠券|进行中的活动|接下来的活动|overlap|ongoing|already exists|already has|existing one is expired/i.test(msg)
+  }
+
   function collectVisibleFormErrors() {
     return [...document.querySelectorAll(
       '.eds-react-form-item__extra, .eds-react-form-item__help, .eds-form-item__extra, .eds-form-item__help, ' +
@@ -2435,6 +3259,39 @@
       .filter(visible)
       .map(el => textOf(el))
       .filter(looksLikeValidationError)
+  }
+
+  function collectSubmitConflictMessages() {
+    const visibleErrors = [...document.querySelectorAll(
+      '.eds-react-form-item__extra, .eds-react-form-item__help, .eds-form-item__extra, .eds-form-item__help, ' +
+      '[class*="error-msg"], [class*="error-text"], [class*="form-error"]'
+    )]
+      .filter(visible)
+      .map(el => textOf(el))
+
+    const alerts = [...document.querySelectorAll('[role=alert], .eds-toast, .eds-message, .eds-notification')]
+      .filter(visible)
+      .map(el => textOf(el))
+
+    const scopedTexts = [
+      textOf(getFormItem(['优惠券领取期限', 'Claim Period'])),
+      textOf(getFormItem(['目标买家'])),
+      textOf(getFormItem(['优惠券类型', 'Voucher Type'])),
+      norm(document.body?.innerText || ''),
+    ]
+
+    const messages = []
+    for (const source of [...visibleErrors, ...alerts, ...scopedTexts]) {
+      const exact = extractKnownConflictRetryableMessage(source)
+      if (exact) {
+        messages.push(exact)
+        continue
+      }
+      if (looksLikeConflictRetryableError(source)) {
+        messages.push(norm(source))
+      }
+    }
+    return [...new Set(messages.filter(Boolean))]
   }
 
   function findSubmitConfirmButton() {
@@ -2588,8 +3445,16 @@
         phaseName: 'resolve_existing_vouchers',
       })
       if (conflictResult.handled) {
+        if (conflictResult.cdpClicks?.length) {
+          return cdpPhase(conflictResult.cdpClicks, 'resolve_existing_vouchers', 350, ctx, {
+            shopId,
+            ...conflictResult.sharedExtras,
+          })
+        }
+        const retryCount = Number(conflictResult.sharedExtras?.conflict_retry_count || 1)
+        const retryDelay = Math.min(3000 + retryCount * 2500, 15000)
         navigateSoon(listUrl)
-        return nextPhase('resolve_existing_vouchers', 2500, ctx, {
+        return nextPhase('resolve_existing_vouchers', retryDelay, ctx, {
           shopId,
           ...conflictResult.sharedExtras,
         })
@@ -2598,6 +3463,46 @@
         shopId,
         conflict_retry_key: '',
         conflict_retry_count: 0,
+        ...clearVoucherConflictCdpExtras(),
+      })
+    }
+
+    if (currentPhase === 'resolve_submit_conflicts') {
+      markStage(ctx, 'resolve_submit_conflicts')
+      const shopId = shared.shopId || ctx.shopId || getUrlShopId()
+      if (!shopId) throw new Error('提交冲突兜底时未解析到店铺 shopId')
+      ctx.shopId = shopId
+      const listUrl = buildVouchersListUrl(shopId)
+      if (!isOnVouchersListPage() || getUrlShopId() !== shopId) {
+        navigateSoon(listUrl)
+        return nextPhase('resolve_submit_conflicts', 2500, ctx, {
+          shopId,
+        })
+      }
+
+      const cleanupRounds = Number(shared.submit_conflict_cleanup_round || 0)
+      if (cleanupRounds > 4) {
+        throw new Error('提交冲突兜底清理次数过多，请检查是否仍有无法自动结束的旧券')
+      }
+
+      const cleanupResult = await resolveAllVoucherConflicts(ctx, shared, {
+        phaseName: 'resolve_submit_conflicts',
+      })
+      if (cleanupResult.cdpClicks?.length) {
+        return cdpPhase(cleanupResult.cdpClicks, 'resolve_submit_conflicts', 350, ctx, {
+          shopId,
+          submit_conflict_cleanup_round: cleanupRounds,
+          ...cleanupResult.sharedExtras,
+        })
+      }
+
+      return nextPhase('open_usecase_form', cleanupResult.handledCount > 0 ? 1200 : 200, ctx, {
+        shopId,
+        conflict_retry_key: '',
+        conflict_retry_count: 0,
+        resolved_conflict_row_keys: cleanupResult.sharedExtras?.resolved_conflict_row_keys || readVoucherConflictRowKeys(shared),
+        submit_conflict_cleanup_round: cleanupRounds + 1,
+        ...clearVoucherConflictCdpExtras(),
       })
     }
 
@@ -2654,15 +3559,17 @@
         if (/查看详情|返回列表页面|返回优惠券列表|继续创建/.test(actionTexts)) return 'inline-success'
         if (/查看详情/.test(bodyText) && /返回列表页面|返回优惠券列表/.test(bodyText)) return 'inline-success'
         if (/您的优惠券会在|优惠券已生效|优惠券将在/.test(bodyText) && /我的广播|查看详情|返回列表页面/.test(bodyText)) return 'inline-success'
+        if (collectSubmitConflictMessages().length > 0) return 'error'
         const alerts = [...document.querySelectorAll('[role=alert], .eds-toast, .eds-message, .eds-notification')]
           .filter(visible)
           .map(el => textOf(el))
           .join(' ')
         if (/成功/.test(alerts)) return 'toast'
+        if (looksLikeValidationError(alerts) || looksLikeConflictRetryableError(alerts)) return 'error'
         return null
       }, 18000, 300)
 
-      if (ok) {
+      if (ok && ok !== 'error') {
         if (shouldRunPostCreateCleanup(ctx)) {
           const shopId = shared.shopId || ctx.shopId || getUrlShopId()
           if (!shopId) throw new Error('提交成功后未解析到店铺 shopId')
@@ -2678,15 +3585,29 @@
       )]
         .filter(visible)
         .map(el => textOf(el))
-        .filter(looksLikeValidationError)
+        .filter(text => looksLikeValidationError(text) || looksLikeConflictRetryableError(text))
 
       const toastErrors = [...document.querySelectorAll('[role=alert], .eds-toast, .eds-message, .eds-notification')]
         .filter(visible)
         .map(el => textOf(el))
         .filter(Boolean)
 
-      const errors = [...new Set([...inlineErrors, ...toastErrors])]
+      const errors = [...new Set([...inlineErrors, ...toastErrors, ...collectSubmitConflictMessages()])]
       if (errors.length > 0) {
+        const conflictRetryCount = Number(shared.submit_conflict_retry_count || 0)
+        const shouldRetryConflict = errors.some(looksLikeConflictRetryableError)
+        if (shouldRetryConflict && conflictRetryCount < 2) {
+          const shopId = shared.shopId || ctx.shopId || getUrlShopId()
+          if (!shopId) throw new Error(`提交失败：${errors.join(' | ')}`)
+          ctx.shopId = shopId
+          navigateSoon(buildVouchersListUrl(shopId))
+          return nextPhase('resolve_submit_conflicts', 2500, ctx, {
+            shopId,
+            submit_conflict_retry_count: conflictRetryCount + 1,
+            conflict_retry_key: '',
+            conflict_retry_count: 0,
+          })
+        }
         throw new Error(`提交失败：${errors.join(' | ')}`)
       }
 
@@ -2711,6 +3632,12 @@
         excludeCurrentGenerated: true,
       })
       if (cleanupResult.handled) {
+        if (cleanupResult.cdpClicks?.length) {
+          return cdpPhase(cleanupResult.cdpClicks, 'post_create_cleanup', 350, ctx, {
+            shopId,
+            ...cleanupResult.sharedExtras,
+          })
+        }
         navigateSoon(listUrl)
         return nextPhase('post_create_cleanup', 2500, ctx, {
           shopId,
