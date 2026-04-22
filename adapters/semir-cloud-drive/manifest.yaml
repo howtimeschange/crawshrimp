@@ -1,8 +1,8 @@
 id: semir-cloud-drive
 name: 森马云盘图片工具
-version: 0.1.0
+version: 0.1.1
 author: codex
-description: "森马云盘图片批量检索、下载、整理与打包"
+description: "森马云盘素材图批量检索下载，并串联豆包/Gemini 自动生图"
 entry_url: https://fmp.semirapp.com/web/index#/home/file
 
 auth:
