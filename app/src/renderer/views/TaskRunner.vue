@@ -27,6 +27,31 @@
                 :placeholder="param.placeholder || ''"
                 class="input"
               />
+              <div v-if="getQuickFillOptions(param).length" class="param-quick-fill-list">
+                <button
+                  v-for="option in getQuickFillOptions(param)"
+                  :key="option"
+                  type="button"
+                  class="param-quick-fill-chip"
+                  @click="applyQuickFill(param, option)"
+                >
+                  {{ option }}
+                </button>
+              </div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
+            <template v-else-if="param.type === 'directory'">
+              <div class="file-picker">
+                <div class="file-chosen" :class="{ empty: !values[param.id] }" @click="pickDirectory(param)">
+                  <span class="f-ico">📁</span>
+                  <span class="f-label">{{ values[param.id] ? fileName(values[param.id]) : (param.placeholder || '点击选择目录…') }}</span>
+                  <span v-if="values[param.id]" class="f-clear" @click.stop="clearDirectory(param.id)">✕</span>
+                </div>
+                <div class="file-picker-actions">
+                  <button class="btn-pick" @click="pickDirectory(param)">选择目录</button>
+                </div>
+              </div>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
@@ -37,6 +62,17 @@
                 :class="['textarea', { 'textarea-compact': getTextareaRows(param) <= 3 }]"
                 :rows="getTextareaRows(param)"
               ></textarea>
+              <div v-if="getQuickFillOptions(param).length" class="param-quick-fill-list">
+                <button
+                  v-for="option in getQuickFillOptions(param)"
+                  :key="option"
+                  type="button"
+                  class="param-quick-fill-chip"
+                  @click="applyQuickFill(param, option)"
+                >
+                  {{ option }}
+                </button>
+              </div>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
@@ -390,53 +426,60 @@
               <span class="progress-strip-percent">{{ progressSummary.percentLabel }}</span>
             </div>
             <div class="progress-strip-meta">
-              <span v-if="progressSummary.completedText">{{ progressSummary.completedText }}</span>
-              <span v-if="progressSummary.batchText">{{ progressSummary.batchText }}</span>
-              <span v-if="progressSummary.rowText">{{ progressSummary.rowText }}</span>
-              <span v-if="progressSummary.targetText">{{ progressSummary.targetText }}</span>
-              <span v-if="progressSummary.storeText">{{ progressSummary.storeText }}</span>
-              <span v-if="progressSummary.phaseText">{{ progressSummary.phaseText }}</span>
+              <span
+                v-for="metaItem in (progressSummary.metaItems || []).filter(Boolean)"
+                :key="metaItem"
+              >{{ metaItem }}</span>
             </div>
           </div>
-          <div class="progress-strip-stack">
-            <div class="progress-track">
-              <div class="progress-track-label">
-                <span>{{ progressSummary.trackTitle }}</span>
-                <span>{{ progressSummary.percentLabel }}</span>
+          <div class="progress-strip-stack progress-stage-stack">
+            <div
+              v-for="track in (progressSummary.tracks || [])"
+              :key="track.id || track.title"
+              :class="[
+                'progress-stage-card',
+                `progress-stage-card-${track.tone || 'primary'}`,
+                `progress-stage-card-${track.state || 'pending'}`,
+              ]"
+            >
+              <div class="progress-stage-card-head">
+                <div class="progress-stage-card-kicker">
+                  <span class="progress-stage-card-title">{{ track.title }}</span>
+                  <span v-if="track.status" class="progress-stage-card-status">{{ track.status }}</span>
+                </div>
+                <div class="progress-stage-card-mainline">
+                  <span class="progress-stage-card-main">{{ track.main }}</span>
+                  <span class="progress-stage-card-percent">{{ track.percentLabel }}</span>
+                </div>
               </div>
+
+              <div v-if="track.caption || track.detail" class="progress-stage-card-meta">
+                <span v-if="track.caption">{{ track.caption }}</span>
+                <span v-if="track.detail">{{ track.detail }}</span>
+              </div>
+
               <div
-                :class="['progress-strip-bar', { indeterminate: progressSummary.indeterminate }]"
+                :class="[
+                  'progress-strip-bar',
+                  'progress-stage-bar',
+                  track.tone === 'secondary' ? 'progress-strip-bar-secondary' : '',
+                  { indeterminate: track.indeterminate }
+                ]"
                 role="progressbar"
-                :aria-label="progressSummary.ariaLabel"
-                :aria-valuenow="progressSummary.indeterminate ? null : progressSummary.percentValue"
+                :aria-label="track.ariaLabel || progressSummary.ariaLabel"
+                :aria-valuenow="track.indeterminate ? null : track.percentValue"
                 aria-valuemin="0"
                 aria-valuemax="100"
-                :aria-valuetext="progressSummary.ariaText"
-                :aria-busy="progressSummary.indeterminate ? 'true' : 'false'"
+                :aria-valuetext="track.ariaText || progressSummary.ariaText"
+                :aria-busy="track.indeterminate ? 'true' : 'false'"
               >
                 <div
-                  :class="['progress-strip-bar-fill', { indeterminate: progressSummary.indeterminate }]"
-                  :style="progressSummary.indeterminate ? undefined : { width: `${progressSummary.percentValue}%` }"
-                ></div>
-              </div>
-            </div>
-            <div v-if="progressSummary.batchPercentValue > 0" class="progress-track progress-track-secondary">
-              <div class="progress-track-label">
-                <span>当前条目</span>
-                <span>{{ progressSummary.batchText }}</span>
-              </div>
-              <div
-                class="progress-strip-bar progress-strip-bar-secondary"
-                role="progressbar"
-                aria-label="当前条目进度"
-                :aria-valuenow="progressSummary.batchPercentValue"
-                aria-valuemin="0"
-                aria-valuemax="100"
-                :aria-valuetext="`${progressSummary.batchText}，${progressSummary.batchPercentValue}%`"
-              >
-                <div
-                  class="progress-strip-bar-fill progress-strip-bar-fill-secondary"
-                  :style="{ width: `${progressSummary.batchPercentValue}%` }"
+                  :class="[
+                    'progress-strip-bar-fill',
+                    track.tone === 'secondary' ? 'progress-strip-bar-fill-secondary' : '',
+                    { indeterminate: track.indeterminate }
+                  ]"
+                  :style="track.indeterminate ? undefined : { width: `${track.percentValue}%` }"
                 ></div>
               </div>
             </div>
@@ -543,6 +586,18 @@ function getTextareaRows(param) {
   const rows = Number(param?.rows || 0)
   if (Number.isFinite(rows) && rows > 0) return Math.max(2, Math.min(8, Math.floor(rows)))
   return 4
+}
+
+function getQuickFillOptions(param) {
+  return Array.isArray(param?.quick_fill_options)
+    ? param.quick_fill_options.map(item => String(item || '').trim()).filter(Boolean)
+    : []
+}
+
+function applyQuickFill(param, value) {
+  const paramId = String(param?.id || '').trim()
+  if (!paramId) return
+  values.value[paramId] = String(value || '')
 }
 
 function mergeTaskParams(baseParams = [], patchMap = {}) {
@@ -772,7 +827,7 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'textarea' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
+  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'textarea' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
@@ -1509,6 +1564,21 @@ function clearExcel(paramId) {
   values.value[paramId + '_headers'] = []
 }
 
+async function pickDirectory(param) {
+  const paramId = param?.id
+  if (!paramId) return
+  const path = await window.cs.browseFile({
+    title: param?.label ? `选择${param.label}` : '选择目录',
+    directory: true,
+  })
+  if (!path) return
+  values.value[paramId] = path
+}
+
+function clearDirectory(paramId) {
+  values.value[paramId] = ''
+}
+
 async function pickImages(param) {
   const paramId = param?.id
   if (!paramId) return
@@ -1918,6 +1988,9 @@ onUnmounted(() => {
   flex-direction: column;
   gap: 10px;
 }
+.progress-stage-stack {
+  gap: 12px;
+}
 .progress-track {
   display: flex;
   flex-direction: column;
@@ -1966,6 +2039,108 @@ onUnmounted(() => {
   min-width: 120px;
   border-radius: 999px;
   animation: progress-slide 1.6s ease-in-out infinite;
+}
+.progress-stage-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 13px;
+  border-radius: 14px;
+  border: 1px solid rgba(255,255,255,0.06);
+  background:
+    linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.018)),
+    rgba(9, 11, 18, 0.26);
+  overflow: hidden;
+}
+.progress-stage-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(circle at top right, rgba(255,255,255,0.07), transparent 44%);
+  opacity: 0.55;
+}
+.progress-stage-card-primary {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 10px 28px rgba(255,106,41,0.06);
+}
+.progress-stage-card-secondary {
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03), 0 10px 28px rgba(124,139,255,0.05);
+}
+.progress-stage-card-active {
+  border-color: rgba(255,255,255,0.1);
+}
+.progress-stage-card-complete {
+  border-color: rgba(255,255,255,0.08);
+}
+.progress-stage-card-head,
+.progress-stage-card-kicker,
+.progress-stage-card-mainline,
+.progress-stage-card-meta {
+  position: relative;
+  z-index: 1;
+}
+.progress-stage-card-head {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.progress-stage-card-kicker {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.progress-stage-card-title {
+  font-size: 11px;
+  color: var(--text3);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.progress-stage-card-status {
+  font-size: 11px;
+  line-height: 1;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--text2);
+  background: rgba(255,255,255,0.06);
+}
+.progress-stage-card-mainline {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.progress-stage-card-main {
+  font-size: 19px;
+  font-weight: 800;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+.progress-stage-card-percent {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+.progress-stage-card-primary .progress-stage-card-percent,
+.progress-stage-card-primary .progress-stage-card-status {
+  color: #ffb182;
+}
+.progress-stage-card-secondary .progress-stage-card-percent,
+.progress-stage-card-secondary .progress-stage-card-status {
+  color: #b9c4ff;
+}
+.progress-stage-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  font-size: 12px;
+  color: var(--text2);
+}
+.progress-stage-bar {
+  position: relative;
+  z-index: 1;
 }
 .progress-strip-sub {
   font-size: 12px;
@@ -2105,6 +2280,30 @@ onUnmounted(() => {
   gap: 8px;
   flex-wrap: wrap;
 }
+.param-quick-fill-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.param-quick-fill-chip {
+  max-width: 100%;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--text2);
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.param-quick-fill-chip:hover {
+  border-color: var(--orange);
+  color: var(--text);
+}
 .image-file-chip {
   max-width: 100%;
   font-size: 11px;
@@ -2152,6 +2351,15 @@ onUnmounted(() => {
   }
   .param-span-half,
   .param-span-third { grid-column: span 1; }
+  .progress-stage-card-kicker,
+  .progress-stage-card-mainline {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .progress-strip-sub {
+    text-align: left;
+    white-space: normal;
+  }
 }
 
 @media (max-width: 640px) {

@@ -1,0 +1,78 @@
+id: semir-cloud-drive
+name: 森马云盘图片工具
+version: 0.1.0
+author: codex
+description: "森马云盘图片批量检索、下载、整理与打包"
+entry_url: https://fmp.semirapp.com/web/index#/home/file
+
+auth:
+  check_script: auth_check.js
+  login_url: https://fmp.semirapp.com/web/index#/home/file
+
+tasks:
+  - id: batch_image_download
+    name: 批量下载图片并打包
+    description: 按款号或款色编码检索森马云盘图片，下载后整理并打包导出
+    script: batch-image-download.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: cloud_path
+        type: text
+        label: 云盘路径
+        required: true
+        placeholder: "例如：巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        hint: 从森马云盘根目录开始填写目标搜索范围
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/
+      - id: item_codes
+        type: textarea
+        label: 款号或款色编码
+        rows: 5
+        required: true
+        placeholder: "一行一个，例如：\n208226111002\n208226111002-00316"
+        hint: 支持混合输入款号和款色编码；输入款号时只匹配“款号-五位色码”图片
+      - id: duplicate_mode
+        type: select
+        label: 重复图处理
+        default: first_per_stem
+        ui_span: third
+        options:
+          - value: first_per_stem
+            label: 同名/同编码图只保留一张（推荐）
+          - value: all
+            label: 保留全部匹配图
+        hint: 当同一张图在多个子目录重复出现时，默认只保留一张；如需全部下载可切换
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: third
+      - id: package_name
+        type: text
+        label: 导出包名称
+        ui_span: third
+        placeholder: "例如：巴拉产品上新图片包"
+        hint: 可选。留空则按任务时间自动命名
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "森马云盘图片下载结果_{timestamp}.xlsx"
+        columns:
+          - 输入编码
+          - 匹配类型
+          - 文件名
+          - 云盘路径
+          - 下载结果
+          - 本地文件
+          - 备注

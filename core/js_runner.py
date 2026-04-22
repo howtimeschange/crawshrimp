@@ -14,7 +14,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Awaitable, Callable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
@@ -736,6 +736,12 @@ class JSRunner:
                 "error": f"URL error: {e.reason}",
                 "path": str(target_path),
             }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"下载异常: {e}",
+                "path": str(target_path),
+            }
 
     async def _download_via_browser_session(self, url: str, target_path: Path, timeout_ms: int = 15000) -> dict:
         from core.cdp_bridge import get_bridge
@@ -1165,62 +1171,158 @@ class JSRunner:
             "items": results,
         }
 
-    async def download_urls(self, items: list[dict], strict: bool = False) -> dict:
-        results: list[dict] = []
+    async def _download_url_item(
+        self,
+        item: dict,
+        default_retry_attempts: int = 1,
+        default_retry_delay_ms: int = 0,
+    ) -> dict:
+        url = str((item or {}).get("url") or "").strip()
+        filename = str((item or {}).get("filename") or "").strip()
+        label = str((item or {}).get("label") or filename or self._derive_url_filename(url)).strip()
+        browser_session = bool((item or {}).get("browser_session") or (item or {}).get("browserSession"))
+        headers_raw = (item or {}).get("headers") or {}
+        headers = {
+            str(key): str(value)
+            for key, value in headers_raw.items()
+            if str(key or "").strip() and value is not None
+        } if isinstance(headers_raw, dict) else {}
 
-        for item in items or []:
-            url = str((item or {}).get("url") or "").strip()
-            filename = str((item or {}).get("filename") or "").strip()
-            label = str((item or {}).get("label") or filename or self._derive_url_filename(url)).strip()
-            browser_session = bool((item or {}).get("browser_session") or (item or {}).get("browserSession"))
-            headers_raw = (item or {}).get("headers") or {}
-            headers = {
-                str(key): str(value)
-                for key, value in headers_raw.items()
-                if str(key or "").strip() and value is not None
-            } if isinstance(headers_raw, dict) else {}
+        if not url:
+            return {
+                "success": False,
+                "label": label or "download",
+                "filename": filename,
+                "error": "download_urls 缺少 url",
+                "attempts": 0,
+            }
 
-            if not url:
+        target_path = self._build_artifact_target_path(filename, url)
+        retry_attempts = int((item or {}).get("retry_attempts") or (item or {}).get("retryAttempts") or default_retry_attempts or 1)
+        retry_attempts = max(retry_attempts, 1)
+        retry_delay_ms = int((item or {}).get("retry_delay_ms") or (item or {}).get("retryDelayMs") or default_retry_delay_ms or 0)
+        retry_delay_ms = max(retry_delay_ms, 0)
+        last_result: Optional[dict] = None
+
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                if browser_session:
+                    result = await self._download_via_browser_session(
+                        url,
+                        target_path,
+                        timeout_ms=max(self.timeout, 30) * 1000,
+                    )
+                else:
+                    result = await asyncio.to_thread(
+                        self._download_url_sync,
+                        url,
+                        target_path,
+                        headers,
+                        max(self.timeout, 30),
+                    )
+            except Exception as e:
                 result = {
                     "success": False,
-                    "label": label or "download",
-                    "filename": filename,
-                    "error": "download_urls 缺少 url",
+                    "path": str(target_path),
+                    "error": f"下载异常: {e}",
                 }
-                results.append(result)
-                if strict:
-                    raise RuntimeError(result["error"])
-                continue
 
-            target_path = self._build_artifact_target_path(filename, url)
-            if browser_session:
-                result = await self._download_via_browser_session(
-                    url,
-                    target_path,
-                    timeout_ms=max(self.timeout, 30) * 1000,
-                )
-            else:
-                result = await asyncio.to_thread(
-                    self._download_url_sync,
-                    url,
-                    target_path,
-                    headers,
-                    max(self.timeout, 30),
-                )
             result["label"] = label or target_path.name
             result["filename"] = Path(str(result.get("path") or target_path)).name
             result["url"] = url
+            result["attempts"] = attempt
+
             if result.get("success"):
                 saved_path = str(result.get("path") or target_path)
                 if saved_path not in self.runtime_output_files:
                     self.runtime_output_files.append(saved_path)
-            elif strict:
-                raise RuntimeError(str(result.get("error") or f"下载失败: {label or url}"))
-            results.append(result)
+                return result
 
+            last_result = result
+            failed_path = Path(str(result.get("path") or target_path)).expanduser()
+            try:
+                if failed_path.exists() and failed_path.is_file():
+                    failed_path.unlink()
+            except Exception:
+                logger.debug("Failed to clean partial download %s", failed_path, exc_info=True)
+
+            if attempt < retry_attempts and retry_delay_ms > 0:
+                await asyncio.sleep(retry_delay_ms / 1000.0)
+
+        final_result = dict(last_result or {
+            "success": False,
+            "label": label or target_path.name,
+            "filename": target_path.name,
+            "url": url,
+            "error": f"下载失败: {label or url}",
+        })
+        final_result["attempts"] = retry_attempts
+        if retry_attempts > 1 and final_result.get("error"):
+            final_result["error"] = f"{final_result['error']}（已重试 {retry_attempts} 次）"
+        return final_result
+
+    async def download_urls(
+        self,
+        items: list[dict],
+        strict: bool = False,
+        concurrency: int = 1,
+        retry_attempts: int = 1,
+        retry_delay_ms: int = 0,
+        progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
+    ) -> dict:
+        normalized_items = list(items or [])
+        if not normalized_items:
+            return {"ok": True, "items": []}
+
+        concurrency = max(1, int(concurrency or 1))
+        retry_attempts = max(1, int(retry_attempts or 1))
+        retry_delay_ms = max(0, int(retry_delay_ms or 0))
+        results: list[Optional[dict]] = [None] * len(normalized_items)
+        semaphore = asyncio.Semaphore(concurrency)
+        progress_lock = asyncio.Lock()
+        progress_state = {
+            "completed": 0,
+            "success": 0,
+            "failed": 0,
+            "total": len(normalized_items),
+        }
+
+        async def worker(index: int, item: dict) -> None:
+            async with semaphore:
+                result = await self._download_url_item(
+                    item,
+                    default_retry_attempts=retry_attempts,
+                    default_retry_delay_ms=retry_delay_ms,
+                )
+            results[index] = result
+
+            if progress_callback is not None:
+                async with progress_lock:
+                    progress_state["completed"] += 1
+                    if result.get("success"):
+                        progress_state["success"] += 1
+                    else:
+                        progress_state["failed"] += 1
+                    snapshot = {
+                        "download_total": progress_state["total"],
+                        "download_completed": progress_state["completed"],
+                        "download_success": progress_state["success"],
+                        "download_failed": progress_state["failed"],
+                        "download_active": progress_state["completed"] < progress_state["total"],
+                        "download_last_label": str(result.get("label") or result.get("filename") or result.get("url") or "").strip(),
+                        "download_last_success": bool(result.get("success")),
+                    }
+                await progress_callback(snapshot)
+
+        await asyncio.gather(*(worker(index, item) for index, item in enumerate(normalized_items)))
+        finalized = [dict(item or {}) for item in results]
+        if strict:
+            first_error = next((item for item in finalized if not item.get("success")), None)
+            if first_error:
+                raise RuntimeError(str(first_error.get("error") or f"下载失败: {first_error.get('label') or first_error.get('url') or ''}"))
         return {
-            "ok": all(bool(item.get("success")) for item in results) if results else True,
-            "items": results,
+            "ok": all(bool(item.get("success")) for item in finalized) if finalized else True,
+            "items": finalized,
         }
 
     async def evaluate(self, expression: str) -> JSResult:
@@ -1610,11 +1712,27 @@ class JSRunner:
                             strict = bool(meta.get("strict"))
                             shared_key = str(meta.get("shared_key") or "").strip()
                             shared_append = bool(meta.get("shared_append"))
+                            concurrency = int(meta.get("concurrency") or meta.get("max_concurrency") or 1)
+                            retry_attempts = int(meta.get("retry_attempts") or meta.get("retryAttempts") or meta.get("retries") or 1)
+                            retry_delay_ms = int(meta.get("retry_delay_ms") or meta.get("retryDelayMs") or 0)
 
                             await cooperate("before_download_urls", page, phase, shared, {
                                 "download_item_total": len(items),
+                                "download_concurrency": concurrency,
+                                "download_retry_attempts": retry_attempts,
                             })
-                            download_result = await self.download_urls(items, strict=strict)
+
+                            async def report_download_progress(progress_payload: dict) -> None:
+                                await cooperate("download_urls_progress", page, phase, shared, progress_payload)
+
+                            download_result = await self.download_urls(
+                                items,
+                                strict=strict,
+                                concurrency=concurrency,
+                                retry_attempts=retry_attempts,
+                                retry_delay_ms=retry_delay_ms,
+                                progress_callback=report_download_progress,
+                            )
                             shared = self._merge_runtime_shared(shared, shared_key, download_result, append=shared_append)
                             next_phase = meta.get("next_phase") or phase
                             sleep_ms = float(meta.get("sleep_ms", 0))

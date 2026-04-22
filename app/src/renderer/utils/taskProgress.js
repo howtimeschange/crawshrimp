@@ -18,6 +18,15 @@ const ENHANCED_PROGRESS_CONFIG = Object.freeze({
   }),
 })
 
+const ENHANCED_TASK_RUNNER_ONLY_CONFIG = Object.freeze({
+  mode: 'enhanced',
+  usage: Object.freeze({
+    sidebar: 'dot',
+    scriptList: 'badge',
+    taskRunner: 'enhanced',
+  }),
+})
+
 // 新进度条逻辑集中定义在这里：
 // 1. 默认脚本继续使用 classic，避免影响既有任务体验。
 // 2. 当前只对白名单任务开启 enhanced，避免样式扩散到其他脚本。
@@ -52,6 +61,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     adapterId: 'shein-helper',
     taskId: 'merchandise_details',
     config: ENHANCED_PROGRESS_CONFIG,
+  }),
+  Object.freeze({
+    adapterId: 'semir-cloud-drive',
+    taskId: 'batch_image_download',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
 ])
 
@@ -139,6 +153,44 @@ function buildEnhancedOverviewProgress(live = {}) {
   }
 }
 
+function buildTrack({
+  id,
+  title,
+  main,
+  percentValue = 0,
+  percentLabel = '',
+  caption = '',
+  detail = '',
+  status = '',
+  tone = 'primary',
+  state = 'pending',
+  indeterminate = false,
+  ariaLabel = '',
+  ariaText = '',
+} = {}) {
+  return {
+    id: normalizeKeyPart(id) || normalizeKeyPart(title) || `track-${Date.now()}`,
+    title: normalizeKeyPart(title),
+    main: normalizeKeyPart(main),
+    percentValue: clampPercent(percentValue),
+    percentLabel: normalizeKeyPart(percentLabel) || `${clampPercent(percentValue)}%`,
+    caption: normalizeKeyPart(caption),
+    detail: normalizeKeyPart(detail),
+    status: normalizeKeyPart(status),
+    tone: tone === 'secondary' ? 'secondary' : 'primary',
+    state: ['active', 'complete'].includes(normalizeKeyPart(state)) ? normalizeKeyPart(state) : 'pending',
+    indeterminate: !!indeterminate,
+    ariaLabel: normalizeKeyPart(ariaLabel) || normalizeKeyPart(title) || '进度',
+    ariaText: normalizeKeyPart(ariaText) || [main, percentLabel, caption, detail].filter(Boolean).join('，'),
+  }
+}
+
+function buildMetaItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map(item => String(item || '').trim())
+    .filter(Boolean)
+}
+
 function buildClassicTaskRunnerProgress(live = {}, isRunning = false) {
   const current = Number(live?.current || 0)
   const total = Number(live?.total || 0)
@@ -203,6 +255,7 @@ function buildEnhancedTaskRunnerProgress(live = {}, liveStatus = '', isRunning =
   const batchPercentValue = totalBatches > 0
     ? Math.min(100, Math.max(0, Number(((Math.max(batchNo, 0) / totalBatches) * 100).toFixed(1))))
     : 0
+  const batchText = batchNo > 0 && totalBatches > 0 ? `批次 ${batchNo}/${totalBatches}` : ''
 
   const main = hasBoundedProgress
     ? `第 ${Math.max(current || completed, 0)} / ${total} 条`
@@ -220,16 +273,49 @@ function buildEnhancedTaskRunnerProgress(live = {}, liveStatus = '', isRunning =
   if (progressText && progressText !== main) parts.push(progressText)
   if (statusLabel && !parts.includes(statusLabel)) parts.push(statusLabel)
 
+  const tracks = [
+    buildTrack({
+      id: 'overall',
+      title: hasBoundedProgress ? '总进度' : '执行状态',
+      main,
+      percentValue,
+      percentLabel: indeterminate ? statusLabel : `${percentValue}%`,
+      caption: parts[0] || statusLabel,
+      detail: [targetId ? `目标 ${targetId}` : '', store, phase ? `阶段 ${phase}` : ''].filter(Boolean).join(' · '),
+      status: statusLabel,
+      tone: 'primary',
+      state: indeterminate ? 'active' : percentValue >= 100 ? 'complete' : 'active',
+      indeterminate,
+      ariaLabel: hasBoundedProgress ? '批处理总进度' : '执行状态',
+      ariaText: [main, indeterminate ? statusLabel : `${percentValue}%`, ...parts].filter(Boolean).join('，'),
+    }),
+  ]
+
+  if (batchPercentValue > 0) {
+    tracks.push(buildTrack({
+      id: 'batch',
+      title: '当前条目',
+      main: batchText || `第 ${Math.max(batchNo, 0)} / ${totalBatches} 批`,
+      percentValue: batchPercentValue,
+      percentLabel: `${batchPercentValue}%`,
+      caption: targetId ? `目标 ${targetId}` : '',
+      detail: rowNo > 0 ? `源表行 ${rowNo}` : '',
+      status: batchPercentValue >= 100 ? '已完成' : '处理中',
+      tone: 'secondary',
+      state: batchPercentValue >= 100 ? 'complete' : 'active',
+      ariaLabel: '当前条目进度',
+      ariaText: [`${batchText || `第 ${Math.max(batchNo, 0)} / ${totalBatches} 批`}`, `${batchPercentValue}%`].filter(Boolean).join('，'),
+    }))
+  }
+
   return {
     title: hasBoundedProgress ? '批处理进度' : '执行进度',
-    trackTitle: hasBoundedProgress ? '总进度' : '执行状态',
     main,
     percentValue,
-    batchPercentValue,
     percentLabel: indeterminate ? statusLabel : `${percentValue}%`,
     completed,
     completedText: completed > 0 ? `已完成 ${completed} 条` : '',
-    batchText: batchNo > 0 && totalBatches > 0 ? `批次 ${batchNo}/${totalBatches}` : '',
+    batchText,
     rowText: rowNo > 0 ? `源表行 ${rowNo}` : '',
     targetText: targetId ? `目标 ${targetId}` : '',
     storeText: store || '',
@@ -237,7 +323,149 @@ function buildEnhancedTaskRunnerProgress(live = {}, liveStatus = '', isRunning =
     indeterminate,
     ariaLabel: hasBoundedProgress ? '批处理进度' : '执行进度',
     ariaText: [main, indeterminate ? statusLabel : `${percentValue}%`, ...parts].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      completed > 0 ? `已完成 ${completed} 条` : '',
+      batchText,
+      rowNo > 0 ? `源表行 ${rowNo}` : '',
+      targetId ? `目标 ${targetId}` : '',
+      store,
+      phase ? `阶段 ${phase}` : '',
+    ]),
+    tracks,
     sub: parts.join(' · ') || statusLabel,
+  }
+}
+
+function isSemirBatchImageDownloadTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && normalizeKeyPart(taskId) === 'batch_image_download'
+}
+
+function getSemirPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (normalizedPhase === 'finalize_all') return '整理打包'
+  if (downloadActive) return '批量下载'
+  if (downloadStarted && downloadTotal > 0 && downloadCompleted >= downloadTotal) return '下载完成'
+  if (['ensure_folder', 'plan_code', 'ensure_search', 'collect_code'].includes(normalizedPhase)) return '检索链接'
+  return '准备中'
+}
+
+function buildSemirBatchImageDownloadProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const scanCurrentRaw = toInt(live?.current)
+  const scanTotal = toInt(live?.total)
+  const scanCurrent = scanTotal > 0 ? Math.min(scanCurrentRaw, scanTotal) : scanCurrentRaw
+  const currentCode = String(live?.buyer_id || '').trim()
+  const store = String(live?.store || '').trim()
+  const phase = String(live?.phase || '').trim()
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+
+  const downloadTotal = toInt(live?.download_total)
+  const downloadCompletedRaw = toInt(live?.download_completed)
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadSuccess = toInt(live?.download_success)
+  const downloadFailed = toInt(live?.download_failed)
+  const downloadConcurrency = toInt(live?.download_concurrency)
+  const downloadRetryAttempts = toInt(live?.download_retry_attempts)
+  const downloadLastLabel = String(live?.download_last_label || '').trim()
+  const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0 || normalizeKeyPart(phase) === 'finalize_all'
+  const downloadActive = Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal)
+
+  const scanPercent = scanTotal > 0 ? clampPercent((scanCurrent / scanTotal) * 100) : 0
+  const downloadPercent = downloadTotal > 0
+    ? clampPercent((downloadCompleted / downloadTotal) * 100)
+    : (downloadStarted && !downloadActive ? 100 : 0)
+
+  const scanState = downloadStarted || (scanTotal > 0 && scanCurrent >= scanTotal)
+    ? 'complete'
+    : scanCurrent > 0 ? 'active' : 'pending'
+  const downloadState = !downloadStarted
+    ? 'pending'
+    : normalizeKeyPart(phase) === 'finalize_all'
+      ? 'active'
+      : downloadTotal > 0 && downloadCompleted >= downloadTotal
+        ? 'complete'
+        : 'active'
+
+  const phaseLabel = getSemirPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) || statusLabel
+  const scanStatus = scanState === 'complete' ? '已完成' : scanState === 'active' ? '进行中' : '待开始'
+  const downloadStatus = downloadState === 'complete'
+    ? '已完成'
+    : downloadState === 'active'
+      ? (normalizeKeyPart(phase) === 'finalize_all' ? '打包中' : '进行中')
+      : '待开始'
+
+  const scanMain = scanTotal > 0 ? `${scanCurrent} / ${scanTotal} 个编码` : (statusLabel || '等待开始')
+  const downloadMain = downloadTotal > 0
+    ? `${downloadCompleted} / ${downloadTotal} 个文件`
+    : downloadStarted
+      ? '等待下载进度'
+      : '检索完成后自动开始'
+
+  const downloadCaptionParts = []
+  if (downloadSuccess > 0) downloadCaptionParts.push(`成功 ${downloadSuccess}`)
+  if (downloadFailed > 0) downloadCaptionParts.push(`失败 ${downloadFailed}`)
+  if (downloadConcurrency > 0) downloadCaptionParts.push(`并发 ${downloadConcurrency}`)
+  if (downloadRetryAttempts > 1) downloadCaptionParts.push(`重试 ${downloadRetryAttempts} 次`)
+
+  const tracks = [
+    buildTrack({
+      id: 'semir-search',
+      title: '上层 · 检索链接',
+      main: scanMain,
+      percentValue: scanPercent,
+      percentLabel: `${scanPercent}%`,
+      caption: currentCode ? `当前目标 ${currentCode}` : '',
+      detail: store ? `搜索范围 ${store}` : '',
+      status: scanStatus,
+      tone: 'primary',
+      state: scanState,
+      ariaLabel: '检索链接进度',
+      ariaText: [scanMain, `${scanPercent}%`, currentCode ? `当前目标 ${currentCode}` : '', store ? `搜索范围 ${store}` : ''].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'semir-download',
+      title: '下层 · 批量下载',
+      main: downloadMain,
+      percentValue: downloadPercent,
+      percentLabel: downloadStarted ? `${downloadPercent}%` : '待开始',
+      caption: downloadCaptionParts.join(' · ') || (downloadStarted ? '正在汇总下载结果' : '检索完成后进入下载阶段'),
+      detail: downloadLastLabel ? `最近文件 ${downloadLastLabel}` : (currentCode ? `最近目标 ${currentCode}` : ''),
+      status: downloadStatus,
+      tone: 'secondary',
+      state: downloadState,
+      ariaLabel: '批量下载进度',
+      ariaText: [downloadMain, downloadStarted ? `${downloadPercent}%` : '待开始', downloadCaptionParts.join(' · '), downloadLastLabel].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: '双阶段进度',
+    main: phaseLabel,
+    percentValue: downloadStarted ? clampPercent(50 + (downloadPercent * 0.5)) : clampPercent(scanPercent * 0.5),
+    percentLabel: phaseLabel,
+    completed: downloadSuccess,
+    completedText: downloadSuccess > 0 ? `已下载 ${downloadSuccess} 个文件` : '',
+    batchText: '',
+    rowText: '',
+    targetText: currentCode ? `目标 ${currentCode}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: '森马云盘双阶段进度',
+    ariaText: [phaseLabel, scanMain, downloadMain].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      scanTotal > 0 ? `已检索 ${scanCurrent}/${scanTotal}` : '',
+      downloadTotal > 0 ? `已下载 ${downloadCompleted}/${downloadTotal}` : '',
+      currentCode ? `目标 ${currentCode}` : '',
+      store,
+    ]),
+    tracks,
+    sub: [
+      phaseLabel,
+      downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '',
+      normalizeKeyPart(phase) === 'finalize_all' ? '正在整理压缩包' : '',
+    ].filter(Boolean).join(' · ') || statusLabel,
   }
 }
 
@@ -275,6 +503,9 @@ export function buildTaskRunnerProgressSummary({
   isRunning = false,
 } = {}) {
   const config = resolveTaskProgressConfig(adapterId, taskId)
+  if (config.mode === 'enhanced' && isSemirBatchImageDownloadTask(adapterId, taskId)) {
+    return buildSemirBatchImageDownloadProgress(live, liveStatus, isRunning)
+  }
   return config.mode === 'enhanced'
     ? buildEnhancedTaskRunnerProgress(live, liveStatus, isRunning)
     : buildClassicTaskRunnerProgress(live, isRunning)

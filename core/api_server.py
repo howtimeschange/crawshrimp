@@ -13,8 +13,10 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import tempfile
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -593,6 +595,197 @@ def _apply_final_export_guards(adapter_id: str, task_id: str, data_rows):
     return guarded
 
 
+def _safe_local_name(value: str, fallback: str = "item") -> str:
+    text = str(value or "").strip()
+    text = re.sub(r'[\x00-\x1f]+', '', text)
+    text = re.sub(r'[\\/:*?"<>|]+', '_', text)
+    text = re.sub(r'\s+', ' ', text).strip(' ._')
+    return text or fallback
+
+
+def _ensure_unique_local_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    stem = path.stem
+    suffix = path.suffix
+    index = 2
+    while True:
+        candidate = path.with_name(f"{stem}_{index}{suffix}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _ensure_unique_local_dir(path: Path) -> Path:
+    if not path.exists():
+        return path
+    index = 2
+    while True:
+        candidate = path.with_name(f"{path.name}_{index}")
+        if not candidate.exists():
+            return candidate
+        index += 1
+
+
+def _parse_semir_cloud_path(raw_value: str) -> dict:
+    raw = str(raw_value or "").strip()
+    divider = raw.find("//")
+    if divider < 0:
+      return {"mount_name": "", "relative_path": "", "relative_prefix": ""}
+    mount_name = str(raw[:divider]).strip()
+    relative_path = "/".join(
+        part.strip()
+        for part in raw[divider + 2:].replace("\\", "/").split("/")
+        if str(part or "").strip()
+    )
+    return {
+        "mount_name": mount_name,
+        "relative_path": relative_path,
+        "relative_prefix": f"{relative_path}/" if relative_path else "",
+    }
+
+
+def _semir_output_folder_and_filename(fullpath: str, relative_path: str, fallback_name: str) -> tuple[str, str]:
+    normalized_fullpath = str(fullpath or "").replace("\\", "/").strip("/")
+    normalized_base = str(relative_path or "").replace("\\", "/").strip("/")
+
+    if normalized_fullpath:
+        tail = normalized_fullpath
+    elif normalized_base:
+        tail = f"{normalized_base}/{fallback_name}"
+    else:
+        tail = fallback_name
+
+    safe_parts = [_safe_local_name(part, "item") for part in tail.split("/") if str(part or "").strip()]
+    if not safe_parts:
+        clean_name = _safe_local_name(fallback_name, "file")
+        return ("未分类路径", clean_name)
+
+    if len(safe_parts) == 1:
+        clean_name = _safe_local_name(safe_parts[0], _safe_local_name(fallback_name, "file"))
+        return ("未分类路径", clean_name)
+
+    clean_name = _safe_local_name(safe_parts[-1], _safe_local_name(fallback_name, "file"))
+    folder_name = "__".join(part for part in safe_parts[:-1] if str(part or "").strip()) or "未分类路径"
+    return (_safe_local_name(folder_name, "未分类路径"), clean_name)
+
+
+def _copy_file_to_unique_target(source: Path, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    unique_target = _ensure_unique_local_path(target)
+    shutil.copy2(source, unique_target)
+    return unique_target
+
+
+def _cleanup_semir_runtime_artifacts(runtime_files: list, package_root: Optional[Path]) -> None:
+    for file_path in runtime_files or []:
+        source = Path(str(file_path or "")).expanduser()
+        try:
+            if source.exists() and source.is_file():
+                source.unlink()
+        except Exception:
+            logger.debug("Failed to clean semir runtime file %s", source, exc_info=True)
+
+    try:
+        if package_root and package_root.exists() and package_root.is_dir():
+            shutil.rmtree(package_root)
+    except Exception:
+        logger.debug("Failed to clean semir package root %s", package_root, exc_info=True)
+
+
+def _finalize_semir_cloud_drive_outputs(
+    task_id: str,
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    if task_id != "batch_image_download":
+        return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
+
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    cloud = _parse_semir_cloud_path(run_params.get("cloud_path"))
+    relative_path = cloud.get("relative_path") or ""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"森马云盘图片包_{timestamp}",
+        f"森马云盘图片包_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+    duplicate_mode = str(run_params.get("duplicate_mode") or "first_per_stem").strip().lower()
+    flatten_code_folder = duplicate_mode != "all"
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    zip_path = None
+    if successful_rows:
+        for row, local_path in successful_rows:
+            input_code = _safe_local_name(row.get("输入编码") or "未分类", "未分类")
+            folder_name, clean_filename = _semir_output_folder_and_filename(
+                row.get("云盘路径") or "",
+                relative_path,
+                row.get("文件名") or local_path.name,
+            )
+            if flatten_code_folder:
+                target = package_root / input_code / clean_filename
+            else:
+                target = package_root / input_code / folder_name / clean_filename
+            _copy_file_to_unique_target(local_path, target)
+
+        zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in package_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        log(f"Semir package created: {zip_path}")
+
+    export_folder = str(run_params.get("export_folder") or "").strip()
+    runtime_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    if zip_path:
+        runtime_refs.insert(0, str(zip_path))
+    final_refs = runtime_refs
+
+    if export_folder:
+        target_root = Path(export_folder).expanduser()
+        target_root.mkdir(parents=True, exist_ok=True)
+        external_refs = []
+
+        if successful_rows and package_root.exists():
+            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+            shutil.copytree(package_root, external_dir)
+            if zip_path and zip_path.exists():
+                copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
+                external_refs.append(str(copied_zip))
+            log(f"Semir package copied to export folder: {external_dir}")
+
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            external_refs.append(str(copied))
+
+        if external_refs:
+            final_refs = external_refs
+
+    if zip_path and zip_path.exists():
+        _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+
+    return final_refs
+
+
 def _rows_raw_to_table(rows_raw, header_row: int = 1):
     if not rows_raw:
         return {"headers": [], "rows": [], "total": 0}
@@ -826,6 +1019,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         store = str(shared_state.get('current_store') or '').strip()
         phase_name = str((payload or {}).get('phase') or '').strip()
         records = int((payload or {}).get('records') or 0)
+        download_total = int(run_control.get('download_total') or 0) if run_control else int((payload or {}).get('download_total') or (payload or {}).get('download_item_total') or 0)
+        download_completed = int(run_control.get('download_completed') or 0) if run_control else int((payload or {}).get('download_completed') or 0)
+        download_success = int(run_control.get('download_success') or 0) if run_control else int((payload or {}).get('download_success') or 0)
+        download_failed = int(run_control.get('download_failed') or 0) if run_control else int((payload or {}).get('download_failed') or 0)
+        download_concurrency = int(run_control.get('download_concurrency') or 0) if run_control else int((payload or {}).get('download_concurrency') or 0)
+        download_retry_attempts = int(run_control.get('download_retry_attempts') or 0) if run_control else int((payload or {}).get('download_retry_attempts') or 0)
+        download_started = bool(run_control.get('download_started')) if run_control else bool(download_total > 0)
+        download_active = bool(run_control.get('download_active')) if run_control else bool((payload or {}).get('download_active'))
+        download_last_label = str((run_control.get('download_last_label') if run_control else (payload or {}).get('download_last_label')) or '').strip()
 
         if run_control and total_rows:
             run_control['total_rows'] = total_rows
@@ -850,13 +1052,53 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             "completed": records,
             "percent": percent,
             "progress_text": progress_text,
+            "download_total": download_total,
+            "download_completed": download_completed,
+            "download_success": download_success,
+            "download_failed": download_failed,
+            "download_concurrency": download_concurrency,
+            "download_retry_attempts": download_retry_attempts,
+            "download_started": download_started,
+            "download_active": download_active,
+            "download_last_label": download_last_label,
         }
 
     async def wait_for_control(payload: Optional[dict] = None):
         if not run_control:
             return
 
-        records = int((payload or {}).get('records') or 0)
+        payload = dict(payload or {})
+        kind = str(payload.get('kind') or '').strip()
+
+        if kind == 'before_download_urls':
+            download_total = int(payload.get('download_item_total') or 0)
+            run_control['download_total'] = download_total
+            run_control['download_completed'] = 0
+            run_control['download_success'] = 0
+            run_control['download_failed'] = 0
+            run_control['download_concurrency'] = int(payload.get('download_concurrency') or 0)
+            run_control['download_retry_attempts'] = int(payload.get('download_retry_attempts') or 0)
+            run_control['download_started'] = download_total > 0
+            run_control['download_active'] = download_total > 0
+            run_control['download_last_label'] = ''
+        elif kind == 'download_urls_progress':
+            if 'download_total' in payload:
+                run_control['download_total'] = int(payload.get('download_total') or 0)
+            if 'download_completed' in payload:
+                run_control['download_completed'] = int(payload.get('download_completed') or 0)
+            if 'download_success' in payload:
+                run_control['download_success'] = int(payload.get('download_success') or 0)
+            if 'download_failed' in payload:
+                run_control['download_failed'] = int(payload.get('download_failed') or 0)
+            if 'download_active' in payload:
+                run_control['download_active'] = bool(payload.get('download_active'))
+            if 'download_last_label' in payload:
+                run_control['download_last_label'] = str(payload.get('download_last_label') or '').strip()
+            run_control['download_started'] = bool(run_control.get('download_total') or run_control.get('download_completed'))
+        elif kind == 'before_phase' and str(payload.get('phase') or '').strip() == 'finalize_all':
+            run_control['download_active'] = False
+
+        records = int(payload.get('records') or 0)
         progress = build_progress(payload)
         base_status = {
             'run_id': run_id,
@@ -872,11 +1114,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'completed': progress['completed'],
             'percent': progress['percent'],
             'progress_text': progress['progress_text'],
+            'download_total': progress['download_total'],
+            'download_completed': progress['download_completed'],
+            'download_success': progress['download_success'],
+            'download_failed': progress['download_failed'],
+            'download_concurrency': progress['download_concurrency'],
+            'download_retry_attempts': progress['download_retry_attempts'],
+            'download_started': progress['download_started'],
+            'download_active': progress['download_active'],
+            'download_last_label': progress['download_last_label'],
         }
 
         # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。
         if (
-            (payload or {}).get('kind') == 'before_phase' and
+            payload.get('kind') == 'before_phase' and
             progress['current'] > 0 and
             progress['total'] > 0 and
             progress['current'] != int(run_control.get('last_progress_exec_no') or 0)
@@ -891,6 +1142,23 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             suffix = f" · {' · '.join(extra_parts)}" if extra_parts else ""
             log(f"[progress] 第 {progress['current']}/{progress['total']} 条 · 已完成 {records} 条{suffix}")
             run_control['last_progress_exec_no'] = progress['current']
+
+        if (
+            payload.get('kind') == 'before_download_urls' and
+            progress['current'] > 0 and
+            progress['total'] > 0
+        ):
+            download_total = int(payload.get('download_item_total') or 0)
+            concurrency = int(payload.get('download_concurrency') or 0)
+            retry_attempts = int(payload.get('download_retry_attempts') or 0)
+            marker = f"{progress['current']}::{download_total}::{concurrency}::{retry_attempts}"
+            if marker != str(run_control.get('last_download_marker') or ''):
+                target_text = f" · 目标 {progress['buyer_id']}" if progress['buyer_id'] else ""
+                count_text = f" · {download_total} 个文件" if download_total > 0 else ""
+                concurrency_text = f" · 并发 {concurrency}" if concurrency > 0 else ""
+                retry_text = f" · 重试 {retry_attempts} 次" if retry_attempts > 1 else ""
+                log(f"[download] 第 {progress['current']}/{progress['total']} 条{target_text}{count_text}{concurrency_text}{retry_text}，开始下载")
+                run_control['last_download_marker'] = marker
 
         if run_control.get('stop_requested'):
             raise RunAbortedError(str(run_control.get('stop_reason') or '任务已停止'))
@@ -1079,6 +1347,25 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log(f"Notification skipped (condition not met: {out.condition})")
             return files
 
+        def finalize_output_files(data_rows, runtime_files, exported_files):
+            if adapter_id != 'semir-cloud-drive':
+                return merge_output_file_refs(runtime_files, exported_files)
+
+            try:
+                packaged_refs = _finalize_semir_cloud_drive_outputs(
+                    task_id=task_id,
+                    data_rows=data_rows,
+                    runtime_files=runtime_files,
+                    exported_files=exported_files,
+                    run_params=run_params,
+                    runtime_artifact_dir=runtime_artifact_dir,
+                    log=log,
+                )
+                return merge_output_file_refs(packaged_refs)
+            except Exception as package_error:
+                log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
+                return merge_output_file_refs(runtime_files, exported_files)
+
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
         if not task.skip_auth and m.auth and m.auth.check_script:
             adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
@@ -1145,7 +1432,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before export")
 
         runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
-        output_files = merge_output_file_refs(runtime_files, await export_outputs(data))
+        exported_files = await export_outputs(data)
+        output_files = finalize_output_files(data, runtime_files, exported_files)
         data_sink.finish_run(run_id, len(data), output_files)
         _run_status[jid] = {'status': 'done', 'run_id': run_id, 'records': len(data)}
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
@@ -1167,7 +1455,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         try:
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
             exported = await export_outputs(data) if runner else []
-            output_files = merge_output_file_refs(runtime_files, exported)
+            output_files = finalize_output_files(data, runtime_files, exported) if runner else []
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
@@ -1191,7 +1479,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         try:
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
             exported = await export_outputs(data) if runner else []
-            output_files = merge_output_file_refs(runtime_files, exported)
+            output_files = finalize_output_files(data, runtime_files, exported) if runner else []
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
