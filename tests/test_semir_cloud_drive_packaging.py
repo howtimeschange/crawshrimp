@@ -47,7 +47,7 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             }
         ]
 
-    def test_finalize_outputs_flattens_to_code_folder_when_duplicate_mode_is_first_per_stem(self):
+    def test_finalize_outputs_uses_code_folders_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             runtime_dir = base / "runtime"
@@ -93,6 +93,46 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
                         for name in names
                     )
                 )
+                self.assertFalse(any("/巴拉货控__" in name for name in names))
+
+    def test_finalize_outputs_can_flatten_all_images_into_package_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            file_a = runtime_dir / "raw-a.jpg"
+            file_b = runtime_dir / "raw-b.jpg"
+            file_a.write_bytes(b"a")
+            file_b.write_bytes(b"b")
+
+            exported = base / "summary.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="batch_image_download",
+                data_rows=self._build_rows(file_a, file_b),
+                runtime_files=[str(file_a), str(file_b)],
+                exported_files=[str(exported)],
+                run_params={
+                    "cloud_path": "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/",
+                    "package_name": "测试图片包_平铺",
+                    "duplicate_mode": "all",
+                    "package_layout": "flat",
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            zip_path = Path(result[0])
+            self.assertTrue(zip_path.is_file())
+
+            with zipfile.ZipFile(zip_path) as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.endswith("测试图片包_平铺/208226111002.jpg") for name in names))
+                self.assertTrue(any(name.endswith("测试图片包_平铺/208226111002-00316.jpg") for name in names))
+                self.assertFalse(any(name.endswith("测试图片包_平铺/208226111002/208226111002.jpg") for name in names))
                 self.assertFalse(any("/巴拉货控__" in name for name in names))
 
     def test_finalize_outputs_keeps_path_folder_when_duplicate_mode_is_all(self):

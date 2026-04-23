@@ -645,6 +645,10 @@ def _parse_semir_cloud_path(raw_value: str) -> dict:
     }
 
 
+def _normalize_semir_package_layout(raw_value: str) -> str:
+    return "flat" if str(raw_value or "").strip().lower() == "flat" else "by_code"
+
+
 def _semir_output_folder_and_filename(fullpath: str, relative_path: str, fallback_name: str) -> tuple[str, str]:
     normalized_fullpath = str(fullpath or "").replace("\\", "/").strip("/")
     normalized_base = str(relative_path or "").replace("\\", "/").strip("/")
@@ -668,6 +672,22 @@ def _semir_output_folder_and_filename(fullpath: str, relative_path: str, fallbac
     clean_name = _safe_local_name(safe_parts[-1], _safe_local_name(fallback_name, "file"))
     folder_name = "__".join(part for part in safe_parts[:-1] if str(part or "").strip()) or "未分类路径"
     return (_safe_local_name(folder_name, "未分类路径"), clean_name)
+
+
+def _build_semir_package_target(
+    package_root: Path,
+    input_code: str,
+    folder_name: str,
+    clean_filename: str,
+    *,
+    package_layout: str,
+    preserve_path: bool,
+) -> Path:
+    if _normalize_semir_package_layout(package_layout) == "flat":
+        return package_root / clean_filename
+    if preserve_path:
+        return package_root / input_code / folder_name / clean_filename
+    return package_root / input_code / clean_filename
 
 
 def _copy_file_to_unique_target(source: Path, target: Path) -> Path:
@@ -763,10 +783,14 @@ def _create_semir_ai_zip(
             relative_path,
             entry.get("filename") or entry["local_path"].name,
         )
-        if entry.get("preserve_path") and not flatten_code_folder:
-            target = package_root / entry["input_code"] / folder_name / clean_filename
-        else:
-            target = package_root / entry["input_code"] / clean_filename
+        target = _build_semir_package_target(
+            package_root,
+            entry["input_code"],
+            folder_name,
+            clean_filename,
+            package_layout="by_code",
+            preserve_path=bool(entry.get("preserve_path")) and not flatten_code_folder,
+        )
         _copy_file_to_unique_target(entry["local_path"], target)
 
     output_root.mkdir(parents=True, exist_ok=True)
@@ -852,7 +876,8 @@ def _finalize_semir_cloud_drive_outputs(
     )
     package_root = _ensure_unique_local_dir(runtime_dir / package_base)
     duplicate_mode = str(run_params.get("duplicate_mode") or "first_per_stem").strip().lower()
-    flatten_code_folder = duplicate_mode != "all"
+    package_layout = _normalize_semir_package_layout(run_params.get("package_layout"))
+    preserve_path = duplicate_mode == "all"
 
     successful_rows = []
     for row in data_rows or []:
@@ -872,10 +897,14 @@ def _finalize_semir_cloud_drive_outputs(
                 relative_path,
                 row.get("文件名") or local_path.name,
             )
-            if flatten_code_folder:
-                target = package_root / input_code / clean_filename
-            else:
-                target = package_root / input_code / folder_name / clean_filename
+            target = _build_semir_package_target(
+                package_root,
+                input_code,
+                folder_name,
+                clean_filename,
+                package_layout=package_layout,
+                preserve_path=preserve_path,
+            )
             _copy_file_to_unique_target(local_path, target)
 
         zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")

@@ -51,6 +51,17 @@ tasks:
           - value: all
             label: 保留全部匹配图
         hint: 当同一张图在多个子目录重复出现时，默认只保留一张；如需全部下载可切换
+      - id: package_layout
+        type: select
+        label: 导出结构
+        default: by_code
+        ui_span: third
+        options:
+          - value: by_code
+            label: 按款号分文件夹（默认）
+          - value: flat
+            label: 总文件夹平铺全部图片
+        hint: 默认按款号建立子文件夹；如需把所有图片直接放在一个总文件夹里，可切换为平铺导出
       - id: export_folder
         type: directory
         label: 导出目录
