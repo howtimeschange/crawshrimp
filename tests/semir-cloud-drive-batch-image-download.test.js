@@ -96,6 +96,50 @@ test('filterSearchResults keeps only in-scope image files for spu query', async 
   )
 })
 
+test('filterSearchResults representative mode keeps one random color image and ignores exact spu image', async () => {
+  const helpers = await loadExports()
+  const items = [
+    { dir: '0', ext: 'jpg', filename: '208226111002-00316.jpg', fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/A/208226111002-00316.jpg' },
+    { dir: '0', ext: 'jpg', filename: '208226111002.jpg', fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/A/208226111002.jpg' },
+    { dir: '0', ext: 'jpg', filename: '208226111002-60035.jpg', fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/B/208226111002-60035.jpg' },
+  ]
+
+  const result = helpers.filterSearchResults(
+    items,
+    '208226111002',
+    '巴拉货控/02 产品上新模块/2-2 巴拉产品上新',
+    { spuMatchMode: 'representative' },
+  )
+
+  assert.equal(result.length, 1)
+  assert.ok(['208226111002-00316.jpg', '208226111002-60035.jpg'].includes(result[0].filename))
+})
+
+test('filterSearchResults representative mode returns no image without color images', async () => {
+  const helpers = await loadExports()
+  const items = [
+    { dir: '0', ext: 'jpg', filename: '208226111002_01.jpg', fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/A/208226111002_01.jpg' },
+    { dir: '0', ext: 'jpg', filename: '208226111002.jpg', fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/B/208226111002.jpg' },
+  ]
+
+  const result = helpers.filterSearchResults(
+    items,
+    '208226111002',
+    '巴拉货控/02 产品上新模块/2-2 巴拉产品上新',
+    { spuMatchMode: 'representative' },
+  )
+
+  assert.deepEqual(Array.from(result), [])
+})
+
+test('buildSpuPackageFilename names representative image by spu code', async () => {
+  const helpers = await loadExports()
+  assert.equal(
+    helpers.buildSpuPackageFilename('208226111002', { ext: 'JPG', filename: '208226111002-00316.JPG' }),
+    '208226111002.jpg',
+  )
+})
+
 test('filterSearchResults can keep duplicate filenames when configured', async () => {
   const helpers = await loadExports()
   const items = [

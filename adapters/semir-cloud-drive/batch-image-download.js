@@ -83,6 +83,10 @@
     return String(rawValue || '').trim().toLowerCase() === 'all' ? 'all' : 'first_per_stem'
   }
 
+  function normalizeSpuMatchMode(rawValue) {
+    return String(rawValue || '').trim().toLowerCase() === 'representative' ? 'representative' : 'color_skc_all'
+  }
+
   function buildFolderHashRoute(mountId, relativePath) {
     const base = `#/home/file/mount/${encodeURIComponent(String(mountId || '').trim())}`
     const normalized = String(relativePath || '').trim()
@@ -119,6 +123,14 @@
     return isSkcLikeStemForSpu(stem, target)
   }
 
+  function pickRepresentativeSpuItem(items, code) {
+    const candidates = Array.isArray(items) ? items : []
+    const colorItems = candidates.filter(item => isSkcLikeStemForSpu(getFileStem(item?.filename || ''), code))
+    if (!colorItems.length) return []
+    const index = Math.min(colorItems.length - 1, Math.floor(Math.random() * colorItems.length))
+    return [colorItems[index]]
+  }
+
   function isWithinRelativePath(fullpath, relativePath) {
     const target = String(relativePath || '').trim()
     if (!target) return true
@@ -143,10 +155,16 @@
   }
 
   function filterSearchResults(items, code, relativePath, options = {}) {
-    const matched = (Array.isArray(items) ? items : [])
+    const scopedItems = (Array.isArray(items) ? items : [])
       .filter(item => !isDirectoryItem(item))
       .filter(isImageItem)
       .filter(item => isWithinRelativePath(item?.fullpath, relativePath))
+
+    if (classifyCode(code) === 'spu' && normalizeSpuMatchMode(options.spuMatchMode) === 'representative') {
+      return pickRepresentativeSpuItem(scopedItems, code)
+    }
+
+    const matched = scopedItems
       .filter(item => matchesCode(item?.filename, code))
     return dedupeMatchedItems(matched, options.duplicateMode)
   }
@@ -157,6 +175,12 @@
     const itemId = String(item?.id || item?.hash || itemIndex + 1)
     const stem = toSafeFilename(`${toSafeFilename(code, 'code')}__${itemId}__${getFileStem(item?.filename || '')}`, 'download')
     return suffix && !stem.toLowerCase().endsWith(suffix) ? `${stem}${suffix}` : stem
+  }
+
+  function buildSpuPackageFilename(code, item) {
+    const ext = String(item?.ext || '').trim().toLowerCase()
+    const safeCode = toSafeFilename(code, 'code')
+    return ext ? `${safeCode}.${ext}` : safeCode
   }
 
   function nextPhase(name, sleepMs = 0, newShared = shared, data = []) {
@@ -299,14 +323,17 @@
 
     for (let index = 0; index < matchedItems.length; index += 1) {
       const item = matchedItems[index]
+      const representativeSpu = codeType === 'spu' && normalizeSpuMatchMode(options.spuMatchMode) === 'representative'
+      const sourceFilename = String(item?.filename || '')
+      const packageFilename = representativeSpu ? buildSpuPackageFilename(inputCode, item) : ''
       const baseRow = {
         '输入编码': inputCode,
         '匹配类型': codeType === 'skc' ? '款色编码' : '款号',
-        '文件名': String(item?.filename || ''),
+        '文件名': packageFilename || sourceFilename,
         '云盘路径': String(item?.fullpath || ''),
         '下载结果': '',
         '本地文件': '',
-        '备注': '',
+        '备注': packageFilename && packageFilename !== sourceFilename ? `代表图来源：${sourceFilename}` : '',
       }
 
       try {
@@ -321,10 +348,11 @@
           continue
         }
 
-        const runtimeFilename = buildRuntimeFilename(inputCode, item, index)
+        const runtimeFilename = packageFilename || buildRuntimeFilename(inputCode, item, index)
         rows.push({
           ...baseRow,
           '__runtime_filename': runtimeFilename,
+          ...(packageFilename ? { '__package_filename': packageFilename } : {}),
           '__code_index': codeIndex,
           '__total_codes': totalCodes,
         })
@@ -371,14 +399,17 @@
       classifyCode,
       isImageItem,
       normalizeDuplicateMode,
+      normalizeSpuMatchMode,
       buildFolderHashRoute,
       buildSearchHashRoute,
       isSkcLikeStemForSpu,
       matchesCode,
+      pickRepresentativeSpuItem,
       isWithinRelativePath,
       dedupeMatchedItems,
       filterSearchResults,
       buildRuntimeFilename,
+      buildSpuPackageFilename,
       finalizeCodeRows,
     })
   }
@@ -395,6 +426,7 @@
       const codes = normalizeCodes(params.item_codes)
       if (!codes.length) throw new Error('请至少输入一个款号或款色编码')
       const duplicateMode = normalizeDuplicateMode(params.duplicate_mode)
+      const spuMatchMode = normalizeSpuMatchMode(params.spu_match_mode)
 
       const mount = await resolveMountId(cloudConfig.mountName)
 
@@ -405,6 +437,7 @@
         relative_path: cloudConfig.relativePath,
         folder_hash: buildFolderHashRoute(mount.mountId, cloudConfig.relativePath),
         duplicate_mode: duplicateMode,
+        spu_match_mode: spuMatchMode,
         target_codes: codes,
         code_index: 0,
         result_rows: [],
@@ -477,6 +510,7 @@
         codes.length,
         {
           duplicateMode: shared.duplicate_mode,
+          spuMatchMode: shared.spu_match_mode,
         },
       )
 

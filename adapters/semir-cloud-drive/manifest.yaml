@@ -39,7 +39,18 @@ tasks:
         rows: 5
         required: true
         placeholder: "一行一个，例如：\n208226111002\n208226111002-00316"
-        hint: 支持混合输入款号和款色编码；输入款号时只匹配“款号-五位色码”图片
+        hint: 支持混合输入款号和款色编码；输入款号时的保存策略由下方“款号匹配模式”控制
+      - id: spu_match_mode
+        type: select
+        label: 款号匹配模式
+        default: color_skc_all
+        ui_span: third
+        options:
+          - value: color_skc_all
+            label: 匹配全部款色图（默认）
+          - value: representative
+            label: 仅保留一张款号代表图
+        hint: 默认输入款号时匹配全部“款号-五位色码”图片；代表图模式会随机保存一张款色图，并按款号命名
       - id: duplicate_mode
         type: select
         label: 重复图处理

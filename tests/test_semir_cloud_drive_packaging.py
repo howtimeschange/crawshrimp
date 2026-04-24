@@ -135,6 +135,49 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
                 self.assertFalse(any(name.endswith("测试图片包_平铺/208226111002/208226111002.jpg") for name in names))
                 self.assertFalse(any("/巴拉货控__" in name for name in names))
 
+    def test_finalize_outputs_can_override_packaged_filename(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            source = runtime_dir / "208226111002.jpg"
+            source.write_bytes(b"a")
+
+            exported = base / "summary.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="batch_image_download",
+                data_rows=[
+                    {
+                        "输入编码": "208226111002",
+                        "文件名": "208226111002.jpg",
+                        "云盘路径": "巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/平拍原图/B/208226111002-00316.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(source),
+                        "备注": "代表图来源：208226111002-00316.jpg",
+                        "__package_filename": "208226111002.jpg",
+                    }
+                ],
+                runtime_files=[str(source)],
+                exported_files=[str(exported)],
+                run_params={
+                    "cloud_path": "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/",
+                    "package_name": "代表图包",
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            zip_path = Path(result[0])
+            self.assertTrue(zip_path.is_file())
+
+            with zipfile.ZipFile(zip_path) as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.endswith("代表图包/208226111002/208226111002.jpg") for name in names))
+                self.assertFalse(any(name.endswith("代表图包/208226111002/208226111002-00316.jpg") for name in names))
+
     def test_finalize_outputs_keeps_path_folder_when_duplicate_mode_is_all(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

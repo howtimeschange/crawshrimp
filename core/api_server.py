@@ -649,9 +649,19 @@ def _normalize_semir_package_layout(raw_value: str) -> str:
     return "flat" if str(raw_value or "").strip().lower() == "flat" else "by_code"
 
 
-def _semir_output_folder_and_filename(fullpath: str, relative_path: str, fallback_name: str) -> tuple[str, str]:
+def _semir_output_folder_and_filename(
+    fullpath: str,
+    relative_path: str,
+    fallback_name: str,
+    preferred_filename: str = "",
+) -> tuple[str, str]:
     normalized_fullpath = str(fullpath or "").replace("\\", "/").strip("/")
     normalized_base = str(relative_path or "").replace("\\", "/").strip("/")
+    preferred_clean_name = (
+        _safe_local_name(preferred_filename, "")
+        if str(preferred_filename or "").strip()
+        else ""
+    )
 
     if normalized_fullpath:
         tail = normalized_fullpath
@@ -662,14 +672,14 @@ def _semir_output_folder_and_filename(fullpath: str, relative_path: str, fallbac
 
     safe_parts = [_safe_local_name(part, "item") for part in tail.split("/") if str(part or "").strip()]
     if not safe_parts:
-        clean_name = _safe_local_name(fallback_name, "file")
+        clean_name = preferred_clean_name or _safe_local_name(fallback_name, "file")
         return ("未分类路径", clean_name)
 
     if len(safe_parts) == 1:
-        clean_name = _safe_local_name(safe_parts[0], _safe_local_name(fallback_name, "file"))
+        clean_name = preferred_clean_name or _safe_local_name(safe_parts[0], _safe_local_name(fallback_name, "file"))
         return ("未分类路径", clean_name)
 
-    clean_name = _safe_local_name(safe_parts[-1], _safe_local_name(fallback_name, "file"))
+    clean_name = preferred_clean_name or _safe_local_name(safe_parts[-1], _safe_local_name(fallback_name, "file"))
     folder_name = "__".join(part for part in safe_parts[:-1] if str(part or "").strip()) or "未分类路径"
     return (_safe_local_name(folder_name, "未分类路径"), clean_name)
 
@@ -896,6 +906,7 @@ def _finalize_semir_cloud_drive_outputs(
                 row.get("云盘路径") or "",
                 relative_path,
                 row.get("文件名") or local_path.name,
+                row.get("__package_filename") or "",
             )
             target = _build_semir_package_target(
                 package_root,
