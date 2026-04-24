@@ -11,6 +11,11 @@ APP_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 ROOT_DIR="$(cd "${APP_DIR}/.." && pwd)"
 OUT_DIR="${APP_DIR}/python-dist"
 REQUIREMENTS_FILE="${ROOT_DIR}/core/requirements.txt"
+PY_MAJOR="${PY_VERSION%%.*}"
+PY_MINOR_REST="${PY_VERSION#*.}"
+PY_MINOR="${PY_MINOR_REST%%.*}"
+PY_ABI="cp${PY_MAJOR}${PY_MINOR}"
+PY_MAJOR_MINOR="${PY_MAJOR}.${PY_MINOR}"
 
 BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${BUILD_VERSION}"
 
@@ -57,6 +62,66 @@ target_python() {
   esac
 }
 
+host_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    command -v python3
+    return
+  fi
+  command -v python
+}
+
+target_site_packages() {
+  case "$1" in
+    win-x64)
+      echo "$2/Lib/site-packages"
+      ;;
+    mac-arm64|mac-x64)
+      echo "$2/lib/python${PY_MAJOR_MINOR}/site-packages"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+has_core_requirements() {
+  local key="$1"
+  local dest="$2"
+  local site_packages
+  site_packages="$(target_site_packages "$key" "$dest")" || return 1
+  [ -d "${site_packages}/fastapi" ] &&
+    [ -d "${site_packages}/uvicorn" ] &&
+    [ -d "${site_packages}/apscheduler" ] &&
+    [ -d "${site_packages}/openpyxl" ] &&
+    [ -d "${site_packages}/tzdata" ]
+}
+
+install_windows_requirements_cross() {
+  local dest="$1"
+  local host_py
+  local site_packages
+
+  host_py="$(host_python)" || {
+    echo "[error] Host Python not found; cannot cross-install win-x64 dependencies"
+    exit 1
+  }
+  site_packages="$(target_site_packages "win-x64" "$dest")"
+  mkdir -p "$site_packages"
+
+  echo "[deps] Cross-installing backend requirements into win-x64 ..."
+  "$host_py" -m pip install \
+    --disable-pip-version-check \
+    --no-warn-script-location \
+    --upgrade \
+    --target "$site_packages" \
+    --platform win_amd64 \
+    --python-version "$PY_MAJOR_MINOR" \
+    --implementation cp \
+    --abi "$PY_ABI" \
+    --only-binary=:all: \
+    -r "$REQUIREMENTS_FILE"
+}
+
 install_requirements() {
   local key="$1"
   local dest="$2"
@@ -73,14 +138,20 @@ install_requirements() {
     exit 1
   fi
 
-  if ! "$py_bin" -V >/dev/null 2>&1; then
-    echo "[warn] Cannot execute $py_bin on this host; skip dependency install for $key"
+  marker="${dest}/.crawshrimp-requirements.txt"
+  if [ -f "$marker" ] && cmp -s "$REQUIREMENTS_FILE" "$marker" && has_core_requirements "$key" "$dest"; then
+    echo "[skip] $key requirements already installed"
     return
   fi
 
-  marker="${dest}/.crawshrimp-requirements.txt"
-  if [ -f "$marker" ] && cmp -s "$REQUIREMENTS_FILE" "$marker"; then
-    echo "[skip] $key requirements already installed"
+  if ! "$py_bin" -V >/dev/null 2>&1; then
+    if [ "$key" = "win-x64" ]; then
+      install_windows_requirements_cross "$dest"
+      cp "$REQUIREMENTS_FILE" "$marker"
+      echo "[ok] $key requirements installed"
+      return
+    fi
+    echo "[warn] Cannot execute $py_bin on this host; skip dependency install for $key"
     return
   fi
 

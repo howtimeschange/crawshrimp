@@ -1697,19 +1697,28 @@ async def lifespan(app: FastAPI):
                     logger.warning(f"Built-in adapter failed {d.name}: {e}")
 
     adapter_loader.scan_all()
-    ensure_knowledge_index()
+    try:
+        ensure_knowledge_index()
+    except Exception:
+        logger.exception("knowledge index initialization failed; continuing without prebuilt index")
 
     # Register scheduled tasks
-    for item in adapter_loader.list_all():
-        if item['enabled']:
-            m = adapter_loader.get_adapter(item['id'])
-            if m:
-                sched_module.register_adapter(m, _execute_task)
+    try:
+        for item in adapter_loader.list_all():
+            if item['enabled']:
+                m = adapter_loader.get_adapter(item['id'])
+                if m:
+                    sched_module.register_adapter(m, _execute_task)
 
-    sched_module.start()
+        sched_module.start()
+    except Exception:
+        logger.exception("scheduler startup failed; continuing without scheduled jobs")
     logger.info("crawshrimp core started")
     yield
-    sched_module.shutdown()
+    try:
+        sched_module.shutdown()
+    except Exception:
+        logger.exception("scheduler shutdown failed")
 
 
 app = FastAPI(title="crawshrimp", version="1.4.1", lifespan=lifespan)

@@ -10,7 +10,7 @@ Design:
 """
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Callable, Dict, Optional
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -20,6 +20,7 @@ from apscheduler.triggers.cron import CronTrigger
 from core.models import AdapterManifest, TriggerType
 
 logger = logging.getLogger(__name__)
+APP_TIMEZONE = timezone(timedelta(hours=8), "UTC+08:00")
 
 # job_id format: "{adapter_id}::{task_id}"
 _scheduler: Optional[AsyncIOScheduler] = None
@@ -29,7 +30,9 @@ _task_callbacks: Dict[str, Callable] = {}  # job_id -> async callable
 def get_scheduler() -> AsyncIOScheduler:
     global _scheduler
     if _scheduler is None:
-        _scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+        # Windows Python builds do not always ship an IANA timezone database.
+        # Crawshrimp only needs China standard time, so use a fixed UTC+8 tzinfo.
+        _scheduler = AsyncIOScheduler(timezone=APP_TIMEZONE)
     return _scheduler
 
 

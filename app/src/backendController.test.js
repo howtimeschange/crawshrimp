@@ -71,3 +71,50 @@ test('ensureReady rejects when the process exits before becoming ready', async (
     /process exited before ready \(code=23\)/
   )
 })
+
+test('ensureReady includes backend startup output when process exits before ready', async () => {
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => false,
+    startProcess: () => {
+      const proc = new EventEmitter()
+      proc.getStartupOutput = () => [
+        'Traceback (most recent call last):',
+        "ZoneInfoNotFoundError: 'No time zone found with key Asia/Shanghai'",
+      ].join('\n')
+      setTimeout(() => proc.emit('exit', 3), 0)
+      return proc
+    },
+    intervalMs: 1,
+    attempts: 5,
+  })
+
+  await assert.rejects(
+    controller.ensureReady(),
+    /No time zone found with key Asia\/Shanghai/
+  )
+})
+
+test('ensureReady retries a backend launch that exits before ready', async () => {
+  let startCount = 0
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => startCount >= 2,
+    startProcess: () => {
+      startCount += 1
+      const proc = new EventEmitter()
+      if (startCount === 1) setTimeout(() => proc.emit('exit', 3), 0)
+      return proc
+    },
+    intervalMs: 1,
+    attempts: 5,
+    launchRetries: 1,
+    retryDelayMs: 1,
+  })
+
+  await controller.ensureReady()
+
+  assert.equal(startCount, 2)
+})

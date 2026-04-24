@@ -14,6 +14,7 @@ const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
+const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 0
 
 function normalizeUrlForMatch(raw) {
   try {
@@ -247,9 +248,16 @@ function spawnBackendProcess() {
     },
   })
   backendProcess = proc
+  const startupOutput = []
 
   const fwd = (prefix) => (d) =>
-    d.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => log(`[${prefix}] ${l}`))
+    d.toString('utf8').split('\n').filter(l => l.trim()).forEach(l => {
+      startupOutput.push(l)
+      if (startupOutput.length > 80) startupOutput.shift()
+      log(`[${prefix}] ${l}`)
+    })
+
+  proc.getStartupOutput = () => startupOutput.join('\n')
 
   proc.stdout.on('data', fwd('api'))
   proc.stderr.on('data', fwd('api'))
@@ -555,6 +563,11 @@ function log(msg) {
   const ts = new Date().toLocaleTimeString('en', { hour12: false })
   const line = `[${ts}] ${msg}`
   console.log(line)
+  try {
+    const logDir = path.join(getCrawshrimpDataDir(), 'logs')
+    fs.mkdirSync(logDir, { recursive: true })
+    fs.appendFileSync(path.join(logDir, 'desktop.log'), line + '\n', 'utf8')
+  } catch {}
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('log', line)
   }
@@ -574,6 +587,8 @@ const backendController = createBackendController({
   stopProcess: (proc) => stopBackendProcess(proc),
   intervalMs: 500,
   attempts: BACKEND_STARTUP_ATTEMPTS,
+  launchRetries: BACKEND_LAUNCH_RETRIES,
+  retryDelayMs: 1200,
 })
 
 async function startBackend() {
