@@ -60,6 +60,8 @@ class ParamType(str, Enum):
     number     = "number"      # 数字输入
     file_excel = "file_excel"  # Excel 文件选择（.xlsx/.xls/.csv），注入 rows 数组
     file_images = "file_images"  # 多图文件选择（png/jpg/jpeg），注入 paths 数组
+    file_zip = "file_zip"      # 多 ZIP 文件选择，注入 paths 数组
+    file_pdf = "file_pdf"      # 多 PDF 文件选择，注入 paths 数组
 
 
 class ParamOption(BaseModel):

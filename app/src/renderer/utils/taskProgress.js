@@ -72,6 +72,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'batch_ai_generate',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'shenhui-new-arrival',
+    taskId: 'prepare_upload_package',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {
@@ -349,6 +354,10 @@ function isSemirBatchAiGenerateTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && normalizeKeyPart(taskId) === 'batch_ai_generate'
 }
 
+function isShenhuiPrepareUploadPackageTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'shenhui-new-arrival' && normalizeKeyPart(taskId) === 'prepare_upload_package'
+}
+
 function getSemirPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
   const normalizedPhase = normalizeKeyPart(phase)
   if (normalizedPhase === 'finalize_all') return '整理打包'
@@ -474,6 +483,142 @@ function buildSemirBatchImageDownloadProgress(live = {}, liveStatus = '', isRunn
       phaseLabel,
       downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '',
       normalizeKeyPart(phase) === 'finalize_all' ? '正在整理压缩包' : '',
+    ].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
+function getShenhuiPrepareUploadPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (normalizedPhase === 'finalize_all') return '整理打包'
+  if (downloadActive) return '下载图片'
+  if (downloadStarted && downloadTotal > 0 && downloadCompleted >= downloadTotal) return '下载完成'
+  if (['ensure_folder', 'plan_code', 'ensure_search', 'collect_code'].includes(normalizedPhase)) return '找款任务'
+  return '准备中'
+}
+
+function buildShenhuiPrepareUploadPackageProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const phase = String(live?.phase || '').trim()
+  const normalizedPhase = normalizeKeyPart(phase)
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const currentCode = String(live?.buyer_id || '').trim()
+  const store = String(live?.store || '').trim()
+
+  const downloadTotal = toInt(live?.download_total)
+  const downloadCompletedRaw = toInt(live?.download_completed)
+  const downloadCompleted = downloadTotal > 0 ? Math.min(downloadCompletedRaw, downloadTotal) : downloadCompletedRaw
+  const downloadSuccess = toInt(live?.download_success)
+  const downloadFailed = toInt(live?.download_failed)
+  const downloadConcurrency = toInt(live?.download_concurrency)
+  const downloadRetryAttempts = toInt(live?.download_retry_attempts)
+  const downloadLastLabel = String(live?.download_last_label || '').trim()
+  const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0 || normalizedPhase === 'finalize_all'
+  const downloadActive = Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal)
+
+  const scanTotal = toInt(live?.search_total_codes) || toInt(live?.total)
+  const searchCompleted = toInt(live?.search_completed_codes)
+  const currentRaw = toInt(live?.current)
+  const fallbackCompleted = downloadStarted ? scanTotal : Math.max(currentRaw - 1, 0)
+  const scanCompletedRaw = searchCompleted > 0 || downloadStarted ? searchCompleted : fallbackCompleted
+  const scanCompleted = scanTotal > 0 ? Math.min(scanCompletedRaw, scanTotal) : scanCompletedRaw
+  const scanPercent = scanTotal > 0 ? clampPercent((scanCompleted / scanTotal) * 100) : 0
+  const scanPhaseActive = ['ensure_folder', 'plan_code', 'ensure_search', 'collect_code'].includes(normalizedPhase)
+  const scanState = downloadStarted || (scanTotal > 0 && scanCompleted >= scanTotal)
+    ? 'complete'
+    : (scanPhaseActive || scanCompleted > 0 || currentCode)
+      ? 'active'
+      : 'pending'
+
+  const downloadPercent = downloadTotal > 0
+    ? clampPercent((downloadCompleted / downloadTotal) * 100)
+    : (downloadStarted && !downloadActive ? 100 : 0)
+  const downloadState = !downloadStarted
+    ? 'pending'
+    : normalizedPhase === 'finalize_all'
+      ? 'active'
+      : downloadTotal > 0 && downloadCompleted >= downloadTotal
+        ? 'complete'
+        : 'active'
+
+  const phaseLabel = getShenhuiPrepareUploadPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) || statusLabel
+  const scanStatus = scanState === 'complete' ? '已完成' : scanState === 'active' ? '进行中' : '待开始'
+  const downloadStatus = downloadState === 'complete'
+    ? '已完成'
+    : downloadState === 'active'
+      ? (normalizedPhase === 'finalize_all' ? '打包中' : '进行中')
+      : '待开始'
+
+  const scanMain = scanTotal > 0 ? `${scanCompleted} / ${scanTotal} 个款号` : (statusLabel || '等待开始')
+  const downloadMain = downloadTotal > 0
+    ? `${downloadCompleted} / ${downloadTotal} 个文件`
+    : downloadStarted
+      ? '等待下载进度'
+      : '找款完成后自动开始'
+
+  const downloadCaptionParts = []
+  if (downloadSuccess > 0) downloadCaptionParts.push(`成功 ${downloadSuccess}`)
+  if (downloadFailed > 0) downloadCaptionParts.push(`失败 ${downloadFailed}`)
+  if (downloadConcurrency > 0) downloadCaptionParts.push(`并发 ${downloadConcurrency}`)
+  if (downloadRetryAttempts > 1) downloadCaptionParts.push(`重试 ${downloadRetryAttempts} 次`)
+
+  const tracks = [
+    buildTrack({
+      id: 'shenhui-search',
+      title: '找款任务',
+      main: scanMain,
+      percentValue: scanPercent,
+      percentLabel: `${scanPercent}%`,
+      caption: currentCode && scanState !== 'complete' ? `当前款号 ${currentCode}` : '',
+      detail: store || '',
+      status: scanStatus,
+      tone: 'primary',
+      state: scanState,
+      ariaLabel: '找款任务进度',
+      ariaText: [scanMain, `${scanPercent}%`, currentCode ? `当前款号 ${currentCode}` : '', store].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'shenhui-download',
+      title: '下载任务',
+      main: downloadMain,
+      percentValue: downloadPercent,
+      percentLabel: downloadStarted ? `${downloadPercent}%` : '待开始',
+      caption: downloadCaptionParts.join(' · ') || (downloadStarted ? '正在汇总下载结果' : '找款完成后进入下载阶段'),
+      detail: downloadLastLabel ? `最近文件 ${downloadLastLabel}` : (currentCode ? `最近款号 ${currentCode}` : ''),
+      status: downloadStatus,
+      tone: 'secondary',
+      state: downloadState,
+      ariaLabel: '下载任务进度',
+      ariaText: [downloadMain, downloadStarted ? `${downloadPercent}%` : '待开始', downloadCaptionParts.join(' · '), downloadLastLabel].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: '双任务进度',
+    main: phaseLabel,
+    percentValue: downloadStarted ? clampPercent(50 + (downloadPercent * 0.5)) : clampPercent(scanPercent * 0.5),
+    percentLabel: phaseLabel,
+    completed: downloadSuccess,
+    completedText: downloadSuccess > 0 ? `已下载 ${downloadSuccess} 个文件` : '',
+    batchText: '',
+    rowText: '',
+    targetText: currentCode ? `款号 ${currentCode}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: '深绘上新图包整理双任务进度',
+    ariaText: [phaseLabel, scanMain, downloadMain].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      scanTotal > 0 ? `找款 ${scanCompleted}/${scanTotal}` : '',
+      downloadTotal > 0 ? `下载 ${downloadCompleted}/${downloadTotal}` : '',
+      currentCode ? `款号 ${currentCode}` : '',
+      store,
+    ]),
+    tracks,
+    sub: [
+      phaseLabel,
+      downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '',
+      normalizedPhase === 'finalize_all' ? '正在整理压缩包' : '',
     ].filter(Boolean).join(' · ') || statusLabel,
   }
 }
@@ -669,6 +814,9 @@ export function buildTaskRunnerProgressSummary({
   const config = resolveTaskProgressConfig(adapterId, taskId)
   if (config.mode === 'enhanced' && isSemirBatchImageDownloadTask(adapterId, taskId)) {
     return buildSemirBatchImageDownloadProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isShenhuiPrepareUploadPackageTask(adapterId, taskId)) {
+    return buildShenhuiPrepareUploadPackageProgress(live, liveStatus, isRunning)
   }
   if (config.mode === 'enhanced' && isSemirBatchAiGenerateTask(adapterId, taskId)) {
     return buildSemirBatchAiGenerateProgress(live, liveStatus, isRunning)

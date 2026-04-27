@@ -40,6 +40,7 @@ from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequ
 from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_index, search_knowledge
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
+from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs
 
 logger = logging.getLogger(__name__)
 
@@ -721,6 +722,143 @@ def _cleanup_semir_runtime_artifacts(runtime_files: list, package_root: Optional
             shutil.rmtree(package_root)
     except Exception:
         logger.debug("Failed to clean semir package root %s", package_root, exc_info=True)
+
+
+def _cleanup_shenhui_runtime_artifacts(runtime_files: list, package_root: Optional[Path], work_dir: Optional[Path]) -> None:
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    try:
+        if work_dir and work_dir.exists() and work_dir.is_dir():
+            shutil.rmtree(work_dir)
+    except Exception:
+        logger.debug("Failed to clean shenhui work dir %s", work_dir, exc_info=True)
+
+
+def _finalize_shenhui_new_arrival_outputs(
+    task_id: str,
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    if task_id == "pdf_batch_screenshot":
+        return finalize_pdf_batch_screenshot_outputs(
+            data_rows=data_rows,
+            exported_files=exported_files,
+            run_params=run_params,
+            runtime_artifact_dir=runtime_artifact_dir,
+            log=log,
+        )
+
+    if task_id != "prepare_upload_package":
+        return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
+
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"深绘上新图包_{timestamp}",
+        f"深绘上新图包_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+    pdf_work_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_pdf_work")
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    style_zip_paths = []
+    zip_path = None
+    if successful_rows:
+        for row, local_path in successful_rows:
+            group_code = _safe_local_name(
+                row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
+                "未分类",
+            )
+            role = str(row.get("__shenhui_asset_role") or "").strip().lower()
+
+            if role == "pdf_yq" or local_path.suffix.lower() == ".pdf":
+                target = package_root / group_code / "_PDF待裁图" / _safe_local_name(local_path.name, "label.pdf")
+                _copy_file_to_unique_target(local_path, target)
+                continue
+
+            clean_filename = _safe_local_name(
+                row.get("__package_filename") or row.get("文件名") or local_path.name,
+                local_path.name,
+            )
+            target = package_root / group_code / clean_filename
+            _copy_file_to_unique_target(local_path, target)
+
+        style_zip_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_deepdraw_zips")
+        style_zip_dir.mkdir(parents=True, exist_ok=True)
+        for style_dir in sorted(path for path in package_root.iterdir() if path.is_dir()):
+            if style_dir.name.startswith("_"):
+                continue
+            style_zip_path = _ensure_unique_local_path(style_zip_dir / f"{style_dir.name}.zip")
+            with zipfile.ZipFile(style_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for file_path in sorted(style_dir.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    archive.write(file_path, arcname=str(file_path.relative_to(style_dir)))
+            style_zip_paths.append(style_zip_path)
+        if style_zip_paths:
+            log(f"Shenhui DeepDraw style ZIPs created: {len(style_zip_paths)}")
+
+        zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in package_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        log(f"Shenhui package created: {zip_path}")
+
+    export_folder = str(run_params.get("export_folder") or "").strip()
+    runtime_refs = [str(path) for path in style_zip_paths if str(path or "").strip()]
+    if zip_path:
+        runtime_refs.append(str(zip_path))
+    runtime_refs.extend(str(path) for path in exported_files or [] if str(path or "").strip())
+    final_refs = runtime_refs
+
+    if export_folder:
+        target_root = Path(export_folder).expanduser()
+        target_root.mkdir(parents=True, exist_ok=True)
+        external_refs = []
+
+        if successful_rows and package_root.exists():
+            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+            shutil.copytree(package_root, external_dir)
+            for style_zip_path in style_zip_paths:
+                if style_zip_path.exists():
+                    copied_style_zip = _copy_file_to_unique_target(style_zip_path, target_root / style_zip_path.name)
+                    external_refs.append(str(copied_style_zip))
+            if zip_path and zip_path.exists():
+                copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
+                external_refs.append(str(copied_zip))
+            log(f"Shenhui package copied to export folder: {external_dir}")
+
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            external_refs.append(str(copied))
+
+        if external_refs:
+            final_refs = external_refs
+
+    if zip_path and zip_path.exists():
+        _cleanup_shenhui_runtime_artifacts(runtime_files, package_root, pdf_work_dir)
+    elif pdf_work_dir.exists():
+        shutil.rmtree(pdf_work_dir, ignore_errors=True)
+
+    return final_refs
 
 
 def _build_semir_ai_material_entries(data_rows: list) -> list[dict]:
@@ -1538,23 +1676,39 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             return files
 
         def finalize_output_files(data_rows, runtime_files, exported_files):
-            if adapter_id != 'semir-cloud-drive':
-                return merge_output_file_refs(runtime_files, exported_files)
+            if adapter_id == 'semir-cloud-drive':
+                try:
+                    packaged_refs = _finalize_semir_cloud_drive_outputs(
+                        task_id=task_id,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
 
-            try:
-                packaged_refs = _finalize_semir_cloud_drive_outputs(
-                    task_id=task_id,
-                    data_rows=data_rows,
-                    runtime_files=runtime_files,
-                    exported_files=exported_files,
-                    run_params=run_params,
-                    runtime_artifact_dir=runtime_artifact_dir,
-                    log=log,
-                )
-                return merge_output_file_refs(packaged_refs)
-            except Exception as package_error:
-                log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
-                return merge_output_file_refs(runtime_files, exported_files)
+            if adapter_id == 'shenhui-new-arrival':
+                try:
+                    packaged_refs = _finalize_shenhui_new_arrival_outputs(
+                        task_id=task_id,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] 深绘图包后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
+            return merge_output_file_refs(runtime_files, exported_files)
 
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
         if not task.skip_auth and m.auth and m.auth.check_script:

@@ -5,11 +5,18 @@ Chrome 启动参数：--remote-debugging-port=9222
 import json
 import logging
 from typing import Optional
-from urllib.request import urlopen, Request
+from urllib.request import build_opener, ProxyHandler, Request
 from urllib.error import URLError
 from urllib.parse import quote
 
 logger = logging.getLogger(__name__)
+
+_NO_PROXY_OPENER = build_opener(ProxyHandler({}))
+
+
+def cdp_urlopen(url_or_request, timeout: int = 5):
+    """Open Chrome CDP management URLs without honoring process proxy env vars."""
+    return _NO_PROXY_OPENER.open(url_or_request, timeout=timeout)
 
 
 class CDPBridge:
@@ -19,7 +26,7 @@ class CDPBridge:
 
     def get_tabs(self) -> list:
         try:
-            resp = urlopen(f"{self.cdp_url}/json", timeout=5)
+            resp = cdp_urlopen(f"{self.cdp_url}/json", timeout=5)
             self._tabs = json.loads(resp.read())
             return self._tabs
         except URLError as e:
@@ -54,10 +61,16 @@ class CDPBridge:
         encoded = quote(url, safe=':/?&=_-%#')
         req = Request(f"{self.cdp_url}/json/new?{encoded}", method="PUT")
         try:
-            resp = urlopen(req, timeout=8)
+            resp = cdp_urlopen(req, timeout=8)
             return json.loads(resp.read())
         except URLError as e:
             raise ConnectionError(f"新建 Chrome tab 失败: {e}")
+
+    def close_tab(self, tab_id: str) -> None:
+        safe_tab_id = str(tab_id or "").strip()
+        if not safe_tab_id:
+            return
+        cdp_urlopen(f"{self.cdp_url}/json/close/{quote(safe_tab_id, safe='')}", timeout=3)
 
 
 _bridge: Optional[CDPBridge] = None

@@ -3,11 +3,44 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from core.js_runner import JSRunner
 
 
+class _ChunkedResponse:
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self.headers = {"Content-Type": "image/jpeg"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size=-1):
+        if not self._chunks:
+            return b""
+        return self._chunks.pop(0)
+
+    def geturl(self):
+        return "https://example.com/final.jpg"
+
+
 class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_download_url_sync_streams_to_target_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+            target = Path(tmpdir) / "large.jpg"
+
+            with patch("core.js_runner.urlopen", return_value=_ChunkedResponse([b"large-", b"image"])):
+                result = runner._download_url_sync("https://example.com/large.jpg", target, timeout=5)
+
+            self.assertTrue(result["success"])
+            self.assertEqual(target.read_bytes(), b"large-image")
+            self.assertFalse(target.with_name("large.jpg.part").exists())
+
     async def test_download_urls_retries_until_success(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)
@@ -67,6 +100,29 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(result["items"]), 4)
             self.assertGreaterEqual(state["max_active"], 2)
             self.assertLessEqual(state["max_active"], 2)
+
+    async def test_download_urls_passes_configured_timeout_to_url_download(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+            seen_timeouts = []
+
+            def fake_download(url, target_path, headers=None, timeout=60):
+                seen_timeouts.append(timeout)
+                Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(target_path).write_bytes(b"ok")
+                return {"success": True, "path": str(target_path)}
+
+            runner._download_url_sync = fake_download  # type: ignore[method-assign]
+
+            result = await runner.download_urls(
+                [{"url": "https://example.com/a.jpg", "filename": "a.jpg"}],
+                concurrency=1,
+                retry_attempts=1,
+                timeout_seconds=120,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(seen_timeouts, [120])
 
     async def test_download_urls_reports_progress_callback_snapshots(self):
         with tempfile.TemporaryDirectory() as tmpdir:

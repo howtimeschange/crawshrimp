@@ -315,6 +315,35 @@
               </div>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
+
+            <template v-else-if="param.type === 'file_zip' || param.type === 'file_pdf'">
+              <div class="file-picker">
+                <div class="file-chosen" :class="{ empty: !(values[param.id + '_paths'] || []).length }" @click="pickFilePaths(param)">
+                  <span class="f-ico">{{ filePickerIcon(param) }}</span>
+                  <span class="f-label">
+                    {{ filePathsSummary(param) }}
+                  </span>
+                  <span v-if="(values[param.id + '_paths'] || []).length" class="f-clear" @click.stop="clearFilePaths(param.id)">✕</span>
+                </div>
+                <div class="file-picker-actions">
+                  <button class="btn-pick" @click="pickFilePaths(param)">{{ filePickerButtonLabel(param) }}</button>
+                </div>
+              </div>
+              <div v-if="(values[param.id + '_paths'] || []).length" class="image-file-list">
+                <span
+                  v-for="path in values[param.id + '_paths']"
+                  :key="path"
+                  class="image-file-chip"
+                >
+                  {{ fileName(path) }}
+                </span>
+              </div>
+              <div v-if="pdfCropTypeForFilesParam(param)" class="pdf-crop-actions">
+                <button type="button" class="btn-pick" @click="openPdfCropModal(pdfCropTypeForFilesParam(param))">{{ pdfCropButtonLabel(pdfCropTypeForFilesParam(param)) }}</button>
+                <span class="pdf-crop-status">{{ pdfCropTemplateSummaryForType(pdfCropTypeForFilesParam(param)) }}</span>
+              </div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
           </div>
         </div>
 
@@ -530,6 +559,130 @@
         </div>
       </div>
     </div>
+
+    <div v-if="pdfCropModal.open" class="pdf-crop-modal" @click.self="closePdfCropModal">
+      <div class="pdf-crop-dialog">
+        <div class="pdf-crop-head">
+          <div>
+            <div class="pdf-crop-title">{{ pdfCropModal.type === 'wash_label' ? '洗唛截图框模板' : '吊牌截图框模板' }}</div>
+            <div class="pdf-crop-subtitle">拖动矩形移动位置，拖动边角或边线调整宽高；保存后同类型 PDF 的每一页都会套用该模板。</div>
+          </div>
+          <button type="button" class="pdf-crop-close" @click="closePdfCropModal">×</button>
+        </div>
+
+        <div class="pdf-crop-toolbar">
+          <select v-model="pdfCropModal.previewPath" class="select" @change="event => loadPdfCropPreview(event.target.value)">
+            <option
+              v-for="path in pdfCropSourcePaths"
+              :key="path"
+              :value="path"
+            >
+              {{ fileName(path) }}
+            </option>
+          </select>
+          <div class="pdf-crop-page-controls">
+            <button type="button" class="pdf-crop-page-step" :disabled="!canGoPrevPdfCropPage" @click="setPdfCropPage(pdfCropModal.pageIndex - 1)">上一页</button>
+            <span class="pdf-crop-page-current">{{ currentPdfCropPageText }}</span>
+            <button type="button" class="pdf-crop-page-step" :disabled="!canGoNextPdfCropPage" @click="setPdfCropPage(pdfCropModal.pageIndex + 1)">下一页</button>
+          </div>
+          <div class="pdf-crop-zoom-controls">
+            <button type="button" class="pdf-crop-page-step" @click="adjustPdfCropZoom(-0.25)">缩小</button>
+            <input
+              class="pdf-crop-zoom-range"
+              type="range"
+              min="0.5"
+              max="4"
+              step="0.05"
+              v-model.number="pdfCropModal.zoom"
+            />
+            <button type="button" class="pdf-crop-page-step" @click="adjustPdfCropZoom(0.25)">放大</button>
+            <button type="button" class="pdf-crop-page-step" @click="resetPdfCropZoom">适合</button>
+            <span class="pdf-crop-zoom-value">{{ pdfCropZoomText }}</span>
+          </div>
+          <span class="pdf-crop-template-current">{{ currentPdfCropTemplateText }}</span>
+        </div>
+
+        <div class="pdf-crop-template-manager">
+          <select
+            v-model="pdfCropModal.activeTemplateId"
+            class="select"
+            @change="event => applySavedPdfCropTemplate(event.target.value)"
+          >
+            <option value="">本地模板：未选择</option>
+            <option
+              v-for="template in currentPdfCropSavedTemplates"
+              :key="template.id"
+              :value="template.id"
+            >
+              {{ template.name }}
+            </option>
+          </select>
+          <input
+            v-model="pdfCropModal.templateNameDraft"
+            class="input pdf-crop-template-name"
+            type="text"
+            placeholder="本地模板名称"
+          />
+          <button type="button" class="run-sub-btn" @click="saveCurrentPdfCropAsLocalTemplate">保存为本地模板</button>
+          <button type="button" class="run-sub-btn" :disabled="!pdfCropModal.activeTemplateId" @click="updateCurrentPdfCropLocalTemplate">更新选中模板</button>
+          <button type="button" class="run-sub-btn danger" :disabled="!pdfCropModal.activeTemplateId" @click="deleteCurrentPdfCropLocalTemplate">删除选中模板</button>
+        </div>
+
+        <div v-if="pdfCropModal.error" :class="['pdf-crop-error', { compact: hasPdfCropPreview }]">{{ pdfCropModal.error }}</div>
+        <div v-if="pdfCropModal.loading" class="pdf-crop-loading">正在生成 PDF 预览…</div>
+        <div
+          v-else-if="currentPdfCropPage"
+          :class="['pdf-crop-workspace', { 'no-pages': pdfCropModal.pages.length <= 1 }]"
+        >
+          <div v-if="pdfCropModal.pages.length > 1" class="pdf-crop-page-list" aria-label="PDF 页缩略图">
+            <button
+              v-for="(page, index) in pdfCropModal.pages"
+              :key="`${pdfCropModal.previewPath}-${page.page || index}`"
+              type="button"
+              :class="['pdf-crop-page-button', { active: index === pdfCropModal.pageIndex }]"
+              @click="setPdfCropPage(index)"
+            >
+              <img :src="page.data_url" draggable="false" alt="" />
+              <span>第{{ page.page || index + 1 }}页</span>
+            </button>
+          </div>
+          <div class="pdf-crop-stage">
+            <div class="pdf-crop-canvas" :style="pdfCropCanvasStyle" @pointerdown="startPdfCropSelection">
+              <img
+                ref="pdfCropImageRef"
+                class="pdf-crop-preview"
+                :style="pdfCropCanvasStyle"
+                :src="currentPdfCropPage.data_url"
+                draggable="false"
+                alt="PDF preview"
+              />
+              <div
+                v-if="pdfCropModal.selection"
+                class="pdf-crop-selection"
+                :style="pdfCropSelectionStyle"
+                @pointerdown.stop="startPdfCropMove"
+              >
+                <span
+                  v-for="handle in pdfCropResizeHandles"
+                  :key="handle"
+                  :class="['pdf-crop-handle', `handle-${handle}`]"
+                  @pointerdown.stop="event => startPdfCropResize(event, handle)"
+                ></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="pdf-crop-foot">
+          <span class="pdf-crop-selection-text">{{ pdfCropSelectionText }}</span>
+          <div class="pdf-crop-buttons">
+            <button type="button" class="run-sub-btn" @click="clearPdfCropSelection">清除选区</button>
+            <button type="button" class="run-sub-btn" @click="savePdfCropSelection('append')">追加到模板</button>
+            <button type="button" class="run-btn mini" @click="savePdfCropSelection('replace')">替换模板</button>
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -557,6 +710,30 @@ const dynamicParamPatches = ref({})
 const dynamicParamProbeLoading = ref(false)
 const dynamicParamProbeError = ref('')
 const multiSelectOpenId = ref('')
+const pdfCropImageRef = ref(null)
+const pdfCropResizeHandles = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
+const PDF_CROP_MIN_SIZE = 0.005
+const PDF_CROP_TEMPLATE_STORAGE_KEY = 'crawshrimp:shenhui-pdf-crop-templates:v1'
+const pdfCropModal = ref({
+  open: false,
+  type: 'wash_label',
+  previewPath: '',
+  dataUrl: '',
+  pages: [],
+  pageIndex: 0,
+  activeTemplateId: '',
+  templateNameDraft: '',
+  zoom: 1,
+  loading: false,
+  error: '',
+  selection: null,
+  interaction: null,
+})
+const pdfCropSavedTemplates = ref({
+  wash_label: [],
+  hang_tag: [],
+})
+const pdfCropSavedTemplatesLoaded = ref(false)
 const dateInputRefs = new Map()
 let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
@@ -576,6 +753,9 @@ function buildDefaultValues(params = []) {
     }
     else if (p.type === 'file_images') {
       next[p.id + '_paths'] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
+    }
+    else if (isMultiFileParamType(p.type)) {
+      next[p.id + '_paths'] = normalizeFilePaths(p.default?.paths)
     }
     else next[p.id] = p.default ?? ''
   }
@@ -672,6 +852,15 @@ function reconcileValuesWithParams(params = []) {
       continue
     }
 
+    if (isMultiFileParamType(p.type)) {
+      const key = p.id + '_paths'
+      if (!Object.prototype.hasOwnProperty.call(next, key)) {
+        next[key] = normalizeFilePaths(p.default?.paths)
+        changed = true
+      }
+      continue
+    }
+
     if (!Object.prototype.hasOwnProperty.call(next, p.id)) {
       next[p.id] = p.default ?? ''
       changed = true
@@ -707,6 +896,7 @@ watch(() => props.task, (task) => {
   dynamicParamProbeLoading.value = false
   dynamicParamProbeError.value = ''
   values.value = buildDefaultValues(task.params || [])
+  if (pdfCropSavedTemplatesLoaded.value) applyDefaultPdfCropTemplatesToValues()
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
@@ -725,15 +915,6 @@ watch(() => props.task, (task) => {
         isRunning.value = true
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
-      } else if (!live && last && isTaskActiveStatus(last.status)) {
-        isRunning.value = true
-        currentRunId = last.id ?? null
-        emit('status-change', {
-          status: last.status,
-          records: last.records_count,
-          error: last.error,
-          run_id: last.id,
-        })
       }
       scrollToBottom()
     } catch {}
@@ -797,6 +978,7 @@ const missingRequired = computed(() => {
     if (p.type === 'checkbox') return !(values.value[p.id] || []).length
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
     if (p.type === 'file_images') return !(values.value[p.id + '_paths'] || []).length
+    if (isMultiFileParamType(p.type)) return !(values.value[p.id + '_paths'] || []).length
     if (isSingleTemporalParamType(p.type)) return !values.value[p.id]
     if (isRangeParamType(p.type)) {
       return !values.value[p.id + '_start'] || !values.value[p.id + '_end']
@@ -815,6 +997,87 @@ const progressSummary = computed(() =>
   })
 )
 
+const pdfCropSourcePaths = computed(() =>
+  pdfCropSourcePathsForType(pdfCropModal.value.type)
+)
+
+const pdfCropTemplateSummary = computed(() => {
+  const wash = String(values.value.wash_crop_boxes || '').trim() ? '洗唛已设置' : '洗唛未设置'
+  const tag = String(values.value.tag_crop_boxes || '').trim() ? '吊牌已设置' : '吊牌未设置'
+  return `${wash} / ${tag}`
+})
+
+const currentPdfCropSavedTemplates = computed(() =>
+  pdfCropSavedTemplates.value[pdfCropModal.value.type] || []
+)
+
+const currentPdfCropTemplateText = computed(() => {
+  const field = pdfCropTemplateField(pdfCropModal.value.type)
+  const boxes = parsePdfCropTemplate(values.value[field])
+  const templateText = boxes.length ? `当前模板 ${boxes.length} 个截图框` : '当前模板未设置'
+  const pageCount = pdfCropModal.value.pages.length
+  return pageCount > 1 ? `${templateText} / 预览 ${pageCount} 页` : templateText
+})
+
+const currentPdfCropPage = computed(() => {
+  const pages = Array.isArray(pdfCropModal.value.pages) ? pdfCropModal.value.pages : []
+  return pages[pdfCropModal.value.pageIndex] || pages[0] || null
+})
+
+const currentPdfCropPageText = computed(() => {
+  const pages = Array.isArray(pdfCropModal.value.pages) ? pdfCropModal.value.pages : []
+  if (!pages.length) return '未生成页面'
+  const page = currentPdfCropPage.value
+  return `第 ${page?.page || pdfCropModal.value.pageIndex + 1} / ${pages.length} 页`
+})
+
+const canGoPrevPdfCropPage = computed(() => pdfCropModal.value.pageIndex > 0)
+const canGoNextPdfCropPage = computed(() => pdfCropModal.value.pageIndex < pdfCropModal.value.pages.length - 1)
+
+const hasPdfCropPreview = computed(() =>
+  Boolean(pdfCropModal.value.dataUrl || pdfCropModal.value.pages.length)
+)
+
+const pdfCropBaseDisplayWidth = computed(() => {
+  const page = currentPdfCropPage.value
+  const width = Number(page?.width || 0)
+  const height = Number(page?.height || 0)
+  if (pdfCropModal.value.type === 'wash_label') {
+    return Math.max(720, Math.min(980, width || 820))
+  }
+  const scaled = width ? width * 0.44 : 1320
+  return Math.max(1100, Math.min(1650, scaled))
+})
+
+const pdfCropCanvasDisplayWidth = computed(() =>
+  Math.round(pdfCropBaseDisplayWidth.value * clampPdfCropZoom(pdfCropModal.value.zoom))
+)
+
+const pdfCropCanvasStyle = computed(() => ({
+  width: `${pdfCropCanvasDisplayWidth.value}px`,
+}))
+
+const pdfCropZoomText = computed(() =>
+  `${Math.round(clampPdfCropZoom(pdfCropModal.value.zoom) * 100)}%`
+)
+
+const pdfCropSelectionStyle = computed(() => {
+  const selection = pdfCropModal.value.selection
+  if (!selection) return {}
+  return {
+    left: `${selection.x * 100}%`,
+    top: `${selection.y * 100}%`,
+    width: `${selection.width * 100}%`,
+    height: `${selection.height * 100}%`,
+  }
+})
+
+const pdfCropSelectionText = computed(() => {
+  const selection = pdfCropModal.value.selection
+  if (!selection) return '未选择截图范围'
+  return `x=${selection.x.toFixed(4)}, y=${selection.y.toFixed(4)}, w=${selection.width.toFixed(4)}, h=${selection.height.toFixed(4)}`
+})
+
 function paramLayoutClass(param) {
   if (!param) return 'param-span-compact'
   const explicitSpan = normalizeParamUiSpan(param.ui_span)
@@ -827,7 +1090,7 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || param.type === 'checkbox' || param.type === 'textarea' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
+  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || isMultiFileParamType(param.type) || param.type === 'checkbox' || param.type === 'textarea' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
@@ -936,6 +1199,17 @@ function normalizeImagePaths(paths, maxCount = 0) {
   return maxCount > 0 ? normalized.slice(0, maxCount) : normalized
 }
 
+function isMultiFileParamType(type) {
+  return ['file_zip', 'file_pdf'].includes(String(type || ''))
+}
+
+function normalizeFilePaths(paths) {
+  const normalized = Array.isArray(paths)
+    ? paths.map(path => String(path || '').trim()).filter(Boolean)
+    : []
+  return [...new Set(normalized)]
+}
+
 function imageSummary(param) {
   const count = (values.value[param.id + '_paths'] || []).length
   const maxCount = imageParamLimit(param)
@@ -945,6 +1219,30 @@ function imageSummary(param) {
       : '点击选择图片（支持多选）…'
   }
   return maxCount > 0 ? `${count} / ${maxCount} 张图片` : `${count} 张图片`
+}
+
+function filePickerIcon(param) {
+  if (param?.type === 'file_zip') return '🗜'
+  if (param?.type === 'file_pdf') return '📄'
+  return '📎'
+}
+
+function filePickerButtonLabel(param) {
+  if (param?.type === 'file_zip') return '选择 ZIP'
+  if (param?.type === 'file_pdf') return '选择 PDF'
+  return '选择文件'
+}
+
+function filePathsSummary(param) {
+  const count = (values.value[param.id + '_paths'] || []).length
+  if (count) {
+    if (param?.type === 'file_zip') return `${count} 个 ZIP 压缩包`
+    if (param?.type === 'file_pdf') return `${count} 个 PDF 文件`
+    return `${count} 个文件`
+  }
+  if (param?.type === 'file_zip') return '点击批量选择 ZIP 压缩包…'
+  if (param?.type === 'file_pdf') return '点击批量选择 PDF 文件…'
+  return '点击批量选择文件…'
 }
 
 function orderVisibleParams(params) {
@@ -1132,6 +1430,13 @@ function buildRunParams(overrides = {}) {
       const maxCount = imageParamLimit(p)
       params[p.id] = {
         paths: normalizeImagePaths(values.value[p.id + '_paths'], maxCount),
+      }
+      continue
+    }
+
+    if (isMultiFileParamType(p.type)) {
+      params[p.id] = {
+        paths: normalizeFilePaths(values.value[p.id + '_paths']),
       }
       continue
     }
@@ -1595,6 +1900,529 @@ function clearImages(paramId) {
   values.value[paramId + '_paths'] = []
 }
 
+async function pickFilePaths(param) {
+  const paramId = param?.id
+  if (!paramId) return
+  const paths = await window.cs.browseFile({
+    title: param?.label ? `选择${param.label}` : filePickerButtonLabel(param),
+    zip: param?.type === 'file_zip',
+    pdf: param?.type === 'file_pdf',
+    multi: true,
+  })
+  if (!Array.isArray(paths) || !paths.length) return
+  values.value[paramId + '_paths'] = normalizeFilePaths(paths)
+}
+
+function clearFilePaths(paramId) {
+  values.value[paramId + '_paths'] = []
+}
+
+function isShenhuiPdfScreenshotTask() {
+  return props.adapterId === 'shenhui-new-arrival'
+    && props.task?.task_id === 'pdf_batch_screenshot'
+}
+
+function pdfCropTypeForFilesParam(param) {
+  if (!isShenhuiPdfScreenshotTask() || param?.type !== 'file_pdf') return ''
+  if (param?.id === 'wash_pdf_files') return 'wash_label'
+  if (param?.id === 'tag_pdf_files') return 'hang_tag'
+  if (param?.id === 'pdf_files') return 'auto'
+  return ''
+}
+
+function pdfCropButtonLabel(type) {
+  if (type === 'hang_tag') return '框选吊牌模板'
+  if (type === 'wash_label') return '框选洗唛模板'
+  return '框选截图模板'
+}
+
+function pdfCropTemplateSummaryForType(type) {
+  const field = pdfCropTemplateField(type)
+  const boxes = parsePdfCropTemplate(values.value[field])
+  const savedCount = (pdfCropSavedTemplates.value[type] || []).length
+  const status = boxes.length ? `已设置 ${boxes.length} 个截图框` : '未设置'
+  return savedCount ? `${status} / 本地 ${savedCount} 个模板` : status
+}
+
+function pdfCropTemplateField(type) {
+  return type === 'hang_tag' ? 'tag_crop_boxes' : 'wash_crop_boxes'
+}
+
+function pdfCropFileParamIdForType(type) {
+  return type === 'hang_tag' ? 'tag_pdf_files' : 'wash_pdf_files'
+}
+
+function pdfCropSourcePathsForType(type) {
+  const rolePaths = normalizeFilePaths(values.value[`${pdfCropFileParamIdForType(type)}_paths`] || [])
+  if (rolePaths.length) return rolePaths
+  return normalizeFilePaths(values.value.pdf_files_paths || [])
+}
+
+function candidatePdfPathForType(type) {
+  const paths = pdfCropSourcePathsForType(type)
+  if (!paths.length) return ''
+  return paths[0]
+}
+
+function clampPdfCropZoom(value) {
+  return Math.min(4, Math.max(0.5, Number(value) || 1))
+}
+
+function clampPdfCropValue(value, min = 0, max = 1) {
+  return Math.min(max, Math.max(min, Number(value) || 0))
+}
+
+function normalizePdfCropBox(box) {
+  if (!box) return null
+  const x = Array.isArray(box) ? Number(box[0]) : Number(box.x ?? box.left)
+  const y = Array.isArray(box) ? Number(box[1]) : Number(box.y ?? box.top)
+  const width = Array.isArray(box) ? Number(box[2]) : Number(box.width ?? box.w)
+  const height = Array.isArray(box) ? Number(box[3]) : Number(box.height ?? box.h)
+  if (![x, y, width, height].every(Number.isFinite) || width <= 0 || height <= 0) return null
+  const left = clampPdfCropValue(x)
+  const top = clampPdfCropValue(y)
+  const right = clampPdfCropValue(x + width)
+  const bottom = clampPdfCropValue(y + height)
+  if (right - left < PDF_CROP_MIN_SIZE || bottom - top < PDF_CROP_MIN_SIZE) return null
+  return {
+    x: left,
+    y: top,
+    width: right - left,
+    height: bottom - top,
+  }
+}
+
+function parsePdfCropTemplate(rawValue) {
+  const raw = String(rawValue || '').trim()
+  if (!raw) return []
+  try {
+    const parsed = JSON.parse(raw)
+    const items = Array.isArray(parsed) ? parsed : [parsed]
+    return items.map(normalizePdfCropBox).filter(Boolean)
+  } catch {
+    return []
+  }
+}
+
+function roundedPdfCropBox(selection) {
+  const normalized = normalizePdfCropBox(selection)
+  if (!normalized) return null
+  return {
+    x: Number(normalized.x.toFixed(4)),
+    y: Number(normalized.y.toFixed(4)),
+    width: Number(normalized.width.toFixed(4)),
+    height: Number(normalized.height.toFixed(4)),
+  }
+}
+
+function pdfCropTemplatesState() {
+  return {
+    wash_label: [],
+    hang_tag: [],
+  }
+}
+
+function normalizePdfCropTemplateRecord(record, fallbackIndex = 0) {
+  const boxes = Array.isArray(record?.boxes)
+    ? record.boxes.map(normalizePdfCropBox).filter(Boolean)
+    : []
+  if (!boxes.length) return null
+  const now = Date.now()
+  return {
+    id: String(record?.id || `template-${now}-${fallbackIndex}`),
+    name: String(record?.name || `模板 ${fallbackIndex + 1}`).trim() || `模板 ${fallbackIndex + 1}`,
+    boxes,
+    updatedAt: Number(record?.updatedAt) || now,
+  }
+}
+
+function loadPdfCropSavedTemplates() {
+  const next = pdfCropTemplatesState()
+  try {
+    const raw = window.localStorage?.getItem(PDF_CROP_TEMPLATE_STORAGE_KEY)
+    const parsed = raw ? JSON.parse(raw) : {}
+    for (const type of ['wash_label', 'hang_tag']) {
+      next[type] = Array.isArray(parsed?.[type])
+        ? parsed[type].map(normalizePdfCropTemplateRecord).filter(Boolean)
+        : []
+    }
+  } catch {}
+  pdfCropSavedTemplates.value = next
+  pdfCropSavedTemplatesLoaded.value = true
+}
+
+function persistPdfCropSavedTemplates() {
+  try {
+    window.localStorage?.setItem(PDF_CROP_TEMPLATE_STORAGE_KEY, JSON.stringify(pdfCropSavedTemplates.value))
+  } catch {}
+}
+
+function boxesToPdfCropTemplateValue(boxes) {
+  return JSON.stringify((boxes || []).map(box => roundedPdfCropBox(box)).filter(Boolean))
+}
+
+function applyDefaultPdfCropTemplatesToValues() {
+  if (!isShenhuiPdfScreenshotTask()) return
+  for (const type of ['wash_label', 'hang_tag']) {
+    const field = pdfCropTemplateField(type)
+    if (String(values.value[field] || '').trim()) continue
+    const template = pdfCropSavedTemplates.value[type]?.[0]
+    if (template?.boxes?.length) values.value[field] = boxesToPdfCropTemplateValue(template.boxes)
+  }
+}
+
+function activePdfCropTemplate() {
+  const activeId = pdfCropModal.value.activeTemplateId
+  if (!activeId) return null
+  return (pdfCropSavedTemplates.value[pdfCropModal.value.type] || []).find(template => template.id === activeId) || null
+}
+
+function currentPdfCropBoxesForLocalTemplate() {
+  const selectedBox = roundedPdfCropBox(pdfCropModal.value.selection)
+  if (selectedBox) return [selectedBox]
+  const field = pdfCropTemplateField(pdfCropModal.value.type)
+  return parsePdfCropTemplate(values.value[field])
+}
+
+function applySavedPdfCropTemplate(templateId) {
+  const template = (pdfCropSavedTemplates.value[pdfCropModal.value.type] || []).find(item => item.id === templateId)
+  if (!template) {
+    pdfCropModal.value.activeTemplateId = ''
+    pdfCropModal.value.templateNameDraft = ''
+    return
+  }
+  const field = pdfCropTemplateField(pdfCropModal.value.type)
+  values.value[field] = boxesToPdfCropTemplateValue(template.boxes)
+  pdfCropModal.value.selection = normalizePdfCropBox(template.boxes[0])
+  pdfCropModal.value.activeTemplateId = template.id
+  pdfCropModal.value.templateNameDraft = template.name
+  pdfCropModal.value.error = ''
+}
+
+function saveCurrentPdfCropAsLocalTemplate() {
+  const boxes = currentPdfCropBoxesForLocalTemplate()
+  if (!boxes.length) {
+    pdfCropModal.value.error = '请先设置一个有效截图框，再保存本地模板。'
+    return
+  }
+  const defaultName = pdfCropModal.value.type === 'hang_tag' ? '吊牌模板' : '洗唛模板'
+  const cleanName = String(pdfCropModal.value.templateNameDraft || '').trim()
+    || `${defaultName} ${currentPdfCropSavedTemplates.value.length + 1}`
+  const template = {
+    id: `template-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    name: cleanName,
+    boxes: boxes.map(normalizePdfCropBox).filter(Boolean),
+    updatedAt: Date.now(),
+  }
+  values.value[pdfCropTemplateField(pdfCropModal.value.type)] = boxesToPdfCropTemplateValue(template.boxes)
+  pdfCropSavedTemplates.value[pdfCropModal.value.type] = [
+    template,
+    ...(pdfCropSavedTemplates.value[pdfCropModal.value.type] || []),
+  ]
+  persistPdfCropSavedTemplates()
+  pdfCropModal.value.activeTemplateId = template.id
+  pdfCropModal.value.templateNameDraft = template.name
+  pdfCropModal.value.error = ''
+}
+
+function updateCurrentPdfCropLocalTemplate() {
+  const template = activePdfCropTemplate()
+  if (!template) return
+  const boxes = currentPdfCropBoxesForLocalTemplate()
+  if (!boxes.length) {
+    pdfCropModal.value.error = '请先设置一个有效截图框，再更新本地模板。'
+    return
+  }
+  const list = pdfCropSavedTemplates.value[pdfCropModal.value.type] || []
+  const nextBoxes = boxes.map(normalizePdfCropBox).filter(Boolean)
+  const nextName = String(pdfCropModal.value.templateNameDraft || '').trim() || template.name
+  pdfCropSavedTemplates.value[pdfCropModal.value.type] = list.map(item =>
+    item.id === template.id
+      ? { ...item, name: nextName, boxes: nextBoxes, updatedAt: Date.now() }
+      : item
+  )
+  values.value[pdfCropTemplateField(pdfCropModal.value.type)] = boxesToPdfCropTemplateValue(nextBoxes)
+  persistPdfCropSavedTemplates()
+  pdfCropModal.value.error = ''
+}
+
+function deleteCurrentPdfCropLocalTemplate() {
+  const template = activePdfCropTemplate()
+  if (!template) return
+  const confirmed = window.confirm?.(`删除本地模板“${template.name}”？`) ?? true
+  if (!confirmed) return
+  pdfCropSavedTemplates.value[pdfCropModal.value.type] = (pdfCropSavedTemplates.value[pdfCropModal.value.type] || [])
+    .filter(item => item.id !== template.id)
+  persistPdfCropSavedTemplates()
+  pdfCropModal.value.activeTemplateId = ''
+  pdfCropModal.value.templateNameDraft = ''
+  pdfCropModal.value.error = ''
+}
+
+function firstPdfCropTemplateBox(type) {
+  const field = pdfCropTemplateField(type)
+  return parsePdfCropTemplate(values.value[field])[0] || null
+}
+
+function normalizePdfPreviewPages(result) {
+  const rawPages = Array.isArray(result?.pages) ? result.pages : []
+  const pages = rawPages
+    .map((page, index) => ({
+      page: Number(page?.page) || index + 1,
+      data_url: String(page?.data_url || ''),
+      preview_path: String(page?.preview_path || ''),
+      width: Number(page?.width) || 0,
+      height: Number(page?.height) || 0,
+    }))
+    .filter(page => page.data_url)
+  if (pages.length) return pages
+  if (result?.data_url) return [{ page: 1, data_url: result.data_url, preview_path: result.preview_path || '', width: 0, height: 0 }]
+  return []
+}
+
+function makePdfCropModalState(overrides = {}) {
+  return {
+    open: false,
+    type: 'wash_label',
+    previewPath: '',
+    dataUrl: '',
+    pages: [],
+    pageIndex: 0,
+    activeTemplateId: '',
+    templateNameDraft: '',
+    zoom: 1,
+    loading: false,
+    error: '',
+    selection: null,
+    interaction: null,
+    ...overrides,
+  }
+}
+
+function stopPdfCropInteraction() {
+  window.removeEventListener('pointermove', handlePdfCropPointerMove)
+  window.removeEventListener('pointerup', finishPdfCropSelection)
+  window.removeEventListener('pointercancel', finishPdfCropSelection)
+  pdfCropModal.value.interaction = null
+}
+
+function closePdfCropModal() {
+  stopPdfCropInteraction()
+  pdfCropModal.value = makePdfCropModalState()
+}
+
+async function openPdfCropModal(type) {
+  const previewPath = candidatePdfPathForType(type)
+  const defaultName = type === 'hang_tag' ? '吊牌模板' : '洗唛模板'
+  const savedCount = (pdfCropSavedTemplates.value[type] || []).length
+  pdfCropModal.value = makePdfCropModalState({
+    open: true,
+    type,
+    previewPath,
+    templateNameDraft: `${defaultName} ${savedCount + 1}`,
+    selection: firstPdfCropTemplateBox(type),
+  })
+  if (!previewPath) {
+    pdfCropModal.value.error = '请先选择至少一个 PDF 文件。'
+    return
+  }
+  await loadPdfCropPreview(previewPath)
+}
+
+async function loadPdfCropPreview(previewPath) {
+  if (!previewPath) return
+  stopPdfCropInteraction()
+  pdfCropModal.value.previewPath = previewPath
+  pdfCropModal.value.loading = true
+  pdfCropModal.value.error = ''
+  pdfCropModal.value.dataUrl = ''
+  pdfCropModal.value.pages = []
+  pdfCropModal.value.pageIndex = 0
+  pdfCropModal.value.zoom = 1
+  pdfCropModal.value.selection = firstPdfCropTemplateBox(pdfCropModal.value.type)
+  try {
+    if (typeof window.cs.renderPdfPreview !== 'function') {
+      throw new Error('PDF 预览能力尚未加载，请重启抓虾客户端后再框选。')
+    }
+    const result = await window.cs.renderPdfPreview(previewPath)
+    const pages = normalizePdfPreviewPages(result)
+    if (!result?.ok || !pages.length) {
+      throw new Error(result?.error || 'PDF 预览生成失败')
+    }
+    pdfCropModal.value.pages = pages
+    pdfCropModal.value.dataUrl = pages[0]?.data_url || ''
+    resetPdfCropZoom()
+  } catch (error) {
+    pdfCropModal.value.error = error?.message || String(error)
+  } finally {
+    pdfCropModal.value.loading = false
+  }
+}
+
+function setPdfCropPage(index) {
+  const pages = pdfCropModal.value.pages
+  if (!pages.length) return
+  pdfCropModal.value.pageIndex = Math.min(pages.length - 1, Math.max(0, Number(index) || 0))
+}
+
+function resetPdfCropZoom() {
+  pdfCropModal.value.zoom = 1
+}
+
+function adjustPdfCropZoom(delta) {
+  pdfCropModal.value.zoom = clampPdfCropZoom((Number(pdfCropModal.value.zoom) || 1) + delta)
+}
+
+function pdfCropPointFromEvent(event) {
+  const image = pdfCropImageRef.value
+  if (!image) return null
+  const rect = image.getBoundingClientRect()
+  if (!rect.width || !rect.height) return null
+  const x = clampPdfCropValue((event.clientX - rect.left) / rect.width)
+  const y = clampPdfCropValue((event.clientY - rect.top) / rect.height)
+  return { x, y }
+}
+
+function selectionFromEdges(left, top, right, bottom) {
+  const safeLeft = clampPdfCropValue(Math.min(left, right))
+  const safeTop = clampPdfCropValue(Math.min(top, bottom))
+  const safeRight = clampPdfCropValue(Math.max(left, right))
+  const safeBottom = clampPdfCropValue(Math.max(top, bottom))
+  return {
+    x: safeLeft,
+    y: safeTop,
+    width: Math.max(0, safeRight - safeLeft),
+    height: Math.max(0, safeBottom - safeTop),
+  }
+}
+
+function movePdfCropBox(startSelection, dx, dy) {
+  const width = startSelection.width
+  const height = startSelection.height
+  return {
+    x: clampPdfCropValue(startSelection.x + dx, 0, Math.max(0, 1 - width)),
+    y: clampPdfCropValue(startSelection.y + dy, 0, Math.max(0, 1 - height)),
+    width,
+    height,
+  }
+}
+
+function resizePdfCropBox(startSelection, handle, dx, dy) {
+  let left = startSelection.x
+  let top = startSelection.y
+  let right = startSelection.x + startSelection.width
+  let bottom = startSelection.y + startSelection.height
+
+  if (handle.includes('w')) left += dx
+  if (handle.includes('e')) right += dx
+  if (handle.includes('n')) top += dy
+  if (handle.includes('s')) bottom += dy
+
+  left = clampPdfCropValue(left)
+  right = clampPdfCropValue(right)
+  top = clampPdfCropValue(top)
+  bottom = clampPdfCropValue(bottom)
+
+  if (right - left < PDF_CROP_MIN_SIZE) {
+    if (handle.includes('w')) left = Math.max(0, right - PDF_CROP_MIN_SIZE)
+    else right = Math.min(1, left + PDF_CROP_MIN_SIZE)
+  }
+  if (bottom - top < PDF_CROP_MIN_SIZE) {
+    if (handle.includes('n')) top = Math.max(0, bottom - PDF_CROP_MIN_SIZE)
+    else bottom = Math.min(1, top + PDF_CROP_MIN_SIZE)
+  }
+
+  return selectionFromEdges(left, top, right, bottom)
+}
+
+function beginPdfCropInteraction(event, interaction) {
+  if (event.button != null && event.button !== 0) return
+  event.preventDefault()
+  stopPdfCropInteraction()
+  pdfCropModal.value.error = ''
+  pdfCropModal.value.interaction = interaction
+  window.addEventListener('pointermove', handlePdfCropPointerMove)
+  window.addEventListener('pointerup', finishPdfCropSelection)
+  window.addEventListener('pointercancel', finishPdfCropSelection)
+}
+
+function startPdfCropSelection(event) {
+  if (!hasPdfCropPreview.value || pdfCropModal.value.loading) return
+  const point = pdfCropPointFromEvent(event)
+  if (!point) return
+  pdfCropModal.value.selection = { x: point.x, y: point.y, width: 0, height: 0 }
+  beginPdfCropInteraction(event, {
+    mode: 'create',
+    startPoint: point,
+    startSelection: { x: point.x, y: point.y, width: 0, height: 0 },
+  })
+}
+
+function startPdfCropMove(event) {
+  const point = pdfCropPointFromEvent(event)
+  const selection = normalizePdfCropBox(pdfCropModal.value.selection)
+  if (!point || !selection) return
+  beginPdfCropInteraction(event, {
+    mode: 'move',
+    startPoint: point,
+    startSelection: selection,
+  })
+}
+
+function startPdfCropResize(event, handle) {
+  const point = pdfCropPointFromEvent(event)
+  const selection = normalizePdfCropBox(pdfCropModal.value.selection)
+  if (!point || !selection) return
+  beginPdfCropInteraction(event, {
+    mode: 'resize',
+    handle,
+    startPoint: point,
+    startSelection: selection,
+  })
+}
+
+function handlePdfCropPointerMove(event) {
+  const interaction = pdfCropModal.value.interaction
+  const current = pdfCropPointFromEvent(event)
+  if (!interaction || !current) return
+  event.preventDefault()
+  const start = interaction.startPoint
+  const selection = interaction.startSelection
+  const dx = current.x - start.x
+  const dy = current.y - start.y
+
+  if (interaction.mode === 'create') {
+    pdfCropModal.value.selection = selectionFromEdges(start.x, start.y, current.x, current.y)
+  } else if (interaction.mode === 'move') {
+    pdfCropModal.value.selection = movePdfCropBox(selection, dx, dy)
+  } else if (interaction.mode === 'resize') {
+    pdfCropModal.value.selection = resizePdfCropBox(selection, interaction.handle, dx, dy)
+  }
+}
+
+function finishPdfCropSelection(event) {
+  if (pdfCropModal.value.interaction && event) handlePdfCropPointerMove(event)
+  stopPdfCropInteraction()
+}
+
+function clearPdfCropSelection() {
+  stopPdfCropInteraction()
+  pdfCropModal.value.selection = null
+}
+
+function savePdfCropSelection(mode) {
+  const nextBox = roundedPdfCropBox(pdfCropModal.value.selection)
+  if (!nextBox) {
+    pdfCropModal.value.error = '请先拖拽选择一个有效截图范围。'
+    return
+  }
+  const field = pdfCropTemplateField(pdfCropModal.value.type)
+  const existing = mode === 'append' ? parsePdfCropTemplate(values.value[field]) : []
+  values.value[field] = JSON.stringify([...existing, nextBox])
+  pdfCropModal.value.error = ''
+  closePdfCropModal()
+}
+
 function getParamTemplates(param) {
   const templates = Array.isArray(param?.templates) ? param.templates.filter(Boolean) : []
   if (templates.length) return templates
@@ -1638,12 +2466,15 @@ async function downloadTemplate(task, param, template) {
 }
 
 onMounted(() => {
+  loadPdfCropSavedTemplates()
+  applyDefaultPdfCropTemplatesToValues()
   document.addEventListener('pointerdown', handleDocumentPointerDown)
   document.addEventListener('keydown', handleDocumentKeydown)
 })
 
 onUnmounted(() => {
   clearInterval(pollTimer)
+  stopPdfCropInteraction()
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)
 })
@@ -1899,6 +2730,7 @@ onUnmounted(() => {
 .run-btn:hover:not(:disabled) { background: var(--orange-dim); transform: translateY(-1px); }
 .run-btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
 .run-btn.running { background: #555; }
+.run-btn.mini { padding: 10px 18px; font-size: 13px; }
 .run-sub-btn {
   padding: 10px 18px;
   border-radius: 10px;
@@ -2209,6 +3041,288 @@ onUnmounted(() => {
   background: var(--bg3); color: var(--text2); font-size: 12px; white-space: nowrap;
 }
 .btn-pick:hover { background: var(--orange-bg); color: var(--orange); border-color: var(--orange); }
+.pdf-crop-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-top: 2px;
+}
+.pdf-crop-status {
+  font-size: 11px;
+  color: var(--text3);
+}
+.pdf-crop-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.56);
+}
+.pdf-crop-dialog {
+  width: min(1480px, calc(100vw - 48px));
+  max-height: calc(100vh - 48px);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg2);
+  box-shadow: 0 24px 72px rgba(0, 0, 0, 0.42);
+}
+.pdf-crop-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  align-items: flex-start;
+}
+.pdf-crop-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.pdf-crop-subtitle {
+  margin-top: 4px;
+  font-size: 12px;
+  color: var(--text3);
+  line-height: 1.5;
+}
+.pdf-crop-close {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 20px;
+  line-height: 1;
+}
+.pdf-crop-close:hover { border-color: var(--orange); color: var(--orange); }
+.pdf-crop-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto auto auto;
+  gap: 12px;
+  align-items: center;
+}
+.pdf-crop-page-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.pdf-crop-page-step {
+  padding: 7px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 12px;
+}
+.pdf-crop-page-step:hover:not(:disabled) {
+  color: var(--orange);
+  border-color: var(--orange);
+}
+.pdf-crop-page-step:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.pdf-crop-page-current {
+  min-width: 76px;
+  font-size: 12px;
+  color: var(--text2);
+  text-align: center;
+}
+.pdf-crop-zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+.pdf-crop-zoom-range {
+  width: 120px;
+  accent-color: var(--orange);
+}
+.pdf-crop-zoom-value {
+  min-width: 44px;
+  font-size: 12px;
+  color: var(--text2);
+  text-align: right;
+}
+.pdf-crop-template-manager {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(180px, 260px) auto auto auto;
+  gap: 10px;
+  align-items: center;
+}
+.pdf-crop-template-name {
+  min-width: 0;
+}
+.run-sub-btn.danger {
+  color: #fca5a5;
+}
+.run-sub-btn.danger:hover:not(:disabled) {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.1);
+}
+.pdf-crop-template-current,
+.pdf-crop-selection-text {
+  font-size: 12px;
+  color: var(--text3);
+}
+.pdf-crop-error,
+.pdf-crop-loading {
+  min-height: 220px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text3);
+}
+.pdf-crop-error { color: #fca5a5; }
+.pdf-crop-error.compact {
+  min-height: 0;
+  justify-content: flex-start;
+  padding: 8px 10px;
+  border-style: solid;
+}
+.pdf-crop-workspace {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr);
+  gap: 14px;
+}
+.pdf-crop-workspace.no-pages {
+  grid-template-columns: minmax(0, 1fr);
+}
+.pdf-crop-page-list {
+  max-height: min(62vh, 760px);
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+.pdf-crop-page-button {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  padding: 8px;
+  margin-bottom: 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text3);
+}
+.pdf-crop-page-button:last-child { margin-bottom: 0; }
+.pdf-crop-page-button img {
+  width: 100%;
+  max-height: 132px;
+  object-fit: contain;
+  border-radius: 6px;
+  background: #fff;
+}
+.pdf-crop-page-button span {
+  font-size: 12px;
+}
+.pdf-crop-page-button:hover,
+.pdf-crop-page-button.active {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: rgba(255, 106, 41, 0.1);
+}
+.pdf-crop-stage {
+  position: relative;
+  min-width: 0;
+  max-width: 100%;
+  max-height: min(62vh, 760px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #fff;
+  user-select: none;
+}
+.pdf-crop-canvas {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+  cursor: crosshair;
+}
+.pdf-crop-preview {
+  display: block;
+  height: auto;
+}
+.pdf-crop-selection {
+  position: absolute;
+  border: 2px solid var(--orange);
+  background: rgba(255, 106, 41, 0.16);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.12);
+  box-sizing: border-box;
+  cursor: move;
+  pointer-events: auto;
+}
+.pdf-crop-handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  border: 2px solid #fff;
+  border-radius: 999px;
+  background: var(--orange);
+  box-shadow: 0 1px 6px rgba(0, 0, 0, 0.35);
+}
+.pdf-crop-handle.handle-nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.pdf-crop-handle.handle-n { left: 50%; top: -7px; transform: translateX(-50%); cursor: ns-resize; }
+.pdf-crop-handle.handle-ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.pdf-crop-handle.handle-e { right: -7px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.pdf-crop-handle.handle-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.pdf-crop-handle.handle-s { left: 50%; bottom: -7px; transform: translateX(-50%); cursor: ns-resize; }
+.pdf-crop-handle.handle-sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.pdf-crop-handle.handle-w { left: -7px; top: 50%; transform: translateY(-50%); cursor: ew-resize; }
+.pdf-crop-foot {
+  display: flex;
+  justify-content: space-between;
+  gap: 14px;
+  align-items: center;
+}
+.pdf-crop-buttons {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+@media (max-width: 760px) {
+  .pdf-crop-modal { padding: 12px; }
+  .pdf-crop-dialog {
+    width: calc(100vw - 24px);
+    max-height: calc(100vh - 24px);
+  }
+  .pdf-crop-toolbar,
+  .pdf-crop-template-manager,
+  .pdf-crop-foot {
+    grid-template-columns: 1fr;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .pdf-crop-workspace {
+    grid-template-columns: 1fr;
+  }
+  .pdf-crop-page-list {
+    max-height: none;
+    display: flex;
+    overflow-x: auto;
+  }
+  .pdf-crop-page-button {
+    flex: 0 0 112px;
+    margin-bottom: 0;
+  }
+}
 .btn-template {
   padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(255, 106, 41, 0.28);
   background: rgba(255, 106, 41, 0.1); color: var(--orange); font-size: 12px; font-weight: 600;

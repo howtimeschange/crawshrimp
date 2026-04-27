@@ -1,0 +1,231 @@
+id: shenhui-new-arrival
+name: 深绘上新助手
+version: 0.1.0
+author: codex
+description: "从森马云盘按款合并模特图与静物图，按深绘上新 SOP 规整后导出待上传图包"
+entry_url: https://fmp.semirapp.com/web/index#/home/file
+
+auth:
+  check_script: auth_check.js
+  login_url: https://fmp.semirapp.com/web/index#/home/file
+
+tasks:
+  - id: prepare_upload_package
+    name: 整理深绘上新图包
+    description: 按款号从森马云盘两条路径定位匹配文件夹，下载文件夹内模特图和静物图，过滤 SOP 中不可用素材并打包为深绘待上传图包
+    script: prepare-upload-package.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: still_cloud_path
+        type: text
+        label: 静物图云盘路径
+        required: true
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/平拍原图/2P/婴幼童/幼童-2.5已写/"
+        hint: SOP 中的平拍/静物图包路径
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/平拍原图/2P/婴幼童/幼童-2.5已写/
+      - id: model_cloud_path
+        type: text
+        label: 模特图云盘路径
+        required: true
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/模拍原图/期货/1P/幼童服装/"
+        hint: SOP 中的模拍/模特图包路径
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉夏/模拍原图/期货/1P/幼童服装/
+      - id: item_codes
+        type: textarea
+        label: 款号或款色编码
+        rows: 6
+        required: true
+        placeholder: "一行一个，例如：\n208226102001\n208226103201-00316"
+        hint: 支持款号和款色编码；最终按款号文件夹合并模特图与静物图
+      - id: duplicate_mode
+        type: select
+        label: 重复素材处理
+        default: first_per_path
+        ui_span: third
+        options:
+          - value: first_per_path
+            label: 同一路径只保留一份（推荐）
+          - value: all
+            label: 保留全部匹配素材
+        hint: 默认按云盘路径去重；如需完整保留重复素材可切换
+      - id: folder_scan_depth
+        type: number
+        label: 款号文件夹扫描层级
+        default: 3
+        min: 0
+        max: 8
+        step: 1
+        ui_span: third
+        hint: 搜索只用于定位款号文件夹；命中文件夹后会按该层级递归下载文件夹内素材
+      - id: download_concurrency
+        type: number
+        label: 下载并发数
+        default: 6
+        min: 1
+        max: 32
+        step: 1
+        ui_span: third
+        hint: 默认偏稳；图片较大或云盘限流时建议保持 4-8，网络稳定后再提高
+      - id: package_name
+        type: text
+        label: 导出包名称
+        ui_span: third
+        placeholder: "例如：深绘上新图包_幼童2P"
+        hint: 可选。留空则按任务时间自动命名
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "深绘上新图包整理结果_{timestamp}.xlsx"
+        columns:
+          - 输入款号
+          - 输入编码
+          - 素材来源
+          - 文件名
+          - 云盘路径
+          - 处理动作
+          - 下载结果
+          - 本地文件
+          - 备注
+
+  - id: pdf_batch_screenshot
+    name: PDF 批量截图
+    description: 批量选择本地 PDF 吊牌/水洗文件，截图并裁切为深绘可用的 yq 图片包
+    script: pdf-batch-screenshot.js
+    entry_url: about:blank
+    skip_auth: true
+    params:
+      - id: wash_pdf_files
+        type: file_pdf
+        label: 洗唛 PDF 文件
+        required: false
+        hint: 选择洗唛 PDF；会按洗唛模板裁切，输出 yq(2) 图片
+      - id: tag_pdf_files
+        type: file_pdf
+        label: 吊牌 PDF 文件
+        required: false
+        hint: 选择吊牌/合格证 PDF；会按吊牌模板裁切，输出 yq(1) 图片
+      - id: wash_crop_boxes
+        type: textarea
+        label: 洗唛截图框模板
+        rows: 3
+        ui_span: half
+        default: '[{"x":0.0892,"y":0.2084,"width":0.4189,"height":0.7546}]'
+        placeholder: '[{"x":0.02,"y":0.02,"width":0.48,"height":0.96},{"x":0.50,"y":0.02,"width":0.48,"height":0.96}]'
+        hint: 可选；支持比例或像素 x/y/width/height，多个框会依次输出 yq-1、yq-2
+      - id: tag_crop_boxes
+        type: textarea
+        label: 吊牌截图框模板
+        rows: 3
+        ui_span: half
+        default: '[{"x":0.0113,"y":0.2352,"width":0.1535,"height":0.5058}]'
+        placeholder: '[{"x":0.01,"y":0.25,"width":0.16,"height":0.55}]'
+        hint: 可选；按吊牌同版式批量裁切，留空则使用自动裁白和分栏
+      - id: output_mode
+        type: select
+        label: 输出模式
+        default: create_package
+        ui_span: half
+        options:
+          - value: create_package
+            label: 生成独立截图包
+          - value: merge_existing_zips
+            label: 合并到导出目录同款号 ZIP
+        hint: 合并模式会在导出目录下查找“12位款号.zip”，把本次截图的 yq 图追加/替换到对应 ZIP 根目录
+      - id: package_name
+        type: text
+        label: 导出包名称
+        ui_span: half
+        placeholder: "例如：深绘PDF截图_幼童2P"
+        hint: 可选。留空则按任务时间自动命名
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: half
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "深绘PDF截图结果_{timestamp}.xlsx"
+        columns:
+          - PDF文件
+          - PDF类型
+          - 原始路径
+          - 处理动作
+          - 备注
+
+  - id: upload_to_deepdraw
+    name: 上传深绘图片包
+    description: 在深绘“产品素材 / 图片包上传”页按款号搜索产品，选择匹配行并批量上传款号命名的 ZIP 图片包；执行模式为真实上传时会直接提交
+    script: upload-to-deepdraw.js
+    entry_url: https://www.deepdraw.biz/authorized/merchant/index
+    tab_match_prefixes:
+      - https://www.deepdraw.biz/authorized/merchant/index
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: package_zip_paths
+        type: file_zip
+        label: 款号 ZIP 压缩包
+        required: true
+        hint: 支持批量选择 ZIP；ZIP 文件名必须等于深绘产品货号；整理任务会额外产出这些款号 ZIP
+      - id: upload_mode
+        type: radio
+        label: 执行模式
+        default: dry_run
+        options:
+          - value: dry_run
+            label: 只校验并入队（不上传）
+          - value: upload
+            label: 真实上传到生产
+        hint: 默认不会点击上传；切换为真实上传后会直接调用深绘上传
+      - id: upload_poll_timeout_minutes
+        type: number
+        label: 上传处理等待分钟
+        default: 20
+        min: 1
+        max: 120
+        step: 1
+        ui_span: third
+        hint: 真实上传后等待深绘处理结果的最长时间
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "深绘图片包上传结果_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - ZIP文件
+          - 搜索结果
+          - 产品ID
+          - 期数
+          - 处理阶段
+          - 上传结果
+          - 备注

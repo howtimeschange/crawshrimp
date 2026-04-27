@@ -864,16 +864,28 @@ class JSRunner:
         finally:
             if temp_tab_id:
                 try:
-                    urlopen(f"{bridge.cdp_url}/json/close/{temp_tab_id}", timeout=3)
+                    bridge.close_tab(temp_tab_id)
                 except Exception:
                     logger.debug("Failed to close temporary capture tab %s", temp_tab_id, exc_info=True)
 
     def _download_url_sync(self, url: str, target_path: Path, headers: Optional[dict[str, str]] = None, timeout: int = 60) -> dict:
         request = Request(url, headers=headers or {})
+        partial_path = target_path.with_name(f"{target_path.name}.part")
+
+        def cleanup_partial() -> None:
+            try:
+                if partial_path.exists() and partial_path.is_file():
+                    partial_path.unlink()
+            except Exception:
+                logger.debug("Failed to clean partial url download %s", partial_path, exc_info=True)
+
         try:
             with urlopen(request, timeout=max(timeout, 1)) as response:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
-                target_path.write_bytes(response.read())
+                cleanup_partial()
+                with partial_path.open("wb") as handle:
+                    shutil.copyfileobj(response, handle, length=1024 * 1024)
+                partial_path.replace(target_path)
                 content_type = response.headers.get("Content-Type", "")
                 return {
                     "success": True,
@@ -882,6 +894,7 @@ class JSRunner:
                     "contentType": content_type,
                 }
         except HTTPError as e:
+            cleanup_partial()
             body = ""
             try:
                 body = e.read().decode("utf-8", "ignore")[:500]
@@ -894,12 +907,14 @@ class JSRunner:
                 "path": str(target_path),
             }
         except URLError as e:
+            cleanup_partial()
             return {
                 "success": False,
                 "error": f"URL error: {e.reason}",
                 "path": str(target_path),
             }
         except Exception as e:
+            cleanup_partial()
             return {
                 "success": False,
                 "error": f"下载异常: {e}",
@@ -984,7 +999,7 @@ class JSRunner:
         finally:
             if temp_tab_id:
                 try:
-                    urlopen(f"{bridge.cdp_url}/json/close/{temp_tab_id}", timeout=3)
+                    bridge.close_tab(temp_tab_id)
                 except Exception:
                     logger.debug("Failed to close temporary browser download tab %s", temp_tab_id, exc_info=True)
             shutil.rmtree(temp_download_dir, ignore_errors=True)
@@ -1013,7 +1028,7 @@ class JSRunner:
             if "bill-download-with-detail" not in url and "agentseller" not in url and url != "about:blank":
                 continue
             try:
-                urlopen(f"{bridge.cdp_url}/json/close/{tab_id}", timeout=3)
+                bridge.close_tab(tab_id)
             except Exception:
                 logger.debug("Failed to close click-opened tab %s", tab_id, exc_info=True)
 
@@ -1035,7 +1050,7 @@ class JSRunner:
             ):
                 continue
             try:
-                urlopen(f"{bridge.cdp_url}/json/close/{tab_id}", timeout=3)
+                bridge.close_tab(tab_id)
             except Exception:
                 logger.debug("Failed to close transient download tab %s", tab_id, exc_info=True)
 
@@ -1339,6 +1354,7 @@ class JSRunner:
         item: dict,
         default_retry_attempts: int = 1,
         default_retry_delay_ms: int = 0,
+        default_timeout_seconds: Optional[int] = None,
     ) -> dict:
         url = str((item or {}).get("url") or "").strip()
         filename = str((item or {}).get("filename") or "").strip()
@@ -1365,6 +1381,17 @@ class JSRunner:
         retry_attempts = max(retry_attempts, 1)
         retry_delay_ms = int((item or {}).get("retry_delay_ms") or (item or {}).get("retryDelayMs") or default_retry_delay_ms or 0)
         retry_delay_ms = max(retry_delay_ms, 0)
+        item_timeout = (
+            (item or {}).get("timeout_seconds")
+            or (item or {}).get("timeoutSeconds")
+            or (item or {}).get("timeout")
+            or default_timeout_seconds
+            or max(self.timeout, 30)
+        )
+        try:
+            timeout_seconds = max(1, int(item_timeout))
+        except Exception:
+            timeout_seconds = max(self.timeout, 30)
         last_result: Optional[dict] = None
 
         for attempt in range(1, retry_attempts + 1):
@@ -1373,7 +1400,7 @@ class JSRunner:
                     result = await self._download_via_browser_session(
                         url,
                         target_path,
-                        timeout_ms=max(self.timeout, 30) * 1000,
+                        timeout_ms=timeout_seconds * 1000,
                     )
                 else:
                     result = await asyncio.to_thread(
@@ -1381,7 +1408,7 @@ class JSRunner:
                         url,
                         target_path,
                         headers,
-                        max(self.timeout, 30),
+                        timeout_seconds,
                     )
             except Exception as e:
                 result = {
@@ -1431,6 +1458,7 @@ class JSRunner:
         concurrency: int = 1,
         retry_attempts: int = 1,
         retry_delay_ms: int = 0,
+        timeout_seconds: Optional[int] = None,
         progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> dict:
         normalized_items = list(items or [])
@@ -1440,6 +1468,8 @@ class JSRunner:
         concurrency = max(1, int(concurrency or 1))
         retry_attempts = max(1, int(retry_attempts or 1))
         retry_delay_ms = max(0, int(retry_delay_ms or 0))
+        if timeout_seconds is not None:
+            timeout_seconds = max(1, int(timeout_seconds or 1))
         results: list[Optional[dict]] = [None] * len(normalized_items)
         semaphore = asyncio.Semaphore(concurrency)
         progress_lock = asyncio.Lock()
@@ -1456,6 +1486,7 @@ class JSRunner:
                     item,
                     default_retry_attempts=retry_attempts,
                     default_retry_delay_ms=retry_delay_ms,
+                    default_timeout_seconds=timeout_seconds,
                 )
             results[index] = result
 
@@ -1541,6 +1572,12 @@ class JSRunner:
                     tab = candidates[0]
                 elif len(candidates) > 1:
                     tab = candidates[0]
+        if not tab and self.tab_url:
+            try:
+                tab = bridge.new_tab(str(self.tab_url).strip())
+                logger.info("运行中的 Chrome 标签页已丢失，重新打开入口页恢复连接: %s", self.tab_url)
+            except Exception as e:
+                logger.info("重新打开入口页失败: %s", e)
         if not tab:
             raise RuntimeError(f"导航后找不到原标签页: {self.tab_id}")
         ws_url = tab.get("webSocketDebuggerUrl", "")
@@ -1904,6 +1941,8 @@ class JSRunner:
                             concurrency = int(meta.get("concurrency") or meta.get("max_concurrency") or 1)
                             retry_attempts = int(meta.get("retry_attempts") or meta.get("retryAttempts") or meta.get("retries") or 1)
                             retry_delay_ms = int(meta.get("retry_delay_ms") or meta.get("retryDelayMs") or 0)
+                            timeout_seconds_raw = meta.get("timeout_seconds") or meta.get("timeoutSeconds") or meta.get("timeout")
+                            timeout_seconds = int(timeout_seconds_raw) if timeout_seconds_raw else None
 
                             await cooperate("before_download_urls", page, phase, shared, {
                                 "download_item_total": len(items),
@@ -1920,6 +1959,7 @@ class JSRunner:
                                 concurrency=concurrency,
                                 retry_attempts=retry_attempts,
                                 retry_delay_ms=retry_delay_ms,
+                                timeout_seconds=timeout_seconds,
                                 progress_callback=report_download_progress,
                             )
                             shared = self._merge_runtime_shared(shared, shared_key, download_result, append=shared_append)

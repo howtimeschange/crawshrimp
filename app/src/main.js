@@ -7,7 +7,8 @@ const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
 const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
-const { spawn, execSync } = require('child_process')
+const crypto = require('crypto')
+const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
 
 const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
@@ -190,6 +191,159 @@ async function saveExistingFileAs(resolvedSrcPath) {
   if (res.canceled || !res.filePath) return { ok: false }
   fs.copyFileSync(resolvedSrcPath, res.filePath)
   return { ok: true, dest: res.filePath }
+}
+
+function findQuickLookPdfPreview(pdfPath, outputDir) {
+  const candidates = [
+    path.join(outputDir, `${path.basename(pdfPath)}.png`),
+    path.join(outputDir, `${path.basename(pdfPath, path.extname(pdfPath))}.png`),
+  ]
+  const stack = [outputDir]
+  while (stack.length) {
+    const dir = stack.pop()
+    for (const name of fs.readdirSync(dir)) {
+      const candidate = path.join(dir, name)
+      const stat = fs.statSync(candidate)
+      if (stat.isDirectory()) stack.push(candidate)
+      if (stat.isFile() && /\.(png|jpg|jpeg)$/i.test(name)) candidates.push(candidate)
+    }
+  }
+  return candidates.find(candidate => fs.existsSync(candidate) && fs.statSync(candidate).isFile()) || ''
+}
+
+function pdfPreviewPageFromImage(imagePath, page, width = 0, height = 0) {
+  const raw = fs.readFileSync(imagePath)
+  const ext = path.extname(imagePath).toLowerCase()
+  const mime = ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' : 'image/png'
+  return {
+    page,
+    preview_path: imagePath,
+    width,
+    height,
+    data_url: `data:${mime};base64,${raw.toString('base64')}`,
+  }
+}
+
+function renderPdfPreviewWithPyMuPDF(pdfPath, outputDir) {
+  const pythonBin = getPythonBin()
+  fs.mkdirSync(outputDir, { recursive: true })
+
+  const script = `
+import json
+import sys
+from pathlib import Path
+
+import fitz
+
+pdf_path = Path(sys.argv[1])
+output_dir = Path(sys.argv[2])
+output_dir.mkdir(parents=True, exist_ok=True)
+
+doc = fitz.open(str(pdf_path))
+pages = []
+try:
+    for index in range(doc.page_count):
+        page = doc.load_page(index)
+        rect = page.rect
+        long_edge = max(float(rect.width or 0), float(rect.height or 0), 1.0)
+        scale = max(3.0, min(8.0, 3600.0 / long_edge))
+        pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
+        target = output_dir / f"page-{index + 1}.png"
+        pixmap.save(str(target))
+        pages.append({
+            "page": index + 1,
+            "preview_path": str(target),
+            "width": pixmap.width,
+            "height": pixmap.height,
+        })
+finally:
+    doc.close()
+
+print(json.dumps({"pages": pages}, ensure_ascii=False))
+`.trim()
+
+  try {
+    const env = { ...process.env, PYTHONIOENCODING: 'utf-8' }
+    delete env.ELECTRON_RUN_AS_NODE
+    const stdout = execFileSync(pythonBin, ['-c', script, pdfPath, outputDir], {
+      encoding: 'utf8',
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 60000,
+      maxBuffer: 1024 * 1024,
+    })
+    const parsed = JSON.parse(String(stdout || '').trim() || '{}')
+    const pages = Array.isArray(parsed.pages)
+      ? parsed.pages
+        .filter(page => page?.preview_path && fs.existsSync(page.preview_path))
+        .map(page => pdfPreviewPageFromImage(
+          page.preview_path,
+          Number(page.page) || 1,
+          Number(page.width) || 0,
+          Number(page.height) || 0,
+        ))
+      : []
+    if (!pages.length) return { ok: false, error: 'PyMuPDF 没有渲染出 PDF 页面。' }
+    return {
+      ok: true,
+      engine: 'pymupdf',
+      page_count: pages.length,
+      pages,
+      preview_path: pages[0].preview_path,
+      data_url: pages[0].data_url,
+    }
+  } catch (error) {
+    const stderr = String(error?.stderr || '').trim()
+    const detail = stderr || error.message || String(error)
+    return { ok: false, error: detail }
+  }
+}
+
+function renderPdfPreviewWithQuickLook(pdfPath) {
+  if (!fs.existsSync(pdfPath) || !fs.statSync(pdfPath).isFile()) {
+    return { ok: false, error: `PDF 文件不存在：${pdfPath}` }
+  }
+  if (path.extname(pdfPath).toLowerCase() !== '.pdf') {
+    return { ok: false, error: '请选择 PDF 文件进行预览框选。' }
+  }
+
+  const previewRoot = path.join(getCrawshrimpDataDir(), 'pdf-previews')
+  const digest = crypto.createHash('sha1').update(`${pdfPath}:${fs.statSync(pdfPath).mtimeMs}`).digest('hex').slice(0, 16)
+  const outputDir = path.join(previewRoot, digest)
+  fs.rmSync(outputDir, { recursive: true, force: true })
+  fs.mkdirSync(outputDir, { recursive: true })
+
+  const pymupdfResult = renderPdfPreviewWithPyMuPDF(pdfPath, path.join(outputDir, 'pages'))
+  if (pymupdfResult.ok) return pymupdfResult
+  if (process.platform !== 'darwin') {
+    return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}` }
+  }
+
+  try {
+    const quickLookBin = fs.existsSync('/usr/bin/qlmanage') ? '/usr/bin/qlmanage' : 'qlmanage'
+    execFileSync(quickLookBin, ['-t', '-s', '1800', '-o', outputDir, pdfPath], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 45000,
+    })
+    const previewPath = findQuickLookPdfPreview(pdfPath, outputDir)
+    if (!previewPath) {
+      const produced = fs.readdirSync(outputDir).join(', ')
+      return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look 没有输出图片。输出目录：${produced || '空'}` }
+    }
+    const page = pdfPreviewPageFromImage(previewPath, 1)
+    return {
+      ok: true,
+      engine: 'quicklook',
+      page_count: 1,
+      pages: [page],
+      preview_path: previewPath,
+      data_url: page.data_url,
+    }
+  } catch (error) {
+    const stderr = String(error?.stderr || '').trim()
+    const detail = stderr || error.message || String(error)
+    return { ok: false, error: `PDF 预览图生成失败：PyMuPDF: ${pymupdfResult.error}；Quick Look: ${detail}` }
+  }
 }
 
 // ── Window ────────────────────────────────────────────────────────────────────
@@ -773,7 +927,11 @@ ipcMain.handle('browse-file', async (_, opts = {}) => {
     ? [{ name: 'Excel / CSV', extensions: ['xlsx', 'xls', 'csv'] }, { name: '所有文件', extensions: ['*'] }]
     : opts.images
       ? [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg'] }, { name: '所有文件', extensions: ['*'] }]
-    : [{ name: '所有文件', extensions: ['*'] }])
+      : opts.zip
+        ? [{ name: 'ZIP 压缩包', extensions: ['zip'] }, { name: '所有文件', extensions: ['*'] }]
+        : opts.pdf
+          ? [{ name: 'PDF 文件', extensions: ['pdf'] }, { name: '所有文件', extensions: ['*'] }]
+          : [{ name: '所有文件', extensions: ['*'] }])
   const res = await dialog.showOpenDialog(mainWindow, {
     title: opts.title || '选择文件',
     properties: props,
@@ -781,6 +939,14 @@ ipcMain.handle('browse-file', async (_, opts = {}) => {
   })
   if (res.canceled) return opts.multi ? [] : ''
   return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
+})
+
+ipcMain.handle('render-pdf-preview', async (_, filePath) => {
+  try {
+    return renderPdfPreviewWithQuickLook(String(filePath || ''))
+  } catch (error) {
+    return { ok: false, error: error.message || String(error) }
+  }
 })
 
 ipcMain.handle('read-excel', async (_, filePath) => {

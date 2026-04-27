@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('cs', {
   getSettings:     () => ipcRenderer.invoke('get-settings'),
   saveSettings:    (cfg) => ipcRenderer.invoke('save-settings', cfg),
   browseFile:      (opts) => ipcRenderer.invoke('browse-file', opts),
+  renderPdfPreview:(path) => ipcRenderer.invoke('render-pdf-preview', path),
 
   statFile:        (path) => ipcRenderer.invoke('stat-file', path),
   revealFile:      (path) => ipcRenderer.invoke('reveal-file', path),
