@@ -98,18 +98,11 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 log=lambda _: None,
             )
 
-            self.assertEqual(len(result), 3)
+            self.assertEqual(len(result), 2)
             style_zip_path = Path(result[0])
-            zip_path = Path(result[1])
             self.assertTrue(style_zip_path.is_file())
             self.assertEqual(style_zip_path.name, "208226103201.zip")
-            self.assertTrue(zip_path.is_file())
-            self.assertEqual(Path(result[2]), exported)
-
-            with zipfile.ZipFile(zip_path) as archive:
-                names = archive.namelist()
-                self.assertTrue(any(name.endswith("深绘测试图包/208226103201/balaBR05106-72904_P.jpg") for name in names))
-                self.assertTrue(any(name.endswith("深绘测试图包/208226103201/yq.jpg") for name in names))
+            self.assertEqual(Path(result[1]), exported)
 
             with zipfile.ZipFile(style_zip_path) as archive:
                 names = archive.namelist()

@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, List, Optional
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request, build_opener, urlopen, ProxyHandler
 
 import websockets
 
@@ -502,7 +502,7 @@ class JSRunner:
 
         return newest[1] if newest else None
 
-    def _build_artifact_target_path(self, filename: str = "", source_url: str = "") -> Path:
+    def _build_artifact_target_path(self, filename: str = "", source_url: str = "", reuse_existing: bool = False) -> Path:
         raw_name = str(filename or "").strip() or self._derive_url_filename(source_url)
         clean_name = self._sanitize_artifact_filename(raw_name)
         source_suffix = ""
@@ -513,7 +513,10 @@ class JSRunner:
                 source_suffix = ""
         if source_suffix and not Path(clean_name).suffix:
             clean_name = f"{clean_name}{source_suffix}"
-        return self._ensure_unique_artifact_path(self.artifact_dir / clean_name)
+        target = self.artifact_dir / clean_name
+        if reuse_existing and target.exists():
+            return target
+        return self._ensure_unique_artifact_path(target)
 
     def _merge_runtime_shared(self, shared: Optional[dict], shared_key: str, value: Any, append: bool = False) -> dict:
         merged = dict(shared or {})
@@ -868,7 +871,15 @@ class JSRunner:
                 except Exception:
                     logger.debug("Failed to close temporary capture tab %s", temp_tab_id, exc_info=True)
 
-    def _download_url_sync(self, url: str, target_path: Path, headers: Optional[dict[str, str]] = None, timeout: int = 60) -> dict:
+    def _download_url_sync(
+        self,
+        url: str,
+        target_path: Path,
+        headers: Optional[dict[str, str]] = None,
+        timeout: int = 60,
+        no_proxy: bool = False,
+        progress_callback: Optional[Callable[[dict], None]] = None,
+    ) -> dict:
         request = Request(url, headers=headers or {})
         partial_path = target_path.with_name(f"{target_path.name}.part")
 
@@ -880,11 +891,30 @@ class JSRunner:
                 logger.debug("Failed to clean partial url download %s", partial_path, exc_info=True)
 
         try:
-            with urlopen(request, timeout=max(timeout, 1)) as response:
+            opener = build_opener(ProxyHandler({})) if no_proxy else None
+            open_url = opener.open if opener else urlopen
+            with open_url(request, timeout=max(timeout, 1)) as response:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 cleanup_partial()
                 with partial_path.open("wb") as handle:
-                    shutil.copyfileobj(response, handle, length=1024 * 1024)
+                    bytes_written = 0
+                    total_bytes = 0
+                    try:
+                        total_bytes = int(response.headers.get("Content-Length") or 0)
+                    except Exception:
+                        total_bytes = 0
+                    while True:
+                        chunk = response.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        bytes_written += len(chunk)
+                        if progress_callback is not None:
+                            progress_callback({
+                                "bytes_downloaded": bytes_written,
+                                "bytes_delta": len(chunk),
+                                "bytes_total": total_bytes,
+                            })
                 partial_path.replace(target_path)
                 content_type = response.headers.get("Content-Type", "")
                 return {
@@ -892,6 +922,8 @@ class JSRunner:
                     "path": str(target_path),
                     "finalUrl": response.geturl(),
                     "contentType": content_type,
+                    "bytes": target_path.stat().st_size if target_path.exists() else 0,
+                    "contentLength": int(response.headers.get("Content-Length") or 0) if str(response.headers.get("Content-Length") or "").isdigit() else 0,
                 }
         except HTTPError as e:
             cleanup_partial()
@@ -1355,11 +1387,13 @@ class JSRunner:
         default_retry_attempts: int = 1,
         default_retry_delay_ms: int = 0,
         default_timeout_seconds: Optional[int] = None,
+        progress_callback: Optional[Callable[[dict], None]] = None,
     ) -> dict:
         url = str((item or {}).get("url") or "").strip()
         filename = str((item or {}).get("filename") or "").strip()
         label = str((item or {}).get("label") or filename or self._derive_url_filename(url)).strip()
         browser_session = bool((item or {}).get("browser_session") or (item or {}).get("browserSession"))
+        no_proxy = bool((item or {}).get("no_proxy") or (item or {}).get("noProxy"))
         headers_raw = (item or {}).get("headers") or {}
         headers = {
             str(key): str(value)
@@ -1376,7 +1410,21 @@ class JSRunner:
                 "attempts": 0,
             }
 
-        target_path = self._build_artifact_target_path(filename, url)
+        target_path = self._build_artifact_target_path(filename, url, reuse_existing=True)
+        if target_path.is_file() and target_path.stat().st_size > 0:
+            saved_path = str(target_path)
+            if saved_path not in self.runtime_output_files:
+                self.runtime_output_files.append(saved_path)
+            return {
+                "success": True,
+                "path": saved_path,
+                "label": label or target_path.name,
+                "filename": target_path.name,
+                "url": url,
+                "attempts": 0,
+                "skipped_existing": True,
+                "bytes": target_path.stat().st_size,
+            }
         retry_attempts = int((item or {}).get("retry_attempts") or (item or {}).get("retryAttempts") or default_retry_attempts or 1)
         retry_attempts = max(retry_attempts, 1)
         retry_delay_ms = int((item or {}).get("retry_delay_ms") or (item or {}).get("retryDelayMs") or default_retry_delay_ms or 0)
@@ -1409,6 +1457,8 @@ class JSRunner:
                         target_path,
                         headers,
                         timeout_seconds,
+                        no_proxy,
+                        progress_callback,
                     )
             except Exception as e:
                 result = {
@@ -1459,6 +1509,10 @@ class JSRunner:
         retry_attempts: int = 1,
         retry_delay_ms: int = 0,
         timeout_seconds: Optional[int] = None,
+        progress_total: Optional[int] = None,
+        progress_completed_offset: int = 0,
+        progress_success_offset: int = 0,
+        progress_failed_offset: int = 0,
         progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> dict:
         normalized_items = list(items or [])
@@ -1473,40 +1527,123 @@ class JSRunner:
         results: list[Optional[dict]] = [None] * len(normalized_items)
         semaphore = asyncio.Semaphore(concurrency)
         progress_lock = asyncio.Lock()
+        loop = asyncio.get_running_loop()
+        started_at = time.monotonic()
+        last_speed_sample = {"time": started_at, "bytes": 0}
+        current_speed_bps = 0
+        active_items: dict[int, dict] = {}
         progress_state = {
-            "completed": 0,
-            "success": 0,
-            "failed": 0,
-            "total": len(normalized_items),
+            "completed": max(0, int(progress_completed_offset or 0)),
+            "success": max(0, int(progress_success_offset or 0)),
+            "failed": max(0, int(progress_failed_offset or 0)),
+            "total": max(int(progress_total or 0), len(normalized_items) + max(0, int(progress_completed_offset or 0))),
+            "completed_bytes": 0,
         }
+
+        def build_progress_snapshot(result: Optional[dict] = None) -> dict:
+            nonlocal current_speed_bps
+            now = time.monotonic()
+            active_bytes = sum(int(item.get("bytes_downloaded") or 0) for item in active_items.values())
+            observed_bytes = int(progress_state["completed_bytes"]) + active_bytes
+            elapsed = max(now - started_at, 0.001)
+            sample_elapsed = now - float(last_speed_sample["time"])
+            if sample_elapsed >= 0.5:
+                delta = max(0, observed_bytes - int(last_speed_sample["bytes"]))
+                current_speed_bps = int(delta / sample_elapsed) if sample_elapsed > 0 else 0
+                last_speed_sample["time"] = now
+                last_speed_sample["bytes"] = observed_bytes
+            active_labels = [
+                str(item.get("label") or item.get("filename") or item.get("url") or "").strip()
+                for item in active_items.values()
+                if str(item.get("label") or item.get("filename") or item.get("url") or "").strip()
+            ]
+            active_total_bytes = sum(int(item.get("bytes_total") or 0) for item in active_items.values())
+            snapshot = {
+                "download_total": progress_state["total"],
+                "download_completed": progress_state["completed"],
+                "download_success": progress_state["success"],
+                "download_failed": progress_state["failed"],
+                "download_active": progress_state["completed"] < progress_state["total"] or bool(active_items),
+                "download_current_label": active_labels[0] if active_labels else "",
+                "download_active_labels": active_labels[:6],
+                "download_active_count": len(active_items),
+                "download_bytes_completed": observed_bytes,
+                "download_total_bytes": int(progress_state["completed_bytes"]) + active_total_bytes if active_total_bytes else int(progress_state["completed_bytes"]),
+                "download_speed_bps": current_speed_bps if active_items else 0,
+                "download_elapsed_seconds": round(elapsed, 3),
+            }
+            if result is not None:
+                snapshot.update({
+                    "download_last_label": str(result.get("label") or result.get("filename") or result.get("url") or "").strip(),
+                    "download_last_success": bool(result.get("success")),
+                })
+            return snapshot
+
+        async def emit_progress(snapshot: dict) -> None:
+            if progress_callback is not None:
+                await progress_callback(snapshot)
+
+        async def mark_started(index: int, item: dict) -> None:
+            async with progress_lock:
+                active_items[index] = {
+                    "label": str((item or {}).get("label") or (item or {}).get("filename") or (item or {}).get("url") or "").strip(),
+                    "filename": str((item or {}).get("filename") or "").strip(),
+                    "url": str((item or {}).get("url") or "").strip(),
+                    "bytes_downloaded": 0,
+                    "bytes_total": 0,
+                }
+                snapshot = build_progress_snapshot()
+            await emit_progress(snapshot)
+
+        async def mark_stream(index: int, progress: dict) -> None:
+            async with progress_lock:
+                active = active_items.get(index)
+                if not active:
+                    return
+                active["bytes_downloaded"] = max(int(active.get("bytes_downloaded") or 0), int(progress.get("bytes_downloaded") or 0))
+                if int(progress.get("bytes_total") or 0) > 0:
+                    active["bytes_total"] = int(progress.get("bytes_total") or 0)
+                snapshot = build_progress_snapshot()
+            await emit_progress(snapshot)
+
+        def make_thread_progress(index: int) -> Callable[[dict], None]:
+            last_emit = {"time": 0.0, "bytes": 0}
+
+            def report(progress: dict) -> None:
+                now = time.monotonic()
+                downloaded = int((progress or {}).get("bytes_downloaded") or 0)
+                if now - float(last_emit["time"]) < 0.75 and downloaded - int(last_emit["bytes"]) < 1024 * 1024:
+                    return
+                last_emit["time"] = now
+                last_emit["bytes"] = downloaded
+                loop.call_soon_threadsafe(
+                    lambda: asyncio.create_task(mark_stream(index, dict(progress or {})))
+                )
+
+            return report
 
         async def worker(index: int, item: dict) -> None:
             async with semaphore:
+                await mark_started(index, item)
                 result = await self._download_url_item(
                     item,
                     default_retry_attempts=retry_attempts,
                     default_retry_delay_ms=retry_delay_ms,
                     default_timeout_seconds=timeout_seconds,
+                    progress_callback=make_thread_progress(index) if progress_callback is not None else None,
                 )
             results[index] = result
 
-            if progress_callback is not None:
-                async with progress_lock:
-                    progress_state["completed"] += 1
-                    if result.get("success"):
-                        progress_state["success"] += 1
-                    else:
-                        progress_state["failed"] += 1
-                    snapshot = {
-                        "download_total": progress_state["total"],
-                        "download_completed": progress_state["completed"],
-                        "download_success": progress_state["success"],
-                        "download_failed": progress_state["failed"],
-                        "download_active": progress_state["completed"] < progress_state["total"],
-                        "download_last_label": str(result.get("label") or result.get("filename") or result.get("url") or "").strip(),
-                        "download_last_success": bool(result.get("success")),
-                    }
-                await progress_callback(snapshot)
+            async with progress_lock:
+                active_items.pop(index, None)
+                progress_state["completed"] += 1
+                if result.get("success"):
+                    progress_state["success"] += 1
+                else:
+                    progress_state["failed"] += 1
+                progress_state["completed_bytes"] += int(result.get("bytes") or 0)
+                snapshot = build_progress_snapshot(result)
+            await emit_progress(snapshot)
 
         await asyncio.gather(*(worker(index, item) for index, item in enumerate(normalized_items)))
         finalized = [dict(item or {}) for item in results]
@@ -1943,9 +2080,18 @@ class JSRunner:
                             retry_delay_ms = int(meta.get("retry_delay_ms") or meta.get("retryDelayMs") or 0)
                             timeout_seconds_raw = meta.get("timeout_seconds") or meta.get("timeoutSeconds") or meta.get("timeout")
                             timeout_seconds = int(timeout_seconds_raw) if timeout_seconds_raw else None
+                            progress_total_raw = meta.get("progress_total") or meta.get("download_progress_total")
+                            progress_completed_offset = int(meta.get("progress_completed_offset") or meta.get("download_completed_offset") or 0)
+                            progress_success_offset = int(meta.get("progress_success_offset") or meta.get("download_success_offset") or 0)
+                            progress_failed_offset = int(meta.get("progress_failed_offset") or meta.get("download_failed_offset") or 0)
+                            progress_total = int(progress_total_raw) if progress_total_raw else len(items) + progress_completed_offset
 
                             await cooperate("before_download_urls", page, phase, shared, {
-                                "download_item_total": len(items),
+                                "download_item_total": progress_total,
+                                "download_batch_total": len(items),
+                                "download_completed": progress_completed_offset,
+                                "download_success": progress_success_offset,
+                                "download_failed": progress_failed_offset,
                                 "download_concurrency": concurrency,
                                 "download_retry_attempts": retry_attempts,
                             })
@@ -1960,6 +2106,10 @@ class JSRunner:
                                 retry_attempts=retry_attempts,
                                 retry_delay_ms=retry_delay_ms,
                                 timeout_seconds=timeout_seconds,
+                                progress_total=progress_total,
+                                progress_completed_offset=progress_completed_offset,
+                                progress_success_offset=progress_success_offset,
+                                progress_failed_offset=progress_failed_offset,
                                 progress_callback=report_download_progress,
                             )
                             shared = self._merge_runtime_shared(shared, shared_key, download_result, append=shared_append)

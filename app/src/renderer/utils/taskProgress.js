@@ -94,6 +94,25 @@ function clampPercent(rawValue, fallbackValue = 0) {
   return Math.min(100, Math.max(0, Number(candidate.toFixed(1))))
 }
 
+function formatBytes(bytes) {
+  const value = Number(bytes)
+  if (!Number.isFinite(value) || value <= 0) return ''
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let size = value
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  const digits = size >= 100 || unitIndex === 0 ? 0 : size >= 10 ? 1 : 2
+  return `${size.toFixed(digits)} ${units[unitIndex]}`
+}
+
+function formatSpeed(bytesPerSecond) {
+  const label = formatBytes(bytesPerSecond)
+  return label ? `${label}/s` : ''
+}
+
 function getStatusLabel(status) {
   const normalized = normalizeKeyPart(status)
   if (normalized === 'pausing') return '暂停中'
@@ -513,6 +532,10 @@ function buildShenhuiPrepareUploadPackageProgress(live = {}, liveStatus = '', is
   const downloadConcurrency = toInt(live?.download_concurrency)
   const downloadRetryAttempts = toInt(live?.download_retry_attempts)
   const downloadLastLabel = String(live?.download_last_label || '').trim()
+  const downloadCurrentLabel = String(live?.download_current_label || '').trim()
+  const downloadActiveCount = toInt(live?.download_active_count)
+  const downloadSpeed = formatSpeed(live?.download_speed_bps)
+  const downloadBytes = formatBytes(live?.download_bytes_completed)
   const downloadStarted = Boolean(live?.download_started) || downloadTotal > 0 || normalizedPhase === 'finalize_all'
   const downloadActive = Boolean(live?.download_active) || (downloadStarted && downloadTotal > 0 && downloadCompleted < downloadTotal)
 
@@ -559,8 +582,15 @@ function buildShenhuiPrepareUploadPackageProgress(live = {}, liveStatus = '', is
   const downloadCaptionParts = []
   if (downloadSuccess > 0) downloadCaptionParts.push(`成功 ${downloadSuccess}`)
   if (downloadFailed > 0) downloadCaptionParts.push(`失败 ${downloadFailed}`)
+  if (downloadSpeed) downloadCaptionParts.push(downloadSpeed)
+  if (downloadBytes) downloadCaptionParts.push(downloadBytes)
   if (downloadConcurrency > 0) downloadCaptionParts.push(`并发 ${downloadConcurrency}`)
   if (downloadRetryAttempts > 1) downloadCaptionParts.push(`重试 ${downloadRetryAttempts} 次`)
+  const downloadDetail = downloadCurrentLabel
+    ? `正在下载 ${downloadCurrentLabel}${downloadActiveCount > 1 ? ` 等 ${downloadActiveCount} 个` : ''}`
+    : downloadLastLabel
+      ? `最近文件 ${downloadLastLabel}`
+      : (currentCode ? `最近款号 ${currentCode}` : '')
 
   const tracks = [
     buildTrack({
@@ -584,12 +614,12 @@ function buildShenhuiPrepareUploadPackageProgress(live = {}, liveStatus = '', is
       percentValue: downloadPercent,
       percentLabel: downloadStarted ? `${downloadPercent}%` : '待开始',
       caption: downloadCaptionParts.join(' · ') || (downloadStarted ? '正在汇总下载结果' : '找款完成后进入下载阶段'),
-      detail: downloadLastLabel ? `最近文件 ${downloadLastLabel}` : (currentCode ? `最近款号 ${currentCode}` : ''),
+      detail: downloadDetail,
       status: downloadStatus,
       tone: 'secondary',
       state: downloadState,
       ariaLabel: '下载任务进度',
-      ariaText: [downloadMain, downloadStarted ? `${downloadPercent}%` : '待开始', downloadCaptionParts.join(' · '), downloadLastLabel].filter(Boolean).join('，'),
+      ariaText: [downloadMain, downloadStarted ? `${downloadPercent}%` : '待开始', downloadCaptionParts.join(' · '), downloadDetail].filter(Boolean).join('，'),
     }),
   ]
 

@@ -7,7 +7,7 @@
   const SEARCH_SCOPE = '["filename", "tag"]'
   const SEARCH_PAGE_SIZE = 100
   const FOLDER_PAGE_SIZE = 200
-  const DEFAULT_DOWNLOAD_CONCURRENCY = 6
+  const DEFAULT_DOWNLOAD_CONCURRENCY = 8
   const MIN_DOWNLOAD_CONCURRENCY = 1
   const MAX_DOWNLOAD_CONCURRENCY = 32
   const DOWNLOAD_RETRY_ATTEMPTS = 5
@@ -63,6 +63,55 @@
       deduped.push(value)
     }
     return deduped
+  }
+
+  function normalizeFullpathKey(value) {
+    return String(value || '').replace(/\\/g, '/').replace(/\s+/g, ' ').trim().toLowerCase()
+  }
+
+  function normalizeRetryFailedPlan(rawValue) {
+    const rows = Array.isArray(rawValue?.rows)
+      ? rawValue.rows
+      : Array.isArray(rawValue)
+        ? rawValue
+        : []
+    const paths = []
+    const pathSet = new Set()
+    const codes = []
+    const seenCodes = new Set()
+
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue
+      const status = compact(row['下载结果'])
+      if (!status || status === '已下载' || status === '已跳过') continue
+      const fullpath = compact(row['云盘路径'])
+      const key = normalizeFullpathKey(fullpath)
+      if (!key || pathSet.has(key)) continue
+      pathSet.add(key)
+      paths.push(key)
+
+      const code = compact(row['输入编码'] || row['输入款号'])
+      if (code && !seenCodes.has(code)) {
+        seenCodes.add(code)
+        codes.push(code)
+      }
+    }
+
+    return {
+      active: paths.length > 0,
+      paths,
+      codes,
+      failedCount: paths.length,
+    }
+  }
+
+  function filterRetryFailedItems(items, retryFailedPaths) {
+    const pathSet = retryFailedPaths instanceof Set
+      ? retryFailedPaths
+      : new Set(Array.isArray(retryFailedPaths) ? retryFailedPaths : [])
+    if (!pathSet.size) return Array.isArray(items) ? items : []
+    return (Array.isArray(items) ? items : [])
+      .filter(item => pathSet.has(normalizeFullpathKey(item?.fullpath || '')))
   }
 
   function classifyCode(code) {
@@ -416,6 +465,11 @@
         concurrency: Number(options.concurrency || 1),
         retry_attempts: Number(options.retry_attempts || 1),
         retry_delay_ms: Number(options.retry_delay_ms || 0),
+        timeout_seconds: Number(options.timeout_seconds || 0) || undefined,
+        progress_total: Number(options.progress_total || 0) || undefined,
+        progress_completed_offset: Number(options.progress_completed_offset || 0) || 0,
+        progress_success_offset: Number(options.progress_success_offset || 0) || 0,
+        progress_failed_offset: Number(options.progress_failed_offset || 0) || 0,
         next_phase: nextPhaseName,
         sleep_ms: options.sleep_ms || 0,
         shared: newShared,
@@ -680,12 +734,13 @@
       ...options,
       sourceType,
     })
-    const candidates = candidateResult.items
+    const candidates = filterRetryFailedItems(candidateResult.items, options.retryFailedPaths)
 
     if (!candidates.length) {
       const noteParts = [`搜索结果 ${candidateResult.searchCount} 条`, `款号文件夹 ${candidateResult.folderCount} 个`]
       if (candidateResult.directAssetCount) noteParts.push(`直接素材 ${candidateResult.directAssetCount} 个`)
       if (candidateResult.folderErrors.length) noteParts.push(`列目录失败 ${candidateResult.folderErrors.length} 个`)
+      if (Array.isArray(options.retryFailedPaths) && options.retryFailedPaths.length) noteParts.push(`失败清单命中 0 个`)
       rows.push(rowForNotice(inputCode, sourceType, '未匹配到可处理素材', '未匹配到素材', noteParts.join('；')))
       for (const error of candidateResult.folderErrors.slice(0, 5)) {
         rows.push(rowForNotice(inputCode, sourceType, '款号文件夹列目录失败', '已跳过', error))
@@ -729,6 +784,7 @@
           label: `${SOURCE_LABELS[sourceType] || sourceType} / ${inputCode} / ${item?.filename || runtimeFilename}`,
           headers: buildDownloadHeaders(),
           timeout_seconds: DOWNLOAD_TIMEOUT_SECONDS,
+          no_proxy: true,
         })
       } catch (error) {
         rows.push({
@@ -775,11 +831,55 @@
     })
   }
 
+  function summarizeDownloadResult(downloadResult) {
+    const items = Array.isArray(downloadResult?.items) ? downloadResult.items : []
+    return {
+      completed: items.length,
+      success: items.filter(item => item?.success).length,
+      failed: items.filter(item => !item?.success).length,
+    }
+  }
+
+  function advanceAfterCode(codes, codeIndex, currentCode, nextShared, allRows) {
+    const nextIndex = codeIndex + 1
+    const nextCode = String(codes[nextIndex] || '')
+    if (nextCode) {
+      return nextPhase('plan_code', 0, {
+        ...nextShared,
+        code_index: nextIndex,
+        result_rows: allRows,
+        pending_download_items: [],
+        pending_code_rows: [],
+        last_code_download_result: null,
+        current_code: '',
+        search_hash: '',
+        current_exec_no: nextIndex + 1,
+        current_buyer_id: nextCode,
+      })
+    }
+
+    return nextPhase('finalize_all', 0, {
+      ...nextShared,
+      result_rows: allRows,
+      pending_download_items: [],
+      pending_code_rows: [],
+      last_code_download_result: null,
+      current_code: currentCode,
+      current_exec_no: codes.length,
+      current_buyer_id: currentCode,
+      search_total_codes: codes.length,
+      search_completed_codes: codes.length,
+    })
+  }
+
   function exposeHelpers() {
     if (!testExports || typeof testExports !== 'object') return
     Object.assign(testExports, {
       parseCloudPath,
       normalizeCodes,
+      normalizeRetryFailedPlan,
+      normalizeFullpathKey,
+      filterRetryFailedItems,
       classifyCode,
       getGroupCode,
       getExt,
@@ -804,6 +904,7 @@
       collectCandidateAssets,
       buildRuntimeFilename,
       finalizeRows,
+      summarizeDownloadResult,
     })
   }
 
@@ -817,8 +918,10 @@
     if (phase === 'init' || phase === 'main') {
       const stillPath = parseCloudPath(params.still_cloud_path)
       const modelPath = parseCloudPath(params.model_cloud_path)
-      const codes = normalizeCodes(params.item_codes)
-      if (!codes.length) throw new Error('请至少输入一个款号或款色编码')
+      const retryPlan = normalizeRetryFailedPlan(params.retry_failed_file)
+      const manualCodes = normalizeCodes(params.item_codes)
+      const codes = retryPlan.active ? retryPlan.codes : manualCodes
+      if (!codes.length) throw new Error('请至少输入一个款号/款色编码，或选择上一轮结果表重跑失败清单')
 
       const stillMount = await resolveMountId(stillPath.mountName)
       const modelMount = compact(modelPath.mountName) === compact(stillPath.mountName)
@@ -851,16 +954,24 @@
         folder_scan_depth: folderScanDepth,
         download_concurrency: downloadConcurrency,
         download_retry_attempts: DOWNLOAD_RETRY_ATTEMPTS,
+        retry_failed_paths: retryPlan.paths,
+        retry_failed_count: retryPlan.failedCount,
+        retry_failed_only: retryPlan.active,
         target_codes: codes,
         code_index: 0,
         result_rows: [],
         pending_download_items: [],
+        pending_code_rows: [],
+        download_total_files: 0,
+        download_completed_files: 0,
+        download_success_files: 0,
+        download_failed_files: 0,
         total_rows: codes.length,
         search_total_codes: codes.length,
         search_completed_codes: 0,
         current_exec_no: 1,
         current_buyer_id: codes[0] || '',
-        current_store: '深绘上新图包整理',
+        current_store: retryPlan.active ? `深绘上新图包整理 / 重跑失败 ${retryPlan.failedCount}` : '深绘上新图包整理',
       })
     }
 
@@ -921,6 +1032,7 @@
         {
           duplicateMode: shared.duplicate_mode,
           folderScanDepth: shared.folder_scan_depth,
+          retryFailedPaths: shared.retry_failed_paths,
         },
       )
 
@@ -928,74 +1040,89 @@
         ...shared,
         current_exec_no: codeIndex + 1,
         current_buyer_id: currentCode,
-        current_store: `深绘上新图包整理 / ${getGroupCode(currentCode)}`,
+        current_store: `深绘上新图包整理 / ${getGroupCode(currentCode)}${shared.retry_failed_only ? ' / 重跑失败' : ''}`,
         search_total_codes: codes.length,
         search_completed_codes: codeIndex + 1,
       }
 
-      const allRows = [...(Array.isArray(shared.result_rows) ? shared.result_rows : []), ...plan.rows]
-      const allDownloadItems = [...(Array.isArray(shared.pending_download_items) ? shared.pending_download_items : []), ...plan.downloadItems]
-      const nextIndex = codeIndex + 1
-      const nextCode = String(codes[nextIndex] || '')
-
-      if (nextCode) {
-        return nextPhase('plan_code', 0, {
-          ...baseShared,
-          code_index: nextIndex,
-          result_rows: allRows,
-          pending_download_items: allDownloadItems,
-          current_code: '',
-          search_hash: '',
-          current_exec_no: nextIndex + 1,
-          current_buyer_id: nextCode,
-        })
+      const previousRows = Array.isArray(shared.result_rows) ? shared.result_rows : []
+      const nextDownloadTotal = Number(shared.download_total_files || 0) + plan.downloadItems.length
+      const codeShared = {
+        ...baseShared,
+        download_total_files: nextDownloadTotal,
+        download_completed_files: Number(shared.download_completed_files || 0),
+        download_success_files: Number(shared.download_success_files || 0),
+        download_failed_files: Number(shared.download_failed_files || 0),
       }
 
-      if (!allDownloadItems.length) {
-        return complete(allRows, {
-          ...baseShared,
+      if (!plan.downloadItems.length) {
+        const allRows = [...previousRows, ...plan.rows]
+        return advanceAfterCode(codes, codeIndex, currentCode, {
+          ...codeShared,
           result_rows: allRows,
           pending_download_items: [],
-          current_code: currentCode,
-          current_exec_no: codes.length,
-          current_buyer_id: currentCode,
-          search_total_codes: codes.length,
-          search_completed_codes: codes.length,
-        })
+          pending_code_rows: [],
+        }, allRows)
       }
 
       return downloadUrls(
-        allDownloadItems,
-        'finalize_all',
+        plan.downloadItems,
+        'finalize_code_download',
         {
-          shared_key: 'last_download_result',
+          shared_key: 'last_code_download_result',
           strict: false,
           concurrency: normalizeDownloadConcurrency(shared.download_concurrency),
           retry_attempts: DOWNLOAD_RETRY_ATTEMPTS,
           retry_delay_ms: DOWNLOAD_RETRY_DELAY_MS,
           timeout_seconds: DOWNLOAD_TIMEOUT_SECONDS,
+          progress_total: nextDownloadTotal,
+          progress_completed_offset: Number(shared.download_completed_files || 0),
+          progress_success_offset: Number(shared.download_success_files || 0),
+          progress_failed_offset: Number(shared.download_failed_files || 0),
         },
         {
-          ...baseShared,
-          result_rows: allRows,
-          pending_download_items: allDownloadItems,
+          ...codeShared,
+          result_rows: previousRows,
+          pending_code_rows: plan.rows,
+          pending_download_items: plan.downloadItems,
           current_code: currentCode,
-          current_exec_no: codes.length,
+          current_exec_no: codeIndex + 1,
           current_buyer_id: currentCode,
-          search_total_codes: codes.length,
-          search_completed_codes: codes.length,
           download_concurrency: normalizeDownloadConcurrency(shared.download_concurrency),
           download_retry_attempts: DOWNLOAD_RETRY_ATTEMPTS,
+          batch_no: 1,
+          total_batches: plan.downloadItems.length,
         },
       )
     }
 
-    if (phase === 'finalize_all') {
-      const allRows = finalizeRows(shared.result_rows, shared.last_download_result)
-      return complete(allRows, {
+    if (phase === 'finalize_code_download') {
+      const codes = Array.isArray(shared.target_codes) ? shared.target_codes : []
+      const codeIndex = Number(shared.code_index || 0)
+      const currentCode = String(shared.current_code || codes[codeIndex] || '')
+      const finalizedRows = finalizeRows(shared.pending_code_rows, shared.last_code_download_result)
+      const summary = summarizeDownloadResult(shared.last_code_download_result)
+      const allRows = [...(Array.isArray(shared.result_rows) ? shared.result_rows : []), ...finalizedRows]
+      const nextShared = {
         ...shared,
         result_rows: allRows,
         pending_download_items: [],
+        pending_code_rows: [],
+        download_completed_files: Number(shared.download_completed_files || 0) + summary.completed,
+        download_success_files: Number(shared.download_success_files || 0) + summary.success,
+        download_failed_files: Number(shared.download_failed_files || 0) + summary.failed,
+        batch_no: 0,
+        total_batches: 0,
+      }
+
+      return advanceAfterCode(codes, codeIndex, currentCode, nextShared, allRows)
+    }
+
+    if (phase === 'finalize_all') {
+      return complete(Array.isArray(shared.result_rows) ? shared.result_rows : [], {
+        ...shared,
+        pending_download_items: [],
+        pending_code_rows: [],
       })
     }
 

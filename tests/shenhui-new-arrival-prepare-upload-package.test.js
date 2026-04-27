@@ -334,10 +334,43 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
 test('normalizeDownloadConcurrency defaults and clamps the large-image download setting', async () => {
   const helpers = await loadExports()
 
-  assert.equal(helpers.normalizeDownloadConcurrency(''), 6)
+  assert.equal(helpers.normalizeDownloadConcurrency(''), 8)
   assert.equal(helpers.normalizeDownloadConcurrency('20'), 20)
   assert.equal(helpers.normalizeDownloadConcurrency('0'), 1)
   assert.equal(helpers.normalizeDownloadConcurrency('128'), 32)
+})
+
+test('normalizeRetryFailedPlan extracts only retryable failed cloud paths', async () => {
+  const helpers = await loadExports()
+
+  const plan = helpers.normalizeRetryFailedPlan({
+    rows: [
+      { '输入编码': '208226111002', '云盘路径': '模拍/208226111002/a.jpg', '下载结果': '已下载' },
+      { '输入编码': '208226111002', '云盘路径': '模拍/208226111002/b.jpg', '下载结果': '下载失败' },
+      { '输入编码': '208226111003', '云盘路径': '平拍/208226111003/c.jpg', '下载结果': '获取下载链接失败' },
+      { '输入编码': '208226111003', '云盘路径': '', '下载结果': '下载失败' },
+      { '输入编码': '208226111004', '云盘路径': '平拍/208226111004/d.psd', '下载结果': '已跳过' },
+    ],
+  })
+
+  assert.equal(plan.active, true)
+  assert.equal(plan.failedCount, 2)
+  assert.deepEqual([...plan.codes], ['208226111002', '208226111003'])
+  assert.deepEqual([...plan.paths], ['模拍/208226111002/b.jpg', '平拍/208226111003/c.jpg'])
+})
+
+test('filterRetryFailedItems keeps only exact failed cloud paths during rerun', async () => {
+  const helpers = await loadExports()
+  const items = [
+    { filename: 'a.jpg', fullpath: '模拍/208226111002/a.jpg' },
+    { filename: 'b.jpg', fullpath: '模拍/208226111002/b.jpg' },
+  ]
+
+  assert.deepEqual(
+    helpers.filterRetryFailedItems(items, ['模拍/208226111002/b.jpg']).map(item => item.filename),
+    ['b.jpg'],
+  )
+  assert.deepEqual(helpers.filterRetryFailedItems(items, []).map(item => item.filename), ['a.jpg', 'b.jpg'])
 })
 
 test('finalizeRows maps download results only onto rows that were scheduled for download', async () => {

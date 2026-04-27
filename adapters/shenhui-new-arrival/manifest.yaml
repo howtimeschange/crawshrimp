@@ -45,9 +45,14 @@ tasks:
         type: textarea
         label: 款号或款色编码
         rows: 6
-        required: true
+        required: false
         placeholder: "一行一个，例如：\n208226102001\n208226103201-00316"
-        hint: 支持款号和款色编码；最终按款号文件夹合并模特图与静物图
+        hint: 支持款号和款色编码；如选择下方失败结果表，可留空并只重跑失败素材
+      - id: retry_failed_file
+        type: file_excel
+        label: 失败结果表（可选）
+        required: false
+        hint: 选择上一轮“整理结果”Excel 后，只重跑其中下载失败/获取链接失败且有云盘路径的素材
       - id: duplicate_mode
         type: select
         label: 重复素材处理
@@ -71,12 +76,12 @@ tasks:
       - id: download_concurrency
         type: number
         label: 下载并发数
-        default: 6
+        default: 8
         min: 1
         max: 32
         step: 1
         ui_span: third
-        hint: 默认偏稳；图片较大或云盘限流时建议保持 4-8，网络稳定后再提高
+        hint: 默认 8；图片较大或云盘限流时可降到 4-6，网络稳定可提高到 10
       - id: package_name
         type: text
         label: 导出包名称

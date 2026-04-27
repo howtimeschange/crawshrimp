@@ -46,7 +46,7 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)
             attempts = {"https://example.com/a.jpg": 0}
 
-            def fake_download(url, target_path, headers=None, timeout=60):
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
                 attempts[url] += 1
                 if attempts[url] < 3:
                     return {"success": False, "error": "temporary failure", "path": str(target_path)}
@@ -77,7 +77,7 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             }
             lock = threading.Lock()
 
-            def fake_download(url, target_path, headers=None, timeout=60):
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
                 with lock:
                     state["active"] += 1
                     state["max_active"] = max(state["max_active"], state["active"])
@@ -106,7 +106,7 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)
             seen_timeouts = []
 
-            def fake_download(url, target_path, headers=None, timeout=60):
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
                 seen_timeouts.append(timeout)
                 Path(target_path).parent.mkdir(parents=True, exist_ok=True)
                 Path(target_path).write_bytes(b"ok")
@@ -124,15 +124,38 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(seen_timeouts, [120])
 
+    async def test_download_urls_skips_existing_target_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+            target = Path(tmpdir) / "a.jpg"
+            target.write_bytes(b"already")
+            calls = 0
+
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
+                nonlocal calls
+                calls += 1
+                return {"success": False, "path": str(target_path), "error": "should not download"}
+
+            runner._download_url_sync = fake_download  # type: ignore[method-assign]
+
+            result = await runner.download_urls(
+                [{"url": "https://example.com/a.jpg", "filename": "a.jpg"}],
+                concurrency=1,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(calls, 0)
+            self.assertTrue(result["items"][0]["skipped_existing"])
+
     async def test_download_urls_reports_progress_callback_snapshots(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)
             snapshots = []
 
-            def fake_download(url, target_path, headers=None, timeout=60):
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
                 Path(target_path).parent.mkdir(parents=True, exist_ok=True)
                 Path(target_path).write_bytes(url.encode("utf-8"))
-                return {"success": True, "path": str(target_path)}
+                return {"success": True, "path": str(target_path), "bytes": target_path.stat().st_size}
 
             runner._download_url_sync = fake_download  # type: ignore[method-assign]
 
@@ -146,12 +169,49 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             result = await runner.download_urls(items, concurrency=2, progress_callback=on_progress)
 
             self.assertTrue(result["ok"])
-            self.assertEqual(len(snapshots), 3)
-            self.assertEqual([snap["download_completed"] for snap in snapshots], [1, 2, 3])
+            self.assertGreaterEqual(len(snapshots), 3)
+            self.assertEqual([snap["download_completed"] for snap in snapshots if snap.get("download_last_label")], [1, 2, 3])
             self.assertEqual(snapshots[-1]["download_total"], 3)
             self.assertEqual(snapshots[-1]["download_success"], 3)
             self.assertEqual(snapshots[-1]["download_failed"], 0)
             self.assertFalse(snapshots[-1]["download_active"])
+            self.assertIn("download_current_label", snapshots[0])
+            self.assertGreater(snapshots[-1]["download_bytes_completed"], 0)
+
+    async def test_download_urls_reports_cumulative_progress_offsets(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+            snapshots = []
+
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
+                Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(target_path).write_bytes(b"ok")
+                return {"success": True, "path": str(target_path), "bytes": 2}
+
+            runner._download_url_sync = fake_download  # type: ignore[method-assign]
+
+            async def on_progress(payload):
+                snapshots.append(dict(payload))
+
+            result = await runner.download_urls(
+                [
+                    {"url": "https://example.com/a.jpg", "filename": "a.jpg"},
+                    {"url": "https://example.com/b.jpg", "filename": "b.jpg"},
+                ],
+                concurrency=1,
+                progress_total=5,
+                progress_completed_offset=3,
+                progress_success_offset=2,
+                progress_failed_offset=1,
+                progress_callback=on_progress,
+            )
+
+            self.assertTrue(result["ok"])
+            completion = [snap for snap in snapshots if snap.get("download_last_label")]
+            self.assertEqual([snap["download_completed"] for snap in completion], [4, 5])
+            self.assertEqual(snapshots[-1]["download_total"], 5)
+            self.assertEqual(snapshots[-1]["download_success"], 4)
+            self.assertEqual(snapshots[-1]["download_failed"], 1)
 
 
 if __name__ == "__main__":

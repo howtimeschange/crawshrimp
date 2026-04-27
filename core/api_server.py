@@ -775,7 +775,6 @@ def _finalize_shenhui_new_arrival_outputs(
         successful_rows.append((row, local_path))
 
     style_zip_paths = []
-    zip_path = None
     if successful_rows:
         for row, local_path in successful_rows:
             group_code = _safe_local_name(
@@ -811,18 +810,8 @@ def _finalize_shenhui_new_arrival_outputs(
         if style_zip_paths:
             log(f"Shenhui DeepDraw style ZIPs created: {len(style_zip_paths)}")
 
-        zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-            for file_path in package_root.rglob("*"):
-                if not file_path.is_file():
-                    continue
-                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
-        log(f"Shenhui package created: {zip_path}")
-
     export_folder = str(run_params.get("export_folder") or "").strip()
     runtime_refs = [str(path) for path in style_zip_paths if str(path or "").strip()]
-    if zip_path:
-        runtime_refs.append(str(zip_path))
     runtime_refs.extend(str(path) for path in exported_files or [] if str(path or "").strip())
     final_refs = runtime_refs
 
@@ -831,17 +820,13 @@ def _finalize_shenhui_new_arrival_outputs(
         target_root.mkdir(parents=True, exist_ok=True)
         external_refs = []
 
-        if successful_rows and package_root.exists():
-            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
-            shutil.copytree(package_root, external_dir)
+        if successful_rows:
             for style_zip_path in style_zip_paths:
                 if style_zip_path.exists():
                     copied_style_zip = _copy_file_to_unique_target(style_zip_path, target_root / style_zip_path.name)
                     external_refs.append(str(copied_style_zip))
-            if zip_path and zip_path.exists():
-                copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
-                external_refs.append(str(copied_zip))
-            log(f"Shenhui package copied to export folder: {external_dir}")
+            if style_zip_paths:
+                log(f"Shenhui style ZIPs copied to export folder: {target_root}")
 
         for file_path in exported_files or []:
             source = Path(str(file_path or "")).expanduser()
@@ -853,10 +838,13 @@ def _finalize_shenhui_new_arrival_outputs(
         if external_refs:
             final_refs = external_refs
 
-    if zip_path and zip_path.exists():
+    if successful_rows:
         _cleanup_shenhui_runtime_artifacts(runtime_files, package_root, pdf_work_dir)
-    elif pdf_work_dir.exists():
-        shutil.rmtree(pdf_work_dir, ignore_errors=True)
+    else:
+        if package_root.exists():
+            shutil.rmtree(package_root, ignore_errors=True)
+        if pdf_work_dir.exists():
+            shutil.rmtree(pdf_work_dir, ignore_errors=True)
 
     return final_refs
 
@@ -1346,6 +1334,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         download_started = bool(run_control.get('download_started')) if run_control else bool(download_total > 0)
         download_active = bool(run_control.get('download_active')) if run_control else bool((payload or {}).get('download_active'))
         download_last_label = str((run_control.get('download_last_label') if run_control else (payload or {}).get('download_last_label')) or '').strip()
+        download_current_label = str((run_control.get('download_current_label') if run_control else (payload or {}).get('download_current_label')) or '').strip()
+        download_active_labels = run_control.get('download_active_labels') if run_control else (payload or {}).get('download_active_labels')
+        if not isinstance(download_active_labels, list):
+            download_active_labels = []
+        download_active_labels = [str(item or '').strip() for item in download_active_labels if str(item or '').strip()]
+        download_active_count = int(run_control.get('download_active_count') or 0) if run_control else int((payload or {}).get('download_active_count') or 0)
+        download_speed_bps = int(run_control.get('download_speed_bps') or 0) if run_control else int((payload or {}).get('download_speed_bps') or 0)
+        download_bytes_completed = int(run_control.get('download_bytes_completed') or 0) if run_control else int((payload or {}).get('download_bytes_completed') or 0)
+        download_total_bytes = int(run_control.get('download_total_bytes') or 0) if run_control else int((payload or {}).get('download_total_bytes') or 0)
 
         if run_control and total_rows:
             run_control['total_rows'] = total_rows
@@ -1384,6 +1381,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             "download_started": download_started,
             "download_active": download_active,
             "download_last_label": download_last_label,
+            "download_current_label": download_current_label,
+            "download_active_labels": download_active_labels,
+            "download_active_count": download_active_count,
+            "download_speed_bps": download_speed_bps,
+            "download_bytes_completed": download_bytes_completed,
+            "download_total_bytes": download_total_bytes,
         }
 
     async def wait_for_control(payload: Optional[dict] = None):
@@ -1396,14 +1399,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         if kind == 'before_download_urls':
             download_total = int(payload.get('download_item_total') or 0)
             run_control['download_total'] = download_total
-            run_control['download_completed'] = 0
-            run_control['download_success'] = 0
-            run_control['download_failed'] = 0
+            run_control['download_completed'] = int(payload.get('download_completed') or 0)
+            run_control['download_success'] = int(payload.get('download_success') or 0)
+            run_control['download_failed'] = int(payload.get('download_failed') or 0)
             run_control['download_concurrency'] = int(payload.get('download_concurrency') or 0)
             run_control['download_retry_attempts'] = int(payload.get('download_retry_attempts') or 0)
             run_control['download_started'] = download_total > 0
             run_control['download_active'] = download_total > 0
             run_control['download_last_label'] = ''
+            run_control['download_current_label'] = ''
+            run_control['download_active_labels'] = []
+            run_control['download_active_count'] = 0
+            run_control['download_speed_bps'] = 0
+            run_control['download_bytes_completed'] = int(payload.get('download_bytes_completed') or 0)
+            run_control['download_total_bytes'] = int(payload.get('download_total_bytes') or 0)
         elif kind == 'download_urls_progress':
             if 'download_total' in payload:
                 run_control['download_total'] = int(payload.get('download_total') or 0)
@@ -1417,9 +1426,26 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 run_control['download_active'] = bool(payload.get('download_active'))
             if 'download_last_label' in payload:
                 run_control['download_last_label'] = str(payload.get('download_last_label') or '').strip()
+            if 'download_current_label' in payload:
+                run_control['download_current_label'] = str(payload.get('download_current_label') or '').strip()
+            if 'download_active_labels' in payload:
+                labels = payload.get('download_active_labels') or []
+                run_control['download_active_labels'] = [str(item or '').strip() for item in labels if str(item or '').strip()] if isinstance(labels, list) else []
+            if 'download_active_count' in payload:
+                run_control['download_active_count'] = int(payload.get('download_active_count') or 0)
+            if 'download_speed_bps' in payload:
+                run_control['download_speed_bps'] = int(payload.get('download_speed_bps') or 0)
+            if 'download_bytes_completed' in payload:
+                run_control['download_bytes_completed'] = int(payload.get('download_bytes_completed') or 0)
+            if 'download_total_bytes' in payload:
+                run_control['download_total_bytes'] = int(payload.get('download_total_bytes') or 0)
             run_control['download_started'] = bool(run_control.get('download_total') or run_control.get('download_completed'))
         elif kind == 'before_phase' and str(payload.get('phase') or '').strip() == 'finalize_all':
             run_control['download_active'] = False
+            run_control['download_current_label'] = ''
+            run_control['download_active_labels'] = []
+            run_control['download_active_count'] = 0
+            run_control['download_speed_bps'] = 0
 
         records = int(payload.get('records') or 0)
         progress = build_progress(payload)
@@ -1451,6 +1477,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'download_started': progress['download_started'],
             'download_active': progress['download_active'],
             'download_last_label': progress['download_last_label'],
+            'download_current_label': progress['download_current_label'],
+            'download_active_labels': progress['download_active_labels'],
+            'download_active_count': progress['download_active_count'],
+            'download_speed_bps': progress['download_speed_bps'],
+            'download_bytes_completed': progress['download_bytes_completed'],
+            'download_total_bytes': progress['download_total_bytes'],
         }
 
         # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。
@@ -1477,12 +1509,17 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             progress['total'] > 0
         ):
             download_total = int(payload.get('download_item_total') or 0)
+            download_batch_total = int(payload.get('download_batch_total') or 0)
             concurrency = int(payload.get('download_concurrency') or 0)
             retry_attempts = int(payload.get('download_retry_attempts') or 0)
-            marker = f"{progress['current']}::{download_total}::{concurrency}::{retry_attempts}"
+            marker = f"{progress['current']}::{download_total}::{download_batch_total}::{concurrency}::{retry_attempts}"
             if marker != str(run_control.get('last_download_marker') or ''):
                 target_text = f" · 目标 {progress['buyer_id']}" if progress['buyer_id'] else ""
-                count_text = f" · {download_total} 个文件" if download_total > 0 else ""
+                count_text = (
+                    f" · 本批 {download_batch_total} 个文件 · 累计 {download_total} 个文件"
+                    if download_batch_total > 0 and download_total > download_batch_total
+                    else (f" · {download_total} 个文件" if download_total > 0 else "")
+                )
                 concurrency_text = f" · 并发 {concurrency}" if concurrency > 0 else ""
                 retry_text = f" · 重试 {retry_attempts} 次" if retry_attempts > 1 else ""
                 log(f"[download] 第 {progress['current']}/{progress['total']} 条{target_text}{count_text}{concurrency_text}{retry_text}，开始下载")
