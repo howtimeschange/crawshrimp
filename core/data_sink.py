@@ -107,6 +107,18 @@ def stop_run(run_id: int, records_count: int, output_files: List[str], error: st
         conn.commit()
 
 
+def stop_orphaned_active_runs(error: str = "任务运行时后端已重启，已自动标记为停止") -> int:
+    """Mark runs that cannot have an in-memory worker after backend startup as stopped."""
+    with _get_conn() as conn:
+        cur = conn.execute("""
+            UPDATE task_runs
+            SET status='stopped', finished_at=?, error=COALESCE(NULLIF(error, ''), ?)
+            WHERE status IN ('running', 'pausing', 'paused', 'stopping')
+        """, (datetime.now().isoformat(), error))
+        conn.commit()
+        return int(cur.rowcount or 0)
+
+
 def get_latest_run(adapter_id: str, task_id: str) -> Optional[dict]:
     with _get_conn() as conn:
         row = conn.execute("""

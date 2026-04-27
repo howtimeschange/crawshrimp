@@ -1850,6 +1850,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 async def lifespan(app: FastAPI):
     # Init DB
     data_sink.init_db()
+    orphaned_runs = data_sink.stop_orphaned_active_runs()
+    if orphaned_runs:
+        logger.warning("Marked %s orphaned active task run(s) as stopped after backend startup", orphaned_runs)
 
     # Install built-in adapters
     built_in = Path(__file__).parent.parent / "adapters"
