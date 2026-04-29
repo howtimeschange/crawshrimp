@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from core import adapter_loader
@@ -117,6 +118,83 @@ class AdapterLoaderTests(unittest.TestCase):
             self.assertTrue(runtime_dir.is_symlink())
             self.assertEqual(manifest.version, "2.0.0")
             self.assertEqual(adapter_loader.get_install_metadata(manifest.id)["install_mode"], "link")
+
+    def test_preserve_existing_link_uses_linked_manifest_not_packaged_manifest(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            src_root = Path(self.tmpdir.name) / "src"
+            src_root.mkdir(parents=True, exist_ok=True)
+            linked_dir = _write_adapter(src_root, adapter_id="linked-manifest-adapter", version="4.0.0")
+            packaged_dir = _write_adapter(src_root, adapter_id="packaged-linked-manifest-adapter", version="1.0.0")
+            packaged_manifest = packaged_dir / "manifest.yaml"
+            packaged_manifest.write_text(
+                packaged_manifest.read_text(encoding="utf-8").replace(
+                    "id: packaged-linked-manifest-adapter",
+                    "id: linked-manifest-adapter",
+                ),
+                encoding="utf-8",
+            )
+
+            adapter_loader.install_from_dir(str(linked_dir), install_mode="link")
+            manifest = adapter_loader.install_from_dir(str(packaged_dir), install_mode="copy", preserve_existing_link=True)
+
+            self.assertEqual(manifest.version, "4.0.0")
+            self.assertEqual(adapter_loader.get_adapter(manifest.id).version, "4.0.0")
+            self.assertTrue((Path(self.tmpdir.name) / "adapters" / manifest.id).is_symlink())
+
+    def test_stale_link_metadata_does_not_preserve_regular_directory(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            src_root = Path(self.tmpdir.name) / "src"
+            src_root.mkdir(parents=True, exist_ok=True)
+            packaged_dir = _write_adapter(src_root, adapter_id="stale-link-adapter", version="2.0.0")
+
+            runtime_dir = Path(self.tmpdir.name) / "adapters" / "stale-link-adapter"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            (runtime_dir / "manifest.yaml").write_text(
+                packaged_dir.joinpath("manifest.yaml").read_text(encoding="utf-8").replace("version: 2.0.0", "version: 1.0.0"),
+                encoding="utf-8",
+            )
+            (runtime_dir / "demo.js").write_text("old", encoding="utf-8")
+            metadata_path = Path(self.tmpdir.name) / "adapter-meta" / "stale-link-adapter.json"
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(
+                json.dumps({
+                    "adapter_id": "stale-link-adapter",
+                    "install_mode": "link",
+                    "runtime_path": str(runtime_dir),
+                    "source_path": "/missing/source",
+                }),
+                encoding="utf-8",
+            )
+
+            manifest = adapter_loader.install_from_dir(str(packaged_dir), install_mode="copy", preserve_existing_link=True)
+
+            self.assertFalse(runtime_dir.is_symlink())
+            self.assertEqual(manifest.version, "2.0.0")
+            self.assertIn("success: true", (runtime_dir / "demo.js").read_text(encoding="utf-8"))
+            self.assertEqual(adapter_loader.get_install_metadata(manifest.id)["install_mode"], "copy")
+
+    def test_packaged_copy_does_not_downgrade_newer_installed_copy(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            src_root = Path(self.tmpdir.name) / "src"
+            src_root.mkdir(parents=True, exist_ok=True)
+            old_packaged_dir = _write_adapter(src_root, adapter_id="newer-copy-adapter", version="1.0.0")
+            newer_user_dir = _write_adapter(src_root, adapter_id="newer-copy-adapter-user", version="3.0.0")
+            newer_user_dir.rename(src_root / "newer-copy-adapter-user-src")
+            newer_user_dir = src_root / "newer-copy-adapter-user-src"
+            newer_manifest = newer_user_dir / "manifest.yaml"
+            newer_manifest.write_text(
+                newer_manifest.read_text(encoding="utf-8").replace("id: newer-copy-adapter-user", "id: newer-copy-adapter"),
+                encoding="utf-8",
+            )
+
+            adapter_loader.install_from_dir(str(newer_user_dir), install_mode="copy")
+            runtime_dir = Path(self.tmpdir.name) / "adapters" / "newer-copy-adapter"
+            (runtime_dir / "demo.js").write_text("newer", encoding="utf-8")
+
+            manifest = adapter_loader.install_from_dir(str(old_packaged_dir), install_mode="copy", preserve_existing_link=True)
+
+            self.assertEqual(manifest.version, "3.0.0")
+            self.assertEqual((runtime_dir / "demo.js").read_text(encoding="utf-8"), "newer")
 
 
 if __name__ == "__main__":

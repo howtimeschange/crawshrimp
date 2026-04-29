@@ -4,12 +4,14 @@
 delete process.env.ELECTRON_RUN_AS_NODE
 
 const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
 const crypto = require('crypto')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
+const { createUpdateService } = require('./updateService')
 
 const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 const CDP_PORT = 9222
@@ -733,6 +735,12 @@ function sendStatus(key, value) {
   }
 }
 
+function sendUpdateStatus(status) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('update-status', status)
+  }
+}
+
 const backendController = createBackendController({
   log,
   sendStatus,
@@ -743,6 +751,13 @@ const backendController = createBackendController({
   attempts: BACKEND_STARTUP_ATTEMPTS,
   launchRetries: BACKEND_LAUNCH_RETRIES,
   retryDelayMs: 1200,
+})
+
+const updateService = createUpdateService({
+  app,
+  autoUpdater,
+  log,
+  emit: sendUpdateStatus,
 })
 
 async function startBackend() {
@@ -779,6 +794,10 @@ app.whenReady().then(async () => {
     log('[chrome] ' + result.msg)
     sendStatus('chrome', result.ok)
   }
+
+  setTimeout(() => {
+    updateService.checkForUpdates({ manual: false })
+  }, 15000)
 })
 
 app.on('window-all-closed', () => {
@@ -796,6 +815,13 @@ ipcMain.handle('get-status', async () => ({
   pythonBin: getPythonBin(),
   dev: IS_DEV,
 }))
+
+ipcMain.handle('update:get-status', async () => updateService.getStatus())
+ipcMain.handle('update:check', async () => updateService.checkForUpdates({ manual: true }))
+ipcMain.handle('update:download', async () => updateService.downloadUpdate())
+ipcMain.handle('update:install', async () => updateService.installDownloadedUpdate())
+ipcMain.handle('update:set-install-deferral', async (_, active) =>
+  updateService.setActiveTaskCount(active ? 1 : 0))
 
 ipcMain.handle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
 ipcMain.handle('check-chrome', async () => ({ ok: (await probeChromeCdp()).ok }))
@@ -837,15 +863,29 @@ ipcMain.handle('probe-task-params', async (_, aid, tid, params, options) =>
     params: params || {},
     current_tab_id: options?.current_tab_id || '',
   }))
-ipcMain.handle('run-task',        async (_, aid, tid, params, options) =>
-  apiCall('POST', `/tasks/${aid}/${tid}/run`, {
-    params: params || {},
-    current_tab_id: options?.current_tab_id || '',
-  }))
+ipcMain.handle('run-task', async (_, aid, tid, params, options) => {
+  updateService.setActiveTaskCount(1)
+  try {
+    return await apiCall('POST', `/tasks/${aid}/${tid}/run`, {
+      params: params || {},
+      current_tab_id: options?.current_tab_id || '',
+    })
+  } catch (error) {
+    updateService.setActiveTaskCount(0)
+    throw error
+  }
+})
 ipcMain.handle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
 ipcMain.handle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
 ipcMain.handle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
-ipcMain.handle('get-task-status', async (_, aid, tid) => apiCall('GET',  `/tasks/${aid}/${tid}/status`))
+ipcMain.handle('get-task-status', async (_, aid, tid) => {
+  const status = await apiCall('GET', `/tasks/${aid}/${tid}/status`)
+  const liveStatus = String(status?.live?.status || status?.last_run?.status || '').toLowerCase()
+  if (!status?.live || !['running', 'pausing', 'paused', 'stopping'].includes(liveStatus)) {
+    updateService.setActiveTaskCount(0)
+  }
+  return status
+})
 ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
 ipcMain.handle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
 

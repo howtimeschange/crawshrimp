@@ -33,6 +33,12 @@ contextBridge.exposeInMainWorld('cs', {
   browseFile:      (opts) => ipcRenderer.invoke('browse-file', opts),
   renderPdfPreview:(path) => ipcRenderer.invoke('render-pdf-preview', path),
 
+  getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate:  () => ipcRenderer.invoke('update:download'),
+  installUpdate:   () => ipcRenderer.invoke('update:install'),
+  setUpdateInstallDeferral: (active) => ipcRenderer.invoke('update:set-install-deferral', !!active),
+
   statFile:        (path) => ipcRenderer.invoke('stat-file', path),
   revealFile:      (path) => ipcRenderer.invoke('reveal-file', path),
   deleteFile:      (path) => ipcRenderer.invoke('delete-file', path),
@@ -42,6 +48,12 @@ contextBridge.exposeInMainWorld('cs', {
 
   onLog:    (cb) => ipcRenderer.on('log', (_, msg) => cb(msg)),
   onStatus: (cb) => ipcRenderer.on('status', (_, data) => cb(data)),
+  onUpdateStatus: (cb) => {
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('update-status', listener)
+    return () => ipcRenderer.removeListener('update-status', listener)
+  },
   offLog:   ()   => ipcRenderer.removeAllListeners('log'),
   offStatus:()   => ipcRenderer.removeAllListeners('status'),
+  offUpdateStatus:() => ipcRenderer.removeAllListeners('update-status'),
 })

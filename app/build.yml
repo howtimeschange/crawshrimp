@@ -18,6 +18,10 @@ mac:
       arch:
         - arm64
         - x64
+    - target: zip
+      arch:
+        - arm64
+        - x64
 
 win:
   icon: assets/icon.ico
@@ -35,6 +39,11 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 抓虾
+
+publish:
+  provider: github
+  owner: howtimeschange
+  repo: crawshrimp
 
 dmg:
   title: 抓虾

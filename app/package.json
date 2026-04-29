@@ -1,6 +1,6 @@
 {
   "name": "crawshrimp",
-  "version": "1.4.5",
+  "version": "1.4.6",
   "description": "Universal web automation desktop app",
   "author": "howtimeschange",
   "main": "src/main.js",
@@ -13,6 +13,7 @@
     "vite:build": "vite build"
   },
   "dependencies": {
+    "electron-updater": "^6.8.3",
     "portfinder": "^1.0.32"
   },
   "devDependencies": {

@@ -7,6 +7,7 @@ import os
 import shutil
 import zipfile
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -53,6 +54,36 @@ def _safe_realpath(path: Path) -> str:
         return str(path.expanduser().resolve())
     except Exception:
         return str(path.expanduser())
+
+
+def _version_key(version: str) -> tuple:
+    parts = []
+    for part in re.split(r"[.\-+_]", str(version or "")):
+        if part.isdigit():
+            parts.append((1, int(part)))
+        elif part:
+            parts.append((0, part))
+    return tuple(parts)
+
+
+def _load_manifest_if_exists(adapter_dir: Path) -> Optional[AdapterManifest]:
+    manifest_path = adapter_dir / "manifest.yaml"
+    if not manifest_path.exists():
+        return None
+    try:
+        return _read_manifest_file(manifest_path)
+    except Exception as e:
+        logger.warning("adapter manifest 读取失败 %s: %s", manifest_path, e)
+        return None
+
+
+def _should_preserve_existing_link(existing_meta: dict[str, Any], dest: Path) -> bool:
+    if existing_meta.get("install_mode") != "link":
+        return False
+    if dest.is_symlink():
+        return True
+    source_path = Path(str(existing_meta.get("source_path") or "")).expanduser()
+    return source_path.exists() and source_path.is_dir() and dest.exists() and dest.resolve() == source_path.resolve()
 
 
 def _read_manifest_file(manifest_path: Path) -> AdapterManifest:
@@ -170,16 +201,38 @@ def install_from_dir(source_dir: str, install_mode: str = "copy", preserve_exist
     install_mode = _normalize_install_mode(install_mode)
     m = _read_manifest_file(src / "manifest.yaml")
     existing_meta = _read_install_metadata(m.id)
-    if preserve_existing_link and existing_meta.get("install_mode") == "link":
-        _adapters[m.id] = m
-        current_dir = _adapters_root() / m.id
-        if current_dir.exists() or current_dir.is_symlink():
-            _adapter_dirs[m.id] = current_dir
-        _install_meta[m.id] = existing_meta
-        _enabled[m.id] = True
-        logger.info("保留 link 安装的适配包: %s", m.id)
-        return m
     dest = _adapters_root() / m.id
+    if preserve_existing_link and _should_preserve_existing_link(existing_meta, dest):
+        linked_manifest = _load_manifest_if_exists(dest) or m
+        _adapters[linked_manifest.id] = linked_manifest
+        if dest.exists() or dest.is_symlink():
+            _adapter_dirs[linked_manifest.id] = dest
+        _install_meta[linked_manifest.id] = existing_meta
+        _enabled[linked_manifest.id] = True
+        logger.info("保留 link 安装的适配包: %s", linked_manifest.id)
+        return linked_manifest
+
+    if preserve_existing_link and install_mode == "copy" and dest.exists() and not dest.is_symlink():
+        existing_manifest = _load_manifest_if_exists(dest)
+        if existing_manifest and _version_key(existing_manifest.version) > _version_key(m.version):
+            metadata = {
+                "adapter_id": existing_manifest.id,
+                "install_mode": "copy",
+                "runtime_path": _safe_realpath(dest),
+                "source_path": _safe_realpath(dest),
+            }
+            _write_install_metadata(existing_manifest.id, metadata)
+            _adapters[existing_manifest.id] = existing_manifest
+            _adapter_dirs[existing_manifest.id] = dest
+            _enabled[existing_manifest.id] = True
+            logger.info(
+                "保留较新的已安装适配包: %s v%s >= built-in v%s",
+                existing_manifest.id,
+                existing_manifest.version,
+                m.version,
+            )
+            return existing_manifest
+
     if dest.exists() or dest.is_symlink():
         _remove_installed_path(dest)
     if install_mode == "link":

@@ -3,6 +3,13 @@
     <!-- 标题栏 -->
     <div class="titlebar">
       <span class="logo">🦐 抓虾</span>
+      <button
+        v-if="topbarUpdatePrompt"
+        class="topbar-update-btn"
+        :title="topbarUpdatePrompt.title"
+        @click="openUpdateSettings">
+        {{ topbarUpdatePrompt.label }}
+      </button>
       <div class="status-bar">
         <span class="dot" :class="status.api ? 'on' : 'off'">
           <i></i>核心
@@ -102,7 +109,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onUnmounted } from 'vue'
+import { computed, ref, onMounted, onUnmounted } from 'vue'
 import ScriptList  from './views/ScriptList.vue'
 import TaskRunner  from './views/TaskRunner.vue'
 import MarketPage  from './views/MarketPage.vue'
@@ -110,12 +117,15 @@ import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 import { formatTasksForDisplay } from './utils/taskDisplay'
+import { buildTopbarUpdatePrompt } from './utils/updateDisplay'
 
 const currentView = ref('scripts')
 const status = ref({ api: false, chrome: false })
+const updateStatus = ref({ status: 'idle' })
 const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const scriptGroups = ref([])
+let stopUpdateStatusListener = null
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
@@ -123,6 +133,8 @@ const navItems = [
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
+
+const topbarUpdatePrompt = computed(() => buildTopbarUpdatePrompt(updateStatus.value))
 
 async function loadScriptGroups() {
   const tasks = await window.cs.getTasks()
@@ -157,6 +169,15 @@ function exitScript() {
   activeTaskId.value = null
 }
 
+function openUpdateSettings() {
+  activeScript.value = null
+  activeTaskId.value = null
+  currentView.value = 'settings'
+  window.setTimeout(() => {
+    document.getElementById('auto-update-section')?.scrollIntoView({ block: 'start', behavior: 'smooth' })
+  }, 80)
+}
+
 function onTaskStatusChange(status) {
   if (activeScript.value && activeTaskId.value) {
     const t = activeScript.value.tasks.find(x => x.task_id === activeTaskId.value)
@@ -180,12 +201,20 @@ async function launchChrome() {
 let pollTimer = null
 onMounted(async () => {
   window.cs.onStatus(({ key, value }) => { status.value[key] = value })
+  if (window.cs.onUpdateStatus) {
+    stopUpdateStatusListener = window.cs.onUpdateStatus((next) => { updateStatus.value = next || { status: 'idle' } })
+  }
   try {
     const s = await window.cs.getStatus()
     status.value.api = s.api
     status.value.chrome = s.chrome
   } catch (error) {
     console.error('Failed to get initial status', error)
+  }
+  try {
+    if (window.cs.getUpdateStatus) updateStatus.value = await window.cs.getUpdateStatus()
+  } catch (error) {
+    console.error('Failed to get update status', error)
   }
 
   try {
@@ -203,6 +232,7 @@ onMounted(async () => {
 onUnmounted(() => {
   clearInterval(pollTimer)
   window.cs.offStatus()
+  if (stopUpdateStatusListener) stopUpdateStatusListener()
 })
 
 // Expose to children via provide
@@ -258,6 +288,18 @@ input, select, textarea { font-family: inherit; }
   gap: 8px;
 }
 .logo { font-size: 18px; font-weight: 800; color: var(--text); }
+.topbar-update-btn {
+  -webkit-app-region: no-drag;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 107, 43, 0.5);
+  background: rgba(255, 107, 43, 0.12);
+  color: var(--orange);
+  font-size: 12px;
+  font-weight: 700;
+}
+.topbar-update-btn:hover { background: rgba(255, 107, 43, 0.2); }
 .status-bar { margin-left: auto; display: flex; gap: 16px; -webkit-app-region: no-drag; }
 .dot { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text3); }
 .dot i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text3); }

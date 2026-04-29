@@ -23,6 +23,46 @@
         <p class="hint">应用启动时会自动尝试拉起专用 Chrome 实例，不会关闭你已经打开的浏览器窗口；此按钮用于手动重试</p>
       </section>
 
+      <!-- 自动更新 -->
+      <section id="auto-update-section" class="section">
+        <h3>自动更新</h3>
+        <div class="status-row">
+          <span>当前版本</span>
+          <span class="badge neutral">v{{ updateStatus.currentVersion || '未知' }}</span>
+        </div>
+        <div class="status-row">
+          <span>{{ updateStatusLabel }}</span>
+          <span :class="['badge', updateBadgeClass]">{{ updateBadgeText }}</span>
+        </div>
+        <div v-if="updateStatus.status === 'downloading'" class="update-progress" aria-label="更新下载进度">
+          <div class="update-progress-bar" :style="{ width: updateProgressPercent + '%' }"></div>
+        </div>
+        <p v-if="updateMessage" :class="['hint-msg', updateMessageOk ? 'ok' : 'err']">{{ updateMessage }}</p>
+        <div v-if="updateStatus.releaseNotes" class="release-notes">
+          <p class="guide-title">更新日志</p>
+          <pre class="guide-code">{{ updateStatus.releaseNotes }}</pre>
+        </div>
+        <div class="test-row">
+          <button class="btn-ghost-sm" :disabled="checkingUpdate" @click="checkUpdate">
+            {{ checkingUpdate ? '检查中…' : '检查更新' }}
+          </button>
+          <button
+            v-if="updateStatus.updateAvailable && !updateStatus.downloaded"
+            class="btn-orange-sm"
+            :disabled="downloadingUpdate"
+            @click="downloadUpdate">
+            {{ downloadingUpdate ? '下载中…' : '下载更新' }}
+          </button>
+          <button
+            v-if="updateStatus.downloaded"
+            class="btn-orange-sm"
+            @click="installUpdate">
+            {{ updateStatus.installDeferred ? '任务结束后安装' : '重启并安装' }}
+          </button>
+        </div>
+        <p class="hint">后台会静默检查新版本；安装更新前会等待当前任务结束，避免中断正在执行的抓取。</p>
+      </section>
+
       <!-- 通知设置 -->
       <section class="section">
         <h3>通知</h3>
@@ -142,7 +182,7 @@
 </template>
 
 <script setup>
-import { ref, reactive, onMounted } from 'vue'
+import { computed, ref, reactive, onMounted, onUnmounted } from 'vue'
 
 const props = defineProps(['status'])
 const emit  = defineEmits(['launch-chrome'])
@@ -156,12 +196,66 @@ const launching  = ref(false)
 const chromeMsg  = ref('')
 const chromeMsgOk = ref(true)
 
+const updateStatus = ref({
+  status: 'idle',
+  currentVersion: '',
+  latestVersion: '',
+  releaseNotes: '',
+  error: '',
+  progress: null,
+  updateAvailable: false,
+  downloaded: false,
+  installDeferred: false,
+})
+const checkingUpdate = ref(false)
+const downloadingUpdate = ref(false)
+const updateMessage = ref('')
+const updateMessageOk = ref(true)
+let stopUpdateStatusListener = null
+
 const testing = reactive({ dingtalk: false, feishu: false, webhook: false })
 const testMsg = reactive({ dingtalk: '', feishu: '', webhook: '' })
 const testOk  = reactive({ dingtalk: true, feishu: true, webhook: true })
 
+const updateProgressPercent = computed(() => {
+  const percent = Number(updateStatus.value?.progress?.percent || 0)
+  return Math.max(0, Math.min(100, Math.round(percent)))
+})
+
+const updateStatusLabel = computed(() => {
+  const latest = updateStatus.value.latestVersion ? `发现 v${updateStatus.value.latestVersion}` : '更新状态'
+  if (updateStatus.value.status === 'available') return latest
+  if (updateStatus.value.status === 'downloaded') return `v${updateStatus.value.latestVersion || ''} 已下载`
+  if (updateStatus.value.status === 'downloading') return `正在下载 v${updateStatus.value.latestVersion || ''}`
+  if (updateStatus.value.status === 'not-available') return '已经是最新版本'
+  if (updateStatus.value.status === 'disabled') return '开发模式'
+  if (updateStatus.value.status === 'error') return '检查失败'
+  if (updateStatus.value.status === 'checking') return '正在检查'
+  return '等待检查'
+})
+
+const updateBadgeText = computed(() => {
+  if (updateStatus.value.status === 'available') return '可更新'
+  if (updateStatus.value.status === 'downloaded') return updateStatus.value.installDeferred ? '待安装' : '已下载'
+  if (updateStatus.value.status === 'downloading') return `${updateProgressPercent.value}%`
+  if (updateStatus.value.status === 'not-available') return '最新'
+  if (updateStatus.value.status === 'disabled') return '未启用'
+  if (updateStatus.value.status === 'error') return '失败'
+  if (updateStatus.value.status === 'checking') return '检查中'
+  return '空闲'
+})
+
+const updateBadgeClass = computed(() => {
+  if (['available', 'downloaded', 'downloading'].includes(updateStatus.value.status)) return 'on'
+  if (updateStatus.value.status === 'error') return 'off'
+  return 'neutral'
+})
+
 async function load() {
   cfg.value = await window.cs.getSettings() || {}
+  if (window.cs.getUpdateStatus) {
+    updateStatus.value = await window.cs.getUpdateStatus()
+  }
 }
 
 async function browseDir() {
@@ -195,6 +289,51 @@ async function doLaunchChrome() {
   launching.value = false
 }
 
+async function checkUpdate() {
+  checkingUpdate.value = true
+  updateMessage.value = ''
+  try {
+    updateStatus.value = await window.cs.checkForUpdates()
+    if (updateStatus.value.status === 'not-available') {
+      updateMessage.value = '已是最新版本'
+      updateMessageOk.value = true
+    } else if (updateStatus.value.status === 'disabled') {
+      updateMessage.value = updateStatus.value.error || '开发模式不会检查自动更新'
+      updateMessageOk.value = true
+    }
+  } catch (e) {
+    updateMessage.value = e.message
+    updateMessageOk.value = false
+  }
+  checkingUpdate.value = false
+}
+
+async function downloadUpdate() {
+  downloadingUpdate.value = true
+  updateMessage.value = ''
+  try {
+    updateStatus.value = await window.cs.downloadUpdate()
+  } catch (e) {
+    updateMessage.value = e.message
+    updateMessageOk.value = false
+  }
+  downloadingUpdate.value = false
+}
+
+async function installUpdate() {
+  try {
+    const res = await window.cs.installUpdate()
+    if (res.deferred) {
+      updateMessage.value = '当前有任务运行，更新会在任务结束后再安装'
+      updateMessageOk.value = true
+      updateStatus.value = await window.cs.getUpdateStatus()
+    }
+  } catch (e) {
+    updateMessage.value = e.message
+    updateMessageOk.value = false
+  }
+}
+
 async function testNotify(channel) {
   // 先保存当前配置，确保 webhook 已写入（Proxy → 纯对象）
   await window.cs.saveSettings(JSON.parse(JSON.stringify(cfg.value)))
@@ -211,7 +350,21 @@ async function testNotify(channel) {
   testing[channel] = false
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  if (window.cs.onUpdateStatus) {
+    stopUpdateStatusListener = window.cs.onUpdateStatus((next) => {
+      updateStatus.value = next
+      if (next.status === 'error') {
+        updateMessage.value = next.error || '更新检查失败'
+        updateMessageOk.value = false
+      }
+    })
+  }
+})
+onUnmounted(() => {
+  if (stopUpdateStatusListener) stopUpdateStatusListener()
+})
 </script>
 
 <style scoped>
@@ -230,6 +383,7 @@ onMounted(load)
 .badge { font-size: 11px; padding: 3px 10px; border-radius: 10px; font-weight: 600; }
 .badge.on  { background: rgba(74,222,128,0.12); color: #4ade80; }
 .badge.off { background: rgba(248,113,113,0.12); color: #f87171; }
+.badge.neutral { background: rgba(148,163,184,0.12); color: #cbd5e1; }
 
 /* 通知 */
 .notify-block { display: flex; flex-direction: column; gap: 10px; padding: 14px; background: var(--bg3); border: 1px solid var(--border); border-radius: 10px; }
@@ -249,6 +403,9 @@ onMounted(load)
 .guide-title { font-size: 12px; font-weight: 700; color: var(--orange); margin: 0; }
 .guide-body  { font-size: 12px; color: var(--text3); margin: 0; }
 .guide-code  { font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; background: var(--bg); border-radius: 6px; padding: 10px 12px; margin: 0; color: var(--text2); white-space: pre; overflow-x: auto; line-height: 1.6; }
+.release-notes { display: flex; flex-direction: column; gap: 8px; }
+.update-progress { height: 8px; border-radius: 999px; overflow: hidden; background: var(--bg); border: 1px solid var(--border); }
+.update-progress-bar { height: 100%; background: var(--orange); transition: width 0.2s ease; }
 
 /* 字段 */
 .field { display: flex; flex-direction: column; gap: 6px; }
