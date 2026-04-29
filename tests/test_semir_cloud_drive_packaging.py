@@ -385,6 +385,72 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
                     )
                 )
 
+    def test_tmall_material_match_buy_outputs_flat_zip_with_target_id_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            file_a = runtime_dir / "raw-3.jpg"
+            file_b = runtime_dir / "raw-3-1.jpg"
+            file_a.write_bytes(b"a")
+            file_b.write_bytes(b"b")
+
+            exported = base / "match-buy-result.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="tmall_material_match_buy",
+                data_rows=[
+                    {
+                        "表格行号": 2,
+                        "款号": "109326124011",
+                        "对应ID": "1018757615139",
+                        "文件名": "1018757615139（1）.jpg",
+                        "原文件名": "3.jpg",
+                        "云盘路径": "01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/109326124011-88601/3.jpg",
+                        "文件时间": "2026-04-16 00:00:00",
+                        "下载结果": "已下载",
+                        "本地文件": str(file_a),
+                        "备注": "",
+                        "__package_filename": "1018757615139（1）.jpg",
+                    },
+                    {
+                        "表格行号": 2,
+                        "款号": "109326124011",
+                        "对应ID": "1018757615139",
+                        "文件名": "1018757615139（2）.jpg",
+                        "原文件名": "3-1.jpg",
+                        "云盘路径": "01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/109326124011-88601/3-1.jpg",
+                        "文件时间": "2026-04-16 00:00:00",
+                        "下载结果": "已下载",
+                        "本地文件": str(file_b),
+                        "备注": "",
+                        "__package_filename": "1018757615139（2）.jpg",
+                    },
+                ],
+                runtime_files=[str(file_a), str(file_b)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "搭配购素材包",
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            zip_path = Path(result[0])
+            self.assertTrue(zip_path.is_file())
+            self.assertEqual(Path(result[1]), exported)
+            self.assertFalse(file_a.exists())
+            self.assertFalse(file_b.exists())
+
+            with zipfile.ZipFile(zip_path) as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.endswith("搭配购素材包/1018757615139（1）.jpg") for name in names))
+                self.assertTrue(any(name.endswith("搭配购素材包/1018757615139（2）.jpg") for name in names))
+                self.assertFalse(any("/109326124011/" in name for name in names))
+
 
 if __name__ == "__main__":
     unittest.main()

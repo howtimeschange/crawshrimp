@@ -1,6 +1,6 @@
 id: semir-cloud-drive
 name: 森马云盘图片工具
-version: 0.1.1
+version: 0.1.2
 author: codex
 description: "森马云盘素材图批量检索下载，并串联豆包/Gemini 自动生图"
 entry_url: https://fmp.semirapp.com/web/index#/home/file
@@ -97,6 +97,83 @@ tasks:
           - 云盘路径
           - 下载结果
           - 本地文件
+          - 备注
+  - id: tmall_material_match_buy
+    name: 森马-天猫素材批量爬取-搭配购
+    description: 读取款号与对应ID，在森马视觉模拍目录检索搭配购 3 系列素材图，按对应ID命名并打包导出
+    script: tmall-material-match-buy.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: input_file
+        type: file_excel
+        label: 搭配购款号 Excel
+        required: true
+        templates:
+          - file: templates/tmall-material-match-buy-template.csv
+            label: Excel / CSV 模板
+            description: 填写两列：款号、对应ID。脚本会用款号检索素材，并按对应ID（1）、对应ID（2）命名。
+            version: "2026.04.29.1"
+        hint: 必须包含“款号”“对应ID”两列；每行会单独搜索并下载命中的 3 系列图片。
+      - id: cloud_path
+        type: text
+        label: 云盘路径
+        required: true
+        default: "森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/"
+        placeholder: "森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/"
+        hint: 从森马云盘根目录开始填写目标搜索范围
+        quick_fill_options:
+          - 森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/
+      - id: upload_time_range
+        type: date_range
+        label: 文件上传时间范围
+        required: true
+        hint: 会按云盘返回的上传/创建/更新时间字段过滤；无法识别时间的文件不会下载。
+      - id: folder_scan_depth
+        type: number
+        label: 文件夹扫描层级
+        default: 3
+        min: 1
+        max: 8
+        step: 1
+        ui_span: third
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: third
+      - id: package_name
+        type: text
+        label: 导出包名称
+        default: 搭配购素材包
+        ui_span: third
+        placeholder: "例如：搭配购素材包"
+        hint: 可选。留空则按任务时间自动命名
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "森马天猫搭配购素材爬取结果_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 款号
+          - 对应ID
+          - 文件名
+          - 原文件名
+          - 云盘路径
+          - 文件时间
+          - 下载结果
+          - 本地文件
+          - 执行结果
           - 备注
   - id: batch_ai_generate
     name: 下载素材并自动生图

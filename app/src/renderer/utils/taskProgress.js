@@ -69,6 +69,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
   }),
   Object.freeze({
     adapterId: 'semir-cloud-drive',
+    taskId: 'tmall_material_match_buy',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
+  Object.freeze({
+    adapterId: 'semir-cloud-drive',
     taskId: 'batch_ai_generate',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
@@ -366,7 +371,10 @@ function buildEnhancedTaskRunnerProgress(live = {}, liveStatus = '', isRunning =
 }
 
 function isSemirBatchImageDownloadTask(adapterId, taskId) {
-  return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && normalizeKeyPart(taskId) === 'batch_image_download'
+  return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && [
+    'batch_image_download',
+    'tmall_material_match_buy',
+  ].includes(normalizeKeyPart(taskId))
 }
 
 function isSemirBatchAiGenerateTask(adapterId, taskId) {

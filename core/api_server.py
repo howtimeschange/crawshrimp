@@ -941,6 +941,86 @@ def _create_semir_ai_zip(
     return str(zip_path)
 
 
+def _finalize_semir_tmall_material_match_buy_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"搭配购素材包_{timestamp}",
+        f"搭配购素材包_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    zip_path = None
+    if successful_rows:
+        for row, local_path in successful_rows:
+            clean_filename = _safe_local_name(
+                row.get("__package_filename") or row.get("文件名") or local_path.name,
+                local_path.name,
+            )
+            target = package_root / clean_filename
+            _copy_file_to_unique_target(local_path, target)
+
+        zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in package_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        log(f"Semir Tmall match-buy package created: {zip_path}")
+
+    export_folder = str(run_params.get("export_folder") or "").strip()
+    runtime_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    if zip_path:
+        runtime_refs.insert(0, str(zip_path))
+    final_refs = runtime_refs
+
+    if export_folder:
+        target_root = Path(export_folder).expanduser()
+        target_root.mkdir(parents=True, exist_ok=True)
+        external_refs = []
+
+        if successful_rows and package_root.exists():
+            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+            shutil.copytree(package_root, external_dir)
+            if zip_path and zip_path.exists():
+                copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
+                external_refs.append(str(copied_zip))
+            log(f"Semir Tmall match-buy package copied to export folder: {external_dir}")
+
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            external_refs.append(str(copied))
+
+        if external_refs:
+            final_refs = external_refs
+
+    if zip_path and zip_path.exists():
+        _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+
+    return final_refs
+
+
 def _finalize_semir_cloud_drive_outputs(
     task_id: str,
     data_rows: list,
@@ -951,6 +1031,16 @@ def _finalize_semir_cloud_drive_outputs(
     log,
 ) -> list[str]:
     if task_id != "batch_image_download":
+        if task_id == "tmall_material_match_buy":
+            return _finalize_semir_tmall_material_match_buy_outputs(
+                data_rows=data_rows,
+                runtime_files=runtime_files,
+                exported_files=exported_files,
+                run_params=run_params,
+                runtime_artifact_dir=runtime_artifact_dir,
+                log=log,
+            )
+
         if task_id == "batch_ai_generate":
             runtime_dir = Path(runtime_artifact_dir)
             runtime_dir.mkdir(parents=True, exist_ok=True)
