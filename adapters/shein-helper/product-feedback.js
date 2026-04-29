@@ -22,6 +22,11 @@
   const persistedRequestShared = {
     requestedMode: String(shared.requestedMode || params.mode || 'current').trim().toLowerCase() || 'current',
     requestedReviewDateRange: normalizeDateRangeParam(shared.requestedReviewDateRange || params.review_date_range),
+    requestedFeedbackFilters: normalizeFeedbackFilterParams(shared.requestedFeedbackFilters || {
+      skc: params.filter_skc,
+      commentId: params.filter_comment_id,
+      star: params.filter_star,
+    }),
   }
 
   function normalizeDateRangeParam(value) {
@@ -30,6 +35,24 @@
     const end = String(value.end || '').trim()
     if (!start || !end) return {}
     return { start, end }
+  }
+
+  function splitFilterValues(value) {
+    if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
+    return String(value || '')
+      .split(/[\s,，;；]+/)
+      .map(item => item.trim())
+      .filter(Boolean)
+  }
+
+  function normalizeFeedbackFilterParams(value) {
+    const source = value && typeof value === 'object' ? value : {}
+    const starText = String(source.star || '').trim()
+    return {
+      skc: splitFilterValues(source.skc),
+      commentId: splitFilterValues(source.commentId),
+      star: /^[1-5]$/.test(starText) ? Number(starText) : '',
+    }
   }
 
   function sleep(ms) { return new Promise(resolve => setTimeout(resolve, ms)) }
@@ -429,6 +452,38 @@
     return datePart || text
   }
 
+  function pickPayloadKey(payload, candidates, fallback) {
+    for (const key of candidates) {
+      if (Object.prototype.hasOwnProperty.call(payload || {}, key)) return key
+    }
+    return fallback
+  }
+
+  function assignTextFilter(payload, candidates, fallback, values) {
+    if (!Array.isArray(values) || !values.length) return false
+    const key = pickPayloadKey(payload, candidates, fallback)
+    payload[key] = values.length === 1 ? values[0] : values
+    return true
+  }
+
+  function applyRequestedFeedbackFilters(payload, requestedFilters) {
+    const filterPayload = deepClone(payload, {})
+    const filters = normalizeFeedbackFilterParams(requestedFilters)
+    let changed = false
+    changed = assignTextFilter(filterPayload, ['skc', 'goodsSkc', 'goodsSKC'], 'skc', filters.skc) || changed
+    changed = assignTextFilter(filterPayload, ['commentId', 'comment_id', 'id'], 'commentId', filters.commentId) || changed
+    if (filters.star) {
+      const key = pickPayloadKey(filterPayload, ['goodsCommentStar', 'commentStar', 'star'], 'goodsCommentStar')
+      filterPayload[key] = filters.star
+      changed = true
+    }
+    return {
+      filterPayload,
+      filterSummary: summarizeFilters(filterPayload),
+      changed,
+    }
+  }
+
   function applyRequestedReviewDateRange(payload, requestedRange) {
     const filterPayload = deepClone(payload, {})
     const requestedStart = buildReviewBoundary(requestedRange?.start, false)
@@ -617,14 +672,25 @@
       ['goodSn', '货号'],
       ['spu', 'SPU'],
       ['skc', 'SKC'],
+      ['goodsSkc', 'SKC'],
+      ['goodsSKC', 'SKC'],
       ['sku', 'SKU'],
+      ['commentId', '评价ID'],
+      ['comment_id', '评价ID'],
+      ['id', '评价ID'],
+      ['goodsCommentStar', '星级'],
+      ['commentStar', '星级'],
+      ['star', '星级'],
       ['goodsCommentStarName', '星级'],
       ['dataCenterName', '数据中心'],
     ]
     for (const [key, label] of mapping) {
       const value = payload[key]
       if (value == null) continue
-      const text = Array.isArray(value) ? value.map(item => String(item || '').trim()).filter(Boolean).join(',') : String(value).trim()
+      let text = Array.isArray(value) ? value.map(item => String(item || '').trim()).filter(Boolean).join(',') : String(value).trim()
+      if (label === '星级' && /^[1-5]$/.test(text)) {
+        text = `${text}星`
+      }
       if (!text) continue
       parts.push(`${label}=${text}`)
     }
@@ -749,13 +815,17 @@
     const reviewRangeResult = applyRequestedReviewDateRange(rawFilterPayload, options.reviewDateRange)
     if (reviewRangeResult.error) return { error: reviewRangeResult.error }
 
-    const filterPayload = reviewRangeResult.filterPayload
-    const filterSummary = reviewRangeResult.filterSummary
+    const feedbackFilterResult = applyRequestedFeedbackFilters(
+      reviewRangeResult.filterPayload,
+      options.feedbackFilters,
+    )
+    const filterPayload = feedbackFilterResult.filterPayload
+    const filterSummary = feedbackFilterResult.filterSummary
     const fullPayload = {
       ...deepClone(payload, {}),
       ...filterPayload,
     }
-    const preserveCapturedTotals = !reviewRangeResult.changed
+    const preserveCapturedTotals = !reviewRangeResult.changed && !feedbackFilterResult.changed
     const totalRows = preserveCapturedTotals ? resolveTotalRows(responsePayload) : 0
     const totalBatches = preserveCapturedTotals && totalRows > 0 ? Math.ceil(totalRows / PAGE_SIZE) : 0
 
@@ -888,6 +958,7 @@
 
       const prepared = buildTemplateFromCapture(shared[CAPTURE_KEY], {
         reviewDateRange: persistedRequestShared.requestedReviewDateRange,
+        feedbackFilters: persistedRequestShared.requestedFeedbackFilters,
       })
       if (prepared.error) return fail(prepared.error)
 

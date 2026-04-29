@@ -29,6 +29,38 @@ tasks:
         type: date_range
         label: 评价时间
         hint: 留空则继承当前页面评价时间；填写后会优先尝试按页面时间控件注入，失败时回退到请求体时间覆写
+      - id: filter_skc
+        type: textarea
+        label: 商品SKC
+        rows: 2
+        ui_span: compact
+        hint: 支持多个 SKC，一行一个；留空则继承当前页面筛选
+        placeholder: "例如：\nsk25021051271714212"
+      - id: filter_comment_id
+        type: textarea
+        label: 评价ID
+        rows: 2
+        ui_span: compact
+        hint: 支持多个评价ID，一行一个；留空则继承当前页面筛选
+        placeholder: "例如：\n18249209315"
+      - id: filter_star
+        type: select
+        label: 评价星级
+        default: ""
+        hint: 留空则继承当前页面筛选
+        options:
+          - value: ""
+            label: 不额外指定
+          - value: "1"
+            label: 1星
+          - value: "2"
+            label: 2星
+          - value: "3"
+            label: 3星
+          - value: "4"
+            label: 4星
+          - value: "5"
+            label: 5星
     trigger:
       type: manual
     output:

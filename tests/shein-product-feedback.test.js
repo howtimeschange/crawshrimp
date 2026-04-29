@@ -270,13 +270,19 @@ test('product feedback collect_page replays API with perPage 200', async () => {
       payload: {
         startCommentTime: '2026-01-21 00:00:00',
         commentEndTime: '2026-04-20 23:59:59',
+        skc: ['sk25021051271714212', 'sa260303103351937770319'],
+        commentId: '18249209315',
+        goodsCommentStar: 4,
         page: 2,
         perPage: 30,
       },
-      filter_summary: '评价时间=2026-01-21~2026-04-20',
+      filter_summary: '评价时间=2026-01-21~2026-04-20; SKC=sk25021051271714212,sa260303103351937770319; 评价ID=18249209315; 星级=4星',
       filter_payload: {
         startCommentTime: '2026-01-21 00:00:00',
         commentEndTime: '2026-04-20 23:59:59',
+        skc: ['sk25021051271714212', 'sa260303103351937770319'],
+        commentId: '18249209315',
+        goodsCommentStar: 4,
       },
     },
   }
@@ -295,7 +301,10 @@ test('product feedback collect_page replays API with perPage 200', async () => {
   assert.equal(result.data.length, 200)
   assert.equal(result.data[0].评价ID, 'C-1')
   assert.equal(result.data[0].商品标题, '商品A-1')
-  assert.equal(result.data[0].筛选摘要, '评价时间=2026-01-21~2026-04-20')
+  assert.equal(
+    result.data[0].筛选摘要,
+    '评价时间=2026-01-21~2026-04-20; SKC=sk25021051271714212,sa260303103351937770319; 评价ID=18249209315; 星级=4星',
+  )
   assert.equal(result.meta.shared.total_rows, 250)
   assert.equal(result.meta.shared.total_batches, 2)
   assert.equal(result.meta.shared.current_exec_no, 200)
@@ -304,6 +313,9 @@ test('product feedback collect_page replays API with perPage 200', async () => {
   const requestPayload = JSON.parse(fetchCalls[0].init.body)
   assert.equal(requestPayload.page, 1)
   assert.equal(requestPayload.perPage, 200)
+  assert.deepEqual(requestPayload.skc, ['sk25021051271714212', 'sa260303103351937770319'])
+  assert.equal(requestPayload.commentId, '18249209315')
+  assert.equal(requestPayload.goodsCommentStar, 4)
 })
 
 test('product feedback main phase injects review date range before capturing current filters', async () => {
@@ -370,6 +382,61 @@ test('product feedback prepare_template overrides review date range and resets c
   assert.equal(result.meta.shared.api_template.filter_summary, '评价时间=2026-04-18~2026-04-18')
   assert.equal(result.meta.shared.total_rows, 0)
   assert.equal(result.meta.shared.total_batches, 0)
+})
+
+test('product feedback prepare_template applies requested skc comment id and star filters', async () => {
+  const document = new FakeDocument('商品评价')
+  const shared = {
+    captureResult: {
+      matches: [
+        {
+          url: 'https://sso.geiwohuo.com/mgs-api-prefix/goods/comment/list',
+          responseUrl: 'https://sso.geiwohuo.com/mgs-api-prefix/goods/comment/list',
+          method: 'POST',
+          headers: {
+            Accept: 'application/json, text/plain, */*',
+            'Content-Type': 'application/json',
+          },
+          postData: JSON.stringify({
+            startCommentTime: '2026-01-21 00:00:00',
+            commentEndTime: '2026-04-20 23:59:59',
+            skc: 'old-skc',
+            commentId: 'old-comment',
+            goodsCommentStar: 5,
+            page: 12,
+            perPage: 30,
+          }),
+          body: JSON.stringify({
+            code: '0',
+            info: {
+              data: [],
+              meta: { count: 23312 },
+            },
+          }),
+        },
+      ],
+    },
+  }
+
+  const result = await runScript({
+    phase: 'prepare_template',
+    params: {
+      filter_skc: 'sk25021051271714212\nsa260303103351937770319',
+      filter_comment_id: '18249209315',
+      filter_star: '4',
+    },
+    shared,
+    document,
+  })
+
+  assert.equal(result.success, true)
+  const template = result.meta.shared.api_template
+  assert.deepEqual(Array.from(template.payload.skc), ['sk25021051271714212', 'sa260303103351937770319'])
+  assert.equal(template.payload.commentId, '18249209315')
+  assert.equal(template.payload.goodsCommentStar, 4)
+  assert.match(template.filter_summary, /SKC=sk25021051271714212,sa260303103351937770319/)
+  assert.match(template.filter_summary, /评价ID=18249209315/)
+  assert.match(template.filter_summary, /星级=4星/)
 })
 
 test('product feedback inject_review_date_range updates visible inputs through react range handlers', async () => {
