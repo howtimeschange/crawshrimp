@@ -3,6 +3,173 @@
   "title": "Crawshrimp Adapter Manifest",
   "type": "object",
   "required": ["id", "name", "entry_url", "tasks"],
+  "additionalProperties": true,
+  "definitions": {
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "option": {
+      "type": "object",
+      "required": ["value", "label"],
+      "additionalProperties": true,
+      "properties": {
+        "value": { "type": "string" },
+        "label": { "type": "string" }
+      }
+    },
+    "template": {
+      "type": "object",
+      "required": ["file"],
+      "additionalProperties": true,
+      "properties": {
+        "file": { "type": "string" },
+        "label": { "type": "string" },
+        "description": { "type": "string" },
+        "version": { "type": "string" },
+        "path": { "type": "string" }
+      }
+    },
+    "columnGroup": {
+      "type": "object",
+      "required": ["label", "columns"],
+      "additionalProperties": true,
+      "properties": {
+        "label": { "type": "string" },
+        "columns": { "$ref": "#/definitions/stringArray" }
+      }
+    },
+    "outputSheet": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string" },
+        "columns": { "$ref": "#/definitions/stringArray" },
+        "column_groups": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/columnGroup" }
+        }
+      }
+    },
+    "param": {
+      "type": "object",
+      "required": ["id", "type", "label"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "type": {
+          "enum": [
+            "text",
+            "textarea",
+            "directory",
+            "radio",
+            "select",
+            "checkbox",
+            "week",
+            "month",
+            "date_range",
+            "week_range",
+            "month_range",
+            "number",
+            "file_excel",
+            "file_images",
+            "file_zip",
+            "file_pdf"
+          ]
+        },
+        "label": { "type": "string" },
+        "placeholder": { "type": "string" },
+        "hint": { "type": "string" },
+        "quick_fill_options": { "$ref": "#/definitions/stringArray" },
+        "rows": { "type": "integer", "minimum": 1 },
+        "ui_span": { "enum": ["compact", "full", "half", "third"] },
+        "ui_variant": { "type": "string" },
+        "template_file": { "type": "string" },
+        "template_label": { "type": "string" },
+        "template_path": { "type": "string" },
+        "templates": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/template" }
+        },
+        "default": {},
+        "options": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/option" }
+        },
+        "visible_when": {
+          "oneOf": [
+            { "type": "object" },
+            {
+              "type": "array",
+              "items": { "type": "object" }
+            }
+          ]
+        },
+        "required": { "type": "boolean" },
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "step": { "type": "number" }
+      }
+    },
+    "trigger": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "type": { "enum": ["manual", "interval", "cron"] },
+        "interval_minutes": { "type": "integer", "minimum": 1 },
+        "cron": { "type": "string" }
+      }
+    },
+    "output": {
+      "type": "object",
+      "required": ["type"],
+      "additionalProperties": true,
+      "properties": {
+        "type": { "enum": ["excel", "json", "notify"] },
+        "filename": { "type": "string" },
+        "channel": { "enum": ["dingtalk", "feishu", "webhook"] },
+        "condition": { "type": "string" },
+        "columns": { "$ref": "#/definitions/stringArray" },
+        "column_groups": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/columnGroup" }
+        },
+        "sheet_key": { "type": "string" },
+        "sheets": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/outputSheet" }
+        }
+      }
+    },
+    "task": {
+      "type": "object",
+      "required": ["id", "name", "script"],
+      "additionalProperties": true,
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "script": { "type": "string" },
+        "param_probe_script": { "type": "string" },
+        "execution_ui_mode": { "type": "string" },
+        "validation_only_label": { "type": "string" },
+        "auto_precheck_note": { "type": "string" },
+        "entry_url": { "type": "string" },
+        "tab_match_prefixes": { "$ref": "#/definitions/stringArray" },
+        "skip_auth": { "type": "boolean" },
+        "params": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/param" }
+        },
+        "trigger": { "$ref": "#/definitions/trigger" },
+        "output": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/output" }
+        }
+      }
+    }
+  },
   "properties": {
     "id": { "type": "string", "pattern": "^[a-z0-9_-]+$" },
     "name": { "type": "string" },
@@ -10,50 +177,20 @@
     "icon": { "type": "string" },
     "author": { "type": "string" },
     "description": { "type": "string" },
-    "entry_url": { "type": "string", "format": "uri" },
+    "entry_url": { "type": "string" },
+    "tab_match_prefixes": { "$ref": "#/definitions/stringArray" },
     "auth": {
       "type": "object",
+      "additionalProperties": true,
       "properties": {
         "check_script": { "type": "string" },
-        "login_url": { "type": "string", "format": "uri" }
+        "login_url": { "type": "string" }
       }
     },
     "tasks": {
       "type": "array",
       "minItems": 1,
-      "items": {
-        "type": "object",
-        "required": ["id", "name", "script"],
-        "properties": {
-          "id": { "type": "string" },
-          "name": { "type": "string" },
-          "description": { "type": "string" },
-          "script": { "type": "string" },
-          "entry_url": { "type": "string", "format": "uri" },
-          "skip_auth": { "type": "boolean" },
-          "trigger": {
-            "type": "object",
-            "properties": {
-              "type": { "enum": ["manual", "interval", "cron"] },
-              "interval_minutes": { "type": "integer", "minimum": 1 },
-              "cron": { "type": "string" }
-            }
-          },
-          "output": {
-            "type": "array",
-            "items": {
-              "type": "object",
-              "required": ["type"],
-              "properties": {
-                "type": { "enum": ["excel", "json", "sqlite", "notify"] },
-                "filename": { "type": "string" },
-                "channel": { "enum": ["dingtalk", "feishu", "webhook"] },
-                "condition": { "type": "string" }
-              }
-            }
-          }
-        }
-      }
+      "items": { "$ref": "#/definitions/task" }
     }
   }
 }
