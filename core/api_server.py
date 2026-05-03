@@ -2152,7 +2152,7 @@ async def lifespan(app: FastAPI):
         logger.exception("scheduler shutdown failed")
 
 
-app = FastAPI(title="crawshrimp", version="1.4.6", lifespan=lifespan)
+app = FastAPI(title="crawshrimp", version="1.4.7", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
