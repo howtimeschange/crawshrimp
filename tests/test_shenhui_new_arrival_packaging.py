@@ -6,7 +6,10 @@ from unittest.mock import patch
 
 import yaml
 
-from core.api_server import _finalize_shenhui_new_arrival_outputs
+from core.api_server import (
+    _cleanup_orphaned_runtime_artifacts,
+    _finalize_shenhui_new_arrival_outputs,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "adapters" / "shenhui-new-arrival" / "manifest.yaml"
@@ -112,6 +115,130 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
             self.assertFalse(model_file.exists())
             self.assertFalse(yq_file.exists())
             self.assertFalse((runtime_dir / "深绘测试图包").exists())
+
+    def test_finalize_outputs_removes_runtime_intermediates_after_copying_to_export_folder(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "exports"
+            runtime_dir.mkdir()
+
+            model_file = runtime_dir / "runtime-model.jpg"
+            model_file.write_bytes(b"model")
+            exported = base / "summary.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_upload_package",
+                data_rows=[{
+                    "输入款号": "208226103201",
+                    "输入编码": "208226103201",
+                    "素材来源": "模特图",
+                    "文件名": "balaBR05106-72904_P.jpg",
+                    "下载结果": "已下载",
+                    "本地文件": str(model_file),
+                    "__shenhui_group_code": "208226103201",
+                    "__shenhui_asset_role": "image",
+                    "__package_filename": "balaBR05106-72904_P.jpg",
+                }],
+                runtime_files=[str(model_file)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "深绘测试图包",
+                    "export_folder": str(export_dir),
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertTrue(all(Path(path).is_file() for path in result))
+            self.assertEqual({Path(path).parent for path in result}, {export_dir})
+            self.assertFalse(runtime_dir.exists())
+
+    def test_finalize_outputs_writes_default_zips_next_to_excel_and_cleans_runtime(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            output_dir = base / "outputs"
+            runtime_dir.mkdir()
+            output_dir.mkdir()
+
+            model_file = runtime_dir / "runtime-model.jpg"
+            model_file.write_bytes(b"model")
+            exported = output_dir / "summary.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_upload_package",
+                data_rows=[{
+                    "输入款号": "208226103201",
+                    "输入编码": "208226103201",
+                    "素材来源": "模特图",
+                    "文件名": "balaBR05106-72904_P.jpg",
+                    "下载结果": "已下载",
+                    "本地文件": str(model_file),
+                    "__shenhui_group_code": "208226103201",
+                    "__shenhui_asset_role": "image",
+                    "__package_filename": "balaBR05106-72904_P.jpg",
+                }],
+                runtime_files=[str(model_file)],
+                exported_files=[str(exported)],
+                run_params={"package_name": "深绘测试图包"},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            self.assertEqual(Path(result[0]).parent, output_dir)
+            self.assertTrue(Path(result[0]).is_file())
+            self.assertEqual(Path(result[1]), exported)
+            self.assertFalse(runtime_dir.exists())
+
+    def test_finalize_outputs_cleans_stopped_runtime_download_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            downloaded = runtime_dir / "downloaded.jpg"
+            partial = runtime_dir / "downloaded-2.jpg.part"
+            downloaded.write_bytes(b"downloaded")
+            partial.write_bytes(b"partial")
+            exported = base / "partial.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_upload_package",
+                data_rows=[],
+                runtime_files=[str(downloaded)],
+                exported_files=[str(exported)],
+                run_params={"package_name": "深绘测试图包"},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(result, [str(exported)])
+            self.assertFalse(runtime_dir.exists())
+
+    def test_orphaned_active_run_cleanup_removes_runtime_download_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "data" / "shenhui-new-arrival" / "prepare_upload_package" / "runtime" / "123"
+            runtime_dir.mkdir(parents=True)
+
+            downloaded = runtime_dir / "downloaded.jpg"
+            partial = runtime_dir / "downloaded-2.jpg.part"
+            downloaded.write_bytes(b"downloaded")
+            partial.write_bytes(b"partial")
+
+            with patch("core.data_sink.artifact_dir_path", return_value=runtime_dir):
+                _cleanup_orphaned_runtime_artifacts([{
+                    "id": 123,
+                    "adapter_id": "shenhui-new-arrival",
+                    "task_id": "prepare_upload_package",
+                }])
+
+            self.assertFalse(runtime_dir.exists())
 
     def test_finalize_pdf_batch_screenshot_outputs_cropped_zip(self):
         with tempfile.TemporaryDirectory() as tmpdir:

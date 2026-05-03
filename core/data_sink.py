@@ -119,6 +119,25 @@ def stop_orphaned_active_runs(error: str = "任务运行时后端已重启，已
         return int(cur.rowcount or 0)
 
 
+def list_active_runs(statuses: Optional[Iterable[str]] = None) -> List[dict]:
+    """Return runs that are still considered active by the desktop runtime."""
+    active_statuses = [
+        str(item or "").strip()
+        for item in (statuses or ("running", "pausing", "paused", "stopping"))
+        if str(item or "").strip()
+    ]
+    if not active_statuses:
+        return []
+    placeholders = ",".join("?" for _ in active_statuses)
+    with _get_conn() as conn:
+        rows = conn.execute(f"""
+            SELECT *
+            FROM task_runs
+            WHERE status IN ({placeholders})
+        """, active_statuses).fetchall()
+        return [dict(row) for row in rows]
+
+
 def get_latest_run(adapter_id: str, task_id: str) -> Optional[dict]:
     with _get_conn() as conn:
         row = conn.execute("""
@@ -379,10 +398,15 @@ def _write_excel_sheet(ws, data: List[dict], column_order: Optional[List[str]] =
 
 def prepare_artifact_dir(adapter_id: str, task_id: str, run_id: int, kind: str = "artifacts") -> str:
     """Create and return a per-run artifact directory."""
-    safe_kind = _sanitize_filename(kind, "artifacts")
-    out_dir = _data_root() / adapter_id / task_id / safe_kind / str(run_id)
+    out_dir = artifact_dir_path(adapter_id, task_id, run_id, kind)
     out_dir.mkdir(parents=True, exist_ok=True)
     return str(out_dir)
+
+
+def artifact_dir_path(adapter_id: str, task_id: str, run_id: int, kind: str = "artifacts") -> Path:
+    """Return the per-run artifact directory path without creating it."""
+    safe_kind = _sanitize_filename(kind, "artifacts")
+    return _data_root() / adapter_id / task_id / safe_kind / str(run_id)
 
 
 def export_excel(

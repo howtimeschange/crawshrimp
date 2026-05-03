@@ -51,6 +51,13 @@ _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requeste
 
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
 
+RUNTIME_CLEANUP_TASKS = {
+    ("semir-cloud-drive", "batch_ai_generate"),
+    ("semir-cloud-drive", "batch_image_download"),
+    ("semir-cloud-drive", "tmall_material_match_buy"),
+    ("shenhui-new-arrival", "prepare_upload_package"),
+}
+
 
 def _build_run_control() -> dict:
     resume_event = asyncio.Event()
@@ -733,6 +740,98 @@ def _cleanup_shenhui_runtime_artifacts(runtime_files: list, package_root: Option
         logger.debug("Failed to clean shenhui work dir %s", work_dir, exc_info=True)
 
 
+def _is_within_directory(path: Path, directory: Path) -> bool:
+    try:
+        path.resolve(strict=False).relative_to(directory.resolve(strict=False))
+        return True
+    except Exception:
+        return False
+
+
+def _cleanup_runtime_artifact_dir(runtime_artifact_dir: str, preserve_paths: Optional[list] = None) -> None:
+    runtime_dir = Path(str(runtime_artifact_dir or "")).expanduser()
+    if not runtime_dir.exists() or not runtime_dir.is_dir():
+        return
+
+    preserved: set[Path] = set()
+    for raw_path in preserve_paths or []:
+        if not str(raw_path or "").strip():
+            continue
+        try:
+            path = Path(str(raw_path)).expanduser().resolve(strict=False)
+        except Exception:
+            continue
+        if _is_within_directory(path, runtime_dir):
+            preserved.add(path)
+
+    for path in sorted(runtime_dir.rglob("*"), key=lambda item: len(item.parts), reverse=True):
+        path_resolved = path.resolve(strict=False)
+        if path_resolved in preserved:
+            continue
+        if path.is_dir() and any(_is_within_directory(preserved_path, path_resolved) for preserved_path in preserved):
+            try:
+                next(path.iterdir())
+            except StopIteration:
+                try:
+                    path.rmdir()
+                except Exception:
+                    logger.debug("Failed to remove empty runtime dir %s", path, exc_info=True)
+            except Exception:
+                logger.debug("Failed to inspect runtime dir %s", path, exc_info=True)
+            continue
+
+        try:
+            if path.is_dir():
+                path.rmdir()
+            else:
+                path.unlink(missing_ok=True)
+        except Exception:
+            logger.debug("Failed to clean runtime artifact %s", path, exc_info=True)
+
+    try:
+        next(runtime_dir.iterdir())
+    except StopIteration:
+        try:
+            runtime_dir.rmdir()
+        except Exception:
+            logger.debug("Failed to remove empty runtime dir %s", runtime_dir, exc_info=True)
+    except Exception:
+        logger.debug("Failed to inspect runtime dir %s", runtime_dir, exc_info=True)
+
+
+def _cleanup_orphaned_runtime_artifacts(runs: Optional[list] = None) -> None:
+    for run in runs or []:
+        adapter_id = str((run or {}).get("adapter_id") or "").strip()
+        task_id = str((run or {}).get("task_id") or "").strip()
+        run_id = (run or {}).get("id")
+        if (adapter_id, task_id) not in RUNTIME_CLEANUP_TASKS or run_id is None:
+            continue
+        try:
+            runtime_dir = data_sink.artifact_dir_path(adapter_id, task_id, int(run_id), "runtime")
+        except Exception:
+            continue
+        _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=[])
+
+
+def _default_output_root_for_runtime(runtime_dir: Path, exported_files: list) -> Path:
+    exported_refs = [str(path or "").strip() for path in exported_files or [] if str(path or "").strip()]
+    if exported_refs:
+        return Path(exported_refs[0]).expanduser().parent
+    if runtime_dir.parent.name == "runtime":
+        return runtime_dir.parent.parent
+    return runtime_dir.parent
+
+
+def _semir_output_roots(runtime_dir: Path, exported_files: list, run_params: dict) -> tuple[Path, Optional[Path], list[str]]:
+    exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    default_root = _default_output_root_for_runtime(runtime_dir, exported_refs)
+    export_folder = str((run_params or {}).get("export_folder") or "").strip()
+    export_root = Path(export_folder).expanduser() if export_folder else None
+    if export_root:
+        export_root.mkdir(parents=True, exist_ok=True)
+    return default_root, export_root, exported_refs
+
+
 def _finalize_shenhui_new_arrival_outputs(
     task_id: str,
     data_rows: list,
@@ -811,9 +910,8 @@ def _finalize_shenhui_new_arrival_outputs(
             log(f"Shenhui DeepDraw style ZIPs created: {len(style_zip_paths)}")
 
     export_folder = str(run_params.get("export_folder") or "").strip()
-    runtime_refs = [str(path) for path in style_zip_paths if str(path or "").strip()]
-    runtime_refs.extend(str(path) for path in exported_files or [] if str(path or "").strip())
-    final_refs = runtime_refs
+    exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    final_refs = [*([str(path) for path in style_zip_paths if str(path or "").strip()]), *exported_refs]
 
     if export_folder:
         target_root = Path(export_folder).expanduser()
@@ -837,6 +935,17 @@ def _finalize_shenhui_new_arrival_outputs(
 
         if external_refs:
             final_refs = external_refs
+    elif style_zip_paths:
+        target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+        target_root.mkdir(parents=True, exist_ok=True)
+        default_refs = []
+        for style_zip_path in style_zip_paths:
+            if style_zip_path.exists():
+                copied_style_zip = _copy_file_to_unique_target(style_zip_path, target_root / style_zip_path.name)
+                default_refs.append(str(copied_style_zip))
+        if default_refs:
+            log(f"Shenhui style ZIPs moved to default output folder: {target_root}")
+            final_refs = [*default_refs, *exported_refs]
 
     if successful_rows:
         _cleanup_shenhui_runtime_artifacts(runtime_files, package_root, pdf_work_dir)
@@ -845,6 +954,8 @@ def _finalize_shenhui_new_arrival_outputs(
             shutil.rmtree(package_root, ignore_errors=True)
         if pdf_work_dir.exists():
             shutil.rmtree(pdf_work_dir, ignore_errors=True)
+
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
 
     return final_refs
 
@@ -951,6 +1062,7 @@ def _finalize_semir_tmall_material_match_buy_outputs(
 ) -> list[str]:
     runtime_dir = Path(runtime_artifact_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     package_base = _safe_local_name(
@@ -978,7 +1090,9 @@ def _finalize_semir_tmall_material_match_buy_outputs(
             target = package_root / clean_filename
             _copy_file_to_unique_target(local_path, target)
 
-        zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")
+        zip_output_root = target_root or output_root
+        zip_output_root.mkdir(parents=True, exist_ok=True)
+        zip_path = _ensure_unique_local_path(zip_output_root / f"{package_root.name}.zip")
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for file_path in package_root.rglob("*"):
                 if not file_path.is_file():
@@ -986,21 +1100,20 @@ def _finalize_semir_tmall_material_match_buy_outputs(
                 archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
         log(f"Semir Tmall match-buy package created: {zip_path}")
 
-    export_folder = str(run_params.get("export_folder") or "").strip()
-    runtime_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    runtime_refs = [*exported_refs]
     if zip_path:
         runtime_refs.insert(0, str(zip_path))
     final_refs = runtime_refs
 
-    if export_folder:
-        target_root = Path(export_folder).expanduser()
-        target_root.mkdir(parents=True, exist_ok=True)
+    if target_root:
         external_refs = []
 
         if successful_rows and package_root.exists():
             external_dir = _ensure_unique_local_dir(target_root / package_root.name)
             shutil.copytree(package_root, external_dir)
-            if zip_path and zip_path.exists():
+            if zip_path and zip_path.exists() and _is_within_directory(zip_path, target_root):
+                external_refs.append(str(zip_path))
+            elif zip_path and zip_path.exists():
                 copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
                 external_refs.append(str(copied_zip))
             log(f"Semir Tmall match-buy package copied to export folder: {external_dir}")
@@ -1015,8 +1128,8 @@ def _finalize_semir_tmall_material_match_buy_outputs(
         if external_refs:
             final_refs = external_refs
 
-    if zip_path and zip_path.exists():
-        _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
 
     return final_refs
 
@@ -1044,8 +1157,7 @@ def _finalize_semir_cloud_drive_outputs(
         if task_id == "batch_ai_generate":
             runtime_dir = Path(runtime_artifact_dir)
             runtime_dir.mkdir(parents=True, exist_ok=True)
-            exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
-            output_root = Path(str(exported_refs[0])).expanduser().parent if exported_refs else runtime_dir
+            output_root, _, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
             cloud = _parse_semir_cloud_path(run_params.get("cloud_path"))
             relative_path = cloud.get("relative_path") or ""
             duplicate_mode = str(run_params.get("duplicate_mode") or "first_per_stem").strip().lower()
@@ -1085,13 +1197,17 @@ def _finalize_semir_cloud_drive_outputs(
                 if material_zip:
                     final_refs.append(material_zip)
 
+            final_refs = [*final_refs, *exported_refs]
             _cleanup_semir_runtime_artifacts(runtime_files, None)
-            return [*final_refs, *exported_refs]
+            _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+            return final_refs
 
         return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
 
     runtime_dir = Path(runtime_artifact_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
 
     cloud = _parse_semir_cloud_path(run_params.get("cloud_path"))
     relative_path = cloud.get("relative_path") or ""
@@ -1134,7 +1250,9 @@ def _finalize_semir_cloud_drive_outputs(
             )
             _copy_file_to_unique_target(local_path, target)
 
-        zip_path = _ensure_unique_local_path(runtime_dir / f"{package_root.name}.zip")
+        zip_output_root = target_root or output_root
+        zip_output_root.mkdir(parents=True, exist_ok=True)
+        zip_path = _ensure_unique_local_path(zip_output_root / f"{package_root.name}.zip")
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for file_path in package_root.rglob("*"):
                 if not file_path.is_file():
@@ -1142,21 +1260,20 @@ def _finalize_semir_cloud_drive_outputs(
                 archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
         log(f"Semir package created: {zip_path}")
 
-    export_folder = str(run_params.get("export_folder") or "").strip()
-    runtime_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    runtime_refs = [*exported_refs]
     if zip_path:
         runtime_refs.insert(0, str(zip_path))
     final_refs = runtime_refs
 
-    if export_folder:
-        target_root = Path(export_folder).expanduser()
-        target_root.mkdir(parents=True, exist_ok=True)
+    if target_root:
         external_refs = []
 
         if successful_rows and package_root.exists():
             external_dir = _ensure_unique_local_dir(target_root / package_root.name)
             shutil.copytree(package_root, external_dir)
-            if zip_path and zip_path.exists():
+            if zip_path and zip_path.exists() and _is_within_directory(zip_path, target_root):
+                external_refs.append(str(zip_path))
+            elif zip_path and zip_path.exists():
                 copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
                 external_refs.append(str(copied_zip))
             log(f"Semir package copied to export folder: {external_dir}")
@@ -1171,8 +1288,8 @@ def _finalize_semir_cloud_drive_outputs(
         if external_refs:
             final_refs = external_refs
 
-    if zip_path and zip_path.exists():
-        _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
 
     return final_refs
 
@@ -1977,7 +2094,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 async def lifespan(app: FastAPI):
     # Init DB
     data_sink.init_db()
+    orphaned_active_runs = data_sink.list_active_runs(ACTIVE_LIVE_STATUSES)
     orphaned_runs = data_sink.stop_orphaned_active_runs()
+    if orphaned_active_runs:
+        _cleanup_orphaned_runtime_artifacts(orphaned_active_runs)
     if orphaned_runs:
         logger.warning("Marked %s orphaned active task run(s) as stopped after backend startup", orphaned_runs)
 
