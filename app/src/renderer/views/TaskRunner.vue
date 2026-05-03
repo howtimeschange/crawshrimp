@@ -734,6 +734,14 @@ const pdfCropSavedTemplates = ref({
   hang_tag: [],
 })
 const pdfCropSavedTemplatesLoaded = ref(false)
+const pdfCropManifestDefaultValues = {
+  wash_crop_boxes: {
+    '[{"x":0.0892,"y":0.2084,"width":0.4189,"height":0.7546}]': true,
+  },
+  tag_crop_boxes: {
+    '[{"x":0.0113,"y":0.2352,"width":0.1535,"height":0.5058}]': true,
+  },
+}
 const dateInputRefs = new Map()
 let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
@@ -1922,6 +1930,15 @@ function isShenhuiPdfScreenshotTask() {
     && props.task?.task_id === 'pdf_batch_screenshot'
 }
 
+function isShenhuiPrepareUploadPackageTask() {
+  return props.adapterId === 'shenhui-new-arrival'
+    && props.task?.task_id === 'prepare_upload_package'
+}
+
+function isShenhuiPdfCropTemplateTask() {
+  return isShenhuiPdfScreenshotTask() || isShenhuiPrepareUploadPackageTask()
+}
+
 function pdfCropTypeForFilesParam(param) {
   if (!isShenhuiPdfScreenshotTask() || param?.type !== 'file_pdf') return ''
   if (param?.id === 'wash_pdf_files') return 'wash_label'
@@ -2062,10 +2079,11 @@ function boxesToPdfCropTemplateValue(boxes) {
 }
 
 function applyDefaultPdfCropTemplatesToValues() {
-  if (!isShenhuiPdfScreenshotTask()) return
+  if (!isShenhuiPdfCropTemplateTask()) return
   for (const type of ['wash_label', 'hang_tag']) {
     const field = pdfCropTemplateField(type)
-    if (String(values.value[field] || '').trim()) continue
+    const currentValue = String(values.value[field] || '').trim()
+    if (currentValue && !pdfCropManifestDefaultValues[field]?.[currentValue]) continue
     const template = pdfCropSavedTemplates.value[type]?.[0]
     if (template?.boxes?.length) values.value[field] = boxesToPdfCropTemplateValue(template.boxes)
   }

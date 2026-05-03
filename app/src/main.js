@@ -14,6 +14,7 @@ const { createBackendController } = require('./backendController')
 const { createUpdateService } = require('./updateService')
 
 const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
+const DEV_RENDERER_URL = process.env.CRAWSHRIMP_RENDERER_URL || 'http://127.0.0.1:5173'
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
@@ -368,7 +369,7 @@ function createWindow() {
 
   if (IS_DEV) {
     // Vite dev server
-    mainWindow.loadURL('http://127.0.0.1:5173')
+    mainWindow.loadURL(DEV_RENDERER_URL)
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
     mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'))

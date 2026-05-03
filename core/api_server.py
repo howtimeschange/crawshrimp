@@ -40,7 +40,7 @@ from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequ
 from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_index, search_knowledge
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
-from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs
+from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs, convert_pdf_rows_to_yq_output_root
 
 logger = logging.getLogger(__name__)
 
@@ -883,8 +883,6 @@ def _finalize_shenhui_new_arrival_outputs(
             role = str(row.get("__shenhui_asset_role") or "").strip().lower()
 
             if role == "pdf_yq" or local_path.suffix.lower() == ".pdf":
-                target = package_root / group_code / "_PDF待裁图" / _safe_local_name(local_path.name, "label.pdf")
-                _copy_file_to_unique_target(local_path, target)
                 continue
 
             clean_filename = _safe_local_name(
@@ -893,6 +891,24 @@ def _finalize_shenhui_new_arrival_outputs(
             )
             target = package_root / group_code / clean_filename
             _copy_file_to_unique_target(local_path, target)
+
+        pdf_rows = []
+        for row, local_path in successful_rows:
+            if str(row.get("__shenhui_asset_role") or "").strip().lower() != "pdf_yq" and local_path.suffix.lower() != ".pdf":
+                continue
+            row["__pdf_path"] = str(local_path)
+            row["原始路径"] = row.get("原始路径") or str(local_path)
+            pdf_rows.append(row)
+        if pdf_rows:
+            converted_count = convert_pdf_rows_to_yq_output_root(
+                data_rows=pdf_rows,
+                output_root=package_root,
+                pdf_work_dir=pdf_work_dir,
+                run_params=run_params or {},
+                log=log,
+            )
+            if converted_count:
+                log(f"Shenhui downloaded PDF screenshots added to style packages: {converted_count}")
 
         style_zip_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_deepdraw_zips")
         style_zip_dir.mkdir(parents=True, exist_ok=True)

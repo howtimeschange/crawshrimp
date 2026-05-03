@@ -10,6 +10,74 @@ auth:
   login_url: https://fmp.semirapp.com/web/index#/home/file
 
 tasks:
+  - id: pdf_batch_screenshot
+    name: PDF 批量截图
+    description: 批量选择本地 PDF 吊牌/水洗文件，截图并裁切为深绘可用的 yq 图片包
+    script: pdf-batch-screenshot.js
+    entry_url: about:blank
+    skip_auth: true
+    params:
+      - id: wash_pdf_files
+        type: file_pdf
+        label: 洗唛 PDF 文件
+        required: false
+        hint: 选择洗唛 PDF；会按洗唛模板裁切，输出 yq(2) 图片
+      - id: tag_pdf_files
+        type: file_pdf
+        label: 吊牌 PDF 文件
+        required: false
+        hint: 选择吊牌/合格证 PDF；会按吊牌模板裁切，输出 yq(1) 图片
+      - id: wash_crop_boxes
+        type: textarea
+        label: 洗唛截图框模板
+        rows: 3
+        ui_span: half
+        default: '[{"x":0.0892,"y":0.2084,"width":0.4189,"height":0.7546}]'
+        placeholder: '[{"x":0.02,"y":0.02,"width":0.48,"height":0.96},{"x":0.50,"y":0.02,"width":0.48,"height":0.96}]'
+        hint: 可选；支持比例或像素 x/y/width/height，多个框会依次输出 yq-1、yq-2
+      - id: tag_crop_boxes
+        type: textarea
+        label: 吊牌截图框模板
+        rows: 3
+        ui_span: half
+        default: '[{"x":0.0113,"y":0.2352,"width":0.1535,"height":0.5058}]'
+        placeholder: '[{"x":0.01,"y":0.25,"width":0.16,"height":0.55}]'
+        hint: 可选；按吊牌同版式批量裁切，留空则使用自动裁白和分栏
+      - id: output_mode
+        type: select
+        label: 输出模式
+        default: create_package
+        ui_span: half
+        options:
+          - value: create_package
+            label: 生成独立截图包
+          - value: merge_existing_zips
+            label: 合并到导出目录同款号 ZIP
+        hint: 合并模式会在导出目录下查找“12位款号.zip”，把本次截图的 yq 图追加/替换到对应 ZIP 根目录
+      - id: package_name
+        type: text
+        label: 导出包名称
+        ui_span: half
+        placeholder: "例如：深绘PDF截图_幼童2P"
+        hint: 可选。留空则按任务时间自动命名
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: half
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "深绘PDF截图结果_{timestamp}.xlsx"
+        columns:
+          - PDF文件
+          - PDF类型
+          - 原始路径
+          - 处理动作
+          - 备注
+
   - id: prepare_upload_package
     name: 整理深绘上新图包
     description: 按款号从森马云盘两条路径定位匹配文件夹，下载文件夹内模特图和静物图，过滤 SOP 中不可用素材并打包为深绘待上传图包
@@ -82,6 +150,22 @@ tasks:
         step: 1
         ui_span: third
         hint: 默认 8；图片较大或云盘限流时可降到 4-6，网络稳定可提高到 10
+      - id: wash_crop_boxes
+        type: textarea
+        label: 洗唛截图框模板
+        rows: 3
+        ui_span: half
+        default: '[{"x":0.0892,"y":0.2084,"width":0.4189,"height":0.7546}]'
+        placeholder: '[{"x":0.02,"y":0.02,"width":0.48,"height":0.96},{"x":0.50,"y":0.02,"width":0.48,"height":0.96}]'
+        hint: 自动处理网盘洗唛 PDF 时使用；默认会读取 PDF 批量截图中保存的同类型模板
+      - id: tag_crop_boxes
+        type: textarea
+        label: 吊牌截图框模板
+        rows: 3
+        ui_span: half
+        default: '[{"x":0.0113,"y":0.2352,"width":0.1535,"height":0.5058}]'
+        placeholder: '[{"x":0.01,"y":0.25,"width":0.16,"height":0.55}]'
+        hint: 自动处理网盘吊牌 PDF 时使用；默认会读取 PDF 批量截图中保存的同类型模板
       - id: package_name
         type: text
         label: 导出包名称
@@ -108,74 +192,6 @@ tasks:
           - 处理动作
           - 下载结果
           - 本地文件
-          - 备注
-
-  - id: pdf_batch_screenshot
-    name: PDF 批量截图
-    description: 批量选择本地 PDF 吊牌/水洗文件，截图并裁切为深绘可用的 yq 图片包
-    script: pdf-batch-screenshot.js
-    entry_url: about:blank
-    skip_auth: true
-    params:
-      - id: wash_pdf_files
-        type: file_pdf
-        label: 洗唛 PDF 文件
-        required: false
-        hint: 选择洗唛 PDF；会按洗唛模板裁切，输出 yq(2) 图片
-      - id: tag_pdf_files
-        type: file_pdf
-        label: 吊牌 PDF 文件
-        required: false
-        hint: 选择吊牌/合格证 PDF；会按吊牌模板裁切，输出 yq(1) 图片
-      - id: wash_crop_boxes
-        type: textarea
-        label: 洗唛截图框模板
-        rows: 3
-        ui_span: half
-        default: '[{"x":0.0892,"y":0.2084,"width":0.4189,"height":0.7546}]'
-        placeholder: '[{"x":0.02,"y":0.02,"width":0.48,"height":0.96},{"x":0.50,"y":0.02,"width":0.48,"height":0.96}]'
-        hint: 可选；支持比例或像素 x/y/width/height，多个框会依次输出 yq-1、yq-2
-      - id: tag_crop_boxes
-        type: textarea
-        label: 吊牌截图框模板
-        rows: 3
-        ui_span: half
-        default: '[{"x":0.0113,"y":0.2352,"width":0.1535,"height":0.5058}]'
-        placeholder: '[{"x":0.01,"y":0.25,"width":0.16,"height":0.55}]'
-        hint: 可选；按吊牌同版式批量裁切，留空则使用自动裁白和分栏
-      - id: output_mode
-        type: select
-        label: 输出模式
-        default: create_package
-        ui_span: half
-        options:
-          - value: create_package
-            label: 生成独立截图包
-          - value: merge_existing_zips
-            label: 合并到导出目录同款号 ZIP
-        hint: 合并模式会在导出目录下查找“12位款号.zip”，把本次截图的 yq 图追加/替换到对应 ZIP 根目录
-      - id: package_name
-        type: text
-        label: 导出包名称
-        ui_span: half
-        placeholder: "例如：深绘PDF截图_幼童2P"
-        hint: 可选。留空则按任务时间自动命名
-      - id: export_folder
-        type: directory
-        label: 导出目录
-        placeholder: "点击选择导出目录"
-        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
-        ui_span: half
-    trigger:
-      type: manual
-    output:
-      - type: excel
-        filename: "深绘PDF截图结果_{timestamp}.xlsx"
-        columns:
-          - PDF文件
-          - PDF类型
-          - 原始路径
-          - 处理动作
           - 备注
 
   - id: upload_to_deepdraw

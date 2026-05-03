@@ -326,9 +326,28 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
     filename: '208226103201吊牌.pdf',
     fullpath: '平拍原图/208226103201吊牌.pdf',
   })
-  assert.equal(stillPdf.keep, false)
-  assert.equal(stillPdf.role, 'skip')
-  assert.match(stillPdf.reason, /PDF 批量截图/)
+  assert.equal(stillPdf.keep, true)
+  assert.equal(stillPdf.role, 'pdf_yq')
+  assert.equal(stillPdf.packageFilename, '208226103201吊牌.pdf')
+  assert.equal(stillPdf.pdfType, 'hang_tag')
+
+  const stillWashPdf = helpers.classifySopAsset('still', {
+    ext: 'pdf',
+    filename: '208226103201洗唛.pdf',
+    fullpath: '平拍原图/208226103201洗唛.pdf',
+  })
+  assert.equal(stillWashPdf.keep, true)
+  assert.equal(stillWashPdf.role, 'pdf_yq')
+  assert.equal(stillWashPdf.pdfType, 'wash_label')
+
+  const sizePdf = helpers.classifySopAsset('still', {
+    ext: 'pdf',
+    filename: '208226103201尺码表.pdf',
+    fullpath: '平拍原图/208226103201尺码表.pdf',
+  })
+  assert.equal(sizePdf.keep, false)
+  assert.equal(sizePdf.role, 'skip')
+  assert.match(sizePdf.reason, /非洗唛\/吊牌 PDF/)
 })
 
 test('normalizeDownloadConcurrency defaults and clamps the large-image download setting', async () => {

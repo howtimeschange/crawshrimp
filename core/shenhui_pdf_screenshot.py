@@ -586,6 +586,111 @@ def _pdf_output_mode(run_params: dict) -> str:
     return "create_package"
 
 
+def _pdf_path_for_row(row: dict) -> Path:
+    raw = str(row.get("__pdf_path") or row.get("原始路径") or "").strip()
+    if not raw and str(row.get("__shenhui_asset_role") or "").strip().lower() == "pdf_yq":
+        raw = str(row.get("本地文件") or "").strip()
+    return Path(raw).expanduser() if raw else Path()
+
+
+def convert_pdf_rows_to_yq_output_root(
+    data_rows: list,
+    output_root: Path,
+    pdf_work_dir: Path,
+    run_params: dict,
+    log,
+) -> int:
+    output_root.mkdir(parents=True, exist_ok=True)
+    pdf_work_dir.mkdir(parents=True, exist_ok=True)
+
+    work_items = []
+    colors_by_style_role: dict[tuple[str, str], set[str]] = {}
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        pdf_path = _pdf_path_for_row(row)
+        if not str(pdf_path):
+            continue
+        if pdf_path.suffix.lower() != ".pdf":
+            continue
+        row["__pdf_path"] = str(pdf_path)
+        if not pdf_path.is_file():
+            log(f"[warn] PDF 文件不存在，跳过截图: {pdf_path}")
+            row["处理动作"] = "截图失败"
+            row["备注"] = f"PDF 文件不存在：{pdf_path}"
+            continue
+
+        pdf_type = infer_pdf_type(pdf_path, row, run_params or {})
+        style_code, color_code = _style_color_for_row(row, pdf_path, run_params or {})
+        style_folder = safe_local_name(style_code or row.get("__shenhui_group_code") or pdf_path.stem, "pdf")
+        if style_code and color_code:
+            colors_by_style_role.setdefault((style_code, _pdf_role(pdf_type)), set()).add(color_code)
+        work_items.append({
+            "row": row,
+            "pdf_path": pdf_path,
+            "pdf_type": pdf_type,
+            "style_code": style_code,
+            "color_code": color_code,
+            "style_folder": style_folder,
+        })
+
+    converted_count = 0
+    sequence_by_name_scope: dict[tuple[str, str, str], int] = {}
+    for item in work_items:
+        pdf_path = item["pdf_path"]
+        pdf_type = item["pdf_type"]
+        style_code = item["style_code"]
+        color_code = item["color_code"]
+        style_folder = item["style_folder"]
+        has_multiple_colors = bool(
+            style_code
+            and any(
+                len(colors) > 1
+                for (role_style_code, _role), colors in colors_by_style_role.items()
+                if role_style_code == style_code
+            )
+        )
+        crop_boxes = crop_boxes_for_pdf_type(pdf_type, run_params or {})
+        target_dir = output_root / style_folder
+        converted = convert_pdf_to_yq_images(
+            pdf_path,
+            pdf_work_dir / style_folder / safe_local_name(pdf_path.stem, "pdf"),
+            log,
+            crop_boxes=crop_boxes,
+        )
+        if not converted:
+            log(f"[warn] PDF 未生成截图: {pdf_path.name}")
+            item["row"]["处理动作"] = "截图失败"
+            item["row"]["备注"] = "PDF 未生成截图，请检查文件内容或截图框模板"
+            continue
+
+        sequence_key = (
+            style_folder,
+            _pdf_role(pdf_type),
+            color_code if has_multiple_colors else "",
+        )
+        next_sequence = sequence_by_name_scope.get(sequence_key, 1)
+        copied_count = 0
+        for converted_path in converted:
+            target_name = build_pdf_yq_filename(
+                style_code or style_folder,
+                color_code,
+                pdf_type,
+                next_sequence,
+                has_multiple_colors,
+            )
+            copied = copy_file_to_unique_target(converted_path, target_dir / target_name)
+            converted_count += 1
+            copied_count += 1
+            next_sequence += 1
+            log(f"Shenhui PDF screenshot copied: {copied}")
+        sequence_by_name_scope[sequence_key] = next_sequence
+        item["row"]["处理动作"] = "截图完成"
+        item["row"]["备注"] = f"生成 {copied_count} 张截图；款号目录：{style_folder}"
+
+    return converted_count
+
+
 def _find_style_zip(target_root: Path, style_code: str) -> Optional[Path]:
     style = safe_local_name(style_code, "")
     if not style:
@@ -706,85 +811,13 @@ def finalize_pdf_batch_screenshot_outputs(
     output_root.mkdir(parents=True, exist_ok=True)
     pdf_work_dir = ensure_unique_local_dir(runtime_dir / f"{output_root.name}_pdf_work")
 
-    work_items = []
-    colors_by_style_role: dict[tuple[str, str], set[str]] = {}
-    for row in data_rows or []:
-        if not isinstance(row, dict):
-            continue
-        pdf_path = Path(str(row.get("__pdf_path") or row.get("原始路径") or "")).expanduser()
-        if not pdf_path.is_file():
-            log(f"[warn] PDF 文件不存在，跳过截图: {pdf_path}")
-            row["处理动作"] = "截图失败"
-            row["备注"] = f"PDF 文件不存在：{pdf_path}"
-            continue
-
-        pdf_type = infer_pdf_type(pdf_path, row, run_params or {})
-        style_code, color_code = _style_color_for_row(row, pdf_path, run_params or {})
-        style_folder = safe_local_name(style_code or pdf_path.stem, "pdf")
-        if style_code and color_code:
-            colors_by_style_role.setdefault((style_code, _pdf_role(pdf_type)), set()).add(color_code)
-        work_items.append({
-            "row": row,
-            "pdf_path": pdf_path,
-            "pdf_type": pdf_type,
-            "style_code": style_code,
-            "color_code": color_code,
-            "style_folder": style_folder,
-        })
-
-    converted_count = 0
-    sequence_by_name_scope: dict[tuple[str, str, str], int] = {}
-    for item in work_items:
-        pdf_path = item["pdf_path"]
-        pdf_type = item["pdf_type"]
-        style_code = item["style_code"]
-        color_code = item["color_code"]
-        style_folder = item["style_folder"]
-        has_multiple_colors = bool(
-            style_code
-            and any(
-                len(colors) > 1
-                for (role_style_code, _role), colors in colors_by_style_role.items()
-                if role_style_code == style_code
-            )
-        )
-        crop_boxes = crop_boxes_for_pdf_type(pdf_type, run_params or {})
-        target_dir = output_root / style_folder
-        converted = convert_pdf_to_yq_images(
-            pdf_path,
-            pdf_work_dir / style_folder / safe_local_name(pdf_path.stem, "pdf"),
-            log,
-            crop_boxes=crop_boxes,
-        )
-        if not converted:
-            log(f"[warn] PDF 未生成截图: {pdf_path.name}")
-            item["row"]["处理动作"] = "截图失败"
-            item["row"]["备注"] = "PDF 未生成截图，请检查文件内容或截图框模板"
-            continue
-
-        sequence_key = (
-            style_folder,
-            _pdf_role(pdf_type),
-            color_code if has_multiple_colors else "",
-        )
-        next_sequence = sequence_by_name_scope.get(sequence_key, 1)
-        copied_count = 0
-        for converted_path in converted:
-            target_name = build_pdf_yq_filename(
-                style_code or style_folder,
-                color_code,
-                pdf_type,
-                next_sequence,
-                has_multiple_colors,
-            )
-            copied = copy_file_to_unique_target(converted_path, target_dir / target_name)
-            converted_count += 1
-            copied_count += 1
-            next_sequence += 1
-            log(f"Shenhui PDF screenshot copied: {copied}")
-        sequence_by_name_scope[sequence_key] = next_sequence
-        item["row"]["处理动作"] = "截图完成"
-        item["row"]["备注"] = f"生成 {copied_count} 张截图；款号目录：{style_folder}"
+    converted_count = convert_pdf_rows_to_yq_output_root(
+        data_rows=data_rows,
+        output_root=output_root,
+        pdf_work_dir=pdf_work_dir,
+        run_params=run_params or {},
+        log=log,
+    )
 
     zip_path = None
     if converted_count:

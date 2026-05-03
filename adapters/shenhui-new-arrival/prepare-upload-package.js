@@ -320,6 +320,13 @@
     return patterns.some(pattern => pattern.test(source))
   }
 
+  function inferSopPdfType(item) {
+    const text = `${item?.filename || ''} ${item?.fullpath || ''}`
+    if (hasAny(text, [/洗唛|洗标|水洗/])) return 'wash_label'
+    if (hasAny(text, [/吊牌|吊卡|挂牌|合格证/])) return 'hang_tag'
+    return ''
+  }
+
   function classifySopAsset(sourceType, item) {
     const ext = getExt(item)
     const text = `${item?.filename || ''} ${item?.fullpath || ''}`
@@ -336,7 +343,20 @@
     }
 
     if (isPdfExt(ext)) {
-      return { ...base, reason: 'PDF 请通过「PDF 批量截图」单独处理' }
+      const pdfType = inferSopPdfType(item)
+      if (!pdfType) {
+        return { ...base, reason: '非洗唛/吊牌 PDF 按 SOP 跳过' }
+      }
+      return {
+        role: 'pdf_yq',
+        keep: true,
+        action: '保留PDF并自动截图',
+        reason: pdfType === 'wash_label'
+          ? '洗唛 PDF 将按截图模板自动生成 yq(2)'
+          : '吊牌 PDF 将按截图模板自动生成 yq(1)',
+        packageFilename: toSafeFilename(item?.filename || `label.${ext}`, `label.${ext || 'pdf'}`),
+        pdfType,
+      }
     }
 
     if (!isImageExt(ext) && !isPdfExt(ext)) {
@@ -418,6 +438,9 @@
       '__shenhui_source_type': sourceType,
       '__shenhui_asset_role': classification.role,
       '__package_filename': classification.packageFilename || String(item?.filename || ''),
+      '__pdf_type': classification.pdfType || '',
+      '__style_code': groupCode,
+      '__style_color_code': classifyCode(inputCode) === 'skc' ? inputCode : '',
       ...overrides,
     }
   }
@@ -901,6 +924,7 @@
       buildFolderHashRoute,
       buildSearchHashRoute,
       classifySopAsset,
+      inferSopPdfType,
       collectCandidateAssets,
       buildRuntimeFilename,
       finalizeRows,
