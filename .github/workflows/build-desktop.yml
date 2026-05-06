@@ -65,8 +65,48 @@ jobs:
         run: bash scripts/download-python.sh
 
       - name: Build desktop package
+        if: matrix.artifact_suffix != 'mac'
         working-directory: app
         run: npm run ${{ matrix.build_script }} -- --publish never
+
+      - name: Build desktop package
+        if: matrix.artifact_suffix == 'mac'
+        working-directory: app
+        shell: bash
+        run: |
+          set +e
+          npm run ${{ matrix.build_script }} -- --publish never 2>&1 | tee ../mac-build.log
+          build_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "${build_status}" -eq 0 ]; then
+            exit 0
+          fi
+
+          APP_VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
+          expected_files=(
+            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.dmg"
+            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.zip"
+            "dist/crawshrimp-v${APP_VERSION}-mac-x64.dmg"
+            "dist/crawshrimp-v${APP_VERSION}-mac-x64.zip"
+            "dist/latest-mac.yml"
+          )
+
+          missing=0
+          for file in "${expected_files[@]}"; do
+            if [ ! -s "${file}" ]; then
+              echo "::error::Missing expected macOS artifact after failed build: ${file}"
+              missing=1
+            fi
+          done
+
+          if grep -Eq 'Command failed: hdiutil detach|hdiutil:.*(Resource busy|No such file or directory|detach failed)' ../mac-build.log && [ "${missing}" -eq 0 ]; then
+            echo "::warning::electron-builder reported an hdiutil detach cleanup failure after producing all macOS artifacts; continuing so artifacts can be uploaded."
+            hdiutil info || true
+            exit 0
+          fi
+
+          exit "${build_status}"
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
@@ -188,10 +228,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
-            release-assets/macos/* \
-            release-assets/windows/* \
-            --title "抓虾 Desktop v${APP_VERSION}" \
-            --notes-file release-notes.md \
-            --latest \
-            --verify-tag
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release upload "${GITHUB_REF_NAME}" \
+              release-assets/macos/* \
+              release-assets/windows/* \
+              --clobber
+            gh release edit "${GITHUB_REF_NAME}" \
+              --title "抓虾 Desktop v${APP_VERSION}" \
+              --notes-file release-notes.md \
+              --latest
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              release-assets/macos/* \
+              release-assets/windows/* \
+              --title "抓虾 Desktop v${APP_VERSION}" \
+              --notes-file release-notes.md \
+              --latest \
+              --verify-tag
+          fi
