@@ -24,8 +24,8 @@
       <div class="feature-item">
         <span class="f-icon">🔄</span>
         <div>
-          <strong>自动更新</strong>
-          <p>脚本版本更新时自动提示，一键升级</p>
+          <strong>版本治理</strong>
+          <p>脚本版本会附带变更说明，方便人工确认后再升级</p>
         </div>
       </div>
     </div>

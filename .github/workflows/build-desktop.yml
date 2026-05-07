@@ -30,8 +30,6 @@ jobs:
             build_script: build:mac:ci
             artifact_glob: |
               app/dist/*.dmg
-              app/dist/*.zip
-              app/dist/latest*.yml
           - name: Windows x64
             os: windows-2022
             python_target: win-x64
@@ -40,7 +38,6 @@ jobs:
             artifact_glob: |
               app/dist/*.exe
               app/dist/*.exe.blockmap
-              app/dist/latest*.yml
 
     steps:
       - name: Checkout
@@ -86,10 +83,7 @@ jobs:
           APP_VERSION=$(python3 -c "import json; print(json.load(open('package.json'))['version'])")
           expected_files=(
             "dist/crawshrimp-v${APP_VERSION}-mac-arm64.dmg"
-            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.zip"
             "dist/crawshrimp-v${APP_VERSION}-mac-x64.dmg"
-            "dist/crawshrimp-v${APP_VERSION}-mac-x64.zip"
-            "dist/latest-mac.yml"
           )
 
           missing=0
@@ -218,7 +212,7 @@ jobs:
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 自动更新元数据：latest.yml / latest-mac.yml\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 自动更新元数据：已关闭，等待签名 / 公证链路完善后恢复\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \

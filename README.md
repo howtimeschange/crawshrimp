@@ -9,15 +9,16 @@
 
 ## 本次更新（2026-05-07 / v1.4.8）
 
-- 桌面端版本升级到 `v1.4.8`，正式发布会输出 `crawshrimp-v1.4.8-*` 命名的桌面安装包与自动更新元数据。
+- 桌面端版本升级到 `v1.4.8`，正式发布会输出 `crawshrimp-v1.4.8-*` 命名的桌面安装包。
 - 新增 `tiktok-ops-assistant` 适配器，支持 TikTok Shop 商品评分抓取、联盟达人视频列表采集与视频下载打包。
 - 新增 `tmall-ops-assistant` 适配器，支持按多个天猫商品链接批量抓取买家评价、追评、图片与规格信息。
 - 后端任务执行链路补强了多链接拆分、逐商品导航执行、CDP 导航复用、运行时下载产物收口与任务生命周期异常处理。
 - 补充 TikTok / 天猫适配器、任务入口 URL 选择、下载打包与运行时行为的 Python/Node 回归测试。
+- 桌面端应用内自动更新已暂时关闭，等待 macOS 签名 / 公证链路成熟后再恢复。
 
 ## 上次更新（2026-05-03 / v1.4.7）
 
-- 桌面端版本升级到 `v1.4.7`，正式发布会输出 `crawshrimp-v1.4.7-*` 命名的桌面安装包与自动更新元数据。
+- 桌面端版本升级到 `v1.4.7`，正式发布会输出 `crawshrimp-v1.4.7-*` 命名的桌面安装包。
 - 深绘上新图包整理支持自动识别洗唛 / 吊牌 PDF，按保存的截图框模板生成 yq 图片并写入同款号图包。
 - 新增深绘 `PDF 批量截图` 模板复用能力，截图框可在独立任务和上新图包整理任务之间共享。
 - 森马 / 深绘打包任务会把最终 ZIP 与结果表保留在用户可见输出目录，并清理运行时中间产物，减少残留文件。
@@ -25,10 +26,7 @@
 
 ## 上上次更新（2026-04-29 / v1.4.6）
 
-- 桌面端版本升级到 `v1.4.6`，正式发布会输出 `crawshrimp-v1.4.6-*` 命名的桌面安装包与自动更新元数据。
-- 新增桌面端自动更新：设置页可检查、下载、查看进度与更新日志，下载完成后可重启安装。
-- 顶部抓虾 Logo 旁新增更新提醒按钮，检测到新版本、下载中或已下载时会提示用户进入更新面板。
-- macOS 构建新增 `zip` 更新产物，Windows NSIS 保留 `latest.yml` / blockmap 元数据，支持 `v*` 正式 Release 触发 CI 构建。
+- 桌面端版本升级到 `v1.4.6`，正式发布会输出 `crawshrimp-v1.4.6-*` 命名的桌面安装包。
 - 修复 macOS 安装新包后仍运行旧适配包的问题：内置适配包会按版本覆盖旧 copy 目录，真实 link 开发模式仍会保留。
 
 ## 是什么
@@ -59,7 +57,7 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 - `v1.4.8`：新增 TikTok 与天猫运营助手适配器，补强多链接导航、下载打包与任务生命周期回归测试。
 - `v1.4.7`：深绘上新图包整理自动处理洗唛 / 吊牌 PDF，运行产物清理更彻底，并刷新适配器 SDK 文档。
-- `v1.4.6`：新增桌面端自动更新、顶部更新提醒、正式 Release CI，并修复 macOS 旧适配包残留问题。
+- `v1.4.6`：正式 Release CI 落地，并修复 macOS 旧适配包残留问题。
 
 ---
 
@@ -74,16 +72,14 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 当前 Release 会自动包含：
 
-- macOS 桌面包（dmg）与自动更新 zip
-- Windows 安装包（exe）与自动更新元数据（latest.yml / blockmap）
+- macOS 桌面包（dmg）
+- Windows 安装包（exe）与 blockmap
 - 内置 Python 运行时
 
 当前桌面安装包命名规则：
 
 - `crawshrimp-v版本号-mac-arm64.dmg`
 - `crawshrimp-v版本号-mac-x64.dmg`
-- `crawshrimp-v版本号-mac-arm64.zip`
-- `crawshrimp-v版本号-mac-x64.zip`
 - `crawshrimp-v版本号-win-x64.exe`
 
 也就是说，**普通用户不需要自己安装 Python / Node.js**，下载后即可使用。
@@ -96,7 +92,7 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 4. 在任务页按需下载 Excel / CSV 模板并填写
 5. 在 Chrome 中登录目标平台后运行任务
 
-> `desktop-latest` 是自动刷新的滚动桌面构建，便于人工下载测试；应用内自动更新以正式 `v*` Release 为准。
+> `desktop-latest` 是自动刷新的滚动桌面构建，便于人工下载测试；当前应用内自动更新已暂停。
 
 ### 方式二：从源码启动（开发者）
 
@@ -208,7 +204,7 @@ API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认
 
 - `main` 分支每次提交都会自动构建 macOS / Windows 桌面包
 - 构建成功后会自动刷新 [`desktop-latest`](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
-- 推送 `v*` tag 会创建正式版本 Release，并作为应用内自动更新来源
+- 推送 `v*` tag 会创建正式版本 Release
 - Release 中的桌面包已内置 Python runtime，目标是“下载即可运行”
 
 ---
