@@ -679,12 +679,12 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(first.meta.items[0].headers.Referer, 'https://affiliate.tiktokshopglobalselling.com/')
   assert.match(first.meta.items[0].headers['User-Agent'], /Mozilla\/5\.0/)
   assert.equal(first.meta.items[0].url, 'https://v16m-default.tiktokcdn-us.com/video-a.mp4?mime_type=video_mp4')
-  assert.equal(first.meta.items[0].filename, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
+  assert.equal(first.meta.items[0].filename, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4')
   assert.equal(first.meta.concurrency, 2)
   assert.equal(first.meta.shared.pendingRows[0].视频ID, '7619062455813131550')
   assert.equal(first.meta.shared.pendingRows[0].达人ID, '7494014102087828932')
   assert.equal(first.meta.shared.pendingRows[0].商品ID, '1730710259238277880')
-  assert.equal(first.meta.shared.pendingRows[0].计划文件名, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
+  assert.equal(first.meta.shared.pendingRows[0].计划文件名, 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4')
   assert.equal(first.meta.shared.search_total_codes, 2)
   assert.equal(first.meta.shared.search_completed_codes, 1)
   assert.equal(first.meta.shared.current_store, 'TikTok达人视频下载 / US')
@@ -704,8 +704,8 @@ test('creator video task plans browser downloads then emits rows with download r
         items: [
           {
             success: true,
-            filename: 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
-            path: '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4',
+            filename: 'US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4',
+            path: '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4',
             bytes: 1234,
           },
         ],
@@ -719,7 +719,7 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(second.meta.has_more, false)
   assert.equal(second.data.length, 1)
   assert.equal(second.data[0].下载结果, '已下载')
-  assert.equal(second.data[0].本地文件, '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44.mp4')
+  assert.equal(second.data[0].本地文件, '/tmp/tiktok/US_heatherstansberryy_7619062455813131550_1730710259238277880_2026-03-19_12-13-44_55件.mp4')
   assert.equal(second.data[0].联盟视频归因GMV, '$1,517.56')
 })
 
@@ -990,7 +990,79 @@ test('creator video task sends publish date filter and trusts API result rows', 
   assert.equal(result.meta.shared.pendingRows[0].视频ID, 'in-range-video')
   assert.equal(result.meta.shared.pendingRows[1].视频ID, 'out-of-range-video')
   assert.equal(result.meta.items.length, 2)
-  assert.equal(result.meta.items[0].filename, 'US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00.mp4')
+  assert.equal(result.meta.items[0].filename, 'US_creatorinrange_in-range-video_product-in-range_2026-05-06_00-57-00_0件.mp4')
+})
+
+test('creator video publish date range accepts local T-2 through the full day', async () => {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    calls.push(body)
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: {
+        video_list_segments: [
+          {
+            total: 0,
+            time_descriptor: body.params.video_list_params[0].time_descriptor,
+            video_performances: [],
+          },
+        ],
+      },
+    })
+  }
+
+  const result = await runScript('creator-video-download.js', {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    Date: fixedDateClass('2026-05-12T16:00:00.000Z'),
+    params: {
+      shop_regions: ['US'],
+      publish_date_range: { start: '2026-05-10', end: '2026-05-11' },
+      page_size: 20,
+      max_pages_per_region: 1,
+    },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0].params.video_list_params[0].filter.video_post_date, {
+    start_time: 1778400000,
+    end_time: 1778572800,
+    timezone_offset: -28800,
+  })
+})
+
+test('creator video custom statistic date and publish date reject dates after local T-2', async () => {
+  const common = {
+    href: 'https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=US&shop_id=7496042382582647544',
+    fetchImpl: async () => { throw new Error('should reject before fetch') },
+    Date: fixedDateClass('2026-05-12T16:00:00.000Z'),
+  }
+
+  const statisticResult = await runScript('creator-video-download.js', {
+    ...common,
+    params: {
+      shop_regions: ['US'],
+      max_pages_per_region: 1,
+      time_range: 'custom',
+      date_range: { start: '2026-04-29', end: '2026-05-12' },
+    },
+  })
+  const publishResult = await runScript('creator-video-download.js', {
+    ...common,
+    params: {
+      shop_regions: ['US'],
+      max_pages_per_region: 1,
+      publish_date_range: { start: '2026-05-10', end: '2026-05-12' },
+    },
+  })
+
+  assert.equal(statisticResult.success, false)
+  assert.match(statisticResult.error, /最晚只能选择到 2026-05-11/)
+  assert.equal(publishResult.success, false)
+  assert.match(publishResult.error, /最晚只能选择到 2026-05-11/)
 })
 
 test('creator video default date range follows current page statistic date picker', async () => {
@@ -1081,8 +1153,8 @@ test('creator video quick time range supports last 28 days and previous week in 
   assert.deepEqual(descriptors[0], {
     granularity_type: 1,
     timezone_offset: -28800,
-    start_time: 1775635200,
-    end_time: 1778054400,
+    start_time: 1775721600,
+    end_time: 1778140800,
   })
   assert.deepEqual(descriptors[1], {
     granularity_type: 1,
@@ -1140,12 +1212,12 @@ test('creator video custom time range rejects ranges outside the page latest sel
       shop_regions: ['US'],
       max_pages_per_region: 1,
       time_range: 'custom',
-      date_range: { start: '2026-04-29', end: '2026-05-06' },
+      date_range: { start: '2026-04-29', end: '2026-05-07' },
     },
   })
 
   assert.equal(result.success, false)
-  assert.match(result.error, /最晚只能选择到 2026-05-05/)
+  assert.match(result.error, /最晚只能选择到 2026-05-06/)
 })
 
 test('product rating navigates to seller rating page before collecting when started elsewhere', async () => {
