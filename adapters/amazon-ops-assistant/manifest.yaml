@@ -1,0 +1,62 @@
+id: amazon-ops-assistant
+name: 亚马逊运营助手
+version: 0.1.0
+author: codex
+description: "亚马逊运营本地工具：按 FNSKU 映射批量拆分商品标签 PDF"
+entry_url: about:blank
+
+tasks:
+  - id: amazon_label_batch_process
+    name: 亚马逊标签批量处理
+    description: 读取 FNSKU-SKU-标签映射表和多页商品标签 PDF，逐页识别 FNSKU 后拆分并按标签名称输出单页 PDF
+    script: amazon-label-batch-process.js
+    entry_url: about:blank
+    skip_auth: true
+    params:
+      - id: mapping_file
+        type: file_excel
+        label: FNSKU-SKU-标签映射表
+        required: true
+        hint: Excel 需包含 FNSKU 和 标签名称 两列；SKU 列可选，会写入处理结果
+      - id: label_pdf
+        type: file_pdf
+        label: 商品标签 PDF
+        required: true
+        hint: 选择需要逐页拆分的多页亚马逊商品标签 PDF
+      - id: output_mode
+        type: select
+        label: 输出模式
+        default: folder_and_zip
+        ui_span: half
+        options:
+          - value: folder_and_zip
+            label: 输出文件夹并打包 ZIP
+          - value: folder_only
+            label: 仅输出文件夹
+        hint: ZIP 会加入任务结果，方便从历史记录中直接下载整包
+      - id: package_name
+        type: text
+        label: 输出包名称
+        ui_span: half
+        placeholder: "例如：亚马逊标签_本批次"
+        hint: 可选。留空则按任务时间自动命名
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。选择后会把拆分 PDF 和结果表复制到该目录
+        ui_span: half
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "亚马逊标签批量处理结果_{timestamp}.xlsx"
+        columns:
+          - PDF文件
+          - 页码
+          - 识别FNSKU
+          - SKU
+          - 标签名称
+          - 匹配结果
+          - 输出PDF
+          - 备注

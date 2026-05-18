@@ -42,6 +42,10 @@ from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_ind
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs, convert_pdf_rows_to_yq_output_root
+from core.amazon_label_splitter import (
+    copy_amazon_label_outputs_to_export_folder,
+    split_amazon_label_rows,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +57,7 @@ _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requeste
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
 
 RUNTIME_CLEANUP_TASKS = {
+    ("amazon-ops-assistant", "amazon_label_batch_process"),
     ("semir-cloud-drive", "batch_ai_generate"),
     ("semir-cloud-drive", "batch_image_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
@@ -2337,6 +2342,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             return files
 
         def finalize_output_files(data_rows, runtime_files, exported_files):
+            if adapter_id == 'amazon-ops-assistant' and task_id == 'amazon_label_batch_process':
+                try:
+                    generated_refs = list(run_params.get("__amazon_generated_refs") or [])
+                    packaged_refs = copy_amazon_label_outputs_to_export_folder(
+                        generated_refs=generated_refs,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] 亚马逊标签后处理输出失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
             if adapter_id == 'semir-cloud-drive':
                 try:
                     packaged_refs = _finalize_semir_cloud_drive_outputs(
@@ -2468,6 +2487,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         data = _apply_final_export_guards(adapter_id, task_id, data)
         if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
             data = _verify_tiktok_creator_video_download_rows(data, log=log)
+        if adapter_id == 'amazon-ops-assistant' and task_id == 'amazon_label_batch_process':
+            data, amazon_generated_refs = split_amazon_label_rows(
+                data_rows=data,
+                run_params=run_params,
+                runtime_artifact_dir=runtime_artifact_dir,
+                log=log,
+            )
+            run_params["__amazon_generated_refs"] = amazon_generated_refs
+            raw_count = len(data)
         deduped_count = len(data)
         log(f"Script complete. Records: {raw_count}")
         if deduped_count != raw_count:
