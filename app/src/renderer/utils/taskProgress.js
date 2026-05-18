@@ -63,6 +63,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     config: ENHANCED_PROGRESS_CONFIG,
   }),
   Object.freeze({
+    adapterId: 'shein-helper',
+    taskId: 'commodity_quality',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
+  Object.freeze({
     adapterId: 'semir-cloud-drive',
     taskId: 'batch_image_download',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
@@ -394,6 +399,10 @@ function isTiktokCreatorVideoDownloadTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'tiktok-ops-assistant' && normalizeKeyPart(taskId) === 'creator_video_download'
 }
 
+function isSheinCommodityQualityTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'shein-helper' && normalizeKeyPart(taskId) === 'commodity_quality'
+}
+
 function getTiktokCreatorVideoPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
   const normalizedPhase = normalizeKeyPart(phase)
   if (normalizedPhase === 'after_download' || downloadActive) return '批量下载'
@@ -493,6 +502,124 @@ function buildTiktokCreatorVideoDownloadProgress(live = {}, liveStatus = '', isR
     ]),
     tracks,
     sub: [phaseLabel, downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '', store].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
+function buildSheinCommodityQualityProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const phase = String(live?.phase || '').trim()
+  const normalizedPhase = normalizeKeyPart(phase)
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const store = String(live?.store || '').trim()
+
+  const listTotal = toInt(live?.list_total_rows) || toInt(live?.total)
+  const listCompletedRaw = toInt(live?.list_completed_rows) || toInt(live?.current)
+  const listCompleted = listTotal > 0 ? Math.min(listCompletedRaw, listTotal) : listCompletedRaw
+  const listPercent = listTotal > 0 ? clampPercent((listCompleted / listTotal) * 100) : 0
+  const listTotalBatches = toInt(live?.list_total_batches) || toInt(live?.total_batches)
+  const listCompletedBatches = toInt(live?.list_completed_batches) || toInt(live?.batch_no)
+
+  const detailTotal = toInt(live?.detail_total_targets)
+  const detailCompletedRaw = toInt(live?.detail_completed_targets)
+  const detailCompleted = detailTotal > 0 ? Math.min(detailCompletedRaw, detailTotal) : detailCompletedRaw
+  const detailPercent = detailTotal > 0 ? clampPercent((detailCompleted / detailTotal) * 100) : 0
+  const detailCurrentTargetIndex = toInt(live?.detail_current_target_index)
+  const detailCurrentTarget = String(live?.detail_current_target || '').trim()
+  const detailCurrentPage = toInt(live?.detail_current_page)
+  const detailTotalPages = toInt(live?.detail_total_pages)
+  const detailTotalRows = toInt(live?.detail_total_rows)
+  const detailRequestCount = toInt(live?.detail_request_count)
+  const detailRecordsCollected = toInt(live?.detail_records_collected)
+  const detailStarted = detailTotal > 0 || normalizedPhase === 'collect_detail_page'
+  const detailDone = detailTotal > 0 && detailCompleted >= detailTotal && normalizedPhase !== 'collect_detail_page'
+
+  const listState = detailStarted || (listTotal > 0 && listCompleted >= listTotal)
+    ? 'complete'
+    : listCompleted > 0 ? 'active' : 'pending'
+  const detailState = !detailStarted
+    ? 'pending'
+    : detailDone
+      ? 'complete'
+      : 'active'
+
+  const phaseLabel = normalizedPhase === 'collect_detail_page'
+    ? '抓取客退详情'
+    : normalizedPhase === 'collect_list_page' || normalizedPhase === 'prepare_list_shards'
+      ? '抓取商品质量列表'
+      : detailDone
+        ? '客退详情完成'
+        : statusLabel
+
+  const listCaptionParts = []
+  if (listTotalBatches > 0) listCaptionParts.push(`批次 ${Math.min(listCompletedBatches, listTotalBatches)}/${listTotalBatches}`)
+  if (store && !detailStarted) listCaptionParts.push(store)
+
+  const detailCaptionParts = []
+  if (detailCurrentTargetIndex > 0 && detailTotal > 0) detailCaptionParts.push(`当前 ${detailCurrentTargetIndex}/${detailTotal}`)
+  if (detailRequestCount > 0) detailCaptionParts.push(`请求 ${detailRequestCount} 次`)
+  if (detailRecordsCollected > 0) detailCaptionParts.push(`明细 ${detailRecordsCollected} 条`)
+
+  const detailMetaParts = []
+  if (detailCurrentTarget) detailMetaParts.push(`当前 SKC ${detailCurrentTarget}`)
+  if (detailCurrentPage > 0 && detailTotalPages > 0) detailMetaParts.push(`页 ${detailCurrentPage}/${detailTotalPages}`)
+  if (detailTotalRows > 0) detailMetaParts.push(`当前 SKC 明细 ${detailTotalRows} 条`)
+  if (!detailMetaParts.length && store && detailStarted) detailMetaParts.push(store)
+
+  const tracks = [
+    buildTrack({
+      id: 'shein-quality-list',
+      title: '第一阶段 · 商品质量列表',
+      main: listTotal > 0 ? `${listCompleted} / ${listTotal} 条商品` : (statusLabel || '等待开始'),
+      percentValue: listPercent,
+      percentLabel: `${listPercent}%`,
+      caption: listCaptionParts.join(' · '),
+      detail: listState === 'complete' ? '列表已完成' : '',
+      status: listState === 'complete' ? '已完成' : listState === 'active' ? '进行中' : '待开始',
+      tone: 'primary',
+      state: listState,
+      ariaLabel: '商品质量列表进度',
+      ariaText: [listTotal > 0 ? `${listCompleted}/${listTotal} 条商品` : '', `${listPercent}%`, listCaptionParts.join(' · ')].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'shein-quality-return-detail',
+      title: '第二阶段 · 客退详情',
+      main: detailTotal > 0 ? `${detailCompleted} / ${detailTotal} 个 SKC` : (detailStarted ? '等待详情队列' : '列表完成后自动开始'),
+      percentValue: detailPercent,
+      percentLabel: detailStarted ? `${detailPercent}%` : '待开始',
+      caption: detailCaptionParts.join(' · ') || (detailStarted ? '正在抓取客退详情' : '列表完成后进入详情阶段'),
+      detail: detailMetaParts.join(' · '),
+      status: detailState === 'complete' ? '已完成' : detailState === 'active' ? '进行中' : '待开始',
+      tone: 'secondary',
+      state: detailState,
+      ariaLabel: '客退详情进度',
+      ariaText: [detailTotal > 0 ? `${detailCompleted}/${detailTotal} 个 SKC` : '', detailStarted ? `${detailPercent}%` : '待开始', detailMetaParts.join(' · ')].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: '双阶段进度',
+    main: phaseLabel,
+    percentValue: detailStarted ? clampPercent(50 + (detailPercent * 0.5)) : clampPercent(listPercent * 0.5),
+    percentLabel: phaseLabel,
+    completed: detailRecordsCollected || toInt(live?.completed || live?.records),
+    completedText: detailRecordsCollected > 0 ? `已抓取客退明细 ${detailRecordsCollected} 条` : '',
+    batchText: listTotalBatches > 0 ? `列表批次 ${Math.min(listCompletedBatches, listTotalBatches)}/${listTotalBatches}` : '',
+    rowText: '',
+    targetText: detailCurrentTarget ? `SKC ${detailCurrentTarget}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: 'SHEIN 商品质量双阶段进度',
+    ariaText: [phaseLabel, listTotal > 0 ? `${listCompleted}/${listTotal} 条商品` : '', detailTotal > 0 ? `${detailCompleted}/${detailTotal} 个 SKC` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      listTotal > 0 ? `列表 ${listCompleted}/${listTotal}` : '',
+      detailTotal > 0 ? `客退 ${detailCompleted}/${detailTotal}` : '',
+      detailCurrentTarget ? `SKC ${detailCurrentTarget}` : '',
+      detailRecordsCollected > 0 ? `明细 ${detailRecordsCollected}` : '',
+    ]),
+    tracks,
+    sub: [phaseLabel, detailCurrentTarget ? `当前 SKC ${detailCurrentTarget}` : '', detailRecordsCollected > 0 ? `已收集明细 ${detailRecordsCollected} 条` : ''].filter(Boolean).join(' · ') || statusLabel,
   }
 }
 
@@ -969,6 +1096,9 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isTiktokCreatorVideoDownloadTask(adapterId, taskId)) {
     return buildTiktokCreatorVideoDownloadProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isSheinCommodityQualityTask(adapterId, taskId)) {
+    return buildSheinCommodityQualityProgress(live, liveStatus, isRunning)
   }
   if (config.mode === 'enhanced' && isSemirBatchAiGenerateTask(adapterId, taskId)) {
     return buildSemirBatchAiGenerateProgress(live, liveStatus, isRunning)

@@ -8,6 +8,43 @@ from core import api_server
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_build_live_progress_exposes_shein_detail_stage_fields(self):
+        progress = api_server._build_live_progress(
+            {
+                "phase": "collect_detail_page",
+                "records": 20363,
+                "shared": {
+                    "total_rows": 20363,
+                    "current_exec_no": 20363,
+                    "list_total_rows": 20363,
+                    "list_completed_rows": 20363,
+                    "list_total_batches": 113,
+                    "list_completed_batches": 113,
+                    "detail_total_targets": 20363,
+                    "detail_completed_targets": 1220,
+                    "detail_current_target_index": 1221,
+                    "detail_current_target": "sk25050817072795161",
+                    "detail_request_count": 1221,
+                    "detail_records_collected": 42,
+                    "current_store": "客退详情 sk25050817072795161 1221/20363",
+                },
+            },
+            run_control=None,
+        )
+
+        self.assertEqual(progress["current"], 20363)
+        self.assertEqual(progress["total"], 20363)
+        self.assertEqual(progress["list_total_rows"], 20363)
+        self.assertEqual(progress["list_completed_rows"], 20363)
+        self.assertEqual(progress["list_total_batches"], 113)
+        self.assertEqual(progress["list_completed_batches"], 113)
+        self.assertEqual(progress["detail_total_targets"], 20363)
+        self.assertEqual(progress["detail_completed_targets"], 1220)
+        self.assertEqual(progress["detail_current_target_index"], 1221)
+        self.assertEqual(progress["detail_current_target"], "sk25050817072795161")
+        self.assertEqual(progress["detail_request_count"], 1221)
+        self.assertEqual(progress["detail_records_collected"], 42)
+
     async def test_lifespan_skips_orphan_cleanup_when_backend_port_is_unavailable(self):
         calls = []
 

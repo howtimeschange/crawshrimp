@@ -106,3 +106,46 @@ test('tiktok creator video download uses two-stage progress in task runner', () 
   assert.equal(downloadSummary.tracks[1].main, '2 / 4 个视频')
   assert.match(downloadSummary.sub, /批量下载/)
 })
+
+test('shein commodity quality uses two-stage list and return detail progress', () => {
+  const config = resolveTaskProgressConfig('shein-helper', 'commodity_quality')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'shein-helper',
+    taskId: 'commodity_quality',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'collect_detail_page',
+      current: 20363,
+      total: 20363,
+      completed: 20363,
+      store: '客退详情 sk25050817072795161 1221/20363',
+      list_total_rows: 20363,
+      list_completed_rows: 20363,
+      list_total_batches: 113,
+      list_completed_batches: 113,
+      detail_total_targets: 20363,
+      detail_completed_targets: 1220,
+      detail_current_target_index: 1221,
+      detail_current_target: 'sk25050817072795161',
+      detail_request_count: 1221,
+      detail_records_collected: 42,
+    },
+  })
+
+  assert.equal(summary.title, '双阶段进度')
+  assert.equal(summary.ariaLabel, 'SHEIN 商品质量双阶段进度')
+  assert.equal(summary.main, '抓取客退详情')
+  assert.equal(summary.tracks.length, 2)
+  assert.equal(summary.tracks[0].title, '第一阶段 · 商品质量列表')
+  assert.equal(summary.tracks[0].main, '20363 / 20363 条商品')
+  assert.equal(summary.tracks[0].state, 'complete')
+  assert.equal(summary.tracks[1].title, '第二阶段 · 客退详情')
+  assert.equal(summary.tracks[1].main, '1220 / 20363 个 SKC')
+  assert.equal(summary.tracks[1].state, 'active')
+  assert.match(summary.tracks[1].detail, /sk25050817072795161/)
+})

@@ -159,6 +159,117 @@ def _build_run_control() -> dict:
     }
 
 
+def _int_from_mapping(source: Optional[dict], key: str, default: int = 0) -> int:
+    if not source:
+        return default
+    try:
+        return int(source.get(key) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+def _str_from_mapping(source: Optional[dict], key: str) -> str:
+    if not source:
+        return ""
+    return str(source.get(key) or "").strip()
+
+
+def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[dict] = None) -> dict:
+    payload = dict(payload or {})
+    shared_state = dict(payload.get('shared') or {})
+    total_rows = _int_from_mapping(shared_state, 'total_rows', _int_from_mapping(run_control, 'total_rows') if run_control else 0)
+    current_exec_no = _int_from_mapping(shared_state, 'current_exec_no')
+    current_row_no = _int_from_mapping(shared_state, 'current_row_no')
+    batch_no = _int_from_mapping(shared_state, 'batch_no')
+    total_batches = _int_from_mapping(shared_state, 'total_batches')
+    search_total_codes = _int_from_mapping(shared_state, 'search_total_codes')
+    search_completed_codes = _int_from_mapping(shared_state, 'search_completed_codes')
+    generation_total_jobs = _int_from_mapping(shared_state, 'generation_total_jobs')
+    generation_completed_jobs = _int_from_mapping(shared_state, 'generation_completed_jobs')
+    buyer_id = _str_from_mapping(shared_state, 'current_buyer_id')
+    store = _str_from_mapping(shared_state, 'current_store')
+    current_source_filename = _str_from_mapping(shared_state, 'current_source_filename')
+    phase_name = str(payload.get('phase') or '').strip()
+    records = _int_from_mapping(payload, 'records')
+
+    download_total = _int_from_mapping(run_control, 'download_total') if run_control else _int_from_mapping(payload, 'download_total', _int_from_mapping(payload, 'download_item_total'))
+    download_completed = _int_from_mapping(run_control, 'download_completed') if run_control else _int_from_mapping(payload, 'download_completed')
+    download_success = _int_from_mapping(run_control, 'download_success') if run_control else _int_from_mapping(payload, 'download_success')
+    download_failed = _int_from_mapping(run_control, 'download_failed') if run_control else _int_from_mapping(payload, 'download_failed')
+    download_concurrency = _int_from_mapping(run_control, 'download_concurrency') if run_control else _int_from_mapping(payload, 'download_concurrency')
+    download_retry_attempts = _int_from_mapping(run_control, 'download_retry_attempts') if run_control else _int_from_mapping(payload, 'download_retry_attempts')
+    download_started = bool(run_control.get('download_started')) if run_control else bool(download_total > 0)
+    download_active = bool(run_control.get('download_active')) if run_control else bool(payload.get('download_active'))
+    download_last_label = str((run_control.get('download_last_label') if run_control else payload.get('download_last_label')) or '').strip()
+    download_current_label = str((run_control.get('download_current_label') if run_control else payload.get('download_current_label')) or '').strip()
+    download_active_labels = run_control.get('download_active_labels') if run_control else payload.get('download_active_labels')
+    if not isinstance(download_active_labels, list):
+        download_active_labels = []
+    download_active_labels = [str(item or '').strip() for item in download_active_labels if str(item or '').strip()]
+    download_active_count = _int_from_mapping(run_control, 'download_active_count') if run_control else _int_from_mapping(payload, 'download_active_count')
+    download_speed_bps = _int_from_mapping(run_control, 'download_speed_bps') if run_control else _int_from_mapping(payload, 'download_speed_bps')
+    download_bytes_completed = _int_from_mapping(run_control, 'download_bytes_completed') if run_control else _int_from_mapping(payload, 'download_bytes_completed')
+    download_total_bytes = _int_from_mapping(run_control, 'download_total_bytes') if run_control else _int_from_mapping(payload, 'download_total_bytes')
+
+    if run_control and total_rows:
+        run_control['total_rows'] = total_rows
+
+    percent = 0.0
+    if total_rows > 0 and current_exec_no > 0:
+        percent = min(100.0, round((current_exec_no / total_rows) * 100, 1))
+
+    progress_text = ""
+    if current_exec_no > 0 and total_rows > 0:
+        progress_text = f"{current_exec_no}/{total_rows}"
+
+    return {
+        "current": current_exec_no,
+        "total": total_rows,
+        "row_no": current_row_no,
+        "batch_no": batch_no,
+        "total_batches": total_batches,
+        "search_total_codes": search_total_codes,
+        "search_completed_codes": search_completed_codes,
+        "generation_total_jobs": generation_total_jobs,
+        "generation_completed_jobs": generation_completed_jobs,
+        "buyer_id": buyer_id,
+        "store": store,
+        "current_source_filename": current_source_filename,
+        "phase": phase_name,
+        "completed": records,
+        "percent": percent,
+        "progress_text": progress_text,
+        "download_total": download_total,
+        "download_completed": download_completed,
+        "download_success": download_success,
+        "download_failed": download_failed,
+        "download_concurrency": download_concurrency,
+        "download_retry_attempts": download_retry_attempts,
+        "download_started": download_started,
+        "download_active": download_active,
+        "download_last_label": download_last_label,
+        "download_current_label": download_current_label,
+        "download_active_labels": download_active_labels,
+        "download_active_count": download_active_count,
+        "download_speed_bps": download_speed_bps,
+        "download_bytes_completed": download_bytes_completed,
+        "download_total_bytes": download_total_bytes,
+        "list_total_rows": _int_from_mapping(shared_state, 'list_total_rows'),
+        "list_completed_rows": _int_from_mapping(shared_state, 'list_completed_rows'),
+        "list_total_batches": _int_from_mapping(shared_state, 'list_total_batches'),
+        "list_completed_batches": _int_from_mapping(shared_state, 'list_completed_batches'),
+        "detail_total_targets": _int_from_mapping(shared_state, 'detail_total_targets'),
+        "detail_completed_targets": _int_from_mapping(shared_state, 'detail_completed_targets'),
+        "detail_current_target_index": _int_from_mapping(shared_state, 'detail_current_target_index'),
+        "detail_current_target": _str_from_mapping(shared_state, 'detail_current_target'),
+        "detail_current_page": _int_from_mapping(shared_state, 'detail_current_page'),
+        "detail_total_pages": _int_from_mapping(shared_state, 'detail_total_pages'),
+        "detail_total_rows": _int_from_mapping(shared_state, 'detail_total_rows'),
+        "detail_request_count": _int_from_mapping(shared_state, 'detail_request_count'),
+        "detail_records_collected": _int_from_mapping(shared_state, 'detail_records_collected'),
+    }
+
+
 def _extract_candidate_urls_from_text(value: object) -> list[str]:
     text = str(value or "").strip()
     if not text:
@@ -1885,84 +1996,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         _run_logs[jid].append(msg)
 
     def build_progress(payload: Optional[dict] = None) -> dict:
-        shared_state = dict((payload or {}).get('shared') or {})
-        total_rows = int(shared_state.get('total_rows') or run_control.get('total_rows') or 0) if run_control else int(shared_state.get('total_rows') or 0)
-        current_exec_no = int(shared_state.get('current_exec_no') or 0)
-        current_row_no = int(shared_state.get('current_row_no') or 0)
-        batch_no = int(shared_state.get('batch_no') or 0)
-        total_batches = int(shared_state.get('total_batches') or 0)
-        search_total_codes = int(shared_state.get('search_total_codes') or 0)
-        search_completed_codes = int(shared_state.get('search_completed_codes') or 0)
-        generation_total_jobs = int(shared_state.get('generation_total_jobs') or 0)
-        generation_completed_jobs = int(shared_state.get('generation_completed_jobs') or 0)
-        buyer_id = str(shared_state.get('current_buyer_id') or '').strip()
-        store = str(shared_state.get('current_store') or '').strip()
-        current_source_filename = str(shared_state.get('current_source_filename') or '').strip()
-        phase_name = str((payload or {}).get('phase') or '').strip()
-        records = int((payload or {}).get('records') or 0)
-        download_total = int(run_control.get('download_total') or 0) if run_control else int((payload or {}).get('download_total') or (payload or {}).get('download_item_total') or 0)
-        download_completed = int(run_control.get('download_completed') or 0) if run_control else int((payload or {}).get('download_completed') or 0)
-        download_success = int(run_control.get('download_success') or 0) if run_control else int((payload or {}).get('download_success') or 0)
-        download_failed = int(run_control.get('download_failed') or 0) if run_control else int((payload or {}).get('download_failed') or 0)
-        download_concurrency = int(run_control.get('download_concurrency') or 0) if run_control else int((payload or {}).get('download_concurrency') or 0)
-        download_retry_attempts = int(run_control.get('download_retry_attempts') or 0) if run_control else int((payload or {}).get('download_retry_attempts') or 0)
-        download_started = bool(run_control.get('download_started')) if run_control else bool(download_total > 0)
-        download_active = bool(run_control.get('download_active')) if run_control else bool((payload or {}).get('download_active'))
-        download_last_label = str((run_control.get('download_last_label') if run_control else (payload or {}).get('download_last_label')) or '').strip()
-        download_current_label = str((run_control.get('download_current_label') if run_control else (payload or {}).get('download_current_label')) or '').strip()
-        download_active_labels = run_control.get('download_active_labels') if run_control else (payload or {}).get('download_active_labels')
-        if not isinstance(download_active_labels, list):
-            download_active_labels = []
-        download_active_labels = [str(item or '').strip() for item in download_active_labels if str(item or '').strip()]
-        download_active_count = int(run_control.get('download_active_count') or 0) if run_control else int((payload or {}).get('download_active_count') or 0)
-        download_speed_bps = int(run_control.get('download_speed_bps') or 0) if run_control else int((payload or {}).get('download_speed_bps') or 0)
-        download_bytes_completed = int(run_control.get('download_bytes_completed') or 0) if run_control else int((payload or {}).get('download_bytes_completed') or 0)
-        download_total_bytes = int(run_control.get('download_total_bytes') or 0) if run_control else int((payload or {}).get('download_total_bytes') or 0)
-
-        if run_control and total_rows:
-            run_control['total_rows'] = total_rows
-
-        percent = 0.0
-        if total_rows > 0 and current_exec_no > 0:
-            percent = min(100.0, round((current_exec_no / total_rows) * 100, 1))
-
-        progress_text = ""
-        if current_exec_no > 0 and total_rows > 0:
-          progress_text = f"{current_exec_no}/{total_rows}"
-
-        return {
-            "current": current_exec_no,
-            "total": total_rows,
-            "row_no": current_row_no,
-            "batch_no": batch_no,
-            "total_batches": total_batches,
-            "search_total_codes": search_total_codes,
-            "search_completed_codes": search_completed_codes,
-            "generation_total_jobs": generation_total_jobs,
-            "generation_completed_jobs": generation_completed_jobs,
-            "buyer_id": buyer_id,
-            "store": store,
-            "current_source_filename": current_source_filename,
-            "phase": phase_name,
-            "completed": records,
-            "percent": percent,
-            "progress_text": progress_text,
-            "download_total": download_total,
-            "download_completed": download_completed,
-            "download_success": download_success,
-            "download_failed": download_failed,
-            "download_concurrency": download_concurrency,
-            "download_retry_attempts": download_retry_attempts,
-            "download_started": download_started,
-            "download_active": download_active,
-            "download_last_label": download_last_label,
-            "download_current_label": download_current_label,
-            "download_active_labels": download_active_labels,
-            "download_active_count": download_active_count,
-            "download_speed_bps": download_speed_bps,
-            "download_bytes_completed": download_bytes_completed,
-            "download_total_bytes": download_total_bytes,
-        }
+        return _build_live_progress(payload, run_control=run_control)
 
     async def wait_for_control(payload: Optional[dict] = None):
         if not run_control:
@@ -2058,6 +2092,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'download_speed_bps': progress['download_speed_bps'],
             'download_bytes_completed': progress['download_bytes_completed'],
             'download_total_bytes': progress['download_total_bytes'],
+            'list_total_rows': progress['list_total_rows'],
+            'list_completed_rows': progress['list_completed_rows'],
+            'list_total_batches': progress['list_total_batches'],
+            'list_completed_batches': progress['list_completed_batches'],
+            'detail_total_targets': progress['detail_total_targets'],
+            'detail_completed_targets': progress['detail_completed_targets'],
+            'detail_current_target_index': progress['detail_current_target_index'],
+            'detail_current_target': progress['detail_current_target'],
+            'detail_current_page': progress['detail_current_page'],
+            'detail_total_pages': progress['detail_total_pages'],
+            'detail_total_rows': progress['detail_total_rows'],
+            'detail_request_count': progress['detail_request_count'],
+            'detail_records_collected': progress['detail_records_collected'],
         }
 
         # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。

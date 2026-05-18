@@ -1,8 +1,8 @@
 id: shein-helper
 name: Shein 运营助手
-version: 0.1.0
+version: 0.1.2
 author: crawshrimp
-description: "SHEIN 全球商家中心数据抓取与全量导出：商品评价、商品明细"
+description: "SHEIN 全球商家中心数据抓取与全量导出：商品评价、商品明细、商品质量"
 entry_url: https://sso.geiwohuo.com
 
 auth:
@@ -365,3 +365,86 @@ tasks:
                 columns:
                   - 流量/商详访客
                   - 流量/支付人数
+
+  - id: commodity_quality
+    name: 商品质量
+    description: 抓取 SHEIN 全球商家中心商品质量列表及客退详情明细，继承当前页面筛选并自动全量翻页导出
+    script: commodity-quality.js
+    entry_url: https://sso.geiwohuo.com/#/pqmp/commoditiesQuality/list
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        hint: current 模式会继承当前页面已选筛选项；填写 SKC/SPU 时会在继承其余筛选项的前提下覆盖商品搜索条件
+        options:
+          - value: current
+            label: 使用当前标签页（继承当前筛选）
+          - value: new
+            label: 新开标签页
+      - id: filter_skc
+        type: textarea
+        label: SKC
+        rows: 3
+        ui_span: compact
+        hint: 支持批量搜索，一行一个；留空则继承当前页面 SKC 筛选
+        placeholder: "例如：\nsk25050817072795161\nsk25050817072795162"
+      - id: filter_spu
+        type: textarea
+        label: SPU
+        rows: 3
+        ui_span: compact
+        hint: 支持批量搜索，一行一个；留空则继承当前页面 SPU 筛选；SKC 与 SPU 请分次运行
+        placeholder: "例如：\nk250508170727\nk250508170728"
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_商品质量_{time_scope}_{date_range}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 质量列表
+            columns:
+              - 商品名称
+              - SKC
+              - SPU
+              - SKC编码
+              - SPU编码
+              - 商品图片
+              - 分类
+              - 商品层级
+              - 在售状态
+              - 近7日销量
+              - 质量等级
+              - 质量等级类型
+              - 风险等级
+              - 质量变化
+              - 差评数/差评率
+              - 同品类差评率
+              - 差评率对比
+              - 差评问题
+              - 品退数/品退率
+              - 退货量
+              - 同品类品退率
+              - 品退率对比
+              - 售后服务量
+              - 售后表现分
+              - 是否可查看客退详情
+              - 筛选摘要
+          - name: 客退详情
+            columns:
+              - SKC
+              - SPU
+              - 商品名称
+              - 退货月份
+              - 品退数
+              - 退货量
+              - 品退率
+              - 同品类品退率
+              - 序号
+              - 退货时间
+              - 站点
+              - 是否品退
+              - SKU
+              - 客退原因
+
