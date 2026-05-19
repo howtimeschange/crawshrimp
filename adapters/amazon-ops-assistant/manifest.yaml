@@ -80,6 +80,22 @@ tasks:
         required: true
         placeholder: "一行一个 Amazon 商品链接或 product-reviews 链接"
         hint: 支持 /dp/ASIN 商品链接和 /product-reviews/ASIN 评论页链接；同一 ASIN 会自动去重。
+      - id: fetch_mode
+        type: select
+        label: 抓取模式
+        default: quick_100
+        ui_span: half
+        options:
+          - value: quick_100
+            label: 只取前 100 条（快速）
+          - value: full
+            label: 全量取（耗时长）
+        hint: 快速模式只抓每个 ASIN 默认评论流前 100 条；全量模式会跨排序、媒体、星级维度尽量抓全公开可见评论。
+      - id: resume_reviews_file
+        type: file_excel
+        label: 续跑文件（可选）
+        required: false
+        hint: 选择上一次导出的 Reviews Excel 后，会按 ASIN + 评价ID 跳过已抓评论并继续追加新评论。
       - id: max_pages_per_product
         type: number
         label: 每个 ASIN 最多抓取页数
@@ -89,6 +105,60 @@ tasks:
         step: 1
         ui_span: third
         hint: 防止异常分页无限运行；正常会按评论页 Next 按钮自动停止。
+      - id: click_min_delay_ms
+        type: number
+        label: 点击前最短等待(ms)
+        default: 4200
+        min: 0
+        max: 120000
+        step: 500
+        ui_span: third
+        hint: 点击 Show more 前的随机等待下限。
+      - id: click_max_delay_ms
+        type: number
+        label: 点击前最长等待(ms)
+        default: 8800
+        min: 0
+        max: 120000
+        step: 500
+        ui_span: third
+        hint: 点击 Show more 前的随机等待上限。
+      - id: item_min_delay_ms
+        type: number
+        label: 商品间最短冷却(ms)
+        default: 18000
+        min: 0
+        max: 600000
+        step: 1000
+        ui_span: third
+        hint: 一个 ASIN 结束后，切到下一个 ASIN 前的随机冷却下限。
+      - id: item_max_delay_ms
+        type: number
+        label: 商品间最长冷却(ms)
+        default: 42000
+        min: 0
+        max: 600000
+        step: 1000
+        ui_span: third
+        hint: 一个 ASIN 结束后，切到下一个 ASIN 前的随机冷却上限。
+      - id: dimension_min_delay_ms
+        type: number
+        label: 维度间最短冷却(ms)
+        default: 9000
+        min: 0
+        max: 300000
+        step: 1000
+        ui_span: third
+        hint: 排序、星级、媒体维度切换前的随机冷却下限。
+      - id: dimension_max_delay_ms
+        type: number
+        label: 维度间最长冷却(ms)
+        default: 22000
+        min: 0
+        max: 300000
+        step: 1000
+        ui_span: third
+        hint: 排序、星级、媒体维度切换前的随机冷却上限。
     trigger:
       type: manual
     output:

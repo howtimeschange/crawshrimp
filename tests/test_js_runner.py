@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from core.js_runner import JSRunner
+from core.js_runner import JSRunner, RunAbortedError
 from core.models import JSResult
 
 
@@ -211,6 +211,85 @@ class EndlessPaginationRunner(JSRunner):
             meta={
                 "action": "complete",
                 "has_more": True,
+                "shared": {},
+            },
+        )
+
+
+class AbortActionRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        self.calls.append(phase)
+
+        if len(self.calls) == 1:
+            return JSResult(
+                success=True,
+                data=[{"id": "first"}],
+                meta={
+                    "action": "next_phase",
+                    "next_phase": "blocked",
+                    "sleep_ms": 0,
+                    "shared": {"step": 1},
+                },
+            )
+
+        return JSResult(
+            success=True,
+            data=[{"id": "second"}],
+            meta={
+                "action": "abort",
+                "reason": "Amazon 返回自动化访问限制页，已停止并保留已抓结果",
+                "shared": {"step": 2},
+            },
+        )
+
+
+class CompleteSleepRunner(JSRunner):
+    def __init__(self):
+        super().__init__("ws://example.invalid")
+        self.calls = []
+        self.sleep_payloads = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        page_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PAGE__")
+        page = int(page_raw) if page_raw is not None else None
+        self.calls.append(page)
+        return JSResult(
+            success=True,
+            data=[{"page": page}],
+            meta={
+                "action": "complete",
+                "has_more": page == 1,
+                "sleep_ms": 250,
                 "shared": {},
             },
         )
@@ -758,6 +837,38 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             },
         )
         self.assertEqual(runner.calls[2]["shared"], {})
+
+    async def test_run_script_file_abort_action_raises_with_partial_data(self):
+        runner = AbortActionRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            with self.assertRaisesRegex(RunAbortedError, "自动化访问限制页") as captured:
+                await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(captured.exception.partial_data, [{"id": "first"}, {"id": "second"}])
+        self.assertEqual(runner.calls, ["main", "blocked"])
+
+    async def test_run_script_file_complete_has_more_honors_sleep_ms_before_next_page(self):
+        runner = CompleteSleepRunner()
+
+        async def control_hook(payload):
+            if payload.get("kind") == "before_sleep":
+                runner.sleep_payloads.append(payload)
+
+        async def fake_sleep(_seconds):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            with patch("asyncio.sleep", new=fake_sleep):
+                data = await runner.run_script_file(script_path, params={}, control_hook=control_hook)
+
+        self.assertEqual(data, [{"page": 1}, {"page": 2}])
+        self.assertEqual(runner.calls, [1, 2])
+        self.assertEqual([item["sleep_ms"] for item in runner.sleep_payloads], [250])
 
     async def test_run_script_file_handles_runtime_capture_and_download_actions(self):
         with tempfile.TemporaryDirectory() as tmpdir:

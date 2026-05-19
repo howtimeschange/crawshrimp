@@ -2215,9 +2215,17 @@ class JSRunner:
                         if action == "complete":
                             if not meta.get("has_more", False):
                                 return all_data
+                            sleep_ms = float(meta.get("sleep_ms") or 0)
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
                             page_shared = dict(shared or {})
                             logger.info(f"分页: 已获取 {len(all_data)} 条，继续第 {page + 1} 页...")
                             break
+
+                        if action == "abort":
+                            reason = str(meta.get("reason") or meta.get("error") or "任务已停止").strip() or "任务已停止"
+                            raise RunAbortedError(reason, partial_data=list(all_data))
 
                         raise RuntimeError(f"未知脚本阶段动作: {action}")
                     else:

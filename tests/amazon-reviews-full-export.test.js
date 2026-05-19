@@ -30,6 +30,7 @@ class FakeElement {
 
   get innerText() { return this._text }
   get textContent() { return this._text }
+  get innerHTML() { return this._html || this._text }
   get className() { return [...this.classList.values].join(' ') }
 
   setSelector(selector, items) {
@@ -57,9 +58,11 @@ class FakeElement {
 }
 
 class FakeDocument {
-  constructor(bodyText = '') {
+  constructor(bodyText = '', options = {}) {
     this._selectors = new Map()
+    this.title = options.title || ''
     this.body = new FakeElement({ tagName: 'body', text: bodyText })
+    this.body._html = options.html || bodyText
   }
 
   setSelector(selector, items) {
@@ -459,6 +462,110 @@ test('amazon reviews phase machine navigates, collects pages, and dedupes final 
   assert.equal(collected.meta.shared.detail_completed_targets, 1)
 })
 
+test('amazon reviews resumes from a previous export file and emits seed rows once', async () => {
+  const previousRows = [
+    {
+      ASIN: 'B0D2CQ62DX',
+      源链接: 'https://www.amazon.com/dp/B0D2CQ62DX',
+      商品链接: 'https://www.amazon.com/dp/B0D2CQ62DX',
+      评论页链接: 'https://www.amazon.com/product-reviews/B0D2CQ62DX?sortBy=recent',
+      页码: '1',
+      页内序号: '1',
+      评价ID: 'R-OLD',
+      买家昵称: 'Old buyer',
+      评分: '5',
+      评价标题: 'Old review',
+      评价内容: 'Already exported',
+    },
+    {
+      ASIN: 'B0UNRELATED',
+      评价ID: 'R-OTHER',
+      评价标题: 'Other ASIN',
+      评价内容: 'Should not seed this run',
+    },
+  ]
+  const start = await runScript({
+    params: {
+      review_urls: 'https://www.amazon.com/Weestep-Toddler-Little-Lightweight-Sneaker/dp/B0D2CQ62DX',
+      resume_reviews_file: { rows: previousRows },
+    },
+    phase: 'main',
+    href: 'https://www.amazon.com/',
+  })
+
+  assert.equal(start.success, true)
+  assert.equal(start.meta.action, 'next_phase')
+  assert.equal(start.data.length, 1)
+  assert.equal(start.data[0].评价ID, 'R-OLD')
+  assert.equal(start.meta.shared.resume_seed_row_count, 1)
+  assert.equal(start.meta.shared.current_item_collected_reviews, 1)
+  assert.deepEqual(plain(start.meta.shared.seen_review_keys), ['B0D2CQ62DX|R-OLD'])
+
+  const followupMain = await runScript({
+    params: {
+      review_urls: 'https://www.amazon.com/Weestep-Toddler-Little-Lightweight-Sneaker/dp/B0D2CQ62DX',
+      resume_reviews_file: { rows: previousRows },
+    },
+    phase: 'main',
+    href: 'https://www.amazon.com/product-reviews/B0D2CQ62DX?sortBy=recent',
+    shared: start.meta.shared,
+  })
+
+  assert.equal(followupMain.success, true)
+  assert.equal(followupMain.data.length, 0)
+})
+
+test('amazon reviews stops with abort action on automated access block so partial data can export', async () => {
+  const start = await runScript({
+    params: {
+      review_urls: 'https://www.amazon.com/Weestep-Toddler-Little-Lightweight-Sneaker/dp/B0D2CQ62DX',
+    },
+    phase: 'main',
+    href: 'https://www.amazon.com/',
+  })
+  const doc = new FakeDocument(
+    'To discuss automated access to Amazon data please contact api-services-support@amazon.com',
+    { title: 'Page Not Found' },
+  )
+
+  const blocked = await runScript({
+    phase: 'wait_reviews_page',
+    href: 'https://www.amazon.com/product-reviews/B0D2CQ62DX?sortBy=recent',
+    shared: start.meta.shared,
+    document: doc,
+  })
+
+  assert.equal(blocked.success, true)
+  assert.equal(blocked.meta.action, 'abort')
+  assert.match(blocked.meta.reason, /自动化访问限制页/)
+  assert.equal(blocked.meta.shared.traffic_limited, true)
+})
+
+test('amazon reviews aborts from collect phase when Amazon replaces reviews with a block page', async () => {
+  const start = await runScript({
+    params: {
+      review_urls: 'https://www.amazon.com/Weestep-Toddler-Little-Lightweight-Sneaker/dp/B0D2CQ62DX',
+    },
+    phase: 'main',
+    href: 'https://www.amazon.com/',
+  })
+  const doc = new FakeDocument(
+    'To discuss automated access to Amazon data please contact api-services-support@amazon.com',
+    { title: 'Page Not Found' },
+  )
+
+  const blocked = await runScript({
+    phase: 'collect_reviews_page',
+    href: 'https://www.amazon.com/product-reviews/B0D2CQ62DX?sortBy=recent',
+    shared: start.meta.shared,
+    document: doc,
+  })
+
+  assert.equal(blocked.success, true)
+  assert.equal(blocked.meta.action, 'abort')
+  assert.equal(blocked.meta.shared.stop_reason, 'automated_access_block')
+})
+
 test('amazon reviews collects every replaced page before advancing to the next product', async () => {
   const urls = [
     'https://www.amazon.com/SEEKWAY-Barefoot-Water-Shoes-Kids/dp/B0D6GMXZ6X',
@@ -550,7 +657,10 @@ test('amazon reviews collects every replaced page before advancing to the next p
 
 test('amazon reviews advances through star buckets when public all-reviews stream stops early', async () => {
   const start = await runScript({
-    params: { review_urls: 'https://www.amazon.com/Stelle-Water-Shoes-Barefoot-Shoes%EF%BC%88Pink/dp/B0DD79TX7W' },
+    params: {
+      review_urls: 'https://www.amazon.com/Stelle-Water-Shoes-Barefoot-Shoes%EF%BC%88Pink/dp/B0DD79TX7W',
+      fetch_mode: 'full',
+    },
     phase: 'main',
     href: 'https://www.amazon.com/',
   })
@@ -591,9 +701,118 @@ test('amazon reviews advances through star buckets when public all-reviews strea
   assert.equal(advanced.meta.shared.pending_click_summary.reason, 'public_page_limit_reached')
 })
 
+test('amazon reviews quick mode caps at first 100 reviews and skips extra dimensions', async () => {
+  const start = await runScript({
+    params: {
+      review_urls: [
+        'https://www.amazon.com/Stelle-Water-Shoes-Barefoot-Shoes%EF%BC%88Pink/dp/B0DD79TX7W',
+        'https://www.amazon.com/SEEKWAY-Barefoot-Water-Shoes-Kids/dp/B0D6GMXZ6X',
+      ].join('\n'),
+      fetch_mode: 'quick_100',
+    },
+    phase: 'main',
+    href: 'https://www.amazon.com/',
+  })
+
+  const shared = {
+    ...start.meta.shared,
+    current_expected_reviews: 100,
+    current_item_collected_reviews: 100,
+    collected_reviews: 100,
+    completed_items: 0,
+    seen_review_keys: Array.from({ length: 100 }, (_, index) => `B0DD79TX7W|R-${index + 1}`),
+    current_review_page: 10,
+    current_scope_index: 0,
+    current_media_index: 0,
+    current_sort_index: 0,
+  }
+  const doc = new FakeDocument('Customer reviews')
+  doc.setSelector('[data-hook="cr-filter-info-review-rating-count"], .cr-filter-info-review-rating-count', [
+    new FakeElement({ tagName: 'span', text: '224 customer reviews' }),
+  ])
+  doc.setSelector('[data-hook="review"], div.review, li.review', [])
+  doc.setSelector('[data-hook="show-more-button"], .cm-cr-show-more a', [])
+
+  const advanced = await runScript({
+    phase: 'advance_reviews_page',
+    href: 'https://www.amazon.com/product-reviews/B0DD79TX7W?pageNumber=10&sortBy=recent',
+    shared,
+    document: doc,
+  })
+
+  assert.equal(advanced.success, true)
+  assert.equal(advanced.meta.action, 'complete')
+  assert.equal(advanced.meta.has_more, true)
+  assert.equal(advanced.meta.shared.fetch_mode, 'quick_100')
+  assert.equal(advanced.meta.shared.current_index, 1)
+  assert.equal(advanced.meta.shared.completed_items, 1)
+  assert.equal(advanced.meta.shared.current_scope_index, 0)
+  assert.equal(advanced.meta.shared.current_media_index, 0)
+  assert.equal(advanced.meta.shared.current_sort_index, 0)
+  assert.equal(advanced.meta.shared.detail_dimension_total, 1)
+  assert.equal(advanced.meta.shared.target_url, 'https://www.amazon.com/product-reviews/B0D6GMXZ6X?sortBy=recent')
+})
+
+test('amazon reviews quick mode never emits more than 100 rows for one ASIN', async () => {
+  const start = await runScript({
+    params: {
+      review_urls: 'https://www.amazon.com/Stelle-Water-Shoes-Barefoot-Shoes%EF%BC%88Pink/dp/B0DD79TX7W',
+      fetch_mode: 'quick_100',
+    },
+    phase: 'main',
+    href: 'https://www.amazon.com/',
+  })
+  const shared = {
+    ...start.meta.shared,
+    current_expected_reviews: 100,
+    current_item_collected_reviews: 95,
+    collected_reviews: 95,
+    seen_review_keys: Array.from({ length: 95 }, (_, index) => `B0DD79TX7W|R-old-${index + 1}`),
+  }
+  const doc = new FakeDocument('Customer reviews')
+  doc.setSelector('[data-hook="cr-filter-info-review-rating-count"], .cr-filter-info-review-rating-count', [
+    new FakeElement({ tagName: 'span', text: '224 customer reviews' }),
+  ])
+  doc.setSelector('[data-hook="review"], div.review, li.review', Array.from({ length: 10 }, (_, index) => (
+    reviewCard({
+      id: `R-new-${index + 1}`,
+      title: `Quick ${index + 1}`,
+      body: `Body ${index + 1}`,
+      ratingLabel: '5.0 out of 5 stars',
+    })
+  )))
+  doc.setSelector('[data-hook="show-more-button"], .cm-cr-show-more a', [
+    new FakeElement({
+      tagName: 'a',
+      text: 'Show 10 more reviews',
+      attributes: {
+        href: '/product-reviews/B0DD79TX7W/ref=cm_cr_arp_d_paging_btm_2',
+        'data-hook': 'show-more-button',
+      },
+    }),
+  ])
+
+  const collected = await runScript({
+    phase: 'collect_reviews_page',
+    href: 'https://www.amazon.com/product-reviews/B0DD79TX7W?sortBy=recent',
+    shared,
+    document: doc,
+  })
+
+  assert.equal(collected.success, true)
+  assert.equal(collected.meta.action, 'complete')
+  assert.equal(collected.meta.has_more, false)
+  assert.equal(collected.data.length, 5)
+  assert.equal(collected.meta.shared.current_item_collected_reviews, 100)
+  assert.equal(collected.meta.shared.current_expected_reviews, 100)
+})
+
 test('amazon reviews keeps product total while traversing scoped star buckets', async () => {
   const start = await runScript({
-    params: { review_urls: 'https://www.amazon.com/Stelle-Water-Shoes-Barefoot-Shoes%EF%BC%88Pink/dp/B0DD79TX7W' },
+    params: {
+      review_urls: 'https://www.amazon.com/Stelle-Water-Shoes-Barefoot-Shoes%EF%BC%88Pink/dp/B0DD79TX7W',
+      fetch_mode: 'full',
+    },
     phase: 'main',
     href: 'https://www.amazon.com/',
   })
@@ -653,7 +872,10 @@ test('amazon reviews keeps product total while traversing scoped star buckets', 
 
 test('amazon reviews advances from recent star buckets into media dimensions before helpful sort', async () => {
   const start = await runScript({
-    params: { review_urls: 'https://www.amazon.com/SEEKWAY-Barefoot-Water-Shoes-Kids/dp/B0D6GMXZ6X' },
+    params: {
+      review_urls: 'https://www.amazon.com/SEEKWAY-Barefoot-Water-Shoes-Kids/dp/B0D6GMXZ6X',
+      fetch_mode: 'full',
+    },
     phase: 'main',
     href: 'https://www.amazon.com/',
   })
@@ -699,6 +921,13 @@ test('amazon ops manifest exposes reviews full export task with excel output', a
   const manifest = fs.readFileSync(path.resolve('adapters/amazon-ops-assistant/manifest.yaml'), 'utf8')
   assert.match(manifest, /id:\s+amazon_reviews_full_export/)
   assert.match(manifest, /script:\s+amazon-reviews-full-export\.js/)
+  assert.match(manifest, /id:\s+fetch_mode/)
+  assert.match(manifest, /只取前 100 条（快速）/)
+  assert.match(manifest, /全量取（耗时长）/)
+  assert.match(manifest, /id:\s+resume_reviews_file/)
+  assert.match(manifest, /label:\s+续跑文件（可选）/)
+  assert.match(manifest, /id:\s+click_min_delay_ms/)
+  assert.match(manifest, /id:\s+item_max_delay_ms/)
   assert.match(manifest, /filename:\s+"亚马逊Reviews全量抓取_\{timestamp\}\.xlsx"/)
   assert.match(manifest, /ASIN/)
   assert.match(manifest, /评价ID/)

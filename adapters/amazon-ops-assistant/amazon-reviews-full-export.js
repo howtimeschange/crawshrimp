@@ -6,7 +6,13 @@
 
   const DEFAULT_MAX_PAGES_PER_ASIN = 500
   const AMAZON_PUBLIC_REVIEW_PAGE_LIMIT = 10
-  const DEFAULT_PAGE_DELAY_MS = 1800
+  const DEFAULT_PAGE_DELAY_MS = 4200
+  const DEFAULT_CLICK_MIN_DELAY_MS = 4200
+  const DEFAULT_CLICK_MAX_DELAY_MS = 8800
+  const DEFAULT_ITEM_MIN_DELAY_MS = 18000
+  const DEFAULT_ITEM_MAX_DELAY_MS = 42000
+  const DEFAULT_DIMENSION_MIN_DELAY_MS = 9000
+  const DEFAULT_DIMENSION_MAX_DELAY_MS = 22000
   const REVIEW_SORTS = Object.freeze([
     Object.freeze({ id: 'recent', label: '最新', sortBy: 'recent' }),
     Object.freeze({ id: 'helpful', label: '最有帮助', sortBy: 'helpful' }),
@@ -23,6 +29,9 @@
     Object.freeze({ id: 'two_star', label: '2星', filterByStar: 'two_star' }),
     Object.freeze({ id: 'one_star', label: '1星', filterByStar: 'one_star' }),
   ])
+  const FETCH_MODE_QUICK_100 = 'quick_100'
+  const FETCH_MODE_FULL = 'full'
+  const QUICK_REVIEW_LIMIT = 100
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
@@ -97,6 +106,36 @@
     return integer
   }
 
+  function getDelayRange(minParam, maxParam, defaultMin, defaultMax) {
+    const minValue = toInt(params[minParam], defaultMin, 0, 10 * 60 * 1000)
+    const maxValue = toInt(params[maxParam], defaultMax, 0, 10 * 60 * 1000)
+    return {
+      min: Math.min(minValue, maxValue),
+      max: Math.max(minValue, maxValue),
+    }
+  }
+
+  function randomDelayFromParams(minParam, maxParam, defaultMin, defaultMax) {
+    const range = getDelayRange(minParam, maxParam, defaultMin, defaultMax)
+    return randomInt(range.min, range.max)
+  }
+
+  function pageDelayMs() {
+    return randomDelayFromParams('page_min_delay_ms', 'page_max_delay_ms', DEFAULT_PAGE_DELAY_MS, DEFAULT_PAGE_DELAY_MS + 2800)
+  }
+
+  function clickDelayMs() {
+    return randomDelayFromParams('click_min_delay_ms', 'click_max_delay_ms', DEFAULT_CLICK_MIN_DELAY_MS, DEFAULT_CLICK_MAX_DELAY_MS)
+  }
+
+  function itemDelayMs() {
+    return randomDelayFromParams('item_min_delay_ms', 'item_max_delay_ms', DEFAULT_ITEM_MIN_DELAY_MS, DEFAULT_ITEM_MAX_DELAY_MS)
+  }
+
+  function dimensionDelayMs() {
+    return randomDelayFromParams('dimension_min_delay_ms', 'dimension_max_delay_ms', DEFAULT_DIMENSION_MIN_DELAY_MS, DEFAULT_DIMENSION_MAX_DELAY_MS)
+  }
+
   function isoNow() {
     try {
       return new Date().toISOString()
@@ -113,6 +152,27 @@
       return urlMatches.map(item => item.replace(/^[、，,;；]+|[、，,;；]+$/g, '').trim()).filter(Boolean)
     }
     return text.split(/[\n\r\t 、，,;；]+/).map(item => item.trim()).filter(Boolean)
+  }
+
+  function normalizeFetchMode(value) {
+    const mode = compact(value || params.fetch_mode || params.mode || FETCH_MODE_QUICK_100).toLowerCase()
+    if (['full', 'all', 'all_reviews', 'full_export', '全量', 'full_all'].includes(mode)) return FETCH_MODE_FULL
+    return FETCH_MODE_QUICK_100
+  }
+
+  function isQuickMode(state = shared) {
+    return normalizeFetchMode(state?.fetch_mode || params.fetch_mode) === FETCH_MODE_QUICK_100
+  }
+
+  function effectiveReviewTargetCount(rawExpected, state = shared) {
+    const expected = toInt(rawExpected, 0, 0)
+    if (!isQuickMode(state)) return expected
+    if (expected > 0) return Math.min(expected, QUICK_REVIEW_LIMIT)
+    return QUICK_REVIEW_LIMIT
+  }
+
+  function getDimensionTotal(state = shared) {
+    return isQuickMode(state) ? 1 : REVIEW_SORTS.length * REVIEW_MEDIA_SCOPES.length * REVIEW_SCOPES.length
   }
 
   function parseUrl(raw) {
@@ -248,6 +308,18 @@
     }
   }
 
+  function abortTask(message, nextShared = shared, data = []) {
+    return {
+      success: true,
+      data,
+      meta: {
+        action: 'abort',
+        reason: compact(message) || '任务已停止',
+        shared: nextShared,
+      },
+    }
+  }
+
   function fail(message) {
     return {
       success: false,
@@ -320,11 +392,11 @@
     const sort = getCurrentSort(nextState)
     const media = getCurrentMediaScope(nextState)
     const scope = getCurrentScope(nextState)
-    const dimensionTotal = REVIEW_SORTS.length * REVIEW_MEDIA_SCOPES.length * REVIEW_SCOPES.length
+    const dimensionTotal = getDimensionTotal(nextState)
     const currentSortIndex = toInt(nextState.current_sort_index, 0, 0, REVIEW_SORTS.length - 1)
     const currentMediaIndex = toInt(nextState.current_media_index, 0, 0, REVIEW_MEDIA_SCOPES.length - 1)
     const currentScopeIndex = toInt(nextState.current_scope_index, 0, 0, REVIEW_SCOPES.length - 1)
-    const currentDimensionIndex = (currentSortIndex * REVIEW_MEDIA_SCOPES.length * REVIEW_SCOPES.length) + (currentMediaIndex * REVIEW_SCOPES.length) + currentScopeIndex + 1
+    const currentDimensionIndex = isQuickMode(nextState) ? 1 : (currentSortIndex * REVIEW_MEDIA_SCOPES.length * REVIEW_SCOPES.length) + (currentMediaIndex * REVIEW_SCOPES.length) + currentScopeIndex + 1
     return {
       ...nextState,
       current_sort_id: sort.id,
@@ -333,6 +405,8 @@
       current_media_label: media.label,
       current_scope_id: scope.id,
       current_scope_label: scope.label,
+      fetch_mode: normalizeFetchMode(nextState.fetch_mode),
+      fetch_mode_label: isQuickMode(nextState) ? '只取前 100 条（快速）' : '全量取（耗时长）',
       total_items: totalItems,
       total_rows: totalItems,
       current_exec_no: totalItems > 0 ? Math.min(currentIndex + 1, totalItems) : 0,
@@ -472,6 +546,38 @@
       row.评价标题,
       row.评价内容,
     ].map(compact).join('|')
+  }
+
+  function collectResumeSeedRows(allowedAsins = []) {
+    const allowed = new Set((allowedAsins || []).map(item => compact(item).toUpperCase()).filter(Boolean))
+    const file = params.resume_reviews_file || params.resume_file || null
+    const rows = []
+    if (Array.isArray(file?.rows)) rows.push(...file.rows)
+    if (file?.sheets && typeof file.sheets === 'object') {
+      for (const sheet of Object.values(file.sheets)) {
+        if (Array.isArray(sheet?.rows) && sheet.rows !== file.rows) rows.push(...sheet.rows)
+      }
+    }
+    const seen = new Set()
+    const seedRows = []
+    const seedKeys = []
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue
+      const normalized = { ...row }
+      normalized.ASIN = compact(normalized.ASIN || normalized.asin).toUpperCase()
+      normalized.评价ID = compact(normalized.评价ID || normalized.review_id || normalized['Review ID'])
+      const key = reviewKey(normalized)
+      if (!normalized.ASIN || !key || seen.has(key)) continue
+      if (allowed.size && !allowed.has(normalized.ASIN)) continue
+      seen.add(key)
+      seedKeys.push(key)
+      seedRows.push(normalized)
+    }
+    return { rows: seedRows, keys: seedKeys }
+  }
+
+  function countSeedReviewsForAsin(seedKeys = [], asin = '') {
+    return countSeenReviewsForAsin(new Set(seedKeys), asin)
   }
 
   function reviewCardIdentity(card, index = 0) {
@@ -684,8 +790,8 @@
     const limit = toInt(maxPages, DEFAULT_MAX_PAGES_PER_ASIN, 1, DEFAULT_MAX_PAGES_PER_ASIN)
     const currentPage = Math.max(1, toInt(state.current_review_page, parseCurrentReviewPageNumber(String(location.href || '')), 1, limit))
     const pageExpectedCount = getExpectedReviewCount(doc)
-    const expectedCount = toInt(state.current_expected_reviews, 0, 0) || pageExpectedCount
-    const scopeExpectedCount = toInt(state.current_scope_expected_reviews, 0, 0) || pageExpectedCount || expectedCount
+    const expectedCount = effectiveReviewTargetCount(toInt(state.current_expected_reviews, 0, 0) || pageExpectedCount, state)
+    const scopeExpectedCount = effectiveReviewTargetCount(toInt(state.current_scope_expected_reviews, 0, 0) || pageExpectedCount || expectedCount, state)
     const collectedForItem = toInt(state.current_item_collected_reviews, 0, 0)
     const collectedForScope = toInt(state.current_scope_collected_reviews, 0, 0)
     const currentVisibleCount = getReviewCards(doc).length
@@ -808,7 +914,9 @@
     const title = compact(document.title || '')
     const text = compact(document.body?.innerText || document.body?.textContent || '')
     const html = compact(document.body?.innerHTML || '')
-    return /Page Not Found/i.test(title) && /automated access to Amazon data|api-services-support@amazon\.com/i.test(`${text} ${html}`)
+    const combined = `${title} ${text} ${html}`
+    return /automated access to Amazon data|api-services-support@amazon\.com/i.test(combined) ||
+      (/Page Not Found/i.test(title) && /automated access|Amazon data|api-services-support/i.test(combined))
   }
 
   function isAmazonRobotCheck() {
@@ -838,9 +946,13 @@
   function initializeShared() {
     const queue = buildInputQueue(collectReviewUrlsFromParams())
     if (!queue.length) throw new Error('未解析到有效的 Amazon 商品链接或评论页链接')
+    const resumeSeed = collectResumeSeedRows(queue.map(item => item.asin))
+    const firstItem = queue[0] || null
+    const firstItemSeedCount = firstItem ? countSeedReviewsForAsin(resumeSeed.keys, firstItem.asin) : 0
     return buildReviewsProgressShared({
       ...shared,
       queue,
+      fetch_mode: normalizeFetchMode(params.fetch_mode),
       current_index: 0,
       current_sort_index: 0,
       current_media_index: 0,
@@ -848,13 +960,18 @@
       current_review_page: 1,
       next_review_url: '',
       target_url: buildScopedReviewUrl(queue[0], REVIEW_SCOPES[0], REVIEW_SORTS[0], REVIEW_MEDIA_SCOPES[0]),
-      seen_review_keys: [],
-      collected_reviews: 0,
+      seen_review_keys: resumeSeed.keys,
+      collected_reviews: resumeSeed.rows.length,
       completed_items: 0,
-      current_item_collected_reviews: 0,
+      current_item_collected_reviews: firstItemSeedCount,
       current_expected_reviews: 0,
       current_scope_collected_reviews: 0,
       current_scope_expected_reviews: 0,
+      resume_seed_rows: resumeSeed.rows,
+      resume_seed_emitted: false,
+      resume_seed_row_count: resumeSeed.rows.length,
+      traffic_limited: false,
+      stop_reason: '',
       pending_click_summary: null,
       review_page_summaries: [],
     })
@@ -894,6 +1011,8 @@
       getCurrentSort,
       getCurrentMediaScope,
       getNextReviewDimension,
+      collectResumeSeedRows,
+      randomDelayFromParams,
     })
     return complete([], false, shared)
   }
@@ -909,9 +1028,11 @@
         })
       }
       const targetUrl = state.next_review_url || item.reviewsUrl
+      const seedRows = !state.resume_seed_emitted && Array.isArray(state.resume_seed_rows) ? state.resume_seed_rows : []
       return nextPhase('ensure_reviews_page', 0, buildReviewsProgressShared(state, {
         target_url: state.next_review_url || buildScopedReviewUrl(item, getCurrentScope(state), getCurrentSort(state), getCurrentMediaScope(state)),
-      }))
+        resume_seed_emitted: true,
+      }), seedRows)
     }
 
     if (phase === 'ensure_reviews_page') {
@@ -928,19 +1049,37 @@
 
     if (phase === 'wait_reviews_page') {
       if (isAmazonRobotCheck()) {
-        return fail('Amazon 显示机器人验证，请在当前浏览器完成验证后重新运行任务')
+        return abortTask('Amazon 显示机器人验证，已停止并导出已抓结果；请在当前浏览器完成验证后再用导出的文件续跑', buildReviewsProgressShared(shared, {
+          traffic_limited: true,
+          stop_reason: 'robot_check',
+        }))
       }
       if (isAmazonAutomatedAccessBlock()) {
-        return fail('Amazon 返回自动化访问限制页（Page Not Found），请稍后重试，或在当前浏览器手动打开任一商品评论页后再运行任务')
+        return abortTask('Amazon 返回自动化访问限制页（Page Not Found），已停止并导出已抓结果；请稍后再用导出的文件续跑', buildReviewsProgressShared(shared, {
+          traffic_limited: true,
+          stop_reason: 'automated_access_block',
+        }))
       }
       const ok = await waitForReviewPage(12000)
       if (!ok) return fail('Amazon 评论页未加载出评价区域，请确认链接可访问或完成页面验证')
-      return nextPhase('collect_reviews_page', 200, shared)
+      return nextPhase('collect_reviews_page', randomInt(900, 1800), shared)
     }
 
     if (phase === 'collect_reviews_page') {
       const item = getCurrentItem(shared)
       if (!item) return complete([], false, shared)
+      if (isAmazonRobotCheck()) {
+        return abortTask('Amazon 显示机器人验证，已停止并导出已抓结果；请在当前浏览器完成验证后再用导出的文件续跑', buildReviewsProgressShared(shared, {
+          traffic_limited: true,
+          stop_reason: 'robot_check',
+        }))
+      }
+      if (isAmazonAutomatedAccessBlock()) {
+        return abortTask('Amazon 返回自动化访问限制页（Page Not Found），已停止并导出已抓结果；请稍后再用导出的文件续跑', buildReviewsProgressShared(shared, {
+          traffic_limited: true,
+          stop_reason: 'automated_access_block',
+        }))
+      }
       const currentUrl = normalizeReviewPageUrl(String(location.href || '')) || String(location.href || shared.target_url || item.reviewsUrl)
       const maxPages = toInt(params.max_pages_per_product, DEFAULT_MAX_PAGES_PER_ASIN, 1, DEFAULT_MAX_PAGES_PER_ASIN)
       const currentReviewPage = Math.max(1, toInt(shared.current_review_page, parseCurrentReviewPageNumber(String(location.href || '')), 1, maxPages))
@@ -961,23 +1100,35 @@
 
       const queue = Array.isArray(shared.queue) ? shared.queue : []
       const currentIndex = toInt(shared.current_index, 0, 0, queue.length)
-      const collectedReviews = Number(shared.collected_reviews || 0) + rows.length
-      const currentItemCollected = countSeenReviewsForAsin(seen, item.asin)
       const pageExpectedCount = getExpectedReviewCount(document)
       const existingExpectedCount = toInt(shared.current_expected_reviews, 0, 0)
-      const expectedCount = scope.id === 'all'
-        ? (pageExpectedCount || existingExpectedCount)
-        : (existingExpectedCount || currentItemCollected || pageExpectedCount)
       const existingScopeCollected = toInt(shared.current_scope_collected_reviews, 0, 0)
-      const currentScopeCollected = existingScopeCollected + extracted.rows.length
-      const currentScopeExpected = pageExpectedCount || toInt(shared.current_scope_expected_reviews, 0, 0) || expectedCount
+      const currentItemCollectedBeforeLimit = countSeenReviewsForAsin(seen, item.asin)
+      const rawExpectedCount = scope.id === 'all'
+        ? (pageExpectedCount || existingExpectedCount)
+        : (existingExpectedCount || currentItemCollectedBeforeLimit || pageExpectedCount)
+      const expectedCount = effectiveReviewTargetCount(rawExpectedCount, shared)
+      let emittedRows = rows
+      if (isQuickMode(shared)) {
+        const alreadyCollectedBeforeThisPage = Math.max(0, currentItemCollectedBeforeLimit - rows.length)
+        const remaining = Math.max(0, expectedCount - alreadyCollectedBeforeThisPage)
+        emittedRows = rows.slice(0, remaining)
+      }
+      const currentItemCollected = isQuickMode(shared)
+        ? Math.min(expectedCount, countSeenReviewsForAsin(seen, item.asin))
+        : countSeenReviewsForAsin(seen, item.asin)
+      const currentScopeCollected = isQuickMode(shared)
+        ? Math.min(expectedCount, existingScopeCollected + emittedRows.length)
+        : existingScopeCollected + extracted.rows.length
+      const currentScopeExpected = effectiveReviewTargetCount(pageExpectedCount || toInt(shared.current_scope_expected_reviews, 0, 0) || expectedCount, shared)
+      const collectedReviews = Number(shared.collected_reviews || 0) + emittedRows.length
       const scopeRowNote = [
         `排序：${sort.label}`,
         media.id !== 'all_media' ? `媒体范围：${media.label}` : '',
         scope.id !== 'all' ? `筛选范围：${scope.label}` : '',
       ].filter(Boolean).join('；')
       if (scopeRowNote) {
-        for (const row of rows) {
+        for (const row of emittedRows) {
           row.备注 = row.备注 ? `${row.备注}；${scopeRowNote}` : scopeRowNote
         }
       }
@@ -995,7 +1146,7 @@
         scope: scope.id,
         scope_label: scope.label,
         page: currentReviewPage,
-        rows: rows.length,
+        rows: emittedRows.length,
         logical_count_on_page: extracted.rows.length,
         expected_count: expectedCount,
         scope_expected_count: currentScopeExpected,
@@ -1032,20 +1183,23 @@
         ],
       })
       if (canTryShowMore) {
-        return nextPhase('advance_reviews_page', randomInt(900, 1800), nextShared, rows)
+        return nextPhase('advance_reviews_page', clickDelayMs(), nextShared, emittedRows)
       }
 
       const hasNextItem = currentIndex + 1 < queue.length
       const currentSortIndex = toInt(shared.current_sort_index, 0, 0, REVIEW_SORTS.length - 1)
       const currentMediaIndex = toInt(shared.current_media_index, 0, 0, REVIEW_MEDIA_SCOPES.length - 1)
       const currentScopeIndex = toInt(shared.current_scope_index, 0, 0, REVIEW_SCOPES.length - 1)
-      const nextDimension = currentItemCollected < expectedCount ? getNextReviewDimension(currentSortIndex, currentMediaIndex, currentScopeIndex) : null
+      const nextDimension = (!isQuickMode(nextShared) && currentItemCollected < expectedCount) ? getNextReviewDimension(currentSortIndex, currentMediaIndex, currentScopeIndex) : null
       const hasNextDimension = !!nextDimension
       const nextIndex = hasNextDimension ? currentIndex : hasNextItem ? currentIndex + 1 : currentIndex
       const nextSortIndex = hasNextDimension ? nextDimension.sortIndex : 0
       const nextMediaIndex = hasNextDimension ? nextDimension.mediaIndex : 0
       const nextScopeIndex = hasNextDimension ? nextDimension.scopeIndex : 0
       const nextItem = queue[nextIndex] || item
+      const nextItemSeedCount = nextItem && hasNextItem && !hasNextDimension
+        ? countSeenReviewsForAsin(seen, nextItem.asin)
+        : 0
       const nextSort = REVIEW_SORTS[nextSortIndex] || REVIEW_SORTS[0]
       const nextMedia = REVIEW_MEDIA_SCOPES[nextMediaIndex] || REVIEW_MEDIA_SCOPES[0]
       const nextScope = REVIEW_SCOPES[nextScopeIndex] || REVIEW_SCOPES[0]
@@ -1058,7 +1212,7 @@
         next_review_url: '',
         target_url: hasNextDimension || hasNextItem ? buildScopedReviewUrl(nextItem, nextScope, nextSort, nextMedia) : '',
         completed_items: hasNextDimension ? Number(nextShared.completed_items || 0) : Math.min(Number(nextShared.completed_items || 0) + 1, queue.length),
-        current_item_collected_reviews: hasNextDimension ? currentItemCollected : hasNextItem ? 0 : currentItemCollected,
+        current_item_collected_reviews: hasNextDimension ? currentItemCollected : hasNextItem ? nextItemSeedCount : currentItemCollected,
         current_expected_reviews: hasNextDimension ? expectedCount : hasNextItem ? 0 : expectedCount,
         current_scope_collected_reviews: 0,
         current_scope_expected_reviews: 0,
@@ -1068,7 +1222,10 @@
         notify_title: buildNotifyTitle(afterItemShared),
         notify_body: buildNotifyBody(afterItemShared),
       }
-      return complete(rows, hasMore, afterItemShared, extraMeta)
+      return complete(emittedRows, hasMore, afterItemShared, {
+        sleep_ms: hasNextDimension ? dimensionDelayMs() : hasNextItem ? itemDelayMs() : 0,
+        ...extraMeta,
+      })
     }
 
     if (phase === 'advance_reviews_page') {
@@ -1076,8 +1233,22 @@
       if (!item) return complete([], false, shared)
       const maxPages = toInt(params.max_pages_per_product, DEFAULT_MAX_PAGES_PER_ASIN, 1, DEFAULT_MAX_PAGES_PER_ASIN)
       const clickSummary = await clickShowMoreForNextReviewPage(document, maxPages, shared)
+      if (clickSummary.reason === 'robot_check') {
+        return abortTask('Amazon 显示机器人验证，已停止并导出已抓结果；请在当前浏览器完成验证后再用导出的文件续跑', buildReviewsProgressShared(shared, {
+          traffic_limited: true,
+          stop_reason: 'robot_check',
+          pending_click_summary: clickSummary,
+        }))
+      }
+      if (isAmazonAutomatedAccessBlock()) {
+        return abortTask('Amazon 返回自动化访问限制页（Page Not Found），已停止并导出已抓结果；请稍后再用导出的文件续跑', buildReviewsProgressShared(shared, {
+          traffic_limited: true,
+          stop_reason: 'automated_access_block',
+          pending_click_summary: clickSummary,
+        }))
+      }
       if (clickSummary.clicked && clickSummary.changed) {
-        return nextPhase('collect_reviews_page', randomInt(900, 1800), buildReviewsProgressShared(shared, {
+        return nextPhase('collect_reviews_page', pageDelayMs(), buildReviewsProgressShared(shared, {
           current_review_page: clickSummary.next_page || (Number(shared.current_review_page || 1) + 1),
           pending_click_summary: clickSummary,
         }))
@@ -1091,13 +1262,16 @@
       const currentSortIndex = toInt(shared.current_sort_index, 0, 0, REVIEW_SORTS.length - 1)
       const currentMediaIndex = toInt(shared.current_media_index, 0, 0, REVIEW_MEDIA_SCOPES.length - 1)
       const currentScopeIndex = toInt(shared.current_scope_index, 0, 0, REVIEW_SCOPES.length - 1)
-      const nextDimension = currentCollected < currentExpected ? getNextReviewDimension(currentSortIndex, currentMediaIndex, currentScopeIndex) : null
+      const nextDimension = (!isQuickMode(shared) && currentCollected < currentExpected) ? getNextReviewDimension(currentSortIndex, currentMediaIndex, currentScopeIndex) : null
       const hasNextDimension = !!nextDimension
       const nextIndex = hasNextDimension ? currentIndex : hasNextItem ? currentIndex + 1 : currentIndex
       const nextSortIndex = hasNextDimension ? nextDimension.sortIndex : 0
       const nextMediaIndex = hasNextDimension ? nextDimension.mediaIndex : 0
       const nextScopeIndex = hasNextDimension ? nextDimension.scopeIndex : 0
       const nextItem = queue[nextIndex] || item
+      const nextItemSeedCount = nextItem && hasNextItem && !hasNextDimension
+        ? countSeenReviewsForAsin(Array.isArray(shared.seen_review_keys) ? shared.seen_review_keys : [], nextItem.asin)
+        : 0
       const nextShared = buildReviewsProgressShared(shared, {
         current_index: nextIndex,
         current_sort_index: nextSortIndex,
@@ -1107,7 +1281,7 @@
         next_review_url: '',
         target_url: hasNextDimension || hasNextItem ? buildScopedReviewUrl(nextItem, REVIEW_SCOPES[nextScopeIndex] || REVIEW_SCOPES[0], REVIEW_SORTS[nextSortIndex] || REVIEW_SORTS[0], REVIEW_MEDIA_SCOPES[nextMediaIndex] || REVIEW_MEDIA_SCOPES[0]) : '',
         completed_items: hasNextDimension ? Number(shared.completed_items || 0) : Math.min(Number(shared.completed_items || 0) + 1, queue.length),
-        current_item_collected_reviews: hasNextDimension ? currentCollected : hasNextItem ? 0 : currentCollected,
+        current_item_collected_reviews: hasNextDimension ? currentCollected : hasNextItem ? nextItemSeedCount : currentCollected,
         current_expected_reviews: hasNextDimension ? currentExpected : hasNextItem ? 0 : currentExpected,
         current_scope_collected_reviews: 0,
         current_scope_expected_reviews: 0,
@@ -1118,7 +1292,10 @@
         notify_title: buildNotifyTitle(nextShared),
         notify_body: buildNotifyBody(nextShared),
       }
-      return complete([], hasMore, nextShared, extraMeta)
+      return complete([], hasMore, nextShared, {
+        sleep_ms: hasNextDimension ? dimensionDelayMs() : hasNextItem ? itemDelayMs() : 0,
+        ...extraMeta,
+      })
     }
 
     return fail(`未知 phase: ${phase}`)
