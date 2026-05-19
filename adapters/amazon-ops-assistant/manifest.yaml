@@ -2,8 +2,11 @@ id: amazon-ops-assistant
 name: 亚马逊运营助手
 version: 0.1.0
 author: codex
-description: "亚马逊运营本地工具：按 FNSKU 映射批量拆分商品标签 PDF"
-entry_url: about:blank
+description: "亚马逊运营本地工具：标签 PDF 批量处理、商品 Reviews 全量抓取"
+entry_url: https://www.amazon.com/
+tab_match_prefixes:
+  - https://www.amazon.com/
+  - https://amazon.com/
 
 tasks:
   - id: amazon_label_batch_process
@@ -59,4 +62,60 @@ tasks:
           - 标签名称
           - 匹配结果
           - 输出PDF
+          - 备注
+  - id: amazon_reviews_full_export
+    name: Reviews全量抓取
+    description: 输入 Amazon 商品链接或 product-reviews 评论页链接，自动翻页抓取全部可见评价并导出 Excel
+    script: amazon-reviews-full-export.js
+    entry_url: https://www.amazon.com/
+    tab_match_prefixes:
+      - https://www.amazon.com/
+      - https://amazon.com/
+    skip_auth: true
+    params:
+      - id: review_urls
+        type: textarea
+        label: 商品或评价页链接
+        rows: 6
+        required: true
+        placeholder: "一行一个 Amazon 商品链接或 product-reviews 链接"
+        hint: 支持 /dp/ASIN 商品链接和 /product-reviews/ASIN 评论页链接；同一 ASIN 会自动去重。
+      - id: max_pages_per_product
+        type: number
+        label: 每个 ASIN 最多抓取页数
+        default: 500
+        min: 1
+        max: 500
+        step: 1
+        ui_span: third
+        hint: 防止异常分页无限运行；正常会按评论页 Next 按钮自动停止。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "亚马逊Reviews全量抓取_{timestamp}.xlsx"
+        columns:
+          - ASIN
+          - 源链接
+          - 商品链接
+          - 评论页链接
+          - 商品标题
+          - 页码
+          - 页内序号
+          - 评价ID
+          - 买家昵称
+          - 买家主页
+          - 评分
+          - 评价标题
+          - 评价内容
+          - 评价国家
+          - 评价时间
+          - 评价时间原文
+          - 变体信息
+          - VerifiedPurchase
+          - Helpful票数
+          - 评价图片
+          - 抓取时间
+          - 数据来源
+          - 执行结果
           - 备注

@@ -92,6 +92,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'creator_video_download',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'amazon-ops-assistant',
+    taskId: 'amazon_reviews_full_export',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {
@@ -401,6 +406,121 @@ function isTiktokCreatorVideoDownloadTask(adapterId, taskId) {
 
 function isSheinCommodityQualityTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'shein-helper' && normalizeKeyPart(taskId) === 'commodity_quality'
+}
+
+function isAmazonReviewsFullExportTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'amazon-ops-assistant' && normalizeKeyPart(taskId) === 'amazon_reviews_full_export'
+}
+
+function buildAmazonReviewsFullExportProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const phase = normalizeKeyPart(live?.phase)
+  const asin = String(live?.buyer_id || live?.detail_current_target || '').trim()
+  const store = String(live?.store || '').trim()
+  const records = toInt(live?.records || live?.completed)
+  const dimensionLabel = String(live?.detail_dimension_label || '').trim()
+  const dimensionIndex = toInt(live?.detail_dimension_index)
+  const dimensionTotal = toInt(live?.detail_dimension_total)
+
+  const totalItems = toInt(live?.list_total_rows) || toInt(live?.total)
+  const rawItemIndex = toInt(live?.detail_current_target_index) || toInt(live?.current)
+  const currentItemIndex = totalItems > 0 ? Math.min(Math.max(rawItemIndex, 1), totalItems) : rawItemIndex
+  const completedItems = toInt(live?.list_completed_rows)
+  const itemPercent = totalItems > 0 ? clampPercent((Math.max(completedItems, currentItemIndex) / totalItems) * 100) : 0
+
+  const expectedReviews = toInt(live?.detail_total_targets) || toInt(live?.total_batches)
+  const collectedForItemRaw = toInt(live?.detail_completed_targets) || toInt(live?.batch_no)
+  const collectedForItem = expectedReviews > 0 ? Math.min(collectedForItemRaw, expectedReviews) : collectedForItemRaw
+  const reviewPercent = expectedReviews > 0 ? clampPercent((collectedForItem / expectedReviews) * 100) : (collectedForItem > 0 ? 0 : 0)
+  const currentPage = toInt(live?.detail_current_page)
+  const totalPages = toInt(live?.detail_total_pages)
+  const allItemsDone = totalItems > 0 && completedItems >= totalItems
+  const currentItemDone = expectedReviews > 0 && collectedForItem >= expectedReviews
+
+  const phaseLabel = phase === 'advance_reviews_page'
+    ? '展开下一批评论'
+    : phase === 'collect_reviews_page'
+      ? '抓取当前评论'
+      : phase === 'ensure_reviews_page' || phase === 'wait_reviews_page'
+        ? '打开评论页'
+        : allItemsDone ? '抓取完成' : statusLabel
+
+  const itemMain = totalItems > 0
+    ? allItemsDone ? `${totalItems} / ${totalItems} 个商品已完成` : `第 ${currentItemIndex} / ${totalItems} 个商品`
+    : (statusLabel || '等待开始')
+  const reviewMain = expectedReviews > 0
+    ? `${collectedForItem} / ${expectedReviews} 条评论`
+    : collectedForItem > 0
+      ? `已抓取 ${collectedForItem} 条评论`
+      : '读取评论总数'
+
+  const itemState = allItemsDone ? 'complete' : currentItemIndex > 0 ? 'active' : 'pending'
+  const reviewState = currentItemDone ? 'complete' : asin ? 'active' : 'pending'
+  const pageText = currentPage > 0 && totalPages > 0
+    ? `页 ${currentPage}/${totalPages}`
+    : currentPage > 0 ? `页 ${currentPage}` : ''
+  const dimensionText = dimensionIndex > 0 && dimensionTotal > 0
+    ? `维度 ${dimensionIndex}/${dimensionTotal}${dimensionLabel ? ` ${dimensionLabel}` : ''}`
+    : dimensionLabel
+
+  const tracks = [
+    buildTrack({
+      id: 'amazon-review-products',
+      title: '上层 · 商品链接',
+      main: itemMain,
+      percentValue: itemPercent,
+      percentLabel: `${itemPercent}%`,
+      caption: [completedItems > 0 ? `已完成 ${Math.min(completedItems, totalItems)} 个` : '', asin ? `当前 ASIN ${asin}` : ''].filter(Boolean).join(' · '),
+      detail: store,
+      status: itemState === 'complete' ? '已完成' : itemState === 'active' ? '进行中' : '待开始',
+      tone: 'primary',
+      state: itemState,
+      ariaLabel: '商品链接抓取进度',
+      ariaText: [itemMain, `${itemPercent}%`, asin ? `当前 ASIN ${asin}` : ''].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'amazon-review-current',
+      title: '下层 · 当前链接评论',
+      main: reviewMain,
+      percentValue: reviewPercent,
+      percentLabel: expectedReviews > 0 ? `${reviewPercent}%` : '读取中',
+      caption: [dimensionText, pageText, records > 0 ? `总计 ${records} 条` : ''].filter(Boolean).join(' · '),
+      detail: asin ? `ASIN ${asin}` : '',
+      status: reviewState === 'complete' ? '已完成' : reviewState === 'active' ? '进行中' : '待开始',
+      tone: 'secondary',
+      state: reviewState,
+      ariaLabel: '当前链接评论抓取进度',
+      ariaText: [reviewMain, expectedReviews > 0 ? `${reviewPercent}%` : '读取中', pageText].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: '双层进度',
+    main: phaseLabel,
+    percentValue: clampPercent((itemPercent * 0.45) + (reviewPercent * 0.55)),
+    percentLabel: phaseLabel,
+    completed: records,
+    completedText: records > 0 ? `已抓取 ${records} 条评论` : '',
+    batchText: expectedReviews > 0 ? `当前评论 ${collectedForItem}/${expectedReviews}` : '',
+    rowText: '',
+    targetText: asin ? `ASIN ${asin}` : '',
+    storeText: store,
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: expectedReviews <= 0,
+    ariaLabel: 'Amazon Reviews 双层进度',
+    ariaText: [phaseLabel, itemMain, reviewMain].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      totalItems > 0 ? `商品 ${Math.min(completedItems, totalItems)}/${totalItems}` : '',
+      expectedReviews > 0 ? `当前评论 ${collectedForItem}/${expectedReviews}` : '',
+      dimensionText,
+      pageText,
+      records > 0 ? `总计 ${records}` : '',
+    ]),
+    tracks,
+    sub: [phaseLabel, asin ? `当前 ASIN ${asin}` : '', records > 0 ? `已抓取 ${records} 条评论` : ''].filter(Boolean).join(' · ') || statusLabel,
+  }
 }
 
 function getTiktokCreatorVideoPhaseLabel(phase, downloadStarted, downloadActive, downloadCompleted, downloadTotal) {
@@ -1102,6 +1222,9 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isSemirBatchAiGenerateTask(adapterId, taskId)) {
     return buildSemirBatchAiGenerateProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isAmazonReviewsFullExportTask(adapterId, taskId)) {
+    return buildAmazonReviewsFullExportProgress(live, liveStatus, isRunning)
   }
   return config.mode === 'enhanced'
     ? buildEnhancedTaskRunnerProgress(live, liveStatus, isRunning)

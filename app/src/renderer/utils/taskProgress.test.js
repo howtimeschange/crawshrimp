@@ -149,3 +149,47 @@ test('shein commodity quality uses two-stage list and return detail progress', (
   assert.equal(summary.tracks[1].state, 'active')
   assert.match(summary.tracks[1].detail, /sk25050817072795161/)
 })
+
+test('amazon reviews full export uses product and current-review two-layer progress', () => {
+  const config = resolveTaskProgressConfig('amazon-ops-assistant', 'amazon_reviews_full_export')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'amazon-ops-assistant',
+    taskId: 'amazon_reviews_full_export',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'collect_reviews_page',
+      current: 2,
+      total: 3,
+      records: 75,
+      buyer_id: 'B0D9221K6K',
+      store: 'Amazon Reviews · B0D9221K6K',
+      list_total_rows: 3,
+      list_completed_rows: 1,
+      detail_total_targets: 120,
+      detail_completed_targets: 35,
+      detail_current_target_index: 2,
+      detail_current_target: 'B0D9221K6K',
+      detail_dimension_index: 8,
+      detail_dimension_total: 12,
+      detail_dimension_label: '最有帮助 / 5星',
+      detail_current_page: 4,
+      detail_total_pages: 12,
+    },
+  })
+
+  assert.equal(summary.title, '双层进度')
+  assert.equal(summary.ariaLabel, 'Amazon Reviews 双层进度')
+  assert.equal(summary.tracks.length, 2)
+  assert.equal(summary.tracks[0].title, '上层 · 商品链接')
+  assert.equal(summary.tracks[0].main, '第 2 / 3 个商品')
+  assert.equal(summary.tracks[1].title, '下层 · 当前链接评论')
+  assert.equal(summary.tracks[1].main, '35 / 120 条评论')
+  assert.match(summary.tracks[1].caption, /维度 8\/12 最有帮助 \/ 5星/)
+  assert.match(summary.tracks[1].caption, /页 4\/12/)
+  assert.match(summary.sub, /B0D9221K6K/)
+})

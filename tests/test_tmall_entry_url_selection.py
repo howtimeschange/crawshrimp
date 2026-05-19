@@ -136,5 +136,58 @@ class TiktokEntryUrlSelectionTests(unittest.TestCase):
         )
 
 
+class AmazonReviewsEntryUrlSelectionTests(unittest.TestCase):
+    def test_amazon_reviews_opens_product_link_directly_on_reviews_page(self):
+        selected = api_server._resolve_task_target_entry_url(
+            "amazon-ops-assistant",
+            "amazon_reviews_full_export",
+            {
+                "review_urls": "https://www.amazon.com/Weestep-Toddler-Little-Lightweight-Sneaker/dp/B0D2CQ62DX",
+            },
+            "https://www.amazon.com/",
+        )
+
+        self.assertEqual(
+            selected,
+            "https://www.amazon.com/product-reviews/B0D2CQ62DX?sortBy=recent",
+        )
+
+    def test_amazon_reviews_normalizes_product_reviews_link_for_entry(self):
+        selected = api_server._resolve_task_target_entry_url(
+            "amazon-ops-assistant",
+            "amazon_reviews_full_export",
+            {
+                "review_urls": "https://www.amazon.com/product-reviews/B0D2CQ62DX/ref=cm_cr_dp_d_show_all_btm?ie=UTF8",
+            },
+            "https://www.amazon.com/",
+        )
+
+        self.assertEqual(
+            selected,
+            "https://www.amazon.com/product-reviews/B0D2CQ62DX?sortBy=recent",
+        )
+
+    def test_amazon_reviews_final_export_guard_dedupes_by_asin_and_review_id(self):
+        guarded = api_server._apply_final_export_guards(
+            "amazon-ops-assistant",
+            "amazon_reviews_full_export",
+            [
+                {"ASIN": "B0D2CQ62DX", "评价ID": "R1", "评价内容": "first"},
+                {"ASIN": "B0D2CQ62DX", "评价ID": "R1", "评价内容": "duplicate"},
+                {"ASIN": "B0D2CQ62DX", "评价ID": "R2", "评价内容": "second"},
+                {"ASIN": "B0OTHER123", "评价ID": "R1", "评价内容": "other asin"},
+            ],
+        )
+
+        self.assertEqual(
+            guarded,
+            [
+                {"ASIN": "B0D2CQ62DX", "评价ID": "R1", "评价内容": "first"},
+                {"ASIN": "B0D2CQ62DX", "评价ID": "R2", "评价内容": "second"},
+                {"ASIN": "B0OTHER123", "评价ID": "R1", "评价内容": "other asin"},
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

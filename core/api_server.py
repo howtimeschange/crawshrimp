@@ -267,6 +267,9 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "detail_completed_targets": _int_from_mapping(shared_state, 'detail_completed_targets'),
         "detail_current_target_index": _int_from_mapping(shared_state, 'detail_current_target_index'),
         "detail_current_target": _str_from_mapping(shared_state, 'detail_current_target'),
+        "detail_dimension_total": _int_from_mapping(shared_state, 'detail_dimension_total'),
+        "detail_dimension_index": _int_from_mapping(shared_state, 'detail_dimension_index'),
+        "detail_dimension_label": _str_from_mapping(shared_state, 'detail_dimension_label'),
         "detail_current_page": _int_from_mapping(shared_state, 'detail_current_page'),
         "detail_total_pages": _int_from_mapping(shared_state, 'detail_total_pages'),
         "detail_total_rows": _int_from_mapping(shared_state, 'detail_total_rows'),
@@ -333,6 +336,50 @@ def _resolve_tmall_buyer_review_item_urls(run_params: dict) -> list[str]:
     return urls
 
 
+def _normalize_amazon_reviews_url(raw_url: object) -> str:
+    text = str(raw_url or "").strip().rstrip("、，,;；")
+    if not text:
+        return ""
+    if text.startswith("//"):
+        text = f"https:{text}"
+    if not re.match(r"^https?://", text, flags=re.IGNORECASE):
+        text = f"https://{text.lstrip('/')}"
+    try:
+        parsed = urlparse(text)
+    except Exception:
+        return ""
+    host = (parsed.netloc or "").lower()
+    if "amazon." not in host:
+        return ""
+    match = re.search(r"/(?:dp|gp/product|product-reviews)/([A-Z0-9]{10})(?:[/?#]|$)", parsed.path or "", flags=re.IGNORECASE)
+    if not match:
+        query = parse_qs(parsed.query or "", keep_blank_values=False)
+        asin = (query.get("asin") or query.get("ASIN") or [""])[0].strip().upper()
+    else:
+        asin = match.group(1).upper()
+    if not re.fullmatch(r"[A-Z0-9]{10}", asin or ""):
+        return ""
+    origin = "https://www.amazon.com" if host == "amazon.com" else f"{parsed.scheme or 'https'}://{parsed.netloc}"
+    return f"{origin}/product-reviews/{asin}?sortBy=recent"
+
+
+def _resolve_amazon_review_urls(run_params: dict) -> list[str]:
+    urls: list[str] = []
+    seen_asins: set[str] = set()
+    for key in ("review_urls", "product_urls", "item_links", "links"):
+        for candidate in _extract_candidate_urls_from_text(run_params.get(key)):
+            normalized = _normalize_amazon_reviews_url(candidate)
+            if not normalized:
+                continue
+            asin_match = re.search(r"/product-reviews/([A-Z0-9]{10})(?:[/?#]|$)", normalized, flags=re.IGNORECASE)
+            asin = asin_match.group(1).upper() if asin_match else normalized
+            if asin in seen_asins:
+                continue
+            seen_asins.add(asin)
+            urls.append(normalized)
+    return urls
+
+
 def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: dict, fallback_url: str) -> str:
     fallback = str(fallback_url or "").strip()
     if adapter_id == "tiktok-ops-assistant" and task_id in {"product_rating", "product_management_export", "creator_video_download"}:
@@ -365,6 +412,11 @@ def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: di
             suffix += f"&shop_id={shop_id}"
         path = "/product/manage" if task_id == "product_management_export" else "/product/rating"
         return f"https://{host}{path}{suffix}"
+    if (adapter_id, task_id) == ("amazon-ops-assistant", "amazon_reviews_full_export"):
+        urls = _resolve_amazon_review_urls(run_params)
+        if urls:
+            return urls[0]
+        raise ValueError("请先填写有效的 Amazon 商品链接或评论页链接")
     if (adapter_id, task_id) != ("tmall-ops-assistant", "buyer_reviews"):
         return fallback
     urls = _resolve_tmall_buyer_review_item_urls(run_params)
@@ -936,10 +988,50 @@ def _dedupe_temu_goods_traffic_detail_rows(data_rows):
     return deduped
 
 
+def _dedupe_amazon_reviews_full_export_rows(data_rows):
+    if not isinstance(data_rows, list):
+        return data_rows
+
+    deduped = []
+    seen = set()
+
+    for row in data_rows:
+        if not isinstance(row, dict):
+            deduped.append(row)
+            continue
+
+        asin = _normalize_export_guard_value(row.get('ASIN'))
+        review_id = _normalize_export_guard_value(row.get('评价ID'))
+        if asin and review_id:
+            key = (asin, review_id)
+        else:
+            key_parts = [
+                asin,
+                _normalize_export_guard_value(row.get('买家昵称')),
+                _normalize_export_guard_value(row.get('评价时间')),
+                _normalize_export_guard_value(row.get('评分')),
+                _normalize_export_guard_value(row.get('评价标题')),
+                _normalize_export_guard_value(row.get('评价内容')),
+            ]
+            if not asin or not any(key_parts[1:]):
+                deduped.append(row)
+                continue
+            key = tuple(key_parts)
+
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+
+    return deduped
+
+
 def _apply_final_export_guards(adapter_id: str, task_id: str, data_rows):
     guarded = data_rows if isinstance(data_rows, list) else list(data_rows or [])
     if adapter_id == 'temu' and task_id == 'goods_traffic_detail':
         guarded = _dedupe_temu_goods_traffic_detail_rows(guarded)
+    if adapter_id == 'amazon-ops-assistant' and task_id == 'amazon_reviews_full_export':
+        guarded = _dedupe_amazon_reviews_full_export_rows(guarded)
     return guarded
 
 
@@ -2105,6 +2197,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'detail_completed_targets': progress['detail_completed_targets'],
             'detail_current_target_index': progress['detail_current_target_index'],
             'detail_current_target': progress['detail_current_target'],
+            'detail_dimension_total': progress['detail_dimension_total'],
+            'detail_dimension_index': progress['detail_dimension_index'],
+            'detail_dimension_label': progress['detail_dimension_label'],
             'detail_current_page': progress['detail_current_page'],
             'detail_total_pages': progress['detail_total_pages'],
             'detail_total_rows': progress['detail_total_rows'],
