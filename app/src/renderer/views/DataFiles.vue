@@ -38,6 +38,13 @@
         <span class="df-toolbar-count">已选 {{ selectedCount }} 个文件</span>
       </div>
       <div class="df-toolbar-actions">
+        <button
+          class="btn-sync-sm"
+          :disabled="!syncableSelectedCount || deleting || syncing"
+          @click="syncSelectedOdps"
+        >
+          {{ syncing ? '同步中…' : `批量同步${syncableSelectedCount ? ` ${syncableSelectedCount}` : ''}` }}
+        </button>
         <button class="btn-ghost-sm" :disabled="!selectedCount || deleting" @click="clearSelection">清空选择</button>
         <button class="btn-danger-sm" :disabled="!selectedCount || deleting" @click="openBatchDeleteConfirm">批量删除</button>
       </div>
@@ -74,6 +81,14 @@
               </span>
             </div>
             <div class="df-file-actions">
+              <button
+                v-if="isSyncableFile(f)"
+                class="df-btn df-btn-sync"
+                :disabled="syncing"
+                @click="syncOneOdps(f)"
+              >
+                同步
+              </button>
               <button class="df-btn" @click="revealFile(f.path)">显示</button>
               <button class="df-btn" @click="saveAs(f.path)">另存为</button>
               <button class="df-btn df-btn-danger" @click="openDeleteConfirm([f])">删除</button>
@@ -119,6 +134,7 @@ const savingDir      = ref(false)
 const dirMsg         = ref('')
 const dirOk          = ref(true)
 const deleting       = ref(false)
+const syncing        = ref(false)
 const showDeleteConfirm = ref(false)
 const deleteTargets   = ref([])
 const selectedPaths   = ref([])
@@ -142,6 +158,8 @@ const selectedFiles = computed(() => {
 })
 const selectedCount = computed(() => selectedFiles.value.length)
 const allSelected = computed(() => visiblePaths.value.length > 0 && selectedCount.value === visiblePaths.value.length)
+const syncableSelectedFiles = computed(() => selectedFiles.value.filter(isSyncableFile))
+const syncableSelectedCount = computed(() => syncableSelectedFiles.value.length)
 
 async function load() {
   try {
@@ -167,7 +185,14 @@ async function load() {
             size  = stat.size  ? formatSize(stat.size)  : ''
             ctime = stat.ctime ? formatDate(stat.ctime) : ''
           } catch (_) {}
-          files.push({ path: p, name: p.split('/').pop().split('\\').pop(), size, ctime })
+          files.push({
+            path: p,
+            name: p.split('/').pop().split('\\').pop(),
+            size,
+            ctime,
+            adapter_id: a.id,
+            task_id: t.task_id,
+          })
         }
       }
       if (files.length) result.push({ key: a.id + t.task_id, adapter: a.name, task: t.task_name, files })
@@ -193,6 +218,51 @@ function formatDate(iso) {
 function openFile(path)   { window.cs.openFile(path) }
 function revealFile(path) { window.cs.revealFile(path) }
 async function saveAs(srcPath) { await window.cs.saveAsFile(srcPath) }
+
+function isExcelFile(path) {
+  return /\.(xlsx|xlsm)$/i.test(String(path || ''))
+}
+
+function isSyncableFile(file) {
+  return file?.adapter_id === 'temu' && file?.task_id === 'mall_flux' && isExcelFile(file.path)
+}
+
+async function syncFilesOdps(files) {
+  const targets = (files || []).filter(isSyncableFile)
+  if (!targets.length || syncing.value) return
+  syncing.value = true
+  try {
+    const result = await window.cs.syncOdpsFiles({
+      adapter_id: 'temu',
+      task_id: 'mall_flux',
+      paths: targets.map(file => file.path),
+    })
+    const failedCount = Number(result?.failed_count || 0)
+    const syncedCount = Number(result?.synced_count || 0)
+    if (!result?.ok && failedCount && !syncedCount) {
+      throw new Error(result.failed?.[0]?.error || '同步失败')
+    }
+    setNotice(
+      failedCount
+        ? `同步完成：成功 ${syncedCount} 个，失败 ${failedCount} 个`
+        : `同步成功：${syncedCount} 个文件`,
+      failedCount ? 'warn' : 'ok',
+      3600,
+    )
+  } catch (e) {
+    setNotice('同步失败：' + (e.message || e), 'err', 4200)
+  } finally {
+    syncing.value = false
+  }
+}
+
+async function syncOneOdps(file) {
+  await syncFilesOdps([file])
+}
+
+async function syncSelectedOdps() {
+  await syncFilesOdps(syncableSelectedFiles.value)
+}
 
 function isSelected(path) {
   return selectedPaths.value.includes(path)
@@ -511,6 +581,11 @@ onUnmounted(clearNoticeTimer)
 .btn-ghost-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-orange-sm { padding: 6px 14px; border-radius: 8px; border: none; background: var(--orange); color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
 .btn-orange-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn-sync-sm { padding: 6px 14px; border-radius: 7px; border: none; background: #16a34a; color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
+.btn-sync-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-danger-sm { padding: 6px 14px; border-radius: 7px; border: none; background: #ef4444; color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
 .btn-danger-sm:disabled { opacity: 0.4; cursor: not-allowed; }
+.df-btn-sync { color: #86efac; border-color: rgba(74,222,128,0.3); }
+.df-btn-sync:hover:not(:disabled) { background: rgba(74,222,128,0.1); color: #bbf7d0; }
+.df-btn-sync:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

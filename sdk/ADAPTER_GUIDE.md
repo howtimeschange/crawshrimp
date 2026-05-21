@@ -1781,6 +1781,67 @@ output:
 
 当前通知内容由底座统一生成：标题为“适配包名 - 任务名”，正文包含记录数和前 3 行样例。脚本返回的 `meta.notify_title` / `meta.notify_body` 目前不会被通知模块读取；如果需要完全自定义通知内容，建议在脚本里产出专门的摘要行，或扩展 `core/notifier.py` 的发送协议后再写入文档。
 
+### 森马大数据统一同步（ODPS / DataWorks）
+
+森马大数据团队统一数据写入入口为 DataWorks API Gateway：
+
+```text
+POST http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps
+Content-Type: application/json
+Authorization: APPCODE <AppCode>
+```
+
+底座通过 `POST /data-sync/odps` 统一同步已导出的 Excel。适配器开发者不需要在 JS 脚本里直接请求 DataWorks；只需要保证导出的 Excel 字段稳定，然后在 `core/odps_sync.py` 维护任务映射：
+
+- `TASK_TABLE_MAP`：`(adapter_id, task_id)` → ODPS 表名，例如 `("temu", "mall_flux") -> "imp_ods_temu_mall_flux"`
+- `TASK_FIELD_MAP`：导出中文列名 → ODPS 字段名
+- `TASK_FIELD_TYPE_MAP`：导出中文列名 → ODPS 字段类型
+
+请求体遵循森马大数据团队约定：
+
+```json
+{
+  "table_name": "imp_ods_temu_mall_flux",
+  "fields": [
+    {"name": "platform_name", "type": "string", "comment": "平台名称"}
+  ],
+  "data": [
+    {"platform_name": "Temu"}
+  ],
+  "write_mode": "append",
+  "partition_spec": {"dt": "2026-05-18"}
+}
+```
+
+同步地址默认固定为森马大数据统一入口，普通用户只需要在设置页填写 `ODPS AppCode`。开发和联调场景仍可按优先级覆盖：
+
+1. 同步请求体里的 `endpoint` / `app_code`
+2. 设置页里的 `odps.app_code`
+3. 环境变量 `CRAWSHRIMP_ODPS_ENDPOINT` / `CRAWSHRIMP_ODPS_APP_CODE`
+
+凭证规则：
+
+- SDK、适配包、测试和提交记录里不要硬编码真实 AppCode / AppSecret。
+- 内部测试可在设置页填写 AppCode，或用环境变量临时注入。
+- 面向普通用户分发时，推荐走服务端中转，把 AppCode 留在服务端；桌面端只上传标准 payload 或导出文件，避免网关凭证泄露。
+- 日志和错误信息不要打印 AppCode。
+
+真实联调最小命令：
+
+```bash
+curl -sS -x '' -X POST http://127.0.0.1:18765/data-sync/odps \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "adapter_id": "temu",
+    "task_id": "mall_flux",
+    "paths": ["/absolute/path/to/export.xlsx"],
+    "endpoint": "http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps",
+    "app_code": "<AppCode>"
+  }'
+```
+
+接口调通的成功信号为 `success: true`，并返回写入行数，例如 `message: append 成功`、`count: 6`。
+
 ---
 
 ## 10. 真实示例：JD 价格导出

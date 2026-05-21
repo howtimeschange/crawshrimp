@@ -905,6 +905,16 @@ ipcMain.handle('delete-files', async (_, filePaths) => {
   })
 })
 
+ipcMain.handle('sync-odps-files', async (_, payload) => {
+  return apiCall('POST', '/data-sync/odps', {
+    adapter_id: payload?.adapter_id || '',
+    task_id: payload?.task_id || '',
+    paths: Array.isArray(payload?.paths) ? payload.paths.filter(Boolean) : [],
+    endpoint: payload?.endpoint || '',
+    app_code: payload?.app_code || '',
+  })
+})
+
 ipcMain.handle('save-as-file', async (_, srcPath) => {
   const resolvedSrcPath = resolveExistingFilePath(srcPath)
   if (!resolvedSrcPath) {

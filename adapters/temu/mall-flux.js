@@ -1209,6 +1209,76 @@
     return mapped
   }
 
+  function normalizeShopName(value) {
+    const text = String(value || '')
+      .replace(/\s+/g, ' ')
+      .replace(/\s+\d+\s*人关注.*$/, '')
+      .trim()
+    const blacklist = new Set([
+      '服务市场',
+      '履约中心',
+      '学习',
+      '运营对接',
+      '规则中心',
+      '消息',
+      '首页',
+      'TEMU Agent Center',
+      'Beta',
+      'Seller Central',
+      '商家中心',
+    ])
+    return blacklist.has(text) ? '' : text
+  }
+
+  function getMappedShopId(shopName) {
+    const idByShopName = {
+      'SEMIR Official Shop': 'D80367',
+      'balabala Official Shop': 'D80421',
+      'Balabala Shoes': 'D80531',
+      'minibala Kids Shop': 'D80453',
+    }
+    return idByShopName[normalizeShopName(shopName)] || ''
+  }
+
+  function getCurrentShopName() {
+    const selectors = [
+      '[class*="account-info_mallInfo__"]',
+      '[class*="account-info_accountInfo__"]',
+      '[class*="userInfo"]',
+      '[class*="seller-name"]',
+      '[class*="elli_outerWrapper"]',
+      '[class*="mallInfo"]',
+      '[class*="accountInfo"]',
+    ]
+    const candidates = []
+    const seen = new Set()
+    const push = value => {
+      const text = normalizeShopName(value)
+      if (!text || seen.has(text) || text.length > 80) return
+      seen.add(text)
+      candidates.push(text)
+    }
+
+    for (const selector of selectors) {
+      for (const el of document.querySelectorAll(selector)) {
+        if (!isVisible(el)) continue
+        push(textOf(el))
+        for (const child of el.querySelectorAll?.('*') || []) {
+          if (!isVisible(child)) continue
+          const text = textOf(child)
+          if (!text || text.length > 80) continue
+          if ([...child.children].some(c => textOf(c) === text)) continue
+          push(text)
+        }
+      }
+    }
+
+    return candidates.find(text => /shop/i.test(text)) ||
+      candidates.find(text => /[A-Za-z]/.test(text)) ||
+      candidates[0] ||
+      ''
+  }
+
   function getActiveGrainClassValue() {
     return getActiveGrainValue()
   }
@@ -1501,9 +1571,14 @@
     const headerTable = getMainListHeaderTable() || getMainListTable()
     const headers = getTableHeaders(headerTable)
     const activeOuterSite = getResolvedOuterSite() || currentOuterSite || ''
+    const shopName = getCurrentShopName()
+    const shopId = getMappedShopId(shopName)
     return rows.map((row, index) => {
       const cells = [...row.querySelectorAll('td')].filter(td => textOf(td) !== '')
       return {
+        平台名称: 'Temu',
+        店铺名称: shopName,
+        店铺ID: shopId,
         外层站点: activeOuterSite,
         统计日期范围: getStatDateRangeValue(),
         统计粒度: getActiveGrainClassValue(),

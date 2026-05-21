@@ -93,6 +93,7 @@ class DynamicElement {
 class DynamicDocument {
   constructor(state) {
     this._selectors = new Map()
+    this.cookie = state.cookie || ''
     this.body = new DynamicElement({
       tagName: 'body',
       text: () => (state.busy ? 'Too many visitors, please try again later.' : state.bodyText || ''),
@@ -559,6 +560,41 @@ test('activity-data waits for row refresh after pager number changes', async () 
 
 test('mall-flux waits for row refresh after pager number changes', async () => {
   await assertStrictPageTurn('adapters/temu/mall-flux.js', 'https://agentseller.temu.com/main/mall-flux-analysis-full')
+})
+
+test('mall-flux includes platform and shop context in scraped rows', async () => {
+  const state = {
+    pageNo: 1,
+    rows: ['2026-05-18'],
+    totalCount: 1,
+    bodyText: '店铺流量列表 balabala Official Shop',
+    dateRangeValue: '2026-05-13 ~ 2026-05-19',
+    activeGrain: '按日',
+    cookie: 'api_uid=demo; mallid=634418212707202',
+  }
+  const document = buildStatefulDocument(state, { includeDateRange: true })
+  const shopNameNode = new DynamicElement({
+    tagName: 'div',
+    className: 'account-info_mallInfo__mock',
+    text: 'balabala Official Shop',
+  })
+  document.setSelector('[class*="account-info_mallInfo__"]', () => [shopNameNode])
+
+  const { hook } = await loadHook(
+    'adapters/temu/mall-flux.js',
+    ['scrapeCurrentPage'],
+    {
+      href: 'https://agentseller-eu.temu.com/main/mall-flux-analysis-full',
+      document,
+    },
+  )
+
+  const rows = hook.scrapeCurrentPage('欧区')
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].平台名称, 'Temu')
+  assert.equal(rows[0].店铺名称, 'balabala Official Shop')
+  assert.equal(rows[0].店铺ID, 'D80421')
+  assert.equal(rows[0].外层站点, '欧区')
 })
 
 test('goods-traffic-list waits for row refresh after pager number changes', async () => {

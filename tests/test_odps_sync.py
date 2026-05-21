@@ -1,0 +1,123 @@
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import patch
+
+from openpyxl import Workbook
+
+from core import odps_sync
+
+
+class OdpsSyncTest(unittest.TestCase):
+    def test_build_payload_maps_temu_mall_flux_excel_to_task_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "mall_flux.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["平台名称", "店铺名称", "店铺ID", "日期", "总数据/总浏览量"])
+            ws.append(["Temu", "balabala Official Shop", "D80421", "2026-05-18", "4414"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="temu",
+                task_id="mall_flux",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_temu_mall_flux")
+        self.assertEqual(payload["write_mode"], "append")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-05-18"})
+        self.assertEqual(payload["data"][0]["shop_id"], "D80421")
+        self.assertEqual(payload["data"][0]["total_views"], 4414)
+        field_names = [field["name"] for field in payload["fields"]]
+        self.assertEqual(field_names[:5], ["platform_name", "shop_name", "shop_id", "stat_date", "total_views"])
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["shop_id"], "string")
+        self.assertEqual(field_types["total_views"], "bigint")
+        self.assertEqual(payload["fields"][4]["comment"], "总数据/总浏览量")
+
+    def test_sync_file_posts_write_odps_payload_to_gateway_endpoint_with_app_code(self):
+        captured = {}
+
+        def fake_post_json(url, payload, timeout=30, headers=None):
+            captured["url"] = url
+            captured["payload"] = payload
+            captured["timeout"] = timeout
+            captured["headers"] = headers
+            return {"success": True, "count": 1}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "mall_flux.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["平台名称", "店铺名称", "店铺ID", "日期"])
+            ws.append(["Temu", "balabala Official Shop", "D80421", "2026-05-18"])
+            wb.save(path)
+
+            with patch.object(odps_sync, "_post_json", side_effect=fake_post_json):
+                result = odps_sync.sync_file(
+                    adapter_id="temu",
+                    task_id="mall_flux",
+                    file_path=str(path),
+                    endpoint="http://dataworksapi.semirapp.com",
+                    app_code="secret-code",
+                )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(captured["url"], "http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps")
+        self.assertEqual(captured["headers"]["Authorization"], "APPCODE secret-code")
+        self.assertEqual(captured["headers"]["Content-Type"], "application/json")
+        self.assertEqual(captured["payload"]["table_name"], "imp_ods_temu_mall_flux")
+        self.assertEqual(captured["payload"]["data"][0]["platform_name"], "Temu")
+
+    def test_full_write_odps_url_is_preserved(self):
+        url = odps_sync.resolve_write_odps_url("http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps")
+        self.assertEqual(url, "http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps")
+
+    def test_default_dataworks_endpoint_is_the_semir_gateway(self):
+        self.assertEqual(
+            odps_sync.DEFAULT_DATAWORKS_ENDPOINT,
+            "http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps",
+        )
+
+    def test_sync_file_requires_app_code(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "mall_flux.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["平台名称", "店铺名称", "店铺ID", "日期"])
+            ws.append(["Temu", "balabala Official Shop", "D80421", "2026-05-18"])
+            wb.save(path)
+
+            with self.assertRaisesRegex(odps_sync.OdpsSyncError, "ODPS AppCode"):
+                odps_sync.sync_file(
+                    adapter_id="temu",
+                    task_id="mall_flux",
+                    file_path=str(path),
+                    endpoint=odps_sync.DEFAULT_DATAWORKS_ENDPOINT,
+                    app_code="",
+                )
+
+    def test_stat_date_range_is_synced_as_string_not_datetime(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "mall_flux.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["统计日期范围", "日期", "抓取时间"])
+            ws.append(["2026-05-13 ~ 2026-05-19", "2026-05-18", "2026-05-19 12:34:56"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="temu",
+                task_id="mall_flux",
+                file_path=str(path),
+            )
+
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["stat_date_range"], "string")
+        self.assertEqual(field_types["stat_date"], "string")
+        self.assertEqual(field_types["captured_at"], "datetime")
+
+
+if __name__ == "__main__":
+    unittest.main()

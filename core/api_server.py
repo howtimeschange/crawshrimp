@@ -33,6 +33,7 @@ from core.config import load_config, save_config
 from core import adapter_loader
 from core import data_sink
 from core import notifier
+from core import odps_sync
 from core import scheduler as sched_module
 from core.cdp_bridge import get_bridge, reset_bridge
 from core.browser_session import open_browser_session
@@ -3174,6 +3175,14 @@ class DeleteFilesRequest(BaseModel):
     paths: List[str]
 
 
+class SyncDataFilesRequest(BaseModel):
+    adapter_id: str
+    task_id: str
+    paths: List[str]
+    endpoint: Optional[str] = None
+    app_code: Optional[str] = None
+
+
 
 
 @app.post("/files/read-excel")
@@ -3235,6 +3244,34 @@ def delete_files(req: DeleteFilesRequest):
         "updated_runs": prune_result.get("updated_runs", 0),
         "removed_refs": prune_result.get("removed_refs", 0),
     }
+
+
+@app.post("/data-sync/odps")
+def sync_data_files_to_odps(req: SyncDataFilesRequest):
+    cfg = load_config()
+    odps_cfg = cfg.get("odps") if isinstance(cfg.get("odps"), dict) else {}
+    endpoint = str(
+        req.endpoint
+        or os.environ.get("CRAWSHRIMP_ODPS_ENDPOINT")
+        or odps_sync.DEFAULT_DATAWORKS_ENDPOINT
+    ).strip()
+    app_code = str(
+        req.app_code
+        or odps_cfg.get("app_code")
+        or cfg.get("odps.app_code")
+        or os.environ.get("CRAWSHRIMP_ODPS_APP_CODE")
+        or ""
+    ).strip()
+    try:
+        return odps_sync.sync_files(
+            adapter_id=req.adapter_id,
+            task_id=req.task_id,
+            file_paths=req.paths,
+            endpoint=endpoint,
+            app_code=app_code,
+        )
+    except odps_sync.OdpsSyncError as e:
+        raise HTTPException(400, str(e))
 
 
 # ─── Settings ───

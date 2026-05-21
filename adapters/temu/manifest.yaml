@@ -516,6 +516,9 @@ tasks:
       - type: excel
         filename: "{shop_name}_店铺流量_{site_scope}_{grain_scope}_{date_range}_{timestamp}.xlsx"
         columns:
+          - 平台名称
+          - 店铺名称
+          - 店铺ID
           - 外层站点
           - 统计日期范围
           - 统计粒度

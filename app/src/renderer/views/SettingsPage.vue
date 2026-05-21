@@ -129,6 +129,20 @@
         </div>
       </section>
 
+      <!-- 数据同步 -->
+      <section class="section">
+        <h3>数据同步</h3>
+        <p class="hint">同步服务使用森马大数据团队统一 ODPS 写入接口，填写 AppCode 后即可在任务输出文件或「数据文件」页同步已导出的 Excel。</p>
+        <div class="field">
+          <label>ODPS AppCode</label>
+          <input
+            v-model="cfg['odps.app_code']"
+            placeholder="用于 Authorization: APPCODE ..."
+            class="input"
+          />
+        </div>
+      </section>
+
       <div class="save-row">
         <button class="btn-orange" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存设置' }}

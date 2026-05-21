@@ -14,6 +14,7 @@ This skill is the right fit when the hard part is one of these:
 - live progress contract
 - multi-site or multi-time-range loops
 - export dedupe and acceptance checks
+- Semir DataWorks / ODPS sync mapping and verification
 - frontend enhanced-progress whitelist
 - regression and commit boundary control
 
@@ -53,13 +54,16 @@ If the page is not yet well-mapped, run that harness first instead of hand-rolli
 6. Add export guards and acceptance criteria.
    - If duplicate rows, missing last page, or wrong scope labels are possible, read [references/export-and-validation.md](references/export-and-validation.md).
 
-7. Touch frontend progress only if the task truly needs it.
+7. Add Semir DataWorks sync only through the unified sink.
+   - If the task needs ODPS / DataWorks / 数仓同步, read [references/semir-dataworks-sync.md](references/semir-dataworks-sync.md).
+
+8. Touch frontend progress only if the task truly needs it.
    - If the task is long-running and users need richer progress visibility, read [references/progress-ui-whitelist.md](references/progress-ui-whitelist.md).
 
-8. Add runner-facing regression before live verification.
+9. Add runner-facing regression before live verification.
    - If you are fixing protocol bugs, recovery branches, runtime artifacts, or adapter regressions, read [references/js-runner-and-regression.md](references/js-runner-and-regression.md).
 
-9. Run the regression ladder before staging or committing.
+10. Run the regression ladder before staging or committing.
    - Always finish with [references/regression-checklist.md](references/regression-checklist.md).
 
 ## Core Guardrails
@@ -104,6 +108,9 @@ These files are the usual places to inspect before editing:
 
 - [references/export-and-validation.md](references/export-and-validation.md)
   Use when duplicates, scope drift, missing final pages, or export correctness are in scope.
+
+- [references/semir-dataworks-sync.md](references/semir-dataworks-sync.md)
+  Use when adding, reviewing, or verifying Semir big-data ODPS/DataWorks sync.
 
 - [references/progress-ui-whitelist.md](references/progress-ui-whitelist.md)
   Use when wiring enhanced progress UI for a task without affecting other scripts.

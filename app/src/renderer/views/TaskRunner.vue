@@ -443,6 +443,14 @@
             <span v-if="outputFiles.length" class="output-count" @click="showFiles = !showFiles">
               📁 {{ outputFiles.length }} 个输出文件
             </span>
+            <button
+              v-if="canSyncOdps && latestExcelOutput"
+              class="clear-btn sync-btn"
+              :disabled="syncingOdps"
+              @click="syncLatestOdps"
+            >
+              {{ syncingOdps ? '同步中…' : '同步至数仓' }}
+            </button>
             <button class="clear-btn" @click="clearLogs">清空</button>
           </div>
         </div>
@@ -546,10 +554,20 @@
 
         <!-- 输出文件列表 -->
         <div v-if="showFiles && outputFiles.length" class="file-list">
-          <div v-for="f in outputFiles" :key="f" class="file-item" @click="openFile(f)">
-            <span class="file-icon">{{ f.endsWith('.xlsx') ? '📊' : '📄' }}</span>
-            <span class="file-name">{{ fileName(f) }}</span>
-            <span class="file-open">打开 →</span>
+          <div v-for="f in outputFiles" :key="f" class="file-item">
+            <div class="file-item-main" @click="openFile(f)">
+              <span class="file-icon">{{ f.endsWith('.xlsx') ? '📊' : '📄' }}</span>
+              <span class="file-name">{{ fileName(f) }}</span>
+              <span class="file-open">打开 →</span>
+            </div>
+            <button
+              v-if="canSyncOdps && isExcelFile(f)"
+              class="file-sync"
+              :disabled="syncingOdps"
+              @click.stop="syncOdpsFiles([f])"
+            >
+              同步
+            </button>
           </div>
         </div>
 
@@ -703,6 +721,7 @@ const lastResult = ref(null)
 const logEl = ref(null)
 const outputFiles = ref([])
 const showFiles = ref(false)
+const syncingOdps = ref(false)
 const excelLoading = ref({})
 const templateFeedback = ref({})
 const runStage = ref('')
@@ -908,6 +927,7 @@ watch(() => props.task, (task) => {
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
+  syncingOdps.value = false
   isRunning.value = false
   lastResult.value = null
   runStage.value = ''
@@ -965,6 +985,8 @@ const paramsGridClass = computed(() =>
 const useEnhancedProgressUi = computed(() =>
   resolveTaskProgressConfig(props.adapterId, props.task?.task_id).usage.taskRunner === 'enhanced'
 )
+const canSyncOdps = computed(() => props.adapterId === 'temu' && props.task?.task_id === 'mall_flux')
+const latestExcelOutput = computed(() => outputFiles.value.find(isExcelFile) || '')
 
 function isTaskActiveStatus(status) {
   return ['running', 'pausing', 'paused', 'stopping'].includes(status)
@@ -1469,6 +1491,7 @@ function resetRunUi() {
   lastResult.value = null
   outputFiles.value = []
   showFiles.value = false
+  syncingOdps.value = false
 }
 
 async function pauseCurrentTask() {
@@ -1742,11 +1765,48 @@ function now() {
 }
 
 function fileName(path) {
-  return path.split('/').pop().split('\\').pop()
+  return String(path || '').split('/').pop().split('\\').pop()
 }
 
 function openFile(path) {
   window.cs.openFile(path)
+}
+
+function isExcelFile(path) {
+  return /\.(xlsx|xlsm)$/i.test(String(path || ''))
+}
+
+async function syncOdpsFiles(paths) {
+  const excelPaths = (paths || []).filter(isExcelFile)
+  if (!excelPaths.length || syncingOdps.value) return
+  syncingOdps.value = true
+  try {
+    const result = await window.cs.syncOdpsFiles({
+      adapter_id: props.adapterId,
+      task_id: props.task.task_id,
+      paths: excelPaths,
+    })
+    const failedCount = Number(result?.failed_count || 0)
+    const syncedCount = Number(result?.synced_count || 0)
+    if (!result?.ok && failedCount && !syncedCount) {
+      throw new Error(result.failed?.[0]?.error || '同步失败')
+    }
+    lastResult.value = {
+      ok: failedCount === 0,
+      msg: failedCount
+        ? `同步完成：成功 ${syncedCount} 个，失败 ${failedCount} 个`
+        : `同步成功：${syncedCount} 个文件`,
+    }
+  } catch (e) {
+    lastResult.value = { ok: false, msg: `同步失败：${e?.message || String(e)}` }
+  } finally {
+    syncingOdps.value = false
+  }
+}
+
+async function syncLatestOdps() {
+  if (!latestExcelOutput.value) return
+  await syncOdpsFiles([latestExcelOutput.value])
 }
 
 function isCustomDateSelected(paramId) {
@@ -3035,6 +3095,9 @@ onUnmounted(() => {
   padding: 2px 8px; border-radius: 5px;
 }
 .clear-btn:hover { color: var(--text2); background: var(--bg3); }
+.sync-btn { color: #86efac; border: 1px solid rgba(74,222,128,0.18); }
+.sync-btn:hover:not(:disabled) { color: #bbf7d0; background: rgba(74,222,128,0.08); }
+.sync-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 .file-list {
   background: var(--bg3); border-bottom: 1px solid var(--border);
@@ -3042,13 +3105,31 @@ onUnmounted(() => {
 }
 .file-item {
   display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px; border-radius: 7px; cursor: pointer;
+  padding: 6px 10px; border-radius: 7px;
   transition: background 0.1s;
 }
 .file-item:hover { background: var(--bg2); }
+.file-item-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
 .file-icon { font-size: 14px; }
-.file-name { flex: 1; font-size: 12px; color: var(--text); }
+.file-name { flex: 1; min-width: 0; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .file-open { font-size: 11px; color: var(--orange); }
+.file-sync {
+  border: 1px solid rgba(74,222,128,0.25);
+  background: rgba(74,222,128,0.06);
+  color: #86efac;
+  border-radius: 6px;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+.file-sync:disabled { opacity: 0.45; cursor: not-allowed; }
+.file-sync:hover:not(:disabled) { background: rgba(74,222,128,0.12); }
 
 .log-body {
   flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px;
