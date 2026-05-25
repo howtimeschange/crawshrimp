@@ -1,0 +1,77 @@
+id: dasen-ops-assistant
+name: 大森运营助手
+version: 0.1.0
+author: codex
+description: "森马 AI 工作台运营自动化：按 Excel 批量新建案例库案例，支持封面、操作文档、视频等本地路径上传"
+entry_url: https://ai.semir.com/console/studio/showcase/create/
+tab_match_prefixes:
+  - https://ai.semir.com/console/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://ai.semir.com/console/login/
+
+tasks:
+  - id: batch_create_showcase
+    name: 批量新建案例
+    description: 读取 Excel 批量创建大森案例库案例。Excel 中图片、文档和视频请填写本地绝对路径；脚本会先上传文件，再调用案例创建接口。
+    script: batch-create-showcase.js
+    entry_url: https://ai.semir.com/console/studio/showcase/create/
+    skip_auth: false
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel
+    auto_precheck_note: 执行前会先校验字段、枚举和可解析对象；live 模式才会上传文件并创建案例。
+    params:
+      - id: input_file
+        type: file_excel
+        label: 案例 Excel
+        required: true
+        templates:
+          - file: templates/showcase-batch-template.csv
+            label: Excel / CSV 填写模板
+            description: 包含批量新建案例所需字段。图片、文档、视频请填写本地路径或已上传 URL。
+            version: "2026.05.25.1"
+          - file: templates/showcase-field-guide.csv
+            label: 字段与枚举说明
+            description: 说明必填字段、枚举值、多人/多文件填写格式。
+            version: "2026.05.25.1"
+        hint: 支持 xlsx/xlsm/xls/csv；本地文件请填写绝对路径，多值用换行、分号或竖线分隔。
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做 Excel 预检
+          - value: live
+            label: 上传并创建案例
+        hint: 预检不会提交；live 会逐行上传文件并创建案例。
+      - id: request_delay_ms
+        type: number
+        label: 每行间隔毫秒
+        default: 600
+        min: 0
+        max: 10000
+        step: 100
+        ui_span: third
+        hint: 批量创建时每行完成后的等待时间，默认 600ms。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "大森案例批量新建结果_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 案例名称
+          - 案例类型
+          - 所属AI纵队
+          - 所属部门
+          - 案例开发者
+          - 涉及技能
+          - 价值分类
+          - 封面图
+          - 操作文档
+          - 视频介绍
+          - 执行结果
+          - 案例ID
+          - 备注
