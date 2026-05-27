@@ -2682,12 +2682,11 @@ async def lifespan(app: FastAPI):
     if owns_backend_instance:
         built_in = Path(__file__).parent.parent / "adapters"
         if built_in.exists():
-            for d in built_in.iterdir():
-                if d.is_dir() and (d / "manifest.yaml").exists():
-                    try:
-                        adapter_loader.install_from_dir(str(d), install_mode="copy", preserve_existing_link=True)
-                    except Exception as e:
-                        logger.warning(f"Built-in adapter failed {d.name}: {e}")
+            for d in adapter_loader.iter_manifest_dirs(built_in):
+                try:
+                    adapter_loader.install_from_dir(str(d), install_mode="copy", preserve_existing_link=True)
+                except Exception as e:
+                    logger.warning(f"Built-in adapter failed {d.name}: {e}")
 
         adapter_loader.scan_all()
         try:

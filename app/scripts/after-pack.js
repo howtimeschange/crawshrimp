@@ -71,13 +71,29 @@ function requirePythonBundle(srcPython, srcKey = '') {
   }
 }
 
-function hasAdapterManifest(adaptersDir) {
-  if (!fs.existsSync(adaptersDir)) return false
+function requireAdapterManifests(adaptersDir) {
+  if (!fs.existsSync(adaptersDir)) {
+    throw new Error(`[after-pack] bundled adapter manifest not found under ${adaptersDir}`)
+  }
+  let adapterCount = 0
   for (const entry of fs.readdirSync(adaptersDir, { withFileTypes: true })) {
     if (!entry.isDirectory()) continue
-    if (fs.existsSync(path.join(adaptersDir, entry.name, 'manifest.yaml'))) return true
+    adapterCount += 1
+    const adapterDir = path.join(adaptersDir, entry.name)
+    const manifestPath = path.join(adapterDir, 'manifest.yaml')
+    try {
+      fs.accessSync(adapterDir, fs.constants.R_OK)
+      fs.accessSync(manifestPath, fs.constants.R_OK)
+      if (!fs.statSync(manifestPath).isFile()) {
+        throw new Error('manifest.yaml is not a file')
+      }
+    } catch (e) {
+      throw new Error(`[after-pack] adapter ${entry.name} missing manifest.yaml or unreadable: ${e.message}`)
+    }
   }
-  return false
+  if (!adapterCount) {
+    throw new Error(`[after-pack] bundled adapter manifest not found under ${adaptersDir}`)
+  }
 }
 
 function requirePythonScriptsBundle(resourcesPath) {
@@ -88,9 +104,7 @@ function requirePythonScriptsBundle(resourcesPath) {
   }
 
   const adaptersDir = path.join(scriptsDir, 'adapters')
-  if (!hasAdapterManifest(adaptersDir)) {
-    throw new Error(`[after-pack] bundled adapter manifest not found under ${adaptersDir}`)
-  }
+  requireAdapterManifests(adaptersDir)
 }
 
 async function afterPack(context) {

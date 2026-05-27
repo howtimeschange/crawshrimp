@@ -9,7 +9,7 @@ import zipfile
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 import yaml
 from pydantic import ValidationError
@@ -75,6 +75,21 @@ def _load_manifest_if_exists(adapter_dir: Path) -> Optional[AdapterManifest]:
     except Exception as e:
         logger.warning("adapter manifest 读取失败 %s: %s", manifest_path, e)
         return None
+
+
+def iter_manifest_dirs(root: Path) -> Iterator[Path]:
+    try:
+        entries = list(root.iterdir())
+    except OSError as e:
+        logger.warning("adapter 目录扫描失败 %s: %s", root, e)
+        return
+
+    for item in entries:
+        try:
+            if item.is_dir() and (item / "manifest.yaml").exists():
+                yield item
+        except OSError as e:
+            logger.warning("跳过无权限访问的 adapter 目录 %s: %s", item, e)
 
 
 def _should_preserve_existing_link(existing_meta: dict[str, Any], dest: Path) -> bool:
@@ -143,28 +158,27 @@ def scan_all() -> List[AdapterManifest]:
     _adapter_dirs.clear()
     _install_meta.clear()
     root = _adapters_root()
-    for item in root.iterdir():
-        if item.is_dir() and (item / "manifest.yaml").exists():
-            m = _load_manifest(item)
-            if m:
-                _adapters[m.id] = m
-                _adapter_dirs[m.id] = item
-                meta = _read_install_metadata(m.id)
-                if not meta:
-                    meta = {
-                        "adapter_id": m.id,
-                        "install_mode": "copy",
-                        "runtime_path": _safe_realpath(item),
-                        "source_path": _safe_realpath(item),
-                    }
-                else:
-                    meta.setdefault("adapter_id", m.id)
-                    meta.setdefault("install_mode", "copy")
-                    meta.setdefault("runtime_path", _safe_realpath(item))
-                    meta.setdefault("source_path", _safe_realpath(item))
-                _install_meta[m.id] = meta
-                if m.id not in _enabled:
-                    _enabled[m.id] = True
+    for item in iter_manifest_dirs(root):
+        m = _load_manifest(item)
+        if m:
+            _adapters[m.id] = m
+            _adapter_dirs[m.id] = item
+            meta = _read_install_metadata(m.id)
+            if not meta:
+                meta = {
+                    "adapter_id": m.id,
+                    "install_mode": "copy",
+                    "runtime_path": _safe_realpath(item),
+                    "source_path": _safe_realpath(item),
+                }
+            else:
+                meta.setdefault("adapter_id", m.id)
+                meta.setdefault("install_mode", "copy")
+                meta.setdefault("runtime_path", _safe_realpath(item))
+                meta.setdefault("source_path", _safe_realpath(item))
+            _install_meta[m.id] = meta
+            if m.id not in _enabled:
+                _enabled[m.id] = True
     logger.info(f"已加载 {len(_adapters)} 个适配包")
     return list(_adapters.values())
 

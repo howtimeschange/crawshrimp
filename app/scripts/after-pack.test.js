@@ -72,3 +72,22 @@ test('requirePythonScriptsBundle rejects resources without adapter manifests', (
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('requirePythonScriptsBundle rejects adapter directories without manifest', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-resources-'))
+
+  try {
+    fs.mkdirSync(path.join(tmp, 'python-scripts', 'core'), { recursive: true })
+    fs.writeFileSync(path.join(tmp, 'python-scripts', 'core', 'api_server.py'), '')
+    fs.mkdirSync(path.join(tmp, 'python-scripts', 'adapters', 'good-adapter'), { recursive: true })
+    fs.writeFileSync(path.join(tmp, 'python-scripts', 'adapters', 'good-adapter', 'manifest.yaml'), '')
+    fs.mkdirSync(path.join(tmp, 'python-scripts', 'adapters', 'broken-adapter'), { recursive: true })
+
+    assert.throws(
+      () => requirePythonScriptsBundle(tmp),
+      /missing manifest\.yaml/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})

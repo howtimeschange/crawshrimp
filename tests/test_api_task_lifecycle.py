@@ -92,22 +92,78 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
                 with patch("core.api_server.data_sink.list_active_runs", return_value=[]) as list_active_runs:
                     with patch("core.api_server.data_sink.stop_orphaned_active_runs", return_value=0) as stop_orphaned:
-                        with patch("core.api_server.adapter_loader.install_from_dir"):
-                            with patch("core.api_server.adapter_loader.scan_all") as scan_all:
-                                with patch("core.api_server.ensure_knowledge_index"):
-                                    with patch("core.api_server.adapter_loader.list_all", return_value=[]):
-                                        with patch("core.api_server.sched_module.start") as scheduler_start:
-                                            with patch("core.api_server.sched_module.shutdown"):
-                                                async with api_server.lifespan(api_server.app):
-                                                    calls.append("yielded")
+                        with patch("core.api_server.adapter_loader.iter_manifest_dirs", return_value=[]) as iter_manifest_dirs:
+                            with patch("core.api_server.adapter_loader.install_from_dir") as install_from_dir:
+                                with patch("core.api_server.adapter_loader.scan_all") as scan_all:
+                                    with patch("core.api_server.ensure_knowledge_index"):
+                                        with patch("core.api_server.adapter_loader.list_all", return_value=[]):
+                                            with patch("core.api_server.sched_module.start") as scheduler_start:
+                                                with patch("core.api_server.sched_module.shutdown"):
+                                                    async with api_server.lifespan(api_server.app):
+                                                        calls.append("yielded")
 
         self.assertIn("init_db", calls)
         self.assertIn("yielded", calls)
         self.assertIn("lock.close", calls)
         list_active_runs.assert_called_once_with(api_server.ACTIVE_LIVE_STATUSES)
         stop_orphaned.assert_called_once()
+        iter_manifest_dirs.assert_called_once()
+        install_from_dir.assert_not_called()
         scan_all.assert_called_once()
         scheduler_start.assert_called_once()
+
+    async def test_lifespan_skips_inaccessible_builtin_adapter_entry(self):
+        calls = []
+
+        class FakeLock:
+            acquired = True
+
+            def close(self):
+                calls.append("lock.close")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            project_root = Path(tmpdir)
+            bundled_core = project_root / "core"
+            bundled_core.mkdir(parents=True)
+            bundled_file = bundled_core / "api_server.py"
+            bundled_file.write_text("", encoding="utf-8")
+            adapters_root = project_root / "adapters"
+            good_adapter = adapters_root / "good-adapter"
+            good_adapter.mkdir(parents=True)
+            (good_adapter / "manifest.yaml").write_text("id: good-adapter\n", encoding="utf-8")
+            blocked_adapter = adapters_root / "blocked-adapter"
+            blocked_adapter.mkdir(parents=True)
+
+            original_is_dir = Path.is_dir
+
+            def guarded_is_dir(path):
+                if path == blocked_adapter:
+                    raise PermissionError("[WinError 5] Access is denied")
+                return original_is_dir(path)
+
+            with patch.object(api_server, "__file__", str(bundled_file)):
+                with patch.object(Path, "is_dir", guarded_is_dir):
+                    with patch("core.api_server.data_sink.init_db", side_effect=lambda: calls.append("init_db")):
+                        with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
+                            with patch("core.api_server.data_sink.list_active_runs", return_value=[]):
+                                with patch("core.api_server.data_sink.stop_orphaned_active_runs", return_value=0):
+                                    with patch("core.api_server.adapter_loader.install_from_dir") as install_from_dir:
+                                        with patch("core.api_server.adapter_loader.scan_all"):
+                                            with patch("core.api_server.ensure_knowledge_index"):
+                                                with patch("core.api_server.adapter_loader.list_all", return_value=[]):
+                                                    with patch("core.api_server.sched_module.start"):
+                                                        with patch("core.api_server.sched_module.shutdown"):
+                                                            async with api_server.lifespan(api_server.app):
+                                                                calls.append("yielded")
+
+            install_from_dir.assert_called_once_with(
+                str(good_adapter),
+                install_mode="copy",
+                preserve_existing_link=True,
+            )
+
+        self.assertIn("yielded", calls)
+        self.assertIn("lock.close", calls)
 
     async def test_lifespan_skips_orphan_cleanup_when_instance_lock_is_unavailable(self):
         calls = []

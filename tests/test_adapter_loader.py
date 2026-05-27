@@ -196,6 +196,25 @@ class AdapterLoaderTests(unittest.TestCase):
             self.assertEqual(manifest.version, "3.0.0")
             self.assertEqual((runtime_dir / "demo.js").read_text(encoding="utf-8"), "newer")
 
+    def test_scan_all_skips_inaccessible_adapter_entry(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            runtime_root = Path(self.tmpdir.name) / "adapters"
+            _write_adapter(runtime_root, adapter_id="good-adapter")
+            blocked_dir = runtime_root / "blocked-adapter"
+            blocked_dir.mkdir(parents=True)
+
+            original_is_dir = Path.is_dir
+
+            def guarded_is_dir(path):
+                if path == blocked_dir:
+                    raise PermissionError("[WinError 5] Access is denied")
+                return original_is_dir(path)
+
+            with unittest.mock.patch.object(Path, "is_dir", guarded_is_dir):
+                manifests = adapter_loader.scan_all()
+
+            self.assertEqual([manifest.id for manifest in manifests], ["good-adapter"])
+
 
 if __name__ == "__main__":
     unittest.main()
