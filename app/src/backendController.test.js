@@ -119,6 +119,33 @@ test('ensureReady retries a backend launch that exits before ready', async () =>
   assert.equal(startCount, 2)
 })
 
+test('ensureReady stops a timed-out backend process before retrying launch', async () => {
+  let startCount = 0
+  const stopped = []
+
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => startCount >= 2,
+    startProcess: () => {
+      startCount += 1
+      const proc = new EventEmitter()
+      proc.pid = 1000 + startCount
+      return proc
+    },
+    stopProcess: (proc) => stopped.push(proc.pid),
+    intervalMs: 1,
+    attempts: 1,
+    launchRetries: 1,
+    retryDelayMs: 1,
+  })
+
+  await controller.ensureReady()
+
+  assert.equal(startCount, 2)
+  assert.deepEqual(stopped, [1001])
+})
+
 test('runWhenReady retries the operation after a retryable connection error', async () => {
   let probeCount = 0
   let operationCount = 0

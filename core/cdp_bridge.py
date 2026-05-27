@@ -24,9 +24,9 @@ class CDPBridge:
         self.cdp_url = cdp_url.rstrip("/")
         self._tabs: list = []
 
-    def get_tabs(self) -> list:
+    def get_tabs(self, timeout: float = 5) -> list:
         try:
-            resp = cdp_urlopen(f"{self.cdp_url}/json", timeout=5)
+            resp = cdp_urlopen(f"{self.cdp_url}/json", timeout=timeout)
             self._tabs = json.loads(resp.read())
             return self._tabs
         except URLError as e:
@@ -50,9 +50,9 @@ class CDPBridge:
     def get_tab_ws_url(self, tab: dict) -> str:
         return tab.get("webSocketDebuggerUrl", "")
 
-    def is_available(self) -> bool:
+    def is_available(self, timeout: float = 5) -> bool:
         try:
-            self.get_tabs()
+            self.get_tabs(timeout=timeout)
             return True
         except ConnectionError:
             return False

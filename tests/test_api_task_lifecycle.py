@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import unittest
 from pathlib import Path
 import tempfile
@@ -8,6 +9,39 @@ from core import adapter_loader, api_server
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_backend_instance_lock_windows_locks_first_byte(self):
+        positions = []
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            def locking(self, fileno, mode, size):
+                handle = open_files[fileno]
+                positions.append((mode, handle.tell(), size))
+
+        open_files = {}
+        original_open = Path.open
+
+        def tracked_open(path, *args, **kwargs):
+            handle = original_open(path, *args, **kwargs)
+            open_files[handle.fileno()] = handle
+            return handle
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_path = Path(tmpdir) / "backend.lock"
+            lock_path.write_text("12345", encoding="utf-8")
+
+            with patch("core.api_server.os.name", "nt"):
+                with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt()}):
+                    with patch.object(Path, "open", tracked_open):
+                        lock = api_server.BackendInstanceLock(lock_path)
+                        self.assertTrue(lock.acquire())
+                        lock.close()
+
+        self.assertEqual(positions[0], (FakeMsvcrt.LK_NBLCK, 0, 1))
+        self.assertEqual(positions[-1], (FakeMsvcrt.LK_UNLCK, 0, 1))
+
     async def test_build_live_progress_exposes_shein_detail_stage_fields(self):
         progress = api_server._build_live_progress(
             {
@@ -56,17 +90,16 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("core.api_server.data_sink.init_db", side_effect=lambda: calls.append("init_db")):
             with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
-                with patch("core.api_server._is_backend_port_available", return_value=False, create=True):
-                    with patch("core.api_server.data_sink.list_active_runs", return_value=[]) as list_active_runs:
-                        with patch("core.api_server.data_sink.stop_orphaned_active_runs", return_value=0) as stop_orphaned:
-                            with patch("core.api_server.adapter_loader.install_from_dir"):
-                                with patch("core.api_server.adapter_loader.scan_all") as scan_all:
-                                    with patch("core.api_server.ensure_knowledge_index"):
-                                        with patch("core.api_server.adapter_loader.list_all", return_value=[]):
-                                            with patch("core.api_server.sched_module.start") as scheduler_start:
-                                                with patch("core.api_server.sched_module.shutdown"):
-                                                    async with api_server.lifespan(api_server.app):
-                                                        calls.append("yielded")
+                with patch("core.api_server.data_sink.list_active_runs", return_value=[]) as list_active_runs:
+                    with patch("core.api_server.data_sink.stop_orphaned_active_runs", return_value=0) as stop_orphaned:
+                        with patch("core.api_server.adapter_loader.install_from_dir"):
+                            with patch("core.api_server.adapter_loader.scan_all") as scan_all:
+                                with patch("core.api_server.ensure_knowledge_index"):
+                                    with patch("core.api_server.adapter_loader.list_all", return_value=[]):
+                                        with patch("core.api_server.sched_module.start") as scheduler_start:
+                                            with patch("core.api_server.sched_module.shutdown"):
+                                                async with api_server.lifespan(api_server.app):
+                                                    calls.append("yielded")
 
         self.assertIn("init_db", calls)
         self.assertIn("yielded", calls)
@@ -87,17 +120,56 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("core.api_server.data_sink.init_db", side_effect=lambda: calls.append("init_db")):
             with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
-                with patch("core.api_server._is_backend_port_available", return_value=True, create=True):
-                    with patch("core.api_server.data_sink.list_active_runs", side_effect=AssertionError("should not list active runs")):
-                        with patch("core.api_server.data_sink.stop_orphaned_active_runs", side_effect=AssertionError("should not stop runs")):
-                            with patch("core.api_server.adapter_loader.scan_all", side_effect=AssertionError("should not scan adapters")):
-                                with patch("core.api_server.sched_module.start", side_effect=AssertionError("should not start scheduler")):
-                                    async with api_server.lifespan(api_server.app):
-                                        calls.append("yielded")
+                with patch("core.api_server.data_sink.list_active_runs", side_effect=AssertionError("should not list active runs")):
+                    with patch("core.api_server.data_sink.stop_orphaned_active_runs", side_effect=AssertionError("should not stop runs")):
+                        with patch("core.api_server.adapter_loader.scan_all", side_effect=AssertionError("should not scan adapters")):
+                            with patch("core.api_server.sched_module.start", side_effect=AssertionError("should not start scheduler")):
+                                async with api_server.lifespan(api_server.app):
+                                    calls.append("yielded")
 
         self.assertIn("init_db", calls)
         self.assertIn("yielded", calls)
         self.assertIn("lock.close", calls)
+
+    async def test_health_uses_short_chrome_probe_timeout(self):
+        seen = {}
+
+        class FakeBridge:
+            def is_available(self, timeout=None):
+                seen["timeout"] = timeout
+                return False
+
+        with patch("core.api_server.CDPBridge", return_value=FakeBridge()):
+            with patch("core.api_server.adapter_loader.list_all", return_value=[]):
+                with patch("core.api_server.sched_module.list_jobs", return_value=[]):
+                    result = api_server.health()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["chrome"])
+        self.assertIsNotNone(seen.get("timeout"))
+        self.assertLessEqual(seen["timeout"], 0.5)
+
+    async def test_health_remains_ready_when_config_is_invalid(self):
+        with patch("core.api_server.load_config", side_effect=ValueError("bad config")):
+            with patch("core.api_server.CDPBridge", return_value=type("FakeBridge", (), {"is_available": lambda self, timeout=None: False})()):
+                with patch("core.api_server.adapter_loader.list_all", return_value=[]):
+                    with patch("core.api_server.sched_module.list_jobs", return_value=[]):
+                        result = api_server.health()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertFalse(result["chrome"])
+
+    async def test_health_degrades_when_adapter_or_scheduler_status_fails(self):
+        with patch("core.api_server.CDPBridge", return_value=type("FakeBridge", (), {"is_available": lambda self, timeout=None: False})()):
+            with patch("core.api_server.adapter_loader.list_all", side_effect=RuntimeError("adapter metadata broken")):
+                with patch("core.api_server.sched_module.list_jobs", side_effect=RuntimeError("scheduler unavailable")):
+                    result = api_server.health()
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["adapters"], 0)
+        self.assertEqual(result["scheduled_jobs"], 0)
+        self.assertIn("adapter metadata broken", result["warnings"])
+        self.assertIn("scheduler unavailable", result["warnings"])
 
     async def test_list_tasks_includes_adapter_version(self):
         class FakeTask:

@@ -34,7 +34,7 @@ from core import data_sink
 from core import notifier
 from core import odps_sync
 from core import scheduler as sched_module
-from core.cdp_bridge import get_bridge, reset_bridge
+from core.cdp_bridge import CDPBridge, get_bridge, reset_bridge
 from core.browser_session import open_browser_session
 from core.dev_harness import run_harness_capture, run_harness_eval, run_harness_snapshot
 from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequest, DevHarnessSnapshotRequest
@@ -82,6 +82,7 @@ class BackendInstanceLock:
             try:
                 import msvcrt
 
+                self.handle.seek(0)
                 msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError:
                 self.acquired = False
@@ -2728,14 +2729,34 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    cfg = load_config()
-    bridge = get_bridge()
-    chrome_ok = bridge.is_available()
+    warnings = []
+    try:
+        chrome_ok = CDPBridge().is_available(timeout=0.2)
+    except Exception as e:
+        logger.debug("health chrome probe failed", exc_info=True)
+        warnings.append(str(e))
+        chrome_ok = False
+
+    try:
+        adapters_count = len(adapter_loader.list_all())
+    except Exception as e:
+        logger.debug("health adapter status failed", exc_info=True)
+        warnings.append(str(e))
+        adapters_count = 0
+
+    try:
+        scheduled_jobs_count = len(sched_module.list_jobs())
+    except Exception as e:
+        logger.debug("health scheduler status failed", exc_info=True)
+        warnings.append(str(e))
+        scheduled_jobs_count = 0
+
     return {
         "status": "ok",
         "chrome": chrome_ok,
-        "adapters": len(adapter_loader.list_all()),
-        "scheduled_jobs": len(sched_module.list_jobs()),
+        "adapters": adapters_count,
+        "scheduled_jobs": scheduled_jobs_count,
+        "warnings": warnings,
     }
 
 

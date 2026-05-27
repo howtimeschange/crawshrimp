@@ -63,11 +63,30 @@ target_python() {
 }
 
 host_python() {
-  if command -v python3 >/dev/null 2>&1; then
-    command -v python3
-    return
+  local candidates=()
+  if [ -n "${PYTHON:-}" ]; then
+    candidates+=("${PYTHON}")
   fi
-  command -v python
+  candidates+=("${ROOT_DIR}/venv/bin/python3" "python3" "python")
+
+  local candidate
+  local resolved
+  for candidate in "${candidates[@]}"; do
+    if [ -x "$candidate" ]; then
+      resolved="$candidate"
+    elif command -v "$candidate" >/dev/null 2>&1; then
+      resolved="$(command -v "$candidate")"
+    else
+      continue
+    fi
+
+    if "$resolved" -m pip --version >/dev/null 2>&1; then
+      echo "$resolved"
+      return 0
+    fi
+  done
+
+  return 1
 }
 
 target_site_packages() {
@@ -91,30 +110,60 @@ has_core_requirements() {
   site_packages="$(target_site_packages "$key" "$dest")" || return 1
   [ -d "${site_packages}/fastapi" ] &&
     [ -d "${site_packages}/uvicorn" ] &&
+    [ -d "${site_packages}/websockets" ] &&
+    [ -d "${site_packages}/yaml" ] &&
     [ -d "${site_packages}/apscheduler" ] &&
     [ -d "${site_packages}/openpyxl" ] &&
-    [ -d "${site_packages}/tzdata" ]
+    [ -d "${site_packages}/pydantic" ] &&
+    [ -d "${site_packages}/aiofiles" ] &&
+    [ -d "${site_packages}/jsonschema" ] &&
+    [ -d "${site_packages}/tzdata" ] &&
+    [ -d "${site_packages}/PIL" ] &&
+    [ -d "${site_packages}/fitz" ]
 }
 
-install_windows_requirements_cross() {
-  local dest="$1"
+target_pip_platform() {
+  case "$1" in
+    win-x64)
+      echo "win_amd64"
+      ;;
+    mac-arm64)
+      echo "macosx_11_0_arm64"
+      ;;
+    mac-x64)
+      echo "macosx_11_0_x86_64"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+install_requirements_cross() {
+  local key="$1"
+  local dest="$2"
   local host_py
+  local pip_platform
   local site_packages
 
   host_py="$(host_python)" || {
-    echo "[error] Host Python not found; cannot cross-install win-x64 dependencies"
+    echo "[error] Host Python with pip not found; cannot cross-install $key dependencies"
     exit 1
   }
-  site_packages="$(target_site_packages "win-x64" "$dest")"
+  pip_platform="$(target_pip_platform "$key")" || {
+    echo "[error] Unsupported Python target for cross-install: $key"
+    exit 1
+  }
+  site_packages="$(target_site_packages "$key" "$dest")"
   mkdir -p "$site_packages"
 
-  echo "[deps] Cross-installing backend requirements into win-x64 ..."
+  echo "[deps] Cross-installing backend requirements into $key ..."
   "$host_py" -m pip install \
     --disable-pip-version-check \
     --no-warn-script-location \
     --upgrade \
     --target "$site_packages" \
-    --platform win_amd64 \
+    --platform "$pip_platform" \
     --python-version "$PY_MAJOR_MINOR" \
     --implementation cp \
     --abi "$PY_ABI" \
@@ -145,13 +194,9 @@ install_requirements() {
   fi
 
   if ! "$py_bin" -V >/dev/null 2>&1; then
-    if [ "$key" = "win-x64" ]; then
-      install_windows_requirements_cross "$dest"
-      cp "$REQUIREMENTS_FILE" "$marker"
-      echo "[ok] $key requirements installed"
-      return
-    fi
-    echo "[warn] Cannot execute $py_bin on this host; skip dependency install for $key"
+    install_requirements_cross "$key" "$dest"
+    cp "$REQUIREMENTS_FILE" "$marker"
+    echo "[ok] $key requirements installed"
     return
   fi
 

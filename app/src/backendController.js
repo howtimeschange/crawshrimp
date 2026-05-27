@@ -18,6 +18,13 @@ function describeProcessExit(proc, code) {
   return tail ? `${base}: ${tail}` : base
 }
 
+function describeProcessStartup(proc) {
+  if (!proc || typeof proc.getStartupOutput !== 'function') return ''
+  const output = String(proc.getStartupOutput() || '').trim()
+  if (!output) return ''
+  return output.split('\n').map(line => line.trim()).filter(Boolean).slice(-8).join(' | ')
+}
+
 function createBackendController(options) {
   const probeReady = options.probeReady
   const startProcess = options.startProcess
@@ -92,8 +99,17 @@ function createBackendController(options) {
         }
 
         if (!startupFailure) {
-          throw new Error('API server startup timeout')
+          const tail = describeProcessStartup(backendProcess)
+          startupFailure = new Error(tail ? `API server startup timeout: ${tail}` : 'API server startup timeout')
         }
+
+        if (backendProcess) {
+          const proc = backendProcess
+          backendProcess = null
+          stopProcess(proc)
+          markNotReady()
+        }
+
         if (launchAttempt >= launchRetries) {
           throw startupFailure
         }

@@ -16,12 +16,80 @@
 const fs   = require('fs')
 const path = require('path')
 
-function requirePythonBundle(srcPython) {
+const REQUIRED_BACKEND_IMPORTS = [
+  'fastapi',
+  'uvicorn',
+  'websockets',
+  'yaml',
+  'apscheduler',
+  'openpyxl',
+  'pydantic',
+  'aiofiles',
+  'jsonschema',
+  'tzdata',
+  'PIL',
+  'fitz',
+]
+
+function getPythonExecutable(srcPython, srcKey = '') {
+  if (srcKey === 'win-x64') return path.join(srcPython, 'python.exe')
+  if (srcKey === 'mac-arm64' || srcKey === 'mac-x64') return path.join(srcPython, 'bin', 'python3')
+  return null
+}
+
+function getSitePackagesDir(srcPython, srcKey = '') {
+  if (srcKey === 'win-x64') return path.join(srcPython, 'Lib', 'site-packages')
+  if (srcKey === 'mac-arm64' || srcKey === 'mac-x64') return path.join(srcPython, 'lib', 'python3.12', 'site-packages')
+  return null
+}
+
+function requirePythonBundle(srcPython, srcKey = '') {
   if (!fs.existsSync(srcPython)) {
     throw new Error(
       `[after-pack] bundled Python not found at ${srcPython}. ` +
       'Run app/scripts/download-python.sh before building the desktop package.'
     )
+  }
+
+  const executable = getPythonExecutable(srcPython, srcKey)
+  if (executable && !fs.existsSync(executable)) {
+    throw new Error(`[after-pack] bundled Python executable not found: ${executable}`)
+  }
+
+  const sitePackages = getSitePackagesDir(srcPython, srcKey)
+  if (!sitePackages) return
+  if (!fs.existsSync(sitePackages)) {
+    throw new Error(`[after-pack] bundled Python site-packages not found: ${sitePackages}`)
+  }
+
+  const missing = REQUIRED_BACKEND_IMPORTS.filter(name => !fs.existsSync(path.join(sitePackages, name)))
+  if (missing.length) {
+    throw new Error(
+      `[after-pack] missing bundled Python dependencies in ${sitePackages}: ${missing.join(', ')}. ` +
+      'Run app/scripts/download-python.sh to refresh python-dist.'
+    )
+  }
+}
+
+function hasAdapterManifest(adaptersDir) {
+  if (!fs.existsSync(adaptersDir)) return false
+  for (const entry of fs.readdirSync(adaptersDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    if (fs.existsSync(path.join(adaptersDir, entry.name, 'manifest.yaml'))) return true
+  }
+  return false
+}
+
+function requirePythonScriptsBundle(resourcesPath) {
+  const scriptsDir = path.join(resourcesPath, 'python-scripts')
+  const apiServer = path.join(scriptsDir, 'core', 'api_server.py')
+  if (!fs.existsSync(apiServer)) {
+    throw new Error(`[after-pack] bundled backend api_server.py not found: ${apiServer}`)
+  }
+
+  const adaptersDir = path.join(scriptsDir, 'adapters')
+  if (!hasAdapterManifest(adaptersDir)) {
+    throw new Error(`[after-pack] bundled adapter manifest not found under ${adaptersDir}`)
   }
 }
 
@@ -42,7 +110,7 @@ async function afterPack(context) {
 
   const scriptDir = path.dirname(__dirname)  // app/
   const srcPython = path.join(scriptDir, 'python-dist', srcKey)
-  requirePythonBundle(srcPython)
+  requirePythonBundle(srcPython, srcKey)
 
   let resourcesPath
   if (electronPlatformName === 'darwin') {
@@ -54,6 +122,8 @@ async function afterPack(context) {
   } else {
     resourcesPath = path.join(appOutDir, 'resources')
   }
+
+  requirePythonScriptsBundle(resourcesPath)
 
   const destPython = path.join(resourcesPath, 'python')
   console.log(`[after-pack] Copying Python ${srcKey} → ${destPython}`)
@@ -89,3 +159,5 @@ function copyDirSync(src, dest) {
 
 exports.default = afterPack
 exports.requirePythonBundle = requirePythonBundle
+exports.requirePythonScriptsBundle = requirePythonScriptsBundle
+exports.REQUIRED_BACKEND_IMPORTS = REQUIRED_BACKEND_IMPORTS
