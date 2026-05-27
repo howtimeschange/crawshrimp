@@ -15,7 +15,6 @@ import logging
 import os
 import re
 import shutil
-import socket
 import tempfile
 import zipfile
 from contextlib import asynccontextmanager
@@ -137,17 +136,6 @@ def _acquire_backend_instance_lock() -> BackendInstanceLock:
     lock = BackendInstanceLock(BACKEND_LOCK_PATH)
     lock.acquire()
     return lock
-
-
-def _is_backend_port_available() -> bool:
-    port = int(os.environ.get("CRAWSHRIMP_PORT", 18765))
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            sock.bind(("127.0.0.1", port))
-        except OSError:
-            return False
-    return True
 
 
 def _build_run_control() -> dict:
@@ -2677,12 +2665,9 @@ async def lifespan(app: FastAPI):
     instance_lock = _acquire_backend_instance_lock()
     # Init DB
     data_sink.init_db()
-    owns_backend_instance = bool(instance_lock.acquired and _is_backend_port_available())
+    owns_backend_instance = bool(instance_lock.acquired)
     if not owns_backend_instance:
-        if not instance_lock.acquired:
-            logger.warning("Another crawshrimp backend instance is already active; skip startup side effects in this process")
-        else:
-            logger.warning("Backend port is already in use; skip startup side effects in this process")
+        logger.warning("Another crawshrimp backend instance is already active; skip startup side effects in this process")
 
     if owns_backend_instance:
         orphaned_active_runs = data_sink.list_active_runs(ACTIVE_LIVE_STATUSES)

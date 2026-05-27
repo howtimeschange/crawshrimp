@@ -10,6 +10,7 @@ const http   = require('http')
 const crypto = require('crypto')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
+const { startDesktopServices } = require('./startupServices')
 
 const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 const DEV_RENDERER_URL = process.env.CRAWSHRIMP_RENDERER_URL || 'http://127.0.0.1:5173'
@@ -758,6 +759,22 @@ async function startBackend() {
   await backendController.ensureReady()
 }
 
+async function startChromeOnLaunch() {
+  const chromeState = await probeChromeCdp()
+  if (chromeState.ok) {
+    const msg = 'CDP already ready on port ' + CDP_PORT
+    log('[chrome] ' + msg)
+    sendStatus('chrome', true)
+    return { ok: true, msg }
+  }
+
+  log('[chrome] CDP not detected, auto-launching Chrome...')
+  const result = await launchChrome()
+  log('[chrome] ' + result.msg)
+  sendStatus('chrome', result.ok)
+  return result
+}
+
 function stopBackend() {
   backendController.stop()
 }
@@ -770,24 +787,12 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 
-  try {
-    await startBackend()
-    log(`[api] ready on port ${API_PORT}`)
-  } catch (error) {
-    log(`[warn] API backend failed to start: ${error.message}`)
-  }
-
-  // Auto-launch Chrome with CDP on startup
-  const chromeState = await probeChromeCdp()
-  if (chromeState.ok) {
-    log('[chrome] CDP already ready on port ' + CDP_PORT)
-    sendStatus('chrome', true)
-  } else {
-    log('[chrome] CDP not detected, auto-launching Chrome...')
-    const result = await launchChrome()
-    log('[chrome] ' + result.msg)
-    sendStatus('chrome', result.ok)
-  }
+  const startup = await startDesktopServices({
+    startBackend,
+    startChrome: startChromeOnLaunch,
+    log,
+  })
+  if (startup.api.ok) log(`[api] ready on port ${API_PORT}`)
 })
 
 app.on('window-all-closed', () => {

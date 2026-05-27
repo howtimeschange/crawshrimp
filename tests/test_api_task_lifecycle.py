@@ -45,7 +45,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress["detail_request_count"], 1221)
         self.assertEqual(progress["detail_records_collected"], 42)
 
-    async def test_lifespan_skips_orphan_cleanup_when_backend_port_is_unavailable(self):
+    async def test_lifespan_uses_instance_lock_as_startup_owner(self):
         calls = []
 
         class FakeLock:
@@ -57,16 +57,24 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch("core.api_server.data_sink.init_db", side_effect=lambda: calls.append("init_db")):
             with patch("core.api_server._acquire_backend_instance_lock", return_value=FakeLock(), create=True):
                 with patch("core.api_server._is_backend_port_available", return_value=False, create=True):
-                    with patch("core.api_server.data_sink.list_active_runs", side_effect=AssertionError("should not list active runs")):
-                        with patch("core.api_server.data_sink.stop_orphaned_active_runs", side_effect=AssertionError("should not stop runs")):
-                            with patch("core.api_server.adapter_loader.scan_all", side_effect=AssertionError("should not scan adapters")):
-                                with patch("core.api_server.sched_module.start", side_effect=AssertionError("should not start scheduler")):
-                                    async with api_server.lifespan(api_server.app):
-                                        calls.append("yielded")
+                    with patch("core.api_server.data_sink.list_active_runs", return_value=[]) as list_active_runs:
+                        with patch("core.api_server.data_sink.stop_orphaned_active_runs", return_value=0) as stop_orphaned:
+                            with patch("core.api_server.adapter_loader.install_from_dir"):
+                                with patch("core.api_server.adapter_loader.scan_all") as scan_all:
+                                    with patch("core.api_server.ensure_knowledge_index"):
+                                        with patch("core.api_server.adapter_loader.list_all", return_value=[]):
+                                            with patch("core.api_server.sched_module.start") as scheduler_start:
+                                                with patch("core.api_server.sched_module.shutdown"):
+                                                    async with api_server.lifespan(api_server.app):
+                                                        calls.append("yielded")
 
         self.assertIn("init_db", calls)
         self.assertIn("yielded", calls)
         self.assertIn("lock.close", calls)
+        list_active_runs.assert_called_once_with(api_server.ACTIVE_LIVE_STATUSES)
+        stop_orphaned.assert_called_once()
+        scan_all.assert_called_once()
+        scheduler_start.assert_called_once()
 
     async def test_lifespan_skips_orphan_cleanup_when_instance_lock_is_unavailable(self):
         calls = []
