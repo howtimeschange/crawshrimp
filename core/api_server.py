@@ -3037,6 +3037,7 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
 
 @app.post("/tasks/{adapter_id}/{task_id}/run")
 async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskRequest()):
+    adapter_loader.scan_all()
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
         raise HTTPException(404, f"Adapter not found: {adapter_id}")

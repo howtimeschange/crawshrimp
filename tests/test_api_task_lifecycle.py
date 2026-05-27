@@ -4,7 +4,7 @@ from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock, patch
 
-from core import api_server
+from core import adapter_loader, api_server
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -153,6 +153,63 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn(jid, api_server._run_controls)
             self.assertTrue(any("FATAL" in line for line in api_server._run_logs[jid]))
         finally:
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_logs.clear()
+            api_server._run_logs.update(original_logs)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+
+    async def test_run_task_scans_installed_adapters_before_initial_lookup(self):
+        original_status = dict(api_server._run_status)
+        original_logs = dict(api_server._run_logs)
+        original_controls = dict(api_server._run_controls)
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                adapter_dir = Path(tmpdir) / "adapters" / "dasen-ops-assistant"
+                adapter_dir.mkdir(parents=True, exist_ok=True)
+                (adapter_dir / "manifest.yaml").write_text(
+                    "\n".join([
+                        "id: dasen-ops-assistant",
+                        "name: 大森运营助手",
+                        "version: 0.1.0",
+                        "entry_url: https://ai.semir.com/console/studio/showcase/create/",
+                        "tasks:",
+                        "  - id: batch_create_showcase",
+                        "    name: 批量新建案例",
+                        "    script: batch-create-showcase.js",
+                        "    trigger:",
+                        "      type: manual",
+                    ]),
+                    encoding="utf-8",
+                )
+                (adapter_dir / "batch-create-showcase.js").write_text(
+                    "({ success: true, data: [], meta: { has_more: false } })",
+                    encoding="utf-8",
+                )
+
+                adapter_loader._adapters.clear()
+                adapter_loader._adapter_dirs.clear()
+                adapter_loader._enabled.clear()
+                adapter_loader._install_meta.clear()
+
+                with patch.dict("os.environ", {"CRAWSHRIMP_DATA": tmpdir}, clear=False):
+                    with patch("core.api_server._run_task_background", new=AsyncMock()) as background_run:
+                        result = await api_server.run_task(
+                            "dasen-ops-assistant",
+                            "batch_create_showcase",
+                            api_server.RunTaskRequest(params={}),
+                        )
+                        await asyncio.sleep(0)
+
+                self.assertTrue(result["ok"])
+                background_run.assert_awaited_once()
+        finally:
+            adapter_loader._adapters.clear()
+            adapter_loader._adapter_dirs.clear()
+            adapter_loader._enabled.clear()
+            adapter_loader._install_meta.clear()
             api_server._run_status.clear()
             api_server._run_status.update(original_status)
             api_server._run_logs.clear()

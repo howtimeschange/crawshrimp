@@ -706,6 +706,7 @@
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 
 const props = defineProps({
@@ -1651,17 +1652,7 @@ async function inspectLatestPlanOutput() {
   if (!rows.length) {
     return { pass: false, summary: '预检结果为空' }
   }
-  const invalid = rows.filter(row => String(row['状态'] || '') === 'invalid')
-  const outOfScope = rows.filter(row => String(row['状态'] || '') === 'ready_but_out_of_current_live_scope')
-  const ready = rows.filter(row => String(row['状态'] || '') === 'ready_for_live')
-  const parts = []
-  if (ready.length) parts.push(`${ready.length} 行可直接执行`)
-  if (invalid.length) parts.push(`${invalid.length} 行配置有误`)
-  if (outOfScope.length) parts.push(`${outOfScope.length} 行超出当前 live 范围`)
-  return {
-    pass: !invalid.length && !outOfScope.length,
-    summary: parts.join('，') || '未识别到有效预检结果',
-  }
+  return summarizePrecheckRows(rows)
 }
 
 async function runValidationOnly() {
