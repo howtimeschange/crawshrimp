@@ -73,8 +73,22 @@ function catalogs() {
       { categoryCode: 'PL11', name: '其他' },
     ],
     aiTeams: [
-      { name: '电商运营', value: '电商运营' },
-      { name: '客服', value: '客服' },
+      { name: '商品运营' },
+      { name: '电商运营' },
+      { name: '商品企划洞察' },
+      { name: '内容直播' },
+      { name: '创意设计' },
+      { name: '市场营销' },
+      { name: '经营分析' },
+      { name: '门店终端' },
+      { name: '经管中心' },
+      { name: '客服' },
+      { name: '物流' },
+      { name: '财务' },
+      { name: '供应链' },
+      { name: '数字中心' },
+      { name: '采购' },
+      { name: '人资中心' },
     ],
     deptRows: [
       { deptId: 1, name: '数字中心', path: '数字中心' },
@@ -170,26 +184,35 @@ test('normalizes showcase rows with category, department, developer, skill, and 
   assert.equal(payload.icon, 'https://cdn.example/cover.png')
 })
 
-test('allows zero current hours for fully automated efficiency cases', async () => {
+test('accepts dropdown-style category labels and current AI team values', async () => {
+  const helpers = await loadExports()
+  const parsed = await helpers.normalizeShowcaseRows([validRow({
+    案例类型: 'PL6 销售',
+    所属AI纵队: '数字中心',
+    操作文档路径: '',
+    视频路径: '',
+  })], {
+    catalogs: catalogs(),
+    apiClient: apiClient(),
+  })
+
+  assert.equal(parsed.invalidRows.length, 0, JSON.stringify(parsed.invalidRows))
+  assert.equal(parsed.jobs.length, 1)
+  assert.equal(parsed.jobs[0].categoryCode, 'PL6')
+  assert.equal(parsed.jobs[0].categoryName, '销售')
+  assert.equal(parsed.jobs[0].aiTeam, '数字中心')
+})
+
+test('rejects zero current hours to match current platform validation', async () => {
   const helpers = await loadExports()
   const parsed = await helpers.normalizeShowcaseRows([validRow({ 现工时: '0' })], {
     catalogs: catalogs(),
     apiClient: apiClient(),
   })
 
-  assert.equal(parsed.invalidRows.length, 0)
-  assert.equal(parsed.jobs.length, 1)
-
-  const payload = helpers.buildCasePayload({
-    ...parsed.jobs[0],
-    uploaded: {
-      icon: 'https://cdn.example/cover.png',
-      documents: [],
-      videos: [],
-    },
-  })
-  assert.equal(payload.efficiency.currentTime, 0)
-  assert.equal(payload.efficiency.economizeTime, 2)
+  assert.equal(parsed.jobs.length, 0)
+  assert.equal(parsed.invalidRows.length, 1)
+  assert.match(parsed.invalidRows[0].备注, /现工时必须大于 0/)
 })
 
 test('plan phase returns preview rows and does not call save or upload', async () => {

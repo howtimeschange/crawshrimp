@@ -11,5 +11,6 @@ __pycache__/
 data/
 logs/
 *.xlsx
+!adapters/dasen-ops-assistant/templates/showcase-batch-template.xlsx
 *.log
 .env
