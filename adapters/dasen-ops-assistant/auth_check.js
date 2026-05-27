@@ -11,7 +11,7 @@
     }
 
     const token = authData?.oauth2Token?.access_token || ''
-    const onLoginPage = /\/console\/login|\/login|sso|passport/i.test(href) || /登录|扫码|验证码/.test(bodyText)
+    const onLoginPage = /\/console\/login|\/login|sso|passport/i.test(href) || (!token && /登录|扫码|验证码/.test(bodyText))
     const hasConsoleSignal = /森马AI工作台|案例库|创作|数字员工|应用市场/.test(bodyText) || host === 'ai.semir.com'
     const loggedIn = !!token && !onLoginPage && hasConsoleSignal
 

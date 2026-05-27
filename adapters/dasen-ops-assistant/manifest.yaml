@@ -2,7 +2,7 @@ id: dasen-ops-assistant
 name: 大森运营助手
 version: 0.1.0
 author: codex
-description: "森马 AI 工作台运营自动化：按 Excel 批量新建案例库案例，支持封面、操作文档、视频等本地路径上传"
+description: "森马 AI 工作台运营自动化：按 Excel 批量新建或编辑案例库案例，支持封面、操作文档、视频等本地路径上传"
 entry_url: https://ai.semir.com/console/studio/showcase/create/
 tab_match_prefixes:
   - https://ai.semir.com/console/
@@ -74,4 +74,152 @@ tasks:
           - 视频介绍
           - 执行结果
           - 案例ID
+          - 备注
+  - id: export_showcase_edit_template
+    name: 导出案例编辑模板
+    description: 批量导出案例广场列表页的可编辑 Excel，表格自带案例ID。默认会分页读取目标列表页全部案例，也可按指定案例ID导出。
+    script: export-showcase-edit-template.js
+    entry_url: https://ai.semir.com/console/studio/showcase/?tab=plaza&restore=1
+    skip_auth: false
+    params:
+      - id: export_scope
+        type: radio
+        label: 导出范围
+        default: all_published
+        options:
+          - value: all_published
+            label: 导出列表页全部案例
+          - value: selected_ids
+            label: 只导出指定案例ID
+        hint: 默认会从案例库广场列表接口分页读取全部案例，再补齐详情字段。
+      - id: keyword
+        type: text
+        label: 搜索关键词
+        required: false
+        placeholder: 可留空
+        ui_span: half
+        hint: 留空导出全部；填写后会按列表接口关键词筛选。
+      - id: page_size
+        type: number
+        label: 每页读取数量
+        default: 100
+        min: 10
+        max: 200
+        step: 10
+        ui_span: half
+        hint: 默认每页 100 条，40 多个案例通常一页即可。
+      - id: case_ids
+        type: textarea
+        label: 案例ID或编辑页链接
+        required: false
+        rows: 5
+        placeholder: "每行一个案例ID或编辑页链接，例如：\n2058913263735545856\nhttps://ai.semir.com/console/studio/showcase/create/?id=2058913263735545856"
+        hint: 仅在选择“只导出指定案例ID”时填写；导出的 Excel 可直接修改后用于“批量编辑案例”。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "大森案例批量编辑模板_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 案例ID
+          - 编辑页链接
+          - 案例名称
+          - 封面图路径
+          - 案例类型
+          - 使用链接
+          - 下载链接
+          - 所属AI纵队
+          - 所属部门
+          - 案例描述
+          - 案例说明
+          - 案例开发者
+          - 涉及技能
+          - 可复用岗位
+          - 使用频次
+          - 价值分类
+          - 原工时
+          - 现工时
+          - 增收金额
+          - 降低成本
+          - 其他介绍
+          - 亮点1描述
+          - 亮点1指标
+          - 亮点2描述
+          - 亮点2指标
+          - 亮点3描述
+          - 亮点3指标
+          - 对比1之前
+          - 对比1之后
+          - 对比2之前
+          - 对比2之后
+          - 操作文档路径
+          - 视频路径
+          - 钉钉联系人
+          - 导出结果
+          - 备注
+  - id: batch_edit_showcase
+    name: 批量编辑案例
+    description: 读取 Excel 批量修改已发布案例字段。脚本会先按案例ID读取线上详情，空白单元格保持原值，填写 __清空__ 才会清空选填字段。
+    script: batch-edit-showcase.js
+    entry_url: https://ai.semir.com/console/studio/showcase/?tab=plaza&restore=1
+    skip_auth: false
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel
+    auto_precheck_note: 执行前会读取线上案例详情并校验字段；live 模式才会上传新文件并逐行调用编辑接口。
+    params:
+      - id: input_file
+        type: file_excel
+        label: 案例编辑 Excel
+        required: true
+        templates:
+          - file: templates/showcase-edit-template.csv
+            label: 批量编辑填写模板
+            description: 包含案例ID和可编辑字段；空白保持原值，__清空__ 用于清空选填字段。
+            version: "2026.05.27.1"
+          - file: templates/showcase-edit-field-guide.csv
+            label: 批量编辑字段说明
+            description: 说明案例ID、空白保持、清空标记、枚举和多人/多文件填写格式。
+            version: "2026.05.27.1"
+        hint: 支持 xlsx/xlsm/xls/csv；只填要修改的字段即可，空白单元格不会覆盖线上内容。
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做 Excel 预检
+          - value: live
+            label: 上传并编辑案例
+        hint: 预检不会提交；live 会逐行上传新文件并调用编辑接口。
+      - id: request_delay_ms
+        type: number
+        label: 每行间隔毫秒
+        default: 600
+        min: 0
+        max: 10000
+        step: 100
+        ui_span: third
+        hint: 批量编辑时每行完成后的等待时间，默认 600ms。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "大森案例批量编辑结果_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 案例ID
+          - 编辑页链接
+          - 案例名称
+          - 案例类型
+          - 所属AI纵队
+          - 所属部门
+          - 案例开发者
+          - 涉及技能
+          - 更新字段
+          - 价值分类
+          - 封面图
+          - 操作文档
+          - 视频介绍
+          - 执行结果
           - 备注
