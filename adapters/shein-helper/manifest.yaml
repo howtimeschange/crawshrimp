@@ -448,3 +448,118 @@ tasks:
               - SKU
               - 客退原因
 
+  - id: store_search_products
+    name: 公网搜索结果商品导出
+    description: 抓取 SHEIN 公网站点搜索/店铺结果页商品，并逐个进入商详页获取 SKC 真实价格后导出
+    script: store-search-products.js
+    entry_url: https://us.shein.com/Store/dian-pu-xuan-pin-7859875567-sc-102146671.html?adp=&child_cat_id=2057&force_send_adp=1&fromPageType=store&recommend_context_params=%7B%22select_id%22%3A%22102146671%22%2C%22sc_url_id%22%3A%22102146671%22%2C%22service_type%22%3A6%7D&recommend_page_type=storeSelectListPageRec&src_identifier=si%3D7859875567%60fc%3DKids%60sc%3DKids%20Shoes%60tc%3DAll%20Items%60ps%3D1_4_1%60jc%3DitemPicking_2057&src_module=storeCat&src_tab_page_id=page_store1777019784211&st=7859875567&store_code=7859875567
+    tab_match_prefixes:
+      - https://us.shein.com/Store/
+      - https://us.shein.com/
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前标签页
+          - value: new
+            label: 新开标签页
+      - id: search_url
+        type: textarea
+        label: 搜索结果页 URL
+        rows: 3
+        default: https://us.shein.com/Store/dian-pu-xuan-pin-7859875567-sc-102146671.html?adp=&child_cat_id=2057&force_send_adp=1&fromPageType=store&recommend_context_params=%7B%22select_id%22%3A%22102146671%22%2C%22sc_url_id%22%3A%22102146671%22%2C%22service_type%22%3A6%7D&recommend_page_type=storeSelectListPageRec&src_identifier=si%3D7859875567%60fc%3DKids%60sc%3DKids%20Shoes%60tc%3DAll%20Items%60ps%3D1_4_1%60jc%3DitemPicking_2057&src_module=storeCat&src_tab_page_id=page_store1777019784211&st=7859875567&store_code=7859875567
+        hint: current 模式下如果当前页已是 SHEIN 商品列表，会优先使用当前页；否则导航到这里配置的 URL
+      - id: max_products
+        type: number
+        label: 最多抓取商品数
+        default: 0
+        min: 0
+        max: 1000
+        step: 1
+        hint: 0 表示不按商品数截断，会按列表分页继续收集
+      - id: max_list_pages
+        type: number
+        label: 最多抓取列表页数
+        default: 4
+        min: 1
+        max: 80
+        step: 1
+      - id: max_scroll_rounds
+        type: number
+        label: 列表滚动轮数
+        default: 8
+        min: 0
+        max: 80
+        step: 1
+      - id: detail_delay_ms
+        type: number
+        label: 商详请求间隔（毫秒）
+        default: 2600
+        min: 800
+        max: 60000
+        step: 100
+        hint: 为降低风控概率，详情页抓取会按该间隔加随机抖动执行
+      - id: retry_cooldown_ms
+        type: number
+        label: 异常重试冷却（毫秒）
+        default: 12000
+        min: 3000
+        max: 180000
+        step: 1000
+      - id: max_detail_retries
+        type: number
+        label: 单商品自动重试次数
+        default: 2
+        min: 0
+        max: 5
+        step: 1
+      - id: captcha_wait_ms
+        type: number
+        label: 验证等待轮询间隔（毫秒）
+        default: 5000
+        min: 2000
+        max: 120000
+        step: 1000
+      - id: max_verification_wait_rounds
+        type: number
+        label: 验证最多等待轮数
+        default: 12
+        min: 1
+        max: 120
+        step: 1
+        hint: 超过后当前商品写入失败行并继续后续商品，避免整批卡住
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "SHEIN公网商品_{timestamp}.xlsx"
+        columns:
+          - 序号
+          - 商品ID
+          - SPU
+          - SKC
+          - 商品名称
+          - 颜色
+          - 价格
+          - 价格数值
+          - 原价
+          - 展示价
+          - 折扣
+          - 币种
+          - 库存
+          - 店铺ID
+          - 店铺名称
+          - 类目ID
+          - 类目
+          - 图片
+          - 商品链接
+          - 来源列表URL
+          - 列表页价格
+          - 列表页原价
+          - 价格来源
+          - 商详抓取状态
+          - 尺码价格明细

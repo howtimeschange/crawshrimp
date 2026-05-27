@@ -1,6 +1,6 @@
 {
   "name": "crawshrimp",
-  "version": "1.4.15",
+  "version": "1.4.16",
   "description": "Universal web automation desktop app",
   "author": "howtimeschange",
   "main": "src/main.js",
@@ -10,7 +10,8 @@
     "build:mac": "vite build && node scripts/run-electron-builder.js --mac",
     "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac",
     "build:win": "vite build && node scripts/run-electron-builder.js --win",
-    "vite:build": "vite build"
+    "vite:build": "vite build",
+    "test": "node --test src/*.test.js src/renderer/utils/*.test.js scripts/*.test.js"
   },
   "dependencies": {
     "portfinder": "^1.0.32"

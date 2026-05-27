@@ -881,6 +881,7 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call["phase"] for call in runner.calls], ["main", "after_capture", "after_download"])
         self.assertEqual(len(runner.capture_click_payloads), 1)
         self.assertEqual(runner.capture_click_payloads[0]["clicks"], [{"x": 1, "y": 2}])
+        self.assertEqual(runner.capture_click_payloads[0]["kwargs"]["include_response_body"], False)
         self.assertIn("captured", runner.calls[1]["shared"])
         self.assertTrue(runner.calls[1]["shared"]["captured"]["ok"])
         self.assertEqual(len(runner.download_payloads), 1)
@@ -1010,6 +1011,7 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(data), 1)
         self.assertEqual(len(runner.capture_url_payloads), 1)
         self.assertEqual(runner.capture_url_payloads[0]["url"], "https://example.com/landing")
+        self.assertEqual(runner.capture_url_payloads[0]["kwargs"]["include_response_body"], False)
         self.assertEqual(runner.calls[1]["phase"], "after_capture_url")
         self.assertIn("captured_url", runner.calls[1]["shared"])
         self.assertEqual(
@@ -1068,6 +1070,7 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
                 timeout_ms=1000,
                 settle_ms=0,
                 min_matches=1,
+                include_response_body=True,
             )
 
         self.assertTrue(result["ok"])

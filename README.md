@@ -7,29 +7,29 @@
 
 ---
 
-## 本次更新（2026-05-19 / v1.4.13）
+## 本次更新（2026-05-27 / v1.4.16）
 
-- 桌面端版本升级到 `v1.4.13`，正式发布会输出 `crawshrimp-v1.4.13-*` 命名的桌面安装包。
-- Amazon 运营助手新增商品评价完整导出、商品标签批量拆分处理，并加强评价导出模式校验。
-- SHEIN 运营助手新增商品品质分析导出，支持导出商品质量、问题诊断和明细数据。
-- 桌面端任务进度链路补强，后端任务生命周期、JS 执行器和前端进度展示补充回归覆盖。
+- 桌面端版本升级到 `v1.4.16`，正式发布会输出 `crawshrimp-v1.4.16-*` 命名的桌面安装包。
+- 新增跨境调研适配包，支持 Renner 儿童鞋服类目调研，以及 Zara 美国/巴西上新与促销调研。
+- 大森运营助手补齐案例库批量编辑闭环，支持导出带案例ID的编辑模板，并按 Excel 批量更新已发布案例。
+- SHEIN 运营助手新增公网搜索/店铺结果商品导出，可逐个进入商详页补齐 SKC 真实价格。
+- 本地 API、适配包路径解析、任务并发、probe 网络数据脱敏和桌面端导航保护完成安全加固。
 
-## 上次更新（2026-05-13 / v1.4.12）
+## 上次更新（2026-05-27 / v1.4.15）
 
-- 桌面端版本升级到 `v1.4.12`，正式发布会输出 `crawshrimp-v1.4.12-*` 命名的桌面安装包。
-- TikTok 运营助手新增「商品管理导出」，支持按店铺区域、商品状态、商品/ID/SKU、类目、库存与价格条件抓取商品列表。
-- TikTok 达人视频下载会按视频归因成交件数降序整理导出结果，并把成交件数写入计划文件名，便于优先核对高成交素材。
-- TikTok 达人视频日期筛选与导出文件命名继续补强，统计日期 / 发布时间边界和区域、筛选摘要更清晰。
-- SHEIN 商品评价要求 SKC、评论 ID、星级等精确筛选一次只选一种，避免组合筛选造成结果口径不明确。
-- 补充 TikTok 商品管理、达人视频排序、入口 URL 和 SHEIN 筛选约束的回归测试。
+- 桌面端版本升级到 `v1.4.15`，正式发布会输出 `crawshrimp-v1.4.15-*` 命名的桌面安装包。
+- 桌面端任务启动前会刷新适配器注册表，避免新增或更新脚本后仍使用旧注册信息。
+- 后端启动链路补强 Python 服务探活、端口复用和异常恢复，降低桌面应用打开后服务未就绪的概率。
+- 打包后的后端启动流程增强 bundled Python 下载、解包和路径容错，提升 macOS / Windows 构建产物的启动稳定性。
+- 适配器目录加载增加不可访问目录容错，避免单个异常目录阻断整批脚本加载。
 
-## 上上次更新（2026-05-10 / v1.4.11）
+## 上上次更新（2026-05-25 / v1.4.14）
 
-- 桌面端版本升级到 `v1.4.11`，正式发布会输出 `crawshrimp-v1.4.11-*` 命名的桌面安装包。
-- 修复 TikTok 达人视频下载中 Excel 记录数与 ZIP 视频数不一致的问题，导出前会校验本地视频文件，缺失时标记下载失败。
-- 后端启动增加实例锁与端口占用保护，避免第二个后端误清理运行态或把未接管的任务标记为 active。
-- TikTok 达人视频下载新增「视频发布时间」筛选，视频统计日期默认沿用页面筛选，不再默认额外过滤。
-- 补充后端生命周期、TikTok 下载打包校验与筛选项的 Python / Node 回归测试。
+- 桌面端版本升级到 `v1.4.14`，正式发布会输出 `crawshrimp-v1.4.14-*` 命名的桌面安装包。
+- TEMU 运营链路新增 Semir ODPS 同步能力，支持通过 DataWorks 配置把 mall flux 数据文件同步到后续数据处理流程。
+- 桌面端补充 ODPS 同步配置、数据文件入口和任务进度展示，便于在本地完成同步参数维护、执行和结果追踪。
+- Dasen 运营助手新增橱窗批量创建能力，提供 CSV 模板、字段说明和批量创建脚本，降低重复配置成本。
+- 适配器开发文档和技能说明补充 Semir DataWorks 同步指引，便于后续新增同类数据同步任务。
 
 ## 是什么
 
@@ -45,10 +45,13 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 | 适配包 | 平台 | 功能 |
 |--------|------|------|
+| `amazon-ops-assistant` | Amazon 运营本地工具 | 商品 Reviews 全量抓取、商品标签 PDF 批量拆分处理 |
+| `cross-border-research` | Renner / Zara 跨境站点 | Renner 儿童鞋服类目调研、Zara 美国/巴西上新与促销调研 |
+| `dasen-ops-assistant` | 森马 AI 工作台 | 案例库批量新建、编辑模板导出、按 Excel 批量编辑已发布案例 |
 | `shopee-plus-v2` | Shopee 卖家后台 | 多门店多券型优惠券批量创建（商店 / 新买家 / 回购买家 / 关注礼） |
 | `lazada-plus-v1` | Lazada Seller Center | 多站点优惠券/促销批量创建（Regular / Flexi Combo / 新买家 / 粉丝券） |
 | `temu` | Temu 卖家后台 | 商品数据 / 活动数据 / 店铺流量 / 商品流量（列表/详情） / 对账中心 / 售后管理 / 商品评价 / 保税仓退货 / 资金限制 / 建议零售价（爬取/填写） / 抽检结果明细 / 商品品质分析 / 站点商品 / 商品实拍图洗唛合规 |
-| `shein-helper` | SHEIN 全球商家中心 | 商品评价（支持当前筛选与 SKC / 评论 ID / 星级筛选） / 商品分析-商品明细（支持继承当前筛选、维度切换与多 sheet 导出） |
+| `shein-helper` | SHEIN 全球商家中心 / 公网站点 | 商品评价、商品明细、商品品质分析、公网搜索/店铺结果商品导出 |
 | `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
 | `semir-cloud-drive` | 森马云盘 / 豆包 / Gemini | 款图批量下载打包、天猫搭配购素材匹配、按 Excel 批量下载素材并自动生图 |
 | `shenhui-new-arrival` | 森马云盘 / 深绘 DEEPDRAW | 上新图包整理、PDF 吊牌水洗截图、深绘图片包上传 |
@@ -60,9 +63,9 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 ### 最近更新
 
-- `v1.4.13`：新增 Amazon 商品评价完整导出、商品标签批量拆分处理和 SHEIN 商品品质分析导出。
-- `v1.4.12`：新增 TikTok 商品管理导出，达人视频按归因成交件数排序，并收紧 SHEIN 商品评价筛选口径。
-- `v1.4.11`：修复 TikTok 达人视频下载记录数与 ZIP 视频数不一致，补强发布时间筛选和后端实例保护。
+- `v1.4.16`：新增跨境调研适配包；大森运营助手补齐案例编辑闭环；SHEIN 运营助手新增公网搜索/店铺结果商品导出。
+- `v1.4.15`：补强桌面端服务启动、bundled Python 容错、适配器注册刷新和异常目录加载保护。
+- `v1.4.14`：新增 TEMU ODPS 同步链路和大森案例批量新建能力。
 
 ---
 
@@ -153,6 +156,8 @@ PYTHONPATH=. venv/bin/python3 core/api_server.py
 
 API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认运行在 `http://127.0.0.1:5173`。可通过环境变量 `CRAWSHRIMP_PORT` 修改后端端口。
 
+除 `/health` 和 API 文档页外，本地 API 默认要求 `X-Crawshrimp-Token` 请求头。`bash dev.sh` 会自动生成并打印 token；CLI harness 会优先读取 `CRAWSHRIMP_API_TOKEN` 或 `~/.crawshrimp/api-token`。
+
 ### 开发态 Harness
 
 仓库现在把适配器开发入口统一到 `scripts/crawshrimp_dev_harness.py`。它直接复用现有 `probe`、`browser_session` 和 `js_runner` 原语，推荐闭环是：
@@ -203,6 +208,8 @@ API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认
 
 `scripts/crawshrimp_dev_harness.py` 是标准开发入口。旧的 `scripts/crawshrimp_probe.py` 只保留给历史脚本和按 `probe_id` 直接查看 bundle 的兼容场景。
 
+`capture` 和 `probe` 默认不保存响应 body；确需排查响应内容时再显式追加 `--response-body`，返回内容会先做 token、cookie、密码等敏感字段脱敏。
+
 ### 桌面构建与发布
 
 仓库已接入 GitHub Actions 桌面构建：
@@ -233,11 +240,14 @@ crawshrimp/
 │   ├── src/preload.js        # IPC bridge（window.cs.*）
 │   └── src/renderer/         # Vue 3 视图
 ├── adapters/                 # 内置适配包
+│   ├── amazon-ops-assistant/  # Amazon 运营本地工具
+│   ├── cross-border-research/ # Renner / Zara 跨境调研
+│   ├── dasen-ops-assistant/   # 森马 AI 工作台案例库工具
 │   ├── shopee-plus-v2/       # Shopee 优惠券批量创建
 │   ├── shopee-webchat-bulk-reply/ # Shopee 聊聊批量发信
 │   ├── lazada-plus-v1/       # Lazada 优惠券/促销批量创建
 │   ├── temu/                 # Temu 运营助手
-│   ├── shein-helper/         # SHEIN 商品评价 / 商品明细导出
+│   ├── shein-helper/         # SHEIN 商品评价 / 商品明细 / 公网商品导出
 │   ├── jd/                   # 京东价格监控
 │   ├── semir-cloud-drive/    # 森马云盘图片工具
 │   ├── shenhui-new-arrival/  # 深绘上新助手
@@ -257,6 +267,7 @@ crawshrimp/
 ```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
+  -H "X-Crawshrimp-Token: $(cat ~/.crawshrimp/api-token)" \
   -d '{"path": "/path/to/my-adapter"}'
 ```
 
@@ -265,6 +276,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 ```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
+  -H "X-Crawshrimp-Token: $(cat ~/.crawshrimp/api-token)" \
   -d '{"path": "/path/to/my-adapter", "install_mode": "link"}'
 ```
 
@@ -275,6 +287,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 ```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
+  -H "X-Crawshrimp-Token: $(cat ~/.crawshrimp/api-token)" \
   -d '{"path": "/path/to/adapter.zip"}'
 ```
 

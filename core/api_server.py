@@ -10,10 +10,12 @@ Bundling notes (for electron-builder / python-build-standalone):
 """
 import asyncio
 import base64
+import hmac
 import json
 import logging
 import os
 import re
+import secrets
 import shutil
 import tempfile
 import zipfile
@@ -23,9 +25,9 @@ from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlencode, parse_qs, urlparse
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from core.config import load_config, save_config
@@ -49,10 +51,15 @@ from core.amazon_label_splitter import (
 
 logger = logging.getLogger(__name__)
 
+API_VERSION = "1.4.16"
+API_TOKEN_HEADER = "x-crawshrimp-token"
+PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
+
 # In-memory task run state for live status / logs
 _run_logs: dict = {}   # job_id -> list[str]
 _run_status: dict = {} # job_id -> {'status', 'run_id', 'records'}
 _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requested', 'resume_event', ...}
+_task_locks: dict[str, asyncio.Lock] = {}
 
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
 
@@ -65,8 +72,79 @@ RUNTIME_CLEANUP_TASKS = {
     ("tiktok-ops-assistant", "creator_video_download"),
 }
 
-BACKEND_LOCK_DIR = Path(os.environ.get("CRAWSHRIMP_BACKEND_LOCK_DIR", str(Path.home() / ".crawshrimp")))
+BACKEND_LOCK_DIR = Path(
+    os.environ.get(
+        "CRAWSHRIMP_BACKEND_LOCK_DIR",
+        os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp")),
+    )
+)
 BACKEND_LOCK_PATH = BACKEND_LOCK_DIR / "backend.lock"
+
+
+def _get_api_token() -> str:
+    env_token = str(os.environ.get("CRAWSHRIMP_API_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+
+    token_path = BACKEND_LOCK_DIR / "api-token"
+    try:
+        if token_path.exists():
+            return token_path.read_text(encoding="utf-8").strip()
+        token_path.parent.mkdir(parents=True, exist_ok=True)
+        token = secrets.token_hex(32)
+        token_path.write_text(token, encoding="utf-8")
+        try:
+            token_path.chmod(0o600)
+        except OSError:
+            pass
+        return token
+    except Exception:
+        logger.exception("Failed to read or create crawshrimp API token")
+        return ""
+
+
+def _api_auth_required() -> bool:
+    return os.environ.get("CRAWSHRIMP_ALLOW_UNAUTHENTICATED") != "1"
+
+
+def _allowed_cors_origins() -> list[str]:
+    raw = str(os.environ.get("CRAWSHRIMP_ALLOWED_ORIGINS") or "").strip()
+    if raw:
+        origins = [item.strip() for item in raw.split(",") if item.strip()]
+        if origins:
+            return origins
+    return [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+    ]
+
+
+def _task_lock(jid: str) -> asyncio.Lock:
+    lock = _task_locks.get(jid)
+    if lock is None:
+        lock = asyncio.Lock()
+        _task_locks[jid] = lock
+    return lock
+
+
+def _task_is_active(jid: str) -> bool:
+    live = _run_status.get(jid) or {}
+    control = _run_controls.get(jid)
+    task = control.get("task") if control else None
+    if task and not task.done():
+        return True
+    if _task_lock(jid).locked():
+        return True
+    return live.get("status") in ACTIVE_LIVE_STATUSES and ((task and not task.done()) or not control)
+
+
+def _task_has_live_control(jid: str) -> bool:
+    live = _run_status.get(jid) or {}
+    control = _run_controls.get(jid)
+    task = control.get("task") if control else None
+    if task and not task.done():
+        return True
+    return live.get("status") in ACTIVE_LIVE_STATUSES and not control
 
 
 class BackendInstanceLock:
@@ -2492,9 +2570,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         # 可选登录检测：若 manifest 配置了 auth.check_script，则最多等 5 分钟
         if not task.skip_auth and m.auth and m.auth.check_script:
-            adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
-            auth_path = adapter_dir / m.auth.check_script
-            if auth_path.exists():
+            try:
+                auth_path = adapter_loader.resolve_adapter_file(adapter_id, m.auth.check_script)
+            except FileNotFoundError:
+                auth_path = None
+            if auth_path:
                 await wait_for_control()
                 log(f"运行登录检测：{m.auth.check_script}")
                 auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
@@ -2544,10 +2624,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         raise RuntimeError(entry_nav.error or f"无法导航回业务入口：{target_entry_url}")
                     await asyncio.sleep(3)
 
-        adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
-        script_path = adapter_dir / task.script
-        if not script_path.exists():
-            raise FileNotFoundError(f"Script not found: {script_path}")
+        script_path = adapter_loader.resolve_adapter_file(adapter_id, task.script)
 
         await wait_for_control({"records": 0})
         log(f"Injecting script: {task.script}")
@@ -2664,6 +2741,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     instance_lock = _acquire_backend_instance_lock()
+    if _api_auth_required():
+        _get_api_token()
     # Init DB
     data_sink.init_db()
     owns_backend_instance = bool(instance_lock.acquired)
@@ -2701,7 +2780,7 @@ async def lifespan(app: FastAPI):
                 if item['enabled']:
                     m = adapter_loader.get_adapter(item['id'])
                     if m:
-                        sched_module.register_adapter(m, _execute_task)
+                        sched_module.register_adapter(m, _run_scheduled_task)
 
             sched_module.start()
         except Exception:
@@ -2718,10 +2797,34 @@ async def lifespan(app: FastAPI):
         instance_lock.close()
 
 
-app = FastAPI(title="crawshrimp", version="1.4.11", lifespan=lifespan)
+app = FastAPI(title="crawshrimp", version=API_VERSION, lifespan=lifespan)
 app.add_middleware(
-    CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    CORSMiddleware,
+    allow_origins=_allowed_cors_origins(),
+    allow_methods=["*"],
+    allow_headers=["Content-Type", "X-Crawshrimp-Token"],
 )
+
+
+@app.middleware("http")
+async def require_local_api_token(request: Request, call_next):
+    if request.method == "OPTIONS" or request.url.path in PUBLIC_API_PATHS:
+        return await call_next(request)
+
+    expected = _get_api_token()
+    if not expected:
+        if _api_auth_required():
+            return JSONResponse(
+                {"detail": "CRAWSHRIMP_API_TOKEN is required before using crawshrimp API"},
+                status_code=503,
+            )
+        return await call_next(request)
+
+    supplied = str(request.headers.get(API_TOKEN_HEADER) or "").strip()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+
+    return await call_next(request)
 
 
 # ─── Health ───
@@ -2790,7 +2893,7 @@ def install_adapter(req: InstallRequest):
             raise HTTPException(400, "Provide 'path' or 'zip_base64'")
 
         # Register scheduler jobs for newly installed adapter
-        sched_module.register_adapter(m, _execute_task)
+        sched_module.register_adapter(m, _run_scheduled_task)
         adapter_meta = adapter_loader.get_install_metadata(m.id)
         return {
             "ok": True,
@@ -2827,7 +2930,7 @@ def enable_adapter(adapter_id: str, req: EnableRequest):
         raise HTTPException(404, f"Adapter not found: {adapter_id}")
     adapter_loader.set_enabled(adapter_id, req.enabled)
     if req.enabled:
-        sched_module.register_adapter(m, _execute_task)
+        sched_module.register_adapter(m, _run_scheduled_task)
     else:
         sched_module.unregister_adapter(adapter_id)
     return {"ok": True, "enabled": req.enabled}
@@ -2978,13 +3081,12 @@ async def probe_task_params(adapter_id: str, task_id: str, req: ProbeTaskParamsR
     if not probe_script:
         raise HTTPException(404, f"Task does not declare param_probe_script: {adapter_id}/{task_id}")
 
-    adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
-    if not adapter_dir:
-        raise HTTPException(404, f"Adapter directory not found: {adapter_id}")
-
-    script_path = Path(adapter_dir) / probe_script
-    if not script_path.exists() or not script_path.is_file():
+    try:
+        script_path = adapter_loader.resolve_adapter_file(adapter_id, probe_script)
+    except FileNotFoundError:
         raise HTTPException(404, f"Param probe script not found: {probe_script}")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
 
     run_params = dict(req.params or {})
     current_tab_id = str(req.current_tab_id or "").strip()
@@ -3021,10 +3123,26 @@ async def probe_task_params(adapter_id: str, task_id: str, req: ProbeTaskParamsR
     }
 
 
+async def _run_scheduled_task(adapter_id: str, task_id: str):
+    jid = f"{adapter_id}::{task_id}"
+    if _task_is_active(jid):
+        logger.warning("Skip scheduled task %s because a run is already active", jid)
+        return
+
+    lock = _task_lock(jid)
+    async with lock:
+        if _task_has_live_control(jid):
+            logger.warning("Skip scheduled task %s because a manual run is already active", jid)
+            return
+        await _execute_task(adapter_id, task_id, {}, {}, run_control=None)
+
+
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
     jid = f"{adapter_id}::{task_id}"
+    lock = _task_lock(jid)
     try:
-        await _execute_task(adapter_id, task_id, params, runtime_options, run_control=run_control)
+        async with lock:
+            await _execute_task(adapter_id, task_id, params, runtime_options, run_control=run_control)
     except Exception as exc:
         live = dict(_run_status.get(jid) or {})
         if live.get('status') in ACTIVE_LIVE_STATUSES or not live:
@@ -3050,10 +3168,7 @@ async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskR
         raise HTTPException(404, f"Task not found: {task_id}")
 
     jid = f"{adapter_id}::{task_id}"
-    live = _run_status.get(jid) or {}
-    existing_control = _run_controls.get(jid)
-    existing_task = existing_control.get('task') if existing_control else None
-    if live.get('status') in ACTIVE_LIVE_STATUSES and ((existing_task and not existing_task.done()) or not existing_control):
+    if _task_is_active(jid):
         raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
 
     run_control = _build_run_control()

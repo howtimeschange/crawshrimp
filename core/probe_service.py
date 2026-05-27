@@ -6,6 +6,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from core.browser_session import open_browser_session
 from core.probe_analyzer import (
@@ -250,6 +251,135 @@ def _flatten_network_entries(passive_capture: dict, interaction_captures: list[d
     return entries
 
 
+SENSITIVE_HEADER_KEYS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "x-csrf-token",
+    "x-xsrf-token",
+    "x-api-key",
+    "x-auth-token",
+    "x-access-token",
+    "satoken",
+}
+
+SENSITIVE_FIELD_FRAGMENTS = (
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "authorization",
+    "cookie",
+    "session",
+    "csrf",
+    "xsrf",
+    "access_key",
+    "accesskey",
+    "signature",
+    "ticket",
+)
+
+SENSITIVE_FIELD_NAMES = {"sign", "sig"}
+
+REDACTED = "[REDACTED]"
+
+
+def _is_sensitive_key(key: Any) -> bool:
+    normalized = str(key or "").strip().lower().replace("-", "_")
+    if not normalized:
+        return False
+    return normalized in SENSITIVE_FIELD_NAMES or any(fragment in normalized for fragment in SENSITIVE_FIELD_FRAGMENTS)
+
+
+def _redact_headers(headers: Any) -> Any:
+    if not isinstance(headers, dict):
+        return headers
+    redacted = {}
+    for key, value in headers.items():
+        if str(key or "").strip().lower() in SENSITIVE_HEADER_KEYS or _is_sensitive_key(key):
+            redacted[key] = REDACTED
+        else:
+            redacted[key] = value
+    return redacted
+
+
+def _redact_url(raw_url: Any) -> str:
+    text = str(raw_url or "")
+    if not text:
+        return text
+    try:
+        parts = urlsplit(text)
+        query = urlencode(
+            [
+                (key, REDACTED if _is_sensitive_key(key) else value)
+                for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            ],
+            doseq=True,
+        )
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+    except Exception:
+        return text
+
+
+def _redact_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: (REDACTED if _is_sensitive_key(key) else _redact_value(item))
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_value(item) for item in value]
+    return value
+
+
+def _redact_body(value: Any) -> Any:
+    if not isinstance(value, str):
+        return _redact_value(value)
+
+    text = value.strip()
+    if not text:
+        return value
+    try:
+        parsed = json.loads(text)
+    except Exception:
+        if any(fragment in text.lower() for fragment in SENSITIVE_FIELD_FRAGMENTS):
+            return REDACTED
+        return value
+    return json.dumps(_redact_value(parsed), ensure_ascii=False)
+
+
+def _redact_network_entry(entry: Any) -> Any:
+    if not isinstance(entry, dict):
+        return entry
+    redacted = dict(entry)
+    for url_key in ("url", "responseUrl"):
+        if url_key in redacted:
+            redacted[url_key] = _redact_url(redacted.get(url_key))
+    for header_key in ("headers", "responseHeaders"):
+        if header_key in redacted:
+            redacted[header_key] = _redact_headers(redacted.get(header_key))
+    for body_key in ("postData", "body"):
+        if body_key in redacted:
+            redacted[body_key] = _redact_body(redacted.get(body_key))
+    return redacted
+
+
+def _redact_capture_payload(payload: Any) -> Any:
+    if isinstance(payload, dict):
+        redacted = {}
+        for key, value in payload.items():
+            if key == "matches" and isinstance(value, list):
+                redacted[key] = [_redact_network_entry(item) for item in value]
+            elif key == "capture":
+                redacted[key] = _redact_capture_payload(value)
+            else:
+                redacted[key] = _redact_capture_payload(value)
+        return redacted
+    if isinstance(payload, list):
+        return [_redact_capture_payload(item) for item in payload]
+    return payload
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -281,6 +411,7 @@ async def run_probe_request(req: ProbeRequest) -> ProbeRunResponse:
         settle_ms=max(int(req.settle_ms), 0),
         include_response_body=bool(req.capture_response_body),
     )
+    passive_capture = _redact_capture_payload(passive_capture)
 
     interaction_captures: list[dict[str, Any]] = []
     if effective_safe_auto and (merged_labels or merged_selectors):
@@ -296,6 +427,7 @@ async def run_probe_request(req: ProbeRequest) -> ProbeRunResponse:
                 settle_ms=max(int(req.settle_ms), 0),
                 include_response_body=bool(req.capture_response_body),
             )
+            capture = _redact_capture_payload(capture)
             after_dom = await _evaluate_row(runner, DOM_SNAPSHOT_EXPR)
             interaction_captures.append({
                 "trigger_label": target.get("matched") if target.get("reason") == "label" else target.get("text"),

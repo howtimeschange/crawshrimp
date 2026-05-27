@@ -74,13 +74,13 @@ class FakeRunner:
             "ok": True,
             "mode": "passive",
             "matches": [{
-                "url": "https://example.com/api/items?page=1&limit=20",
+                "url": "https://example.com/api/items?page=1&limit=20&token=secret-token",
                 "method": "GET",
                 "status": 200,
                 "mimeType": "application/json",
                 "headers": {"Cookie": "sid=abc"},
                 "responseHeaders": {"content-type": "application/json"},
-                "body": json.dumps({"data": {"items": [{"title": "Item A", "url": "/a", "author": "shop"}]}}),
+                "body": json.dumps({"data": {"items": [{"title": "Item A", "url": "/a", "author": "shop"}]}, "accessToken": "secret"}),
             }],
         }
 
@@ -94,7 +94,8 @@ class FakeRunner:
                 "status": 200,
                 "mimeType": "application/json",
                 "headers": {"Cookie": "sid=abc"},
-                "responseHeaders": {"content-type": "application/json"},
+                "responseHeaders": {"content-type": "application/json", "Set-Cookie": "sid=def"},
+                "postData": json.dumps({"password": "secret", "page": 1}),
                 "body": json.dumps({"result": {"fileUrl": "https://example.com/file.xlsx"}}),
             }],
         }
@@ -143,6 +144,15 @@ class ProbeServiceTests(unittest.IsolatedAsyncioTestCase):
                     recommendations = json.loads((bundle_dir / "recommendations.json").read_text(encoding="utf-8"))
                     self.assertIn("trigger_export", recommendations["phase_candidates"])
                     self.assertIn("capture_click_requests", recommendations["runtime_actions"])
+
+                    network = json.loads((bundle_dir / "network.json").read_text(encoding="utf-8"))
+                    passive = network["passive_capture"]["matches"][0]
+                    self.assertIn("token=%5BREDACTED%5D", passive["url"])
+                    self.assertEqual(passive["headers"]["Cookie"], "[REDACTED]")
+                    self.assertEqual(json.loads(passive["body"])["accessToken"], "[REDACTED]")
+                    clicked = network["interaction_captures"][0]["capture"]["matches"][0]
+                    self.assertEqual(clicked["responseHeaders"]["Set-Cookie"], "[REDACTED]")
+                    self.assertEqual(json.loads(clicked["postData"])["password"], "[REDACTED]")
 
     async def test_probe_api_route_returns_bundle_summary(self):
         with tempfile.TemporaryDirectory() as tmpdir:

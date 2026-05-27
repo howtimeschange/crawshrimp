@@ -178,6 +178,7 @@ test('zara helper aggregates SKU width, price bands, and rule-based style by pro
     site_scope: 'us',
     section_scope: 'woman',
     include_homepage_banners: false,
+    include_promotion_discount: false,
     max_new_categories: 1,
     request_delay_ms: 0,
   }, async url => {
@@ -245,4 +246,42 @@ test('zara helper emits homepage theme and promotion discount rows', async () =>
   assert.equal(bannerRows[1]['Banner 类型'], '促销折扣')
   assert.equal(bannerRows[1]['促销折扣'], '-30% 至 -40%')
   assert.equal(bannerRows[1]['价格带'], '$34.93 - $35.94')
+})
+
+test('zara helper can collect promotion discounts when homepage themes are disabled', async () => {
+  const helpers = await loadExports()
+  const promoProducts = productPayload([
+    {
+      id: 20,
+      reference: 'promo-only',
+      type: 'Product',
+      kind: 'Wear',
+      name: 'SPECIAL PRICE TOP',
+      price: 2495,
+      oldPrice: 4990,
+      displayDiscountPercentage: 50,
+      familyName: 'BLUSA',
+    },
+  ])
+
+  const rows = await helpers.collectResearchRows({
+    site_scope: 'us',
+    section_scope: 'woman',
+    include_homepage_banners: false,
+    include_promotion_discount: true,
+    max_new_categories: 1,
+    max_promo_categories: 1,
+    request_delay_ms: 0,
+  }, async url => {
+    if (url.includes('/categories?ajax=true')) return categoriesFixture()
+    if (url.includes('/category/111/products')) return productPayload([])
+    if (url.includes('/category/120/products')) return promoProducts
+    if (url.includes('/category/121/products')) return promoProducts
+    throw new Error(`unexpected URL ${url}`)
+  })
+
+  const bannerRows = rows.filter(row => row.__sheet_name === helpers.BANNER_SHEET)
+  assert.equal(bannerRows.length, 1)
+  assert.equal(bannerRows[0]['Banner 类型'], '促销折扣')
+  assert.equal(bannerRows[0]['促销折扣'], '-50%')
 })

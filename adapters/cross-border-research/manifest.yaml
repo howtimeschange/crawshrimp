@@ -97,16 +97,26 @@ tasks:
             label: 童装
         hint: 按 Zara 菜单频道识别 New Arrivals / NOVIDADES / THE NEW 上新入口。
       - id: include_homepage_banners
-        type: checkbox
+        type: radio
         label: 汇总首页/导航主推主题
-        default: true
+        default: "true"
         ui_span: half
+        options:
+          - value: "true"
+            label: 开启
+          - value: "false"
+            label: 关闭
         hint: 从 Zara 官方类目树中提取上新主题和 Special Prices 促销入口，作为首页/导航主推线索。
       - id: include_promotion_discount
-        type: checkbox
+        type: radio
         label: 抓取促销折扣
-        default: true
+        default: "true"
         ui_span: half
+        options:
+          - value: "true"
+            label: 开启
+          - value: "false"
+            label: 关闭
         hint: 对 Special Prices / SALE 入口抽取商品折扣区间和促销价格带。
       - id: max_new_categories
         type: number

@@ -147,7 +147,7 @@ test('batch edit rows overlay provided cells and keep blank cells from online de
     案例ID: '2058913263735545856',
     使用链接: 'https://ai.semir.com/console/studio/new',
     下载链接: '',
-    现工时: '0',
+    现工时: '0.25',
   }], {
     catalogs: catalogs(),
     apiClient: client,
@@ -159,12 +159,27 @@ test('batch edit rows overlay provided cells and keep blank cells from online de
   assert.equal(job.caseId, '2058913263735545856')
   assert.equal(job.useLink, 'https://ai.semir.com/console/studio/new')
   assert.equal(job.downloadLink, 'https://cdn.example/app.zip')
-  assert.equal(job.currentHours, 0)
+  assert.equal(job.currentHours, 0.25)
   assert.deepEqual(plain(job.developerIds), ['xingyicheng'])
   assert.deepEqual(plain(job.skillIds), ['2058752504616763394'])
   assert.ok(job.changedFields.includes('使用链接'))
   assert.ok(job.changedFields.includes('提效指标'))
   assert.equal(job.changedFields.includes('下载链接'), false)
+})
+
+test('batch edit rejects zero current hours for efficiency cases', async () => {
+  const helpers = await loadExports()
+  const parsed = await helpers.normalizeEditRows([{
+    案例ID: '2058913263735545856',
+    现工时: '0',
+  }], {
+    catalogs: catalogs(),
+    apiClient: apiClient(),
+  })
+
+  assert.equal(parsed.jobs.length, 0)
+  assert.equal(parsed.invalidRows.length, 1)
+  assert.match(parsed.invalidRows[0].备注, /现工时必须大于 0/)
 })
 
 test('clear token clears optional files and links during edit normalization', async () => {

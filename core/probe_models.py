@@ -18,7 +18,7 @@ class ProbeRequest(BaseModel):
     safe_click_labels: list[str] = Field(default_factory=list)
     safe_click_selectors: list[str] = Field(default_factory=list)
     safe_click_limit: int = 3
-    capture_response_body: bool = True
+    capture_response_body: bool = False
     network_timeout_ms: int = 5000
     settle_ms: int = 800
     materialize_note: bool = True

@@ -100,6 +100,19 @@ class AdapterLoaderTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "ZIP 安装暂不支持 link"):
                 adapter_loader.install_from_zip(str(zip_path), install_mode="link")
 
+    def test_install_from_zip_rejects_zip_slip_paths(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            zip_path = Path(self.tmpdir.name) / "evil.zip"
+            import zipfile
+
+            with zipfile.ZipFile(zip_path, "w") as zf:
+                zf.writestr("../evil.txt", "bad")
+
+            with self.assertRaisesRegex(ValueError, "不安全路径"):
+                adapter_loader.install_from_zip(str(zip_path), install_mode="copy")
+
+            self.assertFalse((Path(self.tmpdir.name) / "evil.txt").exists())
+
     def test_preserve_existing_link_skips_copy_overwrite(self):
         with unittest.mock.patch.dict(os.environ, self.env, clear=False):
             src_root = Path(self.tmpdir.name) / "src"
@@ -214,6 +227,49 @@ class AdapterLoaderTests(unittest.TestCase):
                 manifests = adapter_loader.scan_all()
 
             self.assertEqual([manifest.id for manifest in manifests], ["good-adapter"])
+
+    def test_install_from_dir_rejects_adapter_id_path_traversal(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            src_root = Path(self.tmpdir.name) / "src"
+            adapter_dir = src_root / "evil-adapter"
+            adapter_dir.mkdir(parents=True, exist_ok=True)
+            (adapter_dir / "manifest.yaml").write_text(
+                "\n".join([
+                    "id: ../evil",
+                    "name: Evil Adapter",
+                    "version: 1.0.0",
+                    "entry_url: https://example.com/app",
+                    "tasks:",
+                    "  - id: demo_task",
+                    "    name: Demo Task",
+                    "    script: demo.js",
+                    "    trigger:",
+                    "      type: manual",
+                ]),
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ValueError):
+                adapter_loader.install_from_dir(str(adapter_dir), install_mode="copy")
+
+            self.assertFalse((Path(self.tmpdir.name) / "evil").exists())
+
+    def test_resolve_adapter_relative_file_rejects_escape(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_dir = Path(tmpdir) / "adapter"
+            adapter_dir.mkdir(parents=True)
+            (adapter_dir / "safe.js").write_text("ok", encoding="utf-8")
+            outside = Path(tmpdir) / "outside.js"
+            outside.write_text("bad", encoding="utf-8")
+
+            resolved = adapter_loader.resolve_adapter_relative_file(adapter_dir, "safe.js")
+            self.assertEqual(resolved, (adapter_dir / "safe.js").resolve())
+
+            with self.assertRaises(ValueError):
+                adapter_loader.resolve_adapter_relative_file(adapter_dir, "../outside.js")
+
+            with self.assertRaises(ValueError):
+                adapter_loader.resolve_adapter_relative_file(adapter_dir, str(outside))
 
 
 if __name__ == "__main__":

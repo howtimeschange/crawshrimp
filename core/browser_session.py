@@ -142,8 +142,11 @@ async def open_browser_session(
     )
 
     if not task.skip_auth and adapter.auth and adapter.auth.check_script:
-        auth_path = Path(adapter_dir) / str(adapter.auth.check_script)
-        if auth_path.exists():
+        try:
+            auth_path = adapter_loader.resolve_adapter_file(adapter_id, str(adapter.auth.check_script))
+        except FileNotFoundError:
+            auth_path = None
+        if auth_path:
             auth_result = await runner.evaluate(auth_path.read_text(encoding="utf-8"))
             if not _is_logged_in(auth_result):
                 raise RuntimeError(f"当前页面未登录 {adapter.name or adapter_id}，请先登录后再运行 probe。")

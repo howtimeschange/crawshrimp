@@ -1,5 +1,11 @@
 node_modules/
 dist/
+.codex-build/
+.vite/
+tmp/
+outputs/
+memory-bank/
+adapters/*/delivery/
 app/.builder-bin/
 app/python-dist/
 python/bundle/
@@ -7,6 +13,7 @@ python-vendor/
 *.pyc
 __pycache__/
 .DS_Store
+*.pid
 ~/.crawshrimp/
 data/
 logs/

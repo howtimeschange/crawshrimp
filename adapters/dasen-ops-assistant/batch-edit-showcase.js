@@ -676,7 +676,7 @@
     errors.push(...valueTypes.errors)
     if (valueTypes.values.includes('提效')) {
       if (!(originalHours > 0)) errors.push('选择“提效”时原工时必须大于 0')
-      if (currentHours == null || currentHours < 0) errors.push('选择“提效”时现工时必须大于等于 0')
+      if (!(currentHours > 0)) errors.push('选择“提效”时现工时必须大于 0')
       if (originalHours > 0 && currentHours > originalHours) errors.push('现工时不能大于原工时')
     }
     if (valueTypes.values.includes('增收') && !(revenueAmount > 0)) errors.push('选择“增收”时增收金额必须大于 0')

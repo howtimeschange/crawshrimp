@@ -1,4 +1,5 @@
 import unittest
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -48,13 +49,32 @@ class FakeRunner:
         })()
 
     async def capture_passive_requests(self, **kwargs):
-        return {"mode": "passive", "matches": [{"url": "https://example.com/api"}]}
+        return {
+            "mode": "passive",
+            "include_response_body": kwargs.get("include_response_body"),
+            "matches": [{"url": "https://example.com/api"}],
+        }
 
     async def capture_click_requests(self, clicks, **kwargs):
-        return {"mode": "click", "clicks": clicks, "matches": [{"url": "https://example.com/api/export"}]}
+        return {
+            "mode": "click",
+            "clicks": clicks,
+            "include_response_body": kwargs.get("include_response_body"),
+            "matches": [{
+                "url": "https://example.com/api/export?token=secret",
+                "headers": {"Cookie": "sid=abc"},
+                "postData": json.dumps({"password": "secret", "page": 1}),
+                "body": json.dumps({"accessToken": "secret", "items": []}),
+            }],
+        }
 
     async def capture_url_requests(self, url, **kwargs):
-        return {"mode": "url", "url": url, "matches": [{"url": url}]}
+        return {
+            "mode": "url",
+            "url": url,
+            "include_response_body": kwargs.get("include_response_body"),
+            "matches": [{"url": url}],
+        }
 
 
 class FakeSession:
@@ -103,6 +123,25 @@ class DevHarnessTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["capture"]["mode"], "click")
         self.assertEqual(payload["capture"]["clicks"][0]["x"], 120)
+        self.assertEqual(payload["capture"]["include_response_body"], False)
+
+    async def test_capture_redacts_sensitive_network_values_when_body_capture_is_enabled(self):
+        with patch("core.dev_harness.open_browser_session", return_value=FakeSession()):
+            payload = await run_harness_capture(
+                DevHarnessCaptureRequest(
+                    adapter_id="demo",
+                    task_id="task",
+                    capture_mode="click",
+                    clicks=[{"x": 120, "y": 240}],
+                    include_response_body=True,
+                )
+            )
+
+        match = payload["capture"]["matches"][0]
+        self.assertIn("token=%5BREDACTED%5D", match["url"])
+        self.assertEqual(match["headers"]["Cookie"], "[REDACTED]")
+        self.assertEqual(json.loads(match["postData"])["password"], "[REDACTED]")
+        self.assertEqual(json.loads(match["body"])["accessToken"], "[REDACTED]")
 
 
 if __name__ == "__main__":

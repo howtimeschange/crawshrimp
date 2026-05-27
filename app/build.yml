@@ -55,6 +55,12 @@ extraResources:
     to: python-scripts/core
   - from: "../adapters"
     to: python-scripts/adapters
+    filter:
+      - "**/*"
+      - "!**/delivery/**"
+      - "!**/notes/**"
+      - "!**/.DS_Store"
+      - "!**/*.zip"
   # Python interpreter (downloaded by scripts/download-python.sh)
   # Actual copy happens in afterPack hook
 

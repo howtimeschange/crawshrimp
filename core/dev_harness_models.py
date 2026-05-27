@@ -34,4 +34,4 @@ class DevHarnessCaptureRequest(DevHarnessSessionRequest):
     timeout_ms: int = 8000
     settle_ms: int = 1000
     min_matches: int = 1
-    include_response_body: bool = True
+    include_response_body: bool = False

@@ -640,7 +640,7 @@ class JSRunner:
         timeout_ms: int = 8000,
         settle_ms: int = 1000,
         min_matches: int = 1,
-        include_response_body: bool = True,
+        include_response_body: bool = False,
     ) -> dict:
         requests_by_id: dict[str, dict] = {}
         captured_request_ids: set[str] = set()
@@ -813,7 +813,7 @@ class JSRunner:
         timeout_ms: int = 8000,
         settle_ms: int = 1000,
         min_matches: int = 1,
-        include_response_body: bool = True,
+        include_response_body: bool = False,
     ) -> dict:
         try:
             await self._refresh_ws_url()
@@ -837,7 +837,7 @@ class JSRunner:
         matches: Optional[list[dict]] = None,
         timeout_ms: int = 5000,
         settle_ms: int = 800,
-        include_response_body: bool = True,
+        include_response_body: bool = False,
     ) -> dict:
         try:
             await self._refresh_ws_url()
@@ -862,7 +862,7 @@ class JSRunner:
         timeout_ms: int = 12000,
         settle_ms: int = 1000,
         min_matches: int = 1,
-        include_response_body: bool = True,
+        include_response_body: bool = False,
     ) -> dict:
         from core.cdp_bridge import get_bridge
 
@@ -2026,7 +2026,7 @@ class JSRunner:
                                 timeout_ms=timeout_ms,
                                 settle_ms=settle_ms,
                                 min_matches=min_matches,
-                                include_response_body=bool(meta.get("include_response_body", True)),
+                                include_response_body=bool(meta.get("include_response_body", False)),
                             )
                             if strict and not capture_result.get("ok"):
                                 raise RuntimeError(f"capture_click_requests 未捕获到匹配请求: {matches}")
@@ -2070,7 +2070,7 @@ class JSRunner:
                                 timeout_ms=timeout_ms,
                                 settle_ms=settle_ms,
                                 min_matches=min_matches,
-                                include_response_body=bool(meta.get("include_response_body", True)),
+                                include_response_body=bool(meta.get("include_response_body", False)),
                             )
                             if strict and not capture_result.get("ok"):
                                 raise RuntimeError(f"capture_url_requests 未捕获到匹配请求: {matches}")

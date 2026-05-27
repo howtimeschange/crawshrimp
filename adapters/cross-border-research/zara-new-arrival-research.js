@@ -624,7 +624,7 @@
         if (requestDelayMs > 0) await sleep(requestDelayMs)
       }
 
-      if (includeHomepageBanners && includePromotionDiscount) {
+      if (includePromotionDiscount) {
         const promoTargets = collectPromotionTargets(categoriesPayload, market, selectedSections, maxPromoCategories)
         for (const target of promoTargets) {
           const products = extractProducts(await fetchJsonImpl(target.productUrl))

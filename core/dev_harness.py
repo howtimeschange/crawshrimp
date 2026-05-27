@@ -10,7 +10,7 @@ from core.dev_harness_models import (
     DevHarnessSnapshotRequest,
 )
 from core.knowledge_service import search_knowledge
-from core.probe_service import DOM_SNAPSHOT_EXPR, FRAMEWORK_SNAPSHOT_EXPR, _evaluate_row
+from core.probe_service import DOM_SNAPSHOT_EXPR, FRAMEWORK_SNAPSHOT_EXPR, _evaluate_row, _redact_capture_payload
 
 
 async def run_harness_snapshot(req: DevHarnessSnapshotRequest) -> dict[str, Any]:
@@ -104,6 +104,7 @@ async def run_harness_capture(req: DevHarnessCaptureRequest) -> dict[str, Any]:
         )
     else:
         raise RuntimeError(f"不支持的 capture_mode: {req.capture_mode}")
+    result = _redact_capture_payload(result)
     return {
         "ok": True,
         "adapter_id": req.adapter_id,

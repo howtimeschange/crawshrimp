@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -22,6 +24,17 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_API = "http://127.0.0.1:18765"
+
+
+def _api_token() -> str:
+    env_token = str(os.environ.get("CRAWSHRIMP_API_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+    token_path = Path(os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))) / "api-token"
+    try:
+        return token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def _normalize_url(raw: str) -> str:
@@ -39,6 +52,9 @@ def _api_request(api_base: str, method: str, path: str, payload: dict[str, Any] 
     url = api_base.rstrip("/") + path
     data = None
     headers = {}
+    token = _api_token()
+    if token:
+        headers["X-Crawshrimp-Token"] = token
     if payload is not None:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -141,7 +157,7 @@ def run_command(args: argparse.Namespace) -> int:
         "safe_click_labels": args.safe_click_labels,
         "safe_click_selectors": args.safe_click_selectors,
         "safe_click_limit": args.safe_click_limit,
-        "capture_response_body": not args.no_response_body,
+        "capture_response_body": bool(args.response_body),
     }
     result = _api_request(args.api, "POST", "/probe/run", payload)
     if args.json:
@@ -184,7 +200,7 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--safe-click-labels", nargs="*", default=[], help="extra safe click labels")
     run.add_argument("--safe-click-selectors", nargs="*", default=[], help="extra safe click selectors")
     run.add_argument("--safe-click-limit", type=int, default=3, help="safe click target limit")
-    run.add_argument("--no-response-body", action="store_true", help="skip response body capture")
+    run.add_argument("--response-body", action="store_true", help="include response bodies in the probe bundle after redaction")
     run.add_argument("--json", action="store_true", help="print JSON response")
     run.set_defaults(func=run_command)
 

@@ -1,7 +1,18 @@
 """Pydantic 数据模型"""
+import re
 from typing import Any, Optional, List
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from enum import Enum
+
+
+SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+
+def _validate_slug(value: str, label: str) -> str:
+    normalized = str(value or "").strip()
+    if not SLUG_PATTERN.fullmatch(normalized):
+        raise ValueError(f"{label} must match {SLUG_PATTERN.pattern}")
+    return normalized
 
 
 class TriggerType(str, Enum):
@@ -116,6 +127,11 @@ class TaskDefinition(BaseModel):
     trigger: TaskTrigger = TaskTrigger()
     output: List[TaskOutput] = []
 
+    @field_validator("id")
+    @classmethod
+    def validate_task_id(cls, value: str) -> str:
+        return _validate_slug(value, "task id")
+
 
 class AdapterAuth(BaseModel):
     check_script: Optional[str] = None
@@ -133,6 +149,11 @@ class AdapterManifest(BaseModel):
     tab_match_prefixes: Optional[List[str]] = None  # 可选：current 模式下用于匹配已有标签页的 URL 前缀
     auth: Optional[AdapterAuth] = None
     tasks: List[TaskDefinition] = []
+
+    @field_validator("id")
+    @classmethod
+    def validate_adapter_id(cls, value: str) -> str:
+        return _validate_slug(value, "adapter id")
 
 
 class TaskStatus(str, Enum):

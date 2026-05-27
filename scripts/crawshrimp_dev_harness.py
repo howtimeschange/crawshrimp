@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,17 @@ from urllib.request import Request, urlopen
 
 
 DEFAULT_API = "http://127.0.0.1:18765"
+
+
+def _api_token() -> str:
+    env_token = str(os.environ.get("CRAWSHRIMP_API_TOKEN") or "").strip()
+    if env_token:
+        return env_token
+    token_path = Path(os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))) / "api-token"
+    try:
+        return token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
 
 
 def _normalize_url(raw: str) -> str:
@@ -35,6 +47,9 @@ def _normalize_url(raw: str) -> str:
 def _api_request(api_base: str, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     url = api_base.rstrip("/") + path
     headers: dict[str, str] = {}
+    token = _api_token()
+    if token:
+        headers["X-Crawshrimp-Token"] = token
     data = None
     if payload is not None:
         headers["Content-Type"] = "application/json"
@@ -175,7 +190,7 @@ def capture_command(args: argparse.Namespace) -> int:
         "timeout_ms": args.timeout_ms,
         "settle_ms": args.settle_ms,
         "min_matches": args.min_matches,
-        "include_response_body": not args.no_response_body,
+        "include_response_body": bool(args.response_body),
     }
     result = _api_request(args.api, "POST", "/dev-harness/capture", payload)
     _print_json(result)
@@ -217,7 +232,7 @@ def probe_command(args: argparse.Namespace) -> int:
         "safe_click_labels": args.safe_click_labels,
         "safe_click_selectors": args.safe_click_selectors,
         "safe_click_limit": args.safe_click_limit,
-        "capture_response_body": not args.no_response_body,
+        "capture_response_body": bool(args.response_body),
     }
     result = _api_request(args.api, "POST", "/probe/run", payload)
     _print_json(result if args.json else {
@@ -263,7 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     capture.add_argument("--timeout-ms", type=int, default=8000, help="capture timeout in ms")
     capture.add_argument("--settle-ms", type=int, default=1000, help="settle wait in ms")
     capture.add_argument("--min-matches", type=int, default=1, help="minimum expected matches")
-    capture.add_argument("--no-response-body", action="store_true", help="skip response body capture")
+    capture.add_argument("--response-body", action="store_true", help="include response bodies in captured network entries after redaction")
     capture.set_defaults(func=capture_command)
 
     knowledge = sub.add_parser("knowledge", help="Search generated adapter knowledge cards")
@@ -285,7 +300,7 @@ def build_parser() -> argparse.ArgumentParser:
     probe.add_argument("--safe-click-labels", nargs="*", default=[], help="extra safe click labels")
     probe.add_argument("--safe-click-selectors", nargs="*", default=[], help="extra safe click selectors")
     probe.add_argument("--safe-click-limit", type=int, default=3, help="safe click target limit")
-    probe.add_argument("--no-response-body", action="store_true", help="skip response body capture")
+    probe.add_argument("--response-body", action="store_true", help="include response bodies in the probe bundle after redaction")
     probe.add_argument("--json", action="store_true", help="print JSON response")
     probe.set_defaults(func=probe_command)
     return parser

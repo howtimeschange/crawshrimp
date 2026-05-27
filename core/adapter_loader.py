@@ -23,6 +23,8 @@ _adapter_dirs: Dict[str, Path] = {}
 _enabled: Dict[str, bool] = {}
 _install_meta: Dict[str, dict[str, Any]] = {}
 
+SCRIPT_SUFFIXES = (".js",)
+
 
 def _adapters_root() -> Path:
     base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
@@ -105,6 +107,57 @@ def _read_manifest_file(manifest_path: Path) -> AdapterManifest:
     with open(manifest_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
     return AdapterManifest(**data)
+
+
+def resolve_adapter_relative_file(
+    adapter_dir: Path,
+    relative_path: str,
+    *,
+    allowed_suffixes: tuple[str, ...] | None = None,
+    require_exists: bool = True,
+) -> Path:
+    raw_path = str(relative_path or "").strip()
+    if not raw_path or "\x00" in raw_path:
+        raise ValueError("adapter file path is empty or invalid")
+
+    normalized = Path(raw_path.replace("\\", "/"))
+    if normalized.is_absolute() or any(part == ".." for part in normalized.parts):
+        raise ValueError(f"adapter file path must stay inside adapter directory: {raw_path}")
+
+    base_dir = Path(adapter_dir).resolve()
+    candidate = (base_dir / normalized).resolve()
+    try:
+        candidate.relative_to(base_dir)
+    except ValueError as exc:
+        raise ValueError(f"adapter file path escapes adapter directory: {raw_path}") from exc
+
+    if allowed_suffixes:
+        allowed = tuple(item.lower() for item in allowed_suffixes)
+        if candidate.suffix.lower() not in allowed:
+            raise ValueError(f"adapter file path has unsupported suffix: {raw_path}")
+
+    if require_exists and (not candidate.exists() or not candidate.is_file()):
+        raise FileNotFoundError(f"adapter file not found: {raw_path}")
+
+    return candidate
+
+
+def resolve_adapter_file(
+    adapter_id: str,
+    relative_path: str,
+    *,
+    allowed_suffixes: tuple[str, ...] | None = SCRIPT_SUFFIXES,
+    require_exists: bool = True,
+) -> Path:
+    adapter_dir = get_adapter_dir(adapter_id)
+    if not adapter_dir:
+        raise FileNotFoundError(f"Adapter directory not found: {adapter_id}")
+    return resolve_adapter_relative_file(
+        adapter_dir,
+        relative_path,
+        allowed_suffixes=allowed_suffixes,
+        require_exists=require_exists,
+    )
 
 
 def _remove_installed_path(path: Path) -> None:
@@ -274,7 +327,17 @@ def install_from_zip(zip_path: str, install_mode: str = "copy") -> AdapterManife
         raise ValueError("ZIP 安装暂不支持 link 模式，请改为选择适配包目录")
     with tempfile.TemporaryDirectory() as tmpdir:
         with zipfile.ZipFile(zip_path) as zf:
-            zf.extractall(tmpdir)
+            root = Path(tmpdir).resolve()
+            for member in zf.infolist():
+                member_path = Path(member.filename.replace("\\", "/"))
+                if member_path.is_absolute() or any(part == ".." for part in member_path.parts):
+                    raise ValueError(f"zip 包包含不安全路径: {member.filename}")
+                target = (root / member_path).resolve()
+                try:
+                    target.relative_to(root)
+                except ValueError as exc:
+                    raise ValueError(f"zip 包包含不安全路径: {member.filename}") from exc
+                zf.extract(member, root)
         extracted = Path(tmpdir)
         subdirs = [d for d in extracted.iterdir() if d.is_dir()]
         if len(subdirs) == 1 and (subdirs[0] / "manifest.yaml").exists():

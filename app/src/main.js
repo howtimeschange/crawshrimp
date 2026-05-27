@@ -8,12 +8,14 @@ const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
 const crypto = require('crypto')
+const { fileURLToPath } = require('url')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
 const { startDesktopServices } = require('./startupServices')
 
 const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 const DEV_RENDERER_URL = process.env.CRAWSHRIMP_RENDERER_URL || 'http://127.0.0.1:5173'
+const API_TOKEN_HEADER = 'X-Crawshrimp-Token'
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
@@ -112,6 +114,35 @@ function getCrawshrimpDataDir() {
   return process.env.CRAWSHRIMP_DATA || path.join(app.getPath('home'), '.crawshrimp')
 }
 
+function getApiTokenPath() {
+  return path.join(getCrawshrimpDataDir(), 'api-token')
+}
+
+function getApiToken() {
+  const envToken = String(process.env.CRAWSHRIMP_API_TOKEN || '').trim()
+  if (envToken) return envToken
+
+  const tokenPath = getApiTokenPath()
+  try {
+    if (fs.existsSync(tokenPath)) {
+      const existing = fs.readFileSync(tokenPath, 'utf8').trim()
+      if (existing) {
+        process.env.CRAWSHRIMP_API_TOKEN = existing
+        return existing
+      }
+    }
+    fs.mkdirSync(path.dirname(tokenPath), { recursive: true })
+    const token = crypto.randomBytes(32).toString('hex')
+    fs.writeFileSync(tokenPath, token, 'utf8')
+    try { fs.chmodSync(tokenPath, 0o600) } catch (_) {}
+    process.env.CRAWSHRIMP_API_TOKEN = token
+    return token
+  } catch (error) {
+    log(`[api] failed to prepare API token: ${error.message}`)
+    return ''
+  }
+}
+
 function getDesktopLogPath() {
   return path.join(getCrawshrimpDataDir(), 'logs', 'desktop.log')
 }
@@ -177,9 +208,17 @@ function candidateAdapterTemplatePaths(adapterId = '', templateFile = '', templa
 }
 
 function resolveAdapterTemplatePath(adapterId = '', templateFile = '', templatePath = '') {
+  const adapterRootCandidates = [
+    path.join(getPythonScriptsDir(), 'adapters', String(adapterId || '')),
+    path.join(getCrawshrimpDataDir(), 'adapters', String(adapterId || '')),
+  ].map(p => path.resolve(p))
+
   for (const candidate of candidateAdapterTemplatePaths(adapterId, templateFile, templatePath)) {
     if (candidate && fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-      return candidate
+      const resolved = path.resolve(candidate)
+      if (adapterRootCandidates.some(root => resolved === root || resolved.startsWith(root + path.sep))) {
+        return resolved
+      }
     }
   }
   return ''
@@ -355,6 +394,60 @@ function renderPdfPreviewWithQuickLook(pdfPath) {
 // ── Window ────────────────────────────────────────────────────────────────────
 let mainWindow = null
 
+function getRendererIndexPath() {
+  return path.join(__dirname, '..', 'dist', 'renderer', 'index.html')
+}
+
+function isTrustedRendererUrl(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''))
+    if (IS_DEV) {
+      const devOrigin = new URL(DEV_RENDERER_URL).origin
+      return parsed.origin === devOrigin
+    }
+    if (parsed.protocol !== 'file:') return false
+    return path.resolve(fileURLToPath(parsed)) === path.resolve(getRendererIndexPath())
+  } catch {
+    return false
+  }
+}
+
+function guardRendererNavigation(win) {
+  win.webContents.on('will-navigate', (event, url) => {
+    if (isTrustedRendererUrl(url)) return
+    event.preventDefault()
+    log(`[security] blocked renderer navigation: ${url}`)
+  })
+
+  win.webContents.setWindowOpenHandler(({ url }) => {
+    try {
+      const parsed = new URL(String(url || ''))
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        shell.openExternal(parsed.toString())
+      }
+    } catch {}
+    return { action: 'deny' }
+  })
+}
+
+function assertTrustedSender(event) {
+  const senderUrl = event?.senderFrame?.url || event?.sender?.getURL?.() || ''
+  if (!isTrustedRendererUrl(senderUrl)) {
+    throw new Error(`Blocked IPC from untrusted renderer: ${senderUrl || 'unknown'}`)
+  }
+}
+
+function trustedIpcHandler(handler) {
+  return async (event, ...args) => {
+    assertTrustedSender(event)
+    return handler(event, ...args)
+  }
+}
+
+function secureHandle(channel, handler) {
+  ipcMain.handle(channel, trustedIpcHandler(handler))
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -369,13 +462,14 @@ function createWindow() {
       nodeIntegration: false,
     },
   })
+  guardRendererNavigation(mainWindow)
 
   if (IS_DEV) {
     // Vite dev server
     mainWindow.loadURL(DEV_RENDERER_URL)
     mainWindow.webContents.openDevTools({ mode: 'detach' })
   } else {
-    mainWindow.loadFile(path.join(__dirname, '..', 'dist', 'renderer', 'index.html'))
+    mainWindow.loadFile(getRendererIndexPath())
   }
 
   mainWindow.on('closed', () => { mainWindow = null })
@@ -401,6 +495,7 @@ function spawnBackendProcess() {
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
       CRAWSHRIMP_PORT: String(API_PORT),
+      CRAWSHRIMP_API_TOKEN: getApiToken(),
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: !IS_DEV
         ? path.join(process.resourcesPath, 'python-scripts')
@@ -651,6 +746,7 @@ function apiCall(method, urlPath, body = null, options = {}) {
       method,
       headers: {
         'Content-Type': 'application/json',
+        [API_TOKEN_HEADER]: getApiToken(),
         ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
       },
     }
@@ -802,7 +898,7 @@ app.on('window-all-closed', () => {
 
 // ── IPC handlers ──────────────────────────────────────────────────────────────
 
-ipcMain.handle('get-status', async () => ({
+secureHandle('get-status', async () => ({
   api:     await probeApiReady(),
   chrome:  (await probeChromeCdp()).ok,
   apiPort: API_PORT,
@@ -811,13 +907,13 @@ ipcMain.handle('get-status', async () => ({
   dev: IS_DEV,
 }))
 
-ipcMain.handle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
-ipcMain.handle('check-chrome', async () => ({ ok: (await probeChromeCdp()).ok }))
+secureHandle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
+secureHandle('check-chrome', async () => ({ ok: (await probeChromeCdp()).ok }))
 
-ipcMain.handle('get-chrome-tabs', async () => {
+secureHandle('get-chrome-tabs', async () => {
   try { return await apiCall('GET', '/settings/chrome-tabs') } catch { return [] }
 })
-ipcMain.handle('get-current-chrome-tab', async () => {
+secureHandle('get-current-chrome-tab', async () => {
   try {
     return await resolveCurrentChromeTab()
   } catch {
@@ -825,12 +921,12 @@ ipcMain.handle('get-current-chrome-tab', async () => {
   }
 })
 
-ipcMain.handle('get-adapters',     async () => apiCall('GET',    '/adapters'))
-ipcMain.handle('uninstall-adapter',async (_, id) => apiCall('DELETE', `/adapters/${id}`))
-ipcMain.handle('enable-adapter',   async (_, id, enabled) =>
+secureHandle('get-adapters',     async () => apiCall('GET',    '/adapters'))
+secureHandle('uninstall-adapter',async (_, id) => apiCall('DELETE', `/adapters/${id}`))
+secureHandle('enable-adapter',   async (_, id, enabled) =>
   apiCall('PATCH', `/adapters/${id}/enable`, { enabled }))
 
-ipcMain.handle('install-adapter', async (_, payload) => {
+secureHandle('install-adapter', async (_, payload) => {
   const installMode = payload?.install_mode || 'copy'
   if (payload.path) {
     return apiCall('POST', '/adapters/install', { path: payload.path, install_mode: installMode })
@@ -842,29 +938,29 @@ ipcMain.handle('install-adapter', async (_, payload) => {
   return { ok: false, error: 'No path or file provided' }
 })
 
-ipcMain.handle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
+secureHandle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
   retries: 20,
   retryDelayMs: 500,
 }))
-ipcMain.handle('probe-task-params', async (_, aid, tid, params, options) =>
+secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},
     current_tab_id: options?.current_tab_id || '',
   }))
-ipcMain.handle('run-task', async (_, aid, tid, params, options) =>
+secureHandle('run-task', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/run`, {
     params: params || {},
     current_tab_id: options?.current_tab_id || '',
   }))
-ipcMain.handle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
-ipcMain.handle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
-ipcMain.handle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
-ipcMain.handle('get-task-status', async (_, aid, tid) => apiCall('GET', `/tasks/${aid}/${tid}/status`))
-ipcMain.handle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
-ipcMain.handle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
+secureHandle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
+secureHandle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
+secureHandle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
+secureHandle('get-task-status', async (_, aid, tid) => apiCall('GET', `/tasks/${aid}/${tid}/status`))
+secureHandle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
+secureHandle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
 
-ipcMain.handle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
-ipcMain.handle('export-data', async (_, aid, tid, fmt) => {
+secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
+secureHandle('export-data', async (_, aid, tid, fmt) => {
   try {
     const res = await apiCall('GET', `/data/${aid}/${tid}/export?format=${fmt}`)
     return { ok: true, result: res }
@@ -873,15 +969,15 @@ ipcMain.handle('export-data', async (_, aid, tid, fmt) => {
   }
 })
 
-ipcMain.handle('open-file', async (_, filePath) => {
+secureHandle('open-file', async (_, filePath) => {
   shell.openPath(filePath)
   return { ok: true }
 })
 
-ipcMain.handle('get-settings',  async () => apiCall('GET', '/settings'))
-ipcMain.handle('save-settings', async (_, cfg) => apiCall('PUT', '/settings', cfg))
+secureHandle('get-settings',  async () => apiCall('GET', '/settings'))
+secureHandle('save-settings', async (_, cfg) => apiCall('PUT', '/settings', cfg))
 
-ipcMain.handle('stat-file', async (_, filePath) => {
+secureHandle('stat-file', async (_, filePath) => {
   try {
     const stat = fs.statSync(filePath)
     return {
@@ -894,23 +990,23 @@ ipcMain.handle('stat-file', async (_, filePath) => {
   } catch { return null }
 })
 
-ipcMain.handle('reveal-file', async (_, filePath) => {
+secureHandle('reveal-file', async (_, filePath) => {
   shell.showItemInFolder(filePath)
   return { ok: true }
 })
 
-ipcMain.handle('delete-file', async (_, filePath) => {
+secureHandle('delete-file', async (_, filePath) => {
   return apiCall('POST', '/files/delete', { paths: [filePath] })
 })
 
-ipcMain.handle('delete-files', async (_, filePaths) => {
+secureHandle('delete-files', async (_, filePaths) => {
   const paths = Array.isArray(filePaths) ? filePaths : [filePaths]
   return apiCall('POST', '/files/delete', {
     paths: paths.filter(Boolean),
   })
 })
 
-ipcMain.handle('sync-odps-files', async (_, payload) => {
+secureHandle('sync-odps-files', async (_, payload) => {
   return apiCall('POST', '/data-sync/odps', {
     adapter_id: payload?.adapter_id || '',
     task_id: payload?.task_id || '',
@@ -920,7 +1016,7 @@ ipcMain.handle('sync-odps-files', async (_, payload) => {
   })
 })
 
-ipcMain.handle('save-as-file', async (_, srcPath) => {
+secureHandle('save-as-file', async (_, srcPath) => {
   const resolvedSrcPath = resolveExistingFilePath(srcPath)
   if (!resolvedSrcPath) {
     throw new Error(`源文件不存在：${srcPath}`)
@@ -932,7 +1028,7 @@ ipcMain.handle('save-as-file', async (_, srcPath) => {
   }
 })
 
-ipcMain.handle('save-adapter-template', async (_, adapterId, templateFile, templatePath = '') => {
+secureHandle('save-adapter-template', async (_, adapterId, templateFile, templatePath = '') => {
   const resolvedSrcPath = resolveAdapterTemplatePath(adapterId, templateFile, templatePath)
   if (!resolvedSrcPath) {
     throw new Error(`模板文件不存在：${templateFile || templatePath}`)
@@ -944,7 +1040,7 @@ ipcMain.handle('save-adapter-template', async (_, adapterId, templateFile, templ
   }
 })
 
-ipcMain.handle('browse-file', async (_, opts = {}) => {
+secureHandle('browse-file', async (_, opts = {}) => {
   const props = opts.directory ? ['openDirectory'] : ['openFile']
   if (opts.multi && !opts.directory) props.push('multiSelections')
   const filters = opts.filters || (opts.excel
@@ -965,7 +1061,7 @@ ipcMain.handle('browse-file', async (_, opts = {}) => {
   return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
 })
 
-ipcMain.handle('render-pdf-preview', async (_, filePath) => {
+secureHandle('render-pdf-preview', async (_, filePath) => {
   try {
     return renderPdfPreviewWithQuickLook(String(filePath || ''))
   } catch (error) {
@@ -973,7 +1069,7 @@ ipcMain.handle('render-pdf-preview', async (_, filePath) => {
   }
 })
 
-ipcMain.handle('read-excel', async (_, filePath) => {
+secureHandle('read-excel', async (_, filePath) => {
   try {
     return await apiCall('POST', '/files/read-excel', { path: filePath })
   } catch (e) {
@@ -981,7 +1077,7 @@ ipcMain.handle('read-excel', async (_, filePath) => {
   }
 })
 
-ipcMain.handle('test-notify', async (_, channel) => {
+secureHandle('test-notify', async (_, channel) => {
   try {
     return await apiCall('POST', '/settings/test-notify', { channel })
   } catch (e) {
