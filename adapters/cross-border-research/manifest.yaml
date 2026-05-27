@@ -1,0 +1,181 @@
+id: cross-border-research
+name: 跨境调研
+version: 0.2.0
+author: codex
+description: "跨境站点类目调研工具，支持按站点品类汇总 SKC/SKU 宽度、价格带和促销线索"
+entry_url: https://www.lojasrenner.com.br/
+tab_match_prefixes:
+  - https://www.lojasrenner.com.br/
+  - https://www.zara.com/
+
+tasks:
+  - id: renner_kids_category_research
+    name: Renner 儿童鞋服类目调研
+    description: 抓取巴西 Renner 儿童站点鞋服子类目，汇总品类、SKC 数量和价格带并导出 Excel
+    script: renner-kids-category-research.js
+    entry_url: https://www.lojasrenner.com.br/c/infantil/-/N-10xdweq?s_icid=230228_MENU_INF_GERAL
+    tab_match_prefixes:
+      - https://www.lojasrenner.com.br/
+    skip_auth: true
+    params:
+      - id: category_url
+        type: text
+        label: 调研页面 URL
+        required: true
+        default: "https://www.lojasrenner.com.br/c/infantil/-/N-10xdweq?s_icid=230228_MENU_INF_GERAL"
+        hint: 默认抓取 Renner 巴西站 Infantil 儿童入口；可替换为同站点其他类目页。
+      - id: category_config
+        type: textarea
+        label: 品类配置（可选）
+        rows: 6
+        required: false
+        placeholder: "一行一个品类；支持：中文名=站点品类名、中文名=URL、站点品类名。留空则使用默认儿童鞋服品类。"
+        hint: 例如：裙子=Vestido；裤子=Calça；儿童鞋=https://www.lojasrenner.com.br/c/infantil/calcados-infantis/-/N-o4g07s
+      - id: max_categories
+        type: number
+        label: 最多抓取品类数
+        default: 30
+        min: 1
+        max: 100
+        step: 1
+        ui_span: half
+        hint: 防止配置过宽导致站点请求过多；默认足够覆盖 Renner 儿童鞋服类目。
+      - id: request_delay_ms
+        type: number
+        label: 品类间隔(ms)
+        default: 250
+        min: 0
+        max: 10000
+        step: 50
+        ui_span: half
+        hint: 每个品类完成后短暂停顿，降低站点压力。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "跨境调研_Renner儿童鞋服类目_{timestamp}.xlsx"
+        columns:
+          - 品类
+          - SKC 数量
+          - 价格带
+  - id: zara_new_arrival_research
+    name: Zara 美国/巴西上新与促销调研
+    description: 抓取 Zara 美国站、巴西站的 New Arrivals 上新宽度、品类价格带，并汇总首页/导航主推上新主题与 Special Prices 促销折扣
+    script: zara-new-arrival-research.js
+    entry_url: https://www.zara.com/us/en/
+    tab_match_prefixes:
+      - https://www.zara.com/
+    skip_auth: true
+    params:
+      - id: site_scope
+        type: select
+        label: 调研站点
+        default: all
+        required: true
+        options:
+          - value: all
+            label: 美国站 + 巴西站
+          - value: us
+            label: 美国站
+          - value: br
+            label: 巴西站
+        hint: 默认同时抓取 Zara 美国站和巴西站官方类目/商品接口。
+      - id: section_scope
+        type: select
+        label: 调研频道
+        default: all
+        required: true
+        ui_span: half
+        options:
+          - value: all
+            label: 女装 + 男装 + 童装
+          - value: woman
+            label: 女装
+          - value: man
+            label: 男装
+          - value: kid
+            label: 童装
+        hint: 按 Zara 菜单频道识别 New Arrivals / NOVIDADES / THE NEW 上新入口。
+      - id: include_homepage_banners
+        type: checkbox
+        label: 汇总首页/导航主推主题
+        default: true
+        ui_span: half
+        hint: 从 Zara 官方类目树中提取上新主题和 Special Prices 促销入口，作为首页/导航主推线索。
+      - id: include_promotion_discount
+        type: checkbox
+        label: 抓取促销折扣
+        default: true
+        ui_span: half
+        hint: 对 Special Prices / SALE 入口抽取商品折扣区间和促销价格带。
+      - id: max_new_categories
+        type: number
+        label: 每频道最多上新入口数
+        default: 12
+        min: 1
+        max: 80
+        step: 1
+        ui_span: half
+        hint: 控制每个站点、每个频道在 New Arrivals 下展开的商品入口数量，默认覆盖美国/巴西女装、男装、童装上新入口。
+      - id: max_promo_categories
+        type: number
+        label: 每频道最多促销入口数
+        default: 6
+        min: 1
+        max: 40
+        step: 1
+        ui_span: half
+        hint: 控制每个站点、每个频道在 Special Prices / SALE 下展开的抓取数量。
+      - id: request_delay_ms
+        type: number
+        label: 请求间隔(ms)
+        default: 200
+        min: 0
+        max: 10000
+        step: 50
+        ui_span: half
+        hint: 每个商品入口完成后短暂停顿，降低站点压力。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "跨境调研_Zara美国巴西上新促销_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 站点
+          - 频道
+          - 上新入口
+          - 品类
+          - SKU 宽度
+          - 价格带
+          - 代表商品
+          - 产品风格
+          - 风格证据
+          - Banner 类型
+          - 上新主体
+          - 促销折扣
+          - 来源 URL
+          - 证据
+        sheets:
+          - name: 上新SKU宽度
+            columns:
+              - 站点
+              - 频道
+              - 上新入口
+              - 品类
+              - SKU 宽度
+              - 价格带
+              - 代表商品
+              - 产品风格
+              - 风格证据
+              - 来源 URL
+          - name: 首页主推与促销
+            columns:
+              - 站点
+              - 频道
+              - Banner 类型
+              - 上新主体
+              - 促销折扣
+              - 价格带
+              - 来源 URL
+              - 证据
