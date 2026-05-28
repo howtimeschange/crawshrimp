@@ -146,6 +146,42 @@ test('ensureReady stops a timed-out backend process before retrying launch', asy
   assert.deepEqual(stopped, [1001])
 })
 
+test('ensureReady does not stop a previously ready backend during transient probe timeouts', async () => {
+  let startCount = 0
+  let transientFailure = false
+  const stopped = []
+
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => startCount > 0 && !transientFailure,
+    startProcess: () => {
+      startCount += 1
+      const proc = new EventEmitter()
+      proc.pid = 2000 + startCount
+      return proc
+    },
+    stopProcess: (proc) => stopped.push(proc.pid),
+    intervalMs: 1,
+    attempts: 2,
+  })
+
+  await controller.ensureReady()
+
+  transientFailure = true
+  await assert.rejects(
+    controller.ensureReady(),
+    /API server startup timeout/
+  )
+  await assert.rejects(
+    controller.ensureReady(),
+    /API server startup timeout/
+  )
+
+  assert.equal(startCount, 1)
+  assert.deepEqual(stopped, [])
+})
+
 test('runWhenReady retries the operation after a retryable connection error', async () => {
   let probeCount = 0
   let operationCount = 0

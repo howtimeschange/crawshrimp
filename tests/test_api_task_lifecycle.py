@@ -1,11 +1,13 @@
 import asyncio
 import sys
+import threading
 import unittest
 from pathlib import Path
 import tempfile
 from unittest.mock import AsyncMock, patch
 
 from core import adapter_loader, api_server
+from core.models import OutputType
 
 
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
@@ -461,6 +463,137 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_logs.update(original_logs)
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
+
+    async def test_execute_task_runs_export_and_packaging_off_event_loop_thread(self):
+        class FakeBridge:
+            def get_tabs(self):
+                return []
+
+            def new_tab(self, url):
+                return {"id": "tab-1", "url": url, "webSocketDebuggerUrl": "ws://example.invalid"}
+
+            def find_tab(self, url):
+                return {"id": "tab-1", "url": url, "webSocketDebuggerUrl": "ws://example.invalid"}
+
+            def get_tab_ws_url(self, tab):
+                return "ws://example.invalid"
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return [{"输入款号": "208226103201", "下载结果": "已跳过"}]
+
+        class FakeTask:
+            id = "prepare_upload_package"
+            name = "整理深绘上新图包"
+            description = ""
+            entry_url = "https://fmp.semirapp.com/web/index#/home/file"
+            tab_match_prefixes = []
+            output = [
+                type(
+                    "Output",
+                    (),
+                    {
+                        "type": OutputType.excel,
+                        "filename": "summary.xlsx",
+                        "columns": None,
+                        "column_groups": None,
+                        "sheet_key": None,
+                        "sheets": None,
+                    },
+                )()
+            ]
+            script = "prepare-upload-package.js"
+            skip_auth = True
+            params = []
+
+        class FakeAdapter:
+            id = "shenhui-new-arrival"
+            name = "深绘上新助手"
+            entry_url = "https://fmp.semirapp.com/web/index#/home/file"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        main_thread_id = threading.get_ident()
+        observed_threads = []
+        finalize_statuses = []
+
+        def fake_export_excel(*args, **kwargs):
+            observed_threads.append(("export", threading.get_ident()))
+            return "/tmp/summary.xlsx"
+
+        def fake_finalize_outputs(*args, **kwargs):
+            observed_threads.append(("finalize", threading.get_ident()))
+            return ["/tmp/summary.xlsx"]
+
+        run_control = api_server._build_run_control()
+        run_control["task"] = asyncio.current_task()
+        jid = "shenhui-new-arrival::prepare_upload_package"
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_dir = Path(tmpdir)
+            script_path = adapter_dir / "prepare-upload-package.js"
+            script_path.write_text(
+                "({ success: true, data: [], meta: { has_more: false } })",
+                encoding="utf-8",
+            )
+
+            async def fake_run_script_file(script_path, params=None, control_hook=None):
+                shared = {
+                    "current_exec_no": 3,
+                    "total_rows": 3,
+                    "search_total_codes": 3,
+                    "search_completed_codes": 3,
+                    "current_buyer_id": "208226105201",
+                }
+                await control_hook({
+                    "kind": "before_download_urls",
+                    "phase": "collect_code",
+                    "shared": shared,
+                    "records": 0,
+                    "download_item_total": 274,
+                    "download_completed": 273,
+                    "download_success": 273,
+                    "download_failed": 0,
+                })
+                await control_hook({
+                    "kind": "before_phase",
+                    "phase": "finalize_all",
+                    "shared": shared,
+                    "records": 380,
+                })
+                finalize_statuses.append(dict(api_server._run_status.get(jid) or {}))
+                return [{"输入款号": "208226103201", "下载结果": "已跳过"}]
+
+            fake_runner = FakeRunner()
+            fake_runner.run_script_file = fake_run_script_file
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", return_value=fake_runner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=1001):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.data_sink.finish_run"):
+                                        with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                            with patch("core.api_server.data_sink.export_excel", side_effect=fake_export_excel):
+                                                with patch("core.api_server._finalize_shenhui_new_arrival_outputs", side_effect=fake_finalize_outputs):
+                                                    await api_server._execute_task(
+                                                        "shenhui-new-arrival",
+                                                        "prepare_upload_package",
+                                                        {},
+                                                        {},
+                                                        run_control=run_control,
+                                                    )
+
+        self.assertEqual([label for label, _ in observed_threads], ["export", "finalize"])
+        self.assertTrue(all(thread_id != main_thread_id for _, thread_id in observed_threads))
+        self.assertEqual(finalize_statuses[0]["phase"], "finalize_all")
+        self.assertEqual(finalize_statuses[0]["download_completed"], 274)
+        self.assertFalse(finalize_statuses[0]["download_active"])
 
 
 if __name__ == "__main__":

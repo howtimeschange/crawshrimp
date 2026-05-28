@@ -28,6 +28,29 @@ class _ChunkedResponse:
         return "https://example.com/final.jpg"
 
 
+class _SlowResponse:
+    def __init__(self, delay_seconds):
+        self._delay_seconds = delay_seconds
+        self._read_count = 0
+        self.headers = {"Content-Type": "image/jpeg", "Content-Length": "4"}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def read(self, size=-1):
+        self._read_count += 1
+        if self._read_count > 1:
+            return b""
+        time.sleep(self._delay_seconds)
+        return b"late"
+
+    def geturl(self):
+        return "https://example.com/slow.jpg"
+
+
 class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
     async def test_download_url_sync_streams_to_target_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -123,6 +146,26 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertTrue(result["ok"])
             self.assertEqual(seen_timeouts, [120])
+
+    async def test_download_urls_enforces_whole_attempt_timeout(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+
+            started_at = time.monotonic()
+            with patch("core.js_runner.urlopen", return_value=_SlowResponse(delay_seconds=1.1)):
+                result = await runner.download_urls(
+                    [{"url": "https://example.com/slow.jpg", "filename": "slow.jpg"}],
+                    concurrency=1,
+                    retry_attempts=1,
+                    timeout_seconds=1,
+                )
+            elapsed = time.monotonic() - started_at
+
+            self.assertFalse(result["ok"])
+            self.assertFalse(result["items"][0]["success"])
+            self.assertIn("超时", result["items"][0]["error"])
+            self.assertLess(elapsed, 1.5)
+            self.assertFalse((Path(tmpdir) / "slow.jpg.part").exists())
 
     async def test_download_urls_skips_existing_target_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:

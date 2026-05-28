@@ -40,6 +40,7 @@ function createBackendController(options) {
   let startupPromise = null
   let startupFailure = null
   let ready = false
+  let currentProcessWasReady = false
 
   function markNotReady() {
     ready = false
@@ -48,11 +49,13 @@ function createBackendController(options) {
 
   function rememberProcess(proc) {
     backendProcess = proc
+    currentProcessWasReady = false
 
     proc.once('error', (error) => {
       startupFailure = error
       log(`[api] process error: ${describeError(error)}`)
       if (backendProcess === proc) backendProcess = null
+      currentProcessWasReady = false
       markNotReady()
     })
 
@@ -61,6 +64,7 @@ function createBackendController(options) {
         startupFailure = new Error(describeProcessExit(proc, code))
       }
       if (backendProcess === proc) backendProcess = null
+      currentProcessWasReady = false
       markNotReady()
     })
   }
@@ -68,6 +72,7 @@ function createBackendController(options) {
   async function ensureReady() {
     if (await probeReady()) {
       ready = true
+      if (backendProcess) currentProcessWasReady = true
       startupFailure = null
       sendStatus('api', true)
       return
@@ -77,6 +82,7 @@ function createBackendController(options) {
 
     startupPromise = (async () => {
       for (let launchAttempt = 0; launchAttempt <= launchRetries; launchAttempt += 1) {
+        const hadReadyBackend = currentProcessWasReady && Boolean(backendProcess)
         startupFailure = null
         if (!backendProcess) {
           try {
@@ -90,6 +96,7 @@ function createBackendController(options) {
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           if (await probeReady()) {
             ready = true
+            if (backendProcess) currentProcessWasReady = true
             startupFailure = null
             sendStatus('api', true)
             return
@@ -103,9 +110,15 @@ function createBackendController(options) {
           startupFailure = new Error(tail ? `API server startup timeout: ${tail}` : 'API server startup timeout')
         }
 
+        if (hadReadyBackend) {
+          markNotReady()
+          throw startupFailure
+        }
+
         if (backendProcess) {
           const proc = backendProcess
           backendProcess = null
+          currentProcessWasReady = false
           stopProcess(proc)
           markNotReady()
         }
@@ -167,6 +180,7 @@ function createBackendController(options) {
     startupPromise = null
     startupFailure = null
     ready = false
+    currentProcessWasReady = false
     stopProcess(proc)
     sendStatus('api', false)
   }

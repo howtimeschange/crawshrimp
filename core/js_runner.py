@@ -5,6 +5,7 @@ JS 注入执行器
 import base64
 import asyncio
 import hashlib
+import inspect
 import json
 import logging
 import mimetypes
@@ -901,9 +902,11 @@ class JSRunner:
         timeout: int = 60,
         no_proxy: bool = False,
         progress_callback: Optional[Callable[[dict], None]] = None,
+        deadline: Optional[float] = None,
     ) -> dict:
         request = Request(url, headers=headers or {})
         partial_path = target_path.with_name(f"{target_path.name}.part")
+        deadline = time.monotonic() + max(timeout, 1) if deadline is None else deadline
 
         def cleanup_partial() -> None:
             try:
@@ -912,9 +915,14 @@ class JSRunner:
             except Exception:
                 logger.debug("Failed to clean partial url download %s", partial_path, exc_info=True)
 
+        def assert_deadline() -> None:
+            if time.monotonic() >= float(deadline or 0):
+                raise TimeoutError(f"下载超时: {url}（超过 {max(timeout, 1)}s）")
+
         try:
             opener = build_opener(ProxyHandler({})) if no_proxy else None
             open_url = opener.open if opener else urlopen
+            assert_deadline()
             with open_url(request, timeout=max(timeout, 1)) as response:
                 target_path.parent.mkdir(parents=True, exist_ok=True)
                 cleanup_partial()
@@ -926,6 +934,7 @@ class JSRunner:
                     except Exception:
                         total_bytes = 0
                     while True:
+                        assert_deadline()
                         chunk = response.read(1024 * 1024)
                         if not chunk:
                             break
@@ -937,6 +946,7 @@ class JSRunner:
                                 "bytes_delta": len(chunk),
                                 "bytes_total": total_bytes,
                             })
+                        assert_deadline()
                 partial_path.replace(target_path)
                 content_type = response.headers.get("Content-Type", "")
                 return {
@@ -967,6 +977,13 @@ class JSRunner:
                 "error": f"URL error: {e.reason}",
                 "path": str(target_path),
             }
+        except TimeoutError as e:
+            cleanup_partial()
+            return {
+                "success": False,
+                "error": str(e),
+                "path": str(target_path),
+            }
         except Exception as e:
             cleanup_partial()
             return {
@@ -974,6 +991,43 @@ class JSRunner:
                 "error": f"下载异常: {e}",
                 "path": str(target_path),
             }
+
+    async def _download_url_sync_with_deadline(
+        self,
+        url: str,
+        target_path: Path,
+        headers: dict[str, str],
+        timeout_seconds: int,
+        no_proxy: bool,
+        progress_callback: Optional[Callable[[dict], None]],
+    ) -> dict:
+        deadline = time.monotonic() + timeout_seconds
+
+        def run_download() -> dict:
+            try:
+                signature = inspect.signature(self._download_url_sync)
+            except (TypeError, ValueError):
+                signature = None
+            if signature and "deadline" in signature.parameters:
+                return self._download_url_sync(
+                    url,
+                    target_path,
+                    headers,
+                    timeout_seconds,
+                    no_proxy,
+                    progress_callback,
+                    deadline,
+                )
+            return self._download_url_sync(
+                url,
+                target_path,
+                headers,
+                timeout_seconds,
+                no_proxy,
+                progress_callback,
+            )
+
+        return await asyncio.to_thread(run_download)
 
     async def _download_via_browser_session(self, url: str, target_path: Path, timeout_ms: int = 15000) -> dict:
         from core.cdp_bridge import get_bridge
@@ -1473,8 +1527,7 @@ class JSRunner:
                         timeout_ms=timeout_seconds * 1000,
                     )
                 else:
-                    result = await asyncio.to_thread(
-                        self._download_url_sync,
+                    result = await self._download_url_sync_with_deadline(
                         url,
                         target_path,
                         headers,
@@ -1482,6 +1535,12 @@ class JSRunner:
                         no_proxy,
                         progress_callback,
                     )
+            except asyncio.TimeoutError:
+                result = {
+                    "success": False,
+                    "path": str(target_path),
+                    "error": f"下载超时: {label or url}（超过 {timeout_seconds}s）",
+                }
             except Exception as e:
                 result = {
                     "success": False,

@@ -2215,6 +2215,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 run_control['download_total_bytes'] = int(payload.get('download_total_bytes') or 0)
             run_control['download_started'] = bool(run_control.get('download_total') or run_control.get('download_completed'))
         elif kind == 'before_phase' and str(payload.get('phase') or '').strip() == 'finalize_all':
+            download_total = int(run_control.get('download_total') or 0)
+            if download_total > 0:
+                run_control['download_completed'] = download_total
             run_control['download_active'] = False
             run_control['download_current_label'] = ''
             run_control['download_active_labels'] = []
@@ -2466,7 +2469,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log("No data rows returned, skip Excel export")
                         continue
                     fname = out.filename or "{task_id}_{date}.xlsx"
-                    path = data_sink.export_excel(
+                    path = await asyncio.to_thread(
+                        data_sink.export_excel,
                         data_rows,
                         adapter_id,
                         task_id,
@@ -2482,7 +2486,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
                 elif out.type == OutputType.json:
                     fname = out.filename or "{task_id}_{date}.json"
-                    path = data_sink.export_json(data_rows, adapter_id, task_id, fname, filename_vars=filename_vars)
+                    path = await asyncio.to_thread(
+                        data_sink.export_json,
+                        data_rows,
+                        adapter_id,
+                        task_id,
+                        fname,
+                        filename_vars=filename_vars,
+                    )
                     files.append(path)
                     log(f"JSON exported: {path}")
 
@@ -2504,11 +2515,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log(f"Notification skipped (condition not met: {out.condition})")
             return files
 
-        def finalize_output_files(data_rows, runtime_files, exported_files):
+        async def finalize_output_files(data_rows, runtime_files, exported_files):
             if adapter_id == 'amazon-ops-assistant' and task_id == 'amazon_label_batch_process':
                 try:
                     generated_refs = list(run_params.get("__amazon_generated_refs") or [])
-                    packaged_refs = copy_amazon_label_outputs_to_export_folder(
+                    packaged_refs = await asyncio.to_thread(
+                        copy_amazon_label_outputs_to_export_folder,
                         generated_refs=generated_refs,
                         exported_files=exported_files,
                         run_params=run_params,
@@ -2521,7 +2533,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
             if adapter_id == 'semir-cloud-drive':
                 try:
-                    packaged_refs = _finalize_semir_cloud_drive_outputs(
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_semir_cloud_drive_outputs,
                         task_id=task_id,
                         data_rows=data_rows,
                         runtime_files=runtime_files,
@@ -2537,7 +2550,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
             if adapter_id == 'shenhui-new-arrival':
                 try:
-                    packaged_refs = _finalize_shenhui_new_arrival_outputs(
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_shenhui_new_arrival_outputs,
                         task_id=task_id,
                         data_rows=data_rows,
                         runtime_files=runtime_files,
@@ -2553,7 +2567,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
             if adapter_id == 'tiktok-ops-assistant' and task_id == 'creator_video_download':
                 try:
-                    packaged_refs = _finalize_tiktok_creator_video_outputs(
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_tiktok_creator_video_outputs,
                         data_rows=data_rows,
                         runtime_files=runtime_files,
                         exported_files=exported_files,
@@ -2665,7 +2680,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
         exported_files = await export_outputs(data)
-        output_files = finalize_output_files(data, runtime_files, exported_files)
+        output_files = await finalize_output_files(data, runtime_files, exported_files)
         data_sink.finish_run(run_id, len(data), output_files)
         _run_status[jid] = {'status': 'done', 'run_id': run_id, 'records': len(data)}
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
@@ -2689,7 +2704,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         try:
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
             exported = await export_outputs(data) if runner else []
-            output_files = finalize_output_files(data, runtime_files, exported) if runner else []
+            output_files = await finalize_output_files(data, runtime_files, exported) if runner else []
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
@@ -2715,7 +2730,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         try:
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
             exported = await export_outputs(data) if runner else []
-            output_files = finalize_output_files(data, runtime_files, exported) if runner else []
+            output_files = await finalize_output_files(data, runtime_files, exported) if runner else []
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")

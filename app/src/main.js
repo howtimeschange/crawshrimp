@@ -955,8 +955,12 @@ secureHandle('run-task', async (_, aid, tid, params, options) =>
 secureHandle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
 secureHandle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
 secureHandle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
-secureHandle('get-task-status', async (_, aid, tid) => apiCall('GET', `/tasks/${aid}/${tid}/status`))
-secureHandle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`))
+secureHandle('get-task-status', async (_, aid, tid) => apiCall('GET', `/tasks/${aid}/${tid}/status`, null, {
+  ensureReady: false,
+}))
+secureHandle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`, null, {
+  ensureReady: false,
+}))
 secureHandle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
 
 secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
