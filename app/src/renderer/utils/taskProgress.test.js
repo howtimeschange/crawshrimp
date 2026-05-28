@@ -193,3 +193,35 @@ test('amazon reviews full export uses product and current-review two-layer progr
   assert.match(summary.tracks[1].caption, /页 4\/12/)
   assert.match(summary.sub, /B0D9221K6K/)
 })
+
+test('aliexpress cutout download uses enhanced batch progress for long Excel runs', () => {
+  const config = resolveTaskProgressConfig('aliexpress-ops-assistant', 'product_cutout_download')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+  assert.equal(config.usage.sidebar, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'aliexpress-ops-assistant',
+    taskId: 'product_cutout_download',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'cutout_current',
+      current: 18,
+      total: 1200,
+      completed: 17,
+      row_no: 24,
+      buyer_id: '1005012042309848',
+      store: '速卖通商品抠图下载 · 成功 16 / 失败 1 / 重试 3',
+    },
+  })
+
+  assert.equal(summary.title, '批处理进度')
+  assert.equal(summary.main, '第 18 / 1200 条')
+  assert.equal(summary.tracks.length, 1)
+  assert.equal(summary.tracks[0].title, '总进度')
+  assert.equal(summary.rowText, '源表行 24')
+  assert.equal(summary.targetText, '目标 1005012042309848')
+  assert.match(summary.sub, /重试 3/)
+})

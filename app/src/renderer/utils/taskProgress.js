@@ -97,6 +97,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'amazon_reviews_full_export',
     config: ENHANCED_PROGRESS_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'aliexpress-ops-assistant',
+    taskId: 'product_cutout_download',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {

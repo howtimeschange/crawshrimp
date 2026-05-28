@@ -1,0 +1,126 @@
+id: aliexpress-ops-assistant
+name: 速卖通运营助手
+version: 0.1.0
+author: codex
+description: "速卖通跨境卖家中心运营自动化：批量处理商品主图抠图并导出新图片地址"
+entry_url: https://csp.aliexpress.com/m_apps/productManage/list-manage?channelId=125417
+tab_match_prefixes:
+  - https://csp.aliexpress.com/
+  - https://seller-acs.aliexpress.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://csp.aliexpress.com/
+
+tasks:
+  - id: product_cutout_download
+    name: 商品抠图下载
+    description: 输入一批速卖通商品款号 / productId，逐个读取商品发布页第一张主图，调用速卖通抠图接口生成新图地址并导出表格；不会点击发布页提交。
+    script: product-cutout-download.js
+    entry_url: https://csp.aliexpress.com/m_apps/productManage/list-manage?channelId=125417
+    skip_auth: false
+    params:
+      - id: product_file
+        type: file_excel
+        label: 款号 Excel
+        required: false
+        templates:
+          - file: templates/product-cutout-download-template.xlsx
+            label: Excel 款号模板
+            description: 填写“款号”列后上传；支持 1000+ 行批量执行，也支持粘贴商品发布页链接自动提取 productId。
+            version: "2026.05.28"
+          - file: templates/product-cutout-download-template.csv
+            label: CSV 款号模板
+            description: 轻量 CSV 版本，只有“款号”一列，适合快速批量粘贴后另存上传。
+            version: "2026.05.28"
+        hint: 大批量请优先下载模板并上传 Excel / CSV；脚本会按款号去重并逐个输出抠图后图片地址。
+      - id: product_ids
+        type: textarea
+        label: 少量款号 / productId（可选）
+        rows: 5
+        required: false
+        placeholder: "一行一个，例如：\n1005012039686365\n1005012041834064"
+        hint: 适合临时补充少量款号；会和 Excel 上传内容合并去重，Excel 中靠前的款号优先。
+      - id: channel_id
+        type: text
+        label: channelId
+        default: "125417"
+        ui_span: third
+        hint: 默认使用 Semir Official Store 的 125417；也可留空让脚本从当前页面 URL 读取。
+      - id: start_row
+        type: number
+        label: 起始数据行
+        default: 1
+        min: 1
+        max: 200000
+        step: 1
+        ui_span: third
+        hint: 可用于分段重跑；第 1 行代表模板表头下面第一条数据。
+      - id: end_row
+        type: number
+        label: 结束数据行
+        min: 1
+        max: 200000
+        step: 1
+        ui_span: third
+        hint: 留空表示跑到最后一条；填写后包含该数据行。
+      - id: request_delay_ms
+        type: number
+        label: 单品间隔毫秒
+        default: 1500
+        min: 0
+        max: 30000
+        step: 100
+        ui_span: third
+        hint: 每个商品处理完成后进入下一款前的等待时间；1000+ 款建议保留默认或更慢。
+      - id: max_attempts
+        type: number
+        label: 单款接口重试次数
+        default: 5
+        min: 1
+        max: 10
+        step: 1
+        ui_span: third
+        hint: 单个商品调用抠图接口失败时的最大尝试次数，临时网络/会话错误会自动退避重试。
+      - id: page_reload_every
+        type: number
+        label: 定期刷新间隔
+        default: 120
+        min: 0
+        max: 1000
+        step: 10
+        ui_span: third
+        hint: 每处理多少款强制重新打开一次商品发布页；填 0 表示不做定期刷新。
+      - id: cooldown_every
+        type: number
+        label: 批量冷却间隔
+        default: 100
+        min: 0
+        max: 1000
+        step: 10
+        ui_span: third
+        hint: 每处理多少款进入一次短暂停顿，降低 1000+ 款连续执行的风控/超时概率；填 0 表示关闭。
+      - id: cooldown_ms
+        type: number
+        label: 冷却毫秒
+        default: 15000
+        min: 0
+        max: 120000
+        step: 1000
+        ui_span: third
+        hint: 达到“批量冷却间隔”后的暂停时长。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "速卖通商品抠图下载结果_{timestamp}.xlsx"
+        columns:
+          - 序号
+          - 源表行号
+          - 款号
+          - 商品发布页
+          - 原主图地址
+          - 抠图后图片地址
+          - 执行结果
+          - 重试次数
+          - 备注
