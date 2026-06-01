@@ -168,6 +168,11 @@
     return /^(?:m\(1\)\.)?\d{12}-\d{5}(?:\s*\(\d+\))?$/i.test(stem)
   }
 
+  function isModelMLeadingImageFilename(filename) {
+    const stem = compact(getFileStem(filename))
+    return !!stem && /^m/i.test(stem)
+  }
+
   function escapeRegExp(value) {
     return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   }
@@ -366,6 +371,9 @@
     if (sourceType === 'model') {
       if (isModelWhiteBackgroundFilename(item?.filename || '')) {
         return { ...base, reason: '模特图包白底图按命名规则删除' }
+      }
+      if (isModelMLeadingImageFilename(item?.filename || '')) {
+        return { ...base, reason: '模特图包 m 开头图片按规则删除' }
       }
       if (hasAny(text, [/包装/])) {
         return { ...base, reason: '模特图包包装图按 SOP 删除' }
@@ -908,6 +916,7 @@
       getExt,
       isSupportedAssetItem,
       isModelWhiteBackgroundFilename,
+      isModelMLeadingImageFilename,
       startsWithCodeToken,
       isSkcLikeStemForSpu,
       matchesFilenameCode,

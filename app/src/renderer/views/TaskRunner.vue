@@ -441,7 +441,7 @@
           <span>运行日志</span>
           <div class="log-actions">
             <span v-if="outputFiles.length" class="output-count" @click="showFiles = !showFiles">
-              📁 {{ outputFiles.length }} 个输出文件
+              📁 {{ outputFiles.length }} 个输出项
             </span>
             <button
               v-if="canSyncOdps && latestExcelOutput"
@@ -556,7 +556,7 @@
         <div v-if="showFiles && outputFiles.length" class="file-list">
           <div v-for="f in outputFiles" :key="f" class="file-item">
             <div class="file-item-main" @click="openFile(f)">
-              <span class="file-icon">{{ f.endsWith('.xlsx') ? '📊' : '📄' }}</span>
+              <span class="file-icon">{{ outputPathIcon(f) }}</span>
               <span class="file-name">{{ fileName(f) }}</span>
               <span class="file-open">打开 →</span>
             </div>
@@ -1765,6 +1765,15 @@ function openFile(path) {
 
 function isExcelFile(path) {
   return /\.(xlsx|xlsm)$/i.test(String(path || ''))
+}
+
+function outputPathIcon(path) {
+  const text = String(path || '').trim()
+  const lower = text.toLowerCase()
+  if (isExcelFile(text)) return '📊'
+  if (lower.endsWith('.zip')) return '🗜'
+  if (!/\.[^\\/]+$/.test(text)) return '📁'
+  return '📄'
 }
 
 async function syncOdpsFiles(paths) {

@@ -62,8 +62,11 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
         prepare_params = {item["id"]: item for item in prepare_task["params"]}
         self.assertEqual(prepare_params["wash_crop_boxes"]["type"], "textarea")
         self.assertEqual(prepare_params["tag_crop_boxes"]["type"], "textarea")
+        self.assertEqual(prepare_params["auto_zip_package"]["type"], "checkbox")
+        self.assertEqual(prepare_params["auto_zip_package"]["default"], [])
+        self.assertEqual(prepare_params["auto_zip_package"]["options"][0]["value"], "yes")
 
-    def test_finalize_outputs_groups_images_by_style_code(self):
+    def test_finalize_outputs_groups_images_by_style_code_without_zip_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             runtime_dir = base / "runtime"
@@ -106,6 +109,65 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 runtime_files=[str(model_file), str(yq_file)],
                 exported_files=[str(exported)],
                 run_params={"package_name": "深绘测试图包"},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            package_dir = Path(result[0])
+            self.assertTrue(package_dir.is_dir())
+            self.assertEqual(package_dir.name, "深绘测试图包")
+            self.assertEqual(Path(result[1]), exported)
+            self.assertTrue((package_dir / "208226103201" / "balaBR05106-72904_P.jpg").is_file())
+            self.assertTrue((package_dir / "208226103201" / "yq.jpg").is_file())
+
+            self.assertFalse(model_file.exists())
+            self.assertFalse(yq_file.exists())
+            self.assertFalse((runtime_dir / "深绘测试图包").exists())
+
+    def test_finalize_outputs_creates_style_zips_when_auto_zip_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            model_file = runtime_dir / "runtime-model.jpg"
+            yq_file = runtime_dir / "runtime-yq.jpg"
+            model_file.write_bytes(b"model")
+            yq_file.write_bytes(b"yq")
+
+            exported = base / "summary.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_shenhui_new_arrival_outputs(
+                task_id="prepare_upload_package",
+                data_rows=[
+                    {
+                        "输入款号": "208226103201",
+                        "输入编码": "208226103201",
+                        "素材来源": "模特图",
+                        "文件名": "balaBR05106-72904_P.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(model_file),
+                        "__shenhui_group_code": "208226103201",
+                        "__shenhui_asset_role": "image",
+                        "__package_filename": "balaBR05106-72904_P.jpg",
+                    },
+                    {
+                        "输入款号": "208226103201",
+                        "输入编码": "208226103201",
+                        "素材来源": "静物图",
+                        "文件名": "yq.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(yq_file),
+                        "__shenhui_group_code": "208226103201",
+                        "__shenhui_asset_role": "yq",
+                        "__package_filename": "yq.jpg",
+                    },
+                ],
+                runtime_files=[str(model_file), str(yq_file)],
+                exported_files=[str(exported)],
+                run_params={"package_name": "深绘测试图包", "auto_zip_package": ["yes"]},
                 runtime_artifact_dir=str(runtime_dir),
                 log=lambda _: None,
             )
@@ -155,6 +217,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 run_params={
                     "package_name": "深绘测试图包",
                     "export_folder": str(export_dir),
+                    "auto_zip_package": True,
                 },
                 runtime_artifact_dir=str(runtime_dir),
                 log=lambda _: None,
@@ -199,7 +262,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
 
             self.assertEqual(len(result), 2)
             self.assertEqual(Path(result[0]).parent, output_dir)
-            self.assertTrue(Path(result[0]).is_file())
+            self.assertTrue(Path(result[0]).is_dir())
             self.assertEqual(Path(result[1]), exported)
             self.assertFalse(runtime_dir.exists())
 
@@ -348,6 +411,7 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                     run_params={
                         "package_name": "深绘测试图包",
                         "tag_crop_boxes": '[{"x":0.01,"y":0.2,"width":0.2,"height":0.5}]',
+                        "auto_zip_package": True,
                     },
                     runtime_artifact_dir=str(runtime_dir),
                     log=lambda _: None,

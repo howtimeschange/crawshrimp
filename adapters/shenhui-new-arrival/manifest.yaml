@@ -150,6 +150,15 @@ tasks:
         step: 1
         ui_span: third
         hint: 默认 8；图片较大或云盘限流时可降到 4-6，网络稳定可提高到 10
+      - id: auto_zip_package
+        type: checkbox
+        label: 是否自动压缩
+        default: []
+        ui_span: third
+        options:
+          - value: "yes"
+            label: 自动压缩为款号 ZIP
+        hint: 默认不压缩，只按款号整理到导出目录；需要直接上传深绘时再选择“是”
       - id: wash_crop_boxes
         type: textarea
         label: 洗唛截图框模板

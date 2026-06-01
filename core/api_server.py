@@ -1323,6 +1323,19 @@ def _append_note(existing: object, note: str) -> str:
     return f"{current}; {clean_note}"
 
 
+def _truthy_param(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (list, tuple, set)):
+        return any(_truthy_param(item) for item in value)
+    normalized = str(value or "").strip().lower()
+    return normalized in {"1", "true", "yes", "y", "on", "zip", "auto_zip", "auto_zip_package", "是", "压缩"}
+
+
+def _shenhui_auto_zip_enabled(run_params: Optional[dict]) -> bool:
+    return _truthy_param((run_params or {}).get("auto_zip_package"))
+
+
 def _verify_tiktok_creator_video_download_rows(data_rows: list, log=None) -> list:
     success_total = 0
     missing_rows = []
@@ -1403,6 +1416,7 @@ def _finalize_shenhui_new_arrival_outputs(
     )
     package_root = _ensure_unique_local_dir(runtime_dir / package_base)
     pdf_work_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_pdf_work")
+    auto_zip_package = _shenhui_auto_zip_enabled(run_params)
 
     successful_rows = []
     for row in data_rows or []:
@@ -1450,20 +1464,23 @@ def _finalize_shenhui_new_arrival_outputs(
             if converted_count:
                 log(f"Shenhui downloaded PDF screenshots added to style packages: {converted_count}")
 
-        style_zip_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_deepdraw_zips")
-        style_zip_dir.mkdir(parents=True, exist_ok=True)
-        for style_dir in sorted(path for path in package_root.iterdir() if path.is_dir()):
-            if style_dir.name.startswith("_"):
-                continue
-            style_zip_path = _ensure_unique_local_path(style_zip_dir / f"{style_dir.name}.zip")
-            with zipfile.ZipFile(style_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for file_path in sorted(style_dir.rglob("*")):
-                    if not file_path.is_file():
-                        continue
-                    archive.write(file_path, arcname=str(file_path.relative_to(style_dir)))
-            style_zip_paths.append(style_zip_path)
-        if style_zip_paths:
-            log(f"Shenhui DeepDraw style ZIPs created: {len(style_zip_paths)}")
+        if auto_zip_package:
+            style_zip_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_deepdraw_zips")
+            style_zip_dir.mkdir(parents=True, exist_ok=True)
+            for style_dir in sorted(path for path in package_root.iterdir() if path.is_dir()):
+                if style_dir.name.startswith("_"):
+                    continue
+                style_zip_path = _ensure_unique_local_path(style_zip_dir / f"{style_dir.name}.zip")
+                with zipfile.ZipFile(style_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for file_path in sorted(style_dir.rglob("*")):
+                        if not file_path.is_file():
+                            continue
+                        archive.write(file_path, arcname=str(file_path.relative_to(style_dir)))
+                style_zip_paths.append(style_zip_path)
+            if style_zip_paths:
+                log(f"Shenhui DeepDraw style ZIPs created: {len(style_zip_paths)}")
+        else:
+            log(f"Shenhui package folder prepared without ZIP compression: {package_root}")
 
     export_folder = str(run_params.get("export_folder") or "").strip()
     exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
@@ -1474,13 +1491,18 @@ def _finalize_shenhui_new_arrival_outputs(
         target_root.mkdir(parents=True, exist_ok=True)
         external_refs = []
 
-        if successful_rows:
+        if successful_rows and auto_zip_package:
             for style_zip_path in style_zip_paths:
                 if style_zip_path.exists():
                     copied_style_zip = _copy_file_to_unique_target(style_zip_path, target_root / style_zip_path.name)
                     external_refs.append(str(copied_style_zip))
             if style_zip_paths:
                 log(f"Shenhui style ZIPs copied to export folder: {target_root}")
+        elif successful_rows and package_root.exists():
+            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+            shutil.copytree(package_root, external_dir)
+            external_refs.append(str(external_dir))
+            log(f"Shenhui package folder copied to export folder: {external_dir}")
 
         for file_path in exported_files or []:
             source = Path(str(file_path or "")).expanduser()
@@ -1502,6 +1524,13 @@ def _finalize_shenhui_new_arrival_outputs(
         if default_refs:
             log(f"Shenhui style ZIPs moved to default output folder: {target_root}")
             final_refs = [*default_refs, *exported_refs]
+    elif successful_rows and package_root.exists():
+        target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+        target_root.mkdir(parents=True, exist_ok=True)
+        external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+        shutil.copytree(package_root, external_dir)
+        log(f"Shenhui package folder moved to default output folder: {external_dir}")
+        final_refs = [str(external_dir), *exported_refs]
 
     if successful_rows:
         _cleanup_shenhui_runtime_artifacts(runtime_files, package_root, pdf_work_dir)

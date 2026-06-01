@@ -295,6 +295,15 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
   assert.equal(prefixedWhiteBackground.keep, false)
   assert.equal(prefixedWhiteBackground.reason, '模特图包白底图按命名规则删除')
 
+  const mLeadingModelImage = helpers.classifySopAsset('model', {
+    ext: 'jpg',
+    filename: 'M208226103201-detail.jpg',
+    fullpath: '模拍原图/208226103201/M208226103201-detail.jpg',
+  })
+  assert.equal(helpers.isModelMLeadingImageFilename('m208226103201-look.jpg'), true)
+  assert.equal(mLeadingModelImage.keep, false)
+  assert.equal(mLeadingModelImage.reason, '模特图包 m 开头图片按规则删除')
+
   const model = helpers.classifySopAsset('model', {
     ext: 'jpg',
     filename: 'balaBR05106-72904_P.jpg',
