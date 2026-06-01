@@ -136,6 +136,15 @@ async function runScript({ phase = 'main', page = 1, params = {}, shared = {}, d
   return await vm.runInNewContext(source, context, { filename: scriptPath })
 }
 
+function monthToken(offset = 0) {
+  const date = new Date()
+  date.setDate(1)
+  date.setMonth(date.getMonth() + offset)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  return `${year}-${month}`
+}
+
 function buildCaptureShared({ payload = {}, count = 2 } = {}) {
   return {
     captureResult: {
@@ -504,8 +513,8 @@ test('commodity quality collect_list_page maps live payload and queues return de
   assert.equal(result.meta.shared.detail_queue.length, 1)
   assert.equal(result.meta.shared.detail_queue[0].skc, 'sk25050817072795161')
   assert.equal(result.meta.shared.detail_queue[0].months.length, 12)
-  assert.equal(result.meta.shared.detail_queue[0].months[0], '2026-05')
-  assert.equal(result.meta.shared.detail_queue[0].months[1], '2026-04')
+  assert.equal(result.meta.shared.detail_queue[0].months[0], monthToken())
+  assert.equal(result.meta.shared.detail_queue[0].months[1], monthToken(-1))
   assert.equal(result.meta.shared.total_rows, 1)
   assert.equal(result.meta.shared.list_total_rows, 1)
   assert.equal(result.meta.shared.list_completed_rows, 1)
