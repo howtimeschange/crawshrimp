@@ -2,14 +2,103 @@ id: shopee-plus-v2
 name: Shopee 运营助手
 version: 2.0.5
 author: crawshrimp
-description: "Shopee 卖家后台优惠券批量创建 V2 — 按 SDK 规范重构的稳定版"
+description: "Shopee 卖家后台运营自动化：优惠券批量创建、直播优惠券创建，以及商业分析数据导出同步"
 entry_url: https://seller.shopee.cn/portal/marketing
+tab_match_prefixes:
+  - https://seller.shopee.cn/portal/marketing
+  - https://seller.shopee.cn/datacenter/home
 
 auth:
   check_script: auth_check.js
-  login_url: https://seller.shopee.cn/portal/marketing
+  login_url: https://seller.shopee.cn/
 
 tasks:
+  - id: business_analysis
+    name: 【数据】商业分析
+    description: 导出 Shopee 卖家中心「商业分析」当前筛选下的官方 Excel，默认沿用页面店铺、统计时间和订单类型筛选，并可同步至数仓。
+    script: business-analysis.js
+    entry_url: https://seller.shopee.cn/datacenter/home
+    tab_match_prefixes:
+      - https://seller.shopee.cn/datacenter/home
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开商业分析页
+      - id: shop_scope
+        type: select
+        label: 当前店铺
+        default: page
+        hint: 默认沿用页面左上角店铺筛选；选择“所有店铺”会导出全店铺商业分析。
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: all
+            label: 所有店铺
+          - value: current
+            label: 当前店铺
+      - id: time_range
+        type: select
+        label: 统计时间
+        default: page
+        hint: 默认沿用当前 Shopee 页面统计时间；自定义日期会使用整日范围导出。
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: real_time
+            label: 今日实时
+          - value: yesterday
+            label: 昨天
+          - value: last7
+            label: 最近7天
+          - value: last30
+            label: 最近30天
+          - value: custom
+            label: 自定义日期
+      - id: date_range
+        type: date_range
+        label: 自定义日期
+        hint: 仅在选择“自定义日期”时填写。
+        visible_when:
+          field: time_range
+          equals: custom
+      - id: order_type
+        type: select
+        label: 订单类型
+        default: page
+        hint: 默认沿用页面当前订单类型；官方导出会包含各订单状态列，数仓同步会按订单状态拆成长表。
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: placed
+            label: 已下订单
+          - value: paid
+            label: 已付款订单
+          - value: confirmed
+            label: 已确定订单
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Shopee商业分析_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 平台名称
+          - 数据表
+          - 统计时间
+          - 店铺名称
+          - 市场
+          - 指标名称
+          - 订单状态
+          - 币种
+          - 指标值
+          - 抓取时间
+
   - id: voucher_batch_create
     name: 批量创建优惠券
     description: 根据 Excel 模板逐行在 Shopee 营销中心创建优惠券，支持商店优惠券 / 新买家优惠券 / 回购买家优惠券 / 关注礼优惠券。按站点和店铺自动分组，同店内按 Excel 原顺序执行。

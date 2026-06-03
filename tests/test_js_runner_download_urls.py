@@ -64,6 +64,26 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(target.read_bytes(), b"large-image")
             self.assertFalse(target.with_name("large.jpg.part").exists())
 
+    async def test_download_urls_accepts_data_url_artifact(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+
+            result = await runner.download_urls(
+                [{
+                    "url": "data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBA==",
+                    "filename": "shopee.xlsx",
+                    "label": "Shopee 商业分析",
+                }],
+                concurrency=1,
+                retry_attempts=1,
+                timeout_seconds=5,
+            )
+
+            target = Path(tmpdir) / "shopee.xlsx"
+            self.assertTrue(result["ok"])
+            self.assertEqual(target.read_bytes(), b"PK\x03\x04")
+            self.assertIn(str(target), runner.runtime_output_files)
+
     async def test_download_urls_retries_until_success(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)

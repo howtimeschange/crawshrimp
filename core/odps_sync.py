@@ -17,7 +17,24 @@ TASK_TABLE_MAP = {
     ("tiktok-ops-assistant", "product_analytics"): "imp_ods_tiktok_product_analytics",
     ("aliexpress-ops-assistant", "deal_analysis"): "imp_ods_aliexpress_deal_analysis",
     ("aliexpress-ops-assistant", "product_ranking"): "imp_ods_aliexpress_product_ranking",
+    ("shopee-plus-v2", "business_analysis"): "imp_ods_shopee_business_analysis",
 }
+
+SHOPEE_BUSINESS_ANALYSIS_FIELDS = [
+    ("platform_name", "string", "平台名称"),
+    ("sheet_name", "string", "数据表"),
+    ("dimension_type", "string", "维度类型"),
+    ("stat_time", "string", "统计时间"),
+    ("stat_date", "string", "统计日期"),
+    ("shop_name", "string", "店铺名称"),
+    ("market", "string", "市场"),
+    ("metric_name", "string", "指标名称"),
+    ("order_status", "string", "订单状态"),
+    ("currency", "string", "币种"),
+    ("metric_value", "double", "指标值"),
+    ("raw_metric_header", "string", "原始指标表头"),
+    ("captured_at", "datetime", "抓取时间"),
+]
 
 ALIEXPRESS_COMMON_FIELD_MAP = {
     "平台名称": "platform_name",
@@ -293,6 +310,14 @@ TASK_FIELD_TYPE_MAP = {
     },
 }
 
+SHOPEE_DIMENSION_COLUMNS = {
+    "统计时间": "stat_time",
+    "店铺名称": "shop_name",
+    "市场": "market",
+    "指标": "metric_definition_name",
+    "定义": "metric_definition",
+}
+
 DEFAULT_WRITE_MODE = "append"
 DEFAULT_DATAWORKS_PATH = "/api/v1/dataworks/write_odps"
 DEFAULT_DATAWORKS_ENDPOINT = "http://dataworksapi.semirapp.com/api/v1/dataworks/write_odps"
@@ -406,6 +431,119 @@ def read_excel_rows(file_path: str) -> tuple[list[str], list[dict[str, Any]]]:
     return headers, rows
 
 
+def _normalize_shopee_sheet_name(value: str) -> str:
+    return str(value or "").strip()
+
+
+def _split_shopee_metric_header(header: str) -> tuple[str, str, str]:
+    text = str(header or "").strip()
+    currency = ""
+    order_status = ""
+    currency_match = re.search(r"\(([A-Z]{3})\)", text)
+    if currency_match:
+        currency = currency_match.group(1)
+        text = text.replace(currency_match.group(0), "").strip()
+    status_match = re.search(r"（([^）]+订单)）", text)
+    if status_match:
+        order_status = status_match.group(1)
+        text = text.replace(status_match.group(0), "").strip()
+    metric_name = re.sub(r"\s+", " ", text).strip()
+    return metric_name, order_status, currency
+
+
+def _shopee_dimension_type(sheet_name: str) -> str:
+    name = _normalize_shopee_sheet_name(sheet_name)
+    if name == "关键指标":
+        return "overview"
+    if name == "趋势指标":
+        return "trend"
+    if name == "店铺维度指标分析":
+        return "shop_share"
+    if name == "市场维度指标分析":
+        return "market_share"
+    if name == "详情":
+        return "detail"
+    if name == "指标定义":
+        return "definition"
+    return "unknown"
+
+
+def _normalize_shopee_stat_date(value: Any) -> str:
+    text = str(value or "").strip()
+    match = re.search(r"\d{4}-\d{2}-\d{2}", text)
+    return match.group(0) if match else ""
+
+
+def _shopee_business_analysis_rows(file_path: str) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    path = Path(file_path).expanduser()
+    if not path.exists() or not path.is_file():
+        raise OdpsSyncError(f"文件不存在：{file_path}")
+    if path.suffix.lower() not in {".xlsx", ".xlsm"}:
+        raise OdpsSyncError(f"暂只支持同步 xlsx/xlsm Excel 文件：{path.name}")
+
+    wb = load_workbook(path, read_only=True, data_only=True)
+    rows: list[dict[str, Any]] = []
+    captured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        for ws in wb.worksheets:
+            sheet_name = _normalize_shopee_sheet_name(ws.title)
+            raw_rows = list(ws.iter_rows(values_only=True))
+            header_row = next((row for row in raw_rows if any(str(cell or "").strip() for cell in row)), None)
+            if not header_row:
+                continue
+            header_index = raw_rows.index(header_row)
+            headers = [_clean_header(value, index) for index, value in enumerate(header_row)]
+            dimension_headers = {
+                header for header in headers
+                if header in SHOPEE_DIMENSION_COLUMNS
+            }
+            metric_headers = [
+                header for header in headers
+                if header not in dimension_headers and str(header or "").strip()
+            ]
+            if not metric_headers:
+                continue
+
+            for raw in raw_rows[header_index + 1:]:
+                if all(cell is None or str(cell).strip() == "" for cell in raw):
+                    continue
+                raw_map = {
+                    header: _cell_value(raw[index] if index < len(raw) else None)
+                    for index, header in enumerate(headers)
+                }
+                for header in metric_headers:
+                    raw_value = raw_map.get(header, "")
+                    if str(raw_value or "").strip() == "":
+                        continue
+                    metric_name, order_status, currency = _split_shopee_metric_header(header)
+                    rows.append({
+                        "platform_name": "Shopee",
+                        "sheet_name": sheet_name,
+                        "dimension_type": _shopee_dimension_type(sheet_name),
+                        "stat_time": raw_map.get("统计时间", ""),
+                        "stat_date": _normalize_shopee_stat_date(raw_map.get("统计时间", "")),
+                        "shop_name": raw_map.get("店铺名称", ""),
+                        "market": raw_map.get("市场", ""),
+                        "metric_name": metric_name,
+                        "order_status": order_status,
+                        "currency": currency,
+                        "metric_value": raw_value,
+                        "raw_metric_header": header,
+                        "captured_at": captured_at,
+                    })
+    finally:
+        wb.close()
+
+    if not rows:
+        raise OdpsSyncError(f"Excel 文件没有可同步的数据行：{path.name}")
+
+    fields = [
+        {"name": name, "type": field_type, "comment": comment}
+        for name, field_type, comment in SHOPEE_BUSINESS_ANALYSIS_FIELDS
+    ]
+    return fields, rows
+
+
 def infer_odps_type(field_name: str, values: list[Any]) -> str:
     name = str(field_name or "")
     clean_values = [str(value or "").strip() for value in values if str(value or "").strip()]
@@ -439,6 +577,8 @@ def cast_odps_value(value: Any, field_type: str) -> Any:
         return text
     if normalized_type in {"float", "double", "decimal", "numeric"}:
         numeric_text = text.replace(",", "")
+        if numeric_text.endswith("%"):
+            numeric_text = numeric_text[:-1].strip()
         if re.fullmatch(r"-?\d+(\.\d+)?", numeric_text):
             return float(numeric_text)
         return text
@@ -464,6 +604,25 @@ def build_sync_payload(
     *,
     write_mode: str = DEFAULT_WRITE_MODE,
 ) -> dict[str, Any]:
+    if (str(adapter_id or "").strip(), str(task_id or "").strip()) == ("shopee-plus-v2", "business_analysis"):
+        fields, rows = _shopee_business_analysis_rows(file_path)
+        field_types = {field["name"]: field["type"] for field in fields}
+        data_rows = [
+            {
+                field["name"]: cast_odps_value(row.get(field["name"], ""), field_types[field["name"]])
+                for field in fields
+            }
+            for row in rows
+        ]
+        date_value = rows[0].get("stat_date") or rows[0].get("stat_time") or ""
+        return {
+            "table_name": get_table_name(adapter_id, task_id),
+            "fields": fields,
+            "data": data_rows,
+            "write_mode": write_mode,
+            "partition_spec": {"dt": normalize_partition_value(str(date_value))},
+        }
+
     headers, rows = read_excel_rows(file_path)
     field_names = [get_field_name(adapter_id, task_id, header, index) for index, header in enumerate(headers)]
     field_types = [

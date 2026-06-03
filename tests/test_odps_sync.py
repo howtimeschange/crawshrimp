@@ -201,5 +201,51 @@ class OdpsSyncTest(unittest.TestCase):
         self.assertEqual(field_types["pay_amt"], "double")
 
 
+    def test_build_payload_flattens_shopee_business_analysis_workbook(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "shopee_business_analysis.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "关键指标"
+            ws.append(["统计时间", "总销售额（已下订单） (CNY)", "总订单数（已确认订单）", "商品点击量"])
+            ws.append(["2026-06-03-2026-06-03", "45,190.88", "251", "20588"])
+            trend = wb.create_sheet("趋势指标")
+            trend.append(["统计时间", "总销售额（已下订单） (CNY)", "总订单数（已确认订单）"])
+            trend.append(["2026-06-03 00:00", "2,391.86", "23"])
+            shop_share = wb.create_sheet("店铺维度指标分析")
+            shop_share.append(["店铺名称", "总销售额（已下订单） (CNY)", "总订单数（已确认订单）"])
+            shop_share.append(["Balabala Official Store", "77.08%", "75.86%"])
+            detail = wb.create_sheet("详情")
+            detail.append(["店铺名称", "市场", "总销售额（已确认订单） (CNY)", "总订单数（已确认订单）"])
+            detail.append(["Balabala Official Store", "VN", "29,990.60", "190"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="shopee-plus-v2",
+                task_id="business_analysis",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_shopee_business_analysis")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-06-03"})
+        self.assertEqual(payload["write_mode"], "append")
+        self.assertEqual(payload["data"][0]["platform_name"], "Shopee")
+        self.assertEqual(payload["data"][0]["sheet_name"], "关键指标")
+        self.assertEqual(payload["data"][0]["stat_time"], "2026-06-03-2026-06-03")
+        self.assertEqual(payload["data"][0]["metric_name"], "总销售额")
+        self.assertEqual(payload["data"][0]["order_status"], "已下订单")
+        self.assertEqual(payload["data"][0]["currency"], "CNY")
+        self.assertEqual(payload["data"][0]["metric_value"], 45190.88)
+        share_rows = [row for row in payload["data"] if row["sheet_name"] == "店铺维度指标分析"]
+        self.assertEqual(share_rows[0]["dimension_type"], "shop_share")
+        self.assertEqual(share_rows[0]["metric_value"], 77.08)
+        detail_rows = [row for row in payload["data"] if row["sheet_name"] == "详情"]
+        self.assertEqual(detail_rows[0]["shop_name"], "Balabala Official Store")
+        self.assertEqual(detail_rows[0]["market"], "VN")
+        self.assertEqual(detail_rows[0]["order_status"], "已确认订单")
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["metric_value"], "double")
+        self.assertEqual(field_types["captured_at"], "datetime")
+
 if __name__ == "__main__":
     unittest.main()
