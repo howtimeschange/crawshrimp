@@ -3,6 +3,82 @@ import unittest
 from core import api_server
 
 
+class TemuCurrentTabMatchingTests(unittest.TestCase):
+    def test_agentseller_root_current_tab_can_recover_to_mall_flux_task(self):
+        self.assertTrue(
+            api_server._is_compatible_current_tab_for_task(
+                "temu",
+                "mall_flux",
+                "https://agentseller.temu.com/main/mall-flux-analysis-full",
+                "https://agentseller.temu.com/",
+            )
+        )
+
+    def test_agentseller_region_current_tab_can_recover_to_canonical_task_url(self):
+        self.assertTrue(
+            api_server._is_compatible_current_tab_for_task(
+                "temu",
+                "goods_traffic_list",
+                "https://agentseller.temu.com/main/flux-analysis-full",
+                "https://agentseller-us.temu.com/main/quality/dashboard",
+            )
+        )
+
+    def test_temu_current_tab_matching_does_not_cross_backend_families(self):
+        self.assertFalse(
+            api_server._is_compatible_current_tab_for_task(
+                "temu",
+                "mall_flux",
+                "https://agentseller.temu.com/main/mall-flux-analysis-full",
+                "https://seller.kuajingmaihuo.com/main/order-manager/shipping-list",
+            )
+        )
+        self.assertFalse(
+            api_server._is_compatible_current_tab_for_task(
+                "temu",
+                "qc_detail",
+                "https://seller.kuajingmaihuo.com/wms/qc-detail",
+                "https://agentseller-eu.temu.com/main/quality/dashboard",
+            )
+        )
+
+    def test_temu_new_tab_entry_uses_agentseller_shell_before_business_route(self):
+        self.assertEqual(
+            api_server._temu_new_tab_entry_url(
+                "https://agentseller.temu.com/main/mall-flux-analysis-full"
+            ),
+            "https://agentseller.temu.com/",
+        )
+        self.assertEqual(
+            api_server._temu_new_tab_entry_url(
+                "https://agentseller-us.temu.com/main/flux-analysis-full"
+            ),
+            "https://agentseller-us.temu.com/",
+        )
+
+    def test_temu_new_tab_entry_uses_kuajingmaihuo_shell_before_seller_center_deep_link(self):
+        self.assertEqual(
+            api_server._temu_new_tab_entry_url(
+                "https://seller.kuajingmaihuo.com/wms/tax-free-return-mgt/return-confirm"
+            ),
+            "https://seller.kuajingmaihuo.com/main/order-manager/shipping-list",
+        )
+
+    def test_temu_no_auth_url_is_detected(self):
+        self.assertTrue(api_server._is_temu_no_auth_url("https://seller.temu.com/no-auth.html"))
+        self.assertFalse(api_server._is_temu_no_auth_url("https://seller.temu.com/login"))
+
+    def test_non_temu_adapter_keeps_strict_current_tab_matching(self):
+        self.assertFalse(
+            api_server._is_compatible_current_tab_for_task(
+                "shopify-ops-assistant",
+                "traffic_data",
+                "https://admin.shopify.com/store/demo/analytics/reports/sessions_over_time",
+                "https://admin.shopify.com/store/demo",
+            )
+        )
+
+
 class TiktokEntryUrlSelectionTests(unittest.TestCase):
     def test_product_rating_new_page_uses_selected_eu_region_url(self):
         selected = api_server._resolve_task_target_entry_url(

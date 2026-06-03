@@ -69,7 +69,7 @@ class JSRunner:
         self._msg_id += 1
         return self._msg_id
 
-    async def _evaluate_raw(self, expression: str) -> dict:
+    async def _evaluate_raw(self, expression: str, user_gesture: bool = False) -> dict:
         msg_id = self._next_id()
         payload = json.dumps({
             "id": msg_id,
@@ -79,6 +79,7 @@ class JSRunner:
                 "awaitPromise": True,
                 "returnByValue": True,
                 "timeout": self.timeout * 1000,
+                "userGesture": bool(user_gesture),
             }
         })
         async with websockets.connect(self.ws_url, max_size=50 * 1024 * 1024, proxy=None) as ws:
@@ -1737,9 +1738,9 @@ class JSRunner:
             "items": finalized,
         }
 
-    async def evaluate(self, expression: str) -> JSResult:
+    async def evaluate(self, expression: str, user_gesture: bool = False) -> JSResult:
         try:
-            msg = await self._evaluate_raw(expression)
+            msg = await self._evaluate_raw(expression, user_gesture=user_gesture)
         except asyncio.TimeoutError:
             return JSResult(success=False, error="timeout")
         except Exception as e:
@@ -1772,6 +1773,9 @@ class JSRunner:
             meta=val.get("meta"),
             error=val.get("error"),
         )
+
+    async def evaluate_user_gesture(self, expression: str) -> JSResult:
+        return await self.evaluate(expression, user_gesture=True)
 
     async def _refresh_ws_url(self) -> None:
         from core.cdp_bridge import get_bridge

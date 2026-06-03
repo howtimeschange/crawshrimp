@@ -23,6 +23,8 @@
   const LIST_READY_TIMEOUT_MS = 30000
   const SAFE_PAGE_LOOP_LIMIT = 120
   const PAGER_THROTTLE_MS = 2200
+  const OUTER_SITE_AUTH_WAIT_LIMIT = 60
+  const OUTER_SITE_AUTH_WAIT_MS = 5000
   const TEMU_REQUEST_MODULE_ID = '3204'
   const TEMU_LIST_ENDPOINT = '/api/seller/full/flow/analysis/goods/list'
   const TEMU_CATEGORY_CHILDREN_ENDPOINT = '/bg-anniston-agent-seller/category/children/list'
@@ -1223,6 +1225,31 @@
     return !!nextOuterSite(targetSites, currentSite)
   }
 
+  function isOuterSiteAuthPage() {
+    const href = String(location.href || '')
+    const bodyText = textOf(document.body)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForOuterSiteAuth(sharedState, targetSite) {
+    const rounds = Number(sharedState.outerSiteAuthWaitRounds || 0)
+    if (rounds >= OUTER_SITE_AUTH_WAIT_LIMIT) {
+      return fail(`等待 ${targetSite || '目标站点'} 登录/认证超时，请完成该站点登录后重试`)
+    }
+    const targetUrl = getOuterSiteUrl(targetSite)
+    if (targetUrl && !isOuterSiteAuthPage() && !location.href.includes('/main/flux-analysis-full')) {
+      location.href = targetUrl
+    }
+    return nextPhase('after_outer_site_switch', OUTER_SITE_AUTH_WAIT_MS, {
+      ...sharedState,
+      targetOuterSite: targetSite,
+      outerSiteAuthWaitRounds: rounds + 1,
+      outerSiteAuthWaitReason: `等待 ${targetSite || '目标站点'} 登录/认证`,
+    })
+  }
+
   function buildBusyReload(nextPhaseName, sharedState) {
     const retry = Number(sharedState.listBusyRetry || 0)
     const currentPageNo = Math.max(1, Number(sharedState.lastCollectedPageNo || sharedState.currentPageNo || getListPageNo() || 1))
@@ -1375,11 +1402,20 @@
 
     if (phase === 'after_outer_site_switch') {
       const targetSite = shared.targetOuterSite || ''
+      if (isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, targetSite)
+      }
       const switched = await waitForTargetOuterSite(targetSite, 30000)
+      if (!switched && isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, targetSite)
+      }
       if (!switched) {
         return fail(`外层站点切换未生效：期望 ${targetSite || '未知站点'}，当前 ${getResolvedOuterSite() || '未知站点'}`)
       }
       const ready = await waitForTargetReady(30000)
+      if (!ready && isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, targetSite)
+      }
       if (!ready) return fail(`切换外层站点后页面未恢复：${targetSite || '未知站点'}`)
       const state = await waitForListReady(LIST_READY_TIMEOUT_MS)
       if (!state.ready) {
@@ -1393,6 +1429,8 @@
         currentOuterSite: getResolvedOuterSite() || targetSite || '',
         resume_phase: '',
         switchedOuterSite: true,
+        outerSiteAuthWaitRounds: 0,
+        outerSiteAuthWaitReason: '',
         ...(shopName ? { shopName } : {}),
       })
     }

@@ -15,6 +15,8 @@
   const LIST_API_RETRY_BACKOFF_MS = 1500
   const TEMU_ANTI_CONTENT_MODULE_ID = '65531'
   const TEMU_LIST_ENDPOINT = '/visage-agent-seller/product/sku/site/suggestedPrice/pageQuery'
+  const REGION_AUTH_WAIT_LIMIT = 60
+  const REGION_AUTH_WAIT_MS = 5000
 
   const requestedShared = {
     requestedMode: String(shared.requestedMode || params.mode || 'current').trim().toLowerCase(),
@@ -170,7 +172,26 @@
   function hasRegionAuthenticationGate() {
     const href = String(location.href || '')
     const bodyText = textOf(document.body)
-    return href.includes('/main/authentication') || /其他地区|敬请期待/.test(bodyText)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForRegionAuth(next = shared, targetRegion = String(next.targetRegion || getResolvedRegion() || '').trim(), nextPhaseName = 'wait_region_ready') {
+    const rounds = Number(next.regionAuthWaitRounds || 0)
+    if (rounds >= REGION_AUTH_WAIT_LIMIT) {
+      return fail(`等待 ${targetRegion || '目标地区'} 登录/认证超时，请完成该地区登录后重试`)
+    }
+    const targetUrl = getRegionUrl(targetRegion)
+    if (targetUrl && !hasRegionAuthenticationGate() && !location.href.includes('/goods/recommended-retail-price')) {
+      location.href = targetUrl
+    }
+    return nextPhase(nextPhaseName, REGION_AUTH_WAIT_MS, {
+      ...next,
+      targetRegion,
+      regionAuthWaitRounds: rounds + 1,
+      regionAuthWaitReason: `等待 ${targetRegion || '目标地区'} 登录/认证`,
+    })
   }
 
   function getNextTargetRegion(targetRegions, currentRegion) {
@@ -727,6 +748,9 @@
     }
 
     if (phase === 'ensure_target') {
+      if (hasRegionAuthenticationGate()) {
+        return waitForRegionAuth(shared, shared.targetRegion || getResolvedRegion() || '', 'ensure_target')
+      }
       if (!location.href.includes('/goods/recommended-retail-price')) {
         location.href = TARGET_URL
         return nextPhase('ensure_target', mode === 'new' ? 2200 : 1500)
@@ -783,11 +807,11 @@
 
     if (phase === 'wait_region_ready') {
       if (hasRegionAuthenticationGate()) {
-        return skipBlockedRegion(shared)
+        return waitForRegionAuth(shared, shared.targetRegion || getResolvedRegion() || '')
       }
       const ready = await waitForTable(30000)
       if (!ready) {
-        if (hasRegionAuthenticationGate()) return skipBlockedRegion(shared)
+        if (hasRegionAuthenticationGate()) return waitForRegionAuth(shared, shared.targetRegion || getResolvedRegion() || '')
         return fail(`建议零售价页面切换地区后未加载完成：${shared.targetRegion || '未知'}`)
       }
       if (hasNoRegionAccess()) {
@@ -805,6 +829,8 @@
         currentPageNo: 1,
         totalRows: 0,
         totalPages: 0,
+        regionAuthWaitRounds: 0,
+        regionAuthWaitReason: '',
       })
     }
 

@@ -14,6 +14,7 @@ tasks:
     name: 商品数据
     description: 抓取 Temu 商品数据（支付件数、趋势等），支持时间区间筛选
     script: goods-data.js
+    entry_url: https://agentseller.temu.com/newon/goods-data
     params:
       - id: mode
         type: radio

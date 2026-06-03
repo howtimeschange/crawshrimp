@@ -1692,6 +1692,154 @@ test('mall-flux target readiness does not require a visible date input in month 
   assert.equal(await hook.waitForTargetReady(200), true)
 })
 
+test('mall-flux waits for manual authentication after outer-site switch redirects to auth page', async () => {
+  const document = new DynamicDocument({ bodyText: 'TEMU Agent Center 认证' })
+  const result = await runScript('adapters/temu/mall-flux.js', {
+    phase: 'after_outer_site_switch',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Fmall-flux-analysis-full',
+    document,
+    shared: {
+      targetOuterSite: '美国',
+      targetOuterSites: ['全球', '美国', '欧区'],
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'after_outer_site_switch')
+  assert.equal(result.meta.shared.targetOuterSite, '美国')
+  assert.match(result.meta.shared.outerSiteAuthWaitReason, /美国/)
+})
+
+test('activity-data waits for manual authentication after outer-site switch redirects to auth page', async () => {
+  const document = new DynamicDocument({ bodyText: 'TEMU Agent Center 认证' })
+  const result = await runScript('adapters/temu/activity-data.js', {
+    phase: 'after_outer_site_switch',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Fact%2Fdata-full',
+    document,
+    shared: {
+      targetOuterSite: '美国',
+      targetOuterSites: ['全球', '美国', '欧区'],
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'after_outer_site_switch')
+  assert.equal(result.meta.shared.targetOuterSite, '美国')
+  assert.match(result.meta.shared.outerSiteAuthWaitReason, /美国/)
+})
+
+test('goods-traffic-list waits for manual authentication after outer-site switch redirects to auth page', async () => {
+  const document = new DynamicDocument({ bodyText: 'TEMU Agent Center 认证' })
+  const result = await runScript('adapters/temu/goods-traffic-list.js', {
+    phase: 'after_outer_site_switch',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Fflux-analysis-full',
+    document,
+    shared: {
+      targetOuterSite: '美国',
+      targetOuterSites: ['全球', '美国', '欧区'],
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'after_outer_site_switch')
+  assert.equal(result.meta.shared.targetOuterSite, '美国')
+  assert.match(result.meta.shared.outerSiteAuthWaitReason, /美国/)
+})
+
+async function assertTemuScriptWaitsForManualAuth(scriptPath, options) {
+  const document = new DynamicDocument({ bodyText: 'TEMU Agent Center 认证' })
+  const result = await runScript(scriptPath, {
+    href: options.href,
+    phase: options.phase,
+    document,
+    shared: options.shared,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, options.expectedNextPhase || options.phase)
+  assert.match(
+    result.meta.shared[options.reasonKey],
+    options.reasonPattern || /美国/,
+  )
+}
+
+test('evaluate-list waits for manual authentication after region switch redirects to auth page', async () => {
+  await assertTemuScriptWaitsForManualAuth('adapters/temu/evaluate-list.js', {
+    phase: 'after_outer_site_switch',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Fevaluate%2Fevaluate-list',
+    shared: {
+      pendingTargetOuterSite: '美国',
+      targetOuterSites: ['全球', '美国', '欧区'],
+    },
+    reasonKey: 'outerSiteAuthWaitReason',
+  })
+})
+
+test('goods-traffic-detail waits for manual authentication after outer-site switch redirects to auth page', async () => {
+  await assertTemuScriptWaitsForManualAuth('adapters/temu/goods-traffic-detail.js', {
+    phase: 'after_outer_site_switch',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Fflux-analysis-full',
+    shared: {
+      targetOuterSite: '美国',
+      resume_phase: 'prepare_query',
+    },
+    reasonKey: 'outerSiteAuthWaitReason',
+  })
+})
+
+test('aftersales waits for manual authentication after region switch redirects to auth page', async () => {
+  await assertTemuScriptWaitsForManualAuth('adapters/temu/aftersales.js', {
+    phase: 'after_region_switch',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Faftersales%2Finformation',
+    shared: {
+      targetRegion: '美国',
+      targetRegions: ['全球', '美国', '欧区'],
+    },
+    reasonKey: 'regionAuthWaitReason',
+  })
+})
+
+test('fund-limited-list waits for manual authentication after region switch redirects to auth page', async () => {
+  await assertTemuScriptWaitsForManualAuth('adapters/temu/fund-limited-list.js', {
+    phase: 'wait_region_ready',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Flabor%2Flimited%2Flist',
+    shared: {
+      targetRegion: '美国',
+      targetRegions: ['全球', '美国', '欧区'],
+    },
+    reasonKey: 'regionAuthWaitReason',
+  })
+})
+
+test('recommended-retail-price waits for manual authentication after region switch redirects to auth page', async () => {
+  await assertTemuScriptWaitsForManualAuth('adapters/temu/recommended-retail-price.js', {
+    phase: 'wait_region_ready',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fgoods%2Frecommended-retail-price',
+    shared: {
+      targetRegion: '美国',
+      targetRegions: ['全球', '美国', '欧区'],
+    },
+    reasonKey: 'regionAuthWaitReason',
+  })
+})
+
+test('quality-dashboard waits for manual authentication after region switch redirects to auth page', async () => {
+  await assertTemuScriptWaitsForManualAuth('adapters/temu/quality-dashboard.js', {
+    phase: 'wait_route_ready',
+    href: 'https://agentseller-us.temu.com/auth/authentication?redirectUrl=https%3A%2F%2Fagentseller-us.temu.com%2Fmain%2Fquality%2Fdashboard',
+    shared: {
+      currentRegion: '美国',
+      targetRegions: ['全球', '美国', '欧区'],
+      targetRoute: '品质分析',
+    },
+    reasonKey: 'regionAuthWaitReason',
+  })
+})
+
 test('activity-data does not switch outer site when total count implies more pages', async () => {
   const state = {
     pageNo: 1,

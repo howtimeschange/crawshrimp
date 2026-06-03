@@ -9,6 +9,8 @@
   const CANONICAL_OUTER_SITE_ORDER = ['全球', '美国', '欧区']
   const QUICK_TIME_RANGE_OPTIONS = ['近30天', '近60天', '近90天', '自定义']
   const SEEN_ROW_KEY = '__CRAWSHRIMP_TEMU_EVALUATE_LIST_SEEN__'
+  const OUTER_SITE_AUTH_WAIT_LIMIT = 60
+  const OUTER_SITE_AUTH_WAIT_MS = 5000
 
   const requestedShared = {
     requestedRegions: normalizeArray(shared.requestedRegions || params.regions),
@@ -216,6 +218,31 @@
 
   function getResolvedOuterSite() {
     return getOuterSiteFromHostname() || getActiveOuterSite() || ''
+  }
+
+  function isOuterSiteAuthPage() {
+    const href = String(location.href || '')
+    const bodyText = textOf(document.body)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForOuterSiteAuth(sharedState, targetOuterSite) {
+    const rounds = Number(sharedState.outerSiteAuthWaitRounds || 0)
+    if (rounds >= OUTER_SITE_AUTH_WAIT_LIMIT) {
+      return fail(`等待 ${targetOuterSite || '目标地区'} 登录/认证超时，请完成该地区登录后重试`)
+    }
+    const targetUrl = getOuterSiteUrl(targetOuterSite)
+    if (targetUrl && !isOuterSiteAuthPage() && !location.href.includes('/main/evaluate/evaluate-list')) {
+      location.href = targetUrl
+    }
+    return nextPhase('after_outer_site_switch', OUTER_SITE_AUTH_WAIT_MS, {
+      ...sharedState,
+      pendingTargetOuterSite: targetOuterSite,
+      outerSiteAuthWaitRounds: rounds + 1,
+      outerSiteAuthWaitReason: `等待 ${targetOuterSite || '目标地区'} 登录/认证`,
+    })
   }
 
   function buildTargetOuterSites() {
@@ -878,8 +905,8 @@
 
     if (phase === 'ensure_target') {
       if (page === 1) resetSeenRows()
-      if (location.href.includes('/main/authentication')) {
-        return fail('当前 Temu 账号被重定向到认证页，暂无商品评价页面访问权限')
+      if (isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, shared.pendingTargetOuterSite || getResolvedOuterSite() || '')
       }
       if (!location.href.includes('/main/evaluate/evaluate-list')) {
         location.href = TARGET_URL
@@ -940,9 +967,18 @@
     if (phase === 'after_outer_site_switch') {
       const targetOuterSite = String(shared.pendingTargetOuterSite || '').trim()
       const oldSignature = String(shared.pendingOuterSiteOldSignature || '').trim()
+      if (isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, targetOuterSite)
+      }
       const ready = await waitForTargetReady(25000)
+      if (!ready && isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, targetOuterSite)
+      }
       if (!ready) return fail(`切换地区后页面未恢复：${targetOuterSite || '未知地区'}`)
       const matched = await waitFor(() => !targetOuterSite || getResolvedOuterSite() === targetOuterSite, 12000, 300)
+      if (!matched && isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, targetOuterSite)
+      }
       if (!matched && targetOuterSite) return fail(`切换地区后未进入目标范围：${targetOuterSite}`)
       if (oldSignature) {
         const refreshed = await waitFor(() => {
@@ -957,6 +993,8 @@
         pendingTargetOuterSite: '',
         pendingOuterSiteOldSignature: '',
         justSwitchedOuterSite: true,
+        outerSiteAuthWaitRounds: 0,
+        outerSiteAuthWaitReason: '',
       })
     }
 

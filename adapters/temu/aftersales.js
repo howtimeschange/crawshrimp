@@ -8,6 +8,8 @@
   const regions = Array.isArray(params.regions) ? params.regions : []
 
   const AFTERSALES_URL = 'https://agentseller.temu.com/main/aftersales/information'
+  const REGION_AUTH_WAIT_LIMIT = 60
+  const REGION_AUTH_WAIT_MS = 5000
 
   function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
@@ -33,6 +35,10 @@
       data,
       meta: { action: 'complete', has_more: hasMore, shared: newShared }
     }
+  }
+
+  function textOf(el) {
+    return String(el?.innerText || el?.textContent || '').replace(/\s+/g, ' ').trim()
   }
 
   function getRegionNodes() {
@@ -162,6 +168,56 @@
     return active?.innerText.trim() || ''
   }
 
+  function getRegionFromHostname() {
+    const host = String(location.hostname || '').trim()
+    if (host === 'agentseller.temu.com') return '全球'
+    if (host === 'agentseller-us.temu.com') return '美国'
+    if (host === 'agentseller-eu.temu.com') return '欧区'
+    return ''
+  }
+
+  function getResolvedRegion() {
+    return getActiveRegion() || getRegionFromHostname() || ''
+  }
+
+  function getRegionUrl(regionText) {
+    const hostMap = {
+      全球: 'agentseller.temu.com',
+      美国: 'agentseller-us.temu.com',
+      欧区: 'agentseller-eu.temu.com',
+    }
+    const host = hostMap[regionText]
+    if (!host) return ''
+    const url = new URL(AFTERSALES_URL)
+    url.hostname = host
+    return url.toString()
+  }
+
+  function isRegionAuthPage() {
+    const href = String(location.href || '')
+    const bodyText = textOf(document.body)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForRegionAuth(sharedState, targetRegion, nextPhaseName = 'after_region_switch') {
+    const rounds = Number(sharedState.regionAuthWaitRounds || 0)
+    if (rounds >= REGION_AUTH_WAIT_LIMIT) {
+      return { success: false, error: `等待 ${targetRegion || '目标地区'} 登录/认证超时，请完成该地区登录后重试` }
+    }
+    const targetUrl = getRegionUrl(targetRegion)
+    if (targetUrl && !isRegionAuthPage() && !location.href.includes('/aftersales')) {
+      location.href = targetUrl
+    }
+    return nextPhase(nextPhaseName, REGION_AUTH_WAIT_MS, {
+      ...sharedState,
+      targetRegion,
+      regionAuthWaitRounds: rounds + 1,
+      regionAuthWaitReason: `等待 ${targetRegion || '目标地区'} 登录/认证`,
+    })
+  }
+
   function buildTargetRegions() {
     const available = getAvailableRegions().map(r => r.text)
     const regionMap = { '全球': '全球', '美国': '美国', '欧区': '欧区' }
@@ -191,8 +247,8 @@
     }
 
     if (phase === 'ensure_target') {
-      if (location.href.includes('/main/authentication')) {
-        return { success: false, error: '当前 Temu 账号被重定向到认证页，暂无售后数据访问权限' }
+      if (isRegionAuthPage()) {
+        return waitForRegionAuth(shared, shared.targetRegion || getResolvedRegion() || '', 'ensure_target')
       }
       if (!location.href.includes('/aftersales')) {
         location.href = AFTERSALES_URL
@@ -234,13 +290,21 @@
 
     if (phase === 'prepare_page1_wait_region') {
       const targetRegion = shared.targetRegion || ''
+      if (isRegionAuthPage()) {
+        return waitForRegionAuth(shared, targetRegion, 'prepare_page1_wait_region')
+      }
       const tableOk = await waitForTable(12000)
+      if (!tableOk && isRegionAuthPage()) {
+        return waitForRegionAuth(shared, targetRegion, 'prepare_page1_wait_region')
+      }
       if (!tableOk) return { success: false, error: `切换地区后列表未加载：${targetRegion || '未知地区'}` }
       const pageResetOk = await ensureFirstPage(12000)
       if (!pageResetOk) return { success: false, error: `切换地区后无法回到第一页：${targetRegion || '未知地区'}` }
       return nextPhase('collect', 200, {
         availableRegions: shared.availableRegions || [],
         targetRegions: shared.targetRegions || [],
+        regionAuthWaitRounds: 0,
+        regionAuthWaitReason: '',
       })
     }
 
@@ -282,13 +346,21 @@
 
     if (phase === 'after_region_switch') {
       const targetRegion = shared.targetRegion || ''
+      if (isRegionAuthPage()) {
+        return waitForRegionAuth(shared, targetRegion)
+      }
       const tableOk = await waitForTable(12000)
+      if (!tableOk && isRegionAuthPage()) {
+        return waitForRegionAuth(shared, targetRegion)
+      }
       if (!tableOk) return { success: false, error: `切换地区后列表未加载：${targetRegion || '未知地区'}` }
       const pageResetOk = await ensureFirstPage(12000)
       if (!pageResetOk) return { success: false, error: `切换地区后无法回到第一页：${targetRegion || '未知地区'}` }
       return nextPhase('collect', 200, {
         availableRegions: shared.availableRegions || [],
         targetRegions: shared.targetRegions || [],
+        regionAuthWaitRounds: 0,
+        regionAuthWaitReason: '',
       })
     }
 

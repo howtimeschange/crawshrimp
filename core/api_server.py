@@ -1102,6 +1102,77 @@ def _url_matches_prefix(url: str, prefix: str) -> bool:
     return False
 
 
+def _is_temu_agentseller_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    return host == "agentseller.temu.com" or (
+        host.endswith(".temu.com") and host.startswith("agentseller-")
+    )
+
+
+def _is_temu_kuajingmaihuo_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return False
+    return (parsed.hostname or "").lower() == "seller.kuajingmaihuo.com"
+
+
+def _is_temu_backend_url(url: str) -> bool:
+    return _is_temu_agentseller_url(url) or _is_temu_kuajingmaihuo_url(url)
+
+
+def _is_temu_no_auth_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = parsed.path or ""
+    return host == "seller.temu.com" and path == "/no-auth.html"
+
+
+def _temu_new_tab_entry_url(target_entry_url: str) -> str:
+    """Open Temu backend from its shell first; direct protected deep links can hit no-auth."""
+    if not _is_temu_backend_url(target_entry_url):
+        return target_entry_url
+    try:
+        parsed = urlparse(str(target_entry_url or ""))
+    except Exception:
+        return "https://agentseller.temu.com"
+    host = (parsed.hostname or "agentseller.temu.com").lower()
+    if host == "agentseller.temu.com" or (host.endswith(".temu.com") and host.startswith("agentseller-")):
+        return f"{parsed.scheme or 'https'}://{host}/"
+    if host == "seller.kuajingmaihuo.com":
+        return "https://seller.kuajingmaihuo.com/main/order-manager/shipping-list"
+    return "https://agentseller.temu.com"
+
+
+def _is_temu_opener_tab_url(url: str) -> bool:
+    return _is_temu_backend_url(url) and not _is_temu_no_auth_url(url)
+
+
+def _temu_opener_tab_sort_key(target_entry_url: str, tab_url: str) -> tuple[int, int]:
+    if _is_temu_kuajingmaihuo_url(target_entry_url):
+        return (0 if _is_temu_kuajingmaihuo_url(tab_url) else 1, 0)
+    if _is_temu_agentseller_url(target_entry_url):
+        return (0 if _is_temu_agentseller_url(tab_url) else 1, 0)
+    return (0, 0)
+
+
+def _is_compatible_current_tab_for_task(adapter_id: str, task_id: str, target_entry_url: str, tab_url: str) -> bool:
+    if adapter_id != "temu":
+        return False
+    if _is_temu_agentseller_url(target_entry_url):
+        return _is_temu_agentseller_url(tab_url)
+    if _is_temu_kuajingmaihuo_url(target_entry_url):
+        return _is_temu_kuajingmaihuo_url(tab_url)
+    return False
+
+
 def _normalize_export_guard_value(value) -> str:
     return str(value or '').strip()
 
@@ -2530,12 +2601,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 if not tab:
                     raise RuntimeError("未找到当前页面对应的 Chrome 标签页。请重新聚焦目标业务页面后重试。")
                 tab_url = str(tab.get('url', ''))
-                if not any(_url_matches_prefix(tab_url, prefix) for prefix in preferred_prefixes):
+                if not any(_url_matches_prefix(tab_url, prefix) for prefix in preferred_prefixes) and not _is_compatible_current_tab_for_task(adapter_id, task_id, target_entry_url, tab_url):
                     raise RuntimeError(f"当前页面不是目标业务页：{tab_url[:120]}")
             else:
                 candidate_tabs = [
                     t for t in all_tabs
                     if any(_url_matches_prefix(str(t.get('url', '')), prefix) for prefix in preferred_prefixes)
+                    or _is_compatible_current_tab_for_task(adapter_id, task_id, target_entry_url, str(t.get('url', '')))
                 ]
                 if len(candidate_tabs) == 1:
                     tab = candidate_tabs[0]
@@ -2547,12 +2619,56 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 else:
                     raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}。请选择“新页面开启（重新导航）”或先手动打开并登录。")
         else:
-            log(f"mode=new，尝试新建页面：{target_entry_url}")
-            try:
-                tab = bridge.new_tab(target_entry_url)
-            except Exception as e:
-                log(f"新建 tab 失败，尝试复用现有 tab: {e}")
-                tab = bridge.find_tab(target_entry_url)
+            open_entry_url = _temu_new_tab_entry_url(target_entry_url) if adapter_id == 'temu' else target_entry_url
+            if open_entry_url != target_entry_url:
+                log(f"mode=new，Temu 使用后台入口新建页面：{open_entry_url}，稍后导航业务页：{target_entry_url}")
+            else:
+                log(f"mode=new，尝试新建页面：{target_entry_url}")
+            if adapter_id == 'temu' and _is_temu_backend_url(target_entry_url):
+                opener_candidates = [
+                    item for item in bridge.get_tabs()
+                    if item.get('type') == 'page' and _is_temu_opener_tab_url(str(item.get('url') or ''))
+                ]
+                opener_candidates.sort(key=lambda item: _temu_opener_tab_sort_key(target_entry_url, str(item.get('url') or '')))
+                opener_tab = opener_candidates[0] if opener_candidates else None
+                if opener_tab:
+                    log(f"Temu 复用已登录后台页打开新标签：{str(opener_tab.get('url') or '')[:120]}")
+                    opener_runner = JSRunner(
+                        bridge.get_tab_ws_url(opener_tab),
+                        tab_id=str(opener_tab.get('id') or ''),
+                        tab_url=str(opener_tab.get('url') or ''),
+                        artifact_dir=runtime_artifact_dir,
+                    )
+                    before_ids = {
+                        str(item.get('id') or '')
+                        for item in bridge.get_tabs()
+                        if item.get('type') == 'page'
+                    }
+                    open_expr = (
+                        "(() => {\n"
+                        f"  const url = {json.dumps(open_entry_url, ensure_ascii=False)};\n"
+                        "  const win = window.open(url, '_blank');\n"
+                        "  return { success: !!win, data: [], meta: { has_more: false } };\n"
+                        "})()\n"
+                    )
+                    open_result = await opener_runner.evaluate_user_gesture(open_expr)
+                    if open_result.success:
+                        await asyncio.sleep(1.5)
+                        new_tabs = [
+                            item for item in bridge.get_tabs()
+                            if item.get('type') == 'page' and str(item.get('id') or '') not in before_ids
+                        ]
+                        tab = next((item for item in new_tabs if _is_temu_opener_tab_url(str(item.get('url') or ''))), None)
+                        if not tab and new_tabs:
+                            tab = new_tabs[-1]
+                    else:
+                        log(f"Temu 页面上下文打开新标签失败，回退 CDP 新建：{open_result.error or 'unknown'}")
+            if not tab:
+                try:
+                    tab = bridge.new_tab(open_entry_url)
+                except Exception as e:
+                    log(f"新建 tab 失败，尝试复用现有 tab: {e}")
+                    tab = bridge.find_tab(open_entry_url) or bridge.find_tab(target_entry_url)
             if not tab:
                 raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 
@@ -2563,6 +2679,40 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             tab_url=str(tab.get('url') or ''),
             artifact_dir=runtime_artifact_dir,
         )
+
+        async def navigate_runner_to(url: str, wait_seconds: float = 2.0, via_page: bool = False):
+            if via_page:
+                expression = (
+                    "(() => {\n"
+                    f"  location.href = {json.dumps(str(url or ''), ensure_ascii=False)};\n"
+                    "  return { success: true, data: [], meta: { has_more: false } };\n"
+                    "})()\n"
+                )
+                nav_result = await runner.evaluate(expression)
+                if nav_result.success and wait_seconds > 0:
+                    await asyncio.sleep(wait_seconds)
+                    try:
+                        await runner._refresh_ws_url()
+                    except Exception:
+                        logger.debug("refresh ws url failed after page-context navigate", exc_info=True)
+            else:
+                nav_result = await runner.navigate(url, wait_seconds=wait_seconds)
+            if nav_result.success:
+                runner.tab_url = str(url or runner.tab_url or '')
+            return nav_result
+
+        async def recover_temu_no_auth(stage: str = "入口"):
+            if adapter_id != 'temu':
+                return
+            current_tab = bridge.get_tab(str(tab.get('id') or runner.tab_id or '')) if (tab or runner.tab_id) else None
+            current_url = str((current_tab or {}).get('url') or '')
+            if not _is_temu_no_auth_url(current_url):
+                return
+            shell_url = _temu_new_tab_entry_url(target_entry_url)
+            log(f"检测到 Temu 反爬/无授权页（{stage}）：{current_url}，改从后台入口恢复：{shell_url}")
+            nav_result = await navigate_runner_to(shell_url, wait_seconds=3)
+            if not nav_result.success:
+                raise RuntimeError(nav_result.error or f"无法从 Temu no-auth 恢复到后台入口：{shell_url}")
 
         def merge_output_file_refs(*groups):
             merged = []
@@ -2706,6 +2856,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             except FileNotFoundError:
                 auth_path = None
             if auth_path:
+                await recover_temu_no_auth("登录检测前")
                 await wait_for_control()
                 log(f"运行登录检测：{m.auth.check_script}")
                 auth_result = await runner.evaluate(auth_path.read_text(encoding='utf-8'))
@@ -2721,7 +2872,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     if mode == 'new':
                         await wait_for_control()
                         log(f"检测到未登录，跳转登录页：{login_url}")
-                        login_nav = await runner.navigate(login_url, wait_seconds=2)
+                        login_nav = await navigate_runner_to(login_url, wait_seconds=2)
                         if not login_nav.success:
                             raise RuntimeError(login_nav.error or f"无法跳转登录页：{login_url}")
                         await asyncio.sleep(2)
@@ -2749,11 +2900,29 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 if mode == 'new':
                     # 登录完成后，重新导航回业务入口页
                     await wait_for_control()
+                    await recover_temu_no_auth("导航业务入口前")
                     log(f"导航回业务入口：{target_entry_url}")
-                    entry_nav = await runner.navigate(target_entry_url, wait_seconds=3)
+                    entry_nav = await navigate_runner_to(
+                        target_entry_url,
+                        wait_seconds=3,
+                        via_page=adapter_id == 'temu' and _is_temu_backend_url(target_entry_url),
+                    )
                     if not entry_nav.success:
                         raise RuntimeError(entry_nav.error or f"无法导航回业务入口：{target_entry_url}")
                     await asyncio.sleep(3)
+                    await recover_temu_no_auth("导航业务入口后")
+        elif adapter_id == 'temu' and mode == 'new' and _is_temu_backend_url(target_entry_url):
+            await recover_temu_no_auth("跳过登录检测后")
+            log(f"导航回业务入口：{target_entry_url}")
+            entry_nav = await navigate_runner_to(
+                target_entry_url,
+                wait_seconds=3,
+                via_page=_is_temu_backend_url(target_entry_url),
+            )
+            if not entry_nav.success:
+                raise RuntimeError(entry_nav.error or f"无法导航回业务入口：{target_entry_url}")
+            await asyncio.sleep(3)
+            await recover_temu_no_auth("导航业务入口后")
 
         script_path = adapter_loader.resolve_adapter_file(adapter_id, task.script)
 

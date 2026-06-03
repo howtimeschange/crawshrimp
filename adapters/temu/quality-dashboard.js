@@ -12,6 +12,8 @@
   const REGION_BLACKLIST = new Set(['商家中心'])
   const SEEN_ROW_KEY = '__CRAWSHRIMP_TEMU_QUALITY_DASHBOARD_SEEN__'
   const DEFAULT_PAGE_SIZE = 20
+  const REGION_AUTH_WAIT_LIMIT = 60
+  const REGION_AUTH_WAIT_MS = 5000
 
   const requestedShared = {
     requestedMode: String(shared.requestedMode || params.mode || 'current').trim().toLowerCase(),
@@ -171,6 +173,31 @@
 
   function hasNoRegionAccess() {
     return /该区暂无权限/.test(textOf(document.body))
+  }
+
+  function hasRegionAuthenticationGate() {
+    const href = String(location.href || '')
+    const bodyText = textOf(document.body)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForRegionAuth(next = shared, targetRegion = String(next.currentRegion || getResolvedRegion() || '').trim(), targetRoute = String(next.targetRoute || ANALYSIS_ROUTE).trim() || ANALYSIS_ROUTE, nextPhaseName = 'wait_route_ready') {
+    const rounds = Number(next.regionAuthWaitRounds || 0)
+    if (rounds >= REGION_AUTH_WAIT_LIMIT) {
+      return fail(`等待 ${targetRegion || '目标地区'} 登录/认证超时，请完成该地区登录后重试`)
+    }
+    if (!hasRegionAuthenticationGate() && !/\/main\/quality\/(dashboard|optimize)/.test(String(location.href || ''))) {
+      location.href = getRouteUrl(targetRoute, targetRegion)
+    }
+    return nextPhase(nextPhaseName, REGION_AUTH_WAIT_MS, {
+      ...next,
+      currentRegion: targetRegion,
+      targetRoute,
+      regionAuthWaitRounds: rounds + 1,
+      regionAuthWaitReason: `等待 ${targetRegion || '目标地区'} 登录/认证`,
+    })
   }
 
   function buildTargetRegions() {
@@ -562,6 +589,9 @@
     }
 
     if (phase === 'ensure_target') {
+      if (hasRegionAuthenticationGate()) {
+        return waitForRegionAuth(shared, shared.currentRegion || getResolvedRegion() || '', shared.targetRoute || ANALYSIS_ROUTE, 'ensure_target')
+      }
       if (!/\/main\/quality\/(dashboard|optimize)/.test(String(location.href || ''))) {
         location.href = ANALYSIS_URL
         return nextPhase('ensure_target', mode === 'new' ? 2200 : 1500)
@@ -614,7 +644,13 @@
     }
 
     if (phase === 'wait_route_ready') {
+      if (hasRegionAuthenticationGate()) {
+        return waitForRegionAuth(shared, shared.currentRegion || getResolvedRegion() || '', shared.targetRoute || ANALYSIS_ROUTE)
+      }
       const ready = await waitForTable(30000)
+      if (!ready && hasRegionAuthenticationGate()) {
+        return waitForRegionAuth(shared, shared.currentRegion || getResolvedRegion() || '', shared.targetRoute || ANALYSIS_ROUTE)
+      }
       if (!ready) return fail(`商品品质分析页面切换后未加载完成：${shared.targetRoute || '未知页面'}`)
       if (hasNoRegionAccess()) {
         const currentRegion = getResolvedRegion() || String(shared.currentRegion || '').trim()
@@ -644,6 +680,8 @@
       return nextPhase('collect', 300, {
         ...shared,
         currentRegion: getResolvedRegion(),
+        regionAuthWaitRounds: 0,
+        regionAuthWaitReason: '',
       })
     }
 

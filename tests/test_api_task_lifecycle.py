@@ -595,6 +595,244 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(finalize_statuses[0]["download_completed"], 274)
         self.assertFalse(finalize_statuses[0]["download_active"])
 
+    async def test_temu_new_mode_opens_agentseller_shell_before_page_context_business_navigation(self):
+        class FakeBridge:
+            def __init__(self):
+                self.new_tab_urls = []
+
+            def get_tabs(self):
+                return []
+
+            def new_tab(self, url):
+                self.new_tab_urls.append(url)
+                return {"id": "tab-1", "url": url, "webSocketDebuggerUrl": "ws://example.invalid"}
+
+            def find_tab(self, url):
+                return None
+
+            def get_tab(self, tab_id):
+                return {"id": "tab-1", "url": self.new_tab_urls[-1], "webSocketDebuggerUrl": "ws://example.invalid"}
+
+            def get_tab_ws_url(self, tab):
+                return "ws://example.invalid"
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+                self.evaluations = []
+                self.navigations = []
+                self.tab_url = kwargs.get("tab_url", "")
+                self.tab_id = kwargs.get("tab_id", "")
+
+            async def evaluate(self, expression):
+                self.evaluations.append(expression)
+                if "logged_in" in expression:
+                    return type("Result", (), {"success": True, "data": [], "meta": {"logged_in": True}, "error": None})()
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def navigate(self, url, wait_seconds=0):
+                self.navigations.append(str(url))
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def _refresh_ws_url(self):
+                return None
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return [{"日期": "2026-06-02"}]
+
+        class FakeTask:
+            id = "mall_flux"
+            name = "后台-店铺流量"
+            description = ""
+            entry_url = "https://agentseller.temu.com/main/mall-flux-analysis-full"
+            tab_match_prefixes = []
+            output = []
+            script = "mall-flux.js"
+            skip_auth = False
+            params = [type("Param", (), {"id": "mode", "default": "current"})()]
+
+        class FakeAdapter:
+            id = "temu"
+            name = "Temu 运营助手"
+            entry_url = "https://agentseller.temu.com"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = type("Auth", (), {"check_script": "auth_check.js", "login_url": "https://seller.temu.com/login"})()
+
+        run_control = api_server._build_run_control()
+        run_control["task"] = asyncio.current_task()
+        fake_bridge = FakeBridge()
+        fake_runner = FakeRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_dir = Path(tmpdir)
+            auth_path = adapter_dir / "auth_check.js"
+            auth_path.write_text(
+                "({ success: true, data: [], meta: { logged_in: true, has_more: false } })",
+                encoding="utf-8",
+            )
+            script_path = adapter_dir / "mall-flux.js"
+            script_path.write_text(
+                "({ success: true, data: [], meta: { has_more: false } })",
+                encoding="utf-8",
+            )
+
+            def resolve_file(adapter_id, filename):
+                return auth_path if filename == "auth_check.js" else script_path
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=fake_bridge):
+                        with patch("core.js_runner.JSRunner", return_value=fake_runner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=1002):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.data_sink.finish_run"):
+                                        with patch("core.api_server.adapter_loader.resolve_adapter_file", side_effect=resolve_file):
+                                            await api_server._execute_task(
+                                                "temu",
+                                                "mall_flux",
+                                                {"mode": "new"},
+                                                {},
+                                                run_control=run_control,
+                                            )
+
+        self.assertEqual(fake_bridge.new_tab_urls, ["https://agentseller.temu.com/"])
+        self.assertEqual(fake_runner.navigations, [])
+        self.assertTrue(
+            any("mall-flux-analysis-full" in expression and "location.href" in expression for expression in fake_runner.evaluations)
+        )
+
+    async def test_temu_new_mode_prefers_existing_agentseller_opener_over_cdp_new_tab(self):
+        class FakeBridge:
+            def __init__(self):
+                self.new_tab_urls = []
+                self.opened = False
+
+            def get_tabs(self):
+                tabs = [{
+                    "id": "opener",
+                    "type": "page",
+                    "url": "https://agentseller.temu.com/",
+                    "webSocketDebuggerUrl": "ws://opener.example.invalid",
+                }]
+                if self.opened:
+                    tabs.append({
+                        "id": "tab-1",
+                        "type": "page",
+                        "url": "https://agentseller.temu.com/",
+                        "webSocketDebuggerUrl": "ws://new.example.invalid",
+                    })
+                return tabs
+
+            def new_tab(self, url):
+                self.new_tab_urls.append(url)
+                return {"id": "fallback", "url": url, "webSocketDebuggerUrl": "ws://fallback.example.invalid"}
+
+            def find_tab(self, url):
+                return None
+
+            def get_tab(self, tab_id):
+                for tab in self.get_tabs():
+                    if tab["id"] == tab_id:
+                        return tab
+                return None
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+        class FakeRunner:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+                self.evaluations = []
+                self.user_gesture_evaluations = []
+                self.navigations = []
+                self.tab_url = kwargs.get("tab_url", "")
+                self.tab_id = kwargs.get("tab_id", "")
+                FakeRunner.instances.append(self)
+
+            async def evaluate(self, expression, user_gesture=False):
+                self.evaluations.append(expression)
+                if "logged_in" in expression:
+                    return type("Result", (), {"success": True, "data": [], "meta": {"logged_in": True}, "error": None})()
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def evaluate_user_gesture(self, expression):
+                fake_bridge.opened = True
+                self.user_gesture_evaluations.append(expression)
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def navigate(self, url, wait_seconds=0):
+                self.navigations.append(str(url))
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def _refresh_ws_url(self):
+                return None
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return [{"日期": "2026-06-02"}]
+
+        class FakeTask:
+            id = "mall_flux"
+            name = "后台-店铺流量"
+            description = ""
+            entry_url = "https://agentseller.temu.com/main/mall-flux-analysis-full"
+            tab_match_prefixes = []
+            output = []
+            script = "mall-flux.js"
+            skip_auth = False
+            params = [type("Param", (), {"id": "mode", "default": "current"})()]
+
+        class FakeAdapter:
+            id = "temu"
+            name = "Temu 运营助手"
+            entry_url = "https://agentseller.temu.com"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = type("Auth", (), {"check_script": "auth_check.js", "login_url": "https://seller.temu.com/login"})()
+
+        run_control = api_server._build_run_control()
+        run_control["task"] = asyncio.current_task()
+        fake_bridge = FakeBridge()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_dir = Path(tmpdir)
+            auth_path = adapter_dir / "auth_check.js"
+            auth_path.write_text(
+                "({ success: true, data: [], meta: { logged_in: true, has_more: false } })",
+                encoding="utf-8",
+            )
+            script_path = adapter_dir / "mall-flux.js"
+            script_path.write_text(
+                "({ success: true, data: [], meta: { has_more: false } })",
+                encoding="utf-8",
+            )
+
+            def resolve_file(adapter_id, filename):
+                return auth_path if filename == "auth_check.js" else script_path
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=fake_bridge):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=1003):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.data_sink.finish_run"):
+                                        with patch("core.api_server.adapter_loader.resolve_adapter_file", side_effect=resolve_file):
+                                            await api_server._execute_task(
+                                                "temu",
+                                                "mall_flux",
+                                                {"mode": "new"},
+                                                {},
+                                                run_control=run_control,
+                                            )
+
+        self.assertEqual(fake_bridge.new_tab_urls, [])
+        opener_runner = FakeRunner.instances[0]
+        self.assertTrue(opener_runner.user_gesture_evaluations)
+        self.assertTrue(any("window.open" in expression for expression in opener_runner.user_gesture_evaluations))
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,8 @@
   const REGION_BLACKLIST = new Set(['商家中心'])
   const SEEN_ROW_KEY = '__CRAWSHRIMP_TEMU_FUND_LIMITED_SEEN__'
   const DEFAULT_PAGE_SIZE = 20
+  const REGION_AUTH_WAIT_LIMIT = 60
+  const REGION_AUTH_WAIT_MS = 5000
 
   const requestedShared = {
     requestedMode: String(shared.requestedMode || params.mode || 'current').trim().toLowerCase(),
@@ -199,6 +201,31 @@
     const url = new URL(TARGET_URL)
     url.hostname = host
     return url.toString()
+  }
+
+  function isRegionAuthPage() {
+    const href = String(location.href || '')
+    const bodyText = textOf(document.body)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForRegionAuth(sharedState, targetRegion, nextPhaseName = 'wait_region_ready') {
+    const rounds = Number(sharedState.regionAuthWaitRounds || 0)
+    if (rounds >= REGION_AUTH_WAIT_LIMIT) {
+      return fail(`等待 ${targetRegion || '目标地区'} 登录/认证超时，请完成该地区登录后重试`)
+    }
+    const targetUrl = getRegionUrl(targetRegion)
+    if (targetUrl && !isRegionAuthPage() && !location.href.includes('/labor/limited/list')) {
+      location.href = targetUrl
+    }
+    return nextPhase(nextPhaseName, REGION_AUTH_WAIT_MS, {
+      ...sharedState,
+      targetRegion,
+      regionAuthWaitRounds: rounds + 1,
+      regionAuthWaitReason: `等待 ${targetRegion || '目标地区'} 登录/认证`,
+    })
   }
 
   async function waitForRegion(regionText, timeout = 20000) {
@@ -528,6 +555,9 @@
     }
 
     if (phase === 'ensure_target') {
+      if (isRegionAuthPage()) {
+        return waitForRegionAuth(shared, shared.targetRegion || getResolvedRegion() || '', 'ensure_target')
+      }
       if (!location.href.includes('/labor/limited/list')) {
         location.href = TARGET_URL
         return nextPhase('ensure_target', mode === 'new' ? 2200 : 1500)
@@ -560,7 +590,13 @@
 
     if (phase === 'wait_region_ready') {
       const targetRegion = String(shared.targetRegion || '').trim()
+      if (isRegionAuthPage()) {
+        return waitForRegionAuth(shared, targetRegion)
+      }
       const ready = await waitForTable(15000)
+      if (!ready && isRegionAuthPage()) {
+        return waitForRegionAuth(shared, targetRegion)
+      }
       if (!ready && !hasRegionInfoBanner()) return fail(`资金限制页面切换地区后未加载完成：${targetRegion || '未知'}`)
       if (targetRegion) {
         const expectedHost = getExpectedHostRegion(targetRegion)
@@ -576,6 +612,8 @@
         availableRegions: shared.availableRegions || [],
         targetRegions: shared.targetRegions || [],
         targetRegion,
+        regionAuthWaitRounds: 0,
+        regionAuthWaitReason: '',
         forceEmptyRegion: !ready,
       })
     }

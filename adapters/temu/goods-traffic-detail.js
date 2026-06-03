@@ -16,6 +16,8 @@
   const PREPARE_QUERY_RETRY_LIMIT = 3
   const PREPARE_QUERY_RETRY_BASE_DELAY_MS = 1800
   const DETAIL_QUERY_RECOVERY_LIMIT = 2
+  const OUTER_SITE_AUTH_WAIT_LIMIT = 60
+  const OUTER_SITE_AUTH_WAIT_MS = 5000
   const LIST_TIME_OPTIONS = ['昨日', '今日', '本周', '本月', '近7日', '近30日']
   const OUTER_SITE_BLACKLIST = new Set(['商家中心'])
   const DETAIL_GRAIN_OPTIONS = ['按日', '按周', '按月']
@@ -400,6 +402,56 @@
   function getActiveOuterSite() {
     const node = getOuterSiteNodes().find(item => hasClassFragment(item, 'index-module__active___'))
     return textOf(node)
+  }
+
+  function getOuterSiteFromHostname() {
+    const host = String(location.hostname || '').trim()
+    if (host === 'agentseller.temu.com') return '全球'
+    if (host === 'agentseller-us.temu.com') return '美国'
+    if (host === 'agentseller-eu.temu.com') return '欧区'
+    return ''
+  }
+
+  function getResolvedOuterSite() {
+    return getActiveOuterSite() || getOuterSiteFromHostname() || ''
+  }
+
+  function getOuterSiteUrl(siteLabel) {
+    const hostMap = {
+      全球: 'agentseller.temu.com',
+      美国: 'agentseller-us.temu.com',
+      欧区: 'agentseller-eu.temu.com',
+    }
+    const host = hostMap[siteLabel]
+    if (!host) return ''
+    const url = new URL(TARGET_URL)
+    url.hostname = host
+    return url.toString()
+  }
+
+  function isOuterSiteAuthPage() {
+    const href = String(location.href || '')
+    const bodyText = textOf(document.body)
+    return /\/auth\/authentication(?:[/?#]|$)/i.test(href) ||
+      /\/main\/authentication(?:[/?#]|$)/i.test(href) ||
+      /认证|暂无权限|敬请期待|其他地区/.test(bodyText)
+  }
+
+  function waitForOuterSiteAuth(sharedState, targetSite, nextPhaseName = 'after_outer_site_switch') {
+    const rounds = Number(sharedState.outerSiteAuthWaitRounds || 0)
+    if (rounds >= OUTER_SITE_AUTH_WAIT_LIMIT) {
+      return fail(`等待 ${targetSite || '目标站点'} 登录/认证超时，请完成该站点登录后重试`)
+    }
+    const targetUrl = getOuterSiteUrl(targetSite)
+    if (targetUrl && !isOuterSiteAuthPage() && !location.href.includes('/main/flux-analysis-full')) {
+      location.href = targetUrl
+    }
+    return nextPhase(nextPhaseName, OUTER_SITE_AUTH_WAIT_MS, {
+      ...sharedState,
+      targetOuterSite: targetSite,
+      outerSiteAuthWaitRounds: rounds + 1,
+      outerSiteAuthWaitReason: `等待 ${targetSite || '目标站点'} 登录/认证`,
+    })
   }
 
   function getOuterSiteClick(siteLabel) {
@@ -1788,6 +1840,9 @@
     }
 
     if (phase === 'ensure_target') {
+      if (isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, shared.targetOuterSite || getResolvedOuterSite() || '', 'ensure_target')
+      }
       if (!location.href.includes('/main/flux-analysis-full')) {
         location.href = TARGET_URL
         return nextPhase('ensure_target', mode === 'new' ? 3000 : 2200)
@@ -1842,7 +1897,7 @@
       }
 
       const targetSite = current.outerSite || ''
-      if (targetSite && getActiveOuterSite() !== targetSite) {
+      if (targetSite && getResolvedOuterSite() !== targetSite) {
         const click = getOuterSiteClick(targetSite)
         if (!click) {
           return nextPhase('process_source_row', 0, {
@@ -1864,20 +1919,33 @@
     }
 
     if (phase === 'after_outer_site_switch') {
+      if (isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, shared.targetOuterSite || '')
+      }
       const ready = await waitForTargetReady(15000)
+      if (!ready && isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, shared.targetOuterSite || '')
+      }
       if (!ready) return fail(`切换外层站点后页面未恢复：${shared.targetOuterSite || '未知站点'}`)
       const state = await waitForListReady(12000)
+      if (!state.ready && isOuterSiteAuthPage()) {
+        return waitForOuterSiteAuth(shared, shared.targetOuterSite || '')
+      }
       if (!state.ready) return fail(`切换外层站点后列表未加载：${shared.targetOuterSite || '未知站点'}`)
       if (state.busy) {
         return nextPhase(shared.resume_phase || 'prepare_query', 600, {
           ...shared,
           listBusyRetry: 0,
           prepareQueryRetry: 0,
+          outerSiteAuthWaitRounds: 0,
+          outerSiteAuthWaitReason: '',
         })
       }
       return nextPhase(shared.resume_phase || 'prepare_query', 400, {
         ...shared,
         listBusyRetry: 0,
+        outerSiteAuthWaitRounds: 0,
+        outerSiteAuthWaitReason: '',
       })
     }
 
