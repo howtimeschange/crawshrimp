@@ -1,9 +1,9 @@
 id: tiktok-ops-assistant
 name: Tiktok 运营助手
-version: 0.2.0
+version: 0.2.1
 author: codex
-description: "TikTok Shop 多区域运营数据抓取：商品管理、商品评分、联盟达人视频列表与视频下载"
-entry_url: https://seller.us.tiktokshopglobalselling.com/product/rating
+description: "TikTok Shop 多区域运营数据抓取：商品数据分析、商品管理、商品评分、联盟达人视频列表与视频下载"
+entry_url: https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US
 tab_match_prefixes:
   - https://seller.us.tiktokshopglobalselling.com/
   - https://seller.eu.tiktokshopglobalselling.com/
@@ -15,6 +15,80 @@ auth:
   login_url: https://seller.us.tiktokshopglobalselling.com/
 
 tasks:
+  - id: product_analytics
+    name: 商品数据分析
+    description: 抓取 TikTok Shop Seller Center「商品数据分析」关键指标，默认继承页面统计日期，并汇总订单数、商品曝光次数、商品点击量同步到数仓
+    script: product-analytics.js
+    entry_url: https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开商品数据分析页
+      - id: shop_regions
+        type: checkbox
+        label: 店铺区域
+        default: []
+        ui_variant: dropdown_multi
+        placeholder: 默认当前区域；可多选
+        hint: 不选择时使用当前页面或账号默认区域；选择“全部已开通区域”时会按账号已开通店铺区域抓取。
+        options:
+          - value: all
+            label: 全部已开通区域
+          - value: US
+            label: United States
+          - value: GB
+            label: United Kingdom
+          - value: FR
+            label: France
+          - value: DE
+            label: Germany
+          - value: IT
+            label: Italy
+          - value: ES
+            label: Spain
+      - id: time_range
+        type: select
+        label: 统计日期
+        default: page
+        hint: 默认沿用当前 TikTok 页面上的统计日期；只有主动选择快捷项或自定义日期时才覆盖页面筛选。
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: last7
+            label: 最近7天
+          - value: custom
+            label: 自定义日期
+      - id: date_range
+        type: date_range
+        label: 自定义日期
+        hint: 仅在选择“自定义日期”时填写；接口使用页面同款结束日开区间，会自动转换为整日范围。
+        visible_when:
+          field: time_range
+          equals: custom
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "TikTok商品数据分析_{region_scope}_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 平台名称
+          - 区域
+          - 店铺ID
+          - 店铺名称
+          - 统计日期范围
+          - 对比日期范围
+          - 抓取时间
+          - 订单数
+          - 商品曝光次数
+          - 商品点击量
+
   - id: product_management_export
     name: 商品管理导出
     description: 导出 TikTok Shop Seller Center 商品管理列表字段，按商品状态 Tab 抓取，去除操作列，并将商品、SKU、价格、库存、表现和其他店铺信息拆列展示

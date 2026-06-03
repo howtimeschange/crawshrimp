@@ -56,6 +56,19 @@ class TiktokEntryUrlSelectionTests(unittest.TestCase):
             "https://affiliate.tiktokshopglobalselling.com/insights/transaction-analysis?shop_region=FR",
         )
 
+    def test_product_analytics_new_page_uses_selected_region_and_preserves_shop_id(self):
+        selected = api_server._resolve_task_target_entry_url(
+            "tiktok-ops-assistant",
+            "product_analytics",
+            {"shop_regions": ["GB"]},
+            "https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_id=7496042382582647544",
+        )
+
+        self.assertEqual(
+            selected,
+            "https://seller.eu.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=GB&shop_id=7496042382582647544",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

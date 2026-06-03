@@ -1590,3 +1590,197 @@ test('creator video task navigates to affiliate analysis page before collecting 
   assert.match(result.meta.shared.target_url, /shop_region=FR/)
   assert.match(result.meta.shared.target_url, /shop_id=7496042382582647544/)
 })
+
+test('product analytics inherits page date range and exports key metrics for dataworks sync', async () => {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    calls.push({
+      url: String(url),
+      credentials: init.credentials,
+      headers: init.headers,
+      body,
+    })
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: [
+        {
+          intervals: [
+            {
+              start_date: '2026-05-27',
+              end_date: '2026-06-03',
+              rows: [
+                {
+                  values: {
+                    attributed_type: 'overview',
+                    shop_id: '7496042382582647544',
+                    pay_main_order_cnt: '295',
+                    product_show_cnt: '751050',
+                    product_click_cnt: '23884',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  const result = await runScript('product-analytics.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US&shop_id=7496042382582647544&timeRange=2026-05-27%7C2026-06-03&shortcut=last7days',
+    Date: fixedDateClass('2026-05-12T00:00:00.000Z'),
+    params: { time_range: 'page' },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.meta.has_more, false)
+  assert.equal(calls.length, 1)
+  const requestUrl = new URL(calls[0].url)
+  assert.equal(requestUrl.pathname, '/api/v2/insights/seller/unified/query/product_key_metric')
+  assert.equal(requestUrl.searchParams.get('oec_seller_id'), '7496042382582647544')
+  assert.equal(calls[0].credentials, 'include')
+  assert.equal(calls[0].headers['Content-Type'], 'application/json')
+  assert.deepEqual(calls[0].body.query_condition[0].query_time, {
+    start: '2026-05-27',
+    end: '2026-06-02',
+  })
+  assert.deepEqual(calls[0].body.query_condition[0].compare_to_time, {
+    start: '2026-05-20',
+    end: '2026-05-26',
+  })
+  assert.deepEqual(calls[0].body.query_condition[0].where_filter.attributed_types.value_list, ['overview'])
+
+  assert.equal(result.data.length, 1)
+  assert.deepEqual(JSON.parse(JSON.stringify(result.data[0])), {
+    平台名称: 'TikTok',
+    区域: 'US',
+    店铺ID: '7496042382582647544',
+    店铺名称: 'balabalakids',
+    统计日期范围: '2026-05-27 ~ 2026-06-02',
+    对比日期范围: '2026-05-20 ~ 2026-05-26',
+    抓取时间: '2026-05-12 08:00:00',
+    订单数: '295',
+    商品曝光次数: '751050',
+    商品点击量: '23884',
+  })
+  assert.equal(result.meta.shared.date_range, '2026-05-27 ~ 2026-06-02')
+})
+
+test('product analytics advances across selected TikTok seller regions', async () => {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    const region = init.headers['X-Tt-Oec-Region'] || init.headers['x-tt-oec-region']
+    calls.push({ url: String(url), region })
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: [
+        {
+          intervals: [
+            {
+              start_date: '2026-05-27',
+              end_date: '2026-06-03',
+              rows: [
+                {
+                  values: {
+                    pay_main_order_cnt: region === 'US' ? '295' : '42',
+                    product_show_cnt: region === 'US' ? '751050' : '21000',
+                    product_click_cnt: region === 'US' ? '23884' : '800',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  const first = await runScript('product-analytics.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US&shop_id=7496042382582647544&timeRange=2026-05-27%7C2026-06-03',
+    params: { shop_regions: ['US', 'GB'], time_range: 'page' },
+    fetchImpl,
+  })
+
+  assert.equal(first.success, true)
+  assert.equal(first.meta.action, 'next_phase')
+  assert.equal(first.meta.has_more, true)
+  assert.equal(first.data[0].区域, 'US')
+  assert.equal(first.data[0].订单数, '295')
+  assert.equal(first.meta.shared.region_index, 1)
+
+  const nav = await runScript('product-analytics.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US&shop_id=7496042382582647544&timeRange=2026-05-27%7C2026-06-03',
+    params: { shop_regions: ['US', 'GB'], time_range: 'page' },
+    shared: first.meta.shared,
+    fetchImpl,
+  })
+
+  assert.equal(nav.success, true)
+  assert.equal(nav.meta.action, 'next_phase')
+  assert.match(nav.meta.shared.target_url, /^https:\/\/seller\.eu\.tiktokshopglobalselling\.com\/compass\/product-traffic-analysis/)
+  assert.match(nav.meta.shared.target_url, /shop_region=GB/)
+
+  const second = await runScript('product-analytics.js', {
+    href: nav.meta.shared.target_url,
+    params: { shop_regions: ['US', 'GB'], time_range: 'page' },
+    shared: nav.meta.shared,
+    fetchImpl,
+  })
+
+  assert.equal(second.success, true)
+  assert.equal(second.meta.action, 'complete')
+  assert.equal(second.meta.has_more, false)
+  assert.equal(second.data[0].区域, 'GB')
+  assert.equal(second.data[0].订单数, '42')
+  assert.deepEqual(calls.map(call => call.region), ['US', 'GB'])
+})
+
+test('product analytics last7 quick range matches seller page end-exclusive date', async () => {
+  const calls = []
+  const fetchImpl = async (url, init = {}) => {
+    const body = JSON.parse(String(init.body || '{}'))
+    calls.push(body)
+    return createJsonResponse({
+      code: 0,
+      message: 'success',
+      data: [
+        {
+          intervals: [
+            {
+              start_date: '2026-05-27',
+              end_date: '2026-06-03',
+              rows: [
+                {
+                  values: {
+                    '7517': '{"value":"295"}',
+                    '7459': '{"value":"751050"}',
+                    '7582': '{"value":"23884"}',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    })
+  }
+
+  const result = await runScript('product-analytics.js', {
+    href: 'https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US&shop_id=7496042382582647544',
+    Date: fixedDateClass('2026-06-03T12:00:00.000Z'),
+    params: { time_range: 'last7' },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.deepEqual(calls[0].query_condition[0].query_time, {
+    start: '2026-05-27',
+    end: '2026-06-02',
+  })
+  assert.equal(result.data[0].统计日期范围, '2026-05-27 ~ 2026-06-02')
+})

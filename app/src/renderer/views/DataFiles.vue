@@ -126,6 +126,7 @@
 <script setup>
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import { formatTaskForDisplay } from '../utils/taskDisplay'
+import { groupOdpsSyncableFiles, isOdpsSyncableFile } from '../utils/odpsSyncTasks'
 
 const groups         = ref([])
 const showDirSetting = ref(false)
@@ -224,23 +225,25 @@ function isExcelFile(path) {
 }
 
 function isSyncableFile(file) {
-  return file?.adapter_id === 'temu' && file?.task_id === 'mall_flux' && isExcelFile(file.path)
+  return isOdpsSyncableFile(file)
 }
 
 async function syncFilesOdps(files) {
   const targets = (files || []).filter(isSyncableFile)
   if (!targets.length || syncing.value) return
+  const groups = groupOdpsSyncableFiles(targets)
+  if (!groups.length) return
   syncing.value = true
   try {
-    const result = await window.cs.syncOdpsFiles({
-      adapter_id: 'temu',
-      task_id: 'mall_flux',
-      paths: targets.map(file => file.path),
-    })
-    const failedCount = Number(result?.failed_count || 0)
-    const syncedCount = Number(result?.synced_count || 0)
-    if (!result?.ok && failedCount && !syncedCount) {
-      throw new Error(result.failed?.[0]?.error || '同步失败')
+    const results = []
+    for (const group of groups) {
+      results.push(await window.cs.syncOdpsFiles(group))
+    }
+    const failedCount = results.reduce((sum, result) => sum + Number(result?.failed_count || 0), 0)
+    const syncedCount = results.reduce((sum, result) => sum + Number(result?.synced_count || 0), 0)
+    if (failedCount && !syncedCount) {
+      const firstFailed = results.flatMap(result => result?.failed || [])[0]
+      throw new Error(firstFailed?.error || '同步失败')
     }
     setNotice(
       failedCount

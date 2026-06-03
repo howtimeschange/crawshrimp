@@ -14,6 +14,7 @@ from openpyxl import load_workbook
 
 TASK_TABLE_MAP = {
     ("temu", "mall_flux"): "imp_ods_temu_mall_flux",
+    ("tiktok-ops-assistant", "product_analytics"): "imp_ods_tiktok_product_analytics",
 }
 
 TASK_FIELD_MAP = {
@@ -42,6 +43,18 @@ TASK_FIELD_MAP = {
         "店铺数据/店铺页支付买家数": "shop_page_paid_buyers",
         "店铺数据/店铺页支付转化率": "shop_page_payment_conversion_rate",
     },
+    ("tiktok-ops-assistant", "product_analytics"): {
+        "平台名称": "platform_name",
+        "区域": "region",
+        "店铺ID": "shop_id",
+        "店铺名称": "shop_name",
+        "统计日期范围": "stat_date_range",
+        "对比日期范围": "compare_date_range",
+        "抓取时间": "captured_at",
+        "订单数": "orders",
+        "商品曝光次数": "product_impressions",
+        "商品点击量": "product_clicks",
+    },
 }
 
 TASK_FIELD_TYPE_MAP = {
@@ -69,6 +82,18 @@ TASK_FIELD_TYPE_MAP = {
         "店铺数据/店铺页面访客数": "bigint",
         "店铺数据/店铺页支付买家数": "bigint",
         "店铺数据/店铺页支付转化率": "string",
+    },
+    ("tiktok-ops-assistant", "product_analytics"): {
+        "平台名称": "string",
+        "区域": "string",
+        "店铺ID": "string",
+        "店铺名称": "string",
+        "统计日期范围": "string",
+        "对比日期范围": "string",
+        "抓取时间": "datetime",
+        "订单数": "bigint",
+        "商品曝光次数": "bigint",
+        "商品点击量": "bigint",
     },
 }
 

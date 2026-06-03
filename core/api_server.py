@@ -450,7 +450,7 @@ def _resolve_amazon_review_urls(run_params: dict) -> list[str]:
 
 def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: dict, fallback_url: str) -> str:
     fallback = str(fallback_url or "").strip()
-    if adapter_id == "tiktok-ops-assistant" and task_id in {"product_rating", "product_management_export", "creator_video_download"}:
+    if adapter_id == "tiktok-ops-assistant" and task_id in {"product_analytics", "product_rating", "product_management_export", "creator_video_download"}:
         raw_regions = run_params.get("shop_regions") or run_params.get("regions")
         if isinstance(raw_regions, list):
             selected_regions = [str(item) for item in raw_regions]
@@ -478,7 +478,12 @@ def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: di
         suffix = f"?shop_region={region}"
         if shop_id:
             suffix += f"&shop_id={shop_id}"
-        path = "/product/manage" if task_id == "product_management_export" else "/product/rating"
+        path_map = {
+            "product_analytics": "/compass/product-traffic-analysis",
+            "product_management_export": "/product/manage",
+            "product_rating": "/product/rating",
+        }
+        path = path_map.get(task_id, "/product/rating")
         return f"https://{host}{path}{suffix}"
     if (adapter_id, task_id) == ("amazon-ops-assistant", "amazon_reviews_full_export"):
         urls = _resolve_amazon_review_urls(run_params)

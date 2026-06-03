@@ -118,6 +118,34 @@ class OdpsSyncTest(unittest.TestCase):
         self.assertEqual(field_types["stat_date"], "string")
         self.assertEqual(field_types["captured_at"], "datetime")
 
+    def test_build_payload_maps_tiktok_product_analytics_excel_to_task_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "tiktok_product_analytics.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["平台名称", "区域", "店铺ID", "统计日期范围", "抓取时间", "订单数", "商品曝光次数", "商品点击量"])
+            ws.append(["TikTok", "US", "7496042382582647544", "2026-05-27 ~ 2026-06-02", "2026-06-03 12:00:00", "295", "751050", "23884"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="tiktok-ops-assistant",
+                task_id="product_analytics",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_tiktok_product_analytics")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-05-27"})
+        self.assertEqual(payload["data"][0]["platform_name"], "TikTok")
+        self.assertEqual(payload["data"][0]["region"], "US")
+        self.assertEqual(payload["data"][0]["shop_id"], "7496042382582647544")
+        self.assertEqual(payload["data"][0]["orders"], 295)
+        self.assertEqual(payload["data"][0]["product_impressions"], 751050)
+        self.assertEqual(payload["data"][0]["product_clicks"], 23884)
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["stat_date_range"], "string")
+        self.assertEqual(field_types["captured_at"], "datetime")
+        self.assertEqual(field_types["orders"], "bigint")
+
 
 if __name__ == "__main__":
     unittest.main()

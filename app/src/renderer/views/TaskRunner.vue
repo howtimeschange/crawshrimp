@@ -708,6 +708,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
+import { buildOdpsSyncFile, isOdpsSyncableFile } from '../utils/odpsSyncTasks'
 
 const props = defineProps({
   adapterId: String,
@@ -986,8 +987,13 @@ const paramsGridClass = computed(() =>
 const useEnhancedProgressUi = computed(() =>
   resolveTaskProgressConfig(props.adapterId, props.task?.task_id).usage.taskRunner === 'enhanced'
 )
-const canSyncOdps = computed(() => props.adapterId === 'temu' && props.task?.task_id === 'mall_flux')
-const latestExcelOutput = computed(() => outputFiles.value.find(isExcelFile) || '')
+const odpsSyncFiles = computed(() =>
+  outputFiles.value
+    .map(path => buildOdpsSyncFile(props.adapterId, props.task?.task_id, path))
+    .filter(isOdpsSyncableFile)
+)
+const canSyncOdps = computed(() => odpsSyncFiles.value.length > 0)
+const latestExcelOutput = computed(() => odpsSyncFiles.value[0]?.path || '')
 
 function isTaskActiveStatus(status) {
   return ['running', 'pausing', 'paused', 'stopping'].includes(status)
@@ -1777,14 +1783,17 @@ function outputPathIcon(path) {
 }
 
 async function syncOdpsFiles(paths) {
-  const excelPaths = (paths || []).filter(isExcelFile)
-  if (!excelPaths.length || syncingOdps.value) return
+  const targets = (paths || [])
+    .map(path => buildOdpsSyncFile(props.adapterId, props.task?.task_id, path))
+    .filter(isOdpsSyncableFile)
+  if (!targets.length || syncingOdps.value) return
   syncingOdps.value = true
   try {
+    const syncTask = targets[0]
     const result = await window.cs.syncOdpsFiles({
-      adapter_id: props.adapterId,
-      task_id: props.task.task_id,
-      paths: excelPaths,
+      adapter_id: syncTask.adapter_id,
+      task_id: syncTask.task_id,
+      paths: targets.map(file => file.path),
     })
     const failedCount = Number(result?.failed_count || 0)
     const syncedCount = Number(result?.synced_count || 0)
