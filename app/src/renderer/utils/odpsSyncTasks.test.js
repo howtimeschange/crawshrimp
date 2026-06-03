@@ -15,6 +15,7 @@ test('ODPS sync is enabled for marketplace analytics tasks', () => {
   assert.equal(isOdpsSyncableTask('aliexpress-ops-assistant', 'product_ranking'), true)
   assert.equal(isOdpsSyncableTask('lazada-plus-v1', 'business_advisor'), true)
   assert.equal(isOdpsSyncableTask('shopee-plus-v2', 'business_analysis'), true)
+  assert.equal(isOdpsSyncableTask('shopify-ops-assistant', 'traffic_data'), true)
   assert.equal(isOdpsSyncableTask('tiktok-ops-assistant', 'product_rating'), false)
 })
 
@@ -48,6 +49,11 @@ test('ODPS sync file guard requires a syncable task and Excel path', () => {
     adapter_id: 'lazada-plus-v1',
     task_id: 'business_advisor',
     path: '/tmp/Lazada生意参谋_PH.xls',
+  }), true)
+  assert.equal(isOdpsSyncableFile({
+    adapter_id: 'shopify-ops-assistant',
+    task_id: 'traffic_data',
+    path: '/tmp/Shopify客流数据.xlsx',
   }), true)
 })
 
@@ -98,6 +104,11 @@ test('groupOdpsSyncableFiles groups mixed sync targets by adapter and task', () 
       task_id: 'business_advisor',
       path: '/tmp/Lazada生意参谋_PH.xls',
     },
+    {
+      adapter_id: 'shopify-ops-assistant',
+      task_id: 'traffic_data',
+      path: '/tmp/Shopify客流数据.xlsx',
+    },
   ])
 
   assert.deepEqual(groups, [
@@ -125,6 +136,11 @@ test('groupOdpsSyncableFiles groups mixed sync targets by adapter and task', () 
       adapter_id: 'lazada-plus-v1',
       task_id: 'business_advisor',
       paths: ['/tmp/Lazada生意参谋_PH.xls'],
+    },
+    {
+      adapter_id: 'shopify-ops-assistant',
+      task_id: 'traffic_data',
+      paths: ['/tmp/Shopify客流数据.xlsx'],
     },
   ])
 })

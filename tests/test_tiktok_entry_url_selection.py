@@ -69,6 +69,19 @@ class TiktokEntryUrlSelectionTests(unittest.TestCase):
             "https://seller.eu.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=GB&shop_id=7496042382582647544",
         )
 
+    def test_shopify_traffic_data_new_page_uses_selected_store_key(self):
+        selected = api_server._resolve_task_target_entry_url(
+            "shopify-ops-assistant",
+            "traffic_data",
+            {"store_key": "semir-global"},
+            "https://admin.shopify.com/store/balabala-global/analytics/reports/sessions_over_time?ql=FROM+sessions",
+        )
+
+        self.assertTrue(
+            selected.startswith("https://admin.shopify.com/store/semir-global/analytics/reports/sessions_over_time?ql="),
+        )
+        self.assertIn("FROM+sessions", selected)
+
 
 if __name__ == "__main__":
     unittest.main()

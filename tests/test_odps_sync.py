@@ -146,6 +146,57 @@ class OdpsSyncTest(unittest.TestCase):
         self.assertEqual(field_types["captured_at"], "datetime")
         self.assertEqual(field_types["orders"], "bigint")
 
+    def test_build_payload_maps_shopify_traffic_data_excel_to_task_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "shopify_traffic_data.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append([
+                "平台名称",
+                "店铺标识",
+                "报告名称",
+                "数据类型",
+                "统计日期范围",
+                "统计日期",
+                "在线商店访客",
+                "访问",
+                "访问变化",
+                "抓取时间",
+            ])
+            ws.append([
+                "Shopify",
+                "balabala-global",
+                "访问随时间变化",
+                "汇总",
+                "2026-05-27 ~ 2026-06-03",
+                "",
+                "72,471",
+                "84,983",
+                "2%",
+                "2026-06-03 19:20:00",
+            ])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="shopify-ops-assistant",
+                task_id="traffic_data",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_shopify_traffic_data")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-05-27"})
+        self.assertEqual(payload["data"][0]["platform_name"], "Shopify")
+        self.assertEqual(payload["data"][0]["store_key"], "balabala-global")
+        self.assertEqual(payload["data"][0]["report_name"], "访问随时间变化")
+        self.assertEqual(payload["data"][0]["data_type"], "汇总")
+        self.assertEqual(payload["data"][0]["online_store_visitors"], 72471)
+        self.assertEqual(payload["data"][0]["sessions"], 84983)
+        self.assertEqual(payload["data"][0]["sessions_change"], "2%")
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["stat_date_range"], "string")
+        self.assertEqual(field_types["stat_date"], "string")
+        self.assertEqual(field_types["captured_at"], "datetime")
+
     def test_build_payload_maps_aliexpress_deal_analysis_excel_to_task_table(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "aliexpress_deal_analysis.xlsx"

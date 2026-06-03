@@ -5,6 +5,7 @@ const ODPS_SYNCABLE_TASKS = Object.freeze([
   Object.freeze({ adapterId: 'aliexpress-ops-assistant', taskId: 'product_ranking', aliases: Object.freeze(['product-ranking']) }),
   Object.freeze({ adapterId: 'lazada-plus-v1', taskId: 'business_advisor', aliases: Object.freeze(['business-advisor']) }),
   Object.freeze({ adapterId: 'shopee-plus-v2', taskId: 'business_analysis', aliases: Object.freeze(['business-analysis']) }),
+  Object.freeze({ adapterId: 'shopify-ops-assistant', taskId: 'traffic_data', aliases: Object.freeze(['traffic-data']) }),
 ])
 
 function normalize(value) {

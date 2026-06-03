@@ -1,0 +1,85 @@
+id: shopify-ops-assistant
+name: Shopify 运营助手
+version: 0.1.0
+author: codex
+description: "Shopify Admin 报告数据抓取：复用页面筛选并同步客流数据到数仓"
+entry_url: https://admin.shopify.com/store/balabala-global/analytics/reports/sessions_over_time?ql=FROM+sessions%0ASHOW+online_store_visitors%2C%0A++sessions%0AWHERE+human_or_bot_session+IN+%28%27human%27%2C+%27bot%27%29%0ATIMESERIES+day%0AWITH+TOTALS%2C+PERCENT_CHANGE%0ASINCE+startOfDay%28-7d%29+UNTIL+today%0ACOMPARE+TO+previous_period%0AORDER+BY+day+ASC%0ALIMIT+1000%0AVISUALIZE+sessions+TYPE+line
+tab_match_prefixes:
+  - https://admin.shopify.com/store/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://admin.shopify.com/
+
+tasks:
+  - id: traffic_data
+    name: "【数据】客流数据"
+    description: 抓取 Shopify Admin「访问随时间变化」报表，默认沿用页面当前日期/对比/筛选条件，输出在线商店访客与访问数据并同步到数仓
+    script: traffic-data.js
+    entry_url: https://admin.shopify.com/store/balabala-global/analytics/reports/sessions_over_time?ql=FROM+sessions%0ASHOW+online_store_visitors%2C%0A++sessions%0AWHERE+human_or_bot_session+IN+%28%27human%27%2C+%27bot%27%29%0ATIMESERIES+day%0AWITH+TOTALS%2C+PERCENT_CHANGE%0ASINCE+startOfDay%28-7d%29+UNTIL+today%0ACOMPARE+TO+previous_period%0AORDER+BY+day+ASC%0ALIMIT+1000%0AVISUALIZE+sessions+TYPE+line
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开 Shopify 报告页
+      - id: store_key
+        type: text
+        label: 店铺标识
+        default: balabala-global
+        placeholder: "例如 balabala-global"
+        hint: 默认从当前 Shopify Admin URL 读取；仅在需要新开指定店铺报告页时填写。
+        ui_span: half
+      - id: time_range
+        type: select
+        label: 统计日期
+        default: page
+        hint: 默认沿用当前 Shopify 报告页日期筛选；选择快捷项或自定义日期时会改写 ShopifyQL 日期后打开报告页。
+        ui_span: half
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: last7
+            label: 最近7天
+          - value: last30
+            label: 最近30天
+          - value: custom
+            label: 自定义日期
+      - id: date_range
+        type: date_range
+        label: 自定义日期
+        hint: 仅在选择“自定义日期”时填写；脚本会写入 ShopifyQL 的 SINCE/UNTIL。
+        visible_when:
+          field: time_range
+          equals: custom
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "Shopify客流数据_{store_key}_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 平台名称
+          - 店铺标识
+          - 店铺名称
+          - 报告名称
+          - 数据类型
+          - 统计日期范围
+          - 对比日期范围
+          - 统计日期
+          - 对比日期
+          - 在线商店访客
+          - 对比在线商店访客
+          - 在线商店访客变化
+          - 访问
+          - 对比访问
+          - 访问变化
+          - 货币
+          - 时间筛选
+          - 筛选条件
+          - ShopifyQL
+          - 抓取时间

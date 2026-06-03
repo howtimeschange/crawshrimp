@@ -450,6 +450,31 @@ def _resolve_amazon_review_urls(run_params: dict) -> list[str]:
 
 def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: dict, fallback_url: str) -> str:
     fallback = str(fallback_url or "").strip()
+    if (adapter_id, task_id) == ("shopify-ops-assistant", "traffic_data"):
+        parsed = urlparse(fallback or "https://admin.shopify.com/store/balabala-global/analytics/reports/sessions_over_time")
+        query = parse_qs(parsed.query or "", keep_blank_values=False)
+        store_key = str(run_params.get("store_key") or run_params.get("store") or "").strip()
+        if not store_key:
+            match = re.search(r"/store/([^/]+)", parsed.path or "")
+            store_key = match.group(1) if match else "balabala-global"
+        ql = (query.get("ql") or [""])[0].strip()
+        if not ql:
+            ql = "\n".join([
+                "FROM sessions",
+                "SHOW online_store_visitors,",
+                "  sessions",
+                "WHERE human_or_bot_session IN ('human', 'bot')",
+                "TIMESERIES day",
+                "WITH TOTALS, PERCENT_CHANGE",
+                "SINCE startOfDay(-7d)",
+                "UNTIL today",
+                "COMPARE TO previous_period",
+                "ORDER BY day ASC",
+                "LIMIT 1000",
+                "VISUALIZE sessions TYPE line",
+            ])
+        params = urlencode({"ql": ql})
+        return f"https://admin.shopify.com/store/{store_key}/analytics/reports/sessions_over_time?{params}"
     if adapter_id == "tiktok-ops-assistant" and task_id in {"product_analytics", "product_rating", "product_management_export", "creator_video_download"}:
         raw_regions = run_params.get("shop_regions") or run_params.get("regions")
         if isinstance(raw_regions, list):
