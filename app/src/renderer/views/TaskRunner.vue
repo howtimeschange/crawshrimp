@@ -359,6 +359,14 @@
             <span v-else>▶ 立即执行</span>
           </button>
           <button
+            v-if="isTaskOdpsSyncable"
+            class="run-sub-btn run-sync-btn"
+            :disabled="isRunning || missingRequired"
+            @click="runTaskAndSyncOdps"
+          >
+            立即执行并同步DataWorks
+          </button>
+          <button
             v-if="autoPrecheckFlow"
             class="run-sub-btn"
             :disabled="isRunning || missingRequired"
@@ -408,6 +416,14 @@
           >
             <span v-if="isRunning">{{ runningLabel }}</span>
             <span v-else>▶ 立即执行</span>
+          </button>
+          <button
+            v-if="isTaskOdpsSyncable"
+            class="run-sub-btn run-sync-btn"
+            :disabled="isRunning"
+            @click="runTaskAndSyncOdps"
+          >
+            立即执行并同步DataWorks
           </button>
           <button
             v-if="isRunning && liveStatus === 'running'"
@@ -708,7 +724,7 @@
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
-import { buildOdpsSyncFile, isOdpsSyncableFile } from '../utils/odpsSyncTasks'
+import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
 
 const props = defineProps({
   adapterId: String,
@@ -987,6 +1003,9 @@ const paramsGridClass = computed(() =>
 const useEnhancedProgressUi = computed(() =>
   resolveTaskProgressConfig(props.adapterId, props.task?.task_id).usage.taskRunner === 'enhanced'
 )
+const isTaskOdpsSyncable = computed(() =>
+  isOdpsSyncableTask(props.adapterId, props.task?.task_id)
+)
 const odpsSyncFiles = computed(() =>
   outputFiles.value
     .map(path => buildOdpsSyncFile(props.adapterId, props.task?.task_id, path))
@@ -1005,6 +1024,7 @@ const runningLabel = computed(() => {
   if (liveStatus.value === 'stopping') return '⏳ 停止中…'
   if (runStage.value === 'plan') return '⏳ 预检中…'
   if (runStage.value === 'live') return '⏳ live 执行中…'
+  if (runStage.value === 'sync') return '⏳ 同步DataWorks…'
   return '⏳ 进行中…'
 })
 
@@ -1647,6 +1667,29 @@ async function finishRun(result, options = {}) {
   }
 }
 
+async function finishRunAndSyncOdps(result) {
+  if (result.status !== 'done') {
+    await finishRun(result)
+    return
+  }
+  await finishRun(result, { keepRunning: true })
+  if (!odpsSyncFiles.value.length) {
+    lastResult.value = { ok: false, msg: '任务完成，但没有找到可同步 DataWorks 的 Excel 输出' }
+    isRunning.value = false
+    runStage.value = ''
+    return
+  }
+  runStage.value = 'sync'
+  logs.value.push(`[${now()}] 开始同步 DataWorks…`)
+  scrollToBottom()
+  try {
+    await syncOdpsFiles(odpsSyncFiles.value.map(file => file.path))
+  } finally {
+    isRunning.value = false
+    runStage.value = ''
+  }
+}
+
 async function inspectLatestPlanOutput() {
   const files = await refreshOutputFiles()
   const xlsx = files.find(f => String(f || '').toLowerCase().endsWith('.xlsx'))
@@ -1689,8 +1732,9 @@ async function runValidationOnly() {
   }
 }
 
-async function runTask() {
+async function runTask(options = {}) {
   if (isRunning.value) return
+  const finish = options.syncOdpsAfterDone ? finishRunAndSyncOdps : finishRun
   if (!autoPrecheckFlow.value) {
     isRunning.value = true
     resetRunUi()
@@ -1698,7 +1742,7 @@ async function runTask() {
     try {
       const result = await startTaskRun(buildRunParams(), '任务已启动，等待执行…')
       if (result.status === 'cancelled') return
-      await finishRun(result)
+      await finish(result)
     } catch (e) {
       isRunning.value = false
       runStage.value = ''
@@ -1716,7 +1760,7 @@ async function runTask() {
     const planResult = await startTaskRun(buildRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
     if (planResult.status === 'cancelled') return
     if (planResult.status !== 'done') {
-      await finishRun(planResult)
+      await finish(planResult)
       return
     }
     const gate = await inspectLatestPlanOutput()
@@ -1733,7 +1777,7 @@ async function runTask() {
     runStage.value = 'live'
     const liveResult = await startTaskRun(buildRunParams({ execute_mode: 'live' }), '预检通过，开始 live 执行…')
     if (liveResult.status === 'cancelled') return
-    await finishRun(liveResult)
+    await finish(liveResult)
   } catch (e) {
     isRunning.value = false
     runStage.value = ''
@@ -1741,6 +1785,11 @@ async function runTask() {
     lastResult.value = { ok: false, msg: `✗ 失败: ${e?.message || String(e)}` }
     logs.value.push(`[错误] ${e?.message || String(e)}`)
   }
+}
+
+async function runTaskAndSyncOdps() {
+  if (!isTaskOdpsSyncable.value) return
+  await runTask({ syncOdpsAfterDone: true })
 }
 
 async function clearLogs() {
@@ -1770,7 +1819,7 @@ function openFile(path) {
 }
 
 function isExcelFile(path) {
-  return /\.(xlsx|xlsm)$/i.test(String(path || ''))
+  return /\.(xlsx|xlsm|xls)$/i.test(String(path || ''))
 }
 
 function outputPathIcon(path) {
@@ -2828,7 +2877,7 @@ onUnmounted(() => {
 }
 
 /* 执行按钮 */
-.action-row { display: flex; align-items: center; gap: 12px; padding-top: 4px; }
+.action-row { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; padding-top: 4px; }
 .run-btn {
   padding: 10px 28px; border-radius: 10px; border: none;
   background: var(--orange); color: white;
@@ -2851,6 +2900,17 @@ onUnmounted(() => {
 }
 .run-sub-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); transform: translateY(-1px); }
 .run-sub-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
+.run-sync-btn {
+  min-width: 184px;
+  border-color: rgba(34,197,94,0.55);
+  background: #16a34a;
+  color: #fff;
+}
+.run-sync-btn:hover:not(:disabled) {
+  border-color: rgba(74,222,128,0.8);
+  background: #15803d;
+  color: #fff;
+}
 .run-sub-btn-stop { border-color: rgba(248,113,113,0.35); color: #fca5a5; }
 .run-sub-btn-stop:hover:not(:disabled) { border-color: #f87171; color: #f87171; }
 .action-note { font-size: 12px; color: var(--text3); }

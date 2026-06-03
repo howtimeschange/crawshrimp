@@ -14,7 +14,7 @@ auth:
 
 tasks:
   - id: deal_analysis
-    name: 成交分析
+    name: 【数据】成交分析
     description: 抓取速卖通生意参谋「成交分析」截图范围内的核心指标与趋势明细，默认沿用页面日期、国家和业务模式筛选，并导出后通过统一 DataWorks/ODPS 入口同步。
     script: deal-analysis.js
     entry_url: https://csp.aliexpress.com/m_apps/sycm/MakeBargainAnalysis?channelId=125417
@@ -133,7 +133,7 @@ tasks:
           - 抓取时间
 
   - id: product_ranking
-    name: 商品排行
+    name: 【数据】商品排行
     description: 抓取速卖通生意参谋「商品排行」筛选条件下的全部分页商品数据，默认继承页面国家、平台、类目、日期、业务模式、商品筛选和商品 ID，并导出后通过统一 DataWorks/ODPS 入口同步。
     script: product-ranking.js
     entry_url: https://csp.aliexpress.com/m_apps/csp-sycm-new/productRank?channelId=125417

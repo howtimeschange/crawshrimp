@@ -16,7 +16,7 @@ auth:
 
 tasks:
   - id: product_analytics
-    name: 商品数据分析
+    name: 【数据】商品数据分析
     description: 抓取 TikTok Shop Seller Center「商品数据分析」关键指标，默认继承页面统计日期，并汇总订单数、商品曝光次数、商品点击量同步到数仓
     script: product-analytics.js
     entry_url: https://seller.us.tiktokshopglobalselling.com/compass/product-traffic-analysis?shop_region=US

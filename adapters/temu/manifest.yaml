@@ -450,7 +450,7 @@ tasks:
           - 销量趋势
 
   - id: mall_flux
-    name: 后台-店铺流量
+    name: 【数据】后台-店铺流量
     description: 抓取 Temu 后台「店铺流量」按日/周/月数据，支持外层站点切换、统计日期与粒度筛选，并自动全量翻页
     script: mall-flux.js
     entry_url: https://agentseller.temu.com/main/mall-flux-analysis-full
