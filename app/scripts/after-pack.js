@@ -23,6 +23,7 @@ const REQUIRED_BACKEND_IMPORTS = [
   'yaml',
   'apscheduler',
   'openpyxl',
+  'xlrd',
   'pydantic',
   'aiofiles',
   'jsonschema',

@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Callable, Optional
 from urllib.error import HTTPError, URLError
@@ -17,8 +18,23 @@ TASK_TABLE_MAP = {
     ("tiktok-ops-assistant", "product_analytics"): "imp_ods_tiktok_product_analytics",
     ("aliexpress-ops-assistant", "deal_analysis"): "imp_ods_aliexpress_deal_analysis",
     ("aliexpress-ops-assistant", "product_ranking"): "imp_ods_aliexpress_product_ranking",
+    ("lazada-plus-v1", "business_advisor"): "imp_ods_lazada_business_advisor",
     ("shopee-plus-v2", "business_analysis"): "imp_ods_shopee_business_analysis",
 }
+
+LAZADA_BUSINESS_ADVISOR_FIELDS = [
+    ("platform_name", "string", "平台名称"),
+    ("sheet_name", "string", "数据表"),
+    ("country_code", "string", "国家编码"),
+    ("stat_date_range", "string", "统计日期范围"),
+    ("stat_date", "string", "统计日期"),
+    ("metric_name", "string", "指标名称"),
+    ("metric_value", "double", "指标值"),
+    ("unit", "string", "单位"),
+    ("definition", "string", "指标定义"),
+    ("raw_metric_header", "string", "原始指标表头"),
+    ("captured_at", "datetime", "抓取时间"),
+]
 
 SHOPEE_BUSINESS_ANALYSIS_FIELDS = [
     ("platform_name", "string", "平台名称"),
@@ -544,6 +560,254 @@ def _shopee_business_analysis_rows(file_path: str) -> tuple[list[dict[str, str]]
     return fields, rows
 
 
+def _read_workbook_sheets(file_path: str) -> list[tuple[str, list[tuple[Any, ...]]]]:
+    path = Path(file_path).expanduser()
+    if not path.exists() or not path.is_file():
+        raise OdpsSyncError(f"文件不存在：{file_path}")
+
+    def read_with_openpyxl(source: Any) -> list[tuple[str, list[tuple[Any, ...]]]]:
+        wb = load_workbook(source, read_only=True, data_only=True)
+        try:
+            return [
+                (ws.title, list(ws.iter_rows(values_only=True)))
+                for ws in wb.worksheets
+            ]
+        finally:
+            wb.close()
+
+    try:
+        return read_with_openpyxl(path)
+    except Exception as openpyxl_error:
+        try:
+            with path.open("rb") as handle:
+                signature = handle.read(4)
+            if signature.startswith(b"PK"):
+                return read_with_openpyxl(BytesIO(path.read_bytes()))
+        except Exception:
+            pass
+        if path.suffix.lower() not in {".xls", ".xlt"}:
+            raise openpyxl_error
+        try:
+            import xlrd  # type: ignore
+        except ImportError as import_error:
+            raise OdpsSyncError("同步 Lazada 生意参谋 .xls 文件需要安装 xlrd，请更新后端依赖") from import_error
+        try:
+            book = xlrd.open_workbook(str(path))
+            sheets: list[tuple[str, list[tuple[Any, ...]]]] = []
+            for sheet in book.sheets():
+                rows = [
+                    tuple(sheet.cell_value(row_index, col_index) for col_index in range(sheet.ncols))
+                    for row_index in range(sheet.nrows)
+                ]
+                sheets.append((sheet.name, rows))
+            return sheets
+        except Exception as xlrd_error:
+            raise OdpsSyncError(f"无法读取 Lazada 生意参谋 Excel 文件：{xlrd_error}") from xlrd_error
+
+
+def _normalize_lazada_sheet_name(value: str) -> str:
+    return str(value or "").strip()
+
+
+def _normalize_lazada_stat_date_range(value: Any) -> str:
+    text = str(value or "").strip()
+    dates = []
+    for match in re.finditer(r"(\d{1,2})[-/](\d{1,2})[-/](\d{4})|(\d{4})[-/](\d{1,2})[-/](\d{1,2})", text):
+        if match.group(4):
+            year, month, day = match.group(4), match.group(5), match.group(6)
+        else:
+            day, month, year = match.group(1), match.group(2), match.group(3)
+        dates.append(f"{int(year):04d}-{int(month):02d}-{int(day):02d}")
+    if len(dates) >= 2:
+        return f"{dates[0]} ~ {dates[1]}"
+    if len(dates) == 1:
+        return dates[0]
+    return ""
+
+
+def _lazada_country_from_filename(file_path: str) -> str:
+    name = Path(file_path).stem.upper()
+    for code in ("MY", "SG", "ID", "PH", "TH", "VN"):
+        if re.search(rf"(?:^|[_\-\s]){code}(?:$|[_\-\s])", name):
+            return code
+    return ""
+
+
+def _looks_like_lazada_header(row: tuple[Any, ...]) -> bool:
+    headers = {str(cell or "").strip().lower() for cell in row if str(cell or "").strip()}
+    if "date" in headers and len(headers - {"date"}) >= 1:
+        return True
+    if "metric name" in headers and "definition" in headers:
+        return True
+    return bool(headers & {"metric", "metrics", "indicator", "name"}) and bool(headers & {"value", "definition", "unit"})
+
+
+def _lazada_metric_name(raw_map: dict[str, Any]) -> str:
+    for key in ("Metric", "Metrics", "Metric Name", "Indicator", "Name", "指标", "指标名称"):
+        value = str(raw_map.get(key, "") or "").strip()
+        if value:
+            return value
+    for key, value in raw_map.items():
+        if str(key or "").strip().lower() in {"value", "unit", "definition"}:
+            continue
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
+
+
+def _lazada_metric_value(raw_map: dict[str, Any]) -> Any:
+    for key in ("Value", "值", "指标值"):
+        if key in raw_map:
+            return raw_map.get(key, "")
+    return ""
+
+
+def _lazada_unit(raw_map: dict[str, Any]) -> str:
+    for key in ("Unit", "Currency", "单位", "币种"):
+        value = str(raw_map.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _lazada_definition(raw_map: dict[str, Any]) -> str:
+    for key in ("Definition", "Description", "定义", "指标定义"):
+        value = str(raw_map.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _lazada_business_advisor_rows(file_path: str) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
+    path = Path(file_path).expanduser()
+    if path.suffix.lower() not in {".xls", ".xlsx", ".xlsm"}:
+        raise OdpsSyncError(f"暂只支持同步 Excel 文件：{path.name}")
+
+    captured_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    country_code = _lazada_country_from_filename(file_path)
+    rows: list[dict[str, Any]] = []
+    workbook_sheets = _read_workbook_sheets(file_path)
+
+    for sheet_name_raw, raw_rows in workbook_sheets:
+        sheet_name = _normalize_lazada_sheet_name(sheet_name_raw)
+        stat_date_range = ""
+        for raw in raw_rows[:10]:
+            line = " ".join(str(cell or "").strip() for cell in raw if str(cell or "").strip())
+            if "date range" in line.lower() or "日期" in line:
+                stat_date_range = _normalize_lazada_stat_date_range(line)
+                if stat_date_range:
+                    break
+
+        header_index = None
+        for index, raw in enumerate(raw_rows):
+            if _looks_like_lazada_header(raw):
+                header_index = index
+                break
+        if header_index is None:
+            continue
+
+        headers = [_clean_header(value, index) for index, value in enumerate(raw_rows[header_index])]
+        lower_headers = {header.lower(): header for header in headers}
+        date_header = lower_headers.get("date")
+        definition_header = lower_headers.get("definition")
+        metric_name_header = lower_headers.get("metric name") or lower_headers.get("metric")
+        if date_header:
+            metric_headers = [header for header in headers if header != date_header and str(header or "").strip()]
+            for raw in raw_rows[header_index + 1:]:
+                if all(cell is None or str(cell).strip() == "" for cell in raw):
+                    continue
+                raw_map = {
+                    header: _cell_value(raw[index] if index < len(raw) else None)
+                    for index, header in enumerate(headers)
+                }
+                stat_value = str(raw_map.get(date_header, "") or "").strip()
+                if not stat_value:
+                    continue
+                row_stat_range = _normalize_lazada_stat_date_range(stat_value)
+                row_stat_date = normalize_partition_value(row_stat_range or stat_value)
+                for header in metric_headers:
+                    raw_value = raw_map.get(header, "")
+                    if str(raw_value or "").strip() == "":
+                        continue
+                    rows.append({
+                        "platform_name": "Lazada",
+                        "sheet_name": sheet_name,
+                        "country_code": country_code,
+                        "stat_date_range": row_stat_range or stat_date_range,
+                        "stat_date": row_stat_date,
+                        "metric_name": header,
+                        "metric_value": raw_value,
+                        "unit": "",
+                        "definition": "",
+                        "raw_metric_header": header,
+                        "captured_at": captured_at,
+                    })
+            continue
+
+        if definition_header and metric_name_header:
+            for raw in raw_rows[header_index + 1:]:
+                if all(cell is None or str(cell).strip() == "" for cell in raw):
+                    continue
+                raw_map = {
+                    header: _cell_value(raw[index] if index < len(raw) else None)
+                    for index, header in enumerate(headers)
+                }
+                metric_name = str(raw_map.get(metric_name_header, "") or "").strip()
+                definition = str(raw_map.get(definition_header, "") or "").strip()
+                if not metric_name and not definition:
+                    continue
+                rows.append({
+                    "platform_name": "Lazada",
+                    "sheet_name": sheet_name,
+                    "country_code": country_code,
+                    "stat_date_range": stat_date_range,
+                    "stat_date": normalize_partition_value(stat_date_range),
+                    "metric_name": metric_name,
+                    "metric_value": "",
+                    "unit": "",
+                    "definition": definition,
+                    "raw_metric_header": definition_header,
+                    "captured_at": captured_at,
+                })
+            continue
+
+        for raw in raw_rows[header_index + 1:]:
+            if all(cell is None or str(cell).strip() == "" for cell in raw):
+                continue
+            raw_map = {
+                header: _cell_value(raw[index] if index < len(raw) else None)
+                for index, header in enumerate(headers)
+            }
+            metric_name = _lazada_metric_name(raw_map)
+            definition = _lazada_definition(raw_map)
+            metric_value = _lazada_metric_value(raw_map)
+            if not metric_name and not definition:
+                continue
+            rows.append({
+                "platform_name": "Lazada",
+                "sheet_name": sheet_name,
+                "country_code": country_code,
+                "stat_date_range": stat_date_range,
+                "stat_date": normalize_partition_value(stat_date_range),
+                "metric_name": metric_name,
+                "metric_value": metric_value,
+                "unit": _lazada_unit(raw_map),
+                "definition": definition,
+                "raw_metric_header": "Value" if str(metric_value or "").strip() else "Definition",
+                "captured_at": captured_at,
+            })
+
+    if not rows:
+        raise OdpsSyncError(f"Excel 文件没有可同步的 Lazada 生意参谋数据行：{path.name}")
+
+    fields = [
+        {"name": name, "type": field_type, "comment": comment}
+        for name, field_type, comment in LAZADA_BUSINESS_ADVISOR_FIELDS
+    ]
+    return fields, rows
+
+
 def infer_odps_type(field_name: str, values: list[Any]) -> str:
     name = str(field_name or "")
     clean_values = [str(value or "").strip() for value in values if str(value or "").strip()]
@@ -567,7 +831,7 @@ def cast_odps_value(value: Any, field_type: str) -> Any:
     if value is None:
         return None
     text = str(value).strip()
-    if text == "":
+    if text == "" or text in {"-", "--", "—", "N/A", "n/a", "NA", "na", "null", "NULL"}:
         return None
     normalized_type = str(field_type or "").strip().lower()
     if normalized_type in {"int", "integer", "bigint"}:
@@ -604,6 +868,25 @@ def build_sync_payload(
     *,
     write_mode: str = DEFAULT_WRITE_MODE,
 ) -> dict[str, Any]:
+    if (str(adapter_id or "").strip(), str(task_id or "").strip()) == ("lazada-plus-v1", "business_advisor"):
+        fields, rows = _lazada_business_advisor_rows(file_path)
+        field_types = {field["name"]: field["type"] for field in fields}
+        data_rows = [
+            {
+                field["name"]: cast_odps_value(row.get(field["name"], ""), field_types[field["name"]])
+                for field in fields
+            }
+            for row in rows
+        ]
+        date_value = rows[0].get("stat_date") or rows[0].get("stat_date_range") or ""
+        return {
+            "table_name": get_table_name(adapter_id, task_id),
+            "fields": fields,
+            "data": data_rows,
+            "write_mode": write_mode,
+            "partition_spec": {"dt": normalize_partition_value(str(date_value))},
+        }
+
     if (str(adapter_id or "").strip(), str(task_id or "").strip()) == ("shopee-plus-v2", "business_analysis"):
         fields, rows = _shopee_business_analysis_rows(file_path)
         field_types = {field["name"]: field["type"] for field in fields}

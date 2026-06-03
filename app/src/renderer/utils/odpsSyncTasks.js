@@ -3,6 +3,7 @@ const ODPS_SYNCABLE_TASKS = Object.freeze([
   Object.freeze({ adapterId: 'tiktok-ops-assistant', taskId: 'product_analytics', aliases: Object.freeze(['product-analytics']) }),
   Object.freeze({ adapterId: 'aliexpress-ops-assistant', taskId: 'deal_analysis', aliases: Object.freeze(['deal-analysis']) }),
   Object.freeze({ adapterId: 'aliexpress-ops-assistant', taskId: 'product_ranking', aliases: Object.freeze(['product-ranking']) }),
+  Object.freeze({ adapterId: 'lazada-plus-v1', taskId: 'business_advisor', aliases: Object.freeze(['business-advisor']) }),
   Object.freeze({ adapterId: 'shopee-plus-v2', taskId: 'business_analysis', aliases: Object.freeze(['business-analysis']) }),
 ])
 
@@ -11,7 +12,7 @@ function normalize(value) {
 }
 
 export function isExcelFile(path) {
-  return /\.(xlsx|xlsm)$/i.test(normalize(path))
+  return /\.(xlsx|xlsm|xls)$/i.test(normalize(path))
 }
 
 export function resolveOdpsSyncTask(adapterId, taskId) {

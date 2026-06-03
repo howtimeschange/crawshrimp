@@ -200,7 +200,6 @@ class OdpsSyncTest(unittest.TestCase):
         self.assertEqual(field_types["rank_no"], "bigint")
         self.assertEqual(field_types["pay_amt"], "double")
 
-
     def test_build_payload_flattens_shopee_business_analysis_workbook(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "shopee_business_analysis.xlsx"
@@ -246,6 +245,47 @@ class OdpsSyncTest(unittest.TestCase):
         field_types = {field["name"]: field["type"] for field in payload["fields"]}
         self.assertEqual(field_types["metric_value"], "double")
         self.assertEqual(field_types["captured_at"], "datetime")
+
+    def test_build_payload_flattens_lazada_business_advisor_workbook(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "Lazada生意参谋_PH_2026-06-02~2026-06-02.xls"
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Key Metrics"
+            ws.append(["Data Source: Lazada - Business Advisor - Dashboard  Date Range :02-06-2026~02-06-2026"])
+            ws.append([])
+            ws.append(["Date", "Revenue", "Visitors"])
+            ws.append(["2026-06-02~2026-06-02", "1,234.56", "789"])
+            ws.append(["2026-06-02", "100.00", "10"])
+            metric = wb.create_sheet("Metric Definition")
+            metric.append(["Metric Name", "Definition"])
+            metric.append(["Revenue", "Total gross merchandise value"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="lazada-plus-v1",
+                task_id="business_advisor",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_lazada_business_advisor")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-06-02"})
+        self.assertEqual(payload["write_mode"], "append")
+        self.assertEqual(payload["data"][0]["platform_name"], "Lazada")
+        self.assertEqual(payload["data"][0]["sheet_name"], "Key Metrics")
+        self.assertEqual(payload["data"][0]["country_code"], "PH")
+        self.assertEqual(payload["data"][0]["stat_date_range"], "2026-06-02 ~ 2026-06-02")
+        self.assertEqual(payload["data"][0]["metric_name"], "Revenue")
+        self.assertEqual(payload["data"][0]["metric_value"], 1234.56)
+        visitor_rows = [row for row in payload["data"] if row["metric_name"] == "Visitors"]
+        self.assertEqual(visitor_rows[0]["metric_value"], 789)
+        definition_rows = [row for row in payload["data"] if row["sheet_name"] == "Metric Definition"]
+        self.assertEqual(definition_rows[0]["metric_name"], "Revenue")
+        self.assertEqual(definition_rows[0]["definition"], "Total gross merchandise value")
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["metric_value"], "double")
+        self.assertEqual(field_types["captured_at"], "datetime")
+
 
 if __name__ == "__main__":
     unittest.main()
