@@ -1,8 +1,8 @@
 id: aliexpress-ops-assistant
 name: 速卖通运营助手
-version: 0.1.0
+version: 0.2.0
 author: codex
-description: "速卖通跨境卖家中心运营自动化：批量处理商品主图抠图并导出新图片地址"
+description: "速卖通跨境卖家中心运营自动化：生意参谋成交分析/商品排行数据抓取同步，以及批量处理商品主图抠图"
 entry_url: https://csp.aliexpress.com/m_apps/productManage/list-manage?channelId=125417
 tab_match_prefixes:
   - https://csp.aliexpress.com/
@@ -13,6 +13,368 @@ auth:
   login_url: https://csp.aliexpress.com/
 
 tasks:
+  - id: deal_analysis
+    name: 成交分析
+    description: 抓取速卖通生意参谋「成交分析」截图范围内的核心指标与趋势明细，默认沿用页面日期、国家和业务模式筛选，并导出后通过统一 DataWorks/ODPS 入口同步。
+    script: deal-analysis.js
+    entry_url: https://csp.aliexpress.com/m_apps/sycm/MakeBargainAnalysis?channelId=125417
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开成交分析页
+      - id: channel_id
+        type: text
+        label: channelId
+        default: "125417"
+        ui_span: third
+        hint: 默认使用 Semir Official Store 的 125417；也可留空让脚本从当前页面 URL 读取。
+      - id: time_range
+        type: select
+        label: 时间筛选
+        default: page
+        hint: 默认沿用页面当前日期；只有主动选择快捷项时才覆盖页面筛选。
+        ui_span: third
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: recent1
+            label: 最近一天
+          - value: recent7
+            label: 最近7天
+          - value: recent30
+            label: 最近30天
+      - id: stat_date
+        type: text
+        label: 统计日期
+        placeholder: "例如 2026-06-01；留空沿用页面"
+        hint: 可选。填写后覆盖页面日期；速卖通生意参谋数据通常有 2 天延迟。
+        ui_span: third
+      - id: country
+        type: select
+        label: 国家
+        default: page
+        ui_span: third
+        hint: 默认沿用页面/全部国家；常用国家可直接选择，更多国家可填自定义编码。
+        options:
+          - value: page
+            label: 沿用页面/全部国家
+          - value: AllCountries
+            label: 全部国家
+          - value: RU
+            label: 俄罗斯
+          - value: US
+            label: 美国
+          - value: FR
+            label: 法国
+          - value: DE
+            label: 德国
+          - value: GB
+            label: 英国
+          - value: ES
+            label: 西班牙
+      - id: biz_type
+        type: select
+        label: 业务模式
+        default: ALL
+        ui_span: third
+        options:
+          - value: ALL
+            label: 全部
+          - value: SELF
+            label: 非半托管
+          - value: CHOICE
+            label: 半托管
+      - id: trend_metric
+        type: select
+        label: 趋势指标
+        default: payAmt
+        ui_span: third
+        options:
+          - value: payAmt
+            label: 支付金额
+          - value: payBuyerCnt
+            label: 支付买家数
+          - value: payOrderCnt
+            label: 支付订单数
+          - value: payItemQty
+            label: 支付件数
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "速卖通成交分析_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 平台名称
+          - 店铺名称
+          - channelId
+          - 数据类型
+          - 统计日期
+          - 统计日期范围
+          - 时间筛选
+          - 国家
+          - 国家编码
+          - 业务模式
+          - 业务模式编码
+          - 指标分组
+          - 指标编码
+          - 指标名称
+          - 指标值
+          - 环比标签
+          - 环比值
+          - 同比标签
+          - 同比值
+          - 抓取时间
+
+  - id: product_ranking
+    name: 商品排行
+    description: 抓取速卖通生意参谋「商品排行」筛选条件下的全部分页商品数据，默认继承页面国家、平台、类目、日期、业务模式、商品筛选和商品 ID，并导出后通过统一 DataWorks/ODPS 入口同步。
+    script: product-ranking.js
+    entry_url: https://csp.aliexpress.com/m_apps/csp-sycm-new/productRank?channelId=125417
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开商品排行页
+      - id: channel_id
+        type: text
+        label: channelId
+        default: "125417"
+        ui_span: third
+        hint: 默认使用 Semir Official Store 的 125417；也可留空让脚本从当前页面 URL 读取。
+      - id: rank_type
+        type: select
+        label: 榜单类型
+        default: pay_amt
+        ui_span: third
+        options:
+          - value: pay_amt
+            label: 支付榜
+          - value: item_uv
+            label: 访客榜
+          - value: wishlist
+            label: 收藏量
+          - value: addcart
+            label: 加购榜
+      - id: time_range
+        type: select
+        label: 时间筛选
+        default: page
+        hint: 默认沿用页面当前日期；只有主动选择快捷项时才覆盖页面筛选。
+        ui_span: third
+        options:
+          - value: page
+            label: 沿用页面当前筛选
+          - value: recent1
+            label: 最近1天
+          - value: recent7
+            label: 最近7天
+          - value: recent30
+            label: 最近30天
+          - value: day
+            label: 自然日
+          - value: week
+            label: 自然周
+          - value: month
+            label: 自然月
+      - id: stat_date
+        type: text
+        label: 统计日期
+        placeholder: "例如 2026-06-01；留空沿用页面"
+        hint: 可选。填写后覆盖页面日期；商品排行接口以结束日期作为 statDate。
+        ui_span: third
+      - id: country
+        type: select
+        label: 国家
+        default: page
+        ui_span: third
+        options:
+          - value: page
+            label: 沿用页面/全部国家
+          - value: AllCountries
+            label: 全部国家
+          - value: RU
+            label: 俄罗斯
+          - value: US
+            label: 美国
+          - value: FR
+            label: 法国
+          - value: DE
+            label: 德国
+          - value: GB
+            label: 英国
+          - value: ES
+            label: 西班牙
+      - id: platform
+        type: select
+        label: 平台
+        default: ALL
+        ui_span: third
+        options:
+          - value: ALL
+            label: 所有平台
+          - value: APP
+            label: APP
+          - value: PC
+            label: 非APP
+      - id: biz_type
+        type: select
+        label: 业务模式
+        default: ALL
+        ui_span: third
+        options:
+          - value: ALL
+            label: 全部业务模式
+          - value: choice
+            label: 已加入半托管
+          - value: can_join_choice
+            label: 可加入半托管
+      - id: first_online_30d
+        type: select
+        label: 商品筛选
+        default: false
+        ui_span: third
+        options:
+          - value: "false"
+            label: 全部商品
+          - value: "true"
+            label: 30天内上架新品
+          - value: isPremiumQuality
+            label: 品质商品
+      - id: category_id
+        type: text
+        label: 类目ID
+        placeholder: "留空表示所有类目"
+        ui_span: third
+        hint: 可选。复杂类目筛选默认沿用页面；填写后按指定类目 ID 调接口。
+      - id: category_level
+        type: number
+        label: 类目层级
+        default: 1
+        min: 1
+        max: 5
+        step: 1
+        ui_span: third
+      - id: item_id
+        type: text
+        label: 商品ID
+        placeholder: "可选，留空抓取当前筛选全部商品"
+        ui_span: third
+      - id: page_size
+        type: select
+        label: 每页数量
+        default: "50"
+        ui_span: third
+        options:
+          - value: "10"
+            label: 10 条/页
+          - value: "50"
+            label: 50 条/页（推荐）
+          - value: "100"
+            label: 100 条/页
+      - id: max_pages
+        type: number
+        label: 最多页数
+        default: 500
+        min: 1
+        max: 2000
+        step: 10
+        ui_span: third
+        hint: 安全上限，正常会按接口总数自动停止。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "速卖通商品排行_{date_range}_{timestamp}.xlsx"
+        columns:
+          - 平台名称
+          - 店铺名称
+          - channelId
+          - 榜单类型
+          - 统计日期
+          - 统计日期范围
+          - 时间筛选
+          - 国家
+          - 国家编码
+          - 平台筛选
+          - 平台编码
+          - 类目
+          - 类目路径
+          - 类目ID
+          - 业务模式
+          - 业务模式编码
+          - 商品筛选
+          - 页码
+          - 页内序号
+          - 排行
+          - 商品ID
+          - 商品名称
+          - 商品图片
+          - 商品链接
+          - 最低价
+          - 最高价
+          - 商品状态
+          - Choice商品
+          - 首次上架时间
+          - 支付金额
+          - 支付金额环比
+          - 税费
+          - 税费环比
+          - 商品访客数
+          - 商品访客数环比
+          - 新访客数
+          - 新访客数环比
+          - 老访客数
+          - 老访客数环比
+          - 支付买家数
+          - 支付买家数环比
+          - 新支付买家数
+          - 新支付买家数环比
+          - 老支付买家数
+          - 老支付买家数环比
+          - 支付转化率
+          - 支付转化率环比
+          - 客单价
+          - 客单价环比
+          - 支付件数
+          - 支付件数环比
+          - 支付订单数
+          - 支付订单数环比
+          - 下单金额
+          - 下单金额环比
+          - 下单买家数
+          - 下单买家数环比
+          - 下单件数
+          - 下单件数环比
+          - 下单转化率
+          - 下单转化率环比
+          - 搜索曝光次数
+          - 搜索曝光次数环比
+          - 加购买家数
+          - 加购买家数环比
+          - 收藏买家数
+          - 收藏买家数环比
+          - 详情到下单转化率
+          - 详情到下单转化率环比
+          - 退款金额
+          - 退款金额环比
+          - 停留时长
+          - 停留时长环比
+          - 环比标签
+          - 抓取时间
+
   - id: product_cutout_download
     name: 商品抠图下载
     description: 输入一批速卖通商品款号 / productId，逐个读取商品发布页第一张主图，调用速卖通抠图接口生成新图地址并导出表格；不会点击发布页提交。

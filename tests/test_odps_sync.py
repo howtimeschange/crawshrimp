@@ -146,6 +146,60 @@ class OdpsSyncTest(unittest.TestCase):
         self.assertEqual(field_types["captured_at"], "datetime")
         self.assertEqual(field_types["orders"], "bigint")
 
+    def test_build_payload_maps_aliexpress_deal_analysis_excel_to_task_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "aliexpress_deal_analysis.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["平台名称", "店铺名称", "channelId", "数据类型", "统计日期", "统计日期范围", "指标编码", "指标名称", "指标值", "环比值", "同比值", "抓取时间"])
+            ws.append(["AliExpress", "Semir Official Store", "125417", "核心指标", "2026-06-01", "2026-06-01 ~ 2026-06-01", "payAmt", "支付金额", "18811.33", "7.5362", "4.2461", "2026-06-03 18:20:30"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="aliexpress-ops-assistant",
+                task_id="deal_analysis",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_aliexpress_deal_analysis")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-06-01"})
+        self.assertEqual(payload["data"][0]["platform_name"], "AliExpress")
+        self.assertEqual(payload["data"][0]["channel_id"], "125417")
+        self.assertEqual(payload["data"][0]["metric_code"], "payAmt")
+        self.assertEqual(payload["data"][0]["metric_value"], 18811.33)
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["stat_date"], "string")
+        self.assertEqual(field_types["stat_date_range"], "string")
+        self.assertEqual(field_types["metric_value"], "double")
+        self.assertEqual(field_types["captured_at"], "datetime")
+
+    def test_build_payload_maps_aliexpress_product_ranking_excel_to_task_table(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "aliexpress_product_ranking.xlsx"
+            wb = Workbook()
+            ws = wb.active
+            ws.append(["平台名称", "店铺名称", "channelId", "榜单类型", "统计日期", "商品ID", "排行", "商品名称", "支付金额", "支付金额环比", "商品访客数", "抓取时间"])
+            ws.append(["AliExpress", "Semir Official Store", "125417", "支付榜", "2026-06-01", "1005000000000000", "1", "Semir item", "100.5", "12.00%", "50", "2026-06-03 18:20:30"])
+            wb.save(path)
+
+            payload = odps_sync.build_sync_payload(
+                adapter_id="aliexpress-ops-assistant",
+                task_id="product_ranking",
+                file_path=str(path),
+            )
+
+        self.assertEqual(payload["table_name"], "imp_ods_aliexpress_product_ranking")
+        self.assertEqual(payload["partition_spec"], {"dt": "2026-06-01"})
+        self.assertEqual(payload["data"][0]["platform_name"], "AliExpress")
+        self.assertEqual(payload["data"][0]["item_id"], "1005000000000000")
+        self.assertEqual(payload["data"][0]["rank_no"], 1)
+        self.assertEqual(payload["data"][0]["pay_amt"], 100.5)
+        field_types = {field["name"]: field["type"] for field in payload["fields"]}
+        self.assertEqual(field_types["stat_date"], "string")
+        self.assertEqual(field_types["item_id"], "string")
+        self.assertEqual(field_types["rank_no"], "bigint")
+        self.assertEqual(field_types["pay_amt"], "double")
+
 
 if __name__ == "__main__":
     unittest.main()

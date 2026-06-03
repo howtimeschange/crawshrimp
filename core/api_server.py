@@ -672,6 +672,63 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 ctx['status_scope'] = status_label_map.get(raw_status, raw_status) or '默认状态'
         return ctx
 
+    if adapter_id == 'aliexpress-ops-assistant':
+        ctx = {
+            'time_scope': '当前筛选',
+            'date_range': '当前筛选',
+        }
+        date_context_js = r"""
+(() => {
+  const clean = value => String(value || '').replace(/\s+/g, ' ').trim()
+  const normalizeDate = value => {
+    const match = clean(value).match(/(\d{4})[-/](\d{1,2})[-/](\d{1,2})/)
+    if (!match) return ''
+    return `${match[1]}-${String(match[2]).padStart(2, '0')}-${String(match[3]).padStart(2, '0')}`
+  }
+  const dates = [...document.querySelectorAll('input')]
+    .map(input => normalizeDate(input.value || input.getAttribute('value') || ''))
+    .filter(Boolean)
+  return {
+    success: true,
+    data: [{
+      stat_date: dates[0] || '',
+      end_date: dates[1] || dates[0] || '',
+    }],
+    meta: { has_more: false }
+  }
+})()
+"""
+        page_ctx = await _evaluate_filename_context(runner, date_context_js)
+        time_label_map = {
+            'page': '当前筛选',
+            'recent1': '最近1天',
+            'recent7': '最近7天',
+            'recent30': '最近30天',
+            'day': '自然日',
+            'week': '自然周',
+            'month': '自然月',
+        }
+        time_range = str(run_params.get('time_range') or '').strip()
+        if time_range:
+            ctx['time_scope'] = time_label_map.get(time_range, time_range)
+        stat_date = str(run_params.get('stat_date') or run_params.get('date') or '').strip()
+        start = stat_date or str(page_ctx.get('stat_date') or '').strip()
+        end = stat_date or str(page_ctx.get('end_date') or start).strip()
+        if start and end:
+            ctx['date_range'] = f"{start}~{end}"
+        elif start:
+            ctx['date_range'] = start
+        if task_id == 'product_ranking':
+            rank_label_map = {
+                'pay_amt': '支付榜',
+                'uv': '访客榜',
+                'wishlist': '收藏量',
+                'cart': '加购榜',
+            }
+            rank_type = str(run_params.get('rank_type') or '').strip()
+            ctx['rank_scope'] = rank_label_map.get(rank_type, rank_type) or '支付榜'
+        return ctx
+
     if adapter_id != 'temu':
         return {}
 

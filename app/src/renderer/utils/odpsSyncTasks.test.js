@@ -8,9 +8,11 @@ import {
   isOdpsSyncableFile,
 } from './odpsSyncTasks.js'
 
-test('ODPS sync is enabled for Temu mall flux and TikTok product analytics', () => {
+test('ODPS sync is enabled for Temu mall flux, TikTok product analytics, and AliExpress analytics', () => {
   assert.equal(isOdpsSyncableTask('temu', 'mall_flux'), true)
   assert.equal(isOdpsSyncableTask('tiktok-ops-assistant', 'product_analytics'), true)
+  assert.equal(isOdpsSyncableTask('aliexpress-ops-assistant', 'deal_analysis'), true)
+  assert.equal(isOdpsSyncableTask('aliexpress-ops-assistant', 'product_ranking'), true)
   assert.equal(isOdpsSyncableTask('tiktok-ops-assistant', 'product_rating'), false)
 })
 
@@ -30,6 +32,11 @@ test('ODPS sync file guard requires a syncable task and Excel path', () => {
     task_id: 'goods_data',
     path: '/tmp/Temu商品数据.xlsx',
   }), false)
+  assert.equal(isOdpsSyncableFile({
+    adapter_id: 'aliexpress-ops-assistant',
+    task_id: 'product_ranking',
+    path: '/tmp/速卖通商品排行.xlsx',
+  }), true)
 })
 
 test('buildOdpsSyncFile wraps task runner output paths with task context', () => {
@@ -64,6 +71,11 @@ test('groupOdpsSyncableFiles groups mixed sync targets by adapter and task', () 
       task_id: 'product_analytics',
       path: '/tmp/TikTok商品数据分析.csv',
     },
+    {
+      adapter_id: 'aliexpress-ops-assistant',
+      task_id: 'deal_analysis',
+      path: '/tmp/速卖通成交分析.xlsx',
+    },
   ])
 
   assert.deepEqual(groups, [
@@ -76,6 +88,11 @@ test('groupOdpsSyncableFiles groups mixed sync targets by adapter and task', () 
       adapter_id: 'tiktok-ops-assistant',
       task_id: 'product_analytics',
       paths: ['/tmp/TikTok商品数据分析.xlsx'],
+    },
+    {
+      adapter_id: 'aliexpress-ops-assistant',
+      task_id: 'deal_analysis',
+      paths: ['/tmp/速卖通成交分析.xlsx'],
     },
   ])
 })
