@@ -278,6 +278,13 @@
     return Math.max(MIN_DOWNLOAD_CONCURRENCY, Math.min(MAX_DOWNLOAD_CONCURRENCY, Math.floor(parsed)))
   }
 
+  function normalizeSourceTypes(rawValue) {
+    const value = String(rawValue || '').trim().toLowerCase()
+    if (value === 'model') return ['model']
+    if (value === 'still') return ['still']
+    return ['model', 'still']
+  }
+
   function dedupeItemsByFullpath(items, duplicateMode) {
     if (normalizeDuplicateMode(duplicateMode) === 'all') {
       return Array.isArray(items) ? items.slice() : []
@@ -836,8 +843,16 @@
   async function buildCodePlan(inputCode, sourceConfigs, codeIndex, totalCodes, options = {}) {
     const rows = []
     const downloadItems = []
-    for (const sourceType of ['model', 'still']) {
-      const plan = await buildSourcePlan(inputCode, sourceType, sourceConfigs[sourceType], codeIndex, totalCodes, options)
+    const sourceTypes = Array.isArray(options.sourceTypes) && options.sourceTypes.length
+      ? options.sourceTypes.filter(sourceType => sourceType === 'model' || sourceType === 'still')
+      : ['model', 'still']
+    for (const sourceType of sourceTypes) {
+      const sourceConfig = sourceConfigs[sourceType]
+      if (!sourceConfig) {
+        rows.push(rowForNotice(inputCode, sourceType, '未配置云盘路径', '未匹配到素材', '本次未提供该素材类型的云盘路径'))
+        continue
+      }
+      const plan = await buildSourcePlan(inputCode, sourceType, sourceConfig, codeIndex, totalCodes, options)
       rows.push(...plan.rows)
       downloadItems.push(...plan.downloadItems)
     }
@@ -929,12 +944,14 @@
       normalizeDuplicateMode,
       normalizeFolderScanDepth,
       normalizeDownloadConcurrency,
+      normalizeSourceTypes,
       dedupeItemsByFullpath,
       buildFolderHashRoute,
       buildSearchHashRoute,
       classifySopAsset,
       inferSopPdfType,
       collectCandidateAssets,
+      buildCodePlan,
       buildRuntimeFilename,
       finalizeRows,
       summarizeDownloadResult,
@@ -949,40 +966,55 @@
 
   try {
     if (phase === 'init' || phase === 'main') {
-      const stillPath = parseCloudPath(params.still_cloud_path)
-      const modelPath = parseCloudPath(params.model_cloud_path)
+      const sourceTypes = normalizeSourceTypes(params.image_source_type)
+      const sourceTypeSet = new Set(sourceTypes)
+      const stillPath = sourceTypeSet.has('still') ? parseCloudPath(params.still_cloud_path) : null
+      const modelPath = sourceTypeSet.has('model') ? parseCloudPath(params.model_cloud_path) : null
       const retryPlan = normalizeRetryFailedPlan(params.retry_failed_file)
       const manualCodes = normalizeCodes(params.item_codes)
       const codes = retryPlan.active ? retryPlan.codes : manualCodes
       if (!codes.length) throw new Error('请至少输入一个款号/款色编码，或选择上一轮结果表重跑失败清单')
 
-      const stillMount = await resolveMountId(stillPath.mountName)
-      const modelMount = compact(modelPath.mountName) === compact(stillPath.mountName)
-        ? stillMount
-        : await resolveMountId(modelPath.mountName)
+      const resolvedMounts = {}
+      async function mountForPath(pathConfig) {
+        const key = compact(pathConfig?.mountName)
+        if (!key) throw new Error('云盘路径缺少挂载点名称')
+        if (!resolvedMounts[key]) resolvedMounts[key] = await resolveMountId(pathConfig.mountName)
+        return resolvedMounts[key]
+      }
+
+      const sourceConfigs = {}
+      if (stillPath) {
+        const stillMount = await mountForPath(stillPath)
+        sourceConfigs.still = {
+          mountId: stillMount.mountId,
+          mountName: stillMount.mountName,
+          cloudPath: stillPath.raw,
+          relativePath: stillPath.relativePath,
+          broadRelativePath: deriveBroadSourcePrefix(stillPath.relativePath, 'still'),
+        }
+      }
+      if (modelPath) {
+        const modelMount = await mountForPath(modelPath)
+        sourceConfigs.model = {
+          mountId: modelMount.mountId,
+          mountName: modelMount.mountName,
+          cloudPath: modelPath.raw,
+          relativePath: modelPath.relativePath,
+          broadRelativePath: deriveBroadSourcePrefix(modelPath.relativePath, 'model'),
+        }
+      }
 
       const duplicateMode = normalizeDuplicateMode(params.duplicate_mode)
       const folderScanDepth = normalizeFolderScanDepth(params.folder_scan_depth)
       const downloadConcurrency = normalizeDownloadConcurrency(params.download_concurrency)
+      const folderSourceConfig = sourceConfigs.still || sourceConfigs.model || {}
 
       return nextPhase('ensure_folder', 0, {
-        source_configs: {
-          still: {
-            mountId: stillMount.mountId,
-            mountName: stillMount.mountName,
-            cloudPath: stillPath.raw,
-            relativePath: stillPath.relativePath,
-            broadRelativePath: deriveBroadSourcePrefix(stillPath.relativePath, 'still'),
-          },
-          model: {
-            mountId: modelMount.mountId,
-            mountName: modelMount.mountName,
-            cloudPath: modelPath.raw,
-            relativePath: modelPath.relativePath,
-            broadRelativePath: deriveBroadSourcePrefix(modelPath.relativePath, 'model'),
-          },
-        },
-        folder_hash: buildFolderHashRoute(stillMount.mountId, stillPath.relativePath),
+        source_configs: sourceConfigs,
+        source_types: sourceTypes,
+        image_source_type: String(params.image_source_type || 'all').trim() || 'all',
+        folder_hash: buildFolderHashRoute(folderSourceConfig.mountId, folderSourceConfig.relativePath),
         duplicate_mode: duplicateMode,
         folder_scan_depth: folderScanDepth,
         download_concurrency: downloadConcurrency,
@@ -1036,8 +1068,12 @@
       const currentCode = String(shared.current_code || '')
       if (!currentCode) return nextPhase('plan_code', 0, shared)
 
-      const stillConfig = (shared.source_configs || {}).still || {}
-      const targetHash = buildSearchHashRoute(stillConfig.mountId, currentCode)
+      const sourceTypes = Array.isArray(shared.source_types) && shared.source_types.length
+        ? shared.source_types
+        : normalizeSourceTypes(shared.image_source_type)
+      const sourceConfigs = shared.source_configs || {}
+      const firstSourceConfig = sourceConfigs[sourceTypes[0]] || sourceConfigs.still || sourceConfigs.model || {}
+      const targetHash = buildSearchHashRoute(firstSourceConfig.mountId, currentCode)
       if (targetHash && location.hash !== targetHash) {
         location.hash = targetHash
         return nextPhase('collect_code', 1500, {
@@ -1066,6 +1102,7 @@
           duplicateMode: shared.duplicate_mode,
           folderScanDepth: shared.folder_scan_depth,
           retryFailedPaths: shared.retry_failed_paths,
+          sourceTypes: Array.isArray(shared.source_types) ? shared.source_types : normalizeSourceTypes(shared.image_source_type),
         },
       )
 

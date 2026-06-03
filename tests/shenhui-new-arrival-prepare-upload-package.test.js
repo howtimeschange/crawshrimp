@@ -39,6 +39,39 @@ async function loadExports(options = {}) {
   return exportsBox
 }
 
+async function runScript(options = {}) {
+  const scriptPath = path.resolve('adapters/shenhui-new-arrival/prepare-upload-package.js')
+  const source = fs.readFileSync(scriptPath, 'utf8')
+  const context = {
+    window: {
+      __CRAWSHRIMP_PARAMS__: options.params || {},
+      __CRAWSHRIMP_PHASE__: options.phase || 'init',
+      __CRAWSHRIMP_SHARED__: options.shared || {},
+      __CRAWSHRIMP_EXPORTS__: null,
+    },
+    document: {},
+    location: options.location || { href: 'https://fmp.semirapp.com/web/index#/home/file', hash: '#/home/file' },
+    fetch: options.fetch || (async () => ({ ok: true, json: async () => ({}) })),
+    URLSearchParams,
+    console,
+    setTimeout,
+    clearTimeout,
+    Date,
+    Math,
+    JSON,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    RegExp,
+    Set,
+    Map,
+  }
+  context.globalThis = context
+  return vm.runInNewContext(source, context, { filename: scriptPath })
+}
+
 function jsonResponse(payload) {
   return {
     ok: true,
@@ -399,6 +432,105 @@ test('filterRetryFailedItems keeps only exact failed cloud paths during rerun', 
     ['b.jpg'],
   )
   assert.deepEqual(helpers.filterRetryFailedItems(items, []).map(item => item.filename), ['a.jpg', 'b.jpg'])
+})
+
+test('normalizeSourceTypes defaults to both and supports single image type selections', async () => {
+  const helpers = await loadExports()
+
+  assert.deepEqual([...helpers.normalizeSourceTypes('')], ['model', 'still'])
+  assert.deepEqual([...helpers.normalizeSourceTypes('all')], ['model', 'still'])
+  assert.deepEqual([...helpers.normalizeSourceTypes('model')], ['model'])
+  assert.deepEqual([...helpers.normalizeSourceTypes('still')], ['still'])
+  assert.deepEqual([...helpers.normalizeSourceTypes('unknown')], ['model', 'still'])
+})
+
+test('init only requires the cloud path for the selected image source type', async () => {
+  const result = await runScript({
+    params: {
+      image_source_type: 'model',
+      model_cloud_path: '巴拉营运BU-商品//模拍原图/期货/1P/幼童服装/',
+      item_codes: '208226103201',
+    },
+    fetch: async (url) => {
+      if (String(url).includes('/fengcloud/1/account/mount')) {
+        return jsonResponse({ list: [{ org_name: '巴拉营运BU-商品', mount_id: 'm1' }] })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'ensure_folder')
+  assert.deepEqual([...Object.keys(result.meta.shared.source_configs)], ['model'])
+  assert.equal(result.meta.shared.source_configs.model.relativePath, '模拍原图/期货/1P/幼童服装')
+  assert.equal(result.meta.shared.source_configs.still, undefined)
+})
+
+test('buildCodePlan only plans the selected image source types', async () => {
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        return jsonResponse({
+          total: 2,
+          list: [
+            {
+              dir: '1',
+              filename: '208226103201--模特',
+              fullpath: '模拍原图/208226103201--模特',
+            },
+            {
+              dir: '1',
+              filename: '208226103201--静物',
+              fullpath: '平拍原图/208226103201--静物',
+            },
+          ],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        const decoded = decodeURIComponent(textUrl)
+        if (decoded.includes('模拍原图')) {
+          return jsonResponse({
+            count: 1,
+            list: [{
+              dir: '0',
+              ext: 'jpg',
+              filename: 'model-look.jpg',
+              fullpath: '模拍原图/208226103201--模特/model-look.jpg',
+            }],
+          })
+        }
+        return jsonResponse({
+          count: 1,
+          list: [{
+            dir: '0',
+            ext: 'jpg',
+            filename: 'still-main.jpg',
+            fullpath: '平拍原图/208226103201--静物/still-main.jpg',
+          }],
+        })
+      }
+      if (textUrl.includes('/fengcloud/2/file/info')) {
+        return jsonResponse({ uri: `https://download.example/${encodeURIComponent(textUrl)}` })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const plan = await helpers.buildCodePlan(
+    '208226103201',
+    {
+      model: { mountId: 'm1', relativePath: '模拍原图' },
+      still: { mountId: 'm1', relativePath: '平拍原图' },
+    },
+    1,
+    1,
+    { sourceTypes: ['still'], folderScanDepth: 1 },
+  )
+
+  assert.deepEqual([...new Set(plan.rows.map(row => row['素材来源']))], ['静物图'])
+  assert.equal(plan.downloadItems.length, 1)
+  assert.match(plan.downloadItems[0].label, /^静物图 \//)
 })
 
 test('finalizeRows maps download results only onto rows that were scheduled for download', async () => {

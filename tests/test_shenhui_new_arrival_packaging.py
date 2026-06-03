@@ -60,6 +60,12 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
 
         prepare_task = next(item for item in manifest["tasks"] if item["id"] == "prepare_upload_package")
         prepare_params = {item["id"]: item for item in prepare_task["params"]}
+        self.assertEqual(prepare_params["image_source_type"]["type"], "radio")
+        self.assertEqual(prepare_params["image_source_type"]["default"], "all")
+        self.assertEqual(
+            [item["value"] for item in prepare_params["image_source_type"]["options"]],
+            ["all", "still", "model"],
+        )
         self.assertEqual(prepare_params["wash_crop_boxes"]["type"], "textarea")
         self.assertEqual(prepare_params["tag_crop_boxes"]["type"], "textarea")
         self.assertEqual(prepare_params["auto_zip_package"]["type"], "checkbox")
