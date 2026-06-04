@@ -14,7 +14,7 @@ auth:
 tasks:
   - id: mixed_fund_signup_monitor
     name: 【数据】商城混资报名监控
-    description: 通过抖店活动广场接口抓取商城混资相关活动与已报名商品数量，输出活动报名汇总和报名商品明细，供商城混资监控看板使用。
+    description: 默认抓取当前 4 个商城混资入口，也可自定义入口清单，输出活动报名汇总和报名商品明细，供商城混资监控看板使用。
     script: mixed-fund-signup-monitor.js
     entry_url: https://fxg.jinritemai.com/ffa/merchant/campaign-square
     skip_auth: false
@@ -33,8 +33,34 @@ tasks:
         label: 活动关键词
         default: "混资"
         placeholder: "多个关键词用逗号分隔"
-        hint: 默认按“混资”在活动广场检索，并自动展开父活动下的子活动。
+        hint: 用于从活动广场补充活动时间和父活动信息；最终抓取范围以“活动范围”为准。
         ui_span: half
+      - id: activity_scope
+        type: radio
+        label: 活动范围
+        default: default
+        ui_span: half
+        options:
+          - value: default
+            label: 当前 4 个商城混资入口
+          - value: custom
+            label: 自定义入口清单
+        hint: 默认使用当前配置的 4 个入口；如需增删入口，切到自定义后编辑下方清单。
+      - id: custom_activities
+        type: textarea
+        label: 自定义活动入口清单
+        rows: 6
+        ui_span: full
+        visible_when:
+          id: activity_scope
+          equals: custom
+        default: |
+          7631472587859837230 | 【高客单商品必报】优质用户混资货补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台老朋友惊喜券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&from=operation_seller_link
+          7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台新人首单惊喜券；平台新人首单福利券；平台限时回归礼券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7611436032944275738&from=operation_seller_link
+          7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7554013743270347034&from=operation_seller_link
+          7610636843016552714 | 🔥全品类爆发！推荐卡混资活动报名入口 | 7627772015895036170 | 🔥全品类爆发！推荐卡全资活动报名入口 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?applyTab=allow&id=7610636843016552714&from=campaign_square
+        placeholder: "每行一条：活动ID | 活动名称 | 父活动ID | 父活动名称 | 优惠券名称 | 活动链接"
+        hint: 删除某一行即删除入口；新增一行即新增入口。只必填活动ID，其余字段可留空。
       - id: include_details
         type: checkbox
         label: 输出报名商品明细
@@ -44,27 +70,6 @@ tasks:
         options:
           - value: "true"
             label: 同时输出报名商品明细
-      - id: detail_page_size
-        type: select
-        label: 明细每页数量
-        default: "50"
-        ui_span: third
-        options:
-          - value: "20"
-            label: 20 条/页
-          - value: "50"
-            label: 50 条/页（推荐）
-          - value: "100"
-            label: 100 条/页
-      - id: max_detail_pages
-        type: number
-        label: 单活动最多明细页
-        default: 20
-        min: 1
-        max: 200
-        step: 1
-        ui_span: third
-        hint: 防止异常循环；会按接口 total 自动提前停止。
     trigger:
       type: manual
     output:
@@ -81,6 +86,8 @@ tasks:
           - 活动ID
           - 活动名称
           - 活动入口
+          - 活动链接
+          - 优惠券名称
           - 活动开始时间
           - 活动结束时间
           - 报名商品数
@@ -95,7 +102,7 @@ tasks:
 
   - id: mixed_fund_order_replay
     name: 【数据】商城混资订单复盘
-    description: 支持自动创建抖店官方自定义订单导出任务，或读取已下载的官方订单导出 Excel/CSV；按“平台优惠”券名匹配商城混资活动，并聚合流量体裁、流量渠道、成交商品 Top 数据。
+    description: 一次串行抓取混资报名商品、订单列表和订单详情 API，自动完成平台优惠归因；也兼容已下载官方订单导出 Excel/CSV，流量体裁/流量渠道精确指标需官方导出或后续罗盘接口补齐。
     script: mixed-fund-order-replay.js
     entry_url: https://fxg.jinritemai.com/ffa/morder/order/list
     skip_auth: false
@@ -112,15 +119,17 @@ tasks:
       - id: data_source
         type: radio
         label: 数据来源
-        default: export_file
+        default: detail_api
         options:
+          - value: detail_api
+            label: 一体化订单详情 API（推荐）
           - value: export_file
             label: 已下载官方订单导出文件
           - value: official_export_api
             label: 自动创建官方导出任务
           - value: api
             label: 订单列表 API 探查
-        hint: 完整复盘需要官方导出中的“平台优惠/流量体裁/流量渠道”字段；自动导出会创建小范围官方 CSV 报表，若抖店要求邮箱验证码，请到导出记录下载后再用文件模式复盘。
+        hint: 默认一条任务串行完成“报名商品抓取 -> 订单列表 -> 订单详情优惠 -> 混资归因”，不依赖导出验证码；精确流量体裁/流量渠道仍需官方导出或后续罗盘接口。
       - id: order_file
         type: file_excel
         label: 订单导出 Excel/CSV
@@ -134,6 +143,72 @@ tasks:
         label: 报名监控结果（可选）
         required: false
         hint: 可上传【数据】商城混资报名监控输出文件；当“平台惊喜XX折券”券名同时对应两个活动时，优先按订单商品ID/商家编码匹配报名活动。
+        visible_when:
+          id: data_source
+          equals: export_file
+      - id: auto_signup_match
+        type: checkbox
+        label: 自动抓报名商品辅助归因
+        default:
+          - "true"
+        visible_when:
+          id: data_source
+          equals: detail_api
+        options:
+          - value: "true"
+            label: 先抓报名商品，再复盘订单
+        hint: 用报名商品ID/商家编码区分“平台惊喜XX折券”属于长期混资入口还是推荐卡混资入口；失败时会回退到下方默认归属。
+      - id: include_signup_snapshot
+        type: checkbox
+        label: 输出报名监控数据
+        default:
+          - "true"
+        visible_when:
+          id: data_source
+          equals: detail_api
+        options:
+          - value: "true"
+            label: Excel 中同时保留报名汇总和报名商品明细
+        hint: 开启后，这个复盘文件会同时包含报名监控两个 Sheet，等于把两个脚本合并在一次运行里。
+      - id: activity_keywords
+        type: text
+        label: 活动关键词
+        default: "混资"
+        placeholder: "多个关键词用逗号分隔"
+        ui_span: half
+        visible_when:
+          id: data_source
+          equals: detail_api
+        hint: 用于从活动广场补充活动时间和父活动信息；最终报名抓取范围以“活动范围”为准。
+      - id: activity_scope
+        type: radio
+        label: 活动范围
+        default: default
+        ui_span: half
+        visible_when:
+          id: data_source
+          equals: detail_api
+        options:
+          - value: default
+            label: 当前 4 个商城混资入口
+          - value: custom
+            label: 自定义入口清单
+        hint: 默认使用当前配置的 4 个入口；如需增删入口，切到自定义后编辑下方清单。
+      - id: custom_activities
+        type: textarea
+        label: 自定义活动入口清单
+        rows: 6
+        ui_span: full
+        visible_when:
+          id: activity_scope
+          equals: custom
+        default: |
+          7631472587859837230 | 【高客单商品必报】优质用户混资货补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台老朋友惊喜券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&from=operation_seller_link
+          7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台新人首单惊喜券；平台新人首单福利券；平台限时回归礼券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7611436032944275738&from=operation_seller_link
+          7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7554013743270347034&from=operation_seller_link
+          7610636843016552714 | 🔥全品类爆发！推荐卡混资活动报名入口 | 7627772015895036170 | 🔥全品类爆发！推荐卡全资活动报名入口 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?applyTab=allow&id=7610636843016552714&from=campaign_square
+        placeholder: "每行一条：活动ID | 活动名称 | 父活动ID | 父活动名称 | 优惠券名称 | 活动链接"
+        hint: 删除某一行即删除入口；新增一行即新增入口。只必填活动ID，其余字段可留空。
       - id: surprise_coupon_activity
         type: radio
         label: 平台惊喜折券归属
@@ -150,13 +225,13 @@ tasks:
         label: 数据开始日期
         placeholder: "2026-06-01"
         ui_span: third
-        hint: 自动创建官方导出任务时必填；文件模式下用于标记输出周期。
+        hint: 一体化 API 和自动官方导出模式必填；文件模式下用于标记输出周期。
       - id: end_date
         type: text
         label: 数据结束日期
         placeholder: "2026-06-30"
         ui_span: third
-        hint: 自动创建官方导出任务时必填，建议小周期运行，避免超过抖店 100 万单导出限制。
+        hint: 一体化 API 和自动官方导出模式必填，建议小周期运行。
       - id: official_export_dimension
         type: radio
         label: 官方导出维度
@@ -182,32 +257,14 @@ tasks:
         visible_when:
           id: data_source
           equals: official_export_api
-      - id: page_size
-        type: select
-        label: API 每页数量
-        default: "50"
-        ui_span: third
+      - id: include_zero_promotion_details
+        type: checkbox
+        label: 同时抓取无优惠订单详情
+        default: false
         visible_when:
           id: data_source
-          equals: api
-        options:
-          - value: "20"
-            label: 20 条/页
-          - value: "50"
-            label: 50 条/页
-          - value: "100"
-            label: 100 条/页
-      - id: max_pages
-        type: number
-        label: API 最多页数
-        default: 1
-        min: 1
-        max: 200
-        step: 1
-        ui_span: third
-        visible_when:
-          id: data_source
-          equals: api
+          equals: detail_api
+        hint: 默认关闭以减少请求量；开启后会对时间范围内所有订单抓详情。
     trigger:
       type: manual
     output:
@@ -215,6 +272,49 @@ tasks:
         filename: "抖店商城混资订单复盘_{timestamp}.xlsx"
         sheet_key: __sheet_name
         sheets:
+          - name: 报名汇总
+            columns:
+              - __sheet_name
+              - 平台名称
+              - 品牌
+              - 店铺名称
+              - 父活动ID
+              - 父活动名称
+              - 活动ID
+              - 活动名称
+              - 活动入口
+              - 活动链接
+              - 优惠券名称
+              - 活动开始时间
+              - 活动结束时间
+              - 报名商品数
+              - 已拉取明细数
+              - 抓取时间
+              - 备注
+          - name: 报名商品明细
+            columns:
+              - __sheet_name
+              - 平台名称
+              - 品牌
+              - 店铺名称
+              - 父活动ID
+              - 父活动名称
+              - 活动ID
+              - 活动名称
+              - 活动入口
+              - 活动链接
+              - 优惠券名称
+              - 活动开始时间
+              - 活动结束时间
+              - 报名商品数
+              - 已拉取明细数
+              - 商品ID
+              - 商品名称
+              - 商家编码
+              - 店铺ID
+              - 报名状态
+              - 报名成功时间
+              - 抓取时间
           - name: 复盘总览
             columns:
               - __sheet_name
