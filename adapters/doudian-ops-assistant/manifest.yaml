@@ -1,0 +1,283 @@
+id: doudian-ops-assistant
+name: 抖店运营助手
+version: 0.1.0
+author: codex
+description: "抖店商家后台数据抓取：商城混资活动报名监控、订单优惠券归因与复盘看板数据接口"
+entry_url: https://fxg.jinritemai.com/ffa/merchant/campaign-square
+tab_match_prefixes:
+  - https://fxg.jinritemai.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://fxg.jinritemai.com/
+
+tasks:
+  - id: mixed_fund_signup_monitor
+    name: 【数据】商城混资报名监控
+    description: 通过抖店活动广场接口抓取商城混资相关活动与已报名商品数量，输出活动报名汇总和报名商品明细，供商城混资监控看板使用。
+    script: mixed-fund-signup-monitor.js
+    entry_url: https://fxg.jinritemai.com/ffa/merchant/campaign-square
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开活动广场页
+      - id: activity_keywords
+        type: text
+        label: 活动关键词
+        default: "混资"
+        placeholder: "多个关键词用逗号分隔"
+        hint: 默认按“混资”在活动广场检索，并自动展开父活动下的子活动。
+        ui_span: half
+      - id: include_details
+        type: checkbox
+        label: 输出报名商品明细
+        default:
+          - "true"
+        ui_span: half
+        options:
+          - value: "true"
+            label: 同时输出报名商品明细
+      - id: detail_page_size
+        type: select
+        label: 明细每页数量
+        default: "50"
+        ui_span: third
+        options:
+          - value: "20"
+            label: 20 条/页
+          - value: "50"
+            label: 50 条/页（推荐）
+          - value: "100"
+            label: 100 条/页
+      - id: max_detail_pages
+        type: number
+        label: 单活动最多明细页
+        default: 20
+        min: 1
+        max: 200
+        step: 1
+        ui_span: third
+        hint: 防止异常循环；会按接口 total 自动提前停止。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "抖店商城混资报名监控_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - __sheet_name
+          - 平台名称
+          - 品牌
+          - 店铺名称
+          - 父活动ID
+          - 父活动名称
+          - 活动ID
+          - 活动名称
+          - 活动入口
+          - 活动开始时间
+          - 活动结束时间
+          - 报名商品数
+          - 已拉取明细数
+          - 商品ID
+          - 商品名称
+          - 商家编码
+          - 店铺ID
+          - 报名状态
+          - 报名成功时间
+          - 抓取时间
+
+  - id: mixed_fund_order_replay
+    name: 【数据】商城混资订单复盘
+    description: 支持自动创建抖店官方自定义订单导出任务，或读取已下载的官方订单导出 Excel/CSV；按“平台优惠”券名匹配商城混资活动，并聚合流量体裁、流量渠道、成交商品 Top 数据。
+    script: mixed-fund-order-replay.js
+    entry_url: https://fxg.jinritemai.com/ffa/morder/order/list
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开订单页
+      - id: data_source
+        type: radio
+        label: 数据来源
+        default: export_file
+        options:
+          - value: export_file
+            label: 已下载官方订单导出文件
+          - value: official_export_api
+            label: 自动创建官方导出任务
+          - value: api
+            label: 订单列表 API 探查
+        hint: 完整复盘需要官方导出中的“平台优惠/流量体裁/流量渠道”字段；自动导出会创建小范围官方 CSV 报表，若抖店要求邮箱验证码，请到导出记录下载后再用文件模式复盘。
+      - id: order_file
+        type: file_excel
+        label: 订单导出 Excel/CSV
+        required: false
+        visible_when:
+          id: data_source
+          equals: export_file
+        hint: 请使用包含平台优惠、流量体裁、流量渠道、商品ID、商品名称、成交金额等字段的抖店官方订单导出文件。
+      - id: signup_file
+        type: file_excel
+        label: 报名监控结果（可选）
+        required: false
+        hint: 可上传【数据】商城混资报名监控输出文件；当“平台惊喜XX折券”券名同时对应两个活动时，优先按订单商品ID/商家编码匹配报名活动。
+      - id: surprise_coupon_activity
+        type: radio
+        label: 平台惊喜折券归属
+        default: mall_long_term
+        ui_span: half
+        options:
+          - value: mall_long_term
+            label: 商城长期混资券入口
+          - value: recommendation_card
+            label: 推荐卡混资活动入口
+        hint: DOCX 中两个活动都使用“平台惊喜XX折券”，仅凭券名无法区分，需运营选择默认归属。
+      - id: start_date
+        type: text
+        label: 数据开始日期
+        placeholder: "2026-06-01"
+        ui_span: third
+        hint: 自动创建官方导出任务时必填；文件模式下用于标记输出周期。
+      - id: end_date
+        type: text
+        label: 数据结束日期
+        placeholder: "2026-06-30"
+        ui_span: third
+        hint: 自动创建官方导出任务时必填，建议小周期运行，避免超过抖店 100 万单导出限制。
+      - id: official_export_dimension
+        type: radio
+        label: 官方导出维度
+        default: PRODUCT_ORDER
+        ui_span: third
+        visible_when:
+          id: data_source
+          equals: official_export_api
+        options:
+          - value: PRODUCT_ORDER
+            label: 商品维度
+          - value: SHOP_ORDER
+            label: 订单维度
+        hint: 默认商品维度，便于保留商品ID、商家编码、商品金额等单品复盘字段。
+      - id: export_poll_ms
+        type: number
+        label: 导出轮询间隔毫秒
+        default: 10000
+        min: 1000
+        max: 60000
+        step: 1000
+        ui_span: third
+        visible_when:
+          id: data_source
+          equals: official_export_api
+      - id: page_size
+        type: select
+        label: API 每页数量
+        default: "50"
+        ui_span: third
+        visible_when:
+          id: data_source
+          equals: api
+        options:
+          - value: "20"
+            label: 20 条/页
+          - value: "50"
+            label: 50 条/页
+          - value: "100"
+            label: 100 条/页
+      - id: max_pages
+        type: number
+        label: API 最多页数
+        default: 1
+        min: 1
+        max: 200
+        step: 1
+        ui_span: third
+        visible_when:
+          id: data_source
+          equals: api
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "抖店商城混资订单复盘_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 复盘总览
+            columns:
+              - __sheet_name
+              - 平台名称
+              - 品牌
+              - 店铺名称
+              - 数据周期
+              - 全店引导成交金额
+              - 混资成交金额
+              - 混资成交订单数
+              - 商品卡成交金额
+              - 商品卡成交占比
+              - 抓取时间
+              - 备注
+          - name: 活动汇总
+            columns:
+              - __sheet_name
+              - 平台名称
+              - 活动ID
+              - 活动名称
+              - 成交订单数
+              - 成交金额
+              - 商品卡成交金额
+              - 商品卡成交占比
+              - 抓取时间
+          - name: 商品卡渠道Top3
+            columns:
+              - __sheet_name
+              - 排名
+              - 流量体裁
+              - 流量渠道
+              - 成交订单数
+              - 成交金额
+              - 抓取时间
+          - name: 成交单品Top3
+            columns:
+              - __sheet_name
+              - 排名
+              - 商品ID
+              - 商品名称
+              - 商家编码
+              - 成交订单数
+              - 成交金额
+              - 抓取时间
+          - name: 混资订单明细
+            columns:
+              - __sheet_name
+              - 平台名称
+              - 品牌
+              - 店铺名称
+              - 订单号
+              - 子订单号
+              - 下单时间
+              - 商品ID
+              - 商品名称
+              - 商家编码
+              - 成交金额
+              - 平台优惠
+              - 匹配活动ID
+              - 匹配活动名称
+              - 匹配依据
+              - 流量体裁
+              - 流量渠道
+              - 流量来源
+              - 流量类型
+              - 抓取时间
