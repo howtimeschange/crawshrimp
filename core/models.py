@@ -59,6 +59,7 @@ class TaskTrigger(BaseModel):
 class ParamType(str, Enum):
     text       = "text"        # 单行文本输入
     textarea   = "textarea"    # 多行文本输入
+    line_list  = "line_list"   # 多行单行输入列表，提交为字符串行
     directory  = "directory"   # 本地目录选择，注入绝对路径字符串
     radio      = "radio"       # 单选框组
     select     = "select"      # 下拉选择
@@ -94,6 +95,7 @@ class TaskParam(BaseModel):
     label: str
     placeholder: Optional[str] = None
     hint: Optional[str] = None
+    add_label: Optional[str] = None       # line_list 用：新增按钮文案
     quick_fill_options: Optional[List[str]] = None  # text / textarea: 快捷填充值标签
     rows: Optional[int] = None           # textarea 用：显示行数
     ui_span: Optional[str] = None        # GUI 可选：compact / full / half / third

@@ -101,13 +101,13 @@
   function normalizeActivityConfig(item, index) {
     if (!item) return null
     if (typeof item === 'object' && !Array.isArray(item)) {
-      const activityId = compact(item.activityId || item.activity_id || item.id || item.act_id)
+      const entranceUrl = compact(item.entranceUrl || item.entrance_url || item.url || item.link)
+      const activityId = compact(item.activityId || item.activity_id || item.id || item.act_id) || activityIdFromText(entranceUrl)
       if (!activityId) return null
       const name = compact(item.name || item.activityName || item.activity_name || item.title)
       const parentActivityId = compact(item.parentActivityId || item.parent_activity_id || item.parentId || item.parent_id)
       const parentName = compact(item.parentName || item.parent_name || item.parentTitle || item.parent_title)
       const couponName = compact(item.couponName || item.coupon_name || item.coupon || item.platform_coupon)
-      const entranceUrl = compact(item.entranceUrl || item.entrance_url || item.url || item.link)
       return {
         activityId,
         name: name || `自定义活动${index + 1}`,
@@ -152,9 +152,10 @@
   }
 
   function configuredActivities() {
-    if (activityScope() !== 'custom') return MIXED_FUND_ENTRANCES.slice()
+    const rows = customActivityRows()
+    if (!rows.length && activityScope() !== 'custom') return MIXED_FUND_ENTRANCES.slice()
     const map = new Map()
-    customActivityRows().forEach((row, index) => {
+    rows.forEach((row, index) => {
       const activity = normalizeActivityConfig(row, index)
       if (activity?.activityId) map.set(activity.activityId, activity)
     })
@@ -169,9 +170,10 @@
 
   function configuredActivityCatalog() {
     const configured = configuredActivityById()
+    const hasConfiguredRows = customActivityRows().length > 0 || activityScope() === 'custom'
     const catalog = {}
     for (const [key, activity] of Object.entries(ACTIVITIES)) {
-      if (activityScope() === 'custom' && !configured.has(activity.id)) continue
+      if (hasConfiguredRows && !configured.has(activity.id)) continue
       catalog[key] = {
         ...activity,
         name: configured.get(activity.id)?.name || activity.name,

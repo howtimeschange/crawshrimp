@@ -1155,6 +1155,42 @@ def _is_temu_opener_tab_url(url: str) -> bool:
     return _is_temu_backend_url(url) and not _is_temu_no_auth_url(url)
 
 
+def _is_doudian_fxg_url(url: str) -> bool:
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return False
+    return (parsed.hostname or "").lower() == "fxg.jinritemai.com"
+
+
+def _is_doudian_backend_url(url: str) -> bool:
+    if not _is_doudian_fxg_url(url):
+        return False
+    try:
+        parsed = urlparse(str(url or ""))
+    except Exception:
+        return False
+    return (parsed.path or "").startswith("/ffa/")
+
+
+def _is_doudian_opener_tab_url(url: str) -> bool:
+    return _is_doudian_backend_url(url)
+
+
+def _doudian_opener_tab_sort_key(target_entry_url: str, tab_url: str) -> tuple[int, int]:
+    try:
+        target_path = urlparse(str(target_entry_url or "")).path or ""
+        tab_path = urlparse(str(tab_url or "")).path or ""
+    except Exception:
+        return (2, 0)
+    target_section = "/".join(target_path.strip("/").split("/")[:2])
+    tab_section = "/".join(tab_path.strip("/").split("/")[:2])
+    return (
+        0 if target_section and target_section == tab_section else 1,
+        0 if "/campaign" in tab_path or "/merchant" in tab_path else 1,
+    )
+
+
 def _temu_opener_tab_sort_key(target_entry_url: str, tab_url: str) -> tuple[int, int]:
     if _is_temu_kuajingmaihuo_url(target_entry_url):
         return (0 if _is_temu_kuajingmaihuo_url(tab_url) else 1, 0)
@@ -2624,6 +2660,45 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 log(f"mode=new，Temu 使用后台入口新建页面：{open_entry_url}，稍后导航业务页：{target_entry_url}")
             else:
                 log(f"mode=new，尝试新建页面：{target_entry_url}")
+            if adapter_id == 'doudian-ops-assistant' and _is_doudian_backend_url(target_entry_url):
+                opener_candidates = [
+                    item for item in bridge.get_tabs()
+                    if item.get('type') == 'page' and _is_doudian_opener_tab_url(str(item.get('url') or ''))
+                ]
+                opener_candidates.sort(key=lambda item: _doudian_opener_tab_sort_key(target_entry_url, str(item.get('url') or '')))
+                opener_tab = opener_candidates[0] if opener_candidates else None
+                if opener_tab:
+                    log(f"抖店复用已登录后台页打开新标签：{str(opener_tab.get('url') or '')[:120]}")
+                    opener_runner = JSRunner(
+                        bridge.get_tab_ws_url(opener_tab),
+                        tab_id=str(opener_tab.get('id') or ''),
+                        tab_url=str(opener_tab.get('url') or ''),
+                        artifact_dir=runtime_artifact_dir,
+                    )
+                    before_ids = {
+                        str(item.get('id') or '')
+                        for item in bridge.get_tabs()
+                        if item.get('type') == 'page'
+                    }
+                    open_expr = (
+                        "(() => {\n"
+                        f"  const url = {json.dumps(open_entry_url, ensure_ascii=False)};\n"
+                        "  const win = window.open(url, '_blank');\n"
+                        "  return { success: !!win, data: [], meta: { has_more: false } };\n"
+                        "})()\n"
+                    )
+                    open_result = await opener_runner.evaluate_user_gesture(open_expr)
+                    if open_result.success:
+                        await asyncio.sleep(1.5)
+                        new_tabs = [
+                            item for item in bridge.get_tabs()
+                            if item.get('type') == 'page' and str(item.get('id') or '') not in before_ids
+                        ]
+                        tab = next((item for item in new_tabs if _is_doudian_fxg_url(str(item.get('url') or ''))), None)
+                        if not tab and new_tabs:
+                            tab = new_tabs[-1]
+                    else:
+                        log(f"抖店页面上下文打开新标签失败，回退 CDP 新建：{open_result.error or 'unknown'}")
             if adapter_id == 'temu' and _is_temu_backend_url(target_entry_url):
                 opener_candidates = [
                     item for item in bridge.get_tabs()

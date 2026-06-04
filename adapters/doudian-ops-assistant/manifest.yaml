@@ -28,39 +28,19 @@ tasks:
             label: 使用当前登录页
           - value: new
             label: 新开活动广场页
-      - id: activity_keywords
-        type: text
-        label: 活动关键词
-        default: "混资"
-        placeholder: "多个关键词用逗号分隔"
-        hint: 用于从活动广场补充活动时间和父活动信息；最终抓取范围以“活动范围”为准。
-        ui_span: half
-      - id: activity_scope
-        type: radio
-        label: 活动范围
-        default: default
-        ui_span: half
-        options:
-          - value: default
-            label: 当前 4 个商城混资入口
-          - value: custom
-            label: 自定义入口清单
-        hint: 默认使用当前配置的 4 个入口；如需增删入口，切到自定义后编辑下方清单。
       - id: custom_activities
         type: textarea
         label: 自定义活动入口清单
-        rows: 6
+        ui_variant: line_list
         ui_span: full
-        visible_when:
-          id: activity_scope
-          equals: custom
         default: |
-          7631472587859837230 | 【高客单商品必报】优质用户混资货补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台老朋友惊喜券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&from=operation_seller_link
-          7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台新人首单惊喜券；平台新人首单福利券；平台限时回归礼券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7611436032944275738&from=operation_seller_link
-          7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7554013743270347034&from=operation_seller_link
-          7610636843016552714 | 🔥全品类爆发！推荐卡混资活动报名入口 | 7627772015895036170 | 🔥全品类爆发！推荐卡全资活动报名入口 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?applyTab=allow&id=7610636843016552714&from=campaign_square
-        placeholder: "每行一条：活动ID | 活动名称 | 父活动ID | 父活动名称 | 优惠券名称 | 活动链接"
-        hint: 删除某一行即删除入口；新增一行即新增入口。只必填活动ID，其余字段可留空。
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&from=operation_seller_link
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7611436032944275738&from=operation_seller_link
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7554013743270347034&from=operation_seller_link
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?applyTab=allow&id=7610636843016552714&from=campaign_square
+        placeholder: "粘贴活动链接或输入活动ID"
+        add_label: 新增入口
+        hint: 一行一个入口，保留复制链接或者活动ID即可；删除某一行即删除入口。
       - id: include_details
         type: checkbox
         label: 输出报名商品明细
@@ -125,10 +105,6 @@ tasks:
             label: 一体化订单详情 API（推荐）
           - value: export_file
             label: 已下载官方订单导出文件
-          - value: official_export_api
-            label: 自动创建官方导出任务
-          - value: api
-            label: 订单列表 API 探查
         hint: 默认一条任务串行完成“报名商品抓取 -> 订单列表 -> 订单详情优惠 -> 混资归因”，不依赖导出验证码；精确流量体裁/流量渠道仍需官方导出或后续罗盘接口。
       - id: order_file
         type: file_excel
@@ -170,45 +146,22 @@ tasks:
           - value: "true"
             label: Excel 中同时保留报名汇总和报名商品明细
         hint: 开启后，这个复盘文件会同时包含报名监控两个 Sheet，等于把两个脚本合并在一次运行里。
-      - id: activity_keywords
-        type: text
-        label: 活动关键词
-        default: "混资"
-        placeholder: "多个关键词用逗号分隔"
-        ui_span: half
-        visible_when:
-          id: data_source
-          equals: detail_api
-        hint: 用于从活动广场补充活动时间和父活动信息；最终报名抓取范围以“活动范围”为准。
-      - id: activity_scope
-        type: radio
-        label: 活动范围
-        default: default
-        ui_span: half
-        visible_when:
-          id: data_source
-          equals: detail_api
-        options:
-          - value: default
-            label: 当前 4 个商城混资入口
-          - value: custom
-            label: 自定义入口清单
-        hint: 默认使用当前配置的 4 个入口；如需增删入口，切到自定义后编辑下方清单。
       - id: custom_activities
         type: textarea
         label: 自定义活动入口清单
-        rows: 6
+        ui_variant: line_list
         ui_span: full
         visible_when:
-          id: activity_scope
-          equals: custom
+          id: data_source
+          equals: detail_api
         default: |
-          7631472587859837230 | 【高客单商品必报】优质用户混资货补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台老朋友惊喜券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&from=operation_seller_link
-          7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 7611436032944275738 | 【混资货品补贴-长周期】商家灵活出资，平台至高5倍对补 | 平台新人首单惊喜券；平台新人首单福利券；平台限时回归礼券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7611436032944275738&from=operation_seller_link
-          7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 7554013743270347034 | 必报！抖音商城混资券长期报名入口【商家出资5%】 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7554013743270347034&from=operation_seller_link
-          7610636843016552714 | 🔥全品类爆发！推荐卡混资活动报名入口 | 7627772015895036170 | 🔥全品类爆发！推荐卡全资活动报名入口 | 平台惊喜XX折券 | https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?applyTab=allow&id=7610636843016552714&from=campaign_square
-        placeholder: "每行一条：活动ID | 活动名称 | 父活动ID | 父活动名称 | 优惠券名称 | 活动链接"
-        hint: 删除某一行即删除入口；新增一行即新增入口。只必填活动ID，其余字段可留空。
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&from=operation_seller_link
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7611436032944275738&from=operation_seller_link
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7554013743270347034&from=operation_seller_link
+          https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?applyTab=allow&id=7610636843016552714&from=campaign_square
+        placeholder: "粘贴活动链接或输入活动ID"
+        add_label: 新增入口
+        hint: 一行一个入口，保留复制链接或者活动ID即可；删除某一行即删除入口。
       - id: surprise_coupon_activity
         type: radio
         label: 平台惊喜折券归属
@@ -232,31 +185,6 @@ tasks:
         placeholder: "2026-06-30"
         ui_span: third
         hint: 一体化 API 和自动官方导出模式必填，建议小周期运行。
-      - id: official_export_dimension
-        type: radio
-        label: 官方导出维度
-        default: PRODUCT_ORDER
-        ui_span: third
-        visible_when:
-          id: data_source
-          equals: official_export_api
-        options:
-          - value: PRODUCT_ORDER
-            label: 商品维度
-          - value: SHOP_ORDER
-            label: 订单维度
-        hint: 默认商品维度，便于保留商品ID、商家编码、商品金额等单品复盘字段。
-      - id: export_poll_ms
-        type: number
-        label: 导出轮询间隔毫秒
-        default: 10000
-        min: 1000
-        max: 60000
-        step: 1000
-        ui_span: third
-        visible_when:
-          id: data_source
-          equals: official_export_api
       - id: include_zero_promotion_details
         type: checkbox
         label: 同时抓取无优惠订单详情

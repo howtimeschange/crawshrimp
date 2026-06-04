@@ -226,6 +226,66 @@ function textResponse(text, contentType = 'text/csv; charset=utf-8', status = 20
   }
 }
 
+test('doudian mixed fund manifest hides keyword/export-probe options and uses line-list custom entrances', () => {
+  const manifest = fs.readFileSync(path.resolve('adapters/doudian-ops-assistant/manifest.yaml'), 'utf8')
+
+  assert.equal(manifest.includes('id: activity_keywords'), false)
+  assert.equal(manifest.includes('label: 活动关键词'), false)
+  assert.equal(manifest.includes('id: activity_scope'), false)
+  assert.equal(manifest.includes('label: 活动范围'), false)
+  assert.equal(manifest.includes('value: official_export_api'), false)
+  assert.equal(manifest.includes('label: 自动创建官方导出任务'), false)
+  assert.equal(manifest.includes('value: api'), false)
+  assert.equal(manifest.includes('label: 订单列表 API 探查'), false)
+  assert.equal((manifest.match(/id: custom_activities/g) || []).length, 2)
+  assert.equal((manifest.match(/type: line_list/g) || []).length, 0)
+  assert.equal((manifest.match(/ui_variant: line_list/g) || []).length, 2)
+  assert.match(manifest, /复制链接或[者]?活动ID/)
+})
+
+test('mixed fund signup monitor accepts custom entrance rows as one-link line list', async () => {
+  const customActivityId = '8888888888888888888'
+  const detailCalls = []
+  const result = await runSignupWorkflow({
+    params: {
+      custom_activities: [
+        `https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=${customActivityId}&from=operation_seller_link`,
+      ],
+      include_details: true,
+      detail_pages_per_step: 1,
+    },
+    fetchImpl: async (url, options = {}) => {
+      if (String(url).includes('/mmc/activity/seller_activity_feed')) {
+        return jsonResponse({ code: 0, data: { total: 0, data: [] } })
+      }
+      if (String(url).includes('/mmc/apply/all_product_list')) {
+        const parsedBody = JSON.parse(options.body)
+        detailCalls.push(parsedBody.activity_id)
+        return jsonResponse({
+          code: 0,
+          data: {
+            total: 1,
+            list: [{
+              product_id: 'P-LINK',
+              product_name: '链接清单商品',
+              shop_id: 'S1',
+              apply_success_time: 1767225600,
+              status_desc: '已报名',
+            }],
+          },
+        })
+      }
+      throw new Error(`unexpected url ${url}`)
+    },
+  })
+
+  assert.equal(result.meta.shared.target_activity_ids, customActivityId)
+  assert.deepEqual(detailCalls, [customActivityId])
+  const summary = result.data.find(row => row.__sheet_name === '报名汇总')
+  assert.equal(summary.活动ID, customActivityId)
+  assert.equal(summary.活动链接, `https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=${customActivityId}&from=operation_seller_link`)
+})
+
 function activityFeedPayload() {
   return {
     code: 0,

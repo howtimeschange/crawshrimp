@@ -55,7 +55,7 @@
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
-            <template v-else-if="param.type === 'textarea'">
+            <template v-else-if="param.type === 'textarea' && !isLineListParam(param)">
               <textarea
                 v-model="values[param.id]"
                 :placeholder="param.placeholder || ''"
@@ -71,6 +71,37 @@
                   @click="applyQuickFill(param, option)"
                 >
                   {{ option }}
+                </button>
+              </div>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
+            <template v-else-if="isLineListParam(param)">
+              <div class="line-list">
+                <div
+                  v-for="(line, index) in getLineListRows(param.id)"
+                  :key="`${param.id}-${index}`"
+                  class="line-list-row"
+                >
+                  <input
+                    :value="line"
+                    :placeholder="param.placeholder || ''"
+                    class="input line-list-input"
+                    @input="event => updateLineListRow(param.id, index, event.target.value)"
+                  />
+                  <button
+                    type="button"
+                    class="line-list-remove"
+                    :disabled="getLineListRows(param.id).length <= 1"
+                    title="删除这一行"
+                    aria-label="删除这一行"
+                    @click="removeLineListRow(param.id, index)"
+                  >
+                    ×
+                  </button>
+                </div>
+                <button type="button" class="line-list-add" @click="addLineListRow(param.id)">
+                  + {{ param.add_label || '新增一行' }}
                 </button>
               </div>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
@@ -789,6 +820,7 @@ function buildDefaultValues(params = []) {
   const next = {}
   for (const p of (params || [])) {
     if (p.type === 'checkbox') next[p.id] = Array.isArray(p.default) ? [...p.default] : []
+    else if (isLineListParam(p)) next[p.id] = normalizeLineListRows(p.default, true)
     else if (isSingleTemporalParamType(p.type)) next[p.id] = p.default ?? ''
     else if (isRangeParamType(p.type)) { next[p.id + '_start'] = ''; next[p.id + '_end'] = '' }
     else if (p.type === 'file_excel') {
@@ -823,6 +855,62 @@ function applyQuickFill(param, value) {
   const paramId = String(param?.id || '').trim()
   if (!paramId) return
   values.value[paramId] = String(value || '')
+}
+
+function isLineListParam(param) {
+  return param?.type === 'line_list' || String(param?.ui_variant || '').trim().toLowerCase() === 'line_list'
+}
+
+function normalizeLineListRows(value, keepOneEmpty = false, keepEmptyRows = false) {
+  let rows = []
+  if (Array.isArray(value)) {
+    rows = value
+  } else if (value && typeof value === 'object') {
+    rows = Array.isArray(value.rows)
+      ? value.rows
+      : Array.isArray(value.activities)
+        ? value.activities
+        : []
+  } else {
+    rows = String(value || '').split(/\n+/)
+  }
+  const normalized = rows
+    .map(row => {
+      if (row && typeof row === 'object') {
+        return String(row.url || row.link || row.entranceUrl || row.entrance_url || row.activityId || row.activity_id || row.id || '').trim()
+      }
+      return String(row || '').trim()
+    })
+    .filter(row => keepEmptyRows || row)
+  return normalized.length || !keepOneEmpty ? normalized : ['']
+}
+
+function getLineListRows(paramId) {
+  return normalizeLineListRows(values.value[paramId], true, true)
+}
+
+function updateLineListRow(paramId, index, value) {
+  const rows = normalizeLineListRows(values.value[paramId], true, true)
+  rows[index] = String(value || '')
+  values.value[paramId] = rows
+}
+
+function addLineListRow(paramId) {
+  values.value[paramId] = [...normalizeLineListRows(values.value[paramId], true, true), '']
+}
+
+function removeLineListRow(paramId, index) {
+  const rows = normalizeLineListRows(values.value[paramId], true, true)
+  if (rows.length <= 1) {
+    values.value[paramId] = ['']
+    return
+  }
+  rows.splice(index, 1)
+  values.value[paramId] = rows.length ? rows : ['']
+}
+
+function lineListParamValue(paramId) {
+  return normalizeLineListRows(values.value[paramId], false).join('\n')
 }
 
 function mergeTaskParams(baseParams = [], patchMap = {}) {
@@ -1033,6 +1121,7 @@ const missingRequired = computed(() => {
   return visibleParams.value.some(p => {
     if (!p.required) return false
     if (p.type === 'checkbox') return !(values.value[p.id] || []).length
+    if (isLineListParam(p)) return !lineListParamValue(p.id)
     if (p.type === 'file_excel') return !values.value[p.id + '_path']
     if (p.type === 'file_images') return !(values.value[p.id + '_paths'] || []).length
     if (isMultiFileParamType(p.type)) return !(values.value[p.id + '_paths'] || []).length
@@ -1147,7 +1236,7 @@ function paramLayoutClass(param) {
       return 'param-span-third'
     }
   }
-  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || isMultiFileParamType(param.type) || param.type === 'checkbox' || param.type === 'textarea' || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
+  if (param.type === 'directory' || param.type === 'file_excel' || param.type === 'file_images' || isMultiFileParamType(param.type) || param.type === 'checkbox' || param.type === 'textarea' || isLineListParam(param) || isRangeParamType(param.type) || isSingleTemporalParamType(param.type)) {
     return 'param-span-full'
   }
   if (param.type === 'radio' && (param.options?.length || 0) > 2) {
@@ -1488,6 +1577,11 @@ function buildRunParams(overrides = {}) {
       params[p.id] = {
         paths: normalizeImagePaths(values.value[p.id + '_paths'], maxCount),
       }
+      continue
+    }
+
+    if (isLineListParam(p)) {
+      params[p.id] = lineListParamValue(p.id)
       continue
     }
 
@@ -2709,6 +2803,56 @@ onUnmounted(() => {
 }
 .textarea:focus { border-color: var(--orange); }
 .textarea-compact { min-height: 78px; }
+.line-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.line-list-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 34px;
+  gap: 8px;
+  align-items: center;
+}
+.line-list-input {
+  min-width: 0;
+}
+.line-list-remove {
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.line-list-remove:hover:not(:disabled) {
+  border-color: rgba(255, 99, 35, 0.75);
+  color: var(--orange);
+  background: rgba(255, 99, 35, 0.08);
+}
+.line-list-remove:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.line-list-add {
+  align-self: flex-start;
+  border: 1px solid rgba(255, 99, 35, 0.45);
+  background: rgba(255, 99, 35, 0.08);
+  color: var(--orange);
+  border-radius: 8px;
+  padding: 7px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.line-list-add:hover {
+  border-color: var(--orange);
+  background: rgba(255, 99, 35, 0.14);
+}
 .input-number { width: 100%; }
 .select {
   background: var(--bg3); border: 1px solid var(--border); border-radius: 8px;

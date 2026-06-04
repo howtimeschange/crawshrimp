@@ -833,6 +833,137 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(opener_runner.user_gesture_evaluations)
         self.assertTrue(any("window.open" in expression for expression in opener_runner.user_gesture_evaluations))
 
+    async def test_doudian_new_mode_prefers_existing_fxg_backend_opener_over_cdp_new_tab(self):
+        class FakeBridge:
+            def __init__(self):
+                self.new_tab_urls = []
+                self.opened = False
+
+            def get_tabs(self):
+                tabs = [{
+                    "id": "opener",
+                    "type": "page",
+                    "url": "https://fxg.jinritemai.com/ffa/merchant/child-campaign-detail?id=7631472587859837230&applyTab=applied",
+                    "webSocketDebuggerUrl": "ws://opener.example.invalid",
+                }]
+                if self.opened:
+                    tabs.append({
+                        "id": "tab-1",
+                        "type": "page",
+                        "url": "https://fxg.jinritemai.com/ffa/merchant/campaign-square",
+                        "webSocketDebuggerUrl": "ws://new.example.invalid",
+                    })
+                return tabs
+
+            def new_tab(self, url):
+                self.new_tab_urls.append(url)
+                return {"id": "fallback", "url": url, "webSocketDebuggerUrl": "ws://fallback.example.invalid"}
+
+            def find_tab(self, url):
+                return None
+
+            def get_tab(self, tab_id):
+                for tab in self.get_tabs():
+                    if tab["id"] == tab_id:
+                        return tab
+                return None
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+        class FakeRunner:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+                self.evaluations = []
+                self.user_gesture_evaluations = []
+                self.navigations = []
+                self.tab_url = kwargs.get("tab_url", "")
+                self.tab_id = kwargs.get("tab_id", "")
+                FakeRunner.instances.append(self)
+
+            async def evaluate(self, expression, user_gesture=False):
+                self.evaluations.append(expression)
+                if "logged_in" in expression:
+                    return type("Result", (), {"success": True, "data": [], "meta": {"logged_in": True}, "error": None})()
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def evaluate_user_gesture(self, expression):
+                fake_bridge.opened = True
+                self.user_gesture_evaluations.append(expression)
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def navigate(self, url, wait_seconds=0):
+                self.navigations.append(str(url))
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def _refresh_ws_url(self):
+                return None
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return [{"活动ID": "7631472587859837230"}]
+
+        class FakeTask:
+            id = "mixed_fund_signup_monitor"
+            name = "商城混资报名监控"
+            description = ""
+            entry_url = "https://fxg.jinritemai.com/ffa/merchant/campaign-square"
+            tab_match_prefixes = []
+            output = []
+            script = "mixed-fund-signup-monitor.js"
+            skip_auth = False
+            params = [type("Param", (), {"id": "mode", "default": "current"})()]
+
+        class FakeAdapter:
+            id = "doudian-ops-assistant"
+            name = "抖店运营助手"
+            entry_url = "https://fxg.jinritemai.com/ffa/merchant/campaign-square"
+            tab_match_prefixes = ["https://fxg.jinritemai.com/"]
+            tasks = [FakeTask()]
+            auth = type("Auth", (), {"check_script": "auth_check.js", "login_url": "https://fxg.jinritemai.com/"})()
+
+        run_control = api_server._build_run_control()
+        run_control["task"] = asyncio.current_task()
+        fake_bridge = FakeBridge()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_dir = Path(tmpdir)
+            auth_path = adapter_dir / "auth_check.js"
+            auth_path.write_text(
+                "({ success: true, data: [], meta: { logged_in: true, has_more: false } })",
+                encoding="utf-8",
+            )
+            script_path = adapter_dir / "mixed-fund-signup-monitor.js"
+            script_path.write_text(
+                "({ success: true, data: [], meta: { has_more: false } })",
+                encoding="utf-8",
+            )
+
+            def resolve_file(adapter_id, filename):
+                return auth_path if filename == "auth_check.js" else script_path
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=fake_bridge):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=1004):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.data_sink.finish_run"):
+                                        with patch("core.api_server.adapter_loader.resolve_adapter_file", side_effect=resolve_file):
+                                            await api_server._execute_task(
+                                                "doudian-ops-assistant",
+                                                "mixed_fund_signup_monitor",
+                                                {"mode": "new"},
+                                                {},
+                                                run_control=run_control,
+                                            )
+
+        self.assertEqual(fake_bridge.new_tab_urls, [])
+        opener_runner = FakeRunner.instances[0]
+        self.assertTrue(opener_runner.user_gesture_evaluations)
+        self.assertTrue(any("window.open" in expression for expression in opener_runner.user_gesture_evaluations))
+
 
 if __name__ == "__main__":
     unittest.main()
