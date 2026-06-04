@@ -225,3 +225,71 @@ test('aliexpress cutout download uses enhanced batch progress for long Excel run
   assert.equal(summary.targetText, '目标 1005012042309848')
   assert.match(summary.sub, /重试 3/)
 })
+
+test('doudian mixed fund signup monitor shows activity and product detail progress', () => {
+  const config = resolveTaskProgressConfig('doudian-ops-assistant', 'mixed_fund_signup_monitor')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'doudian-ops-assistant',
+    taskId: 'mixed_fund_signup_monitor',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'main',
+      doudian_stage: 'signup_products',
+      doudian_activity_total: 4,
+      doudian_activity_completed: 2,
+      doudian_current_activity: '必报！抖音商城混资券长期报名入口【商家出资5%】',
+      doudian_current_product_total: 784,
+      doudian_current_product_completed: 300,
+      doudian_detail_rows: 1250,
+    },
+  })
+
+  assert.equal(summary.title, '商城混资报名进度')
+  assert.equal(summary.tracks.length, 2)
+  assert.equal(summary.tracks[0].title, '活动入口')
+  assert.equal(summary.tracks[0].main, '2 / 4 个入口')
+  assert.equal(summary.tracks[1].title, '当前入口商品')
+  assert.equal(summary.tracks[1].main, '300 / 784 个商品')
+  assert.match(summary.sub, /必报！抖音商城混资券长期报名入口/)
+})
+
+test('doudian mixed fund order replay shows signup, order list, and detail progress', () => {
+  const config = resolveTaskProgressConfig('doudian-ops-assistant', 'mixed_fund_order_replay')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'doudian-ops-assistant',
+    taskId: 'mixed_fund_order_replay',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'collect_order_detail_batch',
+      doudian_stage: 'order_details',
+      doudian_signup_total: 4,
+      doudian_signup_completed: 4,
+      list_total_rows: 3600,
+      list_completed_rows: 3600,
+      detail_total_targets: 208,
+      detail_completed_targets: 100,
+      detail_current_target: 'SO-DETAIL-100',
+      doudian_mixed_rows: 42,
+    },
+  })
+
+  assert.equal(summary.title, '商城混资复盘进度')
+  assert.equal(summary.tracks.length, 3)
+  assert.equal(summary.tracks[0].title, '报名商品归因')
+  assert.equal(summary.tracks[0].main, '4 / 4 个入口')
+  assert.equal(summary.tracks[1].title, '订单列表')
+  assert.equal(summary.tracks[1].main, '3600 / 3600 条订单')
+  assert.equal(summary.tracks[2].title, '订单详情优惠')
+  assert.equal(summary.tracks[2].main, '100 / 208 个订单')
+  assert.match(summary.sub, /SO-DETAIL-100/)
+})

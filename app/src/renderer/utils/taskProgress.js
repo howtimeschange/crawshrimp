@@ -102,6 +102,16 @@ const TASK_PROGRESS_RULES = Object.freeze([
     taskId: 'product_cutout_download',
     config: ENHANCED_PROGRESS_CONFIG,
   }),
+  Object.freeze({
+    adapterId: 'doudian-ops-assistant',
+    taskId: 'mixed_fund_signup_monitor',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
+  Object.freeze({
+    adapterId: 'doudian-ops-assistant',
+    taskId: 'mixed_fund_order_replay',
+    config: ENHANCED_PROGRESS_CONFIG,
+  }),
 ])
 
 function normalizeKeyPart(value) {
@@ -415,6 +425,190 @@ function isSheinCommodityQualityTask(adapterId, taskId) {
 
 function isAmazonReviewsFullExportTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'amazon-ops-assistant' && normalizeKeyPart(taskId) === 'amazon_reviews_full_export'
+}
+
+function isDoudianMixedFundSignupTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'doudian-ops-assistant' && normalizeKeyPart(taskId) === 'mixed_fund_signup_monitor'
+}
+
+function isDoudianMixedFundOrderReplayTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'doudian-ops-assistant' && normalizeKeyPart(taskId) === 'mixed_fund_order_replay'
+}
+
+function doudianStageLabel(stage, fallback = '进行中') {
+  const normalized = normalizeKeyPart(stage)
+  if (normalized === 'signup_activity') return '读取活动入口'
+  if (normalized === 'signup_products') return '抓取报名商品'
+  if (normalized === 'order_list') return '抓取订单列表'
+  if (normalized === 'order_details') return '抓取订单详情优惠'
+  if (normalized === 'finalize') return '汇总导出'
+  return fallback
+}
+
+function progressState(done, total, active = false) {
+  if (total > 0 && done >= total) return 'complete'
+  return active || done > 0 ? 'active' : 'pending'
+}
+
+function buildDoudianMixedFundSignupProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const stage = normalizeKeyPart(live?.doudian_stage || live?.phase)
+  const stageLabel = doudianStageLabel(stage, statusLabel)
+  const activityTotal = toInt(live?.doudian_activity_total) || toInt(live?.total)
+  const activityCompleted = activityTotal > 0 ? Math.min(toInt(live?.doudian_activity_completed), activityTotal) : toInt(live?.doudian_activity_completed)
+  const productTotal = toInt(live?.doudian_current_product_total)
+  const productCompleted = productTotal > 0 ? Math.min(toInt(live?.doudian_current_product_completed), productTotal) : toInt(live?.doudian_current_product_completed)
+  const currentActivity = String(live?.doudian_current_activity || '').trim()
+  const detailRows = toInt(live?.doudian_detail_rows || live?.records || live?.completed)
+  const activityPercent = activityTotal > 0 ? clampPercent((activityCompleted / activityTotal) * 100) : 0
+  const productPercent = productTotal > 0 ? clampPercent((productCompleted / productTotal) * 100) : 0
+
+  const tracks = [
+    buildTrack({
+      id: 'doudian-signup-activity',
+      title: '活动入口',
+      main: activityTotal > 0 ? `${activityCompleted} / ${activityTotal} 个入口` : '读取入口中',
+      percentValue: activityPercent,
+      percentLabel: activityTotal > 0 ? `${activityPercent}%` : statusLabel,
+      caption: currentActivity,
+      detail: detailRows > 0 ? `已拉取明细 ${detailRows} 条` : '',
+      status: progressState(activityCompleted, activityTotal, stage === 'signup_activity') === 'complete' ? '已完成' : '进行中',
+      tone: 'primary',
+      state: progressState(activityCompleted, activityTotal, stage === 'signup_activity'),
+      indeterminate: activityTotal <= 0,
+    }),
+    buildTrack({
+      id: 'doudian-signup-products',
+      title: '当前入口商品',
+      main: productTotal > 0 ? `${productCompleted} / ${productTotal} 个商品` : (stage === 'signup_products' ? '读取商品数中' : '等待入口'),
+      percentValue: productPercent,
+      percentLabel: productTotal > 0 ? `${productPercent}%` : (stage === 'signup_products' ? statusLabel : '待开始'),
+      caption: currentActivity,
+      detail: detailRows > 0 ? `累计明细 ${detailRows} 条` : '',
+      status: progressState(productCompleted, productTotal, stage === 'signup_products') === 'complete' ? '已完成' : stage === 'signup_products' ? '进行中' : '待开始',
+      tone: 'secondary',
+      state: progressState(productCompleted, productTotal, stage === 'signup_products'),
+      indeterminate: stage === 'signup_products' && productTotal <= 0,
+    }),
+  ]
+
+  return {
+    title: '商城混资报名进度',
+    main: stageLabel,
+    percentValue: activityTotal > 0 ? activityPercent : 0,
+    percentLabel: stageLabel,
+    completed: detailRows,
+    completedText: detailRows > 0 ? `已拉取报名明细 ${detailRows} 条` : '',
+    targetText: currentActivity ? `当前 ${currentActivity}` : '',
+    storeText: '',
+    phaseText: live?.phase ? `阶段 ${live.phase}` : '',
+    indeterminate: activityTotal <= 0,
+    ariaLabel: '抖店商城混资报名进度',
+    ariaText: [stageLabel, activityTotal > 0 ? `${activityCompleted}/${activityTotal} 个入口` : '', productTotal > 0 ? `${productCompleted}/${productTotal} 个商品` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      activityTotal > 0 ? `入口 ${activityCompleted}/${activityTotal}` : '',
+      productTotal > 0 ? `商品 ${productCompleted}/${productTotal}` : '',
+      detailRows > 0 ? `明细 ${detailRows}` : '',
+      currentActivity,
+    ]),
+    tracks,
+    sub: [stageLabel, currentActivity, detailRows > 0 ? `已拉取 ${detailRows} 条明细` : ''].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
+function buildDoudianMixedFundOrderReplayProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const stage = normalizeKeyPart(live?.doudian_stage || live?.phase)
+  const stageLabel = doudianStageLabel(stage, statusLabel)
+  const signupTotal = toInt(live?.doudian_signup_total || live?.doudian_activity_total)
+  const signupCompleted = signupTotal > 0 ? Math.min(toInt(live?.doudian_signup_completed || live?.doudian_activity_completed), signupTotal) : toInt(live?.doudian_signup_completed || live?.doudian_activity_completed)
+  const orderTotal = toInt(live?.list_total_rows)
+  const orderCompleted = orderTotal > 0 ? Math.min(toInt(live?.list_completed_rows), orderTotal) : toInt(live?.list_completed_rows)
+  const detailTotal = toInt(live?.detail_total_targets)
+  const detailCompleted = detailTotal > 0 ? Math.min(toInt(live?.detail_completed_targets), detailTotal) : toInt(live?.detail_completed_targets)
+  const currentOrder = String(live?.detail_current_target || '').trim()
+  const mixedRows = toInt(live?.doudian_mixed_rows || live?.records || live?.completed)
+  const currentActivity = String(live?.doudian_current_activity || '').trim()
+  const signupPercent = signupTotal > 0 ? clampPercent((signupCompleted / signupTotal) * 100) : 0
+  const orderPercent = orderTotal > 0 ? clampPercent((orderCompleted / orderTotal) * 100) : 0
+  const detailPercent = detailTotal > 0 ? clampPercent((detailCompleted / detailTotal) * 100) : 0
+  const detailStarted = detailTotal > 0 || stage === 'order_details' || stage === 'finalize'
+
+  const tracks = [
+    buildTrack({
+      id: 'doudian-replay-signup',
+      title: '报名商品归因',
+      main: signupTotal > 0 ? `${signupCompleted} / ${signupTotal} 个入口` : '准备报名商品索引',
+      percentValue: signupPercent,
+      percentLabel: signupTotal > 0 ? `${signupPercent}%` : statusLabel,
+      caption: currentActivity,
+      detail: toInt(live?.doudian_detail_rows) > 0 ? `报名明细 ${toInt(live?.doudian_detail_rows)} 条` : '',
+      status: progressState(signupCompleted, signupTotal, stage === 'signup_activity' || stage === 'signup_products') === 'complete' ? '已完成' : '进行中',
+      tone: 'primary',
+      state: progressState(signupCompleted, signupTotal, stage === 'signup_activity' || stage === 'signup_products'),
+      indeterminate: signupTotal <= 0,
+    }),
+    buildTrack({
+      id: 'doudian-replay-order-list',
+      title: '订单列表',
+      main: orderTotal > 0 ? `${orderCompleted} / ${orderTotal} 条订单` : (stage === 'order_list' ? '读取订单总数中' : '等待订单阶段'),
+      percentValue: orderPercent,
+      percentLabel: orderTotal > 0 ? `${orderPercent}%` : (stage === 'order_list' ? statusLabel : '待开始'),
+      caption: toInt(live?.doudian_order_window_total) > 0 ? `时间窗口 ${toInt(live?.doudian_order_window_completed)}/${toInt(live?.doudian_order_window_total)}` : '',
+      detail: '',
+      status: progressState(orderCompleted, orderTotal, stage === 'order_list') === 'complete' ? '已完成' : stage === 'order_list' ? '进行中' : '待开始',
+      tone: 'primary',
+      state: progressState(orderCompleted, orderTotal, stage === 'order_list'),
+      indeterminate: stage === 'order_list' && orderTotal <= 0,
+    }),
+    buildTrack({
+      id: 'doudian-replay-order-details',
+      title: '订单详情优惠',
+      main: detailTotal > 0 ? `${detailCompleted} / ${detailTotal} 个订单` : (detailStarted ? '等待详情队列' : '订单列表完成后开始'),
+      percentValue: detailPercent,
+      percentLabel: detailStarted ? `${detailPercent}%` : '待开始',
+      caption: mixedRows > 0 ? `已归因混资订单 ${mixedRows} 条` : '',
+      detail: currentOrder ? `当前订单 ${currentOrder}` : '',
+      status: progressState(detailCompleted, detailTotal, stage === 'order_details') === 'complete' ? '已完成' : stage === 'order_details' ? '进行中' : '待开始',
+      tone: 'secondary',
+      state: progressState(detailCompleted, detailTotal, stage === 'order_details'),
+      indeterminate: stage === 'order_details' && detailTotal <= 0,
+    }),
+  ]
+
+  const overallPercent = detailStarted
+    ? clampPercent(66 + (detailPercent * 0.34))
+    : orderTotal > 0
+      ? clampPercent(33 + (orderPercent * 0.33))
+      : clampPercent(signupPercent * 0.33)
+
+  return {
+    title: '商城混资复盘进度',
+    main: stageLabel,
+    percentValue: overallPercent,
+    percentLabel: stageLabel,
+    completed: mixedRows,
+    completedText: mixedRows > 0 ? `已归因混资订单 ${mixedRows} 条` : '',
+    targetText: currentOrder ? `订单 ${currentOrder}` : '',
+    storeText: '',
+    phaseText: live?.phase ? `阶段 ${live.phase}` : '',
+    indeterminate: signupTotal <= 0 && orderTotal <= 0 && detailTotal <= 0,
+    ariaLabel: '抖店商城混资复盘进度',
+    ariaText: [stageLabel, signupTotal > 0 ? `报名 ${signupCompleted}/${signupTotal}` : '', orderTotal > 0 ? `订单 ${orderCompleted}/${orderTotal}` : '', detailTotal > 0 ? `详情 ${detailCompleted}/${detailTotal}` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      signupTotal > 0 ? `报名 ${signupCompleted}/${signupTotal}` : '',
+      orderTotal > 0 ? `订单 ${orderCompleted}/${orderTotal}` : '',
+      detailTotal > 0 ? `详情 ${detailCompleted}/${detailTotal}` : '',
+      mixedRows > 0 ? `混资 ${mixedRows}` : '',
+      currentOrder ? `订单 ${currentOrder}` : '',
+    ]),
+    tracks,
+    sub: [stageLabel, currentOrder ? `当前订单 ${currentOrder}` : '', mixedRows > 0 ? `已归因 ${mixedRows} 条` : ''].filter(Boolean).join(' · ') || statusLabel,
+  }
 }
 
 function buildAmazonReviewsFullExportProgress(live = {}, liveStatus = '', isRunning = false) {
@@ -1230,6 +1424,12 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isAmazonReviewsFullExportTask(adapterId, taskId)) {
     return buildAmazonReviewsFullExportProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isDoudianMixedFundSignupTask(adapterId, taskId)) {
+    return buildDoudianMixedFundSignupProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isDoudianMixedFundOrderReplayTask(adapterId, taskId)) {
+    return buildDoudianMixedFundOrderReplayProgress(live, liveStatus, isRunning)
   }
   return config.mode === 'enhanced'
     ? buildEnhancedTaskRunnerProgress(live, liveStatus, isRunning)

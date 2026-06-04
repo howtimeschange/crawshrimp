@@ -560,6 +560,7 @@
     }
 
     const hasMore = activityIndex < activities.length
+    const currentActivity = activities[activityIndex] || activities[Math.max(0, activityIndex - 1)] || {}
     const nextShared = {
       activities,
       activity_index: activityIndex,
@@ -579,6 +580,13 @@
       activity_scope: activityScope() === 'custom' ? 'custom' : 'default',
       target_activity_ids: activities.map(item => item.activityId).join(','),
       detail_fetch_scope: includeDetails ? 'all_applied_products' : 'summary_total_only',
+      doudian_stage: hasMore ? 'signup_products' : 'finalize',
+      doudian_activity_total: activities.length,
+      doudian_activity_completed: Math.min(activityIndex, activities.length),
+      doudian_current_activity: currentActivity.name || currentActivity.activityId || '',
+      doudian_current_product_total: currentTotal || currentFetched,
+      doudian_current_product_completed: currentFetched,
+      doudian_detail_rows: detailRows,
     }
     return complete(data, nextShared, hasMore, hasMore ? 100 : 0)
   } catch (error) {

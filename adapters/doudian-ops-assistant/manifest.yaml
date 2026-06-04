@@ -173,18 +173,10 @@ tasks:
           - value: recommendation_card
             label: 推荐卡混资活动入口
         hint: DOCX 中两个活动都使用“平台惊喜XX折券”，仅凭券名无法区分，需运营选择默认归属。
-      - id: start_date
-        type: text
-        label: 数据开始日期
-        placeholder: "2026-06-01"
-        ui_span: third
-        hint: 一体化 API 和自动官方导出模式必填；文件模式下用于标记输出周期。
-      - id: end_date
-        type: text
-        label: 数据结束日期
-        placeholder: "2026-06-30"
-        ui_span: third
-        hint: 一体化 API 和自动官方导出模式必填，建议小周期运行。
+      - id: date_range
+        type: date_range
+        label: 数据时间范围
+        hint: 一体化 API 模式必填；文件模式下用于标记输出周期，建议小周期运行。
       - id: include_zero_promotion_details
         type: checkbox
         label: 同时抓取无优惠订单详情

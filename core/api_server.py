@@ -343,6 +343,18 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "detail_total_rows": _int_from_mapping(shared_state, 'detail_total_rows'),
         "detail_request_count": _int_from_mapping(shared_state, 'detail_request_count'),
         "detail_records_collected": _int_from_mapping(shared_state, 'detail_records_collected'),
+        "doudian_stage": _str_from_mapping(shared_state, 'doudian_stage'),
+        "doudian_activity_total": _int_from_mapping(shared_state, 'doudian_activity_total'),
+        "doudian_activity_completed": _int_from_mapping(shared_state, 'doudian_activity_completed'),
+        "doudian_current_activity": _str_from_mapping(shared_state, 'doudian_current_activity'),
+        "doudian_current_product_total": _int_from_mapping(shared_state, 'doudian_current_product_total'),
+        "doudian_current_product_completed": _int_from_mapping(shared_state, 'doudian_current_product_completed'),
+        "doudian_detail_rows": _int_from_mapping(shared_state, 'doudian_detail_rows'),
+        "doudian_signup_total": _int_from_mapping(shared_state, 'doudian_signup_total'),
+        "doudian_signup_completed": _int_from_mapping(shared_state, 'doudian_signup_completed'),
+        "doudian_order_window_total": _int_from_mapping(shared_state, 'doudian_order_window_total'),
+        "doudian_order_window_completed": _int_from_mapping(shared_state, 'doudian_order_window_completed'),
+        "doudian_mixed_rows": _int_from_mapping(shared_state, 'doudian_mixed_rows'),
     }
 
 
@@ -2499,6 +2511,18 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'detail_total_rows': progress['detail_total_rows'],
             'detail_request_count': progress['detail_request_count'],
             'detail_records_collected': progress['detail_records_collected'],
+            'doudian_stage': progress['doudian_stage'],
+            'doudian_activity_total': progress['doudian_activity_total'],
+            'doudian_activity_completed': progress['doudian_activity_completed'],
+            'doudian_current_activity': progress['doudian_current_activity'],
+            'doudian_current_product_total': progress['doudian_current_product_total'],
+            'doudian_current_product_completed': progress['doudian_current_product_completed'],
+            'doudian_detail_rows': progress['doudian_detail_rows'],
+            'doudian_signup_total': progress['doudian_signup_total'],
+            'doudian_signup_completed': progress['doudian_signup_completed'],
+            'doudian_order_window_total': progress['doudian_order_window_total'],
+            'doudian_order_window_completed': progress['doudian_order_window_completed'],
+            'doudian_mixed_rows': progress['doudian_mixed_rows'],
         }
 
         # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。

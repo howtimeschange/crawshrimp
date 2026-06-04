@@ -81,6 +81,39 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress["detail_request_count"], 1221)
         self.assertEqual(progress["detail_records_collected"], 42)
 
+    async def test_build_live_progress_exposes_doudian_mixed_fund_stage_fields(self):
+        progress = api_server._build_live_progress(
+            {
+                "phase": "collect_order_detail_batch",
+                "records": 0,
+                "shared": {
+                    "doudian_stage": "order_details",
+                    "doudian_signup_total": 4,
+                    "doudian_signup_completed": 4,
+                    "doudian_order_window_total": 2,
+                    "doudian_order_window_completed": 2,
+                    "doudian_mixed_rows": 42,
+                    "list_total_rows": 3600,
+                    "list_completed_rows": 3600,
+                    "detail_total_targets": 208,
+                    "detail_completed_targets": 100,
+                    "detail_current_target": "SO-DETAIL-100",
+                },
+            },
+            run_control=None,
+        )
+
+        self.assertEqual(progress["doudian_stage"], "order_details")
+        self.assertEqual(progress["doudian_signup_total"], 4)
+        self.assertEqual(progress["doudian_signup_completed"], 4)
+        self.assertEqual(progress["doudian_order_window_total"], 2)
+        self.assertEqual(progress["doudian_order_window_completed"], 2)
+        self.assertEqual(progress["doudian_mixed_rows"], 42)
+        self.assertEqual(progress["list_total_rows"], 3600)
+        self.assertEqual(progress["detail_total_targets"], 208)
+        self.assertEqual(progress["detail_completed_targets"], 100)
+        self.assertEqual(progress["detail_current_target"], "SO-DETAIL-100")
+
     async def test_lifespan_uses_instance_lock_as_startup_owner(self):
         calls = []
 

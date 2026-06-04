@@ -240,7 +240,40 @@ test('doudian mixed fund manifest hides keyword/export-probe options and uses li
   assert.equal((manifest.match(/id: custom_activities/g) || []).length, 2)
   assert.equal((manifest.match(/type: line_list/g) || []).length, 0)
   assert.equal((manifest.match(/ui_variant: line_list/g) || []).length, 2)
+  assert.equal(manifest.includes('id: start_date'), false)
+  assert.equal(manifest.includes('id: end_date'), false)
+  assert.equal((manifest.match(/id: date_range/g) || []).length, 1)
+  assert.match(manifest, /label: 数据时间范围/)
   assert.match(manifest, /复制链接或[者]?活动ID/)
+})
+
+test('mixed fund order replay accepts date range picker params for replay period', async () => {
+  const rows = [
+    {
+      店铺名称: '森马官方旗舰店',
+      主订单编号: 'SO-DATE-RANGE',
+      子订单编号: 'IO-DATE-RANGE',
+      下单时间: '2026-06-03 10:00:00',
+      商品ID: 'P-DATE-RANGE',
+      商品名称: '日期筛选商品',
+      商家编码: 'SEMIR-DATE-RANGE',
+      成交金额: '88.88',
+      平台优惠: '平台老朋友惊喜券',
+    },
+  ]
+
+  const result = await runOrderReplayScript({
+    params: {
+      order_file: { rows, filename: '官方订单导出.csv' },
+      date_range: { start: '2026-06-01', end: '2026-06-30' },
+      surprise_coupon_activity: 'mall_long_term',
+    },
+  })
+
+  assert.equal(result.success, true)
+  const overall = result.data.find(row => row.__sheet_name === '复盘总览')
+  assert.equal(overall.数据周期, '2026-06-01 至 2026-06-30')
+  assert.equal(result.meta.shared.mixed_fund_rows, 1)
 })
 
 test('mixed fund signup monitor accepts custom entrance rows as one-link line list', async () => {

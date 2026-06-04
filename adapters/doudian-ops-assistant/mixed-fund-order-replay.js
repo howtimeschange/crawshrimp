@@ -258,6 +258,34 @@
     return Math.floor(ms / 1000)
   }
 
+  function dateRangeParam() {
+    const range = params.date_range || params.stat_date_range || {}
+    if (range && typeof range === 'object' && !Array.isArray(range)) {
+      const parsed = {
+        start: compact(range.start || range.from || range.begin || range.start_date),
+        end: compact(range.end || range.to || range.finish || range.end_date),
+      }
+      if (parsed.start || parsed.end) return parsed
+    }
+    const text = range && typeof range === 'object' ? '' : compact(range)
+    if (text) {
+      const parts = text.split(/\s*(?:~|至|到|,|，)\s*/).map(compact).filter(Boolean)
+      return {
+        start: parts[0] || '',
+        end: parts[1] || parts[0] || '',
+      }
+    }
+    return {
+      start: compact(params.start_date || params.start_time),
+      end: compact(params.end_date || params.end_time),
+    }
+  }
+
+  function dateRangeLabel() {
+    const range = dateRangeParam()
+    return [range.start, range.end].filter(Boolean).join(' 至 ')
+  }
+
   function today() {
     return formatTime(Date.now())
   }
@@ -1349,8 +1377,9 @@
   }
 
   function searchlistTimeRange() {
-    const start = compact(params.start_time) || (params.start_date ? String(dateToUnix(params.start_date, false)) : '')
-    const end = compact(params.end_time) || (params.end_date ? String(dateToUnix(params.end_date, true)) : '')
+    const range = dateRangeParam()
+    const start = range.start ? String(dateToUnix(range.start, false)) : ''
+    const end = range.end ? String(dateToUnix(range.end, true)) : ''
     return { start, end }
   }
 
@@ -1552,8 +1581,9 @@
   }
 
   function officialExportBody(fields) {
-    const start = dateToUnix(params.start_date || params.start_time, false)
-    const end = dateToUnix(params.end_date || params.end_time, true)
+    const range = dateRangeParam()
+    const start = dateToUnix(range.start, false)
+    const end = dateToUnix(range.end, true)
     if (!start || !end) throw new Error('官方导出 API 模式需要填写数据开始日期和结束日期。')
     if (end < start) throw new Error('数据结束日期不能早于开始日期。')
     return {
@@ -1817,7 +1847,7 @@
       平台名称: '抖店',
       品牌: inferBrand(params.shop_name || allRows[0]?.shopName || ''),
       店铺名称: compact(params.shop_name) || allRows[0]?.shopName || readShopName(),
-      数据周期: [compact(params.start_date), compact(params.end_date)].filter(Boolean).join(' 至 '),
+      数据周期: dateRangeLabel(),
       全店引导成交金额: roundMoney(allAmount),
       混资成交金额: roundMoney(mixedAmount),
       混资成交订单数: mixedRows.length,
@@ -1914,6 +1944,35 @@
     }
   }
 
+  function withDoudianReplayProgress(nextShared, stage, extra = {}) {
+    const state = { ...(nextShared || {}) }
+    const signupActivities = Array.isArray(state.signup_activities) ? state.signup_activities : []
+    const signupIndex = Number(state.signup_product_activity_index || 0)
+    const currentSignupActivity = signupActivities[signupIndex] || signupActivities[Math.max(0, signupIndex - 1)] || {}
+    const orderWindows = Array.isArray(state.order_time_windows) ? state.order_time_windows : []
+    const detailTotal = Number(state.detail_total_targets || (Array.isArray(state.detail_candidates) ? state.detail_candidates.length : 0)) || 0
+    const detailCompleted = Number(state.detail_completed_targets || state.detail_cursor || 0) || 0
+
+    return {
+      ...state,
+      doudian_stage: stage,
+      doudian_signup_total: signupActivities.length,
+      doudian_signup_completed: Math.min(signupIndex, signupActivities.length),
+      doudian_activity_total: signupActivities.length,
+      doudian_activity_completed: Math.min(signupIndex, signupActivities.length),
+      doudian_current_activity: currentSignupActivity.name || currentSignupActivity.activityId || '',
+      doudian_current_product_total: Number(state.signup_current_total || 0) || 0,
+      doudian_current_product_completed: Number(state.signup_current_fetched || 0) || 0,
+      doudian_detail_rows: Array.isArray(state.signup_detail_rows) ? state.signup_detail_rows.length : Number(state.signup_auto_detail_rows || 0) || 0,
+      doudian_order_window_total: orderWindows.length,
+      doudian_order_window_completed: Number(state.order_window_done_count || 0) || 0,
+      detail_total_targets: detailTotal,
+      detail_completed_targets: detailCompleted,
+      doudian_mixed_rows: Number(state.mixed_fund_rows || 0) || 0,
+      ...extra,
+    }
+  }
+
   function stableActivities(activities) {
     return (activities || []).map(activity => ({
       activityId: activity.activityId || '',
@@ -2002,9 +2061,9 @@
 
   async function oneFlowInitPhase() {
     const initial = oneFlowBaseShared()
-    if (checkboxEnabled(params.auto_signup_match, true)) return nextPhaseResult('collect_signup_activity_page', initial)
+    if (checkboxEnabled(params.auto_signup_match, true)) return nextPhaseResult('collect_signup_activity_page', withDoudianReplayProgress(initial, 'signup_activity'))
     return nextPhaseResult('collect_order_list_page', {
-      ...initial,
+      ...withDoudianReplayProgress(initial, 'order_list'),
       signup_auto_collected: false,
       signup_skipped: true,
     })
@@ -2015,12 +2074,12 @@
     const keywordIndex = Number(shared.signup_keyword_index || 0)
     const keyword = keywords[keywordIndex]
     if (!keyword) {
-      return nextPhaseResult('collect_signup_products_page', {
+      return nextPhaseResult('collect_signup_products_page', withDoudianReplayProgress({
         ...shared,
         signup_product_activity_index: 0,
         signup_product_page: 1,
         signup_sub_activity_count: (shared.signup_activities || []).length,
-      })
+      }, 'signup_products'))
     }
     const page = Number(shared.signup_activity_page || 1)
     const pageSize = Number(shared.signup_activity_page_size || 20)
@@ -2028,7 +2087,7 @@
     const activities = upsertActivities(shared.signup_activities || [], stableActivities(targetActivitiesFromFeed(result.list, keyword)))
     const fetched = Number(shared.signup_activity_total_fetched || 0) + result.list.length
     const keywordDone = !result.list.length || (result.total > 0 ? fetched >= result.total : result.list.length < pageSize)
-    return nextPhaseResult('collect_signup_activity_page', {
+    return nextPhaseResult('collect_signup_activity_page', withDoudianReplayProgress({
       ...shared,
       signup_activities: activities,
       signup_activity_total_fetched: keywordDone ? 0 : fetched,
@@ -2036,7 +2095,7 @@
       signup_activity_page: keywordDone ? 1 : page + 1,
       signup_activity_count: new Set(activities.map(item => item.parentActivityId || item.activityId || item.parentName)).size,
       signup_sub_activity_count: activities.length,
-    })
+    }, 'signup_activity'))
   }
 
   async function collectSignupProductsPagePhase() {
@@ -2044,7 +2103,7 @@
     const activityIndex = Number(shared.signup_product_activity_index || 0)
     const activity = activities[activityIndex]
     if (!activity) {
-      return nextPhaseResult('collect_order_list_page', {
+      return nextPhaseResult('collect_order_list_page', withDoudianReplayProgress({
         ...shared,
         signup_auto_collected: true,
         signup_auto_detail_rows: (shared.signup_detail_rows || []).length,
@@ -2052,7 +2111,7 @@
         order_search_items: [],
         order_search_item_count: 0,
         order_search_scope: 'date_range',
-      })
+      }, 'order_list'))
     }
 
     const page = Number(shared.signup_product_page || 1)
@@ -2067,13 +2126,13 @@
     const done = !appliedPage.fetched || (total > 0 ? fetched >= total : appliedPage.fetched < pageSize)
 
     if (!done) {
-      return nextPhaseResult('collect_signup_products_page', {
+      return nextPhaseResult('collect_signup_products_page', withDoudianReplayProgress({
         ...shared,
         signup_current_products: pendingProducts,
         signup_current_fetched: fetched,
         signup_current_total: total,
         signup_product_page: page + 1,
-      })
+      }, 'signup_products'))
     }
 
     const context = shared.signup_context || {}
@@ -2088,7 +2147,7 @@
       scrapeTime: context.scrapeTime || today(),
     })
     const keys = signupKeysForProducts(pendingProducts)
-    return nextPhaseResult('collect_signup_products_page', {
+    return nextPhaseResult('collect_signup_products_page', withDoudianReplayProgress({
       ...shared,
       signup_data_rows: [...(shared.signup_data_rows || []), ...rows.rows],
       signup_detail_rows: [...(shared.signup_detail_rows || []), ...rows.detailRows],
@@ -2100,7 +2159,7 @@
       signup_current_products: [],
       signup_current_fetched: 0,
       signup_current_total: 0,
-    })
+    }, 'signup_products'))
   }
 
   async function collectOrderListPagePhase() {
@@ -2202,7 +2261,7 @@
     }
 
     const complete = Boolean(!windows[Number(nextShared.order_window_index || 0)])
-    return nextPhaseResult(complete ? 'collect_order_detail_batch' : 'collect_order_list_page', {
+    return nextPhaseResult(complete ? 'collect_order_detail_batch' : 'collect_order_list_page', withDoudianReplayProgress({
       ...nextShared,
       order_aggregate_ids: Array.from(seenAggregateIds),
       order_rows: [...(nextShared.order_rows || []), ...rows],
@@ -2211,7 +2270,7 @@
       list_total_rows: Number(nextShared.list_total_rows || nextShared.order_row_count || nextShared.order_list_fetched || 0),
       list_completed_rows: Number(nextShared.order_row_count || nextShared.order_list_fetched || 0),
       detail_total_targets: (nextShared.detail_candidates || []).length + candidates.length,
-    })
+    }, complete ? 'order_details' : 'order_list'))
   }
 
   async function collectOrderDetailBatchPhase() {
@@ -2240,7 +2299,7 @@
     }
 
     const nextCursor = end
-    return nextPhaseResult(nextCursor >= candidates.length ? 'finalize_one_flow' : 'collect_order_detail_batch', {
+    return nextPhaseResult(nextCursor >= candidates.length ? 'finalize_one_flow' : 'collect_order_detail_batch', withDoudianReplayProgress({
       ...shared,
       order_rows: [...(shared.order_rows || []), ...rows],
       detail_cursor: nextCursor,
@@ -2250,7 +2309,7 @@
       detail_completed_targets: nextCursor,
       detail_current_target_index: nextCursor,
       detail_current_target: candidates[nextCursor]?.orderId || '',
-    })
+    }, nextCursor >= candidates.length ? 'finalize' : 'order_details'))
   }
 
   async function finalizeOneFlowPhase() {
