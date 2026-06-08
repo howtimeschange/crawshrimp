@@ -17,6 +17,11 @@
   const PDF_EXTS = new Set(['pdf'])
   const PSD_EXTS = new Set(['psd'])
   const ASSET_EXTS = new Set([...IMAGE_EXTS, ...PDF_EXTS, ...PSD_EXTS])
+  const HANG_TAG_PATTERNS = Object.freeze([/吊牌|吊卡|挂牌|商品标签|标签/])
+  const WASH_LABEL_PATTERNS = Object.freeze([/水洗|洗唛|洗标|洗水/])
+  const LABEL_IMAGE_PATTERNS = Object.freeze([...HANG_TAG_PATTERNS, ...WASH_LABEL_PATTERNS])
+  const CARD_PAPER_PATTERNS = Object.freeze([/卡纸|手写/])
+  const MODEL_REMOVABLE_LABEL_PATTERNS = Object.freeze([...LABEL_IMAGE_PATTERNS, /卡头|卡纸/])
   const SOURCE_LABELS = Object.freeze({
     model: '模特图',
     still: '静物图',
@@ -332,10 +337,39 @@
     return patterns.some(pattern => pattern.test(source))
   }
 
+  function parentPathSegment(fullpath) {
+    const segments = pathSegments(fullpath)
+    return segments.length >= 2 ? segments[segments.length - 2] : ''
+  }
+
+  function isStatusNoteFolderName(folderName) {
+    const text = compact(folderName)
+    if (!text) return false
+    if (/^\d{8,}(?:$|[\s_\-])/.test(text)) return true
+    return /已补|已写|已选|回齐|回图|新回|上市|可选|导购|差\d*|缺\d*/i.test(text)
+  }
+
+  function hasFilenameOrExplicitParentMarker(item, patterns) {
+    if (hasAny(item?.filename || item?.name || '', patterns)) return true
+    const parent = parentPathSegment(item?.fullpath || item?.path || '')
+    if (!parent || isStatusNoteFolderName(parent)) return false
+    return hasAny(parent, patterns)
+  }
+
+  function isChatUploadImageFilename(filename) {
+    const name = compact(filename)
+    return /^lQLP[0-9A-Za-z_-]+\.(?:png|jpe?g|webp)$/i.test(name)
+  }
+
+  function hasLabelStatusParentMarker(item) {
+    if (!isChatUploadImageFilename(item?.filename || item?.name || '')) return false
+    const parent = parentPathSegment(item?.fullpath || item?.path || '')
+    return isStatusNoteFolderName(parent) && hasAny(parent, LABEL_IMAGE_PATTERNS)
+  }
+
   function inferSopPdfType(item) {
-    const text = `${item?.filename || ''} ${item?.fullpath || ''}`
-    if (hasAny(text, [/洗唛|洗标|水洗/])) return 'wash_label'
-    if (hasAny(text, [/吊牌|吊卡|挂牌|合格证/])) return 'hang_tag'
+    if (hasFilenameOrExplicitParentMarker(item, WASH_LABEL_PATTERNS)) return 'wash_label'
+    if (hasFilenameOrExplicitParentMarker(item, [...HANG_TAG_PATTERNS, /合格证/])) return 'hang_tag'
     return ''
   }
 
@@ -388,7 +422,7 @@
       if (hasAny(text, [/静物|平拍/])) {
         return { ...base, reason: '模特图包内静物图按 SOP 删除' }
       }
-      if (hasAny(text, [/吊牌|吊卡|挂牌|水洗|洗唛|洗标|洗水|卡头|卡纸/])) {
+      if (hasFilenameOrExplicitParentMarker(item, MODEL_REMOVABLE_LABEL_PATTERNS)) {
         return { ...base, reason: '模特图包内吊牌/卡头/水洗类图片按 SOP 删除' }
       }
       return {
@@ -400,13 +434,13 @@
       }
     }
 
-    if (hasAny(text, [/卡纸|手写/])) {
+    if (hasFilenameOrExplicitParentMarker(item, CARD_PAPER_PATTERNS)) {
       return { ...base, reason: '静物图包内卡纸吊牌/手写水洗按 SOP 删除' }
     }
     if (hasAny(text, [/包装/])) {
       return { ...base, reason: '包装图按 SOP 删除' }
     }
-    if (hasAny(text, [/吊牌|吊卡|挂牌|水洗|洗唛|洗标|洗水/])) {
+    if (hasFilenameOrExplicitParentMarker(item, LABEL_IMAGE_PATTERNS) || hasLabelStatusParentMarker(item)) {
       return {
         role: 'yq',
         keep: true,

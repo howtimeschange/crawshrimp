@@ -392,6 +392,62 @@ test('classifySopAsset applies the deep-draw SOP filtering and yq naming rules',
   assert.match(sizePdf.reason, /非洗唛\/吊牌 PDF/)
 })
 
+test('classifySopAsset does not treat style folder status notes as yq markers', async () => {
+  const helpers = await loadExports()
+
+  const shoeProduct = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: 'GUDG5621.jpg',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/特殊批/鞋品/6.12上市/208326140202 4吊牌已补-已写/00304/29/GUDG5621.jpg',
+  })
+  assert.equal(shoeProduct.keep, true)
+  assert.equal(shoeProduct.role, 'image')
+  assert.equal(shoeProduct.packageFilename, 'GUDG5621.jpg')
+
+  const shoeAngle = helpers.classifySopAsset('still', {
+    ext: 'png',
+    filename: '208326140202-00304+Ai角度图1.png',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/特殊批/鞋品/6.12上市/208326140202 4吊牌已补-已写/00304/29/208326140202-00304+Ai角度图1.png',
+  })
+  assert.equal(shoeAngle.keep, true)
+  assert.equal(shoeAngle.role, 'image')
+  assert.equal(shoeAngle.packageFilename, '208326140202-00304+Ai角度图1.png')
+
+  const tagImage = helpers.classifySopAsset('still', {
+    ext: 'jpg',
+    filename: '商品标签(3)_1 (1).jpg',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/特殊批/鞋品/6.12上市/208326140202 4吊牌已补-已写/00304/29/商品标签(3)_1 (1).jpg',
+  })
+  assert.equal(tagImage.keep, true)
+  assert.equal(tagImage.role, 'yq')
+  assert.equal(tagImage.packageFilename, 'yq.jpg')
+})
+
+test('classifySopAsset treats lQLP label composites in tag status folders as yq', async () => {
+  const helpers = await loadExports()
+
+  const tagComposite = helpers.classifySopAsset('still', {
+    ext: 'png',
+    filename: 'lQLPJwNKCjsjyT3NAQrNA0-wDefRtyoCp4wJ0LgLV-VkAQ_847_266.png',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/特殊批/鞋品/6.12上市/208326146209 吊牌已补-已写/lQLPJwNKCjsjyT3NAQrNA0-wDefRtyoCp4wJ0LgLV-VkAQ_847_266.png',
+  })
+  assert.equal(tagComposite.keep, true)
+  assert.equal(tagComposite.role, 'yq')
+  assert.equal(tagComposite.packageFilename, 'yq.png')
+
+  const regularChatNamedImage = helpers.classifySopAsset('still', {
+    ext: 'png',
+    filename: 'lQLPJwNKCjsjyT3NAQrNA0-wDefRtyoCp4wJ0LgLV-VkAQ_847_266.png',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/特殊批/鞋品/6.12上市/208326146209/lQLPJwNKCjsjyT3NAQrNA0-wDefRtyoCp4wJ0LgLV-VkAQ_847_266.png',
+  })
+  assert.equal(regularChatNamedImage.keep, true)
+  assert.equal(regularChatNamedImage.role, 'image')
+  assert.equal(
+    regularChatNamedImage.packageFilename,
+    'lQLPJwNKCjsjyT3NAQrNA0-wDefRtyoCp4wJ0LgLV-VkAQ_847_266.png',
+  )
+})
+
 test('normalizeDownloadConcurrency defaults and clamps the large-image download setting', async () => {
   const helpers = await loadExports()
 
