@@ -164,6 +164,10 @@ class BackendInstanceLock:
                 msvcrt.locking(self.handle.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError:
                 self.acquired = False
+                try:
+                    self.handle.close()
+                finally:
+                    self.handle = None
                 return False
         else:
             try:
@@ -172,9 +176,17 @@ class BackendInstanceLock:
                 fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 self.acquired = False
+                try:
+                    self.handle.close()
+                finally:
+                    self.handle = None
                 return False
             except OSError:
                 self.acquired = False
+                try:
+                    self.handle.close()
+                finally:
+                    self.handle = None
                 return False
         try:
             self.handle.seek(0)
@@ -184,6 +196,10 @@ class BackendInstanceLock:
         except Exception:
             logger.debug("Failed to write backend instance lock metadata", exc_info=True)
             self.acquired = False
+            try:
+                self.handle.close()
+            finally:
+                self.handle = None
             return False
         self.acquired = True
         return True
@@ -215,6 +231,26 @@ def _acquire_backend_instance_lock() -> BackendInstanceLock:
     lock = BackendInstanceLock(BACKEND_LOCK_PATH)
     lock.acquire()
     return lock
+
+
+def _backend_runtime_kind() -> str:
+    explicit = str(os.environ.get("CRAWSHRIMP_BACKEND_KIND") or "").strip()
+    if explicit:
+        return explicit
+    scripts_dir = Path(__file__).resolve().parent.parent
+    return "packaged" if scripts_dir.name == "python-scripts" else "source"
+
+
+def _backend_runtime_info() -> dict:
+    data_dir = Path(os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))).expanduser()
+    return {
+        "kind": _backend_runtime_kind(),
+        "pid": os.getpid(),
+        "scripts_dir": str(Path(__file__).resolve().parent.parent),
+        "data_dir": str(data_dir.resolve() if data_dir.exists() else data_dir),
+        "lock_dir": str(BACKEND_LOCK_DIR.expanduser().resolve() if BACKEND_LOCK_DIR.exists() else BACKEND_LOCK_DIR),
+        "owns_backend_instance": bool(getattr(app.state, "owns_backend_instance", False)) if "app" in globals() else False,
+    }
 
 
 def _build_run_control() -> dict:
@@ -3145,6 +3181,7 @@ async def lifespan(app: FastAPI):
     # Init DB
     data_sink.init_db()
     owns_backend_instance = bool(instance_lock.acquired)
+    app.state.owns_backend_instance = owns_backend_instance
     if not owns_backend_instance:
         logger.warning("Another crawshrimp backend instance is already active; skip startup side effects in this process")
 
@@ -3193,6 +3230,7 @@ async def lifespan(app: FastAPI):
                 sched_module.shutdown()
         except Exception:
             logger.exception("scheduler shutdown failed")
+        app.state.owns_backend_instance = False
         instance_lock.close()
 
 
@@ -3258,6 +3296,7 @@ def health():
         "adapters": adapters_count,
         "scheduled_jobs": scheduled_jobs_count,
         "warnings": warnings,
+        "runtime": _backend_runtime_info(),
     }
 
 

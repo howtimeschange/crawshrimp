@@ -124,9 +124,19 @@ const navItems = [
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
 
-async function loadScriptGroups() {
+async function loadScriptGroups(options = {}) {
   const tasks = await window.cs.getTasks()
-  scriptGroups.value = buildScriptGroups(tasks)
+  const nextGroups = buildScriptGroups(tasks)
+  if (options.preserveOnShrink && scriptGroups.value.length > 0) {
+    const beforeTaskCount = scriptGroups.value.reduce((sum, group) => sum + (group.tasks?.length || 0), 0)
+    const nextTaskCount = nextGroups.reduce((sum, group) => sum + (group.tasks?.length || 0), 0)
+    const adapterShrink = nextGroups.length > 0 && nextGroups.length < Math.ceil(scriptGroups.value.length * 0.75)
+    const taskShrink = nextTaskCount > 0 && nextTaskCount < Math.ceil(beforeTaskCount * 0.75)
+    if (adapterShrink || taskShrink) {
+      return scriptGroups.value
+    }
+  }
+  scriptGroups.value = nextGroups
   return scriptGroups.value
 }
 

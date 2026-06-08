@@ -228,6 +228,50 @@ class AdapterLoaderTests(unittest.TestCase):
 
             self.assertEqual([manifest.id for manifest in manifests], ["good-adapter"])
 
+    def test_scan_all_keeps_previous_registry_when_root_scan_fails(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            runtime_root = Path(self.tmpdir.name) / "adapters"
+            _write_adapter(runtime_root, adapter_id="stable-adapter")
+
+            adapter_loader.scan_all()
+            self.assertEqual(adapter_loader.get_adapter("stable-adapter").id, "stable-adapter")
+
+            original_iterdir = Path.iterdir
+
+            def guarded_iterdir(path):
+                if path == runtime_root:
+                    raise PermissionError("[WinError 5] Access is denied")
+                return original_iterdir(path)
+
+            with unittest.mock.patch.object(Path, "iterdir", guarded_iterdir):
+                manifests = adapter_loader.scan_all()
+
+            self.assertEqual([manifest.id for manifest in manifests], ["stable-adapter"])
+            self.assertEqual(adapter_loader.get_adapter("stable-adapter").id, "stable-adapter")
+
+    def test_scan_all_keeps_previous_registry_when_scan_temporarily_shrinks(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            runtime_root = Path(self.tmpdir.name) / "adapters"
+            _write_adapter(runtime_root, adapter_id="stable-a")
+            _write_adapter(runtime_root, adapter_id="stable-b")
+
+            adapter_loader.scan_all()
+            self.assertEqual(len(adapter_loader.list_all()), 2)
+
+            hidden_dir = runtime_root / "stable-b"
+            original_is_dir = Path.is_dir
+
+            def guarded_is_dir(path):
+                if path == hidden_dir:
+                    return False
+                return original_is_dir(path)
+
+            with unittest.mock.patch.object(Path, "is_dir", guarded_is_dir):
+                manifests = adapter_loader.scan_all()
+
+            self.assertEqual(sorted(manifest.id for manifest in manifests), ["stable-a", "stable-b"])
+            self.assertEqual(len(adapter_loader.list_all()), 2)
+
     def test_install_from_dir_rejects_adapter_id_path_traversal(self):
         with unittest.mock.patch.dict(os.environ, self.env, clear=False):
             src_root = Path(self.tmpdir.name) / "src"

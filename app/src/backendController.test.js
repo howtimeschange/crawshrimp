@@ -240,3 +240,60 @@ test('runWhenReady can replace exhausted retryable connection errors with diagno
     /核心服务暂时不可用：connect ECONNREFUSED/
   )
 })
+
+test('ensureReady does not reuse a backend from another runtime', async () => {
+  let probeCount = 0
+  let startCount = 0
+
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => {
+      probeCount += 1
+      return probeCount >= 2
+    },
+    validateReady: async () => {
+      if (startCount === 0) return false
+      return true
+    },
+    startProcess: () => {
+      startCount += 1
+      return new EventEmitter()
+    },
+    intervalMs: 1,
+    attempts: 5,
+  })
+
+  await controller.ensureReady()
+
+  assert.equal(startCount, 1)
+  assert.equal(probeCount, 2)
+})
+
+test('ensureReady switches endpoint before launching when ready backend is foreign', async () => {
+  const endpoints = []
+  let activeEndpoint = 18765
+  let startCount = 0
+
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => activeEndpoint === 18765,
+    validateReady: async () => false,
+    switchEndpoint: async () => {
+      activeEndpoint = 18766
+      endpoints.push(activeEndpoint)
+    },
+    startProcess: () => {
+      startCount += 1
+      return new EventEmitter()
+    },
+    intervalMs: 1,
+    attempts: 1,
+  })
+
+  await assert.rejects(controller.ensureReady(), /API server startup timeout/)
+
+  assert.deepEqual(endpoints, [18766])
+  assert.equal(startCount, 1)
+})

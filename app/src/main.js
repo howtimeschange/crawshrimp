@@ -13,13 +13,28 @@ const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
 const { startDesktopServices } = require('./startupServices')
 
-const API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
+const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
+let apiPort = DEFAULT_API_PORT
 const DEV_RENDERER_URL = process.env.CRAWSHRIMP_RENDERER_URL || 'http://127.0.0.1:5173'
 const API_TOKEN_HEADER = 'X-Crawshrimp-Token'
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
 const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 0
+
+function normalizePathForIdentity(rawPath = '') {
+  const resolved = path.resolve(String(rawPath || ''))
+  try {
+    return fs.realpathSync.native(resolved).replace(/\\/g, '/')
+  } catch {
+    return resolved.replace(/\\/g, '/')
+  }
+}
+
+function sameRuntimePath(left = '', right = '') {
+  if (!left || !right) return false
+  return normalizePathForIdentity(left).toLowerCase() === normalizePathForIdentity(right).toLowerCase()
+}
 
 function normalizeUrlForMatch(raw) {
   try {
@@ -494,7 +509,7 @@ function spawnBackendProcess() {
       ...process.env,
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
-      CRAWSHRIMP_PORT: String(API_PORT),
+      CRAWSHRIMP_PORT: String(apiPort),
       CRAWSHRIMP_API_TOKEN: getApiToken(),
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: !IS_DEV
@@ -741,7 +756,7 @@ function apiCall(method, urlPath, body = null, options = {}) {
     const bodyStr = body ? JSON.stringify(body) : null
     const opts = {
       hostname: '127.0.0.1',
-      port: API_PORT,
+      port: apiPort,
       path: urlPath,
       method,
       headers: {
@@ -789,7 +804,7 @@ function probeApiReady(timeoutMs = 800) {
 
     const req = http.request({
       hostname: '127.0.0.1',
-      port: API_PORT,
+      port: apiPort,
       path: '/health',
       method: 'GET',
       timeout: timeoutMs,
@@ -833,6 +848,107 @@ function describeApiCallFailure(error) {
   return wrapped
 }
 
+function expectedBackendScriptsDir() {
+  return getPythonScriptsDir()
+}
+
+function expectedBackendDataDir() {
+  return getCrawshrimpDataDir()
+}
+
+function isCompatibleBackendRuntime(runtime = {}) {
+  if (!runtime || typeof runtime !== 'object') return false
+  const runtimeScriptsDir = String(runtime.scripts_dir || '')
+  const runtimeDataDir = String(runtime.data_dir || '')
+  if (!sameRuntimePath(runtimeDataDir, expectedBackendDataDir())) return false
+  return sameRuntimePath(runtimeScriptsDir, expectedBackendScriptsDir())
+}
+
+function describeBackendRuntime(runtime = {}) {
+  const parts = []
+  if (runtime.kind) parts.push(String(runtime.kind))
+  if (runtime.pid) parts.push(`pid=${runtime.pid}`)
+  if (runtime.scripts_dir) parts.push(`scripts=${runtime.scripts_dir}`)
+  return parts.join(' ')
+}
+
+function findAvailableApiPort(startPort = DEFAULT_API_PORT + 1) {
+  return new Promise((resolve, reject) => {
+    const server = require('net').createServer()
+    server.unref()
+    server.on('error', (error) => {
+      server.close(() => {})
+      if (error.code === 'EADDRINUSE' && startPort < DEFAULT_API_PORT + 100) {
+        findAvailableApiPort(startPort + 1).then(resolve, reject)
+        return
+      }
+      reject(error)
+    })
+    server.listen(startPort, '127.0.0.1', () => {
+      const port = server.address().port
+      server.close(() => resolve(port))
+    })
+  })
+}
+
+async function getBackendHealth(timeoutMs = 800) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (result) => {
+      if (done) return
+      done = true
+      resolve(result)
+    }
+
+    const req = http.request({
+      hostname: '127.0.0.1',
+      port: apiPort,
+      path: '/health',
+      method: 'GET',
+      timeout: timeoutMs,
+    }, (res) => {
+      let data = ''
+      res.on('data', (chunk) => { data += chunk })
+      res.on('end', () => {
+        if (res.statusCode !== 200) {
+          finish({ ok: false, statusCode: res.statusCode || 0 })
+          return
+        }
+        try {
+          const parsed = JSON.parse(data || '{}')
+          finish({ ok: true, data: parsed })
+        } catch (error) {
+          finish({ ok: false, error: error.message })
+        }
+      })
+    })
+
+    req.on('error', (error) => finish({ ok: false, error: error.message }))
+    req.on('timeout', () => {
+      req.destroy(new Error('timeout'))
+      finish({ ok: false, error: 'timeout' })
+    })
+    req.end()
+  })
+}
+
+async function validateApiRuntime() {
+  const health = await getBackendHealth()
+  if (!health.ok) return false
+  const runtime = health.data?.runtime
+  if (isCompatibleBackendRuntime(runtime)) return true
+  log(`[api] found another crawshrimp backend on port ${apiPort}; ${describeBackendRuntime(runtime) || 'runtime identity unavailable'}`)
+  return false
+}
+
+async function switchApiEndpoint() {
+  const nextPort = await findAvailableApiPort(apiPort === DEFAULT_API_PORT ? DEFAULT_API_PORT + 1 : apiPort + 1)
+  log(`[api] switching backend port ${apiPort} -> ${nextPort}`)
+  apiPort = nextPort
+  sendStatus('api', false)
+  return true
+}
+
 function sendStatus(key, value) {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('status', { key, value })
@@ -843,6 +959,8 @@ const backendController = createBackendController({
   log,
   sendStatus,
   probeReady: () => probeApiReady(),
+  validateReady: () => validateApiRuntime(),
+  switchEndpoint: () => switchApiEndpoint(),
   startProcess: () => spawnBackendProcess(),
   stopProcess: (proc) => stopBackendProcess(proc),
   intervalMs: 500,
@@ -888,7 +1006,7 @@ app.whenReady().then(async () => {
     startChrome: startChromeOnLaunch,
     log,
   })
-  if (startup.api.ok) log(`[api] ready on port ${API_PORT}`)
+  if (startup.api.ok) log(`[api] ready on port ${apiPort}`)
 })
 
 app.on('window-all-closed', () => {
@@ -901,7 +1019,7 @@ app.on('window-all-closed', () => {
 secureHandle('get-status', async () => ({
   api:     await probeApiReady(),
   chrome:  (await probeChromeCdp()).ok,
-  apiPort: API_PORT,
+  apiPort,
   cdpPort: CDP_PORT,
   pythonBin: getPythonBin(),
   dev: IS_DEV,

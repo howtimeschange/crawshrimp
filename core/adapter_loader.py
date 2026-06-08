@@ -8,6 +8,7 @@ import shutil
 import zipfile
 import logging
 import re
+import threading
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
 
@@ -22,6 +23,7 @@ _adapters: Dict[str, AdapterManifest] = {}
 _adapter_dirs: Dict[str, Path] = {}
 _enabled: Dict[str, bool] = {}
 _install_meta: Dict[str, dict[str, Any]] = {}
+_scan_lock = threading.RLock()
 
 SCRIPT_SUFFIXES = (".js",)
 
@@ -92,6 +94,23 @@ def iter_manifest_dirs(root: Path) -> Iterator[Path]:
                 yield item
         except OSError as e:
             logger.warning("跳过无权限访问的 adapter 目录 %s: %s", item, e)
+
+
+def _collect_manifest_dirs(root: Path) -> tuple[list[Path], bool]:
+    try:
+        entries = list(root.iterdir())
+    except OSError as e:
+        logger.warning("adapter 目录扫描失败 %s: %s", root, e)
+        return [], False
+
+    manifest_dirs: list[Path] = []
+    for item in entries:
+        try:
+            if item.is_dir() and (item / "manifest.yaml").exists():
+                manifest_dirs.append(item)
+        except OSError as e:
+            logger.warning("跳过无权限访问的 adapter 目录 %s: %s", item, e)
+    return manifest_dirs, True
 
 
 def _should_preserve_existing_link(existing_meta: dict[str, Any], dest: Path) -> bool:
@@ -207,15 +226,23 @@ def get_install_metadata(adapter_id: str) -> dict[str, Any]:
 
 def scan_all() -> List[AdapterManifest]:
     global _adapters, _adapter_dirs, _install_meta
-    _adapters.clear()
-    _adapter_dirs.clear()
-    _install_meta.clear()
-    root = _adapters_root()
-    for item in iter_manifest_dirs(root):
-        m = _load_manifest(item)
-        if m:
-            _adapters[m.id] = m
-            _adapter_dirs[m.id] = item
+    with _scan_lock:
+        root = _adapters_root()
+        manifest_dirs, scan_complete = _collect_manifest_dirs(root)
+        if not scan_complete and _adapters:
+            logger.warning("adapter 根目录扫描失败，保留上一份已加载清单: %s 个", len(_adapters))
+            return list(_adapters.values())
+
+        current_adapters: Dict[str, AdapterManifest] = {}
+        current_adapter_dirs: Dict[str, Path] = {}
+        current_install_meta: Dict[str, dict[str, Any]] = {}
+
+        for item in manifest_dirs:
+            m = _load_manifest(item)
+            if not m:
+                continue
+            current_adapters[m.id] = m
+            current_adapter_dirs[m.id] = item
             meta = _read_install_metadata(m.id)
             if not meta:
                 meta = {
@@ -229,11 +256,27 @@ def scan_all() -> List[AdapterManifest]:
                 meta.setdefault("install_mode", "copy")
                 meta.setdefault("runtime_path", _safe_realpath(item))
                 meta.setdefault("source_path", _safe_realpath(item))
-            _install_meta[m.id] = meta
-            if m.id not in _enabled:
-                _enabled[m.id] = True
-    logger.info(f"已加载 {len(_adapters)} 个适配包")
-    return list(_adapters.values())
+            current_install_meta[m.id] = meta
+
+        if _adapters and current_adapters and len(current_adapters) < len(_adapters):
+            logger.warning(
+                "adapter 扫描结果少于上一份清单，保留上一份以避免列表闪烁: previous=%s current=%s",
+                len(_adapters),
+                len(current_adapters),
+            )
+            return list(_adapters.values())
+
+        _adapters = current_adapters
+        _adapter_dirs = current_adapter_dirs
+        _install_meta = current_install_meta
+        for adapter_id in _adapters:
+            if adapter_id not in _enabled:
+                _enabled[adapter_id] = True
+        for adapter_id in list(_enabled.keys()):
+            if adapter_id not in _adapters:
+                _enabled.pop(adapter_id, None)
+        logger.info(f"已加载 {len(_adapters)} 个适配包")
+        return list(_adapters.values())
 
 
 def _load_manifest(adapter_dir: Path) -> Optional[AdapterManifest]:

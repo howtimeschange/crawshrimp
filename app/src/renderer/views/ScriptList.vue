@@ -215,7 +215,7 @@ async function loadGroups(options = {}) {
     loadError.value = ''
   }
   try {
-    await loadScriptGroups()
+    await loadScriptGroups({ preserveOnShrink: quiet })
   } catch (error) {
     if (!quiet) {
       console.error('Failed to load script groups', error)

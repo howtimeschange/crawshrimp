@@ -30,6 +30,8 @@ function createBackendController(options) {
   const startProcess = options.startProcess
   const log = options.log || (() => {})
   const sendStatus = options.sendStatus || (() => {})
+  const validateReady = options.validateReady || (async () => true)
+  const switchEndpoint = options.switchEndpoint || (async () => false)
   const intervalMs = Math.max(1, Number(options.intervalMs || 500))
   const attempts = Math.max(1, Number(options.attempts || 20))
   const launchRetries = Math.max(0, Number(options.launchRetries || 0))
@@ -70,12 +72,20 @@ function createBackendController(options) {
   }
 
   async function ensureReady() {
-    if (await probeReady()) {
+    async function acceptReadyBackend() {
       ready = true
       if (backendProcess) currentProcessWasReady = true
       startupFailure = null
       sendStatus('api', true)
-      return
+    }
+
+    if (await probeReady()) {
+      if (await validateReady()) {
+        await acceptReadyBackend()
+        return
+      }
+      markNotReady()
+      await switchEndpoint()
     }
 
     if (startupPromise) return startupPromise
@@ -83,6 +93,7 @@ function createBackendController(options) {
     startupPromise = (async () => {
       for (let launchAttempt = 0; launchAttempt <= launchRetries; launchAttempt += 1) {
         const hadReadyBackend = currentProcessWasReady && Boolean(backendProcess)
+        let endpointSwitched = false
         startupFailure = null
         if (!backendProcess) {
           try {
@@ -95,14 +106,28 @@ function createBackendController(options) {
 
         for (let attempt = 0; attempt < attempts; attempt += 1) {
           if (await probeReady()) {
-            ready = true
-            if (backendProcess) currentProcessWasReady = true
-            startupFailure = null
-            sendStatus('api', true)
-            return
+            if (await validateReady()) {
+              await acceptReadyBackend()
+              return
+            }
+            markNotReady()
+            if (backendProcess) {
+              const proc = backendProcess
+              backendProcess = null
+              currentProcessWasReady = false
+              stopProcess(proc)
+            }
+            await switchEndpoint()
+            endpointSwitched = true
+            break
           }
           if (startupFailure) break
           await sleep(intervalMs)
+        }
+
+        if (endpointSwitched) {
+          startupFailure = null
+          continue
         }
 
         if (!startupFailure) {

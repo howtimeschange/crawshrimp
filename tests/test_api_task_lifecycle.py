@@ -44,6 +44,33 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(positions[0], (FakeMsvcrt.LK_NBLCK, 0, 1))
         self.assertEqual(positions[-1], (FakeMsvcrt.LK_UNLCK, 0, 1))
 
+    async def test_backend_instance_lock_windows_returns_false_when_lock_is_held(self):
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+
+            def locking(self, fileno, mode, size):
+                raise OSError("locked")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lock_path = Path(tmpdir) / "backend.lock"
+
+            with patch("core.api_server.os.name", "nt"):
+                with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt()}):
+                    lock = api_server.BackendInstanceLock(lock_path)
+                    self.assertFalse(lock.acquire())
+                    self.assertIsNone(lock.handle)
+
+    async def test_health_exposes_backend_runtime_identity(self):
+        with patch("core.api_server.CDPBridge") as bridge_cls:
+            bridge_cls.return_value.is_available.return_value = True
+            with patch("core.api_server.adapter_loader.list_all", return_value=[{"id": "demo"}]):
+                with patch("core.api_server.sched_module.list_jobs", return_value=[]):
+                    result = api_server.health()
+
+        self.assertEqual(result["runtime"]["kind"], "source")
+        self.assertTrue(result["runtime"]["data_dir"])
+        self.assertTrue(result["runtime"]["scripts_dir"])
+
     async def test_build_live_progress_exposes_shein_detail_stage_fields(self):
         progress = api_server._build_live_progress(
             {
