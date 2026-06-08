@@ -118,6 +118,34 @@ jobs:
           PYTHON_TARGETS: ${{ matrix.python_target }}
         run: bash scripts/download-python.sh
 
+      - name: Prepare Electron dist
+        if: matrix.artifact_suffix == 'mac'
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          ELECTRON_VERSION=$(node -p "require('./package.json').devDependencies.electron.replace(/^[^0-9]*/, '')")
+          mkdir -p electron-dist
+          for arch in arm64 x64; do
+            file="electron-v${ELECTRON_VERSION}-darwin-${arch}.zip"
+            url="https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}/${file}"
+            downloaded=0
+            for attempt in 1 2 3 4 5; do
+              if curl -fL --connect-timeout 30 --retry 5 --retry-delay 10 --retry-all-errors -o "electron-dist/${file}.tmp" "${url}"; then
+                downloaded=1
+                break
+              fi
+              echo "::warning::Electron ${arch} download failed on attempt ${attempt}; retrying"
+              sleep $((attempt * 15))
+            done
+            if [ "${downloaded}" -ne 1 ]; then
+              echo "::error::Failed to download ${file}"
+              exit 1
+            fi
+            test -s "electron-dist/${file}.tmp"
+            mv "electron-dist/${file}.tmp" "electron-dist/${file}"
+          done
+
       - name: Build desktop package
         if: matrix.artifact_suffix != 'mac'
         working-directory: app
@@ -129,7 +157,7 @@ jobs:
         shell: bash
         run: |
           set +e
-          npm run ${{ matrix.build_script }} -- --publish never 2>&1 | tee ../mac-build.log
+          npm run ${{ matrix.build_script }} -- --publish never -c.electronDist=electron-dist 2>&1 | tee ../mac-build.log
           build_status=${PIPESTATUS[0]}
           set -e
 
