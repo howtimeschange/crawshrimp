@@ -36,7 +36,13 @@ jobs:
 
       - name: Install app deps
         working-directory: app
-        run: npm ci
+        run: |
+          for attempt in 1 2 3; do
+            npm ci && exit 0
+            echo "::warning::npm ci failed on attempt ${attempt}; retrying after transient download failure"
+            sleep $((attempt * 10))
+          done
+          npm ci
 
       - name: Run app tests
         working-directory: app
@@ -95,7 +101,13 @@ jobs:
 
       - name: Install app deps
         working-directory: app
-        run: npm ci
+        run: |
+          for attempt in 1 2 3; do
+            npm ci && exit 0
+            echo "::warning::npm ci failed on attempt ${attempt}; retrying after transient download failure"
+            sleep $((attempt * 10))
+          done
+          npm ci
 
       - name: Download bundled Python
         working-directory: app

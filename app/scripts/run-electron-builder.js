@@ -45,8 +45,11 @@ const builderBin = path.join(
   '.bin',
   process.platform === 'win32' ? 'electron-builder.cmd' : 'electron-builder'
 )
+const builderCommand = process.env.ELECTRON_BUILDER_BIN || builderBin
 
 const args = ['--config', 'build.yml', ...process.argv.slice(2)]
+const maxAttempts = Math.max(1, Number.parseInt(process.env.ELECTRON_BUILDER_ATTEMPTS || '4', 10) || 4)
+const retryDelayMs = Math.max(0, Number.parseInt(process.env.ELECTRON_BUILDER_RETRY_DELAY_MS || '10000', 10) || 10000)
 
 function quoteWindowsArg(value) {
   if (value === '') return '""'
@@ -58,22 +61,52 @@ function runBuilder() {
   const options = {
     cwd: path.join(__dirname, '..'),
     env,
-    stdio: 'inherit',
+    encoding: 'utf8',
+    maxBuffer: 50 * 1024 * 1024,
   }
 
   if (process.platform !== 'win32') {
-    return spawnSync(builderBin, args, options)
+    return spawnSync(builderCommand, args, options)
   }
 
-  const command = [builderBin, ...args].map(quoteWindowsArg).join(' ')
+  const command = [builderCommand, ...args].map(quoteWindowsArg).join(' ')
   return spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/s', '/c', command], options)
 }
 
-const result = runBuilder()
+function writeResultOutput(result) {
+  if (result.stdout) process.stdout.write(result.stdout)
+  if (result.stderr) process.stderr.write(result.stderr)
+}
+
+function isTransientDownloadFailure(result) {
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`
+  return (
+    /cannot resolve https:\/\/github\.com\/.+status code 5\d\d/i.test(output) ||
+    /response code 5\d\d/i.test(output) ||
+    /gateway time-?out/i.test(output)
+  )
+}
+
+function sleep(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+}
+
+let result
+for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+  result = runBuilder()
+  writeResultOutput(result)
+
+  if (result.error || result.status === 0 || !isTransientDownloadFailure(result) || attempt === maxAttempts) {
+    break
+  }
+
+  console.warn(`[build] electron-builder transient download failure on attempt ${attempt}/${maxAttempts}; retrying`)
+  sleep(retryDelayMs)
+}
 
 if (result.error) {
   console.error(result.error.message)
   process.exit(1)
 }
 
-process.exit(result.status || 0)
+process.exit(result.status == null ? 1 : result.status)

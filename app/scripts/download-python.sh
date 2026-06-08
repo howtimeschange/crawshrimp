@@ -18,6 +18,7 @@ PY_ABI="cp${PY_MAJOR}${PY_MINOR}"
 PY_MAJOR_MINOR="${PY_MAJOR}.${PY_MINOR}"
 
 BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${BUILD_VERSION}"
+DOWNLOAD_ATTEMPTS="${DOWNLOAD_ATTEMPTS:-4}"
 
 mkdir -p "$OUT_DIR"
 
@@ -213,6 +214,29 @@ install_requirements() {
   echo "[ok] $key requirements installed"
 }
 
+download_archive() {
+  local url="$1"
+  local output="$2"
+  local label="$3"
+  local attempt
+
+  for attempt in $(seq 1 "$DOWNLOAD_ATTEMPTS"); do
+    rm -f "$output"
+    echo "[download] $label archive attempt $attempt/$DOWNLOAD_ATTEMPTS"
+    if curl --fail --location --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 300 -o "$output" "$url" &&
+      tar -tzf "$output" >/dev/null 2>&1; then
+      return 0
+    fi
+
+    echo "[warn] $label archive download was incomplete or invalid; retrying" >&2
+    rm -f "$output"
+    sleep "$attempt"
+  done
+
+  echo "[error] Failed to download a valid archive for $label: $url" >&2
+  return 1
+}
+
 for KEY in "${SELECTED_TARGETS[@]}"; do
   FILE="$(target_file "$KEY")" || {
     echo "[error] Unknown Python target: $KEY"
@@ -225,8 +249,8 @@ for KEY in "${SELECTED_TARGETS[@]}"; do
     echo "[skip] $KEY already exists"
   else
     echo "[download] $KEY ..."
-    curl -sI "$URL" | grep -q "HTTP/" || { echo "[error] URL not found: $URL"; exit 1; }
-    curl -L -o "/tmp/${FILE}" "$URL"
+    curl --fail -sI "$URL" | grep -q "HTTP/" || { echo "[error] URL not found: $URL"; exit 1; }
+    download_archive "$URL" "/tmp/${FILE}" "$KEY"
     mkdir -p "$DEST"
     tar -xzf "/tmp/${FILE}" -C "$DEST" --strip-components=1
     rm "/tmp/${FILE}"
