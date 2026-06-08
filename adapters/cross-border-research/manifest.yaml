@@ -7,6 +7,7 @@ entry_url: https://www.lojasrenner.com.br/
 tab_match_prefixes:
   - https://www.lojasrenner.com.br/
   - https://www.zara.com/
+  - https://www.macys.com/
 
 tasks:
   - id: renner_kids_category_research
@@ -189,3 +190,122 @@ tasks:
               - 价格带
               - 来源 URL
               - 证据
+  - id: macys_kids_shoes_research
+    name: Macy's 儿童鞋品牌/品类调研
+    description: 抓取 Macy's Kids & Baby Shoes 类目页，按品牌和品类汇总产品宽度、年龄维度、价格带、折扣力度、折扣后价格和产品图片
+    script: macys-kids-shoes-research.js
+    entry_url: https://www.macys.com/shop/kids-baby/shoes/Pageindex/2?id=48561
+    tab_match_prefixes:
+      - https://www.macys.com/
+    skip_auth: true
+    params:
+      - id: category_url
+        type: text
+        label: 调研页面 URL
+        required: true
+        default: "https://www.macys.com/shop/kids-baby/shoes/Pageindex/2?id=48561"
+        hint: 默认抓取 Macy's Kids & Baby Shoes 第 2 页；可替换为同站点其他 kids shoes 类目页。
+      - id: max_products
+        type: number
+        label: 最多抓取商品数
+        default: 120
+        min: 1
+        max: 500
+        step: 1
+        ui_span: half
+        hint: 控制当前页面最多解析的商品卡数量，默认覆盖 Macy's 当前页完整商品网格。
+      - id: include_sponsored_items
+        type: radio
+        label: 包含顶部赞助/推荐轮播
+        default: "false"
+        ui_span: half
+        options:
+          - value: "false"
+            label: 关闭
+          - value: "true"
+            label: 开启
+        hint: 默认排除页面顶部品牌赞助轮播，避免把非鞋类广告商品混入鞋类调研。
+      - id: skip_non_shoe_items
+        type: radio
+        label: 过滤明显非鞋类商品
+        default: "true"
+        ui_span: half
+        options:
+          - value: "true"
+            label: 开启
+          - value: "false"
+            label: 关闭
+        hint: 默认过滤连体衣、泳装、套装等 Macy's 页面可能混入的推荐商品。
+      - id: max_scrolls
+        type: number
+        label: 页面滚动次数
+        default: 6
+        min: 0
+        max: 20
+        step: 1
+        ui_span: half
+        hint: 运行在当前 Macy's 浏览器页时会向下滚动触发懒加载图片/商品。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "跨境调研_Macys儿童鞋品牌品类_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 品牌
+          - 品类
+          - 产品宽度
+          - 年龄维度
+          - 销售价格带
+          - 折扣力度
+          - 折扣后价格带
+          - 品类价格带
+          - 代表产品
+          - 产品图片
+          - 商品链接
+          - 产品名称
+          - 销售价格
+          - 折扣后价格
+          - Macy's 商品ID
+          - 来源 URL
+        sheets:
+          - name: 品牌维度
+            columns:
+              - 品牌
+              - 产品宽度
+              - 品类
+              - 品类价格带
+              - 年龄维度
+              - 销售价格带
+              - 折扣力度
+              - 折扣后价格带
+              - 代表产品
+              - 产品图片
+              - 商品链接
+              - 来源 URL
+          - name: 品类维度
+            columns:
+              - 品类
+              - 产品宽度
+              - 品牌
+              - 年龄维度
+              - 销售价格带
+              - 折扣力度
+              - 折扣后价格带
+              - 代表产品
+              - 产品图片
+              - 商品链接
+              - 来源 URL
+          - name: 产品明细
+            columns:
+              - 品牌
+              - 品类
+              - 年龄维度
+              - 产品名称
+              - 销售价格
+              - 折扣力度
+              - 折扣后价格
+              - 产品图片
+              - 商品链接
+              - Macy's 商品ID
+              - 来源 URL
