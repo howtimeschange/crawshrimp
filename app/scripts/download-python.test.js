@@ -121,3 +121,105 @@ chmod +x "$dest/bin/python3"
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('download-python reinstalls cached bundle when xlrd is missing', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-python-cache-'))
+
+  try {
+    const appDir = path.join(tmp, 'app')
+    const scriptsDir = path.join(appDir, 'scripts')
+    const coreDir = path.join(tmp, 'core')
+    const fakeBinDir = path.join(tmp, 'bin')
+    const bundleDir = path.join(appDir, 'python-dist', 'win-x64')
+    const sitePackages = path.join(bundleDir, 'Lib', 'site-packages')
+    fs.mkdirSync(scriptsDir, { recursive: true })
+    fs.mkdirSync(coreDir, { recursive: true })
+    fs.mkdirSync(fakeBinDir, { recursive: true })
+    fs.mkdirSync(sitePackages, { recursive: true })
+    fs.copyFileSync(scriptPath, path.join(scriptsDir, 'download-python.sh'))
+
+    const requirements = [
+      'fastapi==0.0.0',
+      'uvicorn==0.0.0',
+      'websockets==0.0.0',
+      'pyyaml==0.0.0',
+      'apscheduler==0.0.0',
+      'openpyxl==0.0.0',
+      'xlrd==0.0.0',
+      'pydantic==0.0.0',
+      'aiofiles==0.0.0',
+      'jsonschema==0.0.0',
+      'tzdata==0.0.0',
+      'Pillow==0.0.0',
+      'PyMuPDF==0.0.0',
+    ].join('\n') + '\n'
+    fs.writeFileSync(path.join(coreDir, 'requirements.txt'), requirements)
+    fs.writeFileSync(path.join(bundleDir, '.crawshrimp-requirements.txt'), requirements)
+    fs.writeFileSync(path.join(bundleDir, 'python.exe'), '')
+
+    for (const name of [
+      'fastapi',
+      'uvicorn',
+      'websockets',
+      'yaml',
+      'apscheduler',
+      'openpyxl',
+      'pydantic',
+      'aiofiles',
+      'jsonschema',
+      'tzdata',
+      'PIL',
+      'fitz',
+    ]) {
+      fs.mkdirSync(path.join(sitePackages, name), { recursive: true })
+    }
+
+    writeExecutable(
+      path.join(fakeBinDir, 'python3'),
+      `#!/usr/bin/env bash
+if [ "$1" = "-m" ] && [ "$2" = "pip" ]; then
+  if [ "$3" = "--version" ]; then
+    echo "pip 0.0.0"
+    exit 0
+  fi
+  shift 2
+  target=""
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --target)
+        shift
+        target="$1"
+        ;;
+    esac
+    shift || true
+  done
+  if [ -z "$target" ]; then
+    echo "missing --target" >&2
+    exit 2
+  fi
+  mkdir -p "$target/xlrd"
+  echo installed > "$target/xlrd/MARKER"
+  exit 0
+fi
+exit 0
+`
+    )
+
+    const result = spawnSync('bash', [path.join(scriptsDir, 'download-python.sh')], {
+      cwd: appDir,
+      env: {
+        ...process.env,
+        PATH: `${fakeBinDir}${path.delimiter}${process.env.PATH}`,
+        PYTHON_TARGETS: 'win-x64',
+        PYTHON: path.join(fakeBinDir, 'python3'),
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
+    assert.match(result.stdout, /Cross-installing backend requirements into win-x64/)
+    assert.ok(fs.existsSync(path.join(sitePackages, 'xlrd', 'MARKER')))
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})

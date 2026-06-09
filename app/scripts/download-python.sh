@@ -115,6 +115,7 @@ has_core_requirements() {
     [ -d "${site_packages}/yaml" ] &&
     [ -d "${site_packages}/apscheduler" ] &&
     [ -d "${site_packages}/openpyxl" ] &&
+    [ -d "${site_packages}/xlrd" ] &&
     [ -d "${site_packages}/pydantic" ] &&
     [ -d "${site_packages}/aiofiles" ] &&
     [ -d "${site_packages}/jsonschema" ] &&
