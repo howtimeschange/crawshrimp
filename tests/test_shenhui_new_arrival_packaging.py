@@ -431,6 +431,53 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 self.assertIn("yq(1).png", names)
                 self.assertNotIn("_PDF待裁图/runtime-tag.pdf", names)
 
+    def test_finalize_prepare_upload_package_preserves_pdf_when_screenshot_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            pdf_file = runtime_dir / "runtime-tag.pdf"
+            exported = base / "summary.xlsx"
+            pdf_file.write_bytes(b"%PDF-fake")
+            exported.write_bytes(b"excel")
+
+            with patch(
+                "core.shenhui_pdf_screenshot.convert_pdf_to_yq_images",
+                return_value=[],
+            ), patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="",
+            ):
+                result = _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_upload_package",
+                    data_rows=[{
+                        "输入款号": "208226103201",
+                        "输入编码": "208226103201",
+                        "素材来源": "静物图",
+                        "文件名": "208226103201吊牌.pdf",
+                        "下载结果": "已下载",
+                        "本地文件": str(pdf_file),
+                        "__shenhui_group_code": "208226103201",
+                        "__shenhui_asset_role": "pdf_yq",
+                        "__package_filename": "208226103201吊牌.pdf",
+                        "__pdf_path": str(pdf_file),
+                        "__pdf_type": "hang_tag",
+                        "__style_code": "208226103201",
+                    }],
+                    runtime_files=[str(pdf_file)],
+                    exported_files=[str(exported)],
+                    run_params={"package_name": "深绘测试图包"},
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            package_dir = Path(result[0])
+            preserved_pdf = package_dir / "208226103201" / "_PDF待裁图" / "208226103201吊牌.pdf"
+            self.assertTrue(preserved_pdf.is_file())
+            self.assertEqual(Path(result[1]), exported)
+            self.assertFalse(pdf_file.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -18,6 +18,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import time
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -1457,6 +1458,40 @@ def _copy_file_to_unique_target(source: Path, target: Path) -> Path:
     return unique_target
 
 
+def _move_file_to_unique_target(source: Path, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    unique_target = _ensure_unique_local_path(target)
+    try:
+        shutil.move(str(source), str(unique_target))
+    except Exception:
+        shutil.copy2(source, unique_target)
+        try:
+            source.unlink()
+        except Exception:
+            logger.debug("Failed to clean source after fallback copy %s", source, exc_info=True)
+    return unique_target
+
+
+def _move_dir_to_unique_target(source: Path, target: Path) -> Path:
+    target.parent.mkdir(parents=True, exist_ok=True)
+    unique_target = _ensure_unique_local_dir(target)
+    try:
+        shutil.move(str(source), str(unique_target))
+    except Exception:
+        shutil.copytree(source, unique_target)
+        shutil.rmtree(source, ignore_errors=True)
+    return unique_target
+
+
+def _relocate_runtime_file_to_unique_target(source: Path, target: Path, runtime_dir: Path) -> Path:
+    try:
+        if _is_within_directory(source, runtime_dir):
+            return _move_file_to_unique_target(source, target)
+    except Exception:
+        logger.debug("Failed to decide runtime file relocation for %s", source, exc_info=True)
+    return _copy_file_to_unique_target(source, target)
+
+
 def _cleanup_semir_runtime_artifacts(runtime_files: list, package_root: Optional[Path]) -> None:
     for file_path in runtime_files or []:
         source = Path(str(file_path or "")).expanduser()
@@ -1671,6 +1706,14 @@ def _finalize_shenhui_new_arrival_outputs(
 
     style_zip_paths = []
     if successful_rows:
+        finalize_started_at = time.monotonic()
+        pdf_rows = []
+        image_count = 0
+        pdf_count = 0
+        log(
+            "Shenhui package finalize started: "
+            f"{len(successful_rows)} downloaded files, auto_zip={auto_zip_package}"
+        )
         for row, local_path in successful_rows:
             group_code = _safe_local_name(
                 row.get("__shenhui_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
@@ -1679,6 +1722,11 @@ def _finalize_shenhui_new_arrival_outputs(
             role = str(row.get("__shenhui_asset_role") or "").strip().lower()
 
             if role == "pdf_yq" or local_path.suffix.lower() == ".pdf":
+                row["__pdf_path"] = str(local_path)
+                row["原始路径"] = row.get("原始路径") or str(local_path)
+                row["__shenhui_group_code"] = group_code
+                pdf_rows.append((row, local_path, group_code))
+                pdf_count += 1
                 continue
 
             clean_filename = _safe_local_name(
@@ -1686,18 +1734,20 @@ def _finalize_shenhui_new_arrival_outputs(
                 local_path.name,
             )
             target = package_root / group_code / clean_filename
-            _copy_file_to_unique_target(local_path, target)
+            relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            row["本地文件"] = str(relocated)
+            image_count += 1
+        log(
+            "Shenhui package files arranged: "
+            f"{image_count} image/material files, {pdf_count} PDF files, "
+            f"{time.monotonic() - finalize_started_at:.1f}s"
+        )
 
-        pdf_rows = []
-        for row, local_path in successful_rows:
-            if str(row.get("__shenhui_asset_role") or "").strip().lower() != "pdf_yq" and local_path.suffix.lower() != ".pdf":
-                continue
-            row["__pdf_path"] = str(local_path)
-            row["原始路径"] = row.get("原始路径") or str(local_path)
-            pdf_rows.append(row)
         if pdf_rows:
+            pdf_data_rows = [row for row, _local_path, _group_code in pdf_rows]
+            pdf_started_at = time.monotonic()
             converted_count = convert_pdf_rows_to_yq_output_root(
-                data_rows=pdf_rows,
+                data_rows=pdf_data_rows,
                 output_root=package_root,
                 pdf_work_dir=pdf_work_dir,
                 run_params=run_params or {},
@@ -1705,24 +1755,47 @@ def _finalize_shenhui_new_arrival_outputs(
             )
             if converted_count:
                 log(f"Shenhui downloaded PDF screenshots added to style packages: {converted_count}")
+            for row, local_path, group_code in pdf_rows:
+                if str(row.get("处理动作") or "").strip() != "截图失败":
+                    continue
+                pending_target = package_root / group_code / "_PDF待裁图" / _safe_local_name(
+                    row.get("__package_filename") or row.get("文件名") or local_path.name,
+                    local_path.name,
+                )
+                if local_path.is_file():
+                    preserved = _copy_file_to_unique_target(local_path, pending_target)
+                    row["本地文件"] = str(preserved)
+                    row["备注"] = _append_note(row.get("备注"), f"原 PDF 已保留：{preserved.name}")
+            log(
+                "Shenhui package PDF processing finished: "
+                f"{converted_count} generated images from {len(pdf_rows)} PDF files, "
+                f"{time.monotonic() - pdf_started_at:.1f}s"
+            )
 
         if auto_zip_package:
+            zip_started_at = time.monotonic()
             style_zip_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_deepdraw_zips")
             style_zip_dir.mkdir(parents=True, exist_ok=True)
             for style_dir in sorted(path for path in package_root.iterdir() if path.is_dir()):
                 if style_dir.name.startswith("_"):
                     continue
                 style_zip_path = _ensure_unique_local_path(style_zip_dir / f"{style_dir.name}.zip")
-                with zipfile.ZipFile(style_zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                with zipfile.ZipFile(style_zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
                     for file_path in sorted(style_dir.rglob("*")):
                         if not file_path.is_file():
                             continue
                         archive.write(file_path, arcname=str(file_path.relative_to(style_dir)))
                 style_zip_paths.append(style_zip_path)
             if style_zip_paths:
-                log(f"Shenhui DeepDraw style ZIPs created: {len(style_zip_paths)}")
+                log(
+                    "Shenhui DeepDraw style ZIPs created: "
+                    f"{len(style_zip_paths)} in {time.monotonic() - zip_started_at:.1f}s"
+                )
         else:
-            log(f"Shenhui package folder prepared without ZIP compression: {package_root}")
+            log(
+                "Shenhui package folder prepared without ZIP compression: "
+                f"{package_root} ({time.monotonic() - finalize_started_at:.1f}s)"
+            )
 
     export_folder = str(run_params.get("export_folder") or "").strip()
     exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
@@ -1741,8 +1814,7 @@ def _finalize_shenhui_new_arrival_outputs(
             if style_zip_paths:
                 log(f"Shenhui style ZIPs copied to export folder: {target_root}")
         elif successful_rows and package_root.exists():
-            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
-            shutil.copytree(package_root, external_dir)
+            external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
             external_refs.append(str(external_dir))
             log(f"Shenhui package folder copied to export folder: {external_dir}")
 
@@ -1769,8 +1841,7 @@ def _finalize_shenhui_new_arrival_outputs(
     elif successful_rows and package_root.exists():
         target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
         target_root.mkdir(parents=True, exist_ok=True)
-        external_dir = _ensure_unique_local_dir(target_root / package_root.name)
-        shutil.copytree(package_root, external_dir)
+        external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
         log(f"Shenhui package folder moved to default output folder: {external_dir}")
         final_refs = [str(external_dir), *exported_refs]
 

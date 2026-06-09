@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -26,6 +28,9 @@ PDF_RENDER_MIN_SCALE = 3.0
 PDF_RENDER_MAX_SCALE = 8.0
 DEFAULT_WASH_CROP_BOXES = [(0.0892, 0.2084, 0.4189, 0.7546)]
 DEFAULT_TAG_CROP_BOXES = [(0.0113, 0.2352, 0.1535, 0.5058)]
+DEFAULT_PDF_CONCURRENCY = 4
+MIN_PDF_CONCURRENCY = 1
+MAX_PDF_CONCURRENCY = 8
 
 
 def safe_local_name(value: str, fallback: str = "item") -> str:
@@ -58,6 +63,16 @@ def ensure_unique_local_dir(path: Path) -> Path:
         if not candidate.exists():
             return candidate
         index += 1
+
+
+def normalize_pdf_concurrency(raw_value) -> int:
+    if raw_value is None or str(raw_value).strip() == "":
+        return DEFAULT_PDF_CONCURRENCY
+    try:
+        parsed = int(float(str(raw_value).strip()))
+    except Exception:
+        return DEFAULT_PDF_CONCURRENCY
+    return max(MIN_PDF_CONCURRENCY, min(MAX_PDF_CONCURRENCY, parsed))
 
 
 def copy_file_to_unique_target(source: Path, target: Path) -> Path:
@@ -418,18 +433,18 @@ def _pdf_page_render_scale(page) -> float:
     return max(PDF_RENDER_MIN_SCALE, min(PDF_RENDER_MAX_SCALE, target_scale))
 
 
-def render_pdf_pages_with_pymupdf(pdf_path: Path, output_dir: Path) -> list[Path]:
+def render_pdf_pages_with_pymupdf_result(pdf_path: Path, output_dir: Path) -> tuple[list[Path], str]:
     try:
         import fitz
-    except Exception:
-        return []
+    except Exception as exc:
+        return [], f"PyMuPDF 未安装或无法加载: {exc}"
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
         doc = fitz.open(str(pdf_path))
         if doc.page_count < 1:
             doc.close()
-            return []
+            return [], "PyMuPDF 打开成功但 PDF 没有页面"
         outputs = []
         for page_index in range(doc.page_count):
             page = doc.load_page(page_index)
@@ -441,10 +456,17 @@ def render_pdf_pages_with_pymupdf(pdf_path: Path, output_dir: Path) -> list[Path
             if target.is_file():
                 outputs.append(target)
         doc.close()
-        return outputs
-    except Exception:
+        if not outputs:
+            return [], "PyMuPDF 未输出页面图片"
+        return outputs, ""
+    except Exception as exc:
         logger.debug("Failed to render PDF with PyMuPDF: %s", pdf_path, exc_info=True)
-        return []
+        return [], f"PyMuPDF 渲染失败: {exc}"
+
+
+def render_pdf_pages_with_pymupdf(pdf_path: Path, output_dir: Path) -> list[Path]:
+    pages, _error = render_pdf_pages_with_pymupdf_result(pdf_path, output_dir)
+    return pages
 
 
 def render_pdf_with_pymupdf(pdf_path: Path, output_dir: Path) -> Optional[Path]:
@@ -475,9 +497,18 @@ def render_pdf_with_quicklook(pdf_path: Path, output_dir: Path) -> Optional[Path
         return None
 
 
-def render_pdf_pages_with_quicklook(pdf_path: Path, output_dir: Path) -> list[Path]:
+def render_pdf_pages_with_quicklook_result(pdf_path: Path, output_dir: Path) -> tuple[list[Path], str]:
+    if os.name == "nt":
+        return [], "Quick Look 仅 macOS 可用；Windows 需要 PyMuPDF"
+    if shutil.which("qlmanage") is None:
+        return [], "Quick Look 不可用：未找到 qlmanage"
     rendered = render_pdf_with_quicklook(pdf_path, output_dir)
-    return [rendered] if rendered else []
+    return ([rendered], "") if rendered else ([], "Quick Look 未输出图片")
+
+
+def render_pdf_pages_with_quicklook(pdf_path: Path, output_dir: Path) -> list[Path]:
+    pages, _error = render_pdf_pages_with_quicklook_result(pdf_path, output_dir)
+    return pages
 
 
 def extract_pdf_text(pdf_path: Path) -> str:
@@ -540,9 +571,14 @@ def convert_pdf_to_yq_images(
 
     render_dir = work_dir / "rendered"
     crop_dir = work_dir / "cropped"
-    rendered_pages = render_pdf_pages_with_pymupdf(pdf_path, render_dir) or render_pdf_pages_with_quicklook(pdf_path, render_dir)
+    rendered_pages, pymupdf_error = render_pdf_pages_with_pymupdf_result(pdf_path, render_dir)
+    quicklook_error = ""
     if not rendered_pages:
-        log(f"[warn] PDF 裁图不可用，保留原 PDF 待人工处理: {pdf_path.name}")
+        rendered_pages, quicklook_error = render_pdf_pages_with_quicklook_result(pdf_path, render_dir)
+    if not rendered_pages:
+        details = "；".join(part for part in (pymupdf_error, quicklook_error) if part)
+        suffix = f"（{details}）" if details else ""
+        log(f"[warn] PDF 裁图不可用，保留原 PDF 待人工处理: {pdf_path.name}{suffix}")
         return []
 
     outputs = []
@@ -636,7 +672,38 @@ def convert_pdf_rows_to_yq_output_root(
 
     converted_count = 0
     sequence_by_name_scope: dict[tuple[str, str, str], int] = {}
-    for item in work_items:
+    if work_items:
+        concurrency = min(normalize_pdf_concurrency((run_params or {}).get("pdf_concurrency")), len(work_items))
+        log(f"Shenhui PDF processing started: {len(work_items)} PDF file(s), concurrency {concurrency}")
+
+    def convert_item(item: dict) -> tuple[dict, list[Path]]:
+        pdf_path = item["pdf_path"]
+        pdf_type = item["pdf_type"]
+        style_folder = item["style_folder"]
+        crop_boxes = crop_boxes_for_pdf_type(pdf_type, run_params or {})
+        converted = convert_pdf_to_yq_images(
+            pdf_path,
+            pdf_work_dir / style_folder / safe_local_name(pdf_path.stem, "pdf"),
+            log,
+            crop_boxes=crop_boxes,
+        )
+        return item, converted
+
+    conversion_results: list[tuple[dict, list[Path]]] = []
+    if len(work_items) > 1:
+        with ThreadPoolExecutor(max_workers=min(normalize_pdf_concurrency((run_params or {}).get("pdf_concurrency")), len(work_items))) as executor:
+            future_to_index = {
+                executor.submit(convert_item, item): index
+                for index, item in enumerate(work_items)
+            }
+            ordered_results: list[Optional[tuple[dict, list[Path]]]] = [None] * len(work_items)
+            for future in as_completed(future_to_index):
+                ordered_results[future_to_index[future]] = future.result()
+            conversion_results = [result for result in ordered_results if result is not None]
+    else:
+        conversion_results = [convert_item(item) for item in work_items]
+
+    for item, converted in conversion_results:
         pdf_path = item["pdf_path"]
         pdf_type = item["pdf_type"]
         style_code = item["style_code"]
@@ -650,14 +717,7 @@ def convert_pdf_rows_to_yq_output_root(
                 if role_style_code == style_code
             )
         )
-        crop_boxes = crop_boxes_for_pdf_type(pdf_type, run_params or {})
         target_dir = output_root / style_folder
-        converted = convert_pdf_to_yq_images(
-            pdf_path,
-            pdf_work_dir / style_folder / safe_local_name(pdf_path.stem, "pdf"),
-            log,
-            crop_boxes=crop_boxes,
-        )
         if not converted:
             log(f"[warn] PDF 未生成截图: {pdf_path.name}")
             item["row"]["处理动作"] = "截图失败"

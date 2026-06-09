@@ -82,8 +82,8 @@ class ShenhuiPdfScreenshotTests(unittest.TestCase):
                 path.write_bytes(b"png")
 
             with patch(
-                "core.shenhui_pdf_screenshot.render_pdf_pages_with_pymupdf",
-                return_value=[page_one, page_two],
+                "core.shenhui_pdf_screenshot.render_pdf_pages_with_pymupdf_result",
+                return_value=([page_one, page_two], ""),
             ), patch(
                 "core.shenhui_pdf_screenshot.crop_image_to_yq_pages",
                 side_effect=[[crop_one], [crop_two]],
@@ -99,6 +99,30 @@ class ShenhuiPdfScreenshotTests(unittest.TestCase):
             self.assertEqual(crop_mock.call_count, 2)
             self.assertEqual(crop_mock.call_args_list[0].args[0], page_one)
             self.assertEqual(crop_mock.call_args_list[1].args[0], page_two)
+
+    def test_convert_pdf_logs_dependency_detail_when_rendering_is_unavailable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            pdf_path = base / "hang-tag.pdf"
+            pdf_path.write_bytes(b"%PDF-fake")
+            logs = []
+
+            with patch(
+                "core.shenhui_pdf_screenshot.render_pdf_pages_with_pymupdf_result",
+                return_value=([], "PyMuPDF 未安装或无法加载: No module named 'fitz'"),
+            ), patch(
+                "core.shenhui_pdf_screenshot.render_pdf_pages_with_quicklook_result",
+                return_value=([], "Quick Look 仅 macOS 可用；Windows 需要 PyMuPDF"),
+            ):
+                outputs = convert_pdf_to_yq_images(
+                    pdf_path,
+                    base / "work",
+                    log=logs.append,
+                )
+
+            self.assertEqual(outputs, [])
+            self.assertTrue(any("No module named 'fitz'" in item for item in logs))
+            self.assertTrue(any("Windows 需要 PyMuPDF" in item for item in logs))
 
     def test_finalize_pdf_batch_uses_default_tag_and_wash_names_for_single_color_style(self):
         with tempfile.TemporaryDirectory() as tmpdir:
