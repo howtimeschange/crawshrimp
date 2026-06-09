@@ -441,7 +441,10 @@ def render_pdf_pages_with_pymupdf_result(pdf_path: Path, output_dir: Path) -> tu
 
     try:
         output_dir.mkdir(parents=True, exist_ok=True)
-        doc = fitz.open(str(pdf_path))
+        try:
+            doc = fitz.open(stream=pdf_path.read_bytes(), filetype="pdf")
+        except TypeError:
+            doc = fitz.open(str(pdf_path))
         if doc.page_count < 1:
             doc.close()
             return [], "PyMuPDF 打开成功但 PDF 没有页面"
@@ -450,9 +453,14 @@ def render_pdf_pages_with_pymupdf_result(pdf_path: Path, output_dir: Path) -> tu
             page = doc.load_page(page_index)
             scale = _pdf_page_render_scale(page)
             pixmap = page.get_pixmap(matrix=fitz.Matrix(scale, scale), alpha=False)
-            page_suffix = "" if doc.page_count == 1 else f"_p{page_index + 1}"
-            target = ensure_unique_local_path(output_dir / f"{pdf_path.stem}{page_suffix}.png")
-            pixmap.save(str(target))
+            target = ensure_unique_local_path(output_dir / f"p{page_index + 1}.png")
+            try:
+                pixmap.save(str(target))
+            except Exception as save_exc:
+                try:
+                    target.write_bytes(pixmap.tobytes("png"))
+                except Exception as write_exc:
+                    raise RuntimeError(f"PyMuPDF 保存页面图片失败: {save_exc}; {write_exc}") from write_exc
             if target.is_file():
                 outputs.append(target)
         doc.close()
@@ -668,6 +676,7 @@ def convert_pdf_rows_to_yq_output_root(
             "style_code": style_code,
             "color_code": color_code,
             "style_folder": style_folder,
+            "work_key": f"pdf_{len(work_items) + 1:03d}",
         })
 
     converted_count = 0
@@ -683,7 +692,7 @@ def convert_pdf_rows_to_yq_output_root(
         crop_boxes = crop_boxes_for_pdf_type(pdf_type, run_params or {})
         converted = convert_pdf_to_yq_images(
             pdf_path,
-            pdf_work_dir / style_folder / safe_local_name(pdf_path.stem, "pdf"),
+            pdf_work_dir / item["work_key"],
             log,
             crop_boxes=crop_boxes,
         )
@@ -869,7 +878,7 @@ def finalize_pdf_batch_screenshot_outputs(
     )
     output_root = ensure_unique_local_dir(runtime_dir / package_base)
     output_root.mkdir(parents=True, exist_ok=True)
-    pdf_work_dir = ensure_unique_local_dir(runtime_dir / f"{output_root.name}_pdf_work")
+    pdf_work_dir = ensure_unique_local_dir(runtime_dir / "_pdf_work")
 
     converted_count = convert_pdf_rows_to_yq_output_root(
         data_rows=data_rows,

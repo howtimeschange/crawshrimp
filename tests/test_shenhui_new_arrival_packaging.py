@@ -431,6 +431,59 @@ class ShenhuiNewArrivalPackagingTests(unittest.TestCase):
                 self.assertIn("yq(1).png", names)
                 self.assertNotIn("_PDF待裁图/runtime-tag.pdf", names)
 
+    def test_finalize_prepare_upload_package_uses_short_pdf_work_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            pdf_file = runtime_dir / "runtime-tag.pdf"
+            rendered = base / "tag.png"
+            exported = base / "summary.xlsx"
+            pdf_file.write_bytes(b"%PDF-fake")
+            rendered.write_bytes(b"tag")
+            exported.write_bytes(b"excel")
+            work_dirs = []
+
+            def fake_convert(pdf_path, work_dir, log, *, crop_boxes=None):
+                work_dirs.append(Path(work_dir))
+                return [rendered]
+
+            with patch(
+                "core.shenhui_pdf_screenshot.convert_pdf_to_yq_images",
+                side_effect=fake_convert,
+            ), patch(
+                "core.shenhui_pdf_screenshot.extract_pdf_text",
+                return_value="",
+            ):
+                _finalize_shenhui_new_arrival_outputs(
+                    task_id="prepare_upload_package",
+                    data_rows=[{
+                        "输入款号": "208226133212",
+                        "输入编码": "208226133212",
+                        "素材来源": "静物图",
+                        "文件名": "208226133212__still__f2e2b3449a6c550fa3e6a9fab8c3bfcb37d1466b__208226133212吊牌.pdf",
+                        "下载结果": "已下载",
+                        "本地文件": str(pdf_file),
+                        "__shenhui_group_code": "208226133212",
+                        "__shenhui_asset_role": "pdf_yq",
+                        "__package_filename": "208226133212吊牌.pdf",
+                        "__pdf_path": str(pdf_file),
+                        "__pdf_type": "hang_tag",
+                        "__style_code": "208226133212",
+                    }],
+                    runtime_files=[str(pdf_file)],
+                    exported_files=[str(exported)],
+                    run_params={
+                        "package_name": "深绘上新图包_20260609_174655",
+                        "auto_zip_package": True,
+                    },
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+            self.assertEqual(work_dirs, [runtime_dir / "_pdf_work" / "pdf_001"])
+
     def test_finalize_prepare_upload_package_preserves_pdf_when_screenshot_unavailable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

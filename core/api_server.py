@@ -1692,7 +1692,7 @@ def _finalize_shenhui_new_arrival_outputs(
         f"深绘上新图包_{timestamp}",
     )
     package_root = _ensure_unique_local_dir(runtime_dir / package_base)
-    pdf_work_dir = _ensure_unique_local_dir(runtime_dir / f"{package_root.name}_pdf_work")
+    pdf_work_dir = _ensure_unique_local_dir(runtime_dir / "_pdf_work")
     auto_zip_package = _shenhui_auto_zip_enabled(run_params)
 
     successful_rows = []

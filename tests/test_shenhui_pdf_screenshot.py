@@ -1,6 +1,8 @@
 import tempfile
+import sys
 import unittest
 import zipfile
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ from core.shenhui_pdf_screenshot import (
     extract_style_color_code,
     finalize_pdf_batch_screenshot_outputs,
     parse_style_color_overrides,
+    render_pdf_pages_with_pymupdf_result,
 )
 
 
@@ -123,6 +126,50 @@ class ShenhuiPdfScreenshotTests(unittest.TestCase):
             self.assertEqual(outputs, [])
             self.assertTrue(any("No module named 'fitz'" in item for item in logs))
             self.assertTrue(any("Windows 需要 PyMuPDF" in item for item in logs))
+
+    def test_pymupdf_render_uses_stream_and_short_page_filenames(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            long_stem = "208226133212__still__f2e2b3449a6c550fa3e6a9fab8c3bfcb37d1466b__208226133212吊牌"
+            pdf_path = base / f"{long_stem}.pdf"
+            pdf_path.write_bytes(b"%PDF-fake")
+            saved_targets = []
+            open_calls = []
+
+            class FakePixmap:
+                def save(self, target):
+                    saved_targets.append(Path(target))
+                    Path(target).write_bytes(b"png")
+
+            class FakePage:
+                rect = SimpleNamespace(width=595, height=842)
+
+                def get_pixmap(self, matrix, alpha=False):
+                    return FakePixmap()
+
+            class FakeDoc:
+                page_count = 1
+
+                def load_page(self, index):
+                    return FakePage()
+
+                def close(self):
+                    pass
+
+            fake_fitz = SimpleNamespace(
+                Matrix=lambda x, y: (x, y),
+                open=lambda *args, **kwargs: (open_calls.append((args, kwargs)) or FakeDoc()),
+            )
+
+            with patch.dict(sys.modules, {"fitz": fake_fitz}):
+                outputs, error = render_pdf_pages_with_pymupdf_result(pdf_path, base / "rendered")
+
+            self.assertEqual(error, "")
+            self.assertEqual(outputs, saved_targets)
+            self.assertEqual(saved_targets[0].name, "p1.png")
+            self.assertNotIn(long_stem, str(saved_targets[0]))
+            self.assertEqual(open_calls[0][1]["stream"], b"%PDF-fake")
+            self.assertEqual(open_calls[0][1]["filetype"], "pdf")
 
     def test_finalize_pdf_batch_uses_default_tag_and_wash_names_for_single_color_style(self):
         with tempfile.TemporaryDirectory() as tmpdir:
