@@ -1980,23 +1980,27 @@ def _finalize_semir_tmall_material_match_buy_outputs(
 
     zip_path = None
     if successful_rows:
+        package_started_at = time.monotonic()
         for row, local_path in successful_rows:
             clean_filename = _safe_local_name(
                 row.get("__package_filename") or row.get("文件名") or local_path.name,
                 local_path.name,
             )
             target = package_root / clean_filename
-            _copy_file_to_unique_target(local_path, target)
+            _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
 
         zip_output_root = target_root or output_root
         zip_output_root.mkdir(parents=True, exist_ok=True)
         zip_path = _ensure_unique_local_path(zip_output_root / f"{package_root.name}.zip")
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_STORED) as archive:
             for file_path in package_root.rglob("*"):
                 if not file_path.is_file():
                     continue
                 archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
-        log(f"Semir Tmall match-buy package created: {zip_path}")
+        log(
+            "Semir Tmall match-buy package created: "
+            f"{zip_path} ({len(successful_rows)} files, {time.monotonic() - package_started_at:.1f}s)"
+        )
 
     runtime_refs = [*exported_refs]
     if zip_path:
@@ -2006,15 +2010,13 @@ def _finalize_semir_tmall_material_match_buy_outputs(
     if target_root:
         external_refs = []
 
-        if successful_rows and package_root.exists():
-            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
-            shutil.copytree(package_root, external_dir)
-            if zip_path and zip_path.exists() and _is_within_directory(zip_path, target_root):
+        if successful_rows and zip_path and zip_path.exists():
+            if _is_within_directory(zip_path, target_root):
                 external_refs.append(str(zip_path))
-            elif zip_path and zip_path.exists():
+            else:
                 copied_zip = _copy_file_to_unique_target(zip_path, target_root / zip_path.name)
                 external_refs.append(str(copied_zip))
-            log(f"Semir Tmall match-buy package copied to export folder: {external_dir}")
+            log(f"Semir Tmall match-buy ZIP ready in export folder: {target_root}")
 
         for file_path in exported_files or []:
             source = Path(str(file_path or "")).expanduser()

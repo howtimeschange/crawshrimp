@@ -100,7 +100,7 @@ tasks:
           - 备注
   - id: tmall_material_match_buy
     name: 森马-天猫素材批量爬取-搭配购
-    description: 读取款号与对应ID，在森马视觉模拍目录检索搭配购 3 系列素材图，按对应ID命名并打包导出
+    description: 读取款号、款色与对应ID，在森马视觉模拍目录按 SPU 或 SKC 维度检索搭配购 3 系列素材图，按对应ID命名并打包导出
     script: tmall-material-match-buy.js
     skip_auth: false
     params:
@@ -120,9 +120,19 @@ tasks:
         templates:
           - file: templates/tmall-material-match-buy-template.csv
             label: Excel / CSV 模板
-            description: 填写两列：款号、对应ID。脚本会用款号检索素材，并按对应ID（1）、对应ID（2）命名。
-            version: "2026.04.29.1"
-        hint: 必须包含“款号”“对应ID”两列；每行会单独搜索并下载命中的 3 系列图片。
+            description: 填写三列：款号、款色、对应ID。SPU 维度按款号检索；SKC 维度按“款号-款色”检索，并按对应ID（1）、对应ID（2）命名。
+            version: "2026.06.10.1"
+        hint: 必须包含“款号”“对应ID”两列；选择 SKC 维度时还必须填写“款色”。每行会单独搜索并下载命中的 3 系列图片。
+      - id: match_dimension
+        type: radio
+        label: 抓取维度
+        default: spu
+        options:
+          - value: spu
+            label: SPU 维度（款号）
+          - value: skc
+            label: SKC 维度（款色）
+        hint: SPU 按款号匹配所有款色文件夹；SKC 按“款号-款色”精准匹配单个款色文件夹。
       - id: cloud_path
         type: text
         label: 云盘路径
@@ -165,7 +175,10 @@ tasks:
         filename: "森马天猫搭配购素材爬取结果_{timestamp}.xlsx"
         columns:
           - 表格行号
+          - 抓取维度
           - 款号
+          - 款色
+          - 检索编码
           - 对应ID
           - 文件名
           - 原文件名

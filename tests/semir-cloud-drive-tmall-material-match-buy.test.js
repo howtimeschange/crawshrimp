@@ -63,6 +63,25 @@ test('normalizeMatchBuyJobs reads style code and target ID columns', async () =>
   assert.equal(result.invalidRows[0]['下载结果'], '已跳过')
 })
 
+test('normalizeMatchBuyJobs builds SKC search code when dimension is SKC', async () => {
+  const helpers = await loadExports()
+  const result = helpers.normalizeMatchBuyJobs([
+    { '款号': '109526101005', '款色': 333, '对应ID': '1054819907957' },
+    { '款号': '109526101101', '款色': '109526101101-00510', '对应ID': '1054579543720' },
+    { '款号': '109526101102', '款色': '', '对应ID': 'missing-color' },
+  ], 'skc')
+
+  assert.equal(result.jobs.length, 2)
+  assert.equal(result.invalidRows.length, 1)
+  assert.equal(result.jobs[0].style_code, '109526101005')
+  assert.equal(result.jobs[0].color_code, '00333')
+  assert.equal(result.jobs[0].search_code, '109526101005-00333')
+  assert.equal(result.jobs[0].match_dimension, 'skc')
+  assert.equal(result.jobs[1].search_code, '109526101101-00510')
+  assert.equal(result.invalidRows[0]['执行结果'], '参数缺失')
+  assert.equal(result.invalidRows[0]['备注'], '缺少款色')
+})
+
 test('matchesMatchBuyImageName accepts only 3-series image stems', async () => {
   const helpers = await loadExports()
 
@@ -182,6 +201,63 @@ test('collectMatchBuyAssets expands style folders and filters 3-series images by
   assert.equal(fetchCalls.some(url => url.includes('/fengcloud/1/file/ls')), true)
 })
 
+test('collectMatchBuyAssets can target a single SKC folder', async () => {
+  const searchBodies = []
+  const helpers = await loadExports({
+    fetch: async (url, init = {}) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        searchBodies.push(String(init.body || ''))
+        return jsonResponse({
+          total: 2,
+          list: [
+            {
+              dir: '1',
+              filename: '109526101005-00333',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/牛仔/109526101005-00333',
+            },
+            {
+              dir: '1',
+              filename: '109526101005-00510',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/牛仔/109526101005-00510',
+            },
+          ],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        return jsonResponse({
+          count: 1,
+          list: [{
+            dir: '0',
+            ext: 'jpg',
+            filename: '3.jpg',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/牛仔/109526101005-00333/3.jpg',
+            last_dateline: 1776268800,
+          }],
+        })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const result = await helpers.collectMatchBuyAssets(
+    '109526101005-00333',
+    {
+      mountId: '3283',
+      relativePath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍',
+    },
+    {
+      uploadTimeRange: helpers.normalizeUploadTimeRange({ start: '2026-04-01', end: '2026-04-30' }),
+      folderScanDepth: 1,
+    },
+  )
+
+  assert.equal(result.folderCount, 1)
+  assert.equal(result.items.length, 1)
+  assert.equal(result.items[0].fullpath.includes('109526101005-00333'), true)
+  assert.equal(searchBodies.some(body => body.includes('keyword=109526101005-00333')), true)
+})
+
 test('buildMatchBuyPlan names package files by corresponding ID with Chinese counters', async () => {
   const helpers = await loadExports({
     fetch: async (url) => {
@@ -244,6 +320,69 @@ test('buildMatchBuyPlan names package files by corresponding ID with Chinese cou
   assert.equal(plan.rows[1]['文件名'], '1018757615139（2）.jpg')
   assert.equal(plan.rows[0]['__package_filename'], '1018757615139（1）.jpg')
   assert.equal(plan.downloadItems[0].filename.endsWith('.jpg'), true)
+})
+
+test('buildMatchBuyPlan records SKC dimension and color in output rows', async () => {
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        return jsonResponse({
+          total: 1,
+          list: [{
+            dir: '1',
+            filename: '109526101005-00333',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/109526101005-00333',
+          }],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        return jsonResponse({
+          count: 1,
+          list: [{
+            dir: '0',
+            ext: 'jpg',
+            filename: '3.jpg',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍/109526101005-00333/3.jpg',
+            last_dateline: 1776268800,
+          }],
+        })
+      }
+      if (textUrl.includes('/fengcloud/2/file/info')) {
+        return jsonResponse({ uri: `https://download.example/${encodeURIComponent(textUrl)}` })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const plan = await helpers.buildMatchBuyPlan(
+    {
+      style_code: '109526101005',
+      color_code: '00333',
+      search_code: '109526101005-00333',
+      match_dimension: 'skc',
+      target_id: '1054819907957',
+      row_no: 2,
+    },
+    {
+      mountId: '3283',
+      relativePath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q2/模拍',
+    },
+    1,
+    1,
+    {
+      uploadTimeRange: helpers.normalizeUploadTimeRange({ start: '2026-04-01', end: '2026-04-30' }),
+      folderScanDepth: 1,
+    },
+  )
+
+  assert.equal(plan.rows.length, 1)
+  assert.equal(plan.rows[0]['抓取维度'], 'SKC')
+  assert.equal(plan.rows[0]['款号'], '109526101005')
+  assert.equal(plan.rows[0]['款色'], '00333')
+  assert.equal(plan.rows[0]['检索编码'], '109526101005-00333')
+  assert.equal(plan.rows[0]['文件名'], '1054819907957（1）.jpg')
+  assert.equal(plan.downloadItems[0].label.startsWith('109526101005-00333 / 1054819907957'), true)
 })
 
 test('finalizeRows does not consume download results for skipped input rows', async () => {

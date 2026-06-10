@@ -530,7 +530,7 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
                 self.assertTrue(any(name.endswith("搭配购素材包/1018757615139（2）.jpg") for name in names))
                 self.assertFalse(any("/109326124011/" in name for name in names))
 
-    def test_tmall_material_match_buy_removes_runtime_zip_after_copying_to_export_folder(self):
+    def test_tmall_material_match_buy_outputs_only_zip_and_excel_to_export_folder(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             runtime_dir = base / "runtime"
@@ -588,7 +588,7 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             self.assertEqual(len(result), 2)
             self.assertTrue(all(str(path).startswith(str(export_dir)) for path in result))
             self.assertTrue(any(Path(path).suffix == ".zip" for path in result))
-            self.assertTrue((export_dir / "搭配购外部素材包").is_dir())
+            self.assertFalse((export_dir / "搭配购外部素材包").exists())
             self.assertFalse(runtime_dir.exists())
 
     def test_orphaned_active_run_cleanup_removes_semir_runtime_artifacts(self):

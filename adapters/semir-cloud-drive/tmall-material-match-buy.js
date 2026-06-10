@@ -13,6 +13,7 @@
   const DOWNLOAD_RETRY_DELAY_MS = 1200
 
   const STYLE_CODE_ALIASES = ['款号', '货号', 'spu', 'stylecode', 'style_code']
+  const COLOR_CODE_ALIASES = ['款色', '款色号', '款色编码', '色号', '颜色编码', 'skc', 'colorcode', 'color_code']
   const TARGET_ID_ALIASES = ['对应ID', '对应id', '对应Id', '商品ID', '商品id', 'ID', 'id', '素材ID', '搭配购ID']
 
   function compact(value) {
@@ -48,6 +49,33 @@
       .replace(/\s+/g, ' ')
       .replace(/^_+|_+$/g, '')
     return text || fallback
+  }
+
+  function normalizeMatchDimension(rawValue) {
+    const value = compact(rawValue).toLowerCase()
+    return value === 'skc' ? 'skc' : 'spu'
+  }
+
+  function getMatchDimensionLabel(matchDimension) {
+    return normalizeMatchDimension(matchDimension) === 'skc' ? 'SKC' : 'SPU'
+  }
+
+  function normalizeSkcColorCode(colorCode) {
+    const color = compact(colorCode)
+    if (/^\d{1,4}$/.test(color)) return color.padStart(5, '0')
+    return color
+  }
+
+  function buildSkcCode(styleCode, colorCode) {
+    const style = compact(styleCode)
+    const color = normalizeSkcColorCode(colorCode)
+    if (!style || !color) return style || color
+    if (startsWithCodeToken(color, style)) return color
+    return `${style}-${color}`
+  }
+
+  function getJobSearchCode(job) {
+    return compact(job?.search_code || job?.style_color_code || job?.style_code)
   }
 
   function parseCloudPath(rawValue) {
@@ -309,13 +337,15 @@
     const suffix = `.${ext}`
     const itemId = String(item?.id || item?.hash || item?.filehash || itemIndex + 1)
     const stem = toSafeFilename(
-      `${toSafeFilename(job?.style_code, 'style')}__${toSafeFilename(job?.target_id, 'id')}__${itemId}__${getFileStem(item?.filename || '')}`,
+      `${toSafeFilename(getJobSearchCode(job), 'style')}__${toSafeFilename(job?.target_id, 'id')}__${itemId}__${getFileStem(item?.filename || '')}`,
       'download',
     )
     return stem.toLowerCase().endsWith(suffix.toLowerCase()) ? stem : `${stem}${suffix}`
   }
 
-  function normalizeMatchBuyJobs(rows) {
+  function normalizeMatchBuyJobs(rows, matchDimension = 'spu') {
+    const dimension = normalizeMatchDimension(matchDimension)
+    const dimensionLabel = getMatchDimensionLabel(dimension)
     const jobs = []
     const invalidRows = []
 
@@ -323,14 +353,27 @@
       const row = rows[index] || {}
       const rowNo = index + 2
       const styleCodeEntry = findRowValue(row, STYLE_CODE_ALIASES)
+      const colorCodeEntry = findRowValue(row, COLOR_CODE_ALIASES)
       const targetIdEntry = findRowValue(row, TARGET_ID_ALIASES)
       const styleCode = compact(styleCodeEntry?.value)
+      const colorCode = dimension === 'skc' ? normalizeSkcColorCode(colorCodeEntry?.value) : compact(colorCodeEntry?.value)
       const targetId = compact(targetIdEntry?.value)
+      const searchCode = dimension === 'skc' ? buildSkcCode(styleCode, colorCode) : styleCode
+      const missingReason = !styleCode
+        ? '缺少款号'
+        : dimension === 'skc' && !colorCode
+          ? '缺少款色'
+          : !targetId
+            ? '缺少对应ID'
+            : ''
 
-      if (!styleCode || !targetId) {
+      if (missingReason) {
         invalidRows.push({
           '表格行号': rowNo,
+          '抓取维度': dimensionLabel,
           '款号': styleCode,
+          '款色': colorCode,
+          '检索编码': searchCode,
           '对应ID': targetId,
           '文件名': '',
           '原文件名': '',
@@ -339,14 +382,17 @@
           '下载结果': '已跳过',
           '本地文件': '',
           '执行结果': '参数缺失',
-          '备注': !styleCode ? '缺少款号' : '缺少对应ID',
+          '备注': missingReason,
         })
         continue
       }
 
       jobs.push({
         row_no: rowNo,
+        match_dimension: dimension,
         style_code: styleCode,
+        color_code: colorCode,
+        search_code: searchCode,
         target_id: targetId,
       })
     }
@@ -559,13 +605,14 @@
     return { assets, errors }
   }
 
-  async function collectMatchBuyAssets(styleCode, sourceConfig, options = {}) {
+  async function collectMatchBuyAssets(searchCode, sourceConfig, options = {}) {
     const uploadTimeRange = options.uploadTimeRange || normalizeUploadTimeRange(options.upload_time_range)
-    const searchItems = await searchFiles(sourceConfig.mountId, styleCode)
+    const targetCode = compact(searchCode)
+    const searchItems = await searchFiles(sourceConfig.mountId, targetCode)
     const scoped = searchItems.filter(item => isWithinRelativePath(item?.fullpath, sourceConfig.relativePath))
-    const matchedFolders = scoped.filter(item => matchesFolderItemForCode(item, styleCode))
+    const matchedFolders = scoped.filter(item => matchesFolderItemForCode(item, targetCode))
     const directAssets = scoped
-      .filter(item => matchesAssetItemForCode(item, styleCode))
+      .filter(item => matchesAssetItemForCode(item, targetCode))
       .filter(item => isItemWithinUploadTimeRange(item, uploadTimeRange))
 
     const expandedAssets = []
@@ -610,18 +657,23 @@
   async function buildMatchBuyPlan(job, sourceConfig, jobIndex, totalJobs, options = {}) {
     const rows = []
     const downloadItems = []
-    const candidateResult = await collectMatchBuyAssets(job.style_code, sourceConfig, options)
+    const searchCode = getJobSearchCode(job)
+    const dimensionLabel = getMatchDimensionLabel(job.match_dimension)
+    const candidateResult = await collectMatchBuyAssets(searchCode, sourceConfig, options)
 
     if (!candidateResult.items.length) {
       const noteParts = [
         `搜索结果 ${candidateResult.searchCount} 条`,
-        `款号文件夹 ${candidateResult.folderCount} 个`,
+        `${dimensionLabel}文件夹 ${candidateResult.folderCount} 个`,
         `过滤后 0 张`,
       ]
       if (candidateResult.folderErrors.length) noteParts.push(`列目录失败 ${candidateResult.folderErrors.length} 个`)
       rows.push({
         '表格行号': job.row_no,
+        '抓取维度': dimensionLabel,
         '款号': job.style_code,
+        '款色': job.color_code || '',
+        '检索编码': searchCode,
         '对应ID': job.target_id,
         '文件名': '',
         '原文件名': '',
@@ -635,7 +687,10 @@
       for (const error of candidateResult.folderErrors.slice(0, 5)) {
         rows.push({
           '表格行号': job.row_no,
+          '抓取维度': dimensionLabel,
           '款号': job.style_code,
+          '款色': job.color_code || '',
+          '检索编码': searchCode,
           '对应ID': job.target_id,
           '文件名': '',
           '原文件名': '',
@@ -643,7 +698,7 @@
           '文件时间': '',
           '下载结果': '已跳过',
           '本地文件': '',
-          '执行结果': '款号文件夹列目录失败',
+          '执行结果': `${dimensionLabel}文件夹列目录失败`,
           '备注': error,
         })
       }
@@ -656,7 +711,10 @@
       const timestampMs = getItemTimestampMs(item)
       const baseRow = {
         '表格行号': job.row_no,
+        '抓取维度': dimensionLabel,
         '款号': job.style_code,
+        '款色': job.color_code || '',
+        '检索编码': searchCode,
         '对应ID': job.target_id,
         '文件名': packageFilename,
         '原文件名': String(item?.filename || ''),
@@ -692,7 +750,7 @@
         downloadItems.push({
           url: downloadUrl,
           filename: runtimeFilename,
-          label: `${job.style_code} / ${job.target_id} / ${item?.filename || runtimeFilename}`,
+          label: `${searchCode} / ${job.target_id} / ${item?.filename || runtimeFilename}`,
           headers: buildDownloadHeaders(),
           no_proxy: true,
         })
@@ -733,6 +791,9 @@
     Object.assign(testExports, {
       parseCloudPath,
       normalizeHeaderKey,
+      normalizeMatchDimension,
+      normalizeSkcColorCode,
+      buildSkcCode,
       normalizeMatchBuyJobs,
       matchesMatchBuyImageName,
       normalizeUploadTimeRange,
@@ -775,9 +836,10 @@
       }
 
       const inputRows = Array.isArray(params.input_file?.rows) ? params.input_file.rows : []
-      if (!inputRows.length) throw new Error('请上传包含“款号”“对应ID”的 Excel')
+      const matchDimension = normalizeMatchDimension(params.match_dimension)
+      if (!inputRows.length) throw new Error('请上传包含“款号”“款色”“对应ID”的 Excel')
 
-      const normalized = normalizeMatchBuyJobs(inputRows)
+      const normalized = normalizeMatchBuyJobs(inputRows, matchDimension)
       if (!normalized.jobs.length && !normalized.invalidRows.length) {
         throw new Error('Excel 中未读取到任务行')
       }
@@ -791,6 +853,7 @@
         cloud_path: cloudConfig.raw,
         relative_path: cloudConfig.relativePath,
         folder_hash: buildFolderHashRoute(mount.mountId, cloudConfig.relativePath),
+        match_dimension: matchDimension,
         upload_time_range: uploadTimeRange,
         folder_scan_depth: folderScanDepth,
         target_jobs: normalized.jobs,
@@ -799,7 +862,7 @@
         pending_download_items: [],
         total_rows: Math.max(inputRows.length, normalized.jobs.length),
         current_exec_no: normalized.jobs.length ? 1 : inputRows.length,
-        current_buyer_id: normalized.jobs[0]?.style_code || '',
+        current_buyer_id: getJobSearchCode(normalized.jobs[0]) || '',
         current_store: cloudConfig.relativePath || mount.mountName,
       })
     }
@@ -830,16 +893,16 @@
         ...shared,
         current_job: job,
         current_exec_no: jobIndex + 1,
-        current_buyer_id: job.style_code,
+        current_buyer_id: getJobSearchCode(job),
       })
     }
 
     if (phase === 'ensure_search') {
       const job = shared.current_job || {}
-      const styleCode = String(job.style_code || '').trim()
-      if (!styleCode) return nextPhase('plan_job', 0, shared)
+      const searchCode = getJobSearchCode(job)
+      if (!searchCode) return nextPhase('plan_job', 0, shared)
 
-      const targetHash = buildSearchHashRoute(shared.mount_id, styleCode)
+      const targetHash = buildSearchHashRoute(shared.mount_id, searchCode)
       if (targetHash && location.hash !== targetHash) {
         location.hash = targetHash
         return nextPhase('collect_job', 1500, {
@@ -885,7 +948,7 @@
         result_rows: allRows,
         pending_download_items: allDownloadItems,
         current_exec_no: jobIndex + 1,
-        current_buyer_id: job.style_code,
+        current_buyer_id: getJobSearchCode(job),
         current_store: shared.relative_path || shared.mount_name || '',
       }
 
@@ -896,7 +959,7 @@
           current_job: null,
           search_hash: '',
           current_exec_no: nextIndex + 1,
-          current_buyer_id: nextJob.style_code,
+          current_buyer_id: getJobSearchCode(nextJob),
         })
       }
 
