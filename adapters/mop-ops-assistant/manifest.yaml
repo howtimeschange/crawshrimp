@@ -1,0 +1,130 @@
+id: mop-ops-assistant
+name: MOP 运营助手
+version: 0.1.0
+author: codex
+description: "千牛素材中心运营自动化：按 Excel 批量把 KOL 素材图片提交到视频生产模板生成短视频"
+entry_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
+tab_match_prefixes:
+  - https://qn.taobao.com/
+  - https://myseller.taobao.com/
+  - https://h5api.m.taobao.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
+
+tasks:
+  - id: kol_material_img2video_batch
+    name: 批量KOL素材转短视频
+    description: 读取 Excel 商品 ID 和素材图片，调用千牛素材中心展示视频接口逐行提交生成任务。
+    script: kol-material-img2video-batch.js
+    entry_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
+    skip_auth: false
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel / 素材规划
+    auto_precheck_note: 执行前会先校验商品 ID 和素材路径；live 模式才会上传本地图片并提交展示视频生成任务。
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+        hint: 请先在 9222 端口 Chrome 登录千牛素材中心视频生产页。
+      - id: input_file
+        type: file_excel
+        label: KOL 短视频任务 Excel
+        required: true
+        templates:
+          - file: templates/kol-material-img2video-template.xlsx
+            label: Excel 填写模板
+            description: 包含“填写任务 / 字段说明”两张表；填写区带单元格线条，说明文案放在字段列表右侧。
+            version: "2026.06.10.4"
+          - file: templates/kol-material-img2video-template.csv
+            label: CSV 简版填写模板
+            description: 只包含展示视频批量生成需要的填写字段。
+            version: "2026.06.10.3"
+          - file: templates/kol-material-img2video-field-guide.csv
+            label: 字段与素材包说明
+            description: 说明字段含义、素材根目录摆放方式和手动多选图片命名规则。
+            version: "2026.06.10.3"
+        hint: 必填“商品ID”。“素材图片”可留空；留空时请在下方选择素材根目录或手动多选素材图片。
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做预检
+          - value: live
+            label: 上传并提交生成
+        hint: 预检不会提交；live 会逐行上传本地图片并调用千牛展示视频生成接口。
+      - id: material_root
+        type: directory
+        label: 素材根目录
+        required: false
+        placeholder: "例如：/Users/you/Desktop/KOL素材包"
+        hint: 可选。未在 Excel 写素材图片时，默认按“素材根目录/商品ID/01.jpg、02.jpg...”读取。
+      - id: material_images
+        type: file_images
+        label: 手动选择素材图片
+        required: false
+        hint: 可选。多选图片时，文件名请以商品ID开头，如 728857154429_01.jpg，或放在商品ID同名文件夹下。
+      - id: default_material_count
+        type: number
+        label: 默认素材张数
+        default: 3
+        min: 1
+        max: 12
+        step: 1
+        ui_span: third
+        hint: 使用素材根目录且单行未填“素材张数”时，按 01.jpg 开始生成这些本地路径。
+      - id: ratio
+        type: select
+        label: 默认比例
+        default: "3:4"
+        ui_span: third
+        options:
+          - value: "3:4"
+            label: "3:4"
+          - value: "1:1"
+            label: "1:1"
+          - value: "9:16"
+            label: "9:16"
+          - value: "16:9"
+            label: "16:9"
+        hint: 展示视频会使用此比例；单行“比例”列可覆盖。
+      - id: use_item_pics_fallback
+        type: checkbox
+        label: 缺少素材时使用商品主图兜底
+        default: false
+        hint: 勾选后，单行没有素材图片时会读取千牛商品素材接口中的商品图片作为兜底。
+      - id: submit_delay_ms
+        type: number
+        label: 每个商品提交间隔毫秒
+        default: 2500
+        min: 0
+        max: 30000
+        step: 500
+        ui_span: third
+        hint: 控制批量提交节奏，避免过快触发平台限流。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP批量KOL素材转短视频结果_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 商品ID
+          - 商品标题
+          - 比例
+          - 素材来源
+          - 素材数量
+          - 素材明细
+          - 提交任务ID
+          - 执行结果
+          - 备注
+          - 抓取时间
