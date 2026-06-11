@@ -19,5 +19,6 @@ data/
 logs/
 *.xlsx
 !adapters/dasen-ops-assistant/templates/showcase-batch-template.xlsx
+!adapters/mop-ops-assistant/templates/search-recommend-material-template.xlsx
 *.log
 .env

@@ -2,7 +2,7 @@ id: mop-ops-assistant
 name: MOP 运营助手
 version: 0.1.0
 author: codex
-description: "千牛素材中心运营自动化：按 Excel 批量把 KOL 素材图片提交到视频生产模板生成短视频"
+description: "千牛素材中心运营自动化：按 Excel 批量提交 KOL 短视频生成任务，并发布搜推图文素材"
 entry_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
 tab_match_prefixes:
   - https://qn.taobao.com/
@@ -14,6 +14,114 @@ auth:
   login_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
 
 tasks:
+  - id: search_recommend_material_publish
+    name: 搜推素材
+    description: 读取 Excel 商品 ID、图片、标题和内容描述，调用千牛素材中心搜推素材图文发布接口逐行提交。
+    script: search-recommend-material-publish.js
+    entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend
+    skip_auth: false
+    execution_ui_mode: precheck_before_live
+    validation_only_label: 仅校验 Excel / 素材规划
+    auto_precheck_note: 执行前会先校验商品 ID、标题、内容描述和素材路径；live 模式才会上传本地图片并发布搜推图文素材。
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+        hint: 请先在 9222 端口 Chrome 登录千牛素材中心搜推素材页。
+      - id: input_file
+        type: file_excel
+        label: 搜推素材任务 Excel
+        required: true
+        templates:
+          - file: templates/search-recommend-material-template.xlsx
+            label: Excel 填写模板
+            description: 包含“填写任务 / 字段说明”两张表；预先填写商品 ID、素材图片、添加标题和内容描述。
+            version: "2026.06.10.1"
+          - file: templates/search-recommend-material-template.csv
+            label: CSV 简版填写模板
+            description: 只包含搜推图文素材发布需要的填写字段。
+            version: "2026.06.10.1"
+          - file: templates/search-recommend-material-field-guide.csv
+            label: 字段与素材包说明
+            description: 说明标题、内容描述、图片数量、素材根目录和手动多选图片命名规则。
+            version: "2026.06.10.1"
+        hint: 必填“商品ID”“添加标题”“内容描述”。素材图片可写在 Excel，也可在下方选择素材根目录或手动多选图片。
+      - id: execute_mode
+        type: radio
+        label: 运行方式
+        default: plan
+        options:
+          - value: plan
+            label: 先做预检
+          - value: live
+            label: 上传并发布
+        hint: 预检不会发布；live 会逐行上传本地图片并调用千牛搜推素材发布接口。
+      - id: material_root
+        type: directory
+        label: 素材根目录
+        required: false
+        placeholder: "例如：/Users/you/Desktop/搜推素材包"
+        hint: 可选。未在 Excel 写素材图片时，默认按“素材根目录/商品ID/01.jpg、02.jpg、03.jpg...”读取。
+      - id: material_images
+        type: file_images
+        label: 手动选择素材图片
+        required: false
+        hint: 可选。多选图片时，文件名请以商品ID开头，如 1051467606993_01.jpg，或放在商品ID同名文件夹下。
+      - id: default_material_count
+        type: number
+        label: 默认素材张数
+        default: 3
+        min: 3
+        max: 9
+        step: 1
+        ui_span: third
+        hint: 使用素材根目录且单行未填“素材张数”时，按 01.jpg 开始生成这些本地路径；搜推图文要求至少 3 张、最多 9 张。
+      - id: crop_ratio
+        type: select
+        label: 自动裁剪比例
+        default: "3:4"
+        ui_span: third
+        options:
+          - value: "3:4"
+            label: "3:4"
+          - value: "1:1"
+            label: "1:1"
+        hint: 上传前会自动居中裁剪到该比例；单行“裁剪比例”列可覆盖。
+      - id: submit_delay_ms
+        type: number
+        label: 每个商品提交间隔毫秒
+        default: 2500
+        min: 0
+        max: 30000
+        step: 500
+        ui_span: third
+        hint: 控制批量提交节奏，避免过快触发平台限流。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP搜推素材发布结果_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 商品ID
+          - 商品标题
+          - 添加标题
+          - 内容描述
+          - 裁剪比例
+          - 素材来源
+          - 素材数量
+          - 素材明细
+          - 发布内容ID
+          - 执行结果
+          - 备注
+          - 抓取时间
+
   - id: kol_material_img2video_batch
     name: 批量KOL素材转短视频
     description: 读取 Excel 商品 ID 和素材图片，调用千牛素材中心展示视频接口逐行提交生成任务。
