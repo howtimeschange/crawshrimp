@@ -171,12 +171,17 @@ function kocListing(root = '/Users/test/koc4') {
     'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/03.jpg',
     'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/01.jpg',
     'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/02.jpg',
+    'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/01.jpg',
+    'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/02.jpg',
     'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/买家秀&逛逛/Tobiko/ignore-buyer-show.jpg',
     'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/视频/主图/AHOYECHO/ignore-video-folder.jpg',
     'MOP655137Z4106Z+656939D1213Y+655130Z4110Z/视频/主图/AHOYECHO/ignore-video.mp4',
     'MOP连衣裙套装655230Q5904Z/图片/主图/Sia/01.jpg',
     'MOP连衣裙套装655230Q5904Z/图片/主图/Sia/02.png',
     'MOP连衣裙套装655230Q5904Z/图片(1)/主图/Sia/03.webp',
+    'MOP连衣裙套装655230Q5904Z/图片/主图/Tina/01.jpg',
+    'MOP连衣裙套装655230Q5904Z/图片/主图/Tina/02.jpg',
+    'MOP连衣裙套装655230Q5904Z/图片/主图/Tina/03.jpg',
   ]
   return {
     root,
@@ -268,11 +273,14 @@ test('uses KOC main image package listing by merchant code before root conventio
   const listing = kocListing()
   const grouped = helpers.groupKocMainImagesByMerchantCode(listing, listing.root)
 
-  assert.equal(grouped['655137Z4106Z'].length, 3)
-  assert.equal(grouped['656939D1213Y'].length, 3)
-  assert.equal(grouped['655230Q5904Z'].length, 3)
+  assert.equal(grouped['655137Z4106Z'].length, 5)
+  assert.equal(grouped['656939D1213Y'].length, 5)
+  assert.equal(grouped['655230Q5904Z'].length, 6)
   assert.equal(grouped['655137Z4106Z'].some(path => path.includes('买家秀')), false)
   assert.equal(grouped['655137Z4106Z'].some(path => path.includes('/视频/')), false)
+
+  const groupDetails = helpers.groupKocMainImageGroupsByMerchantCode(listing, listing.root)
+  assert.deepEqual(plain(groupDetails['656939D1213Y'].map(group => group.creator)), ['AHOYECHO', 'Bella'])
 
   const parsed = helpers.normalizeJobs([
     { 商品ID: '', 商家编码: '656939D1213Y', 素材张数: '2' },
@@ -283,11 +291,66 @@ test('uses KOC main image package listing by merchant code before root conventio
   })
 
   assert.equal(parsed.invalidRows.length, 0, JSON.stringify(parsed.invalidRows))
-  assert.equal(parsed.jobs.length, 1)
+  assert.equal(parsed.jobs.length, 2)
   assert.equal(parsed.jobs[0].materialSource, '达人图包主图')
+  assert.equal(parsed.jobs[0].creator, 'AHOYECHO')
+  assert.equal(parsed.jobs[1].creator, 'Bella')
   assert.deepEqual(plain(parsed.jobs[0].materialRefs), [
     `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/03.jpg`,
     `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/01.jpg`,
+  ])
+  assert.deepEqual(plain(parsed.jobs[1].materialRefs), [
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/01.jpg`,
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/02.jpg`,
+  ])
+})
+
+test('assigns KOC creator packages to duplicate merchant rows in order', async () => {
+  const helpers = await loadExports()
+  const listing = kocListing()
+  const parsed = helpers.normalizeJobs([
+    { 商品ID: '', 商家编码: '656939D1213Y', 素材张数: '2', 提示词: '第一条提示词' },
+    { 商品ID: '', 商家编码: '656939D1213Y', 素材张数: '2', 提示词: '第二条提示词' },
+  ], {
+    materialRoot: listing.root,
+    materialRootFiles: listing,
+    defaultMaterialCount: 3,
+  })
+
+  assert.equal(parsed.invalidRows.length, 0, JSON.stringify(parsed.invalidRows))
+  assert.equal(parsed.jobs.length, 2)
+  assert.equal(parsed.jobs[0].creator, 'AHOYECHO')
+  assert.equal(parsed.jobs[0].prompt, '第一条提示词')
+  assert.equal(parsed.jobs[1].creator, 'Bella')
+  assert.equal(parsed.jobs[1].prompt, '第二条提示词')
+  assert.deepEqual(plain(parsed.jobs[0].materialRefs), [
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/03.jpg`,
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/AHOYECHO/01.jpg`,
+  ])
+  assert.deepEqual(plain(parsed.jobs[1].materialRefs), [
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/01.jpg`,
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/02.jpg`,
+  ])
+})
+
+test('assigns KOC package by explicit creator column when duplicate rows are out of order', async () => {
+  const helpers = await loadExports()
+  const listing = kocListing()
+  const parsed = helpers.normalizeJobs([
+    { 商品ID: '', 商家编码: '656939D1213Y', 达人: 'Bella', 素材张数: '2', 提示词: '指定 Bella' },
+  ], {
+    materialRoot: listing.root,
+    materialRootFiles: listing,
+    defaultMaterialCount: 3,
+  })
+
+  assert.equal(parsed.invalidRows.length, 0, JSON.stringify(parsed.invalidRows))
+  assert.equal(parsed.jobs.length, 1)
+  assert.equal(parsed.jobs[0].creator, 'Bella')
+  assert.equal(parsed.jobs[0].prompt, '指定 Bella')
+  assert.deepEqual(plain(parsed.jobs[0].materialRefs), [
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/01.jpg`,
+    `${listing.root}/MOP655137Z4106Z+656939D1213Y+655130Z4110Z/图片/主图/Bella/02.jpg`,
   ])
 })
 
@@ -785,12 +848,46 @@ test('search recommend uses KOC main image package listing by merchant code', as
   })
 
   assert.equal(parsed.invalidRows.length, 0, JSON.stringify(parsed.invalidRows))
-  assert.equal(parsed.jobs.length, 1)
+  assert.equal(parsed.jobs.length, 2)
   assert.equal(parsed.jobs[0].materialSource, '达人图包主图')
+  assert.equal(parsed.jobs[0].creator, 'Sia')
+  assert.equal(parsed.jobs[1].creator, 'Tina')
   assert.deepEqual(plain(parsed.jobs[0].materialRefs), [
     `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Sia/01.jpg`,
     `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Sia/02.png`,
     `${listing.root}/MOP连衣裙套装655230Q5904Z/图片(1)/主图/Sia/03.webp`,
+  ])
+  assert.deepEqual(plain(parsed.jobs[1].materialRefs), [
+    `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Tina/01.jpg`,
+    `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Tina/02.jpg`,
+    `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Tina/03.jpg`,
+  ])
+})
+
+test('search recommend duplicate merchant rows map to different KOC creators and keep row copy', async () => {
+  const helpers = await loadSearchRecommendExports()
+  const listing = kocListing()
+  const parsed = helpers.normalizeJobs([
+    { 商家编码: '655230Q5904Z', 素材张数: '3', 添加标题: '标题一', 内容描述: '描述一'.repeat(20), 裁剪比例: '3:4' },
+    { 商家编码: '655230Q5904Z', 素材张数: '3', 添加标题: '标题二', 内容描述: '描述二'.repeat(20), 裁剪比例: '1:1' },
+  ], {
+    materialRoot: listing.root,
+    materialRootFiles: listing,
+    defaultMaterialCount: 3,
+  })
+
+  assert.equal(parsed.invalidRows.length, 0, JSON.stringify(parsed.invalidRows))
+  assert.equal(parsed.jobs.length, 2)
+  assert.equal(parsed.jobs[0].creator, 'Sia')
+  assert.equal(parsed.jobs[0].title, '标题一')
+  assert.equal(parsed.jobs[0].cropRatio, '3:4')
+  assert.equal(parsed.jobs[1].creator, 'Tina')
+  assert.equal(parsed.jobs[1].title, '标题二')
+  assert.equal(parsed.jobs[1].cropRatio, '1:1')
+  assert.deepEqual(plain(parsed.jobs[1].materialRefs), [
+    `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Tina/01.jpg`,
+    `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Tina/02.jpg`,
+    `${listing.root}/MOP连衣裙套装655230Q5904Z/图片/主图/Tina/03.jpg`,
   ])
 })
 

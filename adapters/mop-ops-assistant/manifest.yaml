@@ -41,17 +41,17 @@ tasks:
         templates:
           - file: templates/search-recommend-material-template.xlsx
             label: Excel 填写模板
-            description: 包含“填写任务 / 字段说明”两张表；支持填写商品 ID 或商家编码、素材图片、添加标题和内容描述。
-            version: "2026.06.11.2"
+            description: 包含“填写任务 / 字段说明”两张表；支持商品 ID 或商家编码、达人、素材图片、添加标题和内容描述。
+            version: "2026.06.11.4"
           - file: templates/search-recommend-material-template.csv
             label: CSV 简版填写模板
-            description: 只包含搜推图文素材发布需要的填写字段，支持商品 ID 或商家编码二选一。
-            version: "2026.06.11.2"
+            description: 只包含搜推图文素材发布需要的填写字段，支持商品 ID 或商家编码二选一，可选达人。
+            version: "2026.06.11.4"
           - file: templates/search-recommend-material-field-guide.csv
             label: 字段与素材包说明
-            description: 说明商家编码解析、标题、内容描述、图片数量、业务图包和手动多选图片命名规则。
-            version: "2026.06.11.2"
-        hint: “商品ID”和“商家编码”二选一；商品ID为空时会按商家编码去千牛“我的商品”解析。素材图片可写在 Excel，也可在下方选择素材根目录（支持业务图包）或手动多选图片。
+            description: 说明商家编码解析、达人分配、标题、内容描述、图片数量、业务图包和手动多选图片命名规则。
+            version: "2026.06.11.4"
+        hint: “商品ID”和“商家编码”二选一；商品ID为空时会按商家编码去千牛“我的商品”解析。重复商家编码多行会按顺序分配多个达人图片包，也可填写“达人”精确指定。
       - id: execute_mode
         type: radio
         label: 运行方式
@@ -82,7 +82,7 @@ tasks:
         max: 9
         step: 1
         ui_span: third
-        hint: 使用素材根目录且单行未填“素材张数”时生效；业务图包按顺序取 图片/主图/达人 下前 N 张；搜推图文要求至少 3 张、最多 9 张。
+        hint: 使用素材根目录且单行未填“素材张数”时生效；单行同款会按每个达人文件夹各生成一条内容；重复同款多行会按行顺序分配达人包，每条取该达人前 N 张；搜推图文要求至少 3 张、最多 9 张。
       - id: crop_ratio
         type: select
         label: 自动裁剪比例
@@ -112,6 +112,7 @@ tasks:
           - 表格行号
           - 商品ID
           - 商家编码
+          - 达人
           - 商品标题
           - 添加标题
           - 内容描述
@@ -151,17 +152,17 @@ tasks:
         templates:
           - file: templates/kol-material-img2video-template.xlsx
             label: Excel 填写模板
-            description: 包含“填写任务 / 字段说明”两张表；支持填写商品 ID 或商家编码。
-            version: "2026.06.11.2"
+            description: 包含“填写任务 / 字段说明”两张表；支持填写商品 ID 或商家编码，可选达人。
+            version: "2026.06.11.4"
           - file: templates/kol-material-img2video-template.csv
             label: CSV 简版填写模板
-            description: 只包含展示视频批量生成需要的填写字段，支持商品 ID 或商家编码二选一。
-            version: "2026.06.11.2"
+            description: 只包含展示视频批量生成需要的填写字段，支持商品 ID 或商家编码二选一，可选达人。
+            version: "2026.06.11.4"
           - file: templates/kol-material-img2video-field-guide.csv
             label: 字段与素材包说明
-            description: 说明商家编码解析、业务图包摆放方式和手动多选图片命名规则。
-            version: "2026.06.11.2"
-        hint: “商品ID”和“商家编码”二选一；商品ID为空时会按商家编码去千牛“我的商品”解析。“素材图片”可留空；留空时请在下方选择素材根目录（支持业务图包）或手动多选素材图片。
+            description: 说明商家编码解析、达人分配、业务图包摆放方式和手动多选图片命名规则。
+            version: "2026.06.11.4"
+        hint: “商品ID”和“商家编码”二选一；商品ID为空时会按商家编码去千牛“我的商品”解析。重复商家编码多行会按顺序分配多个达人图片包，也可填写“达人”精确指定。
       - id: execute_mode
         type: radio
         label: 运行方式
@@ -192,7 +193,7 @@ tasks:
         max: 12
         step: 1
         ui_span: third
-        hint: 使用素材根目录且单行未填“素材张数”时生效；业务图包按顺序取 图片/主图/达人 下前 N 张，未匹配时兼容 01.jpg 旧规则。
+        hint: 使用素材根目录且单行未填“素材张数”时生效；单行同款会按每个达人文件夹各生成一条内容；重复同款多行会按行顺序分配达人包，每条取该达人前 N 张；未匹配时兼容 01.jpg 旧规则。
       - id: ratio
         type: select
         label: 默认比例
@@ -231,6 +232,7 @@ tasks:
           - 表格行号
           - 商品ID
           - 商家编码
+          - 达人
           - 商品标题
           - 比例
           - 素材来源

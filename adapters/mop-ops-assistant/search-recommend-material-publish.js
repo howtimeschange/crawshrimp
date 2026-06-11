@@ -22,6 +22,8 @@
   const DESCRIPTION_MAX = 1000
   const PRODUCT_ID_ALIASES = ['商品ID', '商品id', 'itemId', 'item_id', '商品链接']
   const MERCHANT_CODE_ALIASES = ['商家编码', '商家编号', '商家货号', '商家SKU编码', '商家SKU', '货号', '编码', 'outerId', 'outer_id', 'skuCode', 'sku_code']
+  const CREATOR_ALIASES = ['达人', '达人名称', '达人文件夹', '图片包', '图片包名称', 'KOL', 'kol', 'creator']
+  const MATERIAL_IMAGE_ALIASES = ['素材图片', '搜推图片', '图片', '图片路径', '图片URL', 'image_urls', 'images']
   const KOC_MERCHANT_CODE_RE = /\d{6}[A-Z]\d{4}[A-Z]/gi
 
   function cleanText(value) {
@@ -80,6 +82,14 @@
 
   function normalizeMerchantCode(value) {
     return compact(value)
+  }
+
+  function normalizeCreatorName(value) {
+    return cleanText(value)
+  }
+
+  function normalizeCreatorKey(value) {
+    return compact(value).toLowerCase()
   }
 
   function isRemoteImage(value) {
@@ -398,7 +408,7 @@
     return { codes, creator, fileName, topFolder }
   }
 
-  function groupKocMainImagesByMerchantCode(materialRootFiles, root) {
+  function groupKocMainImageGroupsByMerchantCode(materialRootFiles, root) {
     const grouped = {}
     const files = normalizeDirectoryListingFiles(materialRootFiles)
       .map(file => ({ file, meta: findKocMainImageMeta(file, materialRootFiles?.root || root) }))
@@ -413,13 +423,35 @@
     for (const item of files) {
       for (const code of item.meta.codes) {
         grouped[code] = grouped[code] || []
-        grouped[code].push(item.file.path)
+        const key = `${item.meta.topFolder}\n${item.meta.creator}`
+        let group = grouped[code].find(entry => entry.key === key)
+        if (!group) {
+          group = {
+            key,
+            topFolder: item.meta.topFolder,
+            creator: item.meta.creator,
+            refs: [],
+          }
+          grouped[code].push(group)
+        }
+        group.refs.push(item.file.path)
       }
     }
     Object.keys(grouped).forEach(code => {
-      grouped[code] = [...new Set(grouped[code])]
+      grouped[code] = grouped[code]
+        .map(group => ({ ...group, refs: [...new Set(group.refs)] }))
+        .filter(group => group.refs.length)
     })
     return grouped
+  }
+
+  function groupKocMainImagesByMerchantCode(materialRootFiles, root) {
+    const grouped = groupKocMainImageGroupsByMerchantCode(materialRootFiles, root)
+    const flattened = {}
+    Object.entries(grouped).forEach(([code, groups]) => {
+      flattened[code] = [...new Set(groups.flatMap(group => group.refs || []))]
+    })
+    return flattened
   }
 
   function groupSelectedImagesByProduct(paths) {
@@ -454,29 +486,113 @@
     })
   }
 
-  function selectedRefsForKeyMap(map, keys) {
-    const refs = []
+  function selectedValuesForKeyMap(map, keys, cloneValue) {
+    const values = []
     const seen = new Set()
     for (const key of keys || []) {
       const normalized = normalizeMerchantCode(key)
       const lookupKeys = [...new Set([normalized, normalized.toUpperCase()].filter(Boolean))]
       for (const lookupKey of lookupKeys) {
-        for (const ref of map?.[lookupKey] || []) {
-          const refKey = cleanText(ref)
-          if (!refKey || seen.has(refKey)) continue
-          seen.add(refKey)
-          refs.push(ref)
+        for (const value of map?.[lookupKey] || []) {
+          const valueKey = cleanText(value?.key || value)
+          if (!valueKey || seen.has(valueKey)) continue
+          seen.add(valueKey)
+          values.push(cloneValue ? cloneValue(value) : value)
         }
       }
     }
-    return refs
+    return values
+  }
+
+  function selectedRefsForKeyMap(map, keys) {
+    return selectedValuesForKeyMap(map, keys)
+  }
+
+  function selectedKocGroupsForKeyMap(map, keys, materialCount) {
+    return selectedValuesForKeyMap(map, keys, group => ({
+      topFolder: group.topFolder || '',
+      creator: group.creator || '',
+      refs: [...new Set(group.refs || [])].slice(0, materialCount),
+    })).filter(group => group.refs.length)
+  }
+
+  function hasKocGroupsForMerchant(map, merchantCode) {
+    return selectedValuesForKeyMap(map, [merchantCode]).length > 0
+  }
+
+  function buildKocAssignmentKey(row, selectedByProduct, kocMainImageGroupsByCode) {
+    const productId = normalizeProductId(getRowValue(row, PRODUCT_ID_ALIASES))
+    const merchantCode = normalizeMerchantCode(getRowValue(row, MERCHANT_CODE_ALIASES))
+    if (!merchantCode || !hasKocGroupsForMerchant(kocMainImageGroupsByCode, merchantCode)) return ''
+    const refs = splitMultiValues(getRowValue(row, MATERIAL_IMAGE_ALIASES))
+    const selected = selectedRefsForKeyMap(selectedByProduct, [productId, merchantCode])
+    if (refs.length || selected.length) return ''
+    return merchantCode.toUpperCase()
+  }
+
+  function buildKocAssignmentCounts(rows, selectedByProduct, kocMainImageGroupsByCode) {
+    const counts = {}
+    for (const row of rows || []) {
+      if (!hasTaskFieldContent(row) || isInstructionOnlyRow(row)) continue
+      const key = buildKocAssignmentKey(row, selectedByProduct, kocMainImageGroupsByCode)
+      if (!key) continue
+      counts[key] = (counts[key] || 0) + 1
+    }
+    return counts
+  }
+
+  function buildMaterialVariants(material, context = {}) {
+    if (!material.kocGroups?.length) {
+      return [{
+        refs: material.refs,
+        creator: material.creator || '',
+        materialTopFolder: '',
+        source: material.source,
+      }]
+    }
+
+    const requestedCreator = normalizeCreatorName(context.requestedCreator)
+    const requestedCreatorKey = normalizeCreatorKey(requestedCreator)
+    let groups = material.kocGroups
+    if (requestedCreatorKey) {
+      groups = groups.filter(group => normalizeCreatorKey(group.creator) === requestedCreatorKey)
+      if (!groups.length) {
+        return [{
+          refs: [],
+          creator: requestedCreator,
+          materialTopFolder: '',
+          source: material.source,
+          assignmentError: `未找到达人图片包：${requestedCreator}`,
+        }]
+      }
+    } else if (Number(context.duplicateCount || 0) > 1) {
+      const index = Number(context.duplicateIndex || 0)
+      const group = groups[index]
+      if (!group) {
+        return [{
+          refs: [],
+          creator: '',
+          materialTopFolder: '',
+          source: material.source,
+          assignmentError: `重复商家编码第 ${index + 1} 行未分配到达人图片包：仅找到 ${groups.length} 个达人图片包`,
+        }]
+      }
+      groups = [group]
+    }
+
+    return groups.map(group => ({
+      refs: group.refs,
+      creator: group.creator,
+      materialTopFolder: group.topFolder,
+      source: material.source,
+    }))
   }
 
   function normalizeMaterialRefs(row, options) {
     const productId = normalizeProductId(getRowValue(row, PRODUCT_ID_ALIASES))
     const merchantCode = normalizeMerchantCode(getRowValue(row, MERCHANT_CODE_ALIASES))
     const materialKey = productId || merchantCode
-    const refs = splitMultiValues(getRowValue(row, ['素材图片', '搜推图片', '图片', '图片路径', '图片URL', 'image_urls', 'images']))
+    const refs = splitMultiValues(getRowValue(row, MATERIAL_IMAGE_ALIASES))
     const selected = selectedRefsForKeyMap(options.selectedByProduct, [productId, merchantCode])
     if (refs.length || selected.length) {
       return {
@@ -486,8 +602,15 @@
     }
 
     const materialCount = parseInteger(getRowValue(row, ['素材张数', '图片张数', 'material_count']), parseInteger(options.defaultMaterialCount, MIN_IMAGE_COUNT))
-    const kocRefs = selectedRefsForKeyMap(options.kocMainImagesByCode, [merchantCode]).slice(0, materialCount)
-    if (kocRefs.length) return { refs: kocRefs, source: '达人图包主图' }
+    const kocGroups = selectedKocGroupsForKeyMap(options.kocMainImageGroupsByCode, [merchantCode], materialCount)
+    if (kocGroups.length) {
+      return {
+        refs: kocGroups[0].refs,
+        source: '达人图包主图',
+        creator: kocGroups[0].creator,
+        kocGroups,
+      }
+    }
 
     const rootRefs = buildRootMaterialPaths(options.materialRoot, materialKey, materialCount)
     if (rootRefs.length) return { refs: rootRefs, source: '素材根目录' }
@@ -499,7 +622,8 @@
     const taskFieldGroups = [
       PRODUCT_ID_ALIASES,
       MERCHANT_CODE_ALIASES,
-      ['素材图片', '搜推图片', '图片', '图片路径', '图片URL', 'image_urls', 'images'],
+      CREATOR_ALIASES,
+      MATERIAL_IMAGE_ALIASES,
       ['素材张数', '图片张数', 'material_count'],
       ['添加标题', '标题', 'title'],
       ['内容描述', '描述', '正文', 'description', 'content'],
@@ -532,10 +656,12 @@
   function normalizeJobs(rows, options = {}) {
     const selectedPaths = normalizeSelectedImagePaths(options.materialImages || {})
     const selectedByProduct = groupSelectedImagesByProduct(selectedPaths)
-    const kocMainImagesByCode = groupKocMainImagesByMerchantCode(options.materialRootFiles || {}, options.materialRoot)
+    const kocMainImageGroupsByCode = groupKocMainImageGroupsByMerchantCode(options.materialRootFiles || {}, options.materialRoot)
     const jobs = []
     const invalidRows = []
     const sourceRows = Array.isArray(rows) ? rows : []
+    const kocAssignmentCounts = buildKocAssignmentCounts(sourceRows, selectedByProduct, kocMainImageGroupsByCode)
+    const kocAssignmentSeen = {}
     sourceRows.forEach((row, index) => {
       const rowNo = index + 2
       if (!hasTaskFieldContent(row) || isInstructionOnlyRow(row)) return
@@ -547,7 +673,7 @@
       const remark = cleanText(getRowValue(row, ['备注', '说明', 'remark']))
       const material = normalizeMaterialRefs(row, {
         selectedByProduct,
-        kocMainImagesByCode,
+        kocMainImageGroupsByCode,
         materialRoot: options.materialRoot,
         defaultMaterialCount: options.defaultMaterialCount,
       })
@@ -557,32 +683,47 @@
       if (titleError) errors.push(titleError)
       const descriptionError = validateDescription(description)
       if (descriptionError) errors.push(descriptionError)
-      if (material.refs.length < MIN_IMAGE_COUNT) errors.push(`素材图片至少 ${MIN_IMAGE_COUNT} 张`)
-      if (material.refs.length > MAX_IMAGE_COUNT) errors.push(`素材图片最多 ${MAX_IMAGE_COUNT} 张`)
-      const localRefs = material.refs.filter(ref => !isRemoteImage(ref))
-      const badRefs = localRefs.filter(ref => !isImagePath(ref))
-      if (badRefs.length) errors.push(`素材图片扩展名不支持：${badRefs.slice(0, 3).join('、')}`)
+      const assignmentKey = buildKocAssignmentKey(row, selectedByProduct, kocMainImageGroupsByCode)
+      const duplicateIndex = assignmentKey ? (kocAssignmentSeen[assignmentKey] || 0) : 0
+      if (assignmentKey) kocAssignmentSeen[assignmentKey] = duplicateIndex + 1
+      const variants = buildMaterialVariants(material, {
+        requestedCreator: getRowValue(row, CREATOR_ALIASES),
+        duplicateCount: kocAssignmentCounts[assignmentKey] || 0,
+        duplicateIndex,
+      })
 
-      const job = {
-        rowNo,
-        productId,
-        merchantCode,
-        productIdSource: productId ? '表格商品ID' : '',
-        title,
-        description,
-        cropRatio,
-        remark,
-        materialRefs: material.refs,
-        materialSource: material.source,
-      }
+      for (const variant of variants) {
+        const variantErrors = [...errors]
+        if (variant.assignmentError) variantErrors.push(variant.assignmentError)
+        if (variant.refs.length < MIN_IMAGE_COUNT) variantErrors.push(`素材图片至少 ${MIN_IMAGE_COUNT} 张`)
+        if (variant.refs.length > MAX_IMAGE_COUNT) variantErrors.push(`素材图片最多 ${MAX_IMAGE_COUNT} 张`)
+        const localRefs = variant.refs.filter(ref => !isRemoteImage(ref))
+        const badRefs = localRefs.filter(ref => !isImagePath(ref))
+        if (badRefs.length) variantErrors.push(`素材图片扩展名不支持：${badRefs.slice(0, 3).join('、')}`)
 
-      if (errors.length) {
-        invalidRows.push(buildOutputRow(job, {
-          status: '预检失败',
-          note: errors.join('；'),
-        }))
-      } else {
-        jobs.push(job)
+        const job = {
+          rowNo,
+          productId,
+          merchantCode,
+          productIdSource: productId ? '表格商品ID' : '',
+          creator: variant.creator,
+          materialTopFolder: variant.materialTopFolder,
+          title,
+          description,
+          cropRatio,
+          remark,
+          materialRefs: variant.refs,
+          materialSource: variant.source,
+        }
+
+        if (variantErrors.length) {
+          invalidRows.push(buildOutputRow(job, {
+            status: '预检失败',
+            note: variantErrors.join('；'),
+          }))
+        } else {
+          jobs.push(job)
+        }
       }
     })
     return { jobs, invalidRows, selectedPaths }
@@ -652,6 +793,7 @@
       表格行号: job?.rowNo || '',
       商品ID: job?.productId || '',
       商家编码: job?.merchantCode || '',
+      达人: cleanText(job?.creator || ''),
       商品标题: cleanText(item.title || item.itemTitle || item.name || job?.itemTitle || ''),
       添加标题: cleanText(job?.title || ''),
       内容描述: cleanText(job?.description || ''),
@@ -1346,6 +1488,7 @@
       normalizeSelectedImagePaths,
       normalizeDirectoryListingFiles,
       extractKocMerchantCodes,
+      groupKocMainImageGroupsByMerchantCode,
       groupKocMainImagesByMerchantCode,
       groupSelectedImagesByProduct,
       buildRootMaterialPaths,
