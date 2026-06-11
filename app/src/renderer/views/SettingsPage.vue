@@ -6,11 +6,11 @@
       <section class="section">
         <h3>连接状态</h3>
         <div class="status-row">
-          <span>核心服务 (端口 18765)</span>
+          <span>核心服务 (端口 {{ props.status?.apiPort || 18765 }})</span>
           <span :class="['badge', props.status?.api ? 'on' : 'off']">{{ props.status?.api ? '运行中' : '未启动' }}</span>
         </div>
         <div class="status-row">
-          <span>Chrome CDP (端口 9222)</span>
+          <span>Chrome CDP (端口 {{ props.status?.cdpPort || 9222 }})</span>
           <span :class="['badge', props.status?.chrome ? 'on' : 'off']">
             {{ props.status?.chrome ? '已连接' : '未连接' }}
           </span>

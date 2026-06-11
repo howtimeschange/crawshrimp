@@ -167,6 +167,10 @@ function getApiServerScript() {
   return path.join(__dirname, '..', '..', 'core', 'api_server.py')
 }
 
+function getBackendLaunchArgs() {
+  return ['-m', 'core.api_server']
+}
+
 function candidateTemplatePaths(srcPath = '') {
   const raw = String(srcPath || '').trim()
   if (!raw) return []
@@ -496,14 +500,16 @@ let backendProcess = null
 function spawnBackendProcess() {
   const pythonBin  = getPythonBin()
   const serverScript = getApiServerScript()
+  const scriptsDir = getPythonScriptsDir()
+  const launchArgs = getBackendLaunchArgs()
 
   if (!fs.existsSync(serverScript)) {
     throw new Error(`api_server.py not found: ${serverScript}`)
   }
 
-  log(`[api] starting: ${pythonBin} ${serverScript}`)
-  const proc = spawn(pythonBin, [serverScript], {
-    cwd: getPythonScriptsDir(),
+  log(`[api] starting: ${pythonBin} ${launchArgs.join(' ')}`)
+  const proc = spawn(pythonBin, launchArgs, {
+    cwd: scriptsDir,
     stdio: ['ignore', 'pipe', 'pipe'],
     env: {
       ...process.env,
@@ -512,9 +518,7 @@ function spawnBackendProcess() {
       CRAWSHRIMP_PORT: String(apiPort),
       CRAWSHRIMP_API_TOKEN: getApiToken(),
       ELECTRON_RUN_AS_NODE: '',
-      PYTHONPATH: !IS_DEV
-        ? path.join(process.resourcesPath, 'python-scripts')
-        : path.join(__dirname, '..', '..'),
+      PYTHONPATH: scriptsDir,
     },
   })
   backendProcess = proc
@@ -955,6 +959,22 @@ function sendStatus(key, value) {
   }
 }
 
+async function prepareBackendEndpoint() {
+  if (await probeApiReady()) {
+    if (await validateApiRuntime()) return
+    await switchApiEndpoint()
+    return
+  }
+
+  const availablePort = await findAvailableApiPort(apiPort)
+  if (availablePort !== apiPort) {
+    log(`[api] port ${apiPort} is occupied but no compatible backend responded`)
+    apiPort = availablePort
+    log(`[api] switching backend port to available port ${apiPort}`)
+    sendStatus('api', false)
+  }
+}
+
 const backendController = createBackendController({
   log,
   sendStatus,
@@ -970,6 +990,7 @@ const backendController = createBackendController({
 })
 
 async function startBackend() {
+  await prepareBackendEndpoint()
   await backendController.ensureReady()
 }
 

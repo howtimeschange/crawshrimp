@@ -112,7 +112,7 @@ import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 
 const currentView = ref('scripts')
-const status = ref({ api: false, chrome: false })
+const status = ref({ api: false, chrome: false, apiPort: 18765, cdpPort: 9222 })
 const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const scriptGroups = ref([])
@@ -178,6 +178,8 @@ onMounted(async () => {
     const s = await window.cs.getStatus()
     status.value.api = s.api
     status.value.chrome = s.chrome
+    status.value.apiPort = s.apiPort || status.value.apiPort
+    status.value.cdpPort = s.cdpPort || status.value.cdpPort
   } catch (error) {
     console.error('Failed to get initial status', error)
   }
@@ -192,6 +194,8 @@ onMounted(async () => {
     const s = await window.cs.getStatus()
     status.value.api = s.api
     status.value.chrome = s.chrome
+    status.value.apiPort = s.apiPort || status.value.apiPort
+    status.value.cdpPort = s.cdpPort || status.value.cdpPort
   }, 5000)
 })
 onUnmounted(() => {
