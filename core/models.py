@@ -107,6 +107,7 @@ class TaskParam(BaseModel):
     default: Optional[Any] = None
     options: Optional[List[ParamOption]] = None  # radio / select / checkbox 用
     visible_when: Optional[dict[str, Any]] = None  # GUI 可选：按其他字段值控制显示
+    include_file_listing: bool = False          # directory 用：选择目录后把递归文件清单随参数注入
     required: bool = False
     min: Optional[float] = None        # number 用
     max: Optional[float] = None

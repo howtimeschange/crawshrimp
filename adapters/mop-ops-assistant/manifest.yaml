@@ -16,13 +16,13 @@ auth:
 tasks:
   - id: search_recommend_material_publish
     name: 搜推素材
-    description: 读取 Excel 商品 ID、图片、标题和内容描述，调用千牛素材中心搜推素材图文发布接口逐行提交。
+    description: 读取 Excel 商品 ID 或商家编码、图片、标题和内容描述，调用千牛素材中心搜推素材图文发布接口逐行提交。
     script: search-recommend-material-publish.js
     entry_url: https://qn.taobao.com/home.htm/material-center/material-management?tab=recommend
     skip_auth: false
     execution_ui_mode: precheck_before_live
     validation_only_label: 仅校验 Excel / 素材规划
-    auto_precheck_note: 执行前会先校验商品 ID、标题、内容描述和素材路径；live 模式才会上传本地图片并发布搜推图文素材。
+    auto_precheck_note: 执行前会先校验商品 ID/商家编码、标题、内容描述和素材路径；live 模式会先按商家编码解析商品 ID，再上传本地图片并发布搜推图文素材。
     params:
       - id: mode
         type: radio
@@ -41,17 +41,17 @@ tasks:
         templates:
           - file: templates/search-recommend-material-template.xlsx
             label: Excel 填写模板
-            description: 包含“填写任务 / 字段说明”两张表；预先填写商品 ID、素材图片、添加标题和内容描述。
-            version: "2026.06.10.1"
+            description: 包含“填写任务 / 字段说明”两张表；支持填写商品 ID 或商家编码、素材图片、添加标题和内容描述。
+            version: "2026.06.11.2"
           - file: templates/search-recommend-material-template.csv
             label: CSV 简版填写模板
-            description: 只包含搜推图文素材发布需要的填写字段。
-            version: "2026.06.10.1"
+            description: 只包含搜推图文素材发布需要的填写字段，支持商品 ID 或商家编码二选一。
+            version: "2026.06.11.2"
           - file: templates/search-recommend-material-field-guide.csv
             label: 字段与素材包说明
-            description: 说明标题、内容描述、图片数量、素材根目录和手动多选图片命名规则。
-            version: "2026.06.10.1"
-        hint: 必填“商品ID”“添加标题”“内容描述”。素材图片可写在 Excel，也可在下方选择素材根目录或手动多选图片。
+            description: 说明商家编码解析、标题、内容描述、图片数量、业务图包和手动多选图片命名规则。
+            version: "2026.06.11.2"
+        hint: “商品ID”和“商家编码”二选一；商品ID为空时会按商家编码去千牛“我的商品”解析。素材图片可写在 Excel，也可在下方选择素材根目录（支持业务图包）或手动多选图片。
       - id: execute_mode
         type: radio
         label: 运行方式
@@ -66,13 +66,14 @@ tasks:
         type: directory
         label: 素材根目录
         required: false
+        include_file_listing: true
         placeholder: "例如：/Users/you/Desktop/搜推素材包"
-        hint: 可选。未在 Excel 写素材图片时，默认按“素材根目录/商品ID/01.jpg、02.jpg、03.jpg...”读取。
+        hint: 可选。未在 Excel 写素材图片时，优先识别业务图包“素材根目录/含商家编码的商品文件夹/图片/主图/达人/图片”，顶层目录可用 + 关联多个商家编码；未匹配时兼容“素材根目录/商品ID或商家编码/01.jpg...”。
       - id: material_images
         type: file_images
         label: 手动选择素材图片
         required: false
-        hint: 可选。多选图片时，文件名请以商品ID开头，如 1051467606993_01.jpg，或放在商品ID同名文件夹下。
+        hint: 可选。多选图片时，文件名请以商品ID或商家编码开头，如 1051467606993_01.jpg / 455133A2114Z_01.jpg，或放在同名文件夹下。
       - id: default_material_count
         type: number
         label: 默认素材张数
@@ -81,7 +82,7 @@ tasks:
         max: 9
         step: 1
         ui_span: third
-        hint: 使用素材根目录且单行未填“素材张数”时，按 01.jpg 开始生成这些本地路径；搜推图文要求至少 3 张、最多 9 张。
+        hint: 使用素材根目录且单行未填“素材张数”时生效；业务图包按顺序取 图片/主图/达人 下前 N 张；搜推图文要求至少 3 张、最多 9 张。
       - id: crop_ratio
         type: select
         label: 自动裁剪比例
@@ -110,6 +111,7 @@ tasks:
         columns:
           - 表格行号
           - 商品ID
+          - 商家编码
           - 商品标题
           - 添加标题
           - 内容描述
@@ -124,13 +126,13 @@ tasks:
 
   - id: kol_material_img2video_batch
     name: 批量KOL素材转短视频
-    description: 读取 Excel 商品 ID 和素材图片，调用千牛素材中心展示视频接口逐行提交生成任务。
+    description: 读取 Excel 商品 ID 或商家编码和素材图片，调用千牛素材中心展示视频接口逐行提交生成任务。
     script: kol-material-img2video-batch.js
     entry_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
     skip_auth: false
     execution_ui_mode: precheck_before_live
     validation_only_label: 仅校验 Excel / 素材规划
-    auto_precheck_note: 执行前会先校验商品 ID 和素材路径；live 模式才会上传本地图片并提交展示视频生成任务。
+    auto_precheck_note: 执行前会先校验商品 ID/商家编码和素材路径；live 模式会先按商家编码解析商品 ID，再上传本地图片并提交展示视频生成任务。
     params:
       - id: mode
         type: radio
@@ -149,17 +151,17 @@ tasks:
         templates:
           - file: templates/kol-material-img2video-template.xlsx
             label: Excel 填写模板
-            description: 包含“填写任务 / 字段说明”两张表；填写区带单元格线条，说明文案放在字段列表右侧。
-            version: "2026.06.10.4"
+            description: 包含“填写任务 / 字段说明”两张表；支持填写商品 ID 或商家编码。
+            version: "2026.06.11.2"
           - file: templates/kol-material-img2video-template.csv
             label: CSV 简版填写模板
-            description: 只包含展示视频批量生成需要的填写字段。
-            version: "2026.06.10.3"
+            description: 只包含展示视频批量生成需要的填写字段，支持商品 ID 或商家编码二选一。
+            version: "2026.06.11.2"
           - file: templates/kol-material-img2video-field-guide.csv
             label: 字段与素材包说明
-            description: 说明字段含义、素材根目录摆放方式和手动多选图片命名规则。
-            version: "2026.06.10.3"
-        hint: 必填“商品ID”。“素材图片”可留空；留空时请在下方选择素材根目录或手动多选素材图片。
+            description: 说明商家编码解析、业务图包摆放方式和手动多选图片命名规则。
+            version: "2026.06.11.2"
+        hint: “商品ID”和“商家编码”二选一；商品ID为空时会按商家编码去千牛“我的商品”解析。“素材图片”可留空；留空时请在下方选择素材根目录（支持业务图包）或手动多选素材图片。
       - id: execute_mode
         type: radio
         label: 运行方式
@@ -174,13 +176,14 @@ tasks:
         type: directory
         label: 素材根目录
         required: false
+        include_file_listing: true
         placeholder: "例如：/Users/you/Desktop/KOL素材包"
-        hint: 可选。未在 Excel 写素材图片时，默认按“素材根目录/商品ID/01.jpg、02.jpg...”读取。
+        hint: 可选。未在 Excel 写素材图片时，优先识别业务图包“素材根目录/含商家编码的商品文件夹/图片/主图/达人/图片”，顶层目录可用 + 关联多个商家编码；未匹配时兼容“素材根目录/商品ID或商家编码/01.jpg...”。
       - id: material_images
         type: file_images
         label: 手动选择素材图片
         required: false
-        hint: 可选。多选图片时，文件名请以商品ID开头，如 728857154429_01.jpg，或放在商品ID同名文件夹下。
+        hint: 可选。多选图片时，文件名请以商品ID或商家编码开头，如 728857154429_01.jpg / 46X096070266_01.jpg，或放在同名文件夹下。
       - id: default_material_count
         type: number
         label: 默认素材张数
@@ -189,7 +192,7 @@ tasks:
         max: 12
         step: 1
         ui_span: third
-        hint: 使用素材根目录且单行未填“素材张数”时，按 01.jpg 开始生成这些本地路径。
+        hint: 使用素材根目录且单行未填“素材张数”时生效；业务图包按顺序取 图片/主图/达人 下前 N 张，未匹配时兼容 01.jpg 旧规则。
       - id: ratio
         type: select
         label: 默认比例
@@ -227,6 +230,7 @@ tasks:
         columns:
           - 表格行号
           - 商品ID
+          - 商家编码
           - 商品标题
           - 比例
           - 素材来源

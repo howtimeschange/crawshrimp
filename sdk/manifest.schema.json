@@ -97,6 +97,7 @@
           "type": "array",
           "items": { "$ref": "#/definitions/option" }
         },
+        "include_file_listing": { "type": "boolean" },
         "visible_when": {
           "oneOf": [
             { "type": "object" },

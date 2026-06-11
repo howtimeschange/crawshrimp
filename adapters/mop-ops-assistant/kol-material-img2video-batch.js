@@ -10,6 +10,9 @@
   const DEFAULT_CATEGORY = '女装/女士精品'
   const REMOTE_IMAGE_RE = /^(?:https?:)?\/\//i
   const IMAGE_EXTS = ['jpg', 'jpeg', 'png', 'webp']
+  const PRODUCT_ID_ALIASES = ['商品ID', '商品id', 'itemId', 'item_id', '商品链接']
+  const MERCHANT_CODE_ALIASES = ['商家编码', '商家编号', '商家货号', '商家SKU编码', '商家SKU', '货号', '编码', 'outerId', 'outer_id', 'skuCode', 'sku_code']
+  const KOC_MERCHANT_CODE_RE = /\d{6}[A-Z]\d{4}[A-Z]/gi
   const FUNC_TYPE = {
     IMG_2_VIDEO: 'model_img2video',
     TEMPLATE_2_VIDEO: 'template_img2video',
@@ -70,6 +73,10 @@
     return match ? match[0] : ''
   }
 
+  function normalizeMerchantCode(value) {
+    return compact(value)
+  }
+
   function normalizeMode(value, fallback = 'template') {
     return 'img2video'
   }
@@ -128,6 +135,10 @@
     return cleanText(path).replace(/\\/g, '/').split('/').filter(Boolean).pop() || cleanText(path)
   }
 
+  function pathStem(path) {
+    return pathBasename(path).replace(/\.[a-zA-Z0-9]+$/i, '')
+  }
+
   function dirnameParts(path) {
     return cleanText(path).replace(/\\/g, '/').split('/').filter(Boolean)
   }
@@ -137,6 +148,22 @@
     const base = parts[parts.length - 1] || ''
     const parent = parts[parts.length - 2] || ''
     return normalizeProductId(base) || normalizeProductId(parent) || ''
+  }
+
+  function materialKeysFromPath(path) {
+    const parts = dirnameParts(path)
+    const keys = new Set()
+    const productId = findProductIdFromPath(path)
+    if (productId) keys.add(productId)
+    const base = normalizeMerchantCode(pathStem(path))
+    const parent = normalizeMerchantCode(parts[parts.length - 2] || '')
+    if (parent) keys.add(parent)
+    if (base) {
+      keys.add(base)
+      const prefix = base.match(/^(.+?)[_-]\d{1,4}$/)
+      if (prefix?.[1]) keys.add(normalizeMerchantCode(prefix[1]))
+    }
+    return [...keys].filter(Boolean)
   }
 
   function parseSlotMapping(value) {
@@ -158,13 +185,109 @@
     return paths.map(cleanText).filter(Boolean).filter(isImagePath)
   }
 
+  function normalizeDirectoryListingFiles(materialRootFiles) {
+    const paths = Array.isArray(materialRootFiles?.paths) ? materialRootFiles.paths : []
+    return paths
+      .map((entry, index) => {
+        const rawPath = typeof entry === 'string' ? entry : entry?.path
+        const filePath = cleanText(rawPath)
+        if (!filePath || !isImagePath(filePath)) return null
+        return {
+          path: filePath,
+          relativePath: cleanText(entry?.relativePath || ''),
+          mtimeMs: Number.isFinite(Number(entry?.mtimeMs)) ? Number(entry.mtimeMs) : index,
+          order: index,
+        }
+      })
+      .filter(Boolean)
+  }
+
+  function normalizePathParts(path) {
+    return cleanText(path).replace(/\\/g, '/').split('/').filter(Boolean)
+  }
+
+  function pathStartsWithParts(parts, rootParts) {
+    if (!rootParts.length || parts.length < rootParts.length) return false
+    return rootParts.every((part, index) => parts[index] === part)
+  }
+
+  function relativePartsForListingFile(file, root) {
+    if (file.relativePath) return normalizePathParts(file.relativePath)
+    const parts = normalizePathParts(file.path)
+    const rootParts = normalizePathParts(root)
+    return pathStartsWithParts(parts, rootParts) ? parts.slice(rootParts.length) : parts
+  }
+
+  function extractKocMerchantCodes(text) {
+    const matches = cleanText(text).match(KOC_MERCHANT_CODE_RE) || []
+    return [...new Set(matches.map(item => normalizeMerchantCode(item.toUpperCase())).filter(Boolean))]
+  }
+
+  function findKocMainImageMeta(file, root) {
+    const parts = relativePartsForListingFile(file, root)
+    if (parts.length < 5) return null
+    const topFolder = parts[0] || ''
+    const imageDirIndex = parts.findIndex(part => /^图片(?:\(\d+\))?$/.test(part))
+    if (imageDirIndex < 0) return null
+    const mainIndex = imageDirIndex + 1
+    if (parts[mainIndex] !== '主图') return null
+    const creator = parts[mainIndex + 1] || ''
+    const fileName = parts[parts.length - 1] || ''
+    if (!creator || !fileName || parts.length <= mainIndex + 2) return null
+    const codes = extractKocMerchantCodes(topFolder)
+    if (!codes.length) return null
+    return { codes, creator, fileName, topFolder }
+  }
+
+  function groupKocMainImagesByMerchantCode(materialRootFiles, root) {
+    const grouped = {}
+    const files = normalizeDirectoryListingFiles(materialRootFiles)
+      .map(file => ({ file, meta: findKocMainImageMeta(file, materialRootFiles?.root || root) }))
+      .filter(item => item.meta)
+      .sort((a, b) => (
+        a.meta.topFolder.localeCompare(b.meta.topFolder, 'zh-CN', { numeric: true }) ||
+        a.meta.creator.localeCompare(b.meta.creator, 'zh-CN', { numeric: true }) ||
+        (a.file.mtimeMs - b.file.mtimeMs) ||
+        a.meta.fileName.localeCompare(b.meta.fileName, 'zh-CN', { numeric: true }) ||
+        (a.file.order - b.file.order)
+      ))
+    for (const item of files) {
+      for (const code of item.meta.codes) {
+        grouped[code] = grouped[code] || []
+        grouped[code].push(item.file.path)
+      }
+    }
+    Object.keys(grouped).forEach(code => {
+      grouped[code] = [...new Set(grouped[code])]
+    })
+    return grouped
+  }
+
+  function selectedRefsForKeyMap(map, keys) {
+    const refs = []
+    const seen = new Set()
+    for (const key of keys || []) {
+      const normalized = normalizeMerchantCode(key)
+      const lookupKeys = [...new Set([normalized, normalized.toUpperCase()].filter(Boolean))]
+      for (const lookupKey of lookupKeys) {
+        for (const ref of map?.[lookupKey] || []) {
+          const refKey = cleanText(ref)
+          if (!refKey || seen.has(refKey)) continue
+          seen.add(refKey)
+          refs.push(ref)
+        }
+      }
+    }
+    return refs
+  }
+
   function groupSelectedImagesByProduct(paths) {
     const grouped = {}
     for (const path of paths || []) {
-      const productId = findProductIdFromPath(path)
-      if (!productId) continue
-      grouped[productId] = grouped[productId] || []
-      grouped[productId].push(path)
+      for (const key of materialKeysFromPath(path)) {
+        grouped[key] = grouped[key] || []
+        grouped[key].push(path)
+      }
     }
     Object.values(grouped).forEach(list => list.sort((a, b) => pathBasename(a).localeCompare(pathBasename(b), 'zh-CN')))
     return grouped
@@ -184,8 +307,10 @@
     const refs = splitMultiValues(getRowValue(row, ['素材图片', '素材图', '图片', '图片路径', '图片URL', 'image_urls', 'images']))
     const slotMapping = []
     const slotRefs = []
-    const productId = normalizeProductId(getRowValue(row, ['商品ID', '商品id', 'itemId', 'item_id', '商品链接']))
-    const selected = options.selectedByProduct?.[productId] || []
+    const productId = normalizeProductId(getRowValue(row, PRODUCT_ID_ALIASES))
+    const merchantCode = normalizeMerchantCode(getRowValue(row, MERCHANT_CODE_ALIASES))
+    const materialKey = productId || merchantCode
+    const selected = selectedRefsForKeyMap(options.selectedByProduct, [productId, merchantCode])
     const explicitRefs = refs.length ? refs : selected
     const uniqueRefs = list => {
       const seen = new Set()
@@ -205,21 +330,25 @@
     }
 
     const materialCount = parseInteger(getRowValue(row, ['素材张数', '图片张数', 'material_count']), parseInteger(options.defaultMaterialCount, 3))
-    const rootRefs = buildRootMaterialPaths(options.materialRoot, productId, materialCount)
+    const kocRefs = selectedRefsForKeyMap(options.kocMainImagesByCode, [merchantCode]).slice(0, materialCount)
+    if (kocRefs.length) return { refs: kocRefs, slotMapping, source: '达人图包主图' }
+
+    const rootRefs = buildRootMaterialPaths(options.materialRoot, materialKey, materialCount)
     if (rootRefs.length) return { refs: rootRefs, slotMapping, source: '素材根目录' }
 
     return { refs: [], slotMapping, source: '' }
   }
 
   function isInstructionOnlyRow(row) {
-    const productCell = cleanText(getRowValue(row, ['商品ID', '商品id', 'itemId', 'item_id', '商品链接']))
+    const productCell = cleanText(getRowValue(row, PRODUCT_ID_ALIASES))
     if (!productCell || normalizeProductId(productCell)) return false
     return /^(说明|填写说明|现在脚本|素材图片不是必填|素材根目录约定|手动多选命名约定|素材图片列支持)/.test(productCell)
   }
 
   function hasTaskFieldContent(row) {
     const taskFieldGroups = [
-      ['商品ID', '商品id', 'itemId', 'item_id', '商品链接'],
+      PRODUCT_ID_ALIASES,
+      MERCHANT_CODE_ALIASES,
       ['素材图片', '素材图', '图片', '图片路径', '图片URL', 'image_urls', 'images'],
       ['素材张数', '图片张数', 'material_count'],
       ['槽位映射', '槽位图片', 'slot_mapping'],
@@ -233,20 +362,23 @@
   function normalizeJobs(rows, options = {}) {
     const selectedPaths = normalizeSelectedImagePaths(options.materialImages || {})
     const selectedByProduct = groupSelectedImagesByProduct(selectedPaths)
+    const kocMainImagesByCode = groupKocMainImagesByMerchantCode(options.materialRootFiles || {}, options.materialRoot)
     const jobs = []
     const invalidRows = []
     const sourceRows = Array.isArray(rows) ? rows : []
     sourceRows.forEach((row, index) => {
       const rowNo = index + 2
       if (!hasTaskFieldContent(row) || isInstructionOnlyRow(row)) return
-      const productId = normalizeProductId(getRowValue(row, ['商品ID', '商品id', 'itemId', 'item_id', '商品链接']))
+      const productId = normalizeProductId(getRowValue(row, PRODUCT_ID_ALIASES))
+      const merchantCode = normalizeMerchantCode(getRowValue(row, MERCHANT_CODE_ALIASES))
       const errors = []
-      if (!productId) errors.push('商品ID必填')
+      if (!productId && !merchantCode) errors.push('商品ID或商家编码必填')
       const category = cleanText(getRowValue(row, ['主类目', '类目', 'main_category'])) || cleanText(options.mainCategory) || DEFAULT_CATEGORY
       const mode = 'img2video'
       const ratio = normalizeRatio(getRowValue(row, ['比例', '画幅', 'ratio']), options.ratio || '3:4')
       const material = normalizeMaterialRefs(row, {
         selectedByProduct,
+        kocMainImagesByCode,
         materialRoot: options.materialRoot,
         defaultMaterialCount: options.defaultMaterialCount,
       })
@@ -264,6 +396,8 @@
       const job = {
         rowNo,
         productId,
+        merchantCode,
+        productIdSource: productId ? '表格商品ID' : '',
         category,
         mode,
         ratio,
@@ -351,6 +485,7 @@
     return {
       表格行号: job?.rowNo || '',
       商品ID: job?.productId || '',
+      商家编码: job?.merchantCode || '',
       商品标题: cleanText(item.title || item.itemTitle || item.name || job?.itemTitle || ''),
       比例: job?.ratio || '',
       素材来源: cleanText(extra.materialSource || job?.materialSource || ''),
@@ -519,6 +654,105 @@
     }
   }
 
+  function safeParseJson(value, fallback = null) {
+    if (Array.isArray(value) || (value && typeof value === 'object')) return value
+    try {
+      return JSON.parse(String(value || ''))
+    } catch (error) {
+      return fallback
+    }
+  }
+
+  function itemDescText(item) {
+    const desc = item?.itemDesc?.desc
+    const parts = []
+    if (Array.isArray(desc)) {
+      for (const entry of desc) {
+        parts.push(entry?.copyText, entry?.text)
+      }
+    }
+    parts.push(item?.title, item?.itemTitle, item?.name, item?.outerId, item?.outer_id)
+    return parts.map(cleanText).filter(Boolean).join(' ')
+  }
+
+  function extractMerchantCodeFromItem(item) {
+    const direct = cleanText(item?.outerId || item?.outer_id || item?.outerID || item?.merchantCode || item?.sellerCode || item?.skuOuterId || '')
+    if (direct) return direct
+    const text = itemDescText(item)
+    const match = text.match(/(?:编码|商家编码|outerId)[:：]\s*([A-Za-z0-9._-]+)/i)
+    return match ? cleanText(match[1]) : ''
+  }
+
+  function normalizeSellManageItem(item) {
+    const itemId = normalizeProductId(item?.itemId || item?.id || item?.item_id || itemDescText(item))
+    const desc = Array.isArray(item?.itemDesc?.desc) ? item.itemDesc.desc : []
+    const titleEntry = desc.find(entry => cleanText(entry?.copyText || entry?.text) && !/^ID[:：]/i.test(cleanText(entry?.text)) && !/编码[:：]/.test(cleanText(entry?.text)))
+    const title = cleanText(item?.title || item?.itemTitle || item?.name || titleEntry?.copyText || titleEntry?.text)
+    const picUrl = item?.picUrl || item?.image || item?.itemPic || item?.itemDesc?.img || ''
+    return {
+      ...item,
+      itemId,
+      id: itemId,
+      title,
+      itemTitle: title,
+      picUrl: normalizeRemoteImageUrl(picUrl) || cleanText(picUrl),
+      merchantCode: extractMerchantCodeFromItem(item),
+    }
+  }
+
+  function extractSellManageItems(data) {
+    const raw = data?.result || data?.model || data
+    const parsed = safeParseJson(raw, raw)
+    const payload = parsed?.data || parsed?.result || parsed
+    const table = payload?.table || payload?.data?.table || {}
+    const list = table.dataSource || table.list || payload?.dataSource || payload?.list || payload?.items || []
+    return (Array.isArray(list) ? list : []).map(normalizeSellManageItem).filter(item => item.itemId)
+  }
+
+  async function searchSellManageItemsByMerchantCode(merchantCode) {
+    const code = normalizeMerchantCode(merchantCode)
+    if (!code) return []
+    const data = await callMtop('mtop.tmall.sell.pc.manage.async', {
+      url: '/tmall/manager/table.htm',
+      jsonBody: JSON.stringify({
+        tab: 'on_sale',
+        pagination: { current: 1, pageSize: 20 },
+        filtertab: '',
+        filter: { queryOuterId: code },
+        table: {},
+      }),
+    })
+    return extractSellManageItems(data)
+  }
+
+  async function resolveProductIdFromMerchantCode(job) {
+    if (job?.productId) return { ...job }
+    const code = normalizeMerchantCode(job?.merchantCode)
+    if (!code) throw new Error('商品ID或商家编码必填')
+    const items = await searchSellManageItemsByMerchantCode(code)
+    if (!items.length) throw new Error(`商家编码未匹配到商品ID：${code}`)
+    const exactItems = items.filter(item => normalizeMerchantCode(item.merchantCode) === code)
+    const candidates = exactItems.length ? exactItems : items
+    const chosen = candidates[0]
+    const note = candidates.length > 1
+      ? `商家编码 ${code} 匹配到 ${candidates.length} 个商品，默认使用 ${chosen.itemId}`
+      : `已按商家编码 ${code} 解析商品ID ${chosen.itemId}`
+    return {
+      ...job,
+      productId: chosen.itemId,
+      productIdSource: '商家编码解析',
+      itemLookup: {
+        merchantCode: code,
+        matchedCount: candidates.length,
+        totalCount: items.length,
+        resolvedItemId: chosen.itemId,
+      },
+      item: chosen,
+      itemTitle: chosen.title || job.itemTitle || '',
+      remark: cleanText([job.remark, note].filter(Boolean).join('；')),
+    }
+  }
+
   async function fetchSellerCategory() {
     try {
       const data = await callMtop('mtop.taobao.qn.copilot.node.aigc.seller.category.get', {})
@@ -574,15 +808,6 @@
       const url = typeof item === 'string' ? item : (item.url || item.imageUrl || item.picUrl || item.fullUrl)
       return cleanText(url) ? { ref: `itemPic:${index + 1}`, url: cleanText(url), source: '商品主图兜底' } : null
     }).filter(Boolean)
-  }
-
-  function safeParseJson(value, fallback) {
-    if (Array.isArray(value) || (value && typeof value === 'object')) return value
-    try {
-      return JSON.parse(String(value || ''))
-    } catch (error) {
-      return fallback
-    }
   }
 
   function getTemplateSlots(template) {
@@ -773,6 +998,7 @@
     const parsed = normalizeJobs(rows, {
       materialImages: params.material_images,
       materialRoot: params.material_root,
+      materialRootFiles: params.material_root_files,
       defaultMaterialCount: params.default_material_count,
       mainCategory: params.main_category,
       generationMode: 'img2video',
@@ -842,43 +1068,62 @@
       const rows = [...(shared.invalid_rows || []), ...(shared.results || [])]
       return complete(rows, shared)
     }
-    const rowLocalRefs = localRefsForJob(job)
+    let resolvedJob = job
+    try {
+      resolvedJob = await resolveProductIdFromMerchantCode(job)
+    } catch (error) {
+      const failedShared = finishCurrentJob({
+        ...shared,
+        current_exec_no: index + 1,
+        current_row_no: job.rowNo,
+        current_buyer_id: job.productId || job.merchantCode || '',
+      }, buildOutputRow(job, {
+        status: '解析失败',
+        note: describeError(error),
+      }))
+      return nextPhase('process_row', shared.submit_delay_ms || 0, failedShared)
+    }
+    const nextJobs = [...jobs]
+    nextJobs[index] = resolvedJob
+    const rowLocalRefs = localRefsForJob(resolvedJob)
     const rowLocalRefsKey = refsKey(rowLocalRefs)
     if (rowLocalRefs.length && (shared.injected_job_index !== index || shared.injected_refs_key !== rowLocalRefsKey)) {
       ensureUploadInput()
       return injectFiles([{ selector: UPLOAD_INPUT_SELECTOR, files: rowLocalRefs }], 'process_row', 500, {
         ...shared,
+        jobs: nextJobs,
         injected_job_index: index,
         injected_refs_key: rowLocalRefsKey,
         current_exec_no: index + 1,
-        current_row_no: job.rowNo,
-        current_buyer_id: job.productId,
+        current_row_no: resolvedJob.rowNo,
+        current_buyer_id: resolvedJob.productId || resolvedJob.merchantCode,
       })
     }
     const activeShared = {
       ...shared,
+      jobs: nextJobs,
       current_exec_no: index + 1,
-      current_row_no: job.rowNo,
-      current_buyer_id: job.productId,
+      current_row_no: resolvedJob.rowNo,
+      current_buyer_id: resolvedJob.productId || resolvedJob.merchantCode,
     }
     try {
       const [item, material] = await Promise.all([
-        searchItem(job.productId),
-        fetchItemMaterial(job.productId).catch(() => ({})),
+        searchItem(resolvedJob.productId),
+        fetchItemMaterial(resolvedJob.productId).catch(() => ({})),
       ])
-      const itemVO = normalizeItemVO(job.productId, item, material)
-      let materials = await resolveMaterialUrls(job)
-      if (!materials.length && job.allowItemPicsFallback) {
+      const itemVO = normalizeItemVO(resolvedJob.productId, item || resolvedJob.item, material)
+      let materials = await resolveMaterialUrls(resolvedJob)
+      if (!materials.length && resolvedJob.allowItemPicsFallback) {
         materials = normalizeItemPicMaterials(material)
-        job.materialSource = '商品主图兜底'
+        resolvedJob.materialSource = '商品主图兜底'
       }
       if (!materials.length) throw new Error('没有可用图片素材')
       const enrichedJob = {
-        ...job,
+        ...resolvedJob,
         item: itemVO,
         resolvedMaterials: materials,
         template: null,
-        materialSource: job.materialSource || materials[0]?.source || '',
+        materialSource: resolvedJob.materialSource || materials[0]?.source || '',
       }
       window.__MOP_KOL_ACTIVE_JOB__ = enrichedJob
       return nextPhase('submit_job', 0, {
@@ -886,7 +1131,7 @@
         active_job: enrichedJob,
       })
     } catch (error) {
-      const failedShared = finishCurrentJob(activeShared, buildOutputRow(job, {
+      const failedShared = finishCurrentJob(activeShared, buildOutputRow(resolvedJob, {
         status: '提交失败',
         note: describeError(error),
       }))
@@ -939,6 +1184,9 @@
       findFirstRemoteUrl,
       describeError,
       normalizeSelectedImagePaths,
+      normalizeDirectoryListingFiles,
+      extractKocMerchantCodes,
+      groupKocMainImagesByMerchantCode,
       groupSelectedImagesByProduct,
       buildRootMaterialPaths,
       normalizeMaterialRefs,

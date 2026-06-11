@@ -52,26 +52,28 @@ def build_workbook(output: Path) -> None:
     ws_task.title = "填写任务"
     ws_guide = wb.create_sheet("字段说明")
 
-    task_headers = ["商品ID", "素材图片", "素材张数", "比例", "提示词", "备注"]
+    task_headers = ["商品ID", "商家编码", "素材图片", "素材张数", "比例", "提示词", "备注"]
     ws_task.append(task_headers)
     set_header(ws_task[1])
     ws_task.append([
         "728857154429",
+        "46X096070266",
         "",
         3,
         "3:4",
         "",
-        "素材图片可留空：在 UI 选择素材根目录后读取 商品ID/01.jpg 到 03.jpg",
+        "素材图片可留空：在 UI 选择业务图包根目录后，按商家编码自动读取 图片/主图/达人 下的前 3 张",
     ])
     ws_task.append([
         "741042967594",
+        "564231A5355Z",
         "/Users/you/Desktop/KOL素材/741042967594/01.jpg;/Users/you/Desktop/KOL素材/741042967594/02.jpg",
         "",
         "3:4",
         "突出版型和面料质感",
         "示例：直接填写多张素材图片路径",
     ])
-    for idx, width in enumerate([18, 68, 12, 10, 36, 48, 86], 1):
+    for idx, width in enumerate([18, 18, 68, 12, 10, 36, 48, 86], 1):
         ws_task.column_dimensions[get_column_letter(idx)].width = width
     for row in ws_task.iter_rows(min_row=2, max_row=3):
         for cell in row:
@@ -80,8 +82,10 @@ def build_workbook(output: Path) -> None:
     notes = [
         "现在脚本按千牛页面的“选商品 + 图片生成展示视频”逻辑提交，不再选择或指定模板。",
         "素材图片不是必填；如果留空，请在运行界面选择“素材根目录”或“手动选择素材图片”。",
-        "素材根目录约定：素材根目录/商品ID/01.jpg、02.jpg、03.jpg。",
-        "手动多选命名约定：商品ID_01.jpg，或父文件夹名为商品ID。",
+        "商品ID和商家编码二选一必填；商品ID为空时，脚本会自动按商家编码去千牛“我的商品”解析商品ID。",
+        "业务图包约定：素材根目录/含商家编码的商品文件夹/图片/主图/达人/图片；顶层目录可用 + 关联多个商家编码。",
+        "未匹配业务图包时，兼容旧规则：素材根目录/商品ID或商家编码/01.jpg、02.jpg、03.jpg。",
+        "手动多选命名约定：商品ID_01.jpg 或 商家编码_01.jpg，或父文件夹名为商品ID/商家编码。",
         "素材图片列支持本地绝对路径或 http(s) 图片 URL；多张可用换行、分号、竖线或空格分隔。",
     ]
     note_col = len(task_headers) + 1
@@ -98,21 +102,22 @@ def build_workbook(output: Path) -> None:
     ws_task.row_dimensions[2].height = 92
     ws_task.row_dimensions[3].height = 72
     apply_grid(ws_task, 1, TASK_LAST_ROW, 1, note_col)
-    freeze_and_filter(ws_task, f"A1:F{TASK_LAST_ROW}")
+    freeze_and_filter(ws_task, f"A1:G{TASK_LAST_ROW}")
 
     dv = DataValidation(type="list", formula1='"3:4,1:1,9:16,16:9"', allow_blank=True)
     ws_task.add_data_validation(dv)
-    dv.add("D2:D500")
+    dv.add("E2:E500")
 
     guide_rows = [
-        ("商品ID", "是", "千牛/淘宝商品 ID；脚本会用该 ID 搜索商品，并把素材图片作为该商品的展示视频素材提交", "728857154429"),
+        ("商品ID", "二选一", "千牛/淘宝商品 ID；有值时优先使用。为空但填写商家编码时，脚本会自动解析商品ID", "728857154429"),
+        ("商家编码", "二选一", "店铺内部商家编码；商品ID为空时，脚本会去千牛“我的商品”按商家编码搜索并取回商品ID", "46X096070266"),
         ("素材图片", "否", "本地绝对路径或 http(s) 图片 URL；多张用换行、分号、竖线或空格分隔。也可以留空，改在 UI 选择素材根目录或手动多选素材图片", "/Users/you/Desktop/KOL素材/728857154429/01.jpg;/Users/you/Desktop/KOL素材/728857154429/02.jpg"),
-        ("素材张数", "否", "素材图片为空且填写了“素材根目录”时生效；默认读取 素材根目录/商品ID/01.jpg 到 NN.jpg", "3"),
+        ("素材张数", "否", "素材图片为空且填写了“素材根目录”时生效；业务图包按顺序取 图片/主图/达人 下前 N 张；旧规则读取 01.jpg 到 NN.jpg", "3"),
         ("比例", "否", "展示视频生成比例；为空使用运行界面的默认比例", "3:4"),
         ("提示词", "否", "传给每张图片的生成提示；为空则不传", "突出商品版型和面料质感"),
         ("备注", "否", "原样带到结果里，便于人工追踪", "第一批 KOL 素材"),
-        ("素材包摆放", "建议", "使用素材根目录时按“素材根目录/商品ID/01.jpg、02.jpg、03.jpg”摆放；扩展名固定为 jpg；png/jpeg/webp 请写入素材图片列或手动多选", "/Users/you/Desktop/KOL素材/728857154429/01.jpg"),
-        ("手动多选命名", "建议", "使用“手动选择素材图片”时，文件名以商品ID开头或父文件夹为商品ID；脚本会按商品ID自动归组", "728857154429_01.jpg 或 728857154429/01.jpg"),
+        ("素材包摆放", "建议", "推荐业务图包：素材根目录/MOP655137Z4106Z+656939D1213Y/图片/主图/达人/图片；顶层目录可用 + 关联多个商家编码；脚本只取主图图片，忽略视频和买家秀", "/Users/you/Desktop/KOL素材/MOP655137Z4106Z+656939D1213Y/图片/主图/AHOYECHO/xxx.jpg"),
+        ("手动多选命名", "建议", "使用“手动选择素材图片”时，文件名以商品ID/商家编码开头或父文件夹为商品ID/商家编码；脚本会自动归组", "46X096070266_01.jpg 或 46X096070266/01.jpg"),
     ]
     ws_guide.append(["字段", "是否必填", "说明", "示例"])
     set_header(ws_guide[1])

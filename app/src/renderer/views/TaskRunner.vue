@@ -52,6 +52,9 @@
                   <button class="btn-pick" @click="pickDirectory(param)">选择目录</button>
                 </div>
               </div>
+              <p v-if="param.include_file_listing && directoryListingLoading[param.id]" class="hint">正在扫描目录文件…</p>
+              <p v-else-if="param.include_file_listing && directoryListingError[param.id]" class="hint">{{ directoryListingError[param.id] }}</p>
+              <p v-else-if="param.include_file_listing && (values[param.id + '_files'] || []).length" class="hint">已扫描 {{ values[param.id + '_files'].length }} 个文件</p>
               <p v-if="param.hint" class="hint">{{ param.hint }}</p>
             </template>
 
@@ -772,6 +775,8 @@ const outputFiles = ref([])
 const showFiles = ref(false)
 const syncingOdps = ref(false)
 const excelLoading = ref({})
+const directoryListingLoading = ref({})
+const directoryListingError = ref({})
 const templateFeedback = ref({})
 const runStage = ref('')
 const dynamicParamPatches = ref({})
@@ -827,6 +832,10 @@ function buildDefaultValues(params = []) {
       next[p.id + '_path'] = ''
       next[p.id + '_rows'] = []
       next[p.id + '_headers'] = []
+    }
+    else if (p.type === 'directory') {
+      next[p.id] = p.default ?? ''
+      if (p.include_file_listing) next[p.id + '_files'] = []
     }
     else if (p.type === 'file_images') {
       next[p.id + '_paths'] = normalizeImagePaths(p.default?.paths, imageParamLimit(p))
@@ -989,6 +998,19 @@ function reconcileValuesWithParams(params = []) {
       const key = p.id + '_paths'
       if (!Object.prototype.hasOwnProperty.call(next, key)) {
         next[key] = normalizeFilePaths(p.default?.paths)
+        changed = true
+      }
+      continue
+    }
+
+    if (p.type === 'directory' && p.include_file_listing) {
+      if (!Object.prototype.hasOwnProperty.call(next, p.id)) {
+        next[p.id] = p.default ?? ''
+        changed = true
+      }
+      const filesKey = p.id + '_files'
+      if (!Object.prototype.hasOwnProperty.call(next, filesKey)) {
+        next[filesKey] = []
         changed = true
       }
       continue
@@ -1356,6 +1378,29 @@ function normalizeFilePaths(paths) {
   return [...new Set(normalized)]
 }
 
+function normalizeDirectoryFileListing(files) {
+  const source = Array.isArray(files?.paths) ? files.paths : (Array.isArray(files) ? files : [])
+  const seen = new Set()
+  const normalized = []
+  for (const entry of source) {
+    const rawPath = typeof entry === 'string' ? entry : entry?.path
+    const filePath = String(rawPath || '').trim()
+    if (!filePath || seen.has(filePath)) continue
+    seen.add(filePath)
+    if (entry && typeof entry === 'object') {
+      normalized.push({
+        path: filePath,
+        relativePath: String(entry.relativePath || '').trim(),
+        mtimeMs: Number.isFinite(Number(entry.mtimeMs)) ? Number(entry.mtimeMs) : 0,
+        size: Number.isFinite(Number(entry.size)) ? Number(entry.size) : 0,
+      })
+    } else {
+      normalized.push({ path: filePath, relativePath: '', mtimeMs: 0, size: 0 })
+    }
+  }
+  return normalized
+}
+
 function imageSummary(param) {
   const count = (values.value[param.id + '_paths'] || []).length
   const maxCount = imageParamLimit(param)
@@ -1588,6 +1633,16 @@ function buildRunParams(overrides = {}) {
     if (isMultiFileParamType(p.type)) {
       params[p.id] = {
         paths: normalizeFilePaths(values.value[p.id + '_paths']),
+      }
+      continue
+    }
+
+    if (p.type === 'directory' && p.include_file_listing) {
+      const root = values.value[p.id] || ''
+      params[p.id] = root
+      params[p.id + '_files'] = {
+        root,
+        paths: normalizeDirectoryFileListing(values.value[p.id + '_files']),
       }
       continue
     }
@@ -2119,10 +2174,41 @@ async function pickDirectory(param) {
   })
   if (!path) return
   values.value[paramId] = path
+  if (param.include_file_listing) await refreshDirectoryFileListing(param, path)
 }
 
 function clearDirectory(paramId) {
   values.value[paramId] = ''
+  values.value[paramId + '_files'] = []
+  directoryListingError.value[paramId] = ''
+  directoryListingLoading.value[paramId] = false
+}
+
+async function refreshDirectoryFileListing(param, rootPath) {
+  const paramId = param?.id
+  if (!paramId || !rootPath) return
+  directoryListingLoading.value[paramId] = true
+  directoryListingError.value[paramId] = ''
+  values.value[paramId + '_files'] = []
+  try {
+    if (typeof window.cs.listDirectoryFiles !== 'function') {
+      throw new Error('当前客户端不支持目录文件清单')
+    }
+    const result = await window.cs.listDirectoryFiles(rootPath, {
+      extensions: ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'm4v'],
+      max_files: 10000,
+    })
+    const files = normalizeDirectoryFileListing(result)
+    values.value[paramId + '_files'] = files
+    if (result?.truncated) {
+      directoryListingError.value[paramId] = `目录文件较多，已读取前 ${files.length} 个文件`
+    }
+  } catch (error) {
+    directoryListingError.value[paramId] = `目录扫描失败：${error?.message || String(error)}`
+    values.value[paramId + '_files'] = []
+  } finally {
+    directoryListingLoading.value[paramId] = false
+  }
 }
 
 async function pickImages(param) {

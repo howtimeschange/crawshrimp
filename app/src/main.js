@@ -36,6 +36,66 @@ function sameRuntimePath(left = '', right = '') {
   return normalizePathForIdentity(left).toLowerCase() === normalizePathForIdentity(right).toLowerCase()
 }
 
+function normalizeExtensionList(value) {
+  const source = Array.isArray(value) ? value : []
+  return new Set(source
+    .map(item => String(item || '').trim().toLowerCase().replace(/^\./, ''))
+    .filter(Boolean))
+}
+
+function listDirectoryFilesSnapshot(rootPath, opts = {}) {
+  const rawRoot = String(rootPath || '').trim()
+  if (!rawRoot) throw new Error('目录路径不能为空')
+  const root = fs.realpathSync.native(path.resolve(rawRoot))
+  const stat = fs.statSync(root)
+  if (!stat.isDirectory()) throw new Error(`不是有效目录：${rawRoot}`)
+
+  const allowedExts = normalizeExtensionList(opts.extensions)
+  const maxFiles = Math.max(1, Math.min(Number(opts.max_files || opts.maxFiles || 5000) || 5000, 20000))
+  const results = []
+
+  function walk(dir) {
+    if (results.length >= maxFiles) return
+    let entries = []
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true })
+    } catch {
+      return
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }))
+
+    for (const entry of entries) {
+      if (results.length >= maxFiles) return
+      if (!entry?.name || entry.name.startsWith('.')) continue
+      const fullPath = path.join(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(fullPath)
+        continue
+      }
+      if (!entry.isFile()) continue
+      const ext = path.extname(entry.name).slice(1).toLowerCase()
+      if (allowedExts.size && !allowedExts.has(ext)) continue
+      try {
+        const fileStat = fs.statSync(fullPath)
+        results.push({
+          path: fullPath,
+          relativePath: path.relative(root, fullPath).replace(/\\/g, '/'),
+          mtimeMs: fileStat.mtimeMs,
+          size: fileStat.size,
+        })
+      } catch {}
+    }
+  }
+
+  walk(root)
+  return {
+    ok: true,
+    root,
+    paths: results,
+    truncated: results.length >= maxFiles,
+  }
+}
+
 function normalizeUrlForMatch(raw) {
   try {
     const url = new URL(String(raw || ''))
@@ -1202,6 +1262,10 @@ secureHandle('browse-file', async (_, opts = {}) => {
   })
   if (res.canceled) return opts.multi ? [] : ''
   return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
+})
+
+secureHandle('list-directory-files', async (_, rootPath, opts = {}) => {
+  return listDirectoryFilesSnapshot(rootPath, opts)
 })
 
 secureHandle('render-pdf-preview', async (_, filePath) => {
