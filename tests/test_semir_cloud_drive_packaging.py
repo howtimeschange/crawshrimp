@@ -591,6 +591,66 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             self.assertFalse((export_dir / "搭配购外部素材包").exists())
             self.assertFalse(runtime_dir.exists())
 
+    def test_tmall_material_match_buy_allows_duplicate_download_source_paths(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            shared_source = runtime_dir / "shared-3.jpg"
+            shared_source.write_bytes(b"shared")
+
+            exported = base / "match-buy-result.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="tmall_material_match_buy",
+                data_rows=[
+                    {
+                        "表格行号": 2,
+                        "款号": "109326124011",
+                        "对应ID": "1018757615139",
+                        "文件名": "1018757615139（1）.jpg",
+                        "原文件名": "3.jpg",
+                        "云盘路径": "01-拍摄企划/模拍/109326124011-88601/3.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(shared_source),
+                        "__package_filename": "1018757615139（1）.jpg",
+                    },
+                    {
+                        "表格行号": 3,
+                        "款号": "109326124011",
+                        "对应ID": "1018757615139",
+                        "文件名": "1018757615139（1）.jpg",
+                        "原文件名": "3.jpg",
+                        "云盘路径": "01-拍摄企划/模拍/109326124011-88601/3.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(shared_source),
+                        "__package_filename": "1018757615139（1）.jpg",
+                    },
+                ],
+                runtime_files=[str(shared_source)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "搭配购重复素材包",
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            zip_path = Path(result[0])
+            self.assertTrue(zip_path.is_file())
+            self.assertFalse(shared_source.exists())
+            self.assertFalse(runtime_dir.exists())
+
+            with zipfile.ZipFile(zip_path) as archive:
+                names = archive.namelist()
+                packaged_images = [
+                    name for name in names
+                    if name.endswith(".jpg") and "/搭配购重复素材包/" in f"/{name}"
+                ]
+                self.assertEqual(len(packaged_images), 2)
+
     def test_orphaned_active_run_cleanup_removes_semir_runtime_artifacts(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

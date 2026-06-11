@@ -1987,7 +1987,9 @@ def _finalize_semir_tmall_material_match_buy_outputs(
                 local_path.name,
             )
             target = package_root / clean_filename
-            _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            # A matched material can be reused by multiple target IDs, so keep the
+            # runtime source in place until the final cleanup step.
+            _copy_file_to_unique_target(local_path, target)
 
         zip_output_root = target_root or output_root
         zip_output_root.mkdir(parents=True, exist_ok=True)
