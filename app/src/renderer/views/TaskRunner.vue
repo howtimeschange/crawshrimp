@@ -1859,7 +1859,7 @@ async function runValidationOnly() {
   resetRunUi()
   runStage.value = 'plan'
   try {
-    const result = await startTaskRun(buildRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
+    const result = await startTaskRun(await prepareRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
     if (result.status === 'cancelled') return
     const gate = result.status === 'done' ? await inspectLatestPlanOutput() : null
     if (result.status === 'done') {
@@ -1889,7 +1889,7 @@ async function runTask(options = {}) {
     resetRunUi()
     runStage.value = 'live'
     try {
-      const result = await startTaskRun(buildRunParams(), '任务已启动，等待执行…')
+      const result = await startTaskRun(await prepareRunParams(), '任务已启动，等待执行…')
       if (result.status === 'cancelled') return
       await finish(result)
     } catch (e) {
@@ -1906,7 +1906,7 @@ async function runTask(options = {}) {
   resetRunUi()
   try {
     runStage.value = 'plan'
-    const planResult = await startTaskRun(buildRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
+    const planResult = await startTaskRun(await prepareRunParams({ execute_mode: 'plan' }), 'Excel 预检已启动…')
     if (planResult.status === 'cancelled') return
     if (planResult.status !== 'done') {
       await finish(planResult)
@@ -1924,7 +1924,7 @@ async function runTask(options = {}) {
     }
 
     runStage.value = 'live'
-    const liveResult = await startTaskRun(buildRunParams({ execute_mode: 'live' }), '预检通过，开始 live 执行…')
+    const liveResult = await startTaskRun(await prepareRunParams({ execute_mode: 'live' }), '预检通过，开始 live 执行…')
     if (liveResult.status === 'cancelled') return
     await finish(liveResult)
   } catch (e) {
@@ -2186,7 +2186,7 @@ function clearDirectory(paramId) {
 
 async function refreshDirectoryFileListing(param, rootPath) {
   const paramId = param?.id
-  if (!paramId || !rootPath) return
+  if (!paramId || !rootPath) return []
   directoryListingLoading.value[paramId] = true
   directoryListingError.value[paramId] = ''
   values.value[paramId + '_files'] = []
@@ -2203,12 +2203,41 @@ async function refreshDirectoryFileListing(param, rootPath) {
     if (result?.truncated) {
       directoryListingError.value[paramId] = `目录文件较多，已读取前 ${files.length} 个文件`
     }
+    return files
   } catch (error) {
     directoryListingError.value[paramId] = `目录扫描失败：${error?.message || String(error)}`
     values.value[paramId + '_files'] = []
+    return []
   } finally {
     directoryListingLoading.value[paramId] = false
   }
+}
+
+async function ensureDirectoryListingsForRun() {
+  for (const param of taskParams.value) {
+    if (!isParamVisibleInForm(param)) continue
+    if (param.type !== 'directory' || !param.include_file_listing) continue
+    const rootPath = values.value[param.id]
+    if (!rootPath) continue
+    const currentFiles = normalizeDirectoryFileListing(values.value[param.id + '_files'])
+    if (currentFiles.length) continue
+    const files = await refreshDirectoryFileListing(param, rootPath)
+    if (directoryListingError.value[param.id]) {
+      logs.value.push(`[${now()}] ${directoryListingError.value[param.id]}`)
+      scrollToBottom()
+    } else if (files.length) {
+      logs.value.push(`[${now()}] 已扫描${param.label || '目录'}：${files.length} 个文件`)
+      scrollToBottom()
+    }
+    if (!files.length && /不支持目录文件清单/.test(directoryListingError.value[param.id] || '')) {
+      throw new Error(`${param.label || '素材根目录'}需要目录文件清单能力，请重启开发版后再运行`)
+    }
+  }
+}
+
+async function prepareRunParams(overrides = {}) {
+  await ensureDirectoryListingsForRun()
+  return buildRunParams(overrides)
 }
 
 async function pickImages(param) {
