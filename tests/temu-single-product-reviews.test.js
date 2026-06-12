@@ -567,7 +567,7 @@ test('single product reviews prefers open dialog wheel capture over stale see-al
   assert.equal(result.meta.shared_key, 'dialog_wheel_captures')
 })
 
-test('single product reviews exports fully loaded dialog DOM cards before scrolling more', async () => {
+test('single product reviews tries dialog API capture before fully loaded dialog DOM fallback', async () => {
   const fetchImpl = async () => createJsonResponse({ success: false, error_code: 40002, error_msg: 'System busy！' }, 429)
   const document = createDialogDocument()
   const cards = Array.from({ length: 111 }, (_, index) => createDomCard({ index: index + 1, content: 'Loaded dialog review' }))
@@ -584,10 +584,10 @@ test('single product reviews exports fully loaded dialog DOM cards before scroll
   })
 
   assert.equal(result.success, true)
-  assert.equal(result.meta.action, 'complete')
-  assert.equal(result.data.length, 111)
-  assert.equal(result.data[0].数据来源, 'dialog-dom-loaded-cards')
-  assert.equal(result.meta.shared.api_fallback, 'dialog-dom-loaded-cards')
+  assert.equal(result.meta.action, 'capture_wheel_requests')
+  assert.equal(result.meta.next_phase, 'parse_dialog_wheel_capture')
+  assert.equal(result.meta.shared_key, 'dialog_wheel_captures')
+  assert.equal(result.data.length, 0)
 })
 
 test('single product reviews keeps duplicate-looking loaded dialog DOM cards by position', async () => {
@@ -605,8 +605,22 @@ test('single product reviews keeps duplicate-looking loaded dialog DOM cards by 
 
   const result = await runScript({
     params: { product_url: PRODUCT_URL, max_busy_retries: 0 },
+    phase: 'parse_dialog_wheel_capture',
     fetchImpl,
     document,
+    shared: {
+      product_urls: [PRODUCT_URL],
+      product_index: 0,
+      total_products: 1,
+      goods_id: '605693750906920',
+      product_url: PRODUCT_URL,
+      api_busy: true,
+      api_busy_message: 'System busy！',
+      dialog_wheel_captures: {
+        ok: false,
+        matches: [],
+      },
+    },
   })
 
   assert.equal(result.success, true)

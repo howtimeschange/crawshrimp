@@ -1036,14 +1036,6 @@
     )
   }
 
-  function shouldUseLoadedDialogDomRows() {
-    const cards = getDialogDomReviewCards()
-    if (!cards.length) return false
-    const total = getVisibleReviewTotal()
-    if (!total) return cards.length >= DEFAULT_PAGE_SIZE
-    return cards.length >= Math.min(total, DEFAULT_PAGE_SIZE) && cards.length >= total
-  }
-
   function buildBusyShared(next = {}) {
     return {
       ...shared,
@@ -1115,6 +1107,23 @@
       if (state.items.length) {
         return completeDialogCapture(goodsId, productUrl, collectOptions, productShared, hasNextProduct, productIndex, state)
       }
+      const dialogDomRows = collectLoadedDialogDomReviews(goodsId, productUrl)
+      if (dialogDomRows.length) {
+        return complete(dialogDomRows, buildBusyShared({
+          ...productShared,
+          goods_id: goodsId,
+          product_url: productUrl,
+          busy_retry_count: busyRetryCount,
+          total_reviews: dialogDomRows.length,
+          api_total_reviews: getVisibleReviewTotal() || dialogDomRows.length,
+          api_fallback: 'dialog-dom-loaded-cards',
+          product_index: hasNextProduct ? productIndex + 1 : productIndex,
+          pending_navigation: false,
+        }), {
+          hasMore: hasNextProduct,
+          sleepMs: hasNextProduct ? 1200 : 0,
+        })
+      }
       const embeddedCollected = collectEmbeddedReviews(goodsId, collectOptions)
       if (embeddedCollected.rows.length) {
         return complete(embeddedCollected.rows, buildBusyShared({
@@ -1184,26 +1193,6 @@
             api_busy_message: error.message,
           }))
         }
-        if (shouldUseLoadedDialogDomRows()) {
-          const dialogDomRows = collectLoadedDialogDomReviews(goodsId, productUrl)
-          if (dialogDomRows.length) {
-            return complete(dialogDomRows, buildBusyShared({
-              ...productShared,
-              goods_id: goodsId,
-              product_url: productUrl,
-              busy_retry_count: busyRetryCount,
-              total_reviews: dialogDomRows.length,
-              api_total_reviews: getVisibleReviewTotal() || dialogDomRows.length,
-              api_busy_message: error.message,
-              api_fallback: 'dialog-dom-loaded-cards',
-              product_index: hasNextProduct ? productIndex + 1 : productIndex,
-              pending_navigation: false,
-            }), {
-              hasMore: hasNextProduct,
-              sleepMs: hasNextProduct ? 1200 : 0,
-            })
-          }
-        }
         const openDialogWheelRequest = requestOpenDialogWheelCapture(
           goodsId,
           productUrl,
@@ -1222,6 +1211,24 @@
           busyRetryCount,
         )
         if (dialogRequest) return dialogRequest
+        const dialogDomRows = collectLoadedDialogDomReviews(goodsId, productUrl)
+        if (dialogDomRows.length) {
+          return complete(dialogDomRows, buildBusyShared({
+            ...productShared,
+            goods_id: goodsId,
+            product_url: productUrl,
+            busy_retry_count: busyRetryCount,
+            total_reviews: dialogDomRows.length,
+            api_total_reviews: getVisibleReviewTotal() || dialogDomRows.length,
+            api_busy_message: error.message,
+            api_fallback: 'dialog-dom-loaded-cards',
+            product_index: hasNextProduct ? productIndex + 1 : productIndex,
+            pending_navigation: false,
+          }), {
+            hasMore: hasNextProduct,
+            sleepMs: hasNextProduct ? 1200 : 0,
+          })
+        }
         try {
           const similarCollected = await collectSimilarApiReviews(goodsId, collectOptions)
           if (similarCollected.rows.length) {
