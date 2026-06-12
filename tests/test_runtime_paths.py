@@ -19,10 +19,70 @@ class RuntimePathsTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
                 os.environ.pop("CRAWSHRIMP_DATA", None)
                 with patch("pathlib.Path.home", return_value=home_dir):
-                    root = runtime_paths.data_root()
+                    with patch("sys.platform", "win32"):
+                        root = runtime_paths.data_root()
 
             self.assertEqual(root, local_app_data / "crawshrimp")
             self.assertTrue(root.exists())
+
+    def test_default_data_root_prefers_macos_application_support_when_local_app_data_is_absent(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "darwin"):
+                        root = runtime_paths.data_root()
+
+            self.assertEqual(root, home_dir / "Library" / "Application Support" / "crawshrimp")
+            self.assertTrue(root.exists())
+
+    def test_default_data_root_uses_home_dot_dir_on_non_macos_without_local_app_data(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "linux"):
+                        root = runtime_paths.data_root()
+
+            self.assertEqual(root, home_dir / ".crawshrimp")
+            self.assertTrue(root.exists())
+
+    def test_default_data_root_ignores_local_app_data_on_non_windows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            local_app_data = Path(tmpdir) / "local-app-data"
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+                os.environ.pop("CRAWSHRIMP_DATA", None)
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "darwin"):
+                        root = runtime_paths.data_root()
+
+            self.assertEqual(root, home_dir / "Library" / "Application Support" / "crawshrimp")
+            self.assertFalse((local_app_data / "crawshrimp").exists())
+
+    def test_default_data_root_falls_back_to_home_when_macos_application_support_is_not_writable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            preferred_root = home_dir / "Library" / "Application Support" / "crawshrimp"
+            fallback_root = home_dir / ".crawshrimp"
+            original_mkdir = Path.mkdir
+
+            def guarded_mkdir(path, *args, **kwargs):
+                if path == preferred_root:
+                    raise PermissionError("[Errno 13] Permission denied")
+                return original_mkdir(path, *args, **kwargs)
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "darwin"):
+                        with patch.object(Path, "mkdir", guarded_mkdir):
+                            root = runtime_paths.data_root()
+
+            self.assertEqual(root, fallback_root)
+            self.assertTrue(fallback_root.exists())
 
     def test_default_data_root_falls_back_to_home_when_local_app_data_is_not_writable(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -40,8 +100,9 @@ class RuntimePathsTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
                 os.environ.pop("CRAWSHRIMP_DATA", None)
                 with patch("pathlib.Path.home", return_value=home_dir):
-                    with patch.object(Path, "mkdir", guarded_mkdir):
-                        root = runtime_paths.data_root()
+                    with patch("sys.platform", "win32"):
+                        with patch.object(Path, "mkdir", guarded_mkdir):
+                            root = runtime_paths.data_root()
 
             self.assertEqual(root, fallback_root)
             self.assertTrue(fallback_root.exists())
@@ -63,8 +124,9 @@ class RuntimePathsTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
                 os.environ.pop("CRAWSHRIMP_DATA", None)
                 with patch("pathlib.Path.home", return_value=home_dir):
-                    with patch.object(Path, "write_text", guarded_write_text):
-                        root = runtime_paths.data_root()
+                    with patch("sys.platform", "win32"):
+                        with patch.object(Path, "write_text", guarded_write_text):
+                            root = runtime_paths.data_root()
 
             self.assertEqual(root, fallback_root)
             self.assertTrue(fallback_root.exists())
@@ -96,8 +158,9 @@ class RuntimePathsTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
                 os.environ.pop("CRAWSHRIMP_DATA", None)
                 with patch("pathlib.Path.home", return_value=home_dir):
-                    adapters = runtime_paths.child_dir("adapters")
-                    metadata = runtime_paths.child_dir("adapter-meta")
+                    with patch("sys.platform", "win32"):
+                        adapters = runtime_paths.child_dir("adapters")
+                        metadata = runtime_paths.child_dir("adapter-meta")
 
             self.assertEqual(adapters, runtime_root / "adapters")
             self.assertEqual(metadata, runtime_root / "adapter-meta")
@@ -118,8 +181,9 @@ class RuntimePathsTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
                 os.environ.pop("CRAWSHRIMP_DATA", None)
                 with patch("pathlib.Path.home", return_value=home_dir):
-                    with patch.object(Path, "mkdir", guarded_mkdir):
-                        adapters = runtime_paths.child_dir("adapters")
+                    with patch("sys.platform", "win32"):
+                        with patch.object(Path, "mkdir", guarded_mkdir):
+                            adapters = runtime_paths.child_dir("adapters")
 
             self.assertEqual(adapters, fallback_child)
             self.assertTrue(fallback_child.exists())

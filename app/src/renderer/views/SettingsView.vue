@@ -41,7 +41,7 @@
         <div class="field">
           <label>Data directory (CRAWSHRIMP_DATA)</label>
           <div class="input-row">
-            <input v-model="cfg['data_dir']" placeholder="~/.crawshrimp" />
+            <input v-model="cfg['data_dir']" placeholder="Auto-select writable directory" />
             <button class="btn btn-sm" @click="browseDataDir">Browse</button>
           </div>
         </div>

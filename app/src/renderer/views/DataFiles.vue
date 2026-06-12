@@ -14,7 +14,7 @@
       <div class="df-dir-inner">
         <label class="df-dir-label">数据保存目录</label>
         <div class="df-dir-row">
-          <input v-model="dataDir" class="df-input" placeholder="默认: ~/.crawshrimp" />
+          <input v-model="dataDir" class="df-input" placeholder="默认自动选择可写目录" />
           <button class="btn-ghost-sm" @click="browseDir">选择</button>
           <button class="btn-orange-sm" :disabled="savingDir" @click="saveDir">
             {{ savingDir ? '保存中…' : '保存' }}

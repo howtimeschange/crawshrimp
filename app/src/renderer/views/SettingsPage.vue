@@ -123,7 +123,7 @@
         <div class="field">
           <label>数据目录 (CRAWSHRIMP_DATA)</label>
           <div class="input-row">
-            <input v-model="cfg['data_dir']" placeholder="默认: ~/.crawshrimp" class="input" />
+            <input v-model="cfg['data_dir']" placeholder="默认自动选择可写目录" class="input" />
             <button class="btn-ghost" @click="browseDir">选择</button>
           </div>
         </div>

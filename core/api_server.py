@@ -6,7 +6,7 @@ Bundling notes (for electron-builder / python-build-standalone):
   - All deps (fastapi, uvicorn, apscheduler, openpyxl, websockets, pyyaml) must be
     pre-installed in the bundled Python env (see app/scripts/bundle-python.sh)
   - Built-in adapters (adapters/) are shipped as extraResources alongside Python scripts
-  - User-installed adapters live in ~/.crawshrimp/adapters/
+  - User-installed adapters live under the selected runtime data dir
 """
 import asyncio
 import base64

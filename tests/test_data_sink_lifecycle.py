@@ -73,7 +73,8 @@ class DataSinkLifecycleTests(unittest.TestCase):
             with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
                 os.environ.pop("CRAWSHRIMP_DATA", None)
                 with patch("pathlib.Path.home", return_value=home_dir):
-                    data_sink.init_db()
+                    with patch("sys.platform", "win32"):
+                        data_sink.init_db()
 
             self.assertTrue((runtime_root / "crawshrimp.db").exists())
 

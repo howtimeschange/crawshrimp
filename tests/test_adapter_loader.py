@@ -281,7 +281,8 @@ class AdapterLoaderTests(unittest.TestCase):
         with unittest.mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
             os.environ.pop("CRAWSHRIMP_DATA", None)
             with unittest.mock.patch.object(Path, "home", return_value=home_dir):
-                manifests = adapter_loader.scan_all()
+                with unittest.mock.patch("sys.platform", "win32"):
+                    manifests = adapter_loader.scan_all()
 
         self.assertEqual(manifests, [])
         self.assertTrue(runtime_adapter_root.exists())

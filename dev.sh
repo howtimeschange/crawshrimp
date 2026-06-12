@@ -11,9 +11,12 @@ if [ ! -d "venv" ]; then
   venv/bin/pip install -r core/requirements.txt
 fi
 
-DATA_DIR="${CRAWSHRIMP_DATA:-$HOME/.crawshrimp}"
+DATA_DIR="$(PYTHONPATH=. venv/bin/python3 - <<'PY'
+from core import runtime_paths
+print(runtime_paths.data_root())
+PY
+)"
 TOKEN_FILE="$DATA_DIR/api-token"
-mkdir -p "$DATA_DIR"
 if [ -z "${CRAWSHRIMP_API_TOKEN:-}" ]; then
   if [ -s "$TOKEN_FILE" ]; then
     CRAWSHRIMP_API_TOKEN="$(cat "$TOKEN_FILE")"

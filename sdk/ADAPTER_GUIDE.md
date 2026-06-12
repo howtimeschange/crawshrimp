@@ -180,16 +180,16 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 ./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
 ```
 
-知识索引默认写到：
+知识索引默认写到运行时数据目录：
 
-- `~/.crawshrimp/knowledge/cards.json`
-- `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`
+- `knowledge/cards.json`
+- `knowledge/skills/<adapter>/<task>.md`
 
 ### 重要：运行的是“已安装副本”，不是你的源码目录
 
-默认 `copy` 模式下，`/adapters/install` 不会直接让底座执行你的源码目录。安装时，底座会把适配包复制到：
+默认 `copy` 模式下，`/adapters/install` 不会直接让底座执行你的源码目录。安装时，底座会把适配包复制到运行时数据目录：
 
-- 默认：`~/.crawshrimp/adapters/<adapter_id>/`
+- 默认：自动选择可写目录下的 `adapters/<adapter_id>/`
 - 如果设置了 `CRAWSHRIMP_DATA`：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
 
 底座后续运行、扫描、加载的都是这个“已安装副本”。
@@ -223,7 +223,13 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/absolute/path/to/repo/adapters/my-adapter"}'
 
-diff -qr /absolute/path/to/repo/adapters/my-adapter ~/.crawshrimp/adapters/my-adapter
+RUNTIME_DATA_DIR="$(PYTHONPATH=. ./venv/bin/python - <<'PY'
+from core import runtime_paths
+print(runtime_paths.data_root())
+PY
+)"
+
+diff -qr /absolute/path/to/repo/adapters/my-adapter "$RUNTIME_DATA_DIR/adapters/my-adapter"
 ```
 
 如果使用的是 `install_mode=link`，则无需重复安装；运行时直接读取源码目录，但仍建议在 live 验证前确认当前脚本就是你预期的 checkout/branch。
@@ -2027,9 +2033,9 @@ window.__CRAWSHRIMP_PAGE__ = 1
 
 因为底座执行的是“已安装副本”，不是你的源码目录。
 
-安装逻辑会把适配包复制到：
+安装逻辑会把适配包复制到运行时数据目录：
 
-- 默认：`~/.crawshrimp/adapters/<adapter_id>/`
+- 默认：自动选择可写目录下的 `adapters/<adapter_id>/`
 - 或：`$CRAWSHRIMP_DATA/adapters/<adapter_id>/`
 
 所以开发阶段的正确顺序是：
@@ -2046,15 +2052,21 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -d '{"path": "/Users/me/project/crawshrimp/adapters/temu"}'
 
+RUNTIME_DATA_DIR="$(PYTHONPATH=. ./venv/bin/python - <<'PY'
+from core import runtime_paths
+print(runtime_paths.data_root())
+PY
+)"
+
 diff -qr \
   /Users/me/project/crawshrimp/adapters/temu \
-  ~/.crawshrimp/adapters/temu
+  "$RUNTIME_DATA_DIR/adapters/temu"
 ```
 
 如果你在用 AI agent / Codex 开发适配包，建议把这条写进自定义 Prompt：
 
 ```text
-修改 crawshrimp 适配包后，不要假设运行环境会直接读取仓库源码目录。底座执行的是已安装副本（默认 ~/.crawshrimp/adapters/<adapter_id>/，或 $CRAWSHRIMP_DATA/adapters/<adapter_id>/）。每次修改 adapter 后，必须重新调用 POST /adapters/install 安装当前目录，并用 diff/shasum 校验源码目录与执行副本一致，再进行任务运行或问题排查。
+修改 crawshrimp 适配包后，不要假设运行环境会直接读取仓库源码目录。底座执行的是已安装副本（运行时数据目录/adapters/<adapter_id>/，或 $CRAWSHRIMP_DATA/adapters/<adapter_id>/）。每次修改 adapter 后，必须重新调用 POST /adapters/install 安装当前目录，并用 diff/shasum 校验源码目录与执行副本一致，再进行任务运行或问题排查。
 ```
 
 **Q：`entry_url` 应该填什么？**

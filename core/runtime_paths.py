@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 from uuid import uuid4
 
@@ -25,8 +26,10 @@ def _candidate_data_roots() -> tuple[list[Path], bool]:
 
     candidates = []
     local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
-    if local_app_data:
+    if sys.platform == "win32" and local_app_data:
         candidates.append(Path(local_app_data).expanduser() / "crawshrimp")
+    elif sys.platform == "darwin":
+        candidates.append(Path.home() / "Library" / "Application Support" / "crawshrimp")
     candidates.append(Path.home() / ".crawshrimp")
     return candidates, False
 

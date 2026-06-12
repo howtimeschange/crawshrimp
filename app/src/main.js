@@ -226,6 +226,10 @@ function getWindowsLocalCrawshrimpDataDir() {
   return path.join(app.getPath('userData'), 'data')
 }
 
+function getMacLocalCrawshrimpDataDir() {
+  return path.join(app.getPath('appData'), 'crawshrimp')
+}
+
 function readLegacyConfiguredDataDir() {
   try {
     const legacyConfigPath = path.join(app.getPath('home'), '.crawshrimp', 'config.json')
@@ -264,6 +268,9 @@ function resolveCrawshrimpDataDir() {
   if (process.platform === 'win32') {
     return path.resolve(getWindowsLocalCrawshrimpDataDir())
   }
+  if (process.platform === 'darwin') {
+    return path.resolve(getMacLocalCrawshrimpDataDir())
+  }
   return path.join(app.getPath('home'), '.crawshrimp')
 }
 
@@ -273,6 +280,10 @@ function prepareCrawshrimpDataDir() {
   if (!explicit && process.platform === 'win32') {
     candidates.push(path.join(app.getPath('home'), '.crawshrimp'))
     candidates.push(getWindowsLocalCrawshrimpDataDir())
+  }
+  if (!explicit && process.platform === 'darwin') {
+    candidates.push(path.join(app.getPath('home'), '.crawshrimp'))
+    candidates.push(getMacLocalCrawshrimpDataDir())
   }
 
   const seen = new Set()

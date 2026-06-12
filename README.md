@@ -166,7 +166,9 @@ PYTHONPATH=. venv/bin/python3 core/api_server.py
 
 API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认运行在 `http://127.0.0.1:5173`。可通过环境变量 `CRAWSHRIMP_PORT` 修改后端端口。
 
-除 `/health` 和 API 文档页外，本地 API 默认要求 `X-Crawshrimp-Token` 请求头。`bash dev.sh` 会自动生成并打印 token；CLI harness 会优先读取 `CRAWSHRIMP_API_TOKEN` 或 `~/.crawshrimp/api-token`。
+除 `/health` 和 API 文档页外，本地 API 默认要求 `X-Crawshrimp-Token` 请求头。`bash dev.sh` 会自动生成并打印 token；CLI harness 会优先读取 `CRAWSHRIMP_API_TOKEN` 或运行时数据目录里的 `api-token`。
+
+运行时数据目录会先验证真实可写性，再被后端和脚本共同使用。默认策略是：Windows 优先 `%LOCALAPPDATA%\crawshrimp`，macOS 优先 `~/Library/Application Support/crawshrimp`，其他环境使用 `~/.crawshrimp`；如果默认目录不可写会 fallback 到下一个候选目录。也可以通过 `CRAWSHRIMP_DATA=/absolute/path` 显式指定，此时指定目录不可写会直接报错，避免静默写到意外位置。
 
 ### 开发态 Harness
 
@@ -214,7 +216,7 @@ API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认
 ./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
 ```
 
-知识索引会落在 `~/.crawshrimp/knowledge/`，分组后的 skill 文档会写到 `~/.crawshrimp/knowledge/skills/<adapter>/<task>.md`。
+知识索引会落在运行时数据目录的 `knowledge/`，分组后的 skill 文档会写到 `knowledge/skills/<adapter>/<task>.md`。
 
 `scripts/crawshrimp_dev_harness.py` 是标准开发入口。旧的 `scripts/crawshrimp_probe.py` 只保留给历史脚本和按 `probe_id` 直接查看 bundle 的兼容场景。
 
@@ -276,9 +278,15 @@ crawshrimp/
 ### 从本地目录安装
 
 ```bash
+TOKEN_FILE="$(PYTHONPATH=. ./venv/bin/python - <<'PY'
+from core import runtime_paths
+print(runtime_paths.data_root() / "api-token")
+PY
+)"
+
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
-  -H "X-Crawshrimp-Token: $(cat ~/.crawshrimp/api-token)" \
+  -H "X-Crawshrimp-Token: $(cat "$TOKEN_FILE")" \
   -d '{"path": "/path/to/my-adapter"}'
 ```
 
@@ -287,7 +295,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 ```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
-  -H "X-Crawshrimp-Token: $(cat ~/.crawshrimp/api-token)" \
+  -H "X-Crawshrimp-Token: $(cat "$TOKEN_FILE")" \
   -d '{"path": "/path/to/my-adapter", "install_mode": "link"}'
 ```
 
@@ -298,7 +306,7 @@ curl -X POST http://127.0.0.1:18765/adapters/install \
 ```bash
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
-  -H "X-Crawshrimp-Token: $(cat ~/.crawshrimp/api-token)" \
+  -H "X-Crawshrimp-Token: $(cat "$TOKEN_FILE")" \
   -d '{"path": "/path/to/adapter.zip"}'
 ```
 
@@ -355,7 +363,7 @@ tasks:
 `file_excel` 现在支持直接在任务页下载适配包自带模板：
 
 - 可配置多个模板入口，比如 Excel 主模板 + 字段说明 CSV
-- 运行时会自动解析模板真实路径，兼容开发环境、内置资源和 `~/.crawshrimp/adapters/`
+- 运行时会自动解析模板真实路径，兼容开发环境、内置资源和运行时数据目录下的 `adapters/`
 - `.xlsx/.xls/.xlsm` 会额外注入 `file.sheets`
 - 任务可通过 `execution_ui_mode: precheck_before_live` 声明“先预检再 live”的执行交互
 - 可配合 `validation_only_label` / `auto_precheck_note` 自定义“仅校验”按钮文案和执行提示
