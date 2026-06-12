@@ -39,11 +39,33 @@ class FakeElement {
 
   querySelectorAll(selector) {
     if (this._selectors.has(selector)) return this._selectors.get(selector)
-    return []
+    const selectors = String(selector || '').split(',').map(item => item.trim()).filter(Boolean)
+    const matches = []
+    const visit = node => {
+      for (const child of node._children || []) {
+        if (selectors.some(part => child.matchesSelector?.(part))) matches.push(child)
+        visit(child)
+      }
+    }
+    visit(this)
+    return matches
   }
 
   querySelector(selector) {
     return this.querySelectorAll(selector)[0] || null
+  }
+
+  matchesSelector(selector) {
+    const part = String(selector || '').trim()
+    if (!part) return false
+    if (part === '*') return true
+    if (part.startsWith('.')) return this.className.split(/\s+/).includes(part.slice(1))
+    const attr = part.match(/^\[([^=\]]+)(?:=["']?([^"'\]]+)["']?)?\]$/)
+    if (attr) {
+      const value = this.getAttribute(attr[1])
+      return attr[2] == null ? value != null : value === attr[2]
+    }
+    return this.tagName.toLowerCase() === part.toLowerCase()
   }
 
   getAttribute(name) {
@@ -628,6 +650,57 @@ test('single product reviews keeps duplicate-looking loaded dialog DOM cards by 
   assert.equal(result.data.length, 2)
   assert.equal(result.data[0].评论序号, 1)
   assert.equal(result.data[1].评论序号, 2)
+})
+
+test('single product reviews reads country from nested dialog DOM aria label', async () => {
+  const fetchImpl = async () => createJsonResponse({ success: false, error_code: 40002, error_msg: 'System busy！' }, 429)
+  const document = createDialogDocument()
+  const meta = new FakeElement({ className: '_3t3Ev35j', text: 'sn***uk in on Jan 29, 2026' })
+  meta
+    .appendChild(new FakeElement({ className: 'M-mQ_cI0 pWNP-mkY', attributes: { role: 'link', 'aria-label': 'avatar' } }))
+    .appendChild(new FakeElement({ className: 'XTEkYdlM _3a8V1xkt', text: 'sn***uk' }))
+    .appendChild(new FakeElement({
+      className: '_1tSRIohB oGEL6d3R',
+      text: 'in on Jan 29, 2026',
+      attributes: { role: 'text', 'aria-label': 'in Germany on Jan 29, 2026' },
+    }))
+  const card = new FakeElement({ className: '_9WTBQrvq', text: 'sn***uk in on Jan 29, 2026 Great quality' })
+  card
+    .appendChild(meta)
+    .appendChild(new FakeElement({ className: '_21WXPU_9', attributes: { 'aria-label': '5 out of five stars' } }))
+    .appendChild(new FakeElement({ className: '_2Zm74do1 N4fQ1-w3', text: 'Great quality' }))
+  document.setSelector('div._9WTBQrvq', [card])
+  document.setSelector('._9WTBQrvq', [card])
+  document.setSelector('[class*="_9WTBQrvq"]', [card])
+  document.setSelector('[role="dialog"] ._9WTBQrvq,[role="dialog"] [class*="_9WTBQrvq"]', [card])
+  document.body._text = '1 reviews Item reviews All reviews are from verified purchases'
+
+  const result = await runScript({
+    params: { product_url: PRODUCT_URL, max_busy_retries: 0 },
+    phase: 'parse_dialog_wheel_capture',
+    fetchImpl,
+    document,
+    shared: {
+      product_urls: [PRODUCT_URL],
+      product_index: 0,
+      total_products: 1,
+      goods_id: '605693750906920',
+      product_url: PRODUCT_URL,
+      api_busy: true,
+      api_busy_message: 'System busy！',
+      dialog_wheel_captures: {
+        ok: false,
+        matches: [],
+      },
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data.length, 1)
+  assert.equal(result.data[0].买家昵称, 'sn***uk')
+  assert.equal(result.data[0].评价国家, 'Germany')
+  assert.equal(result.data[0].评价时间原文, 'in Germany on Jan 29, 2026')
 })
 
 test('single product reviews scrolls all-review dialog after parsing first captured page', async () => {

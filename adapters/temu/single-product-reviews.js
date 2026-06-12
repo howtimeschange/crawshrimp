@@ -957,7 +957,11 @@
 
   function extractDomMeta(card) {
     const meta = card.querySelector?.('._3OHJMKy5') || card.children?.[0] || null
-    const aria = compact(meta?.getAttribute?.('aria-label'))
+    const ariaCandidates = [
+      meta?.getAttribute?.('aria-label'),
+      ...[...(meta?.querySelectorAll?.('[aria-label]') || [])].map(el => el.getAttribute?.('aria-label')),
+    ].map(compact).filter(Boolean)
+    const aria = ariaCandidates.find(item => parseCountry(item)) || ariaCandidates[0] || ''
     const visibleText = textOf(meta)
     const name = compact(visibleText.replace(/\s+in\s+.*$/i, '').replace(/\s+on\s+.*$/i, ''))
     const timeSource = aria || visibleText
