@@ -950,9 +950,67 @@
 
   function extractDomRating(card) {
     const starEl = card.querySelector?.('._21WXPU_9,[aria-label*="stars"],[aria-label*="out of five"]')
-    const text = compact(starEl?.getAttribute?.('aria-label') || textOf(starEl))
+    const text = [
+      starEl?.getAttribute?.('aria-label'),
+      ...[...(starEl?.querySelectorAll?.('[aria-label]') || [])].map(el => el.getAttribute?.('aria-label')),
+      textOf(starEl),
+    ].map(compact).find(item => /stars|out of five/i.test(item)) || ''
     const match = text.match(/([0-9]+(?:[.,][0-9]+)?)/)
     return match ? match[1].replace(',', '.') : ''
+  }
+
+  function firstDomText(card, selectors) {
+    for (const selector of selectors) {
+      const text = textOf(card.querySelector?.(selector))
+      if (text) return text
+    }
+    return ''
+  }
+
+  function cleanDomPrefix(text, pattern) {
+    return compact(text).replace(pattern, '').trim()
+  }
+
+  function extractDomReviewImages(card) {
+    return [...(card.querySelectorAll?.('img') || [])]
+      .map(img => ({
+        alt: compact(img.getAttribute?.('alt')),
+        src: normalizeUrl(img.getAttribute?.('src')),
+        className: compact(img.className),
+      }))
+      .filter(img => /review/i.test(img.alt) || /rewimg/i.test(img.src) || /_17EhhWj_/.test(img.className))
+      .map(img => img.src)
+      .filter(Boolean)
+      .join('\n')
+  }
+
+  function extractDomAvatar(card) {
+    return normalizeUrl(card.querySelector?.('[aria-label="avatar"] img, img[alt="avatar"]')?.getAttribute?.('src'))
+  }
+
+  function extractDomOriginalText(card) {
+    const text = firstDomText(card, ['.tbAzrtq-', '._2uEYFs0B'])
+    return cleanDomPrefix(text, /^Review before translation:\s*/i)
+  }
+
+  function extractDomHelpfulCount(card) {
+    const candidates = [
+      ...[...(card.querySelectorAll?.('[aria-label]') || [])].map(el => compact(el.getAttribute?.('aria-label'))),
+      ...[...(card.querySelectorAll?.('*') || [])].map(textOf),
+      textOf(card),
+    ].filter(Boolean)
+    for (const text of candidates) {
+      if (!/helpful|approve/i.test(text)) continue
+      const match = text.match(/([0-9][0-9,.]*)\s*(?:people|person)/i)
+      if (match) return match[1].replace(/,/g, '')
+      if (/Helpful\s+Report/i.test(text)) return '0'
+    }
+    return ''
+  }
+
+  function extractDomPurchaseTimes(card) {
+    const match = textOf(card).match(/Purchased\s+([0-9][0-9,.]*)\s+times/i)
+    return match ? match[1].replace(/,/g, '') : ''
   }
 
   function extractDomMeta(card) {
@@ -999,6 +1057,8 @@
       if (/This review is for:|Reviews from similar items/i.test(textOf(card))) continue
       const content = extractDomReviewText(card)
       const meta = extractDomMeta(card)
+      const specs = cleanDomPrefix(firstDomText(card, ['._2Y-spytg', '._2QI6iM-X']), /^Purchased:\s*/i)
+      const fitText = cleanDomPrefix(firstDomText(card, ['._35Cqvk-G']), /^Overall fit:\s*/i)
       if (!content && !meta.name) continue
       rows.push({
         商品ID: goodsId,
@@ -1011,15 +1071,17 @@
         买家昵称: meta.name,
         评分: extractDomRating(card),
         SKU_ID: '',
-        规格: '',
-        合身情况: '',
+        规格: specs,
+        合身情况: fitText,
         评价内容: content,
-        评价原文: '',
+        评价原文: extractDomOriginalText(card),
         评价国家: meta.country,
         评价时间: '',
         评价时间原文: meta.timeRaw || meta.timeText,
-        评价图片: '',
-        头像: '',
+        评价图片: extractDomReviewImages(card),
+        头像: extractDomAvatar(card),
+        有帮助人数: extractDomHelpfulCount(card),
+        购买次数: extractDomPurchaseTimes(card),
         数据来源: source,
         执行结果: '成功',
         备注: note,

@@ -23,8 +23,10 @@ class FakeElement {
     this.clientHeight = options.clientHeight || this._rect.height
   }
 
-  get innerText() { return this._text }
-  get textContent() { return this._text }
+  get innerText() {
+    return [this._text, ...this._children.map(child => child.innerText)].filter(Boolean).join(' ')
+  }
+  get textContent() { return this.innerText }
   get children() { return this._children }
 
   appendChild(child) {
@@ -59,6 +61,17 @@ class FakeElement {
     const part = String(selector || '').trim()
     if (!part) return false
     if (part === '*') return true
+    const tagAttr = part.match(/^([a-z0-9]+)?\[([^=\]~*^$|]+)([*^$|~]?=)?["']?([^"'\]]*)["']?\]$/i)
+    if (tagAttr) {
+      const [, tag, name, op, expected] = tagAttr
+      if (tag && this.tagName.toLowerCase() !== tag.toLowerCase()) return false
+      const value = this.getAttribute(name)
+      if (value == null) return false
+      if (!op) return true
+      if (op === '=') return value === expected
+      if (op === '*=') return value.includes(expected)
+      return false
+    }
     if (part.startsWith('.')) return this.className.split(/\s+/).includes(part.slice(1))
     const attr = part.match(/^\[([^=\]]+)(?:=["']?([^"'\]]+)["']?)?\]$/)
     if (attr) {
@@ -658,6 +671,11 @@ test('single product reviews reads country from nested dialog DOM aria label', a
   const meta = new FakeElement({ className: '_3t3Ev35j', text: 'sn***uk in on Jan 29, 2026' })
   meta
     .appendChild(new FakeElement({ className: 'M-mQ_cI0 pWNP-mkY', attributes: { role: 'link', 'aria-label': 'avatar' } }))
+    ._children[0].appendChild(new FakeElement({
+      tagName: 'img',
+      attributes: { alt: 'avatar', src: 'https://avatar-eu.kwcdn.com/avatar.png' },
+    }))
+  meta
     .appendChild(new FakeElement({ className: 'XTEkYdlM _3a8V1xkt', text: 'sn***uk' }))
     .appendChild(new FakeElement({
       className: '_1tSRIohB oGEL6d3R',
@@ -667,8 +685,27 @@ test('single product reviews reads country from nested dialog DOM aria label', a
   const card = new FakeElement({ className: '_9WTBQrvq', text: 'sn***uk in on Jan 29, 2026 Great quality' })
   card
     .appendChild(meta)
-    .appendChild(new FakeElement({ className: '_21WXPU_9', attributes: { 'aria-label': '5 out of five stars' } }))
+    .appendChild(new FakeElement({ className: '_21WXPU_9' }))
+    ._children[1].appendChild(new FakeElement({
+      className: '_7JDNQb0g _1uEtAYnT',
+      attributes: { 'aria-label': '5 out of five stars' },
+    }))
+  card
+    .appendChild(new FakeElement({ className: '_2Y-spytg', text: 'Purchased: Ivory White / Label size: 92' }))
+    .appendChild(new FakeElement({ className: '_35Cqvk-G', text: 'Overall fit: Large' }))
+    .appendChild(new FakeElement({
+      tagName: 'img',
+      className: '_17EhhWj_',
+      attributes: { alt: 'Reviews image', src: 'https://rewimg-eu.kwcdn.com/review-image/demo.jpeg' },
+    }))
     .appendChild(new FakeElement({ className: '_2Zm74do1 N4fQ1-w3', text: 'Great quality' }))
+    .appendChild(new FakeElement({ className: 'tbAzrtq-', text: 'Review before translation: Sehr gut' }))
+    .appendChild(new FakeElement({
+      className: '_5JqQ7LxG',
+      text: 'Helpful ( 7 people )',
+      attributes: { role: 'button', 'aria-label': '7 people think this review is helpful，click to approve' },
+    }))
+    .appendChild(new FakeElement({ className: 'purchase-times', text: 'Purchased 2 times' }))
   document.setSelector('div._9WTBQrvq', [card])
   document.setSelector('._9WTBQrvq', [card])
   document.setSelector('[class*="_9WTBQrvq"]', [card])
@@ -699,8 +736,17 @@ test('single product reviews reads country from nested dialog DOM aria label', a
   assert.equal(result.meta.action, 'complete')
   assert.equal(result.data.length, 1)
   assert.equal(result.data[0].买家昵称, 'sn***uk')
+  assert.equal(result.data[0].评分, '5')
+  assert.equal(result.data[0].规格, 'Ivory White / Label size: 92')
+  assert.equal(result.data[0].合身情况, 'Large')
+  assert.equal(result.data[0].评价内容, 'Great quality')
+  assert.equal(result.data[0].评价原文, 'Sehr gut')
   assert.equal(result.data[0].评价国家, 'Germany')
   assert.equal(result.data[0].评价时间原文, 'in Germany on Jan 29, 2026')
+  assert.equal(result.data[0].评价图片, 'https://rewimg-eu.kwcdn.com/review-image/demo.jpeg')
+  assert.equal(result.data[0].头像, 'https://avatar-eu.kwcdn.com/avatar.png')
+  assert.equal(result.data[0].有帮助人数, '7')
+  assert.equal(result.data[0].购买次数, '2')
 })
 
 test('single product reviews scrolls all-review dialog after parsing first captured page', async () => {
