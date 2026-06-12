@@ -31,6 +31,42 @@ test('desktop backend switches away from an occupied non-compatible API port bef
   assert.match(main, /async function startBackend\(\) \{\s*await prepareBackendEndpoint\(\)\s*await backendController\.ensureReady\(\)\s*\}/)
 })
 
+test('desktop backend compatibility requires the current Electron launch identity', () => {
+  const main = readRepoFile('app/src/main.js')
+  const apiServer = readRepoFile('core/api_server.py')
+
+  assert.match(main, /const BACKEND_INSTANCE_ID = crypto\.randomUUID\(\)/)
+  assert.match(main, /CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID/)
+  assert.match(main, /const runtimeInstanceId = String\(runtime\.backend_instance_id \|\| ''\)/)
+  assert.match(main, /if \(runtimeInstanceId !== BACKEND_INSTANCE_ID\) return false/)
+  assert.match(main, /if \(runtime\.owns_backend_instance !== true\) return false/)
+  assert.match(apiServer, /"backend_instance_id": str\(os\.environ\.get\("CRAWSHRIMP_BACKEND_INSTANCE_ID"\) or ""\)/)
+})
+
+test('desktop backend terminates stale crawshrimp backend processes for the same data root', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /async function stopForeignBackendRuntime\(runtime = \{\}\)/)
+  assert.match(main, /function readBackendLockPid\(\)/)
+  assert.match(main, /const lockPid = runtime\.owns_backend_instance === false \? Number\(runtime\.backend_lock_pid \|\| 0\) \|\| readBackendLockPid\(\) : 0/)
+  assert.match(main, /sameRuntimePath\(runtimeDataDir, expectedBackendDataDir\(\)\)/)
+  assert.match(main, /stopProcessTreeByPid\(runtimePid\)/)
+  assert.match(main, /await waitForPidExit\(runtimePid/)
+  assert.match(main, /await stopForeignBackendRuntime\(runtime\)/)
+  assert.match(main, /taskkill', \['\/F', '\/T', '\/PID', String\(pid\)\]/)
+})
+
+test('desktop services restart when macOS reopens the app after all windows close', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const BACKEND_LAUNCH_RETRIES = process\.platform === 'win32' \? 2 : 1/)
+  assert.match(main, /let desktopServicesStartupPromise = null/)
+  assert.match(main, /async function ensureDesktopServicesStarted\(\)/)
+  assert.match(main, /if \(!startup\.api\.ok\) desktopServicesStartupPromise = null/)
+  assert.match(main, /await ensureDesktopServicesStarted\(\)/)
+  assert.match(main, /app\.on\('activate', \(\) => \{\s*if \(BrowserWindow\.getAllWindows\(\)\.length === 0\) createWindow\(\)\s*ensureDesktopServicesStarted\(\)/)
+})
+
 test('settings page displays the runtime backend port reported by the main process', () => {
   const appShell = readRepoFile('app/src/renderer/App.vue')
   const settings = readRepoFile('app/src/renderer/views/SettingsPage.vue')
@@ -67,4 +103,14 @@ test('desktop backend receives a resolved writable CRAWSHRIMP_DATA directory', (
   assert.match(main, /cfg\.data_dir = desktopDataDir \|\| getCrawshrimpDataDir\(\)/)
   assert.match(main, /plain\.data_dir = dataDir/)
   assert.match(main, /return resolvedCrawshrimpDataDir/)
+})
+
+test('desktop backend startup fails before spawn when API token cannot be prepared', () => {
+  const main = readRepoFile('app/src/main.js')
+  const apiServer = readRepoFile('core/api_server.py')
+
+  assert.doesNotMatch(main, /catch \(error\) \{\s*log\(`\[api\] failed to prepare API token: \$\{error\.message\}`\)\s*return ''\s*\}/)
+  assert.match(main, /const apiToken = getApiToken\(\)/)
+  assert.match(main, /CRAWSHRIMP_API_TOKEN: apiToken/)
+  assert.match(apiServer, /except Exception as exc:\s*logger\.exception\("Failed to read or create crawshrimp API token"\)\s*raise RuntimeError\("Failed to prepare crawshrimp API token"\) from exc/)
 })

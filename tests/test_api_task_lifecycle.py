@@ -65,9 +65,12 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             bridge_cls.return_value.is_available.return_value = True
             with patch("core.api_server.adapter_loader.list_all", return_value=[{"id": "demo"}]):
                 with patch("core.api_server.sched_module.list_jobs", return_value=[]):
-                    result = api_server.health()
+                    with patch.dict("os.environ", {"CRAWSHRIMP_BACKEND_INSTANCE_ID": "desktop-launch-123"}, clear=False):
+                        result = api_server.health()
 
         self.assertEqual(result["runtime"]["kind"], "source")
+        self.assertEqual(result["runtime"]["backend_instance_id"], "desktop-launch-123")
+        self.assertIn("backend_lock_pid", result["runtime"])
         self.assertTrue(result["runtime"]["data_dir"])
         self.assertTrue(result["runtime"]["scripts_dir"])
 

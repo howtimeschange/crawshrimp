@@ -20,7 +20,8 @@ const API_TOKEN_HEADER = 'X-Crawshrimp-Token'
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
-const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 0
+const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 1
+const BACKEND_INSTANCE_ID = crypto.randomUUID()
 const LEGACY_RUNTIME_MARKERS = [
   'adapters',
   'adapter-meta',
@@ -34,6 +35,7 @@ const LEGACY_RUNTIME_MARKERS = [
 ]
 let resolvedCrawshrimpDataDir = ''
 let preferredCrawshrimpDataDir = ''
+let desktopServicesStartupPromise = null
 
 function normalizePathForIdentity(rawPath = '') {
   const resolved = path.resolve(String(rawPath || ''))
@@ -337,6 +339,18 @@ function getApiTokenPath() {
   return path.join(getCrawshrimpDataDir(), 'api-token')
 }
 
+function getBackendLockPath() {
+  return path.join(getCrawshrimpDataDir(), 'backend.lock')
+}
+
+function readBackendLockPid() {
+  try {
+    return Number(fs.readFileSync(getBackendLockPath(), 'utf8').trim() || 0) || 0
+  } catch {
+    return 0
+  }
+}
+
 function getApiToken() {
   const envToken = String(process.env.CRAWSHRIMP_API_TOKEN || '').trim()
   if (envToken) return envToken
@@ -358,7 +372,7 @@ function getApiToken() {
     return token
   } catch (error) {
     log(`[api] failed to prepare API token: ${error.message}`)
-    return ''
+    throw error
   }
 }
 
@@ -707,6 +721,7 @@ function spawnBackendProcess() {
   const scriptsDir = getPythonScriptsDir()
   const launchArgs = getBackendLaunchArgs()
   resolvedCrawshrimpDataDir = getCrawshrimpDataDir()
+  const apiToken = getApiToken()
 
   if (!fs.existsSync(serverScript)) {
     throw new Error(`api_server.py not found: ${serverScript}`)
@@ -722,7 +737,8 @@ function spawnBackendProcess() {
       PYTHONUTF8: '1',
       CRAWSHRIMP_PORT: String(apiPort),
       CRAWSHRIMP_DATA: resolvedCrawshrimpDataDir,
-      CRAWSHRIMP_API_TOKEN: getApiToken(),
+      CRAWSHRIMP_API_TOKEN: apiToken,
+      CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID,
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: scriptsDir,
     },
@@ -751,12 +767,24 @@ function spawnBackendProcess() {
 
 function stopBackendProcess(proc = backendProcess) {
   if (!proc) return
-  if (process.platform === 'win32') {
-    try { execSync(`taskkill /F /T /PID ${proc.pid}`, { timeout: 3000 }) } catch (_) {}
-  } else {
-    proc.kill('SIGTERM')
-  }
+  stopProcessTreeByPid(proc.pid, proc)
   if (backendProcess === proc) backendProcess = null
+}
+
+function stopProcessTreeByPid(pid, proc = null) {
+  if (!Number.isInteger(pid) || pid <= 0) return false
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('taskkill', ['/F', '/T', '/PID', String(pid)], { timeout: 3000, stdio: 'ignore' })
+    } else if (proc && typeof proc.kill === 'function') {
+      proc.kill('SIGTERM')
+    } else {
+      process.kill(pid, 'SIGTERM')
+    }
+    return true
+  } catch {
+    return false
+  }
 }
 
 // ── Chrome / CDP ──────────────────────────────────────────────────────────────
@@ -807,6 +835,15 @@ function isPidAlive(pid) {
   } catch {
     return false
   }
+}
+
+async function waitForPidExit(pid, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (!isPidAlive(pid)) return true
+    await new Promise(resolve => setTimeout(resolve, 100))
+  }
+  return !isPidAlive(pid)
 }
 
 function probeChromeCdp(timeoutMs = 800) {
@@ -1070,6 +1107,9 @@ function isCompatibleBackendRuntime(runtime = {}) {
   if (!runtime || typeof runtime !== 'object') return false
   const runtimeScriptsDir = String(runtime.scripts_dir || '')
   const runtimeDataDir = String(runtime.data_dir || '')
+  const runtimeInstanceId = String(runtime.backend_instance_id || '')
+  if (runtimeInstanceId !== BACKEND_INSTANCE_ID) return false
+  if (runtime.owns_backend_instance !== true) return false
   if (!sameRuntimePath(runtimeDataDir, expectedBackendDataDir())) return false
   return sameRuntimePath(runtimeScriptsDir, expectedBackendScriptsDir())
 }
@@ -1078,6 +1118,8 @@ function describeBackendRuntime(runtime = {}) {
   const parts = []
   if (runtime.kind) parts.push(String(runtime.kind))
   if (runtime.pid) parts.push(`pid=${runtime.pid}`)
+  if (runtime.backend_instance_id) parts.push(`instance=${runtime.backend_instance_id}`)
+  if (runtime.owns_backend_instance === false) parts.push('lock=foreign')
   if (runtime.scripts_dir) parts.push(`scripts=${runtime.scripts_dir}`)
   return parts.join(' ')
 }
@@ -1147,8 +1189,21 @@ async function validateApiRuntime() {
   if (!health.ok) return false
   const runtime = health.data?.runtime
   if (isCompatibleBackendRuntime(runtime)) return true
+  await stopForeignBackendRuntime(runtime)
   log(`[api] found another crawshrimp backend on port ${apiPort}; ${describeBackendRuntime(runtime) || 'runtime identity unavailable'}`)
   return false
+}
+
+async function stopForeignBackendRuntime(runtime = {}) {
+  const lockPid = runtime.owns_backend_instance === false ? Number(runtime.backend_lock_pid || 0) || readBackendLockPid() : 0
+  const runtimePid = lockPid || Number(runtime.pid || 0)
+  const runtimeDataDir = String(runtime.data_dir || '')
+  if (!runtimePid || runtimePid === process.pid) return false
+  if (!sameRuntimePath(runtimeDataDir, expectedBackendDataDir())) return false
+
+  log(`[api] terminating stale crawshrimp backend pid=${runtimePid}`)
+  if (!stopProcessTreeByPid(runtimePid)) return false
+  return await waitForPidExit(runtimePid)
 }
 
 async function switchApiEndpoint() {
@@ -1218,6 +1273,21 @@ async function startChromeOnLaunch() {
 
 function stopBackend() {
   backendController.stop()
+  desktopServicesStartupPromise = null
+}
+
+async function ensureDesktopServicesStarted() {
+  if (!desktopServicesStartupPromise) {
+    desktopServicesStartupPromise = startDesktopServices({
+      startBackend,
+      startChrome: startChromeOnLaunch,
+      log,
+    })
+  }
+  const startup = await desktopServicesStartupPromise
+  if (startup.api.ok) log(`[api] ready on port ${apiPort}`)
+  if (!startup.api.ok) desktopServicesStartupPromise = null
+  return startup
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
@@ -1226,14 +1296,10 @@ app.whenReady().then(async () => {
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    ensureDesktopServicesStarted()
   })
 
-  const startup = await startDesktopServices({
-    startBackend,
-    startChrome: startChromeOnLaunch,
-    log,
-  })
-  if (startup.api.ok) log(`[api] ready on port ${apiPort}`)
+  await ensureDesktopServicesStarted()
 })
 
 app.on('window-all-closed', () => {

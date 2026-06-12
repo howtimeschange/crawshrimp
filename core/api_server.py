@@ -104,9 +104,9 @@ def _get_api_token() -> str:
         except OSError:
             pass
         return token
-    except Exception:
+    except Exception as exc:
         logger.exception("Failed to read or create crawshrimp API token")
-        return ""
+        raise RuntimeError("Failed to prepare crawshrimp API token") from exc
 
 
 def _api_auth_required() -> bool:
@@ -250,9 +250,16 @@ def _backend_runtime_kind() -> str:
 def _backend_runtime_info() -> dict:
     data_dir = runtime_paths.data_root()
     lock_dir = _backend_lock_dir()
+    lock_pid = ""
+    try:
+        lock_pid = _backend_lock_path().read_text(encoding="utf-8").strip()
+    except Exception:
+        lock_pid = ""
     return {
         "kind": _backend_runtime_kind(),
         "pid": os.getpid(),
+        "backend_instance_id": str(os.environ.get("CRAWSHRIMP_BACKEND_INSTANCE_ID") or ""),
+        "backend_lock_pid": lock_pid,
         "scripts_dir": str(Path(__file__).resolve().parent.parent),
         "data_dir": str(data_dir.resolve() if data_dir.exists() else data_dir),
         "lock_dir": str(lock_dir.expanduser().resolve() if lock_dir.exists() else lock_dir),
