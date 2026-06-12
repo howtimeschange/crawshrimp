@@ -13,9 +13,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional
 
+from core import runtime_paths
 from core.models import TaskRun, TaskStatus
 
 logger = logging.getLogger(__name__)
+
+MAX_EXPORT_FILENAME_LENGTH = 140
 
 
 class _SafeTemplateVars(dict):
@@ -24,17 +27,11 @@ class _SafeTemplateVars(dict):
 
 
 def _data_root() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    p = Path(base) / "data"
-    p.mkdir(parents=True, exist_ok=True)
-    return p
+    return runtime_paths.child_dir("data")
 
 
 def _db_path() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    p = Path(base)
-    p.mkdir(parents=True, exist_ok=True)   # auto-create ~/.crawshrimp/
-    return p / "crawshrimp.db"
+    return runtime_paths.data_root() / "crawshrimp.db"
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -230,6 +227,23 @@ def _sanitize_filename(text: Any, fallback: str = "output") -> str:
     return value or fallback
 
 
+def _shorten_filename(filename: str, max_length: int = MAX_EXPORT_FILENAME_LENGTH) -> str:
+    value = _sanitize_filename(filename)
+    if len(value) <= max_length:
+        return value
+
+    suffix = Path(value).suffix
+    stem = value[:-len(suffix)] if suffix else value
+    budget = max_length - len(suffix)
+    if budget <= 0:
+        return value[:max_length].strip(" ._") or "output"
+
+    tail_budget = min(64, max(24, budget // 2))
+    head_budget = max(12, budget - tail_budget - 1)
+    shortened = f"{stem[:head_budget].rstrip(' ._')}_{stem[-tail_budget:].lstrip(' ._')}{suffix}"
+    return shortened[:max_length].strip(" ._") or f"output{suffix}"
+
+
 def _render_filename(template: str, adapter_id: str, task_id: str,
                      filename_vars: Optional[Mapping[str, Any]] = None) -> str:
     now = datetime.now()
@@ -243,7 +257,7 @@ def _render_filename(template: str, adapter_id: str, task_id: str,
     if filename_vars:
         for key, value in filename_vars.items():
             vars_map[str(key)] = _sanitize_filename(value, "")
-    return _sanitize_filename(template.format_map(_SafeTemplateVars(vars_map)))
+    return _shorten_filename(template.format_map(_SafeTemplateVars(vars_map)))
 
 
 def _ensure_unique_path(path: Path) -> Path:

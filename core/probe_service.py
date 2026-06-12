@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
+from core import runtime_paths
 from core.browser_session import open_browser_session
 from core.probe_analyzer import (
     analyze_endpoints,
@@ -208,10 +209,7 @@ def _safe_target_expr(labels: list[str], selectors: list[str], limit: int) -> st
 
 
 def _probe_root() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    root = Path(base) / "probes"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return runtime_paths.child_dir("probes")
 
 
 def _probe_id(mode: str) -> str:

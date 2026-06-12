@@ -31,6 +31,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
+from core import runtime_paths
 from core.config import load_config, save_config
 from core import adapter_loader
 from core import data_sink
@@ -73,13 +74,17 @@ RUNTIME_CLEANUP_TASKS = {
     ("tiktok-ops-assistant", "creator_video_download"),
 }
 
-BACKEND_LOCK_DIR = Path(
-    os.environ.get(
-        "CRAWSHRIMP_BACKEND_LOCK_DIR",
-        os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp")),
-    )
-)
-BACKEND_LOCK_PATH = BACKEND_LOCK_DIR / "backend.lock"
+def _backend_lock_dir() -> Path:
+    explicit = str(os.environ.get("CRAWSHRIMP_BACKEND_LOCK_DIR") or "").strip()
+    if explicit:
+        path = Path(explicit).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return runtime_paths.data_root()
+
+
+def _backend_lock_path() -> Path:
+    return _backend_lock_dir() / "backend.lock"
 
 
 def _get_api_token() -> str:
@@ -87,7 +92,7 @@ def _get_api_token() -> str:
     if env_token:
         return env_token
 
-    token_path = BACKEND_LOCK_DIR / "api-token"
+    token_path = _backend_lock_dir() / "api-token"
     try:
         if token_path.exists():
             return token_path.read_text(encoding="utf-8").strip()
@@ -229,7 +234,7 @@ class BackendInstanceLock:
 
 
 def _acquire_backend_instance_lock() -> BackendInstanceLock:
-    lock = BackendInstanceLock(BACKEND_LOCK_PATH)
+    lock = BackendInstanceLock(_backend_lock_path())
     lock.acquire()
     return lock
 
@@ -243,13 +248,14 @@ def _backend_runtime_kind() -> str:
 
 
 def _backend_runtime_info() -> dict:
-    data_dir = Path(os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))).expanduser()
+    data_dir = runtime_paths.data_root()
+    lock_dir = _backend_lock_dir()
     return {
         "kind": _backend_runtime_kind(),
         "pid": os.getpid(),
         "scripts_dir": str(Path(__file__).resolve().parent.parent),
         "data_dir": str(data_dir.resolve() if data_dir.exists() else data_dir),
-        "lock_dir": str(BACKEND_LOCK_DIR.expanduser().resolve() if BACKEND_LOCK_DIR.exists() else BACKEND_LOCK_DIR),
+        "lock_dir": str(lock_dir.expanduser().resolve() if lock_dir.exists() else lock_dir),
         "owns_backend_instance": bool(getattr(app.state, "owns_backend_instance", False)) if "app" in globals() else False,
     }
 

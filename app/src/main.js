@@ -21,6 +21,8 @@ const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
 const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 0
+let resolvedCrawshrimpDataDir = ''
+let preferredCrawshrimpDataDir = ''
 
 function normalizePathForIdentity(rawPath = '') {
   const resolved = path.resolve(String(rawPath || ''))
@@ -185,8 +187,120 @@ function getPythonScriptsDir() {
   return path.join(__dirname, '..', '..')
 }
 
+function getDesktopConfigPath() {
+  return path.join(app.getPath('userData'), 'desktop-config.json')
+}
+
+function readDesktopConfig() {
+  try {
+    const raw = fs.readFileSync(getDesktopConfigPath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function writeDesktopConfig(patch = {}) {
+  const next = { ...readDesktopConfig(), ...(patch || {}) }
+  const configPath = getDesktopConfigPath()
+  fs.mkdirSync(path.dirname(configPath), { recursive: true })
+  fs.writeFileSync(configPath, JSON.stringify(next, null, 2), 'utf8')
+  return next
+}
+
+function resolveConfiguredDataDir(rawValue = '') {
+  const raw = String(rawValue || '').trim()
+  if (!raw || raw === 'data') return ''
+  if (raw === '~') return app.getPath('home')
+  if (raw.startsWith(`~${path.sep}`) || raw.startsWith('~/') || raw.startsWith('~\\')) {
+    return path.resolve(path.join(app.getPath('home'), raw.slice(2)))
+  }
+  if (!path.isAbsolute(raw)) return ''
+  return path.resolve(raw)
+}
+
+function getWindowsLocalCrawshrimpDataDir() {
+  const localAppData = String(process.env.LOCALAPPDATA || '').trim()
+  if (localAppData) return path.join(localAppData, 'crawshrimp')
+  return path.join(app.getPath('userData'), 'data')
+}
+
+function readLegacyConfiguredDataDir() {
+  try {
+    const legacyConfigPath = path.join(app.getPath('home'), '.crawshrimp', 'config.json')
+    const raw = fs.readFileSync(legacyConfigPath, 'utf8')
+    const parsed = JSON.parse(raw)
+    return resolveConfiguredDataDir(parsed?.data_dir || '')
+  } catch {
+    return ''
+  }
+}
+
+function ensureWritableDirectory(dirPath, label = 'directory') {
+  fs.mkdirSync(dirPath, { recursive: true })
+  const probe = path.join(dirPath, `.crawshrimp-write-test-${process.pid}-${Date.now()}`)
+  fs.writeFileSync(probe, 'ok', 'utf8')
+  fs.unlinkSync(probe)
+  return fs.realpathSync.native(dirPath)
+}
+
+function ensureWritableDataDir(dirPath) {
+  const root = ensureWritableDirectory(dirPath, 'CRAWSHRIMP_DATA')
+  for (const childName of ['adapters', 'adapter-meta', 'data', 'logs']) {
+    ensureWritableDirectory(path.join(root, childName), childName)
+  }
+  return root
+}
+
+function resolveCrawshrimpDataDir() {
+  const explicit = String(process.env.CRAWSHRIMP_DATA || '').trim()
+  if (explicit) return path.resolve(explicit)
+  if (!preferredCrawshrimpDataDir) {
+    preferredCrawshrimpDataDir = resolveConfiguredDataDir(readDesktopConfig().data_dir || '') || readLegacyConfiguredDataDir()
+  }
+  if (preferredCrawshrimpDataDir) return path.resolve(preferredCrawshrimpDataDir)
+
+  if (process.platform === 'win32') {
+    return path.resolve(getWindowsLocalCrawshrimpDataDir())
+  }
+  return path.join(app.getPath('home'), '.crawshrimp')
+}
+
+function prepareCrawshrimpDataDir() {
+  const explicit = String(process.env.CRAWSHRIMP_DATA || '').trim()
+  const candidates = [resolveCrawshrimpDataDir()]
+  if (!explicit && process.platform === 'win32') {
+    candidates.push(path.join(app.getPath('home'), '.crawshrimp'))
+    candidates.push(getWindowsLocalCrawshrimpDataDir())
+  }
+
+  const seen = new Set()
+  const errors = []
+  for (const candidate of candidates) {
+    const dirPath = path.resolve(candidate)
+    const key = dirPath.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    try {
+      const writable = ensureWritableDataDir(dirPath)
+      process.env.CRAWSHRIMP_DATA = writable
+      writeDesktopConfig({ data_dir: writable })
+      return writable
+    } catch (error) {
+      errors.push(`${dirPath}: ${error.message}`)
+      console.log(`[data] ${dirPath} is not writable: ${error.message}`)
+    }
+  }
+
+  throw new Error(`No writable CRAWSHRIMP_DATA directory. ${errors.join(' | ')}`)
+}
+
 function getCrawshrimpDataDir() {
-  return process.env.CRAWSHRIMP_DATA || path.join(app.getPath('home'), '.crawshrimp')
+  if (!resolvedCrawshrimpDataDir) {
+    resolvedCrawshrimpDataDir = prepareCrawshrimpDataDir()
+  }
+  return resolvedCrawshrimpDataDir
 }
 
 function getApiTokenPath() {
@@ -562,6 +676,7 @@ function spawnBackendProcess() {
   const serverScript = getApiServerScript()
   const scriptsDir = getPythonScriptsDir()
   const launchArgs = getBackendLaunchArgs()
+  resolvedCrawshrimpDataDir = getCrawshrimpDataDir()
 
   if (!fs.existsSync(serverScript)) {
     throw new Error(`api_server.py not found: ${serverScript}`)
@@ -576,6 +691,7 @@ function spawnBackendProcess() {
       PYTHONIOENCODING: 'utf-8',
       PYTHONUTF8: '1',
       CRAWSHRIMP_PORT: String(apiPort),
+      CRAWSHRIMP_DATA: resolvedCrawshrimpDataDir,
       CRAWSHRIMP_API_TOKEN: getApiToken(),
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: scriptsDir,
@@ -1177,8 +1293,29 @@ secureHandle('open-file', async (_, filePath) => {
   return { ok: true }
 })
 
-secureHandle('get-settings',  async () => apiCall('GET', '/settings'))
-secureHandle('save-settings', async (_, cfg) => apiCall('PUT', '/settings', cfg))
+secureHandle('get-settings', async () => {
+  const cfg = await apiCall('GET', '/settings')
+  const desktopCfg = readDesktopConfig()
+  const desktopDataDir = resolveConfiguredDataDir(desktopCfg.data_dir || '')
+  cfg.data_dir = desktopDataDir || getCrawshrimpDataDir()
+  return cfg
+})
+secureHandle('save-settings', async (_, cfg) => {
+  const plain = cfg && typeof cfg === 'object' ? cfg : {}
+  const dataDir = resolveConfiguredDataDir(plain.data_dir || '')
+  if (dataDir) {
+    plain.data_dir = dataDir
+    preferredCrawshrimpDataDir = dataDir
+    writeDesktopConfig({ data_dir: dataDir })
+  } else {
+    preferredCrawshrimpDataDir = ''
+    writeDesktopConfig({ data_dir: '' })
+  }
+  const result = await apiCall('PUT', '/settings', plain)
+  return dataDir && !sameRuntimePath(dataDir, getCrawshrimpDataDir())
+    ? { ...result, restart_required: true }
+    : result
+})
 
 secureHandle('stat-file', async (_, filePath) => {
   try {

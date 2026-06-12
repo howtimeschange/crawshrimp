@@ -1,6 +1,7 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from core import data_sink
@@ -38,6 +39,43 @@ class DataSinkLifecycleTests(unittest.TestCase):
                 self.assertEqual(run["status"], "done")
                 self.assertEqual(run["records_count"], 3)
                 self.assertFalse(run["error"])
+
+    def test_export_excel_shortens_long_temu_product_title_filename(self):
+        long_title = (
+            "Balabala Kids' Shoes Children's Sports Sandals, Boys' Summer New Closed-Toe "
+            "Comfort & Soft Sole Toddlers Shoes, Cute LittleOcto First Walkers for "
+            "Everyday Beach Casual Wear"
+        )
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"CRAWSHRIMP_DATA": tmpdir}, clear=False):
+                output_path = data_sink.export_excel(
+                    [{"商品ID": "601102594063699", "评价内容": "ok"}],
+                    "temu",
+                    "single_product_reviews",
+                    filename_template="{shop_name}_单款商品评价_{goods_id}_{timestamp}.xlsx",
+                    filename_vars={
+                        "shop_name": long_title,
+                        "goods_id": "601102594063699",
+                    },
+                )
+
+        output_name = Path(output_path).name
+        self.assertLessEqual(len(output_name), 140)
+        self.assertTrue(output_name.endswith(".xlsx"))
+        self.assertIn("601102594063699", output_name)
+
+    def test_init_db_uses_local_app_data_default_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            local_app_data = Path(tmpdir) / "local-app-data"
+            runtime_root = local_app_data / "crawshrimp"
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+                os.environ.pop("CRAWSHRIMP_DATA", None)
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    data_sink.init_db()
+
+            self.assertTrue((runtime_root / "crawshrimp.db").exists())
 
 
 if __name__ == "__main__":

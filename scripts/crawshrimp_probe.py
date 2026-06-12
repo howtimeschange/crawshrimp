@@ -22,6 +22,12 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
 from urllib.request import Request, urlopen
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from core import runtime_paths
+
 
 DEFAULT_API = "http://127.0.0.1:18765"
 
@@ -30,7 +36,7 @@ def _api_token() -> str:
     env_token = str(os.environ.get("CRAWSHRIMP_API_TOKEN") or "").strip()
     if env_token:
         return env_token
-    token_path = Path(os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))) / "api-token"
+    token_path = runtime_paths.data_root() / "api-token"
     try:
         return token_path.read_text(encoding="utf-8").strip()
     except OSError:

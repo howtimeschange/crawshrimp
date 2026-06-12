@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from core import adapter_loader
+from core import runtime_paths
 
 
 SECTION_PATTERN = re.compile(r"^(#{2,3})\s+(.*)$")
@@ -20,10 +21,7 @@ NON_WORD_PATTERN = re.compile(r"[^a-z0-9\u4e00-\u9fff]+")
 
 
 def _data_root() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    root = Path(base) / "knowledge"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return runtime_paths.child_dir("knowledge")
 
 
 def _cards_path() -> Path:
@@ -307,8 +305,7 @@ def _iter_installed_adapter_dirs() -> list[tuple[str, Path]]:
 
 
 def _iter_probe_bundle_dirs() -> list[Path]:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    root = Path(base) / "probes"
+    root = runtime_paths.child_dir("probes", create=False)
     if not root.exists():
         return []
     return sorted(path.parent for path in root.glob("**/manifest.json"))

@@ -15,6 +15,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import yaml
 from pydantic import ValidationError
 
+from core import runtime_paths
 from core.models import AdapterManifest
 
 logger = logging.getLogger(__name__)
@@ -29,17 +30,11 @@ SCRIPT_SUFFIXES = (".js",)
 
 
 def _adapters_root() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    root = Path(base) / "adapters"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return runtime_paths.child_dir("adapters")
 
 
 def _metadata_root() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    root = Path(base) / "adapter-meta"
-    root.mkdir(parents=True, exist_ok=True)
-    return root
+    return runtime_paths.child_dir("adapter-meta")
 
 
 def _metadata_path(adapter_id: str) -> Path:

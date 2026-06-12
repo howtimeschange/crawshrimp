@@ -1,8 +1,9 @@
 """全局配置读写"""
-import os
 import json
 from pathlib import Path
 from typing import Any
+
+from core import runtime_paths
 
 DEFAULT_CONFIG = {
     "chrome": {
@@ -22,10 +23,7 @@ DEFAULT_CONFIG = {
 
 
 def _config_path() -> Path:
-    base = os.environ.get("CRAWSHRIMP_DATA", str(Path.home() / ".crawshrimp"))
-    p = Path(base)
-    p.mkdir(parents=True, exist_ok=True)
-    return p / "config.json"
+    return runtime_paths.data_root() / "config.json"
 
 
 def load_config() -> dict:

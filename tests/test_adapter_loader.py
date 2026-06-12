@@ -5,7 +5,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from core import adapter_loader
+from core import adapter_loader, runtime_paths
 
 
 def _write_adapter(root: Path, adapter_id: str = "demo-adapter", version: str = "1.0.0") -> Path:
@@ -45,6 +45,7 @@ class AdapterLoaderTests(unittest.TestCase):
         adapter_loader._adapter_dirs.clear()
         adapter_loader._enabled.clear()
         adapter_loader._install_meta.clear()
+        runtime_paths.reset_runtime_data_root_cache()
 
     def test_install_from_dir_copy_persists_metadata(self):
         with unittest.mock.patch.dict(os.environ, self.env, clear=False):
@@ -271,6 +272,19 @@ class AdapterLoaderTests(unittest.TestCase):
 
             self.assertEqual(sorted(manifest.id for manifest in manifests), ["stable-a", "stable-b"])
             self.assertEqual(len(adapter_loader.list_all()), 2)
+
+    def test_scan_all_uses_local_app_data_default_adapter_root(self):
+        home_dir = Path(self.tmpdir.name) / "home"
+        local_app_data = Path(self.tmpdir.name) / "local-app-data"
+        runtime_adapter_root = local_app_data / "crawshrimp" / "adapters"
+
+        with unittest.mock.patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+            os.environ.pop("CRAWSHRIMP_DATA", None)
+            with unittest.mock.patch.object(Path, "home", return_value=home_dir):
+                manifests = adapter_loader.scan_all()
+
+        self.assertEqual(manifests, [])
+        self.assertTrue(runtime_adapter_root.exists())
 
     def test_install_from_dir_rejects_adapter_id_path_traversal(self):
         with unittest.mock.patch.dict(os.environ, self.env, clear=False):
