@@ -58,7 +58,7 @@ class CDPBridge:
             return False
 
     def new_tab(self, url: str) -> dict:
-        encoded = quote(url, safe=':/?&=_-%#')
+        encoded = quote(url, safe='')
         req = Request(f"{self.cdp_url}/json/new?{encoded}", method="PUT")
         try:
             resp = cdp_urlopen(req, timeout=8)

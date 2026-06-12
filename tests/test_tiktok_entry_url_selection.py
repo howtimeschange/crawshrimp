@@ -64,6 +64,34 @@ class TemuCurrentTabMatchingTests(unittest.TestCase):
             "https://seller.kuajingmaihuo.com/main/order-manager/shipping-list",
         )
 
+    def test_temu_single_product_reviews_new_page_opens_product_url_directly(self):
+        product_url = "https://www.temu.com/de-en/example-g-606106067809179.html"
+
+        self.assertEqual(
+            api_server._resolve_task_target_entry_url(
+                "temu",
+                "single_product_reviews",
+                {"product_url": product_url},
+                "https://www.temu.com",
+            ),
+            product_url,
+        )
+        self.assertEqual(api_server._temu_new_tab_entry_url(product_url), product_url)
+
+    def test_temu_single_product_reviews_new_page_uses_first_product_url_for_multi_links(self):
+        first_url = "https://www.temu.com/de-en/example-g-606517898129873.html?_oak_mp_inf=x"
+        second_url = "https://www.temu.com/de-en/example-g-606106067809179.html?_oak_mp_inf=y"
+
+        self.assertEqual(
+            api_server._resolve_task_target_entry_url(
+                "temu",
+                "single_product_reviews",
+                {"product_url": f"{first_url}\n{second_url}"},
+                "https://www.temu.com",
+            ),
+            first_url,
+        )
+
     def test_temu_no_auth_url_is_detected(self):
         self.assertTrue(api_server._is_temu_no_auth_url("https://seller.temu.com/no-auth.html"))
         self.assertFalse(api_server._is_temu_no_auth_url("https://seller.temu.com/login"))

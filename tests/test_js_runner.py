@@ -300,6 +300,7 @@ class RuntimeActionRunner(JSRunner):
         super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
         self.calls = []
         self.capture_click_payloads = []
+        self.capture_wheel_payloads = []
         self.download_payloads = []
 
     async def _persist_run_params(self, run_token: str, params_json: str) -> None:
@@ -347,6 +348,20 @@ class RuntimeActionRunner(JSRunner):
                 success=True,
                 data=[],
                 meta={
+                    "action": "capture_wheel_requests",
+                    "wheels": [{"x": 3, "y": 4, "delta_y": 640}],
+                    "matches": [{"url_contains": "/page-2"}],
+                    "shared_key": "wheel_captured",
+                    "next_phase": "after_wheel_capture",
+                    "shared": shared or {},
+                },
+            )
+
+        if phase == "after_wheel_capture":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
                     "action": "download_urls",
                     "items": [{
                         "url": "https://example.com/demo.xlsx",
@@ -379,6 +394,19 @@ class RuntimeActionRunner(JSRunner):
             "matches": [{
                 "url": "https://example.com/api/download",
                 "body": '{"result":{"fileUrl":"https://example.com/demo.xlsx"}}',
+            }],
+        }
+
+    async def capture_wheel_requests(self, wheels, **kwargs):
+        self.capture_wheel_payloads.append({
+            "wheels": wheels,
+            "kwargs": kwargs,
+        })
+        return {
+            "ok": True,
+            "matches": [{
+                "url": "https://example.com/api/page-2",
+                "body": '{"ok":true}',
             }],
         }
 
@@ -878,14 +906,19 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             data = await runner.run_script_file(script_path, params={})
 
         self.assertEqual(data, [{"phase": "after_download"}])
-        self.assertEqual([call["phase"] for call in runner.calls], ["main", "after_capture", "after_download"])
+        self.assertEqual([call["phase"] for call in runner.calls], ["main", "after_capture", "after_wheel_capture", "after_download"])
         self.assertEqual(len(runner.capture_click_payloads), 1)
         self.assertEqual(runner.capture_click_payloads[0]["clicks"], [{"x": 1, "y": 2}])
         self.assertEqual(runner.capture_click_payloads[0]["kwargs"]["include_response_body"], False)
         self.assertIn("captured", runner.calls[1]["shared"])
         self.assertTrue(runner.calls[1]["shared"]["captured"]["ok"])
+        self.assertEqual(len(runner.capture_wheel_payloads), 1)
+        self.assertEqual(runner.capture_wheel_payloads[0]["wheels"], [{"x": 3, "y": 4, "delta_y": 640}])
+        self.assertEqual(runner.capture_wheel_payloads[0]["kwargs"]["include_response_body"], False)
+        self.assertIn("wheel_captured", runner.calls[2]["shared"])
+        self.assertTrue(runner.calls[2]["shared"]["wheel_captured"]["ok"])
         self.assertEqual(len(runner.download_payloads), 1)
-        self.assertIn("downloads", runner.calls[2]["shared"])
+        self.assertIn("downloads", runner.calls[3]["shared"])
         self.assertEqual(len(runner.runtime_output_files), 1)
         self.assertEqual(Path(runner.runtime_output_files[0]).name, "demo.xlsx")
 
@@ -1087,6 +1120,70 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
                 "Network.getResponseBody",
             ],
         )
+
+    async def test_capture_requests_on_ws_dispatches_wheel_events(self):
+        runner = JSRunner("ws://example.invalid")
+        fake_ws = FakeCDPWebSocket([
+            {"id": 1, "result": {}},
+            {"id": 2, "result": {}},
+            {"id": 3, "result": {}},
+            {
+                "method": "Network.requestWillBeSent",
+                "params": {
+                    "requestId": "req-1",
+                    "request": {
+                        "url": "https://example.com/api/reviews/list?page=2",
+                        "method": "GET",
+                        "headers": {},
+                    },
+                },
+            },
+            {
+                "method": "Network.responseReceived",
+                "params": {
+                    "requestId": "req-1",
+                    "response": {
+                        "status": 200,
+                        "mimeType": "application/json",
+                        "headers": {},
+                        "url": "https://example.com/api/reviews/list?page=2",
+                    },
+                },
+            },
+            {
+                "method": "Network.loadingFinished",
+                "params": {"requestId": "req-1"},
+            },
+            {"id": 4, "result": {}},
+            {"id": 5, "result": {}},
+        ])
+
+        with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+            result = await runner._capture_requests_on_ws(
+                "ws://example.invalid/capture",
+                wheels=[{"x": 320, "y": 420, "delta_y": 700, "delay_ms": 0}],
+                matches=[{"url_contains": "/api/reviews/list"}],
+                timeout_ms=1000,
+                settle_ms=0,
+                min_matches=1,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["wheelTotal"], 1)
+        self.assertEqual(len(result["matches"]), 1)
+        self.assertEqual(
+            [item["method"] for item in fake_ws.sent],
+            [
+                "Page.enable",
+                "Network.enable",
+                "Page.bringToFront",
+                "Input.dispatchMouseEvent",
+                "Input.dispatchMouseEvent",
+            ],
+        )
+        self.assertEqual(fake_ws.sent[3]["params"]["type"], "mouseMoved")
+        self.assertEqual(fake_ws.sent[4]["params"]["type"], "mouseWheel")
+        self.assertEqual(fake_ws.sent[4]["params"]["deltaY"], 700)
 
     async def test_run_script_file_handles_runtime_click_download_action(self):
         with tempfile.TemporaryDirectory() as tmpdir:

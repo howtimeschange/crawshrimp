@@ -10,6 +10,70 @@ auth:
   login_url: https://seller.temu.com/login
 
 tasks:
+  - id: single_product_reviews
+    name: 商城-单款商品评价
+    description: 抓取 Temu 商城前台单个或多个商品详情页评论，优先使用页面评论接口，接口繁忙时使用页面结构化数据兜底
+    script: single-product-reviews.js
+    entry_url: https://www.temu.com
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 在当前页面
+          - value: new
+            label: 全新页面
+      - id: product_url
+        type: line_list
+        label: 商品链接
+        placeholder: "例: https://www.temu.com/...-g-605693750906920.html"
+        add_label: 新增商品链接
+        hint: 每行一个 Temu 商品详情页链接；可批量抓取多个商品。当前页面模式下也可留空，脚本会读取当前商品页
+      - id: page_size
+        type: number
+        label: 每页数量
+        default: 10
+        min: 1
+        max: 20
+      - id: max_pages
+        type: number
+        label: 最大页数
+        default: 20
+        min: 1
+        max: 100
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "{shop_name}_单款商品评价_{goods_id}_{timestamp}.xlsx"
+        columns:
+          - 商品ID
+          - 商品标题
+          - 商品链接
+          - 商品图片
+          - 评论页码
+          - 评论序号
+          - 评价ID
+          - 买家昵称
+          - 评分
+          - SKU_ID
+          - 规格
+          - 合身情况
+          - 评价内容
+          - 评价原文
+          - 评价国家
+          - 评价时间
+          - 评价时间原文
+          - 评价图片
+          - 头像
+          - 数据来源
+          - 执行结果
+          - 备注
+
+
   - id: goods_data
     name: 商品数据
     description: 抓取 Temu 商品数据（支付件数、趋势等），支持时间区间筛选

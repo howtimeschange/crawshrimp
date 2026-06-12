@@ -70,6 +70,36 @@ class ExportFilenameContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(quality_ctx["region_scope"], "全球+欧区")
         self.assertEqual(quality_ctx["quality_tab_scope"], "品质分析+品质优化")
 
+    async def test_single_product_reviews_context_uses_goods_id_from_product_url(self):
+        ctx = await self._build_ctx(
+            "single_product_reviews",
+            {
+                "product_url": (
+                    "https://www.temu.com/de-en/-girls-fashion-sandals-"
+                    "g-605693750906920.html?_oak_mp_inf=x"
+                ),
+            },
+            page_ctx={"shop_name": "Girls Fashion Sandals"},
+        )
+
+        self.assertEqual(ctx["shop_name"], "Girls Fashion Sandals")
+        self.assertEqual(ctx["goods_id"], "605693750906920")
+
+    async def test_single_product_reviews_context_uses_first_goods_id_from_multi_links(self):
+        ctx = await self._build_ctx(
+            "single_product_reviews",
+            {
+                "product_url": (
+                    "https://www.temu.com/de-en/example-g-606517898129873.html?_oak_mp_inf=x\n"
+                    "https://www.temu.com/de-en/example-g-606106067809179.html?_oak_mp_inf=y"
+                ),
+            },
+            page_ctx={"shop_name": "Boys Sports Sandals", "goods_id": "606106067809179"},
+        )
+
+        self.assertEqual(ctx["shop_name"], "Boys Sports Sandals")
+        self.assertEqual(ctx["goods_id"], "606517898129873")
+
     async def test_tiktok_product_management_context_uses_chinese_status_scope(self):
         ctx = await self._build_ctx(
             "product_management_export",

@@ -637,6 +637,7 @@ class JSRunner:
         ws_url: str,
         *,
         clicks: Optional[list[dict]] = None,
+        wheels: Optional[list[dict]] = None,
         url: str = "",
         matches: Optional[list[dict]] = None,
         timeout_ms: int = 8000,
@@ -773,6 +774,31 @@ class JSRunner:
                             params.update({"button": "left", "clickCount": 1, "buttons": 0})
                         await send("Input.dispatchMouseEvent", params)
                     await asyncio.sleep(delay_ms / 1000.0)
+            elif wheels:
+                await asyncio.sleep(0.3)
+                for wheel in wheels:
+                    x = float(wheel["x"])
+                    y = float(wheel["y"])
+                    delta_x = float(wheel.get("delta_x", wheel.get("deltaX", 0)) or 0)
+                    delta_y = float(wheel.get("delta_y", wheel.get("deltaY", 0)) or 0)
+                    delay_ms = int(wheel.get("delay_ms", 80))
+                    await send("Input.dispatchMouseEvent", {
+                        "type": "mouseMoved",
+                        "x": x,
+                        "y": y,
+                        "button": "none",
+                        "clickCount": 0,
+                        "modifiers": 0,
+                    })
+                    await send("Input.dispatchMouseEvent", {
+                        "type": "mouseWheel",
+                        "x": x,
+                        "y": y,
+                        "deltaX": delta_x,
+                        "deltaY": delta_y,
+                        "modifiers": 0,
+                    })
+                    await asyncio.sleep(delay_ms / 1000.0)
 
             deadline = time.monotonic() + max(timeout_ms, 1000) / 1000.0
             settle_seconds = max(settle_ms, 0) / 1000.0
@@ -805,6 +831,7 @@ class JSRunner:
             "matches": matched_requests,
             "requestedUrl": str(url or ""),
             "clickTotal": len(clicks or []),
+            "wheelTotal": len(wheels or []),
         }
 
     async def capture_click_requests(
@@ -831,6 +858,32 @@ class JSRunner:
             include_response_body=include_response_body,
         )
         result["mode"] = "click"
+        return result
+
+    async def capture_wheel_requests(
+        self,
+        wheels: list[dict],
+        *,
+        matches: Optional[list[dict]] = None,
+        timeout_ms: int = 8000,
+        settle_ms: int = 1000,
+        min_matches: int = 1,
+        include_response_body: bool = False,
+    ) -> dict:
+        try:
+            await self._refresh_ws_url()
+        except Exception:
+            logger.debug("refresh_ws_url skipped before capture_wheel_requests", exc_info=True)
+        result = await self._capture_requests_on_ws(
+            self.ws_url,
+            wheels=wheels,
+            matches=matches,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            min_matches=min_matches,
+            include_response_body=include_response_body,
+        )
+        result["mode"] = "wheel"
         return result
 
     async def capture_passive_requests(
@@ -2146,6 +2199,48 @@ class JSRunner:
                                 await asyncio.sleep(sleep_ms / 1000.0)
                             logger.info(
                                 "capture_url_requests: page=%s phase=%s 匹配 %s 条 -> %s",
+                                page,
+                                phase,
+                                len(capture_result.get("matches") or []),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "capture_wheel_requests":
+                            wheels = meta.get("wheels") or []
+                            matches = meta.get("matches") or []
+                            timeout_ms = int(meta.get("timeout_ms") or 8000)
+                            settle_ms = int(meta.get("settle_ms") or 1000)
+                            min_matches = int(meta.get("min_matches") or 1)
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+                            strict = bool(meta.get("strict"))
+
+                            await cooperate("before_capture_wheel_requests", page, phase, shared, {
+                                "wheel_total": len(wheels),
+                                "match_total": len(matches),
+                            })
+                            capture_result = await self.capture_wheel_requests(
+                                wheels,
+                                matches=matches,
+                                timeout_ms=timeout_ms,
+                                settle_ms=settle_ms,
+                                min_matches=min_matches,
+                                include_response_body=bool(meta.get("include_response_body", False)),
+                            )
+                            if strict and not capture_result.get("ok"):
+                                raise RuntimeError(f"capture_wheel_requests 未捕获到匹配请求: {matches}")
+
+                            shared = self._merge_runtime_shared(shared, shared_key, capture_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "capture_wheel_requests: page=%s phase=%s 匹配 %s 条 -> %s",
                                 page,
                                 phase,
                                 len(capture_result.get("matches") or []),

@@ -497,8 +497,44 @@ def _resolve_amazon_review_urls(run_params: dict) -> list[str]:
     return urls
 
 
+def _first_url_from_value(value) -> str:
+    values = value if isinstance(value, list) else [value]
+    for item in values:
+        if isinstance(item, dict):
+            for key in ("url", "link", "product_url", "productUrl", "goods_url", "goodsUrl", "item_url", "itemUrl"):
+                found = _first_url_from_value(item.get(key))
+                if found:
+                    return found
+            for key in ("rows", "urls", "links", "product_urls", "productUrls"):
+                found = _first_url_from_value(item.get(key))
+                if found:
+                    return found
+            continue
+        text = str(item or "").strip()
+        if not text:
+            continue
+        match = re.search(r"https?://[^\s,，;；、]+", text)
+        if match:
+            return match.group(0).rstrip(",，;；、")
+        return text
+    return ""
+
+
 def _resolve_task_target_entry_url(adapter_id: str, task_id: str, run_params: dict, fallback_url: str) -> str:
     fallback = str(fallback_url or "").strip()
+    if (adapter_id, task_id) == ("temu", "single_product_reviews"):
+        product_url = _first_url_from_value(
+            run_params.get("product_url")
+            or run_params.get("product_urls")
+            or run_params.get("productUrls")
+            or run_params.get("goods_url")
+            or run_params.get("item_url")
+            or run_params.get("url")
+            or ""
+        )
+        if product_url:
+            return product_url
+        return fallback
     if (adapter_id, task_id) == ("shopify-ops-assistant", "traffic_data"):
         parsed = urlparse(fallback or "https://admin.shopify.com/store/balabala-global/analytics/reports/sessions_over_time")
         query = parse_qs(parsed.query or "", keep_blank_values=False)
@@ -598,6 +634,25 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
             return empty_label
         clean_values = [str(item).strip() for item in value if str(item).strip()]
         return '+'.join(clean_values) if clean_values else empty_label
+
+    def extract_temu_goods_id(value) -> str:
+        text = str(value or '').strip()
+        if not text:
+            return ''
+        try:
+            parsed = urlparse(text)
+            query = parse_qs(parsed.query)
+            for key in ('goods_id', 'goodsId', 'goodsid', 'product_id'):
+                candidate = str((query.get(key) or [''])[0]).strip()
+                if re.fullmatch(r'\d{8,}', candidate):
+                    return candidate
+        except Exception:
+            pass
+        match = (
+            re.search(r'(?:^|[?&#])goods[_-]?id=(\d{8,})', text, re.I)
+            or re.search(r'-g-(\d{8,})(?:[./?#]|$)', text, re.I)
+        )
+        return match.group(1) if match else ''
 
     if adapter_id == 'shein-helper':
         shein_context_js = r"""
@@ -898,18 +953,23 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
   const textOf = el => (el?.textContent || '').replace(/\s+/g, ' ').trim()
   const h1 = textOf(document.querySelector('h1'))
   const title = String(document.title || '').replace(/\s*-\s*Great Offers.*$/i, '').trim()
+  const goodsMatch = String(location.href || '').match(/(?:[?&]goods[_-]?id=|-g-)(\d{8,})/i)
   return {
     success: true,
-    data: [{ shop_name: h1 || title || '' }],
+    data: [{
+      shop_name: h1 || title || '',
+      current_url: String(location.href || ''),
+      goods_id: goodsMatch ? goodsMatch[1] : '',
+    }],
     meta: { has_more: false }
   }
 })()
 """
 
     page_ctx = {}
-    if task_id not in {'reviews', 'store_items'}:
+    if task_id not in {'reviews', 'store_items', 'single_product_reviews'}:
         page_ctx = await _evaluate_filename_context(runner, backend_context_js)
-    elif task_id in {'reviews', 'store_items'}:
+    elif task_id in {'reviews', 'store_items', 'single_product_reviews'}:
         page_ctx = await _evaluate_filename_context(runner, storefront_context_js)
 
     shared_shop_name = str(page_ctx.get('shared_shop_name') or '').strip()
@@ -925,6 +985,30 @@ async def _build_export_filename_context(adapter_id: str, task_id: str, run_para
                 shop_name = ''
 
     ctx = {'shop_name': shop_name or 'Temu店铺'}
+
+    if task_id == 'single_product_reviews':
+        product_url_for_filename = _first_url_from_value(
+            run_params.get('product_url')
+            or run_params.get('product_urls')
+            or run_params.get('productUrls')
+            or ''
+        )
+        goods_url_for_filename = _first_url_from_value(
+            run_params.get('goods_url')
+            or run_params.get('goodsUrl')
+            or run_params.get('item_url')
+            or run_params.get('itemUrl')
+            or run_params.get('url')
+            or ''
+        )
+        goods_id = (
+            extract_temu_goods_id(run_params.get('goods_id'))
+            or extract_temu_goods_id(product_url_for_filename)
+            or extract_temu_goods_id(goods_url_for_filename)
+            or extract_temu_goods_id(page_ctx.get('goods_id'))
+            or extract_temu_goods_id(page_ctx.get('current_url'))
+        )
+        ctx['goods_id'] = goods_id or '未知商品'
 
     def normalize_temporal_value(value) -> str:
         if isinstance(value, str):
