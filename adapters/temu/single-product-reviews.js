@@ -561,6 +561,15 @@
       for (const el of document.querySelectorAll?.(selector) || []) {
         const text = textOf(el)
         if (!/^see all reviews$/i.test(text) && !/\bsee all reviews\b/i.test(text)) continue
+        try {
+          el.scrollIntoView?.({ block: 'center', inline: 'center', behavior: 'instant' })
+        } catch (error) {
+          try {
+            el.scrollIntoView?.()
+          } catch (nestedError) {
+            // Ignore scroll failures; visibility checks below still protect the click.
+          }
+        }
         const center = getVisibleCenter(el)
         if (!center) continue
         candidates.push({ el, center, area: center.width * center.height, text })
@@ -572,7 +581,8 @@
 
   function getDialogScrollerCenter() {
     const dialog = document.querySelector?.('[role="dialog"]')
-    const root = dialog || document
+    if (!dialog) return null
+    const root = dialog
     const candidates = []
     for (const el of root.querySelectorAll?.('*') || []) {
       const center = getVisibleCenter(el)

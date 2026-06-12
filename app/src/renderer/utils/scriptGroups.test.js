@@ -79,6 +79,14 @@ test('buildScriptGroups keeps task display formatting inside each group', () => 
       adapter_id: 'temu',
       adapter_name: 'Temu 运营助手',
       adapter_version: '1.4.0',
+      task_id: 'single_product_reviews',
+      task_name: '商城-单款商品评价',
+      enabled: true,
+    },
+    {
+      adapter_id: 'temu',
+      adapter_name: 'Temu 运营助手',
+      adapter_version: '1.4.0',
       task_id: 'reviews',
       task_name: '原始店铺评价',
       enabled: true,
@@ -91,6 +99,6 @@ test('buildScriptGroups keeps task display formatting inside each group', () => 
   assert.equal(groups[0].adapter_version, '1.4.0')
   assert.deepEqual(
     groups[0].tasks.map(task => task.task_name),
-    ['商城-店铺评价', '后台-商品数据'],
+    ['商城-单款商品评价', '商城-店铺评价', '后台-商品数据'],
   )
 })

@@ -137,6 +137,15 @@ async function loadScriptGroups(options = {}) {
     }
   }
   scriptGroups.value = nextGroups
+  if (activeScript.value) {
+    const nextActiveScript = nextGroups.find(group => group.adapter_id === activeScript.value.adapter_id)
+    if (nextActiveScript) {
+      activeScript.value = nextActiveScript
+      if (!nextActiveScript.tasks.some(task => task.task_id === activeTaskId.value)) {
+        activeTaskId.value = nextActiveScript.tasks[0]?.task_id || null
+      }
+    }
+  }
   return scriptGroups.value
 }
 

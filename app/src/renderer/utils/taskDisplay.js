@@ -1,4 +1,5 @@
 const TEMU_TASK_NAME_MAP = Object.freeze({
+  single_product_reviews: '商城-单款商品评价',
   reviews: '商城-店铺评价',
   store_items: '商城-站点商品',
   goods_data: '后台-商品数据',
@@ -7,6 +8,7 @@ const TEMU_TASK_NAME_MAP = Object.freeze({
 })
 
 const TEMU_TASK_ORDER = Object.freeze([
+  'single_product_reviews',
   'reviews',
   'store_items',
   'goods_data',

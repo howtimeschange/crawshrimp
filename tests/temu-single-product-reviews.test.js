@@ -17,6 +17,7 @@ class FakeElement {
     this._children = []
     this._selectors = new Map()
     this._rect = options.rect || { left: 0, top: 0, width: 120, height: 32 }
+    this._scrollIntoViewRect = options.scrollIntoViewRect || null
     this._style = options.style || { display: 'block', visibility: 'visible', overflowY: 'visible' }
     this.scrollTop = options.scrollTop || 0
     this.scrollHeight = options.scrollHeight || this._rect.height
@@ -96,7 +97,9 @@ class FakeElement {
     }
   }
 
-  scrollIntoView() {}
+  scrollIntoView() {
+    if (this._scrollIntoViewRect) this._rect = this._scrollIntoViewRect
+  }
   click() {}
 }
 
@@ -148,6 +151,8 @@ async function runScript({
     },
     document,
     location: locationUrl,
+    innerWidth: 1200,
+    innerHeight: 900,
     rawData,
     __INITIAL_PROPS__: initialProps,
     fetch: fetchImpl || (async () => { throw new Error('fetch not mocked') }),
@@ -177,6 +182,8 @@ async function runScript({
   context.globalThis = context
   context.window.fetch = (...args) => context.fetch(...args)
   context.window.getComputedStyle = context.getComputedStyle
+  context.window.innerWidth = 1200
+  context.window.innerHeight = 900
   return await vm.runInNewContext(source, context, { filename: SCRIPT_PATH })
 }
 
@@ -199,6 +206,28 @@ function createSeeAllDocument() {
     rect: { left: 220, top: 420, width: 220, height: 42 },
   })
   const document = new FakeDocument('111 reviews 4,9 All reviews are from verified purchases See all reviews')
+  document.setSelector('button,a,[role="button"],div,span', [seeAll])
+  return document
+}
+
+function createPageScrollerSeeAllDocument() {
+  const pageScroller = new FakeElement({
+    tagName: 'div',
+    text: 'Full product page',
+    rect: { left: 0, top: 0, width: 1185, height: 900 },
+    style: { display: 'block', visibility: 'visible', overflowY: 'auto' },
+    scrollHeight: 7349,
+    clientHeight: 900,
+  })
+  const seeAll = new FakeElement({
+    tagName: 'div',
+    text: 'See all reviews',
+    attributes: { role: 'button' },
+    rect: { left: 220, top: 1420, width: 220, height: 42 },
+    scrollIntoViewRect: { left: 220, top: 420, width: 220, height: 42 },
+  })
+  const document = new FakeDocument('111 reviews 4,9 All reviews are from verified purchases See all reviews')
+  document.setSelector('*', [pageScroller])
   document.setSelector('button,a,[role="button"],div,span', [seeAll])
   return document
 }
@@ -547,6 +576,30 @@ test('single product reviews opens all-review dialog when direct list API is bus
   assert.equal(JSON.stringify(result.meta.matches), JSON.stringify([{ url_contains: '/api/bg/engels/reviews/list', method: 'GET', status: 200 }]))
   assert.equal(result.meta.shared.api_busy, true)
   assert.equal(result.meta.shared.goods_id, '605693750906920')
+})
+
+test('single product reviews does not treat page scroller as an open all-review dialog', async () => {
+  const fetchImpl = async () => createJsonResponse({ success: false, error_code: 40002, error_msg: 'System busy！' }, 429)
+  const rawData = {
+    store: {
+      reviewStore: {
+        commentList: createReviewItems('605693750906920', 'EMBEDDED', 4),
+      },
+    },
+  }
+
+  const result = await runScript({
+    params: { product_url: PRODUCT_URL, max_busy_retries: 0 },
+    fetchImpl,
+    document: createPageScrollerSeeAllDocument(),
+    rawData,
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'capture_click_requests')
+  assert.equal(result.meta.next_phase, 'parse_dialog_click_capture')
+  assert.equal(result.meta.shared_key, 'dialog_click_capture')
+  assert.equal(JSON.stringify(result.meta.clicks), JSON.stringify([{ x: 330, y: 441, delay_ms: 120 }]))
 })
 
 test('single product reviews uses already open all-review dialog when direct list API is busy', async () => {
