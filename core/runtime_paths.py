@@ -38,10 +38,13 @@ def _candidate_data_roots() -> tuple[list[Path], bool]:
     candidates = []
     local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
     home_root = Path.home() / ".crawshrimp"
+    legacy_exists = _has_legacy_runtime_data(home_root)
     if sys.platform == "win32" and local_app_data:
+        if legacy_exists:
+            candidates.append(home_root)
         candidates.append(Path(local_app_data).expanduser() / "crawshrimp")
     elif sys.platform == "darwin":
-        if _has_legacy_runtime_data(home_root):
+        if legacy_exists:
             candidates.append(home_root)
         candidates.append(Path.home() / "Library" / "Application Support" / "crawshrimp")
     candidates.append(home_root)

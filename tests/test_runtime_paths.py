@@ -25,6 +25,45 @@ class RuntimePathsTests(unittest.TestCase):
             self.assertEqual(root, local_app_data / "crawshrimp")
             self.assertTrue(root.exists())
 
+    def test_windows_preserves_existing_legacy_runtime_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            local_app_data = Path(tmpdir) / "local-app-data"
+            legacy_root = home_dir / ".crawshrimp"
+            (legacy_root / "adapters" / "temu").mkdir(parents=True)
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+                os.environ.pop("CRAWSHRIMP_DATA", None)
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "win32"):
+                        root = runtime_paths.data_root()
+
+            self.assertEqual(root, legacy_root)
+            self.assertFalse((local_app_data / "crawshrimp").exists())
+
+    def test_windows_falls_back_to_local_app_data_when_legacy_root_is_not_writable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            local_app_data = Path(tmpdir) / "local-app-data"
+            legacy_root = home_dir / ".crawshrimp"
+            preferred_root = local_app_data / "crawshrimp"
+            (legacy_root / "adapters" / "temu").mkdir(parents=True)
+            original_write_text = Path.write_text
+
+            def guarded_write_text(path, *args, **kwargs):
+                if str(path).startswith(str(legacy_root)):
+                    raise PermissionError("[WinError 5] Access is denied")
+                return original_write_text(path, *args, **kwargs)
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+                os.environ.pop("CRAWSHRIMP_DATA", None)
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "win32"):
+                        with patch.object(Path, "write_text", guarded_write_text):
+                            root = runtime_paths.data_root()
+
+            self.assertEqual(root, preferred_root)
+
     def test_default_data_root_prefers_macos_application_support_when_local_app_data_is_absent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home_dir = Path(tmpdir) / "home"

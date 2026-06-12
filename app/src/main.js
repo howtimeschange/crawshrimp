@@ -281,6 +281,8 @@ function resolveCrawshrimpDataDir() {
   if (preferredCrawshrimpDataDir) return path.resolve(preferredCrawshrimpDataDir)
 
   if (process.platform === 'win32') {
+    const legacyRoot = path.join(app.getPath('home'), '.crawshrimp')
+    if (hasLegacyRuntimeData(legacyRoot)) return path.resolve(legacyRoot)
     return path.resolve(getWindowsLocalCrawshrimpDataDir())
   }
   if (process.platform === 'darwin') {
