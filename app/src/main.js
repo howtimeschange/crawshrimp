@@ -21,6 +21,17 @@ const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
 const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 0
+const LEGACY_RUNTIME_MARKERS = [
+  'adapters',
+  'adapter-meta',
+  'data',
+  'knowledge',
+  'logs',
+  'crawshrimp.db',
+  'config.json',
+  'api-token',
+  'chrome-profile',
+]
 let resolvedCrawshrimpDataDir = ''
 let preferredCrawshrimpDataDir = ''
 
@@ -230,6 +241,10 @@ function getMacLocalCrawshrimpDataDir() {
   return path.join(app.getPath('appData'), 'crawshrimp')
 }
 
+function hasLegacyRuntimeData(dirPath) {
+  return LEGACY_RUNTIME_MARKERS.some(marker => fs.existsSync(path.join(dirPath, marker)))
+}
+
 function readLegacyConfiguredDataDir() {
   try {
     const legacyConfigPath = path.join(app.getPath('home'), '.crawshrimp', 'config.json')
@@ -269,6 +284,8 @@ function resolveCrawshrimpDataDir() {
     return path.resolve(getWindowsLocalCrawshrimpDataDir())
   }
   if (process.platform === 'darwin') {
+    const legacyRoot = path.join(app.getPath('home'), '.crawshrimp')
+    if (hasLegacyRuntimeData(legacyRoot)) return path.resolve(legacyRoot)
     return path.resolve(getMacLocalCrawshrimpDataDir())
   }
   return path.join(app.getPath('home'), '.crawshrimp')

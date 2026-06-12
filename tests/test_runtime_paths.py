@@ -37,6 +37,40 @@ class RuntimePathsTests(unittest.TestCase):
             self.assertEqual(root, home_dir / "Library" / "Application Support" / "crawshrimp")
             self.assertTrue(root.exists())
 
+    def test_macos_preserves_existing_legacy_runtime_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            legacy_root = home_dir / ".crawshrimp"
+            (legacy_root / "adapters" / "temu").mkdir(parents=True)
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "darwin"):
+                        root = runtime_paths.data_root()
+
+            self.assertEqual(root, legacy_root)
+
+    def test_macos_falls_back_to_application_support_when_legacy_root_is_not_writable(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            legacy_root = home_dir / ".crawshrimp"
+            preferred_root = home_dir / "Library" / "Application Support" / "crawshrimp"
+            (legacy_root / "adapters" / "temu").mkdir(parents=True)
+            original_write_text = Path.write_text
+
+            def guarded_write_text(path, *args, **kwargs):
+                if str(path).startswith(str(legacy_root)):
+                    raise PermissionError("[Errno 13] Permission denied")
+                return original_write_text(path, *args, **kwargs)
+
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "darwin"):
+                        with patch.object(Path, "write_text", guarded_write_text):
+                            root = runtime_paths.data_root()
+
+            self.assertEqual(root, preferred_root)
+
     def test_default_data_root_uses_home_dot_dir_on_non_macos_without_local_app_data(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home_dir = Path(tmpdir) / "home"

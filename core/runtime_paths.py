@@ -11,6 +11,17 @@ logger = logging.getLogger(__name__)
 
 _runtime_data_root: Path | None = None
 _runtime_data_key: str = ""
+_LEGACY_RUNTIME_MARKERS = (
+    "adapters",
+    "adapter-meta",
+    "data",
+    "knowledge",
+    "logs",
+    "crawshrimp.db",
+    "config.json",
+    "api-token",
+    "chrome-profile",
+)
 
 
 def reset_runtime_data_root_cache() -> None:
@@ -26,12 +37,19 @@ def _candidate_data_roots() -> tuple[list[Path], bool]:
 
     candidates = []
     local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    home_root = Path.home() / ".crawshrimp"
     if sys.platform == "win32" and local_app_data:
         candidates.append(Path(local_app_data).expanduser() / "crawshrimp")
     elif sys.platform == "darwin":
+        if _has_legacy_runtime_data(home_root):
+            candidates.append(home_root)
         candidates.append(Path.home() / "Library" / "Application Support" / "crawshrimp")
-    candidates.append(Path.home() / ".crawshrimp")
+    candidates.append(home_root)
     return candidates, False
+
+
+def _has_legacy_runtime_data(root: Path) -> bool:
+    return any((root / marker).exists() for marker in _LEGACY_RUNTIME_MARKERS)
 
 
 def _selection_key() -> str:
