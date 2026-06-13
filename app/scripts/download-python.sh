@@ -249,6 +249,8 @@ verify_archive_sha256() {
   local filename="$2"
   local checksums_file="${DOWNLOAD_TMP_DIR}/SHA256SUMS"
   local expected_line
+  local archive_dir
+  local checksum_command
 
   echo "[verify] SHA256 $filename"
   curl --fail --location --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 120 -o "$checksums_file" "$SHA256SUMS_URL"
@@ -258,7 +260,19 @@ verify_archive_sha256() {
     rm -f "$checksums_file"
     return 1
   fi
-  printf '%s\n' "$expected_line" | (cd "$(dirname "$archive")" && shasum -a 256 -c -)
+  archive_dir="$(dirname "$archive")"
+  if command -v shasum >/dev/null 2>&1; then
+    checksum_command="shasum"
+    printf '%s\n' "$expected_line" | (cd "$archive_dir" && shasum -a 256 -c -)
+  elif command -v sha256sum >/dev/null 2>&1; then
+    checksum_command="sha256sum"
+    printf '%s\n' "$expected_line" | (cd "$archive_dir" && sha256sum -c -)
+  else
+    echo "[error] No SHA256 verification tool found; expected shasum or sha256sum" >&2
+    rm -f "$checksums_file"
+    return 1
+  fi
+  echo "[ok] $checksum_command verified $filename"
   rm -f "$checksums_file"
 }
 
