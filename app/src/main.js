@@ -11,6 +11,8 @@ const crypto = require('crypto')
 const { fileURLToPath } = require('url')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
+const { createLifecycleController } = require('./lifecycleController')
+const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChrome')
 const { startDesktopServices } = require('./startupServices')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
@@ -846,6 +848,40 @@ async function waitForPidExit(pid, timeoutMs = 3000) {
   return !isPidAlive(pid)
 }
 
+function readPidCommandLine(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return ''
+  try {
+    if (process.platform === 'win32') {
+      const output = execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`,
+      ], {
+        encoding: 'utf8',
+        timeout: 2500,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      return String(output || '').trim()
+    }
+    return execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf8',
+      timeout: 2500,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+  } catch {
+    return ''
+  }
+}
+
+function isManagedChromePid(pid) {
+  const commandLine = readPidCommandLine(pid)
+  if (!commandLine) return false
+  const normalizedCommand = commandLine.replace(/\\/g, '/').toLowerCase()
+  const normalizedProfile = normalizePathForIdentity(getManagedChromeProfileDir()).toLowerCase()
+  return normalizedCommand.includes(`--remote-debugging-port=${CDP_PORT}`) &&
+    normalizedCommand.includes(normalizedProfile)
+}
+
 function probeChromeCdp(timeoutMs = 800) {
   return new Promise((resolve) => {
     let done = false
@@ -998,6 +1034,7 @@ async function launchChrome(customPath = '') {
 function apiCall(method, urlPath, body = null, options = {}) {
   const retries = Math.max(0, Number(options.retries || 0))
   const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 0))
+  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0))
 
   const doRequest = () => new Promise((resolve, reject) => {
     const bodyStr = body ? JSON.stringify(body) : null
@@ -1020,6 +1057,13 @@ function apiCall(method, urlPath, body = null, options = {}) {
       })
     })
     req.on('error', reject)
+    if (timeoutMs > 0) {
+      req.setTimeout(timeoutMs, () => {
+        const error = new Error(`Request timed out after ${timeoutMs}ms`)
+        error.code = 'ETIMEDOUT'
+        req.destroy(error)
+      })
+    }
     if (bodyStr) req.write(bodyStr)
     req.end()
   })
@@ -1276,6 +1320,96 @@ function stopBackend() {
   desktopServicesStartupPromise = null
 }
 
+async function getActiveTasksForQuit() {
+  try {
+    return await apiCall('GET', '/tasks/active', null, {
+      ensureReady: false,
+      timeoutMs: 1200,
+    })
+  } catch (error) {
+    log(`[warn] failed to query active tasks before quit: ${error.message}`)
+    return { active: false, tasks: [] }
+  }
+}
+
+async function requestStopActiveTasks(tasks = []) {
+  for (const task of tasks) {
+    const adapterId = String(task.adapter_id || '').trim()
+    const taskId = String(task.task_id || '').trim()
+    if (!adapterId || !taskId) continue
+    try {
+      const result = await apiCall('POST', `/tasks/${encodeURIComponent(adapterId)}/${encodeURIComponent(taskId)}/stop`, null, {
+        ensureReady: false,
+        timeoutMs: 1500,
+      })
+      if (result && typeof result === 'object' && result.ok === false) {
+        throw new Error(result.detail || result.error || 'backend rejected stop request')
+      }
+    } catch (error) {
+      log(`[warn] failed to request stop for ${adapterId}/${taskId}: ${error.message}`)
+    }
+  }
+}
+
+async function waitForNoActiveTasks(timeoutMs = 30000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    const active = await getActiveTasksForQuit()
+    if (!active?.active || !Array.isArray(active.tasks) || active.tasks.length === 0) return true
+    await new Promise(resolve => setTimeout(resolve, 500))
+  }
+  log('[warn] timed out waiting for active tasks to stop before quit')
+  return false
+}
+
+async function confirmQuitWithActiveTasks(tasks = []) {
+  const count = Array.isArray(tasks) ? tasks.length : 0
+  const detail = count > 0
+    ? tasks.slice(0, 5).map(item => `- ${item.adapter_id}/${item.task_id} (${item.status || 'running'})`).join('\n')
+    : ''
+  const result = await dialog.showMessageBox(mainWindow, {
+    type: 'warning',
+    buttons: ['继续运行', '停止任务并退出'],
+    defaultId: 0,
+    cancelId: 0,
+    title: '任务仍在运行',
+    message: `还有 ${count} 个任务正在运行。`,
+    detail: `${detail}${count > 5 ? `\n- 另有 ${count - 5} 个任务...` : ''}\n\n退出会请求任务停止并等待导出收尾完成。`,
+    noLink: true,
+  })
+  return result.response === 1
+}
+
+async function stopManagedChromeForQuit() {
+  const result = await stopManagedChromeFromState({
+    stateFile: getManagedChromeStateFile(),
+    expectedProfileDir: getManagedChromeProfileDir(),
+    expectedCdpPort: CDP_PORT,
+    isPidAlive,
+    isManagedPid: isManagedChromePid,
+    killPid: pid => stopProcessTreeByPid(pid),
+    waitForPidExit: pid => waitForPidExit(pid, 3000),
+    log,
+  })
+  if (result.stopped) {
+    managedChromeProcess = null
+    sendStatus('chrome', false)
+  }
+  return result
+}
+
+async function restoreWindowAfterQuitCanceled() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow()
+  } else {
+    mainWindow.show()
+    mainWindow.focus()
+  }
+  return ensureDesktopServicesStarted().catch(error => {
+    log(`[lifecycle] failed to restart services after quit cancellation: ${error.message}`)
+  })
+}
+
 async function ensureDesktopServicesStarted() {
   if (!desktopServicesStartupPromise) {
     desktopServicesStartupPromise = startDesktopServices({
@@ -1290,6 +1424,19 @@ async function ensureDesktopServicesStarted() {
   return startup
 }
 
+const lifecycleController = createLifecycleController({
+  platform: process.platform,
+  getActiveTasks: getActiveTasksForQuit,
+  confirmQuitWithActiveTasks,
+  requestStopActiveTasks,
+  waitForNoActiveTasks,
+  stopBackend,
+  stopManagedChrome: stopManagedChromeForQuit,
+  quitApp: () => app.quit(),
+  onQuitCanceled: restoreWindowAfterQuitCanceled,
+  log,
+})
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -1303,8 +1450,13 @@ app.whenReady().then(async () => {
 })
 
 app.on('window-all-closed', () => {
-  stopBackend()
-  if (process.platform !== 'darwin') app.quit()
+  lifecycleController.handleWindowAllClosed()
+})
+
+app.on('before-quit', (event) => {
+  lifecycleController.handleBeforeQuit(event).catch(error => {
+    log(`[lifecycle] before-quit failed: ${error.message}`)
+  })
 })
 
 // ── IPC handlers ──────────────────────────────────────────────────────────────

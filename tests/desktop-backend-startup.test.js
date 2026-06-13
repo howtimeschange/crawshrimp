@@ -65,6 +65,23 @@ test('desktop services restart when macOS reopens the app after all windows clos
   assert.match(main, /if \(!startup\.api\.ok\) desktopServicesStartupPromise = null/)
   assert.match(main, /await ensureDesktopServicesStarted\(\)/)
   assert.match(main, /app\.on\('activate', \(\) => \{\s*if \(BrowserWindow\.getAllWindows\(\)\.length === 0\) createWindow\(\)\s*ensureDesktopServicesStarted\(\)/)
+  assert.match(main, /app\.on\('window-all-closed', \(\) => \{\s*lifecycleController\.handleWindowAllClosed\(\)\s*\}\)/)
+  assert.doesNotMatch(main, /app\.on\('window-all-closed', \(\) => \{\s*stopBackend\(\)/)
+})
+
+test('desktop lifecycle confirms active tasks before quitting', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const lifecycleController = createLifecycleController\(\{/)
+  assert.match(main, /getActiveTasks: getActiveTasksForQuit/)
+  assert.match(main, /confirmQuitWithActiveTasks/)
+  assert.match(main, /requestStopActiveTasks/)
+  assert.match(main, /waitForNoActiveTasks/)
+  assert.match(main, /stopManagedChrome: stopManagedChromeForQuit/)
+  assert.match(main, /onQuitCanceled: restoreWindowAfterQuitCanceled/)
+  assert.match(main, /function restoreWindowAfterQuitCanceled\(\) \{/)
+  assert.match(main, /app\.on\('before-quit', \(event\) => \{\s*lifecycleController\.handleBeforeQuit\(event\)/)
+  assert.match(main, /apiCall\('GET', '\/tasks\/active', null, \{\s*ensureReady: false,\s*timeoutMs: 1200,/)
 })
 
 test('settings page displays the runtime backend port reported by the main process', () => {
@@ -113,4 +130,26 @@ test('desktop backend startup fails before spawn when API token cannot be prepar
   assert.match(main, /const apiToken = getApiToken\(\)/)
   assert.match(main, /CRAWSHRIMP_API_TOKEN: apiToken/)
   assert.match(apiServer, /except Exception as exc:\s*logger\.exception\("Failed to read or create crawshrimp API token"\)\s*raise RuntimeError\("Failed to prepare crawshrimp API token"\) from exc/)
+})
+
+test('desktop API helper supports request timeout for shutdown probes', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const timeoutMs = Math\.max\(0, Number\(options\.timeoutMs \|\| 0\)\)/)
+  assert.match(main, /if \(timeoutMs > 0\) \{\s*req\.setTimeout\(timeoutMs/)
+})
+
+test('desktop quit stop requests log backend rejection details', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const result = await apiCall\('POST', `\/tasks\/\$\{encodeURIComponent\(adapterId\)\}\/\$\{encodeURIComponent\(taskId\)\}\/stop`, null, \{/)
+  assert.match(main, /if \(result && typeof result === 'object' && result\.ok === false\) \{/)
+  assert.match(main, /throw new Error\(result\.detail \|\| result\.error \|\| 'backend rejected stop request'\)/)
+})
+
+test('desktop quit cancellation handles service recovery failures', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /return ensureDesktopServicesStarted\(\)\.catch\(error => \{/)
+  assert.match(main, /log\(`\[lifecycle\] failed to restart services after quit cancellation: \$\{error\.message\}`\)/)
 })

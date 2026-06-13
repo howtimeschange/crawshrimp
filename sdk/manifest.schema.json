@@ -62,6 +62,7 @@
           "enum": [
             "text",
             "textarea",
+            "line_list",
             "directory",
             "radio",
             "select",

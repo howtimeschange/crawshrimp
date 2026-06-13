@@ -18,9 +18,15 @@ PY_ABI="cp${PY_MAJOR}${PY_MINOR}"
 PY_MAJOR_MINOR="${PY_MAJOR}.${PY_MINOR}"
 
 BASE_URL="https://github.com/astral-sh/python-build-standalone/releases/download/${BUILD_VERSION}"
+SHA256SUMS_URL="${BASE_URL}/SHA256SUMS"
 DOWNLOAD_ATTEMPTS="${DOWNLOAD_ATTEMPTS:-4}"
 
 mkdir -p "$OUT_DIR"
+DOWNLOAD_TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/crawshrimp-python.XXXXXX")"
+cleanup_download_tmp() {
+  rm -rf "$DOWNLOAD_TMP_DIR"
+}
+trap cleanup_download_tmp EXIT
 
 if [ -n "${PYTHON_TARGETS:-}" ]; then
   IFS=',' read -r -a SELECTED_TARGETS <<< "${PYTHON_TARGETS}"
@@ -238,6 +244,24 @@ download_archive() {
   return 1
 }
 
+verify_archive_sha256() {
+  local archive="$1"
+  local filename="$2"
+  local checksums_file="${DOWNLOAD_TMP_DIR}/SHA256SUMS"
+  local expected_line
+
+  echo "[verify] SHA256 $filename"
+  curl --fail --location --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 120 -o "$checksums_file" "$SHA256SUMS_URL"
+  expected_line="$(awk -v target="$filename" '$2 == target { print; exit }' "$checksums_file")"
+  if [ -z "$expected_line" ]; then
+    echo "[error] SHA256 entry not found for $filename" >&2
+    rm -f "$checksums_file"
+    return 1
+  fi
+  printf '%s\n' "$expected_line" | (cd "$(dirname "$archive")" && shasum -a 256 -c -)
+  rm -f "$checksums_file"
+}
+
 for KEY in "${SELECTED_TARGETS[@]}"; do
   FILE="$(target_file "$KEY")" || {
     echo "[error] Unknown Python target: $KEY"
@@ -249,12 +273,14 @@ for KEY in "${SELECTED_TARGETS[@]}"; do
   if [ -d "$DEST" ]; then
     echo "[skip] $KEY already exists"
   else
+    ARCHIVE="${DOWNLOAD_TMP_DIR}/${FILE}"
     echo "[download] $KEY ..."
     curl --fail -sI "$URL" | grep -q "HTTP/" || { echo "[error] URL not found: $URL"; exit 1; }
-    download_archive "$URL" "/tmp/${FILE}" "$KEY"
+    download_archive "$URL" "$ARCHIVE" "$KEY"
+    verify_archive_sha256 "$ARCHIVE" "$FILE"
     mkdir -p "$DEST"
-    tar -xzf "/tmp/${FILE}" -C "$DEST" --strip-components=1
-    rm "/tmp/${FILE}"
+    tar -xzf "$ARCHIVE" -C "$DEST" --strip-components=1
+    rm "$ARCHIVE"
     echo "[ok] $KEY -> $DEST"
   fi
 

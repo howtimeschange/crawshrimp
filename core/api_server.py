@@ -125,6 +125,67 @@ def _allowed_cors_origins() -> list[str]:
     ]
 
 
+async def _bridge_call_async(async_name: str, sync_name: str, *args, **kwargs):
+    bridge = get_bridge()
+    async_method = getattr(bridge, async_name, None)
+    if async_method:
+        return await async_method(*args, **kwargs)
+    sync_method = getattr(bridge, sync_name)
+    return await asyncio.to_thread(sync_method, *args, **kwargs)
+
+
+async def _bridge_get_tabs() -> list:
+    return await _bridge_call_async("get_tabs_async", "get_tabs")
+
+
+async def _bridge_new_tab(url: str) -> dict:
+    return await _bridge_call_async("new_tab_async", "new_tab", url)
+
+
+async def _bridge_find_tab(url: str) -> Optional[dict]:
+    return await _bridge_call_async("find_tab_async", "find_tab", url)
+
+
+async def _bridge_get_tab(tab_id: str) -> Optional[dict]:
+    return await _bridge_call_async("get_tab_async", "get_tab", tab_id)
+
+
+async def _await_cleanup_after_cancel(awaitable):
+    """Keep partial export/finalize cleanup running even if the outer task is cancelled again."""
+    cleanup_task = asyncio.ensure_future(awaitable)
+    while True:
+        try:
+            return await asyncio.shield(cleanup_task)
+        except asyncio.CancelledError:
+            if cleanup_task.done():
+                return cleanup_task.result()
+
+
+def _resolve_allowed_file_delete_path(raw_path: str) -> Path:
+    try:
+        data_root = runtime_paths.data_root().resolve(strict=False)
+        path = Path(raw_path).expanduser().resolve(strict=False)
+        if path == data_root:
+            raise HTTPException(400, f"Refusing to delete crawshrimp data directory: {raw_path}")
+        path.relative_to(data_root)
+        return path
+    except ValueError:
+        raise HTTPException(400, f"File delete is limited to crawshrimp data directory: {raw_path}")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, f"Invalid file path: {raw_path}") from exc
+
+
+def _ensure_registered_output_file_path(path: Path) -> None:
+    try:
+        is_registered = data_sink.is_output_file_path(str(path))
+    except Exception as exc:
+        raise HTTPException(500, f"Unable to validate file delete request: {path}") from exc
+    if not is_registered:
+        raise HTTPException(400, f"File delete is limited to registered task output files: {path}")
+
+
 def _task_lock(jid: str) -> asyncio.Lock:
     lock = _task_locks.get(jid)
     if lock is None:
@@ -2814,7 +2875,6 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
 
-        bridge = get_bridge()
         run_params = dict(params or {})
         per_item_review_urls = _resolve_tmall_buyer_review_item_urls(run_params) if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") else []
         runtime_options = runtime_options or {}
@@ -2851,7 +2911,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         tab = None
         if mode == 'current':
-            all_tabs = [t for t in bridge.get_tabs() if t.get('type') == 'page']
+            all_tabs = [t for t in await _bridge_get_tabs() if t.get('type') == 'page']
             preferred_prefixes = configured_match_prefixes or [
                 'https://seller.shopee.cn/portal/marketing',
                 'https://seller.shopee.cn/portal/marketing/vouchers/list',
@@ -2894,7 +2954,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 log(f"mode=new，尝试新建页面：{target_entry_url}")
             if adapter_id == 'doudian-ops-assistant' and _is_doudian_backend_url(target_entry_url):
                 opener_candidates = [
-                    item for item in bridge.get_tabs()
+                    item for item in await _bridge_get_tabs()
                     if item.get('type') == 'page' and _is_doudian_opener_tab_url(str(item.get('url') or ''))
                 ]
                 opener_candidates.sort(key=lambda item: _doudian_opener_tab_sort_key(target_entry_url, str(item.get('url') or '')))
@@ -2902,14 +2962,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 if opener_tab:
                     log(f"抖店复用已登录后台页打开新标签：{str(opener_tab.get('url') or '')[:120]}")
                     opener_runner = JSRunner(
-                        bridge.get_tab_ws_url(opener_tab),
+                        get_bridge().get_tab_ws_url(opener_tab),
                         tab_id=str(opener_tab.get('id') or ''),
                         tab_url=str(opener_tab.get('url') or ''),
                         artifact_dir=runtime_artifact_dir,
                     )
                     before_ids = {
                         str(item.get('id') or '')
-                        for item in bridge.get_tabs()
+                        for item in await _bridge_get_tabs()
                         if item.get('type') == 'page'
                     }
                     open_expr = (
@@ -2923,7 +2983,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     if open_result.success:
                         await asyncio.sleep(1.5)
                         new_tabs = [
-                            item for item in bridge.get_tabs()
+                            item for item in await _bridge_get_tabs()
                             if item.get('type') == 'page' and str(item.get('id') or '') not in before_ids
                         ]
                         tab = next((item for item in new_tabs if _is_doudian_fxg_url(str(item.get('url') or ''))), None)
@@ -2933,7 +2993,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log(f"抖店页面上下文打开新标签失败，回退 CDP 新建：{open_result.error or 'unknown'}")
             if adapter_id == 'temu' and _is_temu_backend_url(target_entry_url):
                 opener_candidates = [
-                    item for item in bridge.get_tabs()
+                    item for item in await _bridge_get_tabs()
                     if item.get('type') == 'page' and _is_temu_opener_tab_url(str(item.get('url') or ''))
                 ]
                 opener_candidates.sort(key=lambda item: _temu_opener_tab_sort_key(target_entry_url, str(item.get('url') or '')))
@@ -2941,14 +3001,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 if opener_tab:
                     log(f"Temu 复用已登录后台页打开新标签：{str(opener_tab.get('url') or '')[:120]}")
                     opener_runner = JSRunner(
-                        bridge.get_tab_ws_url(opener_tab),
+                        get_bridge().get_tab_ws_url(opener_tab),
                         tab_id=str(opener_tab.get('id') or ''),
                         tab_url=str(opener_tab.get('url') or ''),
                         artifact_dir=runtime_artifact_dir,
                     )
                     before_ids = {
                         str(item.get('id') or '')
-                        for item in bridge.get_tabs()
+                        for item in await _bridge_get_tabs()
                         if item.get('type') == 'page'
                     }
                     open_expr = (
@@ -2962,7 +3022,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     if open_result.success:
                         await asyncio.sleep(1.5)
                         new_tabs = [
-                            item for item in bridge.get_tabs()
+                            item for item in await _bridge_get_tabs()
                             if item.get('type') == 'page' and str(item.get('id') or '') not in before_ids
                         ]
                         tab = next((item for item in new_tabs if _is_temu_opener_tab_url(str(item.get('url') or ''))), None)
@@ -2972,16 +3032,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         log(f"Temu 页面上下文打开新标签失败，回退 CDP 新建：{open_result.error or 'unknown'}")
             if not tab:
                 try:
-                    tab = bridge.new_tab(open_entry_url)
+                    tab = await _bridge_new_tab(open_entry_url)
                 except Exception as e:
                     log(f"新建 tab 失败，尝试复用现有 tab: {e}")
-                    tab = bridge.find_tab(open_entry_url) or bridge.find_tab(target_entry_url)
+                    tab = await _bridge_find_tab(open_entry_url) or await _bridge_find_tab(target_entry_url)
             if not tab:
                 raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 
         log(f"Found tab: {tab.get('url', '')[:120]}")
         runner = JSRunner(
-            bridge.get_tab_ws_url(tab),
+            get_bridge().get_tab_ws_url(tab),
             tab_id=str(tab.get('id') or ''),
             tab_url=str(tab.get('url') or ''),
             artifact_dir=runtime_artifact_dir,
@@ -3011,7 +3071,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         async def recover_temu_no_auth(stage: str = "入口"):
             if adapter_id != 'temu':
                 return
-            current_tab = bridge.get_tab(str(tab.get('id') or runner.tab_id or '')) if (tab or runner.tab_id) else None
+            current_tab = await _bridge_get_tab(str(tab.get('id') or runner.tab_id or '')) if (tab or runner.tab_id) else None
             current_url = str((current_tab or {}).get('url') or '')
             if not _is_temu_no_auth_url(current_url):
                 return
@@ -3073,7 +3133,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 elif out.type == OutputType.notify:
                     if notifier.should_notify(out.condition, data_rows):
                         try:
-                            notifier.send(
+                            await asyncio.to_thread(
+                                notifier.send,
                                 channel=out.channel or 'dingtalk',
                                 title=f"{m.name} - {task.name}",
                                 records=len(data_rows),
@@ -3321,14 +3382,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before partial export")
         try:
             runtime_files = list(getattr(runner, 'runtime_output_files', []) or []) if runner else []
-            exported = await export_outputs(data) if runner else []
-            output_files = await finalize_output_files(data, runtime_files, exported) if runner else []
+            exported = await _await_cleanup_after_cancel(export_outputs(data)) if runner else []
+            output_files = await _await_cleanup_after_cancel(finalize_output_files(data, runtime_files, exported)) if runner else []
         except Exception as export_error:
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
         data_sink.stop_run(run_id, len(data), output_files, err)
         _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
+        raise
 
     except Exception as e:
         err = str(e)
@@ -3579,6 +3641,31 @@ def list_tasks():
                 "live": _run_status.get(jid),
             })
     return result
+
+
+@app.get("/tasks/active")
+def active_tasks():
+    tasks = []
+    for jid, live in sorted(_run_status.items()):
+        live_snapshot = dict(live or {})
+        if live_snapshot.get("status") not in ACTIVE_LIVE_STATUSES:
+            continue
+        control = _run_controls.get(jid)
+        task = control.get("task") if control else None
+        has_live_task = bool(task and not task.done())
+        if not has_live_task and not _task_lock(jid).locked():
+            continue
+        adapter_id, task_id = jid.split("::", 1) if "::" in jid else (jid, "")
+        tasks.append({
+            "jid": jid,
+            "adapter_id": adapter_id,
+            "task_id": task_id,
+            "status": live_snapshot.get("status"),
+            "run_id": live_snapshot.get("run_id"),
+            "records": int(live_snapshot.get("records") or 0),
+            "phase": live_snapshot.get("phase"),
+        })
+    return {"active": bool(tasks), "tasks": tasks}
 
 
 class RunTaskRequest(BaseModel):
@@ -3934,10 +4021,9 @@ def delete_files(req: DeleteFilesRequest):
     seen = set()
     normalized_paths = []
     for raw in raw_paths:
-        try:
-            normalized = str(Path(raw).expanduser().resolve(strict=False))
-        except Exception:
-            normalized = raw
+        path = _resolve_allowed_file_delete_path(raw)
+        _ensure_registered_output_file_path(path)
+        normalized = str(path)
         if normalized in seen:
             continue
         seen.add(normalized)

@@ -69,6 +69,27 @@ class JSRunner:
         self._msg_id += 1
         return self._msg_id
 
+    async def _bridge_call_async(self, async_name: str, sync_name: str, *args):
+        from core.cdp_bridge import get_bridge
+
+        bridge = get_bridge()
+        async_method = getattr(bridge, async_name, None)
+        if async_method:
+            return await async_method(*args)
+        return await asyncio.to_thread(getattr(bridge, sync_name), *args)
+
+    async def _bridge_get_tabs(self) -> list:
+        return await self._bridge_call_async("get_tabs_async", "get_tabs")
+
+    async def _bridge_get_tab(self, tab_id: str) -> Optional[dict]:
+        return await self._bridge_call_async("get_tab_async", "get_tab", tab_id)
+
+    async def _bridge_new_tab(self, url: str) -> dict:
+        return await self._bridge_call_async("new_tab_async", "new_tab", url)
+
+    async def _bridge_close_tab(self, tab_id: str) -> None:
+        return await self._bridge_call_async("close_tab_async", "close_tab", tab_id)
+
     async def _evaluate_raw(self, expression: str, user_gesture: bool = False) -> dict:
         msg_id = self._next_id()
         payload = json.dumps({
@@ -922,7 +943,7 @@ class JSRunner:
         from core.cdp_bridge import get_bridge
 
         bridge = get_bridge()
-        temp_tab = bridge.new_tab("about:blank")
+        temp_tab = await self._bridge_new_tab("about:blank")
         temp_tab_id = str(temp_tab.get("id") or "")
         temp_ws_url = bridge.get_tab_ws_url(temp_tab)
         if not temp_ws_url:
@@ -944,7 +965,7 @@ class JSRunner:
         finally:
             if temp_tab_id:
                 try:
-                    bridge.close_tab(temp_tab_id)
+                    await self._bridge_close_tab(temp_tab_id)
                 except Exception:
                     logger.debug("Failed to close temporary capture tab %s", temp_tab_id, exc_info=True)
 
@@ -1087,7 +1108,7 @@ class JSRunner:
         from core.cdp_bridge import get_bridge
 
         bridge = get_bridge()
-        temp_tab = bridge.new_tab("about:blank")
+        temp_tab = await self._bridge_new_tab("about:blank")
         temp_tab_id = str(temp_tab.get("id") or "")
         temp_ws_url = bridge.get_tab_ws_url(temp_tab)
         if not temp_ws_url:
@@ -1161,26 +1182,20 @@ class JSRunner:
         finally:
             if temp_tab_id:
                 try:
-                    bridge.close_tab(temp_tab_id)
+                    await self._bridge_close_tab(temp_tab_id)
                 except Exception:
                     logger.debug("Failed to close temporary browser download tab %s", temp_tab_id, exc_info=True)
             shutil.rmtree(temp_download_dir, ignore_errors=True)
 
-    def _list_page_tab_ids(self) -> set[str]:
-        from core.cdp_bridge import get_bridge
-
-        bridge = get_bridge()
+    async def _list_page_tab_ids(self) -> set[str]:
         return {
             str(tab.get("id") or "")
-            for tab in bridge.get_tabs()
+            for tab in await self._bridge_get_tabs()
             if tab.get("type") == "page" and str(tab.get("id") or "")
         }
 
-    def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
-        from core.cdp_bridge import get_bridge
-
-        bridge = get_bridge()
-        for tab in bridge.get_tabs():
+    async def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
+        for tab in await self._bridge_get_tabs():
             if tab.get("type") != "page":
                 continue
             tab_id = str(tab.get("id") or "")
@@ -1190,15 +1205,12 @@ class JSRunner:
             if "bill-download-with-detail" not in url and "agentseller" not in url and url != "about:blank":
                 continue
             try:
-                bridge.close_tab(tab_id)
+                await self._bridge_close_tab(tab_id)
             except Exception:
                 logger.debug("Failed to close click-opened tab %s", tab_id, exc_info=True)
 
-    def _close_transient_download_tabs(self) -> None:
-        from core.cdp_bridge import get_bridge
-
-        bridge = get_bridge()
-        for tab in bridge.get_tabs():
+    async def _close_transient_download_tabs(self) -> None:
+        for tab in await self._bridge_get_tabs():
             if tab.get("type") != "page":
                 continue
             tab_id = str(tab.get("id") or "")
@@ -1212,7 +1224,7 @@ class JSRunner:
             ):
                 continue
             try:
-                bridge.close_tab(tab_id)
+                await self._bridge_close_tab(tab_id)
             except Exception:
                 logger.debug("Failed to close transient download tab %s", tab_id, exc_info=True)
 
@@ -1327,13 +1339,10 @@ class JSRunner:
 """
 
     async def _handle_transient_download_tabs(self) -> list[dict]:
-        from core.cdp_bridge import get_bridge
-
-        bridge = get_bridge()
         actions: list[dict] = []
         expression = self._build_region_switch_confirm_expression()
 
-        for tab in bridge.get_tabs():
+        for tab in await self._bridge_get_tabs():
             if tab.get("type") != "page":
                 continue
             tab_id = str(tab.get("id") or "")
@@ -1422,10 +1431,10 @@ class JSRunner:
                     raise RuntimeError(result["error"])
                 continue
 
-            self._close_transient_download_tabs()
+            await self._close_transient_download_tabs()
             baseline = self._snapshot_download_state([downloads_dir], name_pattern)
             fallback_baseline = self._snapshot_download_state([downloads_dir], fallback_xlsx_pattern)
-            baseline_tab_ids = self._list_page_tab_ids()
+            baseline_tab_ids = await self._list_page_tab_ids()
             started_at_ns = time.time_ns()
             transient_actions: list[dict] = []
             transient_action_keys: set[str] = set()
@@ -1472,7 +1481,7 @@ class JSRunner:
                         break
                     await asyncio.sleep(0.5)
             finally:
-                self._close_new_page_tabs(baseline_tab_ids)
+                await self._close_new_page_tabs(baseline_tab_ids)
 
             if downloaded:
                 target_path = self._build_artifact_target_path(filename, expected_url)
@@ -1831,16 +1840,14 @@ class JSRunner:
         return await self.evaluate(expression, user_gesture=True)
 
     async def _refresh_ws_url(self) -> None:
-        from core.cdp_bridge import get_bridge
-        bridge = get_bridge()
         tab = None
         if self.tab_id:
-            tab = bridge.get_tab(self.tab_id)
+            tab = await self._bridge_get_tab(self.tab_id)
         if not tab and self.tab_url:
             prefix = str(self.tab_url).strip()
             if prefix:
                 candidates = [
-                    candidate for candidate in bridge.get_tabs()
+                    candidate for candidate in await self._bridge_get_tabs()
                     if candidate.get("type") == "page" and str(candidate.get("url", "")).startswith(prefix)
                 ]
                 if len(candidates) == 1:
@@ -1849,7 +1856,7 @@ class JSRunner:
                     tab = candidates[0]
         if not tab and self.tab_url:
             try:
-                tab = bridge.new_tab(str(self.tab_url).strip())
+                tab = await self._bridge_new_tab(str(self.tab_url).strip())
                 logger.info("运行中的 Chrome 标签页已丢失，重新打开入口页恢复连接: %s", self.tab_url)
             except Exception as e:
                 logger.info("重新打开入口页失败: %s", e)
@@ -1941,13 +1948,10 @@ class JSRunner:
             logger.debug("Failed to clear persisted run params", exc_info=True)
 
     async def _reload_current_page(self) -> None:
-        from core.cdp_bridge import get_bridge
-
-        bridge = get_bridge()
         tab = None
         if self.tab_id:
             try:
-                tab = bridge.get_tab(self.tab_id)
+                tab = await self._bridge_get_tab(self.tab_id)
             except Exception:
                 tab = None
 
@@ -1955,7 +1959,7 @@ class JSRunner:
             prefix = str(self.tab_url).strip()
             if prefix:
                 candidates = [
-                    candidate for candidate in bridge.get_tabs()
+                    candidate for candidate in await self._bridge_get_tabs()
                     if candidate.get("type") == "page" and str(candidate.get("url", "")).startswith(prefix)
                 ]
                 if candidates:

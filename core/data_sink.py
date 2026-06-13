@@ -216,6 +216,34 @@ def remove_output_files(paths: List[str]) -> dict:
     return {"updated_runs": updated_runs, "removed_refs": removed_refs}
 
 
+def is_output_file_path(path: str) -> bool:
+    target_path = _normalize_output_file_path(path)
+    if not target_path:
+        return False
+
+    with _get_conn() as conn:
+        rows = conn.execute("""
+            SELECT output_files
+            FROM task_runs
+            WHERE output_files IS NOT NULL AND output_files != '[]'
+        """).fetchall()
+
+        for row in rows:
+            raw_files = row["output_files"]
+            try:
+                files = json.loads(raw_files) if isinstance(raw_files, str) else raw_files
+            except Exception:
+                continue
+            if not isinstance(files, list):
+                continue
+            for item in files:
+                file_path = str(item or '').strip()
+                if file_path and _normalize_output_file_path(file_path) == target_path:
+                    return True
+
+    return False
+
+
 # ─── Export functions ───
 
 def _sanitize_filename(text: Any, fallback: str = "output") -> str:

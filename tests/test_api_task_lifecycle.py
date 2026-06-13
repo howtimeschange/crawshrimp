@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import sys
 import threading
 import unittest
@@ -360,6 +361,221 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_logs.update(original_logs)
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
+
+    async def test_active_tasks_reports_only_live_controls_or_locked_runs(self):
+        original_status = dict(api_server._run_status)
+        original_controls = dict(api_server._run_controls)
+        active_task = asyncio.create_task(asyncio.sleep(60))
+        finished_task = asyncio.create_task(asyncio.sleep(0))
+        await finished_task
+        scheduled_lock = api_server._task_lock("scheduled::locked_task")
+
+        try:
+            api_server._run_status.clear()
+            api_server._run_controls.clear()
+            await scheduled_lock.acquire()
+            api_server._run_status["demo::live_task"] = {
+                "status": "running",
+                "run_id": 1001,
+                "records": 3,
+                "phase": "collect",
+            }
+            api_server._run_controls["demo::live_task"] = {"task": active_task}
+            api_server._run_status["demo::finished_task"] = {
+                "status": "running",
+                "run_id": 1002,
+                "records": 4,
+            }
+            api_server._run_controls["demo::finished_task"] = {"task": finished_task}
+            api_server._run_status["demo::stale_task"] = {
+                "status": "running",
+                "run_id": 1003,
+                "records": 5,
+            }
+            api_server._run_status["scheduled::locked_task"] = {
+                "status": "running",
+                "run_id": 1004,
+                "records": 6,
+            }
+
+            result = api_server.active_tasks()
+
+            self.assertTrue(result["active"])
+            self.assertEqual(
+                [item["jid"] for item in result["tasks"]],
+                ["demo::live_task", "scheduled::locked_task"],
+            )
+            self.assertEqual(result["tasks"][0]["run_id"], 1001)
+            self.assertEqual(result["tasks"][0]["records"], 3)
+            self.assertEqual(result["tasks"][0]["phase"], "collect")
+        finally:
+            if scheduled_lock.locked():
+                scheduled_lock.release()
+            active_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active_task
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+
+    async def test_execute_task_reraises_cancelled_error_after_partial_export(self):
+        class FakeBridge:
+            def get_tabs(self):
+                return [{
+                    "id": "tab-1",
+                    "type": "page",
+                    "url": "https://example.test/app",
+                    "webSocketDebuggerUrl": "ws://example.invalid",
+                }]
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+            def find_tab(self, url):
+                return self.get_tabs()[0]
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                raise asyncio.CancelledError()
+
+        class FakeTask:
+            id = "cancel_task"
+            name = "Cancel Task"
+            description = ""
+            entry_url = "https://example.test/app"
+            tab_match_prefixes = []
+            output = []
+            script = "cancel.js"
+            skip_auth = True
+            params = []
+
+        class FakeAdapter:
+            id = "demo"
+            name = "Demo"
+            entry_url = "https://example.test/app"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        run_control = api_server._build_run_control()
+        run_control["task"] = asyncio.current_task()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "cancel.js"
+            script_path.write_text("", encoding="utf-8")
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=2001):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                        with patch("core.api_server.data_sink.stop_run") as stop_run:
+                                            with self.assertRaises(asyncio.CancelledError):
+                                                await api_server._execute_task(
+                                                    "demo",
+                                                    "cancel_task",
+                                                    {},
+                                                    {},
+                                                    run_control=run_control,
+                                                )
+
+        stop_run.assert_called_once()
+
+    async def test_execute_task_waits_for_cancelled_partial_finalize_before_reraising(self):
+        class FakeBridge:
+            def get_tabs(self):
+                return [{
+                    "id": "tab-1",
+                    "type": "page",
+                    "url": "https://example.test/app",
+                    "webSocketDebuggerUrl": "ws://example.invalid",
+                }]
+
+            def get_tab_ws_url(self, tab):
+                return tab["webSocketDebuggerUrl"]
+
+            def find_tab(self, url):
+                return self.get_tabs()[0]
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = []
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                raise asyncio.CancelledError()
+
+        class FakeTask:
+            id = "prepare_upload_package"
+            name = "Prepare Upload Package"
+            description = ""
+            entry_url = "https://example.test/app"
+            tab_match_prefixes = []
+            output = []
+            script = "cancel.js"
+            skip_auth = True
+            params = []
+
+        class FakeAdapter:
+            id = "shenhui-new-arrival"
+            name = "Shenhui"
+            entry_url = "https://example.test/app"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        loop = asyncio.get_running_loop()
+        finalize_started = threading.Event()
+        finalize_can_finish = threading.Event()
+        finalize_finished = threading.Event()
+        task_ref = {}
+
+        def fake_finalize_outputs(*args, **kwargs):
+            finalize_started.set()
+            loop.call_soon_threadsafe(task_ref["task"].cancel)
+            self.assertTrue(finalize_can_finish.wait(timeout=2))
+            finalize_finished.set()
+            return ["/tmp/finalized.xlsx"]
+
+        run_control = api_server._build_run_control()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "cancel.js"
+            script_path.write_text("", encoding="utf-8")
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=2002):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                        with patch("core.api_server._finalize_shenhui_new_arrival_outputs", side_effect=fake_finalize_outputs):
+                                            with patch("core.api_server.data_sink.stop_run") as stop_run:
+                                                task = asyncio.create_task(
+                                                    api_server._execute_task(
+                                                        "shenhui-new-arrival",
+                                                        "prepare_upload_package",
+                                                        {},
+                                                        {},
+                                                        run_control=run_control,
+                                                    )
+                                                )
+                                                task_ref["task"] = task
+                                                run_control["task"] = task
+
+                                                self.assertTrue(await asyncio.to_thread(finalize_started.wait, 2))
+                                                finalize_can_finish.set()
+                                                with self.assertRaises(asyncio.CancelledError):
+                                                    await task
+
+        self.assertTrue(finalize_finished.is_set())
+        stop_run.assert_called_once_with(2002, 0, ["/tmp/finalized.xlsx"], "任务已停止")
 
     async def test_run_task_scans_installed_adapters_before_initial_lookup(self):
         original_status = dict(api_server._run_status)

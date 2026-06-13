@@ -752,16 +752,16 @@ class FallbackFilenameDownloadRunner(JSRunner):
     async def _refresh_ws_url(self) -> None:
         return None
 
-    def _close_transient_download_tabs(self) -> None:
+    async def _close_transient_download_tabs(self) -> None:
         return None
 
-    def _list_page_tab_ids(self) -> set[str]:
+    async def _list_page_tab_ids(self) -> set[str]:
         return set()
 
     async def _handle_transient_download_tabs(self) -> list[dict]:
         return []
 
-    def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
+    async def _close_new_page_tabs(self, baseline_tab_ids: set[str]) -> None:
         return None
 
     async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
@@ -1032,6 +1032,51 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             {"url": "https://detail.tmall.com/item.htm?id=919643072179"},
         )
         refresh_ws_url.assert_awaited_once()
+
+    async def test_browser_session_download_uses_async_bridge_calls(self):
+        class AsyncOnlyBridge:
+            def __init__(self):
+                self.closed = []
+
+            def new_tab(self, url):
+                raise AssertionError("sync new_tab should not run in async JSRunner path")
+
+            def close_tab(self, tab_id):
+                raise AssertionError("sync close_tab should not run in async JSRunner path")
+
+            async def new_tab_async(self, url):
+                return {
+                    "id": "temp-1",
+                    "webSocketDebuggerUrl": "ws://example.invalid/temp",
+                }
+
+            async def close_tab_async(self, tab_id):
+                self.closed.append(tab_id)
+
+            def get_tab_ws_url(self, tab):
+                return tab.get("webSocketDebuggerUrl", "")
+
+        bridge = AsyncOnlyBridge()
+        runner = JSRunner("ws://example.invalid")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner.artifact_dir = Path(tmpdir)
+            fake_ws = FakeCDPWebSocket([
+                {"id": 1, "result": {}},
+                {"id": 2, "result": {}},
+                {"id": 3, "result": {}},
+            ])
+
+            with patch("core.cdp_bridge.get_bridge", return_value=bridge):
+                with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+                    result = await runner._download_via_browser_session(
+                        "https://example.test/file.xlsx",
+                        Path(tmpdir) / "file.xlsx",
+                        timeout_ms=20,
+                    )
+
+        self.assertFalse(result["success"])
+        self.assertEqual(bridge.closed, ["temp-1"])
 
     async def test_run_script_file_handles_runtime_url_capture_action(self):
         runner = RuntimeUrlCaptureRunner()

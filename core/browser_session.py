@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+import asyncio
 
 from core import adapter_loader
 from core.cdp_bridge import get_bridge
@@ -67,6 +68,13 @@ def _is_logged_in(auth_result) -> bool:
     return logged_in
 
 
+async def _bridge_call_async(bridge, async_name: str, sync_name: str, *args):
+    async_method = getattr(bridge, async_name, None)
+    if async_method:
+        return await async_method(*args)
+    return await asyncio.to_thread(getattr(bridge, sync_name), *args)
+
+
 async def open_browser_session(
     adapter_id: str,
     task_id: str,
@@ -100,7 +108,7 @@ async def open_browser_session(
 
     tab = None
     if selected_mode == "current":
-        all_tabs = [item for item in bridge.get_tabs() if item.get("type") == "page"]
+        all_tabs = [item for item in await _bridge_call_async(bridge, "get_tabs_async", "get_tabs") if item.get("type") == "page"]
         if current_tab_id:
             tab = next((item for item in all_tabs if str(item.get("id")) == str(current_tab_id)), None)
             if not tab:
@@ -123,9 +131,9 @@ async def open_browser_session(
                 raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}")
     else:
         try:
-            tab = bridge.new_tab(target_entry_url)
+            tab = await _bridge_call_async(bridge, "new_tab_async", "new_tab", target_entry_url)
         except Exception as exc:
-            fallback_tab = bridge.find_tab(target_entry_url)
+            fallback_tab = await _bridge_call_async(bridge, "find_tab_async", "find_tab", target_entry_url)
             if fallback_tab:
                 tab = fallback_tab
             else:

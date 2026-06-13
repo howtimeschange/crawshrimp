@@ -1,0 +1,70 @@
+'use strict'
+
+function createLifecycleController(options = {}) {
+  const platform = options.platform || process.platform
+  const getActiveTasks = options.getActiveTasks || (async () => ({ active: false, tasks: [] }))
+  const confirmQuitWithActiveTasks = options.confirmQuitWithActiveTasks || (async () => true)
+  const requestStopActiveTasks = options.requestStopActiveTasks || (async () => {})
+  const waitForNoActiveTasks = options.waitForNoActiveTasks || (async () => {})
+  const stopBackend = options.stopBackend || (() => {})
+  const stopManagedChrome = options.stopManagedChrome || (() => {})
+  const quitApp = options.quitApp || (() => {})
+  const onQuitCanceled = options.onQuitCanceled || (async () => {})
+  const log = options.log || (() => {})
+
+  let shutdownInProgress = false
+  let confirmedQuit = false
+
+  function handleWindowAllClosed() {
+    if (platform === 'darwin') return
+    quitApp()
+  }
+
+  async function handleBeforeQuit(event = null) {
+    if (confirmedQuit) return true
+    if (shutdownInProgress) {
+      if (event && typeof event.preventDefault === 'function') event.preventDefault()
+      return false
+    }
+
+    if (event && typeof event.preventDefault === 'function') event.preventDefault()
+    shutdownInProgress = true
+
+    try {
+      const active = await getActiveTasks()
+      const tasks = Array.isArray(active?.tasks) ? active.tasks : []
+      if (active?.active && tasks.length > 0) {
+        const shouldQuit = await confirmQuitWithActiveTasks(tasks)
+        if (!shouldQuit) {
+          shutdownInProgress = false
+          await onQuitCanceled()
+          return false
+        }
+        await requestStopActiveTasks(tasks)
+        await waitForNoActiveTasks()
+      }
+
+      await stopBackend()
+      await stopManagedChrome()
+      confirmedQuit = true
+      quitApp()
+      return true
+    } catch (error) {
+      log(`[lifecycle] graceful shutdown failed: ${error?.message || String(error)}`)
+      try { await stopBackend() } catch (_) {}
+      try { await stopManagedChrome() } catch (_) {}
+      confirmedQuit = true
+      quitApp()
+      return true
+    }
+  }
+
+  return {
+    handleBeforeQuit,
+    handleWindowAllClosed,
+  }
+}
+
+module.exports = {
+  createLifecycleController,
+}

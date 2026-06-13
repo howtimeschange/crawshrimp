@@ -7,6 +7,8 @@ Webhook sends raw JSON POST.
 """
 import json
 import logging
+import operator
+import re
 from typing import List, Optional
 from urllib.request import urlopen, Request
 from urllib.error import URLError
@@ -14,6 +16,16 @@ from urllib.error import URLError
 from core.config import get as cfg_get
 
 logger = logging.getLogger(__name__)
+
+_DATA_LENGTH_COMPARISON_RE = re.compile(r"^\s*data\.length\s*(==|!=|>=|<=|>|<)\s*(\d+)\s*$")
+_COMPARISON_OPERATORS = {
+    "==": operator.eq,
+    "!=": operator.ne,
+    ">=": operator.ge,
+    "<=": operator.le,
+    ">": operator.gt,
+    "<": operator.lt,
+}
 
 
 class NotifyError(Exception):
@@ -119,15 +131,43 @@ def _send_webhook(title: str, records: int, adapter_name: str,
 def should_notify(condition: Optional[str], data: list) -> bool:
     """
     Evaluate an output condition expression.
-    condition is a JS-style string like 'data.length > 0'
-    We evaluate it as Python with data substituted.
+    Supports a small JS-style whitelist such as:
+    - data.length > 0
+    - data.length >= 1 && data.length < 100
     """
     if not condition:
         return True
     try:
-        # Simple safe eval: replace JS idioms with Python equivalents
-        expr = condition.replace("data.length", "len(data)").replace("&&", "and").replace("||", "or")
-        return bool(eval(expr, {"data": data, "len": len}, {}))
+        result = _evaluate_condition(condition, len(data))
+        if result is None:
+            logger.warning("Unsupported notification condition '%s', defaulting to True", condition)
+            return True
+        return result
     except Exception as e:
-        logger.warning(f"Condition eval failed '{condition}': {e}, defaulting to True")
+        logger.warning("Condition eval failed '%s': %s, defaulting to True", condition, e)
         return True
+
+
+def _evaluate_condition(condition: str, data_length: int) -> Optional[bool]:
+    expression = str(condition or "").strip()
+    if not expression:
+        return True
+    if "||" in expression:
+        parts = expression.split("||")
+        values = [_evaluate_condition(part, data_length) for part in parts]
+        if any(value is None for value in values):
+            return None
+        return any(values)
+    parts = expression.split("&&")
+    values = [_evaluate_condition_part(part, data_length) for part in parts]
+    if any(value is None for value in values):
+        return None
+    return all(values)
+
+
+def _evaluate_condition_part(condition: str, data_length: int) -> Optional[bool]:
+    matched = _DATA_LENGTH_COMPARISON_RE.match(condition)
+    if not matched:
+        return None
+    op, expected_raw = matched.groups()
+    return bool(_COMPARISON_OPERATORS[op](data_length, int(expected_raw)))

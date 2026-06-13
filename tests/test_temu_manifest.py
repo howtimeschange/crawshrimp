@@ -1,10 +1,24 @@
 import unittest
+import json
 from pathlib import Path
 
 import yaml
 
+from core.models import ParamType
+
+
+def _manifest_param_type_enum():
+    schema = json.loads(Path("sdk/manifest.schema.json").read_text(encoding="utf-8"))
+    return schema["definitions"]["param"]["properties"]["type"]["enum"]
+
 
 class TemuManifestTests(unittest.TestCase):
+    def test_manifest_schema_param_types_match_core_param_type_enum(self):
+        schema_types = set(_manifest_param_type_enum())
+        core_types = {item.value for item in ParamType}
+
+        self.assertEqual(schema_types, core_types)
+
     def test_storefront_single_product_reviews_is_first_and_accepts_multi_links(self):
         manifest = yaml.safe_load(Path("adapters/temu/manifest.yaml").read_text(encoding="utf-8"))
         first_task = manifest["tasks"][0]

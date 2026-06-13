@@ -4,6 +4,7 @@ Chrome 启动参数：--remote-debugging-port=9222
 """
 import json
 import logging
+import asyncio
 from typing import Optional
 from urllib.request import build_opener, ProxyHandler, Request
 from urllib.error import URLError
@@ -49,6 +50,21 @@ class CDPBridge:
 
     def get_tab_ws_url(self, tab: dict) -> str:
         return tab.get("webSocketDebuggerUrl", "")
+
+    async def get_tabs_async(self, timeout: float = 5) -> list:
+        return await asyncio.to_thread(self.get_tabs, timeout)
+
+    async def get_tab_async(self, tab_id: str) -> Optional[dict]:
+        return await asyncio.to_thread(self.get_tab, tab_id)
+
+    async def find_tab_async(self, url_pattern: str) -> Optional[dict]:
+        return await asyncio.to_thread(self.find_tab, url_pattern)
+
+    async def new_tab_async(self, url: str) -> dict:
+        return await asyncio.to_thread(self.new_tab, url)
+
+    async def close_tab_async(self, tab_id: str) -> None:
+        return await asyncio.to_thread(self.close_tab, tab_id)
 
     def is_available(self, timeout: float = 5) -> bool:
         try:
