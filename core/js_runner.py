@@ -2052,8 +2052,9 @@ class JSRunner:
                                 break
 
                         if not result.success:
-                            logger.error(f"脚本执行失败 (page={page}, phase={phase}): {result.error}")
-                            raise RuntimeError(result.error)
+                            error_message = str(result.error or "").strip() or "脚本执行失败：未返回错误详情"
+                            logger.error(f"脚本执行失败 (page={page}, phase={phase}): {error_message}")
+                            raise RuntimeError(error_message)
 
                         meta = result.meta or {}
                         action = meta.get("action") or "complete"

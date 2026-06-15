@@ -31,6 +31,43 @@
     return { success: false, error: message }
   }
 
+  function describeError(error) {
+    const direct = compact(error?.message || error?.reason || error?.error || error?.detail || error?.name)
+    if (direct) return direct
+    if (typeof error === 'string' && compact(error)) return compact(error)
+    if (error == null || error === '') return '未返回错误详情'
+    try {
+      const encoded = JSON.stringify(error)
+      if (encoded && encoded !== '{}' && encoded !== '[]') return encoded
+    } catch (jsonError) {
+      // Some browser exceptions are not JSON serializable; fall back to String below.
+    }
+    const fallback = compact(String(error))
+    return fallback && fallback !== '[object Object]' ? fallback : '未返回错误详情'
+  }
+
+  function buildDiagnosticError(error) {
+    const details = describeError(error)
+    const parts = [`phase=${phase}`]
+    let goodsId = ''
+    let productUrl = ''
+    try {
+      goodsId = getGoodsId()
+    } catch (goodsError) {
+      goodsId = ''
+    }
+    try {
+      productUrl = compact(getProductInput())
+    } catch (productError) {
+      productUrl = ''
+    }
+    if (goodsId) parts.push(`goods_id=${goodsId}`)
+    if (productUrl) parts.push(`product_url=${productUrl.slice(0, 180)}`)
+    const currentUrl = compact(location.href)
+    if (currentUrl && currentUrl !== productUrl) parts.push(`current_url=${currentUrl.slice(0, 180)}`)
+    return `Temu 单款商品评价脚本执行失败：${details}（${parts.join('，')}）`
+  }
+
   function nextPhase(name, sleepMs = 800, next = shared, data = []) {
     return {
       success: true,
@@ -189,13 +226,21 @@
   }
 
   async function fetchJson(url) {
-    const response = await fetch(url, {
-      method: 'GET',
-      credentials: 'include',
-      headers: {
-        Accept: 'application/json,text/plain,*/*',
-      },
-    })
+    let response
+    try {
+      response = await fetch(url, {
+        method: 'GET',
+        credentials: 'include',
+        headers: {
+          Accept: 'application/json,text/plain,*/*',
+        },
+      })
+    } catch (error) {
+      const wrapped = new Error(`Temu 评论接口请求失败：${describeError(error)}`)
+      wrapped.isBusy = true
+      wrapped.cause = error
+      throw wrapped
+    }
     let payload = null
     try {
       payload = await response.clone().json()
@@ -1378,6 +1423,6 @@
       throw error
     }
   } catch (error) {
-    return fail(error?.message || String(error))
+    return fail(buildDiagnosticError(error))
   }
 })()

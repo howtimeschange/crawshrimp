@@ -1030,3 +1030,35 @@ test('single product reviews DOM fallback excludes similar-item review cards', a
   assert.equal(result.data.length, 1)
   assert.equal(result.data[0].评价内容, 'Own product review')
 })
+
+test('single product reviews falls back to review dialog when direct review API fetch throws an empty error', async () => {
+  const result = await runScript({
+    params: { product_url: PRODUCT_URL, max_busy_retries: 0 },
+    fetchImpl: async () => { throw '' },
+    document: createSeeAllDocument(),
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'capture_click_requests')
+  assert.equal(result.meta.next_phase, 'parse_dialog_click_capture')
+  assert.equal(result.meta.shared.api_busy, true)
+  assert.match(result.meta.shared.api_busy_message, /Temu 评论接口请求失败/)
+  assert.match(result.meta.shared.api_busy_message, /未返回错误详情/)
+})
+
+test('single product reviews returns diagnostic context for unexpected empty errors', async () => {
+  const result = await runScript({
+    params: {
+      product_url: {
+        toString() {
+          throw ''
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, false)
+  assert.match(result.error, /Temu 单款商品评价脚本执行失败/)
+  assert.match(result.error, /phase=main/)
+  assert.match(result.error, /未返回错误详情/)
+})

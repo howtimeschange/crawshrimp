@@ -950,6 +950,34 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(runner.calls[0]["phase"], "main")
         self.assertTrue(runner.calls[0]["allow_navigation_retry"])
 
+    async def test_run_script_file_replaces_empty_script_error_with_readable_message(self):
+        class EmptyErrorRunner(JSRunner):
+            def __init__(self):
+                super().__init__("ws://example.invalid")
+
+            async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+                return None
+
+            async def _clear_run_params(self, run_token: str) -> None:
+                return None
+
+            async def _refresh_ws_url(self) -> None:
+                return None
+
+            async def _reload_current_page(self) -> None:
+                return None
+
+            async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+                return JSResult(success=False, error="")
+
+        runner = EmptyErrorRunner()
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: false, error: '' })", encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "脚本执行失败：未返回错误详情"):
+                await runner.run_script_file(script_path, params={})
+
     def test_build_phase_preamble_can_run_twice_in_same_node_context(self):
         if shutil.which("node") is None:
             self.skipTest("node not installed")
