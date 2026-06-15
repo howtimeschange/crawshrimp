@@ -30,6 +30,10 @@ class TemuManifestTests(unittest.TestCase):
         self.assertEqual(product_param["type"], "line_list")
         self.assertIn("每行", product_param.get("hint", ""))
 
+        output_filename = first_task["output"][0]["filename"]
+        self.assertEqual(output_filename, "单款商品评价_{goods_id}_{timestamp}.xlsx")
+        self.assertNotIn("{shop_name}", output_filename)
+
 
 if __name__ == "__main__":
     unittest.main()

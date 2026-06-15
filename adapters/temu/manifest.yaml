@@ -48,7 +48,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "{shop_name}_单款商品评价_{goods_id}_{timestamp}.xlsx"
+        filename: "单款商品评价_{goods_id}_{timestamp}.xlsx"
         columns:
           - 商品ID
           - 商品标题
