@@ -98,6 +98,17 @@ test('matches assets when the style code is only present in the parent folder', 
   assert.equal(helpers.matchesFolderItemForCode(folder, '208226103201'), true)
 })
 
+test('matches style folders when plus sign separates the code from status notes', async () => {
+  const helpers = await loadExports()
+  const folder = {
+    dir: '1',
+    filename: '208326105004+AI已回5.27-导购新回齐6.3-已选',
+    fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/模拍原图/期货/1P/中童/208326105004+AI已回5.27-导购新回齐6.3-已选',
+  }
+
+  assert.equal(helpers.matchesFolderItemForCode(folder, '208326105004'), true)
+})
+
 test('collectCandidateAssets uses search results as folder locators instead of direct image hits', async () => {
   const fetchCalls = []
   const helpers = await loadExports({

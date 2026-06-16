@@ -186,7 +186,7 @@
     const text = compact(value).toLowerCase()
     const target = compact(code).toLowerCase()
     if (!text || !target) return false
-    return new RegExp(`^${escapeRegExp(target)}(?:$|[\\s_\\-])`, 'i').test(text)
+    return new RegExp(`^${escapeRegExp(target)}(?:$|[\\s_+\\-])`, 'i').test(text)
   }
 
   function isSkcLikeStemForSpu(stem, code) {
