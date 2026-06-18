@@ -5,6 +5,8 @@ dist/
 tmp/
 outputs/
 memory-bank/
+.superpowers/
+.worktrees/
 adapters/*/delivery/
 app/.builder-bin/
 app/python-dist/
