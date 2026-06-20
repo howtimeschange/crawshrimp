@@ -1,6 +1,6 @@
 id: shenhui-new-arrival
 name: 深绘上新助手
-version: 0.1.0
+version: 0.2.0
 author: codex
 description: "从森马云盘按款合并模特图与静物图，按深绘上新 SOP 规整后导出待上传图包"
 entry_url: https://fmp.semirapp.com/web/index#/home/file
