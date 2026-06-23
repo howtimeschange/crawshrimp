@@ -209,7 +209,42 @@
 
   function compensationMode() {
     const value = String(params.compensation_mode || 'normal').trim().toLowerCase()
-    return value === 'retry_failed_from_file' ? value : 'normal'
+    return ['retry_failed_from_file', 'target_spus'].includes(value) ? value : 'normal'
+  }
+
+  function rawTextListParam(paramId) {
+    const value = params[paramId]
+    if (Array.isArray(value)) return value
+    if (value && Array.isArray(value.lines)) return value.lines
+    if (value && Array.isArray(value.values)) return value.values
+    if (value && Array.isArray(value.items)) return value.items
+    if (value && typeof value === 'object') {
+      return [
+        value.text,
+        value.value,
+        value.raw,
+        value.content,
+      ].filter(item => item != null)
+    }
+    return value == null ? [] : [value]
+  }
+
+  function parseTargetSpus(paramId = 'target_spus') {
+    const seen = new Set()
+    const result = []
+    for (const item of rawTextListParam(paramId)) {
+      const text = item && typeof item === 'object'
+        ? String(item.SPU || item.spu || item.spu_id || item.款号 || item.value || item.text || '')
+        : String(item || '')
+      const matches = text.match(/\d{5,}/g) || []
+      for (const match of matches) {
+        const spu = compact(match)
+        if (!spu || seen.has(spu)) continue
+        seen.add(spu)
+        result.push(spu)
+      }
+    }
+    return result
   }
 
   function buildCompensationSeed() {
@@ -257,6 +292,32 @@
       retryTargetOrder,
       processedCount: Object.keys(processedSpus).length,
       retryCount: Object.keys(retryTargetSpus).length,
+    }
+  }
+
+  function buildTargetSpuSeed() {
+    const targetSpus = parseTargetSpus()
+    const retryTargetSpus = {}
+    const retryTargetRows = {}
+
+    for (const spu of targetSpus) {
+      retryTargetSpus[spu] = 1
+      retryTargetRows[spu] = {
+        spu,
+        name: '',
+        scope_name: '',
+        product_kind: '',
+      }
+    }
+
+    return {
+      rowCount: targetSpus.length,
+      processedSpus: {},
+      retryTargetSpus,
+      retryTargetRows,
+      retryTargetOrder: targetSpus,
+      processedCount: 0,
+      retryCount: targetSpus.length,
     }
   }
 
@@ -441,8 +502,16 @@
       : {}
   }
 
+  function isExactSpuQueueMode(mode) {
+    return ['retry_failed_from_file', 'target_spus'].includes(String(mode || ''))
+  }
+
   function isRetryOnlyMode() {
-    return String(shared.compensation_mode || compensationMode()) === 'retry_failed_from_file'
+    return isExactSpuQueueMode(shared.compensation_mode || compensationMode())
+  }
+
+  function isTargetSpuMode() {
+    return String(shared.compensation_mode || compensationMode()) === 'target_spus'
   }
 
   function getRetryTargetMeta(spu) {
@@ -1525,28 +1594,34 @@
     if (phase === 'main') {
       const retryMode = compensationMode()
       const compensation = buildCompensationSeed()
+      const targetSpuSeed = buildTargetSpuSeed()
+      const queueSeed = retryMode === 'target_spus' ? targetSpuSeed : compensation
       if (retryMode === 'retry_failed_from_file' && !compensation.rowCount) {
         return fail('补偿重试模式需要选择历史结果文件（Excel / CSV）')
       }
       if (retryMode === 'retry_failed_from_file' && !compensation.retryCount) {
         return fail('补偿结果文件中未找到“处理结果=失败”的 SPU')
       }
+      if (retryMode === 'target_spus' && !targetSpuSeed.retryCount) {
+        return fail('指定 SPU 模式需要在“指定 SPU 款号”中粘贴至少一个 SPU')
+      }
       return nextPhase('ensure_target', 0, {
         scope_index: 0,
-        scope_name: QUICK_FILTERS[0],
+        scope_name: retryMode === 'target_spus' ? '' : QUICK_FILTERS[0],
         compensation_mode: retryMode,
-        compensation_source_rows: compensation.rowCount,
-        compensation_skipped_spus: compensation.processedCount,
-        compensation_retry_spus: compensation.retryCount,
-        processed_spus: compensation.processedSpus,
-        retry_target_spus: compensation.retryTargetSpus,
-        retry_target_rows: compensation.retryTargetRows,
-        retry_target_order: compensation.retryTargetOrder,
+        compensation_source_rows: retryMode === 'target_spus' ? 0 : compensation.rowCount,
+        compensation_skipped_spus: retryMode === 'target_spus' ? 0 : compensation.processedCount,
+        compensation_retry_spus: retryMode === 'target_spus' ? 0 : compensation.retryCount,
+        target_spu_count: targetSpuSeed.retryCount,
+        processed_spus: queueSeed.processedSpus,
+        retry_target_spus: queueSeed.retryTargetSpus,
+        retry_target_rows: queueSeed.retryTargetRows,
+        retry_target_order: queueSeed.retryTargetOrder,
         pending_retry_spus: {},
         spu_retry_attempts: {},
         processed_count: 0,
-        total_rows: retryMode === 'retry_failed_from_file' && compensation.retryCount
-          ? compensation.retryCount
+        total_rows: isExactSpuQueueMode(retryMode) && queueSeed.retryCount
+          ? queueSeed.retryCount
           : maxProducts(),
         current_exec_no: 0,
         current_row_no: 0,
@@ -1633,6 +1708,14 @@
     }
 
     if (phase === 'apply_goods_status_filter') {
+      if (isTargetSpuMode()) {
+        return nextPhase('prepare_retry_target', 0, {
+          ...shared,
+          query_retry: 0,
+          page_signature: '',
+        })
+      }
+
       const desired = desiredGoodsStatuses()
       const current = readGoodsStatusSelections()
 
@@ -1668,6 +1751,10 @@
 
     if (phase === 'submit_goods_status_filter_query') {
       const button = findQueryButton()
+      const scopeIndex = Number(shared.scope_index || 0)
+      const scopeName = isRetryOnlyMode()
+        ? String(shared.scope_name || '')
+        : (QUICK_FILTERS[scopeIndex] || shared.scope_name || QUICK_FILTERS[0])
       if (!button) {
         const retry = Number(shared.query_retry || 0)
         if (retry < 12) {
@@ -1684,8 +1771,8 @@
           return nextPhase('wait_goods_status_filter_query', 700, {
             ...shared,
             page_signature: pageSignature(),
-            scope_index: Number(shared.scope_index || 0),
-            scope_name: QUICK_FILTERS[Number(shared.scope_index || 0)] || shared.scope_name || QUICK_FILTERS[0],
+            scope_index: scopeIndex,
+            scope_name: scopeName,
             query_retry: 0,
           })
         }
@@ -1701,8 +1788,8 @@
       return cdpClicks([click], 'wait_goods_status_filter_query', 700, {
         ...shared,
         page_signature: pageSignature(),
-        scope_index: Number(shared.scope_index || 0),
-        scope_name: QUICK_FILTERS[Number(shared.scope_index || 0)] || shared.scope_name || QUICK_FILTERS[0],
+        scope_index: scopeIndex,
+        scope_name: scopeName,
         query_retry: 0,
       })
     }
@@ -1774,7 +1861,7 @@
       if (!targetSpu) return nextPhase('complete_run', 0, shared)
 
       const meta = getRetryTargetMeta(targetSpu) || {}
-      const scopeName = normalizeQuickFilterName(meta.scope_name || shared.scope_name || '')
+      const scopeName = normalizeQuickFilterName(meta.scope_name || (isTargetSpuMode() ? '' : shared.scope_name) || '')
       const kind = meta.product_kind || classifyProduct(meta.name || '', meta.name || '')
       const nextShared = {
         ...shared,

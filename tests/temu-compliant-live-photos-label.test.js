@@ -330,6 +330,44 @@ test('main seeds processed and retry-target SPUs from the compensation result fi
   assert.equal(result.meta.shared.compensation_mode, 'retry_failed_from_file')
 })
 
+test('main seeds an exact SPU queue from pasted target SPUs', async () => {
+  const document = new FakeDocument()
+
+  const result = await runAdapter({
+    phase: 'main',
+    document,
+    params: {
+      compensation_mode: 'target_spus',
+      target_spus: '111111\nSPU：222222, 333333 111111\n款号 444444',
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'ensure_target')
+  assert.deepEqual(Object.keys(result.meta.shared.processed_spus), [])
+  assert.deepEqual(Object.keys(result.meta.shared.retry_target_spus).sort(), ['111111', '222222', '333333', '444444'])
+  assert.deepEqual(Array.from(result.meta.shared.retry_target_order), ['111111', '222222', '333333', '444444'])
+  assert.equal(result.meta.shared.compensation_mode, 'target_spus')
+  assert.equal(result.meta.shared.target_spu_count, 4)
+  assert.equal(result.meta.shared.total_rows, 4)
+})
+
+test('main requires pasted SPUs for exact SPU mode', async () => {
+  const document = new FakeDocument()
+
+  const result = await runAdapter({
+    phase: 'main',
+    document,
+    params: {
+      compensation_mode: 'target_spus',
+      target_spus: '  \n  ',
+    },
+  })
+
+  assert.equal(result.success, false)
+  assert.match(result.error, /指定 SPU/)
+})
+
 test('pick_row diverts retry-only mode into the exact SPU retry flow', async () => {
   const document = new FakeDocument()
   const processedRow = buildRow({
@@ -360,6 +398,61 @@ test('pick_row diverts retry-only mode into the exact SPU retry flow', async () 
       processed_spus: { '111111': 1 },
       retry_target_spus: { '222222': 1 },
       pending_retry_spus: {},
+      processed_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'prepare_retry_target')
+})
+
+test('target SPU mode continues to the next pasted SPU after one item completes', async () => {
+  const document = new FakeDocument()
+  document.setSelector('.rocket-drawer.rocket-drawer-open', [])
+  document.setSelector('.rocket-drawer-content-wrapper', [])
+  document.setSelector('.rocket-drawer-content', [])
+
+  const result = await runAdapter({
+    phase: 'wait_after_submit',
+    document,
+    shared: {
+      compensation_mode: 'target_spus',
+      current_spu: '111111',
+      current_name: '指定款一',
+      current_action_text: '修改',
+      current_status_text: '系统识别能力待建设',
+      current_suggestion: '--',
+      product_kind: 'clothing',
+      retry_target_spus: { '111111': 1, '222222': 1 },
+      retry_target_rows: {
+        '111111': { spu: '111111', name: '指定款一', product_kind: 'clothing' },
+        '222222': { spu: '222222', name: '指定款二', product_kind: 'clothing' },
+      },
+      retry_target_order: ['111111', '222222'],
+      pending_retry_spus: {},
+      processed_spus: {},
+      processed_count: 0,
+    },
+  })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.next_phase, 'prepare_retry_target')
+  assert.deepEqual(Object.keys(result.meta.shared.retry_target_spus), ['222222'])
+  assert.deepEqual(Object.keys(result.meta.shared.processed_spus), ['111111'])
+})
+
+test('target SPU mode skips goods status filtering before exact SPU queries', async () => {
+  const document = new FakeDocument()
+
+  const result = await runAdapter({
+    phase: 'apply_goods_status_filter',
+    document,
+    shared: {
+      compensation_mode: 'target_spus',
+      current_spu: '',
+      retry_target_spus: { '111111': 1 },
+      retry_target_order: ['111111'],
+      processed_spus: {},
       processed_count: 0,
     },
   })

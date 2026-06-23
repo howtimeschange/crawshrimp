@@ -34,6 +34,20 @@ class TemuManifestTests(unittest.TestCase):
         self.assertEqual(output_filename, "单款商品评价_{goods_id}_{timestamp}.xlsx")
         self.assertNotIn("{shop_name}", output_filename)
 
+    def test_compliant_live_photos_target_spu_params_are_mode_scoped(self):
+        manifest = yaml.safe_load(Path("adapters/temu/manifest.yaml").read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "compliant_live_photos_label")
+        params = {item["id"]: item for item in task["params"]}
+
+        self.assertEqual(
+            params["retry_result_file"]["visible_when"],
+            {"field": "compensation_mode", "equals": "retry_failed_from_file"},
+        )
+        self.assertEqual(params["target_spus"]["type"], "textarea")
+        self.assertEqual(params["target_spus"]["visible_when"], {"field": "compensation_mode", "equals": "target_spus"})
+        self.assertEqual(params["goods_statuses"]["visible_when"], {"field": "compensation_mode", "not_equals": "target_spus"})
+        self.assertIn("换行", params["target_spus"]["hint"])
+
 
 if __name__ == "__main__":
     unittest.main()

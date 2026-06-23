@@ -1,6 +1,6 @@
 id: temu
 name: Temu 运营助手
-version: 1.5.4
+version: 1.5.5
 author: howtimeschange
 description: "Temu 卖家后台数据抓取与批量自动化：商品数据、商品流量、售后、评价、站点商品、商品实拍图洗唛合规"
 entry_url: https://agentseller.temu.com
@@ -1192,14 +1192,31 @@ tasks:
             label: 正常扫描（可跳过历史已提交 SPU）
           - value: retry_failed_from_file
             label: 仅补偿重试结果文件中的失败 SPU
-        hint: 如选择结果文件，脚本会自动按 SPU 跳过其中“已提交/跳过”的历史记录；补偿模式下仅处理文件里“失败”的 SPU。
+          - value: target_spus
+            label: 仅处理下方指定 SPU
+        hint: 如选择结果文件，脚本会自动按 SPU 跳过其中“已提交/跳过”的历史记录；指定 SPU 模式下会逐条按 SPU 查询后上传。
       - id: retry_result_file
         type: file_excel
         label: 历史结果文件
+        visible_when:
+          field: compensation_mode
+          equals: retry_failed_from_file
         hint: 可选。选择上一次导出的结果表（Excel / CSV）后，脚本会按 SPU 跳过已成功的款，并可按失败 SPU 做补偿重试。
+      - id: target_spus
+        type: textarea
+        label: 指定 SPU 款号
+        placeholder: "每行一个 SPU，例如：\n1234567890\n2345678901"
+        rows: 6
+        visible_when:
+          field: compensation_mode
+          equals: target_spus
+        hint: 执行范围选择“仅处理下方指定 SPU”时生效；请按换行区分 SPU，脚本会逐条查询后上传。
       - id: goods_statuses
         type: checkbox
         label: 商品状态
+        visible_when:
+          field: compensation_mode
+          not_equals: target_spus
         hint: 默认仅处理「在售中」；可多选，全部取消则不过滤商品状态。
         default:
           - 在售中
