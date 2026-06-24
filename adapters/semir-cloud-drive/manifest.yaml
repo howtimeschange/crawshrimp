@@ -188,6 +188,92 @@ tasks:
           - 本地文件
           - 执行结果
           - 备注
+  - id: tmall_material_new_624
+    name: 森马-天猫AI生图参考素材准备
+    description: 批量粘贴 SKC，在森马视觉图片包目录检索 3-1 全身图与 SKC 同名静物图，并按新命名规则打包导出
+    script: tmall-material-match-buy.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: asset_rule
+        type: select
+        label: 取图规则
+        default: new_624
+        hidden: true
+        options:
+          - value: new_624
+            label: 6.24 新规则
+      - id: skc_codes
+        type: textarea
+        label: SKC 编码
+        rows: 8
+        required: true
+        placeholder: "一行一个 SKC，例如：\n103526124101A-80325\n109526101005-00333"
+        hint: 直接从表格复制 SKC 列粘贴即可；每行按“款号-色码”匹配一个图片包。
+      - id: cloud_path
+        type: text
+        label: 云盘路径
+        required: true
+        default: "森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/"
+        placeholder: "森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/"
+        hint: 从森马云盘根目录开始填写目标搜索范围，可填到批次目录或具体 SKC 图片包上级目录
+        quick_fill_options:
+          - 森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/
+          - 森马视觉//01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/
+      - id: upload_time_range
+        type: date_range
+        label: 文件上传时间范围
+        required: true
+        hint: 会按云盘返回的上传/创建/更新时间字段过滤；无法识别时间的文件不会下载。
+      - id: folder_scan_depth
+        type: number
+        label: 文件夹扫描层级
+        default: 2
+        min: 1
+        max: 8
+        step: 1
+        ui_span: third
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。点击选择本地目录；留空则使用任务默认输出目录
+        ui_span: third
+      - id: package_name
+        type: text
+        label: 导出包名称
+        default: 天猫素材新624图片包
+        ui_span: third
+        placeholder: "例如：天猫素材新624图片包"
+        hint: 可选。留空则按任务时间自动命名
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "森马天猫素材爬取新624结果_{timestamp}.xlsx"
+        columns:
+          - 输入序号
+          - SKC编码
+          - 图片类型
+          - 款号
+          - 款色
+          - 检索编码
+          - 文件名
+          - 原文件名
+          - 云盘路径
+          - 文件时间
+          - 下载结果
+          - 本地文件
+          - 执行结果
+          - 备注
   - id: batch_ai_generate
     name: 下载素材并自动生图
     description: 读取 Excel 按行下载森马云盘素材图，再自动跳转 Doubao / Gemini 上传参考图并执行生图

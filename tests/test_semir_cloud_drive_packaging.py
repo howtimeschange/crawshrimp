@@ -591,6 +591,73 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             self.assertFalse((export_dir / "搭配购外部素材包").exists())
             self.assertFalse(runtime_dir.exists())
 
+    def test_tmall_material_new_624_outputs_flat_zip_with_full_body_and_still_names(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+
+            model_file = runtime_dir / "raw-3-1.jpg"
+            still_file = runtime_dir / "raw-still.jpg"
+            model_file.write_bytes(b"model")
+            still_file.write_bytes(b"still")
+
+            exported = base / "new-624-result.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_semir_cloud_drive_outputs(
+                task_id="tmall_material_new_624",
+                data_rows=[
+                    {
+                        "输入序号": 1,
+                        "款号": "103526124101A",
+                        "款色": "80325",
+                        "SKC编码": "103526124101A-80325",
+                        "图片类型": "全身",
+                        "文件名": "103526124101A-80325-全身.jpg",
+                        "原文件名": "3-1.jpg",
+                        "云盘路径": "01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/103526124101A-80325/3-1.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(model_file),
+                        "__package_filename": "103526124101A-80325-全身.jpg",
+                    },
+                    {
+                        "输入序号": 1,
+                        "款号": "103526124101A",
+                        "款色": "80325",
+                        "SKC编码": "103526124101A-80325",
+                        "图片类型": "静物",
+                        "文件名": "103526124101A-80325.jpg",
+                        "原文件名": "103526124101A-80325.jpg",
+                        "云盘路径": "01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/103526124101A-80325/103526124101A-80325.jpg",
+                        "下载结果": "已下载",
+                        "本地文件": str(still_file),
+                        "__package_filename": "103526124101A-80325.jpg",
+                    },
+                ],
+                runtime_files=[str(model_file), str(still_file)],
+                exported_files=[str(exported)],
+                run_params={
+                    "package_name": "天猫素材新624图片包",
+                },
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            self.assertEqual(len(result), 2)
+            zip_path = Path(result[0])
+            self.assertTrue(zip_path.is_file())
+            self.assertEqual(Path(result[1]), exported)
+            self.assertFalse(model_file.exists())
+            self.assertFalse(still_file.exists())
+            self.assertFalse(runtime_dir.exists())
+
+            with zipfile.ZipFile(zip_path) as archive:
+                names = archive.namelist()
+                self.assertTrue(any(name.endswith("天猫素材新624图片包/103526124101A-80325-全身.jpg") for name in names))
+                self.assertTrue(any(name.endswith("天猫素材新624图片包/103526124101A-80325.jpg") for name in names))
+                self.assertFalse(any("/103526124101A/" in name for name in names))
+
     def test_tmall_material_match_buy_allows_duplicate_download_source_paths(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

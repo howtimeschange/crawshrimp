@@ -67,6 +67,38 @@ class AdapterLoaderTests(unittest.TestCase):
             self.assertEqual(metadata["source_path"], str(adapter_dir.resolve()))
             self.assertEqual(metadata["runtime_path"], str(runtime_dir.resolve()))
 
+    def test_manifest_param_hidden_flag_is_preserved(self):
+        with unittest.mock.patch.dict(os.environ, self.env, clear=False):
+            src_root = Path(self.tmpdir.name) / "src"
+            src_root.mkdir(parents=True, exist_ok=True)
+            adapter_dir = _write_adapter(src_root, adapter_id="hidden-param-adapter")
+            manifest_path = adapter_dir / "manifest.yaml"
+            manifest_path.write_text(
+                manifest_path.read_text(encoding="utf-8").replace(
+                    "    trigger:\n      type: manual",
+                    "\n".join([
+                        "    params:",
+                        "      - id: internal_rule",
+                        "        type: select",
+                        "        label: Internal Rule",
+                        "        default: new_624",
+                        "        hidden: true",
+                        "        options:",
+                        "          - value: new_624",
+                        "            label: New Rule",
+                        "    trigger:",
+                        "      type: manual",
+                    ]),
+                ),
+                encoding="utf-8",
+            )
+
+            manifest = adapter_loader.install_from_dir(str(adapter_dir), install_mode="copy")
+            param = manifest.tasks[0].params[0]
+
+            self.assertTrue(param.hidden)
+            self.assertTrue(param.model_dump()["hidden"])
+
     def test_install_from_dir_link_keeps_source_and_lists_mode(self):
         with unittest.mock.patch.dict(os.environ, self.env, clear=False):
             src_root = Path(self.tmpdir.name) / "src"

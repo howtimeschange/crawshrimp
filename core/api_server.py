@@ -70,6 +70,7 @@ RUNTIME_CLEANUP_TASKS = {
     ("semir-cloud-drive", "batch_ai_generate"),
     ("semir-cloud-drive", "batch_image_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
+    ("semir-cloud-drive", "tmall_material_new_624"),
     ("shenhui-new-arrival", "prepare_upload_package"),
     ("tiktok-ops-assistant", "creator_video_download"),
 }
@@ -2204,7 +2205,7 @@ def _finalize_semir_cloud_drive_outputs(
     log,
 ) -> list[str]:
     if task_id != "batch_image_download":
-        if task_id == "tmall_material_match_buy":
+        if task_id in {"tmall_material_match_buy", "tmall_material_new_624"}:
             return _finalize_semir_tmall_material_match_buy_outputs(
                 data_rows=data_rows,
                 runtime_files=runtime_files,
@@ -2910,6 +2911,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         is_shopee_marketing_adapter = target_entry_url.startswith('https://seller.shopee.cn/portal/marketing')
 
         tab = None
+        current_mode_preferred_prefixes: list[str] = []
         if mode == 'current':
             all_tabs = [t for t in await _bridge_get_tabs() if t.get('type') == 'page']
             preferred_prefixes = configured_match_prefixes or [
@@ -2918,11 +2920,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 'https://seller.shopee.cn/portal/marketing/vouchers/new',
                 'https://seller.shopee.cn/portal/marketing/follow-prize/new',
             ] if is_shopee_marketing_adapter else configured_match_prefixes or [target_entry_url]
+            current_mode_preferred_prefixes = list(preferred_prefixes)
             if adapter_id == 'temu' and shop_url:
                 preferred_prefixes = list(dict.fromkeys([
                     *preferred_prefixes,
                     'https://www.temu.com/bgn_verification.html',
                 ]))
+                current_mode_preferred_prefixes = list(preferred_prefixes)
 
             if current_tab_id:
                 tab = next((t for t in all_tabs if str(t.get('id')) == current_tab_id), None)
@@ -3080,6 +3084,25 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             nav_result = await navigate_runner_to(shell_url, wait_seconds=3)
             if not nav_result.success:
                 raise RuntimeError(nav_result.error or f"无法从 Temu no-auth 恢复到后台入口：{shell_url}")
+
+        async def get_runner_current_url() -> str:
+            current_tab = None
+            tab_id = str(tab.get('id') or runner.tab_id or '') if (tab or runner.tab_id) else ''
+            if tab_id:
+                try:
+                    current_tab = await _bridge_get_tab(tab_id)
+                except Exception:
+                    current_tab = None
+            return str((current_tab or {}).get('url') or runner.tab_url or (tab or {}).get('url') or '')
+
+        def is_task_entry_url(url: str) -> bool:
+            prefixes = current_mode_preferred_prefixes or configured_match_prefixes or [target_entry_url]
+            return any(_url_matches_prefix(url, prefix) for prefix in prefixes) or _is_compatible_current_tab_for_task(
+                adapter_id,
+                task_id,
+                target_entry_url,
+                url,
+            )
 
         def merge_output_file_refs(*groups):
             merged = []
@@ -3265,11 +3288,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     else:
                         raise RuntimeError(f"等待登录超时（5分钟）。请完成 {platform_name} 登录后重试。")
 
-                if mode == 'new':
+                should_return_to_entry = mode == 'new'
+                if mode == 'current':
+                    current_url = await get_runner_current_url()
+                    should_return_to_entry = bool(target_entry_url and not is_task_entry_url(current_url))
+                    if should_return_to_entry:
+                        log(f"登录后当前页不在业务入口，导航回：{target_entry_url}（当前：{current_url[:120]}）")
+
+                if should_return_to_entry:
                     # 登录完成后，重新导航回业务入口页
                     await wait_for_control()
                     await recover_temu_no_auth("导航业务入口前")
-                    log(f"导航回业务入口：{target_entry_url}")
+                    if mode == 'new':
+                        log(f"导航回业务入口：{target_entry_url}")
                     entry_nav = await navigate_runner_to(
                         target_entry_url,
                         wait_seconds=3,

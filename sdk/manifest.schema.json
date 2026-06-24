@@ -108,6 +108,7 @@
             }
           ]
         },
+        "hidden": { "type": "boolean" },
         "required": { "type": "boolean" },
         "min": { "type": "number" },
         "max": { "type": "number" },

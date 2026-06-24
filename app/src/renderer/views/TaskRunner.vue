@@ -1501,6 +1501,7 @@ function isParamVisibleByRule(param) {
 }
 
 function isParamVisibleInForm(param) {
+  if (param?.hidden) return false
   if (autoPrecheckFlow.value && param?.id === 'execute_mode') return false
   return isParamVisibleByRule(param)
 }

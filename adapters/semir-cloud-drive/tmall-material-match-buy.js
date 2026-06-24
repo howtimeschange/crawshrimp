@@ -56,6 +56,11 @@
     return value === 'skc' ? 'skc' : 'spu'
   }
 
+  function normalizeAssetRule(rawValue) {
+    const value = compact(rawValue).toLowerCase().replace(/[\s-]+/g, '_')
+    return value === 'new_624' || value === '624' || value === 'new624' ? 'new_624' : 'match_buy'
+  }
+
   function getMatchDimensionLabel(matchDimension) {
     return normalizeMatchDimension(matchDimension) === 'skc' ? 'SKC' : 'SPU'
   }
@@ -131,6 +136,29 @@
     return /^3(?:-\d+)?$/.test(stem)
   }
 
+  function normalizeComparableCode(value) {
+    return compact(value).toLowerCase()
+  }
+
+  function getFolderCodeFromItem(item) {
+    const segments = pathSegments(item?.fullpath || item?.filename || '')
+    if (!segments.length) return ''
+    if (isImageItem(item)) return segments.length >= 2 ? segments[segments.length - 2] : ''
+    return segments[segments.length - 1]
+  }
+
+  function matchesNew624ImageName(filename, packageCode) {
+    return !!getNew624ImageType({ filename }, packageCode)
+  }
+
+  function getNew624ImageType(item, packageCode) {
+    const stem = normalizeComparableCode(getFileStem(item?.filename || ''))
+    const code = normalizeComparableCode(packageCode || getFolderCodeFromItem(item))
+    if (stem === '3-1') return '全身'
+    if (code && stem === code) return '静物'
+    return ''
+  }
+
   function pathSegments(fullpath) {
     return String(fullpath || '').replace(/\\/g, '/').split('/').map(compact).filter(Boolean)
   }
@@ -158,9 +186,14 @@
     return pathSegments(item?.fullpath || item?.filename || '').some(segment => startsWithCodeToken(segment, code))
   }
 
-  function matchesAssetItemForCode(item, code) {
-    if (!isImageItem(item) || !matchesMatchBuyImageName(item?.filename || '')) return false
-    return pathSegments(item?.fullpath || item?.filename || '').some(segment => startsWithCodeToken(segment, code))
+  function matchesAssetItemForCode(item, code, assetRule = 'match_buy') {
+    if (!isImageItem(item)) return false
+    const hasCodeSegment = pathSegments(item?.fullpath || item?.filename || '').some(segment => startsWithCodeToken(segment, code))
+    if (!hasCodeSegment) return false
+    if (normalizeAssetRule(assetRule) === 'new_624') {
+      return matchesNew624ImageName(item?.filename || '', getFolderCodeFromItem(item) || code)
+    }
+    return matchesMatchBuyImageName(item?.filename || '')
   }
 
   function parseDateBoundary(value, endOfDay = false) {
@@ -332,6 +365,17 @@
     return `${toSafeFilename(targetId, 'id')}（${itemIndex + 1}）.${ext}`
   }
 
+  function buildNew624PackageFilename(job, item) {
+    const ext = getExt(item) || 'jpg'
+    const searchCode = getJobSearchCode(job)
+    const imageType = getNew624ImageType(item, searchCode)
+    if (imageType === '全身') {
+      return `${toSafeFilename(searchCode, 'skc')}-全身.${ext}`
+    }
+    const originalFilename = toSafeFilename(item?.filename || '', '')
+    return originalFilename || `${toSafeFilename(searchCode, 'skc')}-静物.${ext}`
+  }
+
   function buildRuntimeFilename(job, item, itemIndex) {
     const ext = getExt(item) || 'jpg'
     const suffix = `.${ext}`
@@ -398,6 +442,72 @@
     }
 
     return { jobs, invalidRows }
+  }
+
+  function parseSkcCode(rawCode) {
+    const code = compact(rawCode)
+    const divider = code.lastIndexOf('-')
+    if (!code || divider <= 0 || divider >= code.length - 1) {
+      return { code, styleCode: '', colorCode: '', valid: false }
+    }
+    return {
+      code,
+      styleCode: compact(code.slice(0, divider)),
+      colorCode: compact(code.slice(divider + 1)),
+      valid: true,
+    }
+  }
+
+  function normalizeNew624Jobs(rawValue) {
+    const tokens = String(rawValue || '')
+      .split(/[\n\r\t,，;；]+/g)
+      .map(compact)
+      .filter(Boolean)
+    const jobs = []
+    const invalidRows = []
+    const seen = new Set()
+
+    for (let index = 0; index < tokens.length; index += 1) {
+      const parsed = parseSkcCode(tokens[index])
+      const rowNo = index + 1
+      const normalizedCode = parsed.code.toLowerCase()
+      if (!parsed.valid) {
+        invalidRows.push({
+          '输入序号': rowNo,
+          '表格行号': rowNo,
+          '抓取维度': 'SKC',
+          '款号': parsed.styleCode,
+          '款色': parsed.colorCode,
+          '检索编码': parsed.code,
+          'SKC编码': parsed.code,
+          '图片类型': '',
+          '对应ID': '',
+          '文件名': '',
+          '原文件名': '',
+          '云盘路径': '',
+          '文件时间': '',
+          '下载结果': '已跳过',
+          '本地文件': '',
+          '执行结果': '参数缺失',
+          '备注': 'SKC 格式应为“款号-色码”',
+        })
+        continue
+      }
+      if (seen.has(normalizedCode)) continue
+      seen.add(normalizedCode)
+      jobs.push({
+        row_no: rowNo,
+        input_index: rowNo,
+        match_dimension: 'skc',
+        style_code: parsed.styleCode,
+        color_code: parsed.colorCode,
+        search_code: parsed.code,
+        skc_code: parsed.code,
+        target_id: '',
+      })
+    }
+
+    return { jobs, invalidRows, inputCount: tokens.length }
   }
 
   function nextPhase(name, sleepMs = 0, newShared = shared, data = []) {
@@ -569,7 +679,15 @@
     return { ok: false, items: [], error: errors[0] || '列目录失败' }
   }
 
-  async function collectDescendantMatchBuyAssets(mountId, folderItem, maxDepth, uploadTimeRange, remainingBudget = { value: 2000 }) {
+  async function collectDescendantMatchBuyAssets(
+    mountId,
+    folderItem,
+    maxDepth,
+    uploadTimeRange,
+    remainingBudget = { value: 2000 },
+    assetRule = 'match_buy',
+    packageCode = getFolderCodeFromItem(folderItem),
+  ) {
     const folderPath = String(folderItem?.fullpath || '').trim()
     if (!folderPath || maxDepth <= 0 || remainingBudget.value <= 0) {
       return { assets: [], errors: [] }
@@ -591,13 +709,19 @@
           maxDepth - 1,
           uploadTimeRange,
           remainingBudget,
+          assetRule,
+          packageCode,
         )
         assets.push(...child.assets)
         errors.push(...child.errors)
         continue
       }
       if (!isImageItem(item)) continue
-      if (!matchesMatchBuyImageName(item?.filename || '')) continue
+      if (normalizeAssetRule(assetRule) === 'new_624') {
+        if (!matchesNew624ImageName(item?.filename || '', packageCode)) continue
+      } else if (!matchesMatchBuyImageName(item?.filename || '')) {
+        continue
+      }
       if (!isItemWithinUploadTimeRange(item, uploadTimeRange)) continue
       assets.push(item)
       remainingBudget.value -= 1
@@ -607,12 +731,13 @@
 
   async function collectMatchBuyAssets(searchCode, sourceConfig, options = {}) {
     const uploadTimeRange = options.uploadTimeRange || normalizeUploadTimeRange(options.upload_time_range)
+    const assetRule = normalizeAssetRule(options.assetRule || options.asset_rule)
     const targetCode = compact(searchCode)
     const searchItems = await searchFiles(sourceConfig.mountId, targetCode)
     const scoped = searchItems.filter(item => isWithinRelativePath(item?.fullpath, sourceConfig.relativePath))
     const matchedFolders = scoped.filter(item => matchesFolderItemForCode(item, targetCode))
     const directAssets = scoped
-      .filter(item => matchesAssetItemForCode(item, targetCode))
+      .filter(item => matchesAssetItemForCode(item, targetCode, assetRule))
       .filter(item => isItemWithinUploadTimeRange(item, uploadTimeRange))
 
     const expandedAssets = []
@@ -626,6 +751,7 @@
           depth,
           uploadTimeRange,
           { value: 2000 },
+          assetRule,
         )
         expandedAssets.push(...result.assets)
         folderErrors.push(...result.errors)
@@ -659,7 +785,11 @@
     const downloadItems = []
     const searchCode = getJobSearchCode(job)
     const dimensionLabel = getMatchDimensionLabel(job.match_dimension)
-    const candidateResult = await collectMatchBuyAssets(searchCode, sourceConfig, options)
+    const assetRule = normalizeAssetRule(options.assetRule || options.asset_rule)
+    const candidateResult = await collectMatchBuyAssets(searchCode, sourceConfig, {
+      ...options,
+      assetRule,
+    })
 
     if (!candidateResult.items.length) {
       const noteParts = [
@@ -669,11 +799,14 @@
       ]
       if (candidateResult.folderErrors.length) noteParts.push(`列目录失败 ${candidateResult.folderErrors.length} 个`)
       rows.push({
+        '输入序号': job.input_index || job.row_no,
         '表格行号': job.row_no,
         '抓取维度': dimensionLabel,
         '款号': job.style_code,
         '款色': job.color_code || '',
         '检索编码': searchCode,
+        'SKC编码': assetRule === 'new_624' ? searchCode : '',
+        '图片类型': '',
         '对应ID': job.target_id,
         '文件名': '',
         '原文件名': '',
@@ -686,11 +819,14 @@
       })
       for (const error of candidateResult.folderErrors.slice(0, 5)) {
         rows.push({
+          '输入序号': job.input_index || job.row_no,
           '表格行号': job.row_no,
           '抓取维度': dimensionLabel,
           '款号': job.style_code,
           '款色': job.color_code || '',
           '检索编码': searchCode,
+          'SKC编码': assetRule === 'new_624' ? searchCode : '',
+          '图片类型': '',
           '对应ID': job.target_id,
           '文件名': '',
           '原文件名': '',
@@ -707,14 +843,20 @@
 
     for (let index = 0; index < candidateResult.items.length; index += 1) {
       const item = candidateResult.items[index]
-      const packageFilename = buildPackageFilename(job.target_id, item, index)
+      const imageType = assetRule === 'new_624' ? getNew624ImageType(item, searchCode) : ''
+      const packageFilename = assetRule === 'new_624'
+        ? buildNew624PackageFilename(job, item)
+        : buildPackageFilename(job.target_id, item, index)
       const timestampMs = getItemTimestampMs(item)
       const baseRow = {
+        '输入序号': job.input_index || job.row_no,
         '表格行号': job.row_no,
         '抓取维度': dimensionLabel,
         '款号': job.style_code,
         '款色': job.color_code || '',
         '检索编码': searchCode,
+        'SKC编码': assetRule === 'new_624' ? searchCode : '',
+        '图片类型': imageType,
         '对应ID': job.target_id,
         '文件名': packageFilename,
         '原文件名': String(item?.filename || ''),
@@ -792,10 +934,15 @@
       parseCloudPath,
       normalizeHeaderKey,
       normalizeMatchDimension,
+      normalizeAssetRule,
       normalizeSkcColorCode,
       buildSkcCode,
       normalizeMatchBuyJobs,
+      normalizeNew624Jobs,
+      parseSkcCode,
       matchesMatchBuyImageName,
+      matchesNew624ImageName,
+      getNew624ImageType,
       normalizeUploadTimeRange,
       parseCloudTimestamp,
       getItemTimestampMs,
@@ -808,6 +955,7 @@
       getFileStem,
       getExt,
       isImageItem,
+      getFolderCodeFromItem,
       pathSegments,
       startsWithCodeToken,
       isWithinRelativePath,
@@ -815,6 +963,7 @@
       matchesAssetItemForCode,
       collectMatchBuyAssets,
       buildPackageFilename,
+      buildNew624PackageFilename,
       buildRuntimeFilename,
       buildMatchBuyPlan,
       finalizeRows,
@@ -835,11 +984,20 @@
         throw new Error('请选择文件上传时间范围')
       }
 
+      const assetRule = normalizeAssetRule(params.asset_rule)
       const inputRows = Array.isArray(params.input_file?.rows) ? params.input_file.rows : []
-      const matchDimension = normalizeMatchDimension(params.match_dimension)
-      if (!inputRows.length) throw new Error('请上传包含“款号”“款色”“对应ID”的 Excel')
+      const matchDimension = assetRule === 'new_624' ? 'skc' : normalizeMatchDimension(params.match_dimension)
 
-      const normalized = normalizeMatchBuyJobs(inputRows, matchDimension)
+      let normalized
+      if (assetRule === 'new_624') {
+        normalized = normalizeNew624Jobs(params.skc_codes || params.item_codes || params.skc_list)
+        if (!normalized.jobs.length && !normalized.invalidRows.length) {
+          throw new Error('请填写 SKC 编码')
+        }
+      } else {
+        if (!inputRows.length) throw new Error('请上传包含“款号”“款色”“对应ID”的 Excel')
+        normalized = normalizeMatchBuyJobs(inputRows, matchDimension)
+      }
       if (!normalized.jobs.length && !normalized.invalidRows.length) {
         throw new Error('Excel 中未读取到任务行')
       }
@@ -854,14 +1012,15 @@
         relative_path: cloudConfig.relativePath,
         folder_hash: buildFolderHashRoute(mount.mountId, cloudConfig.relativePath),
         match_dimension: matchDimension,
+        asset_rule: assetRule,
         upload_time_range: uploadTimeRange,
         folder_scan_depth: folderScanDepth,
         target_jobs: normalized.jobs,
         job_index: 0,
         result_rows: normalized.invalidRows,
         pending_download_items: [],
-        total_rows: Math.max(inputRows.length, normalized.jobs.length),
-        current_exec_no: normalized.jobs.length ? 1 : inputRows.length,
+        total_rows: Math.max(normalized.inputCount || inputRows.length, normalized.jobs.length),
+        current_exec_no: normalized.jobs.length ? 1 : (normalized.inputCount || inputRows.length),
         current_buyer_id: getJobSearchCode(normalized.jobs[0]) || '',
         current_store: cloudConfig.relativePath || mount.mountName,
       })
@@ -935,6 +1094,7 @@
         {
           uploadTimeRange: shared.upload_time_range,
           folderScanDepth: shared.folder_scan_depth,
+          assetRule: shared.asset_rule,
         },
       )
 
