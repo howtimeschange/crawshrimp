@@ -255,6 +255,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create desktop-latest \
+            --target "${GITHUB_SHA}" \
             release-assets/macos/* \
             release-assets/windows/* \
             --title "抓虾 Desktop Latest v${APP_VERSION}" \
