@@ -759,6 +759,7 @@ import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
+import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
 
 const props = defineProps({
   adapterId: String,
@@ -820,6 +821,7 @@ let pollTimer = null
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 let runAbortToken = 0
 let dynamicParamProbeToken = 0
+let activeTaskIdentityKey = ''
 
 function buildDefaultValues(params = []) {
   const next = {}
@@ -1044,8 +1046,10 @@ const hasParamProbeScript = computed(() =>
 )
 
 // 初始化默认值
-watch(() => props.task, (task) => {
+watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   if (!task) return
+  if (!shouldResetTaskValues(activeTaskIdentityKey, task, adapterId)) return
+  activeTaskIdentityKey = taskIdentityKey(adapterId, task)
   dynamicParamProbeToken += 1
   dynamicParamPatches.value = {}
   dynamicParamProbeLoading.value = false
