@@ -56,6 +56,7 @@ logger = logging.getLogger(__name__)
 API_VERSION = "1.4.16"
 API_TOKEN_HEADER = "x-crawshrimp-token"
 PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
+PUBLIC_API_PREFIXES = ("/adapter-assets/",)
 
 # In-memory task run state for live status / logs
 _run_logs: dict = {}   # job_id -> list[str]
@@ -73,6 +74,7 @@ RUNTIME_CLEANUP_TASKS = {
     ("semir-cloud-drive", "tmall_material_new_624"),
     ("shenhui-new-arrival", "prepare_upload_package"),
     ("tiktok-ops-assistant", "creator_video_download"),
+    ("tmall-ops-assistant", "tmall_packaging_upload"),
 }
 
 def _backend_lock_dir() -> Path:
@@ -2355,6 +2357,27 @@ def _finalize_semir_cloud_drive_outputs(
     return final_refs
 
 
+def _finalize_tmall_ops_assistant_outputs(
+    task_id: str,
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    if task_id == "tmall_packaging_upload":
+        return _finalize_semir_tmall_material_match_buy_outputs(
+            data_rows=data_rows,
+            runtime_files=runtime_files,
+            exported_files=exported_files,
+            run_params=run_params,
+            runtime_artifact_dir=runtime_artifact_dir,
+            log=log,
+        )
+    return [*(runtime_files or []), *(exported_files or [])]
+
+
 def _finalize_tiktok_creator_video_outputs(
     data_rows: list,
     runtime_files: list,
@@ -3205,6 +3228,23 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
+            if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_packaging_upload'):
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_tmall_ops_assistant_outputs,
+                        task_id=task_id,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] 天猫包装图片后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
             if adapter_id == 'shenhui-new-arrival':
                 try:
                     packaged_refs = await asyncio.to_thread(
@@ -3510,7 +3550,7 @@ app.add_middleware(
 
 @app.middleware("http")
 async def require_local_api_token(request: Request, call_next):
-    if request.method == "OPTIONS" or request.url.path in PUBLIC_API_PATHS:
+    if request.method == "OPTIONS" or _is_public_api_path(request.url.path):
         return await call_next(request)
 
     expected = _get_api_token()
@@ -3527,6 +3567,44 @@ async def require_local_api_token(request: Request, call_next):
         return JSONResponse({"detail": "Unauthorized"}, status_code=401)
 
     return await call_next(request)
+
+
+def _is_public_api_path(path: str) -> bool:
+    normalized = str(path or "")
+    return normalized in PUBLIC_API_PATHS or any(normalized.startswith(prefix) for prefix in PUBLIC_API_PREFIXES)
+
+
+def _adapter_asset_headers() -> dict[str, str]:
+    return {
+        "Access-Control-Allow-Origin": "*",
+        "Cross-Origin-Resource-Policy": "cross-origin",
+        "Cache-Control": "public, max-age=31536000, immutable",
+    }
+
+
+@app.get("/adapter-assets/{adapter_id}/{asset_path:path}")
+def get_adapter_asset(adapter_id: str, asset_path: str):
+    normalized = str(asset_path or "").replace("\\", "/").lstrip("/")
+    if not normalized.startswith(("vendor/", "assets/")):
+        raise HTTPException(400, "adapter asset path must be under vendor/ or assets/")
+
+    adapter_dir = adapter_loader.get_adapter_dir(adapter_id)
+    if not adapter_dir:
+        raise HTTPException(404, f"Adapter not found: {adapter_id}")
+
+    try:
+        path = adapter_loader.resolve_adapter_relative_file(
+            Path(adapter_dir),
+            normalized,
+            allowed_suffixes=None,
+            require_exists=True,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+
+    return FileResponse(path, headers=_adapter_asset_headers())
 
 
 # ─── Health ───

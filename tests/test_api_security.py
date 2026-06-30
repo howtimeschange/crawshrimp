@@ -1,5 +1,7 @@
 import os
+import tempfile
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -38,6 +40,39 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
             response = await api_server.require_local_api_token(FakeRequest("/health"), call_next)
 
         self.assertEqual(response.status_code, 200)
+
+    async def test_adapter_assets_route_is_public(self):
+        async def call_next(_request):
+            return PlainTextResponse("ok")
+
+        with patch.dict(os.environ, {"CRAWSHRIMP_API_TOKEN": "unit-token"}, clear=False):
+            response = await api_server.require_local_api_token(
+                FakeRequest("/adapter-assets/tmall-ops-assistant/vendor/tesseract/tesseract.min.js"),
+                call_next,
+            )
+
+        self.assertEqual(response.status_code, 200)
+
+    def test_adapter_asset_response_is_path_scoped_and_cors_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter_dir = Path(tmpdir) / "demo-adapter"
+            asset = adapter_dir / "vendor" / "tesseract" / "tesseract.min.js"
+            asset.parent.mkdir(parents=True)
+            asset.write_text("window.Tesseract={}", encoding="utf-8")
+            outside = Path(tmpdir) / "outside.js"
+            outside.write_text("outside", encoding="utf-8")
+
+            with patch("core.api_server.adapter_loader.get_adapter_dir", return_value=adapter_dir):
+                response = api_server.get_adapter_asset("demo-adapter", "vendor/tesseract/tesseract.min.js")
+                self.assertEqual(response.headers.get("access-control-allow-origin"), "*")
+
+                with self.assertRaises(api_server.HTTPException) as ctx:
+                    api_server.get_adapter_asset("demo-adapter", "../outside.js")
+                self.assertEqual(ctx.exception.status_code, 400)
+
+                with self.assertRaises(api_server.HTTPException) as ctx:
+                    api_server.get_adapter_asset("demo-adapter", str(outside))
+                self.assertEqual(ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

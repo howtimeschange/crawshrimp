@@ -49,7 +49,7 @@ async function loadExports(fetchImpl = async () => jsonResponse({})) {
   return exportsBox
 }
 
-async function runScript({ phase, shared = {}, params = {}, documentOverride = {}, locationOverride = {} }) {
+async function runScript({ phase, shared = {}, params = {}, documentOverride = {}, locationOverride = {}, windowOverride = {} }) {
   const scriptPath = path.resolve('adapters/tmall-ops-assistant/tmall-packaging-upload.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const location = {
@@ -63,6 +63,7 @@ async function runScript({ phase, shared = {}, params = {}, documentOverride = {
       __CRAWSHRIMP_PHASE__: phase,
       __CRAWSHRIMP_SHARED__: shared,
       __CRAWSHRIMP_EXPORTS__: null,
+      ...windowOverride,
     },
     document: documentOverride,
     location,
@@ -400,17 +401,17 @@ test('ensure_cloud_folder enters search route after the Semir mount tab is activ
   assert.equal(next.location.hash, searchHash)
 })
 
-test('buildAnchoredPcDetailModules preserves first image and size anchor while replacing middle detail images', async () => {
+test('buildAnchoredPcDetailModules preserves first image and wanted-info bottom anchor while replacing middle detail images', async () => {
   const helpers = await loadExports()
   const modules = [
     {
       id: 30,
       name: '促销专区',
       content: [
-        '<p><img src="https://img.example/top.jpg"/></p>',
-        '<div data-title="想要的信息看这里">产品信息</div>',
+        '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
         '<p><img src="https://img.example/old-product-1.jpg"/></p>',
         '<p><img src="https://img.example/old-product-2.jpg"/></p>',
+        '<div data-title="想要的信息看这里"><p><img src="https://img.example/wanted-info.jpg"/></p></div>',
         '<h3>尺码表</h3>',
         '<p><img src="https://img.example/size.jpg"/></p>',
         '<p><img src="https://img.example/model.jpg"/></p>',
@@ -427,14 +428,85 @@ test('buildAnchoredPcDetailModules preserves first image and size anchor while r
   assert.equal(result.ok, true)
   assert.equal(result.mode, 'anchored_replace')
   assert.equal(result.replacedImageCount, 2)
+  assert.equal(result.stopAnchorKind, 'wanted_info')
   assert.match(result.modules[0].content, /top\.jpg/)
   assert.match(result.modules[0].content, /new-detail-1\.jpg/)
   assert.match(result.modules[0].content, /new-detail-2\.jpg/)
+  assert.match(result.modules[0].content, /wanted-info\.jpg/)
   assert.match(result.modules[0].content, /尺码表/)
   assert.match(result.modules[0].content, /size\.jpg/)
   assert.match(result.modules[0].content, /model\.jpg/)
   assert.doesNotMatch(result.modules[0].content, /old-product-1\.jpg/)
   assert.doesNotMatch(result.modules[0].content, /old-product-2\.jpg/)
+})
+
+test('buildAnchoredPcDetailModules preserves images through non-first asia top anchor before wash fallback', async () => {
+  const helpers = await loadExports()
+  const result = helpers.buildAnchoredPcDetailModules([
+    {
+      id: 30,
+      name: '促销专区',
+      content: [
+        '<p><img src="https://img.example/pre-brand.jpg"/></p>',
+        '<p><img src="https://img.example/campaign.jpg"/></p>',
+        '<p><img src="https://img.example/asia-first.jpg"/></p>',
+        '<p><img src="https://img.example/old-product-1.jpg"/></p>',
+        '<p><img src="https://img.example/old-product-2.jpg"/></p>',
+        '<p><img src="https://img.example/wash-anchor.jpg"/></p>',
+        '<p><img src="https://img.example/brand-story.jpg"/></p>',
+      ].join(''),
+      custom: false,
+    },
+  ], [
+    'https://img.example/new-detail-1.jpg',
+    'https://img.example/new-detail-2.jpg',
+  ], {
+    visualAnchors: {
+      fixedTopImageIndex: 2,
+      stopImageIndex: 5,
+      stopAnchorKind: 'wash_fallback',
+      source: 'tesseract_ocr',
+    },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.fixedTopImageIndex, 2)
+  assert.equal(result.replaceStartIndex, 3)
+  assert.equal(result.replacedImageCount, 2)
+  assert.equal(result.stopAnchorKind, 'wash_fallback')
+  assert.match(result.modules[0].content, /pre-brand\.jpg/)
+  assert.match(result.modules[0].content, /campaign\.jpg/)
+  assert.match(result.modules[0].content, /asia-first\.jpg/)
+  assert.match(result.modules[0].content, /new-detail-1\.jpg/)
+  assert.match(result.modules[0].content, /new-detail-2\.jpg/)
+  assert.match(result.modules[0].content, /wash-anchor\.jpg/)
+  assert.match(result.modules[0].content, /brand-story\.jpg/)
+  assert.doesNotMatch(result.modules[0].content, /old-product-1\.jpg/)
+  assert.doesNotMatch(result.modules[0].content, /old-product-2\.jpg/)
+})
+
+test('buildAnchoredPcDetailModules does not preserve first image from generic module name alone', async () => {
+  const helpers = await loadExports()
+  const result = helpers.buildAnchoredPcDetailModules([
+    {
+      id: 30,
+      name: '促销专区',
+      content: [
+        '<p><img src="https://img.example/non-asia-top.jpg"/></p>',
+        '<p><img src="https://img.example/old-middle.jpg"/></p>',
+        '<div data-title="想要的信息看这里"><p><img src="https://img.example/wanted-info.jpg"/></p></div>',
+      ].join(''),
+      custom: false,
+    },
+  ], ['https://img.example/new-detail.jpg'])
+
+  assert.equal(result.ok, true)
+  assert.equal(result.preserveFirstImage, false)
+  assert.equal(result.replacedImageCount, 2)
+  assert.match(result.modules[0].content, /new-detail\.jpg/)
+  assert.match(result.modules[0].content, /wanted-info\.jpg/)
+  assert.doesNotMatch(result.modules[0].content, /non-asia-top\.jpg/)
+  assert.doesNotMatch(result.modules[0].content, /old-middle\.jpg/)
 })
 
 test('buildAnchoredPcDetailModules blocks unstructured single legacy description', async () => {
@@ -459,7 +531,7 @@ test('buildAnchoredPcDetailModules uses module-level size anchors even when size
     {
       id: 30,
       name: '促销专区',
-      content: '<p><img src="https://img.example/top.jpg"/></p>',
+      content: '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
       custom: false,
     },
     {
@@ -525,7 +597,7 @@ test('buildAnchoredPcDetailModules falls back to lower preserve anchors when siz
     {
       id: 30,
       name: '促销专区',
-      content: '<p><img src="https://img.example/top.jpg"/></p>',
+      content: '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
       custom: false,
     },
     {
@@ -550,14 +622,15 @@ test('buildAnchoredPcDetailModules falls back to lower preserve anchors when siz
   assert.match(result.modules.find(module => module.name === '吊牌展示').content, /tag\.jpg/)
 })
 
-test('buildAnchoredPcDetailModules preserves lower anchor block title inside the same module', async () => {
+test('buildAnchoredPcDetailModules preserves wanted-info anchor image inside the same module', async () => {
   const helpers = await loadExports()
   const result = helpers.buildAnchoredPcDetailModules([
     {
       id: 30,
       name: '促销专区',
       content: [
-        '<p><img src="https://img.example/top.jpg"/></p>',
+        '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
+        '<p><img src="https://img.example/old-middle.jpg"/></p>',
         '<div data-title="想要的信息看这里"><p><img src="https://img.example/old-info.jpg"/></p></div>',
         '<div data-title="品牌故事"><p><img src="https://img.example/story.jpg"/></p></div>',
       ].join(''),
@@ -566,31 +639,34 @@ test('buildAnchoredPcDetailModules preserves lower anchor block title inside the
   ], ['https://img.example/new-detail.jpg'])
 
   assert.equal(result.ok, true)
-  assert.equal(result.stopAnchorKind, 'lower_preserve')
+  assert.equal(result.stopAnchorKind, 'wanted_info')
   assert.match(result.modules[0].content, /top\.jpg/)
   assert.match(result.modules[0].content, /new-detail\.jpg/)
+  assert.match(result.modules[0].content, /old-info\.jpg/)
   assert.match(result.modules[0].content, /品牌故事/)
   assert.match(result.modules[0].content, /story\.jpg/)
-  assert.doesNotMatch(result.modules[0].content, /old-info\.jpg/)
+  assert.doesNotMatch(result.modules[0].content, /old-middle\.jpg/)
 })
 
-test('buildAnchoredPcDetailHtml replaces old text PC detail when textual anchors are present', async () => {
+test('buildAnchoredPcDetailHtml preserves wanted-info and below when textual anchors are present', async () => {
   const helpers = await loadExports()
   const result = helpers.buildAnchoredPcDetailHtml([
     '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
-    '<p>想要的信息看这里</p>',
-    '<p><img src="https://img.example/old-info.jpg"/></p>',
+    '<p><img src="https://img.example/old-middle.jpg"/></p>',
+    '<p>想要的信息看这里<img src="https://img.example/old-info.jpg"/></p>',
     '<p>尺码表</p>',
     '<p><img src="https://img.example/size.jpg"/></p>',
   ].join(''), ['https://img.example/new-detail.jpg'])
 
   assert.equal(result.ok, true)
   assert.equal(result.target, 'tmDescription')
+  assert.equal(result.stopAnchorKind, 'wanted_info')
   assert.match(result.html, /top\.jpg/)
   assert.match(result.html, /new-detail\.jpg/)
+  assert.match(result.html, /old-info\.jpg/)
   assert.match(result.html, /尺码表/)
   assert.match(result.html, /size\.jpg/)
-  assert.doesNotMatch(result.html, /old-info\.jpg/)
+  assert.doesNotMatch(result.html, /old-middle\.jpg/)
 })
 
 test('buildAnchoredPcDetailHtml blocks image-only old text PC detail without textual anchors', async () => {
@@ -605,6 +681,214 @@ test('buildAnchoredPcDetailHtml blocks image-only old text PC detail without tex
   assert.equal(result.target, 'tmDescription')
   assert.match(result.note, /旧版文本PC详情/)
   assert.equal(result.html.includes('old-info.jpg'), true)
+})
+
+test('buildAnchoredPcDetailHtml blocks image-only old text detail even when image counts look plausible', async () => {
+  const helpers = await loadExports()
+  const oldDetailImages = Array.from({ length: 15 }, (_, index) => `<p><img src="https://img.example/old-${String(index + 1).padStart(2, '0')}.jpg"/></p>`)
+  const newDetailUrls = Array.from({ length: 15 }, (_, index) => `https://img.example/new-${String(index + 1).padStart(2, '0')}.jpg`)
+  const result = helpers.buildAnchoredPcDetailHtml([
+    '<p><img src="https://img.example/unknown-top.jpg"/></p>',
+    ...oldDetailImages,
+    '<p><img src="https://img.example/lower-01.jpg"/></p>',
+    '<p><img src="https://img.example/lower-02.jpg"/></p>',
+  ].join(''), newDetailUrls)
+
+  assert.equal(result.ok, false)
+  assert.equal(result.target, 'tmDescription')
+  assert.equal(result.mode, 'blocked_legacy_visual_anchor_missing')
+  assert.match(result.html, /unknown-top\.jpg/)
+  assert.match(result.html, /old-01\.jpg/)
+})
+
+test('buildAnchoredPcDetailHtml can use explicit legacy image count fallback when allowed', async () => {
+  const helpers = await loadExports()
+  const oldDetailImages = Array.from({ length: 15 }, (_, index) => `<p><img src="https://img.example/old-${String(index + 1).padStart(2, '0')}.jpg"/></p>`)
+  const newDetailUrls = Array.from({ length: 15 }, (_, index) => `https://img.example/new-${String(index + 1).padStart(2, '0')}.jpg`)
+  const result = helpers.buildAnchoredPcDetailHtml([
+    '<p><img src="https://img.example/asia-first.jpg"/></p>',
+    ...oldDetailImages,
+    '<p><img src="https://img.example/size-recommend.jpg"/></p>',
+    '<p><img src="https://img.example/material-wash.jpg"/></p>',
+    '<p><img src="https://img.example/brand-story.jpg"/></p>',
+  ].join(''), newDetailUrls, {
+    allowLegacyImageCountFallback: true,
+    visualAnchors: { preserveFirstImage: true },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.target, 'tmDescription')
+  assert.equal(result.preserveFirstImage, true)
+  assert.equal(result.stopAnchorKind, 'legacy_image_count')
+  assert.match(result.html, /asia-first\.jpg/)
+  assert.match(result.html, /new-01\.jpg/)
+  assert.match(result.html, /new-15\.jpg/)
+  assert.match(result.html, /size-recommend\.jpg/)
+  assert.match(result.html, /material-wash\.jpg/)
+  assert.doesNotMatch(result.html, /old-01\.jpg/)
+  assert.doesNotMatch(result.html, /old-15\.jpg/)
+})
+
+test('buildAnchoredPcDetailHtml accepts explicit visual stop image index for old text detail', async () => {
+  const helpers = await loadExports()
+  const result = helpers.buildAnchoredPcDetailHtml([
+    '<p><img src="https://img.example/asia-first.jpg"/></p>',
+    '<p><img src="https://img.example/old-01.jpg"/></p>',
+    '<p><img src="https://img.example/old-02.jpg"/></p>',
+    '<p><img src="https://img.example/material-wash.jpg"/></p>',
+    '<p><img src="https://img.example/brand-story.jpg"/></p>',
+  ].join(''), ['https://img.example/new-detail.jpg'], {
+    visualAnchors: {
+      preserveFirstImage: true,
+      stopImageIndex: 3,
+      stopAnchorKind: 'lower_preserve',
+      source: 'visual_ocr',
+    },
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.target, 'tmDescription')
+  assert.equal(result.stopAnchorKind, 'visual_lower_preserve')
+  assert.match(result.html, /asia-first\.jpg/)
+  assert.match(result.html, /new-detail\.jpg/)
+  assert.match(result.html, /material-wash\.jpg/)
+  assert.match(result.html, /brand-story\.jpg/)
+  assert.doesNotMatch(result.html, /old-01\.jpg/)
+  assert.doesNotMatch(result.html, /old-02\.jpg/)
+})
+
+test('buildPcDetailVisualAnchorsFromOcrResults detects fixed top and wanted-info anchor', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([
+    { globalIndex: 0, src: 'https://img.example/top.jpg' },
+    { globalIndex: 1, src: 'https://img.example/old-01.jpg' },
+    { globalIndex: 2, src: 'https://img.example/wanted.jpg' },
+  ], [
+    { globalIndex: 0, text: '童装销售额 全亚洲 第一', confidence: 84 },
+    { globalIndex: 2, text: '想要的信息看这里', confidence: 91 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, true)
+  assert.equal(anchors.fixedTopImageIndex, 0)
+  assert.equal(anchors.stopImageIndex, 2)
+  assert.equal(anchors.stopAnchorKind, 'wanted_info')
+  assert.equal(anchors.source, 'tesseract_ocr')
+})
+
+test('buildPcDetailVisualAnchorsFromOcrResults detects non-first fixed top anchor', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([
+    { globalIndex: 0, src: 'https://img.example/pre-brand.jpg' },
+    { globalIndex: 1, src: 'https://img.example/campaign.jpg' },
+    { globalIndex: 2, src: 'https://img.example/asia-first.jpg' },
+    { globalIndex: 3, src: 'https://img.example/old-01.jpg' },
+    { globalIndex: 4, src: 'https://img.example/old-02.jpg' },
+    { globalIndex: 5, src: 'https://img.example/wash.jpg' },
+  ], [
+    { globalIndex: 2, text: '童装销售额 全亚洲 第一', confidence: 84 },
+    { globalIndex: 5, text: '不同材质这样洗 洗涤小知识', confidence: 88 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, true)
+  assert.equal(anchors.fixedTopImageIndex, 2)
+  assert.equal(anchors.stopImageIndex, 5)
+  assert.equal(anchors.stopAnchorKind, 'wash_fallback')
+})
+
+test('buildPcDetailVisualAnchorsFromOcrResults uses wash fallback when wanted-info is absent', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([
+    { globalIndex: 0, src: 'https://img.example/top.jpg' },
+    { globalIndex: 1, src: 'https://img.example/old-01.jpg' },
+    { globalIndex: 2, src: 'https://img.example/wash.jpg' },
+  ], [
+    { globalIndex: 2, text: '不同材质这样洗 机洗注意事项', confidence: 88 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, false)
+  assert.equal(anchors.stopImageIndex, 2)
+  assert.equal(anchors.stopAnchorKind, 'wash_fallback')
+})
+
+test('tesseractRuntimeConfig defaults to bundled adapter asset URLs', async () => {
+  const helpers = await loadExports()
+  const config = helpers.tesseractRuntimeConfig({})
+
+  assert.equal(config.scriptUrl, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract/tesseract.min.js')
+  assert.equal(config.workerPath, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract/worker.min.js')
+  assert.equal(config.corePath, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract')
+  assert.equal(config.langPath, 'http://127.0.0.1:18765/adapter-assets/tmall-ops-assistant/vendor/tesseract/lang')
+  assert.equal(config.lang, 'chi_sim+eng')
+})
+
+test('tesseractRuntimeConfig allows explicit runtime URL overrides', async () => {
+  const helpers = await loadExports()
+  const config = helpers.tesseractRuntimeConfig({
+    tesseract_script_url: 'https://example.test/tesseract.js',
+    tesseract_worker_url: 'https://example.test/worker.js',
+    tesseract_core_path: 'https://example.test/core',
+    tesseract_lang_path: 'https://example.test/lang',
+    tesseract_lang: 'eng',
+  })
+
+  assert.equal(config.scriptUrl, 'https://example.test/tesseract.js')
+  assert.equal(config.workerPath, 'https://example.test/worker.js')
+  assert.equal(config.corePath, 'https://example.test/core')
+  assert.equal(config.langPath, 'https://example.test/lang')
+  assert.equal(config.lang, 'eng')
+})
+
+test('wait_tmall_ready routes blocked PC detail probe into OCR anchor detection when enabled', async () => {
+  const modularDesc = [{
+    id: 88,
+    name: '旧描述',
+    content: '<p><img src="https://img.example/top.jpg"/></p><p><img src="https://img.example/old.jpg"/></p>',
+    custom: true,
+  }]
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'modularDesc') return modularDesc
+      if (name === 'tmDescription') return ''
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    params: { enable_ocr_anchor_detection: true },
+    shared: {
+      current_job: { item_id: '1061946933829', style_code: '208425107212', execute_mode: 'upload_draft' },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1061946933829',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
+  assert.equal(result.meta.shared.pc_detail_replacement_probe.mode, 'blocked_legacy_visual_anchor_missing')
 })
 
 test('buildTmallComponentValues creates main images, vertical image, and anchored PC detail replacement', async () => {
@@ -627,7 +911,7 @@ test('buildTmallComponentValues creates main images, vertical image, and anchore
     modularDesc: [{
       id: 30,
       name: '促销专区',
-      content: '<p><img src="https://img.example/top.jpg"/></p><p>产品信息</p><p><img src="https://img.example/old.jpg"/></p><p>尺码表</p><p><img src="https://img.example/size.jpg"/></p>',
+      content: '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p><p>产品信息</p><p><img src="https://img.example/old.jpg"/></p><p>尺码表</p><p><img src="https://img.example/size.jpg"/></p>',
       custom: false,
     }],
   })
@@ -644,6 +928,40 @@ test('buildTmallComponentValues creates main images, vertical image, and anchore
   assert.match(values.modularDesc[0].content, /尺码表/)
   assert.match(values.modularDesc[0].content, /size\.jpg/)
   assert.doesNotMatch(values.modularDesc[0].content, /old\.jpg/)
+})
+
+test('buildTmallComponentValues applies visual anchors to modularDesc replacements', async () => {
+  const helpers = await loadExports()
+  const values = helpers.buildTmallComponentValues({
+    pc_detail: [{ url: 'https://img.example/detail-1.jpg' }],
+  }, {
+    modularDesc: [{
+      id: 30,
+      name: '促销专区',
+      content: [
+        '<p><img src="https://img.example/asia-first.jpg"/></p>',
+        '<p><img src="https://img.example/old-middle.jpg"/></p>',
+        '<p><img src="https://img.example/white-black-anchor.jpg"/></p>',
+        '<p><img src="https://img.example/brand-story.jpg"/></p>',
+      ].join(''),
+      custom: false,
+    }],
+    pcDetailVisualAnchors: {
+      preserveFirstImage: true,
+      stopImageIndex: 2,
+      stopAnchorKind: 'white_black_fallback',
+      source: 'visual_similarity',
+    },
+  })
+
+  assert.equal(values.pcDetailReplacement.ok, true)
+  assert.equal(values.pcDetailReplacement.stopAnchorKind, 'white_black_fallback')
+  assert.equal(values.pcDetailReplacement.preserveFirstImage, true)
+  assert.match(values.modularDesc[0].content, /asia-first\.jpg/)
+  assert.match(values.modularDesc[0].content, /detail-1\.jpg/)
+  assert.match(values.modularDesc[0].content, /white-black-anchor\.jpg/)
+  assert.match(values.modularDesc[0].content, /brand-story\.jpg/)
+  assert.doesNotMatch(values.modularDesc[0].content, /old-middle\.jpg/)
 })
 
 test('buildTmallComponentValues writes old text PC detail through tmDescription fallback', async () => {

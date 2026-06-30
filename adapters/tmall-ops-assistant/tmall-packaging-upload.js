@@ -17,6 +17,16 @@
   const SEARCH_FALLBACK_IMAGE_LIMIT = 80
   const SEARCH_FALLBACK_ASSET_BUDGET = 1200
   const PC_DETAIL_MAX_COUNT = 30
+  const OCR_DEFAULT_MAX_IMAGES = 80
+  const OCR_PER_IMAGE_TIMEOUT_MS = 18000
+  const OCR_TOTAL_TIMEOUT_MS = 120000
+  const CRAW_SHRIMP_LOCAL_BASE_URL = 'http://127.0.0.1:18765'
+  const TESSERACT_VENDOR_PATH = '/adapter-assets/tmall-ops-assistant/vendor/tesseract'
+  const TESSERACT_SCRIPT_URL = `${CRAW_SHRIMP_LOCAL_BASE_URL}${TESSERACT_VENDOR_PATH}/tesseract.min.js`
+  const TESSERACT_WORKER_URL = `${CRAW_SHRIMP_LOCAL_BASE_URL}${TESSERACT_VENDOR_PATH}/worker.min.js`
+  const TESSERACT_CORE_PATH = `${CRAW_SHRIMP_LOCAL_BASE_URL}${TESSERACT_VENDOR_PATH}`
+  const TESSERACT_LANG_PATH = `${CRAW_SHRIMP_LOCAL_BASE_URL}${TESSERACT_VENDOR_PATH}/lang`
+  const TESSERACT_LANG = 'chi_sim+eng'
   const UPLOAD_INPUT_ID = 'crawshrimp-tmall-packaging-upload-input'
   const UPLOAD_INPUT_SELECTOR = `#${UPLOAD_INPUT_ID}`
 
@@ -1313,13 +1323,21 @@
     return textarea ? String(textarea.value || '') : ''
   }
 
-  function currentPcDetailReplacementProbe() {
+  function currentPcDetailReplacementProbe(options = {}) {
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
-      return buildAnchoredPcDetailModules(modularDesc, [], { probeOnly: true })
+      return buildAnchoredPcDetailModules(modularDesc, [], {
+        probeOnly: true,
+        visualAnchors: options.visualAnchors,
+      })
     }
     const tmDescription = getLegacyPcDetailHtml()
-    if (tmDescription) return buildAnchoredPcDetailHtml(tmDescription, [], { probeOnly: true })
+    if (tmDescription) {
+      return buildAnchoredPcDetailHtml(tmDescription, [], {
+        probeOnly: true,
+        visualAnchors: options.visualAnchors,
+      })
+    }
     return {
       ok: false,
       modules: [],
@@ -1959,9 +1977,11 @@
   }
 
   const SIZE_ANCHOR_RE = /(尺码表|尺码测量|尺码推荐|尺码推荐表|宝贝尺寸|宝贝尺码|商品尺码表|尺码信息|测量图)/i
-  const LOWER_PRESERVE_ANCHOR_RE = /(模特信息|模特展示|宝贝模特|吊牌|吊牌展示|洗涤|水洗|洗唛|品牌介绍|品牌故事|宝贝故事|品牌说明|底部固定|宝贝底部|售后)/i
-  const INFO_ANCHOR_RE = /(商品信息|宝贝信息|产品信息|想要的信息看这里|基础信息|基本信息|商品参数|宝贝参数)/i
-  const FIXED_TOP_ANCHOR_RE = /(促销专区|抖音固定图|顶部展示|dy顶部图|顶部固定|固定图|底部固定|童装销售额|全亚洲|品牌背书|balabala|balaone)/i
+  const WANTED_INFO_ANCHOR_RE = /(想要的信息看这里|想看的信息在这里|想要的信息|信息看这里)/i
+  const WASH_FALLBACK_ANCHOR_RE = /(不同材质这样洗|不同材质|衣物洗涤|洗涤|水洗|洗唛)/i
+  const LOWER_PRESERVE_ANCHOR_RE = /(模特信息|模特展示|宝贝模特|吊牌|吊牌展示|洗涤|水洗|洗唛|不同材质这样洗|不同材质|衣物洗涤|品牌介绍|品牌故事|宝贝故事|品牌说明|底部固定|宝贝底部|售后)/i
+  const INFO_ANCHOR_RE = /(商品信息|宝贝信息|产品信息|基础信息|基本信息|商品参数|宝贝参数)/i
+  const FIXED_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一)/i
 
   function decodeHtmlText(value) {
     return String(value || '')
@@ -1989,8 +2009,16 @@
     return LOWER_PRESERVE_ANCHOR_RE.test(String(value || ''))
   }
 
+  function isWantedInfoAnchorText(value) {
+    return WANTED_INFO_ANCHOR_RE.test(String(value || ''))
+  }
+
+  function isWashFallbackAnchorText(value) {
+    return WASH_FALLBACK_ANCHOR_RE.test(String(value || ''))
+  }
+
   function isStopAnchorText(value) {
-    return isSizeAnchorText(value) || isLowerPreserveAnchorText(value)
+    return isWantedInfoAnchorText(value) || isSizeAnchorText(value) || isLowerPreserveAnchorText(value)
   }
 
   function isInfoAnchorText(value) {
@@ -1999,6 +2027,91 @@
 
   function isFixedTopAnchorText(value) {
     return FIXED_TOP_ANCHOR_RE.test(String(value || ''))
+  }
+
+  function ocrAnchorText(value) {
+    const raw = compact(value)
+    const joined = raw.replace(/[\s:：,，.。;；|｜_\\/\-—~～]+/g, '')
+    return `${raw} ${joined}`
+  }
+
+  function classifyOcrAnchorText(value) {
+    const text = ocrAnchorText(value)
+    if (isFixedTopAnchorText(text)) return 'fixed_top'
+    if (isWantedInfoAnchorText(text)) return 'wanted_info'
+    if (isWashFallbackAnchorText(text)) return 'wash_fallback'
+    if (isSizeAnchorText(text)) return 'size'
+    if (isLowerPreserveAnchorText(text)) return 'lower_preserve'
+    return ''
+  }
+
+  function ocrResultIndex(result, fallbackIndex = 0) {
+    const candidates = [result?.globalIndex, result?.imageIndex, result?.index, fallbackIndex]
+    for (const value of candidates) {
+      const number = Number(value)
+      if (Number.isFinite(number) && number >= 0) return number
+    }
+    return fallbackIndex
+  }
+
+  function buildPcDetailVisualAnchorsFromOcrResults(images = [], ocrResults = [], options = {}) {
+    const imageList = Array.isArray(images) ? images : []
+    const resultList = (Array.isArray(ocrResults) ? ocrResults : [])
+      .map((result, index) => ({
+        ...result,
+        globalIndex: ocrResultIndex(result, index),
+        text: compact(result?.text || result?.data?.text || ''),
+        confidence: Number(result?.confidence ?? result?.data?.confidence ?? 0) || 0,
+      }))
+      .filter(result => result.text && !result.error)
+      .sort((a, b) => a.globalIndex - b.globalIndex)
+
+    const imageByIndex = new Map(imageList.map((image, index) => [Number(image?.globalIndex ?? index), image]))
+    const fixedTopResult = resultList.find(result => {
+      if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
+      return classifyOcrAnchorText(result.text) === 'fixed_top'
+    })
+    const preserveFirstImage = !!fixedTopResult
+    const fixedTopImageIndex = fixedTopResult ? fixedTopResult.globalIndex : null
+    const minStopIndex = fixedTopResult ? fixedTopResult.globalIndex + 1 : 0
+    const priorities = [
+      ['wanted_info', 'wanted_info'],
+      ['wash_fallback', 'wash_fallback'],
+      ['size', 'size'],
+      ['lower_preserve', 'lower_preserve'],
+    ]
+    let stop = null
+    let stopAnchorKind = ''
+    for (const [kind, anchorKind] of priorities) {
+      const found = resultList.find(result => {
+        if (result.globalIndex < minStopIndex) return false
+        if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
+        return classifyOcrAnchorText(result.text) === kind
+      })
+      if (found) {
+        stop = found
+        stopAnchorKind = anchorKind
+        break
+      }
+    }
+
+    const anchors = {
+      ocrStatus: stop ? 'recognized' : (resultList.length ? 'no_anchor' : 'no_text'),
+      preserveFirstImage,
+      source: compact(options.source || 'tesseract_ocr'),
+      confidence: stop ? stop.confidence : (fixedTopResult?.confidence || 0),
+      fixedTopImageIndex,
+      stopImageIndex: stop ? stop.globalIndex : null,
+      stopAnchorKind,
+      matchedText: stop ? stop.text.slice(0, 120) : '',
+      fixedTopText: fixedTopResult ? fixedTopResult.text.slice(0, 120) : '',
+    }
+    if (!stop) {
+      delete anchors.stopImageIndex
+      delete anchors.stopAnchorKind
+    }
+    if (!preserveFirstImage) delete anchors.fixedTopImageIndex
+    return anchors
   }
 
   function extractImgSrc(imgTag) {
@@ -2039,6 +2152,8 @@
           src: extractImgSrc(tag),
           context,
           isSizeAnchor: isSizeAnchorText(context),
+          isWantedInfoAnchor: isWantedInfoAnchorText(context),
+          isWashFallbackAnchor: isWashFallbackAnchorText(context),
           isStopAnchor: isStopAnchorText(context),
           isInfoAnchor: isInfoAnchorText(context),
           isFixedTop: isFixedTopAnchorText(context),
@@ -2075,7 +2190,7 @@
     if (isStopAnchorText(moduleName)) return 0
     const limit = Math.max(0, imageStart - 1800)
     const before = html.slice(limit, imageStart)
-    const stopAnchorRe = new RegExp(`${SIZE_ANCHOR_RE.source}|${LOWER_PRESERVE_ANCHOR_RE.source}`, 'gi')
+    const stopAnchorRe = new RegExp(`${WANTED_INFO_ANCHOR_RE.source}|${SIZE_ANCHOR_RE.source}|${LOWER_PRESERVE_ANCHOR_RE.source}`, 'gi')
     const matches = [...before.matchAll(stopAnchorRe)]
     if (!matches.length) return imageStart
     const anchorAbs = limit + Number(matches[matches.length - 1].index || 0)
@@ -2089,12 +2204,99 @@
     const list = Array.isArray(modules) ? modules : []
     if (list.length !== 1) return false
     const module = list[0] || {}
-    if (!/旧描述/.test(compact(module.name))) return false
-    return !images.some(image => image.isSizeAnchor || image.isInfoAnchor)
+    if (!/(旧描述|文本PC详情)/.test(compact(module.name))) return false
+    return !images.some(image => image.isSizeAnchor || image.isInfoAnchor || image.isVisualStopAnchor)
   }
 
-  function shouldPreserveFirstDetailImage(firstImage) {
-    return !!firstImage && (firstImage.isFixedTop || isFixedTopAnchorText(firstImage.moduleName) || isFixedTopAnchorText(firstImage.context))
+  function normalizeVisualAnchors(value) {
+    const source = value && typeof value === 'object' ? value : {}
+    const fixedTopImageIndex = Number.isFinite(Number(source.fixedTopImageIndex)) ? Number(source.fixedTopImageIndex) : null
+    const stopImageIndex = Number.isFinite(Number(source.stopImageIndex)) ? Number(source.stopImageIndex) : null
+    const rawKind = compact(source.stopAnchorKind || source.anchorKind || 'lower_preserve')
+    const stopAnchorKind = /wanted|想要/.test(rawKind)
+      ? 'wanted_info'
+      : /wash|洗|材质/.test(rawKind)
+        ? 'wash_fallback'
+        : /white|black|白底|黑字/.test(rawKind)
+          ? 'white_black_fallback'
+          : rawKind === 'size' ? 'visual_size' : 'visual_lower_preserve'
+    return {
+      preserveFirstImage: !!source.preserveFirstImage || fixedTopImageIndex !== null,
+      fixedTopImageIndex,
+      stopImageIndex,
+      stopAnchorKind,
+      source: compact(source.source || 'visual_anchor'),
+    }
+  }
+
+  function applyVisualAnchorsToImages(images, visualAnchors) {
+    const list = Array.isArray(images) ? images : []
+    const anchors = normalizeVisualAnchors(visualAnchors)
+    const fixedTopIndex = anchors.fixedTopImageIndex !== null
+      ? anchors.fixedTopImageIndex
+      : (anchors.preserveFirstImage ? 0 : null)
+    if (fixedTopIndex !== null && list[fixedTopIndex]) {
+      list[fixedTopIndex].isFixedTop = true
+      list[fixedTopIndex].isVisualFixedTop = true
+      list[fixedTopIndex].context = `${list[fixedTopIndex].context || ''} 视觉固定头图`
+    }
+    if (anchors.stopImageIndex !== null && list[anchors.stopImageIndex]) {
+      const image = list[anchors.stopImageIndex]
+      image.isStopAnchor = true
+      image.isVisualStopAnchor = true
+      image.visualStopAnchorKind = anchors.stopAnchorKind
+      image.context = `${image.context || ''} ${anchors.source} 视觉保留下半区锚点`
+      if (anchors.stopAnchorKind === 'visual_size') image.isSizeAnchor = true
+      if (anchors.stopAnchorKind === 'wanted_info') image.isWantedInfoAnchor = true
+      if (anchors.stopAnchorKind === 'wash_fallback') image.isWashFallbackAnchor = true
+      if (anchors.stopAnchorKind === 'white_black_fallback') image.isWhiteBlackFallbackAnchor = true
+    }
+    return anchors
+  }
+
+  function shouldPreserveFirstDetailImage(firstImage, options = {}) {
+    return !!firstImage && (
+      firstImage.isFixedTop ||
+      options.preserveFirstImage ||
+      isFixedTopAnchorText(firstImage.moduleName) ||
+      isFixedTopAnchorText(firstImage.context)
+    )
+  }
+
+  function fixedTopDetailImage(images, fallbackImage) {
+    const list = Array.isArray(images) ? images : []
+    return list.find(image => image.isFixedTop) || fallbackImage || null
+  }
+
+  function canUseLegacyImageCountFallback(images, detailUrls, preserveFirstImage, startImage) {
+    const detailCount = (Array.isArray(detailUrls) ? detailUrls : []).filter(Boolean).length
+    if (!preserveFirstImage) return false
+    if (detailCount < 3) return false
+    if (!Array.isArray(images) || images.length <= detailCount + 2) return false
+    const startIndex = Number(startImage?.globalIndex ?? 0)
+    const stopIndex = startIndex + 1 + detailCount
+    if (stopIndex <= startIndex + 1 || stopIndex >= images.length) return false
+    return images.length - stopIndex >= 2
+  }
+
+  function legacyImageCountStopBoundary(images, firstImage, detailUrls, preserveFirstImage, options = {}) {
+    if (!options.allowLegacyImageCountFallback) return null
+    if (!canUseLegacyImageCountFallback(images, detailUrls, preserveFirstImage, firstImage)) return null
+    const detailCount = (Array.isArray(detailUrls) ? detailUrls : []).filter(Boolean).length
+    const stopImage = images[firstImage.globalIndex + 1 + detailCount]
+    if (!stopImage) return null
+    stopImage.isStopAnchor = true
+    stopImage.isVisualStopAnchor = true
+    stopImage.visualStopAnchorKind = 'legacy_image_count'
+    stopImage.context = `${stopImage.context || ''} 旧版纯图片详情按PC详情图数量兜底锚点`
+    return {
+      type: 'image',
+      image: stopImage,
+      moduleIndex: stopImage.moduleIndex,
+      globalIndex: stopImage.globalIndex,
+      moduleName: stopImage.moduleName,
+      anchorKind: 'legacy_image_count',
+    }
   }
 
   function replacementStartBoundary(content, firstImage, preserveFirstImage) {
@@ -2116,7 +2318,13 @@
 
   function findStopBoundary(modules, images, firstImage, preserveFirstImage) {
     const minGlobalIndex = firstImage.globalIndex + (preserveFirstImage ? 1 : 0)
-    const imageBoundary = images.find(image => image.globalIndex >= minGlobalIndex && image.isStopAnchor)
+    const imageBoundary = [
+      image => image.isWantedInfoAnchor,
+      image => image.isWashFallbackAnchor,
+      image => image.isWhiteBlackFallbackAnchor,
+      image => image.isSizeAnchor,
+      image => image.isStopAnchor,
+    ].map(predicate => images.find(image => image.globalIndex >= minGlobalIndex && predicate(image))).find(Boolean)
     if (imageBoundary) {
       return {
         type: 'image',
@@ -2124,27 +2332,58 @@
         moduleIndex: imageBoundary.moduleIndex,
         globalIndex: imageBoundary.globalIndex,
         moduleName: imageBoundary.moduleName,
-        anchorKind: imageBoundary.isSizeAnchor ? 'size' : 'lower_preserve',
+        anchorKind: imageBoundary.visualStopAnchorKind || (
+          imageBoundary.isWantedInfoAnchor ? 'wanted_info'
+            : imageBoundary.isWashFallbackAnchor ? 'wash_fallback'
+              : imageBoundary.isWhiteBlackFallbackAnchor ? 'white_black_fallback'
+                : imageBoundary.isSizeAnchor ? 'size'
+                  : 'lower_preserve'
+        ),
       }
     }
 
     const list = Array.isArray(modules) ? modules : []
-    for (let index = firstImage.moduleIndex + (preserveFirstImage ? 1 : 0); index < list.length; index += 1) {
-      const module = list[index] || {}
-      const name = compact(module.name)
-      if (!isStopAnchorText(name)) continue
-      if (index === firstImage.moduleIndex) continue
-      return {
-        type: 'module',
-        module,
-        moduleIndex: index,
-        globalIndex: images.find(image => image.moduleIndex >= index)?.globalIndex,
-        moduleName: name,
-        anchorKind: isSizeAnchorText(name) ? 'size' : 'lower_preserve',
+    const modulePredicates = [
+      { kind: 'wanted_info', test: isWantedInfoAnchorText },
+      { kind: 'wash_fallback', test: isWashFallbackAnchorText },
+      { kind: 'size', test: isSizeAnchorText },
+      { kind: 'lower_preserve', test: isLowerPreserveAnchorText },
+    ]
+    for (const { kind, test } of modulePredicates) {
+      for (let index = firstImage.moduleIndex + (preserveFirstImage ? 1 : 0); index < list.length; index += 1) {
+        const module = list[index] || {}
+        const name = compact(module.name)
+        if (!test(name)) continue
+        if (index === firstImage.moduleIndex) continue
+        return {
+          type: 'module',
+          module,
+          moduleIndex: index,
+          globalIndex: images.find(image => image.moduleIndex >= index)?.globalIndex,
+          moduleName: name,
+          anchorKind: kind,
+        }
       }
     }
 
     return null
+  }
+
+  function pcDetailStopAnchorLabel(kind) {
+    if (kind === 'wanted_info') return '想要的信息看这里锚点'
+    if (kind === 'wash_fallback') return '不同材质/洗涤兜底锚点'
+    if (kind === 'white_black_fallback') return '白底黑字兜底图锚点'
+    if (kind === 'size' || kind === 'visual_size') return '尺码锚点'
+    if (kind === 'legacy_image_count') return '旧版纯图片数量兜底锚点'
+    if (kind === 'visual_lower_preserve') return '视觉下半区锚点'
+    return '下半区锚点'
+  }
+
+  function pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex) {
+    if (!preserveFirstImage) return ''
+    const index = Number(fixedTopImageIndex)
+    if (Number.isFinite(index) && index > 0) return `保留第1到第${index + 1}张固定头图区，`
+    return '保留首图，'
   }
 
   function replaceAnchoredDetailContent(modules, firstImage, stopBoundary, detailHtml, options = {}) {
@@ -2209,6 +2448,7 @@
     }
 
     const images = flattenModularDescImages(currentModules)
+    const visualAnchors = applyVisualAnchorsToImages(images, options.visualAnchors)
     if (!images.length) {
       return {
         ok: false,
@@ -2217,7 +2457,21 @@
         mode: 'blocked_no_images',
       }
     }
-    if (isLegacySingleDescription(currentModules, images)) {
+    const firstImage = images[0]
+    const legacySingleDescription = isLegacySingleDescription(currentModules, images)
+    const detectedFixedTopImage = fixedTopDetailImage(images, null)
+    let preserveFirstImage = !!detectedFixedTopImage || shouldPreserveFirstDetailImage(firstImage, {
+      preserveFirstImage: visualAnchors.preserveFirstImage || visualAnchors.fixedTopImageIndex === 0,
+    })
+    let startImage = preserveFirstImage ? (detectedFixedTopImage || firstImage) : firstImage
+    if (startImage && startImage.globalIndex > firstImage.globalIndex) preserveFirstImage = true
+    let stopBoundary = findStopBoundary(currentModules, images, startImage, preserveFirstImage)
+    if (!stopBoundary && legacySingleDescription && options.allowLegacyImageCountFallback) {
+      preserveFirstImage = true
+      startImage = fixedTopDetailImage(images, firstImage) || firstImage
+      stopBoundary = legacyImageCountStopBoundary(images, startImage, detailUrls, preserveFirstImage, options)
+    }
+    if (legacySingleDescription && !stopBoundary) {
       return {
         ok: false,
         modules: currentModules,
@@ -2225,22 +2479,19 @@
         mode: 'blocked_legacy_visual_anchor_missing',
       }
     }
-
-    const firstImage = images[0]
-    const preserveFirstImage = shouldPreserveFirstDetailImage(firstImage)
-    const stopBoundary = findStopBoundary(currentModules, images, firstImage, preserveFirstImage)
     if (!stopBoundary) {
       return {
         ok: false,
         modules: currentModules,
-        note: '未识别到可保留的详情下半区锚点（尺码表/尺码测量/尺码推荐/宝贝尺寸/模特/吊牌/洗涤/品牌故事等），已阻止自动替换',
+        note: '未识别到可保留的详情下半区锚点（想要的信息看这里/不同材质这样洗/白底黑字图/尺码表/模特/吊牌/品牌故事等），已阻止自动替换',
         mode: 'blocked_stop_anchor_missing',
       }
     }
 
-    const replaceStartIndex = firstImage.globalIndex + (preserveFirstImage ? 1 : 0)
-    const replacedImageCount = imageCountBeforeBoundary(images, firstImage, stopBoundary, preserveFirstImage)
-    if (replacedImageCount <= 0 && stopBoundary.type === 'image' && stopBoundary.moduleIndex === firstImage.moduleIndex) {
+    const fixedTopImageIndex = preserveFirstImage ? Number(startImage?.globalIndex ?? firstImage.globalIndex) : null
+    const replaceStartIndex = startImage.globalIndex + (preserveFirstImage ? 1 : 0)
+    const replacedImageCount = imageCountBeforeBoundary(images, startImage, stopBoundary, preserveFirstImage)
+    if (replacedImageCount <= 0 && stopBoundary.type === 'image' && stopBoundary.moduleIndex === startImage.moduleIndex) {
       return {
         ok: false,
         modules: currentModules,
@@ -2251,7 +2502,7 @@
 
     const modules = options.probeOnly
       ? currentModules
-      : replaceAnchoredDetailContent(currentModules, firstImage, stopBoundary, detailHtml, { ...options, preserveFirstImage })
+      : replaceAnchoredDetailContent(currentModules, startImage, stopBoundary, detailHtml, { ...options, preserveFirstImage })
     const stopImage = stopBoundary.type === 'image' ? stopBoundary.image : null
     const stopAnchor = stopImage || {
       moduleIndex: stopBoundary.moduleIndex,
@@ -2271,14 +2522,18 @@
       replacedImageCount,
       insertedImageCount: (Array.isArray(detailUrls) ? detailUrls : []).filter(Boolean).length,
       firstImage,
+      startImage,
+      fixedTopImage: preserveFirstImage ? startImage : null,
+      fixedTopImageIndex,
+      preserveTopImageCount: preserveFirstImage ? fixedTopImageIndex + 1 : 0,
       sizeImage: stopAnchor,
       stopAnchor,
       preserveFirstImage,
       stopBoundaryType: stopBoundary.type,
       stopAnchorKind: stopBoundary.anchorKind,
       note: replacedImageCount > 0
-        ? `PC详情锚点区间替换：${preserveFirstImage ? '保留首图，' : ''}替换第${replaceStartIndex + 1}到第${replaceStartIndex + replacedImageCount}张图，${stopBoundary.anchorKind === 'size' ? '尺码锚点' : '下半区锚点'}及以下保留`
-        : `PC详情锚点区间插入：${preserveFirstImage ? '保留首图，' : ''}在${stopBoundary.anchorKind === 'size' ? '尺码锚点' : '下半区锚点'}前插入新PC详情图，锚点及以下保留`,
+        ? `PC详情锚点区间替换：${pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)}替换第${replaceStartIndex + 1}到第${replaceStartIndex + replacedImageCount}张图，${pcDetailStopAnchorLabel(stopBoundary.anchorKind)}及以下保留`
+        : `PC详情锚点区间插入：${pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)}在${pcDetailStopAnchorLabel(stopBoundary.anchorKind)}前插入新PC详情图，锚点及以下保留`,
     }
   }
 
@@ -2297,7 +2552,7 @@
       : currentHtml
     const note = result.ok
       ? `旧版文本PC详情${result.note ? `：${result.note}` : '已完成锚点区间替换'}`
-      : `旧版文本PC详情未识别到可靠文本锚点（尺码表/尺码测量/尺码推荐/宝贝尺寸/模特/吊牌/洗涤/品牌故事等），已按保守模式阻止自动替换`
+      : `旧版文本PC详情未识别到可靠锚点（想要的信息看这里/不同材质这样洗/白底黑字图/尺码表/模特/吊牌/品牌故事等），已按保守模式阻止自动替换`
     return {
       ...result,
       target: 'tmDescription',
@@ -2322,8 +2577,12 @@
     const currentModules = Array.isArray(currentValues.modularDesc) ? currentValues.modularDesc : []
     const currentTmDescription = typeof currentValues.tmDescription === 'string' ? currentValues.tmDescription : ''
     const pcDetailReplacement = currentModules.length
-      ? buildAnchoredPcDetailModules(currentModules, detailUrls)
-      : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls)
+      ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
+        visualAnchors: currentValues.pcDetailVisualAnchors,
+      })
+      : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
+        visualAnchors: currentValues.pcDetailVisualAnchors,
+      })
     const modularDesc = currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
     const tmDescription = !currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
     return {
@@ -2569,6 +2828,265 @@
       .filter(Boolean)
   }
 
+  function currentPcDetailModulesForOcr() {
+    const modularDesc = getComponentValue('modularDesc')
+    if (Array.isArray(modularDesc) && modularDesc.length) {
+      return {
+        target: 'modularDesc',
+        modules: modularDesc,
+      }
+    }
+    const tmDescription = getLegacyPcDetailHtml()
+    if (tmDescription) {
+      return {
+        target: 'tmDescription',
+        modules: [{
+          id: 'tmDescription',
+          name: '文本PC详情',
+          content: tmDescription,
+          custom: true,
+        }],
+      }
+    }
+    return {
+      target: '',
+      modules: [],
+    }
+  }
+
+  function isOcrAnchorDetectionEnabled(rawParams = params) {
+    const value = rawParams.enable_ocr_anchor_detection
+    if (value == null || value === '') return true
+    if (typeof value === 'boolean') return value
+    return !/^(0|false|no|off|关闭|否)$/i.test(compact(value))
+  }
+
+  function ocrMaxImages(rawParams = params) {
+    return Math.max(1, Math.min(positiveInt(rawParams.ocr_max_images, OCR_DEFAULT_MAX_IMAGES), 160))
+  }
+
+  function tesseractRuntimeConfig(rawParams = params) {
+    const assetBase = compact(rawParams.ocr_asset_base_url || CRAW_SHRIMP_LOCAL_BASE_URL).replace(/\/+$/, '')
+    const localVendorPath = `${assetBase}${TESSERACT_VENDOR_PATH}`
+    return {
+      scriptUrl: compact(rawParams.tesseract_script_url || rawParams.ocr_tesseract_url || `${localVendorPath}/tesseract.min.js` || TESSERACT_SCRIPT_URL),
+      workerPath: compact(rawParams.tesseract_worker_url || `${localVendorPath}/worker.min.js` || TESSERACT_WORKER_URL),
+      corePath: compact(rawParams.tesseract_core_path || localVendorPath || TESSERACT_CORE_PATH),
+      langPath: compact(rawParams.tesseract_lang_path || `${localVendorPath}/lang` || TESSERACT_LANG_PATH),
+      lang: compact(rawParams.tesseract_lang || rawParams.ocr_lang || TESSERACT_LANG),
+      maxImages: ocrMaxImages(rawParams),
+      perImageTimeoutMs: positiveInt(rawParams.ocr_per_image_timeout_ms, OCR_PER_IMAGE_TIMEOUT_MS),
+      totalTimeoutMs: positiveInt(rawParams.ocr_total_timeout_ms, OCR_TOTAL_TIMEOUT_MS),
+    }
+  }
+
+  function withTimeout(promise, timeoutMs, label) {
+    let timer = null
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label || '操作'}超时 ${timeoutMs}ms`)), timeoutMs)
+    })
+    return Promise.race([promise, timeout]).finally(() => {
+      if (timer) clearTimeout(timer)
+    })
+  }
+
+  function ensureAbsoluteImageUrl(src) {
+    const raw = compact(src)
+    if (!raw) return ''
+    if (raw.startsWith('//')) return `https:${raw}`
+    try {
+      return new URL(raw, location.href).href
+    } catch (error) {
+      return raw
+    }
+  }
+
+  async function loadScriptTag(url) {
+    if (typeof document === 'undefined' || !document.createElement) throw new Error('当前页面不支持动态加载脚本')
+    await new Promise((resolve, reject) => {
+      const script = document.createElement('script')
+      script.src = url
+      script.async = true
+      script.onload = resolve
+      script.onerror = () => reject(new Error(`加载 Tesseract.js 失败: ${url}`))
+      ;(document.head || document.documentElement || document.body).appendChild(script)
+    })
+  }
+
+  async function loadTesseractRuntime(config = tesseractRuntimeConfig()) {
+    if (window.Tesseract) return window.Tesseract
+    if (window.__CRAWSHRIMP_TESSERACT_LOADING__) return window.__CRAWSHRIMP_TESSERACT_LOADING__
+    window.__CRAWSHRIMP_TESSERACT_LOADING__ = (async () => {
+      try {
+        await loadScriptTag(config.scriptUrl)
+      } catch (scriptError) {
+        if (typeof fetch !== 'function') throw scriptError
+        const response = await fetch(config.scriptUrl, { credentials: 'omit' })
+        if (!response.ok) throw scriptError
+        const code = await response.text()
+        ;(0, eval)(`${code}\n//# sourceURL=${config.scriptUrl}`)
+      }
+      if (!window.Tesseract) throw new Error('Tesseract.js 已加载但未暴露 window.Tesseract')
+      return window.Tesseract
+    })()
+    try {
+      return await window.__CRAWSHRIMP_TESSERACT_LOADING__
+    } finally {
+      window.__CRAWSHRIMP_TESSERACT_LOADING__ = null
+    }
+  }
+
+  async function createTesseractWorker(Tesseract, config) {
+    const engineOptions = {
+      workerPath: config.workerPath,
+      corePath: config.corePath,
+      langPath: config.langPath,
+      logger: () => {},
+    }
+    if (!Tesseract?.createWorker) return null
+    let firstError = null
+    try {
+      const worker = await Tesseract.createWorker(config.lang, 1, engineOptions)
+      if (worker?.recognize) return worker
+    } catch (error) {
+      firstError = error
+    }
+    try {
+      const worker = await Tesseract.createWorker(engineOptions)
+      if (worker?.loadLanguage) await worker.loadLanguage(config.lang)
+      if (worker?.initialize) await worker.initialize(config.lang)
+      if (worker?.recognize) return worker
+    } catch (error) {
+      if (firstError) throw firstError
+      throw error
+    }
+    return null
+  }
+
+  async function imageSourceForOcr(src) {
+    const url = ensureAbsoluteImageUrl(src)
+    if (!url || typeof fetch !== 'function' || typeof URL === 'undefined' || !URL.createObjectURL) {
+      return { source: url, cleanup: () => {} }
+    }
+    try {
+      const response = await fetch(url, { credentials: 'omit' })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      return {
+        source: objectUrl,
+        cleanup: () => {
+          try { URL.revokeObjectURL(objectUrl) } catch (error) {}
+        },
+      }
+    } catch (error) {
+      return { source: url, cleanup: () => {} }
+    }
+  }
+
+  async function recognizeImageWithTesseract(Tesseract, worker, image, config) {
+    const prepared = await imageSourceForOcr(image.src)
+    try {
+      if (!prepared.source) throw new Error('图片 URL 为空')
+      const run = worker?.recognize
+        ? worker.recognize(prepared.source)
+        : Tesseract.recognize(prepared.source, config.lang, {
+          workerPath: config.workerPath,
+          corePath: config.corePath,
+          langPath: config.langPath,
+          logger: () => {},
+        })
+      const result = await withTimeout(run, config.perImageTimeoutMs, `OCR图片${image.globalIndex + 1}`)
+      return {
+        globalIndex: image.globalIndex,
+        imageIndex: image.imageIndex,
+        src: image.src,
+        text: compact(result?.data?.text || result?.text || ''),
+        confidence: Number(result?.data?.confidence ?? result?.confidence ?? 0) || 0,
+      }
+    } finally {
+      prepared.cleanup()
+    }
+  }
+
+  async function runTesseractOcrForImages(images = [], rawParams = params) {
+    const config = tesseractRuntimeConfig(rawParams)
+    const candidates = (Array.isArray(images) ? images : [])
+      .filter(image => compact(image?.src))
+      .slice(0, config.maxImages)
+    if (!candidates.length) return { ok: false, reason: 'PC详情中没有可 OCR 的图片', results: [] }
+
+    return withTimeout((async () => {
+      const Tesseract = await loadTesseractRuntime(config)
+      let worker = null
+      const results = []
+      try {
+        worker = await createTesseractWorker(Tesseract, config)
+        for (const image of candidates) {
+          try {
+            results.push(await recognizeImageWithTesseract(Tesseract, worker, image, config))
+          } catch (error) {
+            results.push({
+              globalIndex: image.globalIndex,
+              imageIndex: image.imageIndex,
+              src: image.src,
+              text: '',
+              confidence: 0,
+              error: String(error?.message || error),
+            })
+          }
+        }
+      } finally {
+        try { await worker?.terminate?.() } catch (error) {}
+      }
+      return {
+        ok: true,
+        engine: 'tesseract.js',
+        lang: config.lang,
+        scanned: results.length,
+        results,
+      }
+    })(), config.totalTimeoutMs, 'Tesseract OCR')
+  }
+
+  async function detectPcDetailOcrAnchors(rawParams = params) {
+    const source = currentPcDetailModulesForOcr()
+    const images = flattenModularDescImages(source.modules)
+    if (!images.length) {
+      return {
+        ok: false,
+        reason: 'PC详情中未识别到图片，无法 OCR 锚点',
+        source,
+        images,
+        anchors: { ocrStatus: 'no_images' },
+      }
+    }
+    try {
+      const ocr = await runTesseractOcrForImages(images, rawParams)
+      const anchors = buildPcDetailVisualAnchorsFromOcrResults(images, ocr.results, {
+        source: 'tesseract_ocr',
+      })
+      const probe = currentPcDetailReplacementProbe({ visualAnchors: anchors })
+      return {
+        ok: !!probe.ok,
+        reason: probe.ok ? '' : (probe.note || 'OCR 未识别到可靠锚点'),
+        source,
+        images,
+        ocr,
+        anchors,
+        probe,
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        reason: String(error?.message || error),
+        source,
+        images,
+        anchors: { ocrStatus: 'failed', source: 'tesseract_ocr' },
+      }
+    }
+  }
+
   function escapeXmlText(value) {
     return String(value || '')
       .replace(/&/g, '&amp;')
@@ -2784,6 +3302,10 @@
       mobile_sync_note: '',
       mobile_sync_api_result: null,
       applied_modular_desc: null,
+      pc_detail_replacement_probe: null,
+      pc_detail_visual_anchors: null,
+      pc_detail_ocr_result: null,
+      pc_detail_ocr_attempted: false,
     }
   }
 
@@ -2839,6 +3361,9 @@
       buildRuntimeFilename,
       buildPcDetailHtml,
       flattenModularDescImages,
+      classifyOcrAnchorText,
+      buildPcDetailVisualAnchorsFromOcrResults,
+      tesseractRuntimeConfig,
       buildAnchoredPcDetailModules,
       buildAnchoredPcDetailHtml,
       buildTmallComponentValues,
@@ -3093,8 +3618,19 @@
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
       if (hasDownloadedPcDetailRows(shared.current_result_rows)) {
-        const replacementProbe = currentPcDetailReplacementProbe()
+        const replacementProbe = currentPcDetailReplacementProbe({
+          visualAnchors: shared.pc_detail_visual_anchors,
+        })
         if (!replacementProbe.ok) {
+          if (isOcrAnchorDetectionEnabled(params) && !shared.pc_detail_ocr_attempted) {
+            return nextPhase('detect_pc_detail_ocr_anchors', 0, {
+              ...shared,
+              tmall_status: status,
+              pc_detail_replacement_probe: replacementProbe,
+              pc_detail_ocr_attempted: true,
+              current_store: 'OCR识别PC详情锚点',
+            })
+          }
           const rows = buildOutputStatusRows(
             shared.current_result_rows,
             status,
@@ -3109,6 +3645,54 @@
         }
       }
       return nextPhase('inject_local_files', 0, { ...shared, tmall_status: status })
+    }
+
+    if (phase === 'detect_pc_detail_ocr_anchors') {
+      const job = shared.current_job || {}
+      const status = extractTmallStatus(job)
+      if (!status.ready) {
+        return nextPhase('wait_tmall_ready', 1000, {
+          ...shared,
+          tmall_status: status,
+          current_store: '等待天猫编辑页恢复后再OCR',
+        })
+      }
+      const detected = await detectPcDetailOcrAnchors(params)
+      const ocrSummary = {
+        ok: detected.ok,
+        reason: detected.reason || '',
+        target: detected.source?.target || '',
+        scanned: detected.ocr?.scanned || 0,
+        anchors: detected.anchors || {},
+        probeMode: detected.probe?.mode || '',
+        probeNote: detected.probe?.note || '',
+      }
+      if (detected.ok) {
+        return nextPhase('inject_local_files', 0, {
+          ...shared,
+          tmall_status: status,
+          pc_detail_visual_anchors: detected.anchors,
+          pc_detail_ocr_result: ocrSummary,
+          pc_detail_replacement_probe: detected.probe,
+          current_store: 'OCR锚点已识别，开始上传图片',
+        })
+      }
+      const note = compact([
+        'OCR未识别到可靠PC详情锚点，已阻止自动替换',
+        detected.reason,
+      ].filter(Boolean).join('；'))
+      const rows = buildOutputStatusRows(
+        shared.current_result_rows,
+        status,
+        note,
+      ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': '预检阻止' })
+      return advanceToNextJob(rows, {
+        ...shared,
+        current_result_rows: rows,
+        tmall_status: status,
+        pc_detail_ocr_result: ocrSummary,
+        pc_detail_replacement_probe: detected.probe || shared.pc_detail_replacement_probe,
+      })
     }
 
     if (phase === 'inject_local_files') {
@@ -3195,6 +3779,7 @@
         guideImageGroup: getComponentValue('guideImageGroup'),
         modularDesc: getComponentValue('modularDesc'),
         tmDescription: getLegacyPcDetailHtml(),
+        pcDetailVisualAnchors: shared.pc_detail_visual_anchors,
       })
       const pcReplacementBlocked = componentValues.pcDetailReplacement?.ok === false
       if (pcReplacementBlocked) {

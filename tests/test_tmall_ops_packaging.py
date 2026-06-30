@@ -7,6 +7,21 @@ from core.api_server import _finalize_tmall_ops_assistant_outputs
 
 
 class TmallOpsPackagingTests(unittest.TestCase):
+    def test_packaging_upload_bundles_tesseract_ocr_runtime_assets(self):
+        vendor = Path("adapters/tmall-ops-assistant/vendor/tesseract")
+        required_files = [
+            vendor / "tesseract.min.js",
+            vendor / "worker.min.js",
+            vendor / "tesseract-core.wasm.js",
+            vendor / "tesseract-core.wasm",
+            vendor / "lang" / "eng.traineddata.gz",
+            vendor / "lang" / "chi_sim.traineddata.gz",
+        ]
+
+        for path in required_files:
+            self.assertTrue(path.is_file(), f"missing OCR runtime asset: {path}")
+            self.assertGreater(path.stat().st_size, 1024, f"OCR runtime asset is unexpectedly small: {path}")
+
     def test_packaging_upload_outputs_flat_zip_with_usage_prefixed_names(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
