@@ -123,21 +123,6 @@ tasks:
         default: true
         ui_span: third
         hint: 推荐保持开启。检测到天猫编辑页货号与云盘款号不一致时，只输出预检结果，不执行上传。
-      - id: enable_ocr_anchor_detection
-        type: checkbox
-        label: OCR识别疑似锚点图
-        default: true
-        ui_span: third
-        hint: 推荐开启。PC详情结构化锚点预检失败时，按需加载 Tesseract.js 识别当前详情图片，只 OCR 阻塞/疑似锚点样本。
-      - id: ocr_max_images
-        type: number
-        label: OCR最多识别图片数
-        default: 80
-        min: 1
-        max: 160
-        step: 1
-        ui_span: third
-        hint: 仅在锚点预检失败时生效；数值越大越稳但耗时越长，默认足够覆盖大多数详情页。
       - id: cloud_path
         type: text
         label: 云盘路径

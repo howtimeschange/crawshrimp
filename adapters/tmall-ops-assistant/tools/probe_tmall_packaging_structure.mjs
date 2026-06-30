@@ -22,6 +22,7 @@ const WASH_FALLBACK_ANCHOR_RE = /(不同材质这样洗|不同材质|衣物洗�
 const SIZE_ANCHOR_RE = /(尺码表|尺码测量|尺码推荐|尺码推荐表|宝贝尺寸|宝贝尺码|商品尺码表|尺码信息|测量图)/i
 const LOWER_PRESERVE_ANCHOR_RE = /(模特信息|模特展示|宝贝模特|吊牌|吊牌展示|洗涤|水洗|洗唛|不同材质这样洗|不同材质|衣物洗涤|品牌介绍|品牌故事|宝贝故事|品牌说明|底部固定|宝贝底部|售后)/i
 const INFO_ANCHOR_RE = /(商品信息|宝贝信息|产品信息|基础信息|基本信息|商品参数|宝贝参数)/i
+const MARKETING_TOP_ANCHOR_RE = /(会员专属礼赠|淘金币补贴|下单链路|送IP周边|IP周边礼盒|周边礼盒|送T恤水杯|送T恤|加购商品|加购过tab|加购过|千款满\s*\d+\s*减\s*\d+|满\s*\d+\s*减\s*\d+)/i
 const ASIA_REFERENCE_URL_TOKENS = [
   'O1CN01OMbu9v1IH8VfuT2Vh_!!642320867',
 ]
@@ -85,6 +86,10 @@ function isAsiaTopAnchorText(value) {
   return ASIA_TOP_ANCHOR_RE.test(String(value || ''))
 }
 
+function isMarketingTopAnchorText(value) {
+  return MARKETING_TOP_ANCHOR_RE.test(String(value || ''))
+}
+
 function isWantedInfoAnchorText(value) {
   return WANTED_INFO_ANCHOR_RE.test(String(value || ''))
 }
@@ -103,6 +108,23 @@ function isLowerPreserveAnchorText(value) {
 
 function isInfoAnchorText(value) {
   return INFO_ANCHOR_RE.test(String(value || ''))
+}
+
+function ocrAnchorText(value) {
+  const raw = compact(value)
+  const joined = raw.replace(/[\s:：,，.。;；|｜_\\/\-—~～]+/g, '')
+  return `${raw} ${joined}`
+}
+
+export function classifyOcrAnchorText(value) {
+  const text = ocrAnchorText(value)
+  if (isAsiaTopAnchorText(text)) return 'fixed_top'
+  if (isWantedInfoAnchorText(text)) return 'wanted_info'
+  if (isWashFallbackAnchorText(text)) return 'wash_fallback'
+  if (isSizeAnchorText(text)) return 'size'
+  if (isLowerPreserveAnchorText(text)) return 'lower_preserve'
+  if (isMarketingTopAnchorText(text)) return 'marketing_top'
+  return ''
 }
 
 function isKnownAsiaReferenceUrl(url) {
@@ -242,8 +264,23 @@ function moduleSummary(modules) {
 
 function classifyTopAnchor(images, visual = {}) {
   if (!images.length) return emptyAnchor()
+  const fixedTopIndex = Number(visual.fixedTopImageIndex)
+  if (Number.isFinite(fixedTopIndex) && fixedTopIndex >= 0) {
+    const visualImage = images.find(image => Number(image.globalIndex) === fixedTopIndex)
+    if (visualImage) {
+      const isMarketingTop = visual.fixedTopAnchorKind === 'marketing_top'
+      return {
+        detected: true,
+        kind: isMarketingTop ? 'marketing_top' : 'asia_first',
+        imageIndex: visualImage.globalIndex,
+        src: visualImage.src,
+        method: cleanText(visual.source || 'visual_similarity'),
+        confidence: Number(visual.confidence || 0.82),
+      }
+    }
+  }
   const firstImage = images[0]
-  const visualTop = visual.fixedTopImageIndex === 0 || visual.preserveFirstImage
+  const visualTop = visual.preserveFirstImage
   if (firstImage.flags.asiaTop || visualTop) {
     return {
       detected: true,
@@ -363,11 +400,12 @@ function buildReplacementPlan(detailKind, modules, images, anchors) {
       mode,
       reason: '未识别到底部保留锚点：想要的信息看这里 / 不同材质这样洗 / 白底黑字图 / 尺码或下半区模块',
       preserveFirstImage: anchors.top.detected,
-      replaceStartIndex: anchors.top.detected ? 1 : 0,
+      replaceStartIndex: anchors.top.detected ? Number(anchors.top.imageIndex || 0) + 1 : 0,
     }
   }
 
-  const replaceStartIndex = anchors.top.detected ? 1 : 0
+  const fixedTopIndex = anchors.top.detected ? Number(anchors.top.imageIndex || 0) : null
+  const replaceStartIndex = anchors.top.detected ? fixedTopIndex + 1 : 0
   const stopIndex = Number(anchors.bottom.imageIndex)
   const replacedImageCount = Math.max(0, stopIndex - replaceStartIndex)
   if (replacedImageCount <= 0) {
@@ -380,14 +418,16 @@ function buildReplacementPlan(detailKind, modules, images, anchors) {
       stopAnchorKind: anchors.bottom.kind,
     }
   }
+  const fixedTopLabel = anchors.top.kind === 'marketing_top' ? '顶部营销固定图区' : '亚洲第一固定图区'
   return {
     mode: 'anchored_replace',
     preserveFirstImage: anchors.top.detected,
+    preserveTopImageCount: anchors.top.detected ? fixedTopIndex + 1 : 0,
     replaceStartIndex,
     stopImageIndex: stopIndex,
     stopAnchorKind: anchors.bottom.kind,
     replacedImageCount,
-    note: `${anchors.top.detected ? '保留亚洲第一首图；' : '未识别亚洲第一首图，从第1张开始替换；'}替换第${replaceStartIndex + 1}到第${stopIndex}张，${anchors.bottom.kind}及以下保留`,
+    note: `${anchors.top.detected ? `保留第1到第${fixedTopIndex + 1}张${fixedTopLabel}；` : '未识别顶部固定图，从第1张开始替换；'}替换第${replaceStartIndex + 1}到第${stopIndex}张，${anchors.bottom.kind}及以下保留`,
   }
 }
 
@@ -560,10 +600,10 @@ export function visualAnchorsFromImageFeatures(sample, features) {
   const images = arrayFromMaybe(sample?.pcDetail?.images)
   const featureList = arrayFromMaybe(features)
   const byIndex = new Map(featureList.map(feature => [Number(feature.index), feature]))
-  const topDetected = !!sample?.anchors?.top?.detected
-  const bottomDetected = !!sample?.anchors?.bottom?.detected
-  if (bottomDetected) return { ocrStatus: 'not_configured' }
-  const startIndex = topDetected ? 1 : 0
+  const topImageIndex = Number(sample?.anchors?.top?.imageIndex)
+  const startIndex = Number.isFinite(topImageIndex) && topImageIndex >= 0 ? topImageIndex + 1 : 0
+  const bottomKind = cleanText(sample?.anchors?.bottom?.kind)
+  if (bottomKind === 'wanted_info' || bottomKind === 'wash_fallback') return { ocrStatus: 'not_configured' }
   for (const image of images) {
     const index = Number(image.globalIndex)
     if (index < startIndex) continue
@@ -578,6 +618,112 @@ export function visualAnchorsFromImageFeatures(sample, features) {
     }
   }
   return { ocrStatus: 'not_configured' }
+}
+
+function ocrResultIndex(result, fallbackIndex = 0) {
+  const candidates = [result?.globalIndex, result?.imageIndex, result?.index, fallbackIndex]
+  for (const value of candidates) {
+    const number = Number(value)
+    if (Number.isFinite(number) && number >= 0) return number
+  }
+  return fallbackIndex
+}
+
+export function buildOcrAnchorsFromResults(sample, ocrResults = [], options = {}) {
+  const images = arrayFromMaybe(sample?.pcDetail?.images || options.images)
+  const imageByIndex = new Map(images.map((image, index) => [Number(image?.globalIndex ?? index), image]))
+  const resultList = arrayFromMaybe(ocrResults)
+    .map((result, index) => ({
+      ...result,
+      globalIndex: ocrResultIndex(result, index),
+      text: compact(result?.text || result?.data?.text || ''),
+      confidence: Number(result?.confidence ?? result?.data?.confidence ?? 0) || 0,
+    }))
+    .map(result => ({ ...result, anchorKind: classifyOcrAnchorText(result.text) }))
+    .filter(result => result.text && !result.error)
+    .sort((a, b) => a.globalIndex - b.globalIndex)
+
+  const asiaTopResult = resultList.find(result => {
+    if (images.length && !imageByIndex.has(result.globalIndex)) return false
+    return result.anchorKind === 'fixed_top'
+  })
+  let fixedTopResult = asiaTopResult
+  let fixedTopAnchorKind = fixedTopResult ? fixedTopResult.anchorKind : ''
+  const priorities = ['wanted_info', 'wash_fallback', 'size', 'lower_preserve']
+
+  function findStopAfter(minStopIndex) {
+    for (const kind of priorities) {
+      const found = resultList.find(result => {
+        if (result.globalIndex < minStopIndex) return false
+        if (images.length && !imageByIndex.has(result.globalIndex)) return false
+        return result.anchorKind === kind
+      })
+      if (found) return { stop: found, stopAnchorKind: kind }
+    }
+    return { stop: null, stopAnchorKind: '' }
+  }
+
+  let minStopIndex = fixedTopResult ? fixedTopResult.globalIndex + 1 : 0
+  let { stop, stopAnchorKind } = findStopAfter(minStopIndex)
+  if (!fixedTopResult) {
+    const marketingTopResult = resultList.find(result => {
+      if (images.length && !imageByIndex.has(result.globalIndex)) return false
+      if (result.anchorKind !== 'marketing_top') return false
+      return !stop || result.globalIndex < stop.globalIndex
+    })
+    if (marketingTopResult) {
+      fixedTopResult = marketingTopResult
+      fixedTopAnchorKind = marketingTopResult.anchorKind
+      minStopIndex = fixedTopResult.globalIndex + 1
+      if (stop && stop.globalIndex < minStopIndex) {
+        ;({ stop, stopAnchorKind } = findStopAfter(minStopIndex))
+      }
+    }
+  }
+
+  const anchors = {
+    ocrStatus: stop ? 'recognized' : (resultList.length ? 'no_anchor' : 'no_text'),
+    preserveFirstImage: !!fixedTopResult,
+    source: compact(options.source || 'tesseract_ocr'),
+    confidence: stop ? stop.confidence : (fixedTopResult?.confidence || 0),
+    fixedTopImageIndex: fixedTopResult ? fixedTopResult.globalIndex : null,
+    fixedTopAnchorKind,
+    stopAnchorKind,
+    matchedText: stop ? stop.text.slice(0, 120) : '',
+    fixedTopText: fixedTopResult ? fixedTopResult.text.slice(0, 120) : '',
+  }
+  if (stop) anchors.stopImageIndex = stop.globalIndex
+  return anchors
+}
+
+export function buildRuleCoverageCases(samples = [], options = {}) {
+  const limit = Number(options.limit || 0)
+  const cases = []
+  for (const sample of arrayFromMaybe(samples)) {
+    const mode = sample?.replacementPlan?.mode || 'fetch_failed'
+    if (HANDLED_MODES.has(mode)) continue
+    const images = arrayFromMaybe(sample?.pcDetail?.images)
+    cases.push({
+      itemId: sample?.itemId || '',
+      merchantCode: sample?.merchantCode || '',
+      title: sample?.title || '',
+      status: 'out_of_rule',
+      detailKind: sample?.detailKind || '',
+      mode,
+      reason: sample?.replacementPlan?.reason || sample?.error || '',
+      modulePattern: sample?.pcDetail?.modulePattern || '',
+      imageCount: Number(sample?.pcDetail?.imageCount || images.length || 0),
+      bottomAnchor: sample?.anchors?.bottom?.kind || '(missing)',
+      ocrStatus: sample?.ocr?.anchors?.ocrStatus || sample?.anchors?.ocrStatus || 'not_run',
+      ocrStopAnchorKind: sample?.ocr?.anchors?.stopAnchorKind || '',
+      ocrMatchedText: sample?.ocr?.anchors?.matchedText || '',
+      ocrFixedTopText: sample?.ocr?.anchors?.fixedTopText || '',
+      screenshot: sample?.caseAssets?.screenshot || '',
+      imageUrls: images.slice(0, 12).map(image => image.src).filter(Boolean),
+    })
+    if (limit > 0 && cases.length >= limit) break
+  }
+  return cases
 }
 
 function scenarioMarkdown(summary, options = {}) {
@@ -653,6 +799,10 @@ function parseArgs(argv) {
     visualMode: 'none',
     visualScope: 'blocked',
     visualMaxImages: 0,
+    ocrMode: 'none',
+    ocrScope: 'blocked',
+    ocrMaxImages: 24,
+    ocrAssetBaseUrl: 'http://127.0.0.1:18765',
     timeoutMs: 45000,
   }
   for (let index = 0; index < argv.length; index += 1) {
@@ -674,6 +824,10 @@ function parseArgs(argv) {
     else if (arg === '--visual-mode') options.visualMode = next, index += 1
     else if (arg === '--visual-scope') options.visualScope = next, index += 1
     else if (arg === '--visual-max-images') options.visualMaxImages = Number(next), index += 1
+    else if (arg === '--ocr-mode') options.ocrMode = next, index += 1
+    else if (arg === '--ocr-scope') options.ocrScope = next, index += 1
+    else if (arg === '--ocr-max-images') options.ocrMaxImages = Number(next), index += 1
+    else if (arg === '--ocr-asset-base-url') options.ocrAssetBaseUrl = next, index += 1
     else if (arg === '--timeout-ms') options.timeoutMs = Number(next), index += 1
     else if (arg === '--no-resume') options.resume = false
     else if (arg === '--help' || arg === '-h') options.help = true
@@ -702,6 +856,10 @@ function helpText() {
     '  --visual-mode none|canvas Optional browser-canvas image feature pass',
     '  --visual-scope blocked|all Only scan blocked samples by default',
     '  --visual-max-images N     Max images per item for canvas features',
+    '  --ocr-mode none|tesseract Optional Tesseract OCR anchor pass',
+    '  --ocr-scope blocked|all   OCR blocked samples by default',
+    '  --ocr-max-images N        Max images per item for OCR, default 24',
+    '  --ocr-asset-base-url URL  Local adapter asset base for Tesseract, default http://127.0.0.1:18765',
     '  --no-resume               Ignore existing samples.jsonl',
   ].join('\n')
 }
@@ -743,7 +901,7 @@ function writeArtifacts(outDir, samples) {
   return summary
 }
 
-class CdpClient {
+export class CdpClient {
   constructor(wsUrl) {
     this.wsUrl = wsUrl
     this.ws = null
@@ -822,7 +980,7 @@ class CdpClient {
   }
 }
 
-async function resolveCdpPage(options) {
+export async function resolveCdpPage(options) {
   const base = String(options.cdp || DEFAULT_CDP).replace(/\/+$/, '')
   const pages = await fetch(`${base}/json`).then(response => response.json())
   const candidates = Array.isArray(pages) ? pages : []
@@ -835,7 +993,7 @@ async function resolveCdpPage(options) {
   return page
 }
 
-function browserInstallExpression() {
+export function browserInstallExpression() {
   return `(() => {
     function extractWindowJsonSource(html) {
       const text = String(html || '')
@@ -1024,8 +1182,234 @@ function browserInstallExpression() {
       }
       return result
     }
-    return true
-  })()`
+    function probeWithTimeout(promise, timeoutMs, label) {
+      let timer = null
+      const timeout = new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error((label || 'operation') + ' timeout ' + timeoutMs + 'ms')), Math.max(500, Number(timeoutMs || 30000)))
+      })
+      return Promise.race([promise, timeout]).finally(() => {
+        if (timer) clearTimeout(timer)
+      })
+    }
+    function probeOcrConfig(args) {
+      const base = String(args.assetBaseUrl || 'http://127.0.0.1:18765').replace(/\\/+$/, '')
+      const vendor = base + '/adapter-assets/tmall-ops-assistant/vendor/tesseract'
+      return {
+        scriptUrl: String(args.scriptUrl || vendor + '/tesseract.min.js'),
+        workerPath: String(args.workerPath || vendor + '/worker.min.js'),
+          corePath: String(args.corePath || vendor),
+          langPath: String(args.langPath || vendor + '/lang'),
+          lang: String(args.lang || 'chi_sim+eng'),
+          perImageTimeoutMs: Number(args.perImageTimeoutMs || 18000),
+          totalTimeoutMs: Number(args.totalTimeoutMs || 120000),
+        }
+      }
+      async function probeLoadScriptTag(url) {
+        await new Promise((resolve, reject) => {
+          const script = document.createElement('script')
+          script.src = url
+          script.async = true
+          script.onload = resolve
+          script.onerror = () => reject(new Error('load script failed: ' + url))
+          ;(document.head || document.documentElement || document.body).appendChild(script)
+        })
+      }
+      async function probeLoadTesseract(config) {
+        if (window.Tesseract) return window.Tesseract
+        if (window.__CRAWSHRIMP_PROBE_TESSERACT_LOADING__) return window.__CRAWSHRIMP_PROBE_TESSERACT_LOADING__
+        window.__CRAWSHRIMP_PROBE_TESSERACT_LOADING__ = (async () => {
+          try {
+            await probeLoadScriptTag(config.scriptUrl)
+          } catch (scriptError) {
+            const response = await fetch(config.scriptUrl, { credentials: 'omit' })
+            if (!response.ok) throw scriptError
+            const code = await response.text()
+            ;(0, eval)(code + '\\n//# sourceURL=' + config.scriptUrl)
+          }
+          if (!window.Tesseract) throw new Error('Tesseract.js loaded without window.Tesseract')
+          return window.Tesseract
+        })()
+        try {
+          return await window.__CRAWSHRIMP_PROBE_TESSERACT_LOADING__
+        } finally {
+          window.__CRAWSHRIMP_PROBE_TESSERACT_LOADING__ = null
+        }
+      }
+      async function probeCreateTesseractWorker(Tesseract, config) {
+        const engineOptions = {
+          workerPath: config.workerPath,
+          corePath: config.corePath,
+          langPath: config.langPath,
+          logger: () => {},
+        }
+        if (!Tesseract?.createWorker) return null
+        let firstError = null
+        try {
+          const worker = await Tesseract.createWorker(config.lang, 1, engineOptions)
+          if (worker?.recognize) return worker
+        } catch (error) {
+          firstError = error
+        }
+        try {
+          const worker = await Tesseract.createWorker(engineOptions)
+          if (worker?.loadLanguage) await worker.loadLanguage(config.lang)
+          if (worker?.initialize) await worker.initialize(config.lang)
+          if (worker?.recognize) return worker
+        } catch (error) {
+          if (firstError) throw firstError
+          throw error
+        }
+        return null
+      }
+      async function probeImageSourceForOcr(src) {
+        const url = normalizeProbeImageUrl(src)
+        if (!url || typeof URL === 'undefined' || !URL.createObjectURL) return { source: url, cleanup: () => {} }
+        try {
+          const response = await fetch(url, { credentials: 'omit' })
+          if (!response.ok) throw new Error('HTTP ' + response.status)
+          const blob = await response.blob()
+          const objectUrl = URL.createObjectURL(blob)
+          return {
+            source: objectUrl,
+            cleanup: () => {
+              try { URL.revokeObjectURL(objectUrl) } catch (error) {}
+            },
+          }
+        } catch (error) {
+          return { source: url, cleanup: () => {} }
+        }
+      }
+      async function probeRecognizeImage(Tesseract, worker, entry, config) {
+        const prepared = await probeImageSourceForOcr(entry.url)
+        try {
+          if (!prepared.source) throw new Error('empty image URL')
+          const run = worker?.recognize
+            ? worker.recognize(prepared.source)
+            : Tesseract.recognize(prepared.source, config.lang, {
+              workerPath: config.workerPath,
+              corePath: config.corePath,
+              langPath: config.langPath,
+              logger: () => {},
+            })
+          const result = await probeWithTimeout(run, config.perImageTimeoutMs, 'OCR image ' + (Number(entry.index) + 1))
+          return {
+            globalIndex: Number(entry.index),
+            imageIndex: Number(entry.imageIndex ?? entry.index),
+            src: normalizeProbeImageUrl(entry.url),
+            text: String(result?.data?.text || result?.text || '').replace(/\\s+/g, ' ').trim(),
+            confidence: Number(result?.data?.confidence ?? result?.confidence ?? 0) || 0,
+          }
+        } finally {
+          prepared.cleanup()
+        }
+      }
+      window.__crawshrimpTmallProbeOcrImages = async args => {
+        const entries = (Array.isArray(args.entries) ? args.entries : []).filter(entry => entry?.url)
+        const config = probeOcrConfig(args || {})
+        return probeWithTimeout((async () => {
+          const Tesseract = await probeLoadTesseract(config)
+          let worker = null
+          const results = []
+          try {
+            worker = await probeCreateTesseractWorker(Tesseract, config)
+            for (const entry of entries) {
+              try {
+                results.push(await probeRecognizeImage(Tesseract, worker, entry, config))
+              } catch (error) {
+                results.push({
+                  globalIndex: Number(entry.index),
+                  imageIndex: Number(entry.imageIndex ?? entry.index),
+                  src: normalizeProbeImageUrl(entry.url),
+                  text: '',
+                  confidence: 0,
+                  error: String(error?.message || error),
+                })
+              }
+            }
+          } finally {
+            try { await worker?.terminate?.() } catch (error) {}
+          }
+          return { ok: true, engine: 'tesseract.js', lang: config.lang, scanned: results.length, results }
+        })(), config.totalTimeoutMs, 'Tesseract OCR')
+      }
+      function drawWrappedText(ctx, text, x, y, maxWidth, lineHeight, maxLines) {
+        const words = String(text || '').split(/\\s+/g).filter(Boolean)
+        let line = ''
+        let used = 0
+        for (const word of words) {
+          const test = line ? line + ' ' + word : word
+          if (ctx.measureText(test).width > maxWidth && line) {
+            ctx.fillText(line, x, y)
+            y += lineHeight
+            used += 1
+            line = word
+            if (used >= maxLines) return
+          } else {
+            line = test
+          }
+        }
+        if (line && used < maxLines) ctx.fillText(line, x, y)
+      }
+      window.__crawshrimpTmallProbeCaseSheet = async args => {
+        const entries = (Array.isArray(args.entries) ? args.entries : []).filter(entry => entry?.url).slice(0, Number(args.maxImages || 12))
+        const ocrByIndex = new Map((Array.isArray(args.ocrResults) ? args.ocrResults : []).map(result => [Number(result.globalIndex ?? result.index), result]))
+        const cardWidth = 220
+        const cardHeight = 306
+        const gap = 14
+        const columns = Math.max(1, Math.min(4, Number(args.columns || 4)))
+        const rows = Math.max(1, Math.ceil(entries.length / columns))
+        const headerHeight = 72
+        const canvas = document.createElement('canvas')
+        canvas.width = columns * cardWidth + (columns + 1) * gap
+        canvas.height = headerHeight + rows * cardHeight + (rows + 1) * gap
+        const ctx = canvas.getContext('2d')
+        ctx.fillStyle = '#f7f7f2'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.fillStyle = '#111827'
+        ctx.font = 'bold 24px sans-serif'
+        ctx.fillText(String(args.title || 'Tmall packaging case'), gap, 32)
+        ctx.font = '14px sans-serif'
+        ctx.fillStyle = '#4b5563'
+        ctx.fillText(String(args.subtitle || ''), gap, 56)
+        for (let index = 0; index < entries.length; index += 1) {
+          const entry = entries[index]
+          const col = index % columns
+          const row = Math.floor(index / columns)
+          const x = gap + col * (cardWidth + gap)
+          const y = headerHeight + gap + row * (cardHeight + gap)
+          ctx.fillStyle = '#ffffff'
+          ctx.fillRect(x, y, cardWidth, cardHeight)
+          ctx.strokeStyle = '#d1d5db'
+          ctx.strokeRect(x, y, cardWidth, cardHeight)
+          try {
+            const response = await fetch(probeThumbUrl(entry.url), { credentials: 'omit' })
+            const blob = await response.blob()
+            const bitmap = await createImageBitmap(blob)
+            const boxW = cardWidth - 20
+            const boxH = 198
+            const ratio = Math.min(boxW / bitmap.width, boxH / bitmap.height)
+            const drawW = Math.max(1, bitmap.width * ratio)
+            const drawH = Math.max(1, bitmap.height * ratio)
+            ctx.drawImage(bitmap, x + 10 + (boxW - drawW) / 2, y + 34 + (boxH - drawH) / 2, drawW, drawH)
+          } catch (error) {
+            ctx.fillStyle = '#fee2e2'
+            ctx.fillRect(x + 10, y + 34, cardWidth - 20, 198)
+            ctx.fillStyle = '#991b1b'
+            ctx.font = '12px sans-serif'
+            ctx.fillText('image failed', x + 18, y + 60)
+          }
+          ctx.fillStyle = '#111827'
+          ctx.font = 'bold 13px sans-serif'
+          ctx.fillText('#' + String(entry.index), x + 10, y + 22)
+          const ocr = ocrByIndex.get(Number(entry.index))
+          ctx.font = '12px sans-serif'
+          ctx.fillStyle = '#374151'
+          drawWrappedText(ctx, ocr?.text || '', x + 10, y + 252, cardWidth - 20, 16, 3)
+        }
+        return { ok: true, dataUrl: canvas.toDataURL('image/png'), width: canvas.width, height: canvas.height }
+      }
+      return true
+    })()`
 }
 
 function extractMerchantCodeFromItem(item) {
@@ -1109,6 +1493,47 @@ async function probeItem(cdp, item, options) {
         anchors: visualAnchors,
         features: arrayFromMaybe(features).slice(0, 120),
         featureListTruncated: arrayFromMaybe(features).length > 120,
+      }
+    }
+  }
+  const needsOcrScan = options.ocrScope === 'all' || !HANDLED_MODES.has(sample.replacementPlan?.mode)
+  if (options.ocrMode === 'tesseract' && needsOcrScan && Number(options.ocrMaxImages || 0) > 0 && sample.pcDetail?.images?.length) {
+    const entries = sample.pcDetail.images
+      .slice(0, Math.max(0, Number(options.ocrMaxImages || 0)))
+      .filter(image => image.src)
+      .map(image => ({ index: image.globalIndex, imageIndex: image.imageIndex, url: image.src }))
+    if (entries.length) {
+      try {
+        const ocr = await cdp.evaluate(`window.__crawshrimpTmallProbeOcrImages(${JSON.stringify({
+          entries,
+          assetBaseUrl: options.ocrAssetBaseUrl,
+          totalTimeoutMs: options.timeoutMs,
+        })})`, options.timeoutMs)
+        const ocrResults = arrayFromMaybe(ocr?.results)
+        const ocrAnchors = buildOcrAnchorsFromResults(sample, ocrResults, { source: 'tesseract_ocr' })
+        if (ocrAnchors.stopImageIndex !== undefined) {
+          sample = analyzePublishModel({
+            itemId: item.itemId,
+            item,
+            html: fetched.hasReturnOld ? '返回旧版图文描述' : '',
+            model: fetched.model,
+            visualAnchors: ocrAnchors,
+          })
+        }
+        sample.ocr = {
+          ok: !!ocr?.ok,
+          engine: ocr?.engine || 'tesseract.js',
+          lang: ocr?.lang || '',
+          scanned: Number(ocr?.scanned || ocrResults.length),
+          results: ocrResults,
+          anchors: ocrAnchors,
+        }
+      } catch (error) {
+        sample.ocr = {
+          ok: false,
+          error: cleanText(error?.message || error),
+          anchors: { ocrStatus: 'failed', source: 'tesseract_ocr' },
+        }
       }
     }
   }

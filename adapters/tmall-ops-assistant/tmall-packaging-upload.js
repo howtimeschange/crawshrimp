@@ -17,7 +17,7 @@
   const SEARCH_FALLBACK_IMAGE_LIMIT = 80
   const SEARCH_FALLBACK_ASSET_BUDGET = 1200
   const PC_DETAIL_MAX_COUNT = 30
-  const OCR_DEFAULT_MAX_IMAGES = 80
+  const OCR_DEFAULT_MAX_IMAGES = Number.POSITIVE_INFINITY
   const OCR_PER_IMAGE_TIMEOUT_MS = 18000
   const OCR_TOTAL_TIMEOUT_MS = 120000
   const CRAW_SHRIMP_LOCAL_BASE_URL = 'http://127.0.0.1:18765'
@@ -1329,6 +1329,7 @@
       return buildAnchoredPcDetailModules(modularDesc, [], {
         probeOnly: true,
         visualAnchors: options.visualAnchors,
+        requireVisualAnchors: options.requireVisualAnchors,
       })
     }
     const tmDescription = getLegacyPcDetailHtml()
@@ -1336,6 +1337,7 @@
       return buildAnchoredPcDetailHtml(tmDescription, [], {
         probeOnly: true,
         visualAnchors: options.visualAnchors,
+        requireVisualAnchors: options.requireVisualAnchors,
       })
     }
     return {
@@ -1982,6 +1984,7 @@
   const LOWER_PRESERVE_ANCHOR_RE = /(模特信息|模特展示|宝贝模特|吊牌|吊牌展示|洗涤|水洗|洗唛|不同材质这样洗|不同材质|衣物洗涤|品牌介绍|品牌故事|宝贝故事|品牌说明|底部固定|宝贝底部|售后)/i
   const INFO_ANCHOR_RE = /(商品信息|宝贝信息|产品信息|基础信息|基本信息|商品参数|宝贝参数)/i
   const FIXED_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一)/i
+  const MARKETING_TOP_ANCHOR_RE = /(会员专属礼赠|淘金币补贴|下单链路|送IP周边|IP周边礼盒|周边礼盒|送T恤水杯|送T恤|加购商品|加购过tab|加购过|千款满\s*\d+\s*减\s*\d+|满\s*\d+\s*减\s*\d+)/i
 
   function decodeHtmlText(value) {
     return String(value || '')
@@ -2018,7 +2021,7 @@
   }
 
   function isStopAnchorText(value) {
-    return isWantedInfoAnchorText(value) || isSizeAnchorText(value) || isLowerPreserveAnchorText(value)
+    return isWantedInfoAnchorText(value) || isWashFallbackAnchorText(value) || isSizeAnchorText(value) || isLowerPreserveAnchorText(value)
   }
 
   function isInfoAnchorText(value) {
@@ -2027,6 +2030,10 @@
 
   function isFixedTopAnchorText(value) {
     return FIXED_TOP_ANCHOR_RE.test(String(value || ''))
+  }
+
+  function isMarketingTopAnchorText(value) {
+    return MARKETING_TOP_ANCHOR_RE.test(String(value || ''))
   }
 
   function ocrAnchorText(value) {
@@ -2042,6 +2049,7 @@
     if (isWashFallbackAnchorText(text)) return 'wash_fallback'
     if (isSizeAnchorText(text)) return 'size'
     if (isLowerPreserveAnchorText(text)) return 'lower_preserve'
+    if (isMarketingTopAnchorText(text)) return 'marketing_top'
     return ''
   }
 
@@ -2063,44 +2071,62 @@
         text: compact(result?.text || result?.data?.text || ''),
         confidence: Number(result?.confidence ?? result?.data?.confidence ?? 0) || 0,
       }))
+      .map(result => ({ ...result, anchorKind: classifyOcrAnchorText(result.text) }))
       .filter(result => result.text && !result.error)
       .sort((a, b) => a.globalIndex - b.globalIndex)
 
     const imageByIndex = new Map(imageList.map((image, index) => [Number(image?.globalIndex ?? index), image]))
-    const fixedTopResult = resultList.find(result => {
+    const asiaTopResult = resultList.find(result => {
       if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
-      return classifyOcrAnchorText(result.text) === 'fixed_top'
+      return result.anchorKind === 'fixed_top'
     })
-    const preserveFirstImage = !!fixedTopResult
-    const fixedTopImageIndex = fixedTopResult ? fixedTopResult.globalIndex : null
-    const minStopIndex = fixedTopResult ? fixedTopResult.globalIndex + 1 : 0
+    let fixedTopResult = asiaTopResult
+    let fixedTopAnchorKind = fixedTopResult ? fixedTopResult.anchorKind : ''
     const priorities = [
       ['wanted_info', 'wanted_info'],
       ['wash_fallback', 'wash_fallback'],
       ['size', 'size'],
       ['lower_preserve', 'lower_preserve'],
     ]
-    let stop = null
-    let stopAnchorKind = ''
-    for (const [kind, anchorKind] of priorities) {
-      const found = resultList.find(result => {
-        if (result.globalIndex < minStopIndex) return false
+
+    function findStopAfter(minStopIndex) {
+      for (const [kind, anchorKind] of priorities) {
+        const found = resultList.find(result => {
+          if (result.globalIndex < minStopIndex) return false
+          if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
+          return result.anchorKind === kind
+        })
+        if (found) return { stop: found, stopAnchorKind: anchorKind }
+      }
+      return { stop: null, stopAnchorKind: '' }
+    }
+
+    let minStopIndex = fixedTopResult ? fixedTopResult.globalIndex + 1 : 0
+    let { stop, stopAnchorKind } = findStopAfter(minStopIndex)
+    if (!fixedTopResult) {
+      const marketingTopResult = resultList.find(result => {
         if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
-        return classifyOcrAnchorText(result.text) === kind
+        if (result.anchorKind !== 'marketing_top') return false
+        return !stop || result.globalIndex < stop.globalIndex
       })
-      if (found) {
-        stop = found
-        stopAnchorKind = anchorKind
-        break
+      if (marketingTopResult) {
+        fixedTopResult = marketingTopResult
+        fixedTopAnchorKind = marketingTopResult.anchorKind
+        minStopIndex = fixedTopResult.globalIndex + 1
+        if (stop && stop.globalIndex < minStopIndex) {
+          ;({ stop, stopAnchorKind } = findStopAfter(minStopIndex))
+        }
       }
     }
+    const fixedTopImageIndex = fixedTopResult ? fixedTopResult.globalIndex : null
 
     const anchors = {
       ocrStatus: stop ? 'recognized' : (resultList.length ? 'no_anchor' : 'no_text'),
-      preserveFirstImage,
+      preserveFirstImage: !!fixedTopResult,
       source: compact(options.source || 'tesseract_ocr'),
       confidence: stop ? stop.confidence : (fixedTopResult?.confidence || 0),
       fixedTopImageIndex,
+      fixedTopAnchorKind,
       stopImageIndex: stop ? stop.globalIndex : null,
       stopAnchorKind,
       matchedText: stop ? stop.text.slice(0, 120) : '',
@@ -2110,8 +2136,42 @@
       delete anchors.stopImageIndex
       delete anchors.stopAnchorKind
     }
-    if (!preserveFirstImage) delete anchors.fixedTopImageIndex
+    if (!fixedTopResult) {
+      delete anchors.fixedTopImageIndex
+      delete anchors.fixedTopAnchorKind
+    }
     return anchors
+  }
+
+  function pcDetailAnchorPriority(kind) {
+    const normalized = compact(kind)
+    if (normalized === 'wanted_info') return 50
+    if (normalized === 'wash_fallback') return 40
+    if (normalized === 'white_black_fallback') return 30
+    if (normalized === 'size' || normalized === 'visual_size') return 20
+    if (normalized === 'lower_preserve' || normalized === 'visual_lower_preserve') return 10
+    return 0
+  }
+
+  function mergePcDetailVisualFallbackAnchors(ocrAnchors = {}, visualFallback = {}) {
+    const fallbackKind = compact(visualFallback.stopAnchorKind || visualFallback.anchorKind)
+    if (!fallbackKind) return ocrAnchors
+    if (pcDetailAnchorPriority(fallbackKind) <= pcDetailAnchorPriority(ocrAnchors.stopAnchorKind)) return ocrAnchors
+    const fixedTopImageIndex = Number.isFinite(Number(ocrAnchors.fixedTopImageIndex))
+      ? Number(ocrAnchors.fixedTopImageIndex)
+      : (Number.isFinite(Number(visualFallback.fixedTopImageIndex)) ? Number(visualFallback.fixedTopImageIndex) : null)
+    return {
+      ...ocrAnchors,
+      ocrStatus: 'recognized',
+      preserveFirstImage: !!ocrAnchors.preserveFirstImage || fixedTopImageIndex !== null || !!visualFallback.preserveFirstImage,
+      source: compact(visualFallback.source || 'visual_canvas_white_black'),
+      confidence: Number(visualFallback.confidence || ocrAnchors.confidence || 0),
+      fixedTopImageIndex,
+      stopImageIndex: Number(visualFallback.stopImageIndex),
+      stopAnchorKind: fallbackKind,
+      matchedText: compact(ocrAnchors.matchedText),
+      fixedTopText: compact(ocrAnchors.fixedTopText),
+    }
   }
 
   function extractImgSrc(imgTag) {
@@ -2190,7 +2250,7 @@
     if (isStopAnchorText(moduleName)) return 0
     const limit = Math.max(0, imageStart - 1800)
     const before = html.slice(limit, imageStart)
-    const stopAnchorRe = new RegExp(`${WANTED_INFO_ANCHOR_RE.source}|${SIZE_ANCHOR_RE.source}|${LOWER_PRESERVE_ANCHOR_RE.source}`, 'gi')
+    const stopAnchorRe = new RegExp(`${WANTED_INFO_ANCHOR_RE.source}|${WASH_FALLBACK_ANCHOR_RE.source}|${SIZE_ANCHOR_RE.source}|${LOWER_PRESERVE_ANCHOR_RE.source}`, 'gi')
     const matches = [...before.matchAll(stopAnchorRe)]
     if (!matches.length) return imageStart
     const anchorAbs = limit + Number(matches[matches.length - 1].index || 0)
@@ -2316,8 +2376,26 @@
     }).length
   }
 
-  function findStopBoundary(modules, images, firstImage, preserveFirstImage) {
+  function visualFixedTopImage(images, visualAnchors = {}) {
+    const index = Number(visualAnchors.fixedTopImageIndex)
+    if (!Number.isFinite(index) || index < 0) return null
+    return (Array.isArray(images) ? images : []).find(image => Number(image.globalIndex) === index) || null
+  }
+
+  function findStopBoundary(modules, images, firstImage, preserveFirstImage, options = {}) {
     const minGlobalIndex = firstImage.globalIndex + (preserveFirstImage ? 1 : 0)
+    if (options.visualAnchorsOnly) {
+      const visualImageBoundary = images.find(image => image.globalIndex >= minGlobalIndex && image.isVisualStopAnchor)
+      if (!visualImageBoundary) return null
+      return {
+        type: 'image',
+        image: visualImageBoundary,
+        moduleIndex: visualImageBoundary.moduleIndex,
+        globalIndex: visualImageBoundary.globalIndex,
+        moduleName: visualImageBoundary.moduleName,
+        anchorKind: visualImageBoundary.visualStopAnchorKind || 'visual_lower_preserve',
+      }
+    }
     const imageBoundary = [
       image => image.isWantedInfoAnchor,
       image => image.isWashFallbackAnchor,
@@ -2449,6 +2527,7 @@
 
     const images = flattenModularDescImages(currentModules)
     const visualAnchors = applyVisualAnchorsToImages(images, options.visualAnchors)
+    const requireVisualAnchors = !!options.requireVisualAnchors
     if (!images.length) {
       return {
         ok: false,
@@ -2459,17 +2538,23 @@
     }
     const firstImage = images[0]
     const legacySingleDescription = isLegacySingleDescription(currentModules, images)
-    const detectedFixedTopImage = fixedTopDetailImage(images, null)
-    let preserveFirstImage = !!detectedFixedTopImage || shouldPreserveFirstDetailImage(firstImage, {
+    const detectedFixedTopImage = requireVisualAnchors
+      ? visualFixedTopImage(images, visualAnchors)
+      : fixedTopDetailImage(images, null)
+    let preserveFirstImage = !!detectedFixedTopImage || (!requireVisualAnchors && shouldPreserveFirstDetailImage(firstImage, {
       preserveFirstImage: visualAnchors.preserveFirstImage || visualAnchors.fixedTopImageIndex === 0,
-    })
+    }))
     let startImage = preserveFirstImage ? (detectedFixedTopImage || firstImage) : firstImage
     if (startImage && startImage.globalIndex > firstImage.globalIndex) preserveFirstImage = true
-    let stopBoundary = findStopBoundary(currentModules, images, startImage, preserveFirstImage)
+    let stopBoundary = findStopBoundary(currentModules, images, startImage, preserveFirstImage, {
+      visualAnchorsOnly: requireVisualAnchors,
+    })
     if (!stopBoundary && legacySingleDescription && options.allowLegacyImageCountFallback) {
       preserveFirstImage = true
       startImage = fixedTopDetailImage(images, firstImage) || firstImage
-      stopBoundary = legacyImageCountStopBoundary(images, startImage, detailUrls, preserveFirstImage, options)
+      stopBoundary = requireVisualAnchors
+        ? null
+        : legacyImageCountStopBoundary(images, startImage, detailUrls, preserveFirstImage, options)
     }
     if (legacySingleDescription && !stopBoundary) {
       return {
@@ -2579,9 +2664,11 @@
     const pcDetailReplacement = currentModules.length
       ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
         visualAnchors: currentValues.pcDetailVisualAnchors,
+        requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
       })
       : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
         visualAnchors: currentValues.pcDetailVisualAnchors,
+        requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
       })
     const modularDesc = currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
     const tmDescription = !currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
@@ -2854,15 +2941,11 @@
     }
   }
 
-  function isOcrAnchorDetectionEnabled(rawParams = params) {
-    const value = rawParams.enable_ocr_anchor_detection
-    if (value == null || value === '') return true
-    if (typeof value === 'boolean') return value
-    return !/^(0|false|no|off|关闭|否)$/i.test(compact(value))
-  }
-
   function ocrMaxImages(rawParams = params) {
-    return Math.max(1, Math.min(positiveInt(rawParams.ocr_max_images, OCR_DEFAULT_MAX_IMAGES), 160))
+    const value = rawParams.ocr_max_images
+    if (value == null || value === '') return OCR_DEFAULT_MAX_IMAGES
+    if (/^(all|full|全部|所有|无限)$/i.test(compact(value))) return Number.POSITIVE_INFINITY
+    return Math.max(1, positiveInt(value, OCR_DEFAULT_MAX_IMAGES))
   }
 
   function tesseractRuntimeConfig(rawParams = params) {
@@ -2984,6 +3067,123 @@
     }
   }
 
+  function thumbUrlForVisualFeature(src) {
+    const url = ensureAbsoluteImageUrl(src)
+    if (!/alicdn\.com/i.test(url)) return url
+    if (/[._](?:jpg|jpeg|png|webp)(?:\?.*)?$/i.test(url)) return url.replace(/(\.(?:jpg|jpeg|png|webp))(\?.*)?$/i, '$1_160x160.jpg$2')
+    return `${url}_160x160.jpg`
+  }
+
+  function largestBlackComponentRatio(blackMask, width, height) {
+    const seen = new Uint8Array(width * height)
+    let largest = 0
+    const queue = []
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1) {
+        const start = y * width + x
+        if (!blackMask[start] || seen[start]) continue
+        let size = 0
+        queue.length = 0
+        queue.push(start)
+        seen[start] = 1
+        while (queue.length) {
+          const current = queue.pop()
+          size += 1
+          const cx = current % width
+          const cy = Math.floor(current / width)
+          const neighbors = [
+            cy > 0 ? current - width : -1,
+            cy < height - 1 ? current + width : -1,
+            cx > 0 ? current - 1 : -1,
+            cx < width - 1 ? current + 1 : -1,
+          ]
+          for (const next of neighbors) {
+            if (next < 0 || !blackMask[next] || seen[next]) continue
+            seen[next] = 1
+            queue.push(next)
+          }
+        }
+        if (size > largest) largest = size
+      }
+    }
+    return largest / Math.max(1, width * height)
+  }
+
+  function classifyWhiteBlackVisualFeature(feature) {
+    if (!feature || feature.ok === false) return false
+    const whiteRatio = Number(feature.whiteRatio || 0)
+    const blackRatio = Number(feature.blackRatio || 0)
+    const saturationAvg = Number(feature.saturationAvg || 0)
+    const largestBlackRatio = Number(feature.largestBlackComponentRatio || 0)
+    return whiteRatio >= 0.62 &&
+      blackRatio >= 0.025 &&
+      blackRatio <= 0.28 &&
+      saturationAvg <= 0.2 &&
+      largestBlackRatio <= 0.055
+  }
+
+  async function visualFeatureForImage(image, timeoutMs = 6000) {
+    const index = Number(image?.globalIndex ?? 0)
+    const url = thumbUrlForVisualFeature(image?.src)
+    try {
+      const response = await withTimeout(fetch(url, { credentials: 'omit' }), timeoutMs, `视觉识别图片${index + 1}`)
+      const blob = await response.blob()
+      const bitmap = await createImageBitmap(blob)
+      const canvas = document.createElement('canvas')
+      canvas.width = 32
+      canvas.height = 32
+      const ctx = canvas.getContext('2d', { willReadFrequently: true })
+      ctx.drawImage(bitmap, 0, 0, 32, 32)
+      const data = ctx.getImageData(0, 0, 32, 32).data
+      let white = 0
+      let black = 0
+      let saturation = 0
+      const blackMask = new Uint8Array(32 * 32)
+      for (let offset = 0; offset < data.length; offset += 4) {
+        const r = data[offset], g = data[offset + 1], b = data[offset + 2]
+        const max = Math.max(r, g, b)
+        const min = Math.min(r, g, b)
+        if (r >= 235 && g >= 235 && b >= 235) white += 1
+        if (r <= 65 && g <= 65 && b <= 65) {
+          black += 1
+          blackMask[offset / 4] = 1
+        }
+        saturation += max === 0 ? 0 : (max - min) / max
+      }
+      const pixels = data.length / 4
+      return {
+        index,
+        ok: true,
+        whiteRatio: white / pixels,
+        blackRatio: black / pixels,
+        saturationAvg: saturation / pixels,
+        largestBlackComponentRatio: largestBlackComponentRatio(blackMask, 32, 32),
+      }
+    } catch (error) {
+      return { index, ok: false, error: String(error?.message || error) }
+    }
+  }
+
+  async function detectWhiteBlackVisualFallback(images = [], anchors = {}, rawParams = params) {
+    const currentPriority = pcDetailAnchorPriority(anchors.stopAnchorKind)
+    if (currentPriority >= pcDetailAnchorPriority('white_black_fallback')) return null
+    const fixedTopIndex = Number(anchors.fixedTopImageIndex)
+    const minIndex = Number.isFinite(fixedTopIndex) ? fixedTopIndex + 1 : 0
+    const timeoutMs = positiveInt(rawParams.visual_per_image_timeout_ms, 6000)
+    for (const image of Array.isArray(images) ? images : []) {
+      if (Number(image?.globalIndex) < minIndex || !compact(image?.src)) continue
+      const feature = await visualFeatureForImage(image, timeoutMs)
+      if (!classifyWhiteBlackVisualFeature(feature)) continue
+      return {
+        stopImageIndex: Number(image.globalIndex),
+        stopAnchorKind: 'white_black_fallback',
+        source: 'visual_canvas_white_black',
+        confidence: 0.74,
+      }
+    }
+    return null
+  }
+
   async function recognizeImageWithTesseract(Tesseract, worker, image, config) {
     const prepared = await imageSourceForOcr(image.src)
     try {
@@ -3015,6 +3215,10 @@
       .filter(image => compact(image?.src))
       .slice(0, config.maxImages)
     if (!candidates.length) return { ok: false, reason: 'PC详情中没有可 OCR 的图片', results: [] }
+    const totalTimeoutMs = Math.max(
+      Number(config.totalTimeoutMs || 0),
+      candidates.length * Number(config.perImageTimeoutMs || 0) + 60000,
+    )
 
     return withTimeout((async () => {
       const Tesseract = await loadTesseractRuntime(config)
@@ -3046,7 +3250,7 @@
         scanned: results.length,
         results,
       }
-    })(), config.totalTimeoutMs, 'Tesseract OCR')
+    })(), totalTimeoutMs, 'Tesseract OCR')
   }
 
   async function detectPcDetailOcrAnchors(rawParams = params) {
@@ -3063,10 +3267,15 @@
     }
     try {
       const ocr = await runTesseractOcrForImages(images, rawParams)
-      const anchors = buildPcDetailVisualAnchorsFromOcrResults(images, ocr.results, {
+      const ocrAnchors = buildPcDetailVisualAnchorsFromOcrResults(images, ocr.results, {
         source: 'tesseract_ocr',
       })
-      const probe = currentPcDetailReplacementProbe({ visualAnchors: anchors })
+      const visualFallback = await detectWhiteBlackVisualFallback(images, ocrAnchors, rawParams)
+      const anchors = mergePcDetailVisualFallbackAnchors(ocrAnchors, visualFallback || {})
+      const probe = currentPcDetailReplacementProbe({
+        visualAnchors: anchors,
+        requireVisualAnchors: true,
+      })
       return {
         ok: !!probe.ok,
         reason: probe.ok ? '' : (probe.note || 'OCR 未识别到可靠锚点'),
@@ -3363,6 +3572,7 @@
       flattenModularDescImages,
       classifyOcrAnchorText,
       buildPcDetailVisualAnchorsFromOcrResults,
+      mergePcDetailVisualFallbackAnchors,
       tesseractRuntimeConfig,
       buildAnchoredPcDetailModules,
       buildAnchoredPcDetailHtml,
@@ -3620,17 +3830,18 @@
       if (hasDownloadedPcDetailRows(shared.current_result_rows)) {
         const replacementProbe = currentPcDetailReplacementProbe({
           visualAnchors: shared.pc_detail_visual_anchors,
+          requireVisualAnchors: !!shared.pc_detail_ocr_attempted,
         })
+        if (!shared.pc_detail_ocr_attempted) {
+          return nextPhase('detect_pc_detail_ocr_anchors', 0, {
+            ...shared,
+            tmall_status: status,
+            pc_detail_replacement_probe: replacementProbe,
+            pc_detail_ocr_attempted: true,
+            current_store: 'OCR识别PC详情锚点',
+          })
+        }
         if (!replacementProbe.ok) {
-          if (isOcrAnchorDetectionEnabled(params) && !shared.pc_detail_ocr_attempted) {
-            return nextPhase('detect_pc_detail_ocr_anchors', 0, {
-              ...shared,
-              tmall_status: status,
-              pc_detail_replacement_probe: replacementProbe,
-              pc_detail_ocr_attempted: true,
-              current_store: 'OCR识别PC详情锚点',
-            })
-          }
           const rows = buildOutputStatusRows(
             shared.current_result_rows,
             status,
@@ -3780,6 +3991,7 @@
         modularDesc: getComponentValue('modularDesc'),
         tmDescription: getLegacyPcDetailHtml(),
         pcDetailVisualAnchors: shared.pc_detail_visual_anchors,
+        requirePcDetailVisualAnchors: hasDownloadedPcDetailRows(shared.current_result_rows),
       })
       const pcReplacementBlocked = componentValues.pcDetailReplacement?.ok === false
       if (pcReplacementBlocked) {
