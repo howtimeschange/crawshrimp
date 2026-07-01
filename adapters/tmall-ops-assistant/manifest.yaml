@@ -213,9 +213,9 @@ tasks:
         templates:
           - file: templates/tmall-ai-image-test-workflow-template.csv
             label: 测图任务导入模板
-            description: 填写“款号”，可选“天猫商品ID、品类、性别、素材图文件、素材图URL、提示词分组、提示词字段名、生成数量”。
-            version: "2026.07.01.1"
-        hint: 至少包含“款号”列。若表格为空，可用下方单款测试字段做一条探路。
+            description: 本期只需要填写“款号、天猫商品ID、品类、性别”四列；脚本会按品类/性别自动匹配提示词。
+            version: "2026.07.01.3"
+        hint: 至少包含“款号”列；建议同时填写天猫商品ID、品类、性别。若表格为空，可用下方单款测试字段做一条探路。
       - id: prompt_file
         type: file_excel
         label: AI 测图提示词库
@@ -460,9 +460,9 @@ tasks:
         templates:
           - file: templates/tmall-ai-image-test-workflow-template.csv
             label: 测图任务导入模板
-            description: 填写“款号、SKC编码、ID（用于测图的ID）、品类（后期匹配）、模特性别”等列；脚本会按款号找主图、按 SKC 编码找平铺细节参考图，并按商品 ID 创建天猫测图任务。
-            version: "2026.07.01.2"
-        hint: 必须包含款号；建议填写 SKC编码 用于严格匹配平铺细节参考图；真实上传/上线时必须包含天猫商品 ID。支持用户提供的“测图工作流导入模板表.xlsx”。
+            description: 本期只需要填写“款号、天猫商品ID、品类、性别”四列；脚本按款号找橱窗1/yz(1)主图，并按品类/性别自动匹配提示词。
+            version: "2026.07.01.3"
+        hint: 必须包含款号；真实上传/上线时必须包含天猫商品ID。SKC编码本期不用填，脚本会在需要时从款号-五位款色码图片名推断平铺参考图。
       - id: prompt_file
         type: file_excel
         label: AI 测图提示词库
@@ -478,7 +478,13 @@ tasks:
         label: 森马云盘路径
         default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/"
         placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/"
-        hint: 优先在该挂载点与目录下按款号找图；找不到时会回退到已挂载目录搜索。
+        hint: 只在该挂载点与目录下按款号找图；若确实需要跨目录找图，请开启“允许全盘兜底找图”。
+      - id: allow_global_semir_fallback
+        type: checkbox
+        label: 允许全盘兜底找图
+        default: false
+        ui_span: third
+        hint: 默认关闭，避免从其他季节/其他目录误选同款号素材；开启后才会在指定路径找不到必需素材时搜索全部挂载目录。
       - id: limit
         type: number
         label: 本次处理款数

@@ -2613,6 +2613,16 @@ def _task_float_param(run_params: dict, key: str, default: float, *, min_value: 
     return value
 
 
+def _task_bool_param(run_params: dict, key: str, default: bool = False) -> bool:
+    value = (run_params or {}).get(key, default)
+    if isinstance(value, bool):
+        return value
+    text = str(value or "").strip().lower()
+    if not text:
+        return default
+    return text in {"1", "true", "yes", "y", "on", "是", "启用", "开启"}
+
+
 def _load_tmall_ai_image_chain_module():
     import importlib.util
     import sys
@@ -2667,12 +2677,17 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         ai_image_count=_task_int_param(run_params, "ai_image_count", 4, min_value=1, max_value=20),
         generation_concurrency=_task_int_param(run_params, "generation_concurrency", 100, min_value=1, max_value=100),
         reference_mode=str((run_params or {}).get("reference_mode") or "main_only").strip().lower(),
+        allow_global_semir_fallback=_task_bool_param(run_params, "allow_global_semir_fallback", False),
         quality=str((run_params or {}).get("quality") or "auto").strip().lower(),
         output_format=str((run_params or {}).get("output_format") or "jpeg").strip().lower(),
         one_xm_key_tier=str((run_params or {}).get("one_xm_key_tier") or "auto").strip().lower(),
         retry_attempts=_task_int_param(run_params, "retry_attempts", 3, min_value=1, max_value=8),
         compensate_attempts=_task_int_param(run_params, "compensate_attempts", 2, min_value=1, max_value=6),
         poll_timeout_minutes=_task_float_param(run_params, "poll_timeout_minutes", 12.0, min_value=1.0, max_value=60.0),
+        tmall_upload_delay_seconds=_task_float_param(run_params, "tmall_upload_delay_seconds", 1.5, min_value=0.0, max_value=60.0),
+        tmall_create_delay_seconds=_task_float_param(run_params, "tmall_create_delay_seconds", 5.0, min_value=0.0, max_value=120.0),
+        tmall_batch_delay_seconds=_task_float_param(run_params, "tmall_batch_delay_seconds", 12.0, min_value=0.0, max_value=180.0),
+        tmall_readback_delay_seconds=_task_float_param(run_params, "tmall_readback_delay_seconds", 5.0, min_value=0.0, max_value=120.0),
     )
     if args.quality not in {"auto", "low", "medium", "high"}:
         args.quality = "auto"

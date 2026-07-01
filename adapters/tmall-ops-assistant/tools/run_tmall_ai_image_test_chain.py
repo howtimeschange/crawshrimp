@@ -40,6 +40,8 @@ DEFAULT_CLOUD_PATH = "巴拉营运BU-商品//巴拉货控/02 产品上新模块/
 PROMPT_SHEETS = {"上装", "连衣裙", "下装", "短裙", "鞋品", "竞品模版"}
 IMAGE_EXT_RE = re.compile(r"\.(jpe?g|png|webp|bmp|gif|tiff?)($|\?)", re.IGNORECASE)
 REFERENCE_IMAGE_MAX_BYTES = 19 * 1024 * 1024
+RISKY_DEFAULT_PROMPT_RE = re.compile(r"多件衣服|衣服[1-9]|效果图|空字段|多件商品|多款", re.IGNORECASE)
+TMALL_UPLOAD_IMAGE_SIZE = (960, 1280)
 
 
 def compact(value: object) -> str:
@@ -258,6 +260,10 @@ def prompt_priority(prompt: PromptItem, workflow: WorkflowItem) -> tuple[int, in
     return normalized, prompt.field_order or 9999, prompt.field_name
 
 
+def is_risky_default_prompt(prompt: PromptItem) -> bool:
+    return bool(RISKY_DEFAULT_PROMPT_RE.search(f"{prompt.field_name}\n{prompt.prompt}"))
+
+
 def select_prompts(workflow: WorkflowItem, prompts: list[PromptItem], limit: int = 1) -> list[PromptItem]:
     prompt_names = set(parse_list(workflow.prompt_name))
     group = category_to_prompt_sheet(workflow.category)
@@ -270,6 +276,10 @@ def select_prompts(workflow: WorkflowItem, prompts: list[PromptItem], limit: int
         matched = [prompt for prompt in prompts if prompt.field_name in prompt_names]
     if not matched:
         return []
+    if not prompt_names:
+        safe_matched = [prompt for prompt in matched if not is_risky_default_prompt(prompt)]
+        if safe_matched:
+            matched = safe_matched
     return sorted(matched, key=lambda item: prompt_priority(item, workflow))[:max(1, limit)]
 
 
@@ -294,7 +304,12 @@ def build_prompt_text(prompt: PromptItem, workflow: WorkflowItem) -> str:
         "{{性别}}": workflow.gender,
     }.items():
         text = text.replace(key, value)
-    return f"{text}\n\n商品属性：{suffix}" if suffix else text
+    guard = (
+        "生成约束：只以参考图中的当前主商品为主体；严格保持主商品颜色、图案、版型、面料不变；"
+        "禁止把参考图里的其他颜色、条纹叠放衣物、配件或多款组合当成主商品；禁止换色、混款、增加不存在的款式。"
+    )
+    body = f"{text}\n\n{guard}"
+    return f"{body}\n\n商品属性：{suffix}" if suffix else body
 
 
 def make_generation_row(
@@ -629,11 +644,23 @@ SEMIR_FIND_JS = r"""
   }
   function isYzOneName(filename) {
     const name = compact(filename);
+    return isYzOneBracketName(name) || isYzOneBareName(name);
+  }
+  function isYzOneBracketName(filename) {
+    const name = compact(filename);
     return /(^|[^0-9a-z])yz\s*[\(（]\s*0?1\s*[\)）]/i.test(name);
+  }
+  function isYzOneBareName(filename) {
+    const name = compact(filename);
+    return /(^|[^0-9a-z])yz\s*0?1(?!\d)/i.test(name);
+  }
+  function isDerivedMainReferenceName(filename) {
+    const name = basenameOf(filename);
+    return /颜色\s*ai|ai\s*[-_ ]?\d|[-_&]ai(?:$|[-_ .])|效果图|创意图|生图|生成图|生成款|改色|换色|变色|智能图/i.test(name);
   }
   function isMainReferenceCandidate(filename) {
     const name = basenameOf(filename);
-    return isShowcaseOneName(name) || isYzOneName(name);
+    return !isDerivedMainReferenceName(name) && (isShowcaseOneName(name) || isYzOneName(name));
   }
   function skcCodeFromStyleName(filename, styleCode) {
     const style = compact(styleCode);
@@ -657,6 +684,8 @@ SEMIR_FIND_JS = r"""
     const stylePathOk = !compact(styleCode) || full.includes(compact(styleCode));
     const flags = {
       showcase1: isShowcaseOneName(baseName),
+      yz1Bracket: isYzOneBracketName(baseName),
+      yz1Bare: isYzOneBareName(baseName),
       yz1: isYzOneName(baseName),
       flat: isSkcFlatCandidate(baseName, skcCode, styleCode),
       flatPath: /平拍|平铺|白底|静物|正面|front/i.test(full),
@@ -665,17 +694,24 @@ SEMIR_FIND_JS = r"""
       front: /正面|前面|front/i.test(baseName),
       back: /背面|后面|back/i.test(baseName),
     };
-    const isMain = (flags.showcase1 || flags.yz1) && stylePathOk;
+    const derivedMain = isDerivedMainReferenceName(baseName);
+    const isMain = (flags.showcase1 || flags.yz1) && stylePathOk && !derivedMain;
     const isDetail = flags.flat;
     if (!isMain && !isDetail) return null;
-    const mainRank = (flags.showcase1 ? 20 : flags.yz1 ? 10 : 0) + (flags.selectedPath ? 2 : 0) + (flags.modelPath ? 1 : 0);
+    const mainRank = (
+      flags.showcase1 ? 30
+        : flags.yz1Bracket ? 25
+          : flags.yz1Bare ? 10
+            : 0
+    ) + (flags.selectedPath ? 2 : 0) + (flags.modelPath ? 1 : 0);
     const detailRank = (flags.flatPath ? 6 : 0) + (flags.front ? 2 : flags.back ? 0 : 1) - (flags.modelPath ? 2 : 0);
     const role = flags.showcase1 ? 'origin_showcase1'
-      : flags.yz1 ? 'origin_yz1'
+      : flags.yz1Bracket ? 'origin_yz1_bracket'
+      : flags.yz1Bare ? 'origin_yz1_bare'
       : 'detail_skc_flat';
     const score = isMain ? 300 + mainRank * 20 : 200 + detailRank * 10;
     const resolvedSkcCode = flags.flat ? (compact(skcCode) || skcCodeFromStyleName(baseName, styleCode)) : '';
-    return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags, skcCode: resolvedSkcCode };
+    return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags: { ...flags, derivedMain }, skcCode: resolvedSkcCode };
   }
   try {
     const styleCode = compact(__payload.style_code);
@@ -819,6 +855,46 @@ TMALL_UPLOAD_CREATE_JS = r"""
     }
     return '';
   }
+  function inferMaterialSize(item) {
+    const raw = compact(item?.materialSize || item?.size || item?.pixel || item?.raw?.object?.pix);
+    const match = raw.match(/(\d+)\D+(\d+)/);
+    if (match) {
+      const width = Number(match[1]);
+      const height = Number(match[2]);
+      if (width > 0 && height > 0) {
+        const ratio = width / height;
+        if (Math.abs(ratio - 1) <= 0.08) return '1:1';
+        if (Math.abs(ratio - 0.75) <= 0.10 || Math.abs(ratio - (2 / 3)) <= 0.10) return '3:4';
+        return ratio > 1 ? '1:1' : '3:4';
+      }
+    }
+    return '3:4';
+  }
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, Math.max(0, Number(ms || 0))));
+  function describeMtopError(error) {
+    const parts = [];
+    const ret = Array.isArray(error?.ret) ? error.ret.join('|') : '';
+    const dataMsg = compact(error?.data?.errorMsg || error?.data?.message || error?.data?.msg);
+    const message = compact(error?.message || error);
+    if (ret) parts.push(ret);
+    if (dataMsg && !parts.includes(dataMsg)) parts.push(dataMsg);
+    if (message && message !== '[object Object]' && !parts.includes(message)) parts.push(message);
+    return parts.join('|') || String(error || 'MTop 调用失败');
+  }
+  function extractRows(value) {
+    for (const rows of [
+      value?.result?.list,
+      value?.list,
+      value?.records,
+      value?.data?.result?.list,
+      value?.data?.list,
+      value?.data?.records,
+      value?.modelDataList,
+    ]) {
+      if (Array.isArray(rows)) return rows;
+    }
+    return Array.isArray(value) ? value : [];
+  }
   async function uploadDataUrl(dataUrl, name) {
     const query = new URLSearchParams({
       appkey: 'tu',
@@ -858,15 +934,20 @@ TMALL_UPLOAD_CREATE_JS = r"""
     if (!client || typeof client.request !== 'function') {
       throw new Error('未找到千牛 MTop 客户端，请确认当前 tab 是天猫素材测试页');
     }
-    const payload = await client.request({
-      api,
-      v: options.v || '1.0',
-      type: options.type || 'POST',
-      dataType: 'json',
-      H5Request: true,
-      preventFallback: true,
-      data,
-    });
+    let payload = null;
+    try {
+      payload = await client.request({
+        api,
+        v: options.v || '1.0',
+        type: options.type || 'POST',
+        dataType: 'json',
+        H5Request: true,
+        preventFallback: true,
+        data,
+      });
+    } catch (error) {
+      throw new Error(`${api} 返回失败：${describeMtopError(error)}`);
+    }
     if (Array.isArray(payload?.ret)) {
       const failed = payload.ret.find((item) => !/^SUCCESS/i.test(String(item || '')));
       if (failed) throw new Error(`${api} 返回失败：${payload.ret.join('；')}`);
@@ -902,60 +983,120 @@ TMALL_UPLOAD_CREATE_JS = r"""
     }
     return unique;
   }
-  async function searchTasks(itemId) {
+  function summarizeTask(readback, taskId, targetSource = 'common_search') {
+    const rows = Array.isArray(readback?.rows) ? readback.rows : [];
+    const targetTaskId = compact(taskId);
+    const target = compact(targetSource).toLowerCase();
+    const countMetrics = (metrics) => {
+      let total = 0;
+      const bySize = {};
+      for (const [size, list] of Object.entries(metrics || {})) {
+        const count = Array.isArray(list) ? list.length : 0;
+        bySize[size] = count;
+        total += count;
+      }
+      return { total, bySize };
+    };
+    for (const row of rows) {
+      const dataList = row?.columns?.test_data?.dataList || row?.test_data?.dataList || row?.testData?.dataList || [];
+      for (const item of Array.isArray(dataList) ? dataList : []) {
+        const source = compact(item?.imageTestSource || item?.source || item?.testChannel).toLowerCase();
+        const currentTaskId = compact(item?.experimentTaskId || item?.taskId || item?.id);
+        if (source !== target) continue;
+        if (targetTaskId && currentTaskId && targetTaskId !== currentTaskId) continue;
+        const origin = countMetrics(item?.originImageMetrics || {});
+        const test = countMetrics(item?.testImageMetrics || {});
+        return {
+          taskId: currentTaskId,
+          source,
+          status: compact(item?.testStatus ?? item?.status),
+          originImageCount: origin.total,
+          originImageCountBySize: origin.bySize,
+          testImageCount: test.total,
+          testImageCountBySize: test.bySize,
+          online: String(item?.testStatus ?? item?.status) === '1',
+        };
+      }
+    }
+    return null;
+  }
+  async function searchTasks(itemId, options = {}) {
+    const params = {
+      tabCode: options.tabCode || 'all',
+      itemIdOrName: String(itemId || ''),
+    };
+    if (options.testChannel) params.testChannel = options.testChannel;
+    if (options.testStatus !== undefined && options.testStatus !== null && options.testStatus !== '') {
+      params.testStatus = String(options.testStatus);
+    }
     const payload = await callMtop('mtop.taobao.qn.copilot.framework.listmodel.data.search', {
       modelCode: 'image_test_mgr',
-      params: JSON.stringify({ tabCode: 'all', testChannel: 'common_search', itemIdOrName: String(itemId || '') }),
+      params: JSON.stringify(params),
       currentPage: 1,
       pageSize: 10,
     });
-    return payload;
+    const rows = extractRows(payload);
+    const total = Number(payload?.result?.total || payload?.total || payload?.count || rows.length || 0);
+    return {
+      total: Number.isFinite(total) ? total : rows.length,
+      rows,
+      requestParams: params,
+      raw: payload,
+    };
   }
+  const result = {
+    uploaded: [],
+    materials: [],
+    createPayload: {
+      source: 'qn',
+      itemId: String(__payload.item_id || ''),
+      imageTestSources: JSON.stringify(['COMMON_SEARCH']),
+    },
+    batchPayload: null,
+    batchPayloads: [],
+    batchAddErrors: [],
+    batchAddWarnings: [],
+    onlinePayload: null,
+    createResult: null,
+    batchAddResult: null,
+    batchAddResults: [],
+    onlineResult: null,
+    readback: null,
+    error: '',
+  };
   try {
-    const uploaded = [];
+    const uploadDelayMs = Number(__payload.upload_delay_ms || 0);
+    const createDelayMs = Number(__payload.create_delay_ms || 0);
+    const batchDelayMs = Number(__payload.batch_delay_ms || 0);
+    const readbackDelayMs = Number(__payload.readback_delay_ms || 0);
     for (const file of (__payload.files || [])) {
       if (!__payload.live_upload) {
-        uploaded.push({ name: file.name, role: file.role, localPath: file.localPath, url: '', skipped: true });
+        result.uploaded.push({ name: file.name, role: file.role, localPath: file.localPath, url: '', skipped: true });
         continue;
       }
       const item = await uploadDataUrl(file.dataUrl, file.name);
-      uploaded.push({ ...item, role: file.role, localPath: file.localPath, skipped: false });
+      result.uploaded.push({ ...item, role: file.role, localPath: file.localPath, skipped: false });
+      if (uploadDelayMs > 0) await sleep(uploadDelayMs);
     }
-    const materials = uploaded
+    result.materials = result.uploaded
       .filter((item) => item.url)
-      .map((item) => ({ sourceType: 4, picUrl: item.url, size: '3:4' }));
-    const result = {
-      uploaded,
-      materials,
-      createPayload: {
-        source: 'qn',
-        itemId: String(__payload.item_id || ''),
-        imageTestSources: JSON.stringify(['COMMON_SEARCH']),
-      },
-      batchPayload: null,
-      batchPayloads: [],
-      onlinePayload: null,
-      createResult: null,
-      batchAddResult: null,
-      batchAddResults: [],
-      onlineResult: null,
-      readback: null,
-    };
+      .map((item) => ({ sourceType: 4, picUrl: item.url, size: inferMaterialSize(item) }));
     if (!__payload.live_create) {
       result.batchPayload = {
         experimentTaskId: '<experimentTaskId>',
         itemId: String(__payload.item_id || ''),
         source: 'common_search',
-        materials: JSON.stringify(materials),
+        materials: JSON.stringify(result.materials),
       };
       return { success: true, data: [result], meta: { has_more: false } };
     }
-    if (!materials.length) throw new Error('没有可添加的天猫素材 URL，请先启用并完成 live_upload');
+    if (!result.materials.length) throw new Error('没有可添加的天猫素材 URL，请先启用并完成 live_upload');
     result.createResult = await callMtop('mtop.taobao.qn.copilot.test.image.task.create', result.createPayload);
     const taskStatusList = extractTaskStatusList(result.createResult, 'common_search');
     if (!taskStatusList.length) throw new Error('创建测图任务后未解析到 COMMON_SEARCH 任务 ID');
     const task = taskStatusList[0];
-    for (const material of materials) {
+    if (createDelayMs > 0) await sleep(createDelayMs);
+    for (const material of result.materials) {
       const batchPayload = {
         experimentTaskId: task.experimentTaskId,
         itemId: String(__payload.item_id || ''),
@@ -964,22 +1105,59 @@ TMALL_UPLOAD_CREATE_JS = r"""
       };
       if (!result.batchPayload) result.batchPayload = batchPayload;
       result.batchPayloads.push(batchPayload);
-      const batchResult = await callMtop('mtop.taobao.qn.copilot.test.image.batch.add', batchPayload);
-      result.batchAddResults.push(batchResult);
+      try {
+        const batchResult = await callMtop('mtop.taobao.qn.copilot.test.image.batch.add', batchPayload);
+        result.batchAddResults.push(batchResult);
+      } catch (batchError) {
+        result.batchAddErrors.push({
+          payload: batchPayload,
+          error: describeError(batchError),
+        });
+        break;
+      }
+      if (batchDelayMs > 0) await sleep(batchDelayMs);
     }
     result.batchAddResult = result.batchAddResults[0] || null;
+    result.readback = await searchTasks(__payload.item_id);
+    result.readbackTaskSummary = summarizeTask(result.readback, task.experimentTaskId, 'common_search');
+    const expectedTestImages = result.materials.length;
+    const actualTestImages = Number(result.readbackTaskSummary?.testImageCount || 0);
+    if (result.batchAddErrors.length && actualTestImages < expectedTestImages) {
+      throw new Error(`天猫 batch.add 返回失败且回读素材不足：${actualTestImages}/${expectedTestImages}；${result.batchAddErrors[0].error}`);
+    }
+    if (result.batchAddErrors.length) {
+      result.batchAddWarnings.push(`batch.add 返回失败，但回读已写入 ${actualTestImages}/${expectedTestImages} 张素材，继续上线`);
+    }
     if (__payload.live_online) {
       result.onlinePayload = {
         source: 'qn',
         itemId: String(__payload.item_id || ''),
         taskStatusList: JSON.stringify(taskStatusList),
       };
-      result.onlineResult = await callMtop('mtop.taobao.qn.copilot.test.image.task.online', result.onlinePayload);
+      try {
+        result.onlineResult = await callMtop('mtop.taobao.qn.copilot.test.image.task.online', result.onlinePayload);
+      } catch (onlineError) {
+        result.onlineError = describeError(onlineError);
+      }
+      if (readbackDelayMs > 0) await sleep(readbackDelayMs);
+      result.readback = await searchTasks(__payload.item_id);
+      result.readbackTaskSummary = summarizeTask(result.readback, task.experimentTaskId, 'common_search');
+      if (!result.onlineResult && result.readbackTaskSummary?.online) {
+        result.onlineResult = { recoveredByReadback: true, warning: result.onlineError || '' };
+      }
+      if (!result.onlineResult) {
+        throw new Error(result.onlineError || '天猫上线失败，且回读未确认任务已上线');
+      }
     }
-    result.readback = await searchTasks(__payload.item_id);
     return { success: true, data: [result], meta: { has_more: false } };
   } catch (error) {
-    return { success: false, error: describeError(error) };
+    result.error = describeError(error);
+    try {
+      result.readback = await searchTasks(__payload.item_id);
+    } catch (readbackError) {
+      result.readbackError = describeError(readbackError);
+    }
+    return { success: true, data: [result], meta: { has_more: false } };
   }
 """
 
@@ -1055,7 +1233,7 @@ async def find_semir_references(
     cloud_path: str,
     artifact_dir: Path,
     *,
-    allow_global_fallback: bool = True,
+    allow_global_fallback: bool = False,
     download_files: bool = True,
     download_detail: bool = True,
 ) -> tuple[dict[str, Any], str, str]:
@@ -1069,9 +1247,9 @@ async def find_semir_references(
     if not result.success:
         raise RuntimeError(result.error or "森马云盘找图失败")
     data = (result.data[0] if isinstance(result.data, list) and result.data else {}) if result.data is not None else {}
-    if allow_global_fallback and cloud_path and (
-        not (data.get("chosenMain") or data.get("chosen")) or not data.get("chosenDetail")
-    ):
+    main_missing = not (data.get("chosenMain") or data.get("chosen"))
+    detail_missing = download_detail and not data.get("chosenDetail")
+    if allow_global_fallback and cloud_path and (main_missing or detail_missing):
         fallback_data, _fallback_main_path, _fallback_detail_path = await find_semir_references(
             runner,
             workflow,
@@ -1083,7 +1261,7 @@ async def find_semir_references(
         if not (data.get("chosenMain") or data.get("chosen")) and (fallback_data.get("chosenMain") or fallback_data.get("chosen")):
             data["chosenMain"] = fallback_data.get("chosenMain") or fallback_data.get("chosen")
             data["chosen"] = data["chosenMain"]
-        if not data.get("chosenDetail") and fallback_data.get("chosenDetail"):
+        if detail_missing and fallback_data.get("chosenDetail"):
             data["chosenDetail"] = fallback_data.get("chosenDetail")
         data["fallbackFromCloudPath"] = cloud_path
         data["fallbackSearches"] = fallback_data.get("searches") or []
@@ -1106,7 +1284,7 @@ async def find_semir_origin(
     cloud_path: str,
     artifact_dir: Path,
     *,
-    allow_global_fallback: bool = True,
+    allow_global_fallback: bool = False,
 ) -> tuple[dict[str, Any], str]:
     data, main_path, _detail_path = await find_semir_references(
         runner,
@@ -1183,6 +1361,45 @@ def optimize_reference_image(path: str, *, max_bytes: int = REFERENCE_IMAGE_MAX_
         return str(source)
 
 
+def normalize_tmall_upload_image(path: str, *, size: tuple[int, int] = TMALL_UPLOAD_IMAGE_SIZE) -> str:
+    source = Path(path)
+    if not source.is_file():
+        return str(path)
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return str(source)
+
+    target = source.with_name(f"{source.stem}-tmall-3x4.jpg")
+    if source.resolve() == target.resolve():
+        return str(source)
+    target_ratio = size[0] / size[1]
+    try:
+        with Image.open(source) as image:
+            image = ImageOps.exif_transpose(image).convert("RGB")
+            width, height = image.size
+            if width <= 0 or height <= 0:
+                return str(source)
+            ratio = width / height
+            if ratio > target_ratio:
+                crop_width = max(1, int(height * target_ratio))
+                left = max(0, (width - crop_width) // 2)
+                image = image.crop((left, 0, left + crop_width, height))
+            elif ratio < target_ratio:
+                crop_height = max(1, int(width / target_ratio))
+                top = max(0, (height - crop_height) // 2)
+                image = image.crop((0, top, width, top + crop_height))
+            image = image.resize(size, Image.Resampling.LANCZOS)
+            image.save(target, format="JPEG", quality=92, optimize=True)
+            return str(target)
+    except Exception:
+        try:
+            target.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return str(source)
+
+
 def guess_image_suffix(url: str, fallback: str = ".jpg") -> str:
     match = IMAGE_EXT_RE.search(url)
     if not match:
@@ -1224,12 +1441,16 @@ async def upload_and_create_tmall_task(
     live_upload: bool,
     live_create: bool,
     live_online: bool,
+    upload_delay_seconds: float = 1.5,
+    create_delay_seconds: float = 5.0,
+    batch_delay_seconds: float = 12.0,
+    readback_delay_seconds: float = 5.0,
 ) -> dict[str, Any]:
     files = []
     if origin_path:
-        files.append(image_file_payload(origin_path, role="origin", name=f"{workflow.style_code}-origin.jpg"))
+        files.append(image_file_payload(normalize_tmall_upload_image(origin_path), role="origin", name=f"{workflow.style_code}-origin.jpg"))
     for index, path in enumerate(generated_paths, start=1):
-        files.append(image_file_payload(path, role="ai", name=f"{workflow.style_code}-ai-{index}.jpg"))
+        files.append(image_file_payload(normalize_tmall_upload_image(path), role="ai", name=f"{workflow.style_code}-ai-{index}.jpg"))
     payload = {
         "style_code": workflow.style_code,
         "item_id": workflow.item_id,
@@ -1238,6 +1459,10 @@ async def upload_and_create_tmall_task(
         "live_create": live_create,
         "live_online": live_online,
         "folder_id": "0",
+        "upload_delay_ms": max(0, int(float(upload_delay_seconds or 0) * 1000)),
+        "create_delay_ms": max(0, int(float(create_delay_seconds or 0) * 1000)),
+        "batch_delay_ms": max(0, int(float(batch_delay_seconds or 0) * 1000)),
+        "readback_delay_ms": max(0, int(float(readback_delay_seconds or 0) * 1000)),
     }
     result = await runner.evaluate_with_reconnect(js_call(TMALL_UPLOAD_CREATE_JS, payload), allow_navigation_retry=True)
     if not result.success:
@@ -1258,6 +1483,11 @@ def result_rows_for_workflow(
 ) -> list[dict[str, Any]]:
     chosen = (semir_data or {}).get("chosenMain") or (semir_data or {}).get("chosen") or {}
     detail = (semir_data or {}).get("chosenDetail") or {}
+    main_candidate_paths = "\n".join(
+        compact(item.get("fullpath") or item.get("filename"))
+        for item in ((semir_data or {}).get("mainCandidates") or [])
+        if isinstance(item, Mapping) and compact(item.get("fullpath") or item.get("filename"))
+    )
     resolved_skc_code = workflow.skc_code or compact(detail.get("skcCode"))
     requires_detail = compact(reference_mode) == "main_and_detail"
     reference_ok = bool(main_origin_path and (detail_reference_path or not requires_detail))
@@ -1278,6 +1508,7 @@ def result_rows_for_workflow(
         "SKC编码": resolved_skc_code,
         "云盘路径": compact(chosen.get("fullpath")),
         "文件名": compact(chosen.get("filename")),
+        "主图候选Top5": main_candidate_paths,
         "素材URL": compact(chosen.get("materialUrl")),
         "主图原图文件": main_origin_path,
         "平铺参考图路径": compact(detail.get("fullpath")),
@@ -1329,6 +1560,15 @@ def result_rows_for_workflow(
             task_id = compact(tmall_result["batchPayload"].get("experimentTaskId"))
         online_ok = bool(tmall_result.get("onlineResult"))
         tmall_error = compact(tmall_result.get("error") or tmall_result.get("uploadError") or tmall_result.get("备注"))
+        tmall_warning = "；".join(compact(item) for item in (tmall_result.get("batchAddWarnings") or []) if compact(item))
+        task_summary = tmall_result.get("readbackTaskSummary") if isinstance(tmall_result.get("readbackTaskSummary"), dict) else {}
+        readback_note = f"total={readback_total}" if readback_total != "" else ""
+        if task_summary:
+            readback_note = "；".join(item for item in [
+                readback_note,
+                f"status={task_summary.get('status', '')}",
+                f"testImages={task_summary.get('testImageCount', '')}",
+            ] if item)
         first_generation = generation_rows[0] if generation_rows else {}
         rows.append({
             "表格行号": workflow.row_no,
@@ -1343,7 +1583,7 @@ def result_rows_for_workflow(
             "任务ID": task_id,
             "上传图数量": len([item for item in uploaded if item.get("url")]),
             "上线结果": "已上线" if online_ok else "未上线",
-            "页面回读": f"total={readback_total}" if readback_total != "" else "",
+            "页面回读": readback_note,
             "素材URL": "\n".join(item.get("picUrl", "") for item in materials),
             "执行结果": (
                 "天猫上传/创建失败" if tmall_error else
@@ -1352,7 +1592,7 @@ def result_rows_for_workflow(
                 else "已创建/加素材" if task_id and task_id != "<experimentTaskId>"
                 else "已生成计划"
             ),
-            "备注": tmall_error or f"uploaded={len(uploaded)} materials={len(materials)} online={online_ok}",
+            "备注": tmall_error or tmall_warning or f"uploaded={len(uploaded)} materials={len(materials)} online={online_ok}",
         })
     return rows
 
@@ -1368,10 +1608,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live-upload", action="store_true", help="Upload files to Tmall picture center.")
     parser.add_argument("--live-create", action="store_true", help="Create material-test task and batch add images.")
     parser.add_argument("--live-online", action="store_true", help="Call Tmall online API after batch add.")
+    parser.add_argument("--tmall-upload-delay-seconds", type=float, default=1.5, help="Delay between Tmall picture uploads.")
+    parser.add_argument("--tmall-create-delay-seconds", type=float, default=5.0, help="Delay after task.create before batch.add.")
+    parser.add_argument("--tmall-batch-delay-seconds", type=float, default=12.0, help="Delay between Tmall batch.add calls.")
+    parser.add_argument("--tmall-readback-delay-seconds", type=float, default=5.0, help="Delay after task.online before readback.")
     parser.add_argument("--image-size", default="960x1280")
     parser.add_argument("--ai-image-count", type=int, default=4)
     parser.add_argument("--generation-concurrency", type=int, default=100)
     parser.add_argument("--reference-mode", default="main_only", choices=["main_only", "main_and_detail"])
+    parser.add_argument("--allow-global-semir-fallback", action="store_true", help="Allow searching all Semir mounts when the configured cloud path misses required images.")
     parser.add_argument("--quality", default="auto", choices=["auto", "low", "medium", "high"])
     parser.add_argument("--output-format", default="jpeg")
     parser.add_argument("--one-xm-key-tier", default="auto", choices=["2k", "4k", "auto"])
@@ -1439,6 +1684,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
             workflow,
             args.cloud_path,
             artifact_dir,
+            allow_global_fallback=bool(getattr(args, "allow_global_semir_fallback", False)),
             download_detail=requires_detail_reference,
         )
         detail_candidate = semir_data.get("chosenDetail") if isinstance(semir_data, dict) else {}
@@ -1573,6 +1819,10 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                     live_upload=args.live_upload,
                     live_create=args.live_create,
                     live_online=args.live_online,
+                    upload_delay_seconds=args.tmall_upload_delay_seconds,
+                    create_delay_seconds=args.tmall_create_delay_seconds,
+                    batch_delay_seconds=args.tmall_batch_delay_seconds,
+                    readback_delay_seconds=args.tmall_readback_delay_seconds,
                 )
             except Exception as exc:
                 tmall_result = {
