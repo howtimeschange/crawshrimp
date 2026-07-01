@@ -130,6 +130,34 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_task_instance_events_instance
             ON task_instance_events (instance_uid, created_at)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_schedules (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_uid       TEXT NOT NULL UNIQUE,
+                adapter_id         TEXT NOT NULL,
+                task_id            TEXT NOT NULL,
+                title              TEXT NOT NULL,
+                enabled            INTEGER NOT NULL DEFAULT 1,
+                frequency          TEXT NOT NULL,
+                time_of_day        TEXT NOT NULL,
+                weekday            INTEGER,
+                params_json        TEXT NOT NULL DEFAULT '{}',
+                notify_channel     TEXT NOT NULL DEFAULT 'dingtalk',
+                notify_template    TEXT NOT NULL DEFAULT '',
+                last_run_id        INTEGER,
+                last_instance_uid  TEXT,
+                last_status        TEXT,
+                last_error         TEXT,
+                last_triggered_at  TEXT,
+                archived           INTEGER NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL,
+                updated_at         TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_schedules_adapter_task_enabled
+            ON task_schedules (adapter_id, task_id, enabled, archived, updated_at)
+        """)
         conn.commit()
 
 
@@ -430,6 +458,191 @@ def add_task_instance_event(
         conn.commit()
         row = conn.execute("SELECT * FROM task_instance_events WHERE id=?", (cur.lastrowid,)).fetchone()
         return dict(row) if row else {}
+
+
+def create_task_schedule(
+    adapter_id: str,
+    task_id: str,
+    title: str,
+    frequency: str,
+    time_of_day: str,
+    weekday: Optional[int] = None,
+    params: Optional[Mapping[str, Any]] = None,
+    notify_channel: str = "dingtalk",
+    notify_template: str = "",
+    enabled: bool = True,
+) -> dict:
+    """Insert a persisted schedule definition and return it."""
+    now = _now_iso()
+    schedule_uid = uuid.uuid4().hex
+    with _get_conn() as conn:
+        conn.execute("""
+            INSERT INTO task_schedules (
+                schedule_uid, adapter_id, task_id, title, enabled, frequency,
+                time_of_day, weekday, params_json, notify_channel, notify_template,
+                archived, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """, (
+            schedule_uid,
+            str(adapter_id or "").strip(),
+            str(task_id or "").strip(),
+            str(title or "").strip() or "未命名定时任务",
+            1 if enabled else 0,
+            str(frequency or "").strip(),
+            str(time_of_day or "").strip(),
+            weekday,
+            _json_dumps(dict(params or {})),
+            str(notify_channel or "").strip() or "dingtalk",
+            str(notify_template or "").strip(),
+            now,
+            now,
+        ))
+        conn.commit()
+    return get_task_schedule(schedule_uid) or {}
+
+
+def get_task_schedule(schedule_uid: str) -> Optional[dict]:
+    """Return one schedule definition by uid."""
+    with _get_conn() as conn:
+        row = conn.execute("""
+            SELECT *
+            FROM task_schedules
+            WHERE schedule_uid=?
+            LIMIT 1
+        """, (str(schedule_uid or "").strip(),)).fetchone()
+        return _row_to_dict(row)
+
+
+def get_task_schedule_detail(schedule_uid: str) -> dict:
+    """Return one schedule plus parsed params."""
+    schedule = get_task_schedule(schedule_uid)
+    if not schedule:
+        return {}
+    detail = dict(schedule)
+    detail["params"] = _json_loads_object(detail.get("params_json"))
+    return detail
+
+
+def list_task_schedules(
+    adapter_id: str = "",
+    task_id: str = "",
+    enabled: Optional[bool] = None,
+    keyword: str = "",
+    include_archived: bool = False,
+    limit: int = 100,
+) -> list[dict]:
+    """Return persisted schedule definitions filtered by metadata."""
+    clauses = []
+    params: list[Any] = []
+
+    if not include_archived:
+        clauses.append("archived=0")
+
+    adapter = str(adapter_id or "").strip()
+    if adapter:
+        clauses.append("adapter_id=?")
+        params.append(adapter)
+
+    task = str(task_id or "").strip()
+    if task:
+        clauses.append("task_id=?")
+        params.append(task)
+
+    if enabled is not None:
+        clauses.append("enabled=?")
+        params.append(1 if enabled else 0)
+
+    term = str(keyword or "").strip()
+    if term:
+        clauses.append("(title LIKE ? OR schedule_uid LIKE ? OR task_id LIKE ?)")
+        like = f"%{term}%"
+        params.extend([like, like, like])
+
+    try:
+        safe_limit = max(1, min(int(limit), 500))
+    except Exception:
+        safe_limit = 100
+
+    where = " AND ".join(clauses) if clauses else "1=1"
+    with _get_conn() as conn:
+        try:
+            rows = conn.execute(f"""
+                SELECT *
+                FROM task_schedules
+                WHERE {where}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+            """, [*params, safe_limit]).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table: task_schedules" in str(exc):
+                return []
+            raise
+        return [dict(row) for row in rows]
+
+
+def update_task_schedule(schedule_uid: str, **fields) -> dict:
+    """Update allowed schedule fields and return the updated row."""
+    allowed = {
+        "title",
+        "enabled",
+        "frequency",
+        "time_of_day",
+        "weekday",
+        "params_json",
+        "notify_channel",
+        "notify_template",
+        "last_run_id",
+        "last_instance_uid",
+        "last_status",
+        "last_error",
+        "last_triggered_at",
+        "archived",
+    }
+    updates: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key == "params":
+            updates["params_json"] = _json_dumps(value)
+        elif key in {"enabled", "archived"}:
+            updates[key] = 1 if value else 0
+        elif key in allowed:
+            updates[key] = value
+
+    updates["updated_at"] = _now_iso()
+    assignments = ", ".join(f"{key}=?" for key in updates.keys())
+    values = list(updates.values())
+    uid = str(schedule_uid or "").strip()
+    with _get_conn() as conn:
+        conn.execute(
+            f"UPDATE task_schedules SET {assignments} WHERE schedule_uid=?",
+            [*values, uid],
+        )
+        conn.commit()
+    return get_task_schedule(uid) or {}
+
+
+def archive_task_schedule(schedule_uid: str) -> dict:
+    """Archive a persisted schedule and disable it."""
+    return update_task_schedule(schedule_uid, archived=True, enabled=False)
+
+
+def record_task_schedule_run(
+    schedule_uid: str,
+    run_id: Optional[int] = None,
+    instance_uid: str = "",
+    status: str = "",
+    error: str = "",
+) -> dict:
+    """Store the latest execution result on a schedule definition."""
+    fields: dict[str, Any] = {
+        "last_triggered_at": _now_iso(),
+        "last_instance_uid": str(instance_uid or "").strip(),
+        "last_status": str(status or "").strip(),
+        "last_error": str(error or "").strip(),
+    }
+    if run_id is not None:
+        fields["last_run_id"] = int(run_id)
+    return update_task_schedule(schedule_uid, **fields)
 
 
 def begin_run(adapter_id: str, task_id: str) -> int:

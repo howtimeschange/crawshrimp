@@ -1515,6 +1515,18 @@ secureHandle('update-task-instance', async (_, instanceUid, payload) =>
   apiCall('PATCH', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`, payload || {}))
 secureHandle('run-task-instance', async (_, instanceUid) =>
   apiCall('POST', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}/run`, {}))
+secureHandle('list-task-schedules', async (_, query = {}) =>
+  apiCall('GET', `/task-schedules?${new URLSearchParams(query || {})}`))
+secureHandle('create-task-schedule', async (_, payload) =>
+  apiCall('POST', '/task-schedules', payload || {}))
+secureHandle('get-task-schedule', async (_, scheduleUid) =>
+  apiCall('GET', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`))
+secureHandle('update-task-schedule', async (_, scheduleUid, payload) =>
+  apiCall('PATCH', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`, payload || {}))
+secureHandle('delete-task-schedule', async (_, scheduleUid) =>
+  apiCall('DELETE', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`))
+secureHandle('run-task-schedule-now', async (_, scheduleUid) =>
+  apiCall('POST', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}/run-now`, {}))
 secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},

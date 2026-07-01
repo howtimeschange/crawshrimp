@@ -68,6 +68,16 @@ _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requeste
 _task_locks: dict[str, asyncio.Lock] = {}
 
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
+TMALL_OPS_ADAPTER_ID = "tmall-ops-assistant"
+TMALL_MATERIAL_EXPORT_TASK_ID = "tmall_material_test_data_export"
+DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE = """巴拉-AI测图数据抓取导出执行通知
+定时任务：{{schedule_title}}
+执行状态：{{status}}
+导出记录：{{records}}
+输出文件：{{output_files}}
+导出目录：{{export_dir}}
+完成时间：{{finished_at}}
+错误信息：{{error}}"""
 
 RUNTIME_CLEANUP_TASKS = {
     ("amazon-ops-assistant", "amazon_label_batch_process"),
@@ -218,6 +228,88 @@ def _task_has_live_control(jid: str) -> bool:
     if task and not task.done():
         return True
     return live.get("status") in ACTIVE_LIVE_STATUSES and not control
+
+
+def _default_tmall_material_export_dir() -> str:
+    return str(Path.home() / "Downloads" / "抓虾导出" / "天猫运营助手" / "巴拉-AI测图数据抓取导出")
+
+
+def _default_tmall_material_export_params(params: Optional[dict] = None) -> dict:
+    merged = {
+        "mode": "new",
+        "output_dir": _default_tmall_material_export_dir(),
+        "test_status": "1",
+        "statistic_type": "ACCUMULATE_30_DAYS",
+        "page_size": 20,
+    }
+    for key, value in (params or {}).items():
+        merged[key] = value
+    if not str(merged.get("output_dir") or "").strip():
+        merged["output_dir"] = _default_tmall_material_export_dir()
+    if not str(merged.get("mode") or "").strip():
+        merged["mode"] = "new"
+    return merged
+
+
+def _validate_schedule_time(value: str) -> str:
+    text = str(value or "").strip()
+    if not re.match(r"^\d{1,2}:\d{2}$", text):
+        raise HTTPException(400, "定时任务时间必须使用 HH:mm")
+    hour_raw, minute_raw = text.split(":", 1)
+    hour = int(hour_raw)
+    minute = int(minute_raw)
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise HTTPException(400, "定时任务时间超出范围")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _validate_schedule_frequency(frequency: str, weekday: Optional[int]) -> tuple[str, Optional[int]]:
+    value = str(frequency or "").strip().lower()
+    if value not in {"daily", "weekly"}:
+        raise HTTPException(400, "定时任务频次必须是 daily 或 weekly")
+    if value == "weekly":
+        try:
+            day = int(weekday or 0)
+        except Exception:
+            day = 0
+        if day < 1 or day > 7:
+            raise HTTPException(400, "每周定时任务必须设置 weekday=1..7")
+        return value, day
+    return value, None
+
+
+def _task_display_name(adapter_id: str, task_id: str) -> tuple[str, str]:
+    adapter_name = adapter_id
+    task_name = task_id
+    try:
+        adapter_loader.scan_all()
+        manifest = adapter_loader.get_adapter(adapter_id)
+        if manifest:
+            adapter_name = manifest.name or adapter_id
+            task = next((item for item in manifest.tasks if item.id == task_id), None)
+            if task:
+                task_name = task.name or task_id
+    except Exception:
+        logger.debug("failed to resolve task display name", exc_info=True)
+    return adapter_name, task_name
+
+
+def _render_task_schedule_template(template: str, values: dict) -> str:
+    text = str(template or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE)
+    for key, value in (values or {}).items():
+        text = text.replace("{{" + str(key) + "}}", str(value if value is not None else ""))
+    return text
+
+
+def _schedule_next_run_map() -> dict[str, str]:
+    try:
+        return {
+            str(job.get("schedule_uid") or ""): str(job.get("next_run") or "")
+            for job in sched_module.list_jobs()
+            if str(job.get("kind") or "") == "task_schedule" and str(job.get("schedule_uid") or "")
+        }
+    except Exception:
+        return {}
 
 
 class BackendInstanceLock:
@@ -3495,6 +3587,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         raise ValueError(f"Task not found: {task_id}")
 
     instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
+    schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
+    run_started_at = datetime.now().isoformat()
     run_id = data_sink.begin_run(adapter_id, task_id)
     if instance_uid:
         data_sink.link_task_instance_run(instance_uid, run_id, purpose="main")
@@ -4056,6 +4150,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     current_step="create",
                     summary=instance_summary,
                 )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="completed",
+                records=len(data),
+                output_files=output_files,
+                error="",
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
 
     except RunAbortedError as e:
@@ -4090,6 +4197,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 status="stopped",
                 summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
             )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="stopped",
+                records=len(data),
+                output_files=output_files,
+                error=err,
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
 
     except asyncio.CancelledError:
@@ -4121,6 +4241,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 status="stopped",
                 summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
             )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="stopped",
+                records=len(data),
+                output_files=output_files,
+                error=err,
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
         raise
 
@@ -4134,6 +4267,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 instance_uid,
                 status="failed",
                 summary={"records": 0, "error": err, "run_id": run_id},
+            )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="failed",
+                records=0,
+                output_files=[],
+                error=err,
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
             )
         raise
     finally:
@@ -4189,6 +4335,12 @@ async def lifespan(app: FastAPI):
                     m = adapter_loader.get_adapter(item['id'])
                     if m:
                         sched_module.register_adapter(m, _run_scheduled_task)
+            try:
+                persisted_schedules = data_sink.list_task_schedules(enabled=True)
+            except Exception:
+                logger.exception("failed to load persisted task schedules; continuing without user schedules")
+                persisted_schedules = []
+            sched_module.register_task_schedules(persisted_schedules, _run_task_schedule)
 
             sched_module.start()
         except Exception:
@@ -4629,6 +4781,30 @@ class TaskInstancePatchRequest(BaseModel):
     archived: Optional[bool] = None
 
 
+class TaskScheduleCreateRequest(BaseModel):
+    adapter_id: str = TMALL_OPS_ADAPTER_ID
+    task_id: str = TMALL_MATERIAL_EXPORT_TASK_ID
+    title: str
+    frequency: str
+    time_of_day: str
+    weekday: Optional[int] = None
+    params: Optional[dict] = None
+    notify_channel: str = "dingtalk"
+    notify_template: str = DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE
+    enabled: bool = True
+
+
+class TaskSchedulePatchRequest(BaseModel):
+    title: Optional[str] = None
+    enabled: Optional[bool] = None
+    frequency: Optional[str] = None
+    time_of_day: Optional[str] = None
+    weekday: Optional[int] = None
+    params: Optional[dict] = None
+    notify_channel: Optional[str] = None
+    notify_template: Optional[str] = None
+
+
 class ProbeTaskParamsRequest(BaseModel):
     params: Optional[dict] = None
     current_tab_id: Optional[str] = None
@@ -4657,10 +4833,165 @@ def _serialize_task_instance_detail(detail: dict) -> dict:
     return data
 
 
+def _serialize_task_schedule(row: dict, next_runs: Optional[dict[str, str]] = None) -> dict:
+    data = dict(row or {})
+    data["params"] = _parse_json_object(data.get("params_json"))
+    data["enabled"] = int(data.get("enabled") or 0)
+    data["archived"] = int(data.get("archived") or 0)
+    next_runs = next_runs if next_runs is not None else _schedule_next_run_map()
+    data["next_run"] = next_runs.get(str(data.get("schedule_uid") or ""), "")
+    return data
+
+
 def _model_patch(req: BaseModel) -> dict:
     if hasattr(req, "model_dump"):
         return req.model_dump(exclude_unset=True)
     return req.dict(exclude_unset=True)
+
+
+def _normalize_schedule_params(adapter_id: str, task_id: str, params: Optional[dict]) -> dict:
+    if adapter_id == TMALL_OPS_ADAPTER_ID and task_id == TMALL_MATERIAL_EXPORT_TASK_ID:
+        return _default_tmall_material_export_params(params or {})
+    return dict(params or {})
+
+
+def _normalize_task_schedule_create(req: TaskScheduleCreateRequest) -> dict:
+    adapter_id = str(req.adapter_id or TMALL_OPS_ADAPTER_ID).strip()
+    task_id = str(req.task_id or TMALL_MATERIAL_EXPORT_TASK_ID).strip()
+    frequency, weekday = _validate_schedule_frequency(req.frequency, req.weekday)
+    time_of_day = _validate_schedule_time(req.time_of_day)
+    return {
+        "adapter_id": adapter_id,
+        "task_id": task_id,
+        "title": str(req.title or "").strip() or "巴拉-AI测图数据抓取导出定时任务",
+        "frequency": frequency,
+        "time_of_day": time_of_day,
+        "weekday": weekday,
+        "params": _normalize_schedule_params(adapter_id, task_id, req.params),
+        "notify_channel": str(req.notify_channel or "dingtalk").strip() or "dingtalk",
+        "notify_template": str(req.notify_template or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE),
+        "enabled": bool(req.enabled),
+    }
+
+
+def _normalize_task_schedule_patch(current: dict, patch: dict) -> dict:
+    merged_frequency = patch.get("frequency", current.get("frequency"))
+    merged_weekday = patch.get("weekday", current.get("weekday"))
+    if "time_of_day" in patch:
+        patch["time_of_day"] = _validate_schedule_time(patch.get("time_of_day"))
+    if "frequency" in patch or "weekday" in patch:
+        frequency, weekday = _validate_schedule_frequency(merged_frequency, merged_weekday)
+        patch["frequency"] = frequency
+        patch["weekday"] = weekday
+    if "params" in patch:
+        patch["params"] = _normalize_schedule_params(
+            str(current.get("adapter_id") or ""),
+            str(current.get("task_id") or ""),
+            patch.get("params"),
+        )
+    return patch
+
+
+def _refresh_task_schedule_registration(schedule: dict) -> None:
+    sched_module.register_task_schedule(schedule, _run_task_schedule)
+
+
+def _create_instance_for_task_schedule(schedule_uid: str) -> dict:
+    schedule = data_sink.get_task_schedule_detail(schedule_uid)
+    if not schedule or int(schedule.get("archived") or 0) == 1:
+        raise HTTPException(404, "Task schedule not found")
+    if int(schedule.get("enabled") or 0) != 1:
+        raise HTTPException(409, "定时任务已停用，无法运行")
+
+    params = _normalize_schedule_params(
+        str(schedule.get("adapter_id") or ""),
+        str(schedule.get("task_id") or ""),
+        schedule.get("params") or {},
+    )
+    params["__task_schedule_uid"] = schedule["schedule_uid"]
+    title = f"{schedule.get('title') or '定时任务'} {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    instance = data_sink.create_task_instance(
+        str(schedule.get("adapter_id") or ""),
+        str(schedule.get("task_id") or ""),
+        title,
+        params,
+    )
+    instance_uid = str(instance.get("instance_uid") or "")
+    params["__task_instance_uid"] = instance_uid
+    data_sink.update_task_instance(instance_uid, status="running", current_step="config", params=params)
+    data_sink.record_task_schedule_run(
+        schedule["schedule_uid"],
+        instance_uid=instance_uid,
+        status="queued",
+        error="",
+    )
+    return {**schedule, "instance_uid": instance_uid, "run_params": params}
+
+
+def _notify_task_schedule_result(
+    schedule_uid: str,
+    instance_uid: str,
+    run_id: Optional[int],
+    status: str,
+    records: int,
+    output_files: list,
+    error: str = "",
+    started_at: str = "",
+    finished_at: str = "",
+    log=None,
+) -> None:
+    schedule = data_sink.get_task_schedule_detail(schedule_uid)
+    if not schedule:
+        return
+    data_sink.record_task_schedule_run(
+        schedule_uid,
+        run_id=run_id,
+        instance_uid=instance_uid,
+        status=status,
+        error=error,
+    )
+    channel = str(schedule.get("notify_channel") or "dingtalk").strip()
+    if not channel or channel == "none":
+        return
+
+    adapter_name, task_name = _task_display_name(str(schedule.get("adapter_id") or ""), str(schedule.get("task_id") or ""))
+    output_text = "\n".join(str(item) for item in (output_files or []) if str(item or "").strip()) or "无"
+    export_dir = str((schedule.get("params") or {}).get("output_dir") or "")
+    message = _render_task_schedule_template(schedule.get("notify_template") or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE, {
+        "schedule_title": schedule.get("title") or "",
+        "task_name": task_name,
+        "status": status,
+        "records": records,
+        "run_id": run_id or "",
+        "instance_uid": instance_uid,
+        "output_files": output_text,
+        "export_dir": export_dir,
+        "started_at": started_at,
+        "finished_at": finished_at or datetime.now().isoformat(),
+        "error": error or "",
+    })
+    try:
+        notifier.send(
+            channel=channel,
+            title=f"{schedule.get('title') or task_name} - {status}",
+            records=records,
+            adapter_name=adapter_name,
+            task_name=task_name,
+            sample_rows=None,
+            error=error or None,
+            message=message,
+        )
+    except Exception as exc:
+        warning = f"定时任务通知发送失败：{exc}"
+        if log:
+            log(f"[warn] {warning}")
+        if instance_uid:
+            data_sink.add_task_instance_event(
+                instance_uid,
+                "notify_failed",
+                warning,
+                {"schedule_uid": schedule_uid, "channel": channel},
+            )
 
 
 @app.get("/task-instances")
@@ -4704,6 +5035,101 @@ def patch_task_instance_endpoint(instance_uid: str, req: TaskInstancePatchReques
     if not row:
         raise HTTPException(404, "Task instance not found")
     return _serialize_task_instance(row)
+
+
+@app.get("/task-schedules")
+def list_task_schedules_endpoint(
+    adapter_id: str = "",
+    task_id: str = "",
+    enabled: Optional[bool] = None,
+    keyword: str = "",
+    include_archived: bool = False,
+    limit: int = 100,
+):
+    items = data_sink.list_task_schedules(
+        adapter_id=adapter_id,
+        task_id=task_id,
+        enabled=enabled,
+        keyword=keyword,
+        include_archived=include_archived,
+        limit=limit,
+    )
+    next_runs = _schedule_next_run_map()
+    return {"items": [_serialize_task_schedule(row, next_runs=next_runs) for row in items]}
+
+
+@app.post("/task-schedules")
+def create_task_schedule_endpoint(req: TaskScheduleCreateRequest):
+    values = _normalize_task_schedule_create(req)
+    row = data_sink.create_task_schedule(**values)
+    _refresh_task_schedule_registration(row)
+    return _serialize_task_schedule(row)
+
+
+@app.get("/task-schedules/{schedule_uid}")
+def get_task_schedule_endpoint(schedule_uid: str):
+    detail = data_sink.get_task_schedule_detail(schedule_uid)
+    if not detail:
+        raise HTTPException(404, "Task schedule not found")
+    return _serialize_task_schedule(detail)
+
+
+@app.patch("/task-schedules/{schedule_uid}")
+def patch_task_schedule_endpoint(schedule_uid: str, req: TaskSchedulePatchRequest):
+    current = data_sink.get_task_schedule_detail(schedule_uid)
+    if not current:
+        raise HTTPException(404, "Task schedule not found")
+    patch = _normalize_task_schedule_patch(current, _model_patch(req))
+    row = data_sink.update_task_schedule(schedule_uid, **patch)
+    _refresh_task_schedule_registration(row)
+    return _serialize_task_schedule(row)
+
+
+@app.delete("/task-schedules/{schedule_uid}")
+def delete_task_schedule_endpoint(schedule_uid: str):
+    row = data_sink.archive_task_schedule(schedule_uid)
+    if not row:
+        raise HTTPException(404, "Task schedule not found")
+    sched_module.unregister_task_schedule(schedule_uid)
+    return {"ok": True, "schedule": _serialize_task_schedule(row)}
+
+
+@app.post("/task-schedules/{schedule_uid}/run-now")
+async def run_task_schedule_now_endpoint(schedule_uid: str):
+    schedule = data_sink.get_task_schedule_detail(schedule_uid)
+    if not schedule or int(schedule.get("archived") or 0) == 1:
+        raise HTTPException(404, "Task schedule not found")
+    jid = f"{schedule.get('adapter_id')}::{schedule.get('task_id')}"
+    if _task_is_active(jid):
+        raise HTTPException(409, "任务正在运行中，请稍后再运行该定时任务")
+
+    schedule_run = _create_instance_for_task_schedule(schedule_uid)
+    try:
+        start_result = await _start_task_run(
+            str(schedule_run.get("adapter_id") or ""),
+            str(schedule_run.get("task_id") or ""),
+            dict(schedule_run.get("run_params") or {}),
+            {},
+        )
+    except Exception as exc:
+        message = getattr(exc, "detail", None) or str(exc)
+        data_sink.update_task_instance(
+            schedule_run["instance_uid"],
+            status="failed",
+            summary={"error": message, "schedule_uid": schedule_uid},
+        )
+        data_sink.record_task_schedule_run(
+            schedule_uid,
+            instance_uid=schedule_run["instance_uid"],
+            status="failed",
+            error=message,
+        )
+        raise
+    return {
+        "ok": True,
+        "instance_uid": schedule_run["instance_uid"],
+        "start": start_result,
+    }
 
 
 @app.post("/probe/run")
@@ -4860,6 +5286,59 @@ async def _run_scheduled_task(adapter_id: str, task_id: str):
             logger.warning("Skip scheduled task %s because a manual run is already active", jid)
             return
         await _execute_task(adapter_id, task_id, {}, {}, run_control=None)
+
+
+async def _run_task_schedule(schedule_uid: str):
+    try:
+        schedule_run = _create_instance_for_task_schedule(schedule_uid)
+    except HTTPException as exc:
+        logger.warning("Skip task schedule %s: %s", schedule_uid, exc.detail)
+        return
+
+    adapter_id = str(schedule_run.get("adapter_id") or "")
+    task_id = str(schedule_run.get("task_id") or "")
+    jid = f"{adapter_id}::{task_id}"
+    if _task_is_active(jid):
+        logger.warning("Skip task schedule %s because %s is already active", schedule_uid, jid)
+        data_sink.update_task_instance(
+            schedule_run["instance_uid"],
+            status="failed",
+            summary={"error": "任务正在运行中，本次定时触发已跳过", "schedule_uid": schedule_uid},
+        )
+        data_sink.record_task_schedule_run(
+            schedule_uid,
+            instance_uid=schedule_run["instance_uid"],
+            status="skipped",
+            error="任务正在运行中，本次定时触发已跳过",
+        )
+        return
+
+    lock = _task_lock(jid)
+    async with lock:
+        if _task_has_live_control(jid):
+            logger.warning("Skip task schedule %s because a manual run is active", schedule_uid)
+            data_sink.update_task_instance(
+                schedule_run["instance_uid"],
+                status="failed",
+                summary={"error": "任务正在运行中，本次定时触发已跳过", "schedule_uid": schedule_uid},
+            )
+            data_sink.record_task_schedule_run(
+                schedule_uid,
+                instance_uid=schedule_run["instance_uid"],
+                status="skipped",
+                error="任务正在运行中，本次定时触发已跳过",
+            )
+            return
+        try:
+            await _execute_task(
+                adapter_id,
+                task_id,
+                dict(schedule_run.get("run_params") or {}),
+                {},
+                run_control=None,
+            )
+        except Exception as exc:
+            logger.exception("Task schedule %s failed: %s", schedule_uid, exc)
 
 
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):

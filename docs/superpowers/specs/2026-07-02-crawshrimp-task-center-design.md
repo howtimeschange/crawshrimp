@@ -13,6 +13,7 @@
 3. 首批接入 `tmall-ops-assistant / tmall_ai_image_test_chain`。
 4. 支持从任务中心新建 `AI 测图任务`，打开独立实例化的配置和进度界面。
 5. 修复当前任务页布局：主操作区可滚动，日志和输出文件可折叠、可最小化。
+6. 新增任务中心内的定时任务能力，首个适配 `巴拉-AI测图数据抓取导出`，支持提前配置导出目录和钉钉通知模板后无人值守执行。
 
 ## 非目标
 
@@ -109,6 +110,35 @@ task_instance_events (
 )
 ```
 
+新增定时任务定义表：
+
+```sql
+task_schedules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schedule_uid TEXT NOT NULL UNIQUE,
+  adapter_id TEXT NOT NULL,
+  task_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  frequency TEXT NOT NULL,
+  time_of_day TEXT NOT NULL,
+  weekday INTEGER,
+  params_json TEXT NOT NULL DEFAULT '{}',
+  notify_channel TEXT NOT NULL DEFAULT 'dingtalk',
+  notify_template TEXT NOT NULL DEFAULT '',
+  last_run_id INTEGER,
+  last_instance_uid TEXT,
+  last_status TEXT,
+  last_error TEXT,
+  last_triggered_at TEXT,
+  archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+)
+```
+
+定时任务只保存“计划定义”和“默认运行参数”。每次触发都会创建一个新的 `task_instances` 作为实际执行实例，并继续关联到底层 `task_runs`，因此历史回看、输出文件、失败原因不会覆盖定时计划本身。
+
 ## 状态模型
 
 任务实例状态使用以下集合：
@@ -144,6 +174,17 @@ task_instance_events (
 
 现有 `POST /tasks/{adapter_id}/{task_id}/run` 继续保留。实例运行 API 内部复用现有执行管线，但在运行参数中注入 `__task_instance_uid`，并在 run 创建后写入 `task_instance_runs`。
 
+新增定时任务 API：
+
+- `GET /task-schedules`：列表，支持 `adapter_id`、`task_id`、`enabled`、`keyword`。
+- `POST /task-schedules`：创建定时任务，参数包含脚本、频次、时分、每周周几、默认运行参数、通知模板。
+- `GET /task-schedules/{schedule_uid}`：定时任务详情。
+- `PATCH /task-schedules/{schedule_uid}`：修改启停、频次、默认参数、通知模板。
+- `DELETE /task-schedules/{schedule_uid}`：归档定时任务，并取消 APScheduler job。
+- `POST /task-schedules/{schedule_uid}/run-now`：立刻按定时任务的保存参数触发一次后台执行。
+
+后端启动时会读取所有启用且未归档的 `task_schedules`，注册到 APScheduler。启用/修改/归档定时任务时同步刷新对应 job。
+
 ## 巴拉-AI测图接入
 
 `巴拉-AI测图全链路` 是首个实例化脚本：
@@ -159,6 +200,35 @@ task_instance_events (
 9. 所有 Excel、原图、AI 图、本地导出目录和审批批次都写入 `task_instance_artifacts`。
 
 审批批次仍可沿用现有 `/tmall-ai-image-approval/api/{batch_id}` 能力，但前端入口不再展示为外链，而是实例详情第二步中的内嵌看板。
+
+## 定时任务接入
+
+`巴拉-AI测图数据抓取导出` 是首个定时任务脚本：
+
+1. 用户在任务中心点击 `新增数据抓取定时任务`。
+2. 前端显示定时配置表单：任务名称、频次、时分、每周周几、本地导出目录、通知渠道、钉钉消息模板。
+3. 频次支持：
+   - `每天`：必须配置 `HH:mm`。
+   - `每周`：必须配置周一到周日和 `HH:mm`。
+4. 创建后后端保存到 `task_schedules`，并注册 APScheduler job。
+5. 到点触发时，后端用保存的参数创建一个新的 `task_instances`，标题包含定时任务名称和触发时间。
+6. 新实例执行 `tmall-ops-assistant / tmall_material_test_data_export`，默认采用全新页面模式、测试中任务、近 30 天累计口径、页大小 20。
+7. 本地导出目录默认固化为用户下载目录下的 `抓虾导出/天猫运营助手/巴拉-AI测图数据抓取导出`；Windows 使用当前用户 home 下的 `Downloads` 路径，用户也可以显式改写。
+8. 执行完成或失败后按保存的钉钉模板发送通知；通知失败只写事件和日志，不反向标记脚本运行失败。
+
+通知模板支持以下变量：
+
+- `{{schedule_title}}`
+- `{{task_name}}`
+- `{{status}}`
+- `{{records}}`
+- `{{run_id}}`
+- `{{instance_uid}}`
+- `{{output_files}}`
+- `{{export_dir}}`
+- `{{started_at}}`
+- `{{finished_at}}`
+- `{{error}}`
 
 ## 前端界面
 
@@ -182,6 +252,8 @@ task_instance_events (
 - 筛选栏：脚本、状态、创建时间、关键词。
 - 任务列表：标题、脚本名、状态、当前步骤、进度摘要、最近更新时间、主要操作。
 - 空状态：提示先新建 AI 测图任务。
+- 定时任务看板：展示启用状态、频次、下次运行、最近运行结果、导出目录、运行一次、编辑、归档。
+- `新增数据抓取定时任务` 表单：内嵌在任务中心，不跳转到独立网页。
 
 ### 实例详情页
 
@@ -237,6 +309,11 @@ task_instance_events (
 - 实例运行时正确关联 `task_runs.id`。
 - 后端重启停止 active run 时同步实例状态。
 - 巴拉 AI 测图审批批次写回实例字段。
+- 初始化 SQLite 时创建 `task_schedules`。
+- 创建、修改、归档、查询定时任务。
+- APScheduler 能按每天/每周配置注册 job。
+- `run-now` 会创建任务实例，并把 `__task_schedule_uid` 和 `__task_instance_uid` 注入运行参数。
+- 定时任务完成/失败后会更新最近运行状态，并按模板触发通知。
 
 前端测试：
 
@@ -246,6 +323,8 @@ task_instance_events (
 - 实例详情步骤 tab 只显示当前步骤。
 - 底部日志 / 输出文件抽屉三态切换。
 - 输出文件摘要按表格、图片、目录计数。
+- 任务中心显示定时任务看板和 `新增数据抓取定时任务`。
+- 定时任务表单能切换每天/每周，并显示对应的时分/周几字段。
 
 端到端或浏览器检查：
 
@@ -275,6 +354,10 @@ task_instance_events (
 
 将审批批次、创建结果、产物文件写回实例；支持历史任务点进去回看配置、审批决策、创建结果和输出文件。
 
+### 阶段 6：定时任务中心
+
+新增 `task_schedules` 持久化、后端 API、APScheduler 动态注册、Electron/dev bridge 调用和任务中心 UI。首个定时任务固定接入 `巴拉-AI测图数据抓取导出`，每次触发生成新的任务实例，输出和通知都绑定到本次实例。
+
 ## 验收标准
 
 1. `抓虾市场` 被替换为 `任务中心`。
@@ -285,3 +368,6 @@ task_instance_events (
 6. 审批提交后创建结果显示在第三步。
 7. 历史任务可回看配置、日志、输出文件和创建结果。
 8. 当前 `task_runs` 历史记录仍可正常使用。
+9. 任务中心可创建、启停、运行一次、归档 `巴拉-AI测图数据抓取导出` 定时任务。
+10. 每天/每周定时配置会注册到本地调度器，到点自动创建任务实例并执行脚本。
+11. 定时任务默认导出目录和钉钉消息模板持久保存，执行时无需用户再次输入。

@@ -151,6 +151,12 @@ export function createDevCsBridge() {
     getTaskInstance: (uid) => apiCall('GET', `/task-instances/${encodePathPart(uid)}`),
     updateTaskInstance: (uid, payload) => apiCall('PATCH', `/task-instances/${encodePathPart(uid)}`, payload || {}),
     runTaskInstance: (uid) => apiCall('POST', `/task-instances/${encodePathPart(uid)}/run`, {}),
+    listTaskSchedules: (query = {}) => apiCall('GET', `/task-schedules?${queryString(query)}`),
+    createTaskSchedule: (payload) => apiCall('POST', '/task-schedules', payload || {}),
+    getTaskSchedule: (uid) => apiCall('GET', `/task-schedules/${encodePathPart(uid)}`),
+    updateTaskSchedule: (uid, payload) => apiCall('PATCH', `/task-schedules/${encodePathPart(uid)}`, payload || {}),
+    deleteTaskSchedule: (uid) => apiCall('DELETE', `/task-schedules/${encodePathPart(uid)}`),
+    runTaskScheduleNow: (uid) => apiCall('POST', `/task-schedules/${encodePathPart(uid)}/run-now`, {}),
 
     probeTaskParams: (aid, tid, params, options = {}) => apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/params/probe`, {
       params: params || {},

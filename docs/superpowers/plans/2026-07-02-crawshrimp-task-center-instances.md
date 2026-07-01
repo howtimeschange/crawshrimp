@@ -1083,3 +1083,136 @@ If browser verification produces CSS or copy polish, commit those changes:
 git add app/src/renderer/views/TaskCenter.vue app/src/renderer/views/TaskInstanceRunner.vue app/src/renderer/views/TaskOutputDrawer.vue app/src/renderer/App.vue
 git commit -m "polish(task-center): verify task instance workflow"
 ```
+
+## Task 7: Scheduled Task Center For Material-Test Data Export
+
+**Files:**
+- Modify: `core/data_sink.py`
+- Modify: `core/scheduler.py`
+- Modify: `core/api_server.py`
+- Modify: `app/src/main.js`
+- Modify: `app/src/preload.js`
+- Modify: `app/src/renderer/utils/devCsBridge.js`
+- Modify: `app/src/renderer/views/TaskCenter.vue`
+- Create: `tests/test_task_schedules_data_sink.py`
+- Create: `tests/test_task_schedules_scheduler.py`
+- Create: `tests/test_task_schedules_api.py`
+- Modify: `tests/task-center-navigation.test.js`
+
+- [ ] **Step 1: Add schedule persistence tests**
+
+Create `tests/test_task_schedules_data_sink.py` with coverage for:
+
+- `init_db()` creates `task_schedules`.
+- `create_task_schedule()` stores daily and weekly schedule fields.
+- `list_task_schedules()` filters archived schedules out by default.
+- `update_task_schedule()` updates frequency, enabled state, params, and notify template.
+- `archive_task_schedule()` hides schedules from the default list.
+
+- [ ] **Step 2: Implement `task_schedules` persistence**
+
+In `core/data_sink.py`, create the `task_schedules` table and helpers:
+
+- `create_task_schedule(adapter_id, task_id, title, frequency, time_of_day, weekday, params, notify_channel, notify_template, enabled=True)`
+- `get_task_schedule(schedule_uid)`
+- `get_task_schedule_detail(schedule_uid)`
+- `list_task_schedules(adapter_id="", task_id="", enabled=None, keyword="", include_archived=False, limit=100)`
+- `update_task_schedule(schedule_uid, **fields)`
+- `archive_task_schedule(schedule_uid)`
+- `record_task_schedule_run(schedule_uid, run_id=None, instance_uid="", status="", error="")`
+
+- [ ] **Step 3: Add scheduler dynamic job tests**
+
+Create `tests/test_task_schedules_scheduler.py` with coverage for:
+
+- daily `09:30` schedules register as `schedule::<uid>`.
+- weekly schedules map `weekday=1..7` to APScheduler `mon..sun`.
+- unregister removes the schedule job.
+
+- [ ] **Step 4: Extend `core/scheduler.py`**
+
+Add dynamic schedule helpers while preserving manifest-trigger behavior:
+
+- `schedule_job_id(schedule_uid)`
+- `register_task_schedule(schedule, run_callback)`
+- `unregister_task_schedule(schedule_uid)`
+- `register_task_schedules(schedules, run_callback)`
+- `list_jobs()` returns schedule jobs with `schedule_uid` and `kind: "task_schedule"`.
+
+- [ ] **Step 5: Add API tests**
+
+Create `tests/test_task_schedules_api.py` with coverage for:
+
+- `POST /task-schedules` creates the material-test export schedule with default params and export directory.
+- `GET /task-schedules` returns created schedules.
+- `PATCH /task-schedules/{uid}` toggles enabled and refreshes scheduler registration.
+- `DELETE /task-schedules/{uid}` archives and unregisters the job.
+- `POST /task-schedules/{uid}/run-now` creates a task instance and starts a background run with `__task_schedule_uid`.
+
+- [ ] **Step 6: Implement schedule APIs and run orchestration**
+
+In `core/api_server.py`:
+
+- Add request models for create/patch.
+- Add default params for `tmall-ops-assistant / tmall_material_test_data_export`.
+- Add default export directory under user Downloads.
+- Add template renderer for `{{var}}` notification templates.
+- Add endpoints:
+  - `GET /task-schedules`
+  - `POST /task-schedules`
+  - `GET /task-schedules/{schedule_uid}`
+  - `PATCH /task-schedules/{schedule_uid}`
+  - `DELETE /task-schedules/{schedule_uid}`
+  - `POST /task-schedules/{schedule_uid}/run-now`
+- On backend startup, register enabled persisted schedules after adapter manifests.
+- When a schedule triggers, create a task instance, inject `__task_schedule_uid` and `__task_instance_uid`, execute the saved script params, update latest schedule run state, and send DingTalk notification from the saved template.
+
+- [ ] **Step 7: Expose schedule APIs to Electron and browser dev bridge**
+
+In `app/src/main.js`, `app/src/preload.js`, and `app/src/renderer/utils/devCsBridge.js`, expose:
+
+- `listTaskSchedules(query)`
+- `createTaskSchedule(payload)`
+- `getTaskSchedule(uid)`
+- `updateTaskSchedule(uid, payload)`
+- `deleteTaskSchedule(uid)`
+- `runTaskScheduleNow(uid)`
+
+- [ ] **Step 8: Add Task Center scheduling UI**
+
+In `TaskCenter.vue`, add a compact `定时任务` section:
+
+- `新增数据抓取定时任务` opens an inline form.
+- Frequency supports `每天` and `每周`.
+- Daily shows time input.
+- Weekly shows weekday select plus time input.
+- The form includes local export directory and DingTalk message template.
+- Schedule cards show enabled state, next run, last status, export dir, run now, edit, archive.
+
+- [ ] **Step 9: Run validation**
+
+```bash
+cd /Users/xingyicheng/Documents/crawshrimp
+venv/bin/python -m unittest tests.test_task_schedules_data_sink tests.test_task_schedules_scheduler tests.test_task_schedules_api tests.test_task_instances_data_sink tests.test_task_instances_api tests.test_task_instance_run_api tests.test_task_instance_artifacts tests.test_api_task_lifecycle tests.test_tmall_ops_manifest tests.test_tmall_ops_packaging
+node --test tests/task-center-navigation.test.js tests/tmall-ops-assistant-material-test.test.js
+cd app
+npm run vite:build
+npm test
+```
+
+- [ ] **Step 10: Browser smoke**
+
+Open the Vite dev URL with the local API bridge token and verify:
+
+1. `任务中心` shows a `定时任务` section.
+2. `新增数据抓取定时任务` opens the daily/weekly form.
+3. Creating a schedule stores it in SQLite and displays it in the list.
+4. `运行一次` creates a task instance for `巴拉-AI测图数据抓取导出`.
+5. Archive removes the schedule from the default list.
+
+- [ ] **Step 11: Commit scheduling work**
+
+```bash
+git add docs/superpowers/specs/2026-07-02-crawshrimp-task-center-design.md docs/superpowers/plans/2026-07-02-crawshrimp-task-center-instances.md core/data_sink.py core/scheduler.py core/api_server.py app/src/main.js app/src/preload.js app/src/renderer/utils/devCsBridge.js app/src/renderer/views/TaskCenter.vue tests/test_task_schedules_data_sink.py tests/test_task_schedules_scheduler.py tests/test_task_schedules_api.py tests/task-center-navigation.test.js
+git commit -m "feat(task-center): schedule material test exports"
+```
