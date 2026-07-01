@@ -1652,6 +1652,9 @@ class JSRunner:
         concurrency: int = 1,
         retry_attempts: int = 1,
         retry_delay_ms: int = 0,
+        recovery_retry_attempts: int = 0,
+        recovery_retry_delay_ms: int = 0,
+        recovery_concurrency: int = 1,
         timeout_seconds: Optional[int] = None,
         progress_total: Optional[int] = None,
         progress_completed_offset: int = 0,
@@ -1666,6 +1669,9 @@ class JSRunner:
         concurrency = max(1, int(concurrency or 1))
         retry_attempts = max(1, int(retry_attempts or 1))
         retry_delay_ms = max(0, int(retry_delay_ms or 0))
+        recovery_retry_attempts = max(0, int(recovery_retry_attempts or 0))
+        recovery_retry_delay_ms = max(0, int(recovery_retry_delay_ms or 0))
+        recovery_concurrency = max(1, int(recovery_concurrency or 1))
         if timeout_seconds is not None:
             timeout_seconds = max(1, int(timeout_seconds or 1))
         results: list[Optional[dict]] = [None] * len(normalized_items)
@@ -1790,6 +1796,45 @@ class JSRunner:
             await emit_progress(snapshot)
 
         await asyncio.gather(*(worker(index, item) for index, item in enumerate(normalized_items)))
+
+        if recovery_retry_attempts > 0:
+            failed_indexes = [
+                index
+                for index, result in enumerate(results)
+                if not bool((result or {}).get("success"))
+            ]
+            if failed_indexes:
+                recovery_semaphore = asyncio.Semaphore(recovery_concurrency)
+
+                async def recovery_worker(index: int) -> None:
+                    item = normalized_items[index]
+                    previous_result = dict(results[index] or {})
+                    async with recovery_semaphore:
+                        await mark_started(index, item)
+                        recovered_result = await self._download_url_item(
+                            item,
+                            default_retry_attempts=recovery_retry_attempts,
+                            default_retry_delay_ms=recovery_retry_delay_ms,
+                            default_timeout_seconds=timeout_seconds,
+                            progress_callback=make_thread_progress(index) if progress_callback is not None else None,
+                        )
+                    recovered_result["recovery_attempts"] = int(recovered_result.get("attempts") or 0)
+                    recovered_result["recovered"] = bool(recovered_result.get("success"))
+                    if previous_result.get("error"):
+                        recovered_result["initial_error"] = str(previous_result.get("error"))
+                    results[index] = recovered_result
+
+                    async with progress_lock:
+                        active_items.pop(index, None)
+                        if recovered_result.get("success"):
+                            progress_state["success"] += 1
+                            progress_state["failed"] = max(0, int(progress_state["failed"]) - 1)
+                        progress_state["completed_bytes"] += int(recovered_result.get("bytes") or 0)
+                        snapshot = build_progress_snapshot(recovered_result)
+                    await emit_progress(snapshot)
+
+                await asyncio.gather(*(recovery_worker(index) for index in failed_indexes))
+
         finalized = [dict(item or {}) for item in results]
         if strict:
             first_error = next((item for item in finalized if not item.get("success")), None)
@@ -2263,6 +2308,9 @@ class JSRunner:
                             concurrency = int(meta.get("concurrency") or meta.get("max_concurrency") or 1)
                             retry_attempts = int(meta.get("retry_attempts") or meta.get("retryAttempts") or meta.get("retries") or 1)
                             retry_delay_ms = int(meta.get("retry_delay_ms") or meta.get("retryDelayMs") or 0)
+                            recovery_retry_attempts = int(meta.get("recovery_retry_attempts") or meta.get("recoveryRetryAttempts") or 0)
+                            recovery_retry_delay_ms = int(meta.get("recovery_retry_delay_ms") or meta.get("recoveryRetryDelayMs") or 0)
+                            recovery_concurrency = int(meta.get("recovery_concurrency") or meta.get("recoveryConcurrency") or 1)
                             timeout_seconds_raw = meta.get("timeout_seconds") or meta.get("timeoutSeconds") or meta.get("timeout")
                             timeout_seconds = int(timeout_seconds_raw) if timeout_seconds_raw else None
                             progress_total_raw = meta.get("progress_total") or meta.get("download_progress_total")
@@ -2290,6 +2338,9 @@ class JSRunner:
                                 concurrency=concurrency,
                                 retry_attempts=retry_attempts,
                                 retry_delay_ms=retry_delay_ms,
+                                recovery_retry_attempts=recovery_retry_attempts,
+                                recovery_retry_delay_ms=recovery_retry_delay_ms,
+                                recovery_concurrency=recovery_concurrency,
                                 timeout_seconds=timeout_seconds,
                                 progress_total=progress_total,
                                 progress_completed_offset=progress_completed_offset,

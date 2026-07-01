@@ -276,6 +276,67 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(snapshots[-1]["download_success"], 4)
             self.assertEqual(snapshots[-1]["download_failed"], 1)
 
+    async def test_download_urls_recovers_failed_items_with_low_concurrency_pass(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://unused", artifact_dir=tmpdir)
+            attempts: dict[str, int] = {}
+            recovery_state = {
+                "active": 0,
+                "max_active": 0,
+            }
+            lock = threading.Lock()
+            reset_urls = {
+                "https://example.com/b.mp4",
+                "https://example.com/c.mp4",
+            }
+
+            def fake_download(url, target_path, headers=None, timeout=60, no_proxy=False, progress_callback=None):
+                previous_attempts = attempts.get(url, 0)
+                attempts[url] = previous_attempts + 1
+                if url in reset_urls and previous_attempts == 0:
+                    return {
+                        "success": False,
+                        "path": str(target_path),
+                        "error": "URL error: [WinError 10054] 远程主机强迫关闭了一个现有的连接",
+                    }
+
+                if url in reset_urls:
+                    with lock:
+                        recovery_state["active"] += 1
+                        recovery_state["max_active"] = max(recovery_state["max_active"], recovery_state["active"])
+                    time.sleep(0.05)
+                    with lock:
+                        recovery_state["active"] -= 1
+
+                Path(target_path).parent.mkdir(parents=True, exist_ok=True)
+                Path(target_path).write_bytes(f"ok:{url}".encode("utf-8"))
+                return {"success": True, "path": str(target_path), "bytes": target_path.stat().st_size}
+
+            runner._download_url_sync = fake_download  # type: ignore[method-assign]
+
+            result = await runner.download_urls(
+                [
+                    {"url": "https://example.com/a.mp4", "filename": "a.mp4"},
+                    {"url": "https://example.com/b.mp4", "filename": "b.mp4"},
+                    {"url": "https://example.com/c.mp4", "filename": "c.mp4"},
+                ],
+                concurrency=3,
+                retry_attempts=1,
+                recovery_retry_attempts=1,
+                recovery_retry_delay_ms=1,
+                recovery_concurrency=1,
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual([item["filename"] for item in result["items"]], ["a.mp4", "b.mp4", "c.mp4"])
+            self.assertEqual([item["success"] for item in result["items"]], [True, True, True])
+            self.assertEqual(attempts["https://example.com/a.mp4"], 1)
+            self.assertEqual(attempts["https://example.com/b.mp4"], 2)
+            self.assertEqual(attempts["https://example.com/c.mp4"], 2)
+            self.assertTrue(result["items"][1]["recovered"])
+            self.assertTrue(result["items"][2]["recovered"])
+            self.assertEqual(recovery_state["max_active"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
