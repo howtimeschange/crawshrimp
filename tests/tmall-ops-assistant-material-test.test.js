@@ -346,6 +346,10 @@ test('registers readonly Tmall material-test data export task and builds its pay
   assert.match(manifest, /id: tmall_material_test_data_export/)
   assert.match(manifest, /name: 天猫测图数据抓取导出/)
   assert.match(manifest, /script: tmall-material-test-data-export\.js/)
+  assert.match(manifest, /sheet_key: __sheet_name/)
+  assert.match(manifest, /name: 概览/)
+  assert.match(manifest, /name: 明细/)
+  assert.match(manifest, /value: "0"\n\s+label: 未测试/)
 
   const sourceRows = helpers.normalizeSourceRows({
     input_file: {
@@ -370,14 +374,73 @@ test('registers readonly Tmall material-test data export task and builds its pay
     currentPage: 1,
     pageSize: 50,
   })
+  assert.deepEqual(plain(helpers.buildSearchTasksPayload('1060862679580', { testStatus: '0' })), {
+    modelCode: 'image_test_mgr',
+    params: JSON.stringify({ tabCode: 'all', testChannel: 'common_search', testStatus: '0', itemIdOrName: '1060862679580' }),
+    currentPage: 1,
+    pageSize: 20,
+  })
+  const taskRows = helpers.normalizeTmallTaskRows([{
+    domainId: '1060862679580',
+    head: { itemTitle: '测试商品' },
+    columns: {
+      test_data: {
+        dataList: [{
+          imageTestSource: 'common_search',
+          experimentTaskId: 'task-0',
+          testStatus: 0,
+          bestTestImage: { imageUrl: '//img.alicdn.com/best.jpg' },
+          testImageMetrics: {
+            '3:4': [{
+              imageId: 'material-1',
+              imageScale: '3:4',
+              imageUrl: '//img.alicdn.com/material.jpg',
+              percent: 13,
+            }],
+          },
+        }],
+      },
+    },
+  }], { 款号: '208326121203', 商品ID: '1060862679580' })
+  assert.equal(taskRows[0].__sheet_name, '概览')
+  assert.equal(taskRows[0].测试状态, '未测试')
+  assert.equal(taskRows[0].测试渠道, '搜索测图')
+  assert.equal(taskRows[0].测试素材数, 1)
+  assert.equal(taskRows[0].__listMaterials[0].__sheet_name, '明细')
+  assert.equal(taskRows[0].__listMaterials[0].记录类型, '任务列表素材')
+  assert.equal(taskRows[0].__listMaterials[0].素材占比, '13')
+
   assert.deepEqual(plain(helpers.sourceRowsFromTaskRows([
-    { 商品ID: '1060862679580', 商品标题: '测试商品', 任务ID: 'task-1' },
+    { 商品ID: '1060862679580', 商品标题: '测试商品', 任务ID: 'task-1', 测试状态: '测试中', 测试渠道: '搜索测图', 测试素材数: 5 },
     { 商品ID: '1060862679580', 商品标题: '测试商品', 任务ID: 'task-1' },
     { 商品ID: '1060862679581', 商品标题: '测试商品2', 任务ID: 'task-2' },
   ])), [
-    { 表格行号: '', 款号: '', 商品ID: '1060862679580', 商品标题: '测试商品', 任务ID: 'task-1' },
-    { 表格行号: '', 款号: '', 商品ID: '1060862679581', 商品标题: '测试商品2', 任务ID: 'task-2' },
+    { 表格行号: '', 款号: '', 商品ID: '1060862679580', 商品标题: '测试商品', 任务ID: 'task-1', 测试状态: '测试中', 测试渠道: '搜索测图', 测试素材数: 5, 素材URL: '', __listMaterials: [] },
+    { 表格行号: '', 款号: '', 商品ID: '1060862679581', 商品标题: '测试商品2', 任务ID: 'task-2', 测试状态: '', 测试渠道: '', 测试素材数: '', 素材URL: '', __listMaterials: [] },
   ])
+  const context = new Map([
+    ['1060862679580', { 款号: '208326121203', 商品标题: '测试商品', 任务ID: 'task-1', 测试状态: '测试中', 测试渠道: '搜索测图', 测试素材数: 5 }],
+  ])
+  const detailRows = helpers.normalizeDownloadDataRows([{
+    itemId: '1060862679580',
+    statisticDate: '20260630',
+    materialId: 'material-1',
+    materialRatio: '3:4',
+    materialUrl: '//img.alicdn.com/material.jpg',
+    searchExposure: 200,
+    searchClick: 8,
+  }], 'ACCUMULATE_30_DAYS', context)
+  assert.equal(detailRows[0].__sheet_name, '明细')
+  assert.equal(detailRows[0].记录类型, '数据明细')
+  assert.equal(detailRows[0].测试状态, '测试中')
+  assert.equal(detailRows[0].测试渠道, '搜索测图')
+
+  const fallbackRows = []
+  helpers.addNoDetailFallbackRows(fallbackRows, helpers.sourceRowsFromTaskRows(taskRows), new Set())
+  assert.equal(fallbackRows[0].__sheet_name, '明细')
+  assert.equal(fallbackRows[0].执行结果, '任务列表素材')
+  assert.equal(fallbackRows[0].商品ID, '1060862679580')
+
   assert.deepEqual(plain(helpers.filterTaskRowsForExport([
     { 商品ID: '1060862679580', 测试渠道: '搜索测图', 测试状态: '测试中' },
     { 商品ID: '1060862679580', 测试渠道: 'common_detail', 测试状态: '已暂停' },

@@ -5,9 +5,11 @@
   const testExports = window.__CRAWSHRIMP_EXPORTS__ || null
 
   const DEFAULT_PAGE_SIZE = 20
+  const OVERVIEW_SHEET = '概览'
+  const DETAIL_SHEET = '明细'
   const STATUS_LABELS = {
     '-1': '已暂停',
-    0: '未开始',
+    0: '未测试',
     1: '测试中',
     2: '已结束',
     3: '已完成',
@@ -77,11 +79,43 @@
     return url.startsWith('//') ? `https:${url}` : url
   }
 
+  function normalizeStatusValue(value) {
+    const text = compact(value)
+    if (!text) return ''
+    const labelToValue = {
+      全部: '',
+      未测试: '0',
+      未开始: '0',
+      测试中: '1',
+      已结束: '2',
+      已完成: '3',
+      已暂停: '-1',
+    }
+    return Object.prototype.hasOwnProperty.call(labelToValue, text) ? labelToValue[text] : text
+  }
+
   function formatPercent(numerator, denominator) {
     const top = Number(numerator)
     const bottom = Number(denominator)
     if (!Number.isFinite(top) || !Number.isFinite(bottom) || bottom <= 0) return ''
     return `${((top / bottom) * 100).toFixed(2)}%`
+  }
+
+  function mapListMetric(material, names = []) {
+    const wanted = new Set((names || []).map(normalizeKey))
+    for (const metric of Array.isArray(material?.metrics) ? material.metrics : []) {
+      const keys = [
+        metric?.metricsName,
+        metric?.metricName,
+        metric?.name,
+        metric?.metricsCode,
+        metric?.metricCode,
+        metric?.code,
+      ]
+      if (!keys.some(key => wanted.has(normalizeKey(key)))) continue
+      return compact(metric?.value ?? metric?.metricsValue ?? metric?.metricValue ?? metric?.num ?? metric?.rate)
+    }
+    return ''
   }
 
   function formatDateYYYYMMDD(date) {
@@ -147,8 +181,9 @@
       tabCode: filters.tabCode || 'all',
       testChannel: normalizeSource(filters.testChannel || filters.source || 'common_search'),
     }
-    if (filters.testStatus !== undefined && filters.testStatus !== null && filters.testStatus !== '') {
-      paramsPayload.testStatus = String(filters.testStatus)
+    const normalizedStatus = normalizeStatusValue(filters.testStatus)
+    if (normalizedStatus !== '') {
+      paramsPayload.testStatus = String(normalizedStatus)
     }
     const id = normalizeItemId(itemId)
     if (id) paramsPayload.itemIdOrName = id
@@ -245,6 +280,50 @@
     return rows
   }
 
+  function flattenTaskListMaterials(item, parentContext = {}) {
+    const rows = []
+    const metricsByRatio = item?.testImageMetrics || item?.imageMetrics || {}
+    for (const [ratio, materials] of Object.entries(metricsByRatio || {})) {
+      for (const material of Array.isArray(materials) ? materials : []) {
+        const searchExposure = mapListMetric(material, ['搜索曝光', 'search_pv', 'searchExposure'])
+        const searchClick = mapListMetric(material, ['搜索点击', 'search_click', 'searchClick'])
+        const detailExposure = mapListMetric(material, ['详情曝光', 'detail_pv', 'detailExposure'])
+        const detailClick = mapListMetric(material, ['详情点击', 'detail_click', 'detailClick'])
+        rows.push({
+          __sheet_name: DETAIL_SHEET,
+          记录类型: '任务列表素材',
+          表格行号: parentContext.表格行号 || '',
+          款号: parentContext.款号 || '',
+          商品ID: parentContext.商品ID || '',
+          商品标题: parentContext.商品标题 || '',
+          任务ID: parentContext.任务ID || '',
+          测试状态: parentContext.测试状态 || '',
+          测试渠道: parentContext.测试渠道 || '',
+          测试素材数: parentContext.测试素材数 || '',
+          统计口径: '',
+          统计日期: '',
+          图片类型: compact(material?.imageType || material?.materialType || ''),
+          素材ID: compact(material?.imageId || material?.materialId || material?.id),
+          素材比例: compact(material?.imageScale || material?.materialRatio || ratio),
+          素材URL: normalizeRemoteUrl(material?.imageUrl || material?.materialUrl || material?.url || ''),
+          素材占比: compact(material?.percent ?? material?.ratio ?? ''),
+          搜索曝光: searchExposure,
+          搜索点击: searchClick,
+          搜索点击率: mapListMetric(material, ['搜索点击率', 'search_ctr', 'searchCtr']),
+          详情曝光: detailExposure,
+          详情点击: detailClick,
+          详情点击率: mapListMetric(material, ['详情点击率', 'detail_ctr', 'detailCtr']),
+          详情加购: mapListMetric(material, ['详情加购', 'detailAddCart', 'detail_cart']),
+          详情支付转化: mapListMetric(material, ['详情支付转化', 'detailPayConversion', 'detail_pay']),
+          详情支付转化率: mapListMetric(material, ['详情支付转化率', 'detail_icvr', 'detailPayConversionRate']),
+          执行结果: '任务列表素材',
+          备注: '数据下载接口未返回明细，已回退到任务列表素材',
+        })
+      }
+    }
+    return rows
+  }
+
   function normalizeTmallTaskRows(inputRows, sourceRow = {}) {
     const rows = []
     for (const row of Array.isArray(inputRows) ? inputRows : []) {
@@ -254,6 +333,8 @@
       const dataList = Array.isArray(testData?.dataList) ? testData.dataList : Array.isArray(testData) ? testData : []
       if (!dataList.length) {
         rows.push({
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
           表格行号: sourceRow.表格行号 || '',
           款号: sourceRow.款号 || '',
           商品ID: itemId,
@@ -268,19 +349,23 @@
       for (const item of dataList) {
         const metrics = item?.testImageMetrics || item?.imageMetrics || {}
         const count = Object.values(metrics).reduce((sum, value) => sum + (Array.isArray(value) ? value.length : 0), 0)
-        rows.push({
+        const taskRow = {
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
           表格行号: sourceRow.表格行号 || '',
           款号: sourceRow.款号 || '',
           商品ID: itemId,
           商品标题: title,
           任务ID: compact(item?.experimentTaskId || item?.taskId || item?.id),
-          测试状态: getStatusLabel(item?.testStatus || item?.status),
+          测试状态: getStatusLabel(item?.testStatus ?? item?.status),
           测试渠道: getSourceLabel(item?.imageTestSource || item?.source || item?.testChannel),
-          素材URL: normalizeRemoteUrl(item?.bestTestImage?.imageUrl || item?.bestImage?.imageUrl || item?.bestTestImageUrl || ''),
+          最优素材: normalizeRemoteUrl(item?.bestTestImage?.imageUrl || item?.bestImage?.imageUrl || item?.bestTestImageUrl || ''),
           测试素材数: count,
           执行结果: '已读取任务',
           备注: '',
-        })
+        }
+        taskRow.__listMaterials = flattenTaskListMaterials(item, taskRow)
+        rows.push(taskRow)
       }
     }
     return rows
@@ -288,9 +373,10 @@
 
   function filterTaskRowsForExport(taskRows, filters = {}) {
     const wantedSource = getSourceLabel(filters.testChannel || filters.source || 'common_search')
-    const wantedStatus = filters.testStatus === undefined || filters.testStatus === null || filters.testStatus === ''
+    const normalizedStatus = normalizeStatusValue(filters.testStatus)
+    const wantedStatus = normalizedStatus === ''
       ? ''
-      : getStatusLabel(filters.testStatus)
+      : getStatusLabel(normalizedStatus)
     return (Array.isArray(taskRows) ? taskRows : []).filter(row => {
       const sourceOk = !compact(row?.测试渠道) || row.测试渠道 === wantedSource
       const statusOk = !wantedStatus || !compact(row?.测试状态) || row.测试状态 === wantedStatus
@@ -306,17 +392,25 @@
       const searchClick = Number(row?.searchClick || 0)
       const detailExposure = Number(row?.detailExposure || 0)
       const detailClick = Number(row?.detailClick || 0)
+      const detailAddCart = Number(row?.detailAddCart || 0)
+      const detailPayConversion = Number(row?.detailPayConversion || 0)
       return {
+        __sheet_name: DETAIL_SHEET,
+        记录类型: '数据明细',
         表格行号: context.表格行号 || '',
         款号: context.款号 || '',
         商品ID: itemId,
         商品标题: context.商品标题 || '',
         任务ID: compact(row?.experimentTaskId || row?.taskId || context.任务ID || ''),
+        测试状态: context.测试状态 || '',
+        测试渠道: context.测试渠道 || '',
+        测试素材数: context.测试素材数 || '',
         统计口径: compact(statisticType),
         统计日期: compact(row?.statisticDate),
         图片类型: compact(row?.imageType),
         素材ID: compact(row?.materialId),
         素材比例: compact(row?.materialRatio),
+        素材占比: compact(row?.materialPercent ?? row?.percent ?? ''),
         素材URL: normalizeRemoteUrl(row?.materialUrl || row?.imageUrl || ''),
         搜索曝光: searchExposure,
         搜索点击: searchClick,
@@ -324,6 +418,9 @@
         详情曝光: detailExposure,
         详情点击: detailClick,
         详情点击率: formatPercent(detailClick, detailExposure),
+        详情加购: detailAddCart,
+        详情支付转化: detailPayConversion,
+        详情支付转化率: formatPercent(detailPayConversion, detailExposure),
         执行结果: '已读取数据',
         备注: '',
       }
@@ -346,9 +443,54 @@
         商品ID: itemId,
         商品标题: compact(row?.商品标题),
         任务ID: taskId,
+        测试状态: compact(row?.测试状态),
+        测试渠道: compact(row?.测试渠道),
+        测试素材数: row?.测试素材数 || '',
+        素材URL: normalizeRemoteUrl(row?.素材URL || row?.最优素材 || ''),
+        __listMaterials: Array.isArray(row?.__listMaterials) ? row.__listMaterials : [],
       })
     }
     return rows
+  }
+
+  function addOverviewRows(targetRows, taskRows) {
+    for (const row of Array.isArray(taskRows) ? taskRows : []) {
+      targetRows.push({
+        ...row,
+        __sheet_name: OVERVIEW_SHEET,
+      })
+    }
+  }
+
+  function addNoDetailFallbackRows(targetRows, sourceRows, itemIdsWithDetail) {
+    for (const sourceRow of Array.isArray(sourceRows) ? sourceRows : []) {
+      const itemId = normalizeItemId(sourceRow?.商品ID)
+      if (!itemId || itemIdsWithDetail.has(itemId)) continue
+      const listMaterials = Array.isArray(sourceRow?.__listMaterials) ? sourceRow.__listMaterials : []
+      if (listMaterials.length) {
+        targetRows.push(...listMaterials.map(row => ({
+          ...row,
+          __sheet_name: DETAIL_SHEET,
+          执行结果: '任务列表素材',
+          备注: row.备注 || '数据下载接口未返回明细，已回退到任务列表素材',
+        })))
+        continue
+      }
+      targetRows.push({
+        __sheet_name: DETAIL_SHEET,
+        记录类型: '数据为空',
+        表格行号: sourceRow.表格行号 || '',
+        款号: sourceRow.款号 || '',
+        商品ID: itemId,
+        商品标题: sourceRow.商品标题 || '',
+        任务ID: sourceRow.任务ID || '',
+        测试状态: sourceRow.测试状态 || '',
+        测试渠道: sourceRow.测试渠道 || '',
+        测试素材数: sourceRow.测试素材数 || '',
+        执行结果: '数据为空',
+        备注: '任务列表存在匹配任务，但数据下载接口未返回该商品明细',
+      })
+    }
   }
 
   function extractDownloadRows(payload) {
@@ -422,6 +564,9 @@
       filterTaskRowsForExport,
       normalizeDownloadDataRows,
       sourceRowsFromTaskRows,
+      flattenTaskListMaterials,
+      addNoDetailFallbackRows,
+      normalizeStatusValue,
       collectMaterialTestTasks,
       chunkArray,
       extractDownloadRows,
@@ -444,12 +589,13 @@
     const defaults = defaultDateRange()
     const startDate = compact(params.start_date || params.download_start_date || defaults.startDate)
     const endDate = compact(params.end_date || params.download_end_date || defaults.endDate)
-    const testStatus = params.test_status === undefined ? '1' : params.test_status
+    const testStatus = normalizeStatusValue(params.test_status === undefined ? '1' : params.test_status)
     const rows = []
     const contextByItem = new Map()
-    let sourceRows = normalizeSourceRows(params)
+    const inputSourceRows = normalizeSourceRows(params)
+    let sourceRows = []
 
-    if (!sourceRows.length) {
+    if (!inputSourceRows.length) {
       try {
         const result = await collectMaterialTestTasks({
           testStatus,
@@ -461,21 +607,26 @@
           testStatus,
           testChannel: params.test_channel || 'common_search',
         })
+        addOverviewRows(rows, taskRows)
         sourceRows = sourceRowsFromTaskRows(taskRows)
-        if (taskRows.length) rows.push(...taskRows)
-        else rows.push({
+        if (!taskRows.length) rows.push({
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
           测试状态: getStatusLabel(testStatus),
           执行结果: '未找到任务',
           备注: `total=${result.total}`,
         })
       } catch (error) {
         rows.push({
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
           执行结果: '任务查询失败',
           备注: describeError(error),
         })
       }
     } else {
-      for (const sourceRow of sourceRows) {
+      const matchedRows = []
+      for (const sourceRow of inputSourceRows) {
         contextByItem.set(sourceRow.商品ID, sourceRow)
         try {
           const result = await searchMaterialTestTasks(sourceRow.商品ID, {
@@ -487,28 +638,39 @@
             testStatus,
             testChannel: params.test_channel || 'common_search',
           })
-          if (taskRows.length) rows.push(...taskRows)
-          else rows.push({
-            ...sourceRow,
-            执行结果: '未找到任务',
-            备注: `total=${result.total}`,
-          })
+          if (taskRows.length) {
+            addOverviewRows(rows, taskRows)
+            matchedRows.push(...sourceRowsFromTaskRows(taskRows))
+          } else {
+            rows.push({
+              __sheet_name: OVERVIEW_SHEET,
+              记录类型: '任务概览',
+              ...sourceRow,
+              执行结果: '未找到任务',
+              备注: `total=${result.total}`,
+            })
+          }
         } catch (error) {
           rows.push({
+            __sheet_name: OVERVIEW_SHEET,
+            记录类型: '任务概览',
             ...sourceRow,
             执行结果: '任务查询失败',
             备注: describeError(error),
           })
         }
       }
+      sourceRows = sourceRowsFromTaskRows(matchedRows)
     }
 
     for (const sourceRow of sourceRows) {
-      if (!contextByItem.has(sourceRow.商品ID)) contextByItem.set(sourceRow.商品ID, sourceRow)
+      contextByItem.set(sourceRow.商品ID, sourceRow)
     }
 
     if (!sourceRows.length) {
       return complete(rows.length ? rows : [{
+        __sheet_name: OVERVIEW_SHEET,
+        记录类型: '任务概览',
         执行结果: '未找到任务',
         备注: '当前筛选条件下没有可导出的测图商品',
       }], {
@@ -520,15 +682,23 @@
       })
     }
 
-    const itemIdChunks = chunkArray(sourceRows.map(row => row.商品ID), params.download_chunk_size || 20)
+    const itemIdsForDownload = Array.from(new Set(sourceRows.map(row => normalizeItemId(row.商品ID)).filter(Boolean)))
+    const itemIdsWithDetail = new Set()
+    const itemIdChunks = chunkArray(itemIdsForDownload, params.download_chunk_size || 20)
     for (const [chunkIndex, itemIds] of itemIdChunks.entries()) {
       try {
         const payload = await downloadMaterialTestData(itemIds, statisticType, startDate, endDate)
         const dataRows = normalizeDownloadDataRows(extractDownloadRows(payload), statisticType, contextByItem)
         if (dataRows.length) {
+          for (const row of dataRows) {
+            const itemId = normalizeItemId(row?.商品ID)
+            if (itemId) itemIdsWithDetail.add(itemId)
+          }
           rows.push(...dataRows)
-        } else {
+        } else if (findDownloadUrl(payload)) {
           rows.push({
+            __sheet_name: DETAIL_SHEET,
+            记录类型: '接口返回',
             统计口径: statisticType,
             统计日期: `${startDate}-${endDate}`,
             数据下载链接: findDownloadUrl(payload),
@@ -537,14 +707,28 @@
           })
         }
       } catch (error) {
-        rows.push({
-          统计口径: statisticType,
-          统计日期: `${startDate}-${endDate}`,
-          执行结果: '数据读取失败',
-          备注: `第 ${chunkIndex + 1}/${itemIdChunks.length} 批：${describeError(error)}`,
-        })
+        for (const itemId of itemIds) {
+          const context = contextByItem.get(itemId) || {}
+          rows.push({
+            __sheet_name: DETAIL_SHEET,
+            记录类型: '数据读取失败',
+            表格行号: context.表格行号 || '',
+            款号: context.款号 || '',
+            商品ID: itemId,
+            商品标题: context.商品标题 || '',
+            任务ID: context.任务ID || '',
+            测试状态: context.测试状态 || '',
+            测试渠道: context.测试渠道 || '',
+            测试素材数: context.测试素材数 || '',
+            统计口径: statisticType,
+            统计日期: `${startDate}-${endDate}`,
+            执行结果: '数据读取失败',
+            备注: `第 ${chunkIndex + 1}/${itemIdChunks.length} 批：${describeError(error)}`,
+          })
+        }
       }
     }
+    addNoDetailFallbackRows(rows, sourceRows, itemIdsWithDetail)
 
     return complete(rows, {
       ...shared,
