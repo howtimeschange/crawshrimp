@@ -7,7 +7,14 @@
 
 ---
 
-## 本次更新（2026-07-01 / v1.4.35）
+## 本次更新（2026-07-01 / v1.4.36）
+
+- 桌面端版本升级到 `v1.4.36`，正式发布会输出 `crawshrimp-v1.4.36-*` 命名的桌面安装包。
+- macOS 桌面构建接入 Developer ID Application 签名和 Apple notarization，CI 会用 App Store Connect API Key 完成公证准备。
+- macOS 构建开启 Hardened Runtime，并补充 Electron/Python 打包所需 entitlements，降低 Gatekeeper 拦截和运行时签名异常风险。
+- GitHub Actions 增加签名、公证配置回归测试，避免后续发布脚本误删 macOS 发行凭据注入。
+
+## 上次更新（2026-07-01 / v1.4.35）
 
 - 桌面端版本升级到 `v1.4.35`，正式发布会输出 `crawshrimp-v1.4.35-*` 命名的桌面安装包。
 - 天猫运营助手新增「天猫包装图上传」工作流：可按表格批量读取商品链接和图片包信息，把包装图写入商品 PC 详情草稿。
@@ -15,14 +22,14 @@
 - 天猫详情图替换会保留全局活动/奖项详情锚点，避免误删页面内已有活动说明或奖项模块。
 - TikTok 达人视频下载兼容代理环境，视频直连下载不再强制绕开系统/网络代理。
 
-## 上次更新（2026-06-25 / v1.4.34）
+## 上上次更新（2026-06-25 / v1.4.34）
 
 - 桌面端版本升级到 `v1.4.34`，正式发布会输出 `crawshrimp-v1.4.34-*` 命名的桌面安装包。
 - 修复任务运行页参数被后台刷新清空的问题：同一个脚本任务刷新状态时会保留已填写内容，只在真正切换任务时重置表单。
 - 森马云盘「森马-天猫AI生图参考素材准备」的 `SKC 编码` 多行输入框现在可以稳定粘贴多行款号，不会出现“刚粘上马上清空”。
 - 前端新增任务身份判断回归测试，覆盖同一个 `adapterId::taskId` 刷新时不清空表单、切换到其他任务时才重置的行为。
 
-## 上上次更新（2026-06-24 / v1.4.33）
+## 更早更新（2026-06-24 / v1.4.33）
 
 - 桌面端版本升级到 `v1.4.33`，正式发布会输出 `crawshrimp-v1.4.33-*` 命名的桌面安装包。
 - 森马云盘新增「森马-天猫AI生图参考素材准备」任务：直接粘贴多行 SKC，按图片包抓取 `3-1` 全身图和 SKC 同名静物图。
@@ -71,9 +78,9 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 
 ### 最近更新
 
+- `v1.4.36`：macOS 桌面构建接入 Developer ID 签名和 Apple 公证，开启 Hardened Runtime 并补充 entitlements。
 - `v1.4.35`：新增天猫包装图上传工作流，加入 OCR 辅助视觉锚点识别，并保留全局活动/奖项详情图；TikTok 达人视频下载兼容代理环境。
 - `v1.4.34`：修复任务页参数被同任务刷新清空的问题，森马「天猫AI生图参考素材准备」可稳定粘贴多行 SKC。
-- `v1.4.33`：新增森马「天猫AI生图参考素材准备」SKC 图包抓取任务，并为 Temu 洗唛合规补充指定 SPU 定向处理模式。
 
 ---
 
@@ -112,7 +119,8 @@ crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具
 #### macOS 安装说明
 
 1. 下载 `.dmg` 文件后双击打开，将抓虾拖入 Applications 文件夹。
-2. 打开终端执行：
+2. `v1.4.36` 起 macOS 包已接入 Developer ID 签名和 Apple 公证，正常情况下可直接打开。
+3. 如果旧包或下载隔离仍提示无法验证，打开终端执行：
 
 ```bash
 xattr -cr "/Applications/抓虾.app"
@@ -238,6 +246,7 @@ API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认
 - 构建成功后会自动刷新 [`desktop-latest`](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
 - 推送 `v*` tag 会创建正式版本 Release
 - Release 中的桌面包已内置 Python runtime，目标是“下载即可运行”
+- macOS 构建会在 GitHub Secrets 配置齐全时执行 Developer ID 签名和 Apple notarization
 
 ---
 

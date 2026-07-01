@@ -24,3 +24,5 @@ logs/
 !adapters/mop-ops-assistant/templates/search-recommend-material-template.xlsx
 *.log
 .env
+AuthKey_*.p8
+*.p12
