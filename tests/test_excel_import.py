@@ -1,5 +1,7 @@
 import tempfile
 import unittest
+import zipfile
+import re
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
@@ -64,6 +66,38 @@ class ExcelImportTests(unittest.TestCase):
         self.assertEqual(result["headers"][:4], ["外层站点", "SPU", "流量情况/曝光量", "流量情况/点击量"])
         self.assertEqual(result["rows"][0]["SPU"], "123")
         self.assertEqual(result["rows"][0]["流量情况/支付件数"], "3")
+
+    def test_read_local_excel_ignores_stale_worksheet_dimension(self):
+        wb = Workbook()
+        ws = wb.active
+        ws.append(["款号", "ID（用于测图的ID）", "品类（后期匹配）", "模特性别"])
+        ws.append(["208326100202", "1002178235142", "长袖T恤", "中性"])
+        ws.append(["208426107201", "1051803908260", "羽绒服", "男"])
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            original_path = Path(tmpdir) / "source.xlsx"
+            broken_path = Path(tmpdir) / "stale-dimension.xlsx"
+            wb.save(original_path)
+
+            with zipfile.ZipFile(original_path, "r") as source, zipfile.ZipFile(broken_path, "w") as target:
+                for info in source.infolist():
+                    payload = source.read(info.filename)
+                    if info.filename == "xl/worksheets/sheet1.xml":
+                        payload, count = re.subn(
+                            rb'<dimension ref="[^"]+"',
+                            b'<dimension ref="A1"',
+                            payload,
+                            count=1,
+                        )
+                        self.assertEqual(count, 1)
+                        self.assertIn(b'<dimension ref="A1"', payload)
+                    target.writestr(info, payload)
+
+            result = _read_local_excel(str(broken_path))
+
+        self.assertEqual(result["headers"], ["款号", "ID（用于测图的ID）", "品类（后期匹配）", "模特性别"])
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(result["rows"][1]["款号"], "208426107201")
 
     def test_rows_raw_to_table_ignores_trailing_blank_header_cells(self):
         table = _rows_raw_to_table([

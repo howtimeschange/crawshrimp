@@ -43,6 +43,8 @@ from core.browser_session import open_browser_session
 from core.dev_harness import run_harness_capture, run_harness_eval, run_harness_snapshot
 from core.dev_harness_models import DevHarnessCaptureRequest, DevHarnessEvalRequest, DevHarnessSnapshotRequest
 from core.knowledge_service import ensure_knowledge_index, rebuild_knowledge_index, search_knowledge
+from core.one_xm_image import DEFAULT_BASE_URL as ONE_XM_DEFAULT_BASE_URL
+from core.one_xm_image import OneXMImageClient, file_to_data_url, run_image_task_until_done
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
 from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs, convert_pdf_rows_to_yq_output_root
@@ -2357,6 +2359,342 @@ def _finalize_semir_cloud_drive_outputs(
     return final_refs
 
 
+def _nested_config_value(source: dict, path: str, default: str = "") -> str:
+    current = source or {}
+    for part in path.split("."):
+        if not isinstance(current, dict):
+            return default
+        current = current.get(part)
+    return str(current or default).strip()
+
+
+def _resolve_one_xm_settings() -> dict:
+    cfg = load_config()
+    base_url = (
+        _nested_config_value(cfg, "ai.1xm.base_url")
+        or os.environ.get("ONE_XM_BASE_URL", "")
+        or ONE_XM_DEFAULT_BASE_URL
+    )
+    return {
+        "base_url": base_url,
+        "2k": (
+            os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            or os.environ.get("ONE_XM_API_KEY", "").strip()
+        ),
+        "4k": (
+            os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            or os.environ.get("ONE_XM_API_KEY", "").strip()
+        ),
+    }
+
+
+def _normalize_one_xm_key_tier(row: dict, run_params: dict) -> str:
+    explicit = str(
+        row.get("__1xm_key_tier")
+        or run_params.get("one_xm_key_tier")
+        or "auto"
+    ).strip().lower()
+    if explicit in {"2k", "4k"}:
+        return explicit
+    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), dict) else {}
+    size = str(payload.get("size") or row.get("尺寸") or "").strip()
+    match = re.match(r"^(\d+)x(\d+)$", size, flags=re.IGNORECASE)
+    if match and max(int(match.group(1)), int(match.group(2))) > 2048:
+        return "4k"
+    return "2k"
+
+
+def _parse_internal_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if not value:
+        return []
+    return [item.strip() for item in re.split(r"[\n\r,，、；;]+", str(value)) if item.strip()]
+
+
+def _prepare_one_xm_payload(row: dict) -> dict:
+    raw_payload = row.get("__1xm_payload") or {}
+    if isinstance(raw_payload, str):
+        try:
+            raw_payload = json.loads(raw_payload)
+        except Exception:
+            raw_payload = {}
+    if not isinstance(raw_payload, dict):
+        raw_payload = {}
+
+    quality = str(raw_payload.get("quality") or row.get("质量") or "auto").strip().lower()
+    if quality not in {"auto", "low", "medium", "high"}:
+        quality = "auto"
+    payload = {
+        "model": "gpt-image-2",
+        "prompt": str(raw_payload.get("prompt") or row.get("最终提示词") or "").strip(),
+        "size": str(raw_payload.get("size") or row.get("尺寸") or "1024x1024").strip(),
+        "quality": quality,
+        "output_format": str(raw_payload.get("output_format") or row.get("格式") or "png").strip(),
+        "n": int(raw_payload.get("n") or row.get("生成数量") or 1),
+    }
+    for optional_key in ("webhook_url", "webhook_secret", "mask"):
+        if raw_payload.get(optional_key):
+            payload[optional_key] = raw_payload.get(optional_key)
+
+    reference_paths = _parse_internal_list(row.get("__1xm_reference_paths")) or _parse_internal_list(row.get("参考图文件"))
+    images = []
+    image_errors = []
+    for raw_path in reference_paths[:10]:
+        try:
+            images.append(file_to_data_url(raw_path))
+        except Exception as exc:
+            image_errors.append(f"{Path(raw_path).name}: {exc}")
+    if images:
+        payload["image"] = images
+    if image_errors:
+        row["备注"] = "；".join([str(row.get("备注") or "").strip(), f"参考图读取失败：{'；'.join(image_errors)}"]).strip("；")
+
+    return payload
+
+
+def _run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dict) -> dict:
+    patched = dict(row)
+    tier = _normalize_one_xm_key_tier(patched, run_params)
+    api_key = str(one_xm_settings.get(tier) or "").strip()
+    if not api_key:
+        patched["执行结果"] = "配置缺失"
+        patched["备注"] = f"设置菜单未配置 1XM GPT Image {tier.upper()} Key"
+        return patched
+
+    payload = _prepare_one_xm_payload(patched)
+    if not payload.get("prompt"):
+        patched["执行结果"] = "参数缺失"
+        patched["备注"] = "缺少最终提示词"
+        return patched
+
+    client = OneXMImageClient(api_key, base_url=one_xm_settings.get("base_url") or ONE_XM_DEFAULT_BASE_URL)
+    result = run_image_task_until_done(
+        client,
+        payload,
+        idempotency_key=str(patched.get("__1xm_idempotency_key") or "").strip() or f"tmall_ai_{secrets.token_hex(8)}",
+        task_attempts=max(1, int(run_params.get("compensate_attempts") or 2)),
+        request_retries=max(1, int(run_params.get("retry_attempts") or 3)),
+        request_timeout_seconds=max(30, int(float(run_params.get("request_timeout_seconds") or 120))),
+        retry_delay_seconds=1.5,
+        poll_timeout_seconds=max(60, int(float(run_params.get("poll_timeout_minutes") or 10) * 60)),
+    )
+
+    if result.get("ok"):
+        urls = result.get("image_urls") or []
+        patched["1XM任务ID"] = result.get("task_id") or ""
+        patched["1XM轮询URL"] = result.get("poll_url") or ""
+        patched["生成图URL"] = "\n".join(urls)
+        patched["生成图数量"] = len(urls)
+        patched["执行结果"] = "已生成"
+        retry_note = []
+        if int(result.get("compensation_attempts") or 0) > 0:
+            retry_note.append(f"补偿 {result.get('compensation_attempts')} 次")
+        if int(result.get("poll_attempts") or 0) > 0:
+            retry_note.append(f"轮询 {result.get('poll_attempts')} 次")
+        patched["备注"] = "；".join(retry_note)
+        return patched
+
+    patched["执行结果"] = "生成失败"
+    patched["备注"] = str(result.get("error") or "1XM 任务失败")
+    return patched
+
+
+async def _apply_tmall_ai_image_generation(data_rows: list, run_params: dict, wait_for_control, log) -> list:
+    if str(run_params.get("execute_mode") or "plan").strip().lower() != "generate":
+        return data_rows
+
+    planned_indexes = [
+        index
+        for index, row in enumerate(data_rows or [])
+        if isinstance(row, dict) and row.get("__1xm_generate")
+    ]
+    if not planned_indexes:
+        return data_rows
+
+    max_jobs = max(1, int(run_params.get("max_generate_jobs") or 1))
+    generation_concurrency = max(1, min(100, int(run_params.get("generation_concurrency") or 100)))
+    settings = _resolve_one_xm_settings()
+    patched_rows = [dict(row) if isinstance(row, dict) else row for row in (data_rows or [])]
+    generation_total = min(len(planned_indexes), max_jobs)
+    log(f"[1xm] 准备并发执行 {generation_total}/{len(planned_indexes)} 条 GPT-Image-2 异步生图任务，并发上限 {generation_concurrency}")
+
+    selected_indexes = planned_indexes[:generation_total]
+    for row_index in planned_indexes[generation_total:]:
+        row = patched_rows[row_index]
+        row["执行结果"] = "已跳过"
+        row["备注"] = f"超过本次最多真实生成 {max_jobs} 条的费用保护阈值"
+
+    semaphore = asyncio.Semaphore(generation_concurrency)
+
+    async def generate_one(row_index: int, ordinal: int) -> tuple[int, dict]:
+        row = patched_rows[row_index]
+        async with semaphore:
+            log(f"[1xm] 提交生图 {ordinal}/{generation_total}: 款号 {row.get('款号') or ''} / {row.get('提示词字段名') or ''}")
+            try:
+                patched = await asyncio.to_thread(_run_one_xm_generation_row, row, run_params, settings)
+            except Exception as exc:
+                patched = dict(row)
+                patched["执行结果"] = "生成失败"
+                patched["备注"] = str(exc)
+                log(f"[1xm][warn] 生图失败：{exc}")
+            return row_index, patched
+
+    tasks = [
+        asyncio.create_task(generate_one(row_index, ordinal))
+        for ordinal, row_index in enumerate(selected_indexes, start=1)
+    ]
+    for completed, task in enumerate(asyncio.as_completed(tasks), start=1):
+        row_index, patched = await task
+        patched_rows[row_index] = patched
+        await wait_for_control({
+            "records": completed,
+            "shared": {
+                "total_rows": generation_total,
+                "current_exec_no": completed,
+                "current_row_no": int(patched.get("表格行号") or 0),
+                "current_buyer_id": str(patched.get("款号") or ""),
+                "current_store": "1XM GPT-Image-2 生图",
+                "generation_total_jobs": generation_total,
+                "generation_completed_jobs": completed,
+            },
+            "phase": "one_xm_generate",
+        })
+
+    await wait_for_control({
+        "records": generation_total,
+        "shared": {
+            "total_rows": generation_total,
+            "current_exec_no": generation_total,
+            "current_store": "1XM GPT-Image-2 生图完成",
+            "generation_total_jobs": generation_total,
+            "generation_completed_jobs": generation_total,
+        },
+        "phase": "one_xm_done",
+    })
+    return patched_rows
+
+
+def _task_file_param_path(run_params: dict, key: str, default: str = "") -> str:
+    value = (run_params or {}).get(key)
+    if isinstance(value, dict):
+        for field in ("path", "file_path", "local_path", "absolute_path"):
+            candidate = str(value.get(field) or "").strip()
+            if candidate:
+                return candidate
+        return default
+    candidate = str(value or "").strip()
+    return candidate or default
+
+
+def _task_int_param(run_params: dict, key: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
+    try:
+        value = int(float(str((run_params or {}).get(key, default)).strip()))
+    except Exception:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _task_float_param(run_params: dict, key: str, default: float, *, min_value: float | None = None, max_value: float | None = None) -> float:
+    try:
+        value = float(str((run_params or {}).get(key, default)).strip())
+    except Exception:
+        value = default
+    if min_value is not None:
+        value = max(min_value, value)
+    if max_value is not None:
+        value = min(max_value, value)
+    return value
+
+
+def _load_tmall_ai_image_chain_module():
+    import importlib.util
+    import sys
+
+    script_path = Path(__file__).resolve().parents[1] / "adapters" / "tmall-ops-assistant" / "tools" / "run_tmall_ai_image_test_chain.py"
+    spec = importlib.util.spec_from_file_location("crawshrimp_tmall_ai_image_test_chain", script_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"无法加载天猫 AI 测图全链路脚本：{script_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_dir: str, wait_for_control, log) -> list:
+    import argparse
+
+    module = _load_tmall_ai_image_chain_module()
+    execute_mode = str((run_params or {}).get("execute_mode") or "plan").strip().lower()
+    generate_modes = {"generate", "live_upload", "live_create", "live_upload_create", "live_online", "create_and_online"}
+    create_modes = {"live_create", "live_upload_create", "live_online", "create_and_online"}
+    live_upload = execute_mode in {"live_upload", *create_modes}
+    live_create = execute_mode in create_modes
+    live_online = execute_mode in {"live_online", "create_and_online"}
+    should_generate = execute_mode in generate_modes
+    if live_online:
+        live_upload = True
+        live_create = True
+        should_generate = True
+    if live_create:
+        live_upload = True
+        should_generate = True
+
+    workflow_file = _task_file_param_path(run_params, "workflow_file", getattr(module, "DEFAULT_WORKFLOW_FILE", ""))
+    prompt_file = _task_file_param_path(run_params, "prompt_file", getattr(module, "DEFAULT_PROMPT_FILE", ""))
+    if not workflow_file:
+        raise RuntimeError("缺少测图任务导入模板文件")
+    if not prompt_file:
+        raise RuntimeError("缺少 AI 测图提示词库文件")
+
+    args = argparse.Namespace(
+        workflow_file=workflow_file,
+        prompt_file=prompt_file,
+        limit=_task_int_param(run_params, "limit", _task_int_param(run_params, "max_generate_jobs", 5, min_value=1), min_value=1, max_value=200),
+        cloud_path=str((run_params or {}).get("cloud_path") or getattr(module, "DEFAULT_CLOUD_PATH", "")).strip(),
+        cdp_url=str((run_params or {}).get("cdp_url") or "http://127.0.0.1:9222").strip(),
+        generate=should_generate,
+        live_upload=live_upload,
+        live_create=live_create,
+        live_online=live_online,
+        image_size=str((run_params or {}).get("image_size") or "960x1280").strip(),
+        ai_image_count=_task_int_param(run_params, "ai_image_count", 4, min_value=1, max_value=20),
+        generation_concurrency=_task_int_param(run_params, "generation_concurrency", 100, min_value=1, max_value=100),
+        reference_mode=str((run_params or {}).get("reference_mode") or "main_only").strip().lower(),
+        quality=str((run_params or {}).get("quality") or "auto").strip().lower(),
+        output_format=str((run_params or {}).get("output_format") or "jpeg").strip().lower(),
+        one_xm_key_tier=str((run_params or {}).get("one_xm_key_tier") or "auto").strip().lower(),
+        retry_attempts=_task_int_param(run_params, "retry_attempts", 3, min_value=1, max_value=8),
+        compensate_attempts=_task_int_param(run_params, "compensate_attempts", 2, min_value=1, max_value=6),
+        poll_timeout_minutes=_task_float_param(run_params, "poll_timeout_minutes", 12.0, min_value=1.0, max_value=60.0),
+    )
+    if args.quality not in {"auto", "low", "medium", "high"}:
+        args.quality = "auto"
+    if args.one_xm_key_tier not in {"auto", "2k", "4k"}:
+        args.one_xm_key_tier = "auto"
+    if args.reference_mode not in {"main_only", "main_and_detail"}:
+        args.reference_mode = "main_only"
+
+    log(
+        "[tmall-ai-chain] 后端编排执行："
+        f"mode={execute_mode}, generate={args.generate}, "
+        f"upload={args.live_upload}, create={args.live_create}, online={args.live_online}, "
+        f"limit={args.limit}, ai_image_count={args.ai_image_count}, quality={args.quality}"
+    )
+    return await module.run_chain_rows(
+        args,
+        Path(runtime_artifact_dir),
+        log=log,
+        wait_for_control=wait_for_control,
+    )
+
+
 def _finalize_tmall_ops_assistant_outputs(
     task_id: str,
     data_rows: list,
@@ -2542,6 +2880,13 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
     if not p.exists():
         return {"error": f"File not found: {path}", "headers": [], "rows": [], "total": 0}
 
+    def _worksheet_rows(ws):
+        try:
+            ws.reset_dimensions()
+        except Exception:
+            pass
+        return list(ws.iter_rows(values_only=True))
+
     suffix = p.suffix.lower()
     try:
         if suffix in ('.xlsx', '.xls', '.xlsm'):
@@ -2551,7 +2896,7 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
             try:
                 if sheet:
                     ws = wb[sheet]
-                    table = _rows_raw_to_table(list(ws.iter_rows(values_only=True)), header_row)
+                    table = _rows_raw_to_table(_worksheet_rows(ws), header_row)
                     table["sheet_name"] = ws.title
                     table["sheets"] = {
                         ws.title: {
@@ -2564,7 +2909,7 @@ def _read_local_excel(path: str, sheet: Optional[str] = None, header_row: int = 
 
                 workbook_tables = {}
                 for ws in wb.worksheets:
-                    workbook_tables[ws.title] = _rows_raw_to_table(list(ws.iter_rows(values_only=True)), header_row)
+                    workbook_tables[ws.title] = _rows_raw_to_table(_worksheet_rows(ws), header_row)
 
                 active_name = wb.active.title if wb.active else (wb.sheetnames[0] if wb.sheetnames else "Sheet1")
                 active_table = workbook_tables.get(active_name) or {"headers": [], "rows": [], "total": 0}
@@ -3396,6 +3741,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 log=log,
             )
             run_params["__amazon_generated_refs"] = amazon_generated_refs
+            raw_count = len(data)
+        if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_generation'):
+            data = await _apply_tmall_ai_image_generation(data, run_params, wait_for_control, log)
+            raw_count = len(data)
+        if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain'):
+            data = await _apply_tmall_ai_image_test_chain(run_params, runtime_artifact_dir, wait_for_control, log)
             raw_count = len(data)
         deduped_count = len(data)
         log(f"Script complete. Records: {raw_count}")

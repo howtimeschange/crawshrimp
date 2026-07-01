@@ -143,6 +143,40 @@
         </div>
       </section>
 
+      <!-- AI 能力 -->
+      <section class="section">
+        <h3>AI 生图</h3>
+        <p class="hint">1XM GPT-Image-2 Key 仅保存在本机抓虾配置中，任务运行时由后端读取；不会写入适配器脚本或导出模板。</p>
+        <div class="field">
+          <label>1XM Base URL</label>
+          <input
+            v-model="cfg['ai.1xm.base_url']"
+            placeholder="https://api.1xm.ai/v1"
+            class="input"
+          />
+        </div>
+        <div class="field">
+          <label>GPT Image 2K Key</label>
+          <input
+            v-model="cfg['ai.1xm.gpt_image_2k_key']"
+            placeholder="sk-..."
+            class="input"
+            type="password"
+            autocomplete="off"
+          />
+        </div>
+        <div class="field">
+          <label>GPT Image 4K Key</label>
+          <input
+            v-model="cfg['ai.1xm.gpt_image_4k_key']"
+            placeholder="sk-..."
+            class="input"
+            type="password"
+            autocomplete="off"
+          />
+        </div>
+      </section>
+
       <div class="save-row">
         <button class="btn-orange" :disabled="saving" @click="save">
           {{ saving ? '保存中…' : '保存设置' }}
@@ -173,8 +207,22 @@ const testing = reactive({ dingtalk: false, feishu: false, webhook: false })
 const testMsg = reactive({ dingtalk: '', feishu: '', webhook: '' })
 const testOk  = reactive({ dingtalk: true, feishu: true, webhook: true })
 
+function flattenSettings(source, prefix = '', target = {}) {
+  const value = source && typeof source === 'object' ? source : {}
+  for (const [key, item] of Object.entries(value)) {
+    const nextKey = prefix ? `${prefix}.${key}` : key
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      flattenSettings(item, nextKey, target)
+    } else {
+      target[nextKey] = item
+    }
+  }
+  return target
+}
+
 async function load() {
-  cfg.value = await window.cs.getSettings() || {}
+  cfg.value = flattenSettings(await window.cs.getSettings() || {})
+  if (!cfg.value['ai.1xm.base_url']) cfg.value['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
 }
 
 async function browseDir() {
