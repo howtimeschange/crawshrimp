@@ -22,17 +22,27 @@ test('mac desktop packaging is configured for Developer ID notarization', () => 
   assert.equal(fs.existsSync(path.join(repoRoot, 'app/assets/entitlements.mac.inherit.plist')), true)
 })
 
-test('desktop workflow provides mac signing and notarization secrets to electron-builder', () => {
+test('desktop workflow signs with electron-builder and notarizes DMGs in a separate step', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const notarizeScript = readRepoFile('app/scripts/notarize-macos-dmgs.sh')
 
   assert.match(workflow, /Prepare Apple notarization credentials/)
   assert.match(workflow, /APPLE_API_KEY_BASE64: \$\{\{ secrets\.APPLE_API_KEY_BASE64 \}\}/)
   assert.match(workflow, /APPLE_API_KEY_ID_SECRET: \$\{\{ secrets\.APPLE_API_KEY_ID \}\}/)
   assert.match(workflow, /APPLE_API_ISSUER_SECRET: \$\{\{ secrets\.APPLE_API_ISSUER \}\}/)
-  assert.match(workflow, /echo "APPLE_API_KEY=\$\{key_path\}"/)
-  assert.match(workflow, /echo "APPLE_API_KEY_ID=\$\{APPLE_API_KEY_ID_SECRET\}"/)
-  assert.match(workflow, /echo "APPLE_API_ISSUER=\$\{APPLE_API_ISSUER_SECRET\}"/)
+  assert.match(workflow, /echo "APPLE_NOTARY_KEY=\$\{key_path\}"/)
+  assert.match(workflow, /echo "APPLE_NOTARY_KEY_ID=\$\{APPLE_API_KEY_ID_SECRET\}"/)
+  assert.match(workflow, /echo "APPLE_NOTARY_ISSUER=\$\{APPLE_API_ISSUER_SECRET\}"/)
+  assert.doesNotMatch(workflow, /echo "APPLE_API_KEY=\$\{key_path\}"/)
   assert.match(workflow, /CSC_LINK: \$\{\{ secrets\.MAC_CSC_LINK \}\}/)
   assert.match(workflow, /CSC_KEY_PASSWORD: \$\{\{ secrets\.MAC_CSC_KEY_PASSWORD \}\}/)
   assert.match(workflow, /CSC_NAME: "yicheng xing \(62AR7GLNK3\)"/)
+  assert.match(workflow, /Notarize and staple macOS DMGs/)
+  assert.match(workflow, /APPLE_NOTARY_TIMEOUT: 2h/)
+  assert.match(workflow, /bash scripts\/notarize-macos-dmgs\.sh/)
+
+  assert.match(notarizeScript, /xcrun notarytool submit/)
+  assert.match(notarizeScript, /--timeout "\$\{timeout_duration\}"/)
+  assert.match(notarizeScript, /xcrun stapler staple/)
+  assert.match(notarizeScript, /xcrun stapler validate/)
 })
