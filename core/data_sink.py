@@ -209,13 +209,13 @@ def get_task_instance_detail(instance_uid: str) -> dict:
             SELECT *
             FROM task_instance_artifacts
             WHERE instance_uid=?
-            ORDER BY id DESC
+            ORDER BY id ASC
         """, (uid,)).fetchall()
         events = conn.execute("""
             SELECT *
             FROM task_instance_events
             WHERE instance_uid=?
-            ORDER BY id DESC
+            ORDER BY id ASC
         """, (uid,)).fetchall()
 
     detail = dict(instance)
@@ -295,6 +295,27 @@ def list_task_instances(
             LIMIT ?
         """, [*params, safe_limit]).fetchall()
         return [dict(row) for row in rows]
+
+
+def find_task_instance_by_approval_batch_id(batch_id: str) -> Optional[dict]:
+    """Return the first task instance whose summary stores the approval batch id."""
+    target = str(batch_id or "").strip()
+    if not target:
+        return None
+    with _get_conn() as conn:
+        rows = conn.execute("""
+            SELECT *
+            FROM task_instances
+            WHERE summary_json LIKE ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 20
+        """, (f"%{target}%",)).fetchall()
+    for row in rows:
+        item = dict(row)
+        summary = _json_loads_object(item.get("summary_json"))
+        if str(summary.get("approval_batch_id") or "").strip() == target:
+            return item
+    return None
 
 
 def update_task_instance(instance_uid: str, **fields) -> dict:

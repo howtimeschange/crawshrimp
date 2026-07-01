@@ -976,7 +976,7 @@ git commit -m "feat(task-center): run AI image task instances"
 - Modify: `app/src/renderer/views/TaskInstanceRunner.vue`
 - Test: `tests/test_task_instance_artifacts.py`
 
-- [ ] **Step 1: Add artifact sync test**
+- [x] **Step 1: Add artifact sync test**
 
 Create `tests/test_task_instance_artifacts.py`:
 
@@ -1010,7 +1010,7 @@ class TaskInstanceArtifactsTests(unittest.TestCase):
         self.assertEqual(kinds, ["excel", "image", "directory"])
 ```
 
-- [ ] **Step 2: Sync outputs into artifacts**
+- [x] **Step 2: Sync outputs into artifacts**
 
 In `_execute_task` finish path, if `instance_uid` is present:
 
@@ -1022,7 +1022,7 @@ In `_execute_task` finish path, if `instance_uid` is present:
 - Call `data_sink.add_task_instance_artifact(instance_uid, kind=kind, label=Path(path).name, path=path, meta={"run_id": run_id})`.
 - Store approval batch id/token when approval URL exists.
 
-- [ ] **Step 3: Update approval submit endpoint**
+- [x] **Step 3: Update approval submit endpoint**
 
 When `/tmall-ai-image-approval/api/{batch_id}/submit` returns upload/create results, find matching instance by `approval_batch_id` and update:
 
@@ -1030,7 +1030,7 @@ When `/tmall-ai-image-approval/api/{batch_id}/submit` returns upload/create resu
 - `current_step`: `create`
 - `summary_json`: attempted/succeeded/failed counts
 
-- [ ] **Step 4: Show history readback**
+- [x] **Step 4: Show history readback**
 
 In `TaskInstanceRunner.vue`, show:
 
@@ -1039,7 +1039,7 @@ In `TaskInstanceRunner.vue`, show:
 - Create result summary from `summary`
 - Artifacts from `window.cs.getTaskInstance(instanceUid)`
 
-- [ ] **Step 5: Validate and commit**
+- [x] **Step 5: Validate and commit**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp

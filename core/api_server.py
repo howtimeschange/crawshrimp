@@ -2647,6 +2647,50 @@ def _extract_first_approval_board_url(data_rows: list) -> str:
     return ""
 
 
+def _parse_tmall_approval_board_url(url: str) -> dict:
+    try:
+        parsed = urlparse(str(url or "").strip())
+        parts = [part for part in parsed.path.split("/") if part]
+        batch_id = parts[-1] if parts else ""
+        token = (parse_qs(parsed.query).get("token") or [""])[0]
+        if "tmall-ai-image-approval" not in parsed.path:
+            return {}
+        return {"approval_batch_id": batch_id, "approval_token": token}
+    except Exception:
+        return {}
+
+
+def _task_instance_artifact_kind(path: str) -> str:
+    suffix = Path(str(path or "").split("?", 1)[0]).suffix.lower()
+    if suffix in {".xlsx", ".xls", ".xlsm", ".csv"}:
+        return "excel"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return "image"
+    if not suffix:
+        return "directory"
+    return "file"
+
+
+def _sync_task_instance_artifacts(instance_uid: str, output_files: list, run_id: int) -> None:
+    if not instance_uid:
+        return
+    for path in output_files or []:
+        text = str(path or "").strip()
+        if not text:
+            continue
+        try:
+            label = Path(text.split("?", 1)[0]).name or text
+            data_sink.add_task_instance_artifact(
+                instance_uid,
+                kind=_task_instance_artifact_kind(text),
+                label=label,
+                path=text,
+                meta={"run_id": run_id},
+            )
+        except Exception:
+            logger.debug("Failed to sync task instance artifact: %s", text, exc_info=True)
+
+
 def _load_tmall_ai_image_chain_module():
     import importlib.util
     import sys
@@ -3983,16 +4027,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         if approval_board_url:
             output_files = merge_output_file_refs([approval_board_url], output_files)
         data_sink.finish_run(run_id, len(data), output_files)
+        if instance_uid:
+            _sync_task_instance_artifacts(instance_uid, output_files, run_id)
         done_status = {'status': 'done', 'run_id': run_id, 'records': len(data)}
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
         _run_status[jid] = done_status
         if instance_uid:
+            approval_summary = _parse_tmall_approval_board_url(approval_board_url)
             instance_summary = {
                 "records": len(data),
                 "output_files": output_files,
                 "approval_board_url": approval_board_url,
                 "run_id": run_id,
+                **approval_summary,
             }
             if approval_board_url:
                 data_sink.update_task_instance(
@@ -4343,9 +4391,39 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
     _validate_tmall_approval_token(batch, token)
     module = _load_tmall_ai_image_chain_module()
     try:
-        return await module.upload_approved_tmall_batch(batch, log=logger.info)
+        result = await module.upload_approved_tmall_batch(batch, log=logger.info)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+    instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
+    if instance:
+        failed = int(result.get("failed") or 0)
+        attempted = int(result.get("attempted") or 0)
+        status = "completed" if attempted > 0 and failed == 0 else "partial_failed"
+        summary = _parse_json_object(instance.get("summary_json"))
+        summary.update({
+            "approval_batch_id": batch_id,
+            "submit_status": result.get("status"),
+            "attempted": attempted,
+            "succeeded": int(result.get("succeeded") or 0),
+            "failed": failed,
+            "submitted": int(result.get("submitted") or 0),
+            "result_path": result.get("result_path") or "",
+        })
+        data_sink.update_task_instance(
+            instance["instance_uid"],
+            status=status,
+            current_step="create",
+            summary=summary,
+        )
+        if result.get("result_path"):
+            data_sink.add_task_instance_artifact(
+                instance["instance_uid"],
+                kind="file",
+                label=Path(str(result.get("result_path"))).name,
+                path=str(result.get("result_path")),
+                meta={"approval_batch_id": batch_id},
+            )
+    return result
 
 
 @app.get("/tmall-ai-image-approval/{batch_id}")
