@@ -1,14 +1,42 @@
 <template>
-  <div class="runner">
+  <div :class="['runner', { 'ai-chain-runner': isTmallAiImageChainTask }]">
     <!-- 页头 -->
     <header class="runner-header">
       <h2>{{ task?.task_name }}</h2>
       <p v-if="task?.description" class="desc">{{ task.description }}</p>
     </header>
 
+    <nav v-if="isTmallAiImageChainTask" class="ai-chain-tabs" role="tablist" aria-label="巴拉-AI测图全链路步骤">
+      <button
+        v-for="step in aiChainSteps"
+        :key="step.id"
+        type="button"
+        role="tab"
+        :aria-selected="aiChainActiveStep === step.id"
+        :class="['ai-chain-tab', step.state, { selected: aiChainActiveStep === step.id }]"
+        @click="setAiChainActiveStep(step.id)"
+      >
+        <span class="ai-chain-tab-index">{{ step.index }}</span>
+        <div>
+          <strong>{{ step.title }}</strong>
+          <span>{{ step.detail }}</span>
+        </div>
+      </button>
+    </nav>
+
     <div class="runner-body">
       <!-- 参数面板 -->
-      <div class="params-panel" v-if="visibleParams.length">
+      <div
+        v-if="(!isTmallAiImageChainTask || aiChainActiveStep === 'config') && visibleParams.length"
+        :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
+      >
+        <div v-if="isTmallAiImageChainTask" class="ai-chain-panel-head">
+          <span>01</span>
+          <div>
+            <strong>任务配置</strong>
+            <small>选择导入表、提示词库、云盘路径和执行模式</small>
+          </div>
+        </div>
         <div v-if="hasParamProbeScript && (dynamicParamProbeLoading || dynamicParamProbeError)" class="probe-note">
           <span v-if="dynamicParamProbeLoading">正在探测页面筛选项…</span>
           <span v-else>{{ dynamicParamProbeError }}</span>
@@ -436,11 +464,29 @@
           <span v-if="lastResult" :class="['result-badge', lastResult.ok ? 'ok' : 'err']">
             {{ lastResult.msg }}
           </span>
+          <button
+            v-if="approvalBoardUrl && !isTmallAiImageChainTask"
+            type="button"
+            class="run-sub-btn"
+            @click="openApprovalDrawer"
+          >
+            审图看板
+          </button>
         </div>
       </div>
 
       <!-- 无参数任务的执行按钮 -->
-      <div v-else class="params-panel">
+      <div
+        v-else-if="!isTmallAiImageChainTask || aiChainActiveStep === 'config'"
+        :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
+      >
+        <div v-if="isTmallAiImageChainTask" class="ai-chain-panel-head">
+          <span>01</span>
+          <div>
+            <strong>任务配置</strong>
+            <small>当前任务无额外参数</small>
+          </div>
+        </div>
         <div class="action-row">
           <button
             class="run-btn"
@@ -482,8 +528,86 @@
             停止
           </button>
           <span v-if="isRunning" class="reset-link" @click="forceReset">重置</span>
+          <button
+            v-if="approvalBoardUrl && !isTmallAiImageChainTask"
+            type="button"
+            class="run-sub-btn"
+            @click="openApprovalDrawer"
+          >
+            审图看板
+          </button>
         </div>
       </div>
+
+      <section
+        v-if="isTmallAiImageChainTask && aiChainActiveStep === 'approval'"
+        class="ai-chain-step-panel ai-chain-approval-panel"
+      >
+        <div class="ai-chain-panel-head">
+          <span>02</span>
+          <div>
+            <strong>生图看板 / 审批</strong>
+            <small>{{ approvalBoardUrl ? '查看本批次原图、AI 图和 Prompt，确认后触发创建' : '任务生图完成后会自动显示图片看板' }}</small>
+          </div>
+        </div>
+        <TmallAiApprovalDrawer
+          v-if="approvalBoardUrl"
+          :model-value="true"
+          :board-url="approvalBoardUrl"
+          embedded
+          :show-submit-results="false"
+          @batch-updated="handleApprovalBatchUpdated"
+        />
+        <div v-else class="ai-chain-empty-panel">
+          <strong>等待生图批次</strong>
+          <span>执行第一步后，这里会展示原图、AI 图、Prompt 和确认/舍弃状态。</span>
+        </div>
+      </section>
+
+      <section
+        v-if="isTmallAiImageChainTask && aiChainActiveStep === 'create'"
+        class="ai-chain-step-panel ai-chain-result-panel"
+      >
+        <div class="ai-chain-panel-head">
+          <span>03</span>
+          <div>
+            <strong>实际测图任务创建结果</strong>
+            <small>{{ aiChainCreateSummary }}</small>
+          </div>
+        </div>
+        <div v-if="aiChainCreateRows.length" class="ai-chain-result-list">
+          <div
+            v-for="row in aiChainCreateRows"
+            :key="`${row.款号 || ''}-${row.任务ID || row.备注 || ''}`"
+            :class="['ai-chain-result-row', String(row.执行结果 || '').includes('失败') ? 'error' : 'ok']"
+          >
+            <div class="ai-chain-result-main">
+              <strong>{{ row.款号 || '-' }}</strong>
+              <span>商品ID {{ row.商品ID || '-' }}</span>
+            </div>
+            <div>
+              <span>任务ID</span>
+              <strong>{{ row.任务ID || '-' }}</strong>
+            </div>
+            <div>
+              <span>上传图</span>
+              <strong>{{ row.上传图数量 ?? '-' }}</strong>
+            </div>
+            <div>
+              <span>页面回读</span>
+              <strong>{{ row.页面回读 || '-' }}</strong>
+            </div>
+            <div class="ai-chain-result-note">
+              <span>{{ row.执行结果 || '-' }}</span>
+              <small v-if="row.备注">{{ row.备注 }}</small>
+            </div>
+          </div>
+        </div>
+        <div v-else class="ai-chain-empty-panel compact">
+          <strong>尚未创建测图任务</strong>
+          <span>第二步提交后，这里会显示任务 ID、上传数量、页面回读和失败原因。</span>
+        </div>
+      </section>
 
       <!-- 运行日志 -->
       <div class="log-panel">
@@ -751,11 +875,19 @@
         </div>
       </div>
     </div>
+
+    <TmallAiApprovalDrawer
+      v-if="!isTmallAiImageChainTask"
+      v-model="approvalDrawerOpen"
+      :board-url="approvalBoardUrl"
+      @batch-updated="handleApprovalBatchUpdated"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import TmallAiApprovalDrawer from './TmallAiApprovalDrawer.vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
@@ -773,6 +905,10 @@ const isRunning = ref(false)
 const lastResult = ref(null)
 const logEl = ref(null)
 const outputFiles = ref([])
+const approvalBoardUrl = ref('')
+const approvalBatch = ref(null)
+const approvalDrawerOpen = ref(false)
+const aiChainActiveStep = ref('config')
 const showFiles = ref(false)
 const syncingOdps = ref(false)
 const excelLoading = ref({})
@@ -1059,6 +1195,10 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
+  approvalBoardUrl.value = ''
+  approvalBatch.value = null
+  approvalDrawerOpen.value = false
+  aiChainActiveStep.value = 'config'
   syncingOdps.value = false
   isRunning.value = false
   lastResult.value = null
@@ -1075,6 +1215,9 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
         isRunning.value = true
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
+      }
+      if (last?.output_files) {
+        await refreshOutputFiles()
       }
       scrollToBottom()
     } catch {}
@@ -1120,6 +1263,92 @@ const useEnhancedProgressUi = computed(() =>
 const isTaskOdpsSyncable = computed(() =>
   isOdpsSyncableTask(props.adapterId, props.task?.task_id)
 )
+const isTmallAiImageChainTask = computed(() =>
+  props.adapterId === 'tmall-ops-assistant' && props.task?.task_id === 'tmall_ai_image_test_chain'
+)
+const aiChainAssets = computed(() =>
+  (approvalBatch.value?.items || []).flatMap(item => item.assets || [])
+)
+const aiChainAiAssets = computed(() =>
+  aiChainAssets.value.filter(asset => asset.kind === 'ai')
+)
+const aiChainCreateRows = computed(() =>
+  (approvalBatch.value?.submit_result_rows || []).filter(row => row?.阶段 === '天猫上传/创建测图任务')
+)
+const aiChainCreateStatus = computed(() => {
+  const status = String(approvalBatch.value?.status || '').trim()
+  if (status === 'submitted' && aiChainCreateRows.value.some(row => String(row?.执行结果 || '').includes('失败'))) {
+    return 'partial_failed'
+  }
+  return status
+})
+const aiChainCreateCounts = computed(() => {
+  const submitSummary = approvalBatch.value?.submit_summary || {}
+  const attempted = Number(submitSummary.attempted ?? aiChainCreateRows.value.length ?? 0)
+  const succeeded = Number(submitSummary.succeeded ?? aiChainCreateRows.value.filter(row => String(row?.执行结果 || '').includes('已创建')).length)
+  const failed = Number(submitSummary.failed ?? aiChainCreateRows.value.filter(row => String(row?.执行结果 || '').includes('失败')).length)
+  return {
+    attempted: Number.isFinite(attempted) ? attempted : 0,
+    succeeded: Number.isFinite(succeeded) ? succeeded : 0,
+    failed: Number.isFinite(failed) ? failed : 0,
+  }
+})
+const aiChainCreateSummary = computed(() => {
+  if (!approvalBoardUrl.value) return '等待审批批次生成'
+  if (!aiChainCreateRows.value.length) return '确认图片后触发上传和创建'
+  const counts = aiChainCreateCounts.value
+  return `尝试 ${counts.attempted || aiChainCreateRows.value.length} 款 / 成功 ${counts.succeeded} / 失败 ${counts.failed}`
+})
+const aiChainSteps = computed(() => {
+  const approved = aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
+  const rejected = aiChainAiAssets.value.filter(asset => asset.status === 'rejected').length
+  const pending = aiChainAiAssets.value.filter(asset => !['approved', 'rejected'].includes(asset.status)).length
+  const createStatus = aiChainCreateStatus.value
+  return [
+    {
+      id: 'config',
+      index: '01',
+      title: '任务配置',
+      detail: approvalBoardUrl.value || isRunning.value ? '已启动本批次' : '填写导入表、提示词库和执行模式',
+      state: approvalBoardUrl.value || isRunning.value ? 'done' : 'active',
+    },
+    {
+      id: 'approval',
+      index: '02',
+      title: '生图看板 / 审批',
+      detail: approvalBoardUrl.value
+        ? `AI 图 ${aiChainAiAssets.value.length} 张，确认 ${approved} / 舍弃 ${rejected} / 待定 ${pending}`
+        : '生图完成后显示图片看板',
+      state: approvalBoardUrl.value ? (pending > 0 ? 'active' : 'done') : 'pending',
+    },
+    {
+      id: 'create',
+      index: '03',
+      title: '创建结果',
+      detail: aiChainCreateSummary.value,
+      state: createStatus === 'created'
+        ? 'done'
+        : ['partial_failed', 'create_failed'].includes(createStatus)
+          ? 'error'
+          : 'pending',
+    },
+  ]
+})
+function hasAiChainCreateRows(batch) {
+  return (batch?.submit_result_rows || []).some(row => row?.阶段 === '天猫上传/创建测图任务')
+}
+
+function setAiChainActiveStep(stepId) {
+  const next = String(stepId || '').trim()
+  if (!['config', 'approval', 'create'].includes(next)) return
+  aiChainActiveStep.value = next
+}
+
+watch(approvalBoardUrl, (url, previousUrl) => {
+  if (!isTmallAiImageChainTask.value || !url || previousUrl) return
+  if (aiChainActiveStep.value === 'config') aiChainActiveStep.value = 'approval'
+})
+
 const odpsSyncFiles = computed(() =>
   outputFiles.value
     .map(path => buildOdpsSyncFile(props.adapterId, props.task?.task_id, path))
@@ -1671,6 +1900,10 @@ async function resolveCurrentTabId(params) {
 function resetRunUi() {
   lastResult.value = null
   outputFiles.value = []
+  approvalBoardUrl.value = ''
+  approvalBatch.value = null
+  approvalDrawerOpen.value = false
+  if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
   showFiles.value = false
   syncingOdps.value = false
 }
@@ -1782,9 +2015,12 @@ async function refreshOutputFiles() {
     const files = typeof dataR.runs[0].output_files === 'string'
       ? JSON.parse(dataR.runs[0].output_files)
       : dataR.runs[0].output_files
-    outputFiles.value = files || []
-    if (files?.length) showFiles.value = true
-    return files || []
+    const allFiles = Array.isArray(files) ? files : []
+    outputFiles.value = visibleOutputFiles(allFiles)
+    approvalBoardUrl.value = findApprovalBoardUrl(allFiles)
+    if (!approvalBoardUrl.value) approvalBatch.value = null
+    showFiles.value = outputFiles.value.length > 0
+    return allFiles
   } catch {
     return []
   }
@@ -1804,7 +2040,8 @@ async function finishRun(result, options = {}) {
   emit('status-change', result)
 
   if (result.status === 'done') {
-    await refreshOutputFiles()
+    const files = await refreshOutputFiles()
+    approvalBoardUrl.value = findApprovalBoardUrl(files, result)
     if (options.message) {
       lastResult.value = { ok: !!options.ok, msg: options.message }
     } else {
@@ -1965,11 +2202,54 @@ function now() {
 }
 
 function fileName(path) {
+  if (isHttpUrl(path)) {
+    try {
+      const parsed = new URL(String(path || ''))
+      if (parsed.pathname.includes('/tmall-ai-image-approval/')) return '审批看板'
+      return parsed.hostname
+    } catch {}
+  }
   return String(path || '').split('/').pop().split('\\').pop()
 }
 
 function openFile(path) {
+  if (isApprovalBoardUrl(path)) {
+    approvalBoardUrl.value = String(path || '').trim()
+    openApprovalDrawer()
+    return
+  }
   window.cs.openFile(path)
+}
+
+function openApprovalDrawer() {
+  if (!approvalBoardUrl.value) return
+  if (isTmallAiImageChainTask.value) return
+  approvalDrawerOpen.value = true
+}
+
+function handleApprovalBatchUpdated(payload) {
+  approvalBatch.value = payload || null
+  if (isTmallAiImageChainTask.value && hasAiChainCreateRows(payload)) {
+    aiChainActiveStep.value = 'create'
+  }
+}
+
+function isHttpUrl(path) {
+  return /^https?:\/\//i.test(String(path || '').trim())
+}
+
+function isApprovalBoardUrl(path) {
+  return isHttpUrl(path) && String(path || '').includes('/tmall-ai-image-approval/')
+}
+
+function visibleOutputFiles(files = []) {
+  return (files || []).map(file => String(file || '').trim()).filter(file => file && !isApprovalBoardUrl(file))
+}
+
+function findApprovalBoardUrl(files = [], result = null) {
+  const direct = String(result?.approval_board_url || '').trim()
+  if (direct) return direct
+  return (files || []).map(file => String(file || '').trim()).find(isApprovalBoardUrl) || ''
 }
 
 function isExcelFile(path) {
@@ -1979,6 +2259,7 @@ function isExcelFile(path) {
 function outputPathIcon(path) {
   const text = String(path || '').trim()
   const lower = text.toLowerCase()
+  if (isHttpUrl(text)) return '🔗'
   if (isExcelFile(text)) return '📊'
   if (lower.endsWith('.zip')) return '🗜'
   if (!/\.[^\\/]+$/.test(text)) return '📁'
@@ -2865,6 +3146,218 @@ onUnmounted(() => {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
+}
+.ai-chain-runner .runner-body {
+  padding: 16px 18px 24px;
+  display: grid;
+  gap: 16px;
+  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+}
+.ai-chain-tabs {
+  padding: 10px 18px 0;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.ai-chain-tab {
+  appearance: none;
+  min-width: 0;
+  min-height: 74px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: 12px 12px 0 0;
+  background: transparent;
+  color: inherit;
+  padding: 10px 12px 12px;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  text-align: left;
+  cursor: pointer;
+  transition: background .16s, border-color .16s, transform .16s;
+}
+.ai-chain-tab:hover {
+  background: rgba(255, 255, 255, .035);
+}
+.ai-chain-tab:active {
+  transform: translateY(1px);
+}
+.ai-chain-tab:focus-visible {
+  outline: 2px solid rgba(255, 106, 41, .58);
+  outline-offset: -2px;
+}
+.ai-chain-tab.selected {
+  border-color: var(--border);
+  background: var(--bg);
+  box-shadow: inset 0 2px 0 var(--orange);
+}
+.ai-chain-tab.active .ai-chain-tab-index {
+  color: var(--orange);
+  background: rgba(255, 106, 41, .1);
+}
+.ai-chain-tab.done .ai-chain-tab-index {
+  color: #86efac;
+  background: rgba(74, 222, 128, .1);
+}
+.ai-chain-tab.error .ai-chain-tab-index {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, .06);
+}
+.ai-chain-tab-index {
+  width: 32px;
+  height: 32px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, .055);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+.ai-chain-tab strong,
+.ai-chain-tab span {
+  min-width: 0;
+  display: block;
+}
+.ai-chain-tab strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.ai-chain-tab div > span {
+  margin-top: 5px;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ai-chain-step-panel {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--bg2);
+}
+.ai-chain-runner .params-panel,
+.ai-chain-runner .log-panel {
+  border-bottom: 0;
+}
+.ai-chain-runner .log-panel {
+  min-height: 240px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg2);
+}
+.ai-chain-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  margin: -20px -24px 2px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, .018);
+}
+.ai-chain-panel-head > span {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--bg3);
+  color: var(--orange);
+  font-size: 12px;
+  font-weight: 900;
+}
+.ai-chain-panel-head strong,
+.ai-chain-panel-head small {
+  display: block;
+}
+.ai-chain-panel-head strong {
+  color: var(--text);
+  font-size: 14px;
+}
+.ai-chain-panel-head small {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 12px;
+}
+.ai-chain-approval-panel,
+.ai-chain-result-panel {
+  padding: 20px 24px;
+  display: grid;
+  gap: 16px;
+}
+.ai-chain-approval-panel .ai-chain-panel-head,
+.ai-chain-result-panel .ai-chain-panel-head {
+  margin: -20px -24px 0;
+}
+.ai-chain-empty-panel {
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  padding: 30px 18px;
+  display: grid;
+  gap: 6px;
+  place-items: center;
+  text-align: center;
+  color: var(--text3);
+}
+.ai-chain-empty-panel.compact {
+  padding: 20px 16px;
+}
+.ai-chain-empty-panel strong {
+  color: var(--text);
+}
+.ai-chain-result-list {
+  display: grid;
+  gap: 10px;
+}
+.ai-chain-result-row {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg3);
+  padding: 12px;
+  display: grid;
+  grid-template-columns: minmax(150px, 1.2fr) minmax(88px, .65fr) minmax(70px, .45fr) minmax(160px, 1fr) minmax(240px, 1.7fr);
+  gap: 12px;
+  align-items: start;
+}
+.ai-chain-result-row.ok {
+  border-color: rgba(74, 222, 128, .26);
+}
+.ai-chain-result-row.error {
+  border-color: rgba(248, 113, 113, .36);
+}
+.ai-chain-result-row span,
+.ai-chain-result-row strong,
+.ai-chain-result-row small {
+  display: block;
+  min-width: 0;
+}
+.ai-chain-result-row span {
+  color: var(--text3);
+  font-size: 11px;
+}
+.ai-chain-result-row strong {
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 12px;
+  word-break: break-word;
+}
+.ai-chain-result-note span {
+  color: var(--text);
+  font-weight: 800;
+}
+.ai-chain-result-note small {
+  margin-top: 5px;
+  max-height: 54px;
+  overflow: auto;
+  color: #fca5a5;
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 /* 参数面板 */
@@ -3885,6 +4378,16 @@ onUnmounted(() => {
 }
 
 @media (max-width: 1040px) {
+  .ai-chain-tabs {
+    grid-template-columns: repeat(3, minmax(220px, 1fr));
+    overflow-x: auto;
+  }
+  .ai-chain-tab {
+    min-width: 220px;
+  }
+  .ai-chain-result-row {
+    grid-template-columns: 1fr 1fr;
+  }
   .params-grid {
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
   }
@@ -3913,6 +4416,17 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
+  .ai-chain-runner .runner-body {
+    padding: 12px;
+  }
+  .ai-chain-approval-panel,
+  .ai-chain-result-panel {
+    padding: 16px;
+  }
+  .ai-chain-approval-panel .ai-chain-panel-head,
+  .ai-chain-result-panel .ai-chain-panel-head {
+    margin: -16px -16px 0;
+  }
   .params-grid-shopee-bulk {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3930,6 +4444,20 @@ onUnmounted(() => {
 }
 
 @media (max-width: 640px) {
+  .ai-chain-tabs {
+    padding: 8px 12px 0;
+  }
+  .ai-chain-tab {
+    min-height: 68px;
+    padding: 9px 10px 10px;
+  }
+  .ai-chain-panel-head {
+    margin-left: -16px;
+    margin-right: -16px;
+  }
+  .ai-chain-result-row {
+    grid-template-columns: 1fr;
+  }
   .params-grid-shopee-bulk { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

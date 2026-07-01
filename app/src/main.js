@@ -1537,8 +1537,49 @@ secureHandle('export-data', async (_, aid, tid, fmt) => {
 })
 
 secureHandle('open-file', async (_, filePath) => {
+  try {
+    const parsed = new URL(String(filePath || ''))
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      await shell.openExternal(parsed.toString())
+      return { ok: true }
+    }
+  } catch {}
   shell.openPath(filePath)
   return { ok: true }
+})
+
+function approvalTokenQuery(token) {
+  return `token=${encodeURIComponent(String(token || ''))}`
+}
+
+secureHandle('get-tmall-approval-batch', async (_, batchId, token) => {
+  return apiCall('GET', `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}?${approvalTokenQuery(token)}`)
+})
+
+secureHandle('save-tmall-approval-decisions', async (_, batchId, token, decisions) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/decisions?${approvalTokenQuery(token)}`,
+    { decisions: decisions || {} },
+  )
+})
+
+secureHandle('regenerate-tmall-approval-asset', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/regenerate?${approvalTokenQuery(token)}`,
+    payload || {},
+    { timeoutMs: 20 * 60 * 1000 },
+  )
+})
+
+secureHandle('submit-tmall-approval-batch', async (_, batchId, token) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/submit?${approvalTokenQuery(token)}`,
+    null,
+    { timeoutMs: 20 * 60 * 1000 },
+  )
 })
 
 secureHandle('get-settings', async () => {

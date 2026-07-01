@@ -46,6 +46,54 @@ class TmallOpsManifestTests(unittest.TestCase):
         self.assertIn("上传结果", output_columns)
         self.assertIn("天猫货号", output_columns)
 
+    def test_ai_image_test_chain_exposes_only_approval_and_direct_create_modes(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        tasks_by_id = {item["id"]: item for item in manifest["tasks"]}
+        task = tasks_by_id["tmall_ai_image_test_chain"]
+        data_export_task = tasks_by_id["tmall_material_test_data_export"]
+        params = {item["id"]: item for item in task["params"]}
+        execute_mode = params["execute_mode"]
+        options = {item["value"]: item["label"] for item in execute_mode["options"]}
+        output_columns = task["output"][0]["columns"]
+
+        self.assertNotIn("tmall_ai_image_generation", tasks_by_id)
+        self.assertNotIn("tmall_material_test_pipeline", tasks_by_id)
+        self.assertEqual(task["name"], "巴拉-AI测图全链路")
+        self.assertEqual(data_export_task["name"], "巴拉-AI测图数据抓取导出")
+        self.assertEqual(task["entry_url"], "https://fmp.semirapp.com/web/index#/home/file")
+        self.assertIn("https://fmp.semirapp.com/", task["tab_match_prefixes"])
+        self.assertIn("https://iam.semirapp.com/", task["tab_match_prefixes"])
+        self.assertNotIn("https://myseller.taobao.com/", task["tab_match_prefixes"])
+        self.assertEqual(task["output"][0]["filename"], "巴拉-AI测图全链路执行证据_{timestamp}.xlsx")
+        self.assertEqual(data_export_task["output"][0]["filename"], "巴拉-AI测图数据抓取导出_{timestamp}.xlsx")
+        self.assertEqual(params["output_dir"]["type"], "directory")
+        self.assertIn("本地导出目录", params["output_dir"]["label"])
+        self.assertIn("网盘素材图", params["output_dir"]["hint"])
+        self.assertIn("AI生成图", params["output_dir"]["hint"])
+        self.assertIn(r"%USERPROFILE%\Downloads", params["output_dir"]["hint"])
+        self.assertNotIn("~/Downloads", params["output_dir"]["hint"])
+        data_export_params = {item["id"]: item for item in data_export_task["params"]}
+        self.assertEqual(data_export_params["output_dir"]["type"], "directory")
+        self.assertIn("本地导出目录", data_export_params["output_dir"]["label"])
+        self.assertIn("数据表格", data_export_params["output_dir"]["hint"])
+        self.assertIn(r"%USERPROFILE%\Downloads", data_export_params["output_dir"]["hint"])
+        self.assertNotIn("~/Downloads", data_export_params["output_dir"]["hint"])
+        self.assertEqual(execute_mode["default"], "approval_then_create")
+        self.assertEqual(list(options), ["approval_then_create", "direct_create"])
+        self.assertIn("审批", options["approval_then_create"])
+        self.assertIn("直接创建", options["direct_create"])
+        self.assertNotIn("plan", options)
+        self.assertNotIn("generate", options)
+        self.assertNotIn("live_online", options)
+        self.assertNotIn("limit", params)
+        self.assertEqual(params["ai_image_count"]["label"], "每款Prompt生图数")
+        self.assertIn("不同提示词", params["ai_image_count"]["hint"])
+        self.assertIn("每条 prompt 生成 1 张", params["ai_image_count"]["hint"])
+        self.assertIn("钉钉", params["approval_message_template"]["label"])
+        self.assertIn("审批看板", output_columns)
+        self.assertIn("审批批次ID", output_columns)
+        self.assertIn("审批状态", output_columns)
+
 
 if __name__ == "__main__":
     unittest.main()

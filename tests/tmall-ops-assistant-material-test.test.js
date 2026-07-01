@@ -80,16 +80,12 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
-test('manifest registers the Tmall material-test pipeline as an independent task', () => {
+test('manifest removes the independent material-test probe task', () => {
   const manifest = fs.readFileSync(path.resolve('adapters/tmall-ops-assistant/manifest.yaml'), 'utf8')
 
-  assert.match(manifest, /id: tmall_material_test_pipeline/)
-  assert.match(manifest, /name: 天猫素材测图探路/)
-  assert.match(manifest, /script: tmall-material-test\.js/)
-  assert.match(manifest, /value: plan/)
-  assert.match(manifest, /value: create_and_online/)
-  assert.match(manifest, /https:\/\/fmp\.semirapp\.com\//)
-  assert.match(manifest, /https:\/\/myseller\.taobao\.com\//)
+  assert.doesNotMatch(manifest, /id: tmall_material_test_pipeline/)
+  assert.doesNotMatch(manifest, /name: 天猫素材测图探路/)
+  assert.doesNotMatch(manifest, /script: tmall-material-test\.js/)
 })
 
 test('Semir image candidates only accept showcase/yz(1) main and SKC-coded detail references', async () => {
@@ -344,7 +340,8 @@ test('registers readonly Tmall material-test data export task and builds its pay
   const helpers = await loadDataExportExports()
 
   assert.match(manifest, /id: tmall_material_test_data_export/)
-  assert.match(manifest, /name: 天猫测图数据抓取导出/)
+  assert.match(manifest, /name: 巴拉-AI测图数据抓取导出/)
+  assert.match(manifest, /filename: "巴拉-AI测图数据抓取导出_\{timestamp\}\.xlsx"/)
   assert.match(manifest, /script: tmall-material-test-data-export\.js/)
   assert.match(manifest, /sheet_key: __sheet_name/)
   assert.match(manifest, /name: 概览/)

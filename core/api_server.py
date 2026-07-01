@@ -13,6 +13,7 @@ import base64
 import hmac
 import json
 import logging
+import mimetypes
 import os
 import re
 import secrets
@@ -58,7 +59,7 @@ logger = logging.getLogger(__name__)
 API_VERSION = "1.4.16"
 API_TOKEN_HEADER = "x-crawshrimp-token"
 PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
-PUBLIC_API_PREFIXES = ("/adapter-assets/",)
+PUBLIC_API_PREFIXES = ("/adapter-assets/", "/tmall-ai-image-approval/")
 
 # In-memory task run state for live status / logs
 _run_logs: dict = {}   # job_id -> list[str]
@@ -1517,6 +1518,19 @@ def _safe_local_name(value: str, fallback: str = "item") -> str:
     return text or fallback
 
 
+def _expand_user_configured_local_path(value: str) -> Path:
+    text = str(value or "").strip()
+    text = re.sub(
+        r"%([^%]+)%",
+        lambda match: os.environ.get(match.group(1), match.group(0)),
+        text,
+    )
+    text = os.path.expandvars(text)
+    if os.sep == "/" and "\\" in text and not re.match(r"^[A-Za-z]:\\", text):
+        text = text.replace("\\", os.sep)
+    return Path(text).expanduser()
+
+
 def _ensure_unique_local_path(path: Path) -> Path:
     if not path.exists():
         return path
@@ -2623,6 +2637,16 @@ def _task_bool_param(run_params: dict, key: str, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "y", "on", "是", "启用", "开启"}
 
 
+def _extract_first_approval_board_url(data_rows: list) -> str:
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        url = str(row.get("审批看板") or "").strip()
+        if url.startswith("http://") or url.startswith("https://"):
+            return url
+    return ""
+
+
 def _load_tmall_ai_image_chain_module():
     import importlib.util
     import sys
@@ -2641,20 +2665,8 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     import argparse
 
     module = _load_tmall_ai_image_chain_module()
-    execute_mode = str((run_params or {}).get("execute_mode") or "plan").strip().lower()
-    generate_modes = {"generate", "live_upload", "live_create", "live_upload_create", "live_online", "create_and_online"}
-    create_modes = {"live_create", "live_upload_create", "live_online", "create_and_online"}
-    live_upload = execute_mode in {"live_upload", *create_modes}
-    live_create = execute_mode in create_modes
-    live_online = execute_mode in {"live_online", "create_and_online"}
-    should_generate = execute_mode in generate_modes
-    if live_online:
-        live_upload = True
-        live_create = True
-        should_generate = True
-    if live_create:
-        live_upload = True
-        should_generate = True
+    execute_mode = str((run_params or {}).get("execute_mode") or "approval_then_create").strip().lower()
+    execution = module.normalize_chain_execution_mode(execute_mode)
 
     workflow_file = _task_file_param_path(run_params, "workflow_file", getattr(module, "DEFAULT_WORKFLOW_FILE", ""))
     prompt_file = _task_file_param_path(run_params, "prompt_file", getattr(module, "DEFAULT_PROMPT_FILE", ""))
@@ -2664,15 +2676,17 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         raise RuntimeError("缺少 AI 测图提示词库文件")
 
     args = argparse.Namespace(
+        execute_mode=execution["mode"],
         workflow_file=workflow_file,
         prompt_file=prompt_file,
-        limit=_task_int_param(run_params, "limit", _task_int_param(run_params, "max_generate_jobs", 5, min_value=1), min_value=1, max_value=200),
+        limit=0,
         cloud_path=str((run_params or {}).get("cloud_path") or getattr(module, "DEFAULT_CLOUD_PATH", "")).strip(),
         cdp_url=str((run_params or {}).get("cdp_url") or "http://127.0.0.1:9222").strip(),
-        generate=should_generate,
-        live_upload=live_upload,
-        live_create=live_create,
-        live_online=live_online,
+        generate=bool(execution["generate"]),
+        approval_required=bool(execution["approval_required"]),
+        live_upload=bool(execution["live_upload"]),
+        live_create=bool(execution["live_create"]),
+        live_online=bool(execution["live_online"]),
         image_size=str((run_params or {}).get("image_size") or "960x1280").strip(),
         ai_image_count=_task_int_param(run_params, "ai_image_count", 4, min_value=1, max_value=20),
         generation_concurrency=_task_int_param(run_params, "generation_concurrency", 100, min_value=1, max_value=100),
@@ -2688,6 +2702,9 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         tmall_create_delay_seconds=_task_float_param(run_params, "tmall_create_delay_seconds", 5.0, min_value=0.0, max_value=120.0),
         tmall_batch_delay_seconds=_task_float_param(run_params, "tmall_batch_delay_seconds", 12.0, min_value=0.0, max_value=180.0),
         tmall_readback_delay_seconds=_task_float_param(run_params, "tmall_readback_delay_seconds", 5.0, min_value=0.0, max_value=120.0),
+        approval_message_template=str((run_params or {}).get("approval_message_template") or "").strip(),
+        approval_notify_channel=str((run_params or {}).get("approval_notify_channel") or "dingtalk").strip().lower(),
+        approval_base_url=str((run_params or {}).get("approval_base_url") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").strip(),
     )
     if args.quality not in {"auto", "low", "medium", "high"}:
         args.quality = "auto"
@@ -2698,9 +2715,9 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
 
     log(
         "[tmall-ai-chain] 后端编排执行："
-        f"mode={execute_mode}, generate={args.generate}, "
-        f"upload={args.live_upload}, create={args.live_create}, online={args.live_online}, "
-        f"limit={args.limit}, ai_image_count={args.ai_image_count}, quality={args.quality}"
+        f"mode={args.execute_mode}, generate={args.generate}, "
+        f"approval={args.approval_required}, upload={args.live_upload}, create={args.live_create}, online={args.live_online}, "
+        f"ai_image_count={args.ai_image_count}, quality={args.quality}"
     )
     return await module.run_chain_rows(
         args,
@@ -2708,6 +2725,174 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         log=log,
         wait_for_control=wait_for_control,
     )
+
+
+def _tmall_local_export_root(run_params: dict, task_folder: str) -> Path:
+    output_dir = str((run_params or {}).get("output_dir") or "").strip()
+    target_root = _expand_user_configured_local_path(output_dir) if output_dir else (
+        Path.home() / "Downloads" / "抓虾导出" / "天猫运营助手" / _safe_local_name(task_folder, "巴拉-AI测图")
+    )
+    target_root.mkdir(parents=True, exist_ok=True)
+    return target_root
+
+
+def _split_tmall_local_path_values(value) -> list[str]:
+    if isinstance(value, (list, tuple, set)):
+        values = []
+        for item in value:
+            values.extend(_split_tmall_local_path_values(item))
+        return values
+    text = str(value or "").strip()
+    if not text:
+        return []
+    return [item.strip() for item in re.split(r"[\n\r|；;]+", text) if item.strip()]
+
+
+def _tmall_local_item_folder(row: dict) -> str:
+    style_code = _safe_local_name(
+        row.get("款号") or row.get("style_code") or row.get("款式编码") or "未填款号",
+        "未填款号",
+    )
+    item_id = _safe_local_name(
+        row.get("商品ID") or row.get("天猫商品ID") or row.get("ID（用于测图的ID）") or "未填商品ID",
+        "未填商品ID",
+    )
+    return f"{style_code}_{item_id}"
+
+
+def _tmall_row_has_semir_material_file(row: dict) -> bool:
+    stage = str(row.get("阶段") or "").strip()
+    result = str(row.get("执行结果") or "").strip()
+    return any(token in stage for token in ("森马", "找图", "参考图")) or any(
+        token in result for token in ("参考图", "已下载")
+    )
+
+
+def _tmall_row_has_ai_generated_file(row: dict) -> bool:
+    stage = str(row.get("阶段") or "").strip()
+    result = str(row.get("执行结果") or "").strip()
+    return any(token in stage for token in ("1XM", "AI", "生图")) or "已生成" in result
+
+
+def _copy_tmall_data_tables_to_local_export(exported_files: list, target_root: Path) -> list[str]:
+    copied_refs = []
+    table_root = target_root / "数据表格"
+    for file_path in exported_files or []:
+        source = Path(str(file_path or "")).expanduser()
+        if not source.is_file():
+            continue
+        if _is_within_directory(source, table_root):
+            copied_refs.append(str(source))
+            continue
+        copied = _copy_file_to_unique_target(source, table_root / source.name)
+        copied_refs.append(str(copied))
+    return copied_refs
+
+
+def _copy_tmall_row_local_files(
+    data_rows: list,
+    target_root: Path,
+    source_folder: str,
+    fields: tuple[str, ...],
+    *,
+    include_row,
+    seen: set[tuple[str, str, str]],
+) -> list[str]:
+    copied_refs = []
+    for row in data_rows or []:
+        if not isinstance(row, dict) or not include_row(row):
+            continue
+        item_folder = _tmall_local_item_folder(row)
+        target_dir = target_root / source_folder / item_folder
+        for field in fields:
+            for raw_path in _split_tmall_local_path_values(row.get(field)):
+                lowered = raw_path.lower()
+                if lowered.startswith(("http://", "https://", "data:", "blob:")):
+                    continue
+                source = Path(raw_path).expanduser()
+                if not source.is_file():
+                    continue
+                key = (str(source.resolve(strict=False)), source_folder, item_folder)
+                if key in seen:
+                    continue
+                seen.add(key)
+                if _is_within_directory(source, target_root):
+                    copied_refs.append(str(source))
+                    continue
+                copied = _copy_file_to_unique_target(source, target_dir / source.name)
+                copied_refs.append(str(copied))
+    return copied_refs
+
+
+def _copy_tmall_ai_chain_images_to_local_export(data_rows: list, target_root: Path) -> list[str]:
+    seen: set[tuple[str, str, str]] = set()
+    copied_refs = []
+    copied_refs.extend(_copy_tmall_row_local_files(
+        data_rows,
+        target_root,
+        "网盘素材图",
+        ("主图原图文件", "主参考图文件", "细节参考图文件", "参考图文件"),
+        include_row=lambda _row: True,
+        seen=seen,
+    ))
+    copied_refs.extend(_copy_tmall_row_local_files(
+        data_rows,
+        target_root,
+        "网盘素材图",
+        ("本地文件",),
+        include_row=_tmall_row_has_semir_material_file,
+        seen=seen,
+    ))
+    copied_refs.extend(_copy_tmall_row_local_files(
+        data_rows,
+        target_root,
+        "AI生成图",
+        ("本地生成图文件",),
+        include_row=lambda _row: True,
+        seen=seen,
+    ))
+    copied_refs.extend(_copy_tmall_row_local_files(
+        data_rows,
+        target_root,
+        "AI生成图",
+        ("本地文件",),
+        include_row=_tmall_row_has_ai_generated_file,
+        seen=seen,
+    ))
+    return copied_refs
+
+
+def _finalize_tmall_ai_image_test_chain_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    target_root = _tmall_local_export_root(run_params, "巴拉-AI测图全链路")
+    fallback_refs = [str(path) for path in [*(runtime_files or []), *(exported_files or [])] if str(path or "").strip()]
+
+    table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
+    image_refs = _copy_tmall_ai_chain_images_to_local_export(data_rows, target_root)
+    if log:
+        log(f"巴拉-AI测图全链路本地导出：表格 {len(table_refs)} 个，图片 {len(image_refs)} 张，目录 {target_root}")
+    return [*table_refs, *image_refs] or fallback_refs
+
+
+def _finalize_tmall_material_test_data_export_outputs(
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    log,
+) -> list[str]:
+    target_root = _tmall_local_export_root(run_params, "巴拉-AI测图数据抓取导出")
+    fallback_refs = [str(path) for path in [*(runtime_files or []), *(exported_files or [])] if str(path or "").strip()]
+
+    table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
+    if log:
+        log(f"巴拉-AI测图数据抓取导出本地导出：表格 {len(table_refs)} 个，目录 {target_root}")
+    return table_refs or fallback_refs
 
 
 def _finalize_tmall_ops_assistant_outputs(
@@ -2726,6 +2911,22 @@ def _finalize_tmall_ops_assistant_outputs(
             exported_files=exported_files,
             run_params=run_params,
             runtime_artifact_dir=runtime_artifact_dir,
+            log=log,
+        )
+    if task_id == "tmall_ai_image_test_chain":
+        return _finalize_tmall_ai_image_test_chain_outputs(
+            data_rows=data_rows,
+            runtime_files=runtime_files,
+            exported_files=exported_files,
+            run_params=run_params,
+            runtime_artifact_dir=runtime_artifact_dir,
+            log=log,
+        )
+    if task_id == "tmall_material_test_data_export":
+        return _finalize_tmall_material_test_data_export_outputs(
+            runtime_files=runtime_files,
+            exported_files=exported_files,
+            run_params=run_params,
             log=log,
         )
     return [*(runtime_files or []), *(exported_files or [])]
@@ -3588,7 +3789,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
-            if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_packaging_upload'):
+            if adapter_id == 'tmall-ops-assistant' and task_id in {
+                'tmall_packaging_upload',
+                'tmall_ai_image_test_chain',
+                'tmall_material_test_data_export',
+            }:
                 try:
                     packaged_refs = await asyncio.to_thread(
                         _finalize_tmall_ops_assistant_outputs,
@@ -3602,7 +3807,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     )
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
-                    log(f"[warn] 天猫包装图片后处理失败，回退到原始输出: {package_error}")
+                    log(f"[warn] 天猫任务后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             if adapter_id == 'shenhui-new-arrival':
@@ -3771,8 +3976,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
         exported_files = await export_outputs(data)
         output_files = await finalize_output_files(data, runtime_files, exported_files)
+        approval_board_url = _extract_first_approval_board_url(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else ""
+        if approval_board_url:
+            output_files = merge_output_file_refs([approval_board_url], output_files)
         data_sink.finish_run(run_id, len(data), output_files)
-        _run_status[jid] = {'status': 'done', 'run_id': run_id, 'records': len(data)}
+        done_status = {'status': 'done', 'run_id': run_id, 'records': len(data)}
+        if approval_board_url:
+            done_status['approval_board_url'] = approval_board_url
+        _run_status[jid] = done_status
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
 
     except RunAbortedError as e:
@@ -3971,6 +4182,140 @@ def get_adapter_asset(adapter_id: str, asset_path: str):
         raise HTTPException(400, str(exc))
 
     return FileResponse(path, headers=_adapter_asset_headers())
+
+
+def _normalize_tmall_approval_batch_id(batch_id: str) -> str:
+    normalized = re.sub(r"[^A-Za-z0-9._~-]+", "", str(batch_id or "").strip())
+    if not normalized:
+        raise HTTPException(400, "Invalid approval batch id")
+    return normalized
+
+
+def _find_tmall_approval_batch_path(batch_id: str) -> Path:
+    normalized = _normalize_tmall_approval_batch_id(batch_id)
+    pattern = f"tmall-ai-image-approval-batch-{normalized}.json"
+    roots = [runtime_paths.data_root(), Path.cwd()]
+    matches: list[Path] = []
+    for root in roots:
+        if not root.exists():
+            continue
+        try:
+            matches.extend(path for path in root.rglob(pattern) if path.is_file())
+        except OSError:
+            logger.debug("approval batch search skipped unavailable root %s", root, exc_info=True)
+    if not matches:
+        raise HTTPException(404, f"Approval batch not found: {batch_id}")
+    matches.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    return matches[0]
+
+
+def _load_tmall_approval_batch(batch_id: str) -> dict:
+    path = _find_tmall_approval_batch_path(batch_id)
+    try:
+        batch = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise HTTPException(500, f"Unable to read approval batch: {path}") from exc
+    if not batch.get("json_path"):
+        batch["json_path"] = str(path)
+    return batch
+
+
+def _validate_tmall_approval_token(batch: dict, token: str) -> None:
+    expected = str((batch or {}).get("token") or "").strip()
+    supplied = str(token or "").strip()
+    if not expected or not supplied or not hmac.compare_digest(expected, supplied):
+        raise HTTPException(403, "Invalid approval token")
+
+
+def _tmall_approval_asset_path(batch: dict, asset_id: str) -> Path:
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        _item, asset = module.find_approval_asset(batch, asset_id)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    path = Path(str(asset.get("path") or "")).expanduser()
+    if not path.is_file():
+        raise HTTPException(404, f"Approval image not found: {asset_id}")
+    return path
+
+
+class TmallApprovalDecisionsRequest(BaseModel):
+    decisions: dict = {}
+
+
+class TmallApprovalRegenerateRequest(BaseModel):
+    asset_id: str
+    prompt: Optional[str] = ""
+    reference_paths: Optional[List[str]] = None
+
+
+@app.get("/tmall-ai-image-approval/api/{batch_id}")
+def get_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    return batch
+
+
+@app.get("/tmall-ai-image-approval/api/{batch_id}/image/{asset_id}")
+def get_tmall_ai_image_approval_image(batch_id: str, asset_id: str, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    path = _tmall_approval_asset_path(batch, asset_id)
+    media_type = "image/jpeg"
+    guessed, _encoding = mimetypes.guess_type(str(path))
+    if guessed:
+        media_type = guessed
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/decisions")
+def save_tmall_ai_image_approval_decisions(batch_id: str, req: TmallApprovalDecisionsRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    batch = module.update_approval_decisions(batch, req.decisions or {})
+    return {"ok": True, "status": batch.get("status"), "updated_at": batch.get("updated_at")}
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/regenerate")
+async def regenerate_tmall_ai_image_approval_asset(batch_id: str, req: TmallApprovalRegenerateRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        asset = await asyncio.to_thread(
+            module.regenerate_approval_asset,
+            batch,
+            req.asset_id,
+            prompt=req.prompt or "",
+            reference_paths=req.reference_paths or [],
+        )
+        return {"ok": True, "asset": asset}
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/submit")
+async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        return await module.upload_approved_tmall_batch(batch, log=logger.info)
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.get("/tmall-ai-image-approval/{batch_id}")
+def get_tmall_ai_image_approval_board(batch_id: str, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    board_path = Path(str(batch.get("board_path") or "")).expanduser()
+    if not board_path.is_file():
+        module = _load_tmall_ai_image_chain_module()
+        board_path = Path(str(batch.get("json_path") or "")).with_name(f"tmall-ai-image-approval-board-{batch.get('batch_id', batch_id)}.html")
+        board_path.write_text(module.render_approval_board_html(batch), encoding="utf-8")
+    return FileResponse(board_path, media_type="text/html; charset=utf-8")
 
 
 # ─── Health ───

@@ -140,6 +140,43 @@ test('tiktok creator video download uses two-stage progress in task runner', () 
   assert.match(downloadSummary.sub, /批量下载/)
 })
 
+test('tmall ai image test chain uses find-image and generation progress tracks', () => {
+  const config = resolveTaskProgressConfig('tmall-ops-assistant', 'tmall_ai_image_test_chain')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'tmall-ops-assistant',
+    taskId: 'tmall_ai_image_test_chain',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'tmall_ai_chain_generate',
+      current: 6,
+      total: 6,
+      buyer_id: '208326108101',
+      store: '1XM 生图完成 3/24',
+      search_total_codes: 6,
+      search_completed_codes: 6,
+      generation_total_jobs: 24,
+      generation_completed_jobs: 3,
+    },
+  })
+
+  assert.equal(summary.title, '双阶段进度')
+  assert.equal(summary.ariaLabel, '巴拉 AI 测图双阶段进度')
+  assert.equal(summary.main, '批量生图')
+  assert.equal(summary.tracks.length, 2)
+  assert.equal(summary.tracks[0].title, '找图进度')
+  assert.equal(summary.tracks[0].main, '6 / 6 款')
+  assert.equal(summary.tracks[0].state, 'complete')
+  assert.equal(summary.tracks[1].title, '生图进度')
+  assert.equal(summary.tracks[1].main, '3 / 24 张')
+  assert.equal(summary.tracks[1].state, 'active')
+  assert.match(summary.sub, /并发/)
+})
+
 test('shein commodity quality uses two-stage list and return detail progress', () => {
   const config = resolveTaskProgressConfig('shein-helper', 'commodity_quality')
   assert.equal(config.mode, 'enhanced')

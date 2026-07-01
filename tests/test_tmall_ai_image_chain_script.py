@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 
 SCRIPT_PATH = Path("adapters/tmall-ops-assistant/tools/run_tmall_ai_image_test_chain.py").resolve()
@@ -22,6 +23,197 @@ def load_script():
 
 
 class TmallAiImageChainScriptTests(unittest.TestCase):
+    def test_chain_execution_modes_are_approval_or_direct_create_only(self):
+        module = load_script()
+
+        self.assertEqual(
+            module.CHAIN_EXECUTION_MODES,
+            ("approval_then_create", "direct_create"),
+        )
+        approval = module.normalize_chain_execution_mode("approval_then_create")
+        direct = module.normalize_chain_execution_mode("direct_create")
+
+        self.assertTrue(approval["generate"])
+        self.assertTrue(approval["approval_required"])
+        self.assertFalse(approval["live_upload"])
+        self.assertFalse(approval["live_create"])
+        self.assertTrue(direct["generate"])
+        self.assertFalse(direct["approval_required"])
+        self.assertTrue(direct["live_upload"])
+        self.assertTrue(direct["live_create"])
+        with self.assertRaises(ValueError):
+            module.normalize_chain_execution_mode("generate")
+
+    def test_approval_item_preserves_reference_and_ai_display_order(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        item = module.build_approval_item(
+            workflow,
+            {"chosenMain": {"filename": "橱窗1.jpg"}, "chosenDetail": {"filename": "208326100202-00482.jpg"}},
+            "/tmp/main.jpg",
+            "/tmp/flat.jpg",
+            [
+                {"提示词序号": 1, "提示词字段名": "正面", "完整Prompt": "prompt 1", "本地生成图文件": "/tmp/ai-1.jpg"},
+                {"提示词序号": 2, "提示词字段名": "侧身", "完整Prompt": "prompt 2", "本地生成图文件": "/tmp/ai-2.jpg"},
+            ],
+            ["/tmp/ai-1.jpg", "/tmp/ai-2.jpg"],
+            reference_mode="main_and_detail",
+        )
+
+        self.assertEqual(
+            [asset["label"] for asset in item["assets"]],
+            ["原图/主图", "款色参考图", "AI 图 1", "AI 图 2"],
+        )
+        self.assertEqual(item["assets"][2]["prompt"], "prompt 1")
+        self.assertEqual(item["assets"][3]["prompt_name"], "侧身")
+        self.assertEqual(item["assets"][2]["status"], "pending")
+        self.assertEqual(item["assets"][0]["status"], "reference")
+
+    def test_write_approval_batch_creates_board_and_renders_message_template(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            item = module.build_approval_item(
+                workflow,
+                {"chosenMain": {"filename": "橱窗1.jpg"}},
+                str(artifact_dir / "main.jpg"),
+                "",
+                [{"提示词序号": 1, "提示词字段名": "正面", "完整Prompt": "保留主商品", "本地生成图文件": str(artifact_dir / "ai-1.jpg")}],
+                [str(artifact_dir / "ai-1.jpg")],
+                reference_mode="main_only",
+            )
+
+            batch = module.write_approval_batch(
+                artifact_dir,
+                [item],
+                run_params={"approval_message_template": "批次 {{batch_id}}，共 {{total_styles}} 款：{{board_url}}"},
+                base_url="http://127.0.0.1:18765",
+                batch_id="batch-test",
+                token="token-test",
+                created_at="2026-07-01T12:00:00+08:00",
+            )
+
+            self.assertEqual(batch["batch_id"], "batch-test")
+            self.assertEqual(batch["status"], "pending_approval")
+            self.assertIn("token=token-test", batch["board_url"])
+            self.assertTrue(Path(batch["json_path"]).is_file())
+            self.assertTrue(Path(batch["board_path"]).is_file())
+            self.assertIn("批次 batch-test，共 1 款", batch["approval_message"])
+            html = Path(batch["board_path"]).read_text(encoding="utf-8")
+            self.assertIn("天猫AI测图审批看板", html)
+            self.assertIn("AI 图 1", html)
+            self.assertIn("保留主商品", html)
+
+    def test_selected_upload_plan_from_approval_batch_only_keeps_confirmed_ai_images(self):
+        module = load_script()
+        batch = {
+            "items": [{
+                "style_code": "208326100202",
+                "item_id": "1002178235142",
+                "origin_path": "/tmp/main.jpg",
+                "detail_reference_path": "/tmp/flat.jpg",
+                "assets": [
+                    {"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"},
+                    {"id": "ai-1", "kind": "ai", "path": "/tmp/ai-1.jpg", "status": "approved"},
+                    {"id": "ai-2", "kind": "ai", "path": "/tmp/ai-2.jpg", "status": "rejected"},
+                    {"id": "ai-3", "kind": "ai", "path": "/tmp/ai-3.jpg", "status": "pending"},
+                ],
+                "workflow": {
+                    "row_no": 2,
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "category": "长袖T恤",
+                    "gender": "中性",
+                    "prompt_name": "",
+                    "skc_code": "208326100202-00482",
+                },
+            }],
+        }
+
+        plan = module.selected_upload_plan_from_approval_batch(batch)
+
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]["origin_path"], "/tmp/main.jpg")
+        self.assertEqual(plan[0]["generated_paths"], ["/tmp/ai-1.jpg"])
+
+    def test_upload_approved_batch_marks_partial_failed_when_tmall_returns_error_with_task_id(self):
+        module = load_script()
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace()
+
+        upload_calls = []
+
+        async def fake_upload_and_create(*args, **_kwargs):
+            upload_calls.append(args)
+            return {
+                "uploaded": [{"url": "https://img.example/main.jpg"}, {"url": "https://img.example/ai.jpg"}],
+                "materials": [{"picUrl": "https://img.example/ai.jpg"}],
+                "batchPayload": {"experimentTaskId": "41716301"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "-1", "testImageCount": 1},
+                "error": "测图素材数量超过限制.3:4尺寸素材超过限制",
+            }
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            batch = {
+                "batch_id": "batch-partial",
+                "artifact_dir": str(artifact_dir),
+                "run_params": {},
+                "items": [{
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "detail_reference_path": "",
+                    "reference_mode": "main_only",
+                    "workflow": {
+                        "row_no": 2,
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "semir_data": {},
+                    "assets": [
+                        {"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"},
+                        {
+                            "id": "ai-1",
+                            "kind": "ai",
+                            "path": "/tmp/ai-1.jpg",
+                            "status": "approved",
+                            "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                        },
+                    ],
+                }],
+            }
+            with patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create):
+                result = asyncio.run(module.upload_approved_tmall_batch(batch))
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["status"], "partial_failed")
+            self.assertEqual(result["attempted"], 1)
+            self.assertEqual(result["succeeded"], 0)
+            self.assertEqual(result["failed"], 1)
+            self.assertEqual(batch["status"], "partial_failed")
+            self.assertEqual(upload_calls[0][2], "")
+            self.assertEqual(upload_calls[0][3], ["/tmp/ai-1.jpg"])
+            self.assertTrue(Path(batch["submit_result_path"]).is_file())
+            create_rows = [row for row in result["rows"] if row.get("阶段") == "天猫上传/创建测图任务"]
+            self.assertEqual(create_rows[0]["任务ID"], "41716301")
+            self.assertEqual(create_rows[0]["执行结果"], "天猫上传/创建失败")
+
     def test_workflow_aliases_match_user_import_template_headers(self):
         module = load_script()
         table = {
@@ -35,7 +227,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             }],
         }
 
-        rows, invalid = module.normalize_workflow_rows(table, 5)
+        rows, invalid = module.normalize_workflow_rows(table)
 
         self.assertEqual(invalid, [])
         self.assertEqual(len(rows), 1)
@@ -44,6 +236,22 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(rows[0].category, "长袖T恤")
         self.assertEqual(rows[0].gender, "中性")
         self.assertEqual(rows[0].skc_code, "208326100202-00482")
+
+    def test_workflow_rows_default_to_all_valid_rows_without_processing_limit(self):
+        module = load_script()
+        table = {
+            "headers": ["款号", "ID（用于测图的ID）", "品类（后期匹配）", "模特性别"],
+            "rows": [
+                {"款号": f"20832610020{i}", "ID（用于测图的ID）": f"100{i}", "品类（后期匹配）": "长袖T恤", "模特性别": "中性"}
+                for i in range(6)
+            ],
+        }
+
+        rows, invalid = module.normalize_workflow_rows(table)
+
+        self.assertEqual(invalid, [])
+        self.assertEqual(len(rows), 6)
+        self.assertEqual(rows[-1].style_code, "208326100205")
 
     def test_category_mapping_for_current_workflow_table_values(self):
         module = load_script()
@@ -95,6 +303,101 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 
         self.assertEqual([item.field_name for item in selected], ["优先1", "优先2", "优先3", "优先4"])
 
+    def test_run_chain_finds_all_semir_images_before_submitting_1xm_batch(self):
+        module = load_script()
+        logs: list[str] = []
+        progress_events: list[dict] = []
+        workflow_table = {
+            "headers": ["款号", "ID（用于测图的ID）", "品类（后期匹配）", "模特性别"],
+            "rows": [
+                {"款号": "208326100202", "ID（用于测图的ID）": "1001", "品类（后期匹配）": "长袖T恤", "模特性别": "中性"},
+                {"款号": "208326108101", "ID（用于测图的ID）": "1002", "品类（后期匹配）": "长袖T恤", "模特性别": "中性"},
+            ],
+        }
+        prompts = [
+            module.PromptItem("上装", "优先1", 1, "2K", "jpeg", "p1", 1, 1),
+            module.PromptItem("上装", "优先2", 2, "2K", "jpeg", "p2", 2, 2),
+        ]
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace()
+
+        async def fake_wait_for_semir_ready(*_args, **_kwargs):
+            return None
+
+        async def fake_find_semir(_runner, workflow, *_args, **_kwargs):
+            return {"chosenMain": {"filename": f"{workflow.style_code}.jpg"}}, f"/tmp/{workflow.style_code}-main.jpg", ""
+
+        def fake_generate(row, *_args, **_kwargs):
+            patched = dict(row)
+            patched["执行结果"] = "生图完成"
+            return patched
+
+        def fake_download(row, _artifact_dir):
+            return [f"/tmp/{row['款号']}-ai-{row['提示词序号']}.jpg"]
+
+        async def wait_for_control(payload):
+            progress_events.append(payload)
+
+        args = SimpleNamespace(
+            execute_mode="approval_then_create",
+            workflow_file="/tmp/workflow.xlsx",
+            prompt_file="/tmp/prompts.xlsx",
+            cloud_path="巴拉营运BU-商品//巴拉货控/2026年巴拉秋/",
+            cdp_url="http://127.0.0.1:9222",
+            image_size="960x1280",
+            ai_image_count=2,
+            generation_concurrency=100,
+            reference_mode="main_only",
+            allow_global_semir_fallback=False,
+            quality="auto",
+            output_format="jpeg",
+            one_xm_key_tier="auto",
+            retry_attempts=1,
+            compensate_attempts=1,
+            poll_timeout_minutes=1,
+            tmall_upload_delay_seconds=0,
+            tmall_create_delay_seconds=0,
+            tmall_batch_delay_seconds=0,
+            tmall_readback_delay_seconds=0,
+            approval_message_template="",
+            approval_notify_channel="none",
+            approval_base_url="http://127.0.0.1:18765",
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch.object(module, "read_workbook_table", return_value=workflow_table), \
+                patch.object(module, "read_prompt_library", return_value=prompts), \
+                patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "wait_for_semir_api_ready", fake_wait_for_semir_ready), \
+                patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+                patch.object(module, "find_semir_references", fake_find_semir), \
+                patch.object(module, "run_one_xm_generation_row", fake_generate), \
+                patch.object(module, "download_generated_images", fake_download):
+                rows = asyncio.run(module.run_chain_rows(
+                    args,
+                    Path(temp_dir),
+                    log=logs.append,
+                    wait_for_control=wait_for_control,
+                ))
+
+        find_indexes = [index for index, line in enumerate(logs) if "森马云盘找图" in line]
+        generation_indexes = [index for index, line in enumerate(logs) if "1XM 生图提交" in line]
+        self.assertEqual(len(find_indexes), 2)
+        self.assertEqual(len(generation_indexes), 4)
+        self.assertGreater(min(generation_indexes), max(find_indexes))
+        self.assertTrue(any("1XM 生图批量提交 4 张，并发 100" in line for line in logs))
+        self.assertTrue(any(event.get("shared", {}).get("generation_total_jobs") == 4 for event in progress_events))
+        self.assertTrue(any(row.get("阶段") == "图片审批" for row in rows))
+
     def test_select_prompts_skips_multi_item_prompts_by_default(self):
         module = load_script()
         workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
@@ -135,9 +438,14 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
     ok: true,
     async text() {{ return JSON.stringify(payload); }},
   }});
+  const fetchedUrls = [];
+  let mountAttempts = 0;
   global.fetch = async (url) => {{
-    const path = String(url);
+    fetchedUrls.push(String(url));
+    const path = new URL(String(url), 'https://fmp.semirapp.com').pathname;
     if (path === '/fengcloud/1/account/mount') {{
+      mountAttempts += 1;
+      if (mountAttempts === 1) throw new TypeError('Failed to fetch');
       return response({{ list: [{{ mount_id: 'm1', name: '巴拉营运BU-商品' }}] }});
     }}
     if (path === '/fengcloud/2/file/search') {{
@@ -156,6 +464,8 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
   process.stdout.write(JSON.stringify({{
     chosen: result.data[0].chosenMain && result.data[0].chosenMain.filename,
     mainCandidates: result.data[0].mainCandidates.map((item) => item.filename),
+    mountUrl: fetchedUrls.find((url) => String(url).includes('/fengcloud/1/account/mount')) || '',
+    mountAttempts,
   }}));
 }})().catch((error) => {{
   console.error(error && error.stack || error);
@@ -166,6 +476,8 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
 
         self.assertEqual(payload["chosen"], "橱窗1.jpg")
+        self.assertTrue(payload["mountUrl"].startswith("https://fmp.semirapp.com/fengcloud/1/account/mount"))
+        self.assertEqual(payload["mountAttempts"], 2)
         self.assertNotIn("橱窗1&颜色AI-4.jpg", payload["mainCandidates"])
 
     def test_semir_main_matching_accepts_yz1_without_parentheses(self):
@@ -196,7 +508,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
     async text() {{ return JSON.stringify(payload); }},
   }});
   global.fetch = async (url) => {{
-    const path = String(url);
+    const path = new URL(String(url), 'https://fmp.semirapp.com').pathname;
     if (path === '/fengcloud/1/account/mount') {{
       return response({{ list: [{{ mount_id: 'm1', name: '巴拉营运BU-商品' }}] }});
     }}
@@ -256,7 +568,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
     async text() {{ return JSON.stringify(payload); }},
   }});
   global.fetch = async (url) => {{
-    const path = String(url);
+    const path = new URL(String(url), 'https://fmp.semirapp.com').pathname;
     if (path === '/fengcloud/1/account/mount') {{
       return response({{ list: [{{ mount_id: 'm1', name: '巴拉营运BU-商品' }}] }});
     }}

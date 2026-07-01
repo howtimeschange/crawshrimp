@@ -11,6 +11,7 @@ class AiSettingsConfigTests(unittest.TestCase):
         self.assertEqual(one_xm["gpt_image_2k_key"], "")
         self.assertEqual(one_xm["gpt_image_4k_key"], "")
         self.assertEqual(one_xm["base_url"], "https://api.1xm.ai/v1")
+        self.assertEqual(DEFAULT_CONFIG["notify"]["dingtalk_secret"], "")
 
     def test_save_config_expands_dotted_settings_keys(self):
         with patch("core.config._config_path") as config_path:
@@ -23,11 +24,13 @@ class AiSettingsConfigTests(unittest.TestCase):
                 save_config({
                     "ai.1xm.gpt_image_2k_key": "unit-2k",
                     "notify.dingtalk_webhook": "https://example.test/hook",
+                    "notify.dingtalk_secret": "unit-secret",
                 })
                 loaded = load_config()
 
         self.assertEqual(loaded["ai"]["1xm"]["gpt_image_2k_key"], "unit-2k")
         self.assertEqual(loaded["notify"]["dingtalk_webhook"], "https://example.test/hook")
+        self.assertEqual(loaded["notify"]["dingtalk_secret"], "unit-secret")
 
 
 if __name__ == "__main__":

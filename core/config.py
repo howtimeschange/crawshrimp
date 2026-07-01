@@ -15,6 +15,7 @@ DEFAULT_CONFIG = {
     "log_dir": "logs",
     "notify": {
         "dingtalk_webhook": "",
+        "dingtalk_secret": "",
         "feishu_webhook": "",
         "custom_webhook": "",
     },

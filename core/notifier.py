@@ -9,7 +9,12 @@ import json
 import logging
 import operator
 import re
+import base64
+import hashlib
+import hmac
+import time
 from typing import List, Optional
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 from urllib.request import urlopen, Request
 from urllib.error import URLError
 
@@ -35,17 +40,18 @@ class NotifyError(Exception):
 def send(channel: str, title: str, records: int,
          adapter_name: str = "", task_name: str = "",
          sample_rows: Optional[List[dict]] = None,
-         error: Optional[str] = None):
+         error: Optional[str] = None,
+         message: Optional[str] = None):
     """
     Dispatch notification to configured channel.
     channel: 'dingtalk' | 'feishu' | 'webhook'
     """
     if channel == "dingtalk":
-        _send_dingtalk(title, records, adapter_name, task_name, sample_rows, error)
+        _send_dingtalk(title, records, adapter_name, task_name, sample_rows, error, message)
     elif channel == "feishu":
-        _send_feishu(title, records, adapter_name, task_name, sample_rows, error)
+        _send_feishu(title, records, adapter_name, task_name, sample_rows, error, message)
     elif channel == "webhook":
-        _send_webhook(title, records, adapter_name, task_name, sample_rows, error)
+        _send_webhook(title, records, adapter_name, task_name, sample_rows, error, message)
     else:
         logger.warning(f"Unknown notification channel: {channel}")
 
@@ -63,9 +69,28 @@ def _post_json(url: str, payload: dict):
         raise NotifyError(f"HTTP request failed: {e}")
 
 
+def _build_signed_dingtalk_url(url: str, secret: str) -> str:
+    clean_url = str(url or "").strip()
+    clean_secret = str(secret or "").strip()
+    if not clean_url or not clean_secret:
+        return clean_url
+    timestamp = str(int(time.time() * 1000))
+    string_to_sign = f"{timestamp}\n{clean_secret}".encode("utf-8")
+    digest = hmac.new(clean_secret.encode("utf-8"), string_to_sign, digestmod=hashlib.sha256).digest()
+    sign = base64.b64encode(digest).decode("utf-8")
+    parsed = urlparse(clean_url)
+    query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    query["timestamp"] = timestamp
+    query["sign"] = sign
+    return urlunparse(parsed._replace(query=urlencode(query)))
+
+
 def _build_text(title: str, records: int, adapter_name: str,
                 task_name: str, sample_rows: Optional[List[dict]],
-                error: Optional[str]) -> str:
+                error: Optional[str],
+                message: Optional[str] = None) -> str:
+    if message:
+        return str(message)
     lines = [f"**{title}**"]
     if adapter_name:
         lines.append(f"Platform: {adapter_name}")
@@ -83,9 +108,11 @@ def _build_text(title: str, records: int, adapter_name: str,
 
 
 def _send_dingtalk(title: str, records: int, adapter_name: str,
-                   task_name: str, sample_rows: Optional[List[dict]], error: Optional[str]):
+                   task_name: str, sample_rows: Optional[List[dict]], error: Optional[str],
+                   message: Optional[str] = None):
     url = cfg_get("notify.dingtalk_webhook", "")
-    text = _build_text(title, records, adapter_name, task_name, sample_rows, error)
+    secret = cfg_get("notify.dingtalk_secret", "") or cfg_get("notify.dingtalk_sign_secret", "")
+    text = _build_text(title, records, adapter_name, task_name, sample_rows, error, message)
     payload = {
         "msgtype": "markdown",
         "markdown": {
@@ -93,16 +120,17 @@ def _send_dingtalk(title: str, records: int, adapter_name: str,
             "text": text,
         }
     }
-    result = _post_json(url, payload)
+    result = _post_json(_build_signed_dingtalk_url(url, secret), payload)
     if result.get("errcode") != 0:
         raise NotifyError(f"DingTalk error: {result}")
     logger.info(f"DingTalk notification sent: {title}")
 
 
 def _send_feishu(title: str, records: int, adapter_name: str,
-                 task_name: str, sample_rows: Optional[List[dict]], error: Optional[str]):
+                 task_name: str, sample_rows: Optional[List[dict]], error: Optional[str],
+                 message: Optional[str] = None):
     url = cfg_get("notify.feishu_webhook", "")
-    text = _build_text(title, records, adapter_name, task_name, sample_rows, error)
+    text = _build_text(title, records, adapter_name, task_name, sample_rows, error, message)
     payload = {
         "msg_type": "text",
         "content": {"text": text}
@@ -114,7 +142,8 @@ def _send_feishu(title: str, records: int, adapter_name: str,
 
 
 def _send_webhook(title: str, records: int, adapter_name: str,
-                  task_name: str, sample_rows: Optional[List[dict]], error: Optional[str]):
+                  task_name: str, sample_rows: Optional[List[dict]], error: Optional[str],
+                  message: Optional[str] = None):
     url = cfg_get("notify.custom_webhook", "")
     payload = {
         "title": title,
@@ -122,6 +151,7 @@ def _send_webhook(title: str, records: int, adapter_name: str,
         "task": task_name,
         "records": records,
         "error": error,
+        "message": message,
         "sample": (sample_rows or [])[:5],
     }
     _post_json(url, payload)

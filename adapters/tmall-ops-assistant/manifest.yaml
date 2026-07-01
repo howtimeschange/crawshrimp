@@ -176,255 +176,12 @@ tasks:
           - 页面校验
           - 执行结果
           - 备注
-  - id: tmall_ai_image_generation
-    name: 天猫AI测图-1XM批量生图
-    description: 读取测图任务导入模板与 AI 测图提示词库，按款号/品类匹配提示词，调用后端 1XM GPT-Image-2 异步任务生成测图素材；支持计划模式、小批量真实生成、幂等重试和失败补偿
-    script: tmall-ai-image-workflow.js
-    entry_url: https://myseller.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search
-    tab_match_prefixes:
-      - https://myseller.taobao.com/
-      - https://fmp.semirapp.com/
-      - https://iam.semirapp.com/
-    skip_auth: true
-    params:
-      - id: mode
-        type: radio
-        label: 打开方式
-        default: current
-        options:
-          - value: current
-            label: 当前页面（推荐）
-          - value: new
-            label: 全新页面
-        hint: 任务本身由后端调用 1XM，页面只用于复用当前抓虾运行环境；可在天猫素材页或森马云盘页运行。
-      - id: execute_mode
-        type: radio
-        label: 执行模式
-        default: plan
-        options:
-          - value: plan
-            label: 只生成计划（不消耗 1XM）
-          - value: generate
-            label: 调用 1XM 真实生图
-        hint: 真实生图会读取设置菜单里的 1XM Key 并产生外部 API 调用；建议先用计划模式确认行数和提示词。
-      - id: workflow_file
-        type: file_excel
-        label: 测图任务导入模板
-        templates:
-          - file: templates/tmall-ai-image-test-workflow-template.csv
-            label: 测图任务导入模板
-            description: 本期只需要填写“款号、天猫商品ID、品类、性别”四列；脚本会按品类/性别自动匹配提示词。
-            version: "2026.07.01.3"
-        hint: 至少包含“款号”列；建议同时填写天猫商品ID、品类、性别。若表格为空，可用下方单款测试字段做一条探路。
-      - id: prompt_file
-        type: file_excel
-        label: AI 测图提示词库
-        required: true
-        templates:
-          - file: templates/tmall-ai-prompt-library-template.csv
-            label: AI 测图提示词导入模板
-            description: 与飞书/表格导出的提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度。支持多 sheet，真实表头可在第 4 行。
-            version: "2026.07.01.1"
-        hint: 支持用户提供的“AI 测图提示词库.xlsx”；脚本会自动识别每个 sheet 第 4 行的字段表头。
-      - id: style_code
-        type: text
-        label: 单款测试款号
-        default: "208326121203"
-        placeholder: "208326121203"
-        ui_span: third
-        hint: 当测图任务导入模板为空时，用这里生成一条测试行。
-      - id: item_id
-        type: text
-        label: 单款测试商品ID
-        default: "1060862679580"
-        placeholder: "1060862679580"
-        ui_span: third
-      - id: prompt_sheet
-        type: select
-        label: 默认提示词分组
-        default: 上装
-        ui_span: third
-        options:
-          - value: 上装
-            label: 上装
-          - value: 连衣裙
-            label: 连衣裙
-          - value: 下装
-            label: 下装
-          - value: 短裙
-            label: 短裙
-          - value: 鞋品
-            label: 鞋品
-          - value: 竞品模版
-            label: 竞品模版
-        hint: 表格行里没有品类/提示词分组时，使用这里匹配提示词库 sheet。
-      - id: gender
-        type: select
-        label: 默认性别偏好
-        default: 女
-        ui_span: third
-        options:
-          - value: 女
-            label: 女童/女性优先
-          - value: 男
-            label: 男童/中性优先
-          - value: 中性
-            label: 中性
-      - id: prompt_names
-        type: textarea
-        label: 指定提示词字段名
-        rows: 2
-        placeholder: "可选，一行一个；留空则按优先度自动选"
-        hint: 例如“正面标准站姿”。填写后只生成这些字段名对应的提示词。
-      - id: material_images
-        type: file_images
-        label: 单款测试参考图
-        hint: 可选。选择本地图片后，后端会转成 data URL 传给 1XM 异步编辑任务；单张最大 20MB。
-      - id: material_urls
-        type: textarea
-        label: 参考图 URL
-        rows: 3
-        placeholder: "可选，一行一个图片 URL"
-        hint: 当前阶段优先支持本地参考图文件；URL 会保留在计划表中用于后续天猫素材上传/测图链路。
-      - id: image_size
-        type: select
-        label: 出图尺寸
-        default: from_prompt
-        ui_span: third
-        options:
-          - value: from_prompt
-            label: 按提示词库尺寸
-          - value: 1024x1024
-            label: 1024x1024
-          - value: 2048x2048
-            label: 2048x2048
-          - value: 3840x2160
-            label: 3840x2160
-          - value: 2160x3840
-            label: 2160x3840
-      - id: output_format
-        type: select
-        label: 图片格式
-        default: from_prompt
-        ui_span: third
-        options:
-          - value: from_prompt
-            label: 按提示词库格式
-          - value: png
-            label: PNG
-          - value: jpeg
-            label: JPEG
-          - value: webp
-            label: WebP
-      - id: quality
-        type: select
-        label: 生成质量
-        default: auto
-        ui_span: third
-        options:
-          - value: auto
-            label: auto
-          - value: high
-            label: high
-          - value: medium
-            label: medium
-          - value: low
-            label: low
-      - id: one_xm_key_tier
-        type: select
-        label: 1XM Key 档位
-        default: auto
-        ui_span: third
-        options:
-          - value: auto
-            label: 按尺寸自动
-          - value: 2k
-            label: 强制使用 2K Key
-          - value: 4k
-            label: 强制使用 4K Key
-      - id: max_prompts_per_style
-        type: number
-        label: 每款提示词数量
-        default: 1
-        min: 1
-        max: 20
-        step: 1
-        ui_span: third
-      - id: max_generate_jobs
-        type: number
-        label: 本次最多真实生成
-        default: 1
-        min: 1
-        max: 100
-        step: 1
-        ui_span: third
-        hint: 费用保护阈值；计划模式不受影响，真实生图默认只跑 1 条。
-      - id: generation_concurrency
-        type: number
-        label: 1XM并发任务数
-        default: 100
-        min: 1
-        max: 100
-        step: 1
-        ui_span: third
-        hint: 1XM 最大支持 100 张图并发；脚本会并发提交并分别轮询，失败自动按补偿次数重试。
-      - id: retry_attempts
-        type: number
-        label: 请求重试次数
-        default: 3
-        min: 1
-        max: 6
-        step: 1
-        ui_span: third
-      - id: compensate_attempts
-        type: number
-        label: 失败补偿次数
-        default: 2
-        min: 1
-        max: 4
-        step: 1
-        ui_span: third
-      - id: poll_timeout_minutes
-        type: number
-        label: 单图轮询超时（分钟）
-        default: 10
-        min: 1
-        max: 30
-        step: 1
-        ui_span: third
-    trigger:
-      type: manual
-    output:
-      - type: excel
-        filename: "天猫AI测图1XM生图结果_{timestamp}.xlsx"
-        columns:
-          - 表格行号
-          - 款号
-          - 商品ID
-          - 品类
-          - 性别
-          - 提示词分组
-          - 提示词字段名
-          - 尺寸
-          - 格式
-          - 质量
-          - 参考图文件
-          - 参考图URL
-          - 完整Prompt
-          - 最终提示词
-          - 1XM任务ID
-          - 1XM轮询URL
-          - 生成图URL
-          - 生成图数量
-          - 执行结果
-          - 备注
   - id: tmall_ai_image_test_chain
-    name: 天猫AI测图全链路
+    name: 巴拉-AI测图全链路
     description: 读取测图工作流与 AI 测图提示词库，按款号在森马云盘找原图，调用 1XM GPT-Image-2 生图，再上传到天猫素材中心、创建测图任务并可直接上线
     script: tmall-ai-image-test-chain.js
-    entry_url: https://myseller.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search
+    entry_url: https://fmp.semirapp.com/web/index#/home/file
     tab_match_prefixes:
-      - https://myseller.taobao.com/
       - https://fmp.semirapp.com/
       - https://iam.semirapp.com/
     skip_auth: true
@@ -442,17 +199,13 @@ tasks:
       - id: execute_mode
         type: radio
         label: 执行模式
-        default: plan
+        default: approval_then_create
         options:
-          - value: plan
-            label: 只找图/生成计划
-          - value: generate
-            label: 真实生图，不上传
-          - value: live_create
-            label: 真实生图+上传+创建任务
-          - value: live_online
-            label: 真实生图+上传+创建并上线
-        hint: live_online 会真实上传图片到天猫图片空间、创建搜索测图任务并调用上线 API；请只在确认要线上执行时选择。
+          - value: approval_then_create
+            label: 生图后审批，通过后上传创建
+          - value: direct_create
+            label: 生图后直接创建测试任务
+        hint: 审批模式会真实生图并生成审批看板，待人工确认后只上传已确认的 AI 图；直接创建模式会真实上传图片到天猫图片空间并创建搜索测图任务。
       - id: workflow_file
         type: file_excel
         label: 测图任务导入模板
@@ -479,20 +232,18 @@ tasks:
         default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/"
         placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/"
         hint: 只在该挂载点与目录下按款号找图；若确实需要跨目录找图，请开启“允许全盘兜底找图”。
+      - id: output_dir
+        type: directory
+        label: 本地导出目录
+        placeholder: "点击选择本地导出目录"
+        hint: 可选。完成后会把数据表格、网盘素材图、AI生成图复制到这里；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图全链路”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图全链路）。图片按“网盘素材图/款号_商品ID”和“AI生成图/款号_商品ID”整理，便于下次复用。
+        ui_span: third
       - id: allow_global_semir_fallback
         type: checkbox
         label: 允许全盘兜底找图
         default: false
         ui_span: third
         hint: 默认关闭，避免从其他季节/其他目录误选同款号素材；开启后才会在指定路径找不到必需素材时搜索全部挂载目录。
-      - id: limit
-        type: number
-        label: 本次处理款数
-        default: 5
-        min: 1
-        max: 200
-        step: 1
-        ui_span: third
       - id: image_size
         type: select
         label: 出图尺寸
@@ -537,13 +288,13 @@ tasks:
             label: low
       - id: ai_image_count
         type: number
-        label: AI生图张数
+        label: 每款Prompt生图数
         default: 4
         min: 1
         max: 8
         step: 1
         ui_span: third
-        hint: 默认按提示词优先级生成 4 张 AI 图；天猫上传包为 1 张云盘主图原图 + 这些 AI 图。
+        hint: 这里表示每款选择多少条不同提示词；每条 prompt 生成 1 张 AI 图，不是同一 prompt 连续生成多张。
       - id: reference_mode
         type: select
         label: 1XM参考图
@@ -600,11 +351,33 @@ tasks:
         max: 60
         step: 1
         ui_span: third
+      - id: approval_notify_channel
+        type: select
+        label: 审批通知渠道
+        default: dingtalk
+        ui_span: third
+        options:
+          - value: dingtalk
+            label: 钉钉
+          - value: feishu
+            label: 飞书
+          - value: webhook
+            label: 自定义 Webhook
+          - value: none
+            label: 不发送
+        hint: 默认复用抓虾设置里的钉钉机器人；通知失败不会中断生图批次。
+      - id: approval_message_template
+        type: textarea
+        label: 钉钉审批消息模板
+        rows: 4
+        default: "天猫AI测图生图批次 {{batch_id}} 已完成，共 {{total_styles}} 款、{{total_ai_images}} 张 AI 图。\n请打开审批看板确认后创建测图任务：{{board_url}}"
+        placeholder: "支持 {{batch_id}}、{{total_styles}}、{{total_ai_images}}、{{board_url}}、{{created_at}}"
+        hint: 审批模式会在生图批次完成后按此模板发送通知；请确保设置页已配置钉钉机器人 Webhook。
     trigger:
       type: manual
     output:
       - type: excel
-        filename: "天猫AI测图全链路执行证据_{timestamp}.xlsx"
+        filename: "巴拉-AI测图全链路执行证据_{timestamp}.xlsx"
         columns:
           - 表格行号
           - 款号
@@ -635,6 +408,9 @@ tasks:
           - 1XM轮询URL
           - 生成图URL
           - 生成图数量
+          - 审批批次ID
+          - 审批状态
+          - 审批看板
           - 任务ID
           - 上传图数量
           - 上线结果
@@ -643,139 +419,8 @@ tasks:
           - 本地文件
           - 执行结果
           - 备注
-  - id: tmall_material_test_pipeline
-    name: 天猫素材测图探路
-    description: 使用森马云盘与天猫素材中心页面 API 探查测图链路：按款号找图、查询商品/测图任务、生成创建/加图/上线 payload，并可读取测图数据；默认仅计划与读取，不做线上变更
-    script: tmall-material-test.js
-    entry_url: https://myseller.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search
-    tab_match_prefixes:
-      - https://fmp.semirapp.com/
-      - https://iam.semirapp.com/
-      - https://myseller.taobao.com/
-    skip_auth: true
-    params:
-      - id: mode
-        type: radio
-        label: 打开方式
-        default: current
-        options:
-          - value: current
-            label: 当前页面（推荐）
-          - value: new
-            label: 全新页面
-        hint: 可在天猫素材测试页或森马云盘页运行；当前页模式会复用已经登录的 9222 浏览器会话。
-      - id: execute_mode
-        type: radio
-        label: 执行模式
-        default: plan
-        options:
-          - value: plan
-            label: 仅探路/读取（推荐）
-          - value: create_and_online
-            label: 创建并上线测图任务（需确认）
-        hint: plan 模式只查询与生成 API 计划；create_and_online 会调用创建任务、加 3:4 素材、上线任务 API，必须同时填写 allow_live_mutation=true 才会执行。
-      - id: item_id
-        type: text
-        label: 天猫商品 ID
-        default: "1060862679580"
-        placeholder: "1060862679580"
-        ui_span: third
-        required: true
-      - id: style_code
-        type: text
-        label: 款号/编码
-        default: "208326121203"
-        placeholder: "208326121203"
-        ui_span: third
-        required: true
-      - id: skc_code
-        type: text
-        label: SKC编码
-        placeholder: "例如：208326121203-00482"
-        ui_span: third
-        hint: 仅用于匹配 SKC 编码平铺/细节参考图；留空时不会用款号泛化替代。
-      - id: cloud_path
-        type: text
-        label: 森马云盘路径
-        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/"
-        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/"
-        hint: 留空时会在已挂载目录中全局搜索；填写后优先在指定挂载点和目录下找图。
-      - id: material_urls
-        type: textarea
-        label: 已上传/AI生成素材 URL
-        rows: 4
-        placeholder: "一行一个 https://img.alicdn.com/... 图片 URL"
-        hint: 这些 URL 会按 3:4、sourceType=4 构造 batch.add payload；本阶段不自动提交，除非使用 create_and_online 且确认允许线上变更。
-      - id: test_channel
-        type: select
-        label: 测试渠道
-        default: common_search
-        ui_span: third
-        options:
-          - value: common_search
-            label: 搜索测图
-      - id: test_status
-        type: select
-        label: 测试状态
-        default: ""
-        ui_span: third
-        options:
-          - value: ""
-            label: 全部
-          - value: "1"
-            label: 测试中
-          - value: "2"
-            label: 已结束
-          - value: "-1"
-            label: 已暂停
-      - id: download_statistic_type
-        type: select
-        label: 数据口径
-        default: ACCUMULATE_30_DAYS
-        ui_span: third
-        options:
-          - value: ACCUMULATE_30_DAYS
-            label: 近 30 天累计
-          - value: DAILY
-            label: 按日
-      - id: download_start_date
-        type: text
-        label: 数据开始日期
-        placeholder: "20260601"
-        ui_span: third
-      - id: download_end_date
-        type: text
-        label: 数据结束日期
-        placeholder: "20260630"
-        ui_span: third
-      - id: allow_live_mutation
-        type: checkbox
-        label: 允许创建/上线任务
-        default: false
-        ui_span: third
-        hint: 仅在你确认要真实创建并上线天猫测图任务时打开。
-    trigger:
-      type: manual
-    output:
-      - type: excel
-        filename: "天猫素材测图探路_{timestamp}.xlsx"
-        columns:
-          - 款号
-          - SKC编码
-          - 商品ID
-          - 阶段
-          - 商品标题
-          - 云盘路径
-          - 文件名
-          - 素材URL
-          - 任务ID
-          - 测试状态
-          - 搜索曝光
-          - 搜索点击率
-          - 执行结果
-          - 备注
   - id: tmall_material_test_data_export
-    name: 天猫测图数据抓取导出
+    name: 巴拉-AI测图数据抓取导出
     description: 在天猫素材测试页通过页面 MTop API 查询测图任务，并按商品 ID 抓取/导出搜索测图数据；只读，不创建或上线任务
     script: tmall-material-test-data-export.js
     entry_url: https://myseller.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search
@@ -803,6 +448,12 @@ tasks:
         rows: 4
         placeholder: "一行一个商品 ID"
         hint: 与导入表格合并去重后逐商品查询；留空则自动导出平台当前筛选状态下的全部任务。
+      - id: output_dir
+        type: directory
+        label: 本地导出目录
+        placeholder: "点击选择本地导出目录"
+        hint: 可选。完成后会把数据表格复制到这里的“数据表格”目录；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图数据抓取导出”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图数据抓取导出）。
+        ui_span: third
       - id: test_status
         type: select
         label: 测试状态
@@ -853,7 +504,7 @@ tasks:
       type: manual
     output:
       - type: excel
-        filename: "天猫测图数据抓取导出_{timestamp}.xlsx"
+        filename: "巴拉-AI测图数据抓取导出_{timestamp}.xlsx"
         sheet_key: __sheet_name
         sheets:
           - name: 概览

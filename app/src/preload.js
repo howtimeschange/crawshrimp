@@ -27,6 +27,10 @@ contextBridge.exposeInMainWorld('cs', {
   openFile:        (path) => ipcRenderer.invoke('open-file', path),
   readExcel:       (path) => ipcRenderer.invoke('read-excel', path),
   testNotify:      (channel) => ipcRenderer.invoke('test-notify', channel),
+  getTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('get-tmall-approval-batch', batchId, token),
+  saveTmallApprovalDecisions: (batchId, token, decisions) => ipcRenderer.invoke('save-tmall-approval-decisions', batchId, token, decisions),
+  regenerateTmallApprovalAsset: (batchId, token, payload) => ipcRenderer.invoke('regenerate-tmall-approval-asset', batchId, token, payload),
+  submitTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('submit-tmall-approval-batch', batchId, token),
 
   getSettings:     () => ipcRenderer.invoke('get-settings'),
   saveSettings:    (cfg) => ipcRenderer.invoke('save-settings', cfg),

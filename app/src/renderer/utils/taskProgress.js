@@ -88,6 +88,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
   Object.freeze({
+    adapterId: 'tmall-ops-assistant',
+    taskId: 'tmall_ai_image_test_chain',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
+  Object.freeze({
     adapterId: 'shenhui-new-arrival',
     taskId: 'prepare_upload_package',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
@@ -415,6 +420,10 @@ function isSemirBatchImageDownloadTask(adapterId, taskId) {
 
 function isSemirBatchAiGenerateTask(adapterId, taskId) {
   return normalizeKeyPart(adapterId) === 'semir-cloud-drive' && normalizeKeyPart(taskId) === 'batch_ai_generate'
+}
+
+function isTmallAiImageTestChainTask(adapterId, taskId) {
+  return normalizeKeyPart(adapterId) === 'tmall-ops-assistant' && normalizeKeyPart(taskId) === 'tmall_ai_image_test_chain'
 }
 
 function isShenhuiPrepareUploadPackageTask(adapterId, taskId) {
@@ -827,6 +836,104 @@ function buildTiktokCreatorVideoDownloadProgress(live = {}, liveStatus = '', isR
     ]),
     tracks,
     sub: [phaseLabel, downloadFailed > 0 ? `下载失败 ${downloadFailed} 个` : '', store].filter(Boolean).join(' · ') || statusLabel,
+  }
+}
+
+function getTmallAiImageChainPhaseLabel(phase, generationStarted, generationDone, statusLabel) {
+  const normalizedPhase = normalizeKeyPart(phase)
+  if (normalizedPhase === 'tmall_ai_chain_semir') return '找图中'
+  if (normalizedPhase === 'tmall_ai_chain_generate') return generationDone ? '生图完成' : '批量生图'
+  if (normalizedPhase === 'tmall_ai_chain_tmall') return '上传创建'
+  if (generationDone) return '整理审批'
+  return generationStarted ? '批量生图' : statusLabel
+}
+
+function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunning = false) {
+  if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
+
+  const phase = String(live?.phase || '').trim()
+  const statusLabel = getStatusLabel(liveStatus || live?.status)
+  const currentStyle = String(live?.buyer_id || '').trim()
+  const store = String(live?.store || '').trim()
+  const currentPrompt = String(live?.current_source_filename || '').trim()
+
+  const searchTotal = toInt(live?.search_total_codes) || toInt(live?.total)
+  const searchCompletedRaw = toInt(live?.search_completed_codes) || (normalizeKeyPart(phase) === 'tmall_ai_chain_generate' ? searchTotal : toInt(live?.current))
+  const searchCompleted = searchTotal > 0 ? Math.min(searchCompletedRaw, searchTotal) : searchCompletedRaw
+  const searchPercent = searchTotal > 0 ? clampPercent((searchCompleted / searchTotal) * 100) : 0
+
+  const generationTotal = toInt(live?.generation_total_jobs)
+  const generationCompletedRaw = toInt(live?.generation_completed_jobs)
+  const generationCompleted = generationTotal > 0 ? Math.min(generationCompletedRaw, generationTotal) : generationCompletedRaw
+  const generationPercent = generationTotal > 0 ? clampPercent((generationCompleted / generationTotal) * 100) : 0
+  const generationStarted = generationTotal > 0 || normalizeKeyPart(phase) === 'tmall_ai_chain_generate' || normalizeKeyPart(phase) === 'tmall_ai_chain_tmall'
+  const generationDone = generationTotal > 0 && generationCompleted >= generationTotal
+  const phaseLabel = getTmallAiImageChainPhaseLabel(phase, generationStarted, generationDone, statusLabel)
+
+  const searchState = generationStarted || (searchTotal > 0 && searchCompleted >= searchTotal)
+    ? 'complete'
+    : searchCompleted > 0 || currentStyle
+      ? 'active'
+      : 'pending'
+  const generationState = !generationStarted
+    ? 'pending'
+    : generationDone
+      ? 'complete'
+      : 'active'
+
+  const tracks = [
+    buildTrack({
+      id: 'tmall-ai-find-images',
+      title: '找图进度',
+      main: searchTotal > 0 ? `${searchCompleted} / ${searchTotal} 款` : (statusLabel || '等待开始'),
+      percentValue: searchPercent,
+      percentLabel: `${searchPercent}%`,
+      caption: currentStyle && searchState !== 'complete' ? `当前款号 ${currentStyle}` : '',
+      detail: searchState === 'complete' ? '云盘找图阶段已完成' : store,
+      status: searchState === 'complete' ? '已完成' : searchState === 'active' ? '进行中' : '待开始',
+      tone: 'primary',
+      state: searchState,
+      ariaLabel: '找图进度',
+      ariaText: [searchTotal > 0 ? `${searchCompleted}/${searchTotal} 款` : '', `${searchPercent}%`, currentStyle ? `当前款号 ${currentStyle}` : ''].filter(Boolean).join('，'),
+    }),
+    buildTrack({
+      id: 'tmall-ai-generate',
+      title: '生图进度',
+      main: generationTotal > 0 ? `${generationCompleted} / ${generationTotal} 张` : (generationStarted ? '等待生图队列' : '找图完成后批量开始'),
+      percentValue: generationPercent,
+      percentLabel: generationStarted ? `${generationPercent}%` : '待开始',
+      caption: generationTotal > 0 ? `1XM 并发队列 ${generationCompleted}/${generationTotal}` : '找图完成后统一提交 1XM',
+      detail: [currentStyle ? `当前款号 ${currentStyle}` : '', currentPrompt ? `当前提示词 ${currentPrompt}` : '', store].filter(Boolean).join(' · '),
+      status: generationState === 'complete' ? '已完成' : generationState === 'active' ? '进行中' : '待开始',
+      tone: 'secondary',
+      state: generationState,
+      ariaLabel: '生图进度',
+      ariaText: [generationTotal > 0 ? `${generationCompleted}/${generationTotal} 张` : '', generationStarted ? `${generationPercent}%` : '待开始', currentStyle ? `当前款号 ${currentStyle}` : ''].filter(Boolean).join('，'),
+    }),
+  ]
+
+  return {
+    title: '双阶段进度',
+    main: phaseLabel,
+    percentValue: generationStarted ? clampPercent(50 + generationPercent * 0.5) : clampPercent(searchPercent * 0.5),
+    percentLabel: phaseLabel,
+    completed: generationCompleted,
+    completedText: generationCompleted > 0 ? `已生图 ${generationCompleted} 张` : '',
+    batchText: '',
+    rowText: '',
+    targetText: currentStyle ? `款号 ${currentStyle}` : '',
+    storeText: store || '',
+    phaseText: phase ? `阶段 ${phase}` : '',
+    indeterminate: false,
+    ariaLabel: '巴拉 AI 测图双阶段进度',
+    ariaText: [phaseLabel, searchTotal > 0 ? `${searchCompleted}/${searchTotal} 款` : '', generationTotal > 0 ? `${generationCompleted}/${generationTotal} 张` : ''].filter(Boolean).join('，'),
+    metaItems: buildMetaItems([
+      searchTotal > 0 ? `找图 ${searchCompleted}/${searchTotal}` : '',
+      generationTotal > 0 ? `生图 ${generationCompleted}/${generationTotal}` : '',
+      currentStyle ? `款号 ${currentStyle}` : '',
+    ]),
+    tracks,
+    sub: [phaseLabel, generationStarted ? '1XM 并发队列' : '', currentStyle ? `当前款号 ${currentStyle}` : ''].filter(Boolean).join(' · ') || statusLabel,
   }
 }
 
@@ -1421,6 +1528,9 @@ export function buildTaskRunnerProgressSummary({
   }
   if (config.mode === 'enhanced' && isTiktokCreatorVideoDownloadTask(adapterId, taskId)) {
     return buildTiktokCreatorVideoDownloadProgress(live, liveStatus, isRunning)
+  }
+  if (config.mode === 'enhanced' && isTmallAiImageTestChainTask(adapterId, taskId)) {
+    return buildTmallAiImageTestChainProgress(live, liveStatus, isRunning)
   }
   if (config.mode === 'enhanced' && isSheinCommodityQualityTask(adapterId, taskId)) {
     return buildSheinCommodityQualityProgress(live, liveStatus, isRunning)

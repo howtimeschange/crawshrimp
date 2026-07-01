@@ -145,6 +145,17 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress["detail_completed_targets"], 100)
         self.assertEqual(progress["detail_current_target"], "SO-DETAIL-100")
 
+    async def test_tmall_ai_chain_approval_board_url_is_extracted_for_output_refs(self):
+        rows = [
+            {"阶段": "图片审批", "审批看板": "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit"},
+            {"阶段": "生图", "审批看板": ""},
+        ]
+
+        self.assertEqual(
+            api_server._extract_first_approval_board_url(rows),
+            "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit",
+        )
+
     async def test_lifespan_uses_instance_lock_as_startup_owner(self):
         calls = []
 

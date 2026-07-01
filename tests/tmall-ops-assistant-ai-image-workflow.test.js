@@ -188,12 +188,15 @@ test('builds 1XM generation rows from workflow styles and prompt priorities', as
   assert.match(result.rows[0].__1xm_idempotency_key, /^tmall_ai_208326121203_/)
 })
 
-test('manifest registers AI image workflow with both import templates', () => {
+test('manifest registers only the Bala full-chain AI image task with both import templates', () => {
   const manifest = fs.readFileSync(path.resolve('adapters/tmall-ops-assistant/manifest.yaml'), 'utf8')
 
-  assert.match(manifest, /id: tmall_ai_image_generation/)
+  assert.doesNotMatch(manifest, /id: tmall_ai_image_generation/)
+  assert.doesNotMatch(manifest, /script: tmall-ai-image-workflow\.js/)
+  assert.doesNotMatch(manifest, /name: 天猫AI测图-1XM批量生图/)
   assert.match(manifest, /id: tmall_ai_image_test_chain/)
-  assert.match(manifest, /script: tmall-ai-image-workflow\.js/)
+  assert.match(manifest, /name: 巴拉-AI测图全链路/)
+  assert.match(manifest, /filename: "巴拉-AI测图全链路执行证据_\{timestamp\}\.xlsx"/)
   assert.match(manifest, /script: tmall-ai-image-test-chain\.js/)
   assert.match(manifest, /default: auto/)
   assert.match(manifest, /id: generation_concurrency/)
