@@ -17,6 +17,7 @@ contextBridge.exposeInMainWorld('cs', {
   createTaskInstance: (payload) => ipcRenderer.invoke('create-task-instance', payload),
   getTaskInstance: (uid) => ipcRenderer.invoke('get-task-instance', uid),
   updateTaskInstance: (uid, payload) => ipcRenderer.invoke('update-task-instance', uid, payload),
+  runTaskInstance: (uid) => ipcRenderer.invoke('run-task-instance', uid),
   probeTaskParams: (aid, tid, params, options) => ipcRenderer.invoke('probe-task-params', aid, tid, params, options),
   runTask:         (aid, tid, params, options) => ipcRenderer.invoke('run-task', aid, tid, params, options),
   pauseTask:       (aid, tid) => ipcRenderer.invoke('pause-task', aid, tid),

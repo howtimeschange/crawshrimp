@@ -807,7 +807,7 @@ git commit -m "feat(task-center): replace market tab"
 - Modify: `core/api_server.py`
 - Test: `tests/test_task_instance_run_api.py`
 
-- [ ] **Step 1: Add run API test**
+- [x] **Step 1: Add run API test**
 
 Create `tests/test_task_instance_run_api.py`:
 
@@ -851,7 +851,7 @@ class TaskInstanceRunApiTests(unittest.TestCase):
         self.assertEqual(args[2]["__task_instance_uid"], created["instance_uid"])
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [x] **Step 2: Run test to verify failure**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -860,7 +860,7 @@ venv/bin/python -m unittest tests.test_task_instance_run_api
 
 Expected: fails because run endpoint is missing.
 
-- [ ] **Step 3: Add instance run endpoint**
+- [x] **Step 3: Add instance run endpoint**
 
 Modify `core/api_server.py`:
 
@@ -898,7 +898,7 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
     return {"ok": True, "message": "Task started in background"}
 ```
 
-- [ ] **Step 4: Associate run IDs with instances**
+- [x] **Step 4: Associate run IDs with instances**
 
 In `_execute_task`, after the existing `run_id = data_sink.begin_run(adapter_id, task_id)` line, read `instance_uid = str(run_params.get("__task_instance_uid") or "").strip()` and call:
 
@@ -914,7 +914,7 @@ When a run finishes, update the instance status:
 - error: `failed`
 - stopped: `stopped`
 
-- [ ] **Step 5: Create `TaskInstanceRunner.vue`**
+- [x] **Step 5: Create `TaskInstanceRunner.vue`**
 
 Implement:
 
@@ -937,7 +937,7 @@ and:
 secureHandle('run-task-instance', async (_, uid) => apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/run`, {}))
 ```
 
-- [ ] **Step 6: Wire App instance route**
+- [x] **Step 6: Wire App instance route**
 
 `App.vue`:
 
@@ -949,7 +949,7 @@ secureHandle('run-task-instance', async (_, uid) => apiCall('POST', `/task-insta
 />
 ```
 
-- [ ] **Step 7: Run full validation**
+- [x] **Step 7: Run full validation**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -962,7 +962,7 @@ npm test
 
 Expected: all pass.
 
-- [ ] **Step 8: Commit instance runner**
+- [x] **Step 8: Commit instance runner**
 
 ```bash
 git add core/api_server.py app/src/main.js app/src/preload.js app/src/renderer/App.vue app/src/renderer/views/TaskInstanceRunner.vue tests/test_task_instance_run_api.py

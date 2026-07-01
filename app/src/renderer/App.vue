@@ -93,8 +93,13 @@
       />
       <!-- 任务中心 -->
       <TaskCenter
-        v-else-if="currentView === 'task_center'"
+        v-else-if="currentView === 'task_center' && !activeInstanceUid"
         @open-instance="openTaskInstance"
+      />
+      <TaskInstanceRunner
+        v-else-if="currentView === 'task_center' && activeInstanceUid"
+        :instance-uid="activeInstanceUid"
+        @back="activeInstanceUid = ''"
       />
       <!-- 数据文件 -->
       <DataFiles v-else-if="currentView === 'files'" />
@@ -109,6 +114,7 @@ import { computed, ref, onMounted, onUnmounted } from 'vue'
 import ScriptList  from './views/ScriptList.vue'
 import TaskRunner  from './views/TaskRunner.vue'
 import TaskCenter  from './views/TaskCenter.vue'
+import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import { buildScriptGroups } from './utils/scriptGroups'

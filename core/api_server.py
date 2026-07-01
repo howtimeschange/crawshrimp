@@ -3450,7 +3450,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     if not task:
         raise ValueError(f"Task not found: {task_id}")
 
+    instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
     run_id = data_sink.begin_run(adapter_id, task_id)
+    if instance_uid:
+        data_sink.link_task_instance_run(instance_uid, run_id, purpose="main")
     _run_status[jid]['run_id'] = run_id
     runner = None
     data = []
@@ -3984,6 +3987,27 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
         _run_status[jid] = done_status
+        if instance_uid:
+            instance_summary = {
+                "records": len(data),
+                "output_files": output_files,
+                "approval_board_url": approval_board_url,
+                "run_id": run_id,
+            }
+            if approval_board_url:
+                data_sink.update_task_instance(
+                    instance_uid,
+                    status="waiting_approval",
+                    current_step="approval",
+                    summary=instance_summary,
+                )
+            else:
+                data_sink.update_task_instance(
+                    instance_uid,
+                    status="completed",
+                    current_step="create",
+                    summary=instance_summary,
+                )
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
 
     except RunAbortedError as e:
@@ -4012,6 +4036,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         data_sink.stop_run(run_id, len(data), output_files, err)
         _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
+        if instance_uid:
+            data_sink.update_task_instance(
+                instance_uid,
+                status="stopped",
+                summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
+            )
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
 
     except asyncio.CancelledError:
@@ -4037,6 +4067,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
         data_sink.stop_run(run_id, len(data), output_files, err)
         _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
+        if instance_uid:
+            data_sink.update_task_instance(
+                instance_uid,
+                status="stopped",
+                summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
+            )
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
         raise
 
@@ -4045,6 +4081,12 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         log(f"[{adapter_id}/{task_id}] ERROR: {err}")
         data_sink.fail_run(run_id, err)
         _run_status[jid] = {'status': 'error', 'run_id': run_id, 'records': 0, 'error': err}
+        if instance_uid:
+            data_sink.update_task_instance(
+                instance_uid,
+                status="failed",
+                summary={"records": 0, "error": err, "run_id": run_id},
+            )
         raise
     finally:
         if run_control is not None:
@@ -4763,8 +4805,7 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
         _run_controls.pop(jid, None)
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/run")
-async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskRequest()):
+async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
     adapter_loader.scan_all()
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
@@ -4781,14 +4822,35 @@ async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskR
         _run_task_background(
             adapter_id,
             task_id,
-            req.params or {},
-            {"current_tab_id": req.current_tab_id},
+            params or {},
+            runtime_options or {},
             run_control,
         )
     )
     run_control['task'] = task_handle
     _run_controls[jid] = run_control
     return {"ok": True, "message": "Task started in background"}
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/run")
+async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskRequest()):
+    return await _start_task_run(
+        adapter_id,
+        task_id,
+        req.params or {},
+        {"current_tab_id": req.current_tab_id},
+    )
+
+
+@app.post("/task-instances/{instance_uid}/run")
+async def run_task_instance(instance_uid: str):
+    instance = data_sink.get_task_instance(instance_uid)
+    if not instance:
+        raise HTTPException(404, "Task instance not found")
+    params = _parse_json_object(instance.get("params_json"))
+    params["__task_instance_uid"] = instance_uid
+    data_sink.update_task_instance(instance_uid, status="running", current_step="config")
+    return await _start_task_run(instance["adapter_id"], instance["task_id"], params, {})
 
 
 @app.post("/tasks/{adapter_id}/{task_id}/pause")

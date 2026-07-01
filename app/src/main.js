@@ -1513,6 +1513,8 @@ secureHandle('get-task-instance', async (_, instanceUid) =>
   apiCall('GET', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`))
 secureHandle('update-task-instance', async (_, instanceUid, payload) =>
   apiCall('PATCH', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`, payload || {}))
+secureHandle('run-task-instance', async (_, instanceUid) =>
+  apiCall('POST', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}/run`, {}))
 secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},

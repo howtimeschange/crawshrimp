@@ -888,6 +888,8 @@ import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState
 const props = defineProps({
   adapterId: String,
   task: Object,
+  instanceUid: { type: String, default: '' },
+  initialParams: { type: Object, default: () => ({}) },
 })
 const emit = defineEmits(['status-change'])
 
@@ -974,6 +976,38 @@ function buildDefaultValues(params = []) {
     else next[p.id] = p.default ?? ''
   }
   return next
+}
+
+function applyInitialParamsToValues(initialParams = {}) {
+  if (!initialParams || typeof initialParams !== 'object') return
+  const next = { ...values.value }
+  for (const p of taskParams.value || []) {
+    if (!Object.prototype.hasOwnProperty.call(initialParams, p.id)) continue
+    const value = initialParams[p.id]
+    if (isSingleTemporalParamType(p.type)) next[p.id] = value || ''
+    else if (isRangeParamType(p.type)) {
+      next[p.id + '_start'] = value?.start || ''
+      next[p.id + '_end'] = value?.end || ''
+    } else if (p.type === 'file_excel') {
+      next[p.id + '_path'] = value?.path || ''
+      next[p.id + '_rows'] = Array.isArray(value?.rows) ? value.rows : []
+      next[p.id + '_headers'] = Array.isArray(value?.headers) ? value.headers : []
+    } else if (p.type === 'file_images') {
+      next[p.id + '_paths'] = normalizeImagePaths(value?.paths, imageParamLimit(p))
+    } else if (isLineListParam(p)) {
+      next[p.id] = normalizeLineListRows(value, true, true)
+    } else if (isMultiFileParamType(p.type)) {
+      next[p.id + '_paths'] = normalizeFilePaths(value?.paths)
+    } else if (p.type === 'directory') {
+      next[p.id] = typeof value === 'string' ? value : value?.root || ''
+      if (p.include_file_listing) next[p.id + '_files'] = Array.isArray(initialParams[p.id + '_files']?.paths)
+        ? initialParams[p.id + '_files'].paths
+        : []
+    } else {
+      next[p.id] = value
+    }
+  }
+  values.value = next
 }
 
 function getTextareaRows(param) {
@@ -1181,6 +1215,7 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   dynamicParamProbeLoading.value = false
   dynamicParamProbeError.value = ''
   values.value = buildDefaultValues(task.params || [])
+  applyInitialParamsToValues(props.initialParams)
   if (pdfCropSavedTemplatesLoaded.value) applyDefaultPdfCropTemplatesToValues()
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
@@ -1216,6 +1251,11 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
     }
   })
 }, { immediate: true })
+
+watch(() => props.initialParams, (next) => {
+  if (!props.task) return
+  applyInitialParamsToValues(next)
+}, { deep: true })
 
 const executeModeParam = computed(() =>
   taskParams.value.find(p =>
@@ -1935,9 +1975,15 @@ async function stopCurrentTask() {
 
 async function startTaskRun(params, pendingMessage) {
   const currentTabId = await resolveCurrentTabId(params)
-  const r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
-    current_tab_id: currentTabId,
-  })
+  let r
+  if (props.instanceUid) {
+    await window.cs.updateTaskInstance(props.instanceUid, { params })
+    r = await window.cs.runTaskInstance(props.instanceUid)
+  } else {
+    r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
+      current_tab_id: currentTabId,
+    })
+  }
   if (!r.ok) throw new Error(r.message || JSON.stringify(r))
   logs.value.push(`[${now()}] ${pendingMessage}`)
   emit('status-change', { status: 'running' })
