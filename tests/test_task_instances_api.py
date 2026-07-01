@@ -26,7 +26,7 @@ class TaskInstancesApiTests(unittest.TestCase):
 
         self.assertTrue(created["instance_uid"])
         listed = api_server.list_task_instances_endpoint(status_group="current")
-        self.assertEqual(listed["items"], [])
+        self.assertEqual([item["instance_uid"] for item in listed["items"]], [created["instance_uid"]])
 
         detail = api_server.get_task_instance_endpoint(created["instance_uid"])
         self.assertEqual(detail["title"], "AI测图任务")

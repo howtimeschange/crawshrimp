@@ -43,3 +43,18 @@ test('TaskRunner reads output files from task instance artifacts in instance mod
   assert.match(view, /detail\?\.artifacts/)
   assert.match(view, /detail\?\.summary\?\.approval_board_url/)
 })
+
+test('TaskRunner auto-saves task instance draft params', () => {
+  const view = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  assert.match(view, /scheduleInstanceDraftParamSave/)
+  assert.match(view, /saveInstanceDraftParamsNow/)
+  assert.match(view, /instanceDraftSaveTargetUid/)
+  assert.match(view, /window\.cs\.updateTaskInstance\(targetUid/)
+  assert.match(view, /preservedTechnicalInstanceParams/)
+})
+
+test('TaskInstanceRunner renders zero-record summaries', () => {
+  const view = fs.readFileSync('app/src/renderer/views/TaskInstanceRunner.vue', 'utf8')
+  assert.match(view, /hasOwnProperty\.call\(summary, 'records'\)/)
+  assert.match(view, /Number\(summary\.records \|\| 0\).*条记录/)
+})

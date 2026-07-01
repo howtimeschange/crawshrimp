@@ -950,6 +950,10 @@ let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 let runAbortToken = 0
 let dynamicParamProbeToken = 0
 let activeTaskIdentityKey = ''
+let applyingInitialTaskValues = false
+let instanceDraftSaveTimer = null
+let instanceDraftSaveTargetUid = ''
+let instanceDraftSaveParams = null
 
 function buildDefaultValues(params = []) {
   const next = {}
@@ -1215,8 +1219,10 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   dynamicParamPatches.value = {}
   dynamicParamProbeLoading.value = false
   dynamicParamProbeError.value = ''
+  applyingInitialTaskValues = true
   values.value = buildDefaultValues(task.params || [])
   applyInitialParamsToValues(props.initialParams)
+  nextTick(() => { applyingInitialTaskValues = false })
   if (pdfCropSavedTemplatesLoaded.value) applyDefaultPdfCropTemplatesToValues()
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
@@ -1255,7 +1261,13 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
 
 watch(() => props.initialParams, (next) => {
   if (!props.task) return
+  applyingInitialTaskValues = true
   applyInitialParamsToValues(next)
+  nextTick(() => { applyingInitialTaskValues = false })
+}, { deep: true })
+
+watch(values, () => {
+  scheduleInstanceDraftParamSave()
 }, { deep: true })
 
 const executeModeParam = computed(() =>
@@ -1915,6 +1927,37 @@ function buildRunParams(overrides = {}) {
     params[p.id] = values.value[p.id]
   }
   return JSON.parse(JSON.stringify({ ...params, ...overrides }))
+}
+
+function preservedTechnicalInstanceParams() {
+  return Object.fromEntries(Object.entries(props.initialParams || {})
+    .filter(([key]) => String(key || '').startsWith('__')))
+}
+
+function scheduleInstanceDraftParamSave() {
+  if (!isInstanceMode.value || !props.task || applyingInitialTaskValues || isRunning.value) return
+  if (instanceDraftSaveTimer) clearTimeout(instanceDraftSaveTimer)
+  instanceDraftSaveTargetUid = String(props.instanceUid || '').trim()
+  instanceDraftSaveParams = buildRunParams(preservedTechnicalInstanceParams())
+  instanceDraftSaveTimer = setTimeout(() => {
+    const targetUid = instanceDraftSaveTargetUid
+    const params = instanceDraftSaveParams
+    instanceDraftSaveTimer = null
+    instanceDraftSaveTargetUid = ''
+    instanceDraftSaveParams = null
+    void saveInstanceDraftParamsNow(targetUid, params)
+  }, 300)
+}
+
+async function saveInstanceDraftParamsNow(targetUid = String(props.instanceUid || '').trim(), paramsSnapshot = null) {
+  if (!targetUid || !isInstanceMode.value || !props.task || isRunning.value) return
+  try {
+    await window.cs.updateTaskInstance(targetUid, {
+      params: paramsSnapshot || buildRunParams(preservedTechnicalInstanceParams()),
+    })
+  } catch (error) {
+    console.warn('保存任务草稿参数失败', error)
+  }
 }
 
 async function resolveCurrentTabId(params) {
@@ -3165,6 +3208,15 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearInterval(pollTimer)
+  if (instanceDraftSaveTimer) {
+    clearTimeout(instanceDraftSaveTimer)
+    const targetUid = instanceDraftSaveTargetUid || String(props.instanceUid || '').trim()
+    const params = instanceDraftSaveParams
+    instanceDraftSaveTimer = null
+    instanceDraftSaveTargetUid = ''
+    instanceDraftSaveParams = null
+    void saveInstanceDraftParamsNow(targetUid, params)
+  }
   stopPdfCropInteraction()
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)

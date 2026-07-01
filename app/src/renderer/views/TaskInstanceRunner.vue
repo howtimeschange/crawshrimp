@@ -72,7 +72,7 @@ const createSummaryText = computed(() => {
   const succeeded = Number(summary.succeeded || 0)
   const failed = Number(summary.failed || 0)
   if (attempted || succeeded || failed) return `成功 ${succeeded} / 失败 ${failed} / 尝试 ${attempted}`
-  if (summary.records) return `${summary.records} 条记录`
+  if (Object.prototype.hasOwnProperty.call(summary, 'records')) return `${Number(summary.records || 0)} 条记录`
   return '-'
 })
 

@@ -48,11 +48,20 @@ class TaskInstancesDataSinkTests(unittest.TestCase):
         data_sink.update_task_instance(waiting["instance_uid"], status="waiting_approval")
         data_sink.update_task_instance(done["instance_uid"], status="completed")
 
+        current = data_sink.list_task_instances(status_group="current")
         pending = data_sink.list_task_instances(status_group="pending")
         history = data_sink.list_task_instances(status_group="history")
 
+        self.assertEqual([row["title"] for row in current], ["待审批"])
         self.assertEqual([row["title"] for row in pending], ["待审批"])
         self.assertEqual([row["title"] for row in history], ["完成"])
+
+    def test_draft_instances_are_current_tasks(self):
+        draft = data_sink.create_task_instance("tmall-ops-assistant", "tmall_ai_image_test_chain", "草稿任务", {})
+
+        current = data_sink.list_task_instances(status_group="current")
+
+        self.assertEqual([row["instance_uid"] for row in current], [draft["instance_uid"]])
 
 
 if __name__ == "__main__":
