@@ -34,5 +34,5 @@ test('desktop workflow provides mac signing and notarization secrets to electron
   assert.match(workflow, /echo "APPLE_API_ISSUER=\$\{APPLE_API_ISSUER_SECRET\}"/)
   assert.match(workflow, /CSC_LINK: \$\{\{ secrets\.MAC_CSC_LINK \}\}/)
   assert.match(workflow, /CSC_KEY_PASSWORD: \$\{\{ secrets\.MAC_CSC_KEY_PASSWORD \}\}/)
-  assert.match(workflow, /CSC_NAME: "Developer ID Application: yicheng xing \(62AR7GLNK3\)"/)
+  assert.match(workflow, /CSC_NAME: "yicheng xing \(62AR7GLNK3\)"/)
 })
