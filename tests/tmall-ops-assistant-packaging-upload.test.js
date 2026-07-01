@@ -777,6 +777,26 @@ test('buildPcDetailVisualAnchorsFromOcrResults detects fixed top and wanted-info
   assert.equal(anchors.source, 'tesseract_ocr')
 })
 
+test('buildPcDetailVisualAnchorsFromOcrResults treats global award image as fixed top anchor', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([
+    { globalIndex: 0, src: 'https://img.example/award.jpg' },
+    { globalIndex: 1, src: 'https://img.example/old-01.jpg' },
+    { globalIndex: 2, src: 'https://img.example/wanted.jpg' },
+  ], [
+    { globalIndex: 0, text: '斩获多项全球大奖 多项国际大奖 以专业定义童鞋标准', confidence: 87 },
+    { globalIndex: 2, text: '想要的信息看这里 产品名称', confidence: 91 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, true)
+  assert.equal(anchors.fixedTopImageIndex, 0)
+  assert.equal(anchors.fixedTopAnchorKind, 'fixed_top')
+  assert.equal(anchors.stopImageIndex, 2)
+  assert.equal(anchors.stopAnchorKind, 'wanted_info')
+  assert.equal(anchors.source, 'tesseract_ocr')
+})
+
 test('buildPcDetailVisualAnchorsFromOcrResults detects non-first fixed top anchor', async () => {
   const helpers = await loadExports()
   const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([

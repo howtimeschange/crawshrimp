@@ -200,6 +200,31 @@ test('OCR results can recover fixed top and wash fallback anchors for probe samp
   assert.equal(anchors.source, 'tesseract_ocr')
 })
 
+test('OCR results treat global award image as fixed top anchor for probe samples', () => {
+  const sample = {
+    anchors: { top: { detected: false }, bottom: { detected: false } },
+    pcDetail: {
+      images: [
+        { globalIndex: 0, src: 'https://img.example/award.jpg' },
+        { globalIndex: 1, src: 'https://img.example/detail.jpg' },
+        { globalIndex: 2, src: 'https://img.example/wanted.jpg' },
+      ],
+    },
+  }
+
+  const anchors = buildOcrAnchorsFromResults(sample, [
+    { globalIndex: 0, text: '斩获多项全球大奖 多项国际大奖 以专业定义童鞋标准', confidence: 87 },
+    { globalIndex: 2, text: '想要的信息看这里 产品名称', confidence: 91 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, true)
+  assert.equal(anchors.fixedTopImageIndex, 0)
+  assert.equal(anchors.fixedTopAnchorKind, 'fixed_top')
+  assert.equal(anchors.stopImageIndex, 2)
+  assert.equal(anchors.stopAnchorKind, 'wanted_info')
+})
+
 test('OCR results can preserve top marketing promo before wanted-info anchors', () => {
   const sample = {
     anchors: { top: { detected: false }, bottom: { detected: false } },

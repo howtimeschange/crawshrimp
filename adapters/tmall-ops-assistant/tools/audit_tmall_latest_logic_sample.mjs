@@ -224,7 +224,7 @@ function replacementPlanFromAnchors(sample, anchors, imageCount) {
 
 function anchorLabel(kind) {
   const normalized = cleanText(kind)
-  if (normalized === 'fixed_top') return '亚洲第一/童装销售额固定头图'
+  if (normalized === 'fixed_top') return '亚洲第一/全球大奖固定头图'
   if (normalized === 'marketing_top') return '顶部营销承接图'
   if (normalized === 'wanted_info') return '想要的信息看这里'
   if (normalized === 'wash_fallback') return '不同材质/洗涤'

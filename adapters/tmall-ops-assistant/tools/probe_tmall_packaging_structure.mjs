@@ -16,7 +16,7 @@ const DEFAULT_COOLDOWN_MS = 30000
 const DEFAULT_ARTIFACT_EVERY = 10
 const DEFAULT_CONCURRENCY = 1
 
-const ASIA_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一)/i
+const ASIA_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一|全球大奖|国际大奖)/i
 const WANTED_INFO_ANCHOR_RE = /(想要的信息看这里|想看的信息在这里|想要的信息|信息看这里)/i
 const WASH_FALLBACK_ANCHOR_RE = /(不同材质这样洗|不同材质|衣物洗涤|洗涤|水洗|洗唛)/i
 const SIZE_ANCHOR_RE = /(尺码表|尺码测量|尺码推荐|尺码推荐表|宝贝尺寸|宝贝尺码|商品尺码表|尺码信息|测量图)/i
@@ -418,7 +418,7 @@ function buildReplacementPlan(detailKind, modules, images, anchors) {
       stopAnchorKind: anchors.bottom.kind,
     }
   }
-  const fixedTopLabel = anchors.top.kind === 'marketing_top' ? '顶部营销固定图区' : '亚洲第一固定图区'
+  const fixedTopLabel = anchors.top.kind === 'marketing_top' ? '顶部营销固定图区' : '亚洲第一/全球大奖固定图区'
   return {
     mode: 'anchored_replace',
     preserveFirstImage: anchors.top.detected,
@@ -741,7 +741,7 @@ function scenarioMarkdown(summary, options = {}) {
   lines.push('')
   lines.push('## 替换规则')
   lines.push('')
-  lines.push('- 顶部：仅当第 1 张图命中「童装销售额 / 全亚洲 / 亚洲第一」文本、已知 URL 或视觉相似度时保留；没有命中就从第 1 张开始替换。')
+  lines.push('- 顶部：OCR/视觉识别「童装销售额 / 全亚洲 / 亚洲第一 / 全球大奖 / 国际大奖」出现在第 N 张时，保留第 1 张到第 N 张；没有命中就从第 1 张开始找可替换区。')
   lines.push('- 底部优先级：先找「想要的信息看这里」；找不到再找「不同材质这样洗 / 不同材质 / 洗涤」；再找视觉白底黑字图；最后才使用尺码/吊牌/品牌故事等旧的下半区锚点。')
   lines.push('- 单个旧描述大模块如果没有文本或视觉锚点，默认只输出预检，不自动改页面。')
   lines.push('')
