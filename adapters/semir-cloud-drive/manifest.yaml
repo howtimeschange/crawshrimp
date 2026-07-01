@@ -190,7 +190,7 @@ tasks:
           - 备注
   - id: tmall_material_new_624
     name: 森马-天猫AI生图参考素材准备
-    description: 批量粘贴 SKC，在森马视觉图片包目录检索 3-1 全身图与 SKC 同名静物图，并按新命名规则打包导出
+    description: 批量粘贴 SKC，在森马视觉图片包目录检索 3 全身图与 SKC 同名静物图，并按新命名规则打包导出
     script: tmall-material-match-buy.js
     skip_auth: false
     params:

@@ -154,7 +154,7 @@
   function getNew624ImageType(item, packageCode) {
     const stem = normalizeComparableCode(getFileStem(item?.filename || ''))
     const code = normalizeComparableCode(packageCode || getFolderCodeFromItem(item))
-    if (stem === '3-1') return '全身'
+    if (stem === '3') return '全身'
     if (code && stem === code) return '静物'
     return ''
   }
@@ -174,6 +174,13 @@
     return new RegExp(`^${escapeRegExp(target)}(?:$|[\\s_\\-])`, 'i').test(text)
   }
 
+  function containsCodeToken(value, code) {
+    const text = compact(value).toLowerCase()
+    const target = compact(code).toLowerCase()
+    if (!text || !target) return false
+    return new RegExp(`(?:^|[^0-9a-z])${escapeRegExp(target)}(?:$|[^0-9a-z])`, 'i').test(text)
+  }
+
   function isWithinRelativePath(fullpath, relativePath) {
     const target = String(relativePath || '').trim()
     if (!target) return true
@@ -183,15 +190,15 @@
 
   function matchesFolderItemForCode(item, code) {
     if (!isDirectoryItem(item)) return false
-    return pathSegments(item?.fullpath || item?.filename || '').some(segment => startsWithCodeToken(segment, code))
+    return pathSegments(item?.fullpath || item?.filename || '').some(segment => containsCodeToken(segment, code))
   }
 
   function matchesAssetItemForCode(item, code, assetRule = 'match_buy') {
     if (!isImageItem(item)) return false
-    const hasCodeSegment = pathSegments(item?.fullpath || item?.filename || '').some(segment => startsWithCodeToken(segment, code))
+    const hasCodeSegment = pathSegments(item?.fullpath || item?.filename || '').some(segment => containsCodeToken(segment, code))
     if (!hasCodeSegment) return false
     if (normalizeAssetRule(assetRule) === 'new_624') {
-      return matchesNew624ImageName(item?.filename || '', getFolderCodeFromItem(item) || code)
+      return matchesNew624ImageName(item?.filename || '', code)
     }
     return matchesMatchBuyImageName(item?.filename || '')
   }
@@ -355,6 +362,44 @@
       const key = String(item?.fullpath || item?.filename || '').trim().toLowerCase()
       if (!key || seen.has(key)) continue
       seen.add(key)
+      result.push(item)
+    }
+    return result
+  }
+
+  function getNew624StaticFormatRank(item) {
+    const ext = getExt(item)
+    if (ext === 'jpg' || ext === 'jpeg') return 3
+    if (ext === 'png') return 2
+    return 1
+  }
+
+  function selectPreferredNew624Items(items, searchCode) {
+    const bestStaticByStem = new Map()
+    for (const item of Array.isArray(items) ? items : []) {
+      if (getNew624ImageType(item, searchCode) !== '静物') continue
+      const stem = normalizeComparableCode(getFileStem(item?.filename || ''))
+      if (!stem) continue
+      const current = bestStaticByStem.get(stem)
+      if (!current) {
+        bestStaticByStem.set(stem, item)
+        continue
+      }
+      if (getNew624StaticFormatRank(item) > getNew624StaticFormatRank(current)) {
+        bestStaticByStem.set(stem, item)
+      }
+    }
+
+    const result = []
+    const emittedStaticStems = new Set()
+    for (const item of Array.isArray(items) ? items : []) {
+      if (getNew624ImageType(item, searchCode) !== '静物') {
+        result.push(item)
+        continue
+      }
+      const stem = normalizeComparableCode(getFileStem(item?.filename || ''))
+      if (!stem || emittedStaticStems.has(stem) || bestStaticByStem.get(stem) !== item) continue
+      emittedStaticStems.add(stem)
       result.push(item)
     }
     return result
@@ -752,6 +797,7 @@
           uploadTimeRange,
           { value: 2000 },
           assetRule,
+          targetCode,
         )
         expandedAssets.push(...result.assets)
         folderErrors.push(...result.errors)
@@ -760,6 +806,10 @@
 
     const usedDirectAssetFallback = !expandedAssets.length && directAssets.length > 0
     const candidateItems = usedDirectAssetFallback ? directAssets : expandedAssets
+    const dedupedItems = dedupeItemsByFullpath(candidateItems)
+    const items = assetRule === 'new_624'
+      ? selectPreferredNew624Items(dedupedItems, targetCode)
+      : dedupedItems
 
     return {
       searchCount: searchItems.length,
@@ -768,7 +818,7 @@
       directAssetCount: directAssets.length,
       usedDirectAssetFallback,
       folderErrors,
-      items: dedupeItemsByFullpath(candidateItems),
+      items,
     }
   }
 
@@ -958,10 +1008,13 @@
       getFolderCodeFromItem,
       pathSegments,
       startsWithCodeToken,
+      containsCodeToken,
       isWithinRelativePath,
       matchesFolderItemForCode,
       matchesAssetItemForCode,
       collectMatchBuyAssets,
+      getNew624StaticFormatRank,
+      selectPreferredNew624Items,
       buildPackageFilename,
       buildNew624PackageFilename,
       buildRuntimeFilename,

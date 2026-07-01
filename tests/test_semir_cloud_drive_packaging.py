@@ -597,7 +597,7 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
             runtime_dir = base / "runtime"
             runtime_dir.mkdir()
 
-            model_file = runtime_dir / "raw-3-1.jpg"
+            model_file = runtime_dir / "raw-3.jpg"
             still_file = runtime_dir / "raw-still.jpg"
             model_file.write_bytes(b"model")
             still_file.write_bytes(b"still")
@@ -615,8 +615,8 @@ class SemirCloudDrivePackagingTests(unittest.TestCase):
                         "SKC编码": "103526124101A-80325",
                         "图片类型": "全身",
                         "文件名": "103526124101A-80325-全身.jpg",
-                        "原文件名": "3-1.jpg",
-                        "云盘路径": "01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/103526124101A-80325/3-1.jpg",
+                        "原文件名": "3.jpg",
+                        "云盘路径": "01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/103526124101A-80325/3.jpg",
                         "下载结果": "已下载",
                         "本地文件": str(model_file),
                         "__package_filename": "103526124101A-80325-全身.jpg",

@@ -47,7 +47,7 @@ function jsonResponse(payload) {
   }
 }
 
-test('new 6.24 asset rule keeps only 3-1 and static SKC images from the SKC folder', async () => {
+test('new 6.24 asset rule keeps only 3 and static SKC images from the SKC folder', async () => {
   const helpers = await loadExports({
     fetch: async (url) => {
       const textUrl = String(url)
@@ -123,7 +123,180 @@ test('new 6.24 asset rule keeps only 3-1 and static SKC images from the SKC fold
   assert.equal(result.folderCount, 1)
   assert.deepEqual(
     [...result.items.map(item => item.filename)],
-    ['3-1.jpg', '103526124101A-80325.jpg'],
+    ['103526124101A-80325.jpg', '3.jpg'],
+  )
+})
+
+test('new 6.24 asset rule accepts SKC folders when the full path contains the SKC token', async () => {
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        return jsonResponse({
+          total: 1,
+          list: [{
+            dir: '1',
+            filename: '裤子103525124007A-00388',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/森马20件look/裤子103525124007A-00388',
+          }],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        return jsonResponse({
+          count: 2,
+          list: [
+            {
+              dir: '0',
+              ext: 'jpg',
+              filename: '3.jpg',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/森马20件look/裤子103525124007A-00388/3.jpg',
+              last_dateline: 1780710400,
+            },
+            {
+              dir: '0',
+              ext: 'jpg',
+              filename: '103525124007A-00388.jpg',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/森马20件look/裤子103525124007A-00388/103525124007A-00388.jpg',
+              last_dateline: 1780710400,
+            },
+          ],
+        })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const result = await helpers.collectMatchBuyAssets(
+    '103525124007A-00388',
+    {
+      mountId: '3283',
+      relativePath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/森马20件look',
+    },
+    {
+      assetRule: 'new_624',
+      uploadTimeRange: helpers.normalizeUploadTimeRange({ start: '2026-06-01', end: '2026-06-30' }),
+      folderScanDepth: 1,
+    },
+  )
+
+  assert.equal(result.folderCount, 1)
+  assert.deepEqual(
+    [...result.items.map(item => item.filename)],
+    ['3.jpg', '103525124007A-00388.jpg'],
+  )
+})
+
+test('new 6.24 asset rule prefers JPG when static SKC image has PNG fallback', async () => {
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        return jsonResponse({
+          total: 1,
+          list: [{
+            dir: '1',
+            filename: '101526127009A-00388',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装/101526127009A-00388',
+          }],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        return jsonResponse({
+          count: 3,
+          list: [
+            {
+              dir: '0',
+              ext: 'jpg',
+              filename: '101526127009A-00388.jpg',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装/101526127009A-00388/101526127009A-00388.jpg',
+              last_dateline: 1780710400,
+            },
+            {
+              dir: '0',
+              ext: 'png',
+              filename: '101526127009A-00388.png',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装/101526127009A-00388/101526127009A-00388.png',
+              last_dateline: 1780710400,
+            },
+            {
+              dir: '0',
+              ext: 'psd',
+              filename: '101526127009A-00388.psd',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装/101526127009A-00388/101526127009A-00388.psd',
+              last_dateline: 1780710400,
+            },
+          ],
+        })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const result = await helpers.collectMatchBuyAssets(
+    '101526127009A-00388',
+    {
+      mountId: '3283',
+      relativePath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装',
+    },
+    {
+      assetRule: 'new_624',
+      uploadTimeRange: helpers.normalizeUploadTimeRange({ start: '2026-06-01', end: '2026-06-30' }),
+      folderScanDepth: 1,
+    },
+  )
+
+  assert.deepEqual(
+    [...result.items.map(item => item.filename)],
+    ['101526127009A-00388.jpg'],
+  )
+})
+
+test('new 6.24 asset rule keeps PNG static SKC image when JPG is unavailable', async () => {
+  const helpers = await loadExports({
+    fetch: async (url) => {
+      const textUrl = String(url)
+      if (textUrl.includes('/fengcloud/2/file/search')) {
+        return jsonResponse({
+          total: 1,
+          list: [{
+            dir: '1',
+            filename: '101526127009A-00388',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装/101526127009A-00388',
+          }],
+        })
+      }
+      if (textUrl.includes('/fengcloud/1/file/ls')) {
+        return jsonResponse({
+          count: 1,
+          list: [{
+            dir: '0',
+            ext: 'png',
+            filename: '101526127009A-00388.png',
+            fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装/101526127009A-00388/101526127009A-00388.png',
+            last_dateline: 1780710400,
+          }],
+        })
+      }
+      return jsonResponse({})
+    },
+  })
+
+  const result = await helpers.collectMatchBuyAssets(
+    '101526127009A-00388',
+    {
+      mountId: '3283',
+      relativePath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/静物/全域服装',
+    },
+    {
+      assetRule: 'new_624',
+      uploadTimeRange: helpers.normalizeUploadTimeRange({ start: '2026-06-01', end: '2026-06-30' }),
+      folderScanDepth: 1,
+    },
+  )
+
+  assert.deepEqual(
+    [...result.items.map(item => item.filename)],
+    ['101526127009A-00388.png'],
   )
 })
 
@@ -163,8 +336,8 @@ test('new 6.24 plan names full-body image by SKC and keeps still-life filename',
             {
               dir: '0',
               ext: 'jpg',
-              filename: '3-1.jpg',
-              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/103526124101A-80325/3-1.jpg',
+              filename: '3.jpg',
+              fullpath: '01-拍摄企划/01-服饰/00-季度所有图片/2026年/26Q3/模特/服饰/AI/6-4/6-04批次 6 套/103526124101A-80325/3.jpg',
               last_dateline: 1780710400,
             },
             {
