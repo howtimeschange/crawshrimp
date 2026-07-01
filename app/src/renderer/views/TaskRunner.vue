@@ -1204,6 +1204,7 @@ const taskParams = computed(() =>
 const hasParamProbeScript = computed(() =>
   !!String(props.task?.param_probe_script || '').trim()
 )
+const isInstanceMode = computed(() => !!String(props.instanceUid || '').trim())
 
 // 初始化默认值
 watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
@@ -1241,7 +1242,7 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
       }
-      if (last?.output_files) {
+      if (isInstanceMode.value || last?.output_files) {
         await refreshOutputFiles()
       }
       scrollToBottom()
@@ -2044,6 +2045,20 @@ function scrollToBottom() {
 }
 
 async function refreshOutputFiles() {
+  if (isInstanceMode.value) {
+    const detail = await window.cs.getTaskInstance(props.instanceUid)
+    const artifactFiles = (detail?.artifacts || [])
+      .map(artifact => artifact?.path)
+      .filter(Boolean)
+    const allFiles = [...artifactFiles]
+    const boardUrl = String(detail?.summary?.approval_board_url || '').trim()
+    if (boardUrl) allFiles.push(boardUrl)
+    outputFiles.value = visibleOutputFiles(allFiles)
+    approvalBoardUrl.value = findApprovalBoardUrl(allFiles, detail?.summary || null)
+    if (!approvalBoardUrl.value) approvalBatch.value = null
+    return allFiles
+  }
+
   const dataR = await window.cs.getData(props.adapterId, props.task.task_id)
   if (!dataR.runs?.[0]?.output_files) return []
   try {

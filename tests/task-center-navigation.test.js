@@ -16,3 +16,11 @@ test('TaskCenter exposes AI image task creation copy', () => {
   assert.match(view, /待处理/)
   assert.match(view, /历史任务/)
 })
+
+test('TaskRunner reads output files from task instance artifacts in instance mode', () => {
+  const view = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  assert.match(view, /const isInstanceMode = computed/)
+  assert.match(view, /window\.cs\.getTaskInstance\(props\.instanceUid\)/)
+  assert.match(view, /detail\?\.artifacts/)
+  assert.match(view, /detail\?\.summary\?\.approval_board_url/)
+})
