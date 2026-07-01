@@ -15,8 +15,6 @@ mac:
   gatekeeperAssess: false
   entitlements: assets/entitlements.mac.plist
   entitlementsInherit: assets/entitlements.mac.inherit.plist
-  notarize:
-    teamId: 62AR7GLNK3
   target:
     - target: dmg
       arch:

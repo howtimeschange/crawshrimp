@@ -17,7 +17,7 @@ test('mac desktop packaging is configured for Developer ID notarization', () => 
   assert.match(buildYml, /^  hardenedRuntime: true$/m)
   assert.match(buildYml, /^  entitlements: assets\/entitlements\.mac\.plist$/m)
   assert.match(buildYml, /^  entitlementsInherit: assets\/entitlements\.mac\.inherit\.plist$/m)
-  assert.match(buildYml, /^  notarize:\n    teamId: 62AR7GLNK3$/m)
+  assert.doesNotMatch(buildYml, /^  notarize:\n    teamId:/m)
   assert.equal(fs.existsSync(path.join(repoRoot, 'app/assets/entitlements.mac.plist')), true)
   assert.equal(fs.existsSync(path.join(repoRoot, 'app/assets/entitlements.mac.inherit.plist')), true)
 })
