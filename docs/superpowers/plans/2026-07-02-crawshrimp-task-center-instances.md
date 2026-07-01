@@ -398,7 +398,7 @@ git commit -m "fix(task-runner): add collapsible output drawer"
 - Modify: `core/data_sink.py`
 - Test: `tests/test_task_instances_data_sink.py`
 
-- [ ] **Step 1: Write data-sink tests**
+- [x] **Step 1: Write data-sink tests**
 
 Create `tests/test_task_instances_data_sink.py`:
 
@@ -464,7 +464,7 @@ if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -473,7 +473,7 @@ venv/bin/python -m unittest tests.test_task_instances_data_sink
 
 Expected: fails because helper functions do not exist.
 
-- [ ] **Step 3: Extend SQLite schema and helpers**
+- [x] **Step 3: Extend SQLite schema and helpers**
 
 Modify `core/data_sink.py`:
 
@@ -510,7 +510,7 @@ def add_task_instance_event(instance_uid: str, event_type: str, message: str, me
 
 Use `uuid.uuid4().hex` for `instance_uid`, ISO timestamps via `datetime.now().isoformat()`, and JSON encoding with `ensure_ascii=False`.
 
-- [ ] **Step 4: Run data-sink tests**
+- [x] **Step 4: Run data-sink tests**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -519,7 +519,7 @@ venv/bin/python -m unittest tests.test_task_instances_data_sink
 
 Expected: pass.
 
-- [ ] **Step 5: Commit persistence layer**
+- [x] **Step 5: Commit persistence layer**
 
 ```bash
 git add core/data_sink.py tests/test_task_instances_data_sink.py
