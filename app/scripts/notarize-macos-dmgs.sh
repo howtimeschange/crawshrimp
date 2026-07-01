@@ -74,7 +74,7 @@ stapled=()
 
 for dmg in "${dmgs[@]}"; do
   echo "Submitting ${dmg} to Apple notarization"
-  result_file="$(mktemp "${RUNNER_TEMP:-/tmp}/notary-result.XXXXXX.json")"
+  result_file="$(mktemp "${RUNNER_TEMP:-/tmp}/notary-result.XXXXXX")"
 
   set +e
   xcrun notarytool submit "${dmg}" \
@@ -119,7 +119,7 @@ while true; do
       continue
     fi
 
-    info_file="$(mktemp "${RUNNER_TEMP:-/tmp}/notary-info.XXXXXX.json")"
+    info_file="$(mktemp "${RUNNER_TEMP:-/tmp}/notary-info.XXXXXX")"
     set +e
     xcrun notarytool info "${submission_id}" \
       --key "${APPLE_NOTARY_KEY}" \

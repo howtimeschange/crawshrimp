@@ -212,7 +212,7 @@ install_requirements() {
   if ! "$py_bin" -m pip --version >/dev/null 2>&1; then
     "$py_bin" -m ensurepip --upgrade
   fi
-  "$py_bin" -m pip install \
+  PYTHONNOUSERSITE=1 "$py_bin" -m pip install \
     --disable-pip-version-check \
     --no-warn-script-location \
     -r "$REQUIREMENTS_FILE"

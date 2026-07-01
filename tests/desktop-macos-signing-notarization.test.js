@@ -48,8 +48,17 @@ test('desktop workflow signs with electron-builder and notarizes DMGs in a separ
 
   assert.match(notarizeScript, /xcrun notarytool submit/)
   assert.doesNotMatch(notarizeScript, /--wait/)
+  assert.match(notarizeScript, /mktemp "\$\{RUNNER_TEMP:-\/tmp\}\/notary-result\.XXXXXX"/)
+  assert.match(notarizeScript, /mktemp "\$\{RUNNER_TEMP:-\/tmp\}\/notary-info\.XXXXXX"/)
+  assert.doesNotMatch(notarizeScript, /mktemp [^\n]+XXXXXX\.json/)
   assert.match(notarizeScript, /xcrun notarytool info/)
   assert.match(notarizeScript, /APPLE_NOTARY_POLL_INTERVAL/)
   assert.match(notarizeScript, /xcrun stapler staple/)
   assert.match(notarizeScript, /xcrun stapler validate/)
+})
+
+test('desktop Python bundle install does not use user site packages', () => {
+  const downloadPythonScript = readRepoFile('app/scripts/download-python.sh')
+
+  assert.match(downloadPythonScript, /PYTHONNOUSERSITE=1 "\$py_bin" -m pip install/)
 })
