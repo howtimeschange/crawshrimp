@@ -31,7 +31,7 @@
 - Test: `app/src/renderer/utils/taskOutputSummary.test.js`
 - Create: `app/src/renderer/utils/taskOutputSummary.js`
 
-- [ ] **Step 1: Add output summary utility test**
+- [x] **Step 1: Add output summary utility test**
 
 Create `app/src/renderer/utils/taskOutputSummary.test.js`:
 
@@ -65,7 +65,7 @@ test('summarizeOutputFiles returns empty label for no output files', () => {
 })
 ```
 
-- [ ] **Step 2: Run the new test and confirm it fails**
+- [x] **Step 2: Run the new test and confirm it fails**
 
 Run:
 
@@ -76,7 +76,7 @@ node --test src/renderer/utils/taskOutputSummary.test.js
 
 Expected: fails because `taskOutputSummary.js` does not exist.
 
-- [ ] **Step 3: Add output summary utility**
+- [x] **Step 3: Add output summary utility**
 
 Create `app/src/renderer/utils/taskOutputSummary.js`:
 
@@ -135,7 +135,7 @@ export function summarizeOutputFiles(files = []) {
 }
 ```
 
-- [ ] **Step 4: Run utility test and app test suite**
+- [x] **Step 4: Run utility test and app test suite**
 
 Run:
 
@@ -147,7 +147,7 @@ npm test
 
 Expected: both pass.
 
-- [ ] **Step 5: Create reusable bottom drawer component**
+- [x] **Step 5: Create reusable bottom drawer component**
 
 Create `app/src/renderer/views/TaskOutputDrawer.vue` with props:
 
@@ -318,7 +318,7 @@ Paste this scoped CSS in the same file:
 }
 ```
 
-- [ ] **Step 6: Integrate drawer into `TaskRunner.vue`**
+- [x] **Step 6: Integrate drawer into `TaskRunner.vue`**
 
 Modify `TaskRunner.vue`:
 
@@ -373,7 +373,7 @@ Update CSS:
 }
 ```
 
-- [ ] **Step 7: Validate layout build**
+- [x] **Step 7: Validate layout build**
 
 Run:
 
@@ -385,7 +385,7 @@ npm test
 
 Expected: build passes and all Node tests pass.
 
-- [ ] **Step 8: Commit layout fix**
+- [x] **Step 8: Commit layout fix**
 
 ```bash
 git add app/src/renderer/views/TaskOutputDrawer.vue app/src/renderer/views/TaskRunner.vue app/src/renderer/utils/taskOutputSummary.js app/src/renderer/utils/taskOutputSummary.test.js

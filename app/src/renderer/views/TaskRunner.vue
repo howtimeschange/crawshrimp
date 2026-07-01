@@ -25,6 +25,7 @@
     </nav>
 
     <div class="runner-body">
+      <div class="runner-main-scroll">
       <!-- 参数面板 -->
       <div
         v-if="(!isTmallAiImageChainTask || aiChainActiveStep === 'config') && visibleParams.length"
@@ -609,26 +610,9 @@
         </div>
       </section>
 
-      <!-- 运行日志 -->
-      <div class="log-panel">
-        <div class="log-header">
-          <span>运行日志</span>
-          <div class="log-actions">
-            <span v-if="outputFiles.length" class="output-count" @click="showFiles = !showFiles">
-              📁 {{ outputFiles.length }} 个输出项
-            </span>
-            <button
-              v-if="canSyncOdps && latestExcelOutput"
-              class="clear-btn sync-btn"
-              :disabled="syncingOdps"
-              @click="syncLatestOdps"
-            >
-              {{ syncingOdps ? '同步中…' : '同步至数仓' }}
-            </button>
-            <button class="clear-btn" @click="clearLogs">清空</button>
-          </div>
-        </div>
+      </div>
 
+      <div class="runner-bottom-stack">
         <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip" aria-live="polite">
           <div class="progress-strip-head">
             <div class="progress-strip-main">
@@ -726,29 +710,36 @@
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>
 
-        <!-- 输出文件列表 -->
-        <div v-if="showFiles && outputFiles.length" class="file-list">
-          <div v-for="f in outputFiles" :key="f" class="file-item">
-            <div class="file-item-main" @click="openFile(f)">
-              <span class="file-icon">{{ outputPathIcon(f) }}</span>
-              <span class="file-name">{{ fileName(f) }}</span>
-              <span class="file-open">打开 →</span>
-            </div>
+        <TaskOutputDrawer
+          :logs="logs"
+          :files="outputFiles"
+          :log-class="logClass"
+          @clear-logs="clearLogs"
+          @open-file="openFile"
+        >
+          <template #actions>
             <button
-              v-if="canSyncOdps && isExcelFile(f)"
-              class="file-sync"
+              v-if="canSyncOdps && latestExcelOutput"
+              type="button"
+              class="task-output-sync-btn"
               :disabled="syncingOdps"
-              @click.stop="syncOdpsFiles([f])"
+              @click="syncLatestOdps"
+            >
+              {{ syncingOdps ? '同步中…' : '同步至数仓' }}
+            </button>
+          </template>
+          <template #file-actions="{ file }">
+            <button
+              v-if="canSyncOdps && isExcelFile(file)"
+              type="button"
+              class="task-output-file-sync"
+              :disabled="syncingOdps"
+              @click.stop="syncOdpsFiles([file])"
             >
               同步
             </button>
-          </div>
-        </div>
-
-        <div class="log-body" ref="logEl">
-          <div v-if="!logs.length" class="log-empty">等待任务执行…</div>
-          <div v-for="(line, i) in logs" :key="i" :class="['log-line', logClass(line)]">{{ line }}</div>
-        </div>
+          </template>
+        </TaskOutputDrawer>
       </div>
     </div>
 
@@ -888,6 +879,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import TmallAiApprovalDrawer from './TmallAiApprovalDrawer.vue'
+import TaskOutputDrawer from './TaskOutputDrawer.vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
@@ -903,13 +895,11 @@ const values = ref({})
 const logs = ref([])
 const isRunning = ref(false)
 const lastResult = ref(null)
-const logEl = ref(null)
 const outputFiles = ref([])
 const approvalBoardUrl = ref('')
 const approvalBatch = ref(null)
 const approvalDrawerOpen = ref(false)
 const aiChainActiveStep = ref('config')
-const showFiles = ref(false)
 const syncingOdps = ref(false)
 const excelLoading = ref({})
 const directoryListingLoading = ref({})
@@ -1904,7 +1894,6 @@ function resetRunUi() {
   approvalBatch.value = null
   approvalDrawerOpen.value = false
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
-  showFiles.value = false
   syncingOdps.value = false
 }
 
@@ -2005,7 +1994,7 @@ async function pollStatusOnce() {
 }
 
 function scrollToBottom() {
-  nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
+  // The reusable output drawer owns log auto-scroll.
 }
 
 async function refreshOutputFiles() {
@@ -2019,7 +2008,6 @@ async function refreshOutputFiles() {
     outputFiles.value = visibleOutputFiles(allFiles)
     approvalBoardUrl.value = findApprovalBoardUrl(allFiles)
     if (!approvalBoardUrl.value) approvalBatch.value = null
-    showFiles.value = outputFiles.value.length > 0
     return allFiles
   } catch {
     return []
@@ -2254,16 +2242,6 @@ function findApprovalBoardUrl(files = [], result = null) {
 
 function isExcelFile(path) {
   return /\.(xlsx|xlsm|xls)$/i.test(String(path || ''))
-}
-
-function outputPathIcon(path) {
-  const text = String(path || '').trim()
-  const lower = text.toLowerCase()
-  if (isHttpUrl(text)) return '🔗'
-  if (isExcelFile(text)) return '📊'
-  if (lower.endsWith('.zip')) return '🗜'
-  if (!/\.[^\\/]+$/.test(text)) return '📁'
-  return '📄'
 }
 
 async function syncOdpsFiles(paths) {
@@ -3145,13 +3123,36 @@ onUnmounted(() => {
 .runner-body {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.runner-main-scroll {
+  flex: 1 1 auto;
+  min-height: 360px;
   overflow-y: auto;
 }
+.runner-bottom-stack {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+}
 .ai-chain-runner .runner-body {
-  padding: 16px 18px 24px;
+  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+}
+.ai-chain-runner .runner-main-scroll {
+  padding: 16px 18px 0;
   display: grid;
   gap: 16px;
-  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+  align-content: start;
+}
+.ai-chain-runner .runner-bottom-stack {
+  padding: 14px 18px 18px;
 }
 .ai-chain-tabs {
   padding: 10px 18px 0;
@@ -3242,15 +3243,8 @@ onUnmounted(() => {
   overflow: hidden;
   background: var(--bg2);
 }
-.ai-chain-runner .params-panel,
-.ai-chain-runner .log-panel {
+.ai-chain-runner .params-panel {
   border-bottom: 0;
-}
-.ai-chain-runner .log-panel {
-  min-height: 240px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--bg2);
 }
 .ai-chain-panel-head {
   display: flex;
@@ -3678,19 +3672,6 @@ onUnmounted(() => {
 .result-badge.ok  { background: rgba(74,222,128,0.12); color: #4ade80; }
 .result-badge.err { background: rgba(248,113,113,0.12); color: #f87171; }
 
-/* 日志面板 */
-.log-panel {
-  min-height: 280px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.log-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
-}
-.log-header > span { font-size: 12px; color: var(--text2); font-weight: 600; }
-.log-actions { display: flex; align-items: center; gap: 12px; }
 .progress-strip {
   display: flex;
   flex-direction: column;
@@ -3912,61 +3893,6 @@ onUnmounted(() => {
   50% { transform: translateX(90%); }
   100% { transform: translateX(240%); }
 }
-.output-count {
-  font-size: 11px; color: var(--orange); cursor: pointer;
-  padding: 2px 8px; border-radius: 5px; background: var(--orange-bg);
-}
-.clear-btn {
-  font-size: 11px; color: var(--text3); background: transparent; border: none;
-  padding: 2px 8px; border-radius: 5px;
-}
-.clear-btn:hover { color: var(--text2); background: var(--bg3); }
-.sync-btn { color: #86efac; border: 1px solid rgba(74,222,128,0.18); }
-.sync-btn:hover:not(:disabled) { color: #bbf7d0; background: rgba(74,222,128,0.08); }
-.sync-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-.file-list {
-  background: var(--bg3); border-bottom: 1px solid var(--border);
-  padding: 8px 16px; display: flex; flex-direction: column; gap: 4px;
-}
-.file-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px; border-radius: 7px;
-  transition: background 0.1s;
-}
-.file-item:hover { background: var(--bg2); }
-.file-item-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-.file-icon { font-size: 14px; }
-.file-name { flex: 1; min-width: 0; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.file-open { font-size: 11px; color: var(--orange); }
-.file-sync {
-  border: 1px solid rgba(74,222,128,0.25);
-  background: rgba(74,222,128,0.06);
-  color: #86efac;
-  border-radius: 6px;
-  padding: 4px 9px;
-  font-size: 11px;
-}
-.file-sync:disabled { opacity: 0.45; cursor: not-allowed; }
-.file-sync:hover:not(:disabled) { background: rgba(74,222,128,0.12); }
-
-.log-body {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px;
-  font-family: 'Menlo', 'Monaco', monospace; font-size: 12px; line-height: 1.7;
-}
-.log-empty { color: var(--text3); text-align: center; padding: 40px 0; }
-.log-line { color: var(--text2); white-space: pre-wrap; word-break: break-all; }
-.log-line.ok   { color: #4ade80; }
-.log-line.err  { color: #f87171; }
-.log-line.warn { color: #fbbf24; }
-
 /* 文件选择控件 */
 .file-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .file-chosen {
@@ -4416,7 +4342,10 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
-  .ai-chain-runner .runner-body {
+  .ai-chain-runner .runner-main-scroll {
+    padding: 12px 12px 0;
+  }
+  .ai-chain-runner .runner-bottom-stack {
     padding: 12px;
   }
   .ai-chain-approval-panel,
