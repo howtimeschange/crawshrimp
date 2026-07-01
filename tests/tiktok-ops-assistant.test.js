@@ -592,7 +592,7 @@ test('product rating reports non JSON API body with response text instead of par
   assert.match(result.error, /No matching route/)
 })
 
-test('creator video task plans browser downloads then emits rows with download results', async () => {
+test('creator video task plans proxy-capable URL downloads then emits rows with download results', async () => {
   const calls = []
   const fetchImpl = async (url, init = {}) => {
     const body = JSON.parse(String(init.body || '{}'))
@@ -675,7 +675,7 @@ test('creator video task plans browser downloads then emits rows with download r
   assert.equal(first.meta.action, 'download_urls')
   assert.equal(first.meta.items.length, 1)
   assert.equal(first.meta.items[0].browser_session, undefined)
-  assert.equal(first.meta.items[0].no_proxy, true)
+  assert.equal(first.meta.items[0].no_proxy, undefined)
   assert.equal(first.meta.items[0].headers.Referer, 'https://affiliate.tiktokshopglobalselling.com/')
   assert.match(first.meta.items[0].headers['User-Agent'], /Mozilla\/5\.0/)
   assert.equal(first.meta.items[0].url, 'https://v16m-default.tiktokcdn-us.com/video-a.mp4?mime_type=video_mp4')

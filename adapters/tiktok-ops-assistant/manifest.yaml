@@ -481,7 +481,7 @@ tasks:
         max: 4
         step: 1
         ui_span: third
-        hint: 视频用浏览器会话下载；并发过高可能触发平台限流。
+        hint: 视频下载会沿用系统代理/VPN；并发过高可能触发平台限流。
       - id: product_id
         type: text
         label: 商品ID

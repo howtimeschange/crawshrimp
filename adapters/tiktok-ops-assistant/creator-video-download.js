@@ -515,7 +515,6 @@
         url: playUrl,
         filename,
         label: `${context.region || DEFAULT_REGION} / ${videoId || playInfo.id || 'video'} / ${creator.handle_name || creatorId || 'creator'}`,
-        no_proxy: true,
         headers: {
           Referer: 'https://affiliate.tiktokshopglobalselling.com/',
           'User-Agent': (typeof navigator !== 'undefined' && navigator.userAgent) || 'Mozilla/5.0',
