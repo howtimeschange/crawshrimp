@@ -534,7 +534,7 @@ git commit -m "feat(task-center): add task instance persistence"
 - Modify: `app/src/preload.js`
 - Test: `tests/test_task_instances_api.py`
 
-- [ ] **Step 1: Write API tests**
+- [x] **Step 1: Write API tests**
 
 Create `tests/test_task_instances_api.py` using `TestClient`:
 
@@ -592,7 +592,7 @@ class TaskInstancesApiTests(unittest.TestCase):
         self.assertEqual(updated["archived"], 1)
 ```
 
-- [ ] **Step 2: Run API tests to verify failure**
+- [x] **Step 2: Run API tests to verify failure**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -601,7 +601,7 @@ venv/bin/python -m unittest tests.test_task_instances_api
 
 Expected: 404 for missing endpoints.
 
-- [ ] **Step 3: Add FastAPI models and endpoints**
+- [x] **Step 3: Add FastAPI models and endpoints**
 
 Modify `core/api_server.py`:
 
@@ -653,7 +653,7 @@ def patch_task_instance_endpoint(instance_uid: str, req: TaskInstancePatchReques
 
 Return parsed `params` and `summary` objects in API responses, not only raw JSON strings.
 
-- [ ] **Step 4: Add IPC bridge**
+- [x] **Step 4: Add IPC bridge**
 
 Modify `app/src/main.js`:
 
@@ -673,7 +673,7 @@ getTaskInstance: (uid) => ipcRenderer.invoke('get-task-instance', uid),
 updateTaskInstance: (uid, payload) => ipcRenderer.invoke('update-task-instance', uid, payload),
 ```
 
-- [ ] **Step 5: Run API and packaging tests**
+- [x] **Step 5: Run API and packaging tests**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -684,7 +684,7 @@ npm test
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit API layer**
+- [x] **Step 6: Commit API layer**
 
 ```bash
 git add core/api_server.py app/src/main.js app/src/preload.js tests/test_task_instances_api.py

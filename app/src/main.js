@@ -1505,6 +1505,14 @@ secureHandle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
   retries: 20,
   retryDelayMs: 500,
 }))
+secureHandle('list-task-instances', async (_, query = {}) =>
+  apiCall('GET', `/task-instances?${new URLSearchParams(query || {})}`))
+secureHandle('create-task-instance', async (_, payload) =>
+  apiCall('POST', '/task-instances', payload || {}))
+secureHandle('get-task-instance', async (_, instanceUid) =>
+  apiCall('GET', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`))
+secureHandle('update-task-instance', async (_, instanceUid, payload) =>
+  apiCall('PATCH', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`, payload || {}))
 secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},

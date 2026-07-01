@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld('cs', {
   enableAdapter:   (id, enabled) => ipcRenderer.invoke('enable-adapter', id, enabled),
 
   getTasks:        () => ipcRenderer.invoke('get-tasks'),
+  listTaskInstances: (query) => ipcRenderer.invoke('list-task-instances', query),
+  createTaskInstance: (payload) => ipcRenderer.invoke('create-task-instance', payload),
+  getTaskInstance: (uid) => ipcRenderer.invoke('get-task-instance', uid),
+  updateTaskInstance: (uid, payload) => ipcRenderer.invoke('update-task-instance', uid, payload),
   probeTaskParams: (aid, tid, params, options) => ipcRenderer.invoke('probe-task-params', aid, tid, params, options),
   runTask:         (aid, tid, params, options) => ipcRenderer.invoke('run-task', aid, tid, params, options),
   pauseTask:       (aid, tid) => ipcRenderer.invoke('pause-task', aid, tid),

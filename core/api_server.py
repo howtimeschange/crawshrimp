@@ -4493,9 +4493,97 @@ class RunTaskRequest(BaseModel):
     current_tab_id: Optional[str] = None
 
 
+class TaskInstanceCreateRequest(BaseModel):
+    adapter_id: str
+    task_id: str
+    title: str
+    params: dict = {}
+
+
+class TaskInstancePatchRequest(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    current_step: Optional[str] = None
+    params: Optional[dict] = None
+    summary: Optional[dict] = None
+    archived: Optional[bool] = None
+
+
 class ProbeTaskParamsRequest(BaseModel):
     params: Optional[dict] = None
     current_tab_id: Optional[str] = None
+
+
+def _parse_json_object(value) -> dict:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _serialize_task_instance(row: dict) -> dict:
+    data = dict(row or {})
+    data["params"] = _parse_json_object(data.get("params_json"))
+    data["summary"] = _parse_json_object(data.get("summary_json"))
+    return data
+
+
+def _serialize_task_instance_detail(detail: dict) -> dict:
+    data = _serialize_task_instance(detail)
+    data["runs"] = list((detail or {}).get("runs") or [])
+    data["artifacts"] = list((detail or {}).get("artifacts") or [])
+    data["events"] = list((detail or {}).get("events") or [])
+    return data
+
+
+def _model_patch(req: BaseModel) -> dict:
+    if hasattr(req, "model_dump"):
+        return req.model_dump(exclude_unset=True)
+    return req.dict(exclude_unset=True)
+
+
+@app.get("/task-instances")
+def list_task_instances_endpoint(
+    status_group: str = "",
+    adapter_id: str = "",
+    task_id: str = "",
+    keyword: str = "",
+    limit: int = 100,
+):
+    items = data_sink.list_task_instances(
+        status_group=status_group,
+        adapter_id=adapter_id,
+        task_id=task_id,
+        keyword=keyword,
+        limit=limit,
+    )
+    return {"items": [_serialize_task_instance(row) for row in items]}
+
+
+@app.post("/task-instances")
+def create_task_instance_endpoint(req: TaskInstanceCreateRequest):
+    row = data_sink.create_task_instance(req.adapter_id, req.task_id, req.title, req.params)
+    return _serialize_task_instance(row)
+
+
+@app.get("/task-instances/{instance_uid}")
+def get_task_instance_endpoint(instance_uid: str):
+    detail = data_sink.get_task_instance_detail(instance_uid)
+    if not detail:
+        raise HTTPException(404, "Task instance not found")
+    return _serialize_task_instance_detail(detail)
+
+
+@app.patch("/task-instances/{instance_uid}")
+def patch_task_instance_endpoint(instance_uid: str, req: TaskInstancePatchRequest):
+    patch = _model_patch(req)
+    if patch.get("archived") is True:
+        patch["status"] = "archived"
+    row = data_sink.update_task_instance(instance_uid, **patch)
+    if not row:
+        raise HTTPException(404, "Task instance not found")
+    return _serialize_task_instance(row)
 
 
 @app.post("/probe/run")
