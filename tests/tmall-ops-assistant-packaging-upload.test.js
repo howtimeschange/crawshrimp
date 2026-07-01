@@ -24,9 +24,12 @@ async function loadExports(fetchImpl = async () => jsonResponse({})) {
       __CRAWSHRIMP_SHARED__: {},
       __CRAWSHRIMP_EXPORTS__: exportsBox,
     },
-    document: {},
+    document: { cookie: '_tb_token_=test-token' },
     location: { href: 'https://fmp.semirapp.com/web/index#/home/file', hash: '#/home/file' },
     fetch: fetchImpl,
+    FormData: globalThis.FormData,
+    Blob: globalThis.Blob,
+    File: globalThis.File,
     URLSearchParams,
     console,
     setTimeout,
@@ -68,6 +71,9 @@ async function runScript({ phase, shared = {}, params = {}, documentOverride = {
     document: documentOverride,
     location,
     fetch: async () => jsonResponse({}),
+    FormData: globalThis.FormData,
+    Blob: globalThis.Blob,
+    File: globalThis.File,
     getComputedStyle: () => ({ display: 'block', visibility: 'visible' }),
     URLSearchParams,
     console,
@@ -144,16 +150,16 @@ function plain(value) {
 test('packaging assets are grouped into Tmall upload buckets from names and dimensions', async () => {
   const helpers = await loadExports()
   const plan = helpers.classifyPackagingAssets([
-    image('208126140007_800x800_主图01.jpg'),
-    image('208126140007_800x800_主图02.jpg'),
-    image('208126140007_800x800_微详情01.jpg'),
-    image('208126140007_800x800_微详情02.jpg'),
-    image('208126140007_750x1000_主图01.jpg'),
-    image('208126140007_750x1000_主图02.jpg'),
-    image('208126140007_750x1000_微详情01.jpg'),
-    image('208126140007_750x1000_微详情02.jpg'),
-    image('208126140007_750x1000_微详情03.jpg'),
-    image('208126140007_800x1200_商品竖图.jpg'),
+    image('1440_1440(天猫).jpg', '208126140007/主图/1440_1440(天猫).jpg'),
+    image('1440_1440(天猫)1.jpg', '208126140007/主图/1440_1440(天猫)1.jpg'),
+    image('1440_14401.jpg', '208126140007/微详情/1440_14401.jpg'),
+    image('1440_14402.jpg', '208126140007/微详情/1440_14402.jpg'),
+    image('1440_1920(天猫).jpg', '208126140007/主图/1440_1920(天猫).jpg'),
+    image('1440_1920(天猫)1.jpg', '208126140007/主图/1440_1920(天猫)1.jpg'),
+    image('1440_19201.jpg', '208126140007/微详情/1440_19201.jpg'),
+    image('1440_19202.jpg', '208126140007/微详情/1440_19202.jpg'),
+    image('1440_19203.jpg', '208126140007/微详情/1440_19203.jpg'),
+    image('1440_2160(天猫).jpg', '208126140007/主图/1440_2160(天猫).jpg'),
     image('详情_001.jpg'),
     image('详情_002.jpg'),
   ])
@@ -164,7 +170,7 @@ test('packaging assets are grouped into Tmall upload buckets from names and dime
   assert.equal(plan.byCategory.micro_3x4.length, 3)
   assert.equal(plan.byCategory.vertical.length, 1)
   assert.equal(plan.byCategory.pc_detail.length, 2)
-  assert.deepEqual(plan.missing, [])
+  assert.equal(plan.missing.length, 0)
 })
 
 test('packaging classifier reads underscore dimensions from Semir packaging filenames', async () => {
@@ -188,7 +194,12 @@ test('packaging classifier reads underscore dimensions from Semir packaging file
   assert.equal(plan.byCategory.main_3x4.length, 2)
   assert.equal(plan.byCategory.micro_3x4.length, 3)
   assert.equal(plan.byCategory.vertical.length, 1)
-  assert.deepEqual(plan.missing, [])
+  assert.deepEqual(plain(plan.byCategory.main_1x1.map(item => item.filename)), ['800_800(天猫).jpg', '800_800(天猫)1.jpg'])
+  assert.deepEqual(plain(plan.byCategory.micro_1x1.map(item => item.filename)), ['1440_14401.jpg', '1440_14402.jpg'])
+  assert.deepEqual(plain(plan.byCategory.main_3x4.map(item => item.filename)), ['1440_1920(天猫).jpg', '1440_1920(天猫)1.jpg'])
+  assert.deepEqual(plain(plan.byCategory.micro_3x4.map(item => item.filename)), ['1440_19201.jpg', '1440_19202.jpg', '1440_19203.jpg'])
+  assert.equal(plan.byCategory.vertical[0].filename, '1440_2160(天猫).jpg')
+  assert.equal(plan.missing.length, 0)
 })
 
 test('packaging classifier caps PC detail images and prefers detail folder assets', async () => {
@@ -221,6 +232,21 @@ test('packaging classifier caps PC detail images and prefers detail folder asset
 
   assert.equal(plan.byCategory.pc_detail.length, 30)
   assert.equal(plan.byCategory.pc_detail.every(item => String(item.fullpath).includes('/2-详情/')), true)
+})
+
+test('packaging classifier keeps optimized package assets eligible after latest-root selection', async () => {
+  const helpers = await loadExports()
+  const plan = helpers.classifyPackagingAssets([
+    image('1440_1440(天猫).jpg', '2025Q4/羽绒优化/208425107212-优化/主图/1440_1440(天猫).jpg'),
+    image('1440_1440(天猫)1.jpg', '2025Q4/羽绒优化/208425107212-优化/主图/1440_1440(天猫)1.jpg'),
+    image('1440_14401.jpg', '2025Q4/羽绒优化/208425107212-优化/微详情/1440_14401.jpg'),
+    image('1440_14402.jpg', '2025Q4/羽绒优化/208425107212-优化/微详情/1440_14402.jpg'),
+    image('208425107212_01.jpg', '2025Q4/羽绒优化/208425107212-优化/images/208425107212_01.jpg'),
+  ])
+
+  assert.equal(plan.byCategory.main_1x1.every(item => String(item.fullpath || '').includes('208425107212-优化/主图/')), true)
+  assert.deepEqual(plain(plan.byCategory.micro_1x1.map(item => item.filename)), ['1440_14401.jpg', '1440_14402.jpg'])
+  assert.equal(plan.byCategory.pc_detail[0].fullpath, '品牌视觉部/鞋品/208126140007/2025Q4/羽绒优化/208425107212-优化/images/208425107212_01.jpg')
 })
 
 test('parseDimensionFromText accepts x, underscore, and sequence-suffixed dimensions', async () => {
@@ -399,6 +425,91 @@ test('ensure_cloud_folder enters search route after the Semir mount tab is activ
 
   assert.equal(next.result.meta.next_phase, 'collect_cloud_assets')
   assert.equal(next.location.hash, searchHash)
+})
+
+test('mobile detail editor readiness goes straight to import menu', async () => {
+  const { result } = await runScript({
+    phase: 'wait_mobile_editor_ready',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+    },
+    documentOverride: {
+      body: { innerText: '手机详情 导入 完成编辑' },
+      querySelectorAll() {
+        return []
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'open_mobile_import_menu')
+  assert.equal(result.meta.shared.current_store, '打开手机端导入菜单')
+})
+
+test('mobile detail import falls back to image-text split when full-image generation is absent', async () => {
+  const { result } = await runScript({
+    phase: 'select_mobile_full_image',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+    },
+    documentOverride: fakeDocument([
+      fakeElement('图文分离'),
+    ]),
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'confirm_mobile_import_pc_detail')
+  assert.equal(result.meta.shared.mobile_generate_mode, '图文分离')
+  assert.equal(result.meta.clicks.length, 1)
+})
+
+test('mobile detail import menu uses CDP hover before opening nested import detail menu', async () => {
+  const { result } = await runScript({
+    phase: 'open_mobile_import_menu',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+    },
+    documentOverride: fakeDocument([
+      fakeElement('导入'),
+    ]),
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'click_mobile_import_detail')
+  assert.equal(result.meta.clicks[0].type, 'move')
+})
+
+test('mobile detail finish closes import success dialog before clicking finish edit', async () => {
+  const confirm = fakeElement('确认', { left: 820 })
+  const finish = fakeElement('完成编辑', { left: 1040 })
+  const dialogRoot = {
+    innerText: '导入电脑端详情成功! 确认',
+    textContent: '导入电脑端详情成功! 确认',
+    className: 'next-dialog',
+    tagName: 'DIV',
+    querySelectorAll() {
+      return [confirm]
+    },
+    getBoundingClientRect() {
+      return { width: 320, height: 180, left: 600, top: 360 }
+    },
+  }
+  const { result } = await runScript({
+    phase: 'finish_mobile_editor',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+    },
+    documentOverride: {
+      body: { innerText: '导入电脑端详情成功! 确认 完成编辑' },
+      querySelectorAll(selector) {
+        if (String(selector).includes('dialog') || String(selector).includes('modal')) return [dialogRoot]
+        return [finish, confirm]
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'finish_mobile_editor')
+  assert.equal(result.meta.shared.current_store, '关闭导入电脑端详情成功提示')
 })
 
 test('buildAnchoredPcDetailModules preserves first image and wanted-info bottom anchor while replacing middle detail images', async () => {
@@ -682,6 +793,32 @@ test('buildAnchoredPcDetailHtml blocks image-only old text PC detail without tex
   assert.equal(result.target, 'tmDescription')
   assert.match(result.note, /旧版文本PC详情/)
   assert.equal(result.html.includes('old-info.jpg'), true)
+})
+
+test('buildAnchoredPcDetailHtml can replace legacy image-only middle range when explicitly allowed', async () => {
+  const helpers = await loadExports()
+  const result = helpers.buildAnchoredPcDetailHtml([
+    '<p><img src="https://img.example/top.jpg"/></p>',
+    '<p><img src="https://img.example/old-middle-1.jpg"/></p>',
+    '<p><img src="https://img.example/old-middle-2.jpg"/></p>',
+    '<p><img src="https://img.example/unknown-lower.jpg"/></p>',
+  ].join(''), [
+    'https://img.example/new-detail-01.jpg',
+    'https://img.example/new-detail-02.jpg',
+  ], {
+    allowLegacyCountImageReplace: true,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.target, 'tmDescription')
+  assert.equal(result.mode, 'legacy_count_replace')
+  assert.match(result.note, /替换中段/)
+  assert.match(result.html, /top\.jpg/)
+  assert.match(result.html, /new-detail-01\.jpg/)
+  assert.match(result.html, /new-detail-02\.jpg/)
+  assert.match(result.html, /unknown-lower\.jpg/)
+  assert.doesNotMatch(result.html, /old-middle-1\.jpg/)
+  assert.doesNotMatch(result.html, /old-middle-2\.jpg/)
 })
 
 test('buildAnchoredPcDetailHtml blocks image-only old text detail even when image counts look plausible', async () => {
@@ -1072,6 +1209,138 @@ test('buildTmallComponentValues creates main images, vertical image, and anchore
   assert.doesNotMatch(values.modularDesc[0].content, /old\.jpg/)
 })
 
+test('buildTmallComponentValues replaces image slots from left and preserves trailing originals', async () => {
+  const helpers = await loadExports()
+  const values = helpers.buildTmallComponentValues({
+    main_1x1: [
+      { url: 'https://img.example/new-main-1.jpg', width: 1440, height: 1440, pix: '1440x1440' },
+      { url: 'https://img.example/new-main-2.jpg', width: 1440, height: 1440, pix: '1440x1440' },
+    ],
+    micro_1x1: [
+      { url: 'https://img.example/new-main-3.jpg', width: 1440, height: 1440, pix: '1440x1440' },
+    ],
+    main_3x4: [{ url: 'https://img.example/new-3x4-1.jpg' }],
+    micro_3x4: [{ url: 'https://img.example/new-3x4-2.jpg' }],
+    pc_detail: [],
+  }, {
+    mainImagesGroup: {
+      images: [
+        { url: 'https://img.example/old-main-1.jpg' },
+        { url: 'https://img.example/old-main-2.jpg' },
+        { url: 'https://img.example/old-main-3.jpg' },
+        { url: 'https://img.example/old-main-4.jpg' },
+        { url: 'https://img.example/old-main-5.jpg' },
+      ],
+      keep: true,
+    },
+    threeToFourImages: [
+      { url: 'https://img.example/old-3x4-1.jpg' },
+      { url: 'https://img.example/old-3x4-2.jpg' },
+      { url: 'https://img.example/old-3x4-3.jpg' },
+    ],
+    modularDesc: [{
+      id: 1,
+      content: '<p><img src="https://img.example/top.jpg"/></p><p>想要的信息看这里</p>',
+    }],
+  })
+
+  assert.equal(values.mainImagesGroup.keep, true)
+  assert.deepEqual(values.mainImagesGroup.images.map(item => item.url), [
+    'https://img.example/new-main-1.jpg',
+    'https://img.example/new-main-2.jpg',
+    'https://img.example/new-main-3.jpg',
+    'https://img.example/old-main-4.jpg',
+    'https://img.example/old-main-5.jpg',
+  ])
+  assert.deepEqual(values.threeToFourImages.map(item => item.url), [
+    'https://img.example/new-3x4-1.jpg',
+    'https://img.example/new-3x4-2.jpg',
+    'https://img.example/old-3x4-3.jpg',
+  ])
+})
+
+test('apply_tmall_draft mirrors component replacements into Tmall formValues model', async () => {
+  const componentValues = {
+    mainImagesGroup: { images: [{ url: 'https://img.example/old-main.jpg' }] },
+    threeToFourImages: [{ url: 'https://img.example/old-3x4.jpg' }],
+    guideImageGroup: { whiteBgImage: [{ url: 'https://img.example/white.jpg' }] },
+    modularDesc: [{
+      id: 1,
+      content: '<p><img src="https://img.example/top.jpg"/></p><p>想要的信息看这里</p>',
+    }],
+  }
+  const models = {
+    formValues: {
+      title: '保留原字段',
+    },
+  }
+  const engine = {
+    getModels() {
+      return models
+    },
+    updateModels(patch) {
+      if (patch.formValues) models.formValues = patch.formValues
+    },
+    getComponent(name) {
+      return {
+        emit(eventName, value) {
+          assert.equal(eventName, 'change')
+          componentValues[name] = value
+        },
+      }
+    },
+  }
+  const state = {
+    engine,
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'apply_tmall_draft',
+    shared: {
+      jobs: [{ item_id: '736290773760', style_code: '208425107212' }],
+      current_job: { item_id: '736290773760', style_code: '208425107212', execute_mode: 'upload_draft' },
+      current_result_rows: [{ '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/main.jpg' }],
+      uploaded_by_category: {
+        main_1x1: [{ url: 'https://img.example/new-main.jpg', width: 1440, height: 1440, pix: '1440x1440' }],
+        main_3x4: [{ url: 'https://img.example/new-3x4.jpg' }],
+        vertical: [{ url: 'https://img.example/new-vertical.jpg' }],
+        pc_detail: [],
+      },
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=736290773760',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(models.formValues.title, '保留原字段')
+  assert.equal(models.formValues.mainImagesGroup.images[0].url, 'https://img.example/new-main.jpg')
+  assert.equal(models.formValues.threeToFourImages[0].url, 'https://img.example/new-3x4.jpg')
+  assert.equal(models.formValues.guideImageGroup.verticalImage[0].url, 'https://img.example/new-vertical.jpg')
+  assert.equal(componentValues.mainImagesGroup.images[0].url, 'https://img.example/new-main.jpg')
+  assert.match(result.meta.shared.applied_components.mainImagesGroup.method, /form_model/)
+})
+
 test('buildTmallComponentValues applies visual anchors to modularDesc replacements', async () => {
   const helpers = await loadExports()
   const values = helpers.buildTmallComponentValues({
@@ -1163,7 +1432,29 @@ test('buildShenbiMobileValueFromPcModules creates full-image mobile detail from 
     },
   ], {
     cid: 8,
-    descContainer: { detail: '<wapDesc></wapDesc>', other: 'keep' },
+    descContainer: {
+      detail: '<wapDesc></wapDesc>',
+      nativeDetail: JSON.stringify({
+        data: {
+          ID: 'detail_layout_existing',
+          type: 'native',
+          key: 'sys_list',
+          params: { requestMap: '{"see_more":true}' },
+          putID: -1,
+          children: [{
+            ID: 'old',
+            type: 'native',
+            key: 'detail_container_style7',
+            params: {
+              childrenStyle: 'sequence',
+              picUrl: 'https://img.example/old-mobile-promo.jpg',
+            },
+            putID: -1,
+          }],
+        },
+      }),
+      other: 'keep',
+    },
     empty: true,
   }, {
     'https://img.example/detail.jpg': 12345,
@@ -1177,6 +1468,59 @@ test('buildShenbiMobileValueFromPcModules creates full-image mobile detail from 
   assert.match(value.descContainer.detail, /detail\.jpg/)
   assert.match(value.descContainer.detail, /size\.jpg/)
   assert.match(value.descContainer.detail, /size="12345">https:\/\/img\.example\/detail\.jpg/)
+  assert.equal(value.descContainer.other, 'keep')
+  assert.doesNotMatch(value.descContainer.nativeDetail, /old-mobile-promo\.jpg/)
+  assert.match(value.descContainer.nativeDetail, /top\.jpg/)
+  assert.match(value.descContainer.nativeDetail, /detail\.jpg/)
+  assert.match(value.descContainer.nativeDetail, /size\.jpg/)
+})
+
+test('legacy tmDescription urls can rebuild Shenbi mobile native detail', async () => {
+  const helpers = await loadExports()
+  const html = [
+    '<p><img src="https://img.example/top.jpg"/></p>',
+    '<p><img src="https://img.example/new-detail.jpg"/></p>',
+    '<p><img src="https://img.example/tail.jpg"/></p>',
+  ].join('')
+  const urls = helpers.pcDetailUrlsFromSource(null, html)
+  const value = helpers.buildShenbiMobileValueFromPcUrls(urls, {
+    descContainer: {
+      detail: '<wapDesc></wapDesc>',
+      nativeDetail: JSON.stringify({
+        data: {
+          ID: 'old-layout',
+          type: 'native',
+          key: 'sys_list',
+          params: { requestMap: '{"see_more":true}' },
+          children: [{
+            ID: 'old-promo',
+            type: 'native',
+            key: 'detail_container_style7',
+            params: {
+              childrenStyle: 'sequence',
+              picUrl: 'https://img.example/old-mobile-promo.jpg',
+            },
+            putID: -1,
+          }],
+        },
+      }),
+    },
+    empty: true,
+  })
+
+  assert.deepEqual(Array.from(urls), [
+    'https://img.example/top.jpg',
+    'https://img.example/new-detail.jpg',
+    'https://img.example/tail.jpg',
+  ])
+  assert.equal(value.empty, false)
+  assert.match(value.descContainer.detail, /top\.jpg/)
+  assert.match(value.descContainer.detail, /new-detail\.jpg/)
+  assert.match(value.descContainer.detail, /tail\.jpg/)
+  assert.doesNotMatch(value.descContainer.nativeDetail, /old-mobile-promo\.jpg/)
+  assert.match(value.descContainer.nativeDetail, /top\.jpg/)
+  assert.match(value.descContainer.nativeDetail, /new-detail\.jpg/)
+  assert.match(value.descContainer.nativeDetail, /tail\.jpg/)
 })
 
 test('validateInjectedAsset guards obvious ratio mismatches before upload', async () => {
@@ -1188,6 +1532,73 @@ test('validateInjectedAsset guards obvious ratio mismatches before upload', asyn
     /不是1:1/,
   )
   assert.equal(helpers.validateInjectedAsset({ __category: 'vertical' }, { width: 800, height: 1200 }), '')
+})
+
+test('blockingUploadFailureRows detects downloaded images that did not upload cleanly', async () => {
+  const helpers = await loadExports()
+  const rows = [
+    { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/ok.jpg' },
+    { '下载结果': '已下载', '上传结果': '上传失败', '本地文件': '/tmp/fail.jpg' },
+    { '下载结果': '已跳过', '上传结果': '', '本地文件': '' },
+  ]
+
+  const failures = helpers.blockingUploadFailureRows(rows)
+
+  assert.equal(failures.length, 1)
+  assert.equal(failures[0]['本地文件'], '/tmp/fail.jpg')
+})
+
+test('shouldAllowLegacyCountPcDetailReplace only trusts PC detail rows under 01 product packaging', async () => {
+  const helpers = await loadExports()
+  const productRows = [
+    {
+      __category: 'pc_detail',
+      '下载结果': '已下载',
+      '本地文件': '/tmp/detail-01.jpg',
+      '云盘路径': '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2025Q4/羽绒优化/208425107212-优化/images/208425107212_01.jpg',
+    },
+  ]
+  const auditRows = [
+    {
+      __category: 'pc_detail',
+      '下载结果': '已下载',
+      '本地文件': '/tmp/detail-01.jpg',
+      '云盘路径': '品牌视觉部/服饰包装组/巴拉服饰产品包装/04-驻场设计/刘遥/婴幼/425婴幼包装/审核中/208425107212/images/208425107212_01.jpg',
+    },
+  ]
+
+  assert.equal(helpers.shouldAllowLegacyCountPcDetailReplace(productRows, { execute_mode: 'publish_and_sync_mobile' }), true)
+  assert.equal(helpers.shouldAllowLegacyCountPcDetailReplace(auditRows, { execute_mode: 'publish_and_sync_mobile' }), false)
+  assert.equal(helpers.shouldAllowLegacyCountPcDetailReplace(productRows, { execute_mode: 'upload_draft' }), false)
+})
+
+test('uploadFileToTmall uses Tmall picture-center stream upload endpoint', async () => {
+  let seenUrl = ''
+  let seenBody = null
+  const helpers = await loadExports(async (url, init = {}) => {
+    seenUrl = String(url)
+    seenBody = init.body
+    return jsonResponse({
+      success: true,
+      object: {
+        url: '//img.alicdn.com/imgextra/i1/test/O1CN.jpg',
+        fileId: '123',
+        pix: '1440x1440',
+        size: 1336788,
+      },
+    })
+  })
+  const file = new File(['image-bytes'], '1440_1440(天猫).jpg', { type: 'image/jpeg' })
+
+  const url = await helpers.uploadFileToTmall(file, 'main_1x1')
+
+  assert.match(seenUrl, /^https:\/\/stream-upload\.taobao\.com\/api\/upload\.api\?/)
+  assert.match(seenUrl, /picCompress=true/)
+  assert.equal(seenBody.get('name'), '1440_1440(天猫).jpg')
+  assert.equal(seenBody.get('_tb_token_'), 'test-token')
+  assert.equal(seenBody.get('water'), 'false')
+  assert.equal(seenBody.get('file').name, '1440_1440(天猫).jpg')
+  assert.equal(url, 'https://img.alicdn.com/imgextra/i1/test/O1CN.jpg')
 })
 
 test('source resolver falls back to visible Semir mounts when configured mount is unavailable', async () => {
@@ -1266,16 +1677,16 @@ test('collectPackagingAssets falls back to mount-wide packaging search when conf
         return jsonResponse({
           total: 10,
           list: [
-            { dir: '0', filename: '208123140211_800x800_主图01.jpg' },
-            { dir: '0', filename: '208123140211_800x800_主图02.jpg' },
-            { dir: '0', filename: '208123140211_800x800_微详情01.jpg' },
-            { dir: '0', filename: '208123140211_800x800_微详情02.jpg' },
-            { dir: '0', filename: '208123140211_750x1000_主图01.jpg' },
-            { dir: '0', filename: '208123140211_750x1000_主图02.jpg' },
-            { dir: '0', filename: '208123140211_750x1000_微详情01.jpg' },
-            { dir: '0', filename: '208123140211_750x1000_微详情02.jpg' },
-            { dir: '0', filename: '208123140211_750x1000_微详情03.jpg' },
-            { dir: '0', filename: '208123140211_800x1200_商品竖图.jpg' },
+            { dir: '0', filename: '1440_1440(天猫).jpg' },
+            { dir: '0', filename: '1440_1440(天猫)1.jpg' },
+            { dir: '0', filename: '1440_14401.jpg' },
+            { dir: '0', filename: '1440_14402.jpg' },
+            { dir: '0', filename: '1440_1920(天猫).jpg' },
+            { dir: '0', filename: '1440_1920(天猫)1.jpg' },
+            { dir: '0', filename: '1440_19201.jpg' },
+            { dir: '0', filename: '1440_19202.jpg' },
+            { dir: '0', filename: '1440_19203.jpg' },
+            { dir: '0', filename: '1440_2160(天猫).jpg' },
           ],
         })
       }
@@ -1318,7 +1729,7 @@ test('collectPackagingAssets falls back to mount-wide packaging search when conf
   assert.equal(plan.items.some(item => String(item.fullpath || '').includes('1-企划拍摄')), false)
 })
 
-test('collectPackagingAssets includes product vertical images from guide material folders', async () => {
+test('collectPackagingAssets uses 1440x2160 Tmall main-folder image for product vertical slot', async () => {
   const configuredPath = '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q1/正春包装/鞋品/208123140211'
   const mainFolder = '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2024Q1/产品包装/男中/鞋品产品线/2-产品包装/2023Q1/2-产品包装/1-主图/创意拍切图/轻户外系列/208123140211'
   const verticalFolder = '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2024Q1/产品包装/男中/鞋品产品线/2-产品包装/2023Q1/2-产品包装/导购素材/商品竖图/轻户外系列/208123140211'
@@ -1343,7 +1754,7 @@ test('collectPackagingAssets includes product vertical images from guide materia
           total: 2,
           list: [
             { dir: '0', filename: '800_800(天猫)1.jpg' },
-            { dir: '0', filename: '750_1000（天猫）1.jpg' },
+            { dir: '0', filename: '1440_2160(天猫).jpg' },
           ],
         })
       }
@@ -1369,7 +1780,8 @@ test('collectPackagingAssets includes product vertical images from guide materia
 
   assert.equal(plan.folderCount, 2)
   assert.equal(plan.byCategory.vertical.length, 1)
-  assert.match(plan.byCategory.vertical[0].fullpath, /导购素材\/商品竖图/)
+  assert.match(plan.byCategory.vertical[0].fullpath, /1-主图\/创意拍切图/)
+  assert.equal(plan.byCategory.vertical[0].filename, '1440_2160(天猫).jpg')
 })
 
 test('collectPackagingAssets accepts flat season style folders under 01 product packaging', async () => {
@@ -1379,23 +1791,29 @@ test('collectPackagingAssets accepts flat season style folders under 01 product 
   const microFolder = `${rootFolder}/微详情`
   const detailFolder = `${rootFolder}/images`
   const optimizedFolder = '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2025Q4/羽绒优化/208425107212-优化'
+  const optimizedMainFolder = `${optimizedFolder}/主图`
+  const optimizedMicroFolder = `${optimizedFolder}/微详情`
+  const optimizedDetailFolder = `${optimizedFolder}/images`
+  const auditFolder = '品牌视觉部/服饰包装组/巴拉服饰产品包装/04-驻场设计/刘遥/婴幼/425婴幼包装/审核中/208425107212'
   const helpers = await loadExports(async (url, init = {}) => {
     const requestUrl = new URL(String(url), 'https://fmp.semirapp.com')
     if (requestUrl.pathname === '/fengcloud/2/file/search') {
       assert.equal(init.method, 'POST')
       return jsonResponse({
-        total: 3,
-        count: 3,
+        total: 4,
+        count: 4,
         list: [
-          { dir: '1', filename: '208425107212', fullpath: rootFolder },
-          { dir: '1', filename: '208425107212-优化', fullpath: optimizedFolder },
-          { dir: '0', ext: 'jpg', filename: '208425107212_01.jpg', fullpath: `${detailFolder}/208425107212_01.jpg` },
+          { dir: '1', filename: '208425107212', fullpath: rootFolder, last_dateline: '2025-11-05 15:18:26' },
+          { dir: '1', filename: '208425107212', fullpath: auditFolder, last_dateline: '2025-11-08 16:46:44' },
+          { dir: '1', filename: '208425107212-优化', fullpath: optimizedFolder, last_dateline: '2025-11-05 13:58:26' },
+          { dir: '0', ext: 'jpg', filename: '208425107212_15.jpg', fullpath: `${optimizedDetailFolder}/208425107212_15.jpg`, last_dateline: '2025-11-07 09:25:37' },
         ],
       })
     }
     if (requestUrl.pathname === '/fengcloud/1/file/ls') {
       const fullpath = requestUrl.searchParams.get('fullpath') || ''
       if (fullpath === configuredPath) return jsonResponse({ total: 0, list: [] })
+      if (fullpath === auditFolder) throw new Error('审核中目录不应作为产品包装图包列目录')
       if (fullpath === rootFolder) {
         return jsonResponse({
           total: 5,
@@ -1410,7 +1828,7 @@ test('collectPackagingAssets accepts flat season style folders under 01 product 
       }
       if (fullpath === mainFolder) {
         return jsonResponse({
-          total: 11,
+          total: 13,
           list: [
             { dir: '0', filename: '800_800(天猫).jpg' },
             { dir: '0', filename: '800_800(天猫)1.jpg' },
@@ -1422,6 +1840,7 @@ test('collectPackagingAssets accepts flat season style folders under 01 product 
             { dir: '0', filename: '1440_1440(天猫)1.jpg' },
             { dir: '0', filename: '1440_1920(天猫).jpg' },
             { dir: '0', filename: '1440_1920(天猫)1.jpg' },
+            { dir: '0', filename: '1440_2160(天猫).jpg' },
             { dir: '0', filename: '950_1200(唯品).jpg' },
             { dir: '0', filename: '1200_1200(唯品).jpg' },
           ],
@@ -1433,9 +1852,9 @@ test('collectPackagingAssets accepts flat season style folders under 01 product 
           list: [
             { dir: '0', filename: '800_8001.jpg' },
             { dir: '0', filename: '800_8002.jpg' },
-            { dir: '0', filename: '750_10001.jpg' },
-            { dir: '0', filename: '750_10002.jpg' },
-            { dir: '0', filename: '750_10003.jpg' },
+            { dir: '0', filename: '1440_19201.jpg' },
+            { dir: '0', filename: '1440_19202.jpg' },
+            { dir: '0', filename: '1440_19203.jpg' },
           ],
         })
       }
@@ -1456,7 +1875,48 @@ test('collectPackagingAssets accepts flat season style folders under 01 product 
           ],
         })
       }
-      if (fullpath === optimizedFolder) return jsonResponse({ total: 0, list: [] })
+      if (fullpath === optimizedFolder) {
+        return jsonResponse({
+          total: 3,
+          list: [
+            { dir: '1', filename: '主图' },
+            { dir: '1', filename: '微详情' },
+            { dir: '1', filename: 'images' },
+          ],
+        })
+      }
+      if (fullpath === optimizedMainFolder) {
+        return jsonResponse({
+          total: 3,
+          list: [
+            { dir: '0', filename: '1440_1440(天猫).jpg' },
+            { dir: '0', filename: '1440_1440(天猫)1.jpg' },
+            { dir: '0', filename: '1440_1920(天猫).jpg' },
+          ],
+        })
+      }
+      if (fullpath === optimizedMicroFolder) {
+        return jsonResponse({
+          total: 5,
+          list: [
+            { dir: '0', filename: '1440_14401.jpg' },
+            { dir: '0', filename: '1440_14402.jpg' },
+            { dir: '0', filename: '1440_19201.jpg' },
+            { dir: '0', filename: '1440_19202.jpg' },
+            { dir: '0', filename: '1440_19203.jpg' },
+          ],
+        })
+      }
+      if (fullpath === optimizedDetailFolder) {
+        return jsonResponse({
+          total: 3,
+          list: [
+            { dir: '0', filename: '208425107212_01.jpg' },
+            { dir: '0', filename: '208425107212_02.jpg' },
+            { dir: '0', filename: '208425107212_03.jpg' },
+          ],
+        })
+      }
     }
     return jsonResponse({ total: 0, list: [] })
   })
@@ -1470,15 +1930,17 @@ test('collectPackagingAssets accepts flat season style folders under 01 product 
   })
 
   assert.equal(plan.folderCount, 2)
-  assert.equal(plan.searchScope, 'mount_packaging_search')
+  assert.equal(plan.searchScope, 'mount_latest_root')
+  assert.equal(plan.selectedStyleRoot, optimizedFolder)
   assert.equal(plan.byCategory.main_1x1.length, 2)
   assert.equal(plan.byCategory.micro_1x1.length, 2)
-  assert.equal(plan.byCategory.main_3x4.length, 2)
+  assert.equal(plan.byCategory.main_3x4.length, 1)
   assert.equal(plan.byCategory.micro_3x4.length, 3)
-  assert.equal(plan.byCategory.vertical.length, 1)
-  assert.equal(plan.byCategory.pc_detail.length, 2)
+  assert.equal(plan.byCategory.vertical.length, 0)
+  assert.equal(plan.byCategory.pc_detail.length, 3)
+  assert.equal(plan.byCategory.main_1x1.every(item => String(item.fullpath || '').includes('/208425107212-优化/')), true)
   assert.equal(plan.byCategory.pc_detail.every(item => String(item.fullpath || '').includes('/images/')), true)
-  assert.equal(plan.byCategory.pc_detail.some(item => String(item.fullpath || '').includes('208425107212-优化')), false)
+  assert.equal(plan.byCategory.pc_detail.every(item => String(item.fullpath || '').includes('208425107212-优化')), true)
 })
 
 test('collectPackagingAssets prefers explicit optimized packaging folder for PC detail images', async () => {
@@ -1494,8 +1956,8 @@ test('collectPackagingAssets prefers explicit optimized packaging folder for PC 
         total: 3,
         count: 3,
         list: [
-          { dir: '1', filename: '208425107212', fullpath: rootFolder },
-          { dir: '1', filename: '208425107212-优化', fullpath: optimizedFolder },
+          { dir: '1', filename: '208425107212', fullpath: rootFolder, dateline: '2025-08-22 16:57:03' },
+          { dir: '1', filename: '208425107212-优化', fullpath: optimizedFolder, dateline: '2025-11-05 15:18:26' },
           { dir: '1', filename: '208425107212-00311', fullpath: colorFolder },
         ],
       })
@@ -1579,6 +2041,7 @@ test('collectPackagingAssets prefers explicit optimized packaging folder for PC 
     relativePath: configuredPath,
   })
 
+  assert.equal(plan.selectedStyleRoot, optimizedFolder)
   assert.equal(plan.byCategory.pc_detail.length, 3)
   assert.equal(plan.byCategory.pc_detail.every(item => String(item.fullpath || '').includes('/羽绒优化/208425107212-优化/images/')), true)
   assert.equal(plan.items.some(item => String(item.fullpath || '').includes('208425107212-00311')), false)

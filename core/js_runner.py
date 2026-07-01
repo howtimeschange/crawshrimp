@@ -164,6 +164,22 @@ class JSRunner:
             await self._cdp_send("Input.dispatchMouseEvent", params)
         await asyncio.sleep(delay_ms / 1000.0)
 
+    async def cdp_mouse_move(self, x: float, y: float, delay_ms: int = 50) -> None:
+        """用 CDP 移动鼠标但不点击，用于 hover 级联菜单。"""
+        try:
+            await self._cdp_send("Page.bringToFront", {})
+        except Exception:
+            logger.debug("Page.bringToFront failed before cdp_mouse_move", exc_info=True)
+        await self._cdp_send("Input.dispatchMouseEvent", {
+            "type": "mouseMoved",
+            "x": x,
+            "y": y,
+            "button": "none",
+            "clickCount": 0,
+            "modifiers": 0,
+        })
+        await asyncio.sleep(delay_ms / 1000.0)
+
     def _resolve_local_file(self, raw_path: str) -> Path:
         path = Path(str(raw_path or "")).expanduser()
         if not path.is_absolute():
@@ -2111,7 +2127,7 @@ class JSRunner:
 
                         if action == "cdp_clicks":
                             # JS 脚本请求用 CDP 真实鼠标点击一组坐标，然后继续当前 phase
-                            # meta.clicks = [{x, y, delay_ms?}, ...]
+                            # meta.clicks = [{x, y, delay_ms?, type?: "click"|"move"|"hover"}, ...]
                             # meta.next_phase (可选) = 点完后切换到哪个 phase
                             clicks = meta.get("clicks") or []
                             for idx, c in enumerate(clicks):
@@ -2119,7 +2135,11 @@ class JSRunner:
                                     "click_index": idx,
                                     "click_total": len(clicks),
                                 })
-                                await self.cdp_mouse_click(float(c["x"]), float(c["y"]), int(c.get("delay_ms", 80)))
+                                event_type = str(c.get("type") or c.get("action") or "click").strip().lower()
+                                if event_type in {"move", "hover", "mousemove", "mouse_moved"}:
+                                    await self.cdp_mouse_move(float(c["x"]), float(c["y"]), int(c.get("delay_ms", 80)))
+                                else:
+                                    await self.cdp_mouse_click(float(c["x"]), float(c["y"]), int(c.get("delay_ms", 80)))
                             post_sleep = float(meta.get("sleep_ms", 300)) / 1000.0
                             await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
                             await asyncio.sleep(post_sleep)

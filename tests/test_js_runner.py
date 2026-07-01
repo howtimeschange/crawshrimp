@@ -1194,6 +1194,24 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_cdp_mouse_move_dispatches_only_mouse_moved(self):
+        runner = JSRunner("ws://example.invalid")
+        sent = []
+
+        async def fake_send(method, params):
+            sent.append((method, params))
+            return {}
+
+        runner._cdp_send = fake_send
+
+        await runner.cdp_mouse_move(12, 34, 0)
+
+        self.assertEqual(sent[0][0], "Page.bringToFront")
+        self.assertEqual(sent[1][0], "Input.dispatchMouseEvent")
+        self.assertEqual(sent[1][1]["type"], "mouseMoved")
+        self.assertEqual(sent[1][1]["button"], "none")
+        self.assertEqual(sent[1][1]["clickCount"], 0)
+
     async def test_capture_requests_on_ws_dispatches_wheel_events(self):
         runner = JSRunner("ws://example.invalid")
         fake_ws = FakeCDPWebSocket([
