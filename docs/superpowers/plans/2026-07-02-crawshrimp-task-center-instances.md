@@ -698,7 +698,7 @@ git commit -m "feat(task-center): expose task instance APIs"
 - Modify: `app/src/renderer/App.vue`
 - Test: `tests/task-center-navigation.test.js`
 
-- [ ] **Step 1: Add navigation test**
+- [x] **Step 1: Add navigation test**
 
 Create `tests/task-center-navigation.test.js`:
 
@@ -723,7 +723,7 @@ test('TaskCenter exposes AI image task creation copy', () => {
 })
 ```
 
-- [ ] **Step 2: Run test to verify failure**
+- [x] **Step 2: Run test to verify failure**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -732,7 +732,7 @@ node --test tests/task-center-navigation.test.js
 
 Expected: fails because view does not exist and nav still says `抓虾市场`.
 
-- [ ] **Step 3: Create `TaskCenter.vue`**
+- [x] **Step 3: Create `TaskCenter.vue`**
 
 Create a Vue component that:
 
@@ -770,7 +770,7 @@ async function createAiImageTask() {
 }
 ```
 
-- [ ] **Step 4: Wire App navigation**
+- [x] **Step 4: Wire App navigation**
 
 Modify `App.vue`:
 
@@ -780,7 +780,7 @@ Modify `App.vue`:
 - Render `TaskCenter` when `currentView === 'task_center' && !activeInstanceUid`.
 - Add handler `openTaskInstance(uid)` to set `activeInstanceUid`.
 
-- [ ] **Step 5: Run UI tests and build**
+- [x] **Step 5: Run UI tests and build**
 
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
@@ -792,7 +792,7 @@ npm test
 
 Expected: all pass.
 
-- [ ] **Step 6: Commit task center shell**
+- [x] **Step 6: Commit task center shell**
 
 ```bash
 git add app/src/renderer/views/TaskCenter.vue app/src/renderer/App.vue tests/task-center-navigation.test.js
