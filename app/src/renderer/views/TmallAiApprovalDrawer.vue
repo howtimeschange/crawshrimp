@@ -315,9 +315,9 @@ const submitSummaryText = computed(() => {
   return `尝试 ${attempted || createRows.value.length} 款 / 成功 ${succeeded} / 失败 ${failed}`
 })
 
-watch(() => props.modelValue, (open) => {
+watch(() => [props.modelValue, props.boardUrl], ([open]) => {
   if (open) reload()
-})
+}, { immediate: true })
 watch(selectedAsset, (asset) => {
   referenceText.value = (asset?.reference_paths || []).join('\n')
 })

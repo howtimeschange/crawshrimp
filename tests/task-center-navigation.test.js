@@ -157,7 +157,7 @@ test('Tmall AI image runner keeps the upper work area scrollable', () => {
 test('Task output drawer is minimized by default and opens after logs arrive', () => {
   const view = fs.readFileSync('app/src/renderer/views/TaskOutputDrawer.vue', 'utf8')
   assert.match(view, /const drawerState = ref\('minimized'\)/)
-  assert.match(view, /if \(nextLength > previousLength && previousLength === 0 && drawerState\.value === 'minimized'\)/)
+  assert.match(view, /props\.autoOpenOnFirstLog && nextLength > previousLength && previousLength === 0 && drawerState\.value === 'minimized'/)
   assert.match(view, /drawerState\.value = 'half'/)
 })
 
@@ -174,4 +174,14 @@ test('Tmall approval board lifecycle stages are not hard-coded as completed', ()
   assert.match(view, /approvalStageClass/)
   assert.doesNotMatch(view, /class="approval-stage done"/)
   assert.doesNotMatch(view, /summary\.pending > 0 \? 'active' : 'done'/)
+})
+
+test('Embedded Tmall approval board loads its batch on first render', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(drawer, /watch\(\(\) => \[props\.modelValue, props\.boardUrl\]/)
+  assert.match(drawer, /\{ immediate: true \}/)
+  assert.match(drawer, /if \(open\) reload\(\)/)
+  assert.match(runner, /<TmallAiApprovalDrawer[\s\S]*:model-value="true"[\s\S]*embedded/)
 })
