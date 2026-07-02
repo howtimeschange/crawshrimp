@@ -182,6 +182,38 @@ test('ensureReady does not stop a previously ready backend during transient prob
   assert.deepEqual(stopped, [])
 })
 
+test('ensureReady marks a previously ready backend degraded before restart threshold', async () => {
+  let startCount = 0
+  let probeOk = true
+  const stopped = []
+  const statuses = []
+
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: (key, value) => statuses.push([key, value]),
+    probeReady: async () => startCount > 0 && probeOk,
+    startProcess: () => {
+      startCount += 1
+      const proc = new EventEmitter()
+      proc.pid = 3000 + startCount
+      return proc
+    },
+    stopProcess: (proc) => stopped.push(proc.pid),
+    intervalMs: 1,
+    attempts: 1,
+    restartProbeFailures: 2,
+  })
+
+  await controller.ensureReady()
+  probeOk = false
+
+  await assert.rejects(controller.ensureReady(), /API server startup timeout/)
+
+  assert.equal(controller.getState(), 'degraded')
+  assert.deepEqual(stopped, [])
+  assert.ok(statuses.some(([key, value]) => key === 'apiState' && value === 'degraded'))
+})
+
 test('runWhenReady retries the operation after a retryable connection error', async () => {
   let probeCount = 0
   let operationCount = 0

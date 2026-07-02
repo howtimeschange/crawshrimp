@@ -729,6 +729,7 @@ function spawnBackendProcess() {
     throw new Error(`api_server.py not found: ${serverScript}`)
   }
 
+  log(`[api] launch context: port=${apiPort}, data=${resolvedCrawshrimpDataDir}, scripts=${scriptsDir}, python=${pythonBin}, lock=${getBackendLockPath()}, token=${apiToken ? 'set' : 'missing'}`)
   log(`[api] starting: ${pythonBin} ${launchArgs.join(' ')}`)
   const proc = spawn(pythonBin, launchArgs, {
     cwd: scriptsDir,
@@ -739,6 +740,7 @@ function spawnBackendProcess() {
       PYTHONUTF8: '1',
       CRAWSHRIMP_PORT: String(apiPort),
       CRAWSHRIMP_DATA: resolvedCrawshrimpDataDir,
+      CRAWSHRIMP_ALLOW_DATA_FALLBACK: '1',
       CRAWSHRIMP_API_TOKEN: apiToken,
       CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID,
       ELECTRON_RUN_AS_NODE: '',
@@ -1096,7 +1098,7 @@ function probeApiReady(timeoutMs = 800) {
     const req = http.request({
       hostname: '127.0.0.1',
       port: apiPort,
-      path: '/health',
+      path: '/health?probe=1',
       method: 'GET',
       timeout: timeoutMs,
     }, (res) => {
@@ -1199,7 +1201,7 @@ async function getBackendHealth(timeoutMs = 800) {
     const req = http.request({
       hostname: '127.0.0.1',
       port: apiPort,
-      path: '/health',
+      path: '/health?probe=1',
       method: 'GET',
       timeout: timeoutMs,
     }, (res) => {
@@ -1463,6 +1465,7 @@ app.on('before-quit', (event) => {
 
 secureHandle('get-status', async () => ({
   api:     await probeApiReady(),
+  apiState: backendController.getState(),
   chrome:  (await probeChromeCdp()).ok,
   apiPort,
   apiBase: `http://127.0.0.1:${apiPort}`,
@@ -1550,7 +1553,9 @@ secureHandle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks
 }))
 secureHandle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
 
-secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
+secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`, null, {
+  ensureReady: false,
+}))
 secureHandle('export-data', async (_, aid, tid, fmt) => {
   try {
     const res = await apiCall('GET', `/data/${aid}/${tid}/export?format=${fmt}`)

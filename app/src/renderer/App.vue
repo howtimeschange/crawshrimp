@@ -121,7 +121,7 @@ import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 
 const currentView = ref('scripts')
-const status = ref({ api: false, chrome: false, apiPort: 18765, cdpPort: 9222 })
+const status = ref({ api: false, apiState: 'starting', chrome: false, apiPort: 18765, cdpPort: 9222 })
 const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const activeInstanceUid = ref('')
@@ -206,6 +206,7 @@ onMounted(async () => {
   try {
     const s = await window.cs.getStatus()
     status.value.api = s.api
+    status.value.apiState = s.apiState || status.value.apiState
     status.value.chrome = s.chrome
     status.value.apiPort = s.apiPort || status.value.apiPort
     status.value.cdpPort = s.cdpPort || status.value.cdpPort
@@ -222,6 +223,7 @@ onMounted(async () => {
   pollTimer = setInterval(async () => {
     const s = await window.cs.getStatus()
     status.value.api = s.api
+    status.value.apiState = s.apiState || status.value.apiState
     status.value.chrome = s.chrome
     status.value.apiPort = s.apiPort || status.value.apiPort
     status.value.cdpPort = s.cdpPort || status.value.cdpPort

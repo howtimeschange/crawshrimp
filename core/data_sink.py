@@ -57,6 +57,9 @@ def init_db():
                 output_files TEXT DEFAULT '[]'
             )
         """)
+        _ensure_column(conn, "task_runs", "last_seen_at", "TEXT")
+        _ensure_column(conn, "task_runs", "phase", "TEXT DEFAULT ''")
+        _ensure_column(conn, "task_runs", "current_row", "INTEGER DEFAULT 0")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_task_runs_adapter_task
             ON task_runs (adapter_id, task_id)
@@ -159,6 +162,15 @@ def init_db():
             ON task_schedules (adapter_id, task_id, enabled, archived, updated_at)
         """)
         conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+    columns = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
 def _now_iso() -> str:
@@ -647,42 +659,71 @@ def record_task_schedule_run(
 
 def begin_run(adapter_id: str, task_id: str) -> int:
     """Record a task run start, return run_id"""
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         cur = conn.execute("""
-            INSERT INTO task_runs (adapter_id, task_id, status, started_at)
-            VALUES (?, ?, 'running', ?)
-        """, (adapter_id, task_id, datetime.now().isoformat()))
+            INSERT INTO task_runs (adapter_id, task_id, status, started_at, last_seen_at, phase, current_row)
+            VALUES (?, ?, 'running', ?, ?, '', 0)
+        """, (adapter_id, task_id, now, now))
         conn.commit()
         return cur.lastrowid
 
 
+def heartbeat_run(run_id: int, phase: str = "", current_row: int = 0, records_count: Optional[int] = None):
+    fields = [
+        "last_seen_at=?",
+        "phase=?",
+        "current_row=?",
+    ]
+    now = datetime.now().isoformat()
+    values: list[Any] = [
+        now,
+        str(phase or "").strip(),
+        max(0, int(current_row or 0)),
+    ]
+    if records_count is not None:
+        fields.append("records_count=?")
+        values.append(max(0, int(records_count or 0)))
+    values.append(int(run_id))
+    with _get_conn() as conn:
+        conn.execute(f"""
+            UPDATE task_runs
+            SET {", ".join(fields)}
+            WHERE id=?
+        """, values)
+        conn.commit()
+
+
 def finish_run(run_id: int, records_count: int, output_files: List[str]):
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='done', finished_at=?, records_count=?, output_files=?, error=NULL
+            SET status='done', finished_at=?, last_seen_at=?, records_count=?, output_files=?, error=NULL
             WHERE id=?
-        """, (datetime.now().isoformat(), records_count, json.dumps(output_files), run_id))
+        """, (now, now, records_count, json.dumps(output_files), run_id))
         conn.commit()
 
 
 def fail_run(run_id: int, error: str):
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='error', finished_at=?, error=?
+            SET status='error', finished_at=?, last_seen_at=?, error=?
             WHERE id=?
-        """, (datetime.now().isoformat(), error, run_id))
+        """, (now, now, error, run_id))
         conn.commit()
 
 
 def stop_run(run_id: int, records_count: int, output_files: List[str], error: str = ""):
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='stopped', finished_at=?, records_count=?, output_files=?, error=?
+            SET status='stopped', finished_at=?, last_seen_at=?, records_count=?, output_files=?, error=?
             WHERE id=?
-        """, (datetime.now().isoformat(), records_count, json.dumps(output_files), error, run_id))
+        """, (now, now, records_count, json.dumps(output_files), error, run_id))
         conn.commit()
 
 
@@ -691,9 +732,9 @@ def stop_orphaned_active_runs(error: str = "任务运行时后端已重启，已
     with _get_conn() as conn:
         cur = conn.execute("""
             UPDATE task_runs
-            SET status='stopped', finished_at=?, error=COALESCE(NULLIF(error, ''), ?)
+            SET status='stopped', finished_at=?, last_seen_at=?, error=COALESCE(NULLIF(error, ''), ?)
             WHERE status IN ('running', 'pausing', 'paused', 'stopping')
-        """, (datetime.now().isoformat(), error))
+        """, (datetime.now().isoformat(), datetime.now().isoformat(), error))
         conn.commit()
         return int(cur.rowcount or 0)
 

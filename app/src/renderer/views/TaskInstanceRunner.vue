@@ -55,6 +55,7 @@
 <script setup>
 import { computed, onMounted, ref, watch } from 'vue'
 import TaskRunner from './TaskRunner.vue'
+import { mergeTaskLiveStatus } from '../utils/taskRunnerState'
 
 const props = defineProps({
   instanceUid: { type: String, required: true },
@@ -99,6 +100,7 @@ async function loadInstance() {
 
 function handleStatusChange(status) {
   if (!instance.value || !status?.status) return
+  task.value = mergeTaskLiveStatus(task.value, status)
   if (status.status === 'running') instance.value.status = 'running'
   if (status.status === 'done') instance.value.status = instance.value.status === 'waiting_approval' ? 'waiting_approval' : 'completed'
   if (status.status === 'error') instance.value.status = 'failed'

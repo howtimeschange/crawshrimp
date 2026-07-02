@@ -141,13 +141,33 @@ def _allowed_cors_origins() -> list[str]:
     ]
 
 
+def _external_call_timeout_seconds(default: float = 20.0) -> float:
+    raw = str(os.environ.get("CRAWSHRIMP_EXTERNAL_CALL_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, value)
+
+
 async def _bridge_call_async(async_name: str, sync_name: str, *args, **kwargs):
     bridge = get_bridge()
     async_method = getattr(bridge, async_name, None)
     if async_method:
-        return await async_method(*args, **kwargs)
-    sync_method = getattr(bridge, sync_name)
-    return await asyncio.to_thread(sync_method, *args, **kwargs)
+        awaitable = async_method(*args, **kwargs)
+    else:
+        sync_method = getattr(bridge, sync_name)
+        awaitable = asyncio.to_thread(sync_method, *args, **kwargs)
+
+    timeout_seconds = _external_call_timeout_seconds()
+    if timeout_seconds <= 0:
+        return await awaitable
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"External dependency timed out: {sync_name}") from exc
 
 
 async def _bridge_get_tabs() -> list:
@@ -3379,7 +3399,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     else:
         _run_logs[jid].append('')
         _run_logs[jid].append(_sep)
-    _run_status[jid] = {'status': 'running', 'run_id': None, 'records': 0}
+    _run_status[jid] = {
+        'status': 'running',
+        'run_id': None,
+        'records': 0,
+        'last_seen_at': datetime.now().isoformat(),
+        'current_row': 0,
+        'phase': '',
+    }
 
     def log(msg: str):
         logger.info(msg)
@@ -3451,9 +3478,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         records = int(payload.get('records') or 0)
         progress = build_progress(payload)
+        current_row = int(progress['row_no'] or progress['current'] or 0)
+        last_seen_at = datetime.now().isoformat()
         base_status = {
             'run_id': run_id,
             'records': records,
+            'last_seen_at': last_seen_at,
+            'current_row': current_row,
             'current': progress['current'],
             'total': progress['total'],
             'row_no': progress['row_no'],
@@ -3514,6 +3545,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'doudian_order_window_completed': progress['doudian_order_window_completed'],
             'doudian_mixed_rows': progress['doudian_mixed_rows'],
         }
+        if run_id:
+            try:
+                data_sink.heartbeat_run(
+                    run_id,
+                    phase=progress['phase'],
+                    current_row=current_row,
+                    records_count=records,
+                )
+            except Exception as heartbeat_error:
+                logger.debug("task heartbeat update failed for %s: %s", jid, heartbeat_error)
 
         # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。
         if (
@@ -3590,9 +3631,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
     run_started_at = datetime.now().isoformat()
     run_id = data_sink.begin_run(adapter_id, task_id)
+    try:
+        data_sink.heartbeat_run(run_id, phase="starting", current_row=0, records_count=0)
+    except Exception as heartbeat_error:
+        logger.debug("task heartbeat update failed for %s: %s", jid, heartbeat_error)
     if instance_uid:
         data_sink.link_task_instance_run(instance_uid, run_id, purpose="main")
-    _run_status[jid]['run_id'] = run_id
+    _run_status[jid] = {
+        **(_run_status.get(jid) or {}),
+        'run_id': run_id,
+        'last_seen_at': datetime.now().isoformat(),
+        'current_row': 0,
+        'phase': 'starting',
+    }
     runner = None
     data = []
     output_files = []
@@ -4123,7 +4174,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         data_sink.finish_run(run_id, len(data), output_files)
         if instance_uid:
             _sync_task_instance_artifacts(instance_uid, output_files, run_id)
-        done_status = {'status': 'done', 'run_id': run_id, 'records': len(data)}
+        done_status = {
+            'status': 'done',
+            'run_id': run_id,
+            'records': len(data),
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': len(data),
+            'phase': 'done',
+        }
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
         _run_status[jid] = done_status
@@ -4190,7 +4248,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
 
         data_sink.stop_run(run_id, len(data), output_files, err)
-        _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
+        _run_status[jid] = {
+            'status': 'stopped',
+            'run_id': run_id,
+            'records': len(data),
+            'error': err,
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': len(data),
+            'phase': 'stopped',
+        }
         if instance_uid:
             data_sink.update_task_instance(
                 instance_uid,
@@ -4234,7 +4300,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
         data_sink.stop_run(run_id, len(data), output_files, err)
-        _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
+        _run_status[jid] = {
+            'status': 'stopped',
+            'run_id': run_id,
+            'records': len(data),
+            'error': err,
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': len(data),
+            'phase': 'stopped',
+        }
         if instance_uid:
             data_sink.update_task_instance(
                 instance_uid,
@@ -4261,7 +4335,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         err = str(e)
         log(f"[{adapter_id}/{task_id}] ERROR: {err}")
         data_sink.fail_run(run_id, err)
-        _run_status[jid] = {'status': 'error', 'run_id': run_id, 'records': 0, 'error': err}
+        _run_status[jid] = {
+            'status': 'error',
+            'run_id': run_id,
+            'records': 0,
+            'error': err,
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': 0,
+            'phase': 'error',
+        }
         if instance_uid:
             data_sink.update_task_instance(
                 instance_uid,
@@ -4593,7 +4675,13 @@ def get_tmall_ai_image_approval_board(batch_id: str, token: str = ""):
 # ─── Health ───
 
 @app.get("/health")
-def health():
+def health(probe: bool = False):
+    if probe:
+        return {
+            "status": "ok",
+            "runtime": _backend_runtime_info(),
+        }
+
     warnings = []
     try:
         chrome_ok = CDPBridge().is_available(timeout=0.2)
@@ -4756,6 +4844,8 @@ def active_tasks():
             "run_id": live_snapshot.get("run_id"),
             "records": int(live_snapshot.get("records") or 0),
             "phase": live_snapshot.get("phase"),
+            "last_seen_at": live_snapshot.get("last_seen_at"),
+            "current_row": int(live_snapshot.get("current_row") or live_snapshot.get("row_no") or 0),
         })
     return {"active": bool(tasks), "tasks": tasks}
 
@@ -5355,6 +5445,9 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
                 'run_id': live.get('run_id'),
                 'records': int(live.get('records') or 0),
                 'error': str(exc),
+                'last_seen_at': datetime.now().isoformat(),
+                'current_row': int(live.get('current_row') or live.get('row_no') or 0),
+                'phase': live.get('phase') or 'error',
             }
         _run_logs.setdefault(jid, []).append(f"[{adapter_id}/{task_id}] FATAL: {exc}")
         logger.exception("Background task crashed before cleanup: %s", jid)
@@ -5423,7 +5516,7 @@ async def pause_task(adapter_id: str, task_id: str):
 
     control['pause_requested'] = True
     control['resume_event'].clear()
-    _run_status[jid] = {**live, 'status': 'pausing'}
+    _run_status[jid] = {**live, 'status': 'pausing', 'last_seen_at': datetime.now().isoformat()}
     _run_logs.setdefault(jid, []).append('[control] 收到暂停指令')
     return {"ok": True, "status": "pausing"}
 
@@ -5440,7 +5533,7 @@ async def resume_task(adapter_id: str, task_id: str):
     control['pause_requested'] = False
     control['resume_event'].set()
     control['pause_logged'] = False
-    _run_status[jid] = {**live, 'status': 'running'}
+    _run_status[jid] = {**live, 'status': 'running', 'last_seen_at': datetime.now().isoformat()}
     _run_logs.setdefault(jid, []).append('[control] 收到继续指令')
     return {"ok": True, "status": "running"}
 
@@ -5457,7 +5550,7 @@ async def stop_task(adapter_id: str, task_id: str):
     control['stop_requested'] = True
     control['pause_requested'] = False
     control['resume_event'].set()
-    _run_status[jid] = {**live, 'status': 'stopping'}
+    _run_status[jid] = {**live, 'status': 'stopping', 'last_seen_at': datetime.now().isoformat()}
     _run_logs.setdefault(jid, []).append('[control] 收到停止指令')
     task.cancel()
     return {"ok": True, "status": "stopping"}

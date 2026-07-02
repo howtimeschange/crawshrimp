@@ -222,6 +222,33 @@ class RuntimePathsTests(unittest.TestCase):
 
             self.assertFalse((local_app_data / "crawshrimp").exists())
 
+    def test_explicit_data_root_can_fallback_when_desktop_allows(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            explicit_root = home_dir / ".crawshrimp"
+            local_app_data = Path(tmpdir) / "local-app-data"
+            fallback_root = local_app_data / "crawshrimp"
+            explicit_root.mkdir(parents=True)
+            original_write_text = Path.write_text
+
+            def guarded_write_text(path, *args, **kwargs):
+                if str(path).startswith(str(explicit_root)):
+                    raise PermissionError("[WinError 5] Access is denied")
+                return original_write_text(path, *args, **kwargs)
+
+            with patch.dict(os.environ, {
+                "CRAWSHRIMP_DATA": str(explicit_root),
+                "CRAWSHRIMP_ALLOW_DATA_FALLBACK": "1",
+                "LOCALAPPDATA": str(local_app_data),
+            }, clear=False):
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "win32"):
+                        with patch.object(Path, "write_text", guarded_write_text):
+                            root = runtime_paths.data_root()
+
+            self.assertEqual(root, fallback_root)
+            self.assertTrue(fallback_root.exists())
+
     def test_child_dir_reuses_selected_local_app_data_root(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home_dir = Path(tmpdir) / "home"
