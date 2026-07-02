@@ -1,8 +1,8 @@
 id: mop-ops-assistant
 name: MOP 运营助手
-version: 0.1.0
+version: 0.1.1
 author: codex
-description: "千牛素材中心运营自动化：按 Excel 批量提交 KOL 短视频生成任务，并发布搜推图文素材"
+description: "千牛素材中心与 MOP 云盘运营自动化：批量提交 KOL 短视频、发布搜推图文素材、下载云盘模拍图并梳理搭配关系"
 entry_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
 tab_match_prefixes:
   - https://qn.taobao.com/
@@ -14,6 +14,140 @@ auth:
   login_url: https://qn.taobao.com/home.htm/material-center/video-production/img2video
 
 tasks:
+  - id: cloud_folder_download
+    name: MOP云盘文件夹下载
+    description: 输入森马云盘目录地址或“挂载点//目录”路径，可只导出搭配表、按指定款号下载匹配文件夹，或全量下载目录内容。
+    script: cloud-folder-download.js
+    entry_url: https://fmp.semirapp.com/web/index#/home/file
+    tab_match_prefixes:
+      - https://fmp.semirapp.com/
+      - https://iam.semirapp.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 全新页面（推荐）
+          - value: current
+            label: 当前页面
+        hint: 请先在 9222 端口 Chrome 登录森马云盘，并打开或可访问目标 MOP 文件夹。
+      - id: cloud_path
+        type: text
+        label: 云盘路径/地址
+        required: true
+        default: "品牌电商项目部//MOP品牌/MOP_26 模拍图/26ss/1月拍摄电商专供0121/"
+        placeholder: "品牌电商项目部//MOP品牌/MOP_26 模拍图/26ss/1月拍摄电商专供0121/ 或森马云盘地址栏 URL"
+        hint: 支持“挂载点//目录/子目录”格式，也支持直接粘贴森马云盘文件夹 URL；实际下载范围由下方执行模式决定。
+        quick_fill_options:
+          - 品牌电商项目部//MOP品牌/MOP_26 模拍图/26ss/1月拍摄电商专供0121/
+      - id: task_mode
+        type: radio
+        label: 执行模式
+        default: relationship_only
+        options:
+          - value: relationship_only
+            label: 只下搭配表
+          - value: selected_styles
+            label: 指定款号下载
+          - value: full_download
+            label: 全量下载
+        hint: “只下搭配表”只读取顶层文件夹并导出搭配关系；“指定款号下载”只下载匹配到的款号/搭配文件夹；“全量下载”会下载整个目录，耗时和空间都较大。
+      - id: style_codes
+        type: textarea
+        label: 指定款号
+        rows: 5
+        required: false
+        placeholder: "一行一个，例如：\n653100C4202Z\n653124B2108Z100"
+        hint: 仅“指定款号下载”使用；输入任一搭配款号会下载包含该款号的整个顶层搭配文件夹。
+        visible_when:
+          field: task_mode
+          equals: selected_styles
+      - id: max_depth
+        type: number
+        label: 扫描层级
+        default: 12
+        min: 1
+        max: 50
+        step: 1
+        ui_span: third
+        hint: 从目标目录下的款号/搭配文件夹开始递归扫描，默认足够覆盖常规图片、视频、子素材目录。
+        visible_when:
+          field: task_mode
+          in: [selected_styles, full_download]
+      - id: max_files
+        type: number
+        label: 最多下载文件数
+        default: 10000
+        min: 1
+        max: 100000
+        step: 100
+        ui_span: third
+        hint: 防止误选超大目录；达到上限后会停止继续加入下载队列。
+        visible_when:
+          field: task_mode
+          in: [selected_styles, full_download]
+      - id: download_concurrency
+        type: number
+        label: 下载并发
+        default: 6
+        min: 1
+        max: 20
+        step: 1
+        ui_span: third
+        hint: 同时下载文件数量；网盘不稳定时可降低。
+        visible_when:
+          field: task_mode
+          in: [selected_styles, full_download]
+      - id: package_name
+        type: text
+        label: 本地文件夹名称
+        default: MOP云盘模拍图包
+        ui_span: third
+        placeholder: "例如：MOP_26SS_1月模拍图"
+        hint: 留空则按任务时间自动命名；最终会生成同名本地文件夹。
+        visible_when:
+          field: task_mode
+          in: [selected_styles, full_download]
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。留空则使用任务默认输出目录；填写后本地文件夹和搭配关系表会复制到该目录。
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "MOP云盘文件夹下载与搭配关系_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 搭配关系
+            columns:
+              - 序号
+              - 文件夹名
+              - 云盘路径
+              - 搭配款数
+              - 款号1
+              - 款号2
+              - 款号3
+              - 款号4
+              - 款号5
+              - 款号6
+              - 备注
+          - name: 下载明细
+            columns:
+              - 序号
+              - 顶层文件夹
+              - 文件名
+              - 云盘路径
+              - 本地目录内路径
+              - 文件大小
+              - 下载结果
+              - 备注
+
   - id: search_recommend_material_publish
     name: 搜推素材
     description: 读取 Excel 商品 ID 或商家编码、图片、标题和内容描述，调用千牛素材中心搜推素材图文发布接口逐行提交。

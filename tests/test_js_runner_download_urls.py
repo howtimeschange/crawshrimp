@@ -84,6 +84,32 @@ class JSRunnerDownloadUrlsTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(target.read_bytes(), b"PK\x03\x04")
             self.assertIn(str(target), runner.runtime_output_files)
 
+    async def test_download_urls_can_write_directly_to_target_directory_tree(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_dir = Path(tmpdir) / "runtime"
+            output_dir = Path(tmpdir) / "out"
+            runner = JSRunner("ws://unused", artifact_dir=str(runtime_dir))
+
+            result = await runner.download_urls(
+                [{
+                    "url": "data:image/jpeg;base64,aW1hZ2U=",
+                    "filename": "runtime-name.jpg",
+                    "target_dir": str(output_dir / "MOP包"),
+                    "target_dir_unique": True,
+                    "target_relative_path": "653100C4202Z+653100C2003Z/look-01.jpg",
+                }],
+                concurrency=1,
+                retry_attempts=1,
+                timeout_seconds=5,
+            )
+
+            target = output_dir / "MOP包" / "653100C4202Z+653100C2003Z" / "look-01.jpg"
+            self.assertTrue(result["ok"])
+            self.assertEqual(target.read_bytes(), b"image")
+            self.assertEqual(result["items"][0]["path"], str(target))
+            self.assertFalse((runtime_dir / "runtime-name.jpg").exists())
+            self.assertIn(str(target), runner.runtime_output_files)
+
     async def test_download_urls_retries_until_success(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             runner = JSRunner("ws://unused", artifact_dir=tmpdir)

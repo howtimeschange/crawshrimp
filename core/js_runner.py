@@ -492,6 +492,24 @@ class JSRunner:
                 return candidate
             index += 1
 
+    def _ensure_unique_artifact_dir(self, path: Path) -> Path:
+        if not path.exists():
+            return path
+        index = 2
+        while True:
+            candidate = path.with_name(f"{path.name}_{index}")
+            if not candidate.exists():
+                return candidate
+            index += 1
+
+    def _sanitize_artifact_relative_parts(self, raw_path: str, fallback: str = "download.bin") -> list[str]:
+        parts = []
+        for raw_part in str(raw_path or "").replace("\\", "/").split("/"):
+            clean = self._sanitize_artifact_filename(raw_part, "")
+            if clean and clean not in {".", ".."}:
+                parts.append(clean)
+        return parts or [self._sanitize_artifact_filename(fallback, fallback)]
+
     def _build_download_candidate_regex(self, source_url: str) -> Optional[re.Pattern[str]]:
         original_name = self._derive_url_filename(source_url, "")
         if not original_name:
@@ -563,7 +581,14 @@ class JSRunner:
 
         return newest[1] if newest else None
 
-    def _build_artifact_target_path(self, filename: str = "", source_url: str = "", reuse_existing: bool = False) -> Path:
+    def _build_artifact_target_path(
+        self,
+        filename: str = "",
+        source_url: str = "",
+        reuse_existing: bool = False,
+        target_dir: str = "",
+        target_relative_path: str = "",
+    ) -> Path:
         raw_name = str(filename or "").strip() or self._derive_url_filename(source_url)
         clean_name = self._sanitize_artifact_filename(raw_name)
         source_suffix = ""
@@ -572,9 +597,16 @@ class JSRunner:
                 source_suffix = Path(urlsplit(source_url).path).suffix
             except Exception:
                 source_suffix = ""
-        if source_suffix and not Path(clean_name).suffix:
-            clean_name = f"{clean_name}{source_suffix}"
-        target = self.artifact_dir / clean_name
+        root_dir = Path(str(target_dir or "")).expanduser() if str(target_dir or "").strip() else self.artifact_dir
+        if target_relative_path:
+            relative_parts = self._sanitize_artifact_relative_parts(target_relative_path, clean_name)
+            if source_suffix and not Path(relative_parts[-1]).suffix:
+                relative_parts[-1] = f"{relative_parts[-1]}{source_suffix}"
+            target = root_dir.joinpath(*relative_parts)
+        else:
+            if source_suffix and not Path(clean_name).suffix:
+                clean_name = f"{clean_name}{source_suffix}"
+            target = root_dir / clean_name
         if reuse_existing and target.exists():
             return target
         return self._ensure_unique_artifact_path(target)
@@ -1555,6 +1587,14 @@ class JSRunner:
             for key, value in headers_raw.items()
             if str(key or "").strip() and value is not None
         } if isinstance(headers_raw, dict) else {}
+        target_dir = str((item or {}).get("target_dir") or (item or {}).get("targetDir") or "").strip()
+        target_relative_path = str(
+            (item or {}).get("target_relative_path")
+            or (item or {}).get("targetRelativePath")
+            or (item or {}).get("relative_path")
+            or (item or {}).get("relativePath")
+            or ""
+        ).strip()
 
         if not url:
             return {
@@ -1565,7 +1605,13 @@ class JSRunner:
                 "attempts": 0,
             }
 
-        target_path = self._build_artifact_target_path(filename, url, reuse_existing=True)
+        target_path = self._build_artifact_target_path(
+            filename,
+            url,
+            reuse_existing=True,
+            target_dir=target_dir,
+            target_relative_path=target_relative_path,
+        )
         if target_path.is_file() and target_path.stat().st_size > 0:
             saved_path = str(target_path)
             if saved_path not in self.runtime_output_files:
@@ -1579,6 +1625,8 @@ class JSRunner:
                 "attempts": 0,
                 "skipped_existing": True,
                 "bytes": target_path.stat().st_size,
+                "target_dir": target_dir,
+                "target_relative_path": target_relative_path,
             }
         retry_attempts = int((item or {}).get("retry_attempts") or (item or {}).get("retryAttempts") or default_retry_attempts or 1)
         retry_attempts = max(retry_attempts, 1)
@@ -1631,6 +1679,10 @@ class JSRunner:
             result["filename"] = Path(str(result.get("path") or target_path)).name
             result["url"] = url
             result["attempts"] = attempt
+            if target_dir:
+                result["target_dir"] = target_dir
+            if target_relative_path:
+                result["target_relative_path"] = target_relative_path
 
             if result.get("success"):
                 saved_path = str(result.get("path") or target_path)
@@ -1678,9 +1730,31 @@ class JSRunner:
         progress_failed_offset: int = 0,
         progress_callback: Optional[Callable[[dict], Awaitable[None]]] = None,
     ) -> dict:
-        normalized_items = list(items or [])
+        normalized_items = [dict(item or {}) for item in (items or [])]
         if not normalized_items:
             return {"ok": True, "items": []}
+
+        target_dir_cache: dict[str, str] = {}
+        for item in normalized_items:
+            raw_target_dir = str(item.get("target_dir") or item.get("targetDir") or "").strip()
+            if not raw_target_dir:
+                continue
+            use_unique_dir = bool(
+                item.get("target_dir_unique")
+                or item.get("targetDirUnique")
+                or item.get("unique_target_dir")
+                or item.get("uniqueTargetDir")
+            )
+            if use_unique_dir:
+                cache_key = raw_target_dir
+                if cache_key not in target_dir_cache:
+                    target_root = self._ensure_unique_artifact_dir(Path(raw_target_dir).expanduser())
+                    target_root.mkdir(parents=True, exist_ok=True)
+                    target_dir_cache[cache_key] = str(target_root)
+                item["target_dir"] = target_dir_cache[cache_key]
+                item["targetDir"] = target_dir_cache[cache_key]
+            else:
+                Path(raw_target_dir).expanduser().mkdir(parents=True, exist_ok=True)
 
         concurrency = max(1, int(concurrency or 1))
         retry_attempts = max(1, int(retry_attempts or 1))

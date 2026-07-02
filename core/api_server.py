@@ -81,6 +81,7 @@ DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE = """巴拉-AI测图数据抓取导出执�
 
 RUNTIME_CLEANUP_TASKS = {
     ("amazon-ops-assistant", "amazon_label_batch_process"),
+    ("mop-ops-assistant", "cloud_folder_download"),
     ("semir-cloud-drive", "batch_ai_generate"),
     ("semir-cloud-drive", "batch_image_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
@@ -2484,6 +2485,142 @@ def _finalize_semir_cloud_drive_outputs(
 
     return final_refs
 
+def _mop_package_relative_parts(value: str, fallback_name: str = "file") -> list[str]:
+    parts = [
+        _safe_local_name(part, "")
+        for part in str(value or "").replace("\\", "/").split("/")
+        if str(part or "").strip() and str(part or "").strip() not in {".", ".."}
+    ]
+    if parts:
+        return parts
+    return [_safe_local_name(fallback_name, "file")]
+
+
+def _infer_mop_direct_package_root(row: dict, local_path: Path, runtime_dir: Path) -> Optional[Path]:
+    try:
+        if _is_within_directory(local_path, runtime_dir):
+            return None
+    except Exception:
+        return None
+
+    rel_parts = _mop_package_relative_parts(
+        row.get("__mop_package_path") or row.get("本地目录内路径") or row.get("文件名"),
+        row.get("文件名") or local_path.name,
+    )
+    actual_parts = list(local_path.parts)
+    if len(actual_parts) < len(rel_parts):
+        return None
+    if actual_parts[-len(rel_parts):] != rel_parts:
+        return None
+    root = local_path
+    for _part in rel_parts:
+        root = root.parent
+    return root if root.exists() and root.is_dir() else None
+
+
+def _finalize_mop_cloud_folder_download_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
+    final_root = target_root or output_root
+    final_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"MOP云盘模拍图包_{timestamp}",
+        f"MOP云盘模拍图包_{timestamp}",
+    )
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("__sheet_name") or "").strip() != "下载明细":
+            continue
+        local_path = Path(str(row.get("__runtime_local_path") or row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    final_refs: list[str] = []
+    package_root: Optional[Path] = None
+    if successful_rows:
+        direct_root_by_key: dict[str, Path] = {}
+        all_rows_are_direct = True
+        for row, local_path in successful_rows:
+            direct_root = _infer_mop_direct_package_root(row, local_path, runtime_dir)
+            if direct_root is None:
+                all_rows_are_direct = False
+                break
+            direct_root_by_key[str(direct_root.resolve(strict=False))] = direct_root
+
+        if all_rows_are_direct and len(direct_root_by_key) == 1:
+            package_root = next(iter(direct_root_by_key.values()))
+            for row, local_path in successful_rows:
+                row["本地文件"] = str(local_path)
+            final_refs.append(str(package_root))
+            log(f"MOP cloud folder direct output ready: {package_root} ({len(successful_rows)} files)")
+        else:
+            package_started_at = time.monotonic()
+            package_root = _ensure_unique_local_dir(final_root / package_base)
+            for row, local_path in successful_rows:
+                rel_parts = _mop_package_relative_parts(
+                    row.get("__mop_package_path") or row.get("本地目录内路径") or row.get("文件名"),
+                    row.get("文件名") or local_path.name,
+                )
+                target = package_root.joinpath(*rel_parts)
+                relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+                row["本地文件"] = str(relocated)
+
+            final_refs.append(str(package_root))
+            log(
+                "MOP cloud folder package prepared: "
+                f"{package_root} ({len(successful_rows)} files, {time.monotonic() - package_started_at:.1f}s)"
+            )
+
+        if _truthy_param(run_params.get("create_zip")):
+            zip_path = _ensure_unique_local_path(final_root / f"{package_root.name}.zip")
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for file_path in sorted(package_root.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+            final_refs.insert(0, str(zip_path))
+            log(f"MOP cloud folder ZIP created: {zip_path}")
+
+    if target_root:
+        copied_exports = []
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            copied_exports.append(str(copied))
+        final_refs.extend(copied_exports)
+    else:
+        final_refs.extend(exported_refs)
+
+    runtime_files_to_cleanup = []
+    for file_path in runtime_files or []:
+        source = Path(str(file_path or "")).expanduser()
+        try:
+            if _is_within_directory(source, runtime_dir):
+                runtime_files_to_cleanup.append(str(source))
+        except Exception:
+            logger.debug("Failed to classify MOP runtime file %s", source, exc_info=True)
+    _cleanup_semir_runtime_artifacts(runtime_files_to_cleanup, None)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+
+    return final_refs
+
+
 
 def _nested_config_value(source: dict, path: str, default: str = "") -> str:
     current = source or {}
@@ -3979,6 +4116,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
                     log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+            if adapter_id == 'mop-ops-assistant' and task_id == 'cloud_folder_download':
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_mop_cloud_folder_download_outputs,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] MOP 云盘下载后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             if adapter_id == 'tmall-ops-assistant' and task_id in {
