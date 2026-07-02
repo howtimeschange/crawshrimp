@@ -22,12 +22,52 @@
           <span>{{ outputSummary.label }}</span>
         </button>
       </div>
+      <div v-if="drawerState === 'minimized' && latestLogPreview" :class="['task-output-preview', logClass(latestLogPreview)]">
+        {{ latestLogPreview }}
+      </div>
       <div class="task-output-actions">
         <slot name="actions" />
         <button v-if="activeTab === 'logs'" type="button" @click="$emit('clear-logs')">清空</button>
-        <button type="button" :class="{ active: drawerState === 'minimized' }" @click="drawerState = 'minimized'">最小化</button>
-        <button type="button" :class="{ active: drawerState === 'half' }" @click="drawerState = 'half'">半高</button>
-        <button type="button" :class="{ active: drawerState === 'expanded' }" @click="drawerState = 'expanded'">展开</button>
+        <button
+          type="button"
+          class="task-output-icon-btn"
+          :class="{ active: drawerState === 'minimized' }"
+          title="最小化"
+          aria-label="最小化输出面板"
+          @click="drawerState = 'minimized'"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M5 12h14" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="task-output-icon-btn"
+          :class="{ active: drawerState === 'half' }"
+          title="半高"
+          aria-label="半高显示输出面板"
+          @click="drawerState = 'half'"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <rect x="4" y="5" width="16" height="14" rx="2" />
+            <path d="M4 13h16" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          class="task-output-icon-btn"
+          :class="{ active: drawerState === 'expanded' }"
+          title="展开"
+          aria-label="展开输出面板"
+          @click="drawerState = 'expanded'"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M8 3H5a2 2 0 0 0-2 2v3" />
+            <path d="M16 3h3a2 2 0 0 1 2 2v3" />
+            <path d="M8 21H5a2 2 0 0 1-2-2v-3" />
+            <path d="M16 21h3a2 2 0 0 0 2-2v-3" />
+          </svg>
+        </button>
       </div>
     </header>
 
@@ -59,6 +99,8 @@ const props = defineProps({
   logs: { type: Array, default: () => [] },
   files: { type: Array, default: () => [] },
   logClass: { type: Function, default: () => '' },
+  autoOpenOnFirstLog: { type: Boolean, default: true },
+  autoOpenOnOutputFiles: { type: Boolean, default: true },
 })
 
 defineEmits(['clear-logs', 'open-file'])
@@ -67,19 +109,29 @@ const activeTab = ref('logs')
 const drawerState = ref('minimized')
 const logBodyEl = ref(null)
 const outputSummary = computed(() => summarizeOutputFiles(props.files))
+const latestLogPreview = computed(() => {
+  const latest = props.logs?.length ? props.logs[props.logs.length - 1] : ''
+  return String(latest || '').replace(/\s+/g, ' ').trim()
+})
 
 function fileName(path) {
   return String(path || '').split('/').pop().split('\\').pop()
 }
 
 watch(() => props.logs.length, (nextLength, previousLength) => {
-  if (nextLength > previousLength && previousLength === 0 && drawerState.value === 'minimized') {
+  if (props.autoOpenOnFirstLog && nextLength > previousLength && previousLength === 0 && drawerState.value === 'minimized') {
     drawerState.value = 'half'
     activeTab.value = 'logs'
   }
   nextTick(() => {
     if (logBodyEl.value) logBodyEl.value.scrollTop = logBodyEl.value.scrollHeight
   })
+})
+
+watch(() => props.files.length, (nextLength, previousLength) => {
+  if (!props.autoOpenOnOutputFiles || nextLength <= 0 || nextLength <= previousLength) return
+  activeTab.value = 'files'
+  drawerState.value = 'half'
 })
 </script>
 
@@ -95,8 +147,8 @@ watch(() => props.logs.length, (nextLength, previousLength) => {
   flex-direction: column;
 }
 .task-output-drawer.minimized { height: 42px; }
-.task-output-drawer.half { height: min(320px, 34vh); }
-.task-output-drawer.expanded { height: min(560px, 58vh); }
+.task-output-drawer.half { height: min(240px, 28vh); }
+.task-output-drawer.expanded { height: min(420px, 46vh); }
 .task-output-head {
   min-height: 42px;
   display: flex;
@@ -114,8 +166,21 @@ watch(() => props.logs.length, (nextLength, previousLength) => {
   min-width: 0;
 }
 .task-output-tabs {
-  flex: 1;
+  flex: 0 0 auto;
 }
+.task-output-preview {
+  flex: 1 1 auto;
+  min-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text3);
+  font-family: 'Menlo', 'Monaco', monospace;
+  font-size: 12px;
+}
+.task-output-preview.ok { color: #86efac; }
+.task-output-preview.err { color: #fca5a5; }
+.task-output-preview.warn { color: #fde68a; }
 .task-output-tabs button,
 .task-output-actions button {
   border: 1px solid var(--border);
@@ -125,6 +190,22 @@ watch(() => props.logs.length, (nextLength, previousLength) => {
   padding: 6px 10px;
   font-size: 12px;
   cursor: pointer;
+}
+.task-output-actions .task-output-icon-btn {
+  width: 34px;
+  height: 30px;
+  padding: 0;
+  display: inline-grid;
+  place-items: center;
+}
+.task-output-icon-btn svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 .task-output-actions button.active,
 .task-output-tabs button.active {
@@ -231,6 +312,10 @@ watch(() => props.logs.length, (nextLength, previousLength) => {
   .task-output-tabs,
   .task-output-actions {
     flex-wrap: wrap;
+  }
+  .task-output-preview {
+    order: 3;
+    width: 100%;
   }
 }
 </style>

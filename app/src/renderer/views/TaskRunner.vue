@@ -613,7 +613,7 @@
       </div>
 
       <div class="runner-bottom-stack">
-        <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip" aria-live="polite">
+        <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip progress-strip-enhanced" aria-live="polite">
           <div class="progress-strip-head">
             <div class="progress-strip-main">
               <span class="progress-strip-title">{{ progressSummary.title }}</span>
@@ -714,6 +714,7 @@
           :logs="logs"
           :files="outputFiles"
           :log-class="logClass"
+          :auto-open-on-first-log="false"
           @clear-logs="clearLogs"
           @open-file="openFile"
         >
@@ -3292,8 +3293,11 @@ onUnmounted(() => {
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px 16px;
+  gap: 8px;
+  max-height: min(44vh, 460px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 16px 12px;
   border-top: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
 }
@@ -3305,7 +3309,7 @@ onUnmounted(() => {
   display: block;
 }
 .ai-chain-runner .runner-bottom-stack {
-  padding: 14px 18px 18px;
+  padding: 10px 18px 12px;
 }
 .ai-chain-tabs {
   padding: 10px 18px 0;
@@ -3828,9 +3832,10 @@ onUnmounted(() => {
 .progress-strip {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
 }
 .progress-strip-head {
@@ -3880,7 +3885,9 @@ onUnmounted(() => {
   gap: 10px;
 }
 .progress-stage-stack {
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 .progress-track {
   display: flex;
@@ -3901,7 +3908,7 @@ onUnmounted(() => {
 }
 .progress-strip-bar {
   position: relative;
-  height: 8px;
+  height: 6px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(255,255,255,0.08);
@@ -3935,9 +3942,10 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 13px;
-  border-radius: 14px;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.06);
   background:
     linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.018)),
@@ -3974,7 +3982,7 @@ onUnmounted(() => {
 .progress-stage-card-head {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
 }
 .progress-stage-card-kicker {
   display: flex;
@@ -3991,7 +3999,7 @@ onUnmounted(() => {
 .progress-stage-card-status {
   font-size: 11px;
   line-height: 1;
-  padding: 5px 8px;
+  padding: 4px 7px;
   border-radius: 999px;
   color: var(--text2);
   background: rgba(255,255,255,0.06);
@@ -4003,7 +4011,11 @@ onUnmounted(() => {
   gap: 12px;
 }
 .progress-stage-card-main {
-  font-size: 19px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
   font-weight: 800;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -4025,16 +4037,23 @@ onUnmounted(() => {
 .progress-stage-card-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 14px;
-  font-size: 12px;
+  gap: 4px 10px;
+  font-size: 11px;
   color: var(--text2);
+}
+.progress-stage-card-meta span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .progress-stage-bar {
   position: relative;
   z-index: 1;
 }
 .progress-strip-sub {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text2);
   text-align: right;
   white-space: nowrap;
@@ -4514,6 +4533,9 @@ onUnmounted(() => {
   }
   .param-span-half,
   .param-span-third { grid-column: span 1; }
+  .progress-stage-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .progress-stage-card-kicker,
   .progress-stage-card-mainline {
     flex-direction: column;
