@@ -1639,7 +1639,266 @@
     return textarea ? String(textarea.value || '') : ''
   }
 
+  function getNewDescValue(sourceValues = null) {
+    const source = sourceValues && typeof sourceValues === 'object' ? sourceValues : null
+    if (source && source.descRepublicOfSell) return source.descRepublicOfSell
+    return getComponentValue('descRepublicOfSell') || getTmallFormValues().descRepublicOfSell || null
+  }
+
+  function parseNewDescTemplateContent(value) {
+    const source = value && typeof value === 'object' && value.descPageCommitParam
+      ? value.descPageCommitParam.templateContent
+      : value
+    if (!source) return { ok: false, reason: '新版详情模板为空', template: null, templateContent: '' }
+    if (typeof source === 'object') {
+      return { ok: true, template: jsonClone(source), templateContent: JSON.stringify(source) }
+    }
+    const text = String(source || '')
+    try {
+      return { ok: true, template: JSON.parse(text), templateContent: text }
+    } catch (error) {
+      return { ok: false, reason: `新版详情模板解析失败：${String(error?.message || error)}`, template: null, templateContent: text }
+    }
+  }
+
+  function newDescPicUrl(component = {}) {
+    const box = component?.boxStyle || {}
+    return compact(box['background-image'] || box.backgroundImage || component.url || component.src || component.picUrl || component.imageUrl || '')
+  }
+
+  function flattenNewDescPicComponents(value) {
+    const parsed = parseNewDescTemplateContent(value)
+    if (!parsed.ok) return []
+    const groups = Array.isArray(parsed.template?.groups) ? parsed.template.groups : []
+    const pics = []
+    groups.forEach((group, groupIndex) => {
+      const components = Array.isArray(group?.components) ? group.components : []
+      components.forEach((component, componentIndex) => {
+        if (compact(component?.componentType).toLowerCase() !== 'pic') return
+        const src = newDescPicUrl(component)
+        if (!src) return
+        const box = component.boxStyle || {}
+        pics.push({
+          group,
+          component,
+          groupIndex,
+          componentIndex,
+          moduleIndex: pics.length,
+          imageIndex: 0,
+          globalIndex: pics.length,
+          moduleName: compact(group?.bizName || group?.groupName || '图文模块'),
+          groupId: compact(group?.groupId),
+          componentId: compact(component?.componentId),
+          src,
+          width: positiveInt(box.width || group?.boxStyle?.width, 0),
+          height: positiveInt(box.height || group?.boxStyle?.height, 0),
+          context: compact([group?.bizName, group?.groupName, component?.componentName].filter(Boolean).join(' ')),
+        })
+      })
+    })
+    return pics
+  }
+
+  function escapeHtmlAttribute(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  }
+
+  function newDescPicsToModules(pics) {
+    return (Array.isArray(pics) ? pics : []).map(pic => ({
+      id: pic.componentId || `new-desc-${pic.globalIndex}`,
+      name: pic.moduleName || '图文模块',
+      content: `<p><img src="${escapeHtmlAttribute(pic.src)}"/></p>`,
+      custom: false,
+      __newDescPic: pic,
+    }))
+  }
+
+  function hasUsableNewDescTemplate(value = getNewDescValue()) {
+    return flattenNewDescPicComponents(value).length > 0
+  }
+
+  function normalizeDetailImage(item) {
+    if (typeof item === 'string') return { url: compact(item), width: 0, height: 0 }
+    return {
+      ...(item || {}),
+      url: compact(item?.url || item?.src || item?.picUrl || item?.imageUrl || ''),
+      width: positiveInt(item?.width, 0),
+      height: positiveInt(item?.height, 0),
+    }
+  }
+
+  function resizeNewDescPicGroup(group, image) {
+    const clone = jsonClone(group)
+    const component = Array.isArray(clone.components)
+      ? clone.components.find(item => compact(item?.componentType).toLowerCase() === 'pic') || clone.components[0]
+      : null
+    const box = component?.boxStyle || {}
+    const groupBox = clone.boxStyle || {}
+    const targetWidth = positiveInt(box.width || groupBox.width, 620) || 620
+    const targetHeight = image.width && image.height
+      ? Math.max(1, Math.round(targetWidth * image.height / image.width))
+      : (positiveInt(box.height || groupBox.height, 0) || 794)
+    clone.boxStyle = {
+      ...groupBox,
+      width: String(targetWidth),
+      height: String(targetHeight),
+    }
+    if (component) {
+      component.boxStyle = {
+        ...box,
+        top: '0',
+        left: '0',
+        width: String(targetWidth),
+        height: String(targetHeight),
+        'background-image': image.url,
+      }
+      component.imgStyle = {
+        ...(component.imgStyle || {}),
+        top: '0',
+        left: '0',
+        width: String(targetWidth),
+        height: String(targetHeight),
+      }
+    }
+    return clone
+  }
+
+  function cloneNewDescPicGroup(group, image, index, options = {}) {
+    const cloned = resizeNewDescPicGroup(group, image)
+    const prefix = compact(options.idPrefix) || `crawshrimp${Date.now()}`
+    const groupId = `group${prefix}${index}`
+    const componentId = `component${prefix}${index}`
+    cloned.groupId = groupId
+    if (Array.isArray(cloned.components)) {
+      cloned.components.forEach(component => {
+        component.groupId = groupId
+        if (compact(component?.componentType).toLowerCase() === 'pic') {
+          component.componentId = componentId
+        }
+      })
+    }
+    return cloned
+  }
+
+  function buildAnchoredNewDescTemplateContent(newDescValue, detailImages = [], options = {}) {
+    const parsed = parseNewDescTemplateContent(newDescValue)
+    const detailList = (Array.isArray(detailImages) ? detailImages : [])
+      .map(normalizeDetailImage)
+      .filter(item => item.url)
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_parse_failed',
+        note: parsed.reason || '新版详情模板解析失败',
+        value: newDescValue,
+        modules: [],
+      }
+    }
+    const template = jsonClone(parsed.template)
+    const pics = flattenNewDescPicComponents(template)
+    const modules = newDescPicsToModules(pics)
+    if (!pics.length) {
+      return {
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_no_pics',
+        note: '新版详情模板中未识别到图片组件，已阻止自动替换',
+        value: newDescValue,
+        modules,
+      }
+    }
+    const range = buildAnchoredPcDetailModules(modules, detailList.map(item => item.url), {
+      ...options,
+      probeOnly: true,
+    })
+    if (!detailList.length || !range.ok) {
+      return {
+        ...range,
+        target: 'descRepublicOfSell',
+        value: newDescValue,
+        template,
+        modules,
+        pics,
+        note: detailList.length
+          ? range.note
+          : '新版详情模板可解析，等待OCR锚点后再替换',
+      }
+    }
+    const startPic = pics[Number(range.replaceStartIndex)]
+    const stopPic = pics[Number(range.replaceEndIndex)]
+    const groups = Array.isArray(template.groups) ? template.groups : []
+    const referenceGroup = startPic?.group || pics[0]?.group
+    if (!startPic || !referenceGroup) {
+      return {
+        ...range,
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_range_missing',
+        value: newDescValue,
+        template,
+        modules,
+        pics,
+        note: '新版详情模板替换区间缺少起始图片组件，已阻止自动替换',
+      }
+    }
+    const startGroupIndex = startPic.groupIndex
+    const stopGroupIndex = stopPic ? stopPic.groupIndex : groups.length
+    if (stopGroupIndex < startGroupIndex) {
+      return {
+        ...range,
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_invalid_range',
+        value: newDescValue,
+        template,
+        modules,
+        pics,
+        note: '新版详情模板替换区间异常，已阻止自动替换',
+      }
+    }
+    const newGroups = detailList.map((item, index) => cloneNewDescPicGroup(referenceGroup, item, index, options))
+    template.groups = [
+      ...groups.slice(0, startGroupIndex),
+      ...newGroups,
+      ...groups.slice(stopGroupIndex),
+    ]
+    const nextValue = {
+      ...(newDescValue && typeof newDescValue === 'object' ? newDescValue : {}),
+      descPageCommitParam: {
+        ...((newDescValue && typeof newDescValue === 'object' ? newDescValue.descPageCommitParam : {}) || {}),
+        templateContent: JSON.stringify(template),
+        changed: true,
+      },
+    }
+    return {
+      ...range,
+      target: 'descRepublicOfSell',
+      value: nextValue,
+      template,
+      modules: newDescPicsToModules(flattenNewDescPicComponents(template)),
+      pics,
+      insertedGroupCount: newGroups.length,
+      replacedGroupStartIndex: startGroupIndex,
+      replacedGroupEndIndex: stopGroupIndex,
+      note: `新版详情模板${range.note || '已完成锚点区间替换'}`,
+    }
+  }
+
   function currentPcDetailReplacementProbe(options = {}) {
+    const newDescValue = getNewDescValue()
+    if (hasUsableNewDescTemplate(newDescValue)) {
+      return buildAnchoredNewDescTemplateContent(newDescValue, [], {
+        probeOnly: true,
+        visualAnchors: options.visualAnchors,
+        requireVisualAnchors: options.requireVisualAnchors,
+        allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+      })
+    }
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
       return buildAnchoredPcDetailModules(modularDesc, [], {
@@ -3343,27 +3602,38 @@
     const currentThreeToFourImages = Array.isArray(currentValues.threeToFourImages) ? currentValues.threeToFourImages : []
     const main1x1 = mergeReplacementImages(currentMainImages, replacementMain1x1, TMALL_MAIN_IMAGE_MAX_COUNT)
     const main3x4 = mergeReplacementImages(currentThreeToFourImages, replacementMain3x4, TMALL_MAIN_IMAGE_MAX_COUNT)
-    const detailUrls = (uploadedByCategory.pc_detail || []).map(item => item.url)
     const currentGuide = currentValues.guideImageGroup && typeof currentValues.guideImageGroup === 'object' ? currentValues.guideImageGroup : {}
+    const currentNewDesc = getNewDescValue(currentValues)
     const currentModules = Array.isArray(currentValues.modularDesc) ? currentValues.modularDesc : []
     const currentTmDescription = typeof currentValues.tmDescription === 'string' ? currentValues.tmDescription : ''
-    const pcDetailReplacement = currentModules.length
-      ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
+    const detailUrls = (uploadedByCategory.pc_detail || []).map(item => item.url)
+    const pcDetailReplacement = hasUsableNewDescTemplate(currentNewDesc)
+      ? buildAnchoredNewDescTemplateContent(currentNewDesc, uploadedByCategory.pc_detail || [], {
         visualAnchors: currentValues.pcDetailVisualAnchors,
         requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
         allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
       })
-      : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
-        visualAnchors: currentValues.pcDetailVisualAnchors,
-        requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
-        allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
-      })
-    const modularDesc = currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
-    const tmDescription = !currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
+      : currentModules.length
+        ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
+          visualAnchors: currentValues.pcDetailVisualAnchors,
+          requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
+          allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
+        })
+        : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
+          visualAnchors: currentValues.pcDetailVisualAnchors,
+          requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
+          allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
+        })
+    const modularDesc = currentModules.length && pcDetailReplacement.target !== 'descRepublicOfSell' && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
+    const tmDescription = !currentModules.length && pcDetailReplacement.target !== 'descRepublicOfSell' && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
+    const descRepublicOfSell = pcDetailReplacement.target === 'descRepublicOfSell' && pcDetailReplacement.ok
+      ? pcDetailReplacement.value
+      : undefined
     return {
       mainImagesGroup: main1x1?.length ? { ...currentMainGroup, images: main1x1 } : undefined,
       threeToFourImages: main3x4?.length ? main3x4 : undefined,
       guideImageGroup: vertical.length ? { ...currentGuide, verticalImage: vertical } : undefined,
+      descRepublicOfSell,
       modularDesc,
       tmDescription,
       detailHtml: pcDetailReplacement.detailHtml || '',
@@ -3478,6 +3748,42 @@
     return Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, stringifyFieldValue(value)]))
   }
 
+  function newDescCommitEndpoint(value = {}) {
+    return compact(value?.descPageRenderModel?.extendConfig?.httpRequestUrlConfig?.url) ||
+      'https://xiangqing.wangpu.taobao.com/template/ajax/commit_item_description.do'
+  }
+
+  async function commitNewDescByApi(value, timeoutMs = 15000) {
+    if (!value) return { ok: true, method: 'skip' }
+    const commitParam = value.descPageCommitParam && typeof value.descPageCommitParam === 'object'
+      ? value.descPageCommitParam
+      : {}
+    if (!commitParam.templateContent) {
+      return { ok: false, method: 'new_desc_commit', reason: '新版详情模板缺少 templateContent，已阻止提交发布' }
+    }
+    const endpoint = newDescCommitEndpoint(value)
+    const payload = { ...commitParam, changed: true }
+    const token = getCookieValue('_tb_token_')
+    if (token && !payload._tb_token_) payload._tb_token_ = token
+    const result = await postTmallForm(endpoint, payload, timeoutMs)
+    if (result.ok || result.successful) {
+      return {
+        ...result,
+        ok: true,
+        method: 'new_desc_commit',
+        endpoint,
+        note: '已通过新版详情接口保存 descRepublicOfSell',
+      }
+    }
+    return {
+      ...result,
+      ok: false,
+      method: 'new_desc_commit',
+      endpoint,
+      reason: result.reason || `新版详情接口保存失败${result.status ? ` HTTP ${result.status}` : ''}`,
+    }
+  }
+
   function parseTmallApiPayload(text) {
     const raw = String(text || '')
     if (!raw) return {}
@@ -3531,15 +3837,33 @@
     Object.entries(payload || {}).forEach(([key, value]) => body.set(key, stringifyFieldValue(value)))
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+    const originFromUrl = (value, base = '') => {
+      const text = String(value || '')
+      const baseText = String(base || '')
+      if (typeof URL === 'function') {
+        try { return new URL(text, baseText || undefined).origin } catch (error) {}
+      }
+      const absolute = /^https?:\/\//i.test(text)
+        ? text
+        : (/^\/\//.test(text) ? `https:${text}` : baseText)
+      const match = absolute.match(/^(https?:)\/\/([^/?#]+)/i)
+      return match ? `${match[1]}//${match[2]}`.toLowerCase() : ''
+    }
+    let sameOrigin = true
+    try {
+      const currentHref = typeof location !== 'undefined' && location.href ? location.href : 'https://sell.publish.tmall.com/'
+      sameOrigin = originFromUrl(action, currentHref) === originFromUrl(currentHref)
+    } catch (error) {}
+    const headers = {
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    }
+    if (sameOrigin) headers['x-requested-with'] = 'XMLHttpRequest'
     try {
       const response = await Promise.race([
         fetch(action, {
           method: 'POST',
           credentials: 'include',
-          headers: {
-            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'x-requested-with': 'XMLHttpRequest',
-          },
+          headers,
           body,
           signal: controller?.signal,
         }),
@@ -3672,6 +3996,13 @@
   }
 
   function currentPcDetailModulesForOcr() {
+    const newDescValue = getNewDescValue()
+    if (hasUsableNewDescTemplate(newDescValue)) {
+      return {
+        target: 'descRepublicOfSell',
+        modules: newDescPicsToModules(flattenNewDescPicComponents(newDescValue)),
+      }
+    }
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
       return {
@@ -4423,6 +4754,9 @@
       tesseractRuntimeConfig,
       buildAnchoredPcDetailModules,
       buildAnchoredPcDetailHtml,
+      parseNewDescTemplateContent,
+      flattenNewDescPicComponents,
+      buildAnchoredNewDescTemplateContent,
       buildTmallComponentValues,
       buildTmallSubmitPayload,
       resolveTmallCatId,
@@ -4667,8 +5001,9 @@
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
       const legacyPcDetailHtml = getLegacyPcDetailHtml()
+      const newDescTemplateAvailable = hasUsableNewDescTemplate(getNewDescValue())
       const returnOldSwitch = findReturnOldDescriptionSwitch()
-      if (returnOldSwitch && !legacyPcDetailHtml) {
+      if (returnOldSwitch && !legacyPcDetailHtml && !newDescTemplateAvailable) {
         const attempts = Number(shared.legacy_switch_attempts || 0)
         if (attempts < 5) {
           const nextShared = {
@@ -4879,6 +5214,7 @@
         mainImagesGroup: getComponentValue('mainImagesGroup'),
         threeToFourImages: getComponentValue('threeToFourImages'),
         guideImageGroup: getComponentValue('guideImageGroup'),
+        descRepublicOfSell: getNewDescValue(),
         modularDesc: getComponentValue('modularDesc'),
         tmDescription: getLegacyPcDetailHtml(),
         pcDetailVisualAnchors: shared.pc_detail_visual_anchors,
@@ -4907,11 +5243,16 @@
         mainImagesGroup: applyComponentValue('mainImagesGroup', componentValues.mainImagesGroup),
         threeToFourImages: applyComponentValue('threeToFourImages', componentValues.threeToFourImages),
         guideImageGroup: applyComponentValue('guideImageGroup', componentValues.guideImageGroup),
+        descRepublicOfSell: applyFormValue('descRepublicOfSell', componentValues.descRepublicOfSell),
         modularDesc: applyComponentValue('modularDesc', componentValues.modularDesc),
         tmDescription: applyFormValue('tmDescription', componentValues.tmDescription),
       }
       if (componentValues.tmDescription !== undefined) {
         applied.tmDescriptionDom = applyLegacyPcDetailDom(componentValues.tmDescription)
+      }
+      const fullPublishMode = isFullPublishMode(shared.current_job?.execute_mode)
+      if (fullPublishMode && componentValues.descRepublicOfSell !== undefined) {
+        applied.descRepublicOfSellCommit = await commitNewDescByApi(componentValues.descRepublicOfSell, 15000)
       }
       const afterStatus = extractTmallStatus(shared.current_job || {})
       const componentApplyNote = Object.entries(applied)
@@ -4922,13 +5263,14 @@
       const replacementNote = componentValues.pcDetailReplacement?.mode === 'anchored_replace' || componentValues.pcDetailReplacement?.ok === false
         ? componentValues.pcDetailReplacement?.note
         : ''
-      const applyNote = [componentApplyNote, replacementNote].filter(Boolean).join('；')
+      const newDescCommitNote = applied.descRepublicOfSellCommit?.ok ? applied.descRepublicOfSellCommit.note : ''
+      const applyNote = [componentApplyNote, replacementNote, newDescCommitNote].filter(Boolean).join('；')
       const rows = buildOutputStatusRows(
         shared.current_result_rows,
         afterStatus,
         applyNote || '已写入天猫编辑页草稿；未点击提交发布；手机端详情仍需在页面确认导入PC详情',
       )
-      if (isFullPublishMode(shared.current_job?.execute_mode)) {
+      if (fullPublishMode) {
         if (hasApplyFailure) {
           const failedRows = rows.map(row => ({ ...row, '执行结果': '草稿写入失败' }))
           return advanceToNextJob(failedRows, {
@@ -4944,7 +5286,7 @@
           tmall_status_after_apply: afterStatus,
           applied_components: applied,
           applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
-          applied_pc_detail_html: componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+          applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
           publish_wait_attempts: 0,
           publish_stage: 'pc',
           current_store: '提交PC端详情发布',
@@ -4956,7 +5298,7 @@
         tmall_status_after_apply: afterStatus,
         applied_components: applied,
         applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
-        applied_pc_detail_html: componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+        applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
       })
     }
 

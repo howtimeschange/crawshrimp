@@ -147,6 +147,61 @@ function plain(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function newDescValueFromUrls(urls) {
+  const groups = [
+    {
+      groupName: '品牌介绍',
+      bizName: '品牌介绍',
+      groupId: 'brand',
+      type: 'group',
+      boxStyle: { width: '620', height: '100' },
+      components: [],
+    },
+    ...urls.map((url, index) => {
+      const groupId = `group${index}`
+      return {
+        boxStyle: { 'background-color': '#fff', width: '620', height: '794' },
+        components: [{
+          componentType: 'pic',
+          boxStyle: {
+            rotate: '0',
+            'z-index': '0',
+            top: '0',
+            left: '0',
+            width: '620',
+            height: '794',
+            'background-image': url,
+          },
+          imgStyle: { top: '0', left: '0', width: '620', height: '794' },
+          componentId: `component${index}`,
+          sellerEditable: true,
+          level: 2,
+          groupId,
+          componentName: '图片组件',
+          type: 'component',
+          clipType: 'rect',
+        }],
+        groupName: '图片模块',
+        hide: false,
+        bizName: '图文模块',
+        level: 1,
+        bizCode: 0,
+        groupId,
+        type: 'group',
+      }
+    }),
+  ]
+  return {
+    descPageCommitParam: {
+      itemId: '999412782684',
+      catId: '124230010',
+      templateContent: JSON.stringify({ groups, sellergroups: [] }),
+    },
+    descPageRenderParam: {},
+    descPageRenderModel: {},
+  }
+}
+
 test('packaging assets are grouped into Tmall upload buckets from names and dimensions', async () => {
   const helpers = await loadExports()
   const plan = helpers.classifyPackagingAssets([
@@ -1363,6 +1418,221 @@ test('wait_tmall_ready skips return-old click when legacy tmDescription is alrea
 
   assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
   assert.equal(result.meta.shared.pc_detail_replacement_probe.target, 'tmDescription')
+})
+
+test('new desc template helpers flatten real pic components', async () => {
+  const helpers = await loadExports()
+  const newDesc = newDescValueFromUrls([
+    '//img.alicdn.com/top.jpg',
+    '//img.alicdn.com/old-1.jpg',
+    '//img.alicdn.com/old-2.jpg',
+    '//img.alicdn.com/size.jpg',
+  ])
+
+  const parsed = helpers.parseNewDescTemplateContent(newDesc)
+  const pics = helpers.flattenNewDescPicComponents(newDesc)
+
+  assert.equal(parsed.ok, true)
+  assert.equal(pics.length, 4)
+  assert.deepEqual(plain(pics.map(pic => pic.src)), [
+    '//img.alicdn.com/top.jpg',
+    '//img.alicdn.com/old-1.jpg',
+    '//img.alicdn.com/old-2.jpg',
+    '//img.alicdn.com/size.jpg',
+  ])
+  assert.equal(pics[0].groupIndex, 1)
+  assert.equal(pics[0].componentId, 'component0')
+})
+
+test('buildTmallComponentValues replaces anchored range inside new desc template', async () => {
+  const helpers = await loadExports()
+  const currentNewDesc = newDescValueFromUrls([
+    '//img.alicdn.com/top.jpg',
+    '//img.alicdn.com/old-1.jpg',
+    '//img.alicdn.com/old-2.jpg',
+    '//img.alicdn.com/size.jpg',
+  ])
+  const values = helpers.buildTmallComponentValues({
+    pc_detail: [
+      { url: '//img.alicdn.com/new-1.jpg', width: 1440, height: 1920 },
+      { url: '//img.alicdn.com/new-2.jpg', width: 1440, height: 1920 },
+    ],
+  }, {
+    descRepublicOfSell: currentNewDesc,
+    pcDetailVisualAnchors: {
+      fixedTopImageIndex: 0,
+      stopImageIndex: 3,
+      stopAnchorKind: 'size',
+    },
+    requirePcDetailVisualAnchors: true,
+  })
+
+  const pics = helpers.flattenNewDescPicComponents(values.descRepublicOfSell)
+
+  assert.equal(values.pcDetailReplacement.target, 'descRepublicOfSell')
+  assert.equal(values.pcDetailReplacement.mode, 'anchored_replace')
+  assert.equal(values.modularDesc, undefined)
+  assert.equal(values.tmDescription, undefined)
+  assert.deepEqual(plain(pics.map(pic => pic.src)), [
+    '//img.alicdn.com/top.jpg',
+    '//img.alicdn.com/new-1.jpg',
+    '//img.alicdn.com/new-2.jpg',
+    '//img.alicdn.com/size.jpg',
+  ])
+  assert.equal(pics[1].height, 827)
+})
+
+test('apply_tmall_draft commits new desc template before full publish submit', async () => {
+  const newDesc = newDescValueFromUrls([
+    '//img.alicdn.com/top.jpg',
+    '//img.alicdn.com/old-1.jpg',
+    '//img.alicdn.com/old-2.jpg',
+    '//img.alicdn.com/size.jpg',
+  ])
+  const models = { formValues: { descRepublicOfSell: newDesc } }
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return {}
+      if (name === 'descRepublicOfSell') return models.formValues.descRepublicOfSell
+      if (name === 'modularDesc') return []
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return models
+      },
+      updateModels(update) {
+        Object.assign(models, update)
+      },
+      getComponent() {
+        return null
+      },
+    },
+  }
+  const fetchCalls = []
+  const { result } = await runScript({
+    phase: 'apply_tmall_draft',
+    shared: {
+      current_job: { item_id: '999412782684', style_code: '208425107212', execute_mode: 'publish_and_sync_mobile' },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+      uploaded_by_category: {
+        pc_detail: [
+          { url: '//img.alicdn.com/new-1.jpg', width: 1440, height: 1920 },
+          { url: '//img.alicdn.com/new-2.jpg', width: 1440, height: 1920 },
+        ],
+      },
+      pc_detail_visual_anchors: {
+        fixedTopImageIndex: 0,
+        stopImageIndex: 3,
+        stopAnchorKind: 'size',
+      },
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      cookie: '_tb_token_=test-token',
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+    fetchImpl: async (url, init = {}) => {
+      fetchCalls.push({ url: String(url), method: init.method, headers: init.headers || {}, body: String(init.body || '') })
+      return jsonResponse({ success: true })
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'submit_pc_publish')
+  assert.equal(fetchCalls.length, 1)
+  assert.match(fetchCalls[0].url, /commit_item_description\.do/)
+  assert.match(fetchCalls[0].body, /templateContent=/)
+  assert.equal(fetchCalls[0].headers?.['x-requested-with'], undefined)
+  assert.equal(new URLSearchParams(fetchCalls[0].body).get('_tb_token_'), 'test-token')
+})
+
+test('wait_tmall_ready prefers new desc template over return-old switch', async () => {
+  const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
+  let clicked = 0
+  returnOld.click = () => { clicked += 1 }
+  const newDesc = newDescValueFromUrls([
+    '//img.alicdn.com/top.jpg',
+    '//img.alicdn.com/old-1.jpg',
+    '//img.alicdn.com/old-2.jpg',
+    '//img.alicdn.com/size.jpg',
+  ])
+  const componentValues = {
+    outerId: '208425107212',
+    mainImagesGroup: { images: [] },
+    descRepublicOfSell: newDesc,
+    tmDescription: '',
+  }
+  const state = {
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { descRepublicOfSell: newDesc, tmDescription: '' } }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    params: { enable_ocr_anchor_detection: false },
+    shared: {
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+        execute_mode: 'upload_draft',
+        block_on_style_mismatch: true,
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '返回旧版图文描述' },
+      querySelectorAll(selector) {
+        if (String(selector).includes('input')) return []
+        return [returnOld]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(clicked, 0)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
+  assert.equal(result.meta.shared.pc_detail_replacement_probe.target, 'descRepublicOfSell')
 })
 
 test('wait_publish_result does not repeatedly confirm loading or hidden Tmall dialogs', async () => {
