@@ -1,0 +1,72 @@
+id: weimob-ops-assistant
+name: 微盟运营助手
+version: 0.1.0
+author: codex
+description: "微盟商城后台运营自动化：商品上新、MDM SKU 映射回填与批量状态更新"
+entry_url: https://master.weimob.com/bos/products/ecGoodsmanage/4000547814432/4diuahndgX5o74sooX4di628kby/goods/list
+tab_match_prefixes:
+  - https://master.weimob.com/
+  - https://mdm.semirapp.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://master.weimob.com/
+
+tasks:
+  - id: goods_new_arrival_automation
+    name: 商品上新自动化
+    description: 粘贴一批微盟商品编码，自动查询商品编辑页规格旧国际码，到 MDM 按国际码查询 SKU 编码，并将销售渠道、可售/上架、配送方式和规格编码/条码生成预演表；更新模式会调用微盟保存接口回填。
+    script: goods-new-arrival-automation.js
+    entry_url: https://master.weimob.com/bos/products/ecGoodsmanage/4000547814432/4diuahndgX5o74sooX4di628kby/goods/list
+    tab_match_prefixes:
+      - https://master.weimob.com/
+      - https://mdm.semirapp.com/
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 使用当前登录页
+          - value: new
+            label: 新开微盟商品列表页
+        hint: 推荐使用当前 9222 浏览器中已登录的微盟与 MDM 页面。
+      - id: execute_mode
+        type: radio
+        label: 执行模式
+        default: plan
+        options:
+          - value: plan
+            label: 仅生成预演表（推荐）
+          - value: update
+            label: 保存更新到微盟
+        hint: 预演模式只查询微盟与 MDM 并输出将要修改的字段；更新模式会真实调用微盟商品保存接口。
+      - id: style_codes
+        type: textarea
+        label: 商品款号/商品编码
+        rows: 6
+        required: true
+        ui_variant: line_list
+        placeholder: "653514A6602Z;653514A6101Z;655139G2112Z"
+        hint: 支持用英文/中文分号、逗号、空格或换行分隔；脚本按微盟“商品编码”精确搜索。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "微盟商品上新自动化_{timestamp}.xlsx"
+        columns:
+          - 款号
+          - 商品ID
+          - 商品名称
+          - 规格ID
+          - 原规格编码
+          - 目标规格编码
+          - 原规格条码
+          - 目标规格条码
+          - MDM_SKC编码
+          - MDM颜色
+          - MDM尺码
+          - 执行结果
+          - 备注
