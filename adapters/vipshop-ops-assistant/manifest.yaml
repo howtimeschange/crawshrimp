@@ -1,0 +1,193 @@
+id: vipshop-ops-assistant
+name: 唯品会运营助手
+version: 0.1.0
+author: codex
+description: "唯品会罗盘与供应商平台运营报表工具"
+entry_url: https://compass.vip.com/frontend/index.html#/product/details
+tab_match_prefixes:
+  - https://compass.vip.com/frontend/index.html
+  - https://compass.vip.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://vis.vip.com/
+
+tasks:
+  - id: light_supply_goods_report
+    name: 轻供款商品报表
+    description: 读取货品匹配表，在罗盘商品明细页按 API 分页抓取「商品明细」，并跨域调用供应商平台「商品信息」接口，提取区分为轻供的款号生成报表。
+    script: light-supply-goods-report.js
+    entry_url: https://compass.vip.com/frontend/index.html#/product/details
+    tab_match_prefixes:
+      - https://compass.vip.com/frontend/index.html
+      - https://compass.vip.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前罗盘页面（推荐）
+          - value: new
+            label: 新开罗盘商品明细页
+        hint: 请在「魔方罗盘 - 商品明细」页运行；脚本会从该页同时调用供应商平台商品信息接口。
+      - id: input_file
+        type: file_excel
+        label: 货品匹配表
+        required: true
+        hint: 必须包含「大货款号」「类别」两列；脚本按「类别=轻供」筛选后台报表行。
+      - id: report_scope
+        type: checkbox
+        label: 报表范围
+        default:
+          - merchandise_info
+          - goods_detail
+        ui_variant: dropdown_multi
+        options:
+          - value: merchandise_info
+            label: 商品信息
+          - value: goods_detail
+            label: 商品明细
+        hint: 默认同时生成 SOP 中的「商品信息」和「商品明细」两类轻供报表。
+      - id: target_category
+        type: text
+        label: 匹配类别
+        default: 轻供
+        ui_span: third
+        hint: 默认提取类别为「轻供」的款号；如匹配表类别名称调整，可在这里改。
+      - id: start_date
+        type: text
+        label: 商品明细开始日期
+        placeholder: "留空则沿用页面统计日期，例如 2026-07-01"
+        ui_span: third
+        hint: 支持 YYYY-MM-DD 或 YYYYMMDD；留空时读取当前罗盘页「统计日期」。
+      - id: end_date
+        type: text
+        label: 商品明细结束日期
+        placeholder: "留空则同开始日期"
+        ui_span: third
+        hint: 留空时与开始日期一致；商品信息报表不使用日期。
+      - id: page_size
+        type: number
+        label: 每页数量
+        default: 500
+        min: 20
+        max: 500
+        step: 20
+        ui_span: third
+        hint: 已按当前唯品会接口验证 500 条/页可稳定返回。
+      - id: max_pages
+        type: number
+        label: 最多页数
+        default: 200
+        min: 1
+        max: 1000
+        step: 1
+        ui_span: third
+        hint: 防止后台异常无限分页；默认足够覆盖当前万级商品列表。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "唯品会轻供款商品报表_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 报表来源
+          - 区分
+          - 款号
+          - 货号
+          - 商品ID
+          - 商品名称
+          - 品牌编码
+          - 品牌名称
+          - 一级品类
+          - 二级品类
+          - 三级品类
+          - 售卖渠道
+          - 统计日期
+          - 市场价
+          - 唯品价
+          - 到手价
+          - 销售额
+          - 销售数量
+          - 客户数
+          - 商详UV
+          - 在售库存
+          - 库存天数
+          - 售龄
+          - 商品状态
+          - 商品标签
+          - 图片链接
+          - 数据来源接口
+          - 执行结果
+          - 备注
+        sheets:
+          - name: 商品信息-轻供
+            columns:
+              - 报表来源
+              - 区分
+              - 款号
+              - 货号
+              - 商品ID
+              - 商品名称
+              - 品牌编码
+              - 品牌名称
+              - 一级品类
+              - 二级品类
+              - 三级品类
+              - 售卖渠道
+              - 统计日期
+              - 市场价
+              - 唯品价
+              - 到手价
+              - 销售额
+              - 销售数量
+              - 客户数
+              - 商详UV
+              - 在售库存
+              - 库存天数
+              - 售龄
+              - 商品状态
+              - 商品标签
+              - 图片链接
+              - 数据来源接口
+              - 执行结果
+              - 备注
+          - name: 商品明细-轻供
+            columns:
+              - 报表来源
+              - 区分
+              - 款号
+              - 货号
+              - 商品ID
+              - 商品名称
+              - 品牌编码
+              - 品牌名称
+              - 一级品类
+              - 二级品类
+              - 三级品类
+              - 售卖渠道
+              - 统计日期
+              - 市场价
+              - 唯品价
+              - 到手价
+              - 销售额
+              - 销售数量
+              - 客户数
+              - 商详UV
+              - 在售库存
+              - 库存天数
+              - 售龄
+              - 商品状态
+              - 商品标签
+              - 图片链接
+              - 数据来源接口
+              - 执行结果
+              - 备注
+          - name: 执行摘要
+            columns:
+              - 报表来源
+              - 执行结果
+              - 备注
