@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from core import runtime_paths
-from core.config import load_config, save_config
+from core.config import load_config, patch_config, save_config
 from core import adapter_loader
 from core import data_sink
 from core import notifier
@@ -68,9 +68,20 @@ _run_controls: dict = {}  # job_id -> {'task', 'pause_requested', 'stop_requeste
 _task_locks: dict[str, asyncio.Lock] = {}
 
 ACTIVE_LIVE_STATUSES = {"running", "pausing", "paused", "stopping"}
+TMALL_OPS_ADAPTER_ID = "tmall-ops-assistant"
+TMALL_MATERIAL_EXPORT_TASK_ID = "tmall_material_test_data_export"
+DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE = """巴拉-AI测图数据抓取导出执行通知
+定时任务：{{schedule_title}}
+执行状态：{{status}}
+导出记录：{{records}}
+输出文件：{{output_files}}
+导出目录：{{export_dir}}
+完成时间：{{finished_at}}
+错误信息：{{error}}"""
 
 RUNTIME_CLEANUP_TASKS = {
     ("amazon-ops-assistant", "amazon_label_batch_process"),
+    ("mop-ops-assistant", "cloud_folder_download"),
     ("semir-cloud-drive", "batch_ai_generate"),
     ("semir-cloud-drive", "batch_image_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
@@ -131,13 +142,33 @@ def _allowed_cors_origins() -> list[str]:
     ]
 
 
+def _external_call_timeout_seconds(default: float = 20.0) -> float:
+    raw = str(os.environ.get("CRAWSHRIMP_EXTERNAL_CALL_TIMEOUT_SECONDS") or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return max(0.0, value)
+
+
 async def _bridge_call_async(async_name: str, sync_name: str, *args, **kwargs):
     bridge = get_bridge()
     async_method = getattr(bridge, async_name, None)
     if async_method:
-        return await async_method(*args, **kwargs)
-    sync_method = getattr(bridge, sync_name)
-    return await asyncio.to_thread(sync_method, *args, **kwargs)
+        awaitable = async_method(*args, **kwargs)
+    else:
+        sync_method = getattr(bridge, sync_name)
+        awaitable = asyncio.to_thread(sync_method, *args, **kwargs)
+
+    timeout_seconds = _external_call_timeout_seconds()
+    if timeout_seconds <= 0:
+        return await awaitable
+    try:
+        return await asyncio.wait_for(awaitable, timeout=timeout_seconds)
+    except asyncio.TimeoutError as exc:
+        raise TimeoutError(f"External dependency timed out: {sync_name}") from exc
 
 
 async def _bridge_get_tabs() -> list:
@@ -200,6 +231,54 @@ def _task_lock(jid: str) -> asyncio.Lock:
     return lock
 
 
+def _task_jid(adapter_id: str, task_id: str) -> str:
+    return f"{adapter_id}::{task_id}"
+
+
+def _instance_jid(instance_uid: str) -> str:
+    uid = str(instance_uid or "").strip()
+    return f"instance::{uid}" if uid else ""
+
+
+def _run_jid(adapter_id: str, task_id: str, instance_uid: str = "") -> str:
+    return _instance_jid(instance_uid) or _task_jid(adapter_id, task_id)
+
+
+def _run_jids(adapter_id: str, task_id: str, instance_uid: str = "") -> list[str]:
+    task_jid = _task_jid(adapter_id, task_id)
+    instance_jid = _instance_jid(instance_uid)
+    if instance_jid and instance_jid != task_jid:
+        return [task_jid, instance_jid]
+    return [task_jid]
+
+
+def _set_live_status(jids: list[str], status: dict) -> None:
+    for job_id in jids:
+        if job_id:
+            _run_status[job_id] = dict(status or {})
+
+
+def _merge_live_status(jids: list[str], patch: dict) -> None:
+    for job_id in jids:
+        if not job_id:
+            continue
+        live = dict(_run_status.get(job_id) or {})
+        _run_status[job_id] = {**live, **dict(patch or {})}
+
+
+def _append_run_log(jids: list[str], message: str) -> None:
+    for job_id in jids:
+        if job_id:
+            _run_logs.setdefault(job_id, []).append(message)
+
+
+def _latest_instance_run(instance_uid: str) -> Optional[dict]:
+    run = data_sink.get_latest_task_instance_run(instance_uid)
+    if not run:
+        return None
+    return {**run, "id": run.get("id") or run.get("run_id")}
+
+
 def _task_is_active(jid: str) -> bool:
     live = _run_status.get(jid) or {}
     control = _run_controls.get(jid)
@@ -218,6 +297,88 @@ def _task_has_live_control(jid: str) -> bool:
     if task and not task.done():
         return True
     return live.get("status") in ACTIVE_LIVE_STATUSES and not control
+
+
+def _default_tmall_material_export_dir() -> str:
+    return str(Path.home() / "Downloads" / "抓虾导出" / "天猫运营助手" / "巴拉-AI测图数据抓取导出")
+
+
+def _default_tmall_material_export_params(params: Optional[dict] = None) -> dict:
+    merged = {
+        "mode": "new",
+        "output_dir": _default_tmall_material_export_dir(),
+        "test_status": "1",
+        "statistic_type": "ACCUMULATE_30_DAYS",
+        "page_size": 20,
+    }
+    for key, value in (params or {}).items():
+        merged[key] = value
+    if not str(merged.get("output_dir") or "").strip():
+        merged["output_dir"] = _default_tmall_material_export_dir()
+    if not str(merged.get("mode") or "").strip():
+        merged["mode"] = "new"
+    return merged
+
+
+def _validate_schedule_time(value: str) -> str:
+    text = str(value or "").strip()
+    if not re.match(r"^\d{1,2}:\d{2}$", text):
+        raise HTTPException(400, "定时任务时间必须使用 HH:mm")
+    hour_raw, minute_raw = text.split(":", 1)
+    hour = int(hour_raw)
+    minute = int(minute_raw)
+    if hour < 0 or hour > 23 or minute < 0 or minute > 59:
+        raise HTTPException(400, "定时任务时间超出范围")
+    return f"{hour:02d}:{minute:02d}"
+
+
+def _validate_schedule_frequency(frequency: str, weekday: Optional[int]) -> tuple[str, Optional[int]]:
+    value = str(frequency or "").strip().lower()
+    if value not in {"daily", "weekly"}:
+        raise HTTPException(400, "定时任务频次必须是 daily 或 weekly")
+    if value == "weekly":
+        try:
+            day = int(weekday or 0)
+        except Exception:
+            day = 0
+        if day < 1 or day > 7:
+            raise HTTPException(400, "每周定时任务必须设置 weekday=1..7")
+        return value, day
+    return value, None
+
+
+def _task_display_name(adapter_id: str, task_id: str) -> tuple[str, str]:
+    adapter_name = adapter_id
+    task_name = task_id
+    try:
+        adapter_loader.scan_all()
+        manifest = adapter_loader.get_adapter(adapter_id)
+        if manifest:
+            adapter_name = manifest.name or adapter_id
+            task = next((item for item in manifest.tasks if item.id == task_id), None)
+            if task:
+                task_name = task.name or task_id
+    except Exception:
+        logger.debug("failed to resolve task display name", exc_info=True)
+    return adapter_name, task_name
+
+
+def _render_task_schedule_template(template: str, values: dict) -> str:
+    text = str(template or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE)
+    for key, value in (values or {}).items():
+        text = text.replace("{{" + str(key) + "}}", str(value if value is not None else ""))
+    return text
+
+
+def _schedule_next_run_map() -> dict[str, str]:
+    try:
+        return {
+            str(job.get("schedule_uid") or ""): str(job.get("next_run") or "")
+            for job in sched_module.list_jobs()
+            if str(job.get("kind") or "") == "task_schedule" and str(job.get("schedule_uid") or "")
+        }
+    except Exception:
+        return {}
 
 
 class BackendInstanceLock:
@@ -346,6 +507,7 @@ def _build_run_control() -> dict:
         "pause_logged": False,
         "last_progress_exec_no": 0,
         "total_rows": 0,
+        "shared_progress": {},
     }
 
 
@@ -366,7 +528,14 @@ def _str_from_mapping(source: Optional[dict], key: str) -> str:
 
 def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[dict] = None) -> dict:
     payload = dict(payload or {})
-    shared_state = dict(payload.get('shared') or {})
+    incoming_shared = payload.get('shared') if isinstance(payload.get('shared'), dict) else {}
+    if run_control is not None:
+        previous_shared = dict(run_control.get('shared_progress') or {})
+        shared_state = {**previous_shared, **dict(incoming_shared or {})}
+        if incoming_shared:
+            run_control['shared_progress'] = dict(shared_state)
+    else:
+        shared_state = dict(incoming_shared or {})
     total_rows = _int_from_mapping(shared_state, 'total_rows', _int_from_mapping(run_control, 'total_rows') if run_control else 0)
     current_exec_no = _int_from_mapping(shared_state, 'current_exec_no')
     current_row_no = _int_from_mapping(shared_state, 'current_row_no')
@@ -375,6 +544,7 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
     search_total_codes = _int_from_mapping(shared_state, 'search_total_codes')
     search_completed_codes = _int_from_mapping(shared_state, 'search_completed_codes')
     generation_total_jobs = _int_from_mapping(shared_state, 'generation_total_jobs')
+    generation_submitted_jobs = _int_from_mapping(shared_state, 'generation_submitted_jobs')
     generation_completed_jobs = _int_from_mapping(shared_state, 'generation_completed_jobs')
     buyer_id = _str_from_mapping(shared_state, 'current_buyer_id')
     store = _str_from_mapping(shared_state, 'current_store')
@@ -421,6 +591,7 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "search_total_codes": search_total_codes,
         "search_completed_codes": search_completed_codes,
         "generation_total_jobs": generation_total_jobs,
+        "generation_submitted_jobs": generation_submitted_jobs,
         "generation_completed_jobs": generation_completed_jobs,
         "buyer_id": buyer_id,
         "store": store,
@@ -2373,6 +2544,142 @@ def _finalize_semir_cloud_drive_outputs(
     return final_refs
 
 
+def _mop_package_relative_parts(value: str, fallback_name: str = "file") -> list[str]:
+    parts = [
+        _safe_local_name(part, "")
+        for part in str(value or "").replace("\\", "/").split("/")
+        if str(part or "").strip() and str(part or "").strip() not in {".", ".."}
+    ]
+    if parts:
+        return parts
+    return [_safe_local_name(fallback_name, "file")]
+
+
+def _infer_mop_direct_package_root(row: dict, local_path: Path, runtime_dir: Path) -> Optional[Path]:
+    try:
+        if _is_within_directory(local_path, runtime_dir):
+            return None
+    except Exception:
+        return None
+
+    rel_parts = _mop_package_relative_parts(
+        row.get("__mop_package_path") or row.get("本地目录内路径") or row.get("文件名"),
+        row.get("文件名") or local_path.name,
+    )
+    actual_parts = list(local_path.parts)
+    if len(actual_parts) < len(rel_parts):
+        return None
+    if actual_parts[-len(rel_parts):] != rel_parts:
+        return None
+    root = local_path
+    for _part in rel_parts:
+        root = root.parent
+    return root if root.exists() and root.is_dir() else None
+
+
+def _finalize_mop_cloud_folder_download_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
+    final_root = target_root or output_root
+    final_root.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"MOP云盘模拍图包_{timestamp}",
+        f"MOP云盘模拍图包_{timestamp}",
+    )
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("__sheet_name") or "").strip() != "下载明细":
+            continue
+        local_path = Path(str(row.get("__runtime_local_path") or row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    final_refs: list[str] = []
+    package_root: Optional[Path] = None
+    if successful_rows:
+        direct_root_by_key: dict[str, Path] = {}
+        all_rows_are_direct = True
+        for row, local_path in successful_rows:
+            direct_root = _infer_mop_direct_package_root(row, local_path, runtime_dir)
+            if direct_root is None:
+                all_rows_are_direct = False
+                break
+            direct_root_by_key[str(direct_root.resolve(strict=False))] = direct_root
+
+        if all_rows_are_direct and len(direct_root_by_key) == 1:
+            package_root = next(iter(direct_root_by_key.values()))
+            for row, local_path in successful_rows:
+                row["本地文件"] = str(local_path)
+            final_refs.append(str(package_root))
+            log(f"MOP cloud folder direct output ready: {package_root} ({len(successful_rows)} files)")
+        else:
+            package_started_at = time.monotonic()
+            package_root = _ensure_unique_local_dir(final_root / package_base)
+            for row, local_path in successful_rows:
+                rel_parts = _mop_package_relative_parts(
+                    row.get("__mop_package_path") or row.get("本地目录内路径") or row.get("文件名"),
+                    row.get("文件名") or local_path.name,
+                )
+                target = package_root.joinpath(*rel_parts)
+                relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+                row["本地文件"] = str(relocated)
+
+            final_refs.append(str(package_root))
+            log(
+                "MOP cloud folder package prepared: "
+                f"{package_root} ({len(successful_rows)} files, {time.monotonic() - package_started_at:.1f}s)"
+            )
+
+        if _truthy_param(run_params.get("create_zip")):
+            zip_path = _ensure_unique_local_path(final_root / f"{package_root.name}.zip")
+            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for file_path in sorted(package_root.rglob("*")):
+                    if not file_path.is_file():
+                        continue
+                    archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+            final_refs.insert(0, str(zip_path))
+            log(f"MOP cloud folder ZIP created: {zip_path}")
+
+    if target_root:
+        copied_exports = []
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            copied = _copy_file_to_unique_target(source, target_root / source.name)
+            copied_exports.append(str(copied))
+        final_refs.extend(copied_exports)
+    else:
+        final_refs.extend(exported_refs)
+
+    runtime_files_to_cleanup = []
+    for file_path in runtime_files or []:
+        source = Path(str(file_path or "")).expanduser()
+        try:
+            if _is_within_directory(source, runtime_dir):
+                runtime_files_to_cleanup.append(str(source))
+        except Exception:
+            logger.debug("Failed to classify MOP runtime file %s", source, exc_info=True)
+    _cleanup_semir_runtime_artifacts(runtime_files_to_cleanup, None)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+
+    return final_refs
+
+
 def _nested_config_value(source: dict, path: str, default: str = "") -> str:
     current = source or {}
     for part in path.split("."):
@@ -2647,6 +2954,50 @@ def _extract_first_approval_board_url(data_rows: list) -> str:
     return ""
 
 
+def _parse_tmall_approval_board_url(url: str) -> dict:
+    try:
+        parsed = urlparse(str(url or "").strip())
+        parts = [part for part in parsed.path.split("/") if part]
+        batch_id = parts[-1] if parts else ""
+        token = (parse_qs(parsed.query).get("token") or [""])[0]
+        if "tmall-ai-image-approval" not in parsed.path:
+            return {}
+        return {"approval_batch_id": batch_id, "approval_token": token}
+    except Exception:
+        return {}
+
+
+def _task_instance_artifact_kind(path: str) -> str:
+    suffix = Path(str(path or "").split("?", 1)[0]).suffix.lower()
+    if suffix in {".xlsx", ".xls", ".xlsm", ".csv"}:
+        return "excel"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}:
+        return "image"
+    if not suffix:
+        return "directory"
+    return "file"
+
+
+def _sync_task_instance_artifacts(instance_uid: str, output_files: list, run_id: int) -> None:
+    if not instance_uid:
+        return
+    for path in output_files or []:
+        text = str(path or "").strip()
+        if not text:
+            continue
+        try:
+            label = Path(text.split("?", 1)[0]).name or text
+            data_sink.add_task_instance_artifact(
+                instance_uid,
+                kind=_task_instance_artifact_kind(text),
+                label=label,
+                path=text,
+                meta={"run_id": run_id},
+            )
+        except Exception:
+            logger.debug("Failed to sync task instance artifact: %s", text, exc_info=True)
+
+
 def _load_tmall_ai_image_chain_module():
     import importlib.util
     import sys
@@ -2705,6 +3056,8 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         approval_message_template=str((run_params or {}).get("approval_message_template") or "").strip(),
         approval_notify_channel=str((run_params or {}).get("approval_notify_channel") or "dingtalk").strip().lower(),
         approval_base_url=str((run_params or {}).get("approval_base_url") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").strip(),
+        task_instance_uid=str((run_params or {}).get("__task_instance_uid") or (run_params or {}).get("task_instance_uid") or "").strip(),
+        task_run_uid=str((run_params or {}).get("task_run_uid") or (run_params or {}).get("__task_run_id") or (run_params or {}).get("run_id") or (run_params or {}).get("__task_instance_uid") or "").strip(),
     )
     if args.quality not in {"auto", "low", "medium", "high"}:
         args.quality = "auto"
@@ -2727,11 +3080,24 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     )
 
 
-def _tmall_local_export_root(run_params: dict, task_folder: str) -> Path:
+def _tmall_local_export_run_folder_name(run_params: dict) -> str:
+    started_raw = str((run_params or {}).get("__task_started_at") or "").strip()
+    try:
+        started = datetime.fromisoformat(started_raw)
+    except Exception:
+        started = datetime.now()
+    run_id = str((run_params or {}).get("__task_run_id") or (run_params or {}).get("task_run_uid") or "").strip()
+    suffix = f"_run{run_id}" if run_id else ""
+    return _safe_local_name(f"运行_{started.strftime('%Y%m%d-%H%M%S')}{suffix}", "运行结果")
+
+
+def _tmall_local_export_root(run_params: dict, task_folder: str, *, run_scoped: bool = False) -> Path:
     output_dir = str((run_params or {}).get("output_dir") or "").strip()
     target_root = _expand_user_configured_local_path(output_dir) if output_dir else (
         Path.home() / "Downloads" / "抓虾导出" / "天猫运营助手" / _safe_local_name(task_folder, "巴拉-AI测图")
     )
+    if run_scoped:
+        target_root = _ensure_unique_local_dir(target_root / _tmall_local_export_run_folder_name(run_params))
     target_root.mkdir(parents=True, exist_ok=True)
     return target_root
 
@@ -2870,7 +3236,7 @@ def _finalize_tmall_ai_image_test_chain_outputs(
     runtime_artifact_dir: str,
     log,
 ) -> list[str]:
-    target_root = _tmall_local_export_root(run_params, "巴拉-AI测图全链路")
+    target_root = _tmall_local_export_root(run_params, "巴拉-AI测图全链路", run_scoped=True)
     fallback_refs = [str(path) for path in [*(runtime_files or []), *(exported_files or [])] if str(path or "").strip()]
 
     table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
@@ -2895,6 +3261,118 @@ def _finalize_tmall_material_test_data_export_outputs(
     return table_refs or fallback_refs
 
 
+def _tmall_packaging_style_folder(row: dict) -> str:
+    return _safe_local_name(
+        row.get("款号") or row.get("输入编码") or row.get("style_code") or "未填款号",
+        "未填款号",
+    )
+
+
+def _tmall_packaging_usage_folder(row: dict) -> str:
+    category = str(row.get("__category") or "").strip()
+    usage = str(row.get("图片用途") or "").strip()
+    filename = str(row.get("__package_filename") or row.get("文件名") or "").strip()
+    haystack = f"{category} {usage} {filename}"
+    if category in {"main_1x1", "micro_1x1"} or "1:1" in usage or "1比1" in filename:
+        return "01_1比1主图"
+    if category in {"main_3x4", "micro_3x4"} or "3:4" in usage or "3比4" in filename:
+        return "02_3比4主图"
+    if category == "vertical" or "商品竖图" in haystack or "竖图" in haystack:
+        return "03_商品竖图"
+    if category == "pc_detail" or any(token in haystack for token in ("PC详情", "商详", "详情")):
+        return "04_商详页"
+    return "99_未分类"
+
+
+def _finalize_tmall_packaging_upload_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"天猫包装图片包_{timestamp}",
+        f"天猫包装图片包_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows: list[tuple[dict, Path]] = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    zip_path = None
+    if successful_rows:
+        seen_assets: set[tuple[str, str, str]] = set()
+        for row, local_path in successful_rows:
+            style_folder = _tmall_packaging_style_folder(row)
+            usage_folder = _tmall_packaging_usage_folder(row)
+            clean_filename = _safe_local_name(
+                row.get("__package_filename") or row.get("文件名") or local_path.name,
+                local_path.name,
+            )
+            source_key = str(row.get("云盘路径") or row.get("原文件名") or clean_filename)
+            dedupe_key = (style_folder, usage_folder, source_key)
+            if dedupe_key in seen_assets:
+                continue
+            seen_assets.add(dedupe_key)
+            target = package_root / style_folder / usage_folder / clean_filename
+            _copy_file_to_unique_target(local_path, target)
+
+        zip_output_root = target_root or output_root
+        zip_output_root.mkdir(parents=True, exist_ok=True)
+        zip_path = _ensure_unique_local_path(zip_output_root / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in package_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        if log:
+            log(f"天猫包装图片包已整理：{zip_path} ({len(seen_assets)} files)")
+
+    final_refs = [*exported_refs]
+    if zip_path:
+        final_refs.insert(0, str(zip_path))
+
+    if target_root:
+        external_refs: list[str] = []
+        if successful_rows and package_root.exists():
+            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+            shutil.copytree(package_root, external_dir)
+            if log:
+                log(f"天猫包装图片包已复制到导出目录：{external_dir}")
+            if zip_path and zip_path.exists() and _is_within_directory(zip_path, target_root):
+                external_refs.append(str(zip_path))
+            elif zip_path and zip_path.exists():
+                external_refs.append(str(_copy_file_to_unique_target(zip_path, target_root / zip_path.name)))
+
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            if _is_within_directory(source, target_root):
+                external_refs.append(str(source))
+            else:
+                external_refs.append(str(_copy_file_to_unique_target(source, target_root / source.name)))
+
+        if external_refs:
+            final_refs = external_refs
+
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+    return final_refs
+
+
 def _finalize_tmall_ops_assistant_outputs(
     task_id: str,
     data_rows: list,
@@ -2905,7 +3383,7 @@ def _finalize_tmall_ops_assistant_outputs(
     log,
 ) -> list[str]:
     if task_id == "tmall_packaging_upload":
-        return _finalize_semir_tmall_material_match_buy_outputs(
+        return _finalize_tmall_packaging_upload_outputs(
             data_rows=data_rows,
             runtime_files=runtime_files,
             exported_files=exported_files,
@@ -3234,20 +3712,34 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     from core.js_runner import JSRunner, RunAbortedError
     from core.models import OutputType
 
-    jid = f"{adapter_id}::{task_id}"
+    instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
+    schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
+    jid = _run_jid(adapter_id, task_id, instance_uid)
+    live_jids = _run_jids(adapter_id, task_id, instance_uid)
     # 保留历史日志，新一轮运行用分隔线追加（不覆盖）
     from datetime import datetime as _dt
     _sep = f"─── 新运行 {_dt.now().strftime('%m-%d %H:%M:%S')} ───────────────────────"
-    if jid not in _run_logs:
-        _run_logs[jid] = []
-    else:
-        _run_logs[jid].append('')
-        _run_logs[jid].append(_sep)
-    _run_status[jid] = {'status': 'running', 'run_id': None, 'records': 0}
+    for job_id in live_jids:
+        if job_id not in _run_logs:
+            _run_logs[job_id] = []
+        else:
+            _run_logs[job_id].append('')
+            _run_logs[job_id].append(_sep)
+    _set_live_status(live_jids, {
+        'status': 'running',
+        'run_id': None,
+        'adapter_id': adapter_id,
+        'task_id': task_id,
+        'instance_uid': instance_uid,
+        'records': 0,
+        'last_seen_at': datetime.now().isoformat(),
+        'current_row': 0,
+        'phase': '',
+    })
 
     def log(msg: str):
         logger.info(msg)
-        _run_logs[jid].append(msg)
+        _append_run_log(live_jids, msg)
 
     def build_progress(payload: Optional[dict] = None) -> dict:
         return _build_live_progress(payload, run_control=run_control)
@@ -3315,9 +3807,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         records = int(payload.get('records') or 0)
         progress = build_progress(payload)
+        current_row = int(progress['row_no'] or progress['current'] or 0)
+        last_seen_at = datetime.now().isoformat()
         base_status = {
             'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
             'records': records,
+            'last_seen_at': last_seen_at,
+            'current_row': current_row,
             'current': progress['current'],
             'total': progress['total'],
             'row_no': progress['row_no'],
@@ -3326,6 +3825,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'search_total_codes': progress['search_total_codes'],
             'search_completed_codes': progress['search_completed_codes'],
             'generation_total_jobs': progress['generation_total_jobs'],
+            'generation_submitted_jobs': progress['generation_submitted_jobs'],
             'generation_completed_jobs': progress['generation_completed_jobs'],
             'buyer_id': progress['buyer_id'],
             'store': progress['store'],
@@ -3378,6 +3878,16 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'doudian_order_window_completed': progress['doudian_order_window_completed'],
             'doudian_mixed_rows': progress['doudian_mixed_rows'],
         }
+        if run_id:
+            try:
+                data_sink.heartbeat_run(
+                    run_id,
+                    phase=progress['phase'],
+                    current_row=current_row,
+                    records_count=records,
+                )
+            except Exception as heartbeat_error:
+                logger.debug("task heartbeat update failed for %s: %s", jid, heartbeat_error)
 
         # 通用批处理进度：只要行号前进，就打印一次，不绑定具体 adapter / phase。
         if (
@@ -3423,7 +3933,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raise RunAbortedError(str(run_control.get('stop_reason') or '任务已停止'))
 
         if run_control.get('pause_requested'):
-            _run_status[jid] = {'status': 'paused', **base_status}
+            _set_live_status(live_jids, {'status': 'paused', **base_status})
             if not run_control.get('pause_logged'):
                 log("[control] 任务已暂停，等待继续…")
                 run_control['pause_logged'] = True
@@ -3438,7 +3948,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 log("[control] 任务已继续")
                 run_control['pause_logged'] = False
 
-        _run_status[jid] = {'status': 'running', **base_status}
+        _set_live_status(live_jids, {'status': 'running', **base_status})
 
     # 任务执行前重扫一次适配包，确保磁盘上的 manifest 改动立即生效
     adapter_loader.scan_all()
@@ -3450,8 +3960,26 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     if not task:
         raise ValueError(f"Task not found: {task_id}")
 
+    run_params = dict(params or {})
+    run_started_at = datetime.now().isoformat()
     run_id = data_sink.begin_run(adapter_id, task_id)
-    _run_status[jid]['run_id'] = run_id
+    run_params["__task_run_id"] = run_id
+    run_params["__task_started_at"] = run_started_at
+    try:
+        data_sink.heartbeat_run(run_id, phase="starting", current_row=0, records_count=0)
+    except Exception as heartbeat_error:
+        logger.debug("task heartbeat update failed for %s: %s", jid, heartbeat_error)
+    if instance_uid:
+        data_sink.link_task_instance_run(instance_uid, run_id, purpose="main")
+    _merge_live_status(live_jids, {
+        'run_id': run_id,
+        'adapter_id': adapter_id,
+        'task_id': task_id,
+        'instance_uid': instance_uid,
+        'last_seen_at': datetime.now().isoformat(),
+        'current_row': 0,
+        'phase': 'starting',
+    })
     runner = None
     data = []
     output_files = []
@@ -3460,7 +3988,6 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
 
-        run_params = dict(params or {})
         per_item_review_urls = _resolve_tmall_buyer_review_item_urls(run_params) if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") else []
         runtime_options = runtime_options or {}
         task_param_ids = {p.id for p in task.params}
@@ -3789,6 +4316,22 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
+            if adapter_id == 'mop-ops-assistant' and task_id == 'cloud_folder_download':
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_mop_cloud_folder_download_outputs,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] MOP 云盘下载后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
             if adapter_id == 'tmall-ops-assistant' and task_id in {
                 'tmall_packaging_upload',
                 'tmall_ai_image_test_chain',
@@ -3864,7 +4407,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         logged_in = bool((auth_result.data[0] or {}).get('logged_in'))
 
                 if not logged_in:
-                    login_url = (m.auth.login_url or target_entry_url)
+                    login_url = (
+                        target_entry_url
+                        if adapter_id == 'mop-ops-assistant' and target_entry_url.startswith('https://fmp.semirapp.com/')
+                        else (m.auth.login_url or target_entry_url)
+                    )
                     if mode == 'new':
                         await wait_for_control()
                         log(f"检测到未登录，跳转登录页：{login_url}")
@@ -3980,10 +4527,58 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         if approval_board_url:
             output_files = merge_output_file_refs([approval_board_url], output_files)
         data_sink.finish_run(run_id, len(data), output_files)
-        done_status = {'status': 'done', 'run_id': run_id, 'records': len(data)}
+        if instance_uid:
+            _sync_task_instance_artifacts(instance_uid, output_files, run_id)
+        done_status = {
+            'status': 'done',
+            'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
+            'records': len(data),
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': len(data),
+            'phase': 'done',
+        }
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
-        _run_status[jid] = done_status
+        _set_live_status(live_jids, done_status)
+        if instance_uid:
+            approval_summary = _parse_tmall_approval_board_url(approval_board_url)
+            instance_summary = {
+                "records": len(data),
+                "output_files": output_files,
+                "approval_board_url": approval_board_url,
+                "run_id": run_id,
+                **approval_summary,
+            }
+            if approval_board_url:
+                data_sink.update_task_instance(
+                    instance_uid,
+                    status="waiting_approval",
+                    current_step="approval",
+                    summary=instance_summary,
+                )
+            else:
+                data_sink.update_task_instance(
+                    instance_uid,
+                    status="completed",
+                    current_step="create",
+                    summary=instance_summary,
+                )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="completed",
+                records=len(data),
+                output_files=output_files,
+                error="",
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         log(f"[{adapter_id}/{task_id}] Done. {len(data)} records.")
 
     except RunAbortedError as e:
@@ -4011,7 +4606,39 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
 
         data_sink.stop_run(run_id, len(data), output_files, err)
-        _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
+        stopped_status = {
+            'status': 'stopped',
+            'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
+            'records': len(data),
+            'error': err,
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': len(data),
+            'phase': 'stopped',
+        }
+        _set_live_status(live_jids, stopped_status)
+        if instance_uid:
+            _sync_task_instance_artifacts(instance_uid, output_files, run_id)
+            data_sink.update_task_instance(
+                instance_uid,
+                status="stopped",
+                summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
+            )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="stopped",
+                records=len(data),
+                output_files=output_files,
+                error=err,
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
 
     except asyncio.CancelledError:
@@ -4036,7 +4663,39 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
         data_sink.stop_run(run_id, len(data), output_files, err)
-        _run_status[jid] = {'status': 'stopped', 'run_id': run_id, 'records': len(data), 'error': err}
+        stopped_status = {
+            'status': 'stopped',
+            'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
+            'records': len(data),
+            'error': err,
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': len(data),
+            'phase': 'stopped',
+        }
+        _set_live_status(live_jids, stopped_status)
+        if instance_uid:
+            _sync_task_instance_artifacts(instance_uid, output_files, run_id)
+            data_sink.update_task_instance(
+                instance_uid,
+                status="stopped",
+                summary={"records": len(data), "output_files": output_files, "error": err, "run_id": run_id},
+            )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="stopped",
+                records=len(data),
+                output_files=output_files,
+                error=err,
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         log(f"[{adapter_id}/{task_id}] Stopped. {len(data)} records.")
         raise
 
@@ -4044,7 +4703,38 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         err = str(e)
         log(f"[{adapter_id}/{task_id}] ERROR: {err}")
         data_sink.fail_run(run_id, err)
-        _run_status[jid] = {'status': 'error', 'run_id': run_id, 'records': 0, 'error': err}
+        error_status = {
+            'status': 'error',
+            'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
+            'records': 0,
+            'error': err,
+            'last_seen_at': datetime.now().isoformat(),
+            'current_row': 0,
+            'phase': 'error',
+        }
+        _set_live_status(live_jids, error_status)
+        if instance_uid:
+            data_sink.update_task_instance(
+                instance_uid,
+                status="failed",
+                summary={"records": 0, "error": err, "run_id": run_id},
+            )
+        if schedule_uid:
+            _notify_task_schedule_result(
+                schedule_uid=schedule_uid,
+                instance_uid=instance_uid,
+                run_id=run_id,
+                status="failed",
+                records=0,
+                output_files=[],
+                error=err,
+                started_at=run_started_at,
+                finished_at=datetime.now().isoformat(),
+                log=log,
+            )
         raise
     finally:
         if run_control is not None:
@@ -4099,6 +4789,12 @@ async def lifespan(app: FastAPI):
                     m = adapter_loader.get_adapter(item['id'])
                     if m:
                         sched_module.register_adapter(m, _run_scheduled_task)
+            try:
+                persisted_schedules = data_sink.list_task_schedules(enabled=True)
+            except Exception:
+                logger.exception("failed to load persisted task schedules; continuing without user schedules")
+                persisted_schedules = []
+            sched_module.register_task_schedules(persisted_schedules, _run_task_schedule)
 
             sched_module.start()
         except Exception:
@@ -4239,13 +4935,93 @@ def _tmall_approval_asset_path(batch: dict, asset_id: str) -> Path:
     return path
 
 
+def _tmall_approval_allowed_reference_paths(batch: dict) -> set[str]:
+    allowed: set[str] = set()
+    module = _load_tmall_ai_image_chain_module()
+    parse_list = getattr(module, "parse_list", None)
+
+    def add_path(value) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        try:
+            allowed.add(str(Path(text).expanduser().resolve()))
+        except Exception:
+            allowed.add(str(Path(text).expanduser()))
+
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        add_path(item.get("origin_path"))
+        add_path(item.get("detail_reference_path"))
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            add_path(asset.get("path"))
+            refs = asset.get("reference_paths")
+            if callable(parse_list):
+                refs = parse_list(refs)
+            elif isinstance(refs, str):
+                refs = [part.strip() for part in re.split(r"[\n\r,，、；;]+", refs) if part.strip()]
+            for ref in refs or []:
+                add_path(ref)
+            generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), dict) else {}
+            generation_refs = generation_row.get("__1xm_reference_paths") or generation_row.get("参考图文件")
+            if callable(parse_list):
+                generation_refs = parse_list(generation_refs)
+            elif isinstance(generation_refs, str):
+                generation_refs = [part.strip() for part in re.split(r"[\n\r,，、；;]+", generation_refs) if part.strip()]
+            for ref in generation_refs or []:
+                add_path(ref)
+    for ref in batch.get("imported_reference_paths") or []:
+        add_path(ref)
+    return allowed
+
+
+def _resolve_tmall_approval_path(value: str) -> str:
+    path = Path(str(value or "").strip()).expanduser()
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def _safe_tmall_approval_paths(batch: dict, paths: list[str], *, field_label: str = "图片") -> list[str]:
+    allowed_refs = _tmall_approval_allowed_reference_paths(batch)
+    safe_paths: list[str] = []
+    rejected: list[str] = []
+    for raw in paths or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if _resolve_tmall_approval_path(text) in allowed_refs:
+            safe_paths.append(text)
+        else:
+            rejected.append(Path(text).name or text)
+    if rejected:
+        raise HTTPException(403, f"{field_label}未登记在当前审批批次：{', '.join(rejected[:3])}")
+    return safe_paths
+
+
 class TmallApprovalDecisionsRequest(BaseModel):
     decisions: dict = {}
+
+
+class TmallApprovalReferenceImportRequest(BaseModel):
+    paths: List[str] = []
 
 
 class TmallApprovalRegenerateRequest(BaseModel):
     asset_id: str
     prompt: Optional[str] = ""
+    reference_paths: Optional[List[str]] = None
+
+
+class TmallApprovalGenerateRequest(BaseModel):
+    item_id: str = ""
+    style_code: str = ""
+    prompt: str = ""
+    main_image_path: str = ""
     reference_paths: Optional[List[str]] = None
 
 
@@ -4268,13 +5044,78 @@ def get_tmall_ai_image_approval_image(batch_id: str, asset_id: str, token: str =
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
+@app.get("/tmall-ai-image-approval/api/{batch_id}/reference-image")
+def get_tmall_ai_image_approval_reference_image(batch_id: str, path: str, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    image_path = Path(str(path or "")).expanduser()
+    try:
+        resolved = str(image_path.resolve())
+    except Exception:
+        resolved = str(image_path)
+    if resolved not in _tmall_approval_allowed_reference_paths(batch):
+        raise HTTPException(403, "Reference image is not registered in this approval batch")
+    if not image_path.is_file():
+        raise HTTPException(404, "Reference image not found")
+    media_type = "image/jpeg"
+    guessed, _encoding = mimetypes.guess_type(str(image_path))
+    if guessed:
+        media_type = guessed
+    return FileResponse(image_path, media_type=media_type, filename=image_path.name)
+
+
 @app.post("/tmall-ai-image-approval/api/{batch_id}/decisions")
 def save_tmall_ai_image_approval_decisions(batch_id: str, req: TmallApprovalDecisionsRequest, token: str = ""):
     batch = _load_tmall_approval_batch(batch_id)
     _validate_tmall_approval_token(batch, token)
     module = _load_tmall_ai_image_chain_module()
-    batch = module.update_approval_decisions(batch, req.decisions or {})
+    allowed_refs = _tmall_approval_allowed_reference_paths(batch)
+    decisions = dict(req.decisions or {})
+    for patch in decisions.values():
+        if not isinstance(patch, dict) or "reference_paths" not in patch:
+            continue
+        safe_refs = []
+        for ref in getattr(module, "parse_list")(patch.get("reference_paths")):
+            try:
+                resolved = str(Path(str(ref or "")).expanduser().resolve())
+            except Exception:
+                resolved = str(Path(str(ref or "")).expanduser())
+            if resolved in allowed_refs:
+                safe_refs.append(ref)
+        patch["reference_paths"] = safe_refs
+    batch = module.update_approval_decisions(batch, decisions)
     return {"ok": True, "status": batch.get("status"), "updated_at": batch.get("updated_at")}
+
+
+@app.post("/tmall-ai-image-approval-local/api/{batch_id}/reference-files")
+def import_tmall_ai_image_approval_reference_files(batch_id: str, req: TmallApprovalReferenceImportRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    artifact_dir_raw = str(batch.get("artifact_dir") or "").strip()
+    if artifact_dir_raw:
+        artifact_dir = Path(artifact_dir_raw).expanduser()
+    else:
+        artifact_dir = Path(str(batch.get("json_path") or ".")).expanduser().parent
+    target_dir = artifact_dir / "reference-imports"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    imported: list[str] = []
+    allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    for raw in req.paths or []:
+        src = Path(str(raw or "")).expanduser()
+        if not src.is_file() or src.suffix.lower() not in allowed_suffixes:
+            continue
+        stem = re.sub(r"[^A-Za-z0-9._~-]+", "-", src.stem).strip("-") or "reference"
+        target = target_dir / f"{stem}-{secrets.token_hex(3)}{src.suffix.lower()}"
+        shutil.copy2(src, target)
+        imported.append(str(target))
+
+    existing = [str(item or "").strip() for item in (batch.get("imported_reference_paths") or []) if str(item or "").strip()]
+    batch["imported_reference_paths"] = list(dict.fromkeys([*existing, *imported]))
+    batch["updated_at"] = datetime.now().isoformat()
+    module.save_approval_batch(batch)
+    return {"ok": True, "paths": imported}
 
 
 @app.post("/tmall-ai-image-approval/api/{batch_id}/regenerate")
@@ -4283,14 +5124,51 @@ async def regenerate_tmall_ai_image_approval_asset(batch_id: str, req: TmallAppr
     _validate_tmall_approval_token(batch, token)
     module = _load_tmall_ai_image_chain_module()
     try:
+        safe_reference_paths = _safe_tmall_approval_paths(
+            batch,
+            list(req.reference_paths or []),
+            field_label="参考图",
+        ) if req.reference_paths is not None else []
         asset = await asyncio.to_thread(
             module.regenerate_approval_asset,
             batch,
             req.asset_id,
             prompt=req.prompt or "",
-            reference_paths=req.reference_paths or [],
+            reference_paths=safe_reference_paths,
         )
         return {"ok": True, "asset": asset}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/generate")
+async def generate_tmall_ai_image_approval_asset(batch_id: str, req: TmallApprovalGenerateRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    main_image_path = str(req.main_image_path or "").strip()
+    if main_image_path:
+        main_image_path = (_safe_tmall_approval_paths(batch, [main_image_path], field_label="主图") or [""])[0]
+    safe_reference_paths = _safe_tmall_approval_paths(
+        batch,
+        list(req.reference_paths or []),
+        field_label="参考图",
+    )
+    try:
+        asset = await asyncio.to_thread(
+            module.generate_approval_asset_for_item,
+            batch,
+            item_id=req.item_id or "",
+            style_code=req.style_code or "",
+            prompt=req.prompt or "",
+            main_image_path=main_image_path,
+            reference_paths=safe_reference_paths,
+        )
+        return {"ok": True, "asset": asset}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -4301,9 +5179,39 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
     _validate_tmall_approval_token(batch, token)
     module = _load_tmall_ai_image_chain_module()
     try:
-        return await module.upload_approved_tmall_batch(batch, log=logger.info)
+        result = await module.upload_approved_tmall_batch(batch, log=logger.info)
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
+    instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
+    if instance:
+        failed = int(result.get("failed") or 0)
+        attempted = int(result.get("attempted") or 0)
+        status = "completed" if attempted > 0 and failed == 0 else "partial_failed"
+        summary = _parse_json_object(instance.get("summary_json"))
+        summary.update({
+            "approval_batch_id": batch_id,
+            "submit_status": result.get("status"),
+            "attempted": attempted,
+            "succeeded": int(result.get("succeeded") or 0),
+            "failed": failed,
+            "submitted": int(result.get("submitted") or 0),
+            "result_path": result.get("result_path") or "",
+        })
+        data_sink.update_task_instance(
+            instance["instance_uid"],
+            status=status,
+            current_step="create",
+            summary=summary,
+        )
+        if result.get("result_path"):
+            data_sink.add_task_instance_artifact(
+                instance["instance_uid"],
+                kind="file",
+                label=Path(str(result.get("result_path"))).name,
+                path=str(result.get("result_path")),
+                meta={"approval_batch_id": batch_id},
+            )
+    return result
 
 
 @app.get("/tmall-ai-image-approval/{batch_id}")
@@ -4321,7 +5229,13 @@ def get_tmall_ai_image_approval_board(batch_id: str, token: str = ""):
 # ─── Health ───
 
 @app.get("/health")
-def health():
+def health(probe: bool = False):
+    if probe:
+        return {
+            "status": "ok",
+            "runtime": _backend_runtime_info(),
+        }
+
     warnings = []
     try:
         chrome_ok = CDPBridge().is_available(timeout=0.2)
@@ -4466,7 +5380,11 @@ def list_tasks():
 @app.get("/tasks/active")
 def active_tasks():
     tasks = []
-    for jid, live in sorted(_run_status.items()):
+    seen_controls = set()
+    for jid, live in sorted(
+        _run_status.items(),
+        key=lambda item: (str(item[0]).startswith("instance::"), str(item[0])),
+    ):
         live_snapshot = dict(live or {})
         if live_snapshot.get("status") not in ACTIVE_LIVE_STATUSES:
             continue
@@ -4475,15 +5393,28 @@ def active_tasks():
         has_live_task = bool(task and not task.done())
         if not has_live_task and not _task_lock(jid).locked():
             continue
-        adapter_id, task_id = jid.split("::", 1) if "::" in jid else (jid, "")
+        if control:
+            control_key = id(control)
+            if control_key in seen_controls:
+                continue
+            seen_controls.add(control_key)
+        adapter_id = str(live_snapshot.get("adapter_id") or "")
+        task_id = str(live_snapshot.get("task_id") or "")
+        if not adapter_id and "::" in jid:
+            adapter_id, task_id = jid.split("::", 1)
+        elif not adapter_id:
+            adapter_id = jid
         tasks.append({
             "jid": jid,
             "adapter_id": adapter_id,
             "task_id": task_id,
+            "instance_uid": live_snapshot.get("instance_uid") or "",
             "status": live_snapshot.get("status"),
             "run_id": live_snapshot.get("run_id"),
             "records": int(live_snapshot.get("records") or 0),
             "phase": live_snapshot.get("phase"),
+            "last_seen_at": live_snapshot.get("last_seen_at"),
+            "current_row": int(live_snapshot.get("current_row") or live_snapshot.get("row_no") or 0),
         })
     return {"active": bool(tasks), "tasks": tasks}
 
@@ -4493,9 +5424,371 @@ class RunTaskRequest(BaseModel):
     current_tab_id: Optional[str] = None
 
 
+class TaskInstanceCreateRequest(BaseModel):
+    adapter_id: str
+    task_id: str
+    title: str
+    params: dict = {}
+
+
+class TaskInstancePatchRequest(BaseModel):
+    title: Optional[str] = None
+    status: Optional[str] = None
+    current_step: Optional[str] = None
+    params: Optional[dict] = None
+    summary: Optional[dict] = None
+    archived: Optional[bool] = None
+
+
+class TaskScheduleCreateRequest(BaseModel):
+    adapter_id: str = TMALL_OPS_ADAPTER_ID
+    task_id: str = TMALL_MATERIAL_EXPORT_TASK_ID
+    title: str
+    frequency: str
+    time_of_day: str
+    weekday: Optional[int] = None
+    params: Optional[dict] = None
+    notify_channel: str = "dingtalk"
+    notify_template: str = DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE
+    enabled: bool = True
+
+
+class TaskSchedulePatchRequest(BaseModel):
+    title: Optional[str] = None
+    enabled: Optional[bool] = None
+    frequency: Optional[str] = None
+    time_of_day: Optional[str] = None
+    weekday: Optional[int] = None
+    params: Optional[dict] = None
+    notify_channel: Optional[str] = None
+    notify_template: Optional[str] = None
+
+
 class ProbeTaskParamsRequest(BaseModel):
     params: Optional[dict] = None
     current_tab_id: Optional[str] = None
+
+
+def _parse_json_object(value) -> dict:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _serialize_task_instance(row: dict) -> dict:
+    data = dict(row or {})
+    data["params"] = _parse_json_object(data.get("params_json"))
+    data["summary"] = _parse_json_object(data.get("summary_json"))
+    return data
+
+
+def _serialize_task_instance_detail(detail: dict) -> dict:
+    data = _serialize_task_instance(detail)
+    data["runs"] = list((detail or {}).get("runs") or [])
+    data["artifacts"] = list((detail or {}).get("artifacts") or [])
+    data["events"] = list((detail or {}).get("events") or [])
+    return data
+
+
+def _serialize_task_schedule(row: dict, next_runs: Optional[dict[str, str]] = None) -> dict:
+    data = dict(row or {})
+    data["params"] = _parse_json_object(data.get("params_json"))
+    data["enabled"] = int(data.get("enabled") or 0)
+    data["archived"] = int(data.get("archived") or 0)
+    next_runs = next_runs if next_runs is not None else _schedule_next_run_map()
+    data["next_run"] = next_runs.get(str(data.get("schedule_uid") or ""), "")
+    return data
+
+
+def _model_patch(req: BaseModel) -> dict:
+    if hasattr(req, "model_dump"):
+        return req.model_dump(exclude_unset=True)
+    return req.dict(exclude_unset=True)
+
+
+def _normalize_schedule_params(adapter_id: str, task_id: str, params: Optional[dict]) -> dict:
+    if adapter_id == TMALL_OPS_ADAPTER_ID and task_id == TMALL_MATERIAL_EXPORT_TASK_ID:
+        return _default_tmall_material_export_params(params or {})
+    return dict(params or {})
+
+
+def _normalize_task_schedule_create(req: TaskScheduleCreateRequest) -> dict:
+    adapter_id = str(req.adapter_id or TMALL_OPS_ADAPTER_ID).strip()
+    task_id = str(req.task_id or TMALL_MATERIAL_EXPORT_TASK_ID).strip()
+    frequency, weekday = _validate_schedule_frequency(req.frequency, req.weekday)
+    time_of_day = _validate_schedule_time(req.time_of_day)
+    return {
+        "adapter_id": adapter_id,
+        "task_id": task_id,
+        "title": str(req.title or "").strip() or "巴拉-AI测图数据抓取导出定时任务",
+        "frequency": frequency,
+        "time_of_day": time_of_day,
+        "weekday": weekday,
+        "params": _normalize_schedule_params(adapter_id, task_id, req.params),
+        "notify_channel": str(req.notify_channel or "dingtalk").strip() or "dingtalk",
+        "notify_template": str(req.notify_template or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE),
+        "enabled": bool(req.enabled),
+    }
+
+
+def _normalize_task_schedule_patch(current: dict, patch: dict) -> dict:
+    merged_frequency = patch.get("frequency", current.get("frequency"))
+    merged_weekday = patch.get("weekday", current.get("weekday"))
+    if "time_of_day" in patch:
+        patch["time_of_day"] = _validate_schedule_time(patch.get("time_of_day"))
+    if "frequency" in patch or "weekday" in patch:
+        frequency, weekday = _validate_schedule_frequency(merged_frequency, merged_weekday)
+        patch["frequency"] = frequency
+        patch["weekday"] = weekday
+    if "params" in patch:
+        patch["params"] = _normalize_schedule_params(
+            str(current.get("adapter_id") or ""),
+            str(current.get("task_id") or ""),
+            patch.get("params"),
+        )
+    return patch
+
+
+def _refresh_task_schedule_registration(schedule: dict) -> None:
+    sched_module.register_task_schedule(schedule, _run_task_schedule)
+
+
+def _create_instance_for_task_schedule(schedule_uid: str) -> dict:
+    schedule = data_sink.get_task_schedule_detail(schedule_uid)
+    if not schedule or int(schedule.get("archived") or 0) == 1:
+        raise HTTPException(404, "Task schedule not found")
+    if int(schedule.get("enabled") or 0) != 1:
+        raise HTTPException(409, "定时任务已停用，无法运行")
+
+    params = _normalize_schedule_params(
+        str(schedule.get("adapter_id") or ""),
+        str(schedule.get("task_id") or ""),
+        schedule.get("params") or {},
+    )
+    params["__task_schedule_uid"] = schedule["schedule_uid"]
+    title = f"{schedule.get('title') or '定时任务'} {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    instance = data_sink.create_task_instance(
+        str(schedule.get("adapter_id") or ""),
+        str(schedule.get("task_id") or ""),
+        title,
+        params,
+    )
+    instance_uid = str(instance.get("instance_uid") or "")
+    params["__task_instance_uid"] = instance_uid
+    data_sink.update_task_instance(instance_uid, status="running", current_step="config", params=params)
+    data_sink.record_task_schedule_run(
+        schedule["schedule_uid"],
+        instance_uid=instance_uid,
+        status="queued",
+        error="",
+    )
+    return {**schedule, "instance_uid": instance_uid, "run_params": params}
+
+
+def _notify_task_schedule_result(
+    schedule_uid: str,
+    instance_uid: str,
+    run_id: Optional[int],
+    status: str,
+    records: int,
+    output_files: list,
+    error: str = "",
+    started_at: str = "",
+    finished_at: str = "",
+    log=None,
+) -> None:
+    schedule = data_sink.get_task_schedule_detail(schedule_uid)
+    if not schedule:
+        return
+    data_sink.record_task_schedule_run(
+        schedule_uid,
+        run_id=run_id,
+        instance_uid=instance_uid,
+        status=status,
+        error=error,
+    )
+    channel = str(schedule.get("notify_channel") or "dingtalk").strip()
+    if not channel or channel == "none":
+        return
+
+    adapter_name, task_name = _task_display_name(str(schedule.get("adapter_id") or ""), str(schedule.get("task_id") or ""))
+    output_text = "\n".join(str(item) for item in (output_files or []) if str(item or "").strip()) or "无"
+    export_dir = str((schedule.get("params") or {}).get("output_dir") or "")
+    message = _render_task_schedule_template(schedule.get("notify_template") or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE, {
+        "schedule_title": schedule.get("title") or "",
+        "task_name": task_name,
+        "status": status,
+        "records": records,
+        "run_id": run_id or "",
+        "instance_uid": instance_uid,
+        "output_files": output_text,
+        "export_dir": export_dir,
+        "started_at": started_at,
+        "finished_at": finished_at or datetime.now().isoformat(),
+        "error": error or "",
+    })
+    try:
+        notifier.send(
+            channel=channel,
+            title=f"{schedule.get('title') or task_name} - {status}",
+            records=records,
+            adapter_name=adapter_name,
+            task_name=task_name,
+            sample_rows=None,
+            error=error or None,
+            message=message,
+        )
+    except Exception as exc:
+        warning = f"定时任务通知发送失败：{exc}"
+        if log:
+            log(f"[warn] {warning}")
+        if instance_uid:
+            data_sink.add_task_instance_event(
+                instance_uid,
+                "notify_failed",
+                warning,
+                {"schedule_uid": schedule_uid, "channel": channel},
+            )
+
+
+@app.get("/task-instances")
+def list_task_instances_endpoint(
+    status_group: str = "",
+    adapter_id: str = "",
+    task_id: str = "",
+    keyword: str = "",
+    limit: int = 100,
+):
+    items = data_sink.list_task_instances(
+        status_group=status_group,
+        adapter_id=adapter_id,
+        task_id=task_id,
+        keyword=keyword,
+        limit=limit,
+    )
+    return {"items": [_serialize_task_instance(row) for row in items]}
+
+
+@app.post("/task-instances")
+def create_task_instance_endpoint(req: TaskInstanceCreateRequest):
+    row = data_sink.create_task_instance(req.adapter_id, req.task_id, req.title, req.params)
+    return _serialize_task_instance(row)
+
+
+@app.get("/task-instances/{instance_uid}")
+def get_task_instance_endpoint(instance_uid: str):
+    detail = data_sink.get_task_instance_detail(instance_uid)
+    if not detail:
+        raise HTTPException(404, "Task instance not found")
+    return _serialize_task_instance_detail(detail)
+
+
+@app.patch("/task-instances/{instance_uid}")
+def patch_task_instance_endpoint(instance_uid: str, req: TaskInstancePatchRequest):
+    patch = _model_patch(req)
+    if patch.get("archived") is True:
+        patch["status"] = "archived"
+    row = data_sink.update_task_instance(instance_uid, **patch)
+    if not row:
+        raise HTTPException(404, "Task instance not found")
+    return _serialize_task_instance(row)
+
+
+@app.get("/task-schedules")
+def list_task_schedules_endpoint(
+    adapter_id: str = "",
+    task_id: str = "",
+    enabled: Optional[bool] = None,
+    keyword: str = "",
+    include_archived: bool = False,
+    limit: int = 100,
+):
+    items = data_sink.list_task_schedules(
+        adapter_id=adapter_id,
+        task_id=task_id,
+        enabled=enabled,
+        keyword=keyword,
+        include_archived=include_archived,
+        limit=limit,
+    )
+    next_runs = _schedule_next_run_map()
+    return {"items": [_serialize_task_schedule(row, next_runs=next_runs) for row in items]}
+
+
+@app.post("/task-schedules")
+def create_task_schedule_endpoint(req: TaskScheduleCreateRequest):
+    values = _normalize_task_schedule_create(req)
+    row = data_sink.create_task_schedule(**values)
+    _refresh_task_schedule_registration(row)
+    return _serialize_task_schedule(row)
+
+
+@app.get("/task-schedules/{schedule_uid}")
+def get_task_schedule_endpoint(schedule_uid: str):
+    detail = data_sink.get_task_schedule_detail(schedule_uid)
+    if not detail:
+        raise HTTPException(404, "Task schedule not found")
+    return _serialize_task_schedule(detail)
+
+
+@app.patch("/task-schedules/{schedule_uid}")
+def patch_task_schedule_endpoint(schedule_uid: str, req: TaskSchedulePatchRequest):
+    current = data_sink.get_task_schedule_detail(schedule_uid)
+    if not current:
+        raise HTTPException(404, "Task schedule not found")
+    patch = _normalize_task_schedule_patch(current, _model_patch(req))
+    row = data_sink.update_task_schedule(schedule_uid, **patch)
+    _refresh_task_schedule_registration(row)
+    return _serialize_task_schedule(row)
+
+
+@app.delete("/task-schedules/{schedule_uid}")
+def delete_task_schedule_endpoint(schedule_uid: str):
+    row = data_sink.archive_task_schedule(schedule_uid)
+    if not row:
+        raise HTTPException(404, "Task schedule not found")
+    sched_module.unregister_task_schedule(schedule_uid)
+    return {"ok": True, "schedule": _serialize_task_schedule(row)}
+
+
+@app.post("/task-schedules/{schedule_uid}/run-now")
+async def run_task_schedule_now_endpoint(schedule_uid: str):
+    schedule = data_sink.get_task_schedule_detail(schedule_uid)
+    if not schedule or int(schedule.get("archived") or 0) == 1:
+        raise HTTPException(404, "Task schedule not found")
+    jid = f"{schedule.get('adapter_id')}::{schedule.get('task_id')}"
+    if _task_is_active(jid):
+        raise HTTPException(409, "任务正在运行中，请稍后再运行该定时任务")
+
+    schedule_run = _create_instance_for_task_schedule(schedule_uid)
+    try:
+        start_result = await _start_task_run(
+            str(schedule_run.get("adapter_id") or ""),
+            str(schedule_run.get("task_id") or ""),
+            dict(schedule_run.get("run_params") or {}),
+            {},
+        )
+    except Exception as exc:
+        message = getattr(exc, "detail", None) or str(exc)
+        data_sink.update_task_instance(
+            schedule_run["instance_uid"],
+            status="failed",
+            summary={"error": message, "schedule_uid": schedule_uid},
+        )
+        data_sink.record_task_schedule_run(
+            schedule_uid,
+            instance_uid=schedule_run["instance_uid"],
+            status="failed",
+            error=message,
+        )
+        raise
+    return {
+        "ok": True,
+        "instance_uid": schedule_run["instance_uid"],
+        "start": start_result,
+    }
 
 
 @app.post("/probe/run")
@@ -4654,9 +5947,64 @@ async def _run_scheduled_task(adapter_id: str, task_id: str):
         await _execute_task(adapter_id, task_id, {}, {}, run_control=None)
 
 
-async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
+async def _run_task_schedule(schedule_uid: str):
+    try:
+        schedule_run = _create_instance_for_task_schedule(schedule_uid)
+    except HTTPException as exc:
+        logger.warning("Skip task schedule %s: %s", schedule_uid, exc.detail)
+        return
+
+    adapter_id = str(schedule_run.get("adapter_id") or "")
+    task_id = str(schedule_run.get("task_id") or "")
     jid = f"{adapter_id}::{task_id}"
+    if _task_is_active(jid):
+        logger.warning("Skip task schedule %s because %s is already active", schedule_uid, jid)
+        data_sink.update_task_instance(
+            schedule_run["instance_uid"],
+            status="failed",
+            summary={"error": "任务正在运行中，本次定时触发已跳过", "schedule_uid": schedule_uid},
+        )
+        data_sink.record_task_schedule_run(
+            schedule_uid,
+            instance_uid=schedule_run["instance_uid"],
+            status="skipped",
+            error="任务正在运行中，本次定时触发已跳过",
+        )
+        return
+
     lock = _task_lock(jid)
+    async with lock:
+        if _task_has_live_control(jid):
+            logger.warning("Skip task schedule %s because a manual run is active", schedule_uid)
+            data_sink.update_task_instance(
+                schedule_run["instance_uid"],
+                status="failed",
+                summary={"error": "任务正在运行中，本次定时触发已跳过", "schedule_uid": schedule_uid},
+            )
+            data_sink.record_task_schedule_run(
+                schedule_uid,
+                instance_uid=schedule_run["instance_uid"],
+                status="skipped",
+                error="任务正在运行中，本次定时触发已跳过",
+            )
+            return
+        try:
+            await _execute_task(
+                adapter_id,
+                task_id,
+                dict(schedule_run.get("run_params") or {}),
+                {},
+                run_control=None,
+            )
+        except Exception as exc:
+            logger.exception("Task schedule %s failed: %s", schedule_uid, exc)
+
+
+async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
+    instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
+    jid = _run_jid(adapter_id, task_id, instance_uid)
+    control_jids = _run_jids(adapter_id, task_id, instance_uid)
+    lock = _task_lock(_task_jid(adapter_id, task_id))
     try:
         async with lock:
             await _execute_task(adapter_id, task_id, params, runtime_options, run_control=run_control)
@@ -4666,17 +6014,24 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
             _run_status[jid] = {
                 'status': 'error',
                 'run_id': live.get('run_id'),
+                'adapter_id': adapter_id,
+                'task_id': task_id,
+                'instance_uid': instance_uid,
                 'records': int(live.get('records') or 0),
                 'error': str(exc),
+                'last_seen_at': datetime.now().isoformat(),
+                'current_row': int(live.get('current_row') or live.get('row_no') or 0),
+                'phase': live.get('phase') or 'error',
             }
         _run_logs.setdefault(jid, []).append(f"[{adapter_id}/{task_id}] FATAL: {exc}")
         logger.exception("Background task crashed before cleanup: %s", jid)
     finally:
-        _run_controls.pop(jid, None)
+        for control_jid in control_jids:
+            if _run_controls.get(control_jid) is run_control:
+                _run_controls.pop(control_jid, None)
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/run")
-async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskRequest()):
+async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
     adapter_loader.scan_all()
     m = adapter_loader.get_adapter(adapter_id)
     if not m:
@@ -4684,8 +6039,10 @@ async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskR
     if not any(t.id == task_id for t in m.tasks):
         raise HTTPException(404, f"Task not found: {task_id}")
 
-    jid = f"{adapter_id}::{task_id}"
-    if _task_is_active(jid):
+    run_params = dict(params or {})
+    instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
+    control_jids = _run_jids(adapter_id, task_id, instance_uid)
+    if any(_task_is_active(control_jid) for control_jid in control_jids):
         raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
 
     run_control = _build_run_control()
@@ -4693,19 +6050,60 @@ async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskR
         _run_task_background(
             adapter_id,
             task_id,
-            req.params or {},
-            {"current_tab_id": req.current_tab_id},
+            run_params,
+            runtime_options or {},
             run_control,
         )
     )
     run_control['task'] = task_handle
-    _run_controls[jid] = run_control
+    for control_jid in control_jids:
+        _run_controls[control_jid] = run_control
     return {"ok": True, "message": "Task started in background"}
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/pause")
-async def pause_task(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+@app.post("/tasks/{adapter_id}/{task_id}/run")
+async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskRequest()):
+    return await _start_task_run(
+        adapter_id,
+        task_id,
+        req.params or {},
+        {"current_tab_id": req.current_tab_id},
+    )
+
+
+@app.post("/task-instances/{instance_uid}/run")
+async def run_task_instance(instance_uid: str, req: RunTaskRequest = RunTaskRequest()):
+    instance = data_sink.get_task_instance(instance_uid)
+    if not instance:
+        raise HTTPException(404, "Task instance not found")
+    params = _parse_json_object(instance.get("params_json"))
+    if req.params:
+        params.update(dict(req.params or {}))
+    params["__task_instance_uid"] = instance_uid
+    runtime_options = {"current_tab_id": req.current_tab_id}
+    previous_status = str(instance.get("status") or "draft").strip() or "draft"
+    data_sink.update_task_instance(instance_uid, status="running", current_step="config", params=params)
+    try:
+        result = await _start_task_run(instance["adapter_id"], instance["task_id"], params, runtime_options)
+    except HTTPException as exc:
+        message = getattr(exc, "detail", None) or str(exc)
+        summary = _parse_json_object(instance.get("summary_json"))
+        summary.update({"error": message})
+        if exc.status_code == 409:
+            data_sink.update_task_instance(instance_uid, status=previous_status, summary=summary)
+        else:
+            data_sink.update_task_instance(instance_uid, status="failed", current_step="config", summary=summary)
+        raise
+    except Exception as exc:
+        message = getattr(exc, "detail", None) or str(exc)
+        summary = _parse_json_object(instance.get("summary_json"))
+        summary.update({"error": message})
+        data_sink.update_task_instance(instance_uid, status="failed", current_step="config", summary=summary)
+        raise
+    return result
+
+
+def _pause_run_jid(jid: str):
     control = _run_controls.get(jid)
     live = _run_status.get(jid) or {}
     task = control.get('task') if control else None
@@ -4716,14 +6114,12 @@ async def pause_task(adapter_id: str, task_id: str):
 
     control['pause_requested'] = True
     control['resume_event'].clear()
-    _run_status[jid] = {**live, 'status': 'pausing'}
-    _run_logs.setdefault(jid, []).append('[control] 收到暂停指令')
+    _merge_live_status([jid], {'status': 'pausing', 'last_seen_at': datetime.now().isoformat()})
+    _append_run_log([jid], '[control] 收到暂停指令')
     return {"ok": True, "status": "pausing"}
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/resume")
-async def resume_task(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+def _resume_run_jid(jid: str):
     control = _run_controls.get(jid)
     live = _run_status.get(jid) or {}
     task = control.get('task') if control else None
@@ -4733,14 +6129,12 @@ async def resume_task(adapter_id: str, task_id: str):
     control['pause_requested'] = False
     control['resume_event'].set()
     control['pause_logged'] = False
-    _run_status[jid] = {**live, 'status': 'running'}
-    _run_logs.setdefault(jid, []).append('[control] 收到继续指令')
+    _merge_live_status([jid], {'status': 'running', 'last_seen_at': datetime.now().isoformat()})
+    _append_run_log([jid], '[control] 收到继续指令')
     return {"ok": True, "status": "running"}
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/stop")
-async def stop_task(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+def _stop_run_jid(jid: str):
     control = _run_controls.get(jid)
     live = _run_status.get(jid) or {}
     task = control.get('task') if control else None
@@ -4750,30 +6144,92 @@ async def stop_task(adapter_id: str, task_id: str):
     control['stop_requested'] = True
     control['pause_requested'] = False
     control['resume_event'].set()
-    _run_status[jid] = {**live, 'status': 'stopping'}
-    _run_logs.setdefault(jid, []).append('[control] 收到停止指令')
+    _merge_live_status([jid], {'status': 'stopping', 'last_seen_at': datetime.now().isoformat()})
+    _append_run_log([jid], '[control] 收到停止指令')
     task.cancel()
     return {"ok": True, "status": "stopping"}
 
 
+def _get_task_instance_or_404(instance_uid: str) -> dict:
+    instance = data_sink.get_task_instance(instance_uid)
+    if not instance:
+        raise HTTPException(404, "Task instance not found")
+    return instance
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/pause")
+async def pause_task(adapter_id: str, task_id: str):
+    return _pause_run_jid(_task_jid(adapter_id, task_id))
+
+
+@app.post("/task-instances/{instance_uid}/pause")
+async def pause_task_instance(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return _pause_run_jid(_instance_jid(instance_uid))
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/resume")
+async def resume_task(adapter_id: str, task_id: str):
+    return _resume_run_jid(_task_jid(adapter_id, task_id))
+
+
+@app.post("/task-instances/{instance_uid}/resume")
+async def resume_task_instance(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return _resume_run_jid(_instance_jid(instance_uid))
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/stop")
+async def stop_task(adapter_id: str, task_id: str):
+    return _stop_run_jid(_task_jid(adapter_id, task_id))
+
+
+@app.post("/task-instances/{instance_uid}/stop")
+async def stop_task_instance(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return _stop_run_jid(_instance_jid(instance_uid))
+
+
 @app.get("/tasks/{adapter_id}/{task_id}/status")
 def task_status(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+    jid = _task_jid(adapter_id, task_id)
     live = _run_status.get(jid)
     last = data_sink.get_latest_run(adapter_id, task_id)
     return {"live": live, "last_run": last}
 
 
+@app.get("/task-instances/{instance_uid}/run-status")
+def task_instance_run_status(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    jid = _instance_jid(instance_uid)
+    live = _run_status.get(jid)
+    last = _latest_instance_run(instance_uid)
+    return {"live": live, "last_run": last}
+
+
 @app.get("/tasks/{adapter_id}/{task_id}/logs")
 def task_logs(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+    jid = _task_jid(adapter_id, task_id)
     return {"logs": _run_logs.get(jid, [])}
+
+
+@app.get("/task-instances/{instance_uid}/logs")
+def task_instance_logs(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return {"logs": _run_logs.get(_instance_jid(instance_uid), [])}
 
 
 @app.delete("/tasks/{adapter_id}/{task_id}/logs")
 def clear_task_logs(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+    jid = _task_jid(adapter_id, task_id)
     _run_logs[jid] = []
+    return {"ok": True}
+
+
+@app.delete("/task-instances/{instance_uid}/logs")
+def clear_task_instance_logs(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    _run_logs[_instance_jid(instance_uid)] = []
     return {"ok": True}
 
 
@@ -4921,6 +6377,13 @@ def get_settings():
 @app.put("/settings")
 def put_settings(cfg: dict):
     save_config(cfg)
+    reset_bridge()
+    return {"ok": True}
+
+
+@app.patch("/settings")
+def patch_settings(cfg: dict):
+    patch_config(cfg)
     reset_bridge()
     return {"ok": True}
 

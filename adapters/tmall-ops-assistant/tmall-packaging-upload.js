@@ -30,6 +30,14 @@
   const UPLOAD_INPUT_ID = 'crawshrimp-tmall-packaging-upload-input'
   const UPLOAD_INPUT_SELECTOR = `#${UPLOAD_INPUT_ID}`
   const PICTURE_CENTER_UPLOAD_ENDPOINT = 'https://stream-upload.taobao.com/api/upload.api'
+  const TMALL_PAGE_WAIT_MS = Math.max(3000, Number(params.tmall_page_wait_ms || 3000) || 3000)
+  const TMALL_PUBLISH_WAIT_MS = Math.max(8000, Number(params.tmall_publish_wait_ms || 8000) || 8000)
+  const TMALL_PUBLISH_CONFIRM_WAIT_MS = Math.max(10000, Number(params.tmall_publish_confirm_wait_ms || 10000) || 10000)
+  const TMALL_SPEED_LIMIT_COOLDOWN_MS = Math.max(60000, Number(params.tmall_speed_limit_cooldown_ms || 90000) || 90000)
+  const TMALL_UPLOAD_BETWEEN_FILES_MS = Math.max(0, Number(params.tmall_upload_between_files_ms ?? 0) || 0)
+  const TMALL_SUBMIT_MODE = compact(params.tmall_submit_mode || 'dom').toLowerCase()
+  const TMALL_ALLOW_API_SUBMIT_FALLBACK = params.tmall_allow_api_submit_fallback === true || TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first'
+  const TMALL_ALLOW_API_CONFIRM_FALLBACK = params.tmall_allow_api_confirm_fallback === true
 
   const CATEGORY_ORDER = [
     'main_1x1',
@@ -54,6 +62,14 @@
     micro_3x4: '04_3比4微详情',
     vertical: '05_商品竖图',
     pc_detail: '06_PC详情',
+  }
+  const DOWNLOAD_PACKAGE_FOLDER_LABELS = {
+    main_1x1: '01_1比1主图',
+    micro_1x1: '01_1比1主图',
+    main_3x4: '02_3比4主图',
+    micro_3x4: '02_3比4主图',
+    vertical: '03_商品竖图',
+    pc_detail: '04_商详页',
   }
   const REQUIRED_COUNTS = {
     main_1x1: 2,
@@ -343,6 +359,7 @@
       '上传结果': '',
       '天猫图片URL': '',
       '天猫货号': '',
+      '天猫商家编码': '',
       '页面校验': '',
       '执行结果': '参数错误',
       '备注': note || '款号或天猫商品ID缺失',
@@ -1017,6 +1034,23 @@
     }
   }
 
+  function waitMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+  }
+
+  function tmallTimingConfig() {
+    return {
+      pageWaitMs: TMALL_PAGE_WAIT_MS,
+      publishWaitMs: TMALL_PUBLISH_WAIT_MS,
+      publishConfirmWaitMs: TMALL_PUBLISH_CONFIRM_WAIT_MS,
+      speedLimitCooldownMs: TMALL_SPEED_LIMIT_COOLDOWN_MS,
+      uploadBetweenFilesMs: TMALL_UPLOAD_BETWEEN_FILES_MS,
+      submitMode: TMALL_SUBMIT_MODE,
+      allowApiSubmitFallback: TMALL_ALLOW_API_SUBMIT_FALLBACK,
+      allowApiConfirmFallback: TMALL_ALLOW_API_CONFIRM_FALLBACK,
+    }
+  }
+
   function downloadUrls(items, nextPhaseName, options = {}, newShared = shared, data = []) {
     return {
       success: true,
@@ -1605,7 +1639,266 @@
     return textarea ? String(textarea.value || '') : ''
   }
 
+  function getNewDescValue(sourceValues = null) {
+    const source = sourceValues && typeof sourceValues === 'object' ? sourceValues : null
+    if (source && source.descRepublicOfSell) return source.descRepublicOfSell
+    return getComponentValue('descRepublicOfSell') || getTmallFormValues().descRepublicOfSell || null
+  }
+
+  function parseNewDescTemplateContent(value) {
+    const source = value && typeof value === 'object' && value.descPageCommitParam
+      ? value.descPageCommitParam.templateContent
+      : value
+    if (!source) return { ok: false, reason: '新版详情模板为空', template: null, templateContent: '' }
+    if (typeof source === 'object') {
+      return { ok: true, template: jsonClone(source), templateContent: JSON.stringify(source) }
+    }
+    const text = String(source || '')
+    try {
+      return { ok: true, template: JSON.parse(text), templateContent: text }
+    } catch (error) {
+      return { ok: false, reason: `新版详情模板解析失败：${String(error?.message || error)}`, template: null, templateContent: text }
+    }
+  }
+
+  function newDescPicUrl(component = {}) {
+    const box = component?.boxStyle || {}
+    return compact(box['background-image'] || box.backgroundImage || component.url || component.src || component.picUrl || component.imageUrl || '')
+  }
+
+  function flattenNewDescPicComponents(value) {
+    const parsed = parseNewDescTemplateContent(value)
+    if (!parsed.ok) return []
+    const groups = Array.isArray(parsed.template?.groups) ? parsed.template.groups : []
+    const pics = []
+    groups.forEach((group, groupIndex) => {
+      const components = Array.isArray(group?.components) ? group.components : []
+      components.forEach((component, componentIndex) => {
+        if (compact(component?.componentType).toLowerCase() !== 'pic') return
+        const src = newDescPicUrl(component)
+        if (!src) return
+        const box = component.boxStyle || {}
+        pics.push({
+          group,
+          component,
+          groupIndex,
+          componentIndex,
+          moduleIndex: pics.length,
+          imageIndex: 0,
+          globalIndex: pics.length,
+          moduleName: compact(group?.bizName || group?.groupName || '图文模块'),
+          groupId: compact(group?.groupId),
+          componentId: compact(component?.componentId),
+          src,
+          width: positiveInt(box.width || group?.boxStyle?.width, 0),
+          height: positiveInt(box.height || group?.boxStyle?.height, 0),
+          context: compact([group?.bizName, group?.groupName, component?.componentName].filter(Boolean).join(' ')),
+        })
+      })
+    })
+    return pics
+  }
+
+  function escapeHtmlAttribute(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+  }
+
+  function newDescPicsToModules(pics) {
+    return (Array.isArray(pics) ? pics : []).map(pic => ({
+      id: pic.componentId || `new-desc-${pic.globalIndex}`,
+      name: pic.moduleName || '图文模块',
+      content: `<p><img src="${escapeHtmlAttribute(pic.src)}"/></p>`,
+      custom: false,
+      __newDescPic: pic,
+    }))
+  }
+
+  function hasUsableNewDescTemplate(value = getNewDescValue()) {
+    return flattenNewDescPicComponents(value).length > 0
+  }
+
+  function normalizeDetailImage(item) {
+    if (typeof item === 'string') return { url: compact(item), width: 0, height: 0 }
+    return {
+      ...(item || {}),
+      url: compact(item?.url || item?.src || item?.picUrl || item?.imageUrl || ''),
+      width: positiveInt(item?.width, 0),
+      height: positiveInt(item?.height, 0),
+    }
+  }
+
+  function resizeNewDescPicGroup(group, image) {
+    const clone = jsonClone(group)
+    const component = Array.isArray(clone.components)
+      ? clone.components.find(item => compact(item?.componentType).toLowerCase() === 'pic') || clone.components[0]
+      : null
+    const box = component?.boxStyle || {}
+    const groupBox = clone.boxStyle || {}
+    const targetWidth = positiveInt(box.width || groupBox.width, 620) || 620
+    const targetHeight = image.width && image.height
+      ? Math.max(1, Math.round(targetWidth * image.height / image.width))
+      : (positiveInt(box.height || groupBox.height, 0) || 794)
+    clone.boxStyle = {
+      ...groupBox,
+      width: String(targetWidth),
+      height: String(targetHeight),
+    }
+    if (component) {
+      component.boxStyle = {
+        ...box,
+        top: '0',
+        left: '0',
+        width: String(targetWidth),
+        height: String(targetHeight),
+        'background-image': image.url,
+      }
+      component.imgStyle = {
+        ...(component.imgStyle || {}),
+        top: '0',
+        left: '0',
+        width: String(targetWidth),
+        height: String(targetHeight),
+      }
+    }
+    return clone
+  }
+
+  function cloneNewDescPicGroup(group, image, index, options = {}) {
+    const cloned = resizeNewDescPicGroup(group, image)
+    const prefix = compact(options.idPrefix) || `crawshrimp${Date.now()}`
+    const groupId = `group${prefix}${index}`
+    const componentId = `component${prefix}${index}`
+    cloned.groupId = groupId
+    if (Array.isArray(cloned.components)) {
+      cloned.components.forEach(component => {
+        component.groupId = groupId
+        if (compact(component?.componentType).toLowerCase() === 'pic') {
+          component.componentId = componentId
+        }
+      })
+    }
+    return cloned
+  }
+
+  function buildAnchoredNewDescTemplateContent(newDescValue, detailImages = [], options = {}) {
+    const parsed = parseNewDescTemplateContent(newDescValue)
+    const detailList = (Array.isArray(detailImages) ? detailImages : [])
+      .map(normalizeDetailImage)
+      .filter(item => item.url)
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_parse_failed',
+        note: parsed.reason || '新版详情模板解析失败',
+        value: newDescValue,
+        modules: [],
+      }
+    }
+    const template = jsonClone(parsed.template)
+    const pics = flattenNewDescPicComponents(template)
+    const modules = newDescPicsToModules(pics)
+    if (!pics.length) {
+      return {
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_no_pics',
+        note: '新版详情模板中未识别到图片组件，已阻止自动替换',
+        value: newDescValue,
+        modules,
+      }
+    }
+    const range = buildAnchoredPcDetailModules(modules, detailList.map(item => item.url), {
+      ...options,
+      probeOnly: true,
+    })
+    if (!detailList.length || !range.ok) {
+      return {
+        ...range,
+        target: 'descRepublicOfSell',
+        value: newDescValue,
+        template,
+        modules,
+        pics,
+        note: detailList.length
+          ? range.note
+          : '新版详情模板可解析，等待OCR锚点后再替换',
+      }
+    }
+    const startPic = pics[Number(range.replaceStartIndex)]
+    const stopPic = pics[Number(range.replaceEndIndex)]
+    const groups = Array.isArray(template.groups) ? template.groups : []
+    const referenceGroup = startPic?.group || pics[0]?.group
+    if (!startPic || !referenceGroup) {
+      return {
+        ...range,
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_range_missing',
+        value: newDescValue,
+        template,
+        modules,
+        pics,
+        note: '新版详情模板替换区间缺少起始图片组件，已阻止自动替换',
+      }
+    }
+    const startGroupIndex = startPic.groupIndex
+    const stopGroupIndex = stopPic ? stopPic.groupIndex : groups.length
+    if (stopGroupIndex < startGroupIndex) {
+      return {
+        ...range,
+        ok: false,
+        target: 'descRepublicOfSell',
+        mode: 'blocked_new_desc_invalid_range',
+        value: newDescValue,
+        template,
+        modules,
+        pics,
+        note: '新版详情模板替换区间异常，已阻止自动替换',
+      }
+    }
+    const newGroups = detailList.map((item, index) => cloneNewDescPicGroup(referenceGroup, item, index, options))
+    template.groups = [
+      ...groups.slice(0, startGroupIndex),
+      ...newGroups,
+      ...groups.slice(stopGroupIndex),
+    ]
+    const nextValue = {
+      ...(newDescValue && typeof newDescValue === 'object' ? newDescValue : {}),
+      descPageCommitParam: {
+        ...((newDescValue && typeof newDescValue === 'object' ? newDescValue.descPageCommitParam : {}) || {}),
+        templateContent: JSON.stringify(template),
+        changed: true,
+      },
+    }
+    return {
+      ...range,
+      target: 'descRepublicOfSell',
+      value: nextValue,
+      template,
+      modules: newDescPicsToModules(flattenNewDescPicComponents(template)),
+      pics,
+      insertedGroupCount: newGroups.length,
+      replacedGroupStartIndex: startGroupIndex,
+      replacedGroupEndIndex: stopGroupIndex,
+      note: `新版详情模板${range.note || '已完成锚点区间替换'}`,
+    }
+  }
+
   function currentPcDetailReplacementProbe(options = {}) {
+    const newDescValue = getNewDescValue()
+    if (hasUsableNewDescTemplate(newDescValue)) {
+      return buildAnchoredNewDescTemplateContent(newDescValue, [], {
+        probeOnly: true,
+        visualAnchors: options.visualAnchors,
+        requireVisualAnchors: options.requireVisualAnchors,
+        allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+      })
+    }
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
       return buildAnchoredPcDetailModules(modularDesc, [], {
@@ -1914,21 +2207,85 @@
   function clickReturnOldDescriptionSwitch() {
     const element = findReturnOldDescriptionSwitch()
     if (!element) return false
-    try {
-      element.click()
-      return true
-    } catch (error) {
-      return false
+    return smartClick(element)
+  }
+
+  function extractFieldTextValue(value) {
+    if (value == null) return ''
+    if (typeof value === 'string' || typeof value === 'number') return compact(value)
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const text = extractFieldTextValue(item)
+        if (text) return text
+      }
+      return ''
     }
+    if (typeof value === 'object') {
+      const direct = value.text ?? value.value ?? value.label ?? value.name
+      if (direct != null && typeof direct !== 'object') return compact(direct)
+      if (direct != null) {
+        const text = extractFieldTextValue(direct)
+        if (text) return text
+      }
+    }
+    return ''
+  }
+
+  function extractComponentValueText(names = []) {
+    for (const name of names) {
+      const text = extractFieldTextValue(getComponentValue(name))
+      if (text) return text
+    }
+    return ''
+  }
+
+  function extractFormModelValueText(names = []) {
+    try {
+      const state = getSellState()
+      const models = state?.engine && typeof state.engine.getModels === 'function'
+        ? state.engine.getModels()
+        : null
+      const formValues = models?.formValues || {}
+      for (const name of names) {
+        const text = extractFieldTextValue(formValues?.[name])
+        if (text) return text
+      }
+    } catch (error) {
+      return ''
+    }
+    return ''
+  }
+
+  function extractInputValueBySelectors(selectors = []) {
+    const docs = typeof getAccessibleDocuments === 'function'
+      ? getAccessibleDocuments()
+      : [document]
+    for (const doc of docs) {
+      for (const selector of selectors) {
+        const element = doc?.querySelector?.(selector) ||
+          Array.from(doc?.querySelectorAll?.(selector) || [])[0]
+        const text = extractFieldTextValue(element?.value ?? element?.textContent)
+        if (text) return text
+      }
+    }
+    return ''
+  }
+
+  function extractItemPropCodeFromTmallState() {
+    const props = getComponentValue('itemProp') || {}
+    const direct = props?.['p-13021751'] || props?.['p-20431815']
+    return extractFieldTextValue(direct)
   }
 
   function extractMerchantCodeFromTmallState() {
-    const props = getComponentValue('itemProp') || {}
-    const direct = props?.['p-13021751'] || props?.['p-20431815']
-    if (direct?.text || direct?.value) return compact(direct.text || direct.value)
-    const inputs = Array.from(document.querySelectorAll('input'))
-    const values = inputs.map(input => compact(input.value)).filter(Boolean)
-    return values.find(value => /^\d{8,}[A-Za-z0-9-]*$/.test(value)) || ''
+    return extractComponentValueText(['outerId']) ||
+      extractFormModelValueText(['outerId']) ||
+      extractInputValueBySelectors([
+        '#sell-field-outerId input',
+        '#struct-outerId input',
+        'input[name="outerId"]',
+        '[id*="outerId"] input',
+      ])
   }
 
   function extractTmallStatus(job = {}) {
@@ -1952,13 +2309,15 @@
       })
     })
     const merchantCode = extractMerchantCodeFromTmallState()
+    const itemPropCode = extractItemPropCodeFromTmallState()
     return {
       url: location.href,
       title: document.title,
       itemId: normalizeItemId(location.href) || job.item_id || '',
       merchantCode,
+      itemPropCode,
       styleCode: job.style_code || '',
-      styleMatched: !job.style_code || !merchantCode || merchantCode === job.style_code,
+      styleMatched: !job.style_code || !merchantCode || merchantCodeMatchesStyle(merchantCode, job.style_code),
       validationMessages,
       hasReturnOldDescription: hasReturnOldDescriptionSwitch(),
       ready: !!getSellState() && typeof getComponentValue('mainImagesGroup') !== 'undefined',
@@ -1977,6 +2336,33 @@
       .join('\n'))
   }
 
+  function detectTmallSpeedLimitWarning(text = bodyText()) {
+    return /操作速度太快|稍等一会儿再试|访问过于频繁|请求过于频繁/.test(text)
+  }
+
+  function detectTmallCaptchaWarning(text = bodyText()) {
+    return /验证码|安全验证|滑块验证|请完成验证/.test(text)
+  }
+
+  function clickSpeedLimitConfirmIfPresent() {
+    const roots = getAccessibleDocuments()
+      .flatMap(doc => visibleDialogRoots(doc))
+      .filter(root => /操作速度太快|稍等一会儿再试|访问过于频繁|请求过于频繁/.test(elementText(root)))
+    for (const root of roots) {
+      const element = findVisibleActionByText(['确定', '确认'], {
+        root,
+        allowContains: false,
+        maxTextLength: 8,
+        preferRight: true,
+        exclude: ['返回修改', '取消', '关闭'],
+      })
+      if (smartClick(element)) {
+        return { ok: true, text: elementText(element) || '确定' }
+      }
+    }
+    return { ok: false, text: '' }
+  }
+
   function extractPublishStatus(job = {}) {
     const status = extractTmallStatus(job)
     const text = bodyText()
@@ -1990,6 +2376,9 @@
     const blockingMessages = [...status.validationMessages]
     if (/必填项未填|存在错误|请完善|请填写|不能为空/.test(text) && !blockingMessages.length) {
       blockingMessages.push('页面提示存在必填项或校验错误')
+    }
+    if (/类目为空或不存在/.test(text) && !blockingMessages.includes('类目为空或不存在')) {
+      blockingMessages.push('类目为空或不存在')
     }
     return {
       ...status,
@@ -2019,9 +2408,41 @@
   }
 
   function clickPublishConfirmIfPresent() {
-    const confirm = clickDialogConfirm(['确认', '确定', '继续发布', '提交', '发布'])
+    const confirm = clickDialogConfirm(['确认提交', '确认', '确定', '继续发布', '提交', '发布'])
     if (confirm.ok) return confirm
     return { ok: false, text: '' }
+  }
+
+  function isTmallSubmitSuccessPage() {
+    return /\/success\.htm/i.test(location.href) || /商品提交成功/.test(bodyText())
+  }
+
+  function findTmallSuccessEditElement() {
+    return findVisibleActionByText(['编辑商品'], {
+      allowContains: false,
+      maxTextLength: 8,
+      preferRight: true,
+      exclude: ['查看商品', '继续发布'],
+    })
+  }
+
+  function reenterTmallEditorFromSuccess(job = {}, state = shared) {
+    const itemId = job.item_id || normalizeItemId(location.href)
+    const nextShared = {
+      ...state,
+      reopened_after_pc_publish: true,
+      tmall_wait_attempts: 0,
+      current_store: '从成功页进入编辑商品',
+    }
+    const editElement = findTmallSuccessEditElement()
+    const href = editElement?.href || (itemId
+      ? `https://upload.taobao.com/auction/publish/edit.htm?item_num_id=${encodeURIComponent(itemId)}&auto=false`
+      : `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`)
+    try {
+      // Assigning location keeps navigation in the current tab; clicking the success-page link opens a new tab.
+      location.href = href
+    } catch (error) {}
+    return nextPhase('wait_reopened_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
   }
 
   function findMobileDetailEditButton() {
@@ -3181,27 +3602,38 @@
     const currentThreeToFourImages = Array.isArray(currentValues.threeToFourImages) ? currentValues.threeToFourImages : []
     const main1x1 = mergeReplacementImages(currentMainImages, replacementMain1x1, TMALL_MAIN_IMAGE_MAX_COUNT)
     const main3x4 = mergeReplacementImages(currentThreeToFourImages, replacementMain3x4, TMALL_MAIN_IMAGE_MAX_COUNT)
-    const detailUrls = (uploadedByCategory.pc_detail || []).map(item => item.url)
     const currentGuide = currentValues.guideImageGroup && typeof currentValues.guideImageGroup === 'object' ? currentValues.guideImageGroup : {}
+    const currentNewDesc = getNewDescValue(currentValues)
     const currentModules = Array.isArray(currentValues.modularDesc) ? currentValues.modularDesc : []
     const currentTmDescription = typeof currentValues.tmDescription === 'string' ? currentValues.tmDescription : ''
-    const pcDetailReplacement = currentModules.length
-      ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
+    const detailUrls = (uploadedByCategory.pc_detail || []).map(item => item.url)
+    const pcDetailReplacement = hasUsableNewDescTemplate(currentNewDesc)
+      ? buildAnchoredNewDescTemplateContent(currentNewDesc, uploadedByCategory.pc_detail || [], {
         visualAnchors: currentValues.pcDetailVisualAnchors,
         requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
         allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
       })
-      : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
-        visualAnchors: currentValues.pcDetailVisualAnchors,
-        requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
-        allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
-      })
-    const modularDesc = currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
-    const tmDescription = !currentModules.length && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
+      : currentModules.length
+        ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
+          visualAnchors: currentValues.pcDetailVisualAnchors,
+          requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
+          allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
+        })
+        : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
+          visualAnchors: currentValues.pcDetailVisualAnchors,
+          requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
+          allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
+        })
+    const modularDesc = currentModules.length && pcDetailReplacement.target !== 'descRepublicOfSell' && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
+    const tmDescription = !currentModules.length && pcDetailReplacement.target !== 'descRepublicOfSell' && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
+    const descRepublicOfSell = pcDetailReplacement.target === 'descRepublicOfSell' && pcDetailReplacement.ok
+      ? pcDetailReplacement.value
+      : undefined
     return {
       mainImagesGroup: main1x1?.length ? { ...currentMainGroup, images: main1x1 } : undefined,
       threeToFourImages: main3x4?.length ? main3x4 : undefined,
       guideImageGroup: vertical.length ? { ...currentGuide, verticalImage: vertical } : undefined,
+      descRepublicOfSell,
       modularDesc,
       tmDescription,
       detailHtml: pcDetailReplacement.detailHtml || '',
@@ -3238,6 +3670,41 @@
     return models.formValues && typeof models.formValues === 'object' ? models.formValues : {}
   }
 
+  function firstScalarValue(value, seen = new Set()) {
+    if (value == null || value === '') return ''
+    if (typeof value === 'number' || typeof value === 'bigint') return String(value)
+    if (typeof value === 'string') return compact(value)
+    if (typeof value !== 'object' || seen.has(value)) return ''
+    seen.add(value)
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        const found = firstScalarValue(value[index], seen)
+        if (found) return found
+      }
+      return ''
+    }
+    for (const key of ['submitId', 'catId', 'categoryId', 'cid', 'id', 'value']) {
+      const found = firstScalarValue(value[key], seen)
+      if (found) return found
+    }
+    return ''
+  }
+
+  function resolveTmallCatId(globalValue = getTmallGlobal(), formValues = getTmallFormValues()) {
+    const global = globalValue && typeof globalValue === 'object' ? globalValue : {}
+    const form = formValues && typeof formValues === 'object' ? formValues : {}
+    return compact(
+      global.catId ||
+      global.categoryId ||
+      global.cid ||
+      firstScalarValue(form.catId) ||
+      firstScalarValue(form.categoryId) ||
+      firstScalarValue(form.cid) ||
+      firstScalarValue(form.category?.categorySelect) ||
+      firstScalarValue(form.category)
+    )
+  }
+
   function jsonClone(value) {
     if (value == null) return value
     try {
@@ -3261,6 +3728,7 @@
   function buildTmallSubmitPayload(formValues = getTmallFormValues(), globalValue = getTmallGlobal(), options = {}) {
     const global = globalValue && typeof globalValue === 'object' ? globalValue : {}
     const itemId = normalizeItemId(global.id || global.itemId || global.requestItemId || options.itemId || location.href)
+    const catId = resolveTmallCatId(global, formValues)
     const payload = {
       isLightCombine: global.isLightCombine,
       isSetsCombine: global.isSetsCombine,
@@ -3268,7 +3736,7 @@
       tmSpuPublishType: global.tmSpuPublishType,
       isUnBondedGift: global.isUnBondedGift,
       spu_qf_param: global.spu_qf_param,
-      catId: global.catId,
+      catId,
       itemId,
       submitUrlDataKey: global.scUrlDataComp || global.mergePublishUrlKey,
       roleType: global.roleType,
@@ -3278,6 +3746,42 @@
     }
     if (global._tb_token_) payload._tb_token_ = global._tb_token_
     return Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, stringifyFieldValue(value)]))
+  }
+
+  function newDescCommitEndpoint(value = {}) {
+    return compact(value?.descPageRenderModel?.extendConfig?.httpRequestUrlConfig?.url) ||
+      'https://xiangqing.wangpu.taobao.com/template/ajax/commit_item_description.do'
+  }
+
+  async function commitNewDescByApi(value, timeoutMs = 15000) {
+    if (!value) return { ok: true, method: 'skip' }
+    const commitParam = value.descPageCommitParam && typeof value.descPageCommitParam === 'object'
+      ? value.descPageCommitParam
+      : {}
+    if (!commitParam.templateContent) {
+      return { ok: false, method: 'new_desc_commit', reason: '新版详情模板缺少 templateContent，已阻止提交发布' }
+    }
+    const endpoint = newDescCommitEndpoint(value)
+    const payload = { ...commitParam, changed: true }
+    const token = getCookieValue('_tb_token_')
+    if (token && !payload._tb_token_) payload._tb_token_ = token
+    const result = await postTmallForm(endpoint, payload, timeoutMs)
+    if (result.ok || result.successful) {
+      return {
+        ...result,
+        ok: true,
+        method: 'new_desc_commit',
+        endpoint,
+        note: '已通过新版详情接口保存 descRepublicOfSell',
+      }
+    }
+    return {
+      ...result,
+      ok: false,
+      method: 'new_desc_commit',
+      endpoint,
+      reason: result.reason || `新版详情接口保存失败${result.status ? ` HTTP ${result.status}` : ''}`,
+    }
   }
 
   function parseTmallApiPayload(text) {
@@ -3333,15 +3837,33 @@
     Object.entries(payload || {}).forEach(([key, value]) => body.set(key, stringifyFieldValue(value)))
     const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null
+    const originFromUrl = (value, base = '') => {
+      const text = String(value || '')
+      const baseText = String(base || '')
+      if (typeof URL === 'function') {
+        try { return new URL(text, baseText || undefined).origin } catch (error) {}
+      }
+      const absolute = /^https?:\/\//i.test(text)
+        ? text
+        : (/^\/\//.test(text) ? `https:${text}` : baseText)
+      const match = absolute.match(/^(https?:)\/\/([^/?#]+)/i)
+      return match ? `${match[1]}//${match[2]}`.toLowerCase() : ''
+    }
+    let sameOrigin = true
+    try {
+      const currentHref = typeof location !== 'undefined' && location.href ? location.href : 'https://sell.publish.tmall.com/'
+      sameOrigin = originFromUrl(action, currentHref) === originFromUrl(currentHref)
+    } catch (error) {}
+    const headers = {
+      'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
+    }
+    if (sameOrigin) headers['x-requested-with'] = 'XMLHttpRequest'
     try {
       const response = await Promise.race([
         fetch(action, {
           method: 'POST',
           credentials: 'include',
-          headers: {
-            'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
-            'x-requested-with': 'XMLHttpRequest',
-          },
+          headers,
           body,
           signal: controller?.signal,
         }),
@@ -3401,6 +3923,14 @@
     }
 
     const payload = buildTmallSubmitPayload(getTmallFormValues(), getTmallGlobal(), options)
+    if (!compact(payload.catId)) {
+      return {
+        ok: false,
+        method: 'api',
+        reason: '发布页未读取到商品类目 catId，已阻止提交发布，避免天猫返回“类目为空或不存在”',
+        payload,
+      }
+    }
     const direct = await postTmallForm('submit.htm', payload, options.timeoutMs || 15000)
     if (direct.ok || direct.successful) {
       return {
@@ -3422,11 +3952,11 @@
     const candidates = ['riskWarning', 'feedbackSubmit_catErrorWarning', 'fakeCredit', 'skuCheckDialog', 'knivesCommitment']
     for (const name of candidates) {
       const engine = getTmallEngine()
-      let visible = false
+      let props = {}
       try {
-        visible = !!engine?.getComponent?.(name)?.getProps?.()?.visible
+        props = engine?.getComponent?.(name)?.getProps?.() || {}
       } catch (error) {}
-      if (!visible) continue
+      if (!props.visible || props.vis === false || props.loading === true) continue
       const ok = emitComponentEvent(name, 'ok')
       if (ok.ok) return { ...ok, note: `已通过天猫确认 API 处理 ${name}` }
       const upper = emitComponentEvent(name, 'oK')
@@ -3466,6 +3996,13 @@
   }
 
   function currentPcDetailModulesForOcr() {
+    const newDescValue = getNewDescValue()
+    if (hasUsableNewDescTemplate(newDescValue)) {
+      return {
+        target: 'descRepublicOfSell',
+        modules: newDescPicsToModules(flattenNewDescPicComponents(newDescValue)),
+      }
+    }
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
       return {
@@ -4104,7 +4641,8 @@
   function buildOutputStatusRows(rows, tmallStatus, note) {
     return (Array.isArray(rows) ? rows : []).map(row => ({
       ...row,
-      '天猫货号': tmallStatus?.merchantCode || '',
+      '天猫货号': tmallStatus?.itemPropCode || '',
+      '天猫商家编码': tmallStatus?.merchantCode || '',
       '页面校验': (tmallStatus?.validationMessages || []).join('；'),
       '备注': compact([row['备注'], note].filter(Boolean).join('；')),
     }))
@@ -4115,6 +4653,10 @@
       ...row,
       '备注': compact([row?.['备注'], note].filter(Boolean).join('；')),
     }
+  }
+
+  function isNewDescPcDetailTarget(state = shared) {
+    return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'descRepublicOfSell'
   }
 
   function currentJobFromShared(state = shared) {
@@ -4151,6 +4693,7 @@
       mobile_sync_api_result: null,
       applied_modular_desc: null,
       applied_pc_detail_html: '',
+      pc_detail_target: '',
       pc_detail_replacement_probe: null,
       pc_detail_visual_anchors: null,
       pc_detail_ocr_result: null,
@@ -4216,8 +4759,13 @@
       tesseractRuntimeConfig,
       buildAnchoredPcDetailModules,
       buildAnchoredPcDetailHtml,
+      parseNewDescTemplateContent,
+      flattenNewDescPicComponents,
+      buildAnchoredNewDescTemplateContent,
       buildTmallComponentValues,
       buildTmallSubmitPayload,
+      resolveTmallCatId,
+      DOWNLOAD_PACKAGE_FOLDER_LABELS,
       extractPcDetailUrlsFromModules,
       extractPcDetailUrlsFromHtml,
       pcDetailUrlsFromSource,
@@ -4232,6 +4780,7 @@
       shouldAllowLegacyCountPcDetailReplace,
       finalizeRows,
       mobileEditorSignals,
+      tmallTimingConfig,
     })
   }
 
@@ -4432,11 +4981,11 @@
       const targetUrl = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
       if (!location.href.startsWith(TMALL_PUBLISH_URL)) {
         location.href = targetUrl
-        return nextPhase('wait_tmall_ready', 2500, { ...shared, tmall_wait_attempts: 0 })
+        return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, { ...shared, tmall_wait_attempts: 0 })
       }
       if (!location.href.includes(`id=${itemId}`)) {
         location.href = targetUrl
-        return nextPhase('wait_tmall_ready', 2500, { ...shared, tmall_wait_attempts: 0 })
+        return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, { ...shared, tmall_wait_attempts: 0 })
       }
       return nextPhase('wait_tmall_ready', 0, shared)
     }
@@ -4447,7 +4996,7 @@
       if (!status.ready) {
         const attempts = Number(shared.tmall_wait_attempts || 0)
         if (attempts < 30) {
-          return nextPhase('wait_tmall_ready', 1000, {
+          return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
             ...shared,
             tmall_wait_attempts: attempts + 1,
             current_store: `等待天猫编辑页 ${attempts + 1}/30`,
@@ -4456,22 +5005,31 @@
         const rows = buildOutputStatusRows(shared.current_result_rows, status, '天猫编辑页未就绪')
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
-      if (status.hasReturnOldDescription) {
+      const legacyPcDetailHtml = getLegacyPcDetailHtml()
+      const newDescTemplateAvailable = hasUsableNewDescTemplate(getNewDescValue())
+      const returnOldSwitch = findReturnOldDescriptionSwitch()
+      if (returnOldSwitch && !legacyPcDetailHtml && !newDescTemplateAvailable) {
         const attempts = Number(shared.legacy_switch_attempts || 0)
-        if (attempts < 3 && clickReturnOldDescriptionSwitch()) {
-          return nextPhase('wait_tmall_ready', 2500, {
+        if (attempts < 5) {
+          const nextShared = {
             ...shared,
             legacy_switch_attempts: attempts + 1,
-            current_store: `切回旧版图文描述 ${attempts + 1}/3`,
-          })
+            current_store: `切回旧版图文描述 ${attempts + 1}/5`,
+          }
+          const cdpClick = cdpClickElement(returnOldSwitch, 'wait_tmall_ready', 2500, nextShared)
+          if (cdpClick) return cdpClick
+          if (clickReturnOldDescriptionSwitch()) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
         }
+        return failCurrentJob('检测到新版商详页，但未能切回“旧版图文描述”，已阻止继续写入和发布', '预检阻止')
       }
       if (job.block_on_style_mismatch && status.merchantCode && job.style_code && !merchantCodeMatchesStyle(status.merchantCode, job.style_code)) {
         const rows = buildOutputStatusRows(
           shared.current_result_rows,
           status,
-          `已阻止上传：页面货号 ${status.merchantCode} 与云盘款号 ${job.style_code} 不一致`,
-        ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': row['执行结果'] || '货号不一致' })
+          `已阻止上传：页面商家编码 ${status.merchantCode} 与云盘款号 ${job.style_code} 不一致`,
+        ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': row['执行结果'] || '商家编码不一致' })
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
       if (hasDownloadedPcDetailRows(shared.current_result_rows)) {
@@ -4512,7 +5070,7 @@
       const job = shared.current_job || {}
       const status = extractTmallStatus(job)
       if (!status.ready) {
-        return nextPhase('wait_tmall_ready', 1000, {
+        return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
           ...shared,
           tmall_status: status,
           current_store: '等待天猫编辑页恢复后再OCR',
@@ -4627,6 +5185,9 @@
             '备注': compact([row['备注'], String(error?.message || error)].filter(Boolean).join('；')),
           })
         }
+        if (TMALL_UPLOAD_BETWEEN_FILES_MS > 0 && index < downloaded.length - 1) {
+          await waitMs(TMALL_UPLOAD_BETWEEN_FILES_MS)
+        }
       }
 
       const uploadedByPath = new Map(uploadedRows.map(row => [row['本地文件'], row]))
@@ -4658,6 +5219,7 @@
         mainImagesGroup: getComponentValue('mainImagesGroup'),
         threeToFourImages: getComponentValue('threeToFourImages'),
         guideImageGroup: getComponentValue('guideImageGroup'),
+        descRepublicOfSell: getNewDescValue(),
         modularDesc: getComponentValue('modularDesc'),
         tmDescription: getLegacyPcDetailHtml(),
         pcDetailVisualAnchors: shared.pc_detail_visual_anchors,
@@ -4686,11 +5248,16 @@
         mainImagesGroup: applyComponentValue('mainImagesGroup', componentValues.mainImagesGroup),
         threeToFourImages: applyComponentValue('threeToFourImages', componentValues.threeToFourImages),
         guideImageGroup: applyComponentValue('guideImageGroup', componentValues.guideImageGroup),
+        descRepublicOfSell: applyFormValue('descRepublicOfSell', componentValues.descRepublicOfSell),
         modularDesc: applyComponentValue('modularDesc', componentValues.modularDesc),
         tmDescription: applyFormValue('tmDescription', componentValues.tmDescription),
       }
       if (componentValues.tmDescription !== undefined) {
         applied.tmDescriptionDom = applyLegacyPcDetailDom(componentValues.tmDescription)
+      }
+      const fullPublishMode = isFullPublishMode(shared.current_job?.execute_mode)
+      if (fullPublishMode && componentValues.descRepublicOfSell !== undefined) {
+        applied.descRepublicOfSellCommit = await commitNewDescByApi(componentValues.descRepublicOfSell, 15000)
       }
       const afterStatus = extractTmallStatus(shared.current_job || {})
       const componentApplyNote = Object.entries(applied)
@@ -4701,13 +5268,15 @@
       const replacementNote = componentValues.pcDetailReplacement?.mode === 'anchored_replace' || componentValues.pcDetailReplacement?.ok === false
         ? componentValues.pcDetailReplacement?.note
         : ''
-      const applyNote = [componentApplyNote, replacementNote].filter(Boolean).join('；')
+      const newDescCommitNote = applied.descRepublicOfSellCommit?.ok ? applied.descRepublicOfSellCommit.note : ''
+      const applyNote = [componentApplyNote, replacementNote, newDescCommitNote].filter(Boolean).join('；')
       const rows = buildOutputStatusRows(
         shared.current_result_rows,
         afterStatus,
         applyNote || '已写入天猫编辑页草稿；未点击提交发布；手机端详情仍需在页面确认导入PC详情',
       )
-      if (isFullPublishMode(shared.current_job?.execute_mode)) {
+      const pcDetailTarget = componentValues.pcDetailReplacement?.target || ''
+      if (fullPublishMode) {
         if (hasApplyFailure) {
           const failedRows = rows.map(row => ({ ...row, '执行结果': '草稿写入失败' }))
           return advanceToNextJob(failedRows, {
@@ -4717,13 +5286,14 @@
             applied_components: applied,
           })
         }
-        return nextPhase('submit_pc_publish', 800, {
+        return nextPhase('submit_pc_publish', TMALL_PAGE_WAIT_MS, {
           ...shared,
           current_result_rows: rows,
           tmall_status_after_apply: afterStatus,
           applied_components: applied,
           applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
-          applied_pc_detail_html: componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+          applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+          pc_detail_target: pcDetailTarget,
           publish_wait_attempts: 0,
           publish_stage: 'pc',
           current_store: '提交PC端详情发布',
@@ -4735,31 +5305,65 @@
         tmall_status_after_apply: afterStatus,
         applied_components: applied,
         applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
-        applied_pc_detail_html: componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+        applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+        pc_detail_target: pcDetailTarget,
       })
     }
 
     if (phase === 'submit_pc_publish' || phase === 'submit_final_publish') {
       const stage = phase === 'submit_final_publish' ? 'final' : 'pc'
-      const apiSubmit = await submitTmallPublishByApi({
-        itemId: shared.current_job?.item_id || '',
-        timeoutMs: 15000,
-        forceHttpPost: stage === 'final',
-      })
-      if (apiSubmit.ok) {
-        return nextPhase('wait_publish_result', 1500, {
+      if (TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first') {
+        const apiSubmit = await submitTmallPublishByApi({
+          itemId: shared.current_job?.item_id || '',
+          timeoutMs: 15000,
+          forceHttpPost: stage === 'final',
+        })
+        if (apiSubmit.ok) {
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
+            ...shared,
+            publish_stage: stage,
+            submit_click_attempts: 0,
+            publish_wait_attempts: 0,
+            last_submit_method: apiSubmit.method,
+            current_store: stage === 'pc'
+              ? `等待PC端API提交发布结果：${apiSubmit.method}`
+              : `等待最终API提交发布结果：${apiSubmit.method}`,
+          })
+        }
+      }
+
+      const clicked = clickSubmitPublishButton()
+      if (clicked.ok) {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           publish_stage: stage,
           submit_click_attempts: 0,
           publish_wait_attempts: 0,
-          last_submit_method: apiSubmit.method,
-          current_store: stage === 'pc'
-            ? `等待PC端API提交发布结果：${apiSubmit.method}`
-            : `等待最终API提交发布结果：${apiSubmit.method}`,
+          last_submit_method: 'dom_click',
+          current_store: stage === 'pc' ? '等待PC端DOM提交发布结果' : '等待最终DOM提交发布结果',
         })
       }
 
-      const clicked = clickSubmitPublishButton()
+      if (TMALL_ALLOW_API_SUBMIT_FALLBACK) {
+        const apiSubmit = await submitTmallPublishByApi({
+          itemId: shared.current_job?.item_id || '',
+          timeoutMs: 15000,
+          forceHttpPost: stage === 'final',
+        })
+        if (apiSubmit.ok) {
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
+            ...shared,
+            publish_stage: stage,
+            submit_click_attempts: 0,
+            publish_wait_attempts: 0,
+            last_submit_method: apiSubmit.method,
+            current_store: stage === 'pc'
+              ? `等待PC端API提交发布结果：${apiSubmit.method}`
+              : `等待最终API提交发布结果：${apiSubmit.method}`,
+          })
+        }
+      }
+
       if (!clicked.ok) {
         const attempts = Number(shared.submit_click_attempts || 0)
         if (attempts < 6) {
@@ -4771,24 +5375,45 @@
             current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布按钮重试 ${attempts + 1}/6`,
           })
         }
-        return failCurrentJob(`API提交失败：${apiSubmit.reason || '未知原因'}；且未找到${stage === 'pc' ? 'PC端' : '最终'}提交发布按钮`, '发布失败')
+        return failCurrentJob(`未找到${stage === 'pc' ? 'PC端' : '最终'}提交发布按钮，未执行API提交`, '发布失败')
       }
-      return nextPhase('wait_publish_result', 1500, {
-        ...shared,
-        publish_stage: stage,
-        submit_click_attempts: 0,
-        publish_wait_attempts: 0,
-        last_submit_method: 'dom_click_fallback',
-        current_store: stage === 'pc' ? '等待PC端提交发布结果' : '等待最终提交发布结果',
-      })
     }
 
     if (phase === 'wait_publish_result') {
       const stage = shared.publish_stage || 'pc'
       const publishStatus = extractPublishStatus(shared.current_job || {})
+      const publishText = compact([bodyText(), publishStatus.dialogText].filter(Boolean).join(' '))
+      if (detectTmallCaptchaWarning(publishText)) {
+        return failCurrentJob(
+          `${stage === 'pc' ? 'PC端' : '最终'}提交发布触发淘宝安全验证/验证码，已停止自动重试，请人工处理后再运行`,
+          '发布失败',
+        )
+      }
+      if (detectTmallSpeedLimitWarning(publishText)) {
+        const speedConfirm = clickSpeedLimitConfirmIfPresent()
+        return nextPhase('wait_publish_result', TMALL_SPEED_LIMIT_COOLDOWN_MS, {
+          ...shared,
+          publish_speed_limit_count: Number(shared.publish_speed_limit_count || 0) + 1,
+          current_store: `${stage === 'pc' ? 'PC端' : '最终'}检测到淘宝操作频率限制，冷却 ${Math.round(TMALL_SPEED_LIMIT_COOLDOWN_MS / 1000)} 秒${speedConfirm.ok ? '并关闭提示' : ''}`,
+        })
+      }
       if (publishStatus.success) {
         if (stage === 'pc') {
-          return nextPhase('reopen_after_pc_publish', 1200, {
+          if (isNewDescPcDetailTarget(shared)) {
+            const finalNote = compact([
+              'PC端新版详情已提交发布',
+              '手机端详情随新版详情同步，无需旧版手机端导入',
+              '更新完毕',
+            ].join('；'))
+            const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '更新完成', finalNote)
+            return advanceToNextJob(rows, {
+              ...shared,
+              current_result_rows: rows,
+              pc_publish_note: finalNote,
+              final_publish_status: publishStatus,
+            })
+          }
+          return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
             ...shared,
             pc_publish_note: 'PC端详情已提交发布',
             publish_wait_attempts: 0,
@@ -4807,23 +5432,25 @@
           final_publish_status: publishStatus,
         })
       }
-      const apiConfirm = confirmPublishByApiIfPresent()
-      if (apiConfirm.ok) {
-        return nextPhase('wait_publish_result', 1500, {
-          ...shared,
-          publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
-          last_confirm_method: apiConfirm.method,
-          current_store: `${stage === 'pc' ? 'PC端' : '最终'}API确认：${apiConfirm.component || ''}`,
-        })
-      }
       const confirm = clickPublishConfirmIfPresent()
       if (confirm.ok) {
-        return nextPhase('wait_publish_result', 1500, {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
           ...shared,
           publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
-          last_confirm_method: 'dom_click_fallback',
+          last_confirm_method: 'dom_click',
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布确认：${confirm.text || '确认'}`,
         })
+      }
+      if (TMALL_ALLOW_API_CONFIRM_FALLBACK) {
+        const apiConfirm = confirmPublishByApiIfPresent()
+        if (apiConfirm.ok) {
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
+            ...shared,
+            publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
+            last_confirm_method: apiConfirm.method,
+            current_store: `${stage === 'pc' ? 'PC端' : '最终'}API确认：${apiConfirm.component || ''}`,
+          })
+        }
       }
       if ((publishStatus.validationMessages || []).length) {
         return failCurrentJob(
@@ -4834,14 +5461,28 @@
 
       const attempts = Number(shared.publish_wait_attempts || 0)
       if (attempts < 12) {
-        return nextPhase('wait_publish_result', 1500, {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           publish_wait_attempts: attempts + 1,
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布等待 ${attempts + 1}/12`,
         })
       }
       if (stage === 'pc') {
-        return nextPhase('reopen_after_pc_publish', 1200, {
+        if (isNewDescPcDetailTarget(shared)) {
+          const finalNote = compact([
+            'PC端新版详情提交已触发，未识别明确成功提示',
+            '手机端详情随新版详情同步，无需旧版手机端导入',
+            '请在天猫后台确认',
+          ].join('；'))
+          const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '提交待确认', finalNote)
+          return advanceToNextJob(rows, {
+            ...shared,
+            current_result_rows: rows,
+            pc_publish_note: finalNote,
+            final_publish_status: publishStatus,
+          })
+        }
+        return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           pc_publish_note: 'PC端提交已触发，未识别明确成功提示，继续同步手机端详情',
           publish_wait_attempts: 0,
@@ -4865,6 +5506,9 @@
       const itemId = shared.current_job?.item_id || ''
       const targetUrl = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
       if (!shared.reopened_after_pc_publish) {
+        if (isTmallSubmitSuccessPage()) {
+          return reenterTmallEditorFromSuccess(shared.current_job || {}, shared)
+        }
         if (location.href.startsWith(TMALL_PUBLISH_URL) && location.href.includes(`id=${itemId}`)) {
           try {
             location.reload()
@@ -4874,7 +5518,7 @@
         } else {
           location.href = targetUrl
         }
-        return nextPhase('wait_reopened_tmall_ready', 2500, {
+        return nextPhase('wait_reopened_tmall_ready', TMALL_PAGE_WAIT_MS, {
           ...shared,
           reopened_after_pc_publish: true,
           tmall_wait_attempts: 0,
@@ -4887,9 +5531,12 @@
     if (phase === 'wait_reopened_tmall_ready') {
       const status = extractTmallStatus(shared.current_job || {})
       if (!status.ready) {
+        if (isTmallSubmitSuccessPage()) {
+          return reenterTmallEditorFromSuccess(shared.current_job || {}, shared)
+        }
         const attempts = Number(shared.tmall_wait_attempts || 0)
         if (attempts < 30) {
-          return nextPhase('wait_reopened_tmall_ready', 1000, {
+          return nextPhase('wait_reopened_tmall_ready', TMALL_PAGE_WAIT_MS, {
             ...shared,
             tmall_wait_attempts: attempts + 1,
             current_store: `等待重新进入编辑页 ${attempts + 1}/30`,
@@ -4897,7 +5544,7 @@
         }
         return failCurrentJob('PC端发布后重新进入编辑页超时，未继续同步手机端详情', '手机端同步失败')
       }
-      return nextPhase('sync_mobile_detail_api', 800, {
+      return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
         ...shared,
         tmall_wait_attempts: 0,
         current_store: '通过API同步手机端详情',

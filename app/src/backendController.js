@@ -36,6 +36,7 @@ function createBackendController(options) {
   const attempts = Math.max(1, Number(options.attempts || 20))
   const launchRetries = Math.max(0, Number(options.launchRetries || 0))
   const retryDelayMs = Math.max(1, Number(options.retryDelayMs || intervalMs))
+  const restartProbeFailures = Math.max(1, Number(options.restartProbeFailures || 3))
   const stopProcess = options.stopProcess || (() => {})
 
   let backendProcess = null
@@ -43,10 +44,20 @@ function createBackendController(options) {
   let startupFailure = null
   let ready = false
   let currentProcessWasReady = false
+  let state = 'starting'
+  let consecutiveProbeFailures = 0
 
-  function markNotReady() {
+  function setState(nextState) {
+    const normalized = String(nextState || '').trim() || 'failed'
+    if (state === normalized) return
+    state = normalized
+    sendStatus('apiState', state)
+  }
+
+  function markNotReady(nextState = 'degraded') {
     ready = false
     sendStatus('api', false)
+    setState(nextState)
   }
 
   function rememberProcess(proc) {
@@ -58,7 +69,7 @@ function createBackendController(options) {
       log(`[api] process error: ${describeError(error)}`)
       if (backendProcess === proc) backendProcess = null
       currentProcessWasReady = false
-      markNotReady()
+      markNotReady('failed')
     })
 
     proc.once('exit', (code) => {
@@ -67,7 +78,7 @@ function createBackendController(options) {
       }
       if (backendProcess === proc) backendProcess = null
       currentProcessWasReady = false
-      markNotReady()
+      markNotReady(ready ? 'degraded' : 'failed')
     })
   }
 
@@ -76,7 +87,9 @@ function createBackendController(options) {
       ready = true
       if (backendProcess) currentProcessWasReady = true
       startupFailure = null
+      consecutiveProbeFailures = 0
       sendStatus('api', true)
+      setState('ready')
     }
 
     if (await probeReady()) {
@@ -84,7 +97,7 @@ function createBackendController(options) {
         await acceptReadyBackend()
         return
       }
-      markNotReady()
+      markNotReady('restarting')
       await switchEndpoint()
     }
 
@@ -96,6 +109,7 @@ function createBackendController(options) {
         let endpointSwitched = false
         startupFailure = null
         if (!backendProcess) {
+          setState(launchAttempt > 0 ? 'restarting' : 'starting')
           try {
             const proc = await startProcess()
             if (proc) rememberProcess(proc)
@@ -110,7 +124,7 @@ function createBackendController(options) {
               await acceptReadyBackend()
               return
             }
-            markNotReady()
+            markNotReady('restarting')
             if (backendProcess) {
               const proc = backendProcess
               backendProcess = null
@@ -136,8 +150,13 @@ function createBackendController(options) {
         }
 
         if (hadReadyBackend) {
-          markNotReady()
-          throw startupFailure
+          consecutiveProbeFailures += 1
+          if (consecutiveProbeFailures < restartProbeFailures) {
+            markNotReady('degraded')
+            throw startupFailure
+          }
+          log(`[api] ready backend missed ${consecutiveProbeFailures} consecutive probes; restarting`)
+          markNotReady('restarting')
         }
 
         if (backendProcess) {
@@ -145,18 +164,21 @@ function createBackendController(options) {
           backendProcess = null
           currentProcessWasReady = false
           stopProcess(proc)
-          markNotReady()
+          markNotReady(hadReadyBackend ? 'restarting' : 'failed')
         }
 
         if (launchAttempt >= launchRetries) {
+          setState('failed')
           throw startupFailure
         }
 
         log(`[api] startup failed: ${describeError(startupFailure)}; retrying backend launch ${launchAttempt + 1}/${launchRetries}`)
         startupFailure = null
+        setState('restarting')
         await sleep(retryDelayMs)
       }
 
+      setState('failed')
       throw new Error('API server startup failed')
     })()
 
@@ -206,14 +228,17 @@ function createBackendController(options) {
     startupFailure = null
     ready = false
     currentProcessWasReady = false
+    consecutiveProbeFailures = 0
     stopProcess(proc)
     sendStatus('api', false)
+    setState('failed')
   }
 
   return {
     ensureReady,
     runWhenReady,
     stop,
+    getState: () => state,
   }
 }
 

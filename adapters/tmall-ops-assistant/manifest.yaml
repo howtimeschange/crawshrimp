@@ -75,7 +75,7 @@ tasks:
           - 备注
   - id: tmall_packaging_upload
     name: 天猫包装图片上传
-    description: 上传款号与天猫商品 ID 对照表，从森马云盘按款号下载包装图包，按 1:1 / 3:4 / 商品竖图 / PC详情分组，并对天猫商品编辑页做上传前预检；可选择上传草稿或完整提交发布并同步手机端详情
+    description: 上传款号与天猫商品 ID 对照表，从森马云盘按款号下载包装图包，按款号整理为 1:1 主图 / 3:4 主图 / 商品竖图 / 商详页；可选择仅下载图包，或完整提交发布并同步手机端详情
     script: tmall-packaging-upload.js
     entry_url: https://fmp.semirapp.com/web/index#/home/file
     tab_match_prefixes:
@@ -94,19 +94,17 @@ tasks:
             label: 当前页面（推荐）
           - value: new
             label: 全新页面
-        hint: 任务会先进入森马云盘下载图包，只有选择“上传到天猫编辑页草稿”时才跳转天猫商品编辑页。
+        hint: 任务会先进入森马云盘下载图包；只有选择“完整发布并同步手机端详情”时才跳转天猫商品编辑页并提交发布。
       - id: execute_mode
         type: radio
         label: 执行模式
         default: plan
         options:
           - value: plan
-            label: 仅下载并生成预检表（推荐）
-          - value: upload_draft
-            label: 上传到天猫编辑页草稿
+            label: 只下载图包（推荐）
           - value: publish_and_sync_mobile
             label: 完整发布并同步手机端详情
-        hint: 上传草稿模式只写入当前编辑页组件，不会提交发布；完整发布模式会优先通过天猫页面 API 提交发布，并把手机端详情按电脑端详情全图生成后再次提交。
+        hint: “只下载图包”只整理并导出本地图包与结果表，不进入天猫发布页；“完整发布并同步手机端详情”会上传图片、提交发布，并把手机端详情按电脑端详情同步后再次提交。
       - id: input_file
         type: file_excel
         label: 款号商品ID表格
@@ -236,7 +234,7 @@ tasks:
         type: directory
         label: 本地导出目录
         placeholder: "点击选择本地导出目录"
-        hint: 可选。完成后会把数据表格、网盘素材图、AI生成图复制到这里；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图全链路”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图全链路）。图片按“网盘素材图/款号_商品ID”和“AI生成图/款号_商品ID”整理，便于下次复用。
+        hint: 可选。完成后会在所选目录下为本次运行创建独立文件夹，并把数据表格、网盘素材图、AI生成图复制进去；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图全链路”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图全链路）。图片按“网盘素材图/款号_商品ID”和“AI生成图/款号_商品ID”整理，避免和历史任务混在一起。
         ui_span: third
       - id: allow_global_semir_fallback
         type: checkbox
@@ -353,9 +351,10 @@ tasks:
         ui_span: third
       - id: approval_notify_channel
         type: select
-        label: 审批通知渠道
+        label: 通知渠道
         default: dingtalk
         ui_span: third
+        hint: 审批待处理和测图任务创建结果都会按此渠道发送；选择“不发送”则两个通知都不发。
         options:
           - value: dingtalk
             label: 钉钉

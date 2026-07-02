@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sqlite3
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional
@@ -56,51 +57,673 @@ def init_db():
                 output_files TEXT DEFAULT '[]'
             )
         """)
+        _ensure_column(conn, "task_runs", "last_seen_at", "TEXT")
+        _ensure_column(conn, "task_runs", "phase", "TEXT DEFAULT ''")
+        _ensure_column(conn, "task_runs", "current_row", "INTEGER DEFAULT 0")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_task_runs_adapter_task
             ON task_runs (adapter_id, task_id)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_instances (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_uid  TEXT NOT NULL UNIQUE,
+                adapter_id    TEXT NOT NULL,
+                task_id       TEXT NOT NULL,
+                title         TEXT NOT NULL,
+                status        TEXT NOT NULL DEFAULT 'draft',
+                current_step  TEXT NOT NULL DEFAULT 'config',
+                params_json   TEXT NOT NULL DEFAULT '{}',
+                summary_json  TEXT NOT NULL DEFAULT '{}',
+                last_run_id   INTEGER,
+                archived      INTEGER NOT NULL DEFAULT 0,
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                completed_at  TEXT
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_instances_adapter_task_status
+            ON task_instances (adapter_id, task_id, status, updated_at)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_instances_updated
+            ON task_instances (updated_at)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_instance_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_uid  TEXT NOT NULL,
+                run_id        INTEGER NOT NULL,
+                purpose       TEXT NOT NULL DEFAULT 'main',
+                created_at    TEXT NOT NULL,
+                UNIQUE(instance_uid, run_id, purpose)
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_instance_runs_instance
+            ON task_instance_runs (instance_uid, created_at)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_instance_artifacts (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_uid  TEXT NOT NULL,
+                kind          TEXT NOT NULL,
+                label         TEXT NOT NULL,
+                path          TEXT NOT NULL,
+                meta_json     TEXT NOT NULL DEFAULT '{}',
+                created_at    TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_instance_artifacts_instance
+            ON task_instance_artifacts (instance_uid, created_at)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_instance_events (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_uid  TEXT NOT NULL,
+                event_type    TEXT NOT NULL,
+                message       TEXT NOT NULL,
+                meta_json     TEXT NOT NULL DEFAULT '{}',
+                created_at    TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_instance_events_instance
+            ON task_instance_events (instance_uid, created_at)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS task_schedules (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_uid       TEXT NOT NULL UNIQUE,
+                adapter_id         TEXT NOT NULL,
+                task_id            TEXT NOT NULL,
+                title              TEXT NOT NULL,
+                enabled            INTEGER NOT NULL DEFAULT 1,
+                frequency          TEXT NOT NULL,
+                time_of_day        TEXT NOT NULL,
+                weekday            INTEGER,
+                params_json        TEXT NOT NULL DEFAULT '{}',
+                notify_channel     TEXT NOT NULL DEFAULT 'dingtalk',
+                notify_template    TEXT NOT NULL DEFAULT '',
+                last_run_id        INTEGER,
+                last_instance_uid  TEXT,
+                last_status        TEXT,
+                last_error         TEXT,
+                last_triggered_at  TEXT,
+                archived           INTEGER NOT NULL DEFAULT 0,
+                created_at         TEXT NOT NULL,
+                updated_at         TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_task_schedules_adapter_task_enabled
+            ON task_schedules (adapter_id, task_id, enabled, archived, updated_at)
+        """)
         conn.commit()
+
+
+def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
+    columns = {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+    if column_name not in columns:
+        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _now_iso() -> str:
+    return datetime.now().isoformat()
+
+
+def _json_dumps(value: Any) -> str:
+    return json.dumps(value or {}, ensure_ascii=False)
+
+
+def _row_to_dict(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    return dict(row) if row else None
+
+
+def _json_loads_object(value: Any) -> dict:
+    try:
+        parsed = json.loads(value) if isinstance(value, str) else value
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def create_task_instance(adapter_id: str, task_id: str, title: str, params: Optional[Mapping[str, Any]] = None) -> dict:
+    """Insert a draft task instance and return the inserted row."""
+    now = _now_iso()
+    instance_uid = uuid.uuid4().hex
+    with _get_conn() as conn:
+        conn.execute("""
+            INSERT INTO task_instances (
+                instance_uid, adapter_id, task_id, title, status, current_step,
+                params_json, summary_json, archived, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'draft', 'config', ?, '{}', 0, ?, ?)
+        """, (
+            instance_uid,
+            str(adapter_id or "").strip(),
+            str(task_id or "").strip(),
+            str(title or "").strip() or "未命名任务",
+            _json_dumps(dict(params or {})),
+            now,
+            now,
+        ))
+        conn.commit()
+    return get_task_instance(instance_uid) or {}
+
+
+def get_task_instance(instance_uid: str) -> Optional[dict]:
+    """Return one task instance row by uid."""
+    with _get_conn() as conn:
+        row = conn.execute("""
+            SELECT *
+            FROM task_instances
+            WHERE instance_uid=?
+            LIMIT 1
+        """, (str(instance_uid or "").strip(),)).fetchone()
+        return _row_to_dict(row)
+
+
+def get_task_instance_detail(instance_uid: str) -> dict:
+    """Return one task instance plus parsed params, parsed summary, runs, artifacts, and events."""
+    uid = str(instance_uid or "").strip()
+    instance = get_task_instance(uid)
+    if not instance:
+        return {}
+
+    with _get_conn() as conn:
+        runs = conn.execute("""
+            SELECT tir.*, tr.adapter_id, tr.task_id, tr.status, tr.started_at, tr.finished_at,
+                   tr.records_count, tr.error, tr.output_files
+            FROM task_instance_runs tir
+            LEFT JOIN task_runs tr ON tr.id = tir.run_id
+            WHERE tir.instance_uid=?
+            ORDER BY tir.id DESC
+        """, (uid,)).fetchall()
+        artifacts = conn.execute("""
+            SELECT *
+            FROM task_instance_artifacts
+            WHERE instance_uid=?
+            ORDER BY id ASC
+        """, (uid,)).fetchall()
+        events = conn.execute("""
+            SELECT *
+            FROM task_instance_events
+            WHERE instance_uid=?
+            ORDER BY id ASC
+        """, (uid,)).fetchall()
+
+    detail = dict(instance)
+    detail["params"] = _json_loads_object(detail.get("params_json"))
+    detail["summary"] = _json_loads_object(detail.get("summary_json"))
+    detail["runs"] = [dict(row) for row in runs]
+    detail["artifacts"] = [dict(row) for row in artifacts]
+    detail["events"] = [dict(row) for row in events]
+    for artifact in detail["artifacts"]:
+        artifact["meta"] = _json_loads_object(artifact.get("meta_json"))
+    for event in detail["events"]:
+        event["meta"] = _json_loads_object(event.get("meta_json"))
+    return detail
+
+
+def list_task_instances(
+    status_group: str = "",
+    adapter_id: str = "",
+    task_id: str = "",
+    keyword: str = "",
+    limit: int = 100,
+) -> list[dict]:
+    """Return task instances filtered by status group and metadata."""
+    status_groups = {
+        "current": ("draft", "queued", "running", "generating", "creating", "waiting_approval"),
+        "pending": ("waiting_approval", "failed", "create_failed", "partial_failed"),
+        "history": ("completed", "stopped", "archived"),
+    }
+    clauses = []
+    params: list[Any] = []
+
+    group = str(status_group or "").strip()
+    statuses = status_groups.get(group)
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        if group == "history":
+            clauses.append(f"(status IN ({placeholders}) OR archived=1)")
+        else:
+            clauses.append(f"status IN ({placeholders})")
+            clauses.append("archived=0")
+        params.extend(statuses)
+    elif group:
+        clauses.append("status=?")
+        clauses.append("archived=0")
+        params.append(group)
+    else:
+        clauses.append("archived=0")
+
+    adapter = str(adapter_id or "").strip()
+    if adapter:
+        clauses.append("adapter_id=?")
+        params.append(adapter)
+
+    task = str(task_id or "").strip()
+    if task:
+        clauses.append("task_id=?")
+        params.append(task)
+
+    term = str(keyword or "").strip()
+    if term:
+        clauses.append("(title LIKE ? OR instance_uid LIKE ? OR task_id LIKE ?)")
+        like = f"%{term}%"
+        params.extend([like, like, like])
+
+    try:
+        safe_limit = max(1, min(int(limit), 500))
+    except Exception:
+        safe_limit = 100
+
+    where = " AND ".join(clauses) if clauses else "1=1"
+    with _get_conn() as conn:
+        rows = conn.execute(f"""
+            SELECT *
+            FROM task_instances
+            WHERE {where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+        """, [*params, safe_limit]).fetchall()
+        return [dict(row) for row in rows]
+
+
+def find_task_instance_by_approval_batch_id(batch_id: str) -> Optional[dict]:
+    """Return the first task instance whose summary stores the approval batch id."""
+    target = str(batch_id or "").strip()
+    if not target:
+        return None
+    with _get_conn() as conn:
+        rows = conn.execute("""
+            SELECT *
+            FROM task_instances
+            WHERE summary_json LIKE ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 20
+        """, (f"%{target}%",)).fetchall()
+    for row in rows:
+        item = dict(row)
+        summary = _json_loads_object(item.get("summary_json"))
+        if str(summary.get("approval_batch_id") or "").strip() == target:
+            return item
+    return None
+
+
+def update_task_instance(instance_uid: str, **fields) -> dict:
+    """Update allowed task instance fields and return the updated row."""
+    allowed = {
+        "title",
+        "status",
+        "current_step",
+        "params_json",
+        "summary_json",
+        "last_run_id",
+        "archived",
+        "completed_at",
+    }
+    updates = {}
+    for key, value in fields.items():
+        if key == "params":
+            updates["params_json"] = _json_dumps(value)
+        elif key == "summary":
+            updates["summary_json"] = _json_dumps(value)
+        elif key == "archived":
+            archived = 1 if value else 0
+            updates["archived"] = archived
+            if archived:
+                updates.setdefault("status", "archived")
+                updates.setdefault("completed_at", _now_iso())
+        elif key in allowed:
+            updates[key] = value
+
+    status = str(updates.get("status") or "").strip()
+    if status in {"completed", "stopped", "archived"} and not updates.get("completed_at"):
+        updates["completed_at"] = _now_iso()
+
+    updates["updated_at"] = _now_iso()
+    assignments = ", ".join(f"{key}=?" for key in updates.keys())
+    values = list(updates.values())
+    uid = str(instance_uid or "").strip()
+    with _get_conn() as conn:
+        conn.execute(
+            f"UPDATE task_instances SET {assignments} WHERE instance_uid=?",
+            [*values, uid],
+        )
+        conn.commit()
+    return get_task_instance(uid) or {}
+
+
+def link_task_instance_run(instance_uid: str, run_id: int, purpose: str = "main") -> None:
+    """Associate a task_runs row with a task instance."""
+    uid = str(instance_uid or "").strip()
+    rid = int(run_id)
+    now = _now_iso()
+    with _get_conn() as conn:
+        conn.execute("""
+            INSERT OR IGNORE INTO task_instance_runs (instance_uid, run_id, purpose, created_at)
+            VALUES (?, ?, ?, ?)
+        """, (uid, rid, str(purpose or "main").strip() or "main", now))
+        conn.execute("""
+            UPDATE task_instances
+            SET last_run_id=?, updated_at=?
+            WHERE instance_uid=?
+        """, (rid, now, uid))
+        conn.commit()
+
+
+def add_task_instance_artifact(
+    instance_uid: str,
+    kind: str,
+    label: str,
+    path: str,
+    meta: Optional[Mapping[str, Any]] = None,
+) -> dict:
+    """Insert an artifact row and return it."""
+    uid = str(instance_uid or "").strip()
+    with _get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO task_instance_artifacts (instance_uid, kind, label, path, meta_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+        """, (
+            uid,
+            str(kind or "").strip() or "file",
+            str(label or "").strip() or "输出文件",
+            str(path or "").strip(),
+            _json_dumps(dict(meta or {})),
+            _now_iso(),
+        ))
+        conn.execute("UPDATE task_instances SET updated_at=? WHERE instance_uid=?", (_now_iso(), uid))
+        conn.commit()
+        row = conn.execute("SELECT * FROM task_instance_artifacts WHERE id=?", (cur.lastrowid,)).fetchone()
+        return dict(row) if row else {}
+
+
+def add_task_instance_event(
+    instance_uid: str,
+    event_type: str,
+    message: str,
+    meta: Optional[Mapping[str, Any]] = None,
+) -> dict:
+    """Insert an event row and return it."""
+    uid = str(instance_uid or "").strip()
+    with _get_conn() as conn:
+        cur = conn.execute("""
+            INSERT INTO task_instance_events (instance_uid, event_type, message, meta_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+        """, (
+            uid,
+            str(event_type or "").strip() or "event",
+            str(message or "").strip(),
+            _json_dumps(dict(meta or {})),
+            _now_iso(),
+        ))
+        conn.execute("UPDATE task_instances SET updated_at=? WHERE instance_uid=?", (_now_iso(), uid))
+        conn.commit()
+        row = conn.execute("SELECT * FROM task_instance_events WHERE id=?", (cur.lastrowid,)).fetchone()
+        return dict(row) if row else {}
+
+
+def create_task_schedule(
+    adapter_id: str,
+    task_id: str,
+    title: str,
+    frequency: str,
+    time_of_day: str,
+    weekday: Optional[int] = None,
+    params: Optional[Mapping[str, Any]] = None,
+    notify_channel: str = "dingtalk",
+    notify_template: str = "",
+    enabled: bool = True,
+) -> dict:
+    """Insert a persisted schedule definition and return it."""
+    now = _now_iso()
+    schedule_uid = uuid.uuid4().hex
+    with _get_conn() as conn:
+        conn.execute("""
+            INSERT INTO task_schedules (
+                schedule_uid, adapter_id, task_id, title, enabled, frequency,
+                time_of_day, weekday, params_json, notify_channel, notify_template,
+                archived, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+        """, (
+            schedule_uid,
+            str(adapter_id or "").strip(),
+            str(task_id or "").strip(),
+            str(title or "").strip() or "未命名定时任务",
+            1 if enabled else 0,
+            str(frequency or "").strip(),
+            str(time_of_day or "").strip(),
+            weekday,
+            _json_dumps(dict(params or {})),
+            str(notify_channel or "").strip() or "dingtalk",
+            str(notify_template or "").strip(),
+            now,
+            now,
+        ))
+        conn.commit()
+    return get_task_schedule(schedule_uid) or {}
+
+
+def get_task_schedule(schedule_uid: str) -> Optional[dict]:
+    """Return one schedule definition by uid."""
+    with _get_conn() as conn:
+        row = conn.execute("""
+            SELECT *
+            FROM task_schedules
+            WHERE schedule_uid=?
+            LIMIT 1
+        """, (str(schedule_uid or "").strip(),)).fetchone()
+        return _row_to_dict(row)
+
+
+def get_task_schedule_detail(schedule_uid: str) -> dict:
+    """Return one schedule plus parsed params."""
+    schedule = get_task_schedule(schedule_uid)
+    if not schedule:
+        return {}
+    detail = dict(schedule)
+    detail["params"] = _json_loads_object(detail.get("params_json"))
+    return detail
+
+
+def list_task_schedules(
+    adapter_id: str = "",
+    task_id: str = "",
+    enabled: Optional[bool] = None,
+    keyword: str = "",
+    include_archived: bool = False,
+    limit: int = 100,
+) -> list[dict]:
+    """Return persisted schedule definitions filtered by metadata."""
+    clauses = []
+    params: list[Any] = []
+
+    if not include_archived:
+        clauses.append("archived=0")
+
+    adapter = str(adapter_id or "").strip()
+    if adapter:
+        clauses.append("adapter_id=?")
+        params.append(adapter)
+
+    task = str(task_id or "").strip()
+    if task:
+        clauses.append("task_id=?")
+        params.append(task)
+
+    if enabled is not None:
+        clauses.append("enabled=?")
+        params.append(1 if enabled else 0)
+
+    term = str(keyword or "").strip()
+    if term:
+        clauses.append("(title LIKE ? OR schedule_uid LIKE ? OR task_id LIKE ?)")
+        like = f"%{term}%"
+        params.extend([like, like, like])
+
+    try:
+        safe_limit = max(1, min(int(limit), 500))
+    except Exception:
+        safe_limit = 100
+
+    where = " AND ".join(clauses) if clauses else "1=1"
+    with _get_conn() as conn:
+        try:
+            rows = conn.execute(f"""
+                SELECT *
+                FROM task_schedules
+                WHERE {where}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ?
+            """, [*params, safe_limit]).fetchall()
+        except sqlite3.OperationalError as exc:
+            if "no such table: task_schedules" in str(exc):
+                return []
+            raise
+        return [dict(row) for row in rows]
+
+
+def update_task_schedule(schedule_uid: str, **fields) -> dict:
+    """Update allowed schedule fields and return the updated row."""
+    allowed = {
+        "title",
+        "enabled",
+        "frequency",
+        "time_of_day",
+        "weekday",
+        "params_json",
+        "notify_channel",
+        "notify_template",
+        "last_run_id",
+        "last_instance_uid",
+        "last_status",
+        "last_error",
+        "last_triggered_at",
+        "archived",
+    }
+    updates: dict[str, Any] = {}
+    for key, value in fields.items():
+        if key == "params":
+            updates["params_json"] = _json_dumps(value)
+        elif key in {"enabled", "archived"}:
+            updates[key] = 1 if value else 0
+        elif key in allowed:
+            updates[key] = value
+
+    updates["updated_at"] = _now_iso()
+    assignments = ", ".join(f"{key}=?" for key in updates.keys())
+    values = list(updates.values())
+    uid = str(schedule_uid or "").strip()
+    with _get_conn() as conn:
+        conn.execute(
+            f"UPDATE task_schedules SET {assignments} WHERE schedule_uid=?",
+            [*values, uid],
+        )
+        conn.commit()
+    return get_task_schedule(uid) or {}
+
+
+def archive_task_schedule(schedule_uid: str) -> dict:
+    """Archive a persisted schedule and disable it."""
+    return update_task_schedule(schedule_uid, archived=True, enabled=False)
+
+
+def record_task_schedule_run(
+    schedule_uid: str,
+    run_id: Optional[int] = None,
+    instance_uid: str = "",
+    status: str = "",
+    error: str = "",
+) -> dict:
+    """Store the latest execution result on a schedule definition."""
+    fields: dict[str, Any] = {
+        "last_triggered_at": _now_iso(),
+        "last_instance_uid": str(instance_uid or "").strip(),
+        "last_status": str(status or "").strip(),
+        "last_error": str(error or "").strip(),
+    }
+    if run_id is not None:
+        fields["last_run_id"] = int(run_id)
+    return update_task_schedule(schedule_uid, **fields)
 
 
 def begin_run(adapter_id: str, task_id: str) -> int:
     """Record a task run start, return run_id"""
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         cur = conn.execute("""
-            INSERT INTO task_runs (adapter_id, task_id, status, started_at)
-            VALUES (?, ?, 'running', ?)
-        """, (adapter_id, task_id, datetime.now().isoformat()))
+            INSERT INTO task_runs (adapter_id, task_id, status, started_at, last_seen_at, phase, current_row)
+            VALUES (?, ?, 'running', ?, ?, '', 0)
+        """, (adapter_id, task_id, now, now))
         conn.commit()
         return cur.lastrowid
 
 
+def heartbeat_run(run_id: int, phase: str = "", current_row: int = 0, records_count: Optional[int] = None):
+    fields = [
+        "last_seen_at=?",
+        "phase=?",
+        "current_row=?",
+    ]
+    now = datetime.now().isoformat()
+    values: list[Any] = [
+        now,
+        str(phase or "").strip(),
+        max(0, int(current_row or 0)),
+    ]
+    if records_count is not None:
+        fields.append("records_count=?")
+        values.append(max(0, int(records_count or 0)))
+    values.append(int(run_id))
+    with _get_conn() as conn:
+        conn.execute(f"""
+            UPDATE task_runs
+            SET {", ".join(fields)}
+            WHERE id=?
+        """, values)
+        conn.commit()
+
+
 def finish_run(run_id: int, records_count: int, output_files: List[str]):
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='done', finished_at=?, records_count=?, output_files=?, error=NULL
+            SET status='done', finished_at=?, last_seen_at=?, records_count=?, output_files=?, error=NULL
             WHERE id=?
-        """, (datetime.now().isoformat(), records_count, json.dumps(output_files), run_id))
+        """, (now, now, records_count, json.dumps(output_files), run_id))
         conn.commit()
 
 
 def fail_run(run_id: int, error: str):
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='error', finished_at=?, error=?
+            SET status='error', finished_at=?, last_seen_at=?, error=?
             WHERE id=?
-        """, (datetime.now().isoformat(), error, run_id))
+        """, (now, now, error, run_id))
         conn.commit()
 
 
 def stop_run(run_id: int, records_count: int, output_files: List[str], error: str = ""):
+    now = datetime.now().isoformat()
     with _get_conn() as conn:
         conn.execute("""
             UPDATE task_runs
-            SET status='stopped', finished_at=?, records_count=?, output_files=?, error=?
+            SET status='stopped', finished_at=?, last_seen_at=?, records_count=?, output_files=?, error=?
             WHERE id=?
-        """, (datetime.now().isoformat(), records_count, json.dumps(output_files), error, run_id))
+        """, (now, now, records_count, json.dumps(output_files), error, run_id))
         conn.commit()
 
 
@@ -109,9 +732,9 @@ def stop_orphaned_active_runs(error: str = "任务运行时后端已重启，已
     with _get_conn() as conn:
         cur = conn.execute("""
             UPDATE task_runs
-            SET status='stopped', finished_at=?, error=COALESCE(NULLIF(error, ''), ?)
+            SET status='stopped', finished_at=?, last_seen_at=?, error=COALESCE(NULLIF(error, ''), ?)
             WHERE status IN ('running', 'pausing', 'paused', 'stopping')
-        """, (datetime.now().isoformat(), error))
+        """, (datetime.now().isoformat(), datetime.now().isoformat(), error))
         conn.commit()
         return int(cur.rowcount or 0)
 
@@ -142,6 +765,23 @@ def get_latest_run(adapter_id: str, task_id: str) -> Optional[dict]:
             WHERE adapter_id=? AND task_id=?
             ORDER BY id DESC LIMIT 1
         """, (adapter_id, task_id)).fetchone()
+        return dict(row) if row else None
+
+
+def get_latest_task_instance_run(instance_uid: str) -> Optional[dict]:
+    """Return the latest task_runs row linked to one task instance."""
+    uid = str(instance_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute("""
+            SELECT tr.*, tir.purpose, tir.created_at AS linked_at
+            FROM task_instance_runs tir
+            LEFT JOIN task_runs tr ON tr.id = tir.run_id
+            WHERE tir.instance_uid=?
+            ORDER BY tir.id DESC
+            LIMIT 1
+        """, (uid,)).fetchone()
         return dict(row) if row else None
 
 

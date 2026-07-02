@@ -3,7 +3,7 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron')
 const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
@@ -14,6 +14,7 @@ const { createBackendController } = require('./backendController')
 const { createLifecycleController } = require('./lifecycleController')
 const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChrome')
 const { startDesktopServices } = require('./startupServices')
+const { requestBackendApi } = require('./backendApi')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 let apiPort = DEFAULT_API_PORT
@@ -687,6 +688,11 @@ function secureHandle(channel, handler) {
   ipcMain.handle(channel, trustedIpcHandler(handler))
 }
 
+function hideNativeAppMenu() {
+  if (process.platform === 'darwin') return
+  Menu.setApplicationMenu(null)
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -694,6 +700,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 620,
     titleBarStyle: 'hiddenInset',
+    autoHideMenuBar: process.platform !== 'darwin',
     backgroundColor: '#0f1117',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -702,6 +709,9 @@ function createWindow() {
     },
   })
   guardRendererNavigation(mainWindow)
+  if (process.platform !== 'darwin') {
+    mainWindow.setMenuBarVisibility(false)
+  }
 
   if (IS_DEV) {
     // Vite dev server
@@ -729,6 +739,7 @@ function spawnBackendProcess() {
     throw new Error(`api_server.py not found: ${serverScript}`)
   }
 
+  log(`[api] launch context: port=${apiPort}, data=${resolvedCrawshrimpDataDir}, scripts=${scriptsDir}, python=${pythonBin}, lock=${getBackendLockPath()}, token=${apiToken ? 'set' : 'missing'}`)
   log(`[api] starting: ${pythonBin} ${launchArgs.join(' ')}`)
   const proc = spawn(pythonBin, launchArgs, {
     cwd: scriptsDir,
@@ -739,6 +750,7 @@ function spawnBackendProcess() {
       PYTHONUTF8: '1',
       CRAWSHRIMP_PORT: String(apiPort),
       CRAWSHRIMP_DATA: resolvedCrawshrimpDataDir,
+      CRAWSHRIMP_ALLOW_DATA_FALLBACK: '1',
       CRAWSHRIMP_API_TOKEN: apiToken,
       CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID,
       ELECTRON_RUN_AS_NODE: '',
@@ -1032,52 +1044,16 @@ async function launchChrome(customPath = '') {
 // ── HTTP helper (call FastAPI) ─────────────────────────────────────────────────
 
 function apiCall(method, urlPath, body = null, options = {}) {
-  const retries = Math.max(0, Number(options.retries || 0))
-  const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 0))
-  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0))
-
-  const doRequest = () => new Promise((resolve, reject) => {
-    const bodyStr = body ? JSON.stringify(body) : null
-    const opts = {
-      hostname: '127.0.0.1',
-      port: apiPort,
-      path: urlPath,
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        [API_TOKEN_HEADER]: getApiToken(),
-        ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
-      },
-    }
-    const req = http.request(opts, (res) => {
-      let data = ''
-      res.on('data', d => data += d)
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)) } catch { resolve(data) }
-      })
-    })
-    req.on('error', reject)
-    if (timeoutMs > 0) {
-      req.setTimeout(timeoutMs, () => {
-        const error = new Error(`Request timed out after ${timeoutMs}ms`)
-        error.code = 'ETIMEDOUT'
-        req.destroy(error)
-      })
-    }
-    if (bodyStr) req.write(bodyStr)
-    req.end()
-  })
-
-  const retryableCodes = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE'])
-
-  if (options.ensureReady === false) {
-    return doRequest()
-  }
-
-  return backendController.runWhenReady(doRequest, {
-    retries,
-    retryDelayMs,
-    retryableCodes,
+  return requestBackendApi({
+    http,
+    port: apiPort,
+    token: getApiToken(),
+    tokenHeader: API_TOKEN_HEADER,
+    method,
+    urlPath,
+    body,
+    options,
+    runWhenReady: (request, runOptions) => backendController.runWhenReady(request, runOptions),
     describeFailure: describeApiCallFailure,
   })
 }
@@ -1096,7 +1072,7 @@ function probeApiReady(timeoutMs = 800) {
     const req = http.request({
       hostname: '127.0.0.1',
       port: apiPort,
-      path: '/health',
+      path: '/health?probe=1',
       method: 'GET',
       timeout: timeoutMs,
     }, (res) => {
@@ -1199,7 +1175,7 @@ async function getBackendHealth(timeoutMs = 800) {
     const req = http.request({
       hostname: '127.0.0.1',
       port: apiPort,
-      path: '/health',
+      path: '/health?probe=1',
       method: 'GET',
       timeout: timeoutMs,
     }, (res) => {
@@ -1440,6 +1416,7 @@ const lifecycleController = createLifecycleController({
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  hideNativeAppMenu()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1463,8 +1440,11 @@ app.on('before-quit', (event) => {
 
 secureHandle('get-status', async () => ({
   api:     await probeApiReady(),
+  apiState: backendController.getState(),
   chrome:  (await probeChromeCdp()).ok,
   apiPort,
+  apiBase: `http://127.0.0.1:${apiPort}`,
+  apiToken: getApiToken(),
   cdpPort: CDP_PORT,
   pythonBin: getPythonBin(),
   dev: IS_DEV,
@@ -1505,6 +1485,28 @@ secureHandle('get-tasks',       async () => apiCall('GET', '/tasks', null, {
   retries: 20,
   retryDelayMs: 500,
 }))
+secureHandle('list-task-instances', async (_, query = {}) =>
+  apiCall('GET', `/task-instances?${new URLSearchParams(query || {})}`))
+secureHandle('create-task-instance', async (_, payload) =>
+  apiCall('POST', '/task-instances', payload || {}))
+secureHandle('get-task-instance', async (_, instanceUid) =>
+  apiCall('GET', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`))
+secureHandle('update-task-instance', async (_, instanceUid, payload) =>
+  apiCall('PATCH', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`, payload || {}))
+secureHandle('run-task-instance', async (_, instanceUid, options = {}) =>
+  apiCall('POST', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}/run`, options || {}))
+secureHandle('list-task-schedules', async (_, query = {}) =>
+  apiCall('GET', `/task-schedules?${new URLSearchParams(query || {})}`))
+secureHandle('create-task-schedule', async (_, payload) =>
+  apiCall('POST', '/task-schedules', payload || {}))
+secureHandle('get-task-schedule', async (_, scheduleUid) =>
+  apiCall('GET', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`))
+secureHandle('update-task-schedule', async (_, scheduleUid, payload) =>
+  apiCall('PATCH', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`, payload || {}))
+secureHandle('delete-task-schedule', async (_, scheduleUid) =>
+  apiCall('DELETE', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`))
+secureHandle('run-task-schedule-now', async (_, scheduleUid) =>
+  apiCall('POST', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}/run-now`, {}))
 secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},
@@ -1515,18 +1517,50 @@ secureHandle('run-task', async (_, aid, tid, params, options) =>
     params: params || {},
     current_tab_id: options?.current_tab_id || '',
   }))
-secureHandle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
-secureHandle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
-secureHandle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
-secureHandle('get-task-status', async (_, aid, tid) => apiCall('GET', `/tasks/${aid}/${tid}/status`, null, {
+secureHandle('pause-task', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return uid
+    ? apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/pause`)
+    : apiCall('POST', `/tasks/${aid}/${tid}/pause`)
+})
+secureHandle('resume-task', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return uid
+    ? apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/resume`)
+    : apiCall('POST', `/tasks/${aid}/${tid}/resume`)
+})
+secureHandle('stop-task', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return uid
+    ? apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/stop`)
+    : apiCall('POST', `/tasks/${aid}/${tid}/stop`)
+})
+secureHandle('get-task-status', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return apiCall('GET', uid
+    ? `/task-instances/${encodeURIComponent(uid)}/run-status`
+    : `/tasks/${aid}/${tid}/status`, null, {
   ensureReady: false,
-}))
-secureHandle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`, null, {
+  })
+})
+secureHandle('get-task-logs', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return apiCall('GET', uid
+    ? `/task-instances/${encodeURIComponent(uid)}/logs`
+    : `/tasks/${aid}/${tid}/logs`, null, {
   ensureReady: false,
-}))
-secureHandle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
+  })
+})
+secureHandle('clear-task-logs', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return apiCall('DELETE', uid
+    ? `/task-instances/${encodeURIComponent(uid)}/logs`
+    : `/tasks/${aid}/${tid}/logs`)
+})
 
-secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`))
+secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`, null, {
+  ensureReady: false,
+}))
 secureHandle('export-data', async (_, aid, tid, fmt) => {
   try {
     const res = await apiCall('GET', `/data/${aid}/${tid}/export?format=${fmt}`)
@@ -1564,10 +1598,27 @@ secureHandle('save-tmall-approval-decisions', async (_, batchId, token, decision
   )
 })
 
+secureHandle('import-tmall-approval-reference-files', async (_, batchId, token, paths) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval-local/api/${encodeURIComponent(String(batchId || ''))}/reference-files?${approvalTokenQuery(token)}`,
+    { paths: Array.isArray(paths) ? paths : [] },
+  )
+})
+
 secureHandle('regenerate-tmall-approval-asset', async (_, batchId, token, payload) => {
   return apiCall(
     'POST',
     `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/regenerate?${approvalTokenQuery(token)}`,
+    payload || {},
+    { timeoutMs: 20 * 60 * 1000 },
+  )
+})
+
+secureHandle('generate-tmall-approval-asset', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/generate?${approvalTokenQuery(token)}`,
     payload || {},
     { timeoutMs: 20 * 60 * 1000 },
   )
@@ -1604,6 +1655,29 @@ secureHandle('save-settings', async (_, cfg) => {
   return dataDir && !sameRuntimePath(dataDir, getCrawshrimpDataDir())
     ? { ...result, restart_required: true }
     : result
+})
+
+secureHandle('patch-settings', async (_, cfg) => {
+  const plain = cfg && typeof cfg === 'object' ? { ...cfg } : {}
+  const hasDataDir = Object.prototype.hasOwnProperty.call(plain, 'data_dir')
+  let restartRequired = false
+
+  if (hasDataDir) {
+    const dataDir = resolveConfiguredDataDir(plain.data_dir || '')
+    if (dataDir) {
+      plain.data_dir = dataDir
+      preferredCrawshrimpDataDir = dataDir
+      writeDesktopConfig({ data_dir: dataDir })
+      restartRequired = !sameRuntimePath(dataDir, getCrawshrimpDataDir())
+    } else {
+      plain.data_dir = ''
+      preferredCrawshrimpDataDir = ''
+      writeDesktopConfig({ data_dir: '' })
+    }
+  }
+
+  const result = await apiCall('PATCH', '/settings', plain)
+  return restartRequired ? { ...result, restart_required: true } : result
 })
 
 secureHandle('stat-file', async (_, filePath) => {

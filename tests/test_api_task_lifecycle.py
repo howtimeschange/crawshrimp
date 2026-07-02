@@ -145,6 +145,17 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(progress["detail_completed_targets"], 100)
         self.assertEqual(progress["detail_current_target"], "SO-DETAIL-100")
 
+    async def test_bridge_call_async_times_out_external_dependency(self):
+        class SlowBridge:
+            async def get_tabs_async(self):
+                await asyncio.sleep(0.05)
+                return []
+
+        with patch("core.api_server.get_bridge", return_value=SlowBridge()):
+            with patch.dict("os.environ", {"CRAWSHRIMP_EXTERNAL_CALL_TIMEOUT_SECONDS": "0.001"}, clear=False):
+                with self.assertRaisesRegex(TimeoutError, "External dependency timed out"):
+                    await api_server._bridge_call_async("get_tabs_async", "get_tabs")
+
     async def test_tmall_ai_chain_approval_board_url_is_extracted_for_output_refs(self):
         rows = [
             {"阶段": "图片审批", "审批看板": "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit"},
@@ -304,6 +315,18 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("adapter metadata broken", result["warnings"])
         self.assertIn("scheduler unavailable", result["warnings"])
 
+    async def test_probe_health_skips_expensive_component_checks(self):
+        with patch("core.api_server.CDPBridge") as bridge_cls:
+            with patch("core.api_server.adapter_loader.list_all") as list_all:
+                with patch("core.api_server.sched_module.list_jobs") as list_jobs:
+                    result = api_server.health(probe=True)
+
+        self.assertEqual(result["status"], "ok")
+        self.assertIn("runtime", result)
+        bridge_cls.assert_not_called()
+        list_all.assert_not_called()
+        list_jobs.assert_not_called()
+
     async def test_list_tasks_includes_adapter_version(self):
         class FakeTask:
             id = "voucher_batch_create"
@@ -390,6 +413,8 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 "run_id": 1001,
                 "records": 3,
                 "phase": "collect",
+                "last_seen_at": "2026-07-02T11:23:45",
+                "current_row": 12,
             }
             api_server._run_controls["demo::live_task"] = {"task": active_task}
             api_server._run_status["demo::finished_task"] = {
@@ -419,6 +444,8 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(result["tasks"][0]["run_id"], 1001)
             self.assertEqual(result["tasks"][0]["records"], 3)
             self.assertEqual(result["tasks"][0]["phase"], "collect")
+            self.assertEqual(result["tasks"][0]["last_seen_at"], "2026-07-02T11:23:45")
+            self.assertEqual(result["tasks"][0]["current_row"], 12)
         finally:
             if scheduled_lock.locked():
                 scheduled_lock.release()

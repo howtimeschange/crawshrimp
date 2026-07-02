@@ -1,7 +1,7 @@
 <template>
   <div :class="['runner', { 'ai-chain-runner': isTmallAiImageChainTask }]">
     <!-- 页头 -->
-    <header class="runner-header">
+    <header v-if="!isTmallAiImageChainTask" class="runner-header">
       <h2>{{ task?.task_name }}</h2>
       <p v-if="task?.description" class="desc">{{ task.description }}</p>
     </header>
@@ -25,18 +25,12 @@
     </nav>
 
     <div class="runner-body">
+      <div class="runner-main-scroll">
       <!-- 参数面板 -->
       <div
         v-if="(!isTmallAiImageChainTask || aiChainActiveStep === 'config') && visibleParams.length"
         :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
       >
-        <div v-if="isTmallAiImageChainTask" class="ai-chain-panel-head">
-          <span>01</span>
-          <div>
-            <strong>任务配置</strong>
-            <small>选择导入表、提示词库、云盘路径和执行模式</small>
-          </div>
-        </div>
         <div v-if="hasParamProbeScript && (dynamicParamProbeLoading || dynamicParamProbeError)" class="probe-note">
           <span v-if="dynamicParamProbeLoading">正在探测页面筛选项…</span>
           <span v-else>{{ dynamicParamProbeError }}</span>
@@ -480,13 +474,6 @@
         v-else-if="!isTmallAiImageChainTask || aiChainActiveStep === 'config'"
         :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
       >
-        <div v-if="isTmallAiImageChainTask" class="ai-chain-panel-head">
-          <span>01</span>
-          <div>
-            <strong>任务配置</strong>
-            <small>当前任务无额外参数</small>
-          </div>
-        </div>
         <div class="action-row">
           <button
             class="run-btn"
@@ -543,13 +530,6 @@
         v-if="isTmallAiImageChainTask && aiChainActiveStep === 'approval'"
         class="ai-chain-step-panel ai-chain-approval-panel"
       >
-        <div class="ai-chain-panel-head">
-          <span>02</span>
-          <div>
-            <strong>生图看板 / 审批</strong>
-            <small>{{ approvalBoardUrl ? '查看本批次原图、AI 图和 Prompt，确认后触发创建' : '任务生图完成后会自动显示图片看板' }}</small>
-          </div>
-        </div>
         <TmallAiApprovalDrawer
           v-if="approvalBoardUrl"
           :model-value="true"
@@ -557,6 +537,8 @@
           embedded
           :show-submit-results="false"
           @batch-updated="handleApprovalBatchUpdated"
+          @submit-started="handleApprovalSubmitStarted"
+          @committed="handleApprovalCommitted"
         />
         <div v-else class="ai-chain-empty-panel">
           <strong>等待生图批次</strong>
@@ -568,11 +550,18 @@
         v-if="isTmallAiImageChainTask && aiChainActiveStep === 'create'"
         class="ai-chain-step-panel ai-chain-result-panel"
       >
-        <div class="ai-chain-panel-head">
-          <span>03</span>
-          <div>
-            <strong>实际测图任务创建结果</strong>
-            <small>{{ aiChainCreateSummary }}</small>
+        <div v-if="aiChainShowSubmitProgress" class="ai-chain-submit-progress">
+          <div class="ai-chain-submit-progress-head">
+            <strong>提交测图任务</strong>
+            <span>{{ aiChainSubmitProgressText }}</span>
+          </div>
+          <div class="ai-chain-submit-progress-bar" role="progressbar" :aria-valuenow="aiChainSubmitProgressPercent" aria-valuemin="0" aria-valuemax="100">
+            <span :style="{ width: `${aiChainSubmitProgressPercent}%` }"></span>
+          </div>
+          <div class="ai-chain-submit-progress-meta">
+            <span>已处理 {{ aiChainSubmitProgressCompleted }} / {{ aiChainSubmitProgressTotal }} 款</span>
+            <span>成功 {{ aiChainCreateCounts.succeeded }} / 失败 {{ aiChainCreateCounts.failed }}</span>
+            <span v-if="aiChainSubmitProgress.current_style">当前 {{ aiChainSubmitProgress.current_style }}</span>
           </div>
         </div>
         <div v-if="aiChainCreateRows.length" class="ai-chain-result-list">
@@ -599,6 +588,14 @@
             </div>
             <div class="ai-chain-result-note">
               <span>{{ row.执行结果 || '-' }}</span>
+              <button
+                v-if="row.测图详情URL"
+                type="button"
+                class="tmall-detail-link"
+                @click="openTmallDetailUrl(row.测图详情URL)"
+              >
+                查看详情
+              </button>
               <small v-if="row.备注">{{ row.备注 }}</small>
             </div>
           </div>
@@ -609,27 +606,10 @@
         </div>
       </section>
 
-      <!-- 运行日志 -->
-      <div class="log-panel">
-        <div class="log-header">
-          <span>运行日志</span>
-          <div class="log-actions">
-            <span v-if="outputFiles.length" class="output-count" @click="showFiles = !showFiles">
-              📁 {{ outputFiles.length }} 个输出项
-            </span>
-            <button
-              v-if="canSyncOdps && latestExcelOutput"
-              class="clear-btn sync-btn"
-              :disabled="syncingOdps"
-              @click="syncLatestOdps"
-            >
-              {{ syncingOdps ? '同步中…' : '同步至数仓' }}
-            </button>
-            <button class="clear-btn" @click="clearLogs">清空</button>
-          </div>
-        </div>
+      </div>
 
-        <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip" aria-live="polite">
+      <div class="runner-bottom-stack">
+        <div v-if="progressSummary && useEnhancedProgressUi" class="progress-strip progress-strip-enhanced" aria-live="polite">
           <div class="progress-strip-head">
             <div class="progress-strip-main">
               <span class="progress-strip-title">{{ progressSummary.title }}</span>
@@ -726,29 +706,37 @@
           <div class="progress-strip-sub">{{ progressSummary.sub }}</div>
         </div>
 
-        <!-- 输出文件列表 -->
-        <div v-if="showFiles && outputFiles.length" class="file-list">
-          <div v-for="f in outputFiles" :key="f" class="file-item">
-            <div class="file-item-main" @click="openFile(f)">
-              <span class="file-icon">{{ outputPathIcon(f) }}</span>
-              <span class="file-name">{{ fileName(f) }}</span>
-              <span class="file-open">打开 →</span>
-            </div>
+        <TaskOutputDrawer
+          :logs="logs"
+          :files="outputFiles"
+          :log-class="logClass"
+          :auto-open-on-first-log="false"
+          @clear-logs="clearLogs"
+          @open-file="openFile"
+        >
+          <template #actions>
             <button
-              v-if="canSyncOdps && isExcelFile(f)"
-              class="file-sync"
+              v-if="canSyncOdps && latestExcelOutput"
+              type="button"
+              class="task-output-sync-btn"
               :disabled="syncingOdps"
-              @click.stop="syncOdpsFiles([f])"
+              @click="syncLatestOdps"
+            >
+              {{ syncingOdps ? '同步中…' : '同步至数仓' }}
+            </button>
+          </template>
+          <template #file-actions="{ file }">
+            <button
+              v-if="canSyncOdps && isExcelFile(file)"
+              type="button"
+              class="task-output-file-sync"
+              :disabled="syncingOdps"
+              @click.stop="syncOdpsFiles([file])"
             >
               同步
             </button>
-          </div>
-        </div>
-
-        <div class="log-body" ref="logEl">
-          <div v-if="!logs.length" class="log-empty">等待任务执行…</div>
-          <div v-for="(line, i) in logs" :key="i" :class="['log-line', logClass(line)]">{{ line }}</div>
-        </div>
+          </template>
+        </TaskOutputDrawer>
       </div>
     </div>
 
@@ -881,6 +869,8 @@
       v-model="approvalDrawerOpen"
       :board-url="approvalBoardUrl"
       @batch-updated="handleApprovalBatchUpdated"
+      @submit-started="handleApprovalSubmitStarted"
+      @committed="handleApprovalCommitted"
     />
   </div>
 </template>
@@ -888,6 +878,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import TmallAiApprovalDrawer from './TmallAiApprovalDrawer.vue'
+import TaskOutputDrawer from './TaskOutputDrawer.vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
@@ -896,20 +887,21 @@ import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState
 const props = defineProps({
   adapterId: String,
   task: Object,
+  instanceUid: { type: String, default: '' },
+  initialParams: { type: Object, default: () => ({}) },
 })
-const emit = defineEmits(['status-change'])
+const emit = defineEmits(['status-change', 'instance-updated'])
 
 const values = ref({})
 const logs = ref([])
 const isRunning = ref(false)
 const lastResult = ref(null)
-const logEl = ref(null)
+const localLiveSnapshot = ref(null)
 const outputFiles = ref([])
 const approvalBoardUrl = ref('')
 const approvalBatch = ref(null)
 const approvalDrawerOpen = ref(false)
 const aiChainActiveStep = ref('config')
-const showFiles = ref(false)
 const syncingOdps = ref(false)
 const excelLoading = ref({})
 const directoryListingLoading = ref({})
@@ -958,6 +950,10 @@ let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 let runAbortToken = 0
 let dynamicParamProbeToken = 0
 let activeTaskIdentityKey = ''
+let applyingInitialTaskValues = false
+let instanceDraftSaveTimer = null
+let instanceDraftSaveTargetUid = ''
+let instanceDraftSaveParams = null
 
 function buildDefaultValues(params = []) {
   const next = {}
@@ -984,6 +980,49 @@ function buildDefaultValues(params = []) {
     else next[p.id] = p.default ?? ''
   }
   return next
+}
+
+function applyInitialParamsToValues(initialParams = {}) {
+  if (!initialParams || typeof initialParams !== 'object') return
+  const next = { ...values.value }
+  for (const p of taskParams.value || []) {
+    if (!Object.prototype.hasOwnProperty.call(initialParams, p.id)) continue
+    const value = initialParams[p.id]
+    if (isSingleTemporalParamType(p.type)) next[p.id] = value || ''
+    else if (isRangeParamType(p.type)) {
+      next[p.id + '_start'] = value?.start || ''
+      next[p.id + '_end'] = value?.end || ''
+    } else if (p.type === 'file_excel') {
+      const nextPath = value?.path || ''
+      const currentPath = next[p.id + '_path'] || ''
+      const keepCurrentPreview = nextPath && nextPath === currentPath
+      next[p.id + '_path'] = nextPath
+      next[p.id + '_rows'] = Array.isArray(value?.rows)
+        ? value.rows
+        : keepCurrentPreview && Array.isArray(next[p.id + '_rows'])
+          ? next[p.id + '_rows']
+          : []
+      next[p.id + '_headers'] = Array.isArray(value?.headers)
+        ? value.headers
+        : keepCurrentPreview && Array.isArray(next[p.id + '_headers'])
+          ? next[p.id + '_headers']
+          : []
+    } else if (p.type === 'file_images') {
+      next[p.id + '_paths'] = normalizeImagePaths(value?.paths, imageParamLimit(p))
+    } else if (isLineListParam(p)) {
+      next[p.id] = normalizeLineListRows(value, true, true)
+    } else if (isMultiFileParamType(p.type)) {
+      next[p.id + '_paths'] = normalizeFilePaths(value?.paths)
+    } else if (p.type === 'directory') {
+      next[p.id] = typeof value === 'string' ? value : value?.root || ''
+      if (p.include_file_listing) next[p.id + '_files'] = Array.isArray(initialParams[p.id + '_files']?.paths)
+        ? initialParams[p.id + '_files'].paths
+        : []
+    } else {
+      next[p.id] = value
+    }
+  }
+  values.value = next
 }
 
 function getTextareaRows(param) {
@@ -1180,6 +1219,7 @@ const taskParams = computed(() =>
 const hasParamProbeScript = computed(() =>
   !!String(props.task?.param_probe_script || '').trim()
 )
+const isInstanceMode = computed(() => !!String(props.instanceUid || '').trim())
 
 // 初始化默认值
 watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
@@ -1190,7 +1230,10 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   dynamicParamPatches.value = {}
   dynamicParamProbeLoading.value = false
   dynamicParamProbeError.value = ''
+  applyingInitialTaskValues = true
   values.value = buildDefaultValues(task.params || [])
+  applyInitialParamsToValues(props.initialParams)
+  nextTick(() => { applyingInitialTaskValues = false })
   if (pdfCropSavedTemplatesLoaded.value) applyDefaultPdfCropTemplatesToValues()
   templateFeedback.value = {}
   // 切换 task 时保留/恢复历史日志，不清空
@@ -1202,21 +1245,23 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   syncingOdps.value = false
   isRunning.value = false
   lastResult.value = null
+  localLiveSnapshot.value = null
   runStage.value = ''
   // 异步加载该任务的历史日志
   nextTick(async () => {
     try {
-      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id)
+      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id, props.instanceUid)
       if (logR.logs) logs.value = logR.logs
-      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id)
+      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id, props.instanceUid)
       const live = taskStatus?.live
       const last = taskStatus?.last_run
       if (live && isTaskActiveStatus(live.status)) {
+        applyLocalLiveStatus(live)
         isRunning.value = true
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
       }
-      if (last?.output_files) {
+      if (isInstanceMode.value || last?.output_files) {
         await refreshOutputFiles()
       }
       scrollToBottom()
@@ -1226,6 +1271,17 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
     }
   })
 }, { immediate: true })
+
+watch(() => props.initialParams, (next) => {
+  if (!props.task) return
+  applyingInitialTaskValues = true
+  applyInitialParamsToValues(next)
+  nextTick(() => { applyingInitialTaskValues = false })
+}, { deep: true })
+
+watch(values, () => {
+  scheduleInstanceDraftParamSave()
+}, { deep: true })
 
 const executeModeParam = computed(() =>
   taskParams.value.find(p =>
@@ -1252,8 +1308,11 @@ const autoPrecheckNote = computed(() =>
   props.task?.auto_precheck_note || '执行前会自动做 Excel 预检'
 )
 
-const liveStatus = computed(() => props.task?.live?.status || '')
-const liveProgress = computed(() => props.task?.live || {})
+const liveProgress = computed(() => ({
+  ...(props.task?.live || {}),
+  ...(localLiveSnapshot.value || {}),
+}))
+const liveStatus = computed(() => liveProgress.value?.status || '')
 const paramsGridClass = computed(() =>
   props.adapterId === 'shopee-webchat-bulk-reply' ? 'params-grid-shopee-bulk' : ''
 )
@@ -1275,6 +1334,7 @@ const aiChainAiAssets = computed(() =>
 const aiChainCreateRows = computed(() =>
   (approvalBatch.value?.submit_result_rows || []).filter(row => row?.阶段 === '天猫上传/创建测图任务')
 )
+const aiChainSubmitProgress = computed(() => approvalBatch.value?.submit_progress || {})
 const aiChainCreateStatus = computed(() => {
   const status = String(approvalBatch.value?.status || '').trim()
   if (status === 'submitted' && aiChainCreateRows.value.some(row => String(row?.执行结果 || '').includes('失败'))) {
@@ -1293,33 +1353,102 @@ const aiChainCreateCounts = computed(() => {
     failed: Number.isFinite(failed) ? failed : 0,
   }
 })
+const aiChainSubmitProgressTotal = computed(() => {
+  const total = Number(aiChainSubmitProgress.value?.total || 0)
+  if (Number.isFinite(total) && total > 0) return total
+  return aiChainCreateCounts.value.attempted || aiChainCreateRows.value.length
+})
+const aiChainSubmitProgressCompleted = computed(() => {
+  const completed = Number(aiChainSubmitProgress.value?.completed ?? aiChainSubmitProgress.value?.attempted ?? 0)
+  if (Number.isFinite(completed) && completed > 0) return Math.min(completed, aiChainSubmitProgressTotal.value || completed)
+  return aiChainCreateCounts.value.attempted || aiChainCreateRows.value.length
+})
+const aiChainSubmitProgressPercent = computed(() => {
+  const total = aiChainSubmitProgressTotal.value
+  if (!total) return 0
+  return Math.max(0, Math.min(100, Math.round((aiChainSubmitProgressCompleted.value / total) * 100)))
+})
+const aiChainShowSubmitProgress = computed(() =>
+  aiChainSubmitProgressTotal.value > 0 || ['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'].includes(aiChainCreateStatus.value)
+)
+const aiChainSubmitProgressText = computed(() => {
+  const progress = aiChainSubmitProgress.value || {}
+  const message = String(progress.message || '').trim()
+  if (message) return message
+  if (aiChainCreateStatus.value === 'submitting') return '正在提交已确认图片并创建测图任务'
+  if (aiChainCreateStatus.value === 'created') return '全部测图任务已提交'
+  if (['partial_failed', 'create_failed'].includes(aiChainCreateStatus.value)) return '提交完成，存在失败款'
+  return aiChainCreateSummary.value
+})
+const aiChainCreateStartedStatuses = new Set(['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainWorkflowStatuses = new Set(['pending_approval', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainLifecycle = computed(() => {
+  const createStatus = aiChainCreateStatus.value
+  const aiTotal = aiChainAiAssets.value.length
+  const approved = aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
+  const rejected = aiChainAiAssets.value.filter(asset => asset.status === 'rejected').length
+  const pending = aiChainAiAssets.value.filter(asset => !['approved', 'rejected'].includes(asset.status)).length
+  const hasBatchPayload = Boolean(approvalBatch.value?.batch_id || approvalBatch.value?.items?.length || createStatus)
+  const createStarted = aiChainCreateRows.value.length > 0 || aiChainCreateStartedStatuses.has(createStatus)
+  const generationDone = aiTotal > 0 || createStarted
+  const approvalStarted = aiTotal > 0 || (aiChainWorkflowStatuses.has(createStatus) && generationDone)
+  const approvalDone = createStarted || (aiTotal > 0 && pending === 0 && approved > 0)
+  const approvalBlocked = aiTotal > 0 && pending === 0 && approved <= 0 && rejected > 0
+  return {
+    aiTotal,
+    approved,
+    rejected,
+    pending,
+    hasBatchPayload,
+    createStatus,
+    createStarted,
+    generationDone,
+    approvalStarted,
+    approvalDone,
+    approvalBlocked,
+  }
+})
 const aiChainCreateSummary = computed(() => {
+  const lifecycle = aiChainLifecycle.value
   if (!approvalBoardUrl.value) return '等待审批批次生成'
+  if (!lifecycle.generationDone && lifecycle.hasBatchPayload) return '等待 AI 图生成'
+  if (!lifecycle.generationDone) return '审批批次读取中'
+  if (lifecycle.createStatus === 'submitting') {
+    return String(aiChainSubmitProgress.value?.message || '').trim() || `提交 ${aiChainSubmitProgressCompleted.value}/${aiChainSubmitProgressTotal.value || '?'} 款`
+  }
   if (!aiChainCreateRows.value.length) return '确认图片后触发上传和创建'
   const counts = aiChainCreateCounts.value
   return `尝试 ${counts.attempted || aiChainCreateRows.value.length} 款 / 成功 ${counts.succeeded} / 失败 ${counts.failed}`
 })
 const aiChainSteps = computed(() => {
-  const approved = aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
-  const rejected = aiChainAiAssets.value.filter(asset => asset.status === 'rejected').length
-  const pending = aiChainAiAssets.value.filter(asset => !['approved', 'rejected'].includes(asset.status)).length
-  const createStatus = aiChainCreateStatus.value
+  const lifecycle = aiChainLifecycle.value
+  const createStatus = lifecycle.createStatus
   return [
     {
       id: 'config',
       index: '01',
       title: '任务配置',
-      detail: approvalBoardUrl.value || isRunning.value ? '已启动本批次' : '填写导入表、提示词库和执行模式',
-      state: approvalBoardUrl.value || isRunning.value ? 'done' : 'active',
+      detail: lifecycle.generationDone || lifecycle.createStarted
+        ? '已生成本批次'
+        : isRunning.value
+          ? '任务执行中'
+          : '填写导入表、提示词库和执行模式',
+      state: lifecycle.generationDone || lifecycle.createStarted ? 'done' : 'active',
     },
     {
       id: 'approval',
       index: '02',
       title: '生图看板 / 审批',
-      detail: approvalBoardUrl.value
-        ? `AI 图 ${aiChainAiAssets.value.length} 张，确认 ${approved} / 舍弃 ${rejected} / 待定 ${pending}`
+      detail: lifecycle.generationDone
+        ? `AI 图 ${lifecycle.aiTotal} 张，确认 ${lifecycle.approved} / 舍弃 ${lifecycle.rejected} / 待定 ${lifecycle.pending}`
         : '生图完成后显示图片看板',
-      state: approvalBoardUrl.value ? (pending > 0 ? 'active' : 'done') : 'pending',
+      state: lifecycle.approvalDone
+        ? 'done'
+        : lifecycle.approvalBlocked
+          ? 'error'
+          : lifecycle.approvalStarted || isRunning.value
+            ? 'active'
+            : 'pending',
     },
     {
       id: 'create',
@@ -1330,14 +1459,12 @@ const aiChainSteps = computed(() => {
         ? 'done'
         : ['partial_failed', 'create_failed'].includes(createStatus)
           ? 'error'
-          : 'pending',
+          : lifecycle.createStarted
+            ? 'active'
+            : 'pending',
     },
   ]
 })
-function hasAiChainCreateRows(batch) {
-  return (batch?.submit_result_rows || []).some(row => row?.阶段 === '天猫上传/创建测图任务')
-}
-
 function setAiChainActiveStep(stepId) {
   const next = String(stepId || '').trim()
   if (!['config', 'approval', 'create'].includes(next)) return
@@ -1886,6 +2013,37 @@ function buildRunParams(overrides = {}) {
   return JSON.parse(JSON.stringify({ ...params, ...overrides }))
 }
 
+function preservedTechnicalInstanceParams() {
+  return Object.fromEntries(Object.entries(props.initialParams || {})
+    .filter(([key]) => String(key || '').startsWith('__')))
+}
+
+function scheduleInstanceDraftParamSave() {
+  if (!isInstanceMode.value || !props.task || applyingInitialTaskValues || isRunning.value) return
+  if (instanceDraftSaveTimer) clearTimeout(instanceDraftSaveTimer)
+  instanceDraftSaveTargetUid = String(props.instanceUid || '').trim()
+  instanceDraftSaveParams = buildRunParams(preservedTechnicalInstanceParams())
+  instanceDraftSaveTimer = setTimeout(() => {
+    const targetUid = instanceDraftSaveTargetUid
+    const params = instanceDraftSaveParams
+    instanceDraftSaveTimer = null
+    instanceDraftSaveTargetUid = ''
+    instanceDraftSaveParams = null
+    void saveInstanceDraftParamsNow(targetUid, params)
+  }, 300)
+}
+
+async function saveInstanceDraftParamsNow(targetUid = String(props.instanceUid || '').trim(), paramsSnapshot = null) {
+  if (!targetUid || !isInstanceMode.value || !props.task || isRunning.value) return
+  try {
+    await window.cs.updateTaskInstance(targetUid, {
+      params: paramsSnapshot || buildRunParams(preservedTechnicalInstanceParams()),
+    })
+  } catch (error) {
+    console.warn('保存任务草稿参数失败', error)
+  }
+}
+
 async function resolveCurrentTabId(params) {
   let currentTabId = ''
   if (String(params.mode || '').trim().toLowerCase() === 'current') {
@@ -1903,16 +2061,25 @@ function resetRunUi() {
   approvalBoardUrl.value = ''
   approvalBatch.value = null
   approvalDrawerOpen.value = false
+  localLiveSnapshot.value = null
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
-  showFiles.value = false
   syncingOdps.value = false
+}
+
+function applyLocalLiveStatus(status) {
+  if (!status?.status) return
+  localLiveSnapshot.value = {
+    ...(localLiveSnapshot.value || props.task?.live || {}),
+    ...status,
+  }
 }
 
 async function pauseCurrentTask() {
   if (!isRunning.value || liveStatus.value !== 'running') return
   try {
-    await window.cs.pauseTask(props.adapterId, props.task.task_id)
+    await window.cs.pauseTask(props.adapterId, props.task.task_id, props.instanceUid)
     logs.value.push(`[${now()}] 已发送暂停指令`)
+    applyLocalLiveStatus({ status: 'pausing', run_id: currentRunId })
     emit('status-change', { status: 'pausing', run_id: currentRunId })
     scrollToBottom()
   } catch (e) {
@@ -1923,8 +2090,9 @@ async function pauseCurrentTask() {
 async function resumeCurrentTask() {
   if (!isRunning.value || !['paused', 'pausing'].includes(liveStatus.value)) return
   try {
-    await window.cs.resumeTask(props.adapterId, props.task.task_id)
+    await window.cs.resumeTask(props.adapterId, props.task.task_id, props.instanceUid)
     logs.value.push(`[${now()}] 已发送继续指令`)
+    applyLocalLiveStatus({ status: 'running', run_id: currentRunId })
     emit('status-change', { status: 'running', run_id: currentRunId })
     scrollToBottom()
   } catch (e) {
@@ -1935,8 +2103,9 @@ async function resumeCurrentTask() {
 async function stopCurrentTask() {
   if (!isRunning.value || liveStatus.value === 'stopping') return
   try {
-    await window.cs.stopTask(props.adapterId, props.task.task_id)
+    await window.cs.stopTask(props.adapterId, props.task.task_id, props.instanceUid)
     logs.value.push(`[${now()}] 已发送停止指令`)
+    applyLocalLiveStatus({ status: 'stopping', run_id: currentRunId })
     emit('status-change', { status: 'stopping', run_id: currentRunId })
     scrollToBottom()
   } catch (e) {
@@ -1946,14 +2115,24 @@ async function stopCurrentTask() {
 
 async function startTaskRun(params, pendingMessage) {
   const currentTabId = await resolveCurrentTabId(params)
-  const r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
-    current_tab_id: currentTabId,
-  })
+  let r
+  if (props.instanceUid) {
+    await window.cs.updateTaskInstance(props.instanceUid, { params })
+    r = await window.cs.runTaskInstance(props.instanceUid, {
+      params,
+      current_tab_id: currentTabId,
+    })
+  } else {
+    r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
+      current_tab_id: currentTabId,
+    })
+  }
   if (!r.ok) throw new Error(r.message || JSON.stringify(r))
   logs.value.push(`[${now()}] ${pendingMessage}`)
+  applyLocalLiveStatus({ status: 'running' })
   emit('status-change', { status: 'running' })
   await new Promise(res => setTimeout(res, 600))
-  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
+  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, props.instanceUid)
   currentRunId = initStatus?.live?.run_id ?? initStatus?.last_run?.id ?? null
   const token = runAbortToken
   return await new Promise((resolve) => {
@@ -1974,12 +2153,15 @@ async function startTaskRun(params, pendingMessage) {
 }
 
 async function pollStatusOnce() {
-  const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
+  const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, props.instanceUid)
   const live = r.live
-  const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id)
+  const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id, props.instanceUid)
 
   if (logR.logs) logs.value = logR.logs
-  if (live) emit('status-change', live)
+  if (live) {
+    applyLocalLiveStatus(live)
+    emit('status-change', live)
+  }
   scrollToBottom()
 
   // live 有值且是当前任务正在跑 → 继续等
@@ -1996,6 +2178,7 @@ async function pollStatusOnce() {
     if (isTaskActiveStatus(last.status)) return null
     // last_run 是当前任务且已完成 → 用 last 作为结果
     const syntheticLive = { status: last.status, records: last.records_count, error: last.error, run_id: last.id }
+    applyLocalLiveStatus(syntheticLive)
     return syntheticLive
   }
 
@@ -2005,10 +2188,27 @@ async function pollStatusOnce() {
 }
 
 function scrollToBottom() {
-  nextTick(() => { if (logEl.value) logEl.value.scrollTop = logEl.value.scrollHeight })
+  // The reusable output drawer owns log auto-scroll.
 }
 
 async function refreshOutputFiles() {
+  if (isInstanceMode.value) {
+    const detail = await window.cs.getTaskInstance(props.instanceUid)
+    const artifactFiles = (detail?.artifacts || [])
+      .map(artifact => artifact?.path)
+      .filter(Boolean)
+    const summaryFiles = Array.isArray(detail?.summary?.output_files)
+      ? detail.summary.output_files.map(file => String(file || '').trim()).filter(Boolean)
+      : []
+    const allFiles = Array.from(new Set([...artifactFiles, ...summaryFiles]))
+    const boardUrl = String(detail?.summary?.approval_board_url || '').trim()
+    if (boardUrl) allFiles.push(boardUrl)
+    outputFiles.value = visibleOutputFiles(allFiles)
+    approvalBoardUrl.value = findApprovalBoardUrl(allFiles, detail?.summary || null)
+    if (!approvalBoardUrl.value) approvalBatch.value = null
+    return allFiles
+  }
+
   const dataR = await window.cs.getData(props.adapterId, props.task.task_id)
   if (!dataR.runs?.[0]?.output_files) return []
   try {
@@ -2019,7 +2219,6 @@ async function refreshOutputFiles() {
     outputFiles.value = visibleOutputFiles(allFiles)
     approvalBoardUrl.value = findApprovalBoardUrl(allFiles)
     if (!approvalBoardUrl.value) approvalBatch.value = null
-    showFiles.value = outputFiles.value.length > 0
     return allFiles
   } catch {
     return []
@@ -2037,11 +2236,13 @@ async function finishRun(result, options = {}) {
   } else {
     currentRunId = null
   }
+  applyLocalLiveStatus(result)
   emit('status-change', result)
 
   if (result.status === 'done') {
     const files = await refreshOutputFiles()
     approvalBoardUrl.value = findApprovalBoardUrl(files, result)
+    if (isInstanceMode.value) emit('instance-updated')
     if (options.message) {
       lastResult.value = { ok: !!options.ok, msg: options.message }
     } else {
@@ -2049,11 +2250,13 @@ async function finishRun(result, options = {}) {
     }
   } else if (result.status === 'stopped') {
     await refreshOutputFiles()
+    if (isInstanceMode.value) emit('instance-updated')
     lastResult.value = {
       ok: false,
       msg: options.message || `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果`,
     }
   } else if (result.status === 'error') {
+    if (isInstanceMode.value) emit('instance-updated')
     lastResult.value = { ok: false, msg: options.message || `✗ 失败: ${result.error || '未知错误'}` }
   }
 }
@@ -2186,7 +2389,7 @@ async function runTaskAndSyncOdps() {
 async function clearLogs() {
   logs.value = []
   try {
-    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id)
+    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id, props.instanceUid)
   } catch {}
 }
 
@@ -2221,6 +2424,12 @@ function openFile(path) {
   window.cs.openFile(path)
 }
 
+function openTmallDetailUrl(url) {
+  const target = String(url || '').trim()
+  if (!target) return
+  window.cs.openFile(target)
+}
+
 function openApprovalDrawer() {
   if (!approvalBoardUrl.value) return
   if (isTmallAiImageChainTask.value) return
@@ -2229,9 +2438,16 @@ function openApprovalDrawer() {
 
 function handleApprovalBatchUpdated(payload) {
   approvalBatch.value = payload || null
-  if (isTmallAiImageChainTask.value && hasAiChainCreateRows(payload)) {
-    aiChainActiveStep.value = 'create'
-  }
+}
+
+function handleApprovalSubmitStarted(payload) {
+  handleApprovalBatchUpdated(payload)
+  aiChainActiveStep.value = 'create'
+}
+
+function handleApprovalCommitted(payload) {
+  handleApprovalBatchUpdated(payload)
+  if (isInstanceMode.value) emit('instance-updated')
 }
 
 function isHttpUrl(path) {
@@ -2254,16 +2470,6 @@ function findApprovalBoardUrl(files = [], result = null) {
 
 function isExcelFile(path) {
   return /\.(xlsx|xlsm|xls)$/i.test(String(path || ''))
-}
-
-function outputPathIcon(path) {
-  const text = String(path || '').trim()
-  const lower = text.toLowerCase()
-  if (isHttpUrl(text)) return '🔗'
-  if (isExcelFile(text)) return '📊'
-  if (lower.endsWith('.zip')) return '🗜'
-  if (!/\.[^\\/]+$/.test(text)) return '📁'
-  return '📄'
 }
 
 async function syncOdpsFiles(paths) {
@@ -3126,6 +3332,15 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearInterval(pollTimer)
+  if (instanceDraftSaveTimer) {
+    clearTimeout(instanceDraftSaveTimer)
+    const targetUid = instanceDraftSaveTargetUid || String(props.instanceUid || '').trim()
+    const params = instanceDraftSaveParams
+    instanceDraftSaveTimer = null
+    instanceDraftSaveTargetUid = ''
+    instanceDraftSaveParams = null
+    void saveInstanceDraftParamsNow(targetUid, params)
+  }
   stopPdfCropInteraction()
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('keydown', handleDocumentKeydown)
@@ -3145,13 +3360,38 @@ onUnmounted(() => {
 .runner-body {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+}
+.runner-main-scroll {
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+}
+.runner-bottom-stack {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: min(44vh, 460px);
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
 }
 .ai-chain-runner .runner-body {
-  padding: 16px 18px 24px;
-  display: grid;
-  gap: 16px;
   background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+}
+.ai-chain-runner .runner-main-scroll {
+  padding: 16px 18px 0;
+  display: block;
+}
+.ai-chain-runner .runner-bottom-stack {
+  padding: 10px 18px 12px;
 }
 .ai-chain-tabs {
   padding: 10px 18px 0;
@@ -3164,17 +3404,17 @@ onUnmounted(() => {
 .ai-chain-tab {
   appearance: none;
   min-width: 0;
-  min-height: 74px;
+  min-height: 64px;
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: 12px 12px 0 0;
   background: transparent;
   color: inherit;
-  padding: 10px 12px 12px;
+  padding: 9px 12px 10px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   gap: 10px;
-  align-items: start;
+  align-items: center;
   text-align: left;
   cursor: pointer;
   transition: background .16s, border-color .16s, transform .16s;
@@ -3209,6 +3449,7 @@ onUnmounted(() => {
 .ai-chain-tab-index {
   width: 32px;
   height: 32px;
+  align-self: center;
   border-radius: 10px;
   display: grid;
   place-items: center;
@@ -3239,18 +3480,11 @@ onUnmounted(() => {
 .ai-chain-step-panel {
   border: 1px solid var(--border);
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
   background: var(--bg2);
 }
-.ai-chain-runner .params-panel,
-.ai-chain-runner .log-panel {
+.ai-chain-runner .params-panel {
   border-bottom: 0;
-}
-.ai-chain-runner .log-panel {
-  min-height: 240px;
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  background: var(--bg2);
 }
 .ai-chain-panel-head {
   display: flex;
@@ -3287,13 +3521,9 @@ onUnmounted(() => {
 }
 .ai-chain-approval-panel,
 .ai-chain-result-panel {
-  padding: 20px 24px;
+  padding: 12px 18px;
   display: grid;
-  gap: 16px;
-}
-.ai-chain-approval-panel .ai-chain-panel-head,
-.ai-chain-result-panel .ai-chain-panel-head {
-  margin: -20px -24px 0;
+  gap: 12px;
 }
 .ai-chain-empty-panel {
   border: 1px dashed var(--border);
@@ -3314,6 +3544,50 @@ onUnmounted(() => {
 .ai-chain-result-list {
   display: grid;
   gap: 10px;
+}
+.ai-chain-submit-progress {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg3);
+  padding: 12px;
+  display: grid;
+  gap: 9px;
+}
+.ai-chain-submit-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.ai-chain-submit-progress-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.ai-chain-submit-progress-head span {
+  color: var(--text3);
+  font-size: 12px;
+  text-align: right;
+}
+.ai-chain-submit-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .07);
+}
+.ai-chain-submit-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f97316, #22c55e);
+  transition: width .22s ease;
+}
+.ai-chain-submit-progress-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .ai-chain-result-row {
   border: 1px solid var(--border);
@@ -3350,6 +3624,22 @@ onUnmounted(() => {
 .ai-chain-result-note span {
   color: var(--text);
   font-weight: 800;
+}
+.tmall-detail-link {
+  display: inline-block;
+  margin-top: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--orange);
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+.tmall-detail-link:hover {
+  text-decoration: underline;
 }
 .ai-chain-result-note small {
   margin-top: 5px;
@@ -3678,25 +3968,13 @@ onUnmounted(() => {
 .result-badge.ok  { background: rgba(74,222,128,0.12); color: #4ade80; }
 .result-badge.err { background: rgba(248,113,113,0.12); color: #f87171; }
 
-/* 日志面板 */
-.log-panel {
-  min-height: 280px;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.log-header {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 8px 16px; background: var(--bg2); border-bottom: 1px solid var(--border);
-}
-.log-header > span { font-size: 12px; color: var(--text2); font-weight: 600; }
-.log-actions { display: flex; align-items: center; gap: 12px; }
 .progress-strip {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border);
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
   background: linear-gradient(180deg, rgba(255,106,41,0.08), rgba(255,106,41,0.03));
 }
 .progress-strip-head {
@@ -3746,7 +4024,9 @@ onUnmounted(() => {
   gap: 10px;
 }
 .progress-stage-stack {
-  gap: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 .progress-track {
   display: flex;
@@ -3767,7 +4047,7 @@ onUnmounted(() => {
 }
 .progress-strip-bar {
   position: relative;
-  height: 8px;
+  height: 6px;
   border-radius: 999px;
   overflow: hidden;
   background: rgba(255,255,255,0.08);
@@ -3801,9 +4081,10 @@ onUnmounted(() => {
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 12px 13px;
-  border-radius: 14px;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 10px;
   border: 1px solid rgba(255,255,255,0.06);
   background:
     linear-gradient(180deg, rgba(255,255,255,0.035), rgba(255,255,255,0.018)),
@@ -3840,7 +4121,7 @@ onUnmounted(() => {
 .progress-stage-card-head {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 5px;
 }
 .progress-stage-card-kicker {
   display: flex;
@@ -3857,7 +4138,7 @@ onUnmounted(() => {
 .progress-stage-card-status {
   font-size: 11px;
   line-height: 1;
-  padding: 5px 8px;
+  padding: 4px 7px;
   border-radius: 999px;
   color: var(--text2);
   background: rgba(255,255,255,0.06);
@@ -3869,7 +4150,11 @@ onUnmounted(() => {
   gap: 12px;
 }
 .progress-stage-card-main {
-  font-size: 19px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 15px;
   font-weight: 800;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -3891,16 +4176,23 @@ onUnmounted(() => {
 .progress-stage-card-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px 14px;
-  font-size: 12px;
+  gap: 4px 10px;
+  font-size: 11px;
   color: var(--text2);
+}
+.progress-stage-card-meta span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .progress-stage-bar {
   position: relative;
   z-index: 1;
 }
 .progress-strip-sub {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text2);
   text-align: right;
   white-space: nowrap;
@@ -3912,61 +4204,6 @@ onUnmounted(() => {
   50% { transform: translateX(90%); }
   100% { transform: translateX(240%); }
 }
-.output-count {
-  font-size: 11px; color: var(--orange); cursor: pointer;
-  padding: 2px 8px; border-radius: 5px; background: var(--orange-bg);
-}
-.clear-btn {
-  font-size: 11px; color: var(--text3); background: transparent; border: none;
-  padding: 2px 8px; border-radius: 5px;
-}
-.clear-btn:hover { color: var(--text2); background: var(--bg3); }
-.sync-btn { color: #86efac; border: 1px solid rgba(74,222,128,0.18); }
-.sync-btn:hover:not(:disabled) { color: #bbf7d0; background: rgba(74,222,128,0.08); }
-.sync-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-
-.file-list {
-  background: var(--bg3); border-bottom: 1px solid var(--border);
-  padding: 8px 16px; display: flex; flex-direction: column; gap: 4px;
-}
-.file-item {
-  display: flex; align-items: center; gap: 8px;
-  padding: 6px 10px; border-radius: 7px;
-  transition: background 0.1s;
-}
-.file-item:hover { background: var(--bg2); }
-.file-item-main {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-.file-icon { font-size: 14px; }
-.file-name { flex: 1; min-width: 0; font-size: 12px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.file-open { font-size: 11px; color: var(--orange); }
-.file-sync {
-  border: 1px solid rgba(74,222,128,0.25);
-  background: rgba(74,222,128,0.06);
-  color: #86efac;
-  border-radius: 6px;
-  padding: 4px 9px;
-  font-size: 11px;
-}
-.file-sync:disabled { opacity: 0.45; cursor: not-allowed; }
-.file-sync:hover:not(:disabled) { background: rgba(74,222,128,0.12); }
-
-.log-body {
-  flex: 1; min-height: 0; overflow-y: auto; padding: 12px 16px;
-  font-family: 'Menlo', 'Monaco', monospace; font-size: 12px; line-height: 1.7;
-}
-.log-empty { color: var(--text3); text-align: center; padding: 40px 0; }
-.log-line { color: var(--text2); white-space: pre-wrap; word-break: break-all; }
-.log-line.ok   { color: #4ade80; }
-.log-line.err  { color: #f87171; }
-.log-line.warn { color: #fbbf24; }
-
 /* 文件选择控件 */
 .file-picker { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .file-chosen {
@@ -4416,7 +4653,10 @@ onUnmounted(() => {
 }
 
 @media (max-width: 900px) {
-  .ai-chain-runner .runner-body {
+  .ai-chain-runner .runner-main-scroll {
+    padding: 12px 12px 0;
+  }
+  .ai-chain-runner .runner-bottom-stack {
     padding: 12px;
   }
   .ai-chain-approval-panel,
@@ -4432,6 +4672,9 @@ onUnmounted(() => {
   }
   .param-span-half,
   .param-span-third { grid-column: span 1; }
+  .progress-stage-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
   .progress-stage-card-kicker,
   .progress-stage-card-mainline {
     flex-direction: column;

@@ -37,10 +37,20 @@ test('desktop backend compatibility requires the current Electron launch identit
 
   assert.match(main, /const BACKEND_INSTANCE_ID = crypto\.randomUUID\(\)/)
   assert.match(main, /CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID/)
+  assert.match(main, /path: '\/health\?probe=1'/)
   assert.match(main, /const runtimeInstanceId = String\(runtime\.backend_instance_id \|\| ''\)/)
   assert.match(main, /if \(runtimeInstanceId !== BACKEND_INSTANCE_ID\) return false/)
   assert.match(main, /if \(runtime\.owns_backend_instance !== true\) return false/)
   assert.match(apiServer, /"backend_instance_id": str\(os\.environ\.get\("CRAWSHRIMP_BACKEND_INSTANCE_ID"\) or ""\)/)
+})
+
+test('desktop backend readiness uses lightweight health probe', () => {
+  const main = readRepoFile('app/src/main.js')
+  const apiServer = readRepoFile('core/api_server.py')
+
+  assert.match(main, /function probeApiReady\(timeoutMs = 800\)[\s\S]*path: '\/health\?probe=1'/)
+  assert.match(main, /async function getBackendHealth\(timeoutMs = 800\)[\s\S]*path: '\/health\?probe=1'/)
+  assert.match(apiServer, /def health\(probe: bool = False\):\s*if probe:/)
 })
 
 test('desktop backend terminates stale crawshrimp backend processes for the same data root', () => {
@@ -69,6 +79,16 @@ test('desktop services restart when macOS reopens the app after all windows clos
   assert.doesNotMatch(main, /app\.on\('window-all-closed', \(\) => \{\s*stopBackend\(\)/)
 })
 
+test('desktop hides native application menu on Windows and Linux', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const \{ app, BrowserWindow, Menu, ipcMain, shell, dialog \} = require\('electron'\)/)
+  assert.match(main, /function hideNativeAppMenu\(\) \{\s*if \(process\.platform === 'darwin'\) return\s*Menu\.setApplicationMenu\(null\)\s*\}/)
+  assert.match(main, /autoHideMenuBar: process\.platform !== 'darwin'/)
+  assert.match(main, /if \(process\.platform !== 'darwin'\) \{\s*mainWindow\.setMenuBarVisibility\(false\)\s*\}/)
+  assert.match(main, /app\.whenReady\(\)\.then\(async \(\) => \{\s*hideNativeAppMenu\(\)\s*createWindow\(\)/)
+})
+
 test('desktop lifecycle confirms active tasks before quitting', () => {
   const main = readRepoFile('app/src/main.js')
 
@@ -89,8 +109,16 @@ test('settings page displays the runtime backend port reported by the main proce
   const settings = readRepoFile('app/src/renderer/views/SettingsPage.vue')
 
   assert.match(appShell, /apiPort: 18765/)
+  assert.match(appShell, /apiState: 'starting'/)
   assert.match(appShell, /status\.value\.apiPort = s\.apiPort \|\| status\.value\.apiPort/)
+  assert.match(appShell, /status\.value\.apiState = s\.apiState \|\| status\.value\.apiState/)
   assert.match(settings, /核心服务 \(端口 \{\{ props\.status\?\.apiPort \|\| 18765 \}\}\)/)
+})
+
+test('desktop get-status reports backend state machine state', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /apiState: backendController\.getState\(\)/)
 })
 
 test('desktop backend receives a resolved writable CRAWSHRIMP_DATA directory', () => {
@@ -120,6 +148,8 @@ test('desktop backend receives a resolved writable CRAWSHRIMP_DATA directory', (
   assert.match(main, /cfg\.data_dir = desktopDataDir \|\| getCrawshrimpDataDir\(\)/)
   assert.match(main, /plain\.data_dir = dataDir/)
   assert.match(main, /return resolvedCrawshrimpDataDir/)
+  assert.match(main, /CRAWSHRIMP_ALLOW_DATA_FALLBACK: '1'/)
+  assert.match(main, /\[api\] launch context:/)
 })
 
 test('desktop backend startup fails before spawn when API token cannot be prepared', () => {
@@ -133,10 +163,27 @@ test('desktop backend startup fails before spawn when API token cannot be prepar
 })
 
 test('desktop API helper supports request timeout for shutdown probes', () => {
+  const backendApi = readRepoFile('app/src/backendApi.js')
+
+  assert.match(backendApi, /const timeoutMs = Math\.max\(0, Number\(options\.timeoutMs \|\| 0\)\)/)
+  assert.match(backendApi, /if \(timeoutMs > 0\) \{\s*req\.setTimeout\(timeoutMs/)
+})
+
+test('desktop API helper rejects HTTP error responses with backend detail', () => {
+  const main = readRepoFile('app/src/main.js')
+  const backendApi = readRepoFile('app/src/backendApi.js')
+
+  assert.match(main, /const \{ requestBackendApi \} = require\('\.\/backendApi'\)/)
+  assert.match(main, /function apiCall\(method, urlPath, body = null, options = \{\}\) \{\s*return requestBackendApi\(\{/)
+  assert.match(backendApi, /if \(statusCode >= 400\) \{\s*reject\(backendErrorFromResponse\(statusCode, res\.statusMessage, payload\)\)/)
+  assert.match(backendApi, /payload\.detail \|\| payload\.error \|\| payload\.message/)
+  assert.match(backendApi, /error\.statusCode = statusCode/)
+})
+
+test('desktop result data requests do not trigger backend restart readiness flow', () => {
   const main = readRepoFile('app/src/main.js')
 
-  assert.match(main, /const timeoutMs = Math\.max\(0, Number\(options\.timeoutMs \|\| 0\)\)/)
-  assert.match(main, /if \(timeoutMs > 0\) \{\s*req\.setTimeout\(timeoutMs/)
+  assert.match(main, /secureHandle\('get-data',[\s\S]*apiCall\('GET', `\/data\/\$\{aid\}\/\$\{tid\}`, null, \{\s*ensureReady: false,\s*\}\)/)
 })
 
 test('desktop quit stop requests log backend rejection details', () => {

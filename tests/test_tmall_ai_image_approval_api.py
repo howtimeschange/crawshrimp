@@ -13,6 +13,8 @@ class TmallAiImageApprovalApiTests(unittest.TestCase):
         self.assertIn("hmac.compare_digest", source)
         self.assertIn('@app.get("/tmall-ai-image-approval/{batch_id}")', source)
         self.assertIn('@app.post("/tmall-ai-image-approval/api/{batch_id}/submit")', source)
+        self.assertIn('@app.post("/tmall-ai-image-approval/api/{batch_id}/generate")', source)
+        self.assertIn("def _safe_tmall_approval_paths", source)
 
 
 if __name__ == "__main__":

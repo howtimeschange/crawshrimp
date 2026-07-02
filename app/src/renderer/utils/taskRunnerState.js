@@ -9,3 +9,14 @@ export function shouldResetTaskValues(previousKey, task, adapterId = '') {
   if (!nextKey) return false
   return nextKey !== String(previousKey || '')
 }
+
+export function mergeTaskLiveStatus(task, status) {
+  if (!task || !status || !status.status) return task || null
+  return {
+    ...task,
+    live: {
+      ...(task.live || {}),
+      ...status,
+    },
+  }
+}

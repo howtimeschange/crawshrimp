@@ -30,24 +30,41 @@ def reset_runtime_data_root_cache() -> None:
     _runtime_data_key = ""
 
 
-def _candidate_data_roots() -> tuple[list[Path], bool]:
-    explicit = str(os.environ.get("CRAWSHRIMP_DATA") or "").strip()
-    if explicit:
-        return [Path(explicit).expanduser()], True
+def _fallback_allowed_for_explicit_root() -> bool:
+    return str(os.environ.get("CRAWSHRIMP_ALLOW_DATA_FALLBACK") or "").strip() == "1"
 
+
+def _default_candidate_data_roots() -> list[Path]:
     candidates = []
     local_app_data = str(os.environ.get("LOCALAPPDATA") or "").strip()
+    roaming_app_data = str(os.environ.get("APPDATA") or "").strip()
     home_root = Path.home() / ".crawshrimp"
     legacy_exists = _has_legacy_runtime_data(home_root)
     if sys.platform == "win32" and local_app_data:
         if legacy_exists:
             candidates.append(home_root)
         candidates.append(Path(local_app_data).expanduser() / "crawshrimp")
+    elif sys.platform == "win32" and roaming_app_data:
+        if legacy_exists:
+            candidates.append(home_root)
+        candidates.append(Path(roaming_app_data).expanduser() / "crawshrimp")
     elif sys.platform == "darwin":
         if legacy_exists:
             candidates.append(home_root)
         candidates.append(Path.home() / "Library" / "Application Support" / "crawshrimp")
     candidates.append(home_root)
+    return candidates
+
+
+def _candidate_data_roots() -> tuple[list[Path], bool]:
+    explicit = str(os.environ.get("CRAWSHRIMP_DATA") or "").strip()
+    if explicit:
+        candidates = [Path(explicit).expanduser()]
+        if _fallback_allowed_for_explicit_root():
+            candidates.extend(_default_candidate_data_roots())
+        return candidates, True
+
+    candidates = _default_candidate_data_roots()
     return candidates, False
 
 
@@ -58,7 +75,9 @@ def _has_legacy_runtime_data(root: Path) -> bool:
 def _selection_key() -> str:
     return "\0".join([
         str(os.environ.get("CRAWSHRIMP_DATA") or ""),
+        str(os.environ.get("CRAWSHRIMP_ALLOW_DATA_FALLBACK") or ""),
         str(os.environ.get("LOCALAPPDATA") or ""),
+        str(os.environ.get("APPDATA") or ""),
         str(Path.home()),
     ])
 
@@ -98,7 +117,7 @@ def _select_root(*, child_name: str | None = None, create_child: bool = True) ->
         except OSError as e:
             errors.append(f"{base}: {e}")
             logger.warning("runtime data path unavailable %s: %s", base, e)
-            if explicit:
+            if explicit and not _fallback_allowed_for_explicit_root():
                 break
 
     label = "CRAWSHRIMP_DATA" if explicit else "default crawshrimp data directory"

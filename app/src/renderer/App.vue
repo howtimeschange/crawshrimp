@@ -20,7 +20,7 @@
         <button
           v-for="item in navItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
-          @click="currentView = item.id"
+          @click="selectNav(item)"
         >
           <span class="icon">{{ item.icon }}</span>
           <span>{{ item.label }}</span>
@@ -91,8 +91,16 @@
         :task="activeScript.tasks.find(t => t.task_id === activeTaskId)"
         @status-change="onTaskStatusChange"
       />
-      <!-- 抓虾市场 -->
-      <MarketPage v-else-if="currentView === 'market'" />
+      <!-- 任务中心 -->
+      <TaskCenter
+        v-else-if="currentView === 'task_center' && !activeInstanceUid"
+        @open-instance="openTaskInstance"
+      />
+      <TaskInstanceRunner
+        v-else-if="currentView === 'task_center' && activeInstanceUid"
+        :instance-uid="activeInstanceUid"
+        @back="activeInstanceUid = ''"
+      />
       <!-- 数据文件 -->
       <DataFiles v-else-if="currentView === 'files'" />
       <!-- 设置 -->
@@ -105,24 +113,31 @@
 import { computed, ref, onMounted, onUnmounted } from 'vue'
 import ScriptList  from './views/ScriptList.vue'
 import TaskRunner  from './views/TaskRunner.vue'
-import MarketPage  from './views/MarketPage.vue'
+import TaskCenter  from './views/TaskCenter.vue'
+import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 
 const currentView = ref('scripts')
-const status = ref({ api: false, chrome: false, apiPort: 18765, cdpPort: 9222 })
+const status = ref({ api: false, apiState: 'starting', chrome: false, apiPort: 18765, cdpPort: 9222 })
 const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
+const activeInstanceUid = ref('')
 const scriptGroups = ref([])
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
-  { id: 'market',   icon: '🏪', label: '抓虾市场' },
+  { id: 'task_center', icon: '📋', label: '任务中心' },
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
+
+function selectNav(item) {
+  currentView.value = item.id
+  activeInstanceUid.value = ''
+}
 
 async function loadScriptGroups(options = {}) {
   const tasks = await window.cs.getTasks()
@@ -153,11 +168,16 @@ function openScript(group) {
   activeScript.value = group
   activeTaskId.value = group.tasks[0]?.task_id || null
   currentView.value = 'scripts'
+  activeInstanceUid.value = ''
 }
 
 function exitScript() {
   activeScript.value = null
   activeTaskId.value = null
+}
+
+function openTaskInstance(instanceUid) {
+  activeInstanceUid.value = instanceUid || ''
 }
 
 function onTaskStatusChange(status) {
@@ -186,6 +206,7 @@ onMounted(async () => {
   try {
     const s = await window.cs.getStatus()
     status.value.api = s.api
+    status.value.apiState = s.apiState || status.value.apiState
     status.value.chrome = s.chrome
     status.value.apiPort = s.apiPort || status.value.apiPort
     status.value.cdpPort = s.cdpPort || status.value.cdpPort
@@ -202,6 +223,7 @@ onMounted(async () => {
   pollTimer = setInterval(async () => {
     const s = await window.cs.getStatus()
     status.value.api = s.api
+    status.value.apiState = s.apiState || status.value.apiState
     status.value.chrome = s.chrome
     status.value.apiPort = s.apiPort || status.value.apiPort
     status.value.cdpPort = s.cdpPort || status.value.cdpPort

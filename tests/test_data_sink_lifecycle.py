@@ -40,6 +40,21 @@ class DataSinkLifecycleTests(unittest.TestCase):
                 self.assertEqual(run["records_count"], 3)
                 self.assertFalse(run["error"])
 
+    def test_run_heartbeat_persists_phase_row_and_last_seen(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict(os.environ, {"CRAWSHRIMP_DATA": tmpdir}, clear=False):
+                data_sink.init_db()
+                run_id = data_sink.begin_run("adapter", "task")
+
+                data_sink.heartbeat_run(run_id, phase="collect_rows", current_row=12, records_count=5)
+
+                run = data_sink.get_latest_run("adapter", "task")
+                self.assertEqual(run["status"], "running")
+                self.assertEqual(run["phase"], "collect_rows")
+                self.assertEqual(run["current_row"], 12)
+                self.assertEqual(run["records_count"], 5)
+                self.assertTrue(run["last_seen_at"])
+
     def test_export_excel_shortens_long_temu_product_title_filename(self):
         long_title = (
             "Balabala Kids' Shoes Children's Sports Sandals, Boys' Summer New Closed-Toe "

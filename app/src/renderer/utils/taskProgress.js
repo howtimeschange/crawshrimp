@@ -848,6 +848,18 @@ function getTmallAiImageChainPhaseLabel(phase, generationStarted, generationDone
   return generationStarted ? '批量生图' : statusLabel
 }
 
+function parseTmallAiImageGenerationProgressText(value) {
+  const text = String(value || '').trim()
+  if (!text) return { count: 0, total: 0, kind: '' }
+  const match = text.match(/(?:1XM\s*)?生图(?:批量提交|提交|完成)?\s*([0-9]+)\s*\/\s*([0-9]+)/i)
+  if (!match) return { count: 0, total: 0, kind: '' }
+  return {
+    count: toInt(match[1]),
+    total: toInt(match[2]),
+    kind: text.includes('提交') ? 'submitted' : (text.includes('完成') ? 'completed' : ''),
+  }
+}
+
 function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunning = false) {
   if (!isRunning && !isTaskLiveActive(liveStatus || live?.status)) return null
 
@@ -856,16 +868,22 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
   const currentStyle = String(live?.buyer_id || '').trim()
   const store = String(live?.store || '').trim()
   const currentPrompt = String(live?.current_source_filename || '').trim()
+  const generationTextProgress = parseTmallAiImageGenerationProgressText(store)
 
   const searchTotal = toInt(live?.search_total_codes) || toInt(live?.total)
   const searchCompletedRaw = toInt(live?.search_completed_codes) || (normalizeKeyPart(phase) === 'tmall_ai_chain_generate' ? searchTotal : toInt(live?.current))
   const searchCompleted = searchTotal > 0 ? Math.min(searchCompletedRaw, searchTotal) : searchCompletedRaw
   const searchPercent = searchTotal > 0 ? clampPercent((searchCompleted / searchTotal) * 100) : 0
 
-  const generationTotal = toInt(live?.generation_total_jobs)
-  const generationCompletedRaw = toInt(live?.generation_completed_jobs)
+  const generationTotal = toInt(live?.generation_total_jobs) || generationTextProgress.total
+  const generationSubmittedRaw = toInt(live?.generation_submitted_jobs) || (generationTextProgress.kind === 'submitted' ? generationTextProgress.count : 0)
+  const generationCompletedRaw = toInt(live?.generation_completed_jobs) || (generationTextProgress.kind === 'completed' ? generationTextProgress.count : 0)
+  const generationSubmitted = generationTotal > 0 ? Math.min(generationSubmittedRaw, generationTotal) : generationSubmittedRaw
   const generationCompleted = generationTotal > 0 ? Math.min(generationCompletedRaw, generationTotal) : generationCompletedRaw
-  const generationPercent = generationTotal > 0 ? clampPercent((generationCompleted / generationTotal) * 100) : 0
+  const generationProgressTotal = generationSubmitted > 0
+    ? Math.max(generationSubmitted, generationCompleted)
+    : generationTotal
+  const generationPercent = generationProgressTotal > 0 ? clampPercent((generationCompleted / generationProgressTotal) * 100) : 0
   const generationStarted = generationTotal > 0 || normalizeKeyPart(phase) === 'tmall_ai_chain_generate' || normalizeKeyPart(phase) === 'tmall_ai_chain_tmall'
   const generationDone = generationTotal > 0 && generationCompleted >= generationTotal
   const phaseLabel = getTmallAiImageChainPhaseLabel(phase, generationStarted, generationDone, statusLabel)
@@ -899,14 +917,20 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
     buildTrack({
       id: 'tmall-ai-generate',
       title: '生图进度',
-      main: generationTotal > 0 ? `${generationCompleted} / ${generationTotal} 张` : (generationStarted ? '等待生图队列' : '找图完成后批量开始'),
+      main: generationProgressTotal > 0 ? `${generationCompleted} / ${generationProgressTotal} 张` : (generationStarted ? '等待生图队列' : '找图完成后批量开始'),
       percentValue: generationPercent,
       percentLabel: generationStarted ? `${generationPercent}%` : '待开始',
-      caption: generationTotal > 0 ? `1XM 并发队列 ${generationCompleted}/${generationTotal}` : '找图完成后统一提交 1XM',
+      caption: generationTotal > 0
+        ? [
+            generationSubmitted > 0 ? `已提交 ${generationSubmitted}/${generationTotal}` : '',
+            generationCompleted > 0 ? `已完成 ${generationCompleted}/${generationTotal}` : '等待生成回传',
+          ].filter(Boolean).join(' · ')
+        : '找图完成后统一提交 1XM',
       detail: [currentStyle ? `当前款号 ${currentStyle}` : '', currentPrompt ? `当前提示词 ${currentPrompt}` : '', store].filter(Boolean).join(' · '),
       status: generationState === 'complete' ? '已完成' : generationState === 'active' ? '进行中' : '待开始',
       tone: 'secondary',
       state: generationState,
+      indeterminate: generationStarted && generationTotal <= 0,
       ariaLabel: '生图进度',
       ariaText: [generationTotal > 0 ? `${generationCompleted}/${generationTotal} 张` : '', generationStarted ? `${generationPercent}%` : '待开始', currentStyle ? `当前款号 ${currentStyle}` : ''].filter(Boolean).join('，'),
     }),
@@ -918,7 +942,9 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
     percentValue: generationStarted ? clampPercent(50 + generationPercent * 0.5) : clampPercent(searchPercent * 0.5),
     percentLabel: phaseLabel,
     completed: generationCompleted,
-    completedText: generationCompleted > 0 ? `已生图 ${generationCompleted} 张` : '',
+    completedText: generationCompleted > 0
+      ? `已生图 ${generationCompleted} 张`
+      : (generationSubmitted > 0 ? `已提交 ${generationSubmitted} 张` : ''),
     batchText: '',
     rowText: '',
     targetText: currentStyle ? `款号 ${currentStyle}` : '',
@@ -929,7 +955,7 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
     ariaText: [phaseLabel, searchTotal > 0 ? `${searchCompleted}/${searchTotal} 款` : '', generationTotal > 0 ? `${generationCompleted}/${generationTotal} 张` : ''].filter(Boolean).join('，'),
     metaItems: buildMetaItems([
       searchTotal > 0 ? `找图 ${searchCompleted}/${searchTotal}` : '',
-      generationTotal > 0 ? `生图 ${generationCompleted}/${generationTotal}` : '',
+      generationProgressTotal > 0 ? `生图 ${generationCompleted}/${generationProgressTotal}` : '',
       currentStyle ? `款号 ${currentStyle}` : '',
     ]),
     tracks,
