@@ -768,6 +768,23 @@ def get_latest_run(adapter_id: str, task_id: str) -> Optional[dict]:
         return dict(row) if row else None
 
 
+def get_latest_task_instance_run(instance_uid: str) -> Optional[dict]:
+    """Return the latest task_runs row linked to one task instance."""
+    uid = str(instance_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute("""
+            SELECT tr.*, tir.purpose, tir.created_at AS linked_at
+            FROM task_instance_runs tir
+            LEFT JOIN task_runs tr ON tr.id = tir.run_id
+            WHERE tir.instance_uid=?
+            ORDER BY tir.id DESC
+            LIMIT 1
+        """, (uid,)).fetchone()
+        return dict(row) if row else None
+
+
 def list_runs(adapter_id: str, task_id: str, limit: int = 20) -> List[dict]:
     with _get_conn() as conn:
         rows = conn.execute("""

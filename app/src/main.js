@@ -3,7 +3,7 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, ipcMain, shell, dialog } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron')
 const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
@@ -687,6 +687,11 @@ function secureHandle(channel, handler) {
   ipcMain.handle(channel, trustedIpcHandler(handler))
 }
 
+function hideNativeAppMenu() {
+  if (process.platform === 'darwin') return
+  Menu.setApplicationMenu(null)
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1280,
@@ -694,6 +699,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 620,
     titleBarStyle: 'hiddenInset',
+    autoHideMenuBar: process.platform !== 'darwin',
     backgroundColor: '#0f1117',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -702,6 +708,9 @@ function createWindow() {
     },
   })
   guardRendererNavigation(mainWindow)
+  if (process.platform !== 'darwin') {
+    mainWindow.setMenuBarVisibility(false)
+  }
 
   if (IS_DEV) {
     // Vite dev server
@@ -1442,6 +1451,7 @@ const lifecycleController = createLifecycleController({
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  hideNativeAppMenu()
   createWindow()
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -1518,8 +1528,8 @@ secureHandle('get-task-instance', async (_, instanceUid) =>
   apiCall('GET', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`))
 secureHandle('update-task-instance', async (_, instanceUid, payload) =>
   apiCall('PATCH', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}`, payload || {}))
-secureHandle('run-task-instance', async (_, instanceUid) =>
-  apiCall('POST', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}/run`, {}))
+secureHandle('run-task-instance', async (_, instanceUid, options = {}) =>
+  apiCall('POST', `/task-instances/${encodeURIComponent(String(instanceUid || ''))}/run`, options || {}))
 secureHandle('list-task-schedules', async (_, query = {}) =>
   apiCall('GET', `/task-schedules?${new URLSearchParams(query || {})}`))
 secureHandle('create-task-schedule', async (_, payload) =>
@@ -1542,16 +1552,46 @@ secureHandle('run-task', async (_, aid, tid, params, options) =>
     params: params || {},
     current_tab_id: options?.current_tab_id || '',
   }))
-secureHandle('pause-task',      async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/pause`))
-secureHandle('resume-task',     async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/resume`))
-secureHandle('stop-task',       async (_, aid, tid) => apiCall('POST', `/tasks/${aid}/${tid}/stop`))
-secureHandle('get-task-status', async (_, aid, tid) => apiCall('GET', `/tasks/${aid}/${tid}/status`, null, {
+secureHandle('pause-task', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return uid
+    ? apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/pause`)
+    : apiCall('POST', `/tasks/${aid}/${tid}/pause`)
+})
+secureHandle('resume-task', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return uid
+    ? apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/resume`)
+    : apiCall('POST', `/tasks/${aid}/${tid}/resume`)
+})
+secureHandle('stop-task', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return uid
+    ? apiCall('POST', `/task-instances/${encodeURIComponent(uid)}/stop`)
+    : apiCall('POST', `/tasks/${aid}/${tid}/stop`)
+})
+secureHandle('get-task-status', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return apiCall('GET', uid
+    ? `/task-instances/${encodeURIComponent(uid)}/run-status`
+    : `/tasks/${aid}/${tid}/status`, null, {
   ensureReady: false,
-}))
-secureHandle('get-task-logs',   async (_, aid, tid) => apiCall('GET',    `/tasks/${aid}/${tid}/logs`, null, {
+  })
+})
+secureHandle('get-task-logs', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return apiCall('GET', uid
+    ? `/task-instances/${encodeURIComponent(uid)}/logs`
+    : `/tasks/${aid}/${tid}/logs`, null, {
   ensureReady: false,
-}))
-secureHandle('clear-task-logs', async (_, aid, tid) => apiCall('DELETE', `/tasks/${aid}/${tid}/logs`))
+  })
+})
+secureHandle('clear-task-logs', async (_, aid, tid, instanceUid = '') => {
+  const uid = String(instanceUid || '').trim()
+  return apiCall('DELETE', uid
+    ? `/task-instances/${encodeURIComponent(uid)}/logs`
+    : `/tasks/${aid}/${tid}/logs`)
+})
 
 secureHandle('get-data',    async (_, aid, tid) => apiCall('GET', `/data/${aid}/${tid}`, null, {
   ensureReady: false,
@@ -1593,10 +1633,27 @@ secureHandle('save-tmall-approval-decisions', async (_, batchId, token, decision
   )
 })
 
+secureHandle('import-tmall-approval-reference-files', async (_, batchId, token, paths) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval-local/api/${encodeURIComponent(String(batchId || ''))}/reference-files?${approvalTokenQuery(token)}`,
+    { paths: Array.isArray(paths) ? paths : [] },
+  )
+})
+
 secureHandle('regenerate-tmall-approval-asset', async (_, batchId, token, payload) => {
   return apiCall(
     'POST',
     `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/regenerate?${approvalTokenQuery(token)}`,
+    payload || {},
+    { timeoutMs: 20 * 60 * 1000 },
+  )
+})
+
+secureHandle('generate-tmall-approval-asset', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/generate?${approvalTokenQuery(token)}`,
     payload || {},
     { timeoutMs: 20 * 60 * 1000 },
   )

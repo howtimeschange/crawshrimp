@@ -231,6 +231,50 @@ def _task_lock(jid: str) -> asyncio.Lock:
     return lock
 
 
+def _task_jid(adapter_id: str, task_id: str) -> str:
+    return f"{adapter_id}::{task_id}"
+
+
+def _instance_jid(instance_uid: str) -> str:
+    uid = str(instance_uid or "").strip()
+    return f"instance::{uid}" if uid else ""
+
+
+def _run_jid(adapter_id: str, task_id: str, instance_uid: str = "") -> str:
+    return _instance_jid(instance_uid) or _task_jid(adapter_id, task_id)
+
+
+def _run_jids(adapter_id: str, task_id: str, instance_uid: str = "") -> list[str]:
+    return [_run_jid(adapter_id, task_id, instance_uid)]
+
+
+def _set_live_status(jids: list[str], status: dict) -> None:
+    for job_id in jids:
+        if job_id:
+            _run_status[job_id] = dict(status or {})
+
+
+def _merge_live_status(jids: list[str], patch: dict) -> None:
+    for job_id in jids:
+        if not job_id:
+            continue
+        live = dict(_run_status.get(job_id) or {})
+        _run_status[job_id] = {**live, **dict(patch or {})}
+
+
+def _append_run_log(jids: list[str], message: str) -> None:
+    for job_id in jids:
+        if job_id:
+            _run_logs.setdefault(job_id, []).append(message)
+
+
+def _latest_instance_run(instance_uid: str) -> Optional[dict]:
+    run = data_sink.get_latest_task_instance_run(instance_uid)
+    if not run:
+        return None
+    return {**run, "id": run.get("id") or run.get("run_id")}
+
+
 def _task_is_active(jid: str) -> bool:
     live = _run_status.get(jid) or {}
     control = _run_controls.get(jid)
@@ -459,6 +503,7 @@ def _build_run_control() -> dict:
         "pause_logged": False,
         "last_progress_exec_no": 0,
         "total_rows": 0,
+        "shared_progress": {},
     }
 
 
@@ -479,7 +524,14 @@ def _str_from_mapping(source: Optional[dict], key: str) -> str:
 
 def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[dict] = None) -> dict:
     payload = dict(payload or {})
-    shared_state = dict(payload.get('shared') or {})
+    incoming_shared = payload.get('shared') if isinstance(payload.get('shared'), dict) else {}
+    if run_control is not None:
+        previous_shared = dict(run_control.get('shared_progress') or {})
+        shared_state = {**previous_shared, **dict(incoming_shared or {})}
+        if incoming_shared:
+            run_control['shared_progress'] = dict(shared_state)
+    else:
+        shared_state = dict(incoming_shared or {})
     total_rows = _int_from_mapping(shared_state, 'total_rows', _int_from_mapping(run_control, 'total_rows') if run_control else 0)
     current_exec_no = _int_from_mapping(shared_state, 'current_exec_no')
     current_row_no = _int_from_mapping(shared_state, 'current_row_no')
@@ -488,6 +540,7 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
     search_total_codes = _int_from_mapping(shared_state, 'search_total_codes')
     search_completed_codes = _int_from_mapping(shared_state, 'search_completed_codes')
     generation_total_jobs = _int_from_mapping(shared_state, 'generation_total_jobs')
+    generation_submitted_jobs = _int_from_mapping(shared_state, 'generation_submitted_jobs')
     generation_completed_jobs = _int_from_mapping(shared_state, 'generation_completed_jobs')
     buyer_id = _str_from_mapping(shared_state, 'current_buyer_id')
     store = _str_from_mapping(shared_state, 'current_store')
@@ -534,6 +587,7 @@ def _build_live_progress(payload: Optional[dict] = None, run_control: Optional[d
         "search_total_codes": search_total_codes,
         "search_completed_codes": search_completed_codes,
         "generation_total_jobs": generation_total_jobs,
+        "generation_submitted_jobs": generation_submitted_jobs,
         "generation_completed_jobs": generation_completed_jobs,
         "buyer_id": buyer_id,
         "store": store,
@@ -2485,6 +2539,7 @@ def _finalize_semir_cloud_drive_outputs(
 
     return final_refs
 
+
 def _mop_package_relative_parts(value: str, fallback_name: str = "file") -> list[str]:
     parts = [
         _safe_local_name(part, "")
@@ -2619,7 +2674,6 @@ def _finalize_mop_cloud_folder_download_outputs(
     _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
 
     return final_refs
-
 
 
 def _nested_config_value(source: dict, path: str, default: str = "") -> str:
@@ -2998,6 +3052,8 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         approval_message_template=str((run_params or {}).get("approval_message_template") or "").strip(),
         approval_notify_channel=str((run_params or {}).get("approval_notify_channel") or "dingtalk").strip().lower(),
         approval_base_url=str((run_params or {}).get("approval_base_url") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").strip(),
+        task_instance_uid=str((run_params or {}).get("__task_instance_uid") or (run_params or {}).get("task_instance_uid") or "").strip(),
+        task_run_uid=str((run_params or {}).get("task_run_uid") or (run_params or {}).get("__task_run_id") or (run_params or {}).get("run_id") or (run_params or {}).get("__task_instance_uid") or "").strip(),
     )
     if args.quality not in {"auto", "low", "medium", "high"}:
         args.quality = "auto"
@@ -3020,11 +3076,24 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     )
 
 
-def _tmall_local_export_root(run_params: dict, task_folder: str) -> Path:
+def _tmall_local_export_run_folder_name(run_params: dict) -> str:
+    started_raw = str((run_params or {}).get("__task_started_at") or "").strip()
+    try:
+        started = datetime.fromisoformat(started_raw)
+    except Exception:
+        started = datetime.now()
+    run_id = str((run_params or {}).get("__task_run_id") or (run_params or {}).get("task_run_uid") or "").strip()
+    suffix = f"_run{run_id}" if run_id else ""
+    return _safe_local_name(f"运行_{started.strftime('%Y%m%d-%H%M%S')}{suffix}", "运行结果")
+
+
+def _tmall_local_export_root(run_params: dict, task_folder: str, *, run_scoped: bool = False) -> Path:
     output_dir = str((run_params or {}).get("output_dir") or "").strip()
     target_root = _expand_user_configured_local_path(output_dir) if output_dir else (
         Path.home() / "Downloads" / "抓虾导出" / "天猫运营助手" / _safe_local_name(task_folder, "巴拉-AI测图")
     )
+    if run_scoped:
+        target_root = _ensure_unique_local_dir(target_root / _tmall_local_export_run_folder_name(run_params))
     target_root.mkdir(parents=True, exist_ok=True)
     return target_root
 
@@ -3163,7 +3232,7 @@ def _finalize_tmall_ai_image_test_chain_outputs(
     runtime_artifact_dir: str,
     log,
 ) -> list[str]:
-    target_root = _tmall_local_export_root(run_params, "巴拉-AI测图全链路")
+    target_root = _tmall_local_export_root(run_params, "巴拉-AI测图全链路", run_scoped=True)
     fallback_refs = [str(path) for path in [*(runtime_files or []), *(exported_files or [])] if str(path or "").strip()]
 
     table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
@@ -3527,27 +3596,34 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     from core.js_runner import JSRunner, RunAbortedError
     from core.models import OutputType
 
-    jid = f"{adapter_id}::{task_id}"
+    instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
+    schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
+    jid = _run_jid(adapter_id, task_id, instance_uid)
+    live_jids = _run_jids(adapter_id, task_id, instance_uid)
     # 保留历史日志，新一轮运行用分隔线追加（不覆盖）
     from datetime import datetime as _dt
     _sep = f"─── 新运行 {_dt.now().strftime('%m-%d %H:%M:%S')} ───────────────────────"
-    if jid not in _run_logs:
-        _run_logs[jid] = []
-    else:
-        _run_logs[jid].append('')
-        _run_logs[jid].append(_sep)
-    _run_status[jid] = {
+    for job_id in live_jids:
+        if job_id not in _run_logs:
+            _run_logs[job_id] = []
+        else:
+            _run_logs[job_id].append('')
+            _run_logs[job_id].append(_sep)
+    _set_live_status(live_jids, {
         'status': 'running',
         'run_id': None,
+        'adapter_id': adapter_id,
+        'task_id': task_id,
+        'instance_uid': instance_uid,
         'records': 0,
         'last_seen_at': datetime.now().isoformat(),
         'current_row': 0,
         'phase': '',
-    }
+    })
 
     def log(msg: str):
         logger.info(msg)
-        _run_logs[jid].append(msg)
+        _append_run_log(live_jids, msg)
 
     def build_progress(payload: Optional[dict] = None) -> dict:
         return _build_live_progress(payload, run_control=run_control)
@@ -3619,6 +3695,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         last_seen_at = datetime.now().isoformat()
         base_status = {
             'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
             'records': records,
             'last_seen_at': last_seen_at,
             'current_row': current_row,
@@ -3630,6 +3709,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             'search_total_codes': progress['search_total_codes'],
             'search_completed_codes': progress['search_completed_codes'],
             'generation_total_jobs': progress['generation_total_jobs'],
+            'generation_submitted_jobs': progress['generation_submitted_jobs'],
             'generation_completed_jobs': progress['generation_completed_jobs'],
             'buyer_id': progress['buyer_id'],
             'store': progress['store'],
@@ -3737,7 +3817,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raise RunAbortedError(str(run_control.get('stop_reason') or '任务已停止'))
 
         if run_control.get('pause_requested'):
-            _run_status[jid] = {'status': 'paused', **base_status}
+            _set_live_status(live_jids, {'status': 'paused', **base_status})
             if not run_control.get('pause_logged'):
                 log("[control] 任务已暂停，等待继续…")
                 run_control['pause_logged'] = True
@@ -3752,7 +3832,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 log("[control] 任务已继续")
                 run_control['pause_logged'] = False
 
-        _run_status[jid] = {'status': 'running', **base_status}
+        _set_live_status(live_jids, {'status': 'running', **base_status})
 
     # 任务执行前重扫一次适配包，确保磁盘上的 manifest 改动立即生效
     adapter_loader.scan_all()
@@ -3764,23 +3844,26 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     if not task:
         raise ValueError(f"Task not found: {task_id}")
 
-    instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
-    schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
+    run_params = dict(params or {})
     run_started_at = datetime.now().isoformat()
     run_id = data_sink.begin_run(adapter_id, task_id)
+    run_params["__task_run_id"] = run_id
+    run_params["__task_started_at"] = run_started_at
     try:
         data_sink.heartbeat_run(run_id, phase="starting", current_row=0, records_count=0)
     except Exception as heartbeat_error:
         logger.debug("task heartbeat update failed for %s: %s", jid, heartbeat_error)
     if instance_uid:
         data_sink.link_task_instance_run(instance_uid, run_id, purpose="main")
-    _run_status[jid] = {
-        **(_run_status.get(jid) or {}),
+    _merge_live_status(live_jids, {
         'run_id': run_id,
+        'adapter_id': adapter_id,
+        'task_id': task_id,
+        'instance_uid': instance_uid,
         'last_seen_at': datetime.now().isoformat(),
         'current_row': 0,
         'phase': 'starting',
-    }
+    })
     runner = None
     data = []
     output_files = []
@@ -3789,7 +3872,6 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
 
-        run_params = dict(params or {})
         per_item_review_urls = _resolve_tmall_buyer_review_item_urls(run_params) if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") else []
         runtime_options = runtime_options or {}
         task_param_ids = {p.id for p in task.params}
@@ -4117,6 +4199,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 except Exception as package_error:
                     log(f"[warn] semir 后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
+
             if adapter_id == 'mop-ops-assistant' and task_id == 'cloud_folder_download':
                 try:
                     packaged_refs = await asyncio.to_thread(
@@ -4208,7 +4291,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                         logged_in = bool((auth_result.data[0] or {}).get('logged_in'))
 
                 if not logged_in:
-                    login_url = (m.auth.login_url or target_entry_url)
+                    login_url = (
+                        target_entry_url
+                        if adapter_id == 'mop-ops-assistant' and target_entry_url.startswith('https://fmp.semirapp.com/')
+                        else (m.auth.login_url or target_entry_url)
+                    )
                     if mode == 'new':
                         await wait_for_control()
                         log(f"检测到未登录，跳转登录页：{login_url}")
@@ -4329,6 +4416,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         done_status = {
             'status': 'done',
             'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
             'records': len(data),
             'last_seen_at': datetime.now().isoformat(),
             'current_row': len(data),
@@ -4336,7 +4426,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         }
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
-        _run_status[jid] = done_status
+        _set_live_status(live_jids, done_status)
         if instance_uid:
             approval_summary = _parse_tmall_approval_board_url(approval_board_url)
             instance_summary = {
@@ -4400,16 +4490,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
 
         data_sink.stop_run(run_id, len(data), output_files, err)
-        _run_status[jid] = {
+        stopped_status = {
             'status': 'stopped',
             'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
             'records': len(data),
             'error': err,
             'last_seen_at': datetime.now().isoformat(),
             'current_row': len(data),
             'phase': 'stopped',
         }
+        _set_live_status(live_jids, stopped_status)
         if instance_uid:
+            _sync_task_instance_artifacts(instance_uid, output_files, run_id)
             data_sink.update_task_instance(
                 instance_uid,
                 status="stopped",
@@ -4452,16 +4547,21 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             output_files = []
             log(f"[warn] 停止任务时导出部分结果失败: {export_error}")
         data_sink.stop_run(run_id, len(data), output_files, err)
-        _run_status[jid] = {
+        stopped_status = {
             'status': 'stopped',
             'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
             'records': len(data),
             'error': err,
             'last_seen_at': datetime.now().isoformat(),
             'current_row': len(data),
             'phase': 'stopped',
         }
+        _set_live_status(live_jids, stopped_status)
         if instance_uid:
+            _sync_task_instance_artifacts(instance_uid, output_files, run_id)
             data_sink.update_task_instance(
                 instance_uid,
                 status="stopped",
@@ -4487,15 +4587,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         err = str(e)
         log(f"[{adapter_id}/{task_id}] ERROR: {err}")
         data_sink.fail_run(run_id, err)
-        _run_status[jid] = {
+        error_status = {
             'status': 'error',
             'run_id': run_id,
+            'adapter_id': adapter_id,
+            'task_id': task_id,
+            'instance_uid': instance_uid,
             'records': 0,
             'error': err,
             'last_seen_at': datetime.now().isoformat(),
             'current_row': 0,
             'phase': 'error',
         }
+        _set_live_status(live_jids, error_status)
         if instance_uid:
             data_sink.update_task_instance(
                 instance_uid,
@@ -4715,13 +4819,93 @@ def _tmall_approval_asset_path(batch: dict, asset_id: str) -> Path:
     return path
 
 
+def _tmall_approval_allowed_reference_paths(batch: dict) -> set[str]:
+    allowed: set[str] = set()
+    module = _load_tmall_ai_image_chain_module()
+    parse_list = getattr(module, "parse_list", None)
+
+    def add_path(value) -> None:
+        text = str(value or "").strip()
+        if not text:
+            return
+        try:
+            allowed.add(str(Path(text).expanduser().resolve()))
+        except Exception:
+            allowed.add(str(Path(text).expanduser()))
+
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        add_path(item.get("origin_path"))
+        add_path(item.get("detail_reference_path"))
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            add_path(asset.get("path"))
+            refs = asset.get("reference_paths")
+            if callable(parse_list):
+                refs = parse_list(refs)
+            elif isinstance(refs, str):
+                refs = [part.strip() for part in re.split(r"[\n\r,，、；;]+", refs) if part.strip()]
+            for ref in refs or []:
+                add_path(ref)
+            generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), dict) else {}
+            generation_refs = generation_row.get("__1xm_reference_paths") or generation_row.get("参考图文件")
+            if callable(parse_list):
+                generation_refs = parse_list(generation_refs)
+            elif isinstance(generation_refs, str):
+                generation_refs = [part.strip() for part in re.split(r"[\n\r,，、；;]+", generation_refs) if part.strip()]
+            for ref in generation_refs or []:
+                add_path(ref)
+    for ref in batch.get("imported_reference_paths") or []:
+        add_path(ref)
+    return allowed
+
+
+def _resolve_tmall_approval_path(value: str) -> str:
+    path = Path(str(value or "").strip()).expanduser()
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
+
+
+def _safe_tmall_approval_paths(batch: dict, paths: list[str], *, field_label: str = "图片") -> list[str]:
+    allowed_refs = _tmall_approval_allowed_reference_paths(batch)
+    safe_paths: list[str] = []
+    rejected: list[str] = []
+    for raw in paths or []:
+        text = str(raw or "").strip()
+        if not text:
+            continue
+        if _resolve_tmall_approval_path(text) in allowed_refs:
+            safe_paths.append(text)
+        else:
+            rejected.append(Path(text).name or text)
+    if rejected:
+        raise HTTPException(403, f"{field_label}未登记在当前审批批次：{', '.join(rejected[:3])}")
+    return safe_paths
+
+
 class TmallApprovalDecisionsRequest(BaseModel):
     decisions: dict = {}
+
+
+class TmallApprovalReferenceImportRequest(BaseModel):
+    paths: List[str] = []
 
 
 class TmallApprovalRegenerateRequest(BaseModel):
     asset_id: str
     prompt: Optional[str] = ""
+    reference_paths: Optional[List[str]] = None
+
+
+class TmallApprovalGenerateRequest(BaseModel):
+    item_id: str = ""
+    style_code: str = ""
+    prompt: str = ""
+    main_image_path: str = ""
     reference_paths: Optional[List[str]] = None
 
 
@@ -4744,13 +4928,78 @@ def get_tmall_ai_image_approval_image(batch_id: str, asset_id: str, token: str =
     return FileResponse(path, media_type=media_type, filename=path.name)
 
 
+@app.get("/tmall-ai-image-approval/api/{batch_id}/reference-image")
+def get_tmall_ai_image_approval_reference_image(batch_id: str, path: str, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    image_path = Path(str(path or "")).expanduser()
+    try:
+        resolved = str(image_path.resolve())
+    except Exception:
+        resolved = str(image_path)
+    if resolved not in _tmall_approval_allowed_reference_paths(batch):
+        raise HTTPException(403, "Reference image is not registered in this approval batch")
+    if not image_path.is_file():
+        raise HTTPException(404, "Reference image not found")
+    media_type = "image/jpeg"
+    guessed, _encoding = mimetypes.guess_type(str(image_path))
+    if guessed:
+        media_type = guessed
+    return FileResponse(image_path, media_type=media_type, filename=image_path.name)
+
+
 @app.post("/tmall-ai-image-approval/api/{batch_id}/decisions")
 def save_tmall_ai_image_approval_decisions(batch_id: str, req: TmallApprovalDecisionsRequest, token: str = ""):
     batch = _load_tmall_approval_batch(batch_id)
     _validate_tmall_approval_token(batch, token)
     module = _load_tmall_ai_image_chain_module()
-    batch = module.update_approval_decisions(batch, req.decisions or {})
+    allowed_refs = _tmall_approval_allowed_reference_paths(batch)
+    decisions = dict(req.decisions or {})
+    for patch in decisions.values():
+        if not isinstance(patch, dict) or "reference_paths" not in patch:
+            continue
+        safe_refs = []
+        for ref in getattr(module, "parse_list")(patch.get("reference_paths")):
+            try:
+                resolved = str(Path(str(ref or "")).expanduser().resolve())
+            except Exception:
+                resolved = str(Path(str(ref or "")).expanduser())
+            if resolved in allowed_refs:
+                safe_refs.append(ref)
+        patch["reference_paths"] = safe_refs
+    batch = module.update_approval_decisions(batch, decisions)
     return {"ok": True, "status": batch.get("status"), "updated_at": batch.get("updated_at")}
+
+
+@app.post("/tmall-ai-image-approval-local/api/{batch_id}/reference-files")
+def import_tmall_ai_image_approval_reference_files(batch_id: str, req: TmallApprovalReferenceImportRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    artifact_dir_raw = str(batch.get("artifact_dir") or "").strip()
+    if artifact_dir_raw:
+        artifact_dir = Path(artifact_dir_raw).expanduser()
+    else:
+        artifact_dir = Path(str(batch.get("json_path") or ".")).expanduser().parent
+    target_dir = artifact_dir / "reference-imports"
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    imported: list[str] = []
+    allowed_suffixes = {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"}
+    for raw in req.paths or []:
+        src = Path(str(raw or "")).expanduser()
+        if not src.is_file() or src.suffix.lower() not in allowed_suffixes:
+            continue
+        stem = re.sub(r"[^A-Za-z0-9._~-]+", "-", src.stem).strip("-") or "reference"
+        target = target_dir / f"{stem}-{secrets.token_hex(3)}{src.suffix.lower()}"
+        shutil.copy2(src, target)
+        imported.append(str(target))
+
+    existing = [str(item or "").strip() for item in (batch.get("imported_reference_paths") or []) if str(item or "").strip()]
+    batch["imported_reference_paths"] = list(dict.fromkeys([*existing, *imported]))
+    batch["updated_at"] = datetime.now().isoformat()
+    module.save_approval_batch(batch)
+    return {"ok": True, "paths": imported}
 
 
 @app.post("/tmall-ai-image-approval/api/{batch_id}/regenerate")
@@ -4759,14 +5008,51 @@ async def regenerate_tmall_ai_image_approval_asset(batch_id: str, req: TmallAppr
     _validate_tmall_approval_token(batch, token)
     module = _load_tmall_ai_image_chain_module()
     try:
+        safe_reference_paths = _safe_tmall_approval_paths(
+            batch,
+            list(req.reference_paths or []),
+            field_label="参考图",
+        ) if req.reference_paths is not None else []
         asset = await asyncio.to_thread(
             module.regenerate_approval_asset,
             batch,
             req.asset_id,
             prompt=req.prompt or "",
-            reference_paths=req.reference_paths or [],
+            reference_paths=safe_reference_paths,
         )
         return {"ok": True, "asset": asset}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/generate")
+async def generate_tmall_ai_image_approval_asset(batch_id: str, req: TmallApprovalGenerateRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    main_image_path = str(req.main_image_path or "").strip()
+    if main_image_path:
+        main_image_path = (_safe_tmall_approval_paths(batch, [main_image_path], field_label="主图") or [""])[0]
+    safe_reference_paths = _safe_tmall_approval_paths(
+        batch,
+        list(req.reference_paths or []),
+        field_label="参考图",
+    )
+    try:
+        asset = await asyncio.to_thread(
+            module.generate_approval_asset_for_item,
+            batch,
+            item_id=req.item_id or "",
+            style_code=req.style_code or "",
+            prompt=req.prompt or "",
+            main_image_path=main_image_path,
+            reference_paths=safe_reference_paths,
+        )
+        return {"ok": True, "asset": asset}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -4987,11 +5273,17 @@ def active_tasks():
         has_live_task = bool(task and not task.done())
         if not has_live_task and not _task_lock(jid).locked():
             continue
-        adapter_id, task_id = jid.split("::", 1) if "::" in jid else (jid, "")
+        adapter_id = str(live_snapshot.get("adapter_id") or "")
+        task_id = str(live_snapshot.get("task_id") or "")
+        if not adapter_id and "::" in jid:
+            adapter_id, task_id = jid.split("::", 1)
+        elif not adapter_id:
+            adapter_id = jid
         tasks.append({
             "jid": jid,
             "adapter_id": adapter_id,
             "task_id": task_id,
+            "instance_uid": live_snapshot.get("instance_uid") or "",
             "status": live_snapshot.get("status"),
             "run_id": live_snapshot.get("run_id"),
             "records": int(live_snapshot.get("records") or 0),
@@ -5584,7 +5876,8 @@ async def _run_task_schedule(schedule_uid: str):
 
 
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
-    jid = f"{adapter_id}::{task_id}"
+    instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
+    jid = _run_jid(adapter_id, task_id, instance_uid)
     lock = _task_lock(jid)
     try:
         async with lock:
@@ -5595,6 +5888,9 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
             _run_status[jid] = {
                 'status': 'error',
                 'run_id': live.get('run_id'),
+                'adapter_id': adapter_id,
+                'task_id': task_id,
+                'instance_uid': instance_uid,
                 'records': int(live.get('records') or 0),
                 'error': str(exc),
                 'last_seen_at': datetime.now().isoformat(),
@@ -5615,7 +5911,9 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
     if not any(t.id == task_id for t in m.tasks):
         raise HTTPException(404, f"Task not found: {task_id}")
 
-    jid = f"{adapter_id}::{task_id}"
+    run_params = dict(params or {})
+    instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
+    jid = _run_jid(adapter_id, task_id, instance_uid)
     if _task_is_active(jid):
         raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
 
@@ -5624,7 +5922,7 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
         _run_task_background(
             adapter_id,
             task_id,
-            params or {},
+            run_params,
             runtime_options or {},
             run_control,
         )
@@ -5645,19 +5943,38 @@ async def run_task(adapter_id: str, task_id: str, req: RunTaskRequest = RunTaskR
 
 
 @app.post("/task-instances/{instance_uid}/run")
-async def run_task_instance(instance_uid: str):
+async def run_task_instance(instance_uid: str, req: RunTaskRequest = RunTaskRequest()):
     instance = data_sink.get_task_instance(instance_uid)
     if not instance:
         raise HTTPException(404, "Task instance not found")
     params = _parse_json_object(instance.get("params_json"))
+    if req.params:
+        params.update(dict(req.params or {}))
     params["__task_instance_uid"] = instance_uid
-    data_sink.update_task_instance(instance_uid, status="running", current_step="config")
-    return await _start_task_run(instance["adapter_id"], instance["task_id"], params, {})
+    runtime_options = {"current_tab_id": req.current_tab_id}
+    previous_status = str(instance.get("status") or "draft").strip() or "draft"
+    data_sink.update_task_instance(instance_uid, status="running", current_step="config", params=params)
+    try:
+        result = await _start_task_run(instance["adapter_id"], instance["task_id"], params, runtime_options)
+    except HTTPException as exc:
+        message = getattr(exc, "detail", None) or str(exc)
+        summary = _parse_json_object(instance.get("summary_json"))
+        summary.update({"error": message})
+        if exc.status_code == 409:
+            data_sink.update_task_instance(instance_uid, status=previous_status, summary=summary)
+        else:
+            data_sink.update_task_instance(instance_uid, status="failed", current_step="config", summary=summary)
+        raise
+    except Exception as exc:
+        message = getattr(exc, "detail", None) or str(exc)
+        summary = _parse_json_object(instance.get("summary_json"))
+        summary.update({"error": message})
+        data_sink.update_task_instance(instance_uid, status="failed", current_step="config", summary=summary)
+        raise
+    return result
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/pause")
-async def pause_task(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+def _pause_run_jid(jid: str):
     control = _run_controls.get(jid)
     live = _run_status.get(jid) or {}
     task = control.get('task') if control else None
@@ -5668,14 +5985,12 @@ async def pause_task(adapter_id: str, task_id: str):
 
     control['pause_requested'] = True
     control['resume_event'].clear()
-    _run_status[jid] = {**live, 'status': 'pausing', 'last_seen_at': datetime.now().isoformat()}
-    _run_logs.setdefault(jid, []).append('[control] 收到暂停指令')
+    _merge_live_status([jid], {'status': 'pausing', 'last_seen_at': datetime.now().isoformat()})
+    _append_run_log([jid], '[control] 收到暂停指令')
     return {"ok": True, "status": "pausing"}
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/resume")
-async def resume_task(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+def _resume_run_jid(jid: str):
     control = _run_controls.get(jid)
     live = _run_status.get(jid) or {}
     task = control.get('task') if control else None
@@ -5685,14 +6000,12 @@ async def resume_task(adapter_id: str, task_id: str):
     control['pause_requested'] = False
     control['resume_event'].set()
     control['pause_logged'] = False
-    _run_status[jid] = {**live, 'status': 'running', 'last_seen_at': datetime.now().isoformat()}
-    _run_logs.setdefault(jid, []).append('[control] 收到继续指令')
+    _merge_live_status([jid], {'status': 'running', 'last_seen_at': datetime.now().isoformat()})
+    _append_run_log([jid], '[control] 收到继续指令')
     return {"ok": True, "status": "running"}
 
 
-@app.post("/tasks/{adapter_id}/{task_id}/stop")
-async def stop_task(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+def _stop_run_jid(jid: str):
     control = _run_controls.get(jid)
     live = _run_status.get(jid) or {}
     task = control.get('task') if control else None
@@ -5702,30 +6015,92 @@ async def stop_task(adapter_id: str, task_id: str):
     control['stop_requested'] = True
     control['pause_requested'] = False
     control['resume_event'].set()
-    _run_status[jid] = {**live, 'status': 'stopping', 'last_seen_at': datetime.now().isoformat()}
-    _run_logs.setdefault(jid, []).append('[control] 收到停止指令')
+    _merge_live_status([jid], {'status': 'stopping', 'last_seen_at': datetime.now().isoformat()})
+    _append_run_log([jid], '[control] 收到停止指令')
     task.cancel()
     return {"ok": True, "status": "stopping"}
 
 
+def _get_task_instance_or_404(instance_uid: str) -> dict:
+    instance = data_sink.get_task_instance(instance_uid)
+    if not instance:
+        raise HTTPException(404, "Task instance not found")
+    return instance
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/pause")
+async def pause_task(adapter_id: str, task_id: str):
+    return _pause_run_jid(_task_jid(adapter_id, task_id))
+
+
+@app.post("/task-instances/{instance_uid}/pause")
+async def pause_task_instance(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return _pause_run_jid(_instance_jid(instance_uid))
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/resume")
+async def resume_task(adapter_id: str, task_id: str):
+    return _resume_run_jid(_task_jid(adapter_id, task_id))
+
+
+@app.post("/task-instances/{instance_uid}/resume")
+async def resume_task_instance(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return _resume_run_jid(_instance_jid(instance_uid))
+
+
+@app.post("/tasks/{adapter_id}/{task_id}/stop")
+async def stop_task(adapter_id: str, task_id: str):
+    return _stop_run_jid(_task_jid(adapter_id, task_id))
+
+
+@app.post("/task-instances/{instance_uid}/stop")
+async def stop_task_instance(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return _stop_run_jid(_instance_jid(instance_uid))
+
+
 @app.get("/tasks/{adapter_id}/{task_id}/status")
 def task_status(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+    jid = _task_jid(adapter_id, task_id)
     live = _run_status.get(jid)
     last = data_sink.get_latest_run(adapter_id, task_id)
     return {"live": live, "last_run": last}
 
 
+@app.get("/task-instances/{instance_uid}/run-status")
+def task_instance_run_status(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    jid = _instance_jid(instance_uid)
+    live = _run_status.get(jid)
+    last = _latest_instance_run(instance_uid)
+    return {"live": live, "last_run": last}
+
+
 @app.get("/tasks/{adapter_id}/{task_id}/logs")
 def task_logs(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+    jid = _task_jid(adapter_id, task_id)
     return {"logs": _run_logs.get(jid, [])}
+
+
+@app.get("/task-instances/{instance_uid}/logs")
+def task_instance_logs(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    return {"logs": _run_logs.get(_instance_jid(instance_uid), [])}
 
 
 @app.delete("/tasks/{adapter_id}/{task_id}/logs")
 def clear_task_logs(adapter_id: str, task_id: str):
-    jid = f"{adapter_id}::{task_id}"
+    jid = _task_jid(adapter_id, task_id)
     _run_logs[jid] = []
+    return {"ok": True}
+
+
+@app.delete("/task-instances/{instance_uid}/logs")
+def clear_task_instance_logs(instance_uid: str):
+    _get_task_instance_or_404(instance_uid)
+    _run_logs[_instance_jid(instance_uid)] = []
     return {"ok": True}
 
 

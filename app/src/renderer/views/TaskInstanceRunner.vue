@@ -42,11 +42,13 @@
     <div v-else-if="error" class="tir-state error">{{ error }}</div>
     <TaskRunner
       v-else-if="task"
+      :key="`${instanceUid}-${reloadToken}`"
       :adapter-id="instance.adapter_id"
       :task="task"
       :instance-uid="instanceUid"
       :initial-params="instance.params || {}"
       @status-change="handleStatusChange"
+      @instance-updated="handleInstanceUpdated"
     />
     <div v-else class="tir-state">未找到脚本任务</div>
   </div>
@@ -76,6 +78,7 @@ const createSummaryText = computed(() => {
   if (Object.prototype.hasOwnProperty.call(summary, 'records')) return `${Number(summary.records || 0)} 条记录`
   return '-'
 })
+const reloadToken = ref(0)
 
 async function loadInstance() {
   if (!props.instanceUid) return
@@ -102,12 +105,17 @@ function handleStatusChange(status) {
   if (!instance.value || !status?.status) return
   task.value = mergeTaskLiveStatus(task.value, status)
   if (status.status === 'running') instance.value.status = 'running'
-  if (status.status === 'done') instance.value.status = instance.value.status === 'waiting_approval' ? 'waiting_approval' : 'completed'
+  if (status.status === 'done') instance.value.status = status.approval_board_url ? 'waiting_approval' : (instance.value.status === 'waiting_approval' ? 'waiting_approval' : 'completed')
   if (status.status === 'error') instance.value.status = 'failed'
   if (status.status === 'stopped') instance.value.status = 'stopped'
   if (['done', 'error', 'stopped'].includes(status.status)) {
     setTimeout(loadInstance, 800)
   }
+}
+
+async function handleInstanceUpdated() {
+  await loadInstance()
+  reloadToken.value += 1
 }
 
 function artifactName(path) {

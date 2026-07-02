@@ -558,6 +558,7 @@
           embedded
           :show-submit-results="false"
           @batch-updated="handleApprovalBatchUpdated"
+          @committed="handleApprovalCommitted"
         />
         <div v-else class="ai-chain-empty-panel">
           <strong>等待生图批次</strong>
@@ -873,6 +874,7 @@
       v-model="approvalDrawerOpen"
       :board-url="approvalBoardUrl"
       @batch-updated="handleApprovalBatchUpdated"
+      @committed="handleApprovalCommitted"
     />
   </div>
 </template>
@@ -892,12 +894,13 @@ const props = defineProps({
   instanceUid: { type: String, default: '' },
   initialParams: { type: Object, default: () => ({}) },
 })
-const emit = defineEmits(['status-change'])
+const emit = defineEmits(['status-change', 'instance-updated'])
 
 const values = ref({})
 const logs = ref([])
 const isRunning = ref(false)
 const lastResult = ref(null)
+const localLiveSnapshot = ref(null)
 const outputFiles = ref([])
 const approvalBoardUrl = ref('')
 const approvalBatch = ref(null)
@@ -1235,16 +1238,18 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   syncingOdps.value = false
   isRunning.value = false
   lastResult.value = null
+  localLiveSnapshot.value = null
   runStage.value = ''
   // 异步加载该任务的历史日志
   nextTick(async () => {
     try {
-      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id)
+      const logR = await window.cs.getTaskLogs(props.adapterId, task.task_id, props.instanceUid)
       if (logR.logs) logs.value = logR.logs
-      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id)
+      const taskStatus = await window.cs.getTaskStatus(props.adapterId, task.task_id, props.instanceUid)
       const live = taskStatus?.live
       const last = taskStatus?.last_run
       if (live && isTaskActiveStatus(live.status)) {
+        applyLocalLiveStatus(live)
         isRunning.value = true
         currentRunId = live.run_id ?? last?.id ?? null
         emit('status-change', live)
@@ -1296,8 +1301,11 @@ const autoPrecheckNote = computed(() =>
   props.task?.auto_precheck_note || '执行前会自动做 Excel 预检'
 )
 
-const liveStatus = computed(() => props.task?.live?.status || '')
-const liveProgress = computed(() => props.task?.live || {})
+const liveProgress = computed(() => ({
+  ...(props.task?.live || {}),
+  ...(localLiveSnapshot.value || {}),
+}))
+const liveStatus = computed(() => liveProgress.value?.status || '')
 const paramsGridClass = computed(() =>
   props.adapterId === 'shopee-webchat-bulk-reply' ? 'params-grid-shopee-bulk' : ''
 )
@@ -2019,15 +2027,25 @@ function resetRunUi() {
   approvalBoardUrl.value = ''
   approvalBatch.value = null
   approvalDrawerOpen.value = false
+  localLiveSnapshot.value = null
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
   syncingOdps.value = false
+}
+
+function applyLocalLiveStatus(status) {
+  if (!status?.status) return
+  localLiveSnapshot.value = {
+    ...(localLiveSnapshot.value || props.task?.live || {}),
+    ...status,
+  }
 }
 
 async function pauseCurrentTask() {
   if (!isRunning.value || liveStatus.value !== 'running') return
   try {
-    await window.cs.pauseTask(props.adapterId, props.task.task_id)
+    await window.cs.pauseTask(props.adapterId, props.task.task_id, props.instanceUid)
     logs.value.push(`[${now()}] 已发送暂停指令`)
+    applyLocalLiveStatus({ status: 'pausing', run_id: currentRunId })
     emit('status-change', { status: 'pausing', run_id: currentRunId })
     scrollToBottom()
   } catch (e) {
@@ -2038,8 +2056,9 @@ async function pauseCurrentTask() {
 async function resumeCurrentTask() {
   if (!isRunning.value || !['paused', 'pausing'].includes(liveStatus.value)) return
   try {
-    await window.cs.resumeTask(props.adapterId, props.task.task_id)
+    await window.cs.resumeTask(props.adapterId, props.task.task_id, props.instanceUid)
     logs.value.push(`[${now()}] 已发送继续指令`)
+    applyLocalLiveStatus({ status: 'running', run_id: currentRunId })
     emit('status-change', { status: 'running', run_id: currentRunId })
     scrollToBottom()
   } catch (e) {
@@ -2050,8 +2069,9 @@ async function resumeCurrentTask() {
 async function stopCurrentTask() {
   if (!isRunning.value || liveStatus.value === 'stopping') return
   try {
-    await window.cs.stopTask(props.adapterId, props.task.task_id)
+    await window.cs.stopTask(props.adapterId, props.task.task_id, props.instanceUid)
     logs.value.push(`[${now()}] 已发送停止指令`)
+    applyLocalLiveStatus({ status: 'stopping', run_id: currentRunId })
     emit('status-change', { status: 'stopping', run_id: currentRunId })
     scrollToBottom()
   } catch (e) {
@@ -2064,7 +2084,10 @@ async function startTaskRun(params, pendingMessage) {
   let r
   if (props.instanceUid) {
     await window.cs.updateTaskInstance(props.instanceUid, { params })
-    r = await window.cs.runTaskInstance(props.instanceUid)
+    r = await window.cs.runTaskInstance(props.instanceUid, {
+      params,
+      current_tab_id: currentTabId,
+    })
   } else {
     r = await window.cs.runTask(props.adapterId, props.task.task_id, params, {
       current_tab_id: currentTabId,
@@ -2072,9 +2095,10 @@ async function startTaskRun(params, pendingMessage) {
   }
   if (!r.ok) throw new Error(r.message || JSON.stringify(r))
   logs.value.push(`[${now()}] ${pendingMessage}`)
+  applyLocalLiveStatus({ status: 'running' })
   emit('status-change', { status: 'running' })
   await new Promise(res => setTimeout(res, 600))
-  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
+  const initStatus = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, props.instanceUid)
   currentRunId = initStatus?.live?.run_id ?? initStatus?.last_run?.id ?? null
   const token = runAbortToken
   return await new Promise((resolve) => {
@@ -2095,12 +2119,15 @@ async function startTaskRun(params, pendingMessage) {
 }
 
 async function pollStatusOnce() {
-  const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id)
+  const r = await window.cs.getTaskStatus(props.adapterId, props.task.task_id, props.instanceUid)
   const live = r.live
-  const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id)
+  const logR = await window.cs.getTaskLogs(props.adapterId, props.task.task_id, props.instanceUid)
 
   if (logR.logs) logs.value = logR.logs
-  if (live) emit('status-change', live)
+  if (live) {
+    applyLocalLiveStatus(live)
+    emit('status-change', live)
+  }
   scrollToBottom()
 
   // live 有值且是当前任务正在跑 → 继续等
@@ -2117,6 +2144,7 @@ async function pollStatusOnce() {
     if (isTaskActiveStatus(last.status)) return null
     // last_run 是当前任务且已完成 → 用 last 作为结果
     const syntheticLive = { status: last.status, records: last.records_count, error: last.error, run_id: last.id }
+    applyLocalLiveStatus(syntheticLive)
     return syntheticLive
   }
 
@@ -2135,7 +2163,10 @@ async function refreshOutputFiles() {
     const artifactFiles = (detail?.artifacts || [])
       .map(artifact => artifact?.path)
       .filter(Boolean)
-    const allFiles = [...artifactFiles]
+    const summaryFiles = Array.isArray(detail?.summary?.output_files)
+      ? detail.summary.output_files.map(file => String(file || '').trim()).filter(Boolean)
+      : []
+    const allFiles = Array.from(new Set([...artifactFiles, ...summaryFiles]))
     const boardUrl = String(detail?.summary?.approval_board_url || '').trim()
     if (boardUrl) allFiles.push(boardUrl)
     outputFiles.value = visibleOutputFiles(allFiles)
@@ -2171,11 +2202,13 @@ async function finishRun(result, options = {}) {
   } else {
     currentRunId = null
   }
+  applyLocalLiveStatus(result)
   emit('status-change', result)
 
   if (result.status === 'done') {
     const files = await refreshOutputFiles()
     approvalBoardUrl.value = findApprovalBoardUrl(files, result)
+    if (isInstanceMode.value) emit('instance-updated')
     if (options.message) {
       lastResult.value = { ok: !!options.ok, msg: options.message }
     } else {
@@ -2183,11 +2216,13 @@ async function finishRun(result, options = {}) {
     }
   } else if (result.status === 'stopped') {
     await refreshOutputFiles()
+    if (isInstanceMode.value) emit('instance-updated')
     lastResult.value = {
       ok: false,
       msg: options.message || `■ 已停止，保留 ${result.records ?? result.records_count ?? 0} 条结果`,
     }
   } else if (result.status === 'error') {
+    if (isInstanceMode.value) emit('instance-updated')
     lastResult.value = { ok: false, msg: options.message || `✗ 失败: ${result.error || '未知错误'}` }
   }
 }
@@ -2320,7 +2355,7 @@ async function runTaskAndSyncOdps() {
 async function clearLogs() {
   logs.value = []
   try {
-    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id)
+    await window.cs.clearTaskLogs(props.adapterId, props.task.task_id, props.instanceUid)
   } catch {}
 }
 
@@ -2366,6 +2401,11 @@ function handleApprovalBatchUpdated(payload) {
   if (isTmallAiImageChainTask.value && hasAiChainCreateRows(payload)) {
     aiChainActiveStep.value = 'create'
   }
+}
+
+function handleApprovalCommitted(payload) {
+  handleApprovalBatchUpdated(payload)
+  if (isInstanceMode.value) emit('instance-updated')
 }
 
 function isHttpUrl(path) {

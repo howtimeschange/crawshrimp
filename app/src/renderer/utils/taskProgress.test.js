@@ -177,6 +177,62 @@ test('tmall ai image test chain uses find-image and generation progress tracks',
   assert.match(summary.sub, /并发/)
 })
 
+test('tmall ai image test chain keeps generation progress moving from status text fallback', () => {
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'tmall-ops-assistant',
+    taskId: 'tmall_ai_image_test_chain',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'tmall_ai_chain_generate',
+      current: 6,
+      total: 6,
+      store: '1XM 生图完成 3/20',
+      search_total_codes: 6,
+      search_completed_codes: 6,
+    },
+  })
+
+  assert.equal(summary.main, '批量生图')
+  assert.equal(summary.percentValue, 57.5)
+  assert.equal(summary.tracks[0].state, 'complete')
+  assert.equal(summary.tracks[1].main, '3 / 20 张')
+  assert.equal(summary.tracks[1].percentLabel, '15%')
+  assert.equal(summary.tracks[1].indeterminate, false)
+})
+
+test('tmall ai image test chain moves generation bar on submitted jobs before completion', () => {
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'tmall-ops-assistant',
+    taskId: 'tmall_ai_image_test_chain',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'tmall_ai_chain_generate',
+      current: 6,
+      total: 6,
+      buyer_id: '208326100202',
+      store: '1XM 生图提交 12/20',
+      search_total_codes: 6,
+      search_completed_codes: 6,
+      generation_total_jobs: 20,
+      generation_submitted_jobs: 12,
+      generation_completed_jobs: 0,
+    },
+  })
+
+  assert.equal(summary.main, '批量生图')
+  assert.equal(summary.percentValue, 80)
+  assert.equal(summary.tracks[0].state, 'complete')
+  assert.equal(summary.tracks[1].main, '12 / 20 张')
+  assert.equal(summary.tracks[1].percentLabel, '60%')
+  assert.equal(summary.tracks[1].state, 'active')
+  assert.match(summary.tracks[1].caption, /已提交 12\/20/)
+  assert.match(summary.tracks[1].caption, /等待生成回传/)
+})
+
 test('shein commodity quality uses two-stage list and return detail progress', () => {
   const config = resolveTaskProgressConfig('shein-helper', 'commodity_quality')
   assert.equal(config.mode, 'enhanced')

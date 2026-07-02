@@ -163,6 +163,51 @@ def approval_asset_id(style_code: str, kind: str, index: object, path: str) -> s
     ])
 
 
+def fresh_approval_nonce(batch: Mapping[str, Any], purpose: str) -> str:
+    batch_run_uid = compact(batch.get("task_run_uid"))
+    batch_id = compact(batch.get("batch_id")) or "approval"
+    return "-".join([
+        safe_token(batch_run_uid or batch_id, "run"),
+        safe_token(purpose, "manual"),
+        datetime.now(timezone.utc).astimezone().strftime("%Y%m%d%H%M%S"),
+        secrets.token_hex(3),
+    ])
+
+
+def approval_batch_run_uid(batch: Mapping[str, Any]) -> str:
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    return (
+        compact(batch.get("task_run_uid"))
+        or compact(run_params.get("task_run_uid"))
+        or compact(run_params.get("__task_run_id"))
+    )
+
+
+def apply_fresh_approval_generation_key(
+    generation_row: dict[str, Any],
+    batch: Mapping[str, Any],
+    purpose: str,
+) -> str:
+    nonce = fresh_approval_nonce(batch, purpose)
+    batch_run_uid = approval_batch_run_uid(batch)
+    key_parts = [
+        "tmall_ai_chain",
+        safe_token(batch_run_uid or nonce, "run"),
+        safe_token(generation_row.get("款号")),
+        safe_token(generation_row.get("提示词分组") or "approval"),
+        safe_token(generation_row.get("提示词字段名") or purpose),
+        safe_token(generation_row.get("提示词序号") or 1),
+        safe_token(generation_row.get("尺寸") or ""),
+        stable_hash(generation_row.get("完整Prompt") or generation_row.get("最终提示词") or ""),
+        safe_token(nonce),
+    ]
+    generation_row["__1xm_idempotency_key"] = "_".join(key_parts)[:180]
+    generation_row["__1xm_output_token"] = safe_token(nonce)
+    if batch_run_uid:
+        generation_row["__task_run_uid"] = batch_run_uid
+    return nonce
+
+
 def _image_asset(path: str, *, style_code: str, kind: str, label: str, index: int = 0, status: str = "reference", extra: Mapping[str, Any] | None = None) -> dict[str, Any]:
     clean_path = compact(path)
     filename = Path(clean_path).name if clean_path else ""
@@ -208,9 +253,16 @@ def build_approval_item(
             status="reference",
         ))
 
-    fallback_paths = list(generated_paths or [])
+    selected_paths = [compact(path) for path in (generated_paths or []) if compact(path)]
+    selected_path_set = set(selected_paths)
+    fallback_paths = list(selected_paths)
+    item_task_run_uid = ""
     for row_index, generation_row in enumerate(generation_rows or [], start=1):
+        if not item_task_run_uid:
+            item_task_run_uid = compact(generation_row.get("__task_run_uid"))
         paths = parse_list(generation_row.get("本地生成图文件"))
+        if selected_path_set:
+            paths = [path for path in paths if compact(path) in selected_path_set]
         if not paths and row_index <= len(fallback_paths):
             paths = [fallback_paths[row_index - 1]]
         for image_offset, path in enumerate(paths, start=1):
@@ -230,6 +282,7 @@ def build_approval_item(
                     "prompt": compact(generation_row.get("完整Prompt") or generation_row.get("最终提示词")),
                     "generation_row": json_safe(generation_row),
                     "reference_paths": parse_list(generation_row.get("参考图文件")),
+                    "task_run_uid": compact(generation_row.get("__task_run_uid")),
                     "custom_prompt": "",
                     "review_note": "",
                 },
@@ -248,6 +301,7 @@ def build_approval_item(
         "detail_reference_path": compact(detail_reference_path),
         "workflow": workflow_data,
         "semir_data": json_safe(semir_data or {}),
+        "task_run_uid": item_task_run_uid,
         "assets": assets,
     }
 
@@ -473,6 +527,8 @@ def write_approval_batch(
         "created_at": created_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "adapter_id": ADAPTER_ID,
         "task_id": TASK_ID,
+        "task_instance_uid": compact((run_params or {}).get("task_instance_uid")),
+        "task_run_uid": compact((run_params or {}).get("task_run_uid")),
         "artifact_dir": str(artifact_dir),
         "board_url": board_url,
         "items": json_safe(list(items or [])),
@@ -523,6 +579,17 @@ def update_approval_decisions(batch: dict[str, Any], decisions: Mapping[str, Any
     return batch
 
 
+def approval_asset_matches_batch_run(batch: Mapping[str, Any], asset: Mapping[str, Any]) -> bool:
+    batch_run_uid = compact(batch.get("task_run_uid"))
+    if not batch_run_uid:
+        return True
+    asset_run_uid = compact(asset.get("task_run_uid"))
+    generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), Mapping) else {}
+    generation_run_uid = compact(generation_row.get("__task_run_uid"))
+    known_run_uid = asset_run_uid or generation_run_uid
+    return known_run_uid == batch_run_uid
+
+
 def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
     plans: list[dict[str, Any]] = []
     for item in batch.get("items") or []:
@@ -532,6 +599,7 @@ def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[d
             if asset.get("kind") == "ai"
             and compact(asset.get("path"))
             and compact(asset.get("status")) in APPROVED_ASSET_STATUSES
+            and approval_asset_matches_batch_run(batch, asset)
         ]
         if not approved_paths:
             continue
@@ -598,6 +666,35 @@ def find_approval_asset(batch: Mapping[str, Any], asset_id: str) -> tuple[dict[s
     raise KeyError(f"未找到审批图片：{asset_id}")
 
 
+def find_approval_item(batch: Mapping[str, Any], *, item_id: str = "", style_code: str = "") -> dict[str, Any]:
+    target_item_id = compact(item_id)
+    target_style = compact(style_code)
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if target_item_id and target_item_id in {compact(item.get("id")), compact(item.get("item_id"))}:
+            return item
+        if target_style and compact(item.get("style_code")) == target_style:
+            return item
+    raise KeyError(f"未找到审批款号：{target_style or target_item_id}")
+
+
+def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, Any], generation_row: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    source_row = generation_row if isinstance(generation_row, Mapping) else {}
+    existing_ai = next((asset for asset in item.get("assets") or [] if isinstance(asset, Mapping) and asset.get("kind") == "ai"), {})
+    existing_row = existing_ai.get("generation_row") if isinstance(existing_ai.get("generation_row"), Mapping) else {}
+    return {
+        "image_size": compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280",
+        "quality": normalize_quality(source_row.get("质量") or existing_row.get("质量") or run_params.get("quality") or "auto"),
+        "output_format": compact(source_row.get("格式")) or compact(existing_row.get("格式")) or compact(run_params.get("output_format")) or "jpeg",
+        "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto",
+        "retry_attempts": to_int(run_params.get("retry_attempts"), 3),
+        "compensate_attempts": to_int(run_params.get("compensate_attempts"), 2),
+        "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
+    }
+
+
 def regenerate_approval_asset(
     batch: dict[str, Any],
     asset_id: str,
@@ -623,20 +720,32 @@ def regenerate_approval_asset(
     generation_row["__1xm_reference_paths"] = refs
     if isinstance(generation_row.get("__1xm_payload"), dict):
         generation_row["__1xm_payload"]["prompt"] = final_prompt
+    else:
+        defaults = approval_generation_defaults(batch, item, generation_row)
+        generation_row["__1xm_payload"] = {
+            "model": "gpt-image-2",
+            "prompt": final_prompt,
+            "size": defaults["image_size"],
+            "quality": defaults["quality"],
+            "output_format": defaults["output_format"],
+            "n": 1,
+        }
+    nonce = apply_fresh_approval_generation_key(generation_row, batch, "retry")
     settings = resolve_one_xm_settings()
     if not (settings.get("2k") or settings.get("4k")):
         raise RuntimeError("未配置 1XM Key，无法重新生图")
-    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    defaults = approval_generation_defaults(batch, item, generation_row)
     patched = run_one_xm_generation_row(generation_row, {
-        "one_xm_key_tier": compact(run_params.get("one_xm_key_tier")) or compact(generation_row.get("__1xm_key_tier")) or "auto",
-        "retry_attempts": to_int(run_params.get("retry_attempts"), 3),
-        "compensate_attempts": to_int(run_params.get("compensate_attempts"), 2),
-        "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
+        "one_xm_key_tier": defaults["one_xm_key_tier"],
+        "retry_attempts": defaults["retry_attempts"],
+        "compensate_attempts": defaults["compensate_attempts"],
+        "poll_timeout_minutes": defaults["poll_timeout_minutes"],
     }, settings)
     artifact_dir = Path(compact(batch.get("artifact_dir")) or ".")
     paths = download_generated_images(patched, artifact_dir)
     if not paths:
         raise RuntimeError(compact(patched.get("备注")) or "重新生图没有下载到本地图片")
+    regenerated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     asset.update({
         "path": paths[0],
         "filename": Path(paths[0]).name,
@@ -645,9 +754,115 @@ def regenerate_approval_asset(
         "custom_prompt": final_prompt,
         "reference_paths": refs,
         "generation_row": json_safe({**patched, "本地生成图文件": "\n".join(paths)}),
-        "regenerated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "task_run_uid": approval_batch_run_uid(batch),
+        "regeneration_nonce": nonce,
+        "regenerated_at": regenerated_at,
+        "updated_at": regenerated_at,
     })
-    batch["updated_at"] = asset["regenerated_at"]
+    batch["updated_at"] = regenerated_at
+    save_approval_batch(batch)
+    return asset
+
+
+def generate_approval_asset_for_item(
+    batch: dict[str, Any],
+    *,
+    item_id: str = "",
+    style_code: str = "",
+    prompt: str = "",
+    main_image_path: str = "",
+    reference_paths: list[str] | None = None,
+) -> dict[str, Any]:
+    item = find_approval_item(batch, item_id=item_id, style_code=style_code)
+    final_prompt = compact(prompt)
+    if not final_prompt:
+        raise ValueError("新增生图缺少 Prompt")
+    main_path = compact(main_image_path) or compact(item.get("origin_path"))
+    if not main_path:
+        raise ValueError("新增生图缺少主图")
+    refs = [main_path, *parse_list(reference_paths)]
+    refs = list(dict.fromkeys([ref for ref in refs if compact(ref)]))
+    workflow = workflow_from_dict(item.get("workflow") or item)
+    defaults = approval_generation_defaults(batch, item)
+    ai_assets = [asset for asset in item.get("assets") or [] if isinstance(asset, Mapping) and asset.get("kind") == "ai"]
+    prompt_index = len(ai_assets) + 1
+    generation_row = {
+        "表格行号": workflow.row_no,
+        "款号": workflow.style_code,
+        "SKC编码": workflow.skc_code,
+        "商品ID": workflow.item_id,
+        "品类": workflow.category,
+        "性别": workflow.gender,
+        "提示词分组": "审批新增",
+        "提示词字段名": f"审批新增 {prompt_index}",
+        "提示词序号": prompt_index,
+        "尺寸": defaults["image_size"],
+        "格式": defaults["output_format"],
+        "质量": defaults["quality"],
+        "参考图文件": "\n".join(refs),
+        "主参考图文件": refs[0],
+        "细节参考图文件": "\n".join(refs[1:]),
+        "最终提示词": final_prompt,
+        "完整Prompt": final_prompt,
+        "1XM任务ID": "",
+        "1XM轮询URL": "",
+        "生成图URL": "",
+        "生成图数量": "",
+        "执行结果": "待生成",
+        "备注": "",
+        "__1xm_generate": True,
+        "__1xm_key_tier": defaults["one_xm_key_tier"],
+        "__task_run_uid": approval_batch_run_uid(batch),
+        "__1xm_reference_paths": refs,
+        "__1xm_payload": {
+            "model": "gpt-image-2",
+            "prompt": final_prompt,
+            "size": defaults["image_size"],
+            "quality": defaults["quality"],
+            "output_format": defaults["output_format"],
+            "n": 1,
+        },
+    }
+    nonce = apply_fresh_approval_generation_key(generation_row, batch, "manual")
+    settings = resolve_one_xm_settings()
+    if not (settings.get("2k") or settings.get("4k")):
+        raise RuntimeError("未配置 1XM Key，无法新增生图")
+    patched = run_one_xm_generation_row(generation_row, {
+        "one_xm_key_tier": defaults["one_xm_key_tier"],
+        "retry_attempts": defaults["retry_attempts"],
+        "compensate_attempts": defaults["compensate_attempts"],
+        "poll_timeout_minutes": defaults["poll_timeout_minutes"],
+    }, settings)
+    artifact_dir = Path(compact(batch.get("artifact_dir")) or ".")
+    paths = download_generated_images(patched, artifact_dir)
+    if not paths:
+        raise RuntimeError(compact(patched.get("备注")) or "新增生图没有下载到本地图片")
+    created_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    asset = _image_asset(
+        paths[0],
+        style_code=workflow.style_code,
+        kind="ai",
+        label=f"AI 图 {prompt_index}",
+        index=f"{prompt_index}-{safe_token(nonce)}",
+        status="pending",
+        extra={
+            "prompt_index": prompt_index,
+            "prompt_name": f"审批新增 {prompt_index}",
+            "prompt_group": "审批新增",
+            "prompt": final_prompt,
+            "custom_prompt": final_prompt,
+            "reference_paths": refs,
+            "generation_row": json_safe({**patched, "本地生成图文件": "\n".join(paths)}),
+            "task_run_uid": approval_batch_run_uid(batch),
+            "manual_added": True,
+            "generation_nonce": nonce,
+            "created_at": created_at,
+            "updated_at": created_at,
+            "review_note": "",
+        },
+    )
+    item.setdefault("assets", []).append(asset)
+    batch["updated_at"] = created_at
     save_approval_batch(batch)
     return asset
 
@@ -893,19 +1108,22 @@ def make_generation_row(
     output_format: str,
     key_tier: str,
     prompt_index: int = 1,
+    run_nonce: str = "",
 ) -> dict[str, Any]:
     final_prompt = build_prompt_text(prompt, workflow)
     normalized_quality = normalize_quality(quality)
     references = [compact(item) for item in (reference_paths if isinstance(reference_paths, (list, tuple)) else [reference_paths]) if compact(item)]
-    idempotency_key = "_".join([
+    key_parts = [
         "tmall_ai_chain",
+        safe_token(run_nonce, "run"),
         safe_token(workflow.style_code),
         safe_token(prompt.sheet_name),
         safe_token(prompt.field_name),
         safe_token(prompt_index),
         safe_token(image_size),
         stable_hash(final_prompt),
-    ])[:180]
+    ]
+    idempotency_key = "_".join(key_parts)[:180]
     return {
         "表格行号": workflow.row_no,
         "款号": workflow.style_code,
@@ -933,6 +1151,7 @@ def make_generation_row(
         "__1xm_generate": True,
         "__1xm_key_tier": key_tier,
         "__1xm_idempotency_key": idempotency_key,
+        "__task_run_uid": compact(run_nonce),
         "__1xm_reference_paths": references,
         "__1xm_payload": {
             "model": "gpt-image-2",
@@ -1845,9 +2064,11 @@ TMALL_UPLOAD_CREATE_JS = r"""
       return { success: true, data: [result], meta: { has_more: false } };
     }
     if (!result.materials.length) throw new Error('没有可添加的天猫素材 URL，请先启用并完成 live_upload');
-    const reusableTask = await findReusableStoppedTask(__payload.item_id, 'common_search');
     let taskStatusList = [];
     let task = null;
+    const reusableTask = __payload.allow_reuse_stopped_task
+      ? await findReusableStoppedTask(__payload.item_id, 'common_search')
+      : null;
     if (reusableTask) {
       result.reusedExistingTask = {
         experimentTaskId: reusableTask.experimentTaskId,
@@ -2189,10 +2410,12 @@ def download_generated_images(row: Mapping[str, Any], artifact_dir: Path) -> lis
     urls = parse_list(row.get("生成图URL"))
     paths: list[str] = []
     prompt_index = int(row.get("提示词序号") or 1)
+    output_token = safe_token(row.get("__1xm_output_token"), "")
     for index, url in enumerate(urls, start=1):
         suffix = guess_image_suffix(url, ".jpg")
         image_index = prompt_index if len(urls) == 1 else f"{prompt_index}-{index}"
-        target = artifact_dir / f"{compact(row.get('款号'))}-ai-{image_index}{suffix}"
+        token_suffix = f"-{output_token}" if output_token else ""
+        target = artifact_dir / f"{compact(row.get('款号'))}-ai-{image_index}{token_suffix}{suffix}"
         result = download_url_to_file(url, target, timeout=90)
         if result.get("success"):
             paths.append(str(result["path"]))
@@ -2288,7 +2511,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
             tmall_result = await upload_and_create_tmall_task(
                 runner,
                 workflow,
-                "",
+                compact(plan.get("origin_path")),
                 list(plan.get("generated_paths") or []),
                 live_upload=True,
                 live_create=True,
@@ -2517,11 +2740,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--approval-message-template", default="")
     parser.add_argument("--approval-notify-channel", default="dingtalk", choices=["dingtalk", "feishu", "webhook", "none"])
     parser.add_argument("--approval-base-url", default="")
+    parser.add_argument("--task-instance-uid", default="")
+    parser.add_argument("--task-run-uid", default="")
     return parser
 
 
 async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None, wait_for_control=None) -> list[dict[str, Any]]:
     args = apply_chain_execution_mode(args)
+    if not compact(getattr(args, "task_run_uid", "")):
+        args.task_run_uid = f"manual-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     all_rows: list[dict[str, Any]] = []
     approval_items: list[dict[str, Any]] = []
     workflow_results: list[dict[str, Any]] = []
@@ -2563,6 +2790,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                     "search_total_codes": total,
                     "search_completed_codes": completed - 1,
                     "generation_total_jobs": 0,
+                    "generation_submitted_jobs": 0,
                     "generation_completed_jobs": 0,
                 },
                 "phase": "tmall_ai_chain_semir",
@@ -2602,6 +2830,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                         "search_total_codes": total,
                         "search_completed_codes": completed,
                         "generation_total_jobs": 0,
+                        "generation_submitted_jobs": 0,
                         "generation_completed_jobs": 0,
                     },
                     "phase": "tmall_ai_chain_semir",
@@ -2638,6 +2867,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                         "search_total_codes": total,
                         "search_completed_codes": completed,
                         "generation_total_jobs": 0,
+                        "generation_submitted_jobs": 0,
                         "generation_completed_jobs": 0,
                     },
                     "phase": "tmall_ai_chain_semir",
@@ -2673,6 +2903,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                         "search_total_codes": total,
                         "search_completed_codes": completed,
                         "generation_total_jobs": 0,
+                        "generation_submitted_jobs": 0,
                         "generation_completed_jobs": 0,
                     },
                     "phase": "tmall_ai_chain_semir",
@@ -2691,6 +2922,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 output_format=args.output_format,
                 key_tier=args.one_xm_key_tier,
                 prompt_index=prompt_index,
+                run_nonce=args.task_run_uid,
             )
             for prompt_index, prompt in enumerate(selected_prompts, start=1)
         ]
@@ -2718,6 +2950,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                     "search_total_codes": total,
                     "search_completed_codes": completed,
                     "generation_total_jobs": 0,
+                    "generation_submitted_jobs": 0,
                     "generation_completed_jobs": 0,
                 },
                 "phase": "tmall_ai_chain_semir",
@@ -2741,20 +2974,47 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                     "search_total_codes": total,
                     "search_completed_codes": total,
                     "generation_total_jobs": generation_total,
+                    "generation_submitted_jobs": 0,
                     "generation_completed_jobs": 0,
                     "current_store": f"1XM 生图批量提交，并发 {concurrency}",
                 },
                 "phase": "tmall_ai_chain_generate",
             })
         semaphore = asyncio.Semaphore(concurrency)
+        submitted_count = 0
+        completed_count = 0
+        progress_lock = asyncio.Lock()
 
         async def generate_one(plan_index: int, row_index: int, generation_row: dict[str, Any]) -> tuple[int, int, dict[str, Any], list[str]]:
+            nonlocal submitted_count, completed_count
             async with semaphore:
                 plan = generation_plans[plan_index]
                 workflow = plan["workflow"]
                 prompt_no = int(generation_row.get("提示词序号") or row_index + 1)
                 prompt_total = len(plan["generation_rows"])
+                async with progress_lock:
+                    submitted_count += 1
+                    current_submitted = submitted_count
+                    current_completed = completed_count
                 log(f"[chain] {workflow.style_code} 1XM 生图提交 {prompt_no}/{prompt_total}（批量队列）")
+                if wait_for_control:
+                    await wait_for_control({
+                        "records": len(all_rows),
+                        "shared": {
+                            "total_rows": total,
+                            "current_exec_no": total,
+                            "current_row_no": workflow.row_no,
+                            "current_buyer_id": workflow.style_code,
+                            "current_source_filename": compact(generation_row.get("提示词字段名")),
+                            "current_store": f"1XM 生图提交 {current_submitted}/{generation_total}",
+                            "search_total_codes": total,
+                            "search_completed_codes": total,
+                            "generation_total_jobs": generation_total,
+                            "generation_submitted_jobs": current_submitted,
+                            "generation_completed_jobs": current_completed,
+                        },
+                        "phase": "tmall_ai_chain_generate",
+                    })
                 try:
                     patched = await asyncio.to_thread(run_one_xm_generation_row, generation_row, {
                         "one_xm_key_tier": args.one_xm_key_tier,
@@ -2781,6 +3041,9 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
             workflow = plan["workflow"]
             plan["generation_rows"][row_index] = patched_row
             plan["generated_paths_by_index"][row_index] = row_paths
+            async with progress_lock:
+                completed_count = done_count
+                current_submitted = submitted_count
             if wait_for_control:
                 await wait_for_control({
                     "records": len(all_rows),
@@ -2794,6 +3057,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                         "search_total_codes": total,
                         "search_completed_codes": total,
                         "generation_total_jobs": generation_total,
+                        "generation_submitted_jobs": current_submitted,
                         "generation_completed_jobs": done_count,
                     },
                     "phase": "tmall_ai_chain_generate",
@@ -2816,7 +3080,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
         detail_reference_path = plan["detail_reference_path"]
         generation_rows = plan["generation_rows"]
         generated_paths_by_index = plan["generated_paths_by_index"]
-        generated_paths = [path for row_paths in generated_paths_by_index for path in row_paths]
+        generated_paths = [row_paths[0] for row_paths in generated_paths_by_index if row_paths]
         expected_ai_count = len(plan["selected_prompts"])
         plan_reference_mode = plan.get("reference_mode") or reference_mode
 
@@ -2884,6 +3148,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                         "search_total_codes": total,
                         "search_completed_codes": total,
                         "generation_total_jobs": generation_total,
+                        "generation_submitted_jobs": generation_total,
                         "generation_completed_jobs": generation_total,
                     },
                     "phase": "tmall_ai_chain_tmall",

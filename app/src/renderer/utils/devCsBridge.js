@@ -150,7 +150,7 @@ export function createDevCsBridge() {
     createTaskInstance: (payload) => apiCall('POST', '/task-instances', payload || {}),
     getTaskInstance: (uid) => apiCall('GET', `/task-instances/${encodePathPart(uid)}`),
     updateTaskInstance: (uid, payload) => apiCall('PATCH', `/task-instances/${encodePathPart(uid)}`, payload || {}),
-    runTaskInstance: (uid) => apiCall('POST', `/task-instances/${encodePathPart(uid)}/run`, {}),
+    runTaskInstance: (uid, options = {}) => apiCall('POST', `/task-instances/${encodePathPart(uid)}/run`, options || {}),
     listTaskSchedules: (query = {}) => apiCall('GET', `/task-schedules?${queryString(query)}`),
     createTaskSchedule: (payload) => apiCall('POST', '/task-schedules', payload || {}),
     getTaskSchedule: (uid) => apiCall('GET', `/task-schedules/${encodePathPart(uid)}`),
@@ -166,12 +166,42 @@ export function createDevCsBridge() {
       params: params || {},
       current_tab_id: options.current_tab_id || '',
     }),
-    pauseTask: (aid, tid) => apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/pause`),
-    resumeTask: (aid, tid) => apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/resume`),
-    stopTask: (aid, tid) => apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/stop`),
-    getTaskStatus: (aid, tid) => apiCall('GET', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/status`),
-    getTaskLogs: (aid, tid) => apiCall('GET', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/logs`),
-    clearTaskLogs: (aid, tid) => apiCall('DELETE', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/logs`),
+    pauseTask: (aid, tid, instanceUid = '') => {
+      const uid = String(instanceUid || '').trim()
+      return uid
+        ? apiCall('POST', `/task-instances/${encodePathPart(uid)}/pause`)
+        : apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/pause`)
+    },
+    resumeTask: (aid, tid, instanceUid = '') => {
+      const uid = String(instanceUid || '').trim()
+      return uid
+        ? apiCall('POST', `/task-instances/${encodePathPart(uid)}/resume`)
+        : apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/resume`)
+    },
+    stopTask: (aid, tid, instanceUid = '') => {
+      const uid = String(instanceUid || '').trim()
+      return uid
+        ? apiCall('POST', `/task-instances/${encodePathPart(uid)}/stop`)
+        : apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/stop`)
+    },
+    getTaskStatus: (aid, tid, instanceUid = '') => {
+      const uid = String(instanceUid || '').trim()
+      return uid
+        ? apiCall('GET', `/task-instances/${encodePathPart(uid)}/run-status`)
+        : apiCall('GET', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/status`)
+    },
+    getTaskLogs: (aid, tid, instanceUid = '') => {
+      const uid = String(instanceUid || '').trim()
+      return uid
+        ? apiCall('GET', `/task-instances/${encodePathPart(uid)}/logs`)
+        : apiCall('GET', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/logs`)
+    },
+    clearTaskLogs: (aid, tid, instanceUid = '') => {
+      const uid = String(instanceUid || '').trim()
+      return uid
+        ? apiCall('DELETE', `/task-instances/${encodePathPart(uid)}/logs`)
+        : apiCall('DELETE', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/logs`)
+    },
 
     getData: (aid, tid) => apiCall('GET', `/data/${encodePathPart(aid)}/${encodePathPart(tid)}`),
     exportData: async (aid, tid, fmt = 'excel') => {
@@ -184,7 +214,9 @@ export function createDevCsBridge() {
     testNotify: (channel) => apiCall('POST', '/settings/test-notify', { channel }),
     getTmallApprovalBatch: (batchId, token) => apiCall('GET', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
     saveTmallApprovalDecisions: (batchId, token, decisions) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/decisions?token=${encodeURIComponent(String(token || ''))}`, { decisions: decisions || {} }),
+    importTmallApprovalReferenceFiles: (batchId, token, paths) => apiCall('POST', `/tmall-ai-image-approval-local/api/${encodePathPart(batchId)}/reference-files?token=${encodeURIComponent(String(token || ''))}`, { paths: Array.isArray(paths) ? paths : [] }),
     regenerateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/regenerate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
+    generateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/generate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalBatch: (batchId, token) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit?token=${encodeURIComponent(String(token || ''))}`, {}),
 
     getSettings: () => apiCall('GET', '/settings'),

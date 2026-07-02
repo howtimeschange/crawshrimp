@@ -70,6 +70,26 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(item["assets"][2]["status"], "pending")
         self.assertEqual(item["assets"][0]["status"], "reference")
 
+    def test_approval_item_limits_ai_assets_to_selected_generation_paths(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        item = module.build_approval_item(
+            workflow,
+            {},
+            "/tmp/main.jpg",
+            "",
+            [
+                {"提示词序号": 1, "提示词字段名": "正面", "本地生成图文件": "/tmp/ai-1-a.jpg\n/tmp/ai-1-b.jpg"},
+                {"提示词序号": 2, "提示词字段名": "侧身", "本地生成图文件": "/tmp/ai-2.jpg"},
+            ],
+            ["/tmp/ai-1-a.jpg", "/tmp/ai-2.jpg"],
+            reference_mode="main_only",
+        )
+
+        ai_assets = [asset for asset in item["assets"] if asset["kind"] == "ai"]
+        self.assertEqual([asset["path"] for asset in ai_assets], ["/tmp/ai-1-a.jpg", "/tmp/ai-2.jpg"])
+
     def test_write_approval_batch_creates_board_and_renders_message_template(self):
         module = load_script()
         workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
@@ -139,6 +159,234 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(plan[0]["origin_path"], "/tmp/main.jpg")
         self.assertEqual(plan[0]["generated_paths"], ["/tmp/ai-1.jpg"])
 
+    def test_selected_upload_plan_filters_ai_images_from_other_runs(self):
+        module = load_script()
+        batch = {
+            "task_run_uid": "run-current",
+            "items": [{
+                "style_code": "208326100202",
+                "item_id": "1002178235142",
+                "origin_path": "/tmp/main.jpg",
+                "assets": [
+                    {
+                        "id": "ai-current",
+                        "kind": "ai",
+                        "path": "/tmp/current.jpg",
+                        "status": "approved",
+                        "task_run_uid": "run-current",
+                    },
+                    {
+                        "id": "ai-old",
+                        "kind": "ai",
+                        "path": "/tmp/old.jpg",
+                        "status": "approved",
+                        "task_run_uid": "run-old",
+                    },
+                    {
+                        "id": "ai-unknown",
+                        "kind": "ai",
+                        "path": "/tmp/unknown.jpg",
+                        "status": "approved",
+                    },
+                ],
+                "workflow": {
+                    "row_no": 2,
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "category": "长袖T恤",
+                    "gender": "中性",
+                },
+            }],
+        }
+
+        plan = module.selected_upload_plan_from_approval_batch(batch)
+
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0]["generated_paths"], ["/tmp/current.jpg"])
+
+    def test_generate_approval_asset_for_item_accepts_product_item_id(self):
+        module = load_script()
+        captured = {}
+
+        def fake_generate(row, *_args, **_kwargs):
+            captured["style_code"] = row["款号"]
+            patched = dict(row)
+            patched["生成图URL"] = "https://img.example/manual.jpg"
+            patched["执行结果"] = "已生成"
+            return patched
+
+        def fake_download(row, artifact_dir):
+            return [str(Path(artifact_dir) / f"{row['款号']}-ai-{row['__1xm_output_token']}.jpg")]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-product-id",
+                "task_run_uid": "run-current",
+                "artifact_dir": temp_dir,
+                "run_params": {},
+                "items": [{
+                    "id": "internal-item-1",
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "workflow": {
+                        "row_no": 2,
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "assets": [{"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"}],
+                }],
+            }
+            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+                patch.object(module, "run_one_xm_generation_row", fake_generate), \
+                patch.object(module, "download_generated_images", fake_download), \
+                patch.object(module, "save_approval_batch"):
+                asset = module.generate_approval_asset_for_item(
+                    batch,
+                    item_id="1002178235142",
+                    prompt="manual prompt",
+                    main_image_path="/tmp/main.jpg",
+                )
+
+        self.assertEqual(captured["style_code"], "208326100202")
+        self.assertEqual(asset["task_run_uid"], "run-current")
+
+    def test_regenerate_approval_asset_uses_fresh_1xm_key_and_current_batch_run(self):
+        module = load_script()
+        captured = {}
+
+        def fake_generate(row, *_args, **_kwargs):
+            captured["idempotency_key"] = row["__1xm_idempotency_key"]
+            captured["output_token"] = row["__1xm_output_token"]
+            captured["task_run_uid"] = row["__task_run_uid"]
+            patched = dict(row)
+            patched["生成图URL"] = "https://img.example/retry.jpg"
+            patched["执行结果"] = "已生成"
+            return patched
+
+        def fake_download(row, artifact_dir):
+            return [str(Path(artifact_dir) / f"{row['款号']}-ai-{row['__1xm_output_token']}.jpg")]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-retry",
+                "task_run_uid": "run-current",
+                "artifact_dir": temp_dir,
+                "run_params": {"retry_attempts": 1, "compensate_attempts": 1, "poll_timeout_minutes": 1},
+                "items": [{
+                    "id": "item-1",
+                    "style_code": "208326100202",
+                    "origin_path": "/tmp/main.jpg",
+                    "assets": [{
+                        "id": "ai-1",
+                        "kind": "ai",
+                        "path": "/tmp/old.jpg",
+                        "status": "pending",
+                        "prompt": "old prompt",
+                        "generation_row": {
+                            "款号": "208326100202",
+                            "提示词分组": "上装",
+                            "提示词字段名": "正面",
+                            "提示词序号": 1,
+                            "尺寸": "960x1280",
+                            "格式": "jpeg",
+                            "质量": "auto",
+                            "参考图文件": "/tmp/main.jpg",
+                            "最终提示词": "old prompt",
+                            "完整Prompt": "old prompt",
+                            "__1xm_key_tier": "2k",
+                            "__1xm_idempotency_key": "old-key",
+                            "__task_run_uid": "run-current",
+                            "__1xm_payload": {"prompt": "old prompt", "size": "960x1280", "quality": "auto", "output_format": "jpeg", "n": 1},
+                        },
+                    }],
+                }],
+            }
+            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+                patch.object(module, "run_one_xm_generation_row", fake_generate), \
+                patch.object(module, "download_generated_images", fake_download), \
+                patch.object(module, "save_approval_batch"):
+                asset = module.regenerate_approval_asset(
+                    batch,
+                    "ai-1",
+                    prompt="new prompt",
+                    reference_paths=["/tmp/main.jpg"],
+                )
+
+        self.assertNotEqual(captured["idempotency_key"], "old-key")
+        self.assertEqual(captured["task_run_uid"], "run-current")
+        self.assertIn(captured["output_token"], asset["path"])
+        self.assertEqual(asset["task_run_uid"], "run-current")
+        self.assertEqual(asset["prompt"], "new prompt")
+        self.assertEqual(asset["generation_row"]["__1xm_idempotency_key"], captured["idempotency_key"])
+
+    def test_generate_approval_asset_for_item_appends_manual_ai_asset_to_current_batch(self):
+        module = load_script()
+        captured = {}
+
+        def fake_generate(row, *_args, **_kwargs):
+            captured.update({
+                "prompt": row["完整Prompt"],
+                "references": row["__1xm_reference_paths"],
+                "task_run_uid": row["__task_run_uid"],
+                "idempotency_key": row["__1xm_idempotency_key"],
+                "output_token": row["__1xm_output_token"],
+            })
+            patched = dict(row)
+            patched["生成图URL"] = "https://img.example/manual.jpg"
+            patched["执行结果"] = "已生成"
+            return patched
+
+        def fake_download(row, artifact_dir):
+            return [str(Path(artifact_dir) / f"{row['款号']}-ai-{row['__1xm_output_token']}.jpg")]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-manual",
+                "task_run_uid": "run-current",
+                "artifact_dir": temp_dir,
+                "run_params": {"image_size": "960x1280", "output_format": "jpeg", "quality": "low"},
+                "items": [{
+                    "id": "item-1",
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "workflow": {
+                        "row_no": 2,
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "assets": [
+                        {"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"},
+                        {"id": "detail-1", "kind": "detail_reference", "path": "/tmp/detail.jpg"},
+                    ],
+                }],
+            }
+            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+                patch.object(module, "run_one_xm_generation_row", fake_generate), \
+                patch.object(module, "download_generated_images", fake_download), \
+                patch.object(module, "save_approval_batch"):
+                asset = module.generate_approval_asset_for_item(
+                    batch,
+                    item_id="item-1",
+                    prompt="manual prompt",
+                    main_image_path="/tmp/main.jpg",
+                    reference_paths=["/tmp/detail.jpg"],
+                )
+
+        self.assertEqual(captured["prompt"], "manual prompt")
+        self.assertEqual(captured["references"], ["/tmp/main.jpg", "/tmp/detail.jpg"])
+        self.assertEqual(captured["task_run_uid"], "run-current")
+        self.assertTrue(captured["idempotency_key"].isascii())
+        self.assertEqual(asset["task_run_uid"], "run-current")
+        self.assertTrue(asset["manual_added"])
+        self.assertIn(captured["output_token"], asset["path"])
+        self.assertEqual(len([item for item in batch["items"][0]["assets"] if item.get("kind") == "ai"]), 1)
+
     def test_upload_approved_batch_marks_partial_failed_when_tmall_returns_error_with_task_id(self):
         module = load_script()
 
@@ -207,14 +455,14 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertEqual(result["succeeded"], 0)
             self.assertEqual(result["failed"], 1)
             self.assertEqual(batch["status"], "partial_failed")
-            self.assertEqual(upload_calls[0][2], "")
+            self.assertEqual(upload_calls[0][2], "/tmp/main.jpg")
             self.assertEqual(upload_calls[0][3], ["/tmp/ai-1.jpg"])
             self.assertTrue(Path(batch["submit_result_path"]).is_file())
             create_rows = [row for row in result["rows"] if row.get("阶段") == "天猫上传/创建测图任务"]
             self.assertEqual(create_rows[0]["任务ID"], "41716301")
             self.assertEqual(create_rows[0]["执行结果"], "天猫上传/创建失败")
 
-    def test_tmall_upload_reuses_stopped_task_by_clearing_old_test_images_before_add(self):
+    def test_tmall_upload_creates_fresh_task_by_default_without_clearing_old_images(self):
         module = load_script()
         code = module.js_call(module.TMALL_UPLOAD_CREATE_JS, {
             "style_code": "208326100202",
@@ -291,10 +539,10 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             return {{ data: {{ result: {{ total: 0, list: [] }} }} }};
           }}
           if (request.api === 'mtop.taobao.qn.copilot.test.image.task.create') {{
-            throw new Error('should reuse stopped task instead of creating a new one');
+            return {{ data: {{ result: {{ taskStatusList: [{{ experimentTaskId: 99900011, source: 'common_search' }}] }} }} }};
           }}
           if (request.api === 'mtop.taobao.qn.copilot.test.image.batch.delete') {{
-            return {{ data: {{ ok: true }} }};
+            throw new Error('should create a fresh task without clearing old material ids');
           }}
           if (request.api === 'mtop.taobao.qn.copilot.test.image.batch.add') {{
             return {{ data: {{ ok: true }} }};
@@ -312,9 +560,9 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
   if (!result.success) throw new Error(result.error || 'mocked tmall upload failed');
   const data = result.data[0];
   process.stdout.write(JSON.stringify({{
-    error: data.error,
-    reusedTaskId: data.reusedExistingTask && data.reusedExistingTask.experimentTaskId,
-    clearedMaterialIds: data.clearedMaterialIds,
+	    error: data.error,
+	    reusedTaskId: data.reusedExistingTask && data.reusedExistingTask.experimentTaskId,
+	    clearedMaterialIds: data.clearedMaterialIds,
     apis: calls.map((call) => call.api),
     deleteMaterialIds: calls
       .filter((call) => call.api === 'mtop.taobao.qn.copilot.test.image.batch.delete')
@@ -335,13 +583,13 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
 
         self.assertEqual(payload["error"], "")
-        self.assertEqual(payload["reusedTaskId"], "41716301")
-        self.assertEqual(payload["clearedMaterialIds"], ["201", "202", "203", "204", "205"])
-        self.assertNotIn("mtop.taobao.qn.copilot.test.image.task.create", payload["apis"])
-        self.assertEqual(payload["deleteMaterialIds"], ["201", "202", "203", "204", "205"])
-        self.assertEqual(payload["addPayloads"][0]["experimentTaskId"], "41716301")
+        self.assertIsNone(payload["reusedTaskId"])
+        self.assertEqual(payload["clearedMaterialIds"], [])
+        self.assertIn("mtop.taobao.qn.copilot.test.image.task.create", payload["apis"])
+        self.assertEqual(payload["deleteMaterialIds"], [])
+        self.assertEqual(payload["addPayloads"][0]["experimentTaskId"], "99900011")
         self.assertIn("new-ai.jpg", payload["addPayloads"][0]["materials"])
-        self.assertIn('"experimentTaskId":"41716301"', payload["onlinePayloads"][0]["taskStatusList"])
+        self.assertIn('"experimentTaskId":"99900011"', payload["onlinePayloads"][0]["taskStatusList"])
 
     def test_workflow_aliases_match_user_import_template_headers(self):
         module = load_script()
@@ -404,6 +652,17 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             quality="low",
             output_format="jpeg",
             key_tier="2k",
+            run_nonce="run-A",
+        )
+        next_run_row = module.make_generation_row(
+            workflow,
+            prompt,
+            ["/tmp/origin.jpg", "/tmp/detail-flat.jpg"],
+            image_size="960x1280",
+            quality="low",
+            output_format="jpeg",
+            key_tier="2k",
+            run_nonce="run-B",
         )
 
         self.assertEqual(row["尺寸"], "960x1280")
@@ -415,7 +674,9 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(row["细节参考图文件"], "/tmp/detail-flat.jpg")
         self.assertEqual(row["__1xm_reference_paths"], ["/tmp/origin.jpg", "/tmp/detail-flat.jpg"])
         self.assertEqual(row["__1xm_key_tier"], "2k")
+        self.assertEqual(row["__task_run_uid"], "run-A")
         self.assertTrue(row["__1xm_idempotency_key"].isascii())
+        self.assertNotEqual(row["__1xm_idempotency_key"], next_run_row["__1xm_idempotency_key"])
 
     def test_select_prompts_returns_four_prompts_by_priority(self):
         module = load_script()
@@ -525,6 +786,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertGreater(min(generation_indexes), max(find_indexes))
         self.assertTrue(any("1XM 生图批量提交 4 张，并发 100" in line for line in logs))
         self.assertTrue(any(event.get("shared", {}).get("generation_total_jobs") == 4 for event in progress_events))
+        self.assertTrue(any(event.get("shared", {}).get("generation_submitted_jobs", 0) > 0 for event in progress_events))
         self.assertTrue(any(row.get("阶段") == "图片审批" for row in rows))
 
     def test_select_prompts_skips_multi_item_prompts_by_default(self):

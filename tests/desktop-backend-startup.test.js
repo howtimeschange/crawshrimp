@@ -79,6 +79,16 @@ test('desktop services restart when macOS reopens the app after all windows clos
   assert.doesNotMatch(main, /app\.on\('window-all-closed', \(\) => \{\s*stopBackend\(\)/)
 })
 
+test('desktop hides native application menu on Windows and Linux', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const \{ app, BrowserWindow, Menu, ipcMain, shell, dialog \} = require\('electron'\)/)
+  assert.match(main, /function hideNativeAppMenu\(\) \{\s*if \(process\.platform === 'darwin'\) return\s*Menu\.setApplicationMenu\(null\)\s*\}/)
+  assert.match(main, /autoHideMenuBar: process\.platform !== 'darwin'/)
+  assert.match(main, /if \(process\.platform !== 'darwin'\) \{\s*mainWindow\.setMenuBarVisibility\(false\)\s*\}/)
+  assert.match(main, /app\.whenReady\(\)\.then\(async \(\) => \{\s*hideNativeAppMenu\(\)\s*createWindow\(\)/)
+})
+
 test('desktop lifecycle confirms active tasks before quitting', () => {
   const main = readRepoFile('app/src/main.js')
 

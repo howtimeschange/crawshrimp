@@ -236,7 +236,7 @@ tasks:
         type: directory
         label: 本地导出目录
         placeholder: "点击选择本地导出目录"
-        hint: 可选。完成后会把数据表格、网盘素材图、AI生成图复制到这里；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图全链路”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图全链路）。图片按“网盘素材图/款号_商品ID”和“AI生成图/款号_商品ID”整理，便于下次复用。
+        hint: 可选。完成后会在所选目录下为本次运行创建独立文件夹，并把数据表格、网盘素材图、AI生成图复制进去；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图全链路”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图全链路）。图片按“网盘素材图/款号_商品ID”和“AI生成图/款号_商品ID”整理，避免和历史任务混在一起。
         ui_span: third
       - id: allow_global_semir_fallback
         type: checkbox

@@ -191,7 +191,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const emit = defineEmits(['open-instance'])
 
@@ -238,6 +238,7 @@ const aiTaskForm = ref(defaultAiTaskForm())
 const scheduleForm = ref(defaultScheduleForm())
 const aiPreviewCache = ref({})
 const aiPreviewLoading = ref({})
+let autoRefreshTimer = null
 
 function defaultAiTaskForm() {
   return {
@@ -261,8 +262,9 @@ async function refreshAll() {
   await Promise.all([loadInstances(), loadSchedules()])
 }
 
-async function loadInstances() {
-  loading.value = true
+async function loadInstances(options = {}) {
+  const silent = !!options.silent
+  if (!silent) loading.value = true
   error.value = ''
   try {
     const result = await window.cs.listTaskInstances({
@@ -274,7 +276,7 @@ async function loadInstances() {
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
-    loading.value = false
+    if (!silent) loading.value = false
   }
 }
 
@@ -501,6 +503,27 @@ function itemTimeLabel(item) {
   return formatTime(item.updated_at || item.created_at)
 }
 
+function hasActiveInstances() {
+  return items.value.some(item =>
+    ['queued', 'running', 'generating', 'creating', 'waiting_approval'].includes(String(item?.status || '').trim())
+  )
+}
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) return
+  autoRefreshTimer = window.setInterval(async () => {
+    if (loading.value || creating.value || savingSchedule.value) return
+    if (!hasActiveInstances() && !['current', 'pending'].includes(activeGroup.value)) return
+    await loadInstances({ silent: true })
+  }, 5000)
+}
+
+function stopAutoRefresh() {
+  if (!autoRefreshTimer) return
+  window.clearInterval(autoRefreshTimer)
+  autoRefreshTimer = null
+}
+
 function aiPreviewImagesForTask(item) {
   if (item?.rowType !== 'instance') return []
   return aiPreviewCache.value[item.instance_uid] || []
@@ -620,8 +643,14 @@ function formatTime(value) {
   }
 }
 
-watch(activeGroup, loadInstances)
-onMounted(refreshAll)
+watch(activeGroup, () => {
+  void loadInstances()
+})
+onMounted(() => {
+  startAutoRefresh()
+  void refreshAll()
+})
+onBeforeUnmount(stopAutoRefresh)
 </script>
 
 <style scoped>

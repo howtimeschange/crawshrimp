@@ -129,17 +129,22 @@ class TmallOpsPackagingTests(unittest.TestCase):
                 ],
                 runtime_files=[str(main_file), str(detail_file), str(ai_file)],
                 exported_files=[str(excel_file), str(json_file)],
-                run_params={"output_dir": str(export_dir)},
+                run_params={
+                    "output_dir": str(export_dir),
+                    "__task_started_at": "2026-07-02T12:10:45",
+                    "__task_run_id": 13,
+                },
                 runtime_artifact_dir=str(runtime_dir),
                 log=lambda _: None,
             )
 
+            export_root = export_dir / "运行_20260702-121045_run13"
             item_dir = "208326100202_1060862679580"
-            copied_main = export_dir / "网盘素材图" / item_dir / "main.jpg"
-            copied_detail = export_dir / "网盘素材图" / item_dir / "detail.jpg"
-            copied_ai = export_dir / "AI生成图" / item_dir / "ai-1.jpg"
-            copied_excel = export_dir / "数据表格" / excel_file.name
-            copied_json = export_dir / "数据表格" / json_file.name
+            copied_main = export_root / "网盘素材图" / item_dir / "main.jpg"
+            copied_detail = export_root / "网盘素材图" / item_dir / "detail.jpg"
+            copied_ai = export_root / "AI生成图" / item_dir / "ai-1.jpg"
+            copied_excel = export_root / "数据表格" / excel_file.name
+            copied_json = export_root / "数据表格" / json_file.name
 
             self.assertTrue(copied_main.is_file())
             self.assertTrue(copied_detail.is_file())
@@ -237,12 +242,15 @@ class TmallOpsPackagingTests(unittest.TestCase):
                     ],
                     runtime_files=[str(main_file), str(ai_file)],
                     exported_files=[str(excel_file)],
-                    run_params={},
+                    run_params={
+                        "__task_started_at": "2026-07-02T12:10:45",
+                        "__task_run_id": 13,
+                    },
                     runtime_artifact_dir=str(runtime_dir),
                     log=lambda _: None,
                 )
 
-            export_root = home_dir / "Downloads" / "抓虾导出" / "天猫运营助手" / "巴拉-AI测图全链路"
+            export_root = home_dir / "Downloads" / "抓虾导出" / "天猫运营助手" / "巴拉-AI测图全链路" / "运行_20260702-121045_run13"
             item_dir = "208326100202_1060862679580"
             copied_main = export_root / "网盘素材图" / item_dir / "main.jpg"
             copied_ai = export_root / "AI生成图" / item_dir / "ai-1.jpg"

@@ -12,7 +12,7 @@
           </div>
         </div>
         <div class="approval-head-actions">
-          <button type="button" class="ghost-btn" @click="reload">刷新</button>
+          <button type="button" class="ghost-btn" @click="reload()">刷新</button>
           <button v-if="!embedded" type="button" class="ghost-btn" @click="collapsed = !collapsed">{{ collapsed ? '展开' : '收起' }}</button>
           <button v-if="!embedded" type="button" class="icon-btn" aria-label="关闭审图看板" @click="close">×</button>
         </div>
@@ -122,7 +122,7 @@
                   class="asset-tile"
                   @click="selectAsset(item, asset)"
                 >
-                  <img :src="imageUrl(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
+                  <img :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
                   <span class="asset-label">{{ asset.label || asset.filename }}</span>
                   <span class="asset-file">{{ asset.filename || asset.path }}</span>
                   <span class="asset-status">{{ statusLabel(asset) }}</span>
@@ -132,6 +132,15 @@
                   <button type="button" class="asset-action danger" @click.stop="setAssetStatus(item, asset, 'rejected')">舍弃</button>
                 </div>
               </div>
+              <button
+                type="button"
+                class="asset-card add-card"
+                @click="openManualGenerate(item)"
+              >
+                <span class="add-icon">+</span>
+                <strong>新增生图</strong>
+                <small>单独为本款补一张 AI 图</small>
+              </button>
             </div>
           </article>
         </main>
@@ -143,7 +152,7 @@
           </div>
           <template v-else>
             <div class="inspector-preview">
-              <img :src="imageUrl(selectedAsset)" :alt="selectedAsset.label || selectedAsset.filename" />
+              <img :src="imageUrlWithVersion(selectedAsset)" :alt="selectedAsset.label || selectedAsset.filename" />
             </div>
             <div class="inspector-title">
               <div>
@@ -158,24 +167,92 @@
               <textarea
                 v-model="selectedAsset.custom_prompt"
                 :readonly="selectedAsset.kind !== 'ai'"
-                :placeholder="selectedAsset.prompt || '无 Prompt'"
+                placeholder="输入调整后的详细 Prompt"
               ></textarea>
             </label>
 
-            <label v-if="selectedAsset.kind === 'ai'" class="inspector-field">
-              <span>参考图路径</span>
-              <textarea v-model="referenceText" placeholder="可多条，换行分隔"></textarea>
-            </label>
+            <div v-if="selectedAsset.kind === 'ai'" class="inspector-field">
+              <span>参考图</span>
+              <div v-if="selectedReferencePaths.length" class="reference-preview-grid">
+                <figure v-for="path in selectedReferencePaths" :key="path" class="reference-preview-card">
+                  <img :src="referenceImageUrl(path)" :alt="referenceFileName(path)" />
+                  <figcaption>{{ referenceFileName(path) }}</figcaption>
+                  <button type="button" aria-label="移除参考图" @click="removeReferencePath(path)">×</button>
+                </figure>
+              </div>
+              <div v-else class="reference-empty">暂无参考图</div>
+            </div>
 
             <div v-if="selectedAsset.kind === 'ai'" class="reference-tools">
               <button type="button" class="ghost-btn" @click="useItemReferences">使用本款参考图</button>
-              <button type="button" class="ghost-btn" @click="pickReferenceFiles">选择本地参考图</button>
+              <button type="button" class="ghost-btn" @click="pickReferenceFiles({ replace: true })">替换参考图</button>
+              <button type="button" class="ghost-btn" @click="pickReferenceFiles({ replace: false })">追加参考图</button>
               <button type="button" class="primary-btn" :disabled="regenerating" @click="regenerateSelected">
                 {{ regenerating ? '重新生成中' : '重试/改图' }}
               </button>
             </div>
           </template>
         </aside>
+      </div>
+
+      <div v-if="manualGenerate.open" class="manual-modal-backdrop" @click.self="closeManualGenerate">
+        <section class="manual-modal">
+          <header class="manual-modal-head">
+            <div>
+              <strong>{{ manualGenerate.item?.style_code || '-' }} 新增生图</strong>
+              <span>单独补充一张 AI 图，完成后追加到本款审批列表。</span>
+            </div>
+            <button type="button" class="icon-btn" aria-label="关闭新增生图" :disabled="manualGenerating" @click="closeManualGenerate">×</button>
+          </header>
+
+          <label class="inspector-field">
+            <span>Prompt</span>
+            <textarea v-model="manualGenerate.prompt" placeholder="输入本次新增生图 Prompt"></textarea>
+          </label>
+
+          <div class="manual-image-columns">
+            <div class="manual-image-panel">
+              <div class="manual-panel-head">
+                <strong>主图</strong>
+                <div>
+                  <button type="button" class="ghost-btn" @click="useManualItemMain">使用本款主图</button>
+                  <button type="button" class="ghost-btn" @click="pickManualMainImage">选择主图</button>
+                </div>
+              </div>
+              <figure v-if="manualGenerate.mainImagePath" class="manual-main-preview">
+                <img :src="referenceImageUrl(manualGenerate.mainImagePath)" :alt="referenceFileName(manualGenerate.mainImagePath)" />
+                <figcaption>{{ referenceFileName(manualGenerate.mainImagePath) }}</figcaption>
+              </figure>
+              <div v-else class="reference-empty">请选择主图</div>
+            </div>
+
+            <div class="manual-image-panel">
+              <div class="manual-panel-head">
+                <strong>参考图</strong>
+                <div>
+                  <button type="button" class="ghost-btn" @click="useManualItemReferences">使用本款参考图</button>
+                  <button type="button" class="ghost-btn" @click="pickManualReferenceFiles({ replace: true })">替换</button>
+                  <button type="button" class="ghost-btn" @click="pickManualReferenceFiles({ replace: false })">追加</button>
+                </div>
+              </div>
+              <div v-if="manualGenerate.referencePaths.length" class="reference-preview-grid">
+                <figure v-for="path in manualGenerate.referencePaths" :key="path" class="reference-preview-card">
+                  <img :src="referenceImageUrl(path)" :alt="referenceFileName(path)" />
+                  <figcaption>{{ referenceFileName(path) }}</figcaption>
+                  <button type="button" aria-label="移除参考图" @click="removeManualReferencePath(path)">×</button>
+                </figure>
+              </div>
+              <div v-else class="reference-empty">可选，多张参考图会一起提交</div>
+            </div>
+          </div>
+
+          <footer class="manual-modal-actions">
+            <button type="button" class="ghost-btn" :disabled="manualGenerating" @click="closeManualGenerate">取消</button>
+            <button type="button" class="primary-btn" :disabled="manualGenerating || !canSubmitManualGenerate" @click="submitManualGenerate">
+              {{ manualGenerating ? '生图中' : '开始生图' }}
+            </button>
+          </footer>
+        </section>
       </div>
 
       <div v-if="toast" class="approval-toast" :class="{ error: toastError }">{{ toast }}</div>
@@ -195,13 +272,14 @@ const props = defineProps({
     default: true,
   },
 })
-const emit = defineEmits(['update:modelValue', 'batch-updated'])
+const emit = defineEmits(['update:modelValue', 'batch-updated', 'committed'])
 
 const collapsed = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const submitting = ref(false)
 const regenerating = ref(false)
+const manualGenerating = ref(false)
 const error = ref('')
 const toast = ref('')
 const toastError = ref(false)
@@ -209,7 +287,13 @@ const filterText = ref('')
 const batch = ref(null)
 const selectedItem = ref(null)
 const selectedAsset = ref(null)
-const referenceText = ref('')
+const manualGenerate = ref({
+  open: false,
+  item: null,
+  prompt: '',
+  mainImagePath: '',
+  referencePaths: [],
+})
 
 const approvalRef = computed(() => parseApprovalUrl(props.boardUrl))
 const filteredItems = computed(() => {
@@ -314,17 +398,18 @@ const submitSummaryText = computed(() => {
   const { attempted, succeeded, failed } = createSummary.value
   return `尝试 ${attempted || createRows.value.length} 款 / 成功 ${succeeded} / 失败 ${failed}`
 })
+const selectedReferencePaths = computed(() => plainStringArray(selectedAsset.value?.reference_paths))
+const canSubmitManualGenerate = computed(() =>
+  Boolean(String(manualGenerate.value.prompt || '').trim()
+  && String(manualGenerate.value.mainImagePath || '').trim())
+)
 
 watch(() => [props.modelValue, props.boardUrl], ([open]) => {
   if (open) reload()
 }, { immediate: true })
 watch(selectedAsset, (asset) => {
-  referenceText.value = (asset?.reference_paths || []).join('\n')
-})
-watch(referenceText, (value) => {
-  if (selectedAsset.value?.kind !== 'ai') return
-  selectedAsset.value.reference_paths = splitLines(value)
-})
+  prepareEditableAsset(asset)
+}, { immediate: true })
 
 function parseApprovalUrl(url) {
   try {
@@ -341,7 +426,7 @@ function parseApprovalUrl(url) {
   }
 }
 
-async function reload() {
+async function reload(preferredAssetId = '') {
   const ref = approvalRef.value
   if (!ref.batchId || !ref.token) {
     error.value = '审批批次链接无效'
@@ -352,10 +437,21 @@ async function reload() {
   try {
     const payload = await window.cs.getTmallApprovalBatch(ref.batchId, ref.token)
     if (payload?.detail) throw new Error(payload.detail)
+    prepareEditableBatch(payload)
     batch.value = payload
     emit('batch-updated', payload)
-    selectedItem.value = payload?.items?.[0] || null
-    selectedAsset.value = selectedItem.value?.assets?.find(asset => asset.kind === 'ai') || selectedItem.value?.assets?.[0] || null
+    const preferredId = String(preferredAssetId || selectedAsset.value?.id || '').trim()
+    const matchedItem = preferredId
+      ? (payload?.items || []).find(item => (item.assets || []).some(asset => asset.id === preferredId))
+      : null
+    selectedItem.value = matchedItem || payload?.items?.[0] || null
+    selectedAsset.value = preferredId
+      ? (selectedItem.value?.assets || []).find(asset => asset.id === preferredId) || null
+      : null
+    if (!selectedAsset.value) {
+      selectedAsset.value = selectedItem.value?.assets?.find(asset => asset.kind === 'ai') || selectedItem.value?.assets?.[0] || null
+    }
+    prepareEditableAsset(selectedAsset.value)
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
@@ -373,9 +469,44 @@ function imageUrl(asset) {
   return `${ref.origin}/tmall-ai-image-approval/api/${encodeURIComponent(ref.batchId)}/image/${encodeURIComponent(asset.id)}?token=${encodeURIComponent(ref.token)}`
 }
 
+function referenceImageUrl(path) {
+  const ref = approvalRef.value
+  if (!ref.batchId || !path) return ''
+  return `${ref.origin}/tmall-ai-image-approval/api/${encodeURIComponent(ref.batchId)}/reference-image?token=${encodeURIComponent(ref.token)}&path=${encodeURIComponent(path)}`
+}
+
+function assetImageVersion(asset) {
+  return encodeURIComponent(String(asset?.updated_at || asset?.regenerated_at || asset?.created_at || batch.value?.updated_at || ''))
+}
+
+function imageUrlWithVersion(asset) {
+  const url = imageUrl(asset)
+  const version = assetImageVersion(asset)
+  return version ? `${url}&v=${version}` : url
+}
+
 function selectAsset(item, asset) {
   selectedItem.value = item
   selectedAsset.value = asset
+  prepareEditableAsset(asset)
+}
+
+function prepareEditableAsset(asset) {
+  if (!asset || asset.kind !== 'ai') return
+  if (!String(asset.custom_prompt || '').trim()) {
+    asset.custom_prompt = String(asset.prompt || asset.generation_row?.完整Prompt || asset.generation_row?.最终提示词 || '')
+  }
+  if (!Array.isArray(asset.reference_paths) || !asset.reference_paths.length) {
+    asset.reference_paths = plainStringArray(asset.generation_row?.参考图文件)
+  }
+}
+
+function prepareEditableBatch(payload) {
+  for (const item of payload?.items || []) {
+    for (const asset of item?.assets || []) {
+      prepareEditableAsset(asset)
+    }
+  }
 }
 
 function statusLabel(asset) {
@@ -404,6 +535,7 @@ function markAllPending(status) {
 }
 
 function decisionsPayload() {
+  prepareEditableBatch(batch.value)
   const decisions = {}
   for (const item of batch.value?.items || []) {
     for (const asset of item.assets || []) {
@@ -419,16 +551,16 @@ function decisionsPayload() {
   return decisions
 }
 
-async function saveDecisions() {
+async function saveDecisions(options = {}) {
   const ref = approvalRef.value
   saving.value = true
   try {
     const result = await window.cs.saveTmallApprovalDecisions(ref.batchId, ref.token, decisionsPayload())
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
-    showToast('审批状态已保存')
+    if (!options.silent) showToast('审批状态已保存')
     return true
   } catch (err) {
-    showToast(err?.message || String(err), true)
+    if (!options.silent) showToast(err?.message || String(err), true)
     return false
   } finally {
     saving.value = false
@@ -449,6 +581,7 @@ async function submitApproved() {
       showToast(`创建成功 ${result?.succeeded || result?.submitted || 0} 款测图任务`)
     }
     await reload()
+    emit('committed', batch.value)
   } catch (err) {
     showToast(err?.message || String(err), true)
   } finally {
@@ -462,19 +595,156 @@ function useItemReferences() {
     .filter(asset => asset.kind !== 'ai' && asset.path)
     .map(asset => asset.path)
   selectedAsset.value.reference_paths = refs
-  referenceText.value = refs.join('\n')
 }
 
-async function pickReferenceFiles() {
+async function pickReferenceFiles(options = {}) {
+  const ref = approvalRef.value
   const paths = await window.cs.browseFile?.({
     title: '选择参考图',
     images: true,
     multi: true,
+    multiSelections: true,
   })
-  if (!Array.isArray(paths) || !paths.length || !selectedAsset.value) return
-  const refs = [...(selectedAsset.value.reference_paths || []), ...paths]
+  const selected = plainStringArray(paths)
+  if (!selected.length || !selectedAsset.value) return
+  const imported = await window.cs.importTmallApprovalReferenceFiles?.(ref.batchId, ref.token, selected)
+  if (imported?.detail || imported?.error) {
+    showToast(imported.detail || imported.error, true)
+    return
+  }
+  const importedPaths = plainStringArray(imported?.paths)
+  if (!importedPaths.length) {
+    showToast('未导入可用参考图', true)
+    return
+  }
+  const refs = options.replace ? importedPaths : [...plainStringArray(selectedAsset.value.reference_paths), ...importedPaths]
   selectedAsset.value.reference_paths = Array.from(new Set(refs))
-  referenceText.value = selectedAsset.value.reference_paths.join('\n')
+  await saveDecisions({ silent: true })
+}
+
+async function importApprovalImageFiles(paths) {
+  const ref = approvalRef.value
+  const selected = plainStringArray(paths)
+  if (!selected.length) return []
+  const imported = await window.cs.importTmallApprovalReferenceFiles?.(ref.batchId, ref.token, selected)
+  if (imported?.detail || imported?.error) {
+    throw new Error(imported.detail || imported.error)
+  }
+  return plainStringArray(imported?.paths)
+}
+
+function removeReferencePath(path) {
+  if (!selectedAsset.value) return
+  selectedAsset.value.reference_paths = plainStringArray(selectedAsset.value.reference_paths)
+    .filter(item => item !== path)
+}
+
+function itemReferencePaths(item, excludePath = '') {
+  const blocked = String(excludePath || '').trim()
+  return Array.from(new Set((item?.assets || [])
+    .filter(asset => asset.kind !== 'ai' && asset.path)
+    .map(asset => asset.path)
+    .filter(path => !blocked || path !== blocked)))
+}
+
+function openManualGenerate(item) {
+  const firstAi = (item?.assets || []).find(asset => asset.kind === 'ai')
+  const mainImagePath = String(item?.origin_path || '').trim()
+  manualGenerate.value = {
+    open: true,
+    item,
+    prompt: String(firstAi?.custom_prompt || firstAi?.prompt || firstAi?.generation_row?.完整Prompt || firstAi?.generation_row?.最终提示词 || ''),
+    mainImagePath,
+    referencePaths: itemReferencePaths(item, mainImagePath),
+  }
+}
+
+function closeManualGenerate(force = false) {
+  if (manualGenerating.value && !force) return
+  manualGenerate.value = {
+    open: false,
+    item: null,
+    prompt: '',
+    mainImagePath: '',
+    referencePaths: [],
+  }
+}
+
+function useManualItemMain() {
+  const item = manualGenerate.value.item
+  manualGenerate.value.mainImagePath = String(item?.origin_path || '').trim()
+}
+
+function useManualItemReferences() {
+  const item = manualGenerate.value.item
+  manualGenerate.value.referencePaths = itemReferencePaths(item, manualGenerate.value.mainImagePath)
+}
+
+async function pickManualMainImage() {
+  try {
+    const path = await window.cs.browseFile?.({
+      title: '选择主图',
+      images: true,
+    })
+    const importedPaths = await importApprovalImageFiles(path ? [path] : [])
+    if (importedPaths.length) manualGenerate.value.mainImagePath = importedPaths[0]
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  }
+}
+
+async function pickManualReferenceFiles(options = {}) {
+  try {
+    const paths = await window.cs.browseFile?.({
+      title: '选择参考图',
+      images: true,
+      multi: true,
+      multiSelections: true,
+    })
+    const importedPaths = await importApprovalImageFiles(paths)
+    if (!importedPaths.length) return
+    const refs = options.replace
+      ? importedPaths
+      : [...plainStringArray(manualGenerate.value.referencePaths), ...importedPaths]
+    manualGenerate.value.referencePaths = Array.from(new Set(refs))
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  }
+}
+
+function removeManualReferencePath(path) {
+  manualGenerate.value.referencePaths = plainStringArray(manualGenerate.value.referencePaths)
+    .filter(item => item !== path)
+}
+
+async function submitManualGenerate() {
+  const ref = approvalRef.value
+  const item = manualGenerate.value.item
+  if (!item) return
+  manualGenerating.value = true
+  try {
+    const result = await window.cs.generateTmallApprovalAsset(ref.batchId, ref.token, {
+      item_id: String(item.id || ''),
+      style_code: String(item.style_code || ''),
+      prompt: String(manualGenerate.value.prompt || ''),
+      main_image_path: String(manualGenerate.value.mainImagePath || ''),
+      reference_paths: plainStringArray(manualGenerate.value.referencePaths),
+    })
+    if (result?.detail || result?.error) throw new Error(result.detail || result.error)
+    const asset = result.asset
+    if (asset?.id) {
+      const targetItem = (batch.value?.items || []).find(row => row.id === item.id || row.style_code === item.style_code) || item
+      targetItem.assets = [...(targetItem.assets || []), asset]
+      selectAsset(targetItem, asset)
+    }
+    showToast('新增生图完成')
+    closeManualGenerate(true)
+    await reload(asset?.id || '')
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  } finally {
+    manualGenerating.value = false
+  }
 }
 
 async function regenerateSelected() {
@@ -492,7 +762,7 @@ async function regenerateSelected() {
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
     Object.assign(asset, result.asset || {})
     selectedAsset.value = asset
-    referenceText.value = (asset.reference_paths || []).join('\n')
+    prepareEditableAsset(asset)
     showToast('重新生成完成')
   } catch (err) {
     asset.status = 'pending'
@@ -509,6 +779,10 @@ function splitLines(value) {
 function plainStringArray(value) {
   if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
   return splitLines(value)
+}
+
+function referenceFileName(path) {
+  return String(path || '').split('/').pop().split('\\').pop() || '参考图'
 }
 
 function formatDate(value) {
@@ -551,11 +825,13 @@ function showToast(message, isError = false) {
   display: flex;
   flex-direction: column;
   position: relative;
+  overflow: hidden;
 }
 .approval-drawer.embedded {
   width: 100%;
-  height: auto;
+  height: calc(100vh - 96px);
   min-height: 560px;
+  max-height: 900px;
   border: 0;
   border-radius: 10px;
   box-shadow: none;
@@ -735,6 +1011,8 @@ function showToast(message, isError = false) {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) 360px;
+  align-items: start;
+  overflow: hidden;
 }
 .approval-submit-results {
   border-bottom: 1px solid var(--border);
@@ -823,6 +1101,7 @@ function showToast(message, isError = false) {
 }
 .approval-list {
   min-width: 0;
+  height: 100%;
   overflow: auto;
   padding: 18px 22px 32px;
 }
@@ -953,12 +1232,58 @@ function showToast(message, isError = false) {
 .asset-card.rejected .asset-action.danger {
   background: rgba(248, 113, 113, .14);
 }
+.add-card {
+  min-height: 100%;
+  border-style: dashed;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 18px 12px;
+  color: var(--text2);
+  cursor: pointer;
+}
+.add-card:hover {
+  border-color: var(--orange);
+  background: rgba(255, 106, 41, .07);
+}
+.add-icon {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 106, 41, .42);
+  color: var(--orange);
+  font-size: 24px;
+  line-height: 1;
+}
+.add-card strong,
+.add-card small {
+  display: block;
+  text-align: center;
+}
+.add-card strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.add-card small {
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.35;
+}
 .approval-inspector {
   min-width: 0;
+  height: 100%;
   border-left: 1px solid var(--border);
   background: var(--bg2);
   overflow: auto;
   padding: 18px;
+  position: sticky;
+  top: 12px;
+  align-self: start;
+  max-height: calc(100vh - 24px);
 }
 .inspector-empty {
   min-height: 180px;
@@ -1015,6 +1340,57 @@ function showToast(message, isError = false) {
 .reference-tools {
   margin-top: 14px;
 }
+.reference-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
+  gap: 10px;
+}
+.reference-preview-card {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+.reference-preview-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  display: block;
+  object-fit: cover;
+  background: rgba(255, 255, 255, .04);
+}
+.reference-preview-card figcaption {
+  padding: 7px 8px;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.reference-preview-card button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(0, 0, 0, .2);
+  border-radius: 50%;
+  background: rgba(0, 0, 0, .58);
+  color: #fff;
+  cursor: pointer;
+  line-height: 1;
+}
+.reference-empty {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  padding: 18px 12px;
+  color: var(--text3);
+  text-align: center;
+  font-size: 12px;
+}
 .inspector-field {
   margin-top: 14px;
   display: flex;
@@ -1040,6 +1416,107 @@ function showToast(message, isError = false) {
 }
 .inspector-field textarea:focus {
   border-color: var(--orange);
+}
+.approval-drawer.embedded .approval-inspector {
+  top: 0;
+  max-height: none;
+}
+.manual-modal-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 8;
+  background: rgba(3, 5, 12, .68);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.manual-modal {
+  width: min(880px, 100%);
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
+  padding: 18px;
+}
+.manual-modal-head,
+.manual-modal-actions,
+.manual-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.manual-modal-head {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.manual-modal-head strong,
+.manual-modal-head span {
+  display: block;
+}
+.manual-modal-head strong {
+  color: var(--text);
+  font-size: 16px;
+}
+.manual-modal-head span {
+  margin-top: 5px;
+  color: var(--text3);
+  font-size: 12px;
+}
+.manual-image-columns {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+  gap: 14px;
+}
+.manual-image-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  padding: 12px;
+}
+.manual-panel-head {
+  margin-bottom: 10px;
+}
+.manual-panel-head strong {
+  color: var(--text2);
+  font-size: 12px;
+}
+.manual-panel-head > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.manual-main-preview {
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+.manual-main-preview img {
+  width: 100%;
+  display: block;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+}
+.manual-main-preview figcaption {
+  padding: 8px 10px;
+  color: var(--text3);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.manual-modal-actions {
+  justify-content: flex-end;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
 }
 .approval-empty {
   border: 1px dashed var(--border);
@@ -1071,10 +1548,13 @@ function showToast(message, isError = false) {
 }
 @media (max-width: 980px) {
   .approval-drawer { width: 100vw; }
+  .approval-drawer.embedded { height: auto; max-height: none; overflow: visible; }
   .approval-lifecycle { grid-template-columns: 1fr; }
   .approval-toolbar { flex-direction: column; }
-  .approval-body { grid-template-columns: 1fr; }
-  .approval-inspector { border-left: none; border-top: 1px solid var(--border); }
+  .approval-body { grid-template-columns: 1fr; overflow: visible; }
+  .approval-list { height: auto; max-height: none; }
+  .approval-inspector { height: auto; position: static; border-left: none; border-top: 1px solid var(--border); }
+  .manual-image-columns { grid-template-columns: 1fr; }
   .submit-result-row { grid-template-columns: 1fr; }
 }
 </style>
