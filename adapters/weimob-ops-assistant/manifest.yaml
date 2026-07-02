@@ -26,13 +26,13 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
           - value: current
             label: 使用当前登录页
           - value: new
-            label: 新开微盟商品列表页
-        hint: 推荐使用当前 9222 浏览器中已登录的微盟与 MDM 页面。
+            label: 新开微盟商品列表页（推荐）
+        hint: 请先在 9222 端口 Chrome 保持微盟与 MDM 已登录；默认会新开微盟商品列表页运行。
       - id: execute_mode
         type: radio
         label: 执行模式

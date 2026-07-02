@@ -26,13 +26,13 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
           - value: current
-            label: 当前罗盘页面（推荐）
+            label: 当前罗盘页面
           - value: new
-            label: 新开罗盘商品明细页
-        hint: 请在「魔方罗盘 - 商品明细」页运行；脚本会从该页同时调用供应商平台商品信息接口。
+            label: 新开罗盘商品明细页（推荐）
+        hint: 请先在 9222 端口 Chrome 登录唯品会；默认会新开「魔方罗盘 - 商品明细」页运行，并同时调用供应商平台商品信息接口。
       - id: input_file
         type: file_excel
         label: 货品匹配表
