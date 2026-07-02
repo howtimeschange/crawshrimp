@@ -202,7 +202,7 @@ test('tmall ai image test chain keeps generation progress moving from status tex
   assert.equal(summary.tracks[1].indeterminate, false)
 })
 
-test('tmall ai image test chain moves generation bar on submitted jobs before completion', () => {
+test('tmall ai image test chain shows completed over submitted jobs before completion', () => {
   const summary = buildTaskRunnerProgressSummary({
     adapterId: 'tmall-ops-assistant',
     taskId: 'tmall_ai_image_test_chain',
@@ -219,18 +219,18 @@ test('tmall ai image test chain moves generation bar on submitted jobs before co
       search_completed_codes: 6,
       generation_total_jobs: 20,
       generation_submitted_jobs: 12,
-      generation_completed_jobs: 0,
+      generation_completed_jobs: 3,
     },
   })
 
   assert.equal(summary.main, '批量生图')
-  assert.equal(summary.percentValue, 80)
+  assert.equal(summary.percentValue, 62.5)
   assert.equal(summary.tracks[0].state, 'complete')
-  assert.equal(summary.tracks[1].main, '12 / 20 张')
-  assert.equal(summary.tracks[1].percentLabel, '60%')
+  assert.equal(summary.tracks[1].main, '3 / 12 张')
+  assert.equal(summary.tracks[1].percentLabel, '25%')
   assert.equal(summary.tracks[1].state, 'active')
   assert.match(summary.tracks[1].caption, /已提交 12\/20/)
-  assert.match(summary.tracks[1].caption, /等待生成回传/)
+  assert.match(summary.tracks[1].caption, /已完成 3\/20/)
 })
 
 test('shein commodity quality uses two-stage list and return detail progress', () => {

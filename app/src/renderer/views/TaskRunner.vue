@@ -1,7 +1,7 @@
 <template>
   <div :class="['runner', { 'ai-chain-runner': isTmallAiImageChainTask }]">
     <!-- 页头 -->
-    <header class="runner-header">
+    <header v-if="!isTmallAiImageChainTask" class="runner-header">
       <h2>{{ task?.task_name }}</h2>
       <p v-if="task?.description" class="desc">{{ task.description }}</p>
     </header>
@@ -31,13 +31,6 @@
         v-if="(!isTmallAiImageChainTask || aiChainActiveStep === 'config') && visibleParams.length"
         :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
       >
-        <div v-if="isTmallAiImageChainTask" class="ai-chain-panel-head">
-          <span>01</span>
-          <div>
-            <strong>任务配置</strong>
-            <small>选择导入表、提示词库、云盘路径和执行模式</small>
-          </div>
-        </div>
         <div v-if="hasParamProbeScript && (dynamicParamProbeLoading || dynamicParamProbeError)" class="probe-note">
           <span v-if="dynamicParamProbeLoading">正在探测页面筛选项…</span>
           <span v-else>{{ dynamicParamProbeError }}</span>
@@ -481,13 +474,6 @@
         v-else-if="!isTmallAiImageChainTask || aiChainActiveStep === 'config'"
         :class="['params-panel', { 'ai-chain-step-panel': isTmallAiImageChainTask }]"
       >
-        <div v-if="isTmallAiImageChainTask" class="ai-chain-panel-head">
-          <span>01</span>
-          <div>
-            <strong>任务配置</strong>
-            <small>当前任务无额外参数</small>
-          </div>
-        </div>
         <div class="action-row">
           <button
             class="run-btn"
@@ -544,13 +530,6 @@
         v-if="isTmallAiImageChainTask && aiChainActiveStep === 'approval'"
         class="ai-chain-step-panel ai-chain-approval-panel"
       >
-        <div class="ai-chain-panel-head">
-          <span>02</span>
-          <div>
-            <strong>生图看板 / 审批</strong>
-            <small>{{ approvalBoardUrl ? '查看本批次原图、AI 图和 Prompt，确认后触发创建' : '任务生图完成后会自动显示图片看板' }}</small>
-          </div>
-        </div>
         <TmallAiApprovalDrawer
           v-if="approvalBoardUrl"
           :model-value="true"
@@ -558,6 +537,7 @@
           embedded
           :show-submit-results="false"
           @batch-updated="handleApprovalBatchUpdated"
+          @submit-started="handleApprovalSubmitStarted"
           @committed="handleApprovalCommitted"
         />
         <div v-else class="ai-chain-empty-panel">
@@ -570,11 +550,18 @@
         v-if="isTmallAiImageChainTask && aiChainActiveStep === 'create'"
         class="ai-chain-step-panel ai-chain-result-panel"
       >
-        <div class="ai-chain-panel-head">
-          <span>03</span>
-          <div>
-            <strong>实际测图任务创建结果</strong>
-            <small>{{ aiChainCreateSummary }}</small>
+        <div v-if="aiChainShowSubmitProgress" class="ai-chain-submit-progress">
+          <div class="ai-chain-submit-progress-head">
+            <strong>提交测图任务</strong>
+            <span>{{ aiChainSubmitProgressText }}</span>
+          </div>
+          <div class="ai-chain-submit-progress-bar" role="progressbar" :aria-valuenow="aiChainSubmitProgressPercent" aria-valuemin="0" aria-valuemax="100">
+            <span :style="{ width: `${aiChainSubmitProgressPercent}%` }"></span>
+          </div>
+          <div class="ai-chain-submit-progress-meta">
+            <span>已处理 {{ aiChainSubmitProgressCompleted }} / {{ aiChainSubmitProgressTotal }} 款</span>
+            <span>成功 {{ aiChainCreateCounts.succeeded }} / 失败 {{ aiChainCreateCounts.failed }}</span>
+            <span v-if="aiChainSubmitProgress.current_style">当前 {{ aiChainSubmitProgress.current_style }}</span>
           </div>
         </div>
         <div v-if="aiChainCreateRows.length" class="ai-chain-result-list">
@@ -601,6 +588,14 @@
             </div>
             <div class="ai-chain-result-note">
               <span>{{ row.执行结果 || '-' }}</span>
+              <button
+                v-if="row.测图详情URL"
+                type="button"
+                class="tmall-detail-link"
+                @click="openTmallDetailUrl(row.测图详情URL)"
+              >
+                查看详情
+              </button>
               <small v-if="row.备注">{{ row.备注 }}</small>
             </div>
           </div>
@@ -874,6 +869,7 @@
       v-model="approvalDrawerOpen"
       :board-url="approvalBoardUrl"
       @batch-updated="handleApprovalBatchUpdated"
+      @submit-started="handleApprovalSubmitStarted"
       @committed="handleApprovalCommitted"
     />
   </div>
@@ -997,9 +993,20 @@ function applyInitialParamsToValues(initialParams = {}) {
       next[p.id + '_start'] = value?.start || ''
       next[p.id + '_end'] = value?.end || ''
     } else if (p.type === 'file_excel') {
-      next[p.id + '_path'] = value?.path || ''
-      next[p.id + '_rows'] = Array.isArray(value?.rows) ? value.rows : []
-      next[p.id + '_headers'] = Array.isArray(value?.headers) ? value.headers : []
+      const nextPath = value?.path || ''
+      const currentPath = next[p.id + '_path'] || ''
+      const keepCurrentPreview = nextPath && nextPath === currentPath
+      next[p.id + '_path'] = nextPath
+      next[p.id + '_rows'] = Array.isArray(value?.rows)
+        ? value.rows
+        : keepCurrentPreview && Array.isArray(next[p.id + '_rows'])
+          ? next[p.id + '_rows']
+          : []
+      next[p.id + '_headers'] = Array.isArray(value?.headers)
+        ? value.headers
+        : keepCurrentPreview && Array.isArray(next[p.id + '_headers'])
+          ? next[p.id + '_headers']
+          : []
     } else if (p.type === 'file_images') {
       next[p.id + '_paths'] = normalizeImagePaths(value?.paths, imageParamLimit(p))
     } else if (isLineListParam(p)) {
@@ -1327,6 +1334,7 @@ const aiChainAiAssets = computed(() =>
 const aiChainCreateRows = computed(() =>
   (approvalBatch.value?.submit_result_rows || []).filter(row => row?.阶段 === '天猫上传/创建测图任务')
 )
+const aiChainSubmitProgress = computed(() => approvalBatch.value?.submit_progress || {})
 const aiChainCreateStatus = computed(() => {
   const status = String(approvalBatch.value?.status || '').trim()
   if (status === 'submitted' && aiChainCreateRows.value.some(row => String(row?.执行结果 || '').includes('失败'))) {
@@ -1345,8 +1353,35 @@ const aiChainCreateCounts = computed(() => {
     failed: Number.isFinite(failed) ? failed : 0,
   }
 })
-const aiChainCreateStartedStatuses = new Set(['submitted', 'created', 'partial_failed', 'create_failed'])
-const aiChainWorkflowStatuses = new Set(['pending_approval', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainSubmitProgressTotal = computed(() => {
+  const total = Number(aiChainSubmitProgress.value?.total || 0)
+  if (Number.isFinite(total) && total > 0) return total
+  return aiChainCreateCounts.value.attempted || aiChainCreateRows.value.length
+})
+const aiChainSubmitProgressCompleted = computed(() => {
+  const completed = Number(aiChainSubmitProgress.value?.completed ?? aiChainSubmitProgress.value?.attempted ?? 0)
+  if (Number.isFinite(completed) && completed > 0) return Math.min(completed, aiChainSubmitProgressTotal.value || completed)
+  return aiChainCreateCounts.value.attempted || aiChainCreateRows.value.length
+})
+const aiChainSubmitProgressPercent = computed(() => {
+  const total = aiChainSubmitProgressTotal.value
+  if (!total) return 0
+  return Math.max(0, Math.min(100, Math.round((aiChainSubmitProgressCompleted.value / total) * 100)))
+})
+const aiChainShowSubmitProgress = computed(() =>
+  aiChainSubmitProgressTotal.value > 0 || ['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'].includes(aiChainCreateStatus.value)
+)
+const aiChainSubmitProgressText = computed(() => {
+  const progress = aiChainSubmitProgress.value || {}
+  const message = String(progress.message || '').trim()
+  if (message) return message
+  if (aiChainCreateStatus.value === 'submitting') return '正在提交已确认图片并创建测图任务'
+  if (aiChainCreateStatus.value === 'created') return '全部测图任务已提交'
+  if (['partial_failed', 'create_failed'].includes(aiChainCreateStatus.value)) return '提交完成，存在失败款'
+  return aiChainCreateSummary.value
+})
+const aiChainCreateStartedStatuses = new Set(['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainWorkflowStatuses = new Set(['pending_approval', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
 const aiChainLifecycle = computed(() => {
   const createStatus = aiChainCreateStatus.value
   const aiTotal = aiChainAiAssets.value.length
@@ -1378,6 +1413,9 @@ const aiChainCreateSummary = computed(() => {
   if (!approvalBoardUrl.value) return '等待审批批次生成'
   if (!lifecycle.generationDone && lifecycle.hasBatchPayload) return '等待 AI 图生成'
   if (!lifecycle.generationDone) return '审批批次读取中'
+  if (lifecycle.createStatus === 'submitting') {
+    return String(aiChainSubmitProgress.value?.message || '').trim() || `提交 ${aiChainSubmitProgressCompleted.value}/${aiChainSubmitProgressTotal.value || '?'} 款`
+  }
   if (!aiChainCreateRows.value.length) return '确认图片后触发上传和创建'
   const counts = aiChainCreateCounts.value
   return `尝试 ${counts.attempted || aiChainCreateRows.value.length} 款 / 成功 ${counts.succeeded} / 失败 ${counts.failed}`
@@ -1427,10 +1465,6 @@ const aiChainSteps = computed(() => {
     },
   ]
 })
-function hasAiChainCreateRows(batch) {
-  return (batch?.submit_result_rows || []).some(row => row?.阶段 === '天猫上传/创建测图任务')
-}
-
 function setAiChainActiveStep(stepId) {
   const next = String(stepId || '').trim()
   if (!['config', 'approval', 'create'].includes(next)) return
@@ -2390,6 +2424,12 @@ function openFile(path) {
   window.cs.openFile(path)
 }
 
+function openTmallDetailUrl(url) {
+  const target = String(url || '').trim()
+  if (!target) return
+  window.cs.openFile(target)
+}
+
 function openApprovalDrawer() {
   if (!approvalBoardUrl.value) return
   if (isTmallAiImageChainTask.value) return
@@ -2398,9 +2438,11 @@ function openApprovalDrawer() {
 
 function handleApprovalBatchUpdated(payload) {
   approvalBatch.value = payload || null
-  if (isTmallAiImageChainTask.value && hasAiChainCreateRows(payload)) {
-    aiChainActiveStep.value = 'create'
-  }
+}
+
+function handleApprovalSubmitStarted(payload) {
+  handleApprovalBatchUpdated(payload)
+  aiChainActiveStep.value = 'create'
 }
 
 function handleApprovalCommitted(payload) {
@@ -3362,17 +3404,17 @@ onUnmounted(() => {
 .ai-chain-tab {
   appearance: none;
   min-width: 0;
-  min-height: 74px;
+  min-height: 64px;
   border: 1px solid transparent;
   border-bottom: 0;
   border-radius: 12px 12px 0 0;
   background: transparent;
   color: inherit;
-  padding: 10px 12px 12px;
+  padding: 9px 12px 10px;
   display: grid;
-  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-columns: 34px minmax(0, 1fr);
   gap: 10px;
-  align-items: start;
+  align-items: center;
   text-align: left;
   cursor: pointer;
   transition: background .16s, border-color .16s, transform .16s;
@@ -3407,6 +3449,7 @@ onUnmounted(() => {
 .ai-chain-tab-index {
   width: 32px;
   height: 32px;
+  align-self: center;
   border-radius: 10px;
   display: grid;
   place-items: center;
@@ -3478,13 +3521,9 @@ onUnmounted(() => {
 }
 .ai-chain-approval-panel,
 .ai-chain-result-panel {
-  padding: 20px 24px;
+  padding: 12px 18px;
   display: grid;
-  gap: 16px;
-}
-.ai-chain-approval-panel .ai-chain-panel-head,
-.ai-chain-result-panel .ai-chain-panel-head {
-  margin: -20px -24px 0;
+  gap: 12px;
 }
 .ai-chain-empty-panel {
   border: 1px dashed var(--border);
@@ -3505,6 +3544,50 @@ onUnmounted(() => {
 .ai-chain-result-list {
   display: grid;
   gap: 10px;
+}
+.ai-chain-submit-progress {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg3);
+  padding: 12px;
+  display: grid;
+  gap: 9px;
+}
+.ai-chain-submit-progress-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+}
+.ai-chain-submit-progress-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.ai-chain-submit-progress-head span {
+  color: var(--text3);
+  font-size: 12px;
+  text-align: right;
+}
+.ai-chain-submit-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .07);
+}
+.ai-chain-submit-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f97316, #22c55e);
+  transition: width .22s ease;
+}
+.ai-chain-submit-progress-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
 }
 .ai-chain-result-row {
   border: 1px solid var(--border);
@@ -3541,6 +3624,22 @@ onUnmounted(() => {
 .ai-chain-result-note span {
   color: var(--text);
   font-weight: 800;
+}
+.tmall-detail-link {
+  display: inline-block;
+  margin-top: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--orange);
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+.tmall-detail-link:hover {
+  text-decoration: underline;
 }
 .ai-chain-result-note small {
   margin-top: 5px;

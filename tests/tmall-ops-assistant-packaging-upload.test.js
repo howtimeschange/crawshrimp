@@ -13,13 +13,13 @@ function jsonResponse(payload, status = 200) {
   }
 }
 
-async function loadExports(fetchImpl = async () => jsonResponse({})) {
+async function loadExports(fetchImpl = async () => jsonResponse({}), params = {}) {
   const scriptPath = path.resolve('adapters/tmall-ops-assistant/tmall-packaging-upload.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const exportsBox = {}
   const context = {
     window: {
-      __CRAWSHRIMP_PARAMS__: {},
+      __CRAWSHRIMP_PARAMS__: params,
       __CRAWSHRIMP_PHASE__: '__exports__',
       __CRAWSHRIMP_SHARED__: {},
       __CRAWSHRIMP_EXPORTS__: exportsBox,
@@ -52,7 +52,7 @@ async function loadExports(fetchImpl = async () => jsonResponse({})) {
   return exportsBox
 }
 
-async function runScript({ phase, shared = {}, params = {}, documentOverride = {}, locationOverride = {}, windowOverride = {} }) {
+async function runScript({ phase, shared = {}, params = {}, documentOverride = {}, locationOverride = {}, windowOverride = {}, fetchImpl = async () => jsonResponse({}) }) {
   const scriptPath = path.resolve('adapters/tmall-ops-assistant/tmall-packaging-upload.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const location = {
@@ -70,7 +70,7 @@ async function runScript({ phase, shared = {}, params = {}, documentOverride = {
     },
     document: documentOverride,
     location,
-    fetch: async () => jsonResponse({}),
+    fetch: fetchImpl,
     FormData: globalThis.FormData,
     Blob: globalThis.Blob,
     File: globalThis.File,
@@ -297,6 +297,24 @@ test('normalizeExecuteMode supports full publish and mobile sync mode', async ()
   assert.equal(helpers.isFullPublishMode('upload_draft'), false)
 })
 
+test('buildTmallSubmitPayload resolves category id from form category fallback', async () => {
+  const helpers = await loadExports()
+  const payload = helpers.buildTmallSubmitPayload({
+    category: {
+      categorySelect: {
+        id: 124230010,
+        submitId: 124230011,
+      },
+    },
+  }, {
+    id: '999412782684',
+    _tb_token_: 'token',
+  })
+
+  assert.equal(payload.catId, '124230011')
+  assert.equal(payload.itemId, '999412782684')
+})
+
 test('normalizePackagingJobs accepts common column aliases and records invalid rows', async () => {
   const helpers = await loadExports()
   const normalized = helpers.normalizePackagingJobs({
@@ -369,7 +387,7 @@ test('ensure_cloud_folder clicks the left Semir mount tab before API search even
   let sidebarClicks = 0
   let titleClicks = 0
   const mountName = '巴拉巴拉品牌事业部-市场系统'
-  const { result } = await runScript({
+  const { result, location } = await runScript({
     phase: 'ensure_cloud_folder',
     shared: {
       mount_id: '1863',
@@ -425,6 +443,50 @@ test('ensure_cloud_folder enters search route after the Semir mount tab is activ
 
   assert.equal(next.result.meta.next_phase, 'collect_cloud_assets')
   assert.equal(next.location.hash, searchHash)
+})
+
+test('wait_tmall_ready clicks return-old-description switch before continuing on new detail editor', async () => {
+  const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    shared: {
+      current_job: { item_id: '999412782684', style_code: '208425107212' },
+      current_result_rows: [],
+    },
+    documentOverride: {
+      title: '商家中心',
+      body: { innerText: '图文描述 宝贝详情 返回旧版图文描述' },
+      querySelectorAll(selector) {
+        if (String(selector).includes('input')) return []
+        return [returnOld]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return {
+            getComponentValue(name) {
+              if (name === 'mainImagesGroup') return { images: [] }
+              if (name === 'threeToFourImages') return []
+              if (name === 'guideImageGroup') return { verticalImage: [] }
+              if (name === 'modularDesc') return []
+              return undefined
+            },
+            getComponentProps() {
+              return {}
+            },
+            engine: null,
+          }
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'wait_tmall_ready')
+  assert.equal(result.meta.shared.legacy_switch_attempts, 1)
+  assert.match(result.meta.shared.current_store, /切回旧版图文描述 1\/5/)
+  assert.equal(result.meta.clicks.length, 1)
 })
 
 test('mobile detail editor readiness goes straight to import menu', async () => {
@@ -1168,6 +1230,405 @@ test('wait_tmall_ready routes successful PC detail probes into mandatory OCR bef
   assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
   assert.equal(result.meta.shared.pc_detail_replacement_probe.mode, 'anchored_replace')
   assert.equal(result.meta.shared.pc_detail_ocr_attempted, true)
+})
+
+test('wait_tmall_ready uses outerId instead of item property style number for mismatch guard', async () => {
+  const modularDesc = [{
+    id: 30,
+    name: '促销专区',
+    content: [
+      '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
+      '<p><img src="https://img.example/old-product.jpg"/></p>',
+      '<p>不同材质这样洗<img src="https://img.example/wash.jpg"/></p>',
+    ].join(''),
+    custom: false,
+  }]
+  const componentValues = {
+    outerId: '208425107212',
+    itemProp: {
+      'p-13021751': { value: '208425107237' },
+    },
+    mainImagesGroup: { images: [] },
+    threeToFourImages: [],
+    guideImageGroup: { verticalImage: [] },
+    modularDesc,
+    tmDescription: '',
+  }
+  const state = {
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    params: { enable_ocr_anchor_detection: false },
+    shared: {
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+        execute_mode: 'upload_draft',
+        block_on_style_mismatch: true,
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
+  assert.equal(result.meta.shared.tmall_status.merchantCode, '208425107212')
+  assert.equal(result.meta.shared.pc_detail_replacement_probe.mode, 'anchored_replace')
+})
+
+test('wait_tmall_ready skips return-old click when legacy tmDescription is already available', async () => {
+  const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
+  const tmDescription = [
+    '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
+    '<p><img src="https://img.example/old-product.jpg"/></p>',
+    '<p>不同材质这样洗<img src="https://img.example/wash.jpg"/></p>',
+  ].join('')
+  const componentValues = {
+    outerId: '208425107212',
+    mainImagesGroup: { images: [] },
+    threeToFourImages: [],
+    guideImageGroup: { verticalImage: [] },
+    tmDescription,
+  }
+  const state = {
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { tmDescription } }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    params: { enable_ocr_anchor_detection: false },
+    shared: {
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+        execute_mode: 'upload_draft',
+        block_on_style_mismatch: true,
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '返回旧版图文描述' },
+      querySelectorAll(selector) {
+        if (String(selector).includes('input')) return []
+        return [returnOld]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
+  assert.equal(result.meta.shared.pc_detail_replacement_probe.target, 'tmDescription')
+})
+
+test('wait_publish_result does not repeatedly confirm loading or hidden Tmall dialogs', async () => {
+  let emitted = 0
+  const components = {
+    riskWarning: {
+      getProps: () => ({ visible: true, loading: true }),
+      emit: () => { emitted += 1 },
+    },
+    skuCheckDialog: {
+      getProps: () => ({ visible: true, vis: false, loading: true }),
+      emit: () => { emitted += 1 },
+    },
+  }
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'modularDesc') return []
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getComponent(name) {
+        return components[name] || null
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      publish_stage: 'pc',
+      publish_wait_attempts: 0,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(emitted, 0)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.publish_wait_attempts, 1)
+  assert.match(result.meta.shared.current_store, /PC端提交发布等待 1\/12/)
+})
+
+test('wait_publish_result cools down after Taobao operation-speed warning', async () => {
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'modularDesc') return []
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getComponent() {
+        return null
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      publish_stage: 'pc',
+      publish_wait_attempts: 0,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '警告 亲，您的操作速度太快了，请您稍等一会儿再试 确定' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.sleep_ms, 90000)
+  assert.equal(result.meta.shared.publish_speed_limit_count, 1)
+  assert.match(result.meta.shared.current_store, /淘宝操作频率限制/)
+})
+
+test('wait_reopened_tmall_ready re-enters editor from Tmall success page', async () => {
+  const edit = fakeElement('编辑商品', { left: 766 })
+  edit.tagName = 'A'
+  edit.href = 'https://upload.taobao.com/auction/publish/edit.htm?item_num_id=999412782684&auto=false'
+  const { result, location } = await runScript({
+    phase: 'wait_reopened_tmall_ready',
+    shared: {
+      tmall_wait_attempts: 0,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/success.htm?isSuccess=true&primaryId=999412782684',
+    },
+    documentOverride: {
+      title: '商品提交成功',
+      body: { innerText: '商品提交成功 商品ID：999412782684 继续发布 查看商品 编辑商品' },
+      querySelectorAll() {
+        return [edit]
+      },
+    },
+    windowOverride: {},
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'wait_reopened_tmall_ready')
+  assert.equal(location.href, 'https://upload.taobao.com/auction/publish/edit.htm?item_num_id=999412782684&auto=false')
+  assert.equal(result.meta.shared.reopened_after_pc_publish, true)
+  assert.match(result.meta.shared.current_store, /从成功页进入编辑商品/)
+})
+
+test('submit_pc_publish clicks DOM submit before trying API submit', async () => {
+  let fetchCalls = 0
+  let clicked = 0
+  const submit = fakeElement('提交', {
+    left: 790,
+    className: 'next-btn next-large next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  submit.tagName = 'BUTTON'
+  const { result } = await runScript({
+    phase: 'submit_pc_publish',
+    shared: {
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品发布 提交' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+    fetchImpl: async () => {
+      fetchCalls += 1
+      return jsonResponse({ success: true })
+    },
+  })
+
+  assert.equal(clicked, 1)
+  assert.equal(fetchCalls, 0)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.last_submit_method, 'dom_click')
+})
+
+test('wait_publish_result clicks visible DOM risk confirmation before API confirm', async () => {
+  let emitted = 0
+  let clicked = 0
+  const confirm = fakeElement('确认提交', {
+    left: 820,
+    className: 'next-btn next-medium next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  confirm.tagName = 'BUTTON'
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'modularDesc') return []
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getComponent(name) {
+        if (name !== 'riskWarning') return null
+        return {
+          getProps: () => ({ visible: true, loading: false }),
+          emit: () => { emitted += 1 },
+        }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      publish_stage: 'pc',
+      publish_wait_attempts: 0,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '图文详情编辑器升级提示 确认提交 返回修改' },
+      querySelectorAll() {
+        return [confirm]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(clicked, 1)
+  assert.equal(emitted, 0)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.last_confirm_method, 'dom_click')
+})
+
+test('tmall upload pacing defaults to no per-file delay', async () => {
+  const helpers = await loadExports()
+  assert.equal(helpers.tmallTimingConfig().uploadBetweenFilesMs, 0)
+  const throttled = await loadExports(undefined, { tmall_upload_between_files_ms: 500 })
+  assert.equal(throttled.tmallTimingConfig().uploadBetweenFilesMs, 500)
 })
 
 test('buildTmallComponentValues creates main images, vertical image, and anchored PC detail replacement', async () => {

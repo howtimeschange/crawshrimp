@@ -17,6 +17,7 @@ import secrets
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -54,6 +55,19 @@ APPROVED_ASSET_STATUSES = {"approved", "selected", "confirmed", "通过", "已�
 
 def compact(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def tmall_material_test_detail_url(item_id: object) -> str:
+    item = compact(item_id)
+    if not item:
+        return ""
+    query = urllib.parse.urlencode({
+        "testStatus": "1",
+        "testChannel": "common_search",
+        "tab": "all",
+        "itemId": item,
+    })
+    return f"https://myseller.taobao.com/home.htm/material-center/material-test/common_test?{query}"
 
 
 def normalize_chain_execution_mode(value: object) -> dict[str, bool | str]:
@@ -590,9 +604,54 @@ def approval_asset_matches_batch_run(batch: Mapping[str, Any], asset: Mapping[st
     return known_run_uid == batch_run_uid
 
 
+def tmall_submit_row_is_online_success(row: Mapping[str, Any]) -> bool:
+    if not isinstance(row, Mapping):
+        return False
+    if compact(row.get("阶段")) != "天猫上传/创建测图任务":
+        return False
+    result_text = compact(row.get("执行结果"))
+    if not result_text or "失败" in result_text or "跳过" in result_text:
+        return False
+    task_id = compact(row.get("任务ID"))
+    if not task_id or task_id == "<experimentTaskId>":
+        return False
+    online_text = compact(row.get("上线结果"))
+    readback_text = compact(row.get("页面回读")).replace(" ", "")
+    return online_text == "已上线" or "status=1" in readback_text or "status：1" in readback_text
+
+
+def latest_submit_rows_by_style(batch: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    latest_rows: dict[str, Mapping[str, Any]] = {}
+    for row in batch.get("submit_result_rows") or []:
+        if not isinstance(row, Mapping):
+            continue
+        if compact(row.get("阶段")) != "天猫上传/创建测图任务":
+            continue
+        style_code = compact(row.get("款号"))
+        if not style_code:
+            continue
+        latest_rows[style_code] = row
+    return latest_rows
+
+
+def successful_submit_rows_by_style(batch: Mapping[str, Any]) -> dict[str, Mapping[str, Any]]:
+    latest_rows = latest_submit_rows_by_style(batch)
+    return {
+        style_code: row
+        for style_code, row in latest_rows.items()
+        if tmall_submit_row_is_online_success(row)
+    }
+
+
 def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
     plans: list[dict[str, Any]] = []
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    force_resubmit_success = is_truthy(run_params.get("approval_resubmit_successful"))
+    successful_styles = set(successful_submit_rows_by_style(batch)) if not force_resubmit_success else set()
     for item in batch.get("items") or []:
+        workflow_data = workflow_to_dict(item.get("workflow") or item)
+        if workflow_data.get("style_code") in successful_styles:
+            continue
         approved_paths = [
             compact(asset.get("path"))
             for asset in item.get("assets") or []
@@ -604,7 +663,7 @@ def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[d
         if not approved_paths:
             continue
         plans.append({
-            "workflow": workflow_to_dict(item.get("workflow") or item),
+            "workflow": workflow_data,
             "origin_path": compact(item.get("origin_path")),
             "detail_reference_path": compact(item.get("detail_reference_path")),
             "generated_paths": approved_paths,
@@ -653,6 +712,137 @@ def notify_approval_batch(batch: Mapping[str, Any], *, channel: str = "dingtalk"
     except Exception as exc:
         if log:
             log(f"[warn] 审批通知发送失败：{exc}")
+
+
+def tmall_submission_success_details(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, Mapping) or not tmall_submit_row_is_online_success(row):
+            continue
+        style_code = compact(row.get("款号"))
+        item_id = compact(row.get("商品ID"))
+        detail_url = compact(row.get("测图详情URL")) or tmall_material_test_detail_url(item_id)
+        key = style_code or item_id or compact(row.get("任务ID"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        details.append({
+            "style_code": style_code,
+            "item_id": item_id,
+            "task_id": compact(row.get("任务ID")),
+            "detail_url": detail_url,
+        })
+    return details
+
+
+def tmall_submission_failed_details(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, str]]:
+    details: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in rows or []:
+        if not isinstance(row, Mapping):
+            continue
+        if compact(row.get("阶段")) != "天猫上传/创建测图任务":
+            continue
+        if tmall_submit_row_is_online_success(row):
+            continue
+        result_text = compact(row.get("执行结果"))
+        if "失败" not in result_text and "跳过" not in result_text:
+            continue
+        style_code = compact(row.get("款号"))
+        item_id = compact(row.get("商品ID"))
+        key = style_code or item_id or compact(row.get("任务ID"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        details.append({
+            "style_code": style_code,
+            "item_id": item_id,
+            "task_id": compact(row.get("任务ID")),
+            "reason": compact(row.get("备注") or result_text),
+        })
+    return details
+
+
+def build_tmall_submission_notification_message(
+    batch: Mapping[str, Any],
+    *,
+    status: str,
+    attempted: int,
+    succeeded: int,
+    failed: int,
+    rows: Iterable[Mapping[str, Any]],
+) -> str:
+    success_details = tmall_submission_success_details(rows)
+    failed_details = tmall_submission_failed_details(rows)
+    lines = [
+        "### 天猫AI测图任务创建结果",
+        f"- 批次：{compact(batch.get('batch_id')) or '-'}",
+        f"- 状态：{compact(status) or '-'}",
+        f"- 汇总：尝试 {attempted} 款 / 成功 {succeeded} 款 / 失败 {failed} 款",
+        "",
+        "#### 成功款号与详情URL",
+    ]
+    if success_details:
+        for item in success_details:
+            meta_parts = []
+            if item.get("item_id"):
+                meta_parts.append(f"商品ID {item['item_id']}")
+            if item.get("task_id"):
+                meta_parts.append(f"任务ID {item['task_id']}")
+            meta = f"（{'，'.join(meta_parts)}）" if meta_parts else ""
+            detail_url = item.get("detail_url") or "未生成详情URL"
+            lines.append(f"- {item.get('style_code') or item.get('item_id') or '-'}{meta}：{detail_url}")
+    else:
+        lines.append("- 无")
+    if failed_details:
+        lines.extend(["", "#### 失败款号"])
+        for item in failed_details[:20]:
+            item_id = f"，商品ID {item['item_id']}" if item.get("item_id") else ""
+            reason = item.get("reason") or "未记录失败原因"
+            lines.append(f"- {item.get('style_code') or item.get('item_id') or '-'}{item_id}：{reason}")
+    return "\n".join(lines)
+
+
+def notify_tmall_submission_result(
+    batch: Mapping[str, Any],
+    *,
+    status: str,
+    attempted: int,
+    succeeded: int,
+    failed: int,
+    rows: Iterable[Mapping[str, Any]],
+    channel: str = "dingtalk",
+    log=None,
+) -> None:
+    notify_channel = compact(channel or "dingtalk").lower()
+    if not notify_channel or notify_channel == "none":
+        return
+    try:
+        from core import notifier
+
+        message = build_tmall_submission_notification_message(
+            batch,
+            status=status,
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            rows=rows,
+        )
+        notifier.send(
+            channel=notify_channel,
+            title="天猫AI测图任务创建结果",
+            records=attempted,
+            adapter_name="天猫运营助手",
+            task_name="天猫AI测图全链路",
+            sample_rows=tmall_submission_success_details(rows),
+            message=message,
+        )
+        if log:
+            log(f"[chain] 测图任务创建结果通知已通过 {notify_channel} 发送")
+    except Exception as exc:
+        if log:
+            log(f"[warn] 测图任务创建结果通知发送失败：{exc}")
 
 
 def find_approval_asset(batch: Mapping[str, Any], asset_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -2029,6 +2219,7 @@ TMALL_UPLOAD_CREATE_JS = r"""
     reusedExistingTask: null,
     clearedMaterialIds: [],
     clearErrors: [],
+    liveOnlineRequested: Boolean(__payload.live_online),
     onlinePayload: null,
     createResult: null,
     batchAddResult: null,
@@ -2066,7 +2257,7 @@ TMALL_UPLOAD_CREATE_JS = r"""
     if (!result.materials.length) throw new Error('没有可添加的天猫素材 URL，请先启用并完成 live_upload');
     let taskStatusList = [];
     let task = null;
-    const reusableTask = __payload.allow_reuse_stopped_task
+    const reusableTask = __payload.allow_reuse_stopped_task !== false
       ? await findReusableStoppedTask(__payload.item_id, 'common_search')
       : null;
     if (reusableTask) {
@@ -2155,6 +2346,241 @@ TMALL_UPLOAD_CREATE_JS = r"""
     } catch (readbackError) {
       result.readbackError = describeError(readbackError);
     }
+    return { success: true, data: [result], meta: { has_more: false } };
+  }
+"""
+
+
+TMALL_SUBMISSION_READBACK_JS = r"""
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const normalizeUrl = (value) => {
+    const url = compact(value);
+    if (!url) return '';
+    return url.startsWith('//') ? `https:${url}` : url;
+  };
+  function describeError(error) {
+    if (!error) return '未知错误';
+    if (typeof error === 'string') return error;
+    if (error.message) return String(error.message);
+    if (Array.isArray(error.ret)) return error.ret.join('；');
+    try { return JSON.stringify(error).slice(0, 1000); } catch (jsonError) {}
+    return String(error);
+  }
+  function describeMtopError(error) {
+    const parts = [];
+    const ret = Array.isArray(error?.ret) ? error.ret.join('|') : '';
+    const dataMsg = compact(error?.data?.errorMsg || error?.data?.message || error?.data?.msg);
+    const message = compact(error?.message || error);
+    if (ret) parts.push(ret);
+    if (dataMsg && !parts.includes(dataMsg)) parts.push(dataMsg);
+    if (message && message !== '[object Object]' && !parts.includes(message)) parts.push(message);
+    return parts.join('|') || String(error || 'MTop 调用失败');
+  }
+  async function callMtop(api, data, options = {}) {
+    const client = window.lib?.mtop || window.mtop;
+    if (!client || typeof client.request !== 'function') {
+      throw new Error('未找到千牛 MTop 客户端，请确认当前 tab 是天猫素材测试页');
+    }
+    let payload = null;
+    try {
+      payload = await client.request({
+        api,
+        v: options.v || '1.0',
+        type: options.type || 'POST',
+        dataType: 'json',
+        H5Request: true,
+        preventFallback: true,
+        data,
+      });
+    } catch (error) {
+      throw new Error(`${api} 返回失败：${describeMtopError(error)}`);
+    }
+    if (Array.isArray(payload?.ret)) {
+      const failed = payload.ret.find((item) => !/^SUCCESS/i.test(String(item || '')));
+      if (failed) throw new Error(`${api} 返回失败：${payload.ret.join('；')}`);
+    }
+    return payload?.data !== undefined ? payload.data : payload;
+  }
+  function extractRows(value) {
+    for (const rows of [
+      value?.result?.list,
+      value?.list,
+      value?.records,
+      value?.data?.result?.list,
+      value?.data?.list,
+      value?.data?.records,
+      value?.modelDataList,
+    ]) {
+      if (Array.isArray(rows)) return rows;
+    }
+    return Array.isArray(value) ? value : [];
+  }
+  function metricItems(value) {
+    const result = [];
+    for (const list of Object.values(value || {})) {
+      if (Array.isArray(list)) result.push(...list);
+    }
+    return result;
+  }
+  function materialRefsFromMetrics(value) {
+    const refs = [];
+    const seenIds = new Set();
+    const seenUrls = new Set();
+    const push = (id, url) => {
+      const materialId = compact(id);
+      const imageUrl = normalizeUrl(url);
+      if (materialId && seenIds.has(materialId)) return;
+      if (imageUrl && seenUrls.has(imageUrl)) return;
+      if (!materialId && !imageUrl) return;
+      if (materialId) seenIds.add(materialId);
+      if (imageUrl) seenUrls.add(imageUrl);
+      refs.push({ id: materialId, url: imageUrl || (materialId ? `material:${materialId}` : '') });
+    };
+    for (const item of metricItems(value)) {
+      push(item?.imageId, item?.imageUrl || item?.picUrl || item?.url || item?.materialUrl);
+      for (const id of Array.isArray(item?.imageIds) ? item.imageIds : []) push(id, '');
+      for (const op of Array.isArray(item?.materialOpParams) ? item.materialOpParams : []) {
+        for (const material of Array.isArray(op?.materials) ? op.materials : []) {
+          push(material?.imageId, material?.imageUrl || material?.picUrl || material?.url || material?.materialUrl);
+        }
+      }
+    }
+    return refs;
+  }
+  function taskDataItems(readback, targetSource = 'common_search') {
+    const rows = Array.isArray(readback?.rows) ? readback.rows : [];
+    const target = compact(targetSource).toLowerCase();
+    const result = [];
+    for (const row of rows) {
+      const itemId = compact(row?.domainId || row?.itemId || row?.id);
+      const dataList = row?.columns?.test_data?.dataList || row?.test_data?.dataList || row?.testData?.dataList || [];
+      for (const item of Array.isArray(dataList) ? dataList : []) {
+        const source = compact(item?.imageTestSource || item?.source || item?.testChannel).toLowerCase();
+        if (source !== target) continue;
+        const experimentTaskId = compact(item?.experimentTaskId || item?.taskId || item?.id);
+        if (!experimentTaskId) continue;
+        const originRefs = materialRefsFromMetrics(item?.originImageMetrics || {});
+        const testRefs = materialRefsFromMetrics(item?.testImageMetrics || {});
+        result.push({
+          itemId,
+          experimentTaskId,
+          source: target,
+          status: compact(item?.testStatus ?? item?.status),
+          originMaterialIds: originRefs.map((ref) => ref.id).filter(Boolean),
+          testMaterialIds: testRefs.map((ref) => ref.id).filter(Boolean),
+          testMaterialUrls: testRefs.map((ref) => ref.url).filter(Boolean),
+          testImageCount: testRefs.length,
+          raw: item,
+        });
+      }
+    }
+    return result;
+  }
+  function summarizeTask(task) {
+    if (!task) return null;
+    return {
+      taskId: task.experimentTaskId,
+      source: task.source || 'common_search',
+      status: task.status,
+      originImageCount: task.originMaterialIds?.length || 0,
+      testImageCount: task.testImageCount || task.testMaterialUrls?.length || task.testMaterialIds?.length || 0,
+      online: String(task.status) === '1',
+    };
+  }
+  async function searchTasks(itemId, options = {}) {
+    const params = {
+      tabCode: options.tabCode || 'all',
+      itemIdOrName: String(itemId || ''),
+    };
+    if (options.testChannel) params.testChannel = options.testChannel;
+    if (options.testStatus !== undefined && options.testStatus !== null && options.testStatus !== '') {
+      params.testStatus = String(options.testStatus);
+    }
+    const runSearch = async (extraParams = {}) => {
+      const requestParams = { ...params, ...extraParams };
+      const payload = await callMtop('mtop.taobao.qn.copilot.framework.listmodel.data.search', {
+        modelCode: 'image_test_mgr',
+        params: JSON.stringify(requestParams),
+        currentPage: 1,
+        pageSize: 10,
+      });
+      const rows = extractRows(payload);
+      const total = Number(payload?.result?.total || payload?.total || payload?.count || rows.length || 0);
+      return {
+        total: Number.isFinite(total) ? total : rows.length,
+        rows,
+        requestParams,
+        raw: payload,
+      };
+    };
+    if (options.testStatus !== undefined && options.testStatus !== null && options.testStatus !== '') {
+      return runSearch();
+    }
+    const mergedRows = [];
+    const seen = new Set();
+    const readbacks = [];
+    for (const status of ['1', '0', '']) {
+      const readback = await runSearch(status ? { testStatus: status } : {});
+      readbacks.push(readback);
+      for (const row of readback.rows) {
+        const rowKey = `${compact(row?.domainId || row?.itemId || row?.id)}:${JSON.stringify((row?.columns?.test_data?.dataList || row?.test_data?.dataList || row?.testData?.dataList || []).map((item) => compact(item?.experimentTaskId || item?.taskId || item?.id)))}`;
+        if (seen.has(rowKey)) continue;
+        seen.add(rowKey);
+        mergedRows.push(row);
+      }
+    }
+    return {
+      total: mergedRows.length,
+      rows: mergedRows,
+      requestParams: params,
+      raw: readbacks[0]?.raw || {},
+      statusReadbacks: readbacks.map((item) => ({ total: item.total, requestParams: item.requestParams })),
+    };
+  }
+  const result = {
+    uploaded: [],
+    materials: [],
+    batchPayload: null,
+    onlineResult: null,
+    readback: null,
+    readbackTaskSummary: null,
+    batchAddWarnings: [],
+    recoveredByReadback: false,
+    error: '',
+  };
+  try {
+    result.readback = await searchTasks(__payload.item_id, { testChannel: 'common_search' });
+    const expected = Number(__payload.expected_test_images || 0);
+    const tasks = taskDataItems(result.readback, 'common_search')
+      .filter((task) => compact(task.itemId) === compact(__payload.item_id) || !task.itemId)
+      .sort((left, right) => {
+        const leftOnline = String(left.status) === '1' ? 1 : 0;
+        const rightOnline = String(right.status) === '1' ? 1 : 0;
+        if (leftOnline !== rightOnline) return rightOnline - leftOnline;
+        return Number(right.testImageCount || 0) - Number(left.testImageCount || 0);
+      });
+    const task = tasks.find((item) =>
+      String(item.status) === '1' && (!expected || Number(item.testImageCount || 0) >= Math.min(expected, 1))
+    ) || tasks[0] || null;
+    if (!task) throw new Error(`未回读到商品 ${__payload.item_id} 的搜索测图任务`);
+    result.batchPayload = {
+      experimentTaskId: task.experimentTaskId,
+      itemId: String(__payload.item_id || ''),
+      source: 'common_search',
+    };
+    result.uploaded = (task.testMaterialUrls || []).map((url, index) => ({ name: `readback-${index + 1}`, role: 'ai', url }));
+    result.materials = (task.testMaterialUrls || []).map((url) => ({ sourceType: 4, picUrl: url, size: '3:4' }));
+    result.readbackTaskSummary = summarizeTask(task);
+    if (String(task.status) === '1') {
+      result.onlineResult = { recoveredByReadback: true };
+      result.recoveredByReadback = true;
+      result.batchAddWarnings.push(compact(__payload.reason) || '通过天猫后台回读确认测图任务已上线');
+    } else {
+      result.error = `回读任务未上线：status=${task.status || ''}`;
+    }
+    return { success: true, data: [result], meta: { has_more: false } };
+  } catch (error) {
+    result.error = describeError(error);
     return { success: true, data: [result], meta: { has_more: false } };
   }
 """
@@ -2459,6 +2885,7 @@ async def upload_and_create_tmall_task(
         "live_create": live_create,
         "live_online": live_online,
         "folder_id": "0",
+        "allow_reuse_stopped_task": True,
         "upload_delay_ms": max(0, int(float(upload_delay_seconds or 0) * 1000)),
         "create_delay_ms": max(0, int(float(create_delay_seconds or 0) * 1000)),
         "batch_delay_ms": max(0, int(float(batch_delay_seconds or 0) * 1000)),
@@ -2470,15 +2897,130 @@ async def upload_and_create_tmall_task(
     return (result.data[0] if isinstance(result.data, list) and result.data else {}) if result.data is not None else {}
 
 
+async def recover_tmall_submission_by_readback(
+    runner: JSRunner,
+    workflow: WorkflowItem,
+    *,
+    expected_test_images: int = 0,
+    reason: str = "",
+) -> dict[str, Any] | None:
+    payload = {
+        "item_id": workflow.item_id,
+        "style_code": workflow.style_code,
+        "expected_test_images": max(0, int(expected_test_images or 0)),
+        "reason": compact(reason),
+    }
+    result = await runner.evaluate_with_reconnect(
+        js_call(TMALL_SUBMISSION_READBACK_JS, payload),
+        allow_navigation_retry=True,
+    )
+    if not result.success:
+        return None
+    data = (result.data[0] if isinstance(result.data, list) and result.data else {}) if result.data is not None else {}
+    return data if isinstance(data, Mapping) else None
+
+
+def should_recover_tmall_submit_error(error: object, previous_row: Mapping[str, Any] | None = None) -> bool:
+    if previous_row is not None:
+        return True
+    text = compact(error).lower()
+    return any(marker in text for marker in ("timeout", "超时", "batch.add", "上线", "readback", "回读"))
+
+
+def tmall_submission_success(tmall_result: Mapping[str, Any] | None) -> tuple[bool, str, str]:
+    if not isinstance(tmall_result, Mapping):
+        return False, "", "天猫提交未返回结果"
+    task_id = ""
+    if isinstance(tmall_result.get("batchPayload"), Mapping):
+        task_id = compact(tmall_result["batchPayload"].get("experimentTaskId"))
+    tmall_error = compact(tmall_result.get("error") or tmall_result.get("uploadError") or tmall_result.get("备注"))
+    if not task_id or task_id == "<experimentTaskId>":
+        return False, task_id, tmall_error or "未解析到测图任务 ID"
+    if tmall_error:
+        return False, task_id, tmall_error
+    task_summary = tmall_result.get("readbackTaskSummary") if isinstance(tmall_result.get("readbackTaskSummary"), Mapping) else {}
+    online_ok = bool(tmall_result.get("onlineResult")) or bool(task_summary.get("online")) or compact(task_summary.get("status")) == "1"
+    if not online_ok:
+        return False, task_id, "任务未上线，未开始测试"
+    return True, task_id, ""
+
+
 async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[str, Any]:
     log = log or (lambda _message: None)
+    previous_latest_rows = latest_submit_rows_by_style(batch)
+    previous_success_rows = successful_submit_rows_by_style(batch)
     plans = selected_upload_plan_from_approval_batch(batch)
-    if not plans:
+    if not plans and not previous_success_rows:
         raise RuntimeError("审批批次中没有已确认的 AI 图")
 
     run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
-    cdp_url = compact(run_params.get("cdp_url")) or "http://127.0.0.1:9222"
     artifact_dir = Path(compact(batch.get("artifact_dir")) or ".")
+    result_rows: list[dict[str, Any]] = [dict(row) for row in previous_success_rows.values()]
+    attempted = len(previous_success_rows)
+    succeeded = len(previous_success_rows)
+    failed = 0
+    started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    submit_total = len(plans) + len(previous_success_rows)
+
+    def persist_submit_progress(status: str = "running", *, current_style: str = "", message: str = "") -> None:
+        batch["submit_progress"] = {
+            "status": status,
+            "total": submit_total,
+            "completed": attempted,
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": failed,
+            "current_style": current_style,
+            "message": message,
+            "started_at": started_at,
+            "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        }
+        batch["submit_summary"] = {
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": failed,
+        }
+        batch["submit_result_rows"] = json_safe(result_rows)
+        save_approval_batch(batch)
+
+    if not plans:
+        status = "created"
+        batch["status"] = status
+        batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        result_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
+        result_path.write_text(json.dumps({
+            "status": status,
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": failed,
+            "submitted": succeeded,
+            "rows": result_rows,
+        }, ensure_ascii=False, indent=2), encoding="utf-8")
+        batch["submit_result_path"] = str(result_path)
+        persist_submit_progress("completed", message="全部测图任务已通过历史回读确认")
+        save_approval_batch(batch)
+        notify_tmall_submission_result(
+            batch,
+            status=status,
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            rows=result_rows,
+            channel=compact(run_params.get("approval_notify_channel") or "dingtalk").lower(),
+            log=log,
+        )
+        return {
+            "ok": True,
+            "status": batch["status"],
+            "attempted": attempted,
+            "succeeded": succeeded,
+            "failed": failed,
+            "submitted": succeeded,
+            "rows": result_rows,
+            "result_path": str(result_path),
+        }
+
+    cdp_url = compact(run_params.get("cdp_url")) or "http://127.0.0.1:9222"
     bridge = CDPBridge(cdp_url)
     if not bridge.is_available(timeout=5):
         raise RuntimeError(f"无法连接 Chrome CDP：{cdp_url}")
@@ -2488,13 +3030,17 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         TMALL_URL,
         artifact_dir,
     )
-    result_rows: list[dict[str, Any]] = []
-    attempted = 0
-    succeeded = 0
-    failed = 0
+    try:
+        runner.timeout = max(int(getattr(runner, "timeout", 60) or 60), 120)
+    except Exception:
+        pass
+    batch["status"] = "submitting"
+    persist_submit_progress("running", message="准备提交已确认图片")
     for plan in plans:
         workflow = workflow_from_dict(plan.get("workflow") or {})
+        existing_row = previous_latest_rows.get(workflow.style_code)
         if not workflow.item_id:
+            attempted += 1
             failed += 1
             result_rows.append({
                 "表格行号": workflow.row_no,
@@ -2504,8 +3050,38 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
                 "执行结果": "跳过",
                 "备注": "缺少商品 ID",
             })
+            persist_submit_progress("running", current_style=workflow.style_code, message="缺少商品 ID，已跳过")
             continue
-        attempted += 1
+        if existing_row and not tmall_submit_row_is_online_success(existing_row):
+            persist_submit_progress("running", current_style=workflow.style_code, message=f"正在回读 {workflow.style_code} 的后台最新状态")
+            recovered_result = await recover_tmall_submission_by_readback(
+                runner,
+                workflow,
+                expected_test_images=len(plan.get("generated_paths") or []),
+                reason="历史提交显示 timeout，已通过天猫后台回读纠偏，未重复上传",
+            )
+            recovered_ok, _recovered_task_id, _recovered_error = tmall_submission_success(recovered_result)
+            if recovered_ok:
+                attempted += 1
+                succeeded += 1
+                log(f"[approval] {workflow.style_code} 历史 timeout 已通过天猫后台回读确认上线")
+                result_rows.extend(result_rows_for_workflow(
+                    workflow,
+                    (plan.get("item") or {}).get("semir_data") or {},
+                    compact(plan.get("origin_path")),
+                    compact(plan.get("detail_reference_path")),
+                    [
+                        asset.get("generation_row") or {}
+                        for asset in (plan.get("item") or {}).get("assets", [])
+                        if asset.get("kind") == "ai" and compact(asset.get("path")) in set(plan.get("generated_paths") or [])
+                    ],
+                    list(plan.get("generated_paths") or []),
+                    recovered_result,
+                    reference_mode=compact((plan.get("item") or {}).get("reference_mode")) or "main_only",
+                ))
+                persist_submit_progress("running", current_style=workflow.style_code, message="后台回读确认已上线，跳过重复提交")
+                continue
+        persist_submit_progress("running", current_style=workflow.style_code, message=f"正在提交 {workflow.style_code}")
         log(f"[approval] {workflow.style_code} 上传 {len(plan.get('generated_paths') or [])} 张已确认 AI 图并创建测图任务")
         try:
             tmall_result = await upload_and_create_tmall_task(
@@ -2515,22 +3091,35 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
                 list(plan.get("generated_paths") or []),
                 live_upload=True,
                 live_create=True,
-                live_online=False,
+                live_online=True,
                 upload_delay_seconds=float(run_params.get("tmall_upload_delay_seconds") or 1.5),
                 create_delay_seconds=float(run_params.get("tmall_create_delay_seconds") or 5.0),
                 batch_delay_seconds=float(run_params.get("tmall_batch_delay_seconds") or 12.0),
                 readback_delay_seconds=float(run_params.get("tmall_readback_delay_seconds") or 5.0),
             )
         except Exception as exc:
-            tmall_result = {"uploaded": [], "materials": [], "batchPayload": {}, "onlineResult": None, "error": str(exc)}
-        task_id = ""
-        if isinstance(tmall_result.get("batchPayload"), Mapping):
-            task_id = compact(tmall_result["batchPayload"].get("experimentTaskId"))
-        tmall_error = compact(tmall_result.get("error") or tmall_result.get("uploadError") or tmall_result.get("备注"))
-        if task_id and task_id != "<experimentTaskId>" and not tmall_error:
+            submit_exception = str(exc)
+            recovered_result = None
+            if should_recover_tmall_submit_error(submit_exception, existing_row):
+                recovered_result = await recover_tmall_submission_by_readback(
+                    runner,
+                    workflow,
+                    expected_test_images=len(plan.get("generated_paths") or []),
+                    reason=f"提交调用返回 {submit_exception}，已通过天猫后台回读确认",
+                )
+            recovered_ok, _recovered_task_id, _recovered_error = tmall_submission_success(recovered_result)
+            if recovered_ok:
+                tmall_result = recovered_result or {}
+            else:
+                tmall_result = {"uploaded": [], "materials": [], "batchPayload": {}, "onlineResult": None, "error": submit_exception}
+        attempted += 1
+        success, _task_id, submit_error = tmall_submission_success(tmall_result)
+        if success:
             succeeded += 1
+            log(f"[approval] {workflow.style_code} 测图任务已提交成功")
         else:
             failed += 1
+            log(f"[approval] {workflow.style_code} 测图任务提交失败：{submit_error}")
         result_rows.extend(result_rows_for_workflow(
             workflow,
             (plan.get("item") or {}).get("semir_data") or {},
@@ -2545,14 +3134,11 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
             tmall_result,
             reference_mode=compact((plan.get("item") or {}).get("reference_mode")) or "main_only",
         ))
+        persist_submit_progress("running", current_style=workflow.style_code, message="已完成本款提交" if success else submit_error)
 
     if attempted > 0 and succeeded == attempted and failed == 0:
         status = "created"
-    elif succeeded > 0 or any(
-        compact(row.get("任务ID")) and compact(row.get("任务ID")) != "<experimentTaskId>"
-        for row in result_rows
-        if isinstance(row, Mapping)
-    ):
+    elif succeeded > 0:
         status = "partial_failed"
     else:
         status = "create_failed"
@@ -2574,7 +3160,29 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         "succeeded": succeeded,
         "failed": failed,
     }
+    batch["submit_progress"] = {
+        "status": "completed" if failed == 0 and attempted > 0 else status,
+        "total": len(plans),
+        "completed": attempted,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "current_style": "",
+        "message": "提交完成" if failed == 0 and attempted > 0 else "提交完成，存在失败款",
+        "started_at": started_at,
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
     save_approval_batch(batch)
+    notify_tmall_submission_result(
+        batch,
+        status=status,
+        attempted=attempted,
+        succeeded=succeeded,
+        failed=failed,
+        rows=result_rows,
+        channel=compact(run_params.get("approval_notify_channel") or "dingtalk").lower(),
+        log=log,
+    )
     return {
         "ok": failed == 0 and attempted > 0,
         "status": batch["status"],
@@ -2686,6 +3294,9 @@ def result_rows_for_workflow(
                 f"status={task_summary.get('status', '')}",
                 f"testImages={task_summary.get('testImageCount', '')}",
             ] if item)
+        submit_ok, _submit_task_id, submit_error = tmall_submission_success(tmall_result)
+        if not tmall_error and not submit_ok:
+            tmall_error = submit_error
         first_generation = generation_rows[0] if generation_rows else {}
         rows.append({
             "表格行号": workflow.row_no,
@@ -2693,6 +3304,7 @@ def result_rows_for_workflow(
             "SKC编码": resolved_skc_code,
             "商品ID": workflow.item_id,
             "阶段": "天猫上传/创建测图任务",
+            "测图详情URL": tmall_material_test_detail_url(workflow.item_id),
             "参考图模式": reference_mode,
             "提示词分组": first_generation.get("提示词分组", ""),
             "提示词字段名": "\n".join(compact(row.get("提示词字段名")) for row in generation_rows if compact(row.get("提示词字段名"))),
@@ -2706,7 +3318,6 @@ def result_rows_for_workflow(
                 "天猫上传/创建失败" if tmall_error else
                 "已创建/加素材/已上线"
                 if task_id and task_id != "<experimentTaskId>" and online_ok
-                else "已创建/加素材" if task_id and task_id != "<experimentTaskId>"
                 else "已生成计划"
             ),
             "备注": tmall_error or tmall_warning or f"uploaded={len(uploaded)} materials={len(materials)} online={online_ok}",
@@ -3268,6 +3879,7 @@ async def run_chain(args: argparse.Namespace) -> dict[str, Any]:
                 "审批状态",
                 "审批看板",
                 "任务ID",
+                "测图详情URL",
                 "上传图数量",
                 "上线结果",
                 "页面回读",

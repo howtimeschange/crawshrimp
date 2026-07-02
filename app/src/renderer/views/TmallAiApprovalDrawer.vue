@@ -3,8 +3,8 @@
     <aside :class="['approval-drawer', { collapsed: collapsed && !embedded, embedded }]">
       <header class="approval-head">
         <div class="approval-title-block">
-          <p class="approval-kicker">生图队列 / 审批流</p>
-          <h3>巴拉-AI测图审图看板</h3>
+          <p v-if="!embedded" class="approval-kicker">生图队列 / 审批流</p>
+          <h3 v-if="!embedded">巴拉-AI测图审图看板</h3>
           <div class="approval-meta">
             <span v-if="batch?.batch_id">批次 {{ batch.batch_id }}</span>
             <span v-if="batch?.status">状态 {{ batch.status }}</span>
@@ -58,6 +58,24 @@
         </div>
       </div>
 
+      <section v-if="(!collapsed || embedded) && showSubmitProgress" class="approval-submit-progress">
+        <div class="submit-progress-head">
+          <div>
+            <strong>提交测图任务</strong>
+            <span>{{ submitProgressText }}</span>
+          </div>
+          <span class="submit-progress-percent">{{ submitProgressPercent }}%</span>
+        </div>
+        <div class="submit-progress-bar" role="progressbar" :aria-valuenow="submitProgressPercent" aria-valuemin="0" aria-valuemax="100">
+          <span :style="{ width: `${submitProgressPercent}%` }"></span>
+        </div>
+        <div class="submit-progress-meta">
+          <span>已处理 {{ submitProgressCompleted }} / {{ submitProgressTotal }} 款</span>
+          <span>成功 {{ createSummary.succeeded }} / 失败 {{ createSummary.failed }}</span>
+          <span v-if="submitProgress.current_style">当前 {{ submitProgress.current_style }}</span>
+        </div>
+      </section>
+
       <section v-if="(!collapsed || embedded) && showSubmitResults && hasSubmitResult" class="approval-submit-results">
         <div class="submit-result-head">
           <div>
@@ -86,6 +104,14 @@
             </div>
             <div class="submit-result-status">
               <span>{{ row.执行结果 || '-' }}</span>
+              <button
+                v-if="row.测图详情URL"
+                type="button"
+                class="tmall-detail-link"
+                @click="openTmallDetailUrl(row.测图详情URL)"
+              >
+                查看详情
+              </button>
               <small v-if="row.备注">{{ row.备注 }}</small>
             </div>
           </div>
@@ -261,7 +287,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -272,7 +298,7 @@ const props = defineProps({
     default: true,
   },
 })
-const emit = defineEmits(['update:modelValue', 'batch-updated', 'committed'])
+const emit = defineEmits(['update:modelValue', 'batch-updated', 'submit-started', 'committed'])
 
 const collapsed = ref(false)
 const loading = ref(false)
@@ -326,15 +352,17 @@ const summary = computed(() => {
 const createRows = computed(() =>
   (batch.value?.submit_result_rows || []).filter(row => row?.阶段 === '天猫上传/创建测图任务')
 )
+const submitProgress = computed(() => batch.value?.submit_progress || {})
 const hasSubmitResult = computed(() => createRows.value.length > 0)
 const effectiveStatus = computed(() => {
   const status = String(batch.value?.status || '').trim()
+  if (String(submitProgress.value?.status || '').trim() === 'running') return 'submitting'
   if (status === 'submitted' && createRows.value.some(row => String(row?.执行结果 || '').includes('失败'))) {
     return 'partial_failed'
   }
   return status
 })
-const createStartedStatuses = new Set(['submitted', 'created', 'partial_failed', 'create_failed'])
+const createStartedStatuses = new Set(['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
 const createStarted = computed(() =>
   hasSubmitResult.value || createStartedStatuses.has(effectiveStatus.value)
 )
@@ -348,6 +376,37 @@ const createSummary = computed(() => {
     succeeded: Number.isFinite(succeeded) ? succeeded : 0,
     failed: Number.isFinite(failed) ? failed : 0,
   }
+})
+const approvedSubmitStyleCount = computed(() =>
+  (batch.value?.items || []).filter(item =>
+    (item.assets || []).some(asset => asset.kind === 'ai' && asset.status === 'approved')
+  ).length
+)
+const submitProgressTotal = computed(() => {
+  const total = Number(submitProgress.value?.total || 0)
+  if (Number.isFinite(total) && total > 0) return total
+  return createSummary.value.attempted || approvedSubmitStyleCount.value || createRows.value.length
+})
+const submitProgressCompleted = computed(() => {
+  const completed = Number(submitProgress.value?.completed ?? submitProgress.value?.attempted ?? 0)
+  if (Number.isFinite(completed) && completed > 0) return Math.min(completed, submitProgressTotal.value || completed)
+  return createSummary.value.attempted || createRows.value.length || 0
+})
+const submitProgressPercent = computed(() => {
+  const total = submitProgressTotal.value
+  if (!total) return 0
+  return Math.max(0, Math.min(100, Math.round((submitProgressCompleted.value / total) * 100)))
+})
+const showSubmitProgress = computed(() =>
+  submitting.value || submitProgressTotal.value > 0 || createStarted.value
+)
+const submitProgressText = computed(() => {
+  const message = String(submitProgress.value?.message || '').trim()
+  if (message) return message
+  if (submitting.value || effectiveStatus.value === 'submitting') return '正在提交已确认图片并创建测图任务'
+  if (effectiveStatus.value === 'created') return '全部测图任务已提交'
+  if (['partial_failed', 'create_failed'].includes(effectiveStatus.value)) return '提交完成，存在失败款'
+  return '审批完成后提交到天猫后台'
 })
 const generationStageClass = computed(() => {
   if (summary.value.aiTotal > 0 || createStarted.value) return 'done'
@@ -379,6 +438,7 @@ const createStageClass = computed(() => {
   return 'pending'
 })
 const createStageLabel = computed(() => {
+  if (effectiveStatus.value === 'submitting') return `提交 ${submitProgressCompleted.value}/${submitProgressTotal.value || '?'} 款`
   if (effectiveStatus.value === 'created') return `创建成功 ${createSummary.value.succeeded} 款`
   if (effectiveStatus.value === 'partial_failed') return `部分失败 ${createSummary.value.failed} 款`
   if (effectiveStatus.value === 'create_failed') return '创建失败'
@@ -386,6 +446,7 @@ const createStageLabel = computed(() => {
   return '确认后触发'
 })
 const batchStatusLabel = computed(() => {
+  if (effectiveStatus.value === 'submitting') return '提交中'
   if (effectiveStatus.value === 'created') return '创建成功'
   if (effectiveStatus.value === 'partial_failed') return '部分失败'
   if (effectiveStatus.value === 'create_failed') return '创建失败'
@@ -411,6 +472,29 @@ watch(selectedAsset, (asset) => {
   prepareEditableAsset(asset)
 }, { immediate: true })
 
+let submitPollTimer = null
+
+function stopSubmitProgressPolling() {
+  if (!submitPollTimer) return
+  window.clearInterval(submitPollTimer)
+  submitPollTimer = null
+}
+
+function startSubmitProgressPolling() {
+  stopSubmitProgressPolling()
+  submitPollTimer = window.setInterval(() => {
+    if (!submitting.value) {
+      stopSubmitProgressPolling()
+      return
+    }
+    void reload('', { silent: true })
+  }, 1600)
+}
+
+onBeforeUnmount(() => {
+  stopSubmitProgressPolling()
+})
+
 function parseApprovalUrl(url) {
   try {
     const parsed = new URL(String(url || ''))
@@ -426,13 +510,13 @@ function parseApprovalUrl(url) {
   }
 }
 
-async function reload(preferredAssetId = '') {
+async function reload(preferredAssetId = '', options = {}) {
   const ref = approvalRef.value
   if (!ref.batchId || !ref.token) {
     error.value = '审批批次链接无效'
     return
   }
-  loading.value = true
+  if (!options.silent) loading.value = true
   error.value = ''
   try {
     const payload = await window.cs.getTmallApprovalBatch(ref.batchId, ref.token)
@@ -455,7 +539,7 @@ async function reload(preferredAssetId = '') {
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
-    loading.value = false
+    if (!options.silent) loading.value = false
   }
 }
 
@@ -573,6 +657,25 @@ async function submitApproved() {
   try {
     const saved = await saveDecisions()
     if (!saved) return
+    const total = approvedSubmitStyleCount.value || summary.value.styles || 0
+    batch.value = {
+      ...(batch.value || {}),
+      status: 'submitting',
+      submit_progress: {
+        status: 'running',
+        total,
+        completed: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        current_style: '',
+        message: '正在提交已确认图片并创建测图任务',
+      },
+    }
+    emit('batch-updated', batch.value)
+    emit('submit-started', batch.value)
+    showToast('正在提交已确认图片并创建测图任务')
+    startSubmitProgressPolling()
     const result = await window.cs.submitTmallApprovalBatch(ref.batchId, ref.token)
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
     if (result?.ok === false || result?.failed > 0) {
@@ -586,6 +689,7 @@ async function submitApproved() {
     showToast(err?.message || String(err), true)
   } finally {
     submitting.value = false
+    stopSubmitProgressPolling()
   }
 }
 
@@ -657,6 +761,12 @@ function openManualGenerate(item) {
     mainImagePath,
     referencePaths: itemReferencePaths(item, mainImagePath),
   }
+}
+
+function openTmallDetailUrl(url) {
+  const target = String(url || '').trim()
+  if (!target) return
+  window.cs.openFile(target)
 }
 
 function closeManualGenerate(force = false) {
@@ -840,6 +950,28 @@ function showToast(message, isError = false) {
 .approval-drawer.embedded .approval-body {
   min-height: 420px;
 }
+.approval-drawer.embedded .approval-head {
+  padding: 10px 14px;
+  align-items: center;
+}
+.approval-drawer.embedded .approval-meta {
+  margin-top: 0;
+}
+.approval-drawer.embedded .approval-lifecycle {
+  padding: 8px 14px;
+  gap: 8px;
+}
+.approval-drawer.embedded .approval-stage {
+  border-radius: 9px;
+  padding: 8px 10px;
+  gap: 8px;
+}
+.approval-drawer.embedded .approval-stage span:last-child {
+  margin-top: 2px;
+}
+.approval-drawer.embedded .approval-toolbar {
+  padding: 9px 14px;
+}
 .approval-drawer.collapsed {
   width: min(520px, calc(100vw - 28px));
   height: auto;
@@ -1014,6 +1146,62 @@ function showToast(message, isError = false) {
   align-items: start;
   overflow: hidden;
 }
+.approval-submit-progress {
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, .018);
+  padding: 12px 22px;
+  display: grid;
+  gap: 9px;
+}
+.approval-drawer.embedded .approval-submit-progress {
+  padding: 10px 14px;
+}
+.submit-progress-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.submit-progress-head strong,
+.submit-progress-head span {
+  display: block;
+}
+.submit-progress-head strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.submit-progress-head span {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 12px;
+}
+.submit-progress-percent {
+  color: var(--orange);
+  font-size: 13px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+.submit-progress-bar {
+  height: 8px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, .07);
+}
+.submit-progress-bar span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #f97316, #22c55e);
+  transition: width .22s ease;
+}
+.submit-progress-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  color: var(--text3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
 .approval-submit-results {
   border-bottom: 1px solid var(--border);
   background: rgba(255, 255, 255, .018);
@@ -1090,6 +1278,22 @@ function showToast(message, isError = false) {
 .submit-result-status span {
   color: var(--text);
   font-weight: 800;
+}
+.tmall-detail-link {
+  display: inline-block;
+  margin-top: 6px;
+  border: 0;
+  background: transparent;
+  color: var(--orange);
+  padding: 0;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+  text-align: left;
+  cursor: pointer;
+}
+.tmall-detail-link:hover {
+  text-decoration: underline;
 }
 .submit-result-status small {
   margin-top: 5px;

@@ -880,8 +880,10 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
   const generationCompletedRaw = toInt(live?.generation_completed_jobs) || (generationTextProgress.kind === 'completed' ? generationTextProgress.count : 0)
   const generationSubmitted = generationTotal > 0 ? Math.min(generationSubmittedRaw, generationTotal) : generationSubmittedRaw
   const generationCompleted = generationTotal > 0 ? Math.min(generationCompletedRaw, generationTotal) : generationCompletedRaw
-  const generationVisibleCount = Math.max(generationSubmitted, generationCompleted)
-  const generationPercent = generationTotal > 0 ? clampPercent((generationVisibleCount / generationTotal) * 100) : 0
+  const generationProgressTotal = generationSubmitted > 0
+    ? Math.max(generationSubmitted, generationCompleted)
+    : generationTotal
+  const generationPercent = generationProgressTotal > 0 ? clampPercent((generationCompleted / generationProgressTotal) * 100) : 0
   const generationStarted = generationTotal > 0 || normalizeKeyPart(phase) === 'tmall_ai_chain_generate' || normalizeKeyPart(phase) === 'tmall_ai_chain_tmall'
   const generationDone = generationTotal > 0 && generationCompleted >= generationTotal
   const phaseLabel = getTmallAiImageChainPhaseLabel(phase, generationStarted, generationDone, statusLabel)
@@ -915,7 +917,7 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
     buildTrack({
       id: 'tmall-ai-generate',
       title: '生图进度',
-      main: generationTotal > 0 ? `${generationVisibleCount} / ${generationTotal} 张` : (generationStarted ? '等待生图队列' : '找图完成后批量开始'),
+      main: generationProgressTotal > 0 ? `${generationCompleted} / ${generationProgressTotal} 张` : (generationStarted ? '等待生图队列' : '找图完成后批量开始'),
       percentValue: generationPercent,
       percentLabel: generationStarted ? `${generationPercent}%` : '待开始',
       caption: generationTotal > 0
@@ -953,7 +955,7 @@ function buildTmallAiImageTestChainProgress(live = {}, liveStatus = '', isRunnin
     ariaText: [phaseLabel, searchTotal > 0 ? `${searchCompleted}/${searchTotal} 款` : '', generationTotal > 0 ? `${generationCompleted}/${generationTotal} 张` : ''].filter(Boolean).join('，'),
     metaItems: buildMetaItems([
       searchTotal > 0 ? `找图 ${searchCompleted}/${searchTotal}` : '',
-      generationTotal > 0 ? `生图 ${generationVisibleCount}/${generationTotal}` : '',
+      generationProgressTotal > 0 ? `生图 ${generationCompleted}/${generationProgressTotal}` : '',
       currentStyle ? `款号 ${currentStyle}` : '',
     ]),
     tracks,

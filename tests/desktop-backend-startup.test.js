@@ -163,10 +163,21 @@ test('desktop backend startup fails before spawn when API token cannot be prepar
 })
 
 test('desktop API helper supports request timeout for shutdown probes', () => {
-  const main = readRepoFile('app/src/main.js')
+  const backendApi = readRepoFile('app/src/backendApi.js')
 
-  assert.match(main, /const timeoutMs = Math\.max\(0, Number\(options\.timeoutMs \|\| 0\)\)/)
-  assert.match(main, /if \(timeoutMs > 0\) \{\s*req\.setTimeout\(timeoutMs/)
+  assert.match(backendApi, /const timeoutMs = Math\.max\(0, Number\(options\.timeoutMs \|\| 0\)\)/)
+  assert.match(backendApi, /if \(timeoutMs > 0\) \{\s*req\.setTimeout\(timeoutMs/)
+})
+
+test('desktop API helper rejects HTTP error responses with backend detail', () => {
+  const main = readRepoFile('app/src/main.js')
+  const backendApi = readRepoFile('app/src/backendApi.js')
+
+  assert.match(main, /const \{ requestBackendApi \} = require\('\.\/backendApi'\)/)
+  assert.match(main, /function apiCall\(method, urlPath, body = null, options = \{\}\) \{\s*return requestBackendApi\(\{/)
+  assert.match(backendApi, /if \(statusCode >= 400\) \{\s*reject\(backendErrorFromResponse\(statusCode, res\.statusMessage, payload\)\)/)
+  assert.match(backendApi, /payload\.detail \|\| payload\.error \|\| payload\.message/)
+  assert.match(backendApi, /error\.statusCode = statusCode/)
 })
 
 test('desktop result data requests do not trigger backend restart readiness flow', () => {

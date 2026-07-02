@@ -14,6 +14,7 @@ const { createBackendController } = require('./backendController')
 const { createLifecycleController } = require('./lifecycleController')
 const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChrome')
 const { startDesktopServices } = require('./startupServices')
+const { requestBackendApi } = require('./backendApi')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 let apiPort = DEFAULT_API_PORT
@@ -1043,52 +1044,16 @@ async function launchChrome(customPath = '') {
 // ── HTTP helper (call FastAPI) ─────────────────────────────────────────────────
 
 function apiCall(method, urlPath, body = null, options = {}) {
-  const retries = Math.max(0, Number(options.retries || 0))
-  const retryDelayMs = Math.max(0, Number(options.retryDelayMs || 0))
-  const timeoutMs = Math.max(0, Number(options.timeoutMs || 0))
-
-  const doRequest = () => new Promise((resolve, reject) => {
-    const bodyStr = body ? JSON.stringify(body) : null
-    const opts = {
-      hostname: '127.0.0.1',
-      port: apiPort,
-      path: urlPath,
-      method,
-      headers: {
-        'Content-Type': 'application/json',
-        [API_TOKEN_HEADER]: getApiToken(),
-        ...(bodyStr ? { 'Content-Length': Buffer.byteLength(bodyStr) } : {}),
-      },
-    }
-    const req = http.request(opts, (res) => {
-      let data = ''
-      res.on('data', d => data += d)
-      res.on('end', () => {
-        try { resolve(JSON.parse(data)) } catch { resolve(data) }
-      })
-    })
-    req.on('error', reject)
-    if (timeoutMs > 0) {
-      req.setTimeout(timeoutMs, () => {
-        const error = new Error(`Request timed out after ${timeoutMs}ms`)
-        error.code = 'ETIMEDOUT'
-        req.destroy(error)
-      })
-    }
-    if (bodyStr) req.write(bodyStr)
-    req.end()
-  })
-
-  const retryableCodes = new Set(['ECONNREFUSED', 'ECONNRESET', 'EPIPE'])
-
-  if (options.ensureReady === false) {
-    return doRequest()
-  }
-
-  return backendController.runWhenReady(doRequest, {
-    retries,
-    retryDelayMs,
-    retryableCodes,
+  return requestBackendApi({
+    http,
+    port: apiPort,
+    token: getApiToken(),
+    tokenHeader: API_TOKEN_HEADER,
+    method,
+    urlPath,
+    body,
+    options,
+    runWhenReady: (request, runOptions) => backendController.runWhenReady(request, runOptions),
     describeFailure: describeApiCallFailure,
   })
 }

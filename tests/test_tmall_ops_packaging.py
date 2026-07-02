@@ -23,7 +23,7 @@ class TmallOpsPackagingTests(unittest.TestCase):
             self.assertTrue(path.is_file(), f"missing OCR runtime asset: {path}")
             self.assertGreater(path.stat().st_size, 1024, f"OCR runtime asset is unexpectedly small: {path}")
 
-    def test_packaging_upload_outputs_flat_zip_with_usage_prefixed_names(self):
+    def test_packaging_upload_outputs_style_grouped_zip_with_usage_folders(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             runtime_dir = base / "runtime"
@@ -83,11 +83,11 @@ class TmallOpsPackagingTests(unittest.TestCase):
             with zipfile.ZipFile(zip_path) as archive:
                 names = archive.namelist()
                 self.assertTrue(any(
-                    name.endswith("天猫包装图片包/01_1比1主图_01_208126140007_800x800_主图01.jpg")
+                    name.endswith("天猫包装图片包/208126140007/01_1比1主图/01_1比1主图_01_208126140007_800x800_主图01.jpg")
                     for name in names
                 ))
                 self.assertTrue(any(
-                    name.endswith("天猫包装图片包/06_PC详情_01_详情_001.jpg")
+                    name.endswith("天猫包装图片包/208126140007/04_商详页/06_PC详情_01_详情_001.jpg")
                     for name in names
                 ))
 

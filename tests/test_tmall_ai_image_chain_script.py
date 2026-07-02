@@ -204,6 +204,221 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(len(plan), 1)
         self.assertEqual(plan[0]["generated_paths"], ["/tmp/current.jpg"])
 
+    def test_selected_upload_plan_skips_previously_online_success_rows_only(self):
+        module = load_script()
+        batch = {
+            "submit_result_rows": [
+                {
+                    "阶段": "天猫上传/创建测图任务",
+                    "款号": "208326100202",
+                    "任务ID": "41716301",
+                    "执行结果": "已创建/加素材/已上线",
+                    "上线结果": "已上线",
+                    "页面回读": "total=1；status=1；testImages=5",
+                },
+                {
+                    "阶段": "天猫上传/创建测图任务",
+                    "款号": "208326108101",
+                    "任务ID": "41733207",
+                    "执行结果": "天猫上传/创建失败",
+                    "上线结果": "未上线",
+                    "页面回读": "total=1；status=-1；testImages=6",
+                },
+            ],
+            "items": [
+                {
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/success-main.jpg",
+                    "assets": [{"id": "ai-success", "kind": "ai", "path": "/tmp/success-ai.jpg", "status": "approved"}],
+                    "workflow": {"row_no": 2, "style_code": "208326100202", "item_id": "1002178235142"},
+                },
+                {
+                    "style_code": "208326108101",
+                    "item_id": "1061920756107",
+                    "origin_path": "/tmp/failed-main.jpg",
+                    "assets": [{"id": "ai-failed", "kind": "ai", "path": "/tmp/failed-ai.jpg", "status": "approved"}],
+                    "workflow": {"row_no": 3, "style_code": "208326108101", "item_id": "1061920756107"},
+                },
+            ],
+        }
+
+        plan = module.selected_upload_plan_from_approval_batch(batch)
+
+        self.assertEqual([item["workflow"]["style_code"] for item in plan], ["208326108101"])
+
+    def test_upload_approved_batch_retries_failed_styles_without_resubmitting_successes(self):
+        module = load_script()
+        upload_styles = []
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace(timeout=60)
+
+        async def fake_upload_and_create(_runner, workflow, *_args, **_kwargs):
+            upload_styles.append(workflow.style_code)
+            return {
+                "uploaded": [{"url": f"https://img.example/{workflow.style_code}.jpg"}],
+                "materials": [{"picUrl": f"https://img.example/{workflow.style_code}.jpg"}],
+                "batchPayload": {"experimentTaskId": f"task-{workflow.style_code}"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "1", "testImageCount": 1, "online": True},
+                "onlineResult": {"ok": True},
+                "error": "",
+            }
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-retry-only-failed",
+                "artifact_dir": temp_dir,
+                "run_params": {},
+                "submit_result_rows": [
+                    {
+                        "表格行号": 2,
+                        "款号": "208326100202",
+                        "商品ID": "1002178235142",
+                        "阶段": "天猫上传/创建测图任务",
+                        "任务ID": "41716301",
+                        "执行结果": "已创建/加素材/已上线",
+                        "上线结果": "已上线",
+                        "页面回读": "total=1；status=1；testImages=5",
+                    },
+                    {
+                        "表格行号": 3,
+                        "款号": "208326108101",
+                        "商品ID": "1061920756107",
+                        "阶段": "天猫上传/创建测图任务",
+                        "任务ID": "41733207",
+                        "执行结果": "天猫上传/创建失败",
+                        "上线结果": "未上线",
+                        "页面回读": "total=1；status=-1；testImages=6",
+                    },
+                ],
+                "items": [
+                    {
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "origin_path": "/tmp/success-main.jpg",
+                        "workflow": {"row_no": 2, "style_code": "208326100202", "item_id": "1002178235142"},
+                        "semir_data": {},
+                        "assets": [{"id": "ai-success", "kind": "ai", "path": "/tmp/success-ai.jpg", "status": "approved"}],
+                    },
+                    {
+                        "style_code": "208326108101",
+                        "item_id": "1061920756107",
+                        "origin_path": "/tmp/failed-main.jpg",
+                        "workflow": {"row_no": 3, "style_code": "208326108101", "item_id": "1061920756107"},
+                        "semir_data": {},
+                        "assets": [
+                            {
+                                "id": "ai-failed",
+                                "kind": "ai",
+                                "path": "/tmp/failed-ai.jpg",
+                                "status": "approved",
+                                "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                            },
+                        ],
+                    },
+                ],
+            }
+            with patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "recover_tmall_submission_by_readback", return_value=None), \
+                patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create):
+                result = asyncio.run(module.upload_approved_tmall_batch(batch))
+
+        self.assertEqual(upload_styles, ["208326108101"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["attempted"], 2)
+        self.assertEqual(result["succeeded"], 2)
+        self.assertEqual(result["failed"], 0)
+        self.assertEqual(batch["submit_summary"], {"attempted": 2, "succeeded": 2, "failed": 0})
+
+    def test_upload_approved_batch_recovers_previous_timeout_by_readback_without_upload(self):
+        module = load_script()
+        upload_styles = []
+        recovered_styles = []
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace(timeout=60)
+
+        async def fake_upload_and_create(_runner, workflow, *_args, **_kwargs):
+            upload_styles.append(workflow.style_code)
+            return {}
+
+        async def fake_recover(_runner, workflow, **kwargs):
+            recovered_styles.append((workflow.style_code, kwargs.get("reason", "")))
+            return {
+                "uploaded": [{"url": f"https://img.example/{workflow.style_code}-1.jpg"} for _index in range(5)],
+                "materials": [{"picUrl": f"https://img.example/{workflow.style_code}-1.jpg"} for _index in range(5)],
+                "batchPayload": {"experimentTaskId": f"task-{workflow.style_code}"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "1", "testImageCount": 5, "online": True},
+                "onlineResult": {"recoveredByReadback": True},
+                "batchAddWarnings": ["历史提交显示 timeout，已通过天猫后台回读纠偏，未重复上传"],
+                "error": "",
+            }
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-recover-timeout",
+                "artifact_dir": temp_dir,
+                "run_params": {},
+                "submit_result_rows": [
+                    {
+                        "表格行号": 2,
+                        "款号": "208326100202",
+                        "商品ID": "1002178235142",
+                        "阶段": "天猫上传/创建测图任务",
+                        "执行结果": "天猫上传/创建失败",
+                        "备注": "timeout",
+                    },
+                ],
+                "items": [{
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "workflow": {"row_no": 2, "style_code": "208326100202", "item_id": "1002178235142"},
+                    "semir_data": {},
+                    "assets": [
+                        {
+                            "id": "ai-1",
+                            "kind": "ai",
+                            "path": "/tmp/ai-1.jpg",
+                            "status": "approved",
+                            "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                        },
+                    ],
+                }],
+            }
+            with patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "recover_tmall_submission_by_readback", fake_recover), \
+                patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create):
+                result = asyncio.run(module.upload_approved_tmall_batch(batch))
+
+        self.assertEqual(upload_styles, [])
+        self.assertEqual(recovered_styles[0][0], "208326100202")
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["attempted"], 1)
+        self.assertEqual(result["succeeded"], 1)
+        create_rows = [row for row in result["rows"] if row.get("阶段") == "天猫上传/创建测图任务"]
+        self.assertEqual(create_rows[0]["执行结果"], "已创建/加素材/已上线")
+        self.assertIn("后台回读", create_rows[0]["备注"])
+
     def test_generate_approval_asset_for_item_accepts_product_item_id(self):
         module = load_script()
         captured = {}
@@ -387,11 +602,11 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertIn(captured["output_token"], asset["path"])
         self.assertEqual(len([item for item in batch["items"][0]["assets"] if item.get("kind") == "ai"]), 1)
 
-    def test_upload_approved_batch_marks_partial_failed_when_tmall_returns_error_with_task_id(self):
+    def test_upload_approved_batch_marks_create_failed_when_only_task_returns_error_with_task_id(self):
         module = load_script()
 
         async def fake_get_runner(*_args, **_kwargs):
-            return SimpleNamespace()
+            return SimpleNamespace(timeout=60)
 
         upload_calls = []
 
@@ -450,11 +665,11 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
                 patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create):
                 result = asyncio.run(module.upload_approved_tmall_batch(batch))
             self.assertFalse(result["ok"])
-            self.assertEqual(result["status"], "partial_failed")
+            self.assertEqual(result["status"], "create_failed")
             self.assertEqual(result["attempted"], 1)
             self.assertEqual(result["succeeded"], 0)
             self.assertEqual(result["failed"], 1)
-            self.assertEqual(batch["status"], "partial_failed")
+            self.assertEqual(batch["status"], "create_failed")
             self.assertEqual(upload_calls[0][2], "/tmp/main.jpg")
             self.assertEqual(upload_calls[0][3], ["/tmp/ai-1.jpg"])
             self.assertTrue(Path(batch["submit_result_path"]).is_file())
@@ -462,7 +677,274 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertEqual(create_rows[0]["任务ID"], "41716301")
             self.assertEqual(create_rows[0]["执行结果"], "天猫上传/创建失败")
 
-    def test_tmall_upload_creates_fresh_task_by_default_without_clearing_old_images(self):
+    def test_upload_approved_batch_does_not_count_material_only_task_as_success(self):
+        module = load_script()
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace(timeout=60)
+
+        async def fake_upload_and_create(*_args, **_kwargs):
+            return {
+                "uploaded": [{"url": "https://img.example/main.jpg"}, {"url": "https://img.example/ai.jpg"}],
+                "materials": [{"picUrl": "https://img.example/ai.jpg"}],
+                "batchPayload": {"experimentTaskId": "41716301"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "-1", "testImageCount": 1, "online": False},
+                "onlineResult": None,
+                "error": "",
+            }
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            batch = {
+                "batch_id": "batch-material-only",
+                "artifact_dir": str(artifact_dir),
+                "run_params": {},
+                "items": [{
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "detail_reference_path": "",
+                    "reference_mode": "main_only",
+                    "workflow": {
+                        "row_no": 2,
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "semir_data": {},
+                    "assets": [
+                        {"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"},
+                        {
+                            "id": "ai-1",
+                            "kind": "ai",
+                            "path": "/tmp/ai-1.jpg",
+                            "status": "approved",
+                            "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                        },
+                    ],
+                }],
+            }
+            with patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create):
+                result = asyncio.run(module.upload_approved_tmall_batch(batch))
+
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["status"], "create_failed")
+            self.assertEqual(result["succeeded"], 0)
+            self.assertEqual(result["failed"], 1)
+            create_rows = [row for row in result["rows"] if row.get("阶段") == "天猫上传/创建测图任务"]
+            self.assertEqual(create_rows[0]["执行结果"], "天猫上传/创建失败")
+            self.assertIn("未上线", create_rows[0]["备注"])
+
+    def test_upload_approved_batch_sends_dingtalk_summary_with_success_detail_urls(self):
+        module = load_script()
+        from core import notifier as core_notifier
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace(timeout=60)
+
+        async def fake_upload_and_create(_runner, workflow, *_args, **_kwargs):
+            if workflow.style_code == "208326100202":
+                return {
+                    "uploaded": [{"url": "https://img.example/main.jpg"}, {"url": "https://img.example/ai.jpg"}],
+                    "materials": [{"picUrl": "https://img.example/ai.jpg"}],
+                    "batchPayload": {"experimentTaskId": "41716301"},
+                    "readback": {"total": 1},
+                    "readbackTaskSummary": {"status": "1", "testImageCount": 5, "online": True},
+                    "onlineResult": {"ok": True},
+                    "error": "",
+                }
+            return {
+                "uploaded": [{"url": "https://img.example/main.jpg"}],
+                "materials": [],
+                "batchPayload": {"experimentTaskId": "41733207"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "-1", "testImageCount": 0, "online": False},
+                "onlineResult": None,
+                "error": "任务未上线，未开始测试",
+            }
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-notify-submit",
+                "artifact_dir": temp_dir,
+                "run_params": {"approval_notify_channel": "dingtalk"},
+                "items": [
+                    {
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "origin_path": "/tmp/main-1.jpg",
+                        "detail_reference_path": "",
+                        "reference_mode": "main_only",
+                        "workflow": {
+                            "row_no": 2,
+                            "style_code": "208326100202",
+                            "item_id": "1002178235142",
+                            "category": "长袖T恤",
+                            "gender": "中性",
+                        },
+                        "semir_data": {},
+                        "assets": [
+                            {
+                                "id": "ai-1",
+                                "kind": "ai",
+                                "path": "/tmp/ai-1.jpg",
+                                "status": "approved",
+                                "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                            },
+                        ],
+                    },
+                    {
+                        "style_code": "208326108101",
+                        "item_id": "1061920756107",
+                        "origin_path": "/tmp/main-2.jpg",
+                        "detail_reference_path": "",
+                        "reference_mode": "main_only",
+                        "workflow": {
+                            "row_no": 3,
+                            "style_code": "208326108101",
+                            "item_id": "1061920756107",
+                            "category": "长袖T恤",
+                            "gender": "中性",
+                        },
+                        "semir_data": {},
+                        "assets": [
+                            {
+                                "id": "ai-2",
+                                "kind": "ai",
+                                "path": "/tmp/ai-2.jpg",
+                                "status": "approved",
+                                "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                            },
+                        ],
+                    },
+                ],
+            }
+            send_calls = []
+
+            def fake_send(*_args, **kwargs):
+                send_calls.append(kwargs)
+
+            with patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create), \
+                patch.object(core_notifier, "send", fake_send):
+                result = asyncio.run(module.upload_approved_tmall_batch(batch))
+
+        self.assertEqual(result["status"], "partial_failed")
+        self.assertEqual(result["succeeded"], 1)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(len(send_calls), 1)
+        self.assertEqual(send_calls[0]["channel"], "dingtalk")
+        message = send_calls[0]["message"]
+        self.assertIn("尝试 2 款 / 成功 1 款 / 失败 1 款", message)
+        self.assertIn("208326100202", message)
+        self.assertIn(
+            "https://myseller.taobao.com/home.htm/material-center/material-test/common_test"
+            "?testStatus=1&testChannel=common_search&tab=all&itemId=1002178235142",
+            message,
+        )
+        self.assertIn("208326108101", message)
+
+    def test_upload_approved_batch_persists_submit_progress_while_creating_tasks(self):
+        module = load_script()
+
+        async def fake_get_runner(*_args, **_kwargs):
+            return SimpleNamespace()
+
+        async def fake_upload_and_create(*args, **_kwargs):
+            self.assertGreaterEqual(args[0].timeout, 120)
+            workflow = args[1]
+            return {
+                "uploaded": [{"url": "https://img.example/main.jpg"}, {"url": f"https://img.example/{workflow.style_code}.jpg"}],
+                "materials": [{"picUrl": f"https://img.example/{workflow.style_code}.jpg"}],
+                "batchPayload": {"experimentTaskId": f"task-{workflow.style_code}"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "1", "testImageCount": 1, "online": True},
+                "onlineResult": {"ok": True},
+                "error": "",
+            }
+
+        class Bridge:
+            def __init__(self, _cdp_url):
+                pass
+
+            def is_available(self, timeout=5):
+                return True
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            items = []
+            for index, style_code in enumerate(["208326100202", "208326108101"], start=2):
+                items.append({
+                    "style_code": style_code,
+                    "item_id": f"100217823514{index}",
+                    "origin_path": f"/tmp/{style_code}-main.jpg",
+                    "detail_reference_path": "",
+                    "reference_mode": "main_only",
+                    "workflow": {
+                        "row_no": index,
+                        "style_code": style_code,
+                        "item_id": f"100217823514{index}",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "semir_data": {},
+                    "assets": [
+                        {"id": f"origin-{index}", "kind": "origin", "path": f"/tmp/{style_code}-main.jpg"},
+                        {
+                            "id": f"ai-{index}",
+                            "kind": "ai",
+                            "path": f"/tmp/{style_code}-ai-1.jpg",
+                            "status": "approved",
+                            "generation_row": {"提示词序号": 1, "提示词字段名": "正面"},
+                        },
+                    ],
+                })
+            batch = {
+                "batch_id": "batch-progress",
+                "artifact_dir": str(artifact_dir),
+                "run_params": {},
+                "items": items,
+            }
+            snapshots = []
+
+            def capture_progress(next_batch):
+                snapshots.append(dict(next_batch.get("submit_progress") or {}))
+
+            with patch.object(module, "CDPBridge", Bridge), \
+                patch.object(module, "get_runner", fake_get_runner), \
+                patch.object(module, "upload_and_create_tmall_task", fake_upload_and_create), \
+                patch.object(module, "save_approval_batch", capture_progress):
+                result = asyncio.run(module.upload_approved_tmall_batch(batch))
+
+            self.assertTrue(result["ok"])
+            running = [item for item in snapshots if item.get("status") == "running"]
+            self.assertTrue(running)
+            self.assertEqual(running[0]["total"], 2)
+            self.assertEqual(running[0]["completed"], 0)
+            self.assertTrue(any(item.get("completed") == 1 for item in running))
+            self.assertEqual(snapshots[-1]["status"], "completed")
+            self.assertEqual(snapshots[-1]["succeeded"], 2)
+
+    def test_tmall_upload_reuses_stopped_task_and_replaces_old_images_by_default(self):
         module = load_script()
         code = module.js_call(module.TMALL_UPLOAD_CREATE_JS, {
             "style_code": "208326100202",
@@ -539,10 +1021,10 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             return {{ data: {{ result: {{ total: 0, list: [] }} }} }};
           }}
           if (request.api === 'mtop.taobao.qn.copilot.test.image.task.create') {{
-            return {{ data: {{ result: {{ taskStatusList: [{{ experimentTaskId: 99900011, source: 'common_search' }}] }} }} }};
+            throw new Error('should reuse the stopped task instead of creating a fresh one');
           }}
           if (request.api === 'mtop.taobao.qn.copilot.test.image.batch.delete') {{
-            throw new Error('should create a fresh task without clearing old material ids');
+            return {{ data: {{ ok: true }} }};
           }}
           if (request.api === 'mtop.taobao.qn.copilot.test.image.batch.add') {{
             return {{ data: {{ ok: true }} }};
@@ -583,13 +1065,81 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
 
         self.assertEqual(payload["error"], "")
-        self.assertIsNone(payload["reusedTaskId"])
-        self.assertEqual(payload["clearedMaterialIds"], [])
-        self.assertIn("mtop.taobao.qn.copilot.test.image.task.create", payload["apis"])
-        self.assertEqual(payload["deleteMaterialIds"], [])
-        self.assertEqual(payload["addPayloads"][0]["experimentTaskId"], "99900011")
+        self.assertEqual(payload["reusedTaskId"], "41716301")
+        self.assertEqual(payload["clearedMaterialIds"], ["201", "202", "203", "204", "205"])
+        self.assertNotIn("mtop.taobao.qn.copilot.test.image.task.create", payload["apis"])
+        self.assertEqual(payload["deleteMaterialIds"], ["201", "202", "203", "204", "205"])
+        self.assertEqual(payload["addPayloads"][0]["experimentTaskId"], "41716301")
         self.assertIn("new-ai.jpg", payload["addPayloads"][0]["materials"])
-        self.assertIn('"experimentTaskId":"99900011"', payload["onlinePayloads"][0]["taskStatusList"])
+        self.assertIn('"experimentTaskId":"41716301"', payload["onlinePayloads"][0]["taskStatusList"])
+
+    def test_tmall_readback_dedupes_material_id_and_image_ids_for_same_image(self):
+        module = load_script()
+        code = module.js_call(module.TMALL_SUBMISSION_READBACK_JS, {
+            "item_id": "1002178235142",
+            "expected_test_images": 1,
+            "reason": "unit-test",
+        })
+        node_script = f"""
+;(async () => {{
+  const code = {json.dumps(code, ensure_ascii=False)};
+  global.window = {{
+    lib: {{
+      mtop: {{
+        async request(request) {{
+          if (request.api !== 'mtop.taobao.qn.copilot.framework.listmodel.data.search') {{
+            throw new Error('unexpected mtop ' + request.api);
+          }}
+          return {{
+            data: {{
+              result: {{
+                total: 1,
+                list: [{{
+                  domainId: '1002178235142',
+                  columns: {{
+                    test_data: {{
+                      dataList: [{{
+                        imageTestSource: 'common_search',
+                        experimentTaskId: 41716301,
+                        testStatus: 1,
+                        originImageMetrics: {{}},
+                        testImageMetrics: {{
+                          '3:4': [{{
+                            imageId: 201,
+                            imageIds: [201],
+                            imageUrl: 'https://img.example/ai-1.jpg',
+                          }}],
+                        }},
+                      }}],
+                    }},
+                  }},
+                }}],
+              }},
+            }},
+          }};
+        }},
+      }},
+    }},
+  }};
+  const result = await eval(code);
+  if (!result.success) throw new Error(result.error || 'mocked readback failed');
+  const data = result.data[0];
+  process.stdout.write(JSON.stringify({{
+    uploaded: data.uploaded.length,
+    materials: data.materials.length,
+    summary: data.readbackTaskSummary,
+  }}));
+}})().catch((error) => {{
+  console.error(error && error.stack || error);
+  process.exit(1);
+}});
+"""
+        completed = subprocess.run(["node"], input=node_script, text=True, capture_output=True, check=True)
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(payload["uploaded"], 1)
+        self.assertEqual(payload["materials"], 1)
+        self.assertEqual(payload["summary"]["testImageCount"], 1)
 
     def test_workflow_aliases_match_user_import_template_headers(self):
         module = load_script()
@@ -1065,6 +1615,40 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(rows[0]["执行结果"], "已下载主图参考图")
         self.assertEqual(rows[1]["本地文件"], "")
         self.assertEqual(rows[1]["执行结果"], "生图失败")
+
+    def test_tmall_create_result_rows_include_material_test_detail_url(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        rows = module.result_rows_for_workflow(
+            workflow,
+            {"chosenMain": {"filename": "橱窗1.jpg"}},
+            "/tmp/main.jpg",
+            "",
+            [{
+                "提示词序号": 1,
+                "提示词字段名": "正面",
+                "完整Prompt": "prompt",
+                "执行结果": "已生成",
+            }],
+            ["/tmp/ai-1.jpg"],
+            {
+                "uploaded": [{"url": "https://img.example/main.jpg"}, {"url": "https://img.example/ai-1.jpg"}],
+                "materials": [{"picUrl": "https://img.example/ai-1.jpg"}],
+                "batchPayload": {"experimentTaskId": "41716301"},
+                "readback": {"total": 1},
+                "readbackTaskSummary": {"status": "1", "testImageCount": 5},
+                "onlineResult": {"success": True},
+            },
+            reference_mode="main_only",
+        )
+
+        create_rows = [row for row in rows if row.get("阶段") == "天猫上传/创建测图任务"]
+        self.assertEqual(
+            create_rows[0]["测图详情URL"],
+            "https://myseller.taobao.com/home.htm/material-center/material-test/common_test"
+            "?testStatus=1&testChannel=common_search&tab=all&itemId=1002178235142",
+        )
 
 
 if __name__ == "__main__":

@@ -245,7 +245,11 @@ def _run_jid(adapter_id: str, task_id: str, instance_uid: str = "") -> str:
 
 
 def _run_jids(adapter_id: str, task_id: str, instance_uid: str = "") -> list[str]:
-    return [_run_jid(adapter_id, task_id, instance_uid)]
+    task_jid = _task_jid(adapter_id, task_id)
+    instance_jid = _instance_jid(instance_uid)
+    if instance_jid and instance_jid != task_jid:
+        return [task_jid, instance_jid]
+    return [task_jid]
 
 
 def _set_live_status(jids: list[str], status: dict) -> None:
@@ -3257,6 +3261,118 @@ def _finalize_tmall_material_test_data_export_outputs(
     return table_refs or fallback_refs
 
 
+def _tmall_packaging_style_folder(row: dict) -> str:
+    return _safe_local_name(
+        row.get("款号") or row.get("输入编码") or row.get("style_code") or "未填款号",
+        "未填款号",
+    )
+
+
+def _tmall_packaging_usage_folder(row: dict) -> str:
+    category = str(row.get("__category") or "").strip()
+    usage = str(row.get("图片用途") or "").strip()
+    filename = str(row.get("__package_filename") or row.get("文件名") or "").strip()
+    haystack = f"{category} {usage} {filename}"
+    if category in {"main_1x1", "micro_1x1"} or "1:1" in usage or "1比1" in filename:
+        return "01_1比1主图"
+    if category in {"main_3x4", "micro_3x4"} or "3:4" in usage or "3比4" in filename:
+        return "02_3比4主图"
+    if category == "vertical" or "商品竖图" in haystack or "竖图" in haystack:
+        return "03_商品竖图"
+    if category == "pc_detail" or any(token in haystack for token in ("PC详情", "商详", "详情")):
+        return "04_商详页"
+    return "99_未分类"
+
+
+def _finalize_tmall_packaging_upload_outputs(
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+    output_root, target_root, exported_refs = _semir_output_roots(runtime_dir, exported_files, run_params)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"天猫包装图片包_{timestamp}",
+        f"天猫包装图片包_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows: list[tuple[dict, Path]] = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    zip_path = None
+    if successful_rows:
+        seen_assets: set[tuple[str, str, str]] = set()
+        for row, local_path in successful_rows:
+            style_folder = _tmall_packaging_style_folder(row)
+            usage_folder = _tmall_packaging_usage_folder(row)
+            clean_filename = _safe_local_name(
+                row.get("__package_filename") or row.get("文件名") or local_path.name,
+                local_path.name,
+            )
+            source_key = str(row.get("云盘路径") or row.get("原文件名") or clean_filename)
+            dedupe_key = (style_folder, usage_folder, source_key)
+            if dedupe_key in seen_assets:
+                continue
+            seen_assets.add(dedupe_key)
+            target = package_root / style_folder / usage_folder / clean_filename
+            _copy_file_to_unique_target(local_path, target)
+
+        zip_output_root = target_root or output_root
+        zip_output_root.mkdir(parents=True, exist_ok=True)
+        zip_path = _ensure_unique_local_path(zip_output_root / f"{package_root.name}.zip")
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for file_path in package_root.rglob("*"):
+                if not file_path.is_file():
+                    continue
+                archive.write(file_path, arcname=str(file_path.relative_to(package_root.parent)))
+        if log:
+            log(f"天猫包装图片包已整理：{zip_path} ({len(seen_assets)} files)")
+
+    final_refs = [*exported_refs]
+    if zip_path:
+        final_refs.insert(0, str(zip_path))
+
+    if target_root:
+        external_refs: list[str] = []
+        if successful_rows and package_root.exists():
+            external_dir = _ensure_unique_local_dir(target_root / package_root.name)
+            shutil.copytree(package_root, external_dir)
+            if log:
+                log(f"天猫包装图片包已复制到导出目录：{external_dir}")
+            if zip_path and zip_path.exists() and _is_within_directory(zip_path, target_root):
+                external_refs.append(str(zip_path))
+            elif zip_path and zip_path.exists():
+                external_refs.append(str(_copy_file_to_unique_target(zip_path, target_root / zip_path.name)))
+
+        for file_path in exported_files or []:
+            source = Path(str(file_path or "")).expanduser()
+            if not source.is_file():
+                continue
+            if _is_within_directory(source, target_root):
+                external_refs.append(str(source))
+            else:
+                external_refs.append(str(_copy_file_to_unique_target(source, target_root / source.name)))
+
+        if external_refs:
+            final_refs = external_refs
+
+    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+    return final_refs
+
+
 def _finalize_tmall_ops_assistant_outputs(
     task_id: str,
     data_rows: list,
@@ -3267,7 +3383,7 @@ def _finalize_tmall_ops_assistant_outputs(
     log,
 ) -> list[str]:
     if task_id == "tmall_packaging_upload":
-        return _finalize_semir_tmall_material_match_buy_outputs(
+        return _finalize_tmall_packaging_upload_outputs(
             data_rows=data_rows,
             runtime_files=runtime_files,
             exported_files=exported_files,
@@ -5264,7 +5380,11 @@ def list_tasks():
 @app.get("/tasks/active")
 def active_tasks():
     tasks = []
-    for jid, live in sorted(_run_status.items()):
+    seen_controls = set()
+    for jid, live in sorted(
+        _run_status.items(),
+        key=lambda item: (str(item[0]).startswith("instance::"), str(item[0])),
+    ):
         live_snapshot = dict(live or {})
         if live_snapshot.get("status") not in ACTIVE_LIVE_STATUSES:
             continue
@@ -5273,6 +5393,11 @@ def active_tasks():
         has_live_task = bool(task and not task.done())
         if not has_live_task and not _task_lock(jid).locked():
             continue
+        if control:
+            control_key = id(control)
+            if control_key in seen_controls:
+                continue
+            seen_controls.add(control_key)
         adapter_id = str(live_snapshot.get("adapter_id") or "")
         task_id = str(live_snapshot.get("task_id") or "")
         if not adapter_id and "::" in jid:
@@ -5878,7 +6003,8 @@ async def _run_task_schedule(schedule_uid: str):
 async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
     instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
     jid = _run_jid(adapter_id, task_id, instance_uid)
-    lock = _task_lock(jid)
+    control_jids = _run_jids(adapter_id, task_id, instance_uid)
+    lock = _task_lock(_task_jid(adapter_id, task_id))
     try:
         async with lock:
             await _execute_task(adapter_id, task_id, params, runtime_options, run_control=run_control)
@@ -5900,7 +6026,9 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
         _run_logs.setdefault(jid, []).append(f"[{adapter_id}/{task_id}] FATAL: {exc}")
         logger.exception("Background task crashed before cleanup: %s", jid)
     finally:
-        _run_controls.pop(jid, None)
+        for control_jid in control_jids:
+            if _run_controls.get(control_jid) is run_control:
+                _run_controls.pop(control_jid, None)
 
 
 async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
@@ -5913,8 +6041,8 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
 
     run_params = dict(params or {})
     instance_uid = str(run_params.get("__task_instance_uid") or "").strip()
-    jid = _run_jid(adapter_id, task_id, instance_uid)
-    if _task_is_active(jid):
+    control_jids = _run_jids(adapter_id, task_id, instance_uid)
+    if any(_task_is_active(control_jid) for control_jid in control_jids):
         raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
 
     run_control = _build_run_control()
@@ -5928,7 +6056,8 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
         )
     )
     run_control['task'] = task_handle
-    _run_controls[jid] = run_control
+    for control_jid in control_jids:
+        _run_controls[control_jid] = run_control
     return {"ok": True, "message": "Task started in background"}
 
 

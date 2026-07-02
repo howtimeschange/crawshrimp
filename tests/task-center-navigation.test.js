@@ -2,6 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
+function functionBlock(source, name) {
+  const match = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{([\\s\\S]*?)\\n\\}`))
+  assert.ok(match, `missing function ${name}`)
+  return match[1]
+}
+
 test('App navigation replaces market with task center', () => {
   const app = fs.readFileSync('app/src/renderer/App.vue', 'utf8')
   assert.match(app, /label: '任务中心'/)
@@ -184,4 +190,52 @@ test('Embedded Tmall approval board loads its batch on first render', () => {
   assert.match(drawer, /\{ immediate: true \}/)
   assert.match(drawer, /if \(open\) reload\(\)/)
   assert.match(runner, /<TmallAiApprovalDrawer[\s\S]*:model-value="true"[\s\S]*embedded/)
+})
+
+test('Tmall AI image runner avoids duplicate step titles under numbered tabs', () => {
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(runner, /<header v-if="!isTmallAiImageChainTask" class="runner-header">/)
+  assert.match(runner, /\.ai-chain-tab\s*\{[^}]*align-items:\s*center;/s)
+  assert.match(runner, /\.ai-chain-tab-index\s*\{[^}]*align-self:\s*center;/s)
+  assert.doesNotMatch(runner, /v-if="isTmallAiImageChainTask" class="ai-chain-panel-head"/)
+  assert.doesNotMatch(runner, /<div class="ai-chain-panel-head">[\s\S]*实际测图任务创建结果/)
+})
+
+test('Tmall approval submit shows progress while backend creates test tasks', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(drawer, /class="approval-submit-progress"/)
+  assert.match(drawer, /submitProgressPercent/)
+  assert.match(drawer, /startSubmitProgressPolling/)
+  assert.match(drawer, /正在提交已确认图片并创建测图任务/)
+  assert.match(runner, /class="ai-chain-submit-progress"/)
+  assert.match(runner, /aiChainSubmitProgressPercent/)
+})
+
+test('Tmall AI image create results expose compact detail links', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  for (const source of [drawer, runner]) {
+    assert.match(source, /row\.测图详情URL/)
+    assert.match(source, /查看详情/)
+    assert.match(source, /openTmallDetailUrl/)
+    assert.doesNotMatch(source, /\{\{\s*row\.测图详情URL\s*\}\}/)
+  }
+})
+
+test('Tmall AI image tabs only jump to create when submit starts', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  const batchUpdated = functionBlock(runner, 'handleApprovalBatchUpdated')
+  const submitStarted = functionBlock(runner, 'handleApprovalSubmitStarted')
+  const committed = functionBlock(runner, 'handleApprovalCommitted')
+
+  assert.match(drawer, /submit-started/)
+  assert.match(runner, /@submit-started="handleApprovalSubmitStarted"/)
+  assert.doesNotMatch(batchUpdated, /aiChainActiveStep\.value\s*=\s*'create'/)
+  assert.match(submitStarted, /aiChainActiveStep\.value\s*=\s*'create'/)
+  assert.doesNotMatch(committed, /aiChainActiveStep\.value\s*=\s*'create'/)
 })

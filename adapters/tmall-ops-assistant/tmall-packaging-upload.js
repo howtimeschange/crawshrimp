@@ -30,6 +30,14 @@
   const UPLOAD_INPUT_ID = 'crawshrimp-tmall-packaging-upload-input'
   const UPLOAD_INPUT_SELECTOR = `#${UPLOAD_INPUT_ID}`
   const PICTURE_CENTER_UPLOAD_ENDPOINT = 'https://stream-upload.taobao.com/api/upload.api'
+  const TMALL_PAGE_WAIT_MS = Math.max(3000, Number(params.tmall_page_wait_ms || 3000) || 3000)
+  const TMALL_PUBLISH_WAIT_MS = Math.max(8000, Number(params.tmall_publish_wait_ms || 8000) || 8000)
+  const TMALL_PUBLISH_CONFIRM_WAIT_MS = Math.max(10000, Number(params.tmall_publish_confirm_wait_ms || 10000) || 10000)
+  const TMALL_SPEED_LIMIT_COOLDOWN_MS = Math.max(60000, Number(params.tmall_speed_limit_cooldown_ms || 90000) || 90000)
+  const TMALL_UPLOAD_BETWEEN_FILES_MS = Math.max(0, Number(params.tmall_upload_between_files_ms ?? 0) || 0)
+  const TMALL_SUBMIT_MODE = compact(params.tmall_submit_mode || 'dom').toLowerCase()
+  const TMALL_ALLOW_API_SUBMIT_FALLBACK = params.tmall_allow_api_submit_fallback === true || TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first'
+  const TMALL_ALLOW_API_CONFIRM_FALLBACK = params.tmall_allow_api_confirm_fallback === true
 
   const CATEGORY_ORDER = [
     'main_1x1',
@@ -54,6 +62,14 @@
     micro_3x4: '04_3比4微详情',
     vertical: '05_商品竖图',
     pc_detail: '06_PC详情',
+  }
+  const DOWNLOAD_PACKAGE_FOLDER_LABELS = {
+    main_1x1: '01_1比1主图',
+    micro_1x1: '01_1比1主图',
+    main_3x4: '02_3比4主图',
+    micro_3x4: '02_3比4主图',
+    vertical: '03_商品竖图',
+    pc_detail: '04_商详页',
   }
   const REQUIRED_COUNTS = {
     main_1x1: 2,
@@ -343,6 +359,7 @@
       '上传结果': '',
       '天猫图片URL': '',
       '天猫货号': '',
+      '天猫商家编码': '',
       '页面校验': '',
       '执行结果': '参数错误',
       '备注': note || '款号或天猫商品ID缺失',
@@ -1014,6 +1031,23 @@
         sleep_ms: sleepMs,
         shared: newShared,
       },
+    }
+  }
+
+  function waitMs(ms) {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+  }
+
+  function tmallTimingConfig() {
+    return {
+      pageWaitMs: TMALL_PAGE_WAIT_MS,
+      publishWaitMs: TMALL_PUBLISH_WAIT_MS,
+      publishConfirmWaitMs: TMALL_PUBLISH_CONFIRM_WAIT_MS,
+      speedLimitCooldownMs: TMALL_SPEED_LIMIT_COOLDOWN_MS,
+      uploadBetweenFilesMs: TMALL_UPLOAD_BETWEEN_FILES_MS,
+      submitMode: TMALL_SUBMIT_MODE,
+      allowApiSubmitFallback: TMALL_ALLOW_API_SUBMIT_FALLBACK,
+      allowApiConfirmFallback: TMALL_ALLOW_API_CONFIRM_FALLBACK,
     }
   }
 
@@ -1914,21 +1948,85 @@
   function clickReturnOldDescriptionSwitch() {
     const element = findReturnOldDescriptionSwitch()
     if (!element) return false
-    try {
-      element.click()
-      return true
-    } catch (error) {
-      return false
+    return smartClick(element)
+  }
+
+  function extractFieldTextValue(value) {
+    if (value == null) return ''
+    if (typeof value === 'string' || typeof value === 'number') return compact(value)
+    if (Array.isArray(value)) {
+      for (const item of value) {
+        const text = extractFieldTextValue(item)
+        if (text) return text
+      }
+      return ''
     }
+    if (typeof value === 'object') {
+      const direct = value.text ?? value.value ?? value.label ?? value.name
+      if (direct != null && typeof direct !== 'object') return compact(direct)
+      if (direct != null) {
+        const text = extractFieldTextValue(direct)
+        if (text) return text
+      }
+    }
+    return ''
+  }
+
+  function extractComponentValueText(names = []) {
+    for (const name of names) {
+      const text = extractFieldTextValue(getComponentValue(name))
+      if (text) return text
+    }
+    return ''
+  }
+
+  function extractFormModelValueText(names = []) {
+    try {
+      const state = getSellState()
+      const models = state?.engine && typeof state.engine.getModels === 'function'
+        ? state.engine.getModels()
+        : null
+      const formValues = models?.formValues || {}
+      for (const name of names) {
+        const text = extractFieldTextValue(formValues?.[name])
+        if (text) return text
+      }
+    } catch (error) {
+      return ''
+    }
+    return ''
+  }
+
+  function extractInputValueBySelectors(selectors = []) {
+    const docs = typeof getAccessibleDocuments === 'function'
+      ? getAccessibleDocuments()
+      : [document]
+    for (const doc of docs) {
+      for (const selector of selectors) {
+        const element = doc?.querySelector?.(selector) ||
+          Array.from(doc?.querySelectorAll?.(selector) || [])[0]
+        const text = extractFieldTextValue(element?.value ?? element?.textContent)
+        if (text) return text
+      }
+    }
+    return ''
+  }
+
+  function extractItemPropCodeFromTmallState() {
+    const props = getComponentValue('itemProp') || {}
+    const direct = props?.['p-13021751'] || props?.['p-20431815']
+    return extractFieldTextValue(direct)
   }
 
   function extractMerchantCodeFromTmallState() {
-    const props = getComponentValue('itemProp') || {}
-    const direct = props?.['p-13021751'] || props?.['p-20431815']
-    if (direct?.text || direct?.value) return compact(direct.text || direct.value)
-    const inputs = Array.from(document.querySelectorAll('input'))
-    const values = inputs.map(input => compact(input.value)).filter(Boolean)
-    return values.find(value => /^\d{8,}[A-Za-z0-9-]*$/.test(value)) || ''
+    return extractComponentValueText(['outerId']) ||
+      extractFormModelValueText(['outerId']) ||
+      extractInputValueBySelectors([
+        '#sell-field-outerId input',
+        '#struct-outerId input',
+        'input[name="outerId"]',
+        '[id*="outerId"] input',
+      ])
   }
 
   function extractTmallStatus(job = {}) {
@@ -1952,13 +2050,15 @@
       })
     })
     const merchantCode = extractMerchantCodeFromTmallState()
+    const itemPropCode = extractItemPropCodeFromTmallState()
     return {
       url: location.href,
       title: document.title,
       itemId: normalizeItemId(location.href) || job.item_id || '',
       merchantCode,
+      itemPropCode,
       styleCode: job.style_code || '',
-      styleMatched: !job.style_code || !merchantCode || merchantCode === job.style_code,
+      styleMatched: !job.style_code || !merchantCode || merchantCodeMatchesStyle(merchantCode, job.style_code),
       validationMessages,
       hasReturnOldDescription: hasReturnOldDescriptionSwitch(),
       ready: !!getSellState() && typeof getComponentValue('mainImagesGroup') !== 'undefined',
@@ -1977,6 +2077,33 @@
       .join('\n'))
   }
 
+  function detectTmallSpeedLimitWarning(text = bodyText()) {
+    return /操作速度太快|稍等一会儿再试|访问过于频繁|请求过于频繁/.test(text)
+  }
+
+  function detectTmallCaptchaWarning(text = bodyText()) {
+    return /验证码|安全验证|滑块验证|请完成验证/.test(text)
+  }
+
+  function clickSpeedLimitConfirmIfPresent() {
+    const roots = getAccessibleDocuments()
+      .flatMap(doc => visibleDialogRoots(doc))
+      .filter(root => /操作速度太快|稍等一会儿再试|访问过于频繁|请求过于频繁/.test(elementText(root)))
+    for (const root of roots) {
+      const element = findVisibleActionByText(['确定', '确认'], {
+        root,
+        allowContains: false,
+        maxTextLength: 8,
+        preferRight: true,
+        exclude: ['返回修改', '取消', '关闭'],
+      })
+      if (smartClick(element)) {
+        return { ok: true, text: elementText(element) || '确定' }
+      }
+    }
+    return { ok: false, text: '' }
+  }
+
   function extractPublishStatus(job = {}) {
     const status = extractTmallStatus(job)
     const text = bodyText()
@@ -1990,6 +2117,9 @@
     const blockingMessages = [...status.validationMessages]
     if (/必填项未填|存在错误|请完善|请填写|不能为空/.test(text) && !blockingMessages.length) {
       blockingMessages.push('页面提示存在必填项或校验错误')
+    }
+    if (/类目为空或不存在/.test(text) && !blockingMessages.includes('类目为空或不存在')) {
+      blockingMessages.push('类目为空或不存在')
     }
     return {
       ...status,
@@ -2019,9 +2149,41 @@
   }
 
   function clickPublishConfirmIfPresent() {
-    const confirm = clickDialogConfirm(['确认', '确定', '继续发布', '提交', '发布'])
+    const confirm = clickDialogConfirm(['确认提交', '确认', '确定', '继续发布', '提交', '发布'])
     if (confirm.ok) return confirm
     return { ok: false, text: '' }
+  }
+
+  function isTmallSubmitSuccessPage() {
+    return /\/success\.htm/i.test(location.href) || /商品提交成功/.test(bodyText())
+  }
+
+  function findTmallSuccessEditElement() {
+    return findVisibleActionByText(['编辑商品'], {
+      allowContains: false,
+      maxTextLength: 8,
+      preferRight: true,
+      exclude: ['查看商品', '继续发布'],
+    })
+  }
+
+  function reenterTmallEditorFromSuccess(job = {}, state = shared) {
+    const itemId = job.item_id || normalizeItemId(location.href)
+    const nextShared = {
+      ...state,
+      reopened_after_pc_publish: true,
+      tmall_wait_attempts: 0,
+      current_store: '从成功页进入编辑商品',
+    }
+    const editElement = findTmallSuccessEditElement()
+    const href = editElement?.href || (itemId
+      ? `https://upload.taobao.com/auction/publish/edit.htm?item_num_id=${encodeURIComponent(itemId)}&auto=false`
+      : `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`)
+    try {
+      // Assigning location keeps navigation in the current tab; clicking the success-page link opens a new tab.
+      location.href = href
+    } catch (error) {}
+    return nextPhase('wait_reopened_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
   }
 
   function findMobileDetailEditButton() {
@@ -3238,6 +3400,41 @@
     return models.formValues && typeof models.formValues === 'object' ? models.formValues : {}
   }
 
+  function firstScalarValue(value, seen = new Set()) {
+    if (value == null || value === '') return ''
+    if (typeof value === 'number' || typeof value === 'bigint') return String(value)
+    if (typeof value === 'string') return compact(value)
+    if (typeof value !== 'object' || seen.has(value)) return ''
+    seen.add(value)
+    if (Array.isArray(value)) {
+      for (let index = value.length - 1; index >= 0; index -= 1) {
+        const found = firstScalarValue(value[index], seen)
+        if (found) return found
+      }
+      return ''
+    }
+    for (const key of ['submitId', 'catId', 'categoryId', 'cid', 'id', 'value']) {
+      const found = firstScalarValue(value[key], seen)
+      if (found) return found
+    }
+    return ''
+  }
+
+  function resolveTmallCatId(globalValue = getTmallGlobal(), formValues = getTmallFormValues()) {
+    const global = globalValue && typeof globalValue === 'object' ? globalValue : {}
+    const form = formValues && typeof formValues === 'object' ? formValues : {}
+    return compact(
+      global.catId ||
+      global.categoryId ||
+      global.cid ||
+      firstScalarValue(form.catId) ||
+      firstScalarValue(form.categoryId) ||
+      firstScalarValue(form.cid) ||
+      firstScalarValue(form.category?.categorySelect) ||
+      firstScalarValue(form.category)
+    )
+  }
+
   function jsonClone(value) {
     if (value == null) return value
     try {
@@ -3261,6 +3458,7 @@
   function buildTmallSubmitPayload(formValues = getTmallFormValues(), globalValue = getTmallGlobal(), options = {}) {
     const global = globalValue && typeof globalValue === 'object' ? globalValue : {}
     const itemId = normalizeItemId(global.id || global.itemId || global.requestItemId || options.itemId || location.href)
+    const catId = resolveTmallCatId(global, formValues)
     const payload = {
       isLightCombine: global.isLightCombine,
       isSetsCombine: global.isSetsCombine,
@@ -3268,7 +3466,7 @@
       tmSpuPublishType: global.tmSpuPublishType,
       isUnBondedGift: global.isUnBondedGift,
       spu_qf_param: global.spu_qf_param,
-      catId: global.catId,
+      catId,
       itemId,
       submitUrlDataKey: global.scUrlDataComp || global.mergePublishUrlKey,
       roleType: global.roleType,
@@ -3401,6 +3599,14 @@
     }
 
     const payload = buildTmallSubmitPayload(getTmallFormValues(), getTmallGlobal(), options)
+    if (!compact(payload.catId)) {
+      return {
+        ok: false,
+        method: 'api',
+        reason: '发布页未读取到商品类目 catId，已阻止提交发布，避免天猫返回“类目为空或不存在”',
+        payload,
+      }
+    }
     const direct = await postTmallForm('submit.htm', payload, options.timeoutMs || 15000)
     if (direct.ok || direct.successful) {
       return {
@@ -3422,11 +3628,11 @@
     const candidates = ['riskWarning', 'feedbackSubmit_catErrorWarning', 'fakeCredit', 'skuCheckDialog', 'knivesCommitment']
     for (const name of candidates) {
       const engine = getTmallEngine()
-      let visible = false
+      let props = {}
       try {
-        visible = !!engine?.getComponent?.(name)?.getProps?.()?.visible
+        props = engine?.getComponent?.(name)?.getProps?.() || {}
       } catch (error) {}
-      if (!visible) continue
+      if (!props.visible || props.vis === false || props.loading === true) continue
       const ok = emitComponentEvent(name, 'ok')
       if (ok.ok) return { ...ok, note: `已通过天猫确认 API 处理 ${name}` }
       const upper = emitComponentEvent(name, 'oK')
@@ -4104,7 +4310,8 @@
   function buildOutputStatusRows(rows, tmallStatus, note) {
     return (Array.isArray(rows) ? rows : []).map(row => ({
       ...row,
-      '天猫货号': tmallStatus?.merchantCode || '',
+      '天猫货号': tmallStatus?.itemPropCode || '',
+      '天猫商家编码': tmallStatus?.merchantCode || '',
       '页面校验': (tmallStatus?.validationMessages || []).join('；'),
       '备注': compact([row['备注'], note].filter(Boolean).join('；')),
     }))
@@ -4218,6 +4425,8 @@
       buildAnchoredPcDetailHtml,
       buildTmallComponentValues,
       buildTmallSubmitPayload,
+      resolveTmallCatId,
+      DOWNLOAD_PACKAGE_FOLDER_LABELS,
       extractPcDetailUrlsFromModules,
       extractPcDetailUrlsFromHtml,
       pcDetailUrlsFromSource,
@@ -4232,6 +4441,7 @@
       shouldAllowLegacyCountPcDetailReplace,
       finalizeRows,
       mobileEditorSignals,
+      tmallTimingConfig,
     })
   }
 
@@ -4432,11 +4642,11 @@
       const targetUrl = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
       if (!location.href.startsWith(TMALL_PUBLISH_URL)) {
         location.href = targetUrl
-        return nextPhase('wait_tmall_ready', 2500, { ...shared, tmall_wait_attempts: 0 })
+        return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, { ...shared, tmall_wait_attempts: 0 })
       }
       if (!location.href.includes(`id=${itemId}`)) {
         location.href = targetUrl
-        return nextPhase('wait_tmall_ready', 2500, { ...shared, tmall_wait_attempts: 0 })
+        return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, { ...shared, tmall_wait_attempts: 0 })
       }
       return nextPhase('wait_tmall_ready', 0, shared)
     }
@@ -4447,7 +4657,7 @@
       if (!status.ready) {
         const attempts = Number(shared.tmall_wait_attempts || 0)
         if (attempts < 30) {
-          return nextPhase('wait_tmall_ready', 1000, {
+          return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
             ...shared,
             tmall_wait_attempts: attempts + 1,
             current_store: `等待天猫编辑页 ${attempts + 1}/30`,
@@ -4456,22 +4666,30 @@
         const rows = buildOutputStatusRows(shared.current_result_rows, status, '天猫编辑页未就绪')
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
-      if (status.hasReturnOldDescription) {
+      const legacyPcDetailHtml = getLegacyPcDetailHtml()
+      const returnOldSwitch = findReturnOldDescriptionSwitch()
+      if (returnOldSwitch && !legacyPcDetailHtml) {
         const attempts = Number(shared.legacy_switch_attempts || 0)
-        if (attempts < 3 && clickReturnOldDescriptionSwitch()) {
-          return nextPhase('wait_tmall_ready', 2500, {
+        if (attempts < 5) {
+          const nextShared = {
             ...shared,
             legacy_switch_attempts: attempts + 1,
-            current_store: `切回旧版图文描述 ${attempts + 1}/3`,
-          })
+            current_store: `切回旧版图文描述 ${attempts + 1}/5`,
+          }
+          const cdpClick = cdpClickElement(returnOldSwitch, 'wait_tmall_ready', 2500, nextShared)
+          if (cdpClick) return cdpClick
+          if (clickReturnOldDescriptionSwitch()) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
         }
+        return failCurrentJob('检测到新版商详页，但未能切回“旧版图文描述”，已阻止继续写入和发布', '预检阻止')
       }
       if (job.block_on_style_mismatch && status.merchantCode && job.style_code && !merchantCodeMatchesStyle(status.merchantCode, job.style_code)) {
         const rows = buildOutputStatusRows(
           shared.current_result_rows,
           status,
-          `已阻止上传：页面货号 ${status.merchantCode} 与云盘款号 ${job.style_code} 不一致`,
-        ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': row['执行结果'] || '货号不一致' })
+          `已阻止上传：页面商家编码 ${status.merchantCode} 与云盘款号 ${job.style_code} 不一致`,
+        ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': row['执行结果'] || '商家编码不一致' })
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
       if (hasDownloadedPcDetailRows(shared.current_result_rows)) {
@@ -4512,7 +4730,7 @@
       const job = shared.current_job || {}
       const status = extractTmallStatus(job)
       if (!status.ready) {
-        return nextPhase('wait_tmall_ready', 1000, {
+        return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
           ...shared,
           tmall_status: status,
           current_store: '等待天猫编辑页恢复后再OCR',
@@ -4627,6 +4845,9 @@
             '备注': compact([row['备注'], String(error?.message || error)].filter(Boolean).join('；')),
           })
         }
+        if (TMALL_UPLOAD_BETWEEN_FILES_MS > 0 && index < downloaded.length - 1) {
+          await waitMs(TMALL_UPLOAD_BETWEEN_FILES_MS)
+        }
       }
 
       const uploadedByPath = new Map(uploadedRows.map(row => [row['本地文件'], row]))
@@ -4717,7 +4938,7 @@
             applied_components: applied,
           })
         }
-        return nextPhase('submit_pc_publish', 800, {
+        return nextPhase('submit_pc_publish', TMALL_PAGE_WAIT_MS, {
           ...shared,
           current_result_rows: rows,
           tmall_status_after_apply: afterStatus,
@@ -4741,25 +4962,58 @@
 
     if (phase === 'submit_pc_publish' || phase === 'submit_final_publish') {
       const stage = phase === 'submit_final_publish' ? 'final' : 'pc'
-      const apiSubmit = await submitTmallPublishByApi({
-        itemId: shared.current_job?.item_id || '',
-        timeoutMs: 15000,
-        forceHttpPost: stage === 'final',
-      })
-      if (apiSubmit.ok) {
-        return nextPhase('wait_publish_result', 1500, {
+      if (TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first') {
+        const apiSubmit = await submitTmallPublishByApi({
+          itemId: shared.current_job?.item_id || '',
+          timeoutMs: 15000,
+          forceHttpPost: stage === 'final',
+        })
+        if (apiSubmit.ok) {
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
+            ...shared,
+            publish_stage: stage,
+            submit_click_attempts: 0,
+            publish_wait_attempts: 0,
+            last_submit_method: apiSubmit.method,
+            current_store: stage === 'pc'
+              ? `等待PC端API提交发布结果：${apiSubmit.method}`
+              : `等待最终API提交发布结果：${apiSubmit.method}`,
+          })
+        }
+      }
+
+      const clicked = clickSubmitPublishButton()
+      if (clicked.ok) {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           publish_stage: stage,
           submit_click_attempts: 0,
           publish_wait_attempts: 0,
-          last_submit_method: apiSubmit.method,
-          current_store: stage === 'pc'
-            ? `等待PC端API提交发布结果：${apiSubmit.method}`
-            : `等待最终API提交发布结果：${apiSubmit.method}`,
+          last_submit_method: 'dom_click',
+          current_store: stage === 'pc' ? '等待PC端DOM提交发布结果' : '等待最终DOM提交发布结果',
         })
       }
 
-      const clicked = clickSubmitPublishButton()
+      if (TMALL_ALLOW_API_SUBMIT_FALLBACK) {
+        const apiSubmit = await submitTmallPublishByApi({
+          itemId: shared.current_job?.item_id || '',
+          timeoutMs: 15000,
+          forceHttpPost: stage === 'final',
+        })
+        if (apiSubmit.ok) {
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
+            ...shared,
+            publish_stage: stage,
+            submit_click_attempts: 0,
+            publish_wait_attempts: 0,
+            last_submit_method: apiSubmit.method,
+            current_store: stage === 'pc'
+              ? `等待PC端API提交发布结果：${apiSubmit.method}`
+              : `等待最终API提交发布结果：${apiSubmit.method}`,
+          })
+        }
+      }
+
       if (!clicked.ok) {
         const attempts = Number(shared.submit_click_attempts || 0)
         if (attempts < 6) {
@@ -4771,24 +5025,31 @@
             current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布按钮重试 ${attempts + 1}/6`,
           })
         }
-        return failCurrentJob(`API提交失败：${apiSubmit.reason || '未知原因'}；且未找到${stage === 'pc' ? 'PC端' : '最终'}提交发布按钮`, '发布失败')
+        return failCurrentJob(`未找到${stage === 'pc' ? 'PC端' : '最终'}提交发布按钮，未执行API提交`, '发布失败')
       }
-      return nextPhase('wait_publish_result', 1500, {
-        ...shared,
-        publish_stage: stage,
-        submit_click_attempts: 0,
-        publish_wait_attempts: 0,
-        last_submit_method: 'dom_click_fallback',
-        current_store: stage === 'pc' ? '等待PC端提交发布结果' : '等待最终提交发布结果',
-      })
     }
 
     if (phase === 'wait_publish_result') {
       const stage = shared.publish_stage || 'pc'
       const publishStatus = extractPublishStatus(shared.current_job || {})
+      const publishText = compact([bodyText(), publishStatus.dialogText].filter(Boolean).join(' '))
+      if (detectTmallCaptchaWarning(publishText)) {
+        return failCurrentJob(
+          `${stage === 'pc' ? 'PC端' : '最终'}提交发布触发淘宝安全验证/验证码，已停止自动重试，请人工处理后再运行`,
+          '发布失败',
+        )
+      }
+      if (detectTmallSpeedLimitWarning(publishText)) {
+        const speedConfirm = clickSpeedLimitConfirmIfPresent()
+        return nextPhase('wait_publish_result', TMALL_SPEED_LIMIT_COOLDOWN_MS, {
+          ...shared,
+          publish_speed_limit_count: Number(shared.publish_speed_limit_count || 0) + 1,
+          current_store: `${stage === 'pc' ? 'PC端' : '最终'}检测到淘宝操作频率限制，冷却 ${Math.round(TMALL_SPEED_LIMIT_COOLDOWN_MS / 1000)} 秒${speedConfirm.ok ? '并关闭提示' : ''}`,
+        })
+      }
       if (publishStatus.success) {
         if (stage === 'pc') {
-          return nextPhase('reopen_after_pc_publish', 1200, {
+          return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
             ...shared,
             pc_publish_note: 'PC端详情已提交发布',
             publish_wait_attempts: 0,
@@ -4807,23 +5068,25 @@
           final_publish_status: publishStatus,
         })
       }
-      const apiConfirm = confirmPublishByApiIfPresent()
-      if (apiConfirm.ok) {
-        return nextPhase('wait_publish_result', 1500, {
-          ...shared,
-          publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
-          last_confirm_method: apiConfirm.method,
-          current_store: `${stage === 'pc' ? 'PC端' : '最终'}API确认：${apiConfirm.component || ''}`,
-        })
-      }
       const confirm = clickPublishConfirmIfPresent()
       if (confirm.ok) {
-        return nextPhase('wait_publish_result', 1500, {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
           ...shared,
           publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
-          last_confirm_method: 'dom_click_fallback',
+          last_confirm_method: 'dom_click',
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布确认：${confirm.text || '确认'}`,
         })
+      }
+      if (TMALL_ALLOW_API_CONFIRM_FALLBACK) {
+        const apiConfirm = confirmPublishByApiIfPresent()
+        if (apiConfirm.ok) {
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
+            ...shared,
+            publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
+            last_confirm_method: apiConfirm.method,
+            current_store: `${stage === 'pc' ? 'PC端' : '最终'}API确认：${apiConfirm.component || ''}`,
+          })
+        }
       }
       if ((publishStatus.validationMessages || []).length) {
         return failCurrentJob(
@@ -4834,14 +5097,14 @@
 
       const attempts = Number(shared.publish_wait_attempts || 0)
       if (attempts < 12) {
-        return nextPhase('wait_publish_result', 1500, {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           publish_wait_attempts: attempts + 1,
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布等待 ${attempts + 1}/12`,
         })
       }
       if (stage === 'pc') {
-        return nextPhase('reopen_after_pc_publish', 1200, {
+        return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           pc_publish_note: 'PC端提交已触发，未识别明确成功提示，继续同步手机端详情',
           publish_wait_attempts: 0,
@@ -4865,6 +5128,9 @@
       const itemId = shared.current_job?.item_id || ''
       const targetUrl = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
       if (!shared.reopened_after_pc_publish) {
+        if (isTmallSubmitSuccessPage()) {
+          return reenterTmallEditorFromSuccess(shared.current_job || {}, shared)
+        }
         if (location.href.startsWith(TMALL_PUBLISH_URL) && location.href.includes(`id=${itemId}`)) {
           try {
             location.reload()
@@ -4874,7 +5140,7 @@
         } else {
           location.href = targetUrl
         }
-        return nextPhase('wait_reopened_tmall_ready', 2500, {
+        return nextPhase('wait_reopened_tmall_ready', TMALL_PAGE_WAIT_MS, {
           ...shared,
           reopened_after_pc_publish: true,
           tmall_wait_attempts: 0,
@@ -4887,9 +5153,12 @@
     if (phase === 'wait_reopened_tmall_ready') {
       const status = extractTmallStatus(shared.current_job || {})
       if (!status.ready) {
+        if (isTmallSubmitSuccessPage()) {
+          return reenterTmallEditorFromSuccess(shared.current_job || {}, shared)
+        }
         const attempts = Number(shared.tmall_wait_attempts || 0)
         if (attempts < 30) {
-          return nextPhase('wait_reopened_tmall_ready', 1000, {
+          return nextPhase('wait_reopened_tmall_ready', TMALL_PAGE_WAIT_MS, {
             ...shared,
             tmall_wait_attempts: attempts + 1,
             current_store: `等待重新进入编辑页 ${attempts + 1}/30`,
@@ -4897,7 +5166,7 @@
         }
         return failCurrentJob('PC端发布后重新进入编辑页超时，未继续同步手机端详情', '手机端同步失败')
       }
-      return nextPhase('sync_mobile_detail_api', 800, {
+      return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
         ...shared,
         tmall_wait_attempts: 0,
         current_store: '通过API同步手机端详情',
