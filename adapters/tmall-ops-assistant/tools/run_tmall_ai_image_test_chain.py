@@ -1528,6 +1528,56 @@ TMALL_UPLOAD_CREATE_JS = r"""
     }
     return Array.isArray(value) ? value : [];
   }
+  function metricItems(value) {
+    const result = [];
+    for (const list of Object.values(value || {})) {
+      if (Array.isArray(list)) result.push(...list);
+    }
+    return result;
+  }
+  function materialIdsFromMetrics(value) {
+    const ids = [];
+    const seen = new Set();
+    const pushId = (id) => {
+      const text = compact(id);
+      if (!text || seen.has(text)) return;
+      seen.add(text);
+      ids.push(text);
+    };
+    for (const item of metricItems(value)) {
+      pushId(item?.imageId);
+      for (const id of Array.isArray(item?.imageIds) ? item.imageIds : []) pushId(id);
+      for (const op of Array.isArray(item?.materialOpParams) ? item.materialOpParams : []) {
+        for (const material of Array.isArray(op?.materials) ? op.materials : []) pushId(material?.imageId);
+      }
+    }
+    return ids;
+  }
+  function taskDataItems(readback, targetSource = 'common_search') {
+    const rows = Array.isArray(readback?.rows) ? readback.rows : [];
+    const target = compact(targetSource).toLowerCase();
+    const result = [];
+    for (const row of rows) {
+      const itemId = compact(row?.domainId || row?.itemId || row?.id);
+      const dataList = row?.columns?.test_data?.dataList || row?.test_data?.dataList || row?.testData?.dataList || [];
+      for (const item of Array.isArray(dataList) ? dataList : []) {
+        const source = compact(item?.imageTestSource || item?.source || item?.testChannel).toLowerCase();
+        if (source !== target) continue;
+        const experimentTaskId = compact(item?.experimentTaskId || item?.taskId || item?.id);
+        if (!experimentTaskId) continue;
+        result.push({
+          itemId,
+          experimentTaskId,
+          source: target,
+          status: compact(item?.testStatus ?? item?.status),
+          originMaterialIds: materialIdsFromMetrics(item?.originImageMetrics || {}),
+          testMaterialIds: materialIdsFromMetrics(item?.testImageMetrics || {}),
+          raw: item,
+        });
+      }
+    }
+    return result;
+  }
   async function uploadDataUrl(dataUrl, name) {
     const query = new URLSearchParams({
       appkey: 'tu',
@@ -1662,20 +1712,88 @@ TMALL_UPLOAD_CREATE_JS = r"""
     if (options.testStatus !== undefined && options.testStatus !== null && options.testStatus !== '') {
       params.testStatus = String(options.testStatus);
     }
-    const payload = await callMtop('mtop.taobao.qn.copilot.framework.listmodel.data.search', {
-      modelCode: 'image_test_mgr',
-      params: JSON.stringify(params),
-      currentPage: 1,
-      pageSize: 10,
-    });
-    const rows = extractRows(payload);
-    const total = Number(payload?.result?.total || payload?.total || payload?.count || rows.length || 0);
-    return {
-      total: Number.isFinite(total) ? total : rows.length,
-      rows,
-      requestParams: params,
-      raw: payload,
+    const runSearch = async (extraParams = {}) => {
+      const requestParams = { ...params, ...extraParams };
+      const payload = await callMtop('mtop.taobao.qn.copilot.framework.listmodel.data.search', {
+        modelCode: 'image_test_mgr',
+        params: JSON.stringify(requestParams),
+        currentPage: 1,
+        pageSize: 10,
+      });
+      const rows = extractRows(payload);
+      const total = Number(payload?.result?.total || payload?.total || payload?.count || rows.length || 0);
+      return {
+        total: Number.isFinite(total) ? total : rows.length,
+        rows,
+        requestParams,
+        raw: payload,
+      };
     };
+    if (options.testStatus !== undefined && options.testStatus !== null && options.testStatus !== '') {
+      return runSearch();
+    }
+    const primary = await runSearch();
+    if (primary.rows.length || options.skipStatusFallback) return primary;
+    const mergedRows = [];
+    const seen = new Set();
+    const readbacks = [primary];
+    for (const status of ['0', '1']) {
+      const readback = await runSearch({ testStatus: status });
+      readbacks.push(readback);
+      for (const row of readback.rows) {
+        const rowKey = `${compact(row?.domainId || row?.itemId || row?.id)}:${JSON.stringify((row?.columns?.test_data?.dataList || row?.test_data?.dataList || row?.testData?.dataList || []).map((item) => compact(item?.experimentTaskId || item?.taskId || item?.id)))}`;
+        if (seen.has(rowKey)) continue;
+        seen.add(rowKey);
+        mergedRows.push(row);
+      }
+    }
+    return {
+      total: mergedRows.length,
+      rows: mergedRows,
+      requestParams: params,
+      raw: primary.raw,
+      statusReadbacks: readbacks.map((item) => ({ total: item.total, requestParams: item.requestParams })),
+    };
+  }
+  async function findReusableStoppedTask(itemId, targetSource = 'common_search') {
+    const readback = await searchTasks(itemId, {
+      testChannel: targetSource,
+      testStatus: '0',
+      skipStatusFallback: true,
+    });
+    const tasks = taskDataItems(readback, targetSource)
+      .filter((task) => compact(task.itemId) === compact(itemId) || !task.itemId);
+    const reusable = tasks.find((task) => task.status === '-1') || tasks[0] || null;
+    if (!reusable) return null;
+    return {
+      ...reusable,
+      readbackTotal: readback.total,
+    };
+  }
+  async function deleteTaskMaterial(experimentTaskId, itemId, materialId, source = 'common_search') {
+    return callMtop('mtop.taobao.qn.copilot.test.image.batch.delete', {
+      experimentTaskId,
+      itemId: String(itemId || ''),
+      materialIds: String(materialId || ''),
+      source,
+    });
+  }
+  async function clearExistingTestMaterials(task, options = {}) {
+    const deleted = [];
+    const errors = [];
+    const ids = Array.isArray(task?.testMaterialIds) ? task.testMaterialIds : [];
+    const delayMs = Number(options.delayMs || 0);
+    for (const materialId of ids) {
+      try {
+        await deleteTaskMaterial(task.experimentTaskId, options.itemId || task.itemId, materialId, task.source || 'common_search');
+        deleted.push(materialId);
+      } catch (error) {
+        errors.push({ materialId, error: describeError(error) });
+        break;
+      }
+      if (delayMs > 0 && deleted.length < ids.length) await sleep(delayMs);
+    }
+    return { deleted, errors };
   }
   const result = {
     uploaded: [],
@@ -1689,6 +1807,9 @@ TMALL_UPLOAD_CREATE_JS = r"""
     batchPayloads: [],
     batchAddErrors: [],
     batchAddWarnings: [],
+    reusedExistingTask: null,
+    clearedMaterialIds: [],
+    clearErrors: [],
     onlinePayload: null,
     createResult: null,
     batchAddResult: null,
@@ -1724,10 +1845,33 @@ TMALL_UPLOAD_CREATE_JS = r"""
       return { success: true, data: [result], meta: { has_more: false } };
     }
     if (!result.materials.length) throw new Error('没有可添加的天猫素材 URL，请先启用并完成 live_upload');
-    result.createResult = await callMtop('mtop.taobao.qn.copilot.test.image.task.create', result.createPayload);
-    const taskStatusList = extractTaskStatusList(result.createResult, 'common_search');
-    if (!taskStatusList.length) throw new Error('创建测图任务后未解析到 COMMON_SEARCH 任务 ID');
-    const task = taskStatusList[0];
+    const reusableTask = await findReusableStoppedTask(__payload.item_id, 'common_search');
+    let taskStatusList = [];
+    let task = null;
+    if (reusableTask) {
+      result.reusedExistingTask = {
+        experimentTaskId: reusableTask.experimentTaskId,
+        source: reusableTask.source,
+        status: reusableTask.status,
+        testMaterialIds: reusableTask.testMaterialIds,
+      };
+      const clearResult = await clearExistingTestMaterials(reusableTask, {
+        itemId: String(__payload.item_id || ''),
+        delayMs: batchDelayMs,
+      });
+      result.clearedMaterialIds = clearResult.deleted;
+      result.clearErrors = clearResult.errors;
+      if (result.clearErrors.length) {
+        throw new Error(`清空旧测图素材失败：${result.clearErrors[0].materialId} ${result.clearErrors[0].error}`);
+      }
+      task = { experimentTaskId: reusableTask.experimentTaskId, source: reusableTask.source || 'common_search' };
+      taskStatusList = [task];
+    } else {
+      result.createResult = await callMtop('mtop.taobao.qn.copilot.test.image.task.create', result.createPayload);
+      taskStatusList = extractTaskStatusList(result.createResult, 'common_search');
+      if (!taskStatusList.length) throw new Error('创建测图任务后未解析到 COMMON_SEARCH 任务 ID');
+      task = taskStatusList[0];
+    }
     if (createDelayMs > 0) await sleep(createDelayMs);
     for (const material of result.materials) {
       const batchPayload = {

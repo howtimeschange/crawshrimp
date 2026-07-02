@@ -85,6 +85,12 @@ def save_config(cfg: dict) -> None:
         json.dump(_expand_dotted_keys(cfg), f, ensure_ascii=False, indent=2)
 
 
+def patch_config(patch: dict) -> dict:
+    cfg = _deep_merge(load_config(), _expand_dotted_keys(patch))
+    save_config(cfg)
+    return cfg
+
+
 def get(key: str, default: Any = None) -> Any:
     cfg = load_config()
     keys = key.split(".")

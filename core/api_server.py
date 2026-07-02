@@ -33,7 +33,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from core import runtime_paths
-from core.config import load_config, save_config
+from core.config import load_config, patch_config, save_config
 from core import adapter_loader
 from core import data_sink
 from core import notifier
@@ -5628,6 +5628,13 @@ def get_settings():
 @app.put("/settings")
 def put_settings(cfg: dict):
     save_config(cfg)
+    reset_bridge()
+    return {"ok": True}
+
+
+@app.patch("/settings")
+def patch_settings(cfg: dict):
+    patch_config(cfg)
     reset_bridge()
     return {"ok": True}
 

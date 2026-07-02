@@ -1465,6 +1465,8 @@ secureHandle('get-status', async () => ({
   api:     await probeApiReady(),
   chrome:  (await probeChromeCdp()).ok,
   apiPort,
+  apiBase: `http://127.0.0.1:${apiPort}`,
+  apiToken: getApiToken(),
   cdpPort: CDP_PORT,
   pythonBin: getPythonBin(),
   dev: IS_DEV,
@@ -1626,6 +1628,29 @@ secureHandle('save-settings', async (_, cfg) => {
   return dataDir && !sameRuntimePath(dataDir, getCrawshrimpDataDir())
     ? { ...result, restart_required: true }
     : result
+})
+
+secureHandle('patch-settings', async (_, cfg) => {
+  const plain = cfg && typeof cfg === 'object' ? { ...cfg } : {}
+  const hasDataDir = Object.prototype.hasOwnProperty.call(plain, 'data_dir')
+  let restartRequired = false
+
+  if (hasDataDir) {
+    const dataDir = resolveConfiguredDataDir(plain.data_dir || '')
+    if (dataDir) {
+      plain.data_dir = dataDir
+      preferredCrawshrimpDataDir = dataDir
+      writeDesktopConfig({ data_dir: dataDir })
+      restartRequired = !sameRuntimePath(dataDir, getCrawshrimpDataDir())
+    } else {
+      plain.data_dir = ''
+      preferredCrawshrimpDataDir = ''
+      writeDesktopConfig({ data_dir: '' })
+    }
+  }
+
+  const result = await apiCall('PATCH', '/settings', plain)
+  return restartRequired ? { ...result, restart_required: true } : result
 })
 
 secureHandle('stat-file', async (_, filePath) => {

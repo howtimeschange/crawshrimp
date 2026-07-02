@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from core.config import DEFAULT_CONFIG, load_config, save_config
+from core.config import DEFAULT_CONFIG, load_config, patch_config, save_config
 
 
 class AiSettingsConfigTests(unittest.TestCase):
@@ -31,6 +31,28 @@ class AiSettingsConfigTests(unittest.TestCase):
         self.assertEqual(loaded["ai"]["1xm"]["gpt_image_2k_key"], "unit-2k")
         self.assertEqual(loaded["notify"]["dingtalk_webhook"], "https://example.test/hook")
         self.assertEqual(loaded["notify"]["dingtalk_secret"], "unit-secret")
+
+    def test_patch_config_updates_only_targeted_settings(self):
+        with patch("core.config._config_path") as config_path:
+            import tempfile
+            from pathlib import Path
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                path = Path(tmpdir) / "config.json"
+                config_path.return_value = path
+                save_config({
+                    "notify.dingtalk_webhook": "https://example.test/old",
+                    "notify.feishu_webhook": "https://open.feishu.cn/old",
+                    "data_dir": "/tmp/crawshrimp-data",
+                })
+                patch_config({
+                    "notify.dingtalk_webhook": "https://example.test/new",
+                })
+                loaded = load_config()
+
+        self.assertEqual(loaded["notify"]["dingtalk_webhook"], "https://example.test/new")
+        self.assertEqual(loaded["notify"]["feishu_webhook"], "https://open.feishu.cn/old")
+        self.assertEqual(loaded["data_dir"], "/tmp/crawshrimp-data")
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ const props = defineProps({
 defineEmits(['clear-logs', 'open-file'])
 
 const activeTab = ref('logs')
-const drawerState = ref('half')
+const drawerState = ref('minimized')
 const logBodyEl = ref(null)
 const outputSummary = computed(() => summarizeOutputFiles(props.files))
 
@@ -72,7 +72,11 @@ function fileName(path) {
   return String(path || '').split('/').pop().split('\\').pop()
 }
 
-watch(() => props.logs.length, () => {
+watch(() => props.logs.length, (nextLength, previousLength) => {
+  if (nextLength > previousLength && previousLength === 0 && drawerState.value === 'minimized') {
+    drawerState.value = 'half'
+    activeTab.value = 'logs'
+  }
   nextTick(() => {
     if (logBodyEl.value) logBodyEl.value.scrollTop = logBodyEl.value.scrollHeight
   })

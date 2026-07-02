@@ -189,6 +189,7 @@ export function createDevCsBridge() {
 
     getSettings: () => apiCall('GET', '/settings'),
     saveSettings: (cfg) => apiCall('PUT', '/settings', cfg || {}),
+    patchSettings: (cfg) => apiCall('PATCH', '/settings', cfg || {}),
     browseFile: promptPath,
     listDirectoryFiles: async () => ({ ok: false, paths: [], error: '浏览器开发模式不支持直接扫描本地目录' }),
     renderPdfPreview: async () => ({ ok: false, error: '浏览器开发模式不支持本地 PDF 预览' }),

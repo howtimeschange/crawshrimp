@@ -19,18 +19,18 @@
       </header>
 
       <section v-if="!collapsed || embedded" class="approval-lifecycle">
-        <div class="approval-stage done">
+        <div :class="['approval-stage', generationStageClass]">
           <span class="stage-dot"></span>
           <div>
             <strong>生图完成</strong>
-            <span>{{ summary.aiTotal }} 张 AI 图</span>
+            <span>{{ generationStageLabel }}</span>
           </div>
         </div>
-        <div :class="['approval-stage', summary.pending > 0 ? 'active' : 'done']">
+        <div :class="['approval-stage', approvalStageClass]">
           <span class="stage-dot"></span>
           <div>
             <strong>人工审批</strong>
-            <span>确认 {{ summary.approved }} / 舍弃 {{ summary.rejected }} / 待定 {{ summary.pending }}</span>
+            <span>{{ approvalStageLabel }}</span>
           </div>
         </div>
         <div :class="['approval-stage', createStageClass]">
@@ -250,6 +250,10 @@ const effectiveStatus = computed(() => {
   }
   return status
 })
+const createStartedStatuses = new Set(['submitted', 'created', 'partial_failed', 'create_failed'])
+const createStarted = computed(() =>
+  hasSubmitResult.value || createStartedStatuses.has(effectiveStatus.value)
+)
 const createSummary = computed(() => {
   const summaryPayload = batch.value?.submit_summary || {}
   const attempted = Number(summaryPayload.attempted ?? createRows.value.length ?? 0)
@@ -261,10 +265,33 @@ const createSummary = computed(() => {
     failed: Number.isFinite(failed) ? failed : 0,
   }
 })
+const generationStageClass = computed(() => {
+  if (summary.value.aiTotal > 0 || createStarted.value) return 'done'
+  if (loading.value || batch.value?.batch_id || effectiveStatus.value === 'generating') return 'active'
+  return 'pending'
+})
+const generationStageLabel = computed(() => {
+  if (summary.value.aiTotal > 0) return `${summary.value.aiTotal} 张 AI 图`
+  if (loading.value) return '正在读取批次'
+  if (batch.value?.batch_id || effectiveStatus.value === 'generating') return '等待 AI 图生成'
+  return '未开始'
+})
+const approvalStageClass = computed(() => {
+  if (createStarted.value) return 'done'
+  if (summary.value.aiTotal <= 0) return 'pending'
+  if (summary.value.pending > 0) return 'active'
+  if (summary.value.approved > 0) return 'done'
+  if (summary.value.rejected > 0) return 'error'
+  return 'pending'
+})
+const approvalStageLabel = computed(() => {
+  if (summary.value.aiTotal <= 0) return '等待生图完成'
+  return `确认 ${summary.value.approved} / 舍弃 ${summary.value.rejected} / 待定 ${summary.value.pending}`
+})
 const createStageClass = computed(() => {
   if (['created'].includes(effectiveStatus.value)) return 'done'
   if (['partial_failed', 'create_failed'].includes(effectiveStatus.value)) return 'error'
-  if (hasSubmitResult.value) return 'active'
+  if (createStarted.value) return 'active'
   return 'pending'
 })
 const createStageLabel = computed(() => {

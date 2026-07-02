@@ -1336,33 +1336,72 @@ const aiChainCreateCounts = computed(() => {
     failed: Number.isFinite(failed) ? failed : 0,
   }
 })
+const aiChainCreateStartedStatuses = new Set(['submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainWorkflowStatuses = new Set(['pending_approval', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainLifecycle = computed(() => {
+  const createStatus = aiChainCreateStatus.value
+  const aiTotal = aiChainAiAssets.value.length
+  const approved = aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
+  const rejected = aiChainAiAssets.value.filter(asset => asset.status === 'rejected').length
+  const pending = aiChainAiAssets.value.filter(asset => !['approved', 'rejected'].includes(asset.status)).length
+  const hasBatchPayload = Boolean(approvalBatch.value?.batch_id || approvalBatch.value?.items?.length || createStatus)
+  const createStarted = aiChainCreateRows.value.length > 0 || aiChainCreateStartedStatuses.has(createStatus)
+  const generationDone = aiTotal > 0 || createStarted
+  const approvalStarted = aiTotal > 0 || (aiChainWorkflowStatuses.has(createStatus) && generationDone)
+  const approvalDone = createStarted || (aiTotal > 0 && pending === 0 && approved > 0)
+  const approvalBlocked = aiTotal > 0 && pending === 0 && approved <= 0 && rejected > 0
+  return {
+    aiTotal,
+    approved,
+    rejected,
+    pending,
+    hasBatchPayload,
+    createStatus,
+    createStarted,
+    generationDone,
+    approvalStarted,
+    approvalDone,
+    approvalBlocked,
+  }
+})
 const aiChainCreateSummary = computed(() => {
+  const lifecycle = aiChainLifecycle.value
   if (!approvalBoardUrl.value) return '等待审批批次生成'
+  if (!lifecycle.generationDone && lifecycle.hasBatchPayload) return '等待 AI 图生成'
+  if (!lifecycle.generationDone) return '审批批次读取中'
   if (!aiChainCreateRows.value.length) return '确认图片后触发上传和创建'
   const counts = aiChainCreateCounts.value
   return `尝试 ${counts.attempted || aiChainCreateRows.value.length} 款 / 成功 ${counts.succeeded} / 失败 ${counts.failed}`
 })
 const aiChainSteps = computed(() => {
-  const approved = aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
-  const rejected = aiChainAiAssets.value.filter(asset => asset.status === 'rejected').length
-  const pending = aiChainAiAssets.value.filter(asset => !['approved', 'rejected'].includes(asset.status)).length
-  const createStatus = aiChainCreateStatus.value
+  const lifecycle = aiChainLifecycle.value
+  const createStatus = lifecycle.createStatus
   return [
     {
       id: 'config',
       index: '01',
       title: '任务配置',
-      detail: approvalBoardUrl.value || isRunning.value ? '已启动本批次' : '填写导入表、提示词库和执行模式',
-      state: approvalBoardUrl.value || isRunning.value ? 'done' : 'active',
+      detail: lifecycle.generationDone || lifecycle.createStarted
+        ? '已生成本批次'
+        : isRunning.value
+          ? '任务执行中'
+          : '填写导入表、提示词库和执行模式',
+      state: lifecycle.generationDone || lifecycle.createStarted ? 'done' : 'active',
     },
     {
       id: 'approval',
       index: '02',
       title: '生图看板 / 审批',
-      detail: approvalBoardUrl.value
-        ? `AI 图 ${aiChainAiAssets.value.length} 张，确认 ${approved} / 舍弃 ${rejected} / 待定 ${pending}`
+      detail: lifecycle.generationDone
+        ? `AI 图 ${lifecycle.aiTotal} 张，确认 ${lifecycle.approved} / 舍弃 ${lifecycle.rejected} / 待定 ${lifecycle.pending}`
         : '生图完成后显示图片看板',
-      state: approvalBoardUrl.value ? (pending > 0 ? 'active' : 'done') : 'pending',
+      state: lifecycle.approvalDone
+        ? 'done'
+        : lifecycle.approvalBlocked
+          ? 'error'
+          : lifecycle.approvalStarted || isRunning.value
+            ? 'active'
+            : 'pending',
     },
     {
       id: 'create',
@@ -1373,7 +1412,9 @@ const aiChainSteps = computed(() => {
         ? 'done'
         : ['partial_failed', 'create_failed'].includes(createStatus)
           ? 'error'
-          : 'pending',
+          : lifecycle.createStarted
+            ? 'active'
+            : 'pending',
     },
   ]
 })
@@ -3242,9 +3283,10 @@ onUnmounted(() => {
   background: var(--bg);
 }
 .runner-main-scroll {
-  flex: 1 1 auto;
-  min-height: 360px;
+  flex: 1 1 0;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
 }
 .runner-bottom-stack {
   flex: 0 0 auto;
@@ -3260,9 +3302,7 @@ onUnmounted(() => {
 }
 .ai-chain-runner .runner-main-scroll {
   padding: 16px 18px 0;
-  display: grid;
-  gap: 16px;
-  align-content: start;
+  display: block;
 }
 .ai-chain-runner .runner-bottom-stack {
   padding: 14px 18px 18px;
@@ -3353,7 +3393,7 @@ onUnmounted(() => {
 .ai-chain-step-panel {
   border: 1px solid var(--border);
   border-radius: 14px;
-  overflow: hidden;
+  overflow: visible;
   background: var(--bg2);
 }
 .ai-chain-runner .params-panel {

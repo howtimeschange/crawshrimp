@@ -9,7 +9,7 @@
         <button type="button" class="tc-secondary" @click="startCreateSchedule">
           新增数据抓取定时任务
         </button>
-        <button type="button" class="tc-primary" :disabled="creating" @click="createAiImageTask">
+        <button type="button" class="tc-primary" :disabled="creating" @click="startCreateAiImageTask">
           {{ creating ? '创建中...' : '新增 AI 测图任务' }}
         </button>
       </div>
@@ -42,124 +42,156 @@
       </div>
     </section>
 
-    <section class="tc-schedules">
-      <div class="tc-section-head">
-        <div>
-          <h3>定时任务</h3>
-          <p>首批接入 巴拉-AI测图数据抓取导出，可每天或每周自动运行</p>
-        </div>
-        <span v-if="schedules.length" class="tc-count">{{ schedules.length }} 个</span>
-      </div>
-
-      <form v-if="showScheduleForm" class="tc-schedule-form" @submit.prevent="saveSchedule">
-        <label>
-          <span>任务名称</span>
-          <input v-model.trim="scheduleForm.title" type="text" required />
-        </label>
-        <label>
-          <span>频次</span>
-          <select v-model="scheduleForm.frequency">
-            <option value="daily">每天</option>
-            <option value="weekly">每周</option>
-          </select>
-        </label>
-        <label v-if="scheduleForm.frequency === 'weekly'">
-          <span>周几</span>
-          <select v-model.number="scheduleForm.weekday">
-            <option v-for="day in weekdays" :key="day.value" :value="day.value">
-              {{ day.label }}
-            </option>
-          </select>
-        </label>
-        <label>
-          <span>时间</span>
-          <input v-model="scheduleForm.time_of_day" type="time" required />
-        </label>
-        <label class="wide">
-          <span>本地导出目录</span>
-          <input
-            v-model.trim="scheduleForm.output_dir"
-            type="text"
-            placeholder="留空使用系统下载目录下的抓虾默认导出地址"
-          />
-        </label>
-        <label class="wide">
-          <span>钉钉消息模板</span>
-          <textarea v-model="scheduleForm.notify_template" rows="4" />
-        </label>
-        <label class="tc-check">
-          <input v-model="scheduleForm.enabled" type="checkbox" />
-          <span>启用定时任务</span>
-        </label>
-        <div class="tc-form-actions">
-          <button type="button" class="tc-secondary" @click="cancelScheduleEdit">取消</button>
-          <button type="submit" class="tc-primary" :disabled="savingSchedule">
-            {{ savingSchedule ? '保存中...' : (editingScheduleUid ? '保存定时任务' : '创建定时任务') }}
-          </button>
-        </div>
-      </form>
-
-      <div v-if="scheduleError" class="tc-inline-error">{{ scheduleError }}</div>
-      <div v-else-if="schedulesLoading" class="tc-inline-state">定时任务加载中...</div>
-      <div v-else-if="!schedules.length" class="tc-inline-state">暂无定时任务</div>
-      <div v-else class="tc-schedule-list">
-        <article v-for="schedule in schedules" :key="schedule.schedule_uid" class="tc-schedule-card">
-          <div class="tc-schedule-main">
-            <strong>{{ schedule.title || '未命名定时任务' }}</strong>
-            <span>{{ scheduleFrequencyLabel(schedule) }} · {{ schedule.task_id }}</span>
-            <small>{{ schedule.params?.output_dir || '默认导出目录' }}</small>
-          </div>
-          <div class="tc-schedule-meta">
-            <span :class="['tc-status', schedule.enabled ? 'active' : 'neutral']">
-              {{ schedule.enabled ? '已启用' : '已停用' }}
-            </span>
-            <span>下次 {{ formatTime(schedule.next_run) }}</span>
-            <span>最近 {{ schedule.last_status || '-' }}</span>
-          </div>
-          <div class="tc-schedule-actions">
-            <label class="tc-switch">
-              <input
-                type="checkbox"
-                :checked="Boolean(schedule.enabled)"
-                @change="toggleSchedule(schedule, $event)"
-              />
-              <span>启用</span>
-            </label>
-            <button type="button" @click="runScheduleNow(schedule)">运行一次</button>
-            <button type="button" @click="editSchedule(schedule)">编辑</button>
-            <button type="button" class="danger" @click="archiveSchedule(schedule)">归档</button>
-          </div>
-        </article>
-      </div>
-    </section>
-
     <section class="tc-content">
-      <div v-if="error" class="tc-state error">{{ error }}</div>
-      <div v-else-if="loading" class="tc-state">加载中...</div>
-      <div v-else-if="!items.length" class="tc-state">暂无任务</div>
-      <button
-        v-for="item in items"
+      <div v-if="error || scheduleError" class="tc-state error">{{ error || scheduleError }}</div>
+      <div v-else-if="loading || schedulesLoading" class="tc-state">加载中...</div>
+      <div v-else-if="!combinedItems.length" class="tc-state">暂无任务</div>
+      <article
+        v-for="item in combinedItems"
         v-else
-        :key="item.instance_uid"
-        type="button"
-        class="tc-row"
-        @click="$emit('open-instance', item.instance_uid)"
+        :key="item.rowUid"
+        :class="['tc-row', item.rowType]"
+        :role="item.rowType === 'instance' ? 'button' : undefined"
+        :tabindex="item.rowType === 'instance' ? 0 : undefined"
+        @click="openTaskCenterItem(item)"
+        @keydown.enter="openTaskCenterItem(item)"
       >
         <div class="tc-row-main">
           <strong>{{ item.title || '未命名任务' }}</strong>
-          <span>{{ item.adapter_id }} / {{ item.task_id }}</span>
+          <span class="tc-type-line">
+            <span class="tc-type-label">任务类型</span>
+            <b>{{ itemTypeLabel(item) }}</b>
+            <em>{{ item.adapter_id }} / {{ item.task_id }}</em>
+          </span>
+          <span v-if="item.rowType === 'schedule'">{{ scheduleFrequencyLabel(item) }} · {{ item.params?.output_dir || '默认导出目录' }}</span>
+          <span v-else>{{ item.current_step || 'config' }}</span>
+          <div v-if="aiPreviewImagesForTask(item).length" class="tc-ai-preview" aria-label="AI 图预览">
+            <figure v-for="preview in aiPreviewImagesForTask(item)" :key="preview.id">
+              <img :src="preview.url" :alt="preview.label" loading="lazy" />
+            </figure>
+          </div>
         </div>
         <div class="tc-row-meta">
-          <span :class="['tc-status', statusTone(item.status)]">{{ statusLabel(item.status) }}</span>
-          <span>{{ formatTime(item.updated_at || item.created_at) }}</span>
+          <span :class="['tc-status', itemStatusTone(item)]">{{ itemStatusLabel(item) }}</span>
+          <span>{{ itemTimeLabel(item) }}</span>
+          <span v-if="item.rowType === 'schedule'">最近 {{ item.last_status || '-' }}</span>
         </div>
-      </button>
+        <div v-if="item.rowType === 'schedule'" class="tc-schedule-actions">
+          <label class="tc-switch" @click.stop>
+            <input
+              type="checkbox"
+              :checked="Boolean(item.enabled)"
+              @change.stop="toggleSchedule(item, $event)"
+            />
+            <span>启用</span>
+          </label>
+          <button type="button" @click.stop="runScheduleNow(item)">运行一次</button>
+          <button type="button" @click.stop="editSchedule(item)">编辑</button>
+          <button type="button" class="danger" @click.stop="archiveSchedule(item)">归档</button>
+        </div>
+      </article>
     </section>
+
+    <div v-if="showAiTaskDialog" class="tc-modal-backdrop" @click.self="cancelAiTaskCreate">
+      <section class="tc-modal-dialog" role="dialog" aria-modal="true" aria-labelledby="ai-task-dialog-title">
+        <header class="tc-modal-head">
+          <div>
+            <h3 id="ai-task-dialog-title">新增 AI 测图任务</h3>
+            <p>创建一个新的巴拉-AI测图全链路任务实例</p>
+          </div>
+          <button type="button" class="tc-icon-button" aria-label="关闭" @click="cancelAiTaskCreate">×</button>
+        </header>
+        <form class="tc-dialog-form tc-ai-task-form" @submit.prevent="createAiImageTask">
+          <label>
+            <span>任务名称</span>
+            <input v-model.trim="aiTaskForm.title" type="text" required />
+          </label>
+          <div v-if="aiTaskError" class="tc-inline-error">{{ aiTaskError }}</div>
+          <div class="tc-form-actions">
+            <button type="button" class="tc-secondary" @click="cancelAiTaskCreate">取消</button>
+            <button type="submit" class="tc-primary" :disabled="creating">
+              {{ creating ? '创建中...' : '创建任务' }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
+
+    <div v-if="showScheduleDialog" class="tc-modal-backdrop" @click.self="cancelScheduleEdit">
+      <section class="tc-modal-dialog wide" role="dialog" aria-modal="true" aria-labelledby="schedule-dialog-title">
+        <header class="tc-modal-head">
+          <div>
+            <h3 id="schedule-dialog-title">{{ editingScheduleUid ? '编辑定时任务' : '新增数据抓取定时任务' }}</h3>
+            <p>巴拉-AI测图数据抓取导出可按每天或每周自动执行</p>
+          </div>
+          <button type="button" class="tc-icon-button" aria-label="关闭" @click="cancelScheduleEdit">×</button>
+        </header>
+        <form class="tc-schedule-form tc-dialog-form" @submit.prevent="saveSchedule">
+          <label>
+            <span>任务名称</span>
+            <input v-model.trim="scheduleForm.title" type="text" required />
+          </label>
+          <label>
+            <span>频次</span>
+            <select v-model="scheduleForm.frequency">
+              <option value="daily">每天</option>
+              <option value="weekly">每周</option>
+            </select>
+          </label>
+          <label v-if="scheduleForm.frequency === 'weekly'">
+            <span>周几</span>
+            <select v-model.number="scheduleForm.weekday">
+              <option v-for="day in weekdays" :key="day.value" :value="day.value">
+                {{ day.label }}
+              </option>
+            </select>
+          </label>
+          <label>
+            <span>时间</span>
+            <input v-model="scheduleForm.time_of_day" type="time" required />
+          </label>
+          <div class="tc-field wide">
+            <span>本地导出目录</span>
+            <div class="tc-dir-picker" :class="{ empty: !scheduleForm.output_dir }">
+              <button type="button" class="tc-dir-target" @click="chooseScheduleOutputDir">
+                <span>{{ scheduleForm.output_dir || '留空使用系统下载目录下的抓虾默认导出地址' }}</span>
+              </button>
+              <button type="button" class="tc-secondary" @click="chooseScheduleOutputDir">
+                选择文件夹
+              </button>
+              <button
+                v-if="scheduleForm.output_dir"
+                type="button"
+                class="tc-secondary"
+                @click="clearScheduleOutputDir"
+              >
+                清除
+              </button>
+            </div>
+          </div>
+          <label class="full">
+            <span>钉钉消息模板</span>
+            <textarea v-model="scheduleForm.notify_template" rows="8" />
+          </label>
+          <label class="tc-check">
+            <input v-model="scheduleForm.enabled" type="checkbox" />
+            <span>启用定时任务</span>
+          </label>
+          <div v-if="scheduleError" class="tc-inline-error tc-form-message">{{ scheduleError }}</div>
+          <div class="tc-form-actions">
+            <button type="button" class="tc-secondary" @click="cancelScheduleEdit">取消</button>
+            <button type="submit" class="tc-primary" :disabled="savingSchedule">
+              {{ savingSchedule ? '保存中...' : (editingScheduleUid ? '保存定时任务' : '创建定时任务') }}
+            </button>
+          </div>
+        </form>
+      </section>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 const emit = defineEmits(['open-instance'])
 
@@ -196,11 +228,22 @@ const loading = ref(false)
 const schedulesLoading = ref(false)
 const creating = ref(false)
 const savingSchedule = ref(false)
-const showScheduleForm = ref(false)
+const showAiTaskDialog = ref(false)
+const showScheduleDialog = ref(false)
 const editingScheduleUid = ref('')
 const error = ref('')
 const scheduleError = ref('')
+const aiTaskError = ref('')
+const aiTaskForm = ref(defaultAiTaskForm())
 const scheduleForm = ref(defaultScheduleForm())
+const aiPreviewCache = ref({})
+const aiPreviewLoading = ref({})
+
+function defaultAiTaskForm() {
+  return {
+    title: `AI测图任务 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+  }
+}
 
 function defaultScheduleForm() {
   return {
@@ -227,6 +270,7 @@ async function loadInstances() {
       keyword: keyword.value,
     })
     items.value = Array.isArray(result?.items) ? result.items : []
+    void loadAiPreviewsForItems(items.value)
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
@@ -250,20 +294,35 @@ async function loadSchedules() {
   }
 }
 
+function startCreateAiImageTask() {
+  aiTaskForm.value = defaultAiTaskForm()
+  aiTaskError.value = ''
+  showAiTaskDialog.value = true
+}
+
+function cancelAiTaskCreate() {
+  showAiTaskDialog.value = false
+  aiTaskForm.value = defaultAiTaskForm()
+  aiTaskError.value = ''
+}
+
 async function createAiImageTask() {
   creating.value = true
   error.value = ''
+  aiTaskError.value = ''
   try {
+    const title = String(aiTaskForm.value.title || '').trim() || defaultAiTaskForm().title
     const result = await window.cs.createTaskInstance({
       adapter_id: 'tmall-ops-assistant',
       task_id: 'tmall_ai_image_test_chain',
-      title: `AI测图任务 ${new Date().toLocaleString('zh-CN', { hour12: false })}`,
+      title,
       params: {},
     })
+    cancelAiTaskCreate()
     await loadInstances()
     if (result?.instance_uid) emit('open-instance', result.instance_uid)
   } catch (err) {
-    error.value = err?.message || String(err)
+    aiTaskError.value = err?.message || String(err)
   } finally {
     creating.value = false
   }
@@ -273,7 +332,7 @@ function startCreateSchedule() {
   editingScheduleUid.value = ''
   scheduleForm.value = defaultScheduleForm()
   scheduleError.value = ''
-  showScheduleForm.value = true
+  showScheduleDialog.value = true
 }
 
 function editSchedule(schedule) {
@@ -288,13 +347,31 @@ function editSchedule(schedule) {
     enabled: Boolean(schedule.enabled),
   }
   scheduleError.value = ''
-  showScheduleForm.value = true
+  showScheduleDialog.value = true
 }
 
 function cancelScheduleEdit() {
   editingScheduleUid.value = ''
-  showScheduleForm.value = false
+  showScheduleDialog.value = false
   scheduleForm.value = defaultScheduleForm()
+  scheduleError.value = ''
+}
+
+async function chooseScheduleOutputDir() {
+  scheduleError.value = ''
+  try {
+    const selected = await window.cs.browseFile({
+      title: '选择本地导出目录',
+      directory: true,
+    })
+    if (selected) scheduleForm.value.output_dir = selected
+  } catch (err) {
+    scheduleError.value = err?.message || String(err)
+  }
+}
+
+function clearScheduleOutputDir() {
+  scheduleForm.value.output_dir = ''
 }
 
 function schedulePayload() {
@@ -325,7 +402,7 @@ async function saveSchedule() {
       await window.cs.createTaskSchedule(payload)
     }
     cancelScheduleEdit()
-    await loadSchedules()
+    await refreshAll()
   } catch (err) {
     scheduleError.value = err?.message || String(err)
   } finally {
@@ -337,10 +414,10 @@ async function toggleSchedule(schedule, event) {
   scheduleError.value = ''
   try {
     await window.cs.updateTaskSchedule(schedule.schedule_uid, { enabled: Boolean(event?.target?.checked) })
-    await loadSchedules()
+    await refreshAll()
   } catch (err) {
     scheduleError.value = err?.message || String(err)
-    await loadSchedules()
+    await refreshAll()
   }
 }
 
@@ -359,10 +436,143 @@ async function archiveSchedule(schedule) {
   scheduleError.value = ''
   try {
     await window.cs.deleteTaskSchedule(schedule.schedule_uid)
-    await loadSchedules()
+    await refreshAll()
   } catch (err) {
     scheduleError.value = err?.message || String(err)
   }
+}
+
+const combinedItems = computed(() => {
+  const instanceRows = items.value.map(item => ({
+    ...item,
+    rowType: 'instance',
+    rowUid: `instance:${item.instance_uid}`,
+  }))
+  const scheduleRows = schedules.value
+    .filter(scheduleVisibleInActiveGroup)
+    .map(schedule => ({
+      ...schedule,
+      rowType: 'schedule',
+      rowUid: `schedule:${schedule.schedule_uid}`,
+      status: schedule.enabled ? 'enabled' : 'disabled',
+    }))
+  return [...scheduleRows, ...instanceRows].sort((left, right) =>
+    sortableTime(right) - sortableTime(left)
+  )
+})
+
+function scheduleVisibleInActiveGroup(schedule) {
+  if (activeGroup.value === 'history') return false
+  if (activeGroup.value === 'pending') {
+    return !schedule.enabled || ['failed', 'error', 'create_failed', 'partial_failed'].includes(String(schedule.last_status || '').trim())
+  }
+  return true
+}
+
+function sortableTime(item) {
+  const value = item.updated_at || item.created_at || item.last_triggered_at || item.next_run || ''
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
+function openTaskCenterItem(item) {
+  if (item?.rowType !== 'instance' || !item.instance_uid) return
+  emit('open-instance', item.instance_uid)
+}
+
+function itemTypeLabel(item) {
+  if (item?.rowType === 'schedule') return '定时任务'
+  if (item?.task_id === 'tmall_ai_image_test_chain') return 'AI 测图任务'
+  return '脚本任务'
+}
+
+function itemStatusLabel(item) {
+  if (item?.rowType === 'schedule') return item.enabled ? '已启用' : '已停用'
+  return statusLabel(item?.status)
+}
+
+function itemStatusTone(item) {
+  if (item?.rowType === 'schedule') return item.enabled ? 'active' : 'neutral'
+  return statusTone(item?.status)
+}
+
+function itemTimeLabel(item) {
+  if (item?.rowType === 'schedule') return `下次 ${formatTime(item.next_run)}`
+  return formatTime(item.updated_at || item.created_at)
+}
+
+function aiPreviewImagesForTask(item) {
+  if (item?.rowType !== 'instance') return []
+  return aiPreviewCache.value[item.instance_uid] || []
+}
+
+function setAiPreviewCache(instanceUid, previews) {
+  aiPreviewCache.value = {
+    ...aiPreviewCache.value,
+    [instanceUid]: previews,
+  }
+}
+
+function setAiPreviewLoading(instanceUid, loadingValue) {
+  aiPreviewLoading.value = {
+    ...aiPreviewLoading.value,
+    [instanceUid]: loadingValue,
+  }
+}
+
+function approvalRefFromSummary(summary) {
+  const directBatchId = String(summary?.approval_batch_id || '').trim()
+  const directToken = String(summary?.approval_token || '').trim()
+  const boardUrl = String(summary?.approval_board_url || '').trim()
+  let origin = ''
+  let batchId = directBatchId
+  let token = directToken
+  try {
+    const parsed = new URL(boardUrl)
+    origin = parsed.origin
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    batchId = batchId || parts[parts.length - 1] || ''
+    token = token || parsed.searchParams.get('token') || ''
+  } catch {}
+  return {
+    origin: origin || 'http://127.0.0.1:18765',
+    batchId,
+    token,
+  }
+}
+
+function tmallApprovalImageUrl(origin, batchId, token, assetId) {
+  return `${origin}/tmall-ai-image-approval/api/${encodeURIComponent(batchId)}/image/${encodeURIComponent(assetId)}?token=${encodeURIComponent(token)}`
+}
+
+function extractAiPreviewImages(batch, ref) {
+  return (batch?.items || [])
+    .flatMap(item => item?.assets || [])
+    .filter(asset => asset?.kind === 'ai' && asset?.id)
+    .slice(0, 4)
+    .map(asset => ({
+      id: String(asset.id),
+      label: String(asset.label || asset.filename || 'AI 图'),
+      url: tmallApprovalImageUrl(ref.origin, ref.batchId, ref.token, asset.id),
+    }))
+}
+
+async function loadAiPreviewsForItems(rows) {
+  await Promise.all((rows || []).map(async (item) => {
+    if (item?.task_id !== 'tmall_ai_image_test_chain' || !item?.instance_uid) return
+    if (aiPreviewCache.value[item.instance_uid] || aiPreviewLoading.value[item.instance_uid]) return
+    const ref = approvalRefFromSummary(item.summary || {})
+    if (!ref.batchId || !ref.token) return
+    setAiPreviewLoading(item.instance_uid, true)
+    try {
+      const batch = await window.cs.getTmallApprovalBatch(ref.batchId, ref.token)
+      setAiPreviewCache(item.instance_uid, extractAiPreviewImages(batch, ref))
+    } catch {
+      setAiPreviewCache(item.instance_uid, [])
+    } finally {
+      setAiPreviewLoading(item.instance_uid, false)
+    }
+  }))
 }
 
 function scheduleFrequencyLabel(schedule) {
@@ -431,17 +641,12 @@ onMounted(refreshAll)
   padding: 20px 24px 16px;
   border-bottom: 1px solid var(--border);
 }
-.tc-head h2,
-.tc-section-head h3 {
+.tc-head h2 {
   color: var(--text);
   font-size: 18px;
   font-weight: 800;
 }
-.tc-section-head h3 {
-  font-size: 14px;
-}
-.tc-head p,
-.tc-section-head p {
+.tc-head p {
   margin-top: 4px;
   color: var(--text3);
   font-size: 12px;
@@ -507,7 +712,10 @@ onMounted(refreshAll)
 .tc-search input,
 .tc-schedule-form input,
 .tc-schedule-form select,
-.tc-schedule-form textarea {
+.tc-schedule-form textarea,
+.tc-dialog-form input,
+.tc-dialog-form select,
+.tc-dialog-form textarea {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg3);
@@ -519,22 +727,6 @@ onMounted(refreshAll)
   width: min(320px, 32vw);
   min-width: 180px;
 }
-.tc-schedules {
-  flex: 0 0 auto;
-  padding: 14px 24px;
-  border-bottom: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg2) 86%, var(--bg3) 14%);
-}
-.tc-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-.tc-count {
-  color: var(--text3);
-  font-size: 12px;
-}
 .tc-schedule-form {
   display: grid;
   grid-template-columns: repeat(4, minmax(140px, 1fr));
@@ -545,7 +737,8 @@ onMounted(refreshAll)
   border-radius: 8px;
   background: var(--bg);
 }
-.tc-schedule-form label {
+.tc-schedule-form label,
+.tc-schedule-form .tc-field {
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -553,11 +746,49 @@ onMounted(refreshAll)
   color: var(--text3);
   font-size: 12px;
 }
-.tc-schedule-form label.wide {
+.tc-schedule-form label.wide,
+.tc-schedule-form .tc-field.wide {
   grid-column: span 2;
+}
+.tc-schedule-form label.full,
+.tc-schedule-form .tc-field.full {
+  grid-column: 1 / -1;
 }
 .tc-schedule-form textarea {
   resize: vertical;
+  min-height: 180px;
+}
+.tc-dir-picker {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 8px;
+  align-items: center;
+}
+.tc-dir-target {
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  color: var(--text);
+  padding: 8px 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.tc-dir-target span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tc-dir-picker.empty .tc-dir-target {
+  color: var(--text3);
+}
+.tc-dir-picker .tc-secondary {
+  height: 34px;
+  white-space: nowrap;
 }
 .tc-check,
 .tc-switch {
@@ -582,24 +813,6 @@ onMounted(refreshAll)
 .tc-inline-error {
   color: var(--red);
 }
-.tc-schedule-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: 10px;
-}
-.tc-schedule-card {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 14px;
-  align-items: center;
-  padding: 12px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-}
-.tc-schedule-main,
-.tc-schedule-meta,
 .tc-row-main,
 .tc-row-meta {
   min-width: 0;
@@ -607,25 +820,15 @@ onMounted(refreshAll)
   flex-direction: column;
   gap: 6px;
 }
-.tc-schedule-main strong,
 .tc-row-main strong {
   color: var(--text);
   font-size: 14px;
 }
-.tc-schedule-main span,
-.tc-schedule-main small,
-.tc-schedule-meta span,
 .tc-row-main span,
 .tc-row-meta span:last-child {
   color: var(--text3);
   font-size: 12px;
 }
-.tc-schedule-main small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.tc-schedule-meta,
 .tc-row-meta {
   align-items: flex-end;
   text-align: right;
@@ -635,6 +838,86 @@ onMounted(refreshAll)
   min-height: 0;
   overflow-y: auto;
   padding: 12px 24px 24px;
+}
+.tc-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 5, 12, .62);
+}
+.tc-modal-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, .42);
+}
+.tc-modal-dialog.wide {
+  width: min(960px, calc(100vw - 32px));
+}
+.tc-modal-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg2);
+}
+.tc-modal-head h3 {
+  margin: 0;
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1.25;
+}
+.tc-modal-head p {
+  margin: 5px 0 0;
+  color: var(--text3);
+  font-size: 12px;
+}
+.tc-icon-button {
+  width: 32px;
+  height: 32px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+.tc-dialog-form {
+  margin: 0;
+  padding: 16px 20px 20px;
+  border: 0;
+  background: transparent;
+}
+.tc-ai-task-form {
+  display: grid;
+  gap: 12px;
+}
+.tc-ai-task-form label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--text3);
+  font-size: 12px;
+}
+.tc-dialog-form .tc-form-actions {
+  grid-column: 1 / -1;
+}
+.tc-form-message {
+  grid-column: 1 / -1;
+  margin-top: 0;
 }
 .tc-state {
   display: grid;
@@ -648,9 +931,9 @@ onMounted(refreshAll)
 }
 .tc-row {
   width: 100%;
-  min-height: 72px;
+  min-height: 76px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(130px, auto);
   gap: 18px;
   align-items: center;
   padding: 12px 14px;
@@ -660,10 +943,64 @@ onMounted(refreshAll)
   color: inherit;
   text-align: left;
   margin-bottom: 8px;
+  cursor: pointer;
+}
+.tc-row.schedule {
+  grid-template-columns: minmax(0, 1fr) minmax(130px, auto) auto;
+  cursor: default;
 }
 .tc-row:hover {
   border-color: rgba(255, 107, 43, .34);
   background: color-mix(in srgb, var(--bg2) 88%, var(--orange) 12%);
+}
+.tc-row.schedule:hover {
+  border-color: var(--border);
+  background: var(--bg2);
+}
+.tc-type-line {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.tc-type-label {
+  color: var(--text3);
+}
+.tc-type-line b {
+  border: 1px solid rgba(255, 107, 43, .28);
+  border-radius: 999px;
+  background: rgba(255, 107, 43, .08);
+  color: var(--orange);
+  padding: 2px 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.tc-type-line em {
+  min-width: 0;
+  color: var(--text3);
+  font-size: 12px;
+  font-style: normal;
+}
+.tc-ai-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+}
+.tc-ai-preview figure {
+  width: 46px;
+  height: 60px;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+}
+.tc-ai-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 .tc-status {
   display: inline-flex;
@@ -692,8 +1029,12 @@ onMounted(refreshAll)
   .tc-schedule-form {
     grid-template-columns: minmax(0, 1fr);
   }
-  .tc-schedule-form label.wide {
+  .tc-schedule-form label.wide,
+  .tc-schedule-form .tc-field.wide {
     grid-column: span 1;
+  }
+  .tc-dir-picker {
+    grid-template-columns: minmax(0, 1fr);
   }
   .tc-schedule-card,
   .tc-row {

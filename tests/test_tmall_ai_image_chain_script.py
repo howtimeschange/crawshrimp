@@ -214,6 +214,135 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertEqual(create_rows[0]["任务ID"], "41716301")
             self.assertEqual(create_rows[0]["执行结果"], "天猫上传/创建失败")
 
+    def test_tmall_upload_reuses_stopped_task_by_clearing_old_test_images_before_add(self):
+        module = load_script()
+        code = module.js_call(module.TMALL_UPLOAD_CREATE_JS, {
+            "style_code": "208326100202",
+            "item_id": "1002178235142",
+            "files": [{
+                "name": "208326100202-ai-1.jpg",
+                "role": "ai",
+                "localPath": "/tmp/ai-1.jpg",
+                "dataUrl": "data:image/jpeg;base64,AA==",
+            }],
+            "live_upload": True,
+            "live_create": True,
+            "live_online": True,
+            "folder_id": "0",
+            "upload_delay_ms": 0,
+            "create_delay_ms": 0,
+            "batch_delay_ms": 0,
+            "readback_delay_ms": 0,
+        })
+        node_script = f"""
+;(async () => {{
+  const code = {json.dumps(code, ensure_ascii=False)};
+  const calls = [];
+  let online = false;
+  const stoppedRow = {{
+    domainId: '1002178235142',
+    columns: {{
+      test_data: {{
+        dataList: [{{
+          imageTestSource: 'common_search',
+          experimentTaskId: 41716301,
+          testStatus: -1,
+          originImageMetrics: {{
+            '3:4': [{{ imageId: 100, imageIds: [100], imageUrl: 'https://img.example/origin.jpg' }}],
+          }},
+          testImageMetrics: {{
+            '3:4': [
+              {{ imageId: 201, imageIds: [201], imageUrl: 'https://img.example/old-1.jpg' }},
+              {{ imageId: 202, imageIds: [202], imageUrl: 'https://img.example/old-2.jpg' }},
+              {{ imageId: 203, imageIds: [203], imageUrl: 'https://img.example/old-3.jpg' }},
+              {{ imageId: 204, imageIds: [204], imageUrl: 'https://img.example/old-4.jpg' }},
+              {{ imageId: 205, imageIds: [205], imageUrl: 'https://img.example/old-5.jpg' }},
+            ],
+          }},
+        }}],
+      }},
+    }},
+  }};
+  global.document = {{ cookie: '_tb_token_=token-test' }};
+  global.fetch = async (url) => {{
+    const raw = String(url);
+    if (raw.startsWith('data:')) {{
+      return {{ ok: true, async blob() {{ return new Blob(['image'], {{ type: 'image/jpeg' }}); }} }};
+    }}
+    if (raw.startsWith('https://stream-upload.taobao.com/api/upload.api')) {{
+      return {{
+        ok: true,
+        async text() {{
+          return JSON.stringify({{ success: true, object: {{ url: '//img.example/new-ai.jpg', fileId: 'new-1', pix: '960x1280' }} }});
+        }},
+      }};
+    }}
+    throw new Error('unexpected fetch ' + raw);
+  }};
+  global.window = {{
+    lib: {{
+      mtop: {{
+        async request(request) {{
+          calls.push({{ api: request.api, data: request.data }});
+          if (request.api === 'mtop.taobao.qn.copilot.framework.listmodel.data.search') {{
+            const params = JSON.parse(request.data.params || '{{}}');
+            if (params.testStatus === '0') return {{ data: {{ result: {{ total: online ? 0 : 1, list: online ? [] : [stoppedRow] }} }} }};
+            if (params.testStatus === '1') return {{ data: {{ result: {{ total: online ? 1 : 0, list: online ? [stoppedRow] : [] }} }} }};
+            return {{ data: {{ result: {{ total: 0, list: [] }} }} }};
+          }}
+          if (request.api === 'mtop.taobao.qn.copilot.test.image.task.create') {{
+            throw new Error('should reuse stopped task instead of creating a new one');
+          }}
+          if (request.api === 'mtop.taobao.qn.copilot.test.image.batch.delete') {{
+            return {{ data: {{ ok: true }} }};
+          }}
+          if (request.api === 'mtop.taobao.qn.copilot.test.image.batch.add') {{
+            return {{ data: {{ ok: true }} }};
+          }}
+          if (request.api === 'mtop.taobao.qn.copilot.test.image.task.online') {{
+            online = true;
+            return {{ data: {{ ok: true }} }};
+          }}
+          throw new Error('unexpected mtop ' + request.api);
+        }},
+      }},
+    }},
+  }};
+  const result = await eval(code);
+  if (!result.success) throw new Error(result.error || 'mocked tmall upload failed');
+  const data = result.data[0];
+  process.stdout.write(JSON.stringify({{
+    error: data.error,
+    reusedTaskId: data.reusedExistingTask && data.reusedExistingTask.experimentTaskId,
+    clearedMaterialIds: data.clearedMaterialIds,
+    apis: calls.map((call) => call.api),
+    deleteMaterialIds: calls
+      .filter((call) => call.api === 'mtop.taobao.qn.copilot.test.image.batch.delete')
+      .map((call) => call.data.materialIds),
+    addPayloads: calls
+      .filter((call) => call.api === 'mtop.taobao.qn.copilot.test.image.batch.add')
+      .map((call) => call.data),
+    onlinePayloads: calls
+      .filter((call) => call.api === 'mtop.taobao.qn.copilot.test.image.task.online')
+      .map((call) => call.data),
+  }}));
+}})().catch((error) => {{
+  console.error(error && error.stack || error);
+  process.exit(1);
+}});
+"""
+        completed = subprocess.run(["node"], input=node_script, text=True, capture_output=True, check=True)
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(payload["error"], "")
+        self.assertEqual(payload["reusedTaskId"], "41716301")
+        self.assertEqual(payload["clearedMaterialIds"], ["201", "202", "203", "204", "205"])
+        self.assertNotIn("mtop.taobao.qn.copilot.test.image.task.create", payload["apis"])
+        self.assertEqual(payload["deleteMaterialIds"], ["201", "202", "203", "204", "205"])
+        self.assertEqual(payload["addPayloads"][0]["experimentTaskId"], "41716301")
+        self.assertIn("new-ai.jpg", payload["addPayloads"][0]["materials"])
+        self.assertIn('"experimentTaskId":"41716301"', payload["onlinePayloads"][0]["taskStatusList"])
+
     def test_workflow_aliases_match_user_import_template_headers(self):
         module = load_script()
         table = {
