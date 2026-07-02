@@ -1559,6 +1559,7 @@ test('apply_tmall_draft commits new desc template before full publish submit', a
   })
 
   assert.equal(result.meta.next_phase, 'submit_pc_publish')
+  assert.equal(result.meta.shared.pc_detail_target, 'descRepublicOfSell')
   assert.equal(fetchCalls.length, 1)
   assert.match(fetchCalls[0].url, /commit_item_description\.do/)
   assert.match(fetchCalls[0].body, /templateContent=/)
@@ -1698,6 +1699,116 @@ test('wait_publish_result does not repeatedly confirm loading or hidden Tmall di
   assert.equal(result.meta.next_phase, 'wait_publish_result')
   assert.equal(result.meta.shared.publish_wait_attempts, 1)
   assert.match(result.meta.shared.current_store, /PC端提交发布等待 1\/12/)
+})
+
+test('wait_publish_result completes new desc publish without reopening mobile editor', async () => {
+  const currentRows = [{
+    '款号': '208425107212',
+    '商品ID': '999412782684',
+    '下载结果': '已下载',
+    '上传结果': '已上传',
+    '本地文件': '/tmp/detail-01.jpg',
+  }]
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      publish_stage: 'pc',
+      pc_detail_target: 'descRepublicOfSell',
+      publish_wait_attempts: 0,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: currentRows,
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/success.htm?isSuccess=true&primaryId=999412782684',
+    },
+    documentOverride: {
+      title: '商品提交成功',
+      body: { innerText: '商品提交成功 商品ID：999412782684 继续发布 查看商品 编辑商品' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {},
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.meta.next_phase, undefined)
+  assert.equal(result.data[0]['执行结果'], '更新完成')
+  assert.match(result.data[0]['备注'], /新版详情已提交发布/)
+  assert.match(result.data[0]['备注'], /手机端详情随新版详情同步/)
+})
+
+test('wait_publish_result keeps legacy PC publish on mobile sync path', async () => {
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      publish_stage: 'pc',
+      pc_detail_target: 'tmDescription',
+      publish_wait_attempts: 0,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/success.htm?isSuccess=true&primaryId=999412782684',
+    },
+    documentOverride: {
+      title: '商品提交成功',
+      body: { innerText: '商品提交成功 商品ID：999412782684 继续发布 查看商品 编辑商品' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {},
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'reopen_after_pc_publish')
+  assert.match(result.meta.shared.current_store, /同步手机端详情/)
+})
+
+test('wait_publish_result does not reopen mobile editor when new desc submit is pending confirmation', async () => {
+  const currentRows = [{
+    '款号': '208425107212',
+    '商品ID': '999412782684',
+    '下载结果': '已下载',
+    '上传结果': '已上传',
+    '本地文件': '/tmp/detail-01.jpg',
+  }]
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      publish_stage: 'pc',
+      pc_detail_target: 'descRepublicOfSell',
+      publish_wait_attempts: 12,
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: currentRows,
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品发布 提交' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {},
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.meta.next_phase, undefined)
+  assert.equal(result.data[0]['执行结果'], '提交待确认')
+  assert.match(result.data[0]['备注'], /无需旧版手机端导入/)
 })
 
 test('wait_publish_result cools down after Taobao operation-speed warning', async () => {

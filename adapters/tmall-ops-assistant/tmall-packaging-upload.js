@@ -4655,6 +4655,10 @@
     }
   }
 
+  function isNewDescPcDetailTarget(state = shared) {
+    return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'descRepublicOfSell'
+  }
+
   function currentJobFromShared(state = shared) {
     const jobs = Array.isArray(state.jobs) ? state.jobs : []
     const index = Number(state.job_index || 0)
@@ -4689,6 +4693,7 @@
       mobile_sync_api_result: null,
       applied_modular_desc: null,
       applied_pc_detail_html: '',
+      pc_detail_target: '',
       pc_detail_replacement_probe: null,
       pc_detail_visual_anchors: null,
       pc_detail_ocr_result: null,
@@ -5270,6 +5275,7 @@
         afterStatus,
         applyNote || '已写入天猫编辑页草稿；未点击提交发布；手机端详情仍需在页面确认导入PC详情',
       )
+      const pcDetailTarget = componentValues.pcDetailReplacement?.target || ''
       if (fullPublishMode) {
         if (hasApplyFailure) {
           const failedRows = rows.map(row => ({ ...row, '执行结果': '草稿写入失败' }))
@@ -5287,6 +5293,7 @@
           applied_components: applied,
           applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
           applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+          pc_detail_target: pcDetailTarget,
           publish_wait_attempts: 0,
           publish_stage: 'pc',
           current_store: '提交PC端详情发布',
@@ -5299,6 +5306,7 @@
         applied_components: applied,
         applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
         applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+        pc_detail_target: pcDetailTarget,
       })
     }
 
@@ -5391,6 +5399,20 @@
       }
       if (publishStatus.success) {
         if (stage === 'pc') {
+          if (isNewDescPcDetailTarget(shared)) {
+            const finalNote = compact([
+              'PC端新版详情已提交发布',
+              '手机端详情随新版详情同步，无需旧版手机端导入',
+              '更新完毕',
+            ].join('；'))
+            const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '更新完成', finalNote)
+            return advanceToNextJob(rows, {
+              ...shared,
+              current_result_rows: rows,
+              pc_publish_note: finalNote,
+              final_publish_status: publishStatus,
+            })
+          }
           return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
             ...shared,
             pc_publish_note: 'PC端详情已提交发布',
@@ -5446,6 +5468,20 @@
         })
       }
       if (stage === 'pc') {
+        if (isNewDescPcDetailTarget(shared)) {
+          const finalNote = compact([
+            'PC端新版详情提交已触发，未识别明确成功提示',
+            '手机端详情随新版详情同步，无需旧版手机端导入',
+            '请在天猫后台确认',
+          ].join('；'))
+          const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '提交待确认', finalNote)
+          return advanceToNextJob(rows, {
+            ...shared,
+            current_result_rows: rows,
+            pc_publish_note: finalNote,
+            final_publish_status: publishStatus,
+          })
+        }
         return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
           ...shared,
           pc_publish_note: 'PC端提交已触发，未识别明确成功提示，继续同步手机端详情',
