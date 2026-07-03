@@ -1,9 +1,12 @@
 import tempfile
 import unittest
+from importlib.util import find_spec
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
+from core import data_sink
 from core.api_server import _finalize_plm_size_chart_downloader_outputs
 
 
@@ -79,6 +82,76 @@ class PlmSizeChartExportDirTests(unittest.TestCase):
             self.assertEqual(result, [str(copied)])
             self.assertEqual(existing.read_bytes(), b"old")
             self.assertEqual(copied.read_bytes(), b"excel")
+
+    def test_export_excel_splits_wide_and_long_rows_into_configured_sheets(self):
+        if find_spec("openpyxl") is None:
+            self.skipTest("openpyxl is required for export_excel in this environment")
+
+        from openpyxl import load_workbook
+
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "size_chart_downloader")
+        output = next(item for item in task["output"] if item["type"] == "excel")
+        rows = [
+            {
+                "__sheet_name": "宽表",
+                "款号": "201326105103",
+                "尺码表阶段": "大货",
+                "尺码表名称": "326FY-BS-507大货_尺寸表",
+                "修订版": "7",
+                "测量点": "衣长",
+                "测量点编码": "101",
+                "80/": "35.5",
+                "90/": "38.0",
+            },
+            {
+                "__sheet_name": "长表",
+                "款号": "201326105103",
+                "尺码表阶段": "大货",
+                "尺码表名称": "326FY-BS-507大货_尺寸表",
+                "修订版": "7",
+                "测量点": "衣长",
+                "测量点编码": "101",
+                "尺码": "80/",
+                "尺码值": "35.5",
+            },
+            {
+                "__sheet_name": "长表",
+                "款号": "201326105103",
+                "尺码表阶段": "大货",
+                "尺码表名称": "326FY-BS-507大货_尺寸表",
+                "修订版": "7",
+                "测量点": "衣长",
+                "测量点编码": "101",
+                "尺码": "90/",
+                "尺码值": "38.0",
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch.dict("os.environ", {"CRAWSHRIMP_DATA": tmpdir}, clear=False):
+                out_path = data_sink.export_excel(
+                    rows,
+                    adapter_id="plm-ops-assistant",
+                    task_id="size_chart_downloader",
+                    filename_template="test.xlsx",
+                    sheet_key=output["sheet_key"],
+                    sheet_configs=output["sheets"],
+                )
+
+            wb = load_workbook(out_path, read_only=True, data_only=True)
+            self.assertEqual(wb.sheetnames, ["宽表", "长表"])
+
+            wide_headers = [cell.value for cell in next(wb["宽表"].iter_rows(min_row=1, max_row=1))]
+            long_headers = [cell.value for cell in next(wb["长表"].iter_rows(min_row=1, max_row=1))]
+            self.assertEqual(wb["宽表"].max_row, 2)
+            self.assertEqual(wb["长表"].max_row, 3)
+            self.assertIn("80/", wide_headers)
+            self.assertIn("90/", wide_headers)
+            self.assertNotIn("80/", long_headers)
+            self.assertNotIn("90/", long_headers)
+            self.assertIn("尺码", long_headers)
+            self.assertIn("尺码值", long_headers)
 
 
 if __name__ == "__main__":

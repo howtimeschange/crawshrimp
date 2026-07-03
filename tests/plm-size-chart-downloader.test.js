@@ -2,7 +2,6 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { spawnSync } from 'node:child_process'
 import vm from 'node:vm'
 
 const SCRIPT_PATH = path.resolve('adapters/plm-ops-assistant/size-chart-downloader.js')
@@ -171,94 +170,6 @@ test('buildRowsForChart exports wide and long rows with measurement descriptions
   assert.equal(long[0]['90/'], undefined)
   assert.equal(rows[0].__sheet_name, '宽表')
   assert.equal(long[0].__sheet_name, '长表')
-})
-
-test('manifest exports wide and long rows into separate workbook sheets', async () => {
-  const helpers = await loadExports()
-  const nodes = [
-    { $URL: 'STYLE1', $Type: 'Style', 'Node Name': '326FY-BS-507/201326105103' },
-    { $URL: 'CHART1', $Type: 'SizeChart', 'Node Name': '326FY-BS-507大货_尺寸表', CurrentRevision: 'REV1', __Parent__: 'STYLE1' },
-    {
-      $URL: 'REV1',
-      $Type: 'SizeChartRevision',
-      'Node Name': '7',
-      State: 'Revision.State:DRAFT',
-      SizeRange: 'RANGE1',
-      SizeChartSubSizeRanges: ['SUB1'],
-      Sizes: ['S80', 'S90'],
-      Items: ['ITEM1'],
-    },
-    { $URL: 'RANGE1', $Type: 'SizeRange', 'Node Name': '婴幼童80-90' },
-    { $URL: 'SUB1', $Type: 'SizeChartSubSizeRange', 'Node Name': '婴幼童80-90', BaseSize: 'S90', BaseSizeIndex: 1 },
-    { $URL: 'S80', $Type: 'ProductSize', 'Node Name': '80/' },
-    { $URL: 'S90', $Type: 'ProductSize', 'Node Name': '90/' },
-    {
-      $URL: 'ITEM1',
-      $Type: 'SizeChartDimension',
-      'Node Name': '衣长',
-      Actual: 'DIM101',
-      Original: 'DIM101',
-      Increments: [-2.5, 38],
-      ToleranceNegative: -1,
-      Tolerance: 1,
-    },
-    { $URL: 'DIM101', $Type: 'ApparelDimension', 'Node Name': '衣长', DimDescAlt1: '101', Description: '后中领缝垂直量至下摆边' },
-  ]
-  const rows = helpers.buildRowsForChart({
-    styleCode: '201326105103',
-    styleNode: nodes[0],
-    chart: nodes[1],
-    revision: nodes[2],
-    nodes,
-    stageName: '大货',
-    outputShape: 'both',
-  })
-  const payload = {
-    rows,
-    manifestPath: MANIFEST_PATH,
-  }
-  const probe = spawnSync('python3', ['-c', `
-import json, os, tempfile, yaml
-from openpyxl import load_workbook
-from core import data_sink
-
-payload = json.loads(os.environ["PAYLOAD"])
-manifest = yaml.safe_load(open(payload["manifestPath"], encoding="utf-8"))
-task = next(item for item in manifest["tasks"] if item["id"] == "size_chart_downloader")
-output = next(item for item in task["output"] if item["type"] == "excel")
-with tempfile.TemporaryDirectory() as tmpdir:
-    os.environ["CRAWSHRIMP_DATA"] = tmpdir
-    path = data_sink.export_excel(
-        payload["rows"],
-        adapter_id="plm-ops-assistant",
-        task_id="size_chart_downloader",
-        filename_template="test.xlsx",
-        sheet_key=output["sheet_key"],
-        sheet_configs=output["sheets"],
-    )
-    wb = load_workbook(path, read_only=True, data_only=True)
-    result = {"sheetnames": wb.sheetnames}
-    result["wide_headers"] = [cell.value for cell in next(wb["宽表"].iter_rows(min_row=1, max_row=1))]
-    result["long_headers"] = [cell.value for cell in next(wb["长表"].iter_rows(min_row=1, max_row=1))]
-    result["wide_rows"] = wb["宽表"].max_row
-    result["long_rows"] = wb["长表"].max_row
-    print(json.dumps(result, ensure_ascii=False))
-`], {
-    cwd: path.resolve('.'),
-    encoding: 'utf8',
-    env: { ...process.env, PAYLOAD: JSON.stringify(payload) },
-  })
-  assert.equal(probe.status, 0, probe.stderr)
-  const result = JSON.parse(probe.stdout)
-  assert.deepEqual(result.sheetnames, ['宽表', '长表'])
-  assert.equal(result.wide_rows, 2)
-  assert.equal(result.long_rows, 3)
-  assert.ok(result.wide_headers.includes('80/'))
-  assert.ok(result.wide_headers.includes('90/'))
-  assert.equal(result.long_headers.includes('80/'), false)
-  assert.equal(result.long_headers.includes('90/'), false)
-  assert.ok(result.long_headers.includes('尺码'))
-  assert.ok(result.long_headers.includes('尺码值'))
 })
 
 test('selectStageSizeChart chooses the requested stage from style nodes', async () => {
