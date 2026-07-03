@@ -93,6 +93,11 @@ const TASK_PROGRESS_RULES = Object.freeze([
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
   }),
   Object.freeze({
+    adapterId: 'tmall-ops-assistant',
+    taskId: 'tmall_material_test_data_export',
+    config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,
+  }),
+  Object.freeze({
     adapterId: 'shenhui-new-arrival',
     taskId: 'prepare_upload_package',
     config: ENHANCED_TASK_RUNNER_ONLY_CONFIG,

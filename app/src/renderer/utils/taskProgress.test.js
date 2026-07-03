@@ -276,6 +276,33 @@ test('shein commodity quality uses two-stage list and return detail progress', (
   assert.match(summary.tracks[1].detail, /sk25050817072795161/)
 })
 
+test('tmall material-test data export exposes enhanced full-run progress', () => {
+  const config = resolveTaskProgressConfig('tmall-ops-assistant', 'tmall_material_test_data_export')
+  assert.equal(config.mode, 'enhanced')
+  assert.equal(config.usage.taskRunner, 'enhanced')
+
+  const summary = buildTaskRunnerProgressSummary({
+    adapterId: 'tmall-ops-assistant',
+    taskId: 'tmall_material_test_data_export',
+    liveStatus: 'running',
+    isRunning: true,
+    live: {
+      status: 'running',
+      phase: 'collect_download_data',
+      current: 40,
+      total: 220,
+      completed: 238,
+      percent: 18.2,
+      progress_text: '40/220',
+    },
+  })
+
+  assert.equal(summary.title, '批处理进度')
+  assert.equal(summary.percentValue, 18.2)
+  assert.equal(summary.tracks[0].main, '第 40 / 220 条')
+  assert.match(summary.sub, /collect_download_data/)
+})
+
 test('amazon reviews full export uses product and current-review two-layer progress', () => {
   const config = resolveTaskProgressConfig('amazon-ops-assistant', 'amazon_reviews_full_export')
   assert.equal(config.mode, 'enhanced')

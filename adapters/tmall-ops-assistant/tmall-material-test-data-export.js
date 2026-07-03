@@ -246,11 +246,21 @@
     )
   }
 
+  function resolveCaptureScope(rawParams = params) {
+    const scope = compact(rawParams.capture_scope || rawParams.captureScope).toLowerCase()
+    if (['full', 'ids', 'file'].includes(scope)) return scope
+    return 'auto'
+  }
+
   function normalizeSourceRows(rawParams = params) {
+    const scope = resolveCaptureScope(rawParams)
+    if (scope === 'full') return []
     const rows = []
     const seen = new Set()
     const seenItemIds = new Set()
-    const inputRows = Array.isArray(rawParams.input_file?.rows) ? rawParams.input_file.rows : []
+    const inputRows = scope === 'ids'
+      ? []
+      : (Array.isArray(rawParams.input_file?.rows) ? rawParams.input_file.rows : [])
     for (const [index, row] of inputRows.entries()) {
       const itemId = normalizeItemId(rowValue(row, ['商品ID', '天猫商品ID', 'ID（用于测图的ID）', '宝贝ID', 'itemId', 'item_id']))
       const taskId = rowValue(row, ['任务ID', '测图任务ID', 'experimentTaskId', 'taskId'])
@@ -267,7 +277,8 @@
       seenItemIds.add(itemId)
       rows.push(source)
     }
-    for (const itemId of parseListInput(rawParams.item_ids || rawParams.item_id || rawParams.itemId)) {
+    const explicitItemIds = scope === 'file' ? [] : parseListInput(rawParams.item_ids || rawParams.item_id || rawParams.itemId)
+    for (const itemId of explicitItemIds) {
       const id = normalizeItemId(itemId)
       if (!id) continue
       if (seenItemIds.has(id)) continue
@@ -538,17 +549,122 @@
     return ''
   }
 
-  function isTmallMaterialPage() {
-    return /^https:\/\/myseller\.taobao\.com\//i.test(String(window.location?.href || globalThis.location?.href || ''))
+  function mergeSourceRows(existingRows = [], nextRows = []) {
+    const rows = []
+    const seen = new Set()
+    for (const row of [...(Array.isArray(existingRows) ? existingRows : []), ...(Array.isArray(nextRows) ? nextRows : [])]) {
+      const itemId = normalizeItemId(row?.商品ID)
+      if (!itemId) continue
+      const taskId = compact(row?.任务ID)
+      const key = `${itemId}:${taskId}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      rows.push({
+        ...row,
+        商品ID: itemId,
+        任务ID: taskId,
+        __listMaterials: Array.isArray(row?.__listMaterials) ? row.__listMaterials : [],
+      })
+    }
+    return rows
   }
 
-  function complete(data = [], newShared = shared) {
+  function buildContextByItem(sourceRows) {
+    const context = new Map()
+    for (const sourceRow of Array.isArray(sourceRows) ? sourceRows : []) {
+      const itemId = normalizeItemId(sourceRow?.商品ID)
+      if (itemId) context.set(itemId, sourceRow)
+    }
+    return context
+  }
+
+  function mergeShared(next = {}) {
+    return {
+      ...shared,
+      ...(next || {}),
+    }
+  }
+
+  function baseProgressShared(next = {}) {
+    const totalRows = Math.max(0, Number(next.total_rows ?? shared.total_rows ?? 0) || 0)
+    const currentExecNo = Math.max(0, Number(next.current_exec_no ?? shared.current_exec_no ?? 0) || 0)
+    return {
+      total_rows: totalRows,
+      current_exec_no: totalRows > 0 ? Math.min(currentExecNo, totalRows) : currentExecNo,
+      current_row_no: Math.max(0, Number(next.current_row_no ?? shared.current_row_no ?? 0) || 0),
+      batch_no: Math.max(0, Number(next.batch_no ?? shared.batch_no ?? 0) || 0),
+      total_batches: Math.max(0, Number(next.total_batches ?? shared.total_batches ?? 0) || 0),
+      current_store: compact(next.current_store ?? shared.current_store),
+      detail_records_collected: Math.max(0, Number(next.detail_records_collected ?? shared.detail_records_collected ?? 0) || 0),
+    }
+  }
+
+  function buildListProgressShared(next = {}) {
+    const base = baseProgressShared(next)
+    return {
+      ...base,
+      list_total_rows: Math.max(0, Number(next.list_total_rows ?? next.total_rows ?? shared.list_total_rows ?? shared.total_rows ?? 0) || 0),
+      list_completed_rows: Math.max(0, Number(next.list_completed_rows ?? next.current_exec_no ?? shared.list_completed_rows ?? shared.current_exec_no ?? 0) || 0),
+      list_total_batches: Math.max(0, Number(next.list_total_batches ?? next.total_batches ?? shared.list_total_batches ?? shared.total_batches ?? 0) || 0),
+      list_completed_batches: Math.max(0, Number(next.list_completed_batches ?? next.batch_no ?? shared.list_completed_batches ?? shared.batch_no ?? 0) || 0),
+      detail_total_targets: Math.max(0, Number(next.detail_total_targets ?? shared.detail_total_targets ?? 0) || 0),
+      detail_completed_targets: Math.max(0, Number(next.detail_completed_targets ?? shared.detail_completed_targets ?? 0) || 0),
+      detail_current_target_index: Math.max(0, Number(next.detail_current_target_index ?? shared.detail_current_target_index ?? 0) || 0),
+      detail_current_target: compact(next.detail_current_target ?? shared.detail_current_target),
+    }
+  }
+
+  function buildDownloadProgressShared(sourceRows = [], next = {}) {
+    const total = Array.isArray(sourceRows) ? sourceRows.length : 0
+    const completed = Math.min(Math.max(0, Number(next.detail_completed_targets ?? shared.detail_completed_targets ?? 0) || 0), total || Number.MAX_SAFE_INTEGER)
+    const target = Array.isArray(sourceRows) && sourceRows[completed] ? sourceRows[completed] : {}
+    return {
+      ...baseProgressShared({
+        total_rows: total,
+        current_exec_no: completed,
+        current_row_no: completed,
+        current_store: '下载测图数据',
+        detail_records_collected: next.detail_records_collected,
+      }),
+      list_total_rows: Math.max(0, Number(shared.list_total_rows || total || 0)),
+      list_completed_rows: Math.max(0, Number(shared.list_completed_rows || total || 0)),
+      detail_total_targets: total,
+      detail_completed_targets: completed,
+      detail_current_target_index: total ? Math.min(completed + 1, total) : 0,
+      detail_current_target: normalizeItemId(target?.商品ID),
+      detail_records_collected: Math.max(0, Number(next.detail_records_collected ?? shared.detail_records_collected ?? 0) || 0),
+    }
+  }
+
+  function currentHref() {
+    return String(window.location?.href || globalThis.location?.href || '')
+  }
+
+  function isTmallMaterialPage() {
+    return /^https:\/\/(?:myseller|qn)\.taobao\.com\/(?:[^?#]*\/)?material-center\/material-test(?:[/?#]|$)/i.test(currentHref())
+  }
+
+  function complete(data = [], newShared = shared, hasMore = false, sleepMs = 0) {
     return {
       success: true,
       data,
       meta: {
         action: 'complete',
-        has_more: false,
+        has_more: !!hasMore,
+        sleep_ms: sleepMs,
+        shared: newShared,
+      },
+    }
+  }
+
+  function nextPhase(name, data = [], newShared = shared, sleepMs = 0) {
+    return {
+      success: true,
+      data,
+      meta: {
+        action: 'next_phase',
+        next_phase: name,
+        sleep_ms: sleepMs,
         shared: newShared,
       },
     }
@@ -557,6 +673,7 @@
   function exposeHelpers() {
     if (!testExports) return
     Object.assign(testExports, {
+      resolveCaptureScope,
       normalizeSourceRows,
       buildSearchTasksPayload,
       buildDownloadDataPayload,
@@ -571,6 +688,11 @@
       chunkArray,
       extractDownloadRows,
       findDownloadUrl,
+      mergeSourceRows,
+      buildListProgressShared,
+      buildDownloadProgressShared,
+      currentHref,
+      isTmallMaterialPage,
     })
   }
 
@@ -581,7 +703,7 @@
     if (!isTmallMaterialPage()) {
       return complete([{
         执行结果: '未在支持页面',
-        备注: '请在天猫素材测试页运行',
+        备注: `请在天猫素材测试页运行；当前 ${currentHref() || 'unknown'}`,
       }], shared)
     }
 
@@ -590,105 +712,265 @@
     const startDate = compact(params.start_date || params.download_start_date || defaults.startDate)
     const endDate = compact(params.end_date || params.download_end_date || defaults.endDate)
     const testStatus = normalizeStatusValue(params.test_status === undefined ? '1' : params.test_status)
-    const rows = []
-    const contextByItem = new Map()
-    const inputSourceRows = normalizeSourceRows(params)
-    let sourceRows = []
+    const testChannel = params.test_channel || 'common_search'
+    const pageSize = Math.max(1, Math.min(100, Number(params.page_size || DEFAULT_PAGE_SIZE) || DEFAULT_PAGE_SIZE))
+    const maxPages = Math.max(1, Number(params.max_pages || 200) || 200)
+    const downloadChunkSize = Math.max(1, Number(params.download_chunk_size || 20) || 20)
+    const captureScope = resolveCaptureScope(params)
+    const runContext = {
+      capture_scope: captureScope,
+      statistic_type: statisticType,
+      start_date: startDate,
+      end_date: endDate,
+      test_status: testStatus,
+      test_channel: testChannel,
+    }
 
-    if (!inputSourceRows.length) {
+    if (phase === 'main') {
+      const inputSourceRows = normalizeSourceRows(params)
+      if (!inputSourceRows.length) {
+        return nextPhase('collect_full_list_page', [], mergeShared({
+          ...runContext,
+          source_rows: [],
+          full_list_page: 1,
+          full_raw_rows_seen: 0,
+          full_list_total: 0,
+          ...buildListProgressShared({
+            total_rows: 0,
+            current_exec_no: 0,
+            current_store: '全量抓取测图任务',
+          }),
+        }))
+      }
+
+      return nextPhase('search_source_item', [], mergeShared({
+        ...runContext,
+        input_source_rows: inputSourceRows,
+        source_rows: [],
+        search_index: 0,
+        ...buildListProgressShared({
+          total_rows: inputSourceRows.length,
+          current_exec_no: 0,
+          current_store: captureScope === 'file' ? '按表格查询测图任务' : '按商品ID查询测图任务',
+        }),
+      }))
+    }
+
+    if (phase === 'collect_full_list_page') {
+      const currentPage = Math.max(1, Number(shared.full_list_page || 1) || 1)
+      const rows = []
       try {
-        const result = await collectMaterialTestTasks({
+        const result = await searchMaterialTestTasks('', {
           testStatus,
-          testChannel: params.test_channel || 'common_search',
-          pageSize: params.page_size || DEFAULT_PAGE_SIZE,
-          maxPages: params.max_pages || 200,
+          testChannel,
+          currentPage,
+          pageSize,
         })
-        const taskRows = filterTaskRowsForExport(normalizeTmallTaskRows(result.rows, {}), {
+        const pageRows = Array.isArray(result.rows) ? result.rows : []
+        const taskRows = filterTaskRowsForExport(normalizeTmallTaskRows(pageRows, {}), {
           testStatus,
-          testChannel: params.test_channel || 'common_search',
+          testChannel,
         })
         addOverviewRows(rows, taskRows)
-        sourceRows = sourceRowsFromTaskRows(taskRows)
-        if (!taskRows.length) rows.push({
-          __sheet_name: OVERVIEW_SHEET,
-          记录类型: '任务概览',
-          测试状态: getStatusLabel(testStatus),
-          执行结果: '未找到任务',
-          备注: `total=${result.total}`,
+        const sourceRows = mergeSourceRows(shared.source_rows, sourceRowsFromTaskRows(taskRows))
+        const rawRowsSeen = Math.max(0, Number(shared.full_raw_rows_seen || 0) || 0) + pageRows.length
+        const totalRows = Math.max(rawRowsSeen, Number(shared.full_list_total || 0) || 0, Number(result.total || 0) || 0)
+        const totalBatches = totalRows > 0 ? Math.ceil(totalRows / pageSize) : currentPage
+        const hasMoreListPages = Boolean(
+          pageRows.length &&
+          currentPage < maxPages &&
+          (
+            (totalRows > 0 && rawRowsSeen < totalRows) ||
+            pageRows.length >= pageSize
+          )
+        )
+        const nextShared = mergeShared({
+          ...runContext,
+          source_rows: sourceRows,
+          full_list_page: currentPage + 1,
+          full_raw_rows_seen: rawRowsSeen,
+          full_list_total: totalRows,
+          ...buildListProgressShared({
+            total_rows: totalRows,
+            current_exec_no: Math.min(rawRowsSeen, totalRows || rawRowsSeen),
+            current_row_no: rawRowsSeen,
+            total_batches: totalBatches,
+            batch_no: currentPage,
+            list_total_rows: totalRows,
+            list_completed_rows: Math.min(rawRowsSeen, totalRows || rawRowsSeen),
+            list_total_batches: totalBatches,
+            list_completed_batches: Math.min(currentPage, totalBatches || currentPage),
+            current_store: '全量抓取测图任务',
+          }),
         })
+
+        if (hasMoreListPages) {
+          return nextPhase('collect_full_list_page', rows, nextShared)
+        }
+
+        if (!sourceRows.length && !rows.length) {
+          rows.push({
+            __sheet_name: OVERVIEW_SHEET,
+            记录类型: '任务概览',
+            测试状态: getStatusLabel(testStatus),
+            执行结果: '未找到任务',
+            备注: `total=${result.total}`,
+          })
+        }
+
+        if (!sourceRows.length) {
+          return complete(rows, {
+            ...nextShared,
+            total_rows: 0,
+            current_exec_no: 0,
+          })
+        }
+
+        return nextPhase('download_data_chunk', rows, mergeShared({
+          ...nextShared,
+          download_chunk_index: 0,
+          item_ids_with_detail: [],
+          ...buildDownloadProgressShared(sourceRows, {
+            detail_completed_targets: 0,
+            detail_records_collected: 0,
+          }),
+        }))
       } catch (error) {
-        rows.push({
+        return complete([{
           __sheet_name: OVERVIEW_SHEET,
           记录类型: '任务概览',
           执行结果: '任务查询失败',
           备注: describeError(error),
-        })
+        }], mergeShared({
+          ...runContext,
+          ...buildListProgressShared({
+            total_rows: 0,
+            current_exec_no: 0,
+            current_store: '全量抓取测图任务',
+          }),
+        }))
       }
-    } else {
-      const matchedRows = []
-      for (const sourceRow of inputSourceRows) {
-        contextByItem.set(sourceRow.商品ID, sourceRow)
-        try {
-          const result = await searchMaterialTestTasks(sourceRow.商品ID, {
-            testStatus,
-            testChannel: params.test_channel || 'common_search',
-            pageSize: params.page_size || DEFAULT_PAGE_SIZE,
-          })
-          const taskRows = filterTaskRowsForExport(normalizeTmallTaskRows(result.rows, sourceRow), {
-            testStatus,
-            testChannel: params.test_channel || 'common_search',
-          })
-          if (taskRows.length) {
-            addOverviewRows(rows, taskRows)
-            matchedRows.push(...sourceRowsFromTaskRows(taskRows))
-          } else {
-            rows.push({
-              __sheet_name: OVERVIEW_SHEET,
-              记录类型: '任务概览',
-              ...sourceRow,
-              执行结果: '未找到任务',
-              备注: `total=${result.total}`,
-            })
-          }
-        } catch (error) {
+    }
+
+    if (phase === 'search_source_item') {
+      const inputSourceRows = Array.isArray(shared.input_source_rows) ? shared.input_source_rows : normalizeSourceRows(params)
+      if (!inputSourceRows.length) {
+        return complete([{
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
+          执行结果: '未找到任务',
+          备注: '当前抓取范围没有可查询的商品 ID',
+        }], mergeShared({
+          ...runContext,
+          total_rows: 0,
+          current_exec_no: 0,
+        }))
+      }
+
+      const index = Math.max(0, Number(shared.search_index || 0) || 0)
+      const sourceRow = inputSourceRows[index]
+      const rows = []
+      let sourceRows = mergeSourceRows(shared.source_rows, [])
+      try {
+        const result = await searchMaterialTestTasks(sourceRow.商品ID, {
+          testStatus,
+          testChannel,
+          pageSize,
+        })
+        const taskRows = filterTaskRowsForExport(normalizeTmallTaskRows(result.rows, sourceRow), {
+          testStatus,
+          testChannel,
+        })
+        if (taskRows.length) {
+          addOverviewRows(rows, taskRows)
+          sourceRows = mergeSourceRows(sourceRows, sourceRowsFromTaskRows(taskRows))
+        } else {
           rows.push({
             __sheet_name: OVERVIEW_SHEET,
             记录类型: '任务概览',
             ...sourceRow,
-            执行结果: '任务查询失败',
-            备注: describeError(error),
+            执行结果: '未找到任务',
+            备注: `total=${result.total}`,
           })
         }
+      } catch (error) {
+        rows.push({
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
+          ...sourceRow,
+          执行结果: '任务查询失败',
+          备注: describeError(error),
+        })
       }
-      sourceRows = sourceRowsFromTaskRows(matchedRows)
-    }
 
-    for (const sourceRow of sourceRows) {
-      contextByItem.set(sourceRow.商品ID, sourceRow)
-    }
-
-    if (!sourceRows.length) {
-      return complete(rows.length ? rows : [{
-        __sheet_name: OVERVIEW_SHEET,
-        记录类型: '任务概览',
-        执行结果: '未找到任务',
-        备注: '当前筛选条件下没有可导出的测图商品',
-      }], {
-        ...shared,
-        total_rows: 0,
-        statistic_type: statisticType,
-        start_date: startDate,
-        end_date: endDate,
+      const completed = Math.min(index + 1, inputSourceRows.length)
+      const nextShared = mergeShared({
+        ...runContext,
+        input_source_rows: inputSourceRows,
+        source_rows: sourceRows,
+        search_index: index + 1,
+        ...buildListProgressShared({
+          total_rows: inputSourceRows.length,
+          current_exec_no: completed,
+          current_row_no: sourceRow.表格行号 || completed,
+          list_total_rows: inputSourceRows.length,
+          list_completed_rows: completed,
+          current_store: captureScope === 'file' ? '按表格查询测图任务' : '按商品ID查询测图任务',
+          detail_total_targets: sourceRows.length,
+          detail_completed_targets: 0,
+        }),
       })
+
+      if (index + 1 < inputSourceRows.length) {
+        return nextPhase('search_source_item', rows, nextShared)
+      }
+
+      if (!sourceRows.length) {
+        return complete(rows.length ? rows : [{
+          __sheet_name: OVERVIEW_SHEET,
+          记录类型: '任务概览',
+          执行结果: '未找到任务',
+          备注: '当前筛选条件下没有可导出的测图商品',
+        }], nextShared)
+      }
+
+      return nextPhase('download_data_chunk', rows, mergeShared({
+        ...nextShared,
+        download_chunk_index: 0,
+        item_ids_with_detail: [],
+        ...buildDownloadProgressShared(sourceRows, {
+          detail_completed_targets: 0,
+          detail_records_collected: 0,
+        }),
+      }))
     }
 
-    const itemIdsForDownload = Array.from(new Set(sourceRows.map(row => normalizeItemId(row.商品ID)).filter(Boolean)))
-    const itemIdsWithDetail = new Set()
-    const itemIdChunks = chunkArray(itemIdsForDownload, params.download_chunk_size || 20)
-    for (const [chunkIndex, itemIds] of itemIdChunks.entries()) {
+    if (phase === 'download_data_chunk') {
+      const sourceRows = mergeSourceRows(shared.source_rows, [])
+      const contextByItem = buildContextByItem(sourceRows)
+      const itemIdsForDownload = Array.from(new Set(sourceRows.map(row => normalizeItemId(row.商品ID)).filter(Boolean)))
+      const itemIdChunks = chunkArray(itemIdsForDownload, downloadChunkSize)
+      const chunkIndex = Math.max(0, Number(shared.download_chunk_index || 0) || 0)
+      const itemIds = itemIdChunks[chunkIndex] || []
+      if (!itemIds.length) {
+        return nextPhase('finalize_fallback', [], mergeShared({
+          ...runContext,
+          source_rows: sourceRows,
+          item_ids_with_detail: Array.isArray(shared.item_ids_with_detail) ? shared.item_ids_with_detail : [],
+          ...buildDownloadProgressShared(sourceRows, {
+            detail_completed_targets: sourceRows.length,
+            detail_records_collected: Number(shared.detail_records_collected || 0),
+          }),
+        }))
+      }
+
+      const rows = []
+      const itemIdsWithDetail = new Set(Array.isArray(shared.item_ids_with_detail) ? shared.item_ids_with_detail : [])
+      let detailRecordsCollected = Math.max(0, Number(shared.detail_records_collected || 0) || 0)
       try {
         const payload = await downloadMaterialTestData(itemIds, statisticType, startDate, endDate)
         const dataRows = normalizeDownloadDataRows(extractDownloadRows(payload), statisticType, contextByItem)
+        detailRecordsCollected += dataRows.length
         if (dataRows.length) {
           for (const row of dataRows) {
             const itemId = normalizeItemId(row?.商品ID)
@@ -727,16 +1009,42 @@
           })
         }
       }
-    }
-    addNoDetailFallbackRows(rows, sourceRows, itemIdsWithDetail)
 
-    return complete(rows, {
-      ...shared,
-      total_rows: sourceRows.length,
-      statistic_type: statisticType,
-      start_date: startDate,
-      end_date: endDate,
-    })
+      const completedTargets = Math.min((chunkIndex + 1) * downloadChunkSize, itemIdsForDownload.length || sourceRows.length)
+      const nextShared = mergeShared({
+        ...runContext,
+        source_rows: sourceRows,
+        download_chunk_index: chunkIndex + 1,
+        download_chunk_total: itemIdChunks.length,
+        item_ids_with_detail: Array.from(itemIdsWithDetail),
+        ...buildDownloadProgressShared(sourceRows, {
+          detail_completed_targets: completedTargets,
+          detail_records_collected: detailRecordsCollected,
+        }),
+      })
+
+      if (chunkIndex + 1 < itemIdChunks.length) {
+        return nextPhase('download_data_chunk', rows, nextShared)
+      }
+
+      return nextPhase('finalize_fallback', rows, nextShared)
+    }
+
+    if (phase === 'finalize_fallback') {
+      const sourceRows = mergeSourceRows(shared.source_rows, [])
+      const rows = []
+      addNoDetailFallbackRows(rows, sourceRows, new Set(Array.isArray(shared.item_ids_with_detail) ? shared.item_ids_with_detail : []))
+      return complete(rows, mergeShared({
+        ...runContext,
+        source_rows: sourceRows,
+        ...buildDownloadProgressShared(sourceRows, {
+          detail_completed_targets: sourceRows.length,
+          detail_records_collected: Number(shared.detail_records_collected || 0),
+        }),
+      }))
+    }
+
+    return { success: false, error: `未知执行阶段：${phase}` }
   } catch (error) {
     return { success: false, error: describeError(error, '天猫测图数据抓取导出失败') }
   }

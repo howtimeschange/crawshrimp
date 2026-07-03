@@ -4032,6 +4032,53 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         configured_match_prefixes = list(task.tab_match_prefixes or m.tab_match_prefixes or [])
         platform_name = m.name or adapter_id
 
+        def matches_task_entry_url(url: str) -> bool:
+            prefixes = configured_match_prefixes or [target_entry_url]
+            return any(_url_matches_prefix(url, prefix) for prefix in prefixes) or _is_compatible_current_tab_for_task(
+                adapter_id,
+                task_id,
+                target_entry_url,
+                url,
+            )
+
+        async def settle_new_mode_target_tab(initial_tab: Optional[dict], baseline_tab_ids: set[str]) -> Optional[dict]:
+            if (
+                mode == 'current'
+                or not initial_tab
+                or (adapter_id, task_id) != ('tmall-ops-assistant', 'tmall_material_test_data_export')
+            ):
+                return initial_tab
+            initial_tab_id = str(initial_tab.get('id') or '')
+            deadline = time.monotonic() + 8.0
+            latest_tab = initial_tab
+            while time.monotonic() < deadline:
+                try:
+                    tabs = [item for item in await _bridge_get_tabs() if item.get('type') == 'page']
+                except Exception:
+                    tabs = []
+
+                if initial_tab_id:
+                    refreshed = next((item for item in tabs if str(item.get('id') or '') == initial_tab_id), None)
+                    if refreshed:
+                        latest_tab = refreshed
+                        if matches_task_entry_url(str(refreshed.get('url') or '')):
+                            return refreshed
+
+                new_target_tabs = [
+                    item for item in tabs
+                    if str(item.get('id') or '') not in baseline_tab_ids
+                    and str(item.get('id') or '')
+                    and matches_task_entry_url(str(item.get('url') or ''))
+                ]
+                if new_target_tabs:
+                    selected = new_target_tabs[-1]
+                    if str(selected.get('id') or '') != initial_tab_id:
+                        log(f"新建页面实际落到目标标签页：{str(selected.get('url') or '')[:120]}")
+                    return selected
+
+                await asyncio.sleep(0.5)
+            return latest_tab
+
         # 自动解析 file_excel 参数：如果传了 path 但没有 rows，就在后台读出来注入
         for pk, pv in run_params.items():
             if isinstance(pv, dict) and pv.get('path') and not pv.get('rows'):
@@ -4052,6 +4099,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         tab = None
         current_mode_preferred_prefixes: list[str] = []
+        new_mode_baseline_tab_ids: set[str] = set()
         if mode == 'current':
             all_tabs = [t for t in await _bridge_get_tabs() if t.get('type') == 'page']
             preferred_prefixes = configured_match_prefixes or [
@@ -4092,6 +4140,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     raise RuntimeError(f"未找到已打开的目标页面：{target_entry_url}。请选择“新页面开启（重新导航）”或先手动打开并登录。")
         else:
             open_entry_url = _temu_new_tab_entry_url(target_entry_url) if adapter_id == 'temu' else target_entry_url
+            new_mode_baseline_tab_ids = {
+                str(item.get('id') or '')
+                for item in await _bridge_get_tabs()
+                if item.get('type') == 'page' and str(item.get('id') or '')
+            }
             if open_entry_url != target_entry_url:
                 log(f"mode=new，Temu 使用后台入口新建页面：{open_entry_url}，稍后导航业务页：{target_entry_url}")
             else:
@@ -4183,6 +4236,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if not tab:
                 raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 
+        tab = await settle_new_mode_target_tab(tab, new_mode_baseline_tab_ids)
+        if not tab:
+            raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
+
         log(f"Found tab: {tab.get('url', '')[:120]}")
         runner = JSRunner(
             get_bridge().get_tab_ws_url(tab),
@@ -4235,6 +4292,14 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     current_tab = None
             return str((current_tab or {}).get('url') or runner.tab_url or (tab or {}).get('url') or '')
 
+        async def get_runner_page_href() -> str:
+            href_result = await runner.evaluate(
+                "(() => ({ success: true, data: [{ href: String(location.href || '') }], meta: { has_more: false } }))()"
+            )
+            if not href_result.success or not href_result.data:
+                return ""
+            return str((href_result.data[0] or {}).get("href") or "")
+
         def is_task_entry_url(url: str) -> bool:
             prefixes = current_mode_preferred_prefixes or configured_match_prefixes or [target_entry_url]
             return any(_url_matches_prefix(url, prefix) for prefix in prefixes) or _is_compatible_current_tab_for_task(
@@ -4255,6 +4320,15 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     seen.add(path)
                     merged.append(path)
             return merged
+
+        if mode == 'new' and adapter_id == 'tmall-ops-assistant' and task_id == 'tmall_material_test_data_export':
+            page_href = await get_runner_page_href()
+            if not is_task_entry_url(page_href):
+                log(f"新建页运行上下文尚未进入业务入口，导航到：{target_entry_url}（当前：{page_href[:120] or 'unknown'}）")
+                entry_nav = await navigate_runner_to(target_entry_url, wait_seconds=3)
+                if not entry_nav.success:
+                    raise RuntimeError(entry_nav.error or f"无法导航到业务入口：{target_entry_url}")
+                await asyncio.sleep(1)
 
         async def export_outputs(data_rows):
             files = []

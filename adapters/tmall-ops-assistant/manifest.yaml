@@ -422,9 +422,10 @@ tasks:
     name: 巴拉-AI测图数据抓取导出
     description: 在天猫素材测试页通过页面 MTop API 查询测图任务，并按商品 ID 抓取/导出搜索测图数据；只读，不创建或上线任务
     script: tmall-material-test-data-export.js
-    entry_url: https://myseller.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search
+    entry_url: https://qn.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search
     tab_match_prefixes:
-      - https://myseller.taobao.com/
+      - https://qn.taobao.com/home.htm/material-center/material-test
+      - https://myseller.taobao.com/home.htm/material-center/material-test
     skip_auth: true
     params:
       - id: mode
@@ -437,16 +438,34 @@ tasks:
           - value: new
             label: 全新页面
         hint: 请在已登录的天猫素材测试页运行；脚本只读取任务和数据。
+      - id: capture_scope
+        type: radio
+        label: 抓取范围
+        default: full
+        options:
+          - value: full
+            label: 全量抓取
+          - value: ids
+            label: 指定商品 ID
+          - value: file
+            label: 测图任务/商品ID表格
+        hint: 全量抓取会读取当前测试状态下的全部搜索测图任务；指定商品 ID 适合少量临时查询；表格适合按款号/任务 ID 批量导出。
       - id: input_file
         type: file_excel
         label: 测图任务/商品ID表格
-        hint: 可选。支持“款号、商品ID/天猫商品ID/ID（用于测图的ID）、任务ID”等列；留空则自动导出平台当前测试中的全部任务。
+        hint: 支持“款号、商品ID/天猫商品ID/ID（用于测图的ID）、任务ID”等列；脚本会按表格行逐个查询并导出匹配任务。
+        visible_when:
+          field: capture_scope
+          equals: file
       - id: item_ids
         type: textarea
         label: 指定商品ID批量导出
         rows: 4
         placeholder: "一行一个商品 ID"
-        hint: 与导入表格合并去重后逐商品查询；留空则自动导出平台当前筛选状态下的全部任务。
+        hint: 一行一个商品 ID，也支持逗号或顿号分隔；脚本会逐商品查询搜索测图任务。
+        visible_when:
+          field: capture_scope
+          equals: ids
       - id: output_dir
         type: directory
         label: 本地导出目录
@@ -495,6 +514,7 @@ tasks:
         type: number
         label: 任务查询页大小
         default: 20
+        hidden: true
         min: 1
         max: 100
         step: 1

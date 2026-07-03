@@ -40,7 +40,7 @@ async function loadExports() {
   return exportsBox
 }
 
-async function loadDataExportExports() {
+async function loadDataExportExports(href = 'https://myseller.taobao.com/home.htm/material-center/material-test/common_test') {
   const scriptPath = path.resolve('adapters/tmall-ops-assistant/tmall-material-test-data-export.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const exportsBox = {}
@@ -50,10 +50,10 @@ async function loadDataExportExports() {
       __CRAWSHRIMP_PHASE__: '__exports__',
       __CRAWSHRIMP_SHARED__: {},
       __CRAWSHRIMP_EXPORTS__: exportsBox,
-      location: { href: 'https://myseller.taobao.com/home.htm/material-center/material-test/common_test' },
+      location: { href },
     },
     document: {},
-    location: { href: 'https://myseller.taobao.com/home.htm/material-center/material-test/common_test' },
+    location: { href },
     URLSearchParams,
     console,
     setTimeout,
@@ -343,6 +343,17 @@ test('registers readonly Tmall material-test data export task and builds its pay
   assert.match(manifest, /name: 巴拉-AI测图数据抓取导出/)
   assert.match(manifest, /filename: "巴拉-AI测图数据抓取导出_\{timestamp\}\.xlsx"/)
   assert.match(manifest, /script: tmall-material-test-data-export\.js/)
+  assert.match(manifest, /entry_url: https:\/\/qn\.taobao\.com\/home\.htm\/material-center\/material-test\/common_test/)
+  assert.match(manifest, /- https:\/\/qn\.taobao\.com\/home\.htm\/material-center\/material-test/)
+  assert.match(manifest, /- https:\/\/myseller\.taobao\.com\/home\.htm\/material-center\/material-test/)
+  assert.match(manifest, /id: capture_scope/)
+  assert.match(manifest, /label: 抓取范围/)
+  assert.match(manifest, /value: full\n\s+label: 全量抓取/)
+  assert.match(manifest, /value: ids\n\s+label: 指定商品 ID/)
+  assert.match(manifest, /value: file\n\s+label: 测图任务\/商品ID表格/)
+  assert.match(manifest, /id: input_file[\s\S]*visible_when:\n\s+field: capture_scope\n\s+equals: file/)
+  assert.match(manifest, /id: item_ids[\s\S]*visible_when:\n\s+field: capture_scope\n\s+equals: ids/)
+  assert.match(manifest, /id: page_size[\s\S]*hidden: true/)
   assert.match(manifest, /sheet_key: __sheet_name/)
   assert.match(manifest, /name: 概览/)
   assert.match(manifest, /name: 明细/)
@@ -357,6 +368,27 @@ test('registers readonly Tmall material-test data export task and builds its pay
   assert.deepEqual(plain(sourceRows), [
     { 表格行号: 2, 款号: '208326121203', 商品ID: '1060862679580', 任务ID: 'task-1' },
     { 表格行号: '', 款号: '', 商品ID: '1060862679581', 任务ID: '' },
+  ])
+
+  assert.equal(helpers.resolveCaptureScope({ capture_scope: 'full', item_ids: '1060862679580' }), 'full')
+  assert.deepEqual(plain(helpers.normalizeSourceRows({
+    capture_scope: 'full',
+    input_file: { rows: [{ 商品ID: '1060862679580' }] },
+    item_ids: '1060862679581',
+  })), [])
+  assert.deepEqual(plain(helpers.normalizeSourceRows({
+    capture_scope: 'ids',
+    input_file: { rows: [{ 商品ID: '1060862679580' }] },
+    item_ids: '1060862679581',
+  })), [
+    { 表格行号: '', 款号: '', 商品ID: '1060862679581', 任务ID: '' },
+  ])
+  assert.deepEqual(plain(helpers.normalizeSourceRows({
+    capture_scope: 'file',
+    input_file: { rows: [{ 款号: '208326121203', 商品ID: '1060862679580' }] },
+    item_ids: '1060862679581',
+  })), [
+    { 表格行号: 2, 款号: '208326121203', 商品ID: '1060862679580', 任务ID: '' },
   ])
 
   assert.deepEqual(plain(helpers.buildSearchTasksPayload('1060862679580', { testStatus: '1' })), {
@@ -458,4 +490,11 @@ test('registers readonly Tmall material-test data export task and builds its pay
     itemIds: '["1060862679580"]',
     statisticType: 'DAILY',
   })
+})
+
+test('material-test data export supports the current QianNiu material-test URL', async () => {
+  const helpers = await loadDataExportExports('https://qn.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search')
+
+  assert.equal(helpers.currentHref(), 'https://qn.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search')
+  assert.equal(helpers.isTmallMaterialPage(), true)
 })

@@ -781,6 +781,134 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
 
+    async def test_new_mode_waits_for_target_tab_after_transition_page(self):
+        class FakeBridge:
+            def __init__(self):
+                self.get_tabs_calls = 0
+
+            async def get_tabs_async(self):
+                self.get_tabs_calls += 1
+                if self.get_tabs_calls == 1:
+                    return []
+                return [
+                    {
+                        "id": "transition-tab",
+                        "type": "page",
+                        "url": "https://g.alicdn.com/platform/xdomain-storage/0.2.4/frame.html#target",
+                        "webSocketDebuggerUrl": "ws://transition.invalid",
+                    },
+                    {
+                        "id": "target-tab",
+                        "type": "page",
+                        "url": "https://qn.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search",
+                        "webSocketDebuggerUrl": "ws://target.invalid",
+                    },
+                ]
+
+            async def new_tab_async(self, url):
+                return {
+                    "id": "transition-tab",
+                    "type": "page",
+                    "url": "https://g.alicdn.com/platform/xdomain-storage/0.2.4/frame.html#target",
+                    "webSocketDebuggerUrl": "ws://transition.invalid",
+                }
+
+            def get_tab_ws_url(self, tab):
+                return tab.get("webSocketDebuggerUrl", "")
+
+        selected = {}
+
+        class FakeRunner:
+            def __init__(self, ws_url, *args, **kwargs):
+                selected["ws_url"] = ws_url
+                selected["tab_id"] = kwargs.get("tab_id")
+                selected["tab_url"] = kwargs.get("tab_url")
+                selected["navigations"] = []
+                self.href = "about:blank"
+                self.runtime_output_files = []
+
+            async def evaluate(self, expression):
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "success": True,
+                        "data": [{"href": self.href}],
+                        "meta": {"has_more": False},
+                        "error": None,
+                    },
+                )()
+
+            async def navigate(self, url, wait_seconds=0):
+                self.href = str(url)
+                selected["navigations"].append(str(url))
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return [{"执行结果": "成功"}]
+
+        class FakeParam:
+            id = "mode"
+            default = "new"
+
+        class FakeTask:
+            id = "tmall_material_test_data_export"
+            name = "巴拉-AI测图数据抓取导出"
+            description = ""
+            entry_url = "https://qn.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search"
+            tab_match_prefixes = ["https://qn.taobao.com/home.htm/material-center/material-test"]
+            params = [FakeParam()]
+            skip_auth = True
+            output = []
+            script = "tmall-material-test-data-export.js"
+
+        class FakeAdapter:
+            name = "天猫运营助手"
+            entry_url = ""
+            tab_match_prefixes = []
+            auth = None
+            tasks = [FakeTask()]
+
+        original_status = dict(api_server._run_status)
+        original_logs = dict(api_server._run_logs)
+        original_controls = dict(api_server._run_controls)
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                script_path = Path(tmpdir) / "tmall-material-test-data-export.js"
+                script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+                with patch("core.api_server.adapter_loader.scan_all"):
+                    with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                        with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                            with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                                with patch("core.js_runner.JSRunner", FakeRunner):
+                                    with patch("core.api_server.data_sink.begin_run", return_value=77):
+                                        with patch("core.api_server.data_sink.heartbeat_run"):
+                                            with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                                with patch("core.api_server.data_sink.finish_run"):
+                                                    await api_server._execute_task(
+                                                        "tmall-ops-assistant",
+                                                        "tmall_material_test_data_export",
+                                                        {"mode": "new"},
+                                                        {},
+                                                        run_control=api_server._build_run_control(),
+                                                    )
+
+            self.assertEqual(selected["tab_id"], "target-tab")
+            self.assertEqual(selected["ws_url"], "ws://target.invalid")
+            self.assertIn("qn.taobao.com/home.htm/material-center/material-test", selected["tab_url"])
+            self.assertEqual(
+                selected["navigations"],
+                ["https://qn.taobao.com/home.htm/material-center/material-test/common_test?testStatus=1&testChannel=common_search"],
+            )
+        finally:
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_logs.clear()
+            api_server._run_logs.update(original_logs)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+
     async def test_execute_task_runs_export_and_packaging_off_event_loop_thread(self):
         class FakeBridge:
             def get_tabs(self):
