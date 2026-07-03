@@ -3155,6 +3155,35 @@ def _copy_tmall_data_tables_to_local_export(exported_files: list, target_root: P
     return copied_refs
 
 
+def _finalize_plm_size_chart_downloader_outputs(
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    log,
+) -> list[str]:
+    fallback_refs = [str(path) for path in [*(runtime_files or []), *(exported_files or [])] if str(path or "").strip()]
+    output_dir = str((run_params or {}).get("output_dir") or "").strip()
+    if not output_dir:
+        return fallback_refs
+
+    target_root = _expand_user_configured_local_path(output_dir)
+    target_root.mkdir(parents=True, exist_ok=True)
+
+    copied_refs = []
+    for file_path in exported_files or []:
+        source = Path(str(file_path or "")).expanduser()
+        if not source.is_file():
+            continue
+        if _is_within_directory(source, target_root):
+            copied_refs.append(str(source))
+            continue
+        copied_refs.append(str(_copy_file_to_unique_target(source, target_root / source.name)))
+
+    if copied_refs and log:
+        log(f"PLM 尺码表已复制到导出目录：{target_root}")
+    return copied_refs or fallback_refs
+
+
 def _copy_tmall_row_local_files(
     data_rows: list,
     target_root: Path,
@@ -4330,6 +4359,20 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     return merge_output_file_refs(packaged_refs)
                 except Exception as package_error:
                     log(f"[warn] MOP 云盘下载后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
+            if adapter_id == 'plm-ops-assistant' and task_id == 'size_chart_downloader':
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_plm_size_chart_downloader_outputs,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] PLM 尺码表导出目录复制失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
             if adapter_id == 'tmall-ops-assistant' and task_id in {
