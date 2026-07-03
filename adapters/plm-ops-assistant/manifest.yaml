@@ -1,0 +1,165 @@
+id: plm-ops-assistant
+name: PLM 运营助手
+version: 0.1.0
+author: codex
+description: "Centric PLM 款式资料自动化：按款号批量下载尺寸表单尺码表"
+entry_url: http://plm.balabala.com/WebAccess/home.html
+tab_match_prefixes:
+  - http://plm.balabala.com/WebAccess/
+
+auth:
+  check_script: auth_check.js
+  login_url: http://plm.balabala.com/WebAccess
+
+tasks:
+  - id: size_chart_downloader
+    name: 尺码表下载器
+    description: 按款号批量定位尺寸表单，默认下载大货阶段尺码表，输出宽表和长表字段，支持多款号区分。
+    script: size-chart-downloader.js
+    entry_url: http://plm.balabala.com/WebAccess/home.html
+    tab_match_prefixes:
+      - http://plm.balabala.com/WebAccess/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前登录页（推荐）
+          - value: new
+            label: 新开 PLM 页面
+      - id: style_codes
+        type: textarea
+        label: 款号
+        rows: 6
+        required: true
+        default: "201326105103"
+        placeholder: "一行一个款号，例如：\n201326105103"
+        hint: 支持从 Excel 复制多行；脚本会按款号去重后逐个下载。
+      - id: stage
+        type: text
+        label: 尺码表阶段
+        default: 大货
+        placeholder: "例如：大货"
+        hint: 默认选择尺寸表单中的“大货”阶段；也可填写初版、内评、订货等阶段。
+        ui_span: half
+      - id: output_shape
+        type: select
+        label: 输出格式
+        default: both
+        ui_span: half
+        options:
+          - value: both
+            label: 宽表 + 长表（推荐）
+          - value: wide
+            label: 仅宽表
+          - value: long
+            label: 仅长表
+        hint: 宽表每个测量点一行、尺码为动态列；长表每个尺码值一行，更适合后续数据处理。
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "PLM尺码表下载_{stage}_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        columns:
+          - 输出表
+          - 款号
+          - 款式名称
+          - 款式URL
+          - 尺码表阶段
+          - 尺码表名称
+          - 尺码表URL
+          - 修订版
+          - 修订版URL
+          - 状态
+          - 尺码范围
+          - 基础尺码
+          - 测量点序号
+          - 测量点
+          - 测量点编码
+          - 描述
+          - 公差(-)
+          - 公差(+)
+          - 尺码
+          - 尺码值
+          - 修改确认
+          - 抓取结果
+          - 备注
+          - 抓取时间
+        sheets:
+          - name: 宽表
+            columns:
+              - 款号
+              - 款式名称
+              - 款式URL
+              - 尺码表阶段
+              - 尺码表名称
+              - 尺码表URL
+              - 修订版
+              - 修订版URL
+              - 状态
+              - 尺码范围
+              - 基础尺码
+              - 测量点序号
+              - 测量点
+              - 测量点编码
+              - 描述
+              - 公差(-)
+              - 公差(+)
+              - 修改确认
+              - 抓取结果
+              - 备注
+              - 抓取时间
+          - name: 长表
+            columns:
+              - 款号
+              - 款式名称
+              - 款式URL
+              - 尺码表阶段
+              - 尺码表名称
+              - 尺码表URL
+              - 修订版
+              - 修订版URL
+              - 状态
+              - 尺码范围
+              - 基础尺码
+              - 测量点序号
+              - 测量点
+              - 测量点编码
+              - 描述
+              - 公差(-)
+              - 公差(+)
+              - 尺码
+              - 尺码值
+              - 修改确认
+              - 抓取结果
+              - 备注
+              - 抓取时间
+          - name: 错误
+            columns:
+              - 款号
+              - 款式名称
+              - 款式URL
+              - 尺码表阶段
+              - 尺码表名称
+              - 尺码表URL
+              - 修订版
+              - 修订版URL
+              - 状态
+              - 尺码范围
+              - 基础尺码
+              - 测量点序号
+              - 测量点
+              - 测量点编码
+              - 描述
+              - 公差(-)
+              - 公差(+)
+              - 尺码
+              - 尺码值
+              - 修改确认
+              - 抓取结果
+              - 备注
+              - 抓取时间
