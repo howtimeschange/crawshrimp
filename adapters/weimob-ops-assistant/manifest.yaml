@@ -1,6 +1,6 @@
 id: weimob-ops-assistant
 name: 微盟运营助手
-version: 0.1.0
+version: 0.1.1
 author: codex
 description: "微盟商城后台运营自动化：商品上新、MDM SKU 映射回填与批量状态更新"
 entry_url: https://master.weimob.com/bos/products/ecGoodsmanage/4000547814432/4diuahndgX5o74sooX4di628kby/goods/list
@@ -43,6 +43,16 @@ tasks:
           - value: update
             label: 保存更新到微盟
         hint: 预演模式只查询微盟与 MDM 并输出将要修改的字段；更新模式会真实调用微盟商品保存接口。
+      - id: goods_record_preference
+        type: radio
+        label: 商品记录选择
+        default: warehouse
+        options:
+          - value: warehouse
+            label: 优先仓库中（新品上新）
+          - value: online_offline
+            label: 优先线上+线下（编辑已上新商品）
+        hint: 新品上新保持优先仓库中；补改已上新商品信息时选择线上+线下行。
       - id: style_codes
         type: textarea
         label: 商品款号/商品编码

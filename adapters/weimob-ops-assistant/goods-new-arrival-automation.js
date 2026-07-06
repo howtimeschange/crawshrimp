@@ -6,7 +6,14 @@
   const DEFAULT_WEIMOB_LIST_URL = 'https://master.weimob.com/bos/products/ecGoodsmanage/4000547814432/4diuahndgX5o74sooX4di628kby/goods/list'
   const DEFAULT_MDM_URL = 'https://mdm.semirapp.com/demdm/336912503927767040/application/application-custom/712740841071886336?name=goodsManage'
   const TARGET_SALE_CHANNEL_TYPE = 3
-  const TARGET_DELIVERY = {
+  const TARGET_MERCHANT_DELIVERY = {
+    deliveryId: 207476,
+    deliveryType: 1,
+    deliveryTypeName: '商家配送',
+    templateId: 10003147950,
+    checked: true,
+  }
+  const TARGET_PICKUP_DELIVERY = {
     deliveryId: 214669,
     deliveryType: 3,
     deliveryTypeName: '到店自提',
@@ -14,6 +21,11 @@
     checked: true,
   }
   const WAREHOUSE_GOODS_SALE_STATUS = '2'
+  const MAX_GOODS_INFO_READ_ATTEMPTS = 12
+  const MAX_MDM_TOKEN_READ_ATTEMPTS = 12
+  const MAX_WEIMOB_HEADER_READ_ATTEMPTS = 12
+  const GOODS_RECORD_PREFERENCE_ONLINE_OFFLINE = 'online_offline'
+  const GOODS_RECORD_PREFERENCE_WAREHOUSE = 'warehouse'
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
@@ -53,11 +65,17 @@
     return mode === 'update' ? 'update' : 'plan'
   }
 
+  function goodsRecordPreference() {
+    const mode = compact(params.goods_record_preference || shared.goods_record_preference || 'warehouse').toLowerCase()
+    return mode === GOODS_RECORD_PREFERENCE_ONLINE_OFFLINE ? GOODS_RECORD_PREFERENCE_ONLINE_OFFLINE : GOODS_RECORD_PREFERENCE_WAREHOUSE
+  }
+
   function mergeShared(next = {}) {
     return {
       ...shared,
       ...next,
       execute_mode: executeMode(),
+      goods_record_preference: goodsRecordPreference(),
     }
   }
 
@@ -119,9 +137,10 @@
     return nextPhase(phaseName, sleepMs, next)
   }
 
-  function editUrlForGoodsId(goodsId) {
+  function editUrlForGoodsId(goodsId, saleChannelType = 1) {
     const id = compact(goodsId)
-    return `${DEFAULT_WEIMOB_LIST_URL.replace(/\/goods\/list.*$/, '/goods/editNoMenu')}?id=${encodeURIComponent(id)}&type=sale&saleChannelType=1`
+    const channelType = compact(saleChannelType) || '1'
+    return `${DEFAULT_WEIMOB_LIST_URL.replace(/\/goods\/list.*$/, '/goods/editNoMenu')}?id=${encodeURIComponent(id)}&type=sale&saleChannelType=${encodeURIComponent(channelType)}`
   }
 
   function weimobHeaders() {
@@ -152,6 +171,36 @@
     return headers
   }
 
+  function hasWeimobSessionHeaders(headers) {
+    return Boolean(headers?.Authorization && headers?.['weimob-bosId'])
+  }
+
+  async function waitForWeimobHeaders() {
+    for (let attempt = 0; attempt <= MAX_WEIMOB_HEADER_READ_ATTEMPTS; attempt += 1) {
+      const headers = weimobHeaders()
+      if (hasWeimobSessionHeaders(headers) || attempt === MAX_WEIMOB_HEADER_READ_ATTEMPTS) return headers
+      await sleep(600)
+    }
+    return weimobHeaders()
+  }
+
+  function hasMdmToken(headers) {
+    return Boolean(headers?.demdmtoken)
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
+  async function waitForMdmHeaders() {
+    for (let attempt = 0; attempt <= MAX_MDM_TOKEN_READ_ATTEMPTS; attempt += 1) {
+      const headers = mdmHeaders()
+      if (hasMdmToken(headers) || attempt === MAX_MDM_TOKEN_READ_ATTEMPTS) return headers
+      await sleep(600)
+    }
+    return mdmHeaders()
+  }
+
   async function postJson(url, payload, headers) {
     const response = await fetch(url, {
       method: 'POST',
@@ -168,24 +217,32 @@
 
   async function callWeimob(path, payload) {
     const url = path.startsWith('/api3/') ? path : `/api3${path.startsWith('/') ? path : `/${path}`}`
-    return postJson(url, payload, weimobHeaders())
+    return postJson(url, payload, await waitForWeimobHeaders())
   }
 
-  function goodsRowScore(row, requestedCode) {
+  function goodsRowScore(row, requestedCode, preference = goodsRecordPreference()) {
     let score = 0
     if (compact(row.outerGoodsCode) === compact(requestedCode)) score += 1000
     const saleChannelType = Number(row.saleChannelType)
-    if (saleChannelType === 1) score += 100
-    else if (saleChannelType === TARGET_SALE_CHANNEL_TYPE) score += 60
-    else if (saleChannelType === 2) score += 20
+    if (preference === GOODS_RECORD_PREFERENCE_ONLINE_OFFLINE) {
+      if (saleChannelType === TARGET_SALE_CHANNEL_TYPE) score += 200
+      else if (saleChannelType === 1) score += 100
+      else if (saleChannelType === 2) score += 20
+    } else {
+      if (saleChannelType === 2) score += 200
+      else if (saleChannelType === 1) score += 100
+      else if (saleChannelType === TARGET_SALE_CHANNEL_TYPE) score += 60
+    }
+    if (row.isCanSell === true) score += 20
+    if (row.isOnline === true) score += 20
     if (row.goodsId != null && !Number.isNaN(Number(row.goodsId))) score += Math.min(Number(row.goodsId) / 1000000000000, 10)
     return score
   }
 
-  function selectBestGoodsRow(rows, requestedCode) {
+  function selectBestGoodsRow(rows, requestedCode, preference = goodsRecordPreference()) {
     const exactRows = (Array.isArray(rows) ? rows : []).filter(row => compact(row.outerGoodsCode) === compact(requestedCode))
     if (!exactRows.length) return null
-    return exactRows.slice().sort((left, right) => goodsRowScore(right, requestedCode) - goodsRowScore(left, requestedCode))[0]
+    return exactRows.slice().sort((left, right) => goodsRowScore(right, requestedCode, preference) - goodsRowScore(left, requestedCode, preference))[0]
   }
 
   async function queryWeimobGoodsRows(styleCode, goodsSaleStatus = '') {
@@ -208,12 +265,23 @@
   async function searchWeimobGoods(styleCodes) {
     const products = []
     const seenGoodsIds = new Set()
+    const preference = goodsRecordPreference()
     for (const styleCode of styleCodes) {
-      const warehouseRows = await queryWeimobGoodsRows(styleCode, WAREHOUSE_GOODS_SALE_STATUS)
-      let row = selectBestGoodsRow(warehouseRows, styleCode)
-      if (!row) {
+      let row = null
+      if (preference === GOODS_RECORD_PREFERENCE_WAREHOUSE) {
+        const warehouseRows = await queryWeimobGoodsRows(styleCode, WAREHOUSE_GOODS_SALE_STATUS)
+        row = selectBestGoodsRow(warehouseRows, styleCode, preference)
+        if (!row) {
+          const rows = await queryWeimobGoodsRows(styleCode)
+          row = selectBestGoodsRow(rows, styleCode, preference)
+        }
+      } else {
         const rows = await queryWeimobGoodsRows(styleCode)
-        row = selectBestGoodsRow(rows, styleCode)
+        row = selectBestGoodsRow(rows, styleCode, preference)
+        if (!row) {
+          const warehouseRows = await queryWeimobGoodsRows(styleCode, WAREHOUSE_GOODS_SALE_STATUS)
+          row = selectBestGoodsRow(warehouseRows, styleCode, preference)
+        }
       }
       const goodsId = compact(row?.goodsId)
       if (!row || !goodsId || seenGoodsIds.has(goodsId)) continue
@@ -225,7 +293,7 @@
         saleChannelType: row.saleChannelType,
         isCanSell: row.isCanSell,
         isOnline: row.isOnline,
-        editUrl: editUrlForGoodsId(row.goodsId),
+        editUrl: editUrlForGoodsId(row.goodsId, row.saleChannelType),
         skuRows: [],
       })
     }
@@ -314,11 +382,20 @@
 
   async function queryMdmRows(eanCodes) {
     if (!eanCodes.length) return []
-    const json = await postJson(
-      `/demdm-api/sku/getSkuInfoList?timestamp=${Date.now()}`,
-      { pageNum: 1, pageSize: Math.max(50, eanCodes.length), eanCodes },
-      mdmHeaders()
-    )
+    let json = null
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        json = await postJson(
+          `/demdm-api/sku/getSkuInfoList?timestamp=${Date.now()}`,
+          { pageNum: 1, pageSize: Math.max(50, eanCodes.length), eanCodes },
+          await waitForMdmHeaders()
+        )
+        break
+      } catch (error) {
+        if (!/401/.test(String(error?.message || error)) || attempt >= 2) throw error
+        await sleep(1200)
+      }
+    }
     if (Array.isArray(json?.data)) return json.data
     if (Array.isArray(json?.data?.list)) return json.data.list
     if (Array.isArray(json?.data?.records)) return json.data.records
@@ -371,21 +448,70 @@
     return rows
   }
 
-  async function querySelfPickupDeliveryOption() {
+  function supportedDeliveryOption(list, deliveryType) {
+    return (Array.isArray(list) ? list : []).find(item => Number(item.deliveryType) === Number(deliveryType) && Number(item.isSupported) !== 0)
+  }
+
+  async function queryDefaultMerchantFreightTemplate() {
+    const json = await callWeimob('/mall/mgr/fulfill/goodsTemplate/findMerchantTemplateList', {})
+    const data = json?.data || {}
+    const found = data.defaultFreightTemplate || (Array.isArray(data.freightTemplateList) ? data.freightTemplateList[0] : null)
+    if (!found) return {}
+    return {
+      templateId: found.templateId,
+      templateName: found.templateName,
+    }
+  }
+
+  async function queryDefaultPickupTemplate() {
+    const json = await callWeimob('/mall/mgr/fulfill/pickup/delivery/findNodeTemplateList', {})
+    const data = json?.data || {}
+    const found = data.defaultTemplate || (Array.isArray(data.templateList) ? data.templateList[0] : null)
+    if (!found) return {}
+    return {
+      templateId: found.id || found.templateId,
+      templateName: found.templateName,
+    }
+  }
+
+  async function queryTargetDeliveryOptions() {
     const json = await callWeimob('/mall/mgr/fulfill/merchant/node/registration/queryNodeSupportDeliveryType', {})
     const list = Array.isArray(json?.data?.nodeDeliveryDtoList) ? json.data.nodeDeliveryDtoList : []
-    const found = list.find(item => Number(item.deliveryType) === 3 && Number(item.isSupported) !== 0)
-    if (!found) return TARGET_DELIVERY
+    const merchantSupport = supportedDeliveryOption(list, 1) || TARGET_MERCHANT_DELIVERY
+    const pickupSupport = supportedDeliveryOption(list, 3) || TARGET_PICKUP_DELIVERY
+    let merchantTemplate = {}
+    let pickupTemplate = {}
+    try {
+      merchantTemplate = await queryDefaultMerchantFreightTemplate()
+    } catch (error) {}
+    try {
+      pickupTemplate = await queryDefaultPickupTemplate()
+    } catch (error) {}
     return {
-      id: found.id,
-      deliveryId: found.deliveryId,
-      deliveryType: found.deliveryType,
-      deliveryTypeName: found.deliveryTypeName || '到店自提',
-      isSupported: found.isSupported,
-      isDefault: found.isDefault,
-      deliveryNodeShipId: found.id,
-      templateId: TARGET_DELIVERY.templateId,
-      checked: true,
+      merchant: {
+        id: merchantSupport.id,
+        deliveryId: merchantSupport.deliveryId || TARGET_MERCHANT_DELIVERY.deliveryId,
+        deliveryType: 1,
+        deliveryTypeName: merchantSupport.deliveryTypeName || TARGET_MERCHANT_DELIVERY.deliveryTypeName,
+        isSupported: merchantSupport.isSupported,
+        isDefault: merchantSupport.isDefault,
+        deliveryNodeShipId: merchantSupport.id || 0,
+        templateId: merchantTemplate.templateId || TARGET_MERCHANT_DELIVERY.templateId,
+        templateName: merchantTemplate.templateName,
+        checked: true,
+      },
+      pickup: {
+        id: pickupSupport.id,
+        deliveryId: pickupSupport.deliveryId || TARGET_PICKUP_DELIVERY.deliveryId,
+        deliveryType: 3,
+        deliveryTypeName: pickupSupport.deliveryTypeName || TARGET_PICKUP_DELIVERY.deliveryTypeName,
+        isSupported: pickupSupport.isSupported,
+        isDefault: pickupSupport.isDefault,
+        deliveryNodeShipId: pickupSupport.id || 0,
+        templateId: pickupTemplate.templateId || TARGET_PICKUP_DELIVERY.templateId,
+        templateName: pickupTemplate.templateName,
+        checked: true,
+      },
     }
   }
 
@@ -393,7 +519,48 @@
     return compact(row?.itemSkuId || row?.skuId || row?.key)
   }
 
-  function patchGoodsInfoForUpdate(goodsInfo, product, mapping, deliveryOption) {
+  function deliveryTypeMap(deliveryOptions) {
+    const map = {}
+    if (Array.isArray(deliveryOptions)) {
+      for (const option of deliveryOptions) {
+        if (option?.deliveryType != null) map[Number(option.deliveryType)] = option
+      }
+      return map
+    }
+    if (deliveryOptions?.merchant) map[1] = deliveryOptions.merchant
+    if (deliveryOptions?.pickup) map[3] = deliveryOptions.pickup
+    if (deliveryOptions?.deliveryType != null) map[Number(deliveryOptions.deliveryType)] = deliveryOptions
+    return map
+  }
+
+  function buildDeliveryEntry(existingEntry, option, fallback) {
+    const source = existingEntry || option || fallback
+    const deliveryType = Number(fallback.deliveryType)
+    const templateId = existingEntry?.templateId || option?.templateId || fallback.templateId
+    const entry = {
+      ...(source || {}),
+      deliveryId: source?.deliveryId || option?.deliveryId || fallback.deliveryId,
+      deliveryType,
+      deliveryTypeName: source?.deliveryTypeName || option?.deliveryTypeName || fallback.deliveryTypeName,
+      deliveryNodeShipId: existingEntry?.deliveryNodeShipId ?? option?.deliveryNodeShipId ?? option?.id ?? source?.id ?? 0,
+      templateId,
+      checked: true,
+    }
+    delete entry.templateName
+    return entry
+  }
+
+  function buildTargetDeliveryList(goodsInfo, deliveryOptions) {
+    const currentList = Array.isArray(goodsInfo?.performanceWay?.deliveryList) ? goodsInfo.performanceWay.deliveryList : []
+    const currentByType = deliveryTypeMap(currentList)
+    const targetByType = deliveryTypeMap(deliveryOptions)
+    return [
+      buildDeliveryEntry(currentByType[1], targetByType[1], TARGET_MERCHANT_DELIVERY),
+      buildDeliveryEntry(currentByType[3], targetByType[3], TARGET_PICKUP_DELIVERY),
+    ]
+  }
+
+  function patchGoodsInfoForUpdate(goodsInfo, product, mapping, deliveryOptions) {
     const skuRows = product?.skuRows || []
     const skuByIdentity = new Map()
     for (const sku of skuRows) {
@@ -421,15 +588,7 @@
       goodsDeliveryMode: 0,
       performanceWay: {
         ...(goodsInfo.performanceWay || {}),
-        deliveryList: [{
-          ...(deliveryOption || TARGET_DELIVERY),
-          deliveryId: deliveryOption.deliveryId,
-          deliveryType: deliveryOption.deliveryType,
-          deliveryTypeName: deliveryOption.deliveryTypeName || '到店自提',
-          deliveryNodeShipId: deliveryOption.deliveryNodeShipId || deliveryOption.id || 0,
-          templateId: deliveryOption.templateId || TARGET_DELIVERY.templateId,
-          checked: true,
-        }],
+        deliveryList: buildTargetDeliveryList(goodsInfo, deliveryOptions),
       },
       skuList: patchedSkuList,
     }
@@ -496,7 +655,7 @@
     const skuRows = extractSkuRowsFromReact()
     if (!skuRows.length) {
       const attempts = Number(shared.read_sku_attempts || 0)
-      if (attempts < 6) {
+      if (attempts < MAX_GOODS_INFO_READ_ATTEMPTS) {
         return nextPhase('read_weimob_sku', 1200, { products, product_index: index, read_sku_attempts: attempts + 1 })
       }
       return fail(`未能从微盟编辑页读取规格明细：${product.styleCode || product.goodsId}`, { products, product_index: index })
@@ -580,14 +739,14 @@
     const goodsInfo = extractGoodsInfoFromReact()
     if (!goodsInfo) {
       const attempts = Number(shared.update_read_attempts || 0)
-      if (attempts < 6) {
+      if (attempts < MAX_GOODS_INFO_READ_ATTEMPTS) {
         return nextPhase('update_weimob', 1200, { products, mdmMapping, update_index: index, savedRows, update_read_attempts: attempts + 1 })
       }
       return fail(`未能从微盟编辑页读取保存 payload：${product.styleCode || product.goodsId}`, { products, mdmMapping, update_index: index, savedRows })
     }
 
-    const deliveryOption = shared.deliveryOption || await querySelfPickupDeliveryOption()
-    const payload = patchGoodsInfoForUpdate(goodsInfo, product, mdmMapping, deliveryOption)
+    const deliveryOptions = shared.deliveryOptions || shared.deliveryOption || await queryTargetDeliveryOptions()
+    const payload = patchGoodsInfoForUpdate(goodsInfo, product, mdmMapping, deliveryOptions)
     const response = await callWeimob('/mall/goods/update', payload)
     if (!isWeimobUpdateSuccess(response)) {
       return fail(`微盟保存失败：${weimobErrorMessage(response)}`, {
@@ -595,7 +754,7 @@
         mdmMapping,
         update_index: index,
         savedRows,
-        deliveryOption,
+        deliveryOptions,
       })
     }
     const savedSet = new Set([compact(product.goodsId)])
@@ -607,11 +766,11 @@
         mdmMapping,
         update_index: index + 1,
         savedRows: nextSavedRows,
-        deliveryOption,
+        deliveryOptions,
         update_read_attempts: 0,
       }, 1800)
     }
-    return complete(nextSavedRows, { products, mdmMapping, savedRows: nextSavedRows, deliveryOption })
+    return complete(nextSavedRows, { products, mdmMapping, savedRows: nextSavedRows, deliveryOptions })
   }
 
   try {
