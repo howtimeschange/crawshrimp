@@ -45,6 +45,48 @@ class PlmSizeChartExportDirTests(unittest.TestCase):
             self.assertTrue(copied.is_file())
             self.assertTrue(exported.is_file())
 
+    def test_finalize_copies_runtime_subdir_excel_to_selected_parent_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            selected_dir = base / "Downloads"
+            runtime_dir = selected_dir / "data" / "plm-ops-assistant" / "size_chart_downloader"
+            runtime_dir.mkdir(parents=True)
+            exported = runtime_dir / "PLM尺码表下载_大货.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_plm_size_chart_downloader_outputs(
+                runtime_files=[],
+                exported_files=[str(exported)],
+                run_params={"output_dir": str(selected_dir)},
+                log=lambda _: None,
+            )
+
+            copied = selected_dir / exported.name
+            self.assertEqual(result, [str(copied)])
+            self.assertTrue(copied.is_file())
+            self.assertTrue(exported.is_file())
+
+    def test_finalize_can_copy_runtime_files_when_exported_files_are_empty(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "exports"
+            runtime_dir.mkdir()
+            exported = runtime_dir / "PLM尺码表下载_大货.xlsx"
+            exported.write_bytes(b"excel")
+
+            result = _finalize_plm_size_chart_downloader_outputs(
+                runtime_files=[str(exported)],
+                exported_files=[],
+                run_params={"output_dir": str(export_dir)},
+                log=lambda _: None,
+            )
+
+            copied = export_dir / exported.name
+            self.assertEqual(result, [str(copied)])
+            self.assertTrue(copied.is_file())
+            self.assertTrue(exported.is_file())
+
     def test_finalize_keeps_runtime_export_when_output_dir_is_blank(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             exported = Path(tmpdir) / "PLM尺码表下载_大货.xlsx"

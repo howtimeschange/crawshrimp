@@ -7,6 +7,7 @@
   const PLM_HOME_URL = 'http://plm.balabala.com/WebAccess/home.html'
   const REQUEST_HANDLER = '/csi-requesthandler/RequestHandler?'
   const DEFAULT_STAGE = '大货'
+  const STAGE_FALLBACK_ORDER = ['大货', '订货', '试销单', '内评', '初版']
   const DEFAULT_PAGE_SIZE = 100
   const DEFAULT_DELAY_MS = 500
 
@@ -59,7 +60,7 @@
   }
 
   function normalizeUrl(value) {
-    return compact(value).replace(/^centric:$/, '')
+    return compact(value).replace(/^centric:\/\//, '').replace(/^centric:/, '')
   }
 
   function isPlmUrl(value) {
@@ -76,6 +77,43 @@
 
   function nodeUrl(node) {
     return compact(node?.$URL || node?.URL || '')
+  }
+
+  function escapeXml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+  }
+
+  function nodeFieldTexts(node) {
+    const texts = [nodeName(node), nodeType(node)]
+    for (const [key, value] of Object.entries(node || {})) {
+      if (/url/i.test(key)) continue
+      if (typeof value === 'string' || typeof value === 'number') {
+        texts.push(value)
+      } else if (Array.isArray(value)) {
+        value.forEach(item => {
+          if (typeof item === 'string' || typeof item === 'number') texts.push(item)
+        })
+      }
+    }
+    return texts.map(compact).filter(Boolean)
+  }
+
+  function nodeContainsStyleCode(node, styleCode) {
+    const needle = normalizeToken(styleCode)
+    if (!needle) return false
+    return nodeFieldTexts(node).some(text => normalizeToken(text).includes(needle))
+  }
+
+  function isStyleNode(node) {
+    const type = nodeType(node)
+    if (!type) return false
+    if (type === 'Style') return true
+    if (/Style/i.test(type) && !/SizeChart|Dimension|Revision|Attribute|Sample/i.test(type)) return true
+    return false
   }
 
   function asArray(value) {
@@ -96,6 +134,56 @@
     return output
   }
 
+  function findNodeByUrl(nodes, url) {
+    const target = normalizeUrl(url)
+    if (!target) return null
+    return (nodes || []).find(node => normalizeUrl(nodeUrl(node)) === target) || null
+  }
+
+  function parentStyleFromNode(node, nodes) {
+    const parentUrls = [
+      node?.__Parent__,
+      node?.Parent,
+      node?.Master,
+      node?.Style,
+      node?.Product,
+      node?.ParentStyle,
+      node?.C8_Style,
+    ].flatMap(asArray)
+
+    for (const parentUrl of parentUrls) {
+      const parent = findNodeByUrl(nodes, parentUrl)
+      if (isStyleNode(parent)) return parent
+      const grandParent = parent ? parentStyleFromNode(parent, nodes) : null
+      if (grandParent) return grandParent
+    }
+    return null
+  }
+
+  function resolveStyleNode(nodes, styleCode = '', preferredUrl = '') {
+    const allNodes = nodes || []
+    const preferred = findNodeByUrl(allNodes, preferredUrl)
+    if (isStyleNode(preferred)) return preferred
+
+    const styleNodes = allNodes.filter(isStyleNode)
+    const exactStyle = styleNodes.find(node => nodeContainsStyleCode(node, styleCode))
+    if (exactStyle) return exactStyle
+
+    const matchingNodes = allNodes.filter(node => nodeContainsStyleCode(node, styleCode))
+    for (const node of matchingNodes) {
+      if (isStyleNode(node)) return node
+      const parent = parentStyleFromNode(node, allNodes)
+      if (parent) return parent
+    }
+
+    if (preferred) {
+      const parent = parentStyleFromNode(preferred, allNodes)
+      if (parent) return parent
+    }
+    if (styleNodes.length === 1) return styleNodes[0]
+    return null
+  }
+
   function normalizeStyleCodes(rawValue) {
     const text = String(rawValue || '').replace(/[，、；;, \t]+/g, '\n')
     const codes = []
@@ -111,6 +199,10 @@
 
   function targetStage() {
     return compact(params.stage || shared.stage || DEFAULT_STAGE) || DEFAULT_STAGE
+  }
+
+  function isDefaultStageRequest(stageName) {
+    return normalizeToken(stageName || DEFAULT_STAGE) === normalizeToken(DEFAULT_STAGE)
   }
 
   function sleep(ms) {
@@ -239,22 +331,53 @@
     return await requestPlm(buildRequestEntries({ urls: safeUrls, depPaths }))
   }
 
+  function styleUrlFromHref(href) {
+    const match = String(href || '').match(/(?:#URL=|[?&]URL=)([^&]+)/)
+    return match ? decodeURIComponent(match[1]) : ''
+  }
+
+  function firstTitleSegment() {
+    return compact(String(document.title || '').split(' - ')[0].split('>')[0])
+  }
+
   function currentStyleFromDom() {
     const href = String(location.href || '')
-    const hashMatch = href.match(/[#&?]URL=([^&]+)/)
-    const currentUrl = hashMatch ? decodeURIComponent(hashMatch[1]) : ''
-    const crumbs = [...document.querySelectorAll('a.browse, .crumb, .crumbSearch, [data-csi-url]')]
+    const currentUrl = styleUrlFromHref(href)
+    const titleStyleName = firstTitleSegment()
+    const titleStyleCode = extractStyleCode(titleStyleName)
+    if (/^C\d+/.test(currentUrl) && titleStyleCode) {
+      return { styleUrl: currentUrl, styleName: titleStyleName, styleCode: titleStyleCode }
+    }
+
+    const scopedSelectors = [
+      '.csi-breadcrumb-view a.browse[href*="#URL=C"]',
+      '.csi-breadcrumb-view [data-csi-url]',
+      '.breadcrumb a[href*="#URL=C"]',
+      '.breadcrumb [data-csi-url]',
+      '.breadcrumbs a[href*="#URL=C"]',
+      '.breadcrumbs [data-csi-url]',
+      '[id*="breadcrumb"] a[href*="#URL=C"]',
+      '[class*="breadcrumb"] a[href*="#URL=C"]',
+      'a.browse[href*="#URL=C"]',
+      '#searchResultsGrid a[href*="#URL=C"]',
+      '#searchResultsGrid [data-csi-url]',
+    ]
+    const seenElements = new Set()
+    const crumbs = [...document.querySelectorAll(scopedSelectors.join(','))]
+      .filter(el => {
+        if (seenElements.has(el)) return false
+        seenElements.add(el)
+        return true
+      })
       .map(el => ({
         text: compact(el.innerText || el.textContent || el.title),
         href: compact(el.href || ''),
         url: compact(el.getAttribute?.('data-csi-url') || ''),
       }))
-    const styleCrumb = crumbs.find(item => /\d{9,}/.test(item.text) && /\/WebAccess\/home\.html#URL=C\d+/.test(item.href))
+    const styleCrumb = crumbs.find(item => /\d{9,}/.test(item.text) && /^C\d+/.test(styleUrlFromHref(item.href)))
       || crumbs.find(item => /\d{9,}/.test(item.text) && /^C\d+/.test(item.url))
-    const styleUrl = styleCrumb?.href?.match(/#URL=([^&]+)/)?.[1]
-      ? decodeURIComponent(styleCrumb.href.match(/#URL=([^&]+)/)[1])
-      : styleCrumb?.url || (/^C\d+/.test(currentUrl) ? currentUrl : '')
-    const styleName = styleCrumb?.text || compact(document.title.split('>')[0] || '')
+    const styleUrl = styleUrlFromHref(styleCrumb?.href) || styleCrumb?.url || ''
+    const styleName = styleCrumb?.text || ''
     const styleCode = extractStyleCode(styleName)
     return { styleUrl, styleName, styleCode }
   }
@@ -265,11 +388,13 @@
   }
 
   function buildSearchXml(styleCode) {
-    const escaped = String(styleCode || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+    const escaped = escapeXml(styleCode)
     return [
+      '<?xml version="1.0" encoding="utf-8" ?>',
       '<Query>',
+      `  <Node Parameter="Name" Op="RE" Value="%${escaped}%"/>`,
+      '  <Attribute Id="IsTemplate" Op="EQ" SValue="false"/>',
       '  <Node Parameter="Type" Op="EQ" Value="Style"/>',
-      `  <Attribute Id="Node Name" Op="MATCHES" Value="${escaped}"/>`,
       '</Query>',
     ].join('')
   }
@@ -278,40 +403,45 @@
     const current = currentStyleFromDom()
     if (current.styleUrl && (!styleCode || current.styleCode === styleCode || current.styleName.includes(styleCode))) {
       const result = await queryByUrls(current.styleUrl, STYLE_DEP_PATHS)
-      const styleNode = result.nodes.find(node => nodeUrl(node) === current.styleUrl) || result.nodes.find(node => nodeType(node) === 'Style')
+      const styleNode = resolveStyleNode(result.nodes, styleCode, current.styleUrl)
       if (styleNode) return { styleNode, nodes: result.nodes, source: 'current_page' }
-    }
-
-    const directSearch = await searchStyleByDomGrid(styleCode)
-    if (directSearch?.styleUrl) {
-      const result = await queryByUrls(directSearch.styleUrl, STYLE_DEP_PATHS)
-      const styleNode = result.nodes.find(node => nodeUrl(node) === directSearch.styleUrl) || result.nodes.find(node => nodeType(node) === 'Style')
-      if (styleNode) return { styleNode, nodes: result.nodes, source: directSearch.source || 'header_search' }
     }
 
     const apiSearch = await searchStyleByXml(styleCode)
     if (apiSearch?.styleNode) return apiSearch
+
+    const directSearch = await searchStyleByDomGrid(styleCode)
+    if (directSearch?.styleUrl) {
+      const result = await queryByUrls(directSearch.styleUrl, STYLE_DEP_PATHS)
+      const styleNode = resolveStyleNode(result.nodes, styleCode, directSearch.styleUrl)
+      if (styleNode) return { styleNode, nodes: result.nodes, source: directSearch.source || 'header_search' }
+    }
 
     throw new Error(`未找到款号 ${styleCode} 对应的 PLM 款式`)
   }
 
   async function searchStyleByXml(styleCode) {
     try {
-      const result = await requestPlm(buildRequestEntries({
-        module: 'Search',
-        operation: 'QueryByXML',
-        depPaths: STYLE_DEP_PATHS,
-        extra: {
-          'Qry.XML': buildSearchXml(styleCode),
-          'Qry.Limit.Begin': '0',
-          'Qry.Limit.End': String(DEFAULT_PAGE_SIZE - 1),
-          'Fmt.Complete.Max': String(DEFAULT_PAGE_SIZE),
-        },
-      }))
-      const candidates = result.nodes.filter(node => nodeType(node) === 'Style' || /\d{9,}/.test(nodeName(node)))
-      const exact = candidates.find(node => nodeName(node).includes(styleCode)) || candidates[0]
-      if (!exact) return null
-      return { styleNode: exact, nodes: result.nodes, source: 'query_xml' }
+      const entries = [
+        ['Fmt.AC.Rights', 'No'],
+        ['Fmt.Attr.Info', 'Mid'],
+        ['Crew.Scope', 'No'],
+        ['Fmt.Crew', 'Name'],
+        ['Module', 'Search'],
+        ['Operation', 'QueryByXML'],
+        ['OutputJSON', '1'],
+        ['Qry.Limit.Begin', '1'],
+        ['Qry.Limit.End', '20'],
+        ['Fmt.Complete.Max', '200'],
+        ['Fmt.Complete', 'Ref'],
+        ['Qry.XML', buildSearchXml(styleCode)],
+        ['Dep.Path', 'Child:ParentSeason'],
+      ]
+      STYLE_DEP_PATHS.forEach(depPath => entries.push(['Dep.Path', depPath]))
+      const result = await requestPlm(entries)
+      const styleNode = resolveStyleNode(result.nodes, styleCode)
+      if (!styleNode) return null
+      return { styleNode, nodes: result.nodes, source: 'query_xml_name_re' }
     } catch (error) {
       return null
     }
@@ -320,38 +450,44 @@
   async function searchStyleByDomGrid(styleCode) {
     if (!styleCode || !document.querySelector('#headerSearchText')) return null
     const input = document.querySelector('#headerSearchText')
+    const beforeText = compact(document.querySelector('#searchResultsGrid')?.innerText || '')
     const inputWidget = getDijitWidget(input)
     if (inputWidget?.set) inputWidget.set('value', styleCode)
-    else {
-      input.value = styleCode
-      input.dispatchEvent(new Event('input', { bubbles: true }))
-      input.dispatchEvent(new Event('change', { bubbles: true }))
-    }
+    input.value = styleCode
+    input.focus?.()
+    input.dispatchEvent(new Event('input', { bubbles: true }))
+    input.dispatchEvent(new Event('change', { bubbles: true }))
 
     const form = input.closest('form')
-    const formWidget = getDijitWidget(form)
+    const searchWidget = getDijitWidget(document.querySelector('#dijit__WidgetsInTemplateMixin_0'))
+      || getDijitWidget(form)
     const submitButton = document.querySelector('.header-search-button, [widgetid="dijit_form_Button_0"]')
     const buttonWidget = getDijitWidget(submitButton)
 
-    if (formWidget?.onSubmit) formWidget.onSubmit()
+    if (searchWidget?._onSubmit) searchWidget._onSubmit({ preventDefault() {}, stopPropagation() {} })
+    else if (searchWidget?.onSubmit) searchWidget.onSubmit({ preventDefault() {}, stopPropagation() {} })
     else if (buttonWidget?.onClick) buttonWidget.onClick()
     else if (form) form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     else submitButton?.click()
 
-    await waitFor(() => {
+    const refreshed = await waitFor(() => {
       const text = compact(document.querySelector('#searchResultsGrid')?.innerText || '')
-      return text.includes(styleCode) || /完成结果加载|总共\d+个结果/.test(text)
-    }, 8000, 250)
+      return text.includes(styleCode) && text !== beforeText && !/加载中/.test(text)
+    }, 12000, 250)
+    if (!refreshed) return null
 
-    const resultLinks = [...document.querySelectorAll('#searchResultsGrid a[href*="#URL=C"], a.csi-card-anchor[href*="#URL=C"]')]
-      .map(anchor => ({
-        text: compact(anchor.innerText || anchor.textContent || anchor.title || anchor.closest('[id*="row"]')?.innerText),
-        href: anchor.href,
+    const resultLinks = [...document.querySelectorAll('#searchResultsGrid a[href*="#URL=C"], #searchResultsGrid [data-csi-url]')]
+      .map(element => ({
+        text: compact(element.innerText || element.textContent || element.title || element.closest('[id*="row"], .dgrid-row, .csi-card')?.innerText),
+        href: compact(element.href || ''),
+        dataUrl: compact(element.getAttribute?.('data-csi-url') || element.closest?.('[data-csi-url]')?.getAttribute('data-csi-url') || ''),
       }))
-      .filter(item => item.text.includes(styleCode) || item.href)
+      .filter(item => item.text.includes(styleCode))
 
     const matched = resultLinks.find(item => item.text.includes(styleCode)) || resultLinks[0]
-    const url = matched?.href?.match(/#URL=([^&]+)/)?.[1] ? decodeURIComponent(matched.href.match(/#URL=([^&]+)/)[1]) : ''
+    const url = matched?.href?.match(/#URL=([^&]+)/)?.[1]
+      ? decodeURIComponent(matched.href.match(/#URL=([^&]+)/)[1])
+      : matched?.dataUrl || ''
     return url ? { styleUrl: url, source: 'header_search_dom' } : null
   }
 
@@ -381,6 +517,31 @@
     return false
   }
 
+  function cleanStageName(value) {
+    return compact(value).replace(/^C8_[^:：]+[:：]/, '')
+  }
+
+  function chartStageLabel(chart, byUrl) {
+    const values = [
+      nodeName(byUrl.get(chart?.C8_SC_Stage)),
+      cleanStageName(chart?.C8_SC_Stage),
+      nodeName(byUrl.get(chart?.Subtype)),
+      cleanStageName(chart?.Subtype),
+      nodeName(chart).replace(/_?尺寸表.*$/, ''),
+    ].map(cleanStageName).filter(Boolean)
+
+    for (const stage of STAGE_FALLBACK_ORDER) {
+      if (values.some(value => normalizeToken(value).includes(normalizeToken(stage)))) return stage
+    }
+    return cleanStageName(values[0] || '')
+  }
+
+  function chartStagePriority(label) {
+    const normalized = normalizeToken(label)
+    const index = STAGE_FALLBACK_ORDER.findIndex(stage => normalized.includes(normalizeToken(stage)))
+    return index >= 0 ? STAGE_FALLBACK_ORDER.length - index : 0
+  }
+
   function selectStageSizeChart(styleNode, nodes, stageName = DEFAULT_STAGE) {
     const byUrl = indexNodes(nodes)
     const styleUrl = nodeUrl(styleNode)
@@ -396,20 +557,31 @@
     const scored = chartCandidates.map(chart => {
       const name = nodeName(chart)
       const subtypeName = nodeName(byUrl.get(chart.Subtype)) || compact(chart.Subtype)
-      const stageRefName = nodeName(byUrl.get(chart.C8_SC_Stage)) || compact(chart.C8_SC_Stage)
-      const haystack = normalizeToken([name, subtypeName, stageRefName].join(' '))
+      const stageRefName = chartStageLabel(chart, byUrl) || nodeName(byUrl.get(chart.C8_SC_Stage)) || compact(chart.C8_SC_Stage)
+      const haystack = normalizeToken([name, subtypeName, stageRefName, chart.C8_SC_Stage].join(' '))
       let score = 0
       if (stageNeedle && haystack.includes(stageNeedle)) score += 10
       if (/大货/.test(name)) score += stageNeedle === normalizeToken('大货') ? 5 : 1
       if (chart.CurrentRevision) score += 2
+      score += chartStagePriority(stageRefName)
       return { chart, score, name, subtypeName, stageRefName }
     }).sort((a, b) => b.score - a.score)
 
     const selected = scored[0]?.chart
     if (!selected) throw new Error(`款式 ${nodeName(styleNode)} 没有找到尺寸表单中的尺码表`)
     if (stageNeedle && scored[0].score < 10) {
-      throw new Error(`款式 ${nodeName(styleNode)} 没有找到阶段为「${stageName}」的尺码表`)
+      if (isDefaultStageRequest(stageName)) {
+        const fallback = scored[0]
+        const actualStage = fallback.stageRefName || chartStageLabel(fallback.chart, byUrl) || nodeName(fallback.chart)
+        fallback.chart.__selectedStageName = actualStage
+        fallback.chart.__stageFallbackNote = `未找到「${stageName}」阶段，已自动选择「${actualStage}」阶段尺码表`
+        return fallback.chart
+      }
+      const availableStages = uniqueValues(scored.map(item => item.stageRefName).filter(Boolean))
+      const suffix = availableStages.length ? `；可用阶段：${availableStages.join('、')}` : ''
+      throw new Error(`款式 ${nodeName(styleNode)} 没有找到阶段为「${stageName}」的尺码表${suffix}`)
     }
+    selected.__selectedStageName = scored[0].stageRefName || stageName
     return selected
   }
 
@@ -550,12 +722,14 @@
     const baseSizeName = nodeName(sizes[baseIndex]) || nodeName(byUrl.get(subSizeRange?.BaseSize)) || ''
     const sizeRangeName = nodeName(byUrl.get(revision.SizeRange)) || nodeName(byUrl.get(subSizeRange?.SubrangeSizeRange)) || ''
     const items = asArray(revision.Items).map(url => byUrl.get(url)).filter(Boolean)
+    const selectedStageName = compact(chart.__selectedStageName || stageName)
+    const fallbackNote = compact(chart.__stageFallbackNote || '')
 
     const common = {
       款号: styleCode || extractStyleCode(nodeName(styleNode)),
       款式名称: nodeName(styleNode),
       款式URL: nodeUrl(styleNode),
-      尺码表阶段: stageName,
+      尺码表阶段: selectedStageName,
       尺码表名称: nodeName(chart),
       尺码表URL: nodeUrl(chart),
       修订版: nodeName(revision),
@@ -583,7 +757,7 @@
       const resultBase = {
         修改确认: formatBoolean(item.C8_SI_CONFIRM),
         抓取结果: '成功',
-        备注: '',
+        备注: fallbackNote,
         抓取时间: common.抓取时间,
       }
       const wideRow = {
@@ -651,6 +825,42 @@
     }
   }
 
+  function buildRunShared(styleCodes, overrides = {}) {
+    const targetCodes = uniqueValues(styleCodes || shared.target_style_codes || [])
+    const currentIndex = Number.isInteger(Number(overrides.current_index))
+      ? Number(overrides.current_index)
+      : Number(shared.current_index || 0)
+    const completedCount = Number.isInteger(Number(overrides.completed_count))
+      ? Number(overrides.completed_count)
+      : Number(shared.completed_count || 0)
+    const successCount = Number.isInteger(Number(overrides.success_count))
+      ? Number(overrides.success_count)
+      : Number(shared.success_count || 0)
+    const failedCount = Number.isInteger(Number(overrides.failed_count))
+      ? Number(overrides.failed_count)
+      : Number(shared.failed_count || 0)
+    const currentCode = overrides.current_buyer_id !== undefined
+      ? compact(overrides.current_buyer_id)
+      : compact(targetCodes[currentIndex] || shared.current_buyer_id || '')
+    return {
+      ...shared,
+      target_style_codes: targetCodes,
+      style_codes: targetCodes,
+      stage: targetStage(),
+      output_shape: params.output_shape || shared.output_shape || 'both',
+      total_rows: targetCodes.length,
+      current_index: currentIndex,
+      completed_count: completedCount,
+      current_exec_no: Math.min(targetCodes.length, Math.max(1, completedCount + 1)),
+      current_row_no: currentIndex + 1,
+      current_buyer_id: currentCode,
+      current_store: targetStage(),
+      success_count: successCount,
+      failed_count: failedCount,
+      ...overrides,
+    }
+  }
+
   async function collectOneStyle(styleCode, options = {}) {
     const stageName = compact(options.stageName || targetStage())
     const found = await findStyleByCode(styleCode)
@@ -658,10 +868,13 @@
     const chart = selectStageSizeChart(styleNode, found.nodes, stageName)
     const detail = await loadSizeChartDetail(nodeUrl(chart))
     const nodes = uniqueNodes([...found.nodes, ...detail.nodes])
+    const selectedChart = detail.chart || chart
+    selectedChart.__selectedStageName = chart.__selectedStageName || selectedChart.__selectedStageName
+    selectedChart.__stageFallbackNote = chart.__stageFallbackNote || selectedChart.__stageFallbackNote
     return buildRowsForChart({
       styleCode,
       styleNode,
-      chart: detail.chart || chart,
+      chart: selectedChart,
       revision: detail.revision,
       nodes,
       stageName,
@@ -690,6 +903,65 @@
     return rows
   }
 
+  function prepareRun() {
+    const styleCodes = normalizeStyleCodes(params.style_codes)
+    if (!styleCodes.length) throw new Error('请至少输入一个款号')
+    return buildRunShared(styleCodes, {
+      current_index: 0,
+      completed_count: 0,
+      success_count: 0,
+      failed_count: 0,
+      current_exec_no: 1,
+      current_row_no: 1,
+      current_buyer_id: styleCodes[0],
+    })
+  }
+
+  async function collectStylePhase() {
+    const styleCodes = uniqueValues(shared.target_style_codes || normalizeStyleCodes(params.style_codes))
+    if (!styleCodes.length) throw new Error('请至少输入一个款号')
+    const index = Math.min(Math.max(Number(shared.current_index || 0), 0), styleCodes.length)
+    if (index >= styleCodes.length) {
+      return complete([], buildRunShared(styleCodes, {
+        current_index: styleCodes.length,
+        completed_count: styleCodes.length,
+        current_exec_no: styleCodes.length,
+        current_buyer_id: '',
+      }))
+    }
+
+    const styleCode = styleCodes[index]
+    let rows = []
+    let successCount = Number(shared.success_count || 0)
+    let failedCount = Number(shared.failed_count || 0)
+    try {
+      rows = await collectOneStyle(styleCode, {
+        stageName: shared.stage || targetStage(),
+        outputShape: shared.output_shape || params.output_shape || 'both',
+      })
+      successCount += 1
+    } catch (error) {
+      rows = [errorRow(styleCode, error.message, { stageName: shared.stage || targetStage() })]
+      failedCount += 1
+    }
+
+    const nextIndex = index + 1
+    const done = nextIndex >= styleCodes.length
+    const nextShared = buildRunShared(styleCodes, {
+      current_index: nextIndex,
+      completed_count: nextIndex,
+      current_exec_no: done ? styleCodes.length : nextIndex + 1,
+      current_row_no: done ? styleCodes.length : nextIndex + 1,
+      current_buyer_id: done ? styleCode : styleCodes[nextIndex],
+      success_count: successCount,
+      failed_count: failedCount,
+      last_style_code: styleCode,
+      last_result: rows.some(row => row.抓取结果 === '成功') ? '成功' : '失败',
+    })
+    if (done) return complete(rows, nextShared)
+    return nextPhase('collect_style', DEFAULT_DELAY_MS, nextShared, rows)
+  }
+
   if (testExports) {
     Object.assign(testExports, {
       normalizeStyleCodes,
@@ -704,22 +976,22 @@
       roundValue,
       findBaseSizeIndex,
       errorRow,
+      buildSearchXml,
+      resolveStyleNode,
+      currentStyleFromDom,
+      buildRunShared,
+      prepareRun,
     })
     return { success: true, data: [], meta: { has_more: false } }
   }
 
-  if (phase !== 'main') return complete([])
-
   try {
-    const rows = await collectAllStyles()
-    const successRows = rows.filter(row => row.抓取结果 === '成功').length
-    return complete(rows, {
-      ...shared,
-      stage: targetStage(),
-      total_rows: rows.length,
-      success_rows: successRows,
-      failed_rows: rows.length - successRows,
-    })
+    if (phase === 'main') {
+      const runShared = prepareRun()
+      return nextPhase('collect_style', 0, runShared)
+    }
+    if (phase === 'collect_style') return await collectStylePhase()
+    return complete([])
   } catch (error) {
     return fail(error.message)
   }

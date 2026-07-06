@@ -1873,6 +1873,13 @@ def _is_within_directory(path: Path, directory: Path) -> bool:
         return False
 
 
+def _is_direct_child_file(path: Path, directory: Path) -> bool:
+    try:
+        return path.resolve(strict=False).parent == directory.resolve(strict=False)
+    except Exception:
+        return False
+
+
 def _cleanup_runtime_artifact_dir(runtime_artifact_dir: str, preserve_paths: Optional[list] = None) -> None:
     runtime_dir = Path(str(runtime_artifact_dir or "")).expanduser()
     if not runtime_dir.exists() or not runtime_dir.is_dir():
@@ -3170,11 +3177,20 @@ def _finalize_plm_size_chart_downloader_outputs(
     target_root.mkdir(parents=True, exist_ok=True)
 
     copied_refs = []
-    for file_path in exported_files or []:
+    source_refs = []
+    seen_sources = set()
+    for file_path in [*(exported_files or []), *(runtime_files or [])]:
+        source_key = str(file_path or "").strip()
+        if not source_key or source_key in seen_sources:
+            continue
+        seen_sources.add(source_key)
+        source_refs.append(source_key)
+
+    for file_path in source_refs:
         source = Path(str(file_path or "")).expanduser()
         if not source.is_file():
             continue
-        if _is_within_directory(source, target_root):
+        if _is_direct_child_file(source, target_root):
             copied_refs.append(str(source))
             continue
         copied_refs.append(str(_copy_file_to_unique_target(source, target_root / source.name)))
