@@ -16,6 +16,7 @@
   const SEARCH_FALLBACK_FOLDER_LIMIT = 8
   const SEARCH_FALLBACK_IMAGE_LIMIT = 80
   const SEARCH_FALLBACK_ASSET_BUDGET = 1200
+  const MIN_USEFUL_FALLBACK_SELECTED_ASSETS = 4
   const PC_DETAIL_MAX_COUNT = 30
   const OCR_DEFAULT_MAX_IMAGES = Number.POSITIVE_INFINITY
   const OCR_PER_IMAGE_TIMEOUT_MS = 18000
@@ -38,6 +39,9 @@
   const TMALL_SUBMIT_MODE = compact(params.tmall_submit_mode || 'dom').toLowerCase()
   const TMALL_ALLOW_API_SUBMIT_FALLBACK = params.tmall_allow_api_submit_fallback === true || TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first'
   const TMALL_ALLOW_API_CONFIRM_FALLBACK = params.tmall_allow_api_confirm_fallback === true
+  const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || 60000) || 60000)
+  const SEMIR_LOGIN_RETRY_MS = Math.min(5000, Math.max(1000, Number(params.semir_login_retry_ms || 5000) || 5000))
+  const SEMIR_LOGIN_WAIT_MAX_ATTEMPTS = Math.max(1, Math.ceil(SEMIR_LOGIN_WAIT_MS / SEMIR_LOGIN_RETRY_MS))
 
   const CATEGORY_ORDER = [
     'main_1x1',
@@ -288,6 +292,16 @@
     'semirPath',
   ]
 
+  const CANDIDATE_CLOUD_PATH_COLUMNS = [
+    '候选云盘路径',
+    '候选图包路径',
+    '候选目录',
+    'candidate_cloud_paths',
+    'candidateCloudPaths',
+    'fallback_cloud_paths',
+    'fallbackCloudPaths',
+  ]
+
   function looksLikeStylePathSegment(segment) {
     const text = compact(segment)
     return /^\d{8,}[A-Za-z0-9_-]*$/i.test(text) || /^[A-Za-z]+\d{8,}[A-Za-z0-9_-]*$/i.test(text)
@@ -312,6 +326,26 @@
       return `${prefix}${parts.join('/')}${trailingSlash ? '/' : ''}`
     }
     return raw
+  }
+
+  function splitCloudPathList(value) {
+    if (Array.isArray(value)) return value.flatMap(splitCloudPathList)
+    return String(value || '')
+      .split(/\r?\n|[；;]/)
+      .map(compact)
+      .filter(Boolean)
+  }
+
+  function normalizeCandidateCloudPaths(value, styleCode) {
+    const seen = new Set()
+    const result = []
+    for (const entry of splitCloudPathList(value)) {
+      const normalized = deriveJobCloudPath(entry, styleCode)
+      if (!normalized || seen.has(normalized)) continue
+      seen.add(normalized)
+      result.push(normalized)
+    }
+    return result
   }
 
   function parseBoolean(value, fallback = true) {
@@ -339,8 +373,9 @@
       style_code: styleCode,
       item_id: itemId,
       cloud_path: deriveJobCloudPath(rawParams.cloud_path, styleCode, rawParams.row_cloud_path || rawParams.cloud_path_override),
+      candidate_cloud_paths: normalizeCandidateCloudPaths(rawParams.candidate_cloud_paths || rawParams.candidate_cloud_path || rawParams.fallback_cloud_paths, styleCode),
       execute_mode: normalizeExecuteMode(rawParams.execute_mode),
-      block_on_style_mismatch: parseBoolean(rawParams.block_on_style_mismatch, true),
+      block_on_style_mismatch: parseBoolean(rawParams.block_on_style_mismatch, false),
       folder_scan_depth: normalizeFolderScanDepth(rawParams.folder_scan_depth),
     }
   }
@@ -390,6 +425,7 @@
         const styleCode = normalizeStyleCode(columnValue(row, STYLE_CODE_COLUMNS))
         const itemIds = normalizeItemIds(columnValue(row, TMALL_ITEM_ID_COLUMNS))
         const rowCloudPath = columnValue(row, CLOUD_PATH_COLUMNS)
+        const rowCandidateCloudPaths = columnValue(row, CANDIDATE_CLOUD_PATH_COLUMNS)
         if (!styleCode || !itemIds.length) {
           const missing = [
             !styleCode ? '款号' : '',
@@ -403,8 +439,9 @@
           style_code: styleCode,
           item_id: itemId,
           cloud_path: deriveJobCloudPath(rawParams.cloud_path, styleCode, rowCloudPath),
+          candidate_cloud_paths: normalizeCandidateCloudPaths(rowCandidateCloudPaths || rawParams.candidate_cloud_paths || rawParams.candidate_cloud_path || rawParams.fallback_cloud_paths, styleCode),
           execute_mode: normalizeExecuteMode(rawParams.execute_mode),
-          block_on_style_mismatch: parseBoolean(rawParams.block_on_style_mismatch, true),
+          block_on_style_mismatch: parseBoolean(rawParams.block_on_style_mismatch, false),
           folder_scan_depth: normalizeFolderScanDepth(rawParams.folder_scan_depth),
         }))
       })
@@ -1021,6 +1058,20 @@
     return result
   }
 
+  function annotateItemsWithSource(items, sourceConfig = {}) {
+    return (Array.isArray(items) ? items : []).map(item => ({
+      ...(item || {}),
+      __mount_id: String(item?.mount_id || item?.mountId || sourceConfig.mountId || '').trim(),
+      __mount_name: compact(item?.mount_name || item?.mountName || sourceConfig.mountName || ''),
+      __source_relative_path: compact(sourceConfig.relativePath || ''),
+      __source_raw_path: compact(sourceConfig.rawPath || ''),
+    }))
+  }
+
+  function selectedPackagingAssetCount(items) {
+    return classifyPackagingAssets(dedupeItemsByFullpath(items)).selected
+  }
+
   function nextPhase(name, sleepMs = 0, newShared = shared, data = []) {
     return {
       success: true,
@@ -1036,6 +1087,63 @@
 
   function waitMs(ms) {
     return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms) || 0)))
+  }
+
+  function isSemirLoginTimeoutPayload(payload) {
+    if (!payload || typeof payload !== 'object') return false
+    const code = String(payload.error_code ?? payload.errorCode ?? payload.code ?? '').trim()
+    const message = compact(payload.error_msg || payload.errorMsg || payload.message || payload.msg)
+    return code === '40106' || /登录超时|login\s*timeout/i.test(message)
+  }
+
+  function isSemirLoginTimeoutText(text) {
+    return /40106|登录超时|login\s*timeout/i.test(String(text || ''))
+  }
+
+  function createSemirLoginTimeoutError(url, response, payload, text) {
+    const error = new Error(`森马云盘登录超时，请在当前浏览器完成登录后继续：${String(url || '')}`)
+    error.isSemirLoginTimeout = true
+    error.status = response?.status || 0
+    error.payload = payload || null
+    error.responseText = String(text || '')
+    return error
+  }
+
+  function isSemirLoginTimeoutError(error) {
+    return !!(error?.isSemirLoginTimeout || isSemirLoginTimeoutPayload(error?.payload) || isSemirLoginTimeoutText(error?.message || error?.responseText))
+  }
+
+  function isSemirLoginWaitPhase(name) {
+    return new Set(['prepare_job', 'collect_cloud_assets']).has(String(name || ''))
+  }
+
+  function semirLoginWaitMessage(attempts) {
+    const waitedMs = Math.min(SEMIR_LOGIN_WAIT_MS, Math.max(0, Number(attempts || 0)) * SEMIR_LOGIN_RETRY_MS)
+    return `等待森马云盘登录 ${Math.ceil(waitedMs / 1000)}/${Math.ceil(SEMIR_LOGIN_WAIT_MS / 1000)}秒；请在当前云盘页面完成登录，登录恢复后脚本会继续`
+  }
+
+  function clearSemirLoginWaitState(state = shared) {
+    const next = { ...state }
+    delete next.semir_login_wait_attempts
+    delete next.semir_login_wait_error
+    return next
+  }
+
+  function waitForSemirLogin(name, state = shared, error = null) {
+    const attempts = Math.max(0, Number(state.semir_login_wait_attempts || 0) || 0)
+    if (attempts >= SEMIR_LOGIN_WAIT_MAX_ATTEMPTS) {
+      return {
+        success: false,
+        error: `等待森马云盘登录超过${Math.ceil(SEMIR_LOGIN_WAIT_MS / 1000)}秒，最后错误：${String(error?.message || error || '登录超时')}`,
+      }
+    }
+    const nextAttempts = attempts + 1
+    return nextPhase(name, SEMIR_LOGIN_RETRY_MS, {
+      ...state,
+      semir_login_wait_attempts: nextAttempts,
+      semir_login_wait_error: String(error?.message || error || ''),
+      current_store: semirLoginWaitMessage(nextAttempts),
+    })
   }
 
   function tmallTimingConfig() {
@@ -1122,6 +1230,9 @@
       payload = text ? JSON.parse(text) : {}
     } catch (error) {
       payload = null
+    }
+    if (isSemirLoginTimeoutPayload(payload) || (!response.ok && response.status === 401 && isSemirLoginTimeoutText(text))) {
+      throw createSemirLoginTimeoutError(url, response, payload, text)
     }
     if (!response.ok) {
       throw new Error(`HTTP ${response.status}: ${text.slice(0, 240) || response.statusText}`)
@@ -1244,6 +1355,32 @@
     return deduped[0] || null
   }
 
+  function resolveCandidateSourceConfigs(mounts, candidateCloudPaths = [], styleCode = '') {
+    const configs = []
+    const seen = new Set()
+    for (const rawPath of Array.isArray(candidateCloudPaths) ? candidateCloudPaths : []) {
+      const cloudConfig = parseCloudPath(deriveJobCloudPath(rawPath, styleCode))
+      const resolved = resolveMountFromList(mounts, cloudConfig.mountName)
+      if (!resolved) {
+        const available = mounts.map(mountDisplayName).filter(Boolean).join('、')
+        throw new Error(`候选云盘路径未找到挂载点：${cloudConfig.mountName}；当前可见挂载点：${available || '无'}`)
+      }
+      const key = `${resolved.mountId}\n${cloudConfig.relativePath}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      configs.push({
+        mountId: resolved.mountId,
+        mountName: resolved.mountName,
+        relativePath: cloudConfig.relativePath,
+        rawPath: cloudConfig.raw,
+        restrictSearchToRelativePath: true,
+        searchOnly: !styleRootPathFromFullpath(cloudConfig.relativePath, styleCode),
+        sourceWarning: `主目录素材不足时使用候选目录：${resolved.mountName}//${cloudConfig.relativePath}`,
+      })
+    }
+    return configs
+  }
+
   async function resolvePackagingSourceConfig(cloudConfig, job) {
     const mounts = await fetchMounts()
     const resolved = resolveMountFromList(mounts, cloudConfig.mountName)
@@ -1253,23 +1390,13 @@
         mountName: resolved.mountName,
         relativePath: cloudConfig.relativePath,
         rawPath: cloudConfig.raw,
+        candidateSources: resolveCandidateSourceConfigs(mounts, job.candidate_cloud_paths || [], job.style_code),
         sourceWarning: '',
       }
     }
 
-    const fallback = await findVisibleStyleFolder(mounts, job.style_code)
-    if (fallback) {
-      return {
-        mountId: fallback.mountId,
-        mountName: fallback.mountName,
-        relativePath: fallback.relativePath,
-        rawPath: `${fallback.mountName}//${fallback.relativePath}`,
-        sourceWarning: `未找到挂载点“${cloudConfig.mountName}”，已按款号在可见挂载点“${fallback.mountName}”中定位图包`,
-      }
-    }
-
     const available = mounts.map(mountDisplayName).filter(Boolean).join('、')
-    throw new Error(`未找到挂载点：${cloudConfig.mountName}；按款号 ${job.style_code} 在当前可见挂载点中也未找到图包。当前可见挂载点：${available || '无'}`)
+    throw new Error(`未找到挂载点：${cloudConfig.mountName}。如需从其它挂载点取图，请在“候选云盘路径”中显式配置。当前可见挂载点：${available || '无'}`)
   }
 
   async function fetchFolderPage(mountId, fullpath, start, method, endpoint) {
@@ -1354,15 +1481,17 @@
     return { assets, errors }
   }
 
-  async function collectPackagingAssets(job, sourceConfig) {
-    const exact = await collectDescendantImagesByPath(
-      sourceConfig.mountId,
-      sourceConfig.relativePath,
-      job.folder_scan_depth,
-      { value: 3000 },
-    )
+  async function collectPackagingAssetsFromSource(job, sourceConfig) {
+    const exact = sourceConfig.searchOnly
+      ? { assets: [], errors: [] }
+      : await collectDescendantImagesByPath(
+        sourceConfig.mountId,
+        sourceConfig.relativePath,
+        job.folder_scan_depth,
+        { value: 3000 },
+      )
     let assets = exact.assets
-    const errors = [...exact.errors]
+    const listingIssues = [...exact.errors]
     let searchCount = 0
     let folderCount = 0
     let searchScope = assets.length ? 'configured_path' : ''
@@ -1373,11 +1502,14 @@
       searchItems = await searchFiles(sourceConfig.mountId, job.style_code)
       searchCount = searchItems.length
     } catch (error) {
-      errors.push(`搜索款号失败：${String(error?.message || error)}`)
+      listingIssues.push(`搜索款号失败：${String(error?.message || error)}`)
     }
 
-    const rootCandidates = collectStyleRootCandidates([...searchItems, ...assets], job.style_code)
-    const latestRoot = selectLatestStyleRoot([...searchItems, ...assets], job.style_code)
+    const scopedSearchItems = sourceConfig.restrictSearchToRelativePath
+      ? searchItems.filter(item => isWithinRelativePath(item?.fullpath, sourceConfig.relativePath))
+      : searchItems
+    const rootCandidates = collectStyleRootCandidates([...scopedSearchItems, ...assets], job.style_code)
+    const latestRoot = selectLatestStyleRoot([...scopedSearchItems, ...assets], job.style_code)
     if (latestRoot?.path) {
       folderCount = rootCandidates.length
       selectedStyleRoot = latestRoot.path
@@ -1393,7 +1525,7 @@
           { value: SEARCH_FALLBACK_ASSET_BUDGET },
         )
         assets = child.assets
-        errors.push(...child.errors)
+        listingIssues.push(...child.errors)
         searchScope = isWithinRelativePath(selectedStyleRoot, sourceConfig.relativePath) ? 'configured_latest_root' : 'mount_latest_root'
       }
     }
@@ -1407,6 +1539,14 @@
         const optimized = optimizedStyleFolderPathFromFullpath(fullpath, job.style_code)
         return !!optimized && optimized === pathSegments(fullpath).join('/')
       })
+      if (!selectedStyleRoot && folders.length) {
+        const rankedFolders = [...folders].sort((a, b) => {
+          const timeDelta = itemUpdatedAtMs(b) - itemUpdatedAtMs(a)
+          if (timeDelta) return timeDelta
+          return naturalCompare(normalizedAssetFullpath(a), normalizedAssetFullpath(b))
+        })
+        selectedStyleRoot = normalizedAssetFullpath(rankedFolders[0])
+      }
       folderCount += folders.length
       const folderBudget = { value: SEARCH_FALLBACK_ASSET_BUDGET }
       for (const folder of folders) {
@@ -1418,34 +1558,81 @@
           folderBudget,
         )
         assets.push(...child.assets)
-        errors.push(...child.errors)
+        listingIssues.push(...child.errors)
       }
       assets.push(...matching.filter(isImageItem))
       if (matching.length) searchScope = scopeLabel
       return matching.length
     }
 
-    if (!assets.length && !selectedStyleRoot) {
-      const scoped = searchItems.filter(item => isWithinRelativePath(item?.fullpath, sourceConfig.relativePath))
-      await collectFromSearchItems(scoped, 'configured_search')
-      if (!assets.length) {
-        const mountWide = selectMountWideSearchItems(searchItems, sourceConfig.relativePath, job.style_code)
+    if (selectedPackagingAssetCount(assets) < MIN_USEFUL_FALLBACK_SELECTED_ASSETS) {
+      const scoped = scopedSearchItems.filter(item => isWithinRelativePath(item?.fullpath, sourceConfig.relativePath))
+      await collectFromSearchItems(scoped, sourceConfig.restrictSearchToRelativePath ? 'candidate_search' : 'configured_search')
+      if (selectedPackagingAssetCount(assets) < MIN_USEFUL_FALLBACK_SELECTED_ASSETS) {
+        const mountWide = sourceConfig.restrictSearchToRelativePath
+          ? []
+          : selectMountWideSearchItems(searchItems, sourceConfig.relativePath, job.style_code)
         const preferred = mountWide.filter(isPreferredPackagingSearchItem)
         await collectFromSearchItems(mountWide, preferred.length ? 'mount_packaging_search' : 'mount_search')
       }
     }
 
-    assets = dedupeItemsByFullpath(assets)
+    assets = annotateItemsWithSource(dedupeItemsByFullpath(assets), sourceConfig)
     const plan = classifyPackagingAssets(assets)
+    const errors = plan.selected > 0 ? [] : listingIssues
     return {
       ...plan,
       items: assets,
       errors,
+      warnings: plan.selected > 0 ? listingIssues : [],
       searchCount,
       folderCount,
       searchScope,
       selectedStyleRoot,
+      sourceMountId: sourceConfig.mountId,
+      sourceMountName: sourceConfig.mountName,
+      sourceRelativePath: sourceConfig.relativePath,
+      sourceRawPath: sourceConfig.rawPath,
     }
+  }
+
+  function planCoverageScore(plan = {}) {
+    const byCategory = plan.byCategory || {}
+    const categoryHits = CATEGORY_ORDER.reduce((sum, category) => sum + ((byCategory[category] || []).length ? 1 : 0), 0)
+    const detailCount = (byCategory.pc_detail || []).length
+    const mainCount = (byCategory.main_1x1 || []).length + (byCategory.main_3x4 || []).length
+    return Number(plan.selected || 0) * 10 + categoryHits * 4 + detailCount * 2 + mainCount
+  }
+
+  async function collectPackagingAssets(job, sourceConfig) {
+    const primary = await collectPackagingAssetsFromSource(job, sourceConfig)
+    const candidates = Array.isArray(sourceConfig.candidateSources) ? sourceConfig.candidateSources : []
+    if (primary.selected >= MIN_USEFUL_FALLBACK_SELECTED_ASSETS || !candidates.length) return primary
+
+    let best = primary
+    const candidateIssues = []
+    for (const candidate of candidates) {
+      const plan = await collectPackagingAssetsFromSource(job, candidate)
+      candidateIssues.push(...(plan.errors || []), ...(plan.warnings || []))
+      if (planCoverageScore(plan) > planCoverageScore(best)) {
+        best = {
+          ...plan,
+          warnings: [
+            `主目录素材不足（选中 ${primary.selected} 张），已使用候选目录：${candidate.mountName}//${candidate.relativePath}`,
+            ...(primary.errors || []),
+            ...(primary.warnings || []),
+            ...(plan.warnings || []),
+          ],
+        }
+      }
+    }
+    if (best === primary && candidateIssues.length) {
+      return {
+        ...primary,
+        warnings: [...(primary.warnings || []), ...candidateIssues],
+      }
+    }
+    return best
   }
 
   async function fetchFileInfo(mountId, fullpath) {
@@ -1461,6 +1648,7 @@
     const rows = []
     const downloadItems = []
     let globalIndex = 0
+    const planSourcePath = plan.sourceRelativePath || sourceConfig.relativePath
 
     if (!plan.items.length) {
       rows.push({
@@ -1468,7 +1656,7 @@
         '图片用途': '',
         '文件名': '',
         '原文件名': '',
-        '云盘路径': sourceConfig.relativePath,
+        '云盘路径': planSourcePath,
         '下载结果': '未匹配到图片',
         '本地文件': '',
         '上传结果': '',
@@ -1501,7 +1689,7 @@
           '__source_index': item.__source_index,
         }
         try {
-          const info = await fetchFileInfo(sourceConfig.mountId, item?.fullpath || '')
+          const info = await fetchFileInfo(item?.__mount_id || sourceConfig.mountId, item?.fullpath || '')
           const downloadUrl = String(info?.uri || (Array.isArray(info?.uris) ? info.uris[0] : '') || '').trim()
           if (!downloadUrl) {
             rows.push({
@@ -1542,7 +1730,7 @@
         '图片用途': '',
         '文件名': '',
         '原文件名': '',
-        '云盘路径': sourceConfig.relativePath,
+        '云盘路径': planSourcePath,
         '下载结果': '已跳过',
         '本地文件': '',
         '上传结果': '',
@@ -1558,7 +1746,7 @@
         '图片用途': '',
         '文件名': '',
         '原文件名': '',
-        '云盘路径': sourceConfig.relativePath,
+        '云盘路径': planSourcePath,
         '下载结果': '已跳过',
         '本地文件': '',
         '上传结果': '',
@@ -1616,6 +1804,21 @@
     } catch (error) {
       return undefined
     }
+  }
+
+  function getComponentProps(name) {
+    const engine = getTmallEngine()
+    try {
+      const component = engine && typeof engine.getComponent === 'function' ? engine.getComponent(name) : null
+      return component && typeof component.getProps === 'function' ? component.getProps() || {} : {}
+    } catch (error) {
+      return {}
+    }
+  }
+
+  function componentVisible(name) {
+    const props = getComponentProps(name)
+    return props.visible === true || props.vis === true
   }
 
   function findLegacyPcDetailTextarea() {
@@ -1699,6 +1902,70 @@
     return pics
   }
 
+  function isAggregateItemImagesGroup(group = {}) {
+    const type = compact(group?.type || group?.componentType || group?.groupType).toLowerCase()
+    const bizName = compact(group?.bizName || group?.groupName)
+    return Array.isArray(group?.imgList) && (type === 'itemimages' || bizName.includes('商品图片'))
+  }
+
+  function summarizeNewDescTemplate(value) {
+    const parsed = parseNewDescTemplateContent(value)
+    if (!parsed.ok) {
+      return {
+        ok: false,
+        reason: parsed.reason || '',
+        groupCount: 0,
+        visibleGroupCount: 0,
+        componentPicCount: 0,
+        aggregateItemImagesGroupCount: 0,
+        aggregateItemImagesImageCount: 0,
+        aggregateItemImagesOnly: false,
+      }
+    }
+    const groups = Array.isArray(parsed.template?.groups) ? parsed.template.groups : []
+    const visibleGroups = groups.filter(group => group?.hide !== true)
+    const pics = flattenNewDescPicComponents(parsed.template)
+    const aggregateGroups = groups.filter(isAggregateItemImagesGroup)
+    const aggregateItemImagesImageCount = aggregateGroups.reduce(
+      (sum, group) => sum + (Array.isArray(group?.imgList) ? group.imgList.length : 0),
+      0,
+    )
+    return {
+      ok: true,
+      groupCount: groups.length,
+      visibleGroupCount: visibleGroups.length,
+      componentPicCount: pics.length,
+      aggregateItemImagesGroupCount: aggregateGroups.length,
+      aggregateItemImagesImageCount,
+      aggregateItemImagesOnly: groups.length > 0 && pics.length === 0 && aggregateGroups.length > 0,
+    }
+  }
+
+  function shouldFallbackAggregateNewDescToLegacy(value = getNewDescValue()) {
+    const summary = summarizeNewDescTemplate(value)
+    return summary.ok &&
+      summary.aggregateItemImagesOnly &&
+      summary.componentPicCount === 0 &&
+      summary.aggregateItemImagesGroupCount > 0 &&
+      summary.visibleGroupCount <= 2 &&
+      summary.aggregateItemImagesImageCount >= 1 &&
+      summary.aggregateItemImagesImageCount <= 2
+  }
+
+  function aggregateNewDescLegacyFallbackLabel(value = getNewDescValue()) {
+    const summary = summarizeNewDescTemplate(value)
+    const moduleCount = summary.visibleGroupCount || summary.groupCount || summary.aggregateItemImagesGroupCount || 1
+    const imageCount = summary.aggregateItemImagesImageCount || 0
+    return `新版详情是${moduleCount}个商品图片聚合模块${imageCount ? `（imgList ${imageCount}张）` : ''}，不是可逐张锚点替换的图文模块`
+  }
+
+  function hasAggregateNewDescTemplate(value = getNewDescValue()) {
+    const summary = summarizeNewDescTemplate(value)
+    return summary.ok &&
+      summary.aggregateItemImagesOnly &&
+      summary.aggregateItemImagesGroupCount > 0
+  }
+
   function escapeHtmlAttribute(value) {
     return String(value || '')
       .replace(/&/g, '&amp;')
@@ -1719,6 +1986,76 @@
 
   function hasUsableNewDescTemplate(value = getNewDescValue()) {
     return flattenNewDescPicComponents(value).length > 0
+  }
+
+  function buildImageDimensionMap(items = []) {
+    const result = {}
+    ;(Array.isArray(items) ? items : []).forEach(item => {
+      const url = compact(item?.url || item?.src || item?.picUrl || item?.imageUrl || item?.img)
+      if (!url) return
+      result[comparableImageUrl(url)] = {
+        width: positiveInt(item?.width, 0),
+        height: positiveInt(item?.height, 0),
+      }
+    })
+    return result
+  }
+
+  function imageDimensionsForUrl(url, maps = []) {
+    const key = comparableImageUrl(url)
+    for (const map of maps) {
+      const found = map?.[key]
+      if (found && (found.width || found.height)) return found
+    }
+    return {}
+  }
+
+  function aggregateNewDescImageItemsFromUrls(urls = [], currentImgList = [], uploadedDetailItems = []) {
+    const currentMap = buildImageDimensionMap((Array.isArray(currentImgList) ? currentImgList : []).map(item => ({
+      ...item,
+      url: item?.img || item?.url,
+    })))
+    const uploadedMap = buildImageDimensionMap(uploadedDetailItems)
+    return (Array.isArray(urls) ? urls : [])
+      .map(compact)
+      .filter(Boolean)
+      .map((url, index) => {
+        const current = (Array.isArray(currentImgList) ? currentImgList : [])[index] || {}
+        const dims = imageDimensionsForUrl(url, [uploadedMap, currentMap])
+        const width = positiveInt(dims.width || current.width, 620) || 620
+        const height = positiveInt(dims.height || current.height, 0) || 827
+        return {
+          hotAreaList: Array.isArray(current.hotAreaList) ? jsonClone(current.hotAreaList) : [],
+          img: url,
+          width,
+          height,
+        }
+      })
+  }
+
+  function buildAggregateNewDescFromPcModules(newDescValue, modules = [], uploadedDetailItems = []) {
+    const parsed = parseNewDescTemplateContent(newDescValue)
+    if (!parsed.ok) return null
+    const template = jsonClone(parsed.template)
+    const groups = Array.isArray(template?.groups) ? template.groups : []
+    const aggregateIndex = groups.findIndex(isAggregateItemImagesGroup)
+    if (aggregateIndex < 0) return null
+    const urls = pcDetailUrlsFromSource(modules)
+    if (!urls.length) return null
+    const currentImgList = Array.isArray(groups[aggregateIndex]?.imgList) ? groups[aggregateIndex].imgList : []
+    groups[aggregateIndex] = {
+      ...groups[aggregateIndex],
+      imgList: aggregateNewDescImageItemsFromUrls(urls, currentImgList, uploadedDetailItems),
+    }
+    template.groups = groups
+    return {
+      ...(newDescValue && typeof newDescValue === 'object' ? newDescValue : {}),
+      descPageCommitParam: {
+        ...((newDescValue && typeof newDescValue === 'object' ? newDescValue.descPageCommitParam : {}) || {}),
+        templateContent: JSON.stringify(template),
+        changed: true,
+      },
+    }
   }
 
   function normalizeDetailImage(item) {
@@ -1784,11 +2121,71 @@
     return cloned
   }
 
+  function buildNewDescImageCountFallback(parsed, newDescValue, pics = [], detailList = [], options = {}) {
+    if (!options.allowLegacyCountImageReplace) return null
+    if (!detailList.length || pics.length <= detailList.length + 1) return null
+    const groups = Array.isArray(parsed?.template?.groups) ? parsed.template.groups : []
+    const firstPic = pics[0]
+    const startPic = pics[1]
+    const stopPic = pics[detailList.length + 1]
+    const referenceGroup = startPic?.group || firstPic?.group
+    if (!startPic || !stopPic || !referenceGroup) return null
+    const template = jsonClone(parsed.template)
+    const newGroups = detailList.map((item, index) => cloneNewDescPicGroup(referenceGroup, item, index, options))
+    template.groups = [
+      ...groups.slice(0, startPic.groupIndex),
+      ...newGroups,
+      ...groups.slice(stopPic.groupIndex),
+    ]
+    const nextValue = {
+      ...(newDescValue && typeof newDescValue === 'object' ? newDescValue : {}),
+      descPageCommitParam: {
+        ...((newDescValue && typeof newDescValue === 'object' ? newDescValue.descPageCommitParam : {}) || {}),
+        templateContent: JSON.stringify(template),
+        changed: true,
+      },
+    }
+    return {
+      ok: true,
+      target: 'descRepublicOfSell',
+      mode: 'new_desc_legacy_count_replace',
+      value: nextValue,
+      template,
+      modules: newDescPicsToModules(flattenNewDescPicComponents(template)),
+      pics,
+      insertedGroupCount: newGroups.length,
+      replacedGroupStartIndex: startPic.groupIndex,
+      replacedGroupEndIndex: stopPic.groupIndex,
+      replaceStartIndex: 1,
+      replaceEndIndex: stopPic.globalIndex,
+      replacedImageCount: detailList.length,
+      insertedImageCount: detailList.length,
+      fixedTopImage: firstPic,
+      fixedTopImageIndex: 0,
+      preserveTopImageCount: 1,
+      stopAnchor: stopPic,
+      stopImageIndex: stopPic.globalIndex,
+      stopAnchorKind: 'legacy_count_tail',
+      note: `新版图片详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailList.length + 1}张，保留第${detailList.length + 2}张及以下尾部`,
+    }
+  }
+
+  function legacyCountProbeDetailImages(options = {}) {
+    if (!options.probeOnly || !options.allowLegacyCountImageReplace) return []
+    const count = Math.max(0, Math.floor(Number(options.legacyCountDetailImageCount || 0) || 0))
+    return Array.from({ length: count }, (_, index) => ({
+      url: `__crawshrimp_pc_detail_probe_${index + 1}__`,
+      width: 1440,
+      height: 1920,
+    }))
+  }
+
   function buildAnchoredNewDescTemplateContent(newDescValue, detailImages = [], options = {}) {
     const parsed = parseNewDescTemplateContent(newDescValue)
     const detailList = (Array.isArray(detailImages) ? detailImages : [])
       .map(normalizeDetailImage)
       .filter(item => item.url)
+    const detailListForCountFallback = detailList.length ? detailList : legacyCountProbeDetailImages(options)
     if (!parsed.ok) {
       return {
         ok: false,
@@ -1817,6 +2214,10 @@
       probeOnly: true,
     })
     if (!detailList.length || !range.ok) {
+      const countFallback = detailListForCountFallback.length
+        ? buildNewDescImageCountFallback(parsed, newDescValue, pics, detailListForCountFallback, options)
+        : null
+      if (countFallback) return countFallback
       return {
         ...range,
         target: 'descRepublicOfSell',
@@ -1889,16 +2290,7 @@
     }
   }
 
-  function currentPcDetailReplacementProbe(options = {}) {
-    const newDescValue = getNewDescValue()
-    if (hasUsableNewDescTemplate(newDescValue)) {
-      return buildAnchoredNewDescTemplateContent(newDescValue, [], {
-        probeOnly: true,
-        visualAnchors: options.visualAnchors,
-        requireVisualAnchors: options.requireVisualAnchors,
-        allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
-      })
-    }
+  function legacyPcDetailReplacementProbe(options = {}) {
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
       return buildAnchoredPcDetailModules(modularDesc, [], {
@@ -1915,6 +2307,35 @@
         visualAnchors: options.visualAnchors,
         requireVisualAnchors: options.requireVisualAnchors,
         allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+      })
+    }
+    return null
+  }
+
+  function currentPcDetailReplacementProbe(options = {}) {
+    const preferLegacy = !!options.preferLegacyPcDetail
+    if (!preferLegacy) {
+      const newDescValue = getNewDescValue()
+      if (hasUsableNewDescTemplate(newDescValue)) {
+        return buildAnchoredNewDescTemplateContent(newDescValue, [], {
+          probeOnly: true,
+          visualAnchors: options.visualAnchors,
+          requireVisualAnchors: options.requireVisualAnchors,
+          allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+          legacyCountDetailImageCount: options.legacyCountDetailImageCount,
+        })
+      }
+    }
+    const legacyProbe = legacyPcDetailReplacementProbe(options)
+    if (legacyProbe) return legacyProbe
+    const newDescValue = getNewDescValue()
+    if (hasUsableNewDescTemplate(newDescValue)) {
+      return buildAnchoredNewDescTemplateContent(newDescValue, [], {
+        probeOnly: true,
+        visualAnchors: options.visualAnchors,
+        requireVisualAnchors: options.requireVisualAnchors,
+        allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+        legacyCountDetailImageCount: options.legacyCountDetailImageCount,
       })
     }
     return {
@@ -2132,19 +2553,20 @@
     }
   }
 
-  function clickDialogConfirm(labels = ['确认', '确定']) {
-    const element = findVisibleActionByText(labels, {
+  function clickDialogConfirm(labels = ['确认', '确定'], options = {}) {
+    const dialogElement = findVisibleActionByText(labels, {
       dialogOnly: true,
       allowContains: false,
       maxTextLength: 12,
       preferRight: true,
       exclude: ['取消', '关闭'],
-    }) || findVisibleActionByText(labels, {
+    })
+    const element = dialogElement || (options.allowPageFallback === false ? null : findVisibleActionByText(labels, {
       allowContains: false,
       maxTextLength: 12,
       preferRight: true,
       exclude: ['取消', '关闭'],
-    })
+    }))
     return {
       ok: smartClick(element),
       text: element ? elementText(element) : '',
@@ -2208,6 +2630,26 @@
     const element = findReturnOldDescriptionSwitch()
     if (!element) return false
     return smartClick(element)
+  }
+
+  function returnOldDescriptionConfirmRoots() {
+    return getAccessibleDocuments()
+      .flatMap(doc => visibleDialogRoots(doc))
+      .filter(root => /确认返回旧版吗|返回旧版后无法切回新版/.test(elementText(root)))
+  }
+
+  function findReturnOldDescriptionConfirmElement() {
+    for (const root of returnOldDescriptionConfirmRoots()) {
+      const element = findVisibleActionByText(['确定', '确认'], {
+        root,
+        allowContains: false,
+        maxTextLength: 8,
+        preferRight: true,
+        exclude: ['取消', '关闭'],
+      })
+      if (element) return element
+    }
+    return null
   }
 
   function extractFieldTextValue(value) {
@@ -2292,6 +2734,7 @@
     const text = String(document.body?.innerText || '')
     const validationMessages = []
     if (text.includes('必填项鞋帮高度不能为空')) validationMessages.push('必填项鞋帮高度不能为空')
+    if (text.includes('请至少维护1个商品视频')) validationMessages.push('请至少维护1个商品视频')
     const itemPropProps = (() => {
       try {
         const state = getSellState()
@@ -2363,6 +2806,63 @@
     return { ok: false, text: '' }
   }
 
+  function tmallAttributeUpdateConfirmToken(state = shared, stage = 'pc') {
+    const normalizedStage = compact(stage || 'pc') || 'pc'
+    const itemId = compact(state?.current_job?.item_id || normalizeItemId(location.href) || 'current')
+    return `${normalizedStage}:${itemId}`
+  }
+
+  function getTmallAttributeUpdateConfirmedTokens(state = shared) {
+    const value = state?.tmall_attribute_update_confirmed_tokens
+    if (Array.isArray(value)) return value.map(item => compact(item)).filter(Boolean)
+    if (typeof value === 'string') return value.split('|').map(item => compact(item)).filter(Boolean)
+    return []
+  }
+
+  function hasConfirmedTmallAttributeUpdate(state = shared, stage = 'pc') {
+    return getTmallAttributeUpdateConfirmedTokens(state).includes(tmallAttributeUpdateConfirmToken(state, stage))
+  }
+
+  function markTmallAttributeUpdateConfirmed(state = shared, stage = 'pc') {
+    const tokens = getTmallAttributeUpdateConfirmedTokens(state)
+    const token = tmallAttributeUpdateConfirmToken(state, stage)
+    return {
+      ...state,
+      tmall_attribute_update_confirmed_tokens: tokens.includes(token) ? tokens : [...tokens, token],
+    }
+  }
+
+  function tmallAttributeUpdateDialogRoots() {
+    return getAccessibleDocuments()
+      .flatMap(doc => visibleDialogRoots(doc))
+      .filter(root => {
+        const text = elementText(root)
+        return /商品属性信息更新确定/.test(text) &&
+          /平台识别到.*商品属性信息存在更新/.test(text)
+      })
+  }
+
+  function hasTmallAttributeUpdateDialog() {
+    return tmallAttributeUpdateDialogRoots().length > 0
+  }
+
+  function clickAttributeUpdateConfirmIfPresent() {
+    const roots = tmallAttributeUpdateDialogRoots()
+    for (const root of roots) {
+      const element = findVisibleActionByText(['确定'], {
+        root,
+        allowContains: false,
+        maxTextLength: 8,
+        preferRight: true,
+        exclude: ['取消', '关闭', '不采纳'],
+      })
+      if (smartClick(element)) {
+        return { ok: true, text: elementText(element) || '确定' }
+      }
+    }
+    return { ok: false, text: '' }
+  }
+
   function extractPublishStatus(job = {}) {
     const status = extractTmallStatus(job)
     const text = bodyText()
@@ -2408,9 +2908,41 @@
   }
 
   function clickPublishConfirmIfPresent() {
-    const confirm = clickDialogConfirm(['确认提交', '确认', '确定', '继续发布', '提交', '发布'])
+    const confirm = clickDialogConfirm(['确认提交', '确认', '确定', '继续发布', '提交', '发布'], {
+      allowPageFallback: false,
+    })
     if (confirm.ok) return confirm
     return { ok: false, text: '' }
+  }
+
+  function hasTmallDetailEditorUpgradePrompt(text = bodyText()) {
+    return /图文详情编辑器升级提示/.test(String(text || ''))
+  }
+
+  function tmallUpgradePromptConfirmToken(state = shared, stage = 'pc') {
+    const normalizedStage = compact(stage || 'pc') || 'pc'
+    const itemId = compact(state?.current_job?.item_id || normalizeItemId(location.href) || 'current')
+    return `${normalizedStage}:${itemId}`
+  }
+
+  function getTmallUpgradePromptConfirmedTokens(state = shared) {
+    const value = state?.tmall_upgrade_prompt_confirmed_tokens
+    if (Array.isArray(value)) return value.map(item => compact(item)).filter(Boolean)
+    if (typeof value === 'string') return value.split('|').map(item => compact(item)).filter(Boolean)
+    return []
+  }
+
+  function hasConfirmedTmallUpgradePrompt(state = shared, stage = 'pc') {
+    return getTmallUpgradePromptConfirmedTokens(state).includes(tmallUpgradePromptConfirmToken(state, stage))
+  }
+
+  function markTmallUpgradePromptConfirmed(state = shared, stage = 'pc') {
+    const tokens = getTmallUpgradePromptConfirmedTokens(state)
+    const token = tmallUpgradePromptConfirmToken(state, stage)
+    return {
+      ...state,
+      tmall_upgrade_prompt_confirmed_tokens: tokens.includes(token) ? tokens : [...tokens, token],
+    }
   }
 
   function isTmallSubmitSuccessPage() {
@@ -2596,6 +3128,9 @@
 
   function elementCenter(element) {
     if (!element || typeof element.getBoundingClientRect !== 'function') return null
+    try {
+      element.scrollIntoView?.({ block: 'center', inline: 'center' })
+    } catch (error) {}
     const rect = element.getBoundingClientRect()
     if (!rect || !Number.isFinite(Number(rect.left)) || !Number.isFinite(Number(rect.top))) return null
     return {
@@ -2695,6 +3230,14 @@
     }))
   }
 
+  function markRowsBlockedBeforeUpload(rows, status, result, note) {
+    return buildOutputStatusRows(rows, status, note).map(row => ({
+      ...row,
+      '上传结果': row['上传结果'] || '已阻止',
+      '执行结果': result || '预检阻止',
+    }))
+  }
+
   function failCurrentJob(note, result = '执行失败') {
     const status = extractPublishStatus(shared.current_job || {})
     const rows = markRowsWithResult(shared.current_result_rows, status, result, note)
@@ -2707,6 +3250,10 @@
 
   function successfulRows(rows) {
     return (Array.isArray(rows) ? rows : []).filter(row => row && row['下载结果'] === '已下载' && row['本地文件'])
+  }
+
+  function downloadedPcDetailRowCount(rows) {
+    return successfulRows(rows).filter(row => row.__category === 'pc_detail').length
   }
 
   function blockingUploadFailureRows(rows) {
@@ -2740,7 +3287,7 @@
   }
 
   function hasDownloadedPcDetailRows(rows) {
-    return successfulRows(rows).some(row => row.__category === 'pc_detail')
+    return downloadedPcDetailRowCount(rows) > 0
   }
 
   function fileListFromInput() {
@@ -2874,7 +3421,8 @@
   const WASH_FALLBACK_ANCHOR_RE = /(不同材质这样洗|不同材质|衣物洗涤|洗涤|水洗|洗唛)/i
   const LOWER_PRESERVE_ANCHOR_RE = /(模特信息|模特展示|宝贝模特|吊牌|吊牌展示|洗涤|水洗|洗唛|不同材质这样洗|不同材质|衣物洗涤|品牌介绍|品牌故事|宝贝故事|品牌说明|底部固定|宝贝底部|售后)/i
   const INFO_ANCHOR_RE = /(商品信息|宝贝信息|产品信息|基础信息|基本信息|商品参数|宝贝参数)/i
-  const FIXED_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一|全球大奖|国际大奖)/i
+  const FIXED_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一|全球大奖|国际大奖|专业国际奖项|国际奖项|国际设计奖项|红点设计奖|IDA设计金奖|MUSE设计金奖|Titan创新奖|纽约产品设计奖|香港设计奖|IDPA设计奖|沸腾质量奖)/i
+  const FIXED_TOP_IMAGE_SIGNATURE_RE = /(O1CN01UAicBE1IH8XX4tcs7)/i
   const MARKETING_TOP_ANCHOR_RE = /(会员专属礼赠|淘金币补贴|下单链路|送IP周边|IP周边礼盒|周边礼盒|送T恤水杯|送T恤|加购商品|加购过tab|加购过|千款满\s*\d+\s*减\s*\d+|满\s*\d+\s*减\s*\d+)/i
 
   function decodeHtmlText(value) {
@@ -2923,6 +3471,10 @@
     return FIXED_TOP_ANCHOR_RE.test(String(value || ''))
   }
 
+  function isFixedTopAnchorImage(value) {
+    return FIXED_TOP_IMAGE_SIGNATURE_RE.test(String(value || ''))
+  }
+
   function isMarketingTopAnchorText(value) {
     return MARKETING_TOP_ANCHOR_RE.test(String(value || ''))
   }
@@ -2967,10 +3519,23 @@
       .sort((a, b) => a.globalIndex - b.globalIndex)
 
     const imageByIndex = new Map(imageList.map((image, index) => [Number(image?.globalIndex ?? index), image]))
-    const asiaTopResult = resultList.find(result => {
-      if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
-      return result.anchorKind === 'fixed_top'
-    })
+    const imageFixedTopResults = imageList
+      .map((image, index) => ({
+        globalIndex: Number(image?.globalIndex ?? index),
+        text: compact(image?.src || image?.tag || image?.context || ''),
+        confidence: 100,
+        anchorKind: 'fixed_top',
+        fromImageSignature: true,
+      }))
+      .filter(result => Number.isFinite(result.globalIndex) && isFixedTopAnchorImage(result.text))
+    const fixedTopResults = [
+      ...resultList.filter(result => {
+        if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
+        return result.anchorKind === 'fixed_top'
+      }),
+      ...imageFixedTopResults,
+    ].sort((a, b) => a.globalIndex - b.globalIndex)
+    const asiaTopResult = fixedTopResults[0] || null
     let fixedTopResult = asiaTopResult
     let fixedTopAnchorKind = fixedTopResult ? fixedTopResult.anchorKind : ''
     const priorities = [
@@ -3107,7 +3672,7 @@
           isWashFallbackAnchor: isWashFallbackAnchorText(context),
           isStopAnchor: isStopAnchorText(context),
           isInfoAnchor: isInfoAnchorText(context),
-          isFixedTop: isFixedTopAnchorText(context),
+          isFixedTop: isFixedTopAnchorText(context) || isFixedTopAnchorImage(tag),
         })
         previousImageEnd = end
       })
@@ -3209,6 +3774,8 @@
     return !!firstImage && (
       firstImage.isFixedTop ||
       options.preserveFirstImage ||
+      isFixedTopAnchorImage(firstImage.src) ||
+      isFixedTopAnchorImage(firstImage.tag) ||
       isFixedTopAnchorText(firstImage.moduleName) ||
       isFixedTopAnchorText(firstImage.context)
     )
@@ -3606,38 +4173,79 @@
     const currentNewDesc = getNewDescValue(currentValues)
     const currentModules = Array.isArray(currentValues.modularDesc) ? currentValues.modularDesc : []
     const currentTmDescription = typeof currentValues.tmDescription === 'string' ? currentValues.tmDescription : ''
+    const currentDescForShenbiPc = currentValues.descForShenbiPc && typeof currentValues.descForShenbiPc === 'object'
+      ? currentValues.descForShenbiPc
+      : {}
     const detailUrls = (uploadedByCategory.pc_detail || []).map(item => item.url)
-    const pcDetailReplacement = hasUsableNewDescTemplate(currentNewDesc)
-      ? buildAnchoredNewDescTemplateContent(currentNewDesc, uploadedByCategory.pc_detail || [], {
-        visualAnchors: currentValues.pcDetailVisualAnchors,
-        requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
-        allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
-      })
-      : currentModules.length
-        ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
+    const legacyPcDetailReplacement = () => currentModules.length
+      ? buildAnchoredPcDetailModules(currentModules, detailUrls, {
           visualAnchors: currentValues.pcDetailVisualAnchors,
           requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
           allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
         })
-        : buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
+      : currentTmDescription
+        ? buildAnchoredPcDetailHtml(currentTmDescription, detailUrls, {
           visualAnchors: currentValues.pcDetailVisualAnchors,
           requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
           allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
         })
-    const modularDesc = currentModules.length && pcDetailReplacement.target !== 'descRepublicOfSell' && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
-    const tmDescription = !currentModules.length && pcDetailReplacement.target !== 'descRepublicOfSell' && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
-    const descRepublicOfSell = pcDetailReplacement.target === 'descRepublicOfSell' && pcDetailReplacement.ok
-      ? pcDetailReplacement.value
+        : null
+    const newDescPcDetailReplacement = () => buildAnchoredNewDescTemplateContent(currentNewDesc, uploadedByCategory.pc_detail || [], {
+          visualAnchors: currentValues.pcDetailVisualAnchors,
+          requireVisualAnchors: currentValues.requirePcDetailVisualAnchors,
+          allowLegacyCountImageReplace: currentValues.allowLegacyCountPcDetailReplace,
+        })
+    const pcDetailReplacement = currentValues.preferLegacyPcDetail
+      ? (legacyPcDetailReplacement() || newDescPcDetailReplacement())
+      : (hasUsableNewDescTemplate(currentNewDesc)
+        ? newDescPcDetailReplacement()
+        : (legacyPcDetailReplacement() || newDescPcDetailReplacement()))
+    const replacementModules = Array.isArray(pcDetailReplacement?.modules) ? pcDetailReplacement.modules : []
+    const useTextPcDetailForShenbi = !!(
+      pcDetailReplacement?.ok &&
+      currentValues.descForShenbiPcVisible &&
+      currentModules.length &&
+      replacementModules.length
+    )
+    const useShenbiPc = false
+    const aggregateNewDescValue = !useTextPcDetailForShenbi && !useShenbiPc && pcDetailReplacement?.ok && !currentValues.modularDescVisible && hasAggregateNewDescTemplate(currentNewDesc)
+      ? buildAggregateNewDescFromPcModules(currentNewDesc, replacementModules, uploadedByCategory.pc_detail || [])
+      : null
+    const pcDetailReplacementTarget = pcDetailReplacement?.target ||
+      (useTextPcDetailForShenbi ? 'modularDesc' : '') ||
+      (useShenbiPc ? 'descForShenbiPc' : '') ||
+      (aggregateNewDescValue ? 'descRepublicOfSell' : '') ||
+      (pcDetailReplacement?.ok && currentModules.length ? 'modularDesc' : '') ||
+      (pcDetailReplacement?.ok && currentTmDescription ? 'tmDescription' : '')
+    const normalizedPcDetailReplacement = pcDetailReplacement
+      ? {
+          ...pcDetailReplacement,
+          target: pcDetailReplacementTarget,
+          textPcDetailMode: useTextPcDetailForShenbi,
+          note: useTextPcDetailForShenbi
+            ? compact([pcDetailReplacement.note, '旺铺PC详情组件不可直接表单持久化，已自动切换为“使用文本编辑”并回写文本PC详情模块'].filter(Boolean).join('；'))
+            : pcDetailReplacement.note,
+        }
+      : pcDetailReplacement
+    const modularDesc = currentModules.length && pcDetailReplacementTarget === 'modularDesc' && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
+    const tmDescription = pcDetailReplacementTarget === 'tmDescription' && pcDetailReplacement.ok ? pcDetailReplacement.html : undefined
+    const descRepublicOfSell = pcDetailReplacementTarget === 'descRepublicOfSell' && pcDetailReplacement.ok
+      ? (aggregateNewDescValue || pcDetailReplacement.value)
+      : undefined
+    const descForShenbiPc = pcDetailReplacementTarget === 'descForShenbiPc' && pcDetailReplacement.ok
+      ? buildShenbiPcValueFromPcModules(replacementModules, currentDescForShenbiPc)
       : undefined
     return {
       mainImagesGroup: main1x1?.length ? { ...currentMainGroup, images: main1x1 } : undefined,
       threeToFourImages: main3x4?.length ? main3x4 : undefined,
       guideImageGroup: vertical.length ? { ...currentGuide, verticalImage: vertical } : undefined,
       descRepublicOfSell,
+      descForShenbiPc,
+      descType: useTextPcDetailForShenbi ? buildTextPcDescTypeValue(currentValues.descType) : undefined,
       modularDesc,
       tmDescription,
       detailHtml: pcDetailReplacement.detailHtml || '',
-      pcDetailReplacement,
+      pcDetailReplacement: normalizedPcDetailReplacement,
     }
   }
 
@@ -3748,6 +4356,15 @@
     return Object.fromEntries(Object.entries(payload).map(([key, value]) => [key, stringifyFieldValue(value)]))
   }
 
+  function buildTextPcDescTypeValue(currentValue = {}) {
+    const current = currentValue && typeof currentValue === 'object' ? jsonClone(currentValue) : {}
+    return {
+      ...current,
+      text: compact(current.text) || '使用文本编辑',
+      value: 0,
+    }
+  }
+
   function newDescCommitEndpoint(value = {}) {
     return compact(value?.descPageRenderModel?.extendConfig?.httpRequestUrlConfig?.url) ||
       'https://xiangqing.wangpu.taobao.com/template/ajax/commit_item_description.do'
@@ -3763,7 +4380,8 @@
     }
     const endpoint = newDescCommitEndpoint(value)
     const payload = { ...commitParam, changed: true }
-    const token = getCookieValue('_tb_token_')
+    const global = getTmallGlobal()
+    const token = getCookieValue('_tb_token_') || compact(global._tb_token_ || global.value?._tb_token_)
     if (token && !payload._tb_token_) payload._tb_token_ = token
     const result = await postTmallForm(endpoint, payload, timeoutMs)
     if (result.ok || result.successful) {
@@ -3812,6 +4430,12 @@
         return
       }
       if (typeof value === 'object') {
+        if (value.error === true) messages.push(compact(value.msg || value.message || value.errorMsg || '接口返回 error=true'))
+        if (value.success === false) messages.push(compact(value.msg || value.message || value.errorMsg || '接口返回 success=false'))
+        if (value.ok === false) messages.push(compact(value.msg || value.message || value.errorMsg || '接口返回 ok=false'))
+        if (value.code != null && value.code !== 0 && value.code !== '0' && value.error === true) {
+          messages.push(compact(value.msg || value.message || value.errorMsg || `接口返回 code=${value.code}`))
+        }
         ;['msg', 'message', 'error', 'errorInfo', 'errorMsg', 'content'].forEach(key => {
           if (typeof value[key] === 'string') visit(value[key], depth + 1)
         })
@@ -3819,11 +4443,15 @@
       }
     }
     visit(payload)
-    return messages.filter(Boolean)
+    const seen = new Set()
+    return messages
+      .filter(Boolean)
+      .filter(message => !seen.has(message) && seen.add(message))
   }
 
   function apiResponseLooksSuccessful(payload) {
     if (!payload || typeof payload !== 'object') return false
+    if (apiResponseHasErrors(payload).length) return false
     if (payload.success === true || payload.ok === true) return true
     if (payload.code === 0 || payload.code === '0') return true
     if (payload.ret && Array.isArray(payload.ret) && payload.ret.some(item => /SUCCESS/i.test(String(item)))) return true
@@ -3995,14 +4623,107 @@
     return moduleUrls.length ? moduleUrls : extractPcDetailUrlsFromHtml(pcDetailHtml)
   }
 
-  function currentPcDetailModulesForOcr() {
-    const newDescValue = getNewDescValue()
-    if (hasUsableNewDescTemplate(newDescValue)) {
-      return {
-        target: 'descRepublicOfSell',
-        modules: newDescPicsToModules(flattenNewDescPicComponents(newDescValue)),
+  function collectRemoteImageUrls(value, seen = new Set()) {
+    if (value == null) return []
+    if (typeof value === 'string') {
+      const urls = []
+      const remoteRe = /(?:https?:)?\/\/[^"' <>()\]]+/ig
+      let match = null
+      while ((match = remoteRe.exec(value))) {
+        const url = normalizeRemoteUrl(match[0]).replace(/&amp;/g, '&')
+        if (/\.(?:jpg|jpeg|png|webp|gif)(?:[._?]|$)/i.test(url) || /alicdn\.com/i.test(url)) urls.push(url)
       }
+      return urls
     }
+    if (typeof value !== 'object' || seen.has(value)) return []
+    seen.add(value)
+    const urls = []
+    if (Array.isArray(value)) {
+      value.forEach(item => urls.push(...collectRemoteImageUrls(item, seen)))
+      return urls
+    }
+    for (const key of ['url', 'src', 'picUrl', 'imageUrl', 'background-image', 'backgroundImage']) {
+      urls.push(...collectRemoteImageUrls(value[key], seen))
+    }
+    Object.values(value).forEach(item => urls.push(...collectRemoteImageUrls(item, seen)))
+    return urls
+  }
+
+  function uniqueImageUrls(urls = []) {
+    const seen = new Set()
+    return (Array.isArray(urls) ? urls : [])
+      .map(normalizeRemoteUrl)
+      .filter(Boolean)
+      .filter(url => !seen.has(url) && seen.add(url))
+  }
+
+  function comparableImageUrl(value) {
+    const raw = normalizeRemoteUrl(value).replace(/^https?:/i, '')
+    if (!raw) return ''
+    try {
+      const parsed = new URL(raw.startsWith('//') ? `https:${raw}` : raw, location.href)
+      return `//${parsed.host}${parsed.pathname}`.toLowerCase()
+    } catch (error) {
+      return raw.split('?')[0].toLowerCase()
+    }
+  }
+
+  function imageUrlMatches(actual, expected) {
+    const actualKey = comparableImageUrl(actual)
+    const expectedKey = comparableImageUrl(expected)
+    if (!actualKey || !expectedKey) return false
+    return actualKey === expectedKey || actualKey.includes(expectedKey) || expectedKey.includes(actualKey)
+  }
+
+  function missingImageUrls(expectedUrls = [], actualUrls = []) {
+    const actual = uniqueImageUrls(actualUrls)
+    return uniqueImageUrls(expectedUrls).filter(expected => !actual.some(url => imageUrlMatches(url, expected)))
+  }
+
+  function uploadedPcDetailUrlsFromShared(state = shared) {
+    return uniqueImageUrls((state?.uploaded_by_category?.pc_detail || []).map(item => item?.url))
+  }
+
+  function currentPcDetailReadbackUrls() {
+    const modularDescUrls = extractPcDetailUrlsFromModules(getComponentValue('modularDesc'))
+    const legacyHtmlUrls = extractPcDetailUrlsFromHtml(getLegacyPcDetailHtml())
+    const newDescValue = getNewDescValue()
+    const newDescUrls = [
+      ...flattenNewDescPicComponents(newDescValue).map(pic => pic.src),
+      ...collectRemoteImageUrls(newDescValue),
+    ]
+    const shenbiPcUrls = collectRemoteImageUrls(getComponentValue('descForShenbiPc') || getTmallFormValues().descForShenbiPc)
+    return uniqueImageUrls([...modularDescUrls, ...legacyHtmlUrls, ...newDescUrls, ...shenbiPcUrls])
+  }
+
+  function currentMobileDetailReadbackUrls() {
+    return uniqueImageUrls(collectRemoteImageUrls(getComponentValue('descForShenbiMobile') || getTmallFormValues().descForShenbiMobile))
+  }
+
+  function verifyPublishedDetailReadback(state = shared) {
+    const expected = uploadedPcDetailUrlsFromShared(state)
+    if (!expected.length) {
+      return { ok: true, skipped: true, reason: '本次没有PC详情图，跳过详情读回校验', expectedCount: 0 }
+    }
+    const pcUrls = currentPcDetailReadbackUrls()
+    const mobileUrls = currentMobileDetailReadbackUrls()
+    const pcMissing = missingImageUrls(expected, pcUrls)
+    const mobileMissing = missingImageUrls(expected, mobileUrls)
+    const ok = pcMissing.length === 0 && mobileMissing.length === 0
+    return {
+      ok,
+      expectedCount: expected.length,
+      pcImageCount: pcUrls.length,
+      mobileImageCount: mobileUrls.length,
+      pcMissing,
+      mobileMissing,
+      reason: ok
+        ? `发布后读回校验通过：PC详情 ${pcUrls.length} 张，手机详情 ${mobileUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
+        : `发布后读回校验失败：PC缺失 ${pcMissing.length}/${expected.length} 张，手机缺失 ${mobileMissing.length}/${expected.length} 张`,
+    }
+  }
+
+  function currentLegacyPcDetailModulesForOcr() {
     const modularDesc = getComponentValue('modularDesc')
     if (Array.isArray(modularDesc) && modularDesc.length) {
       return {
@@ -4022,6 +4743,28 @@
         }],
       }
     }
+    return null
+  }
+
+  function currentPcDetailModulesForOcr(options = {}) {
+    if (!options.preferLegacyPcDetail) {
+      const newDescValue = getNewDescValue()
+      if (hasUsableNewDescTemplate(newDescValue)) {
+        return {
+          target: 'descRepublicOfSell',
+          modules: newDescPicsToModules(flattenNewDescPicComponents(newDescValue)),
+        }
+      }
+    }
+    const legacySource = currentLegacyPcDetailModulesForOcr()
+    if (legacySource) return legacySource
+    const newDescValue = getNewDescValue()
+    if (hasUsableNewDescTemplate(newDescValue)) {
+      return {
+        target: 'descRepublicOfSell',
+        modules: newDescPicsToModules(flattenNewDescPicComponents(newDescValue)),
+      }
+    }
     return {
       target: '',
       modules: [],
@@ -4036,7 +4779,9 @@
   }
 
   function tesseractRuntimeConfig(rawParams = params) {
-    const assetBase = compact(rawParams.ocr_asset_base_url || CRAW_SHRIMP_LOCAL_BASE_URL).replace(/\/+$/, '')
+    const assetBase = compact(
+      rawParams.ocr_asset_base_url || rawParams.__crawshrimp_api_base_url || CRAW_SHRIMP_LOCAL_BASE_URL,
+    ).replace(/\/+$/, '')
     const localVendorPath = `${assetBase}${TESSERACT_VENDOR_PATH}`
     return {
       scriptUrl: compact(rawParams.tesseract_script_url || rawParams.ocr_tesseract_url || `${localVendorPath}/tesseract.min.js` || TESSERACT_SCRIPT_URL),
@@ -4341,7 +5086,9 @@
   }
 
   async function detectPcDetailOcrAnchors(rawParams = params, options = {}) {
-    const source = currentPcDetailModulesForOcr()
+    const source = currentPcDetailModulesForOcr({
+      preferLegacyPcDetail: !!options.preferLegacyPcDetail,
+    })
     const images = flattenModularDescImages(source.modules)
     if (!images.length) {
       return {
@@ -4363,6 +5110,7 @@
         visualAnchors: anchors,
         requireVisualAnchors: true,
         allowLegacyCountImageReplace: options.allowLegacyCountImageReplace || parseBoolean(rawParams.allow_legacy_count_pc_detail_replace, false),
+        legacyCountDetailImageCount: options.legacyCountDetailImageCount,
       })
       return {
         ok: !!probe.ok,
@@ -4474,6 +5222,24 @@
 
   function buildShenbiMobileValueFromPcModules(modularDesc, currentValue = {}, sizeByUrl = {}) {
     return buildShenbiMobileValueFromPcUrls(extractPcDetailUrlsFromModules(modularDesc), currentValue, sizeByUrl)
+  }
+
+  function buildShenbiPcDetailFromUrls(urls = []) {
+    const imgs = (Array.isArray(urls) ? urls : [])
+      .map(compact)
+      .filter(Boolean)
+      .map(url => `<img src="${escapeHtmlAttribute(url)}" style="display:block;width:750.0px;height:auto;margin:0;padding:0;border:0;"/>`)
+      .join('')
+    return `<div style="width: 750.0px;height: auto;overflow: hidden;">${imgs}</div>`
+  }
+
+  function buildShenbiPcValueFromPcModules(modularDesc, currentValue = {}) {
+    const current = currentValue && typeof currentValue === 'object' ? currentValue : {}
+    const urls = extractPcDetailUrlsFromModules(modularDesc)
+    return {
+      ...jsonClone(current),
+      detail: buildShenbiPcDetailFromUrls(urls),
+    }
   }
 
   function findGeneratedWapDesc(payload) {
@@ -4659,6 +5425,28 @@
     return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'descRepublicOfSell'
   }
 
+  function isModularPcDetailTarget(state = shared) {
+    return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'modularDesc'
+  }
+
+  function isShenbiPcDetailTarget(state = shared) {
+    return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'descForShenbiPc'
+  }
+
+  function isLegacyHtmlPcDetailTarget(state = shared) {
+    return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'tmDescription'
+  }
+
+  function isSparseNewDescOcrFailure(detected) {
+    if (!detected || detected.ok) return false
+    if (compact(detected.source?.target) !== 'descRepublicOfSell') return false
+    const imageCount = Array.isArray(detected.images) ? detected.images.length : 0
+    if (imageCount < 1 || imageCount > 2) return false
+    const ocrResults = Array.isArray(detected.ocr?.results) ? detected.ocr.results : []
+    const hasReadableText = ocrResults.some(item => compact(item?.text))
+    return !hasReadableText || /未识别|无法 OCR|OCR|锚点/.test(String(detected.reason || detected.probe?.note || ''))
+  }
+
   function currentJobFromShared(state = shared) {
     const jobs = Array.isArray(state.jobs) ? state.jobs : []
     const index = Number(state.job_index || 0)
@@ -4687,17 +5475,29 @@
       mobile_api_attempts: 0,
       cloud_mount_activated: false,
       cloud_mount_tab_clicked: false,
+      semir_login_wait_attempts: 0,
+      semir_login_wait_error: '',
       publish_stage: '',
       pc_publish_note: '',
       mobile_sync_note: '',
       mobile_sync_api_result: null,
       applied_modular_desc: null,
       applied_pc_detail_html: '',
+      applied_desc_type: null,
       pc_detail_target: '',
       pc_detail_replacement_probe: null,
       pc_detail_visual_anchors: null,
       pc_detail_ocr_result: null,
       pc_detail_ocr_attempted: false,
+      prefer_legacy_pc_detail: false,
+      legacy_wait_attempts: 0,
+      return_old_confirm_attempts: 0,
+      return_old_confirm_wait_attempts: 0,
+      new_desc_sparse_ocr_fallback: false,
+      new_desc_aggregate_legacy_fallback: false,
+      final_detail_readback_verified: false,
+      final_detail_readback_note: '',
+      final_readback_returned_old: false,
     }
   }
 
@@ -4761,14 +5561,21 @@
       buildAnchoredPcDetailHtml,
       parseNewDescTemplateContent,
       flattenNewDescPicComponents,
+      summarizeNewDescTemplate,
+      shouldFallbackAggregateNewDescToLegacy,
       buildAnchoredNewDescTemplateContent,
       buildTmallComponentValues,
       buildTmallSubmitPayload,
+      apiResponseHasErrors,
+      apiResponseLooksSuccessful,
       resolveTmallCatId,
       DOWNLOAD_PACKAGE_FOLDER_LABELS,
       extractPcDetailUrlsFromModules,
       extractPcDetailUrlsFromHtml,
       pcDetailUrlsFromSource,
+      collectRemoteImageUrls,
+      missingImageUrls,
+      verifyPublishedDetailReadback,
       buildWapDescDetailFromUrls,
       buildShenbiMobileValueFromPcUrls,
       buildShenbiMobileValueFromPcModules,
@@ -4845,12 +5652,13 @@
       const cloudConfig = parseCloudPath(job.cloud_path || deriveJobCloudPath(shared.global_cloud_path, job.style_code))
       const sourceConfig = await resolvePackagingSourceConfig(cloudConfig, job)
       return nextPhase('ensure_cloud_folder', 0, {
-        ...shared,
+        ...clearSemirLoginWaitState(shared),
         current_job: job,
         mount_id: sourceConfig.mountId,
         mount_name: sourceConfig.mountName,
         cloud_path: sourceConfig.rawPath,
         relative_path: sourceConfig.relativePath,
+        candidate_sources: sourceConfig.candidateSources || [],
         source_warning: sourceConfig.sourceWarning,
         mount_hash: buildFolderHashRoute(sourceConfig.mountId, ''),
         folder_hash: buildFolderHashRoute(sourceConfig.mountId, sourceConfig.relativePath),
@@ -4930,13 +5738,16 @@
       const job = shared.current_job || currentJobFromShared(shared).job || {}
       const plan = await buildPackagingDownloadPlan(job, {
         mountId: shared.mount_id,
+        mountName: shared.mount_name,
         relativePath: shared.relative_path,
+        rawPath: shared.cloud_path,
+        candidateSources: shared.candidate_sources || [],
       })
       const rows = shared.source_warning && plan.rows.length
         ? plan.rows.map((row, index) => index === 0 ? appendRowNote(row, shared.source_warning) : row)
         : plan.rows
       const nextShared = {
-        ...shared,
+        ...clearSemirLoginWaitState(shared),
         current_result_rows: rows,
         pending_download_items: plan.downloadItems,
         plan_summary: {
@@ -5006,13 +5817,73 @@
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
       const legacyPcDetailHtml = getLegacyPcDetailHtml()
-      const newDescTemplateAvailable = hasUsableNewDescTemplate(getNewDescValue())
+      const newDescValue = getNewDescValue()
+      const newDescTemplateAvailable = hasUsableNewDescTemplate(newDescValue)
       const returnOldSwitch = findReturnOldDescriptionSwitch()
-      if (returnOldSwitch && !legacyPcDetailHtml && !newDescTemplateAvailable) {
+      const legacyProbeBeforeSwitch = legacyPcDetailReplacementProbe({
+        allowLegacyCountImageReplace: shouldAllowLegacyCountPcDetailReplace(shared.current_result_rows, job),
+      })
+      const aggregateNewDescNeedsLegacy = !!returnOldSwitch &&
+        !shared.prefer_legacy_pc_detail &&
+        shouldFallbackAggregateNewDescToLegacy(newDescValue)
+      const legacyFallbackPending = !!(shared.prefer_legacy_pc_detail || shared.new_desc_aggregate_legacy_fallback || aggregateNewDescNeedsLegacy)
+      const returnOldConfirm = findReturnOldDescriptionConfirmElement()
+      if (returnOldConfirm && legacyFallbackPending) {
+        const confirmAttempts = Number(shared.return_old_confirm_attempts || 0)
+        if (confirmAttempts < 1) {
+          const nextShared = {
+            ...shared,
+            prefer_legacy_pc_detail: true,
+            return_old_confirm_attempts: confirmAttempts + 1,
+            return_old_confirm_wait_attempts: 0,
+            current_store: '确认切回旧版图文描述',
+          }
+          const cdpClick = cdpClickElement(returnOldConfirm, 'wait_tmall_ready', 2000, nextShared)
+          if (cdpClick) return cdpClick
+          if (smartClick(returnOldConfirm)) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
+        }
+        const waitAttempts = Number(shared.return_old_confirm_wait_attempts || 0)
+        if (waitAttempts < 6) {
+          return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
+            ...shared,
+            prefer_legacy_pc_detail: true,
+            return_old_confirm_wait_attempts: waitAttempts + 1,
+            current_store: `等待切回旧版确认弹窗关闭 ${waitAttempts + 1}/6`,
+          })
+        }
+        return failCurrentJob('切回旧版图文描述确认弹窗未关闭，已阻止继续发布', '预检阻止')
+      }
+      if (returnOldSwitch && (shared.prefer_legacy_pc_detail || aggregateNewDescNeedsLegacy)) {
+        const attempts = Number(shared.legacy_switch_attempts || 0)
+        if (attempts < 5) {
+          const reason = aggregateNewDescNeedsLegacy
+            ? aggregateNewDescLegacyFallbackLabel(newDescValue)
+            : '切回旧版图文描述'
+          const nextShared = {
+            ...shared,
+            prefer_legacy_pc_detail: true,
+            legacy_switch_attempts: attempts + 1,
+            legacy_wait_attempts: 0,
+            pc_detail_ocr_attempted: false,
+            new_desc_aggregate_legacy_fallback: !!(shared.new_desc_aggregate_legacy_fallback || aggregateNewDescNeedsLegacy),
+            current_store: `${reason}，切回旧版图文描述 ${attempts + 1}/5`,
+          }
+          const cdpClick = cdpClickElement(returnOldSwitch, 'wait_tmall_ready', 2500, nextShared)
+          if (cdpClick) return cdpClick
+          if (clickReturnOldDescriptionSwitch()) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
+        }
+        return failCurrentJob('已决定走旧版图文描述，但页面仍停留在新版详情，未能切回旧版，已阻止继续发布', '预检阻止')
+      }
+      if (returnOldSwitch && !legacyProbeBeforeSwitch && (!newDescTemplateAvailable || shared.prefer_legacy_pc_detail)) {
         const attempts = Number(shared.legacy_switch_attempts || 0)
         if (attempts < 5) {
           const nextShared = {
             ...shared,
+            prefer_legacy_pc_detail: true,
             legacy_switch_attempts: attempts + 1,
             current_store: `切回旧版图文描述 ${attempts + 1}/5`,
           }
@@ -5024,12 +5895,24 @@
         }
         return failCurrentJob('检测到新版商详页，但未能切回“旧版图文描述”，已阻止继续写入和发布', '预检阻止')
       }
+      if (shared.prefer_legacy_pc_detail && !legacyProbeBeforeSwitch) {
+        const attempts = Number(shared.legacy_wait_attempts || 0)
+        if (attempts < 10) {
+          return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
+            ...shared,
+            legacy_wait_attempts: attempts + 1,
+            current_store: `等待旧版图文描述加载 ${attempts + 1}/10`,
+          })
+        }
+        return failCurrentJob('新版详情仅有1-2张图且OCR识别失败，已尝试切回旧版，但未读到旧版PC详情，已阻止继续发布', '预检阻止')
+      }
       if (job.block_on_style_mismatch && status.merchantCode && job.style_code && !merchantCodeMatchesStyle(status.merchantCode, job.style_code)) {
-        const rows = buildOutputStatusRows(
+        const rows = markRowsBlockedBeforeUpload(
           shared.current_result_rows,
           status,
+          '商家编码不一致',
           `已阻止上传：页面商家编码 ${status.merchantCode} 与云盘款号 ${job.style_code} 不一致`,
-        ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': row['执行结果'] || '商家编码不一致' })
+        )
         return advanceToNextJob(rows, { ...shared, current_result_rows: rows, tmall_status: status })
       }
       if (hasDownloadedPcDetailRows(shared.current_result_rows)) {
@@ -5038,6 +5921,8 @@
           visualAnchors: shared.pc_detail_visual_anchors,
           requireVisualAnchors: !!shared.pc_detail_ocr_attempted,
           allowLegacyCountImageReplace,
+          legacyCountDetailImageCount: downloadedPcDetailRowCount(shared.current_result_rows),
+          preferLegacyPcDetail: !!shared.prefer_legacy_pc_detail,
         })
         if (!shared.pc_detail_ocr_attempted) {
           return nextPhase('detect_pc_detail_ocr_anchors', 0, {
@@ -5050,11 +5935,12 @@
           })
         }
         if (!replacementProbe.ok) {
-          const rows = buildOutputStatusRows(
+          const rows = markRowsBlockedBeforeUpload(
             shared.current_result_rows,
             status,
+            '预检阻止',
             replacementProbe.note || 'PC详情锚点未识别，已阻止自动替换',
-          ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': '预检阻止' })
+          )
           return advanceToNextJob(rows, {
             ...shared,
             current_result_rows: rows,
@@ -5076,9 +5962,76 @@
           current_store: '等待天猫编辑页恢复后再OCR',
         })
       }
+      const returnOldSwitchBeforeOcr = findReturnOldDescriptionSwitch()
+      const newDescValueBeforeOcr = getNewDescValue()
+      const aggregateNewDescNeedsLegacyBeforeOcr = !!returnOldSwitchBeforeOcr &&
+        !shared.prefer_legacy_pc_detail &&
+        shouldFallbackAggregateNewDescToLegacy(newDescValueBeforeOcr)
+      const legacyFallbackPendingBeforeOcr = !!(shared.prefer_legacy_pc_detail || shared.new_desc_aggregate_legacy_fallback || aggregateNewDescNeedsLegacyBeforeOcr)
+      const returnOldConfirmBeforeOcr = findReturnOldDescriptionConfirmElement()
+      if (returnOldConfirmBeforeOcr && legacyFallbackPendingBeforeOcr) {
+        const confirmAttempts = Number(shared.return_old_confirm_attempts || 0)
+        if (confirmAttempts < 1) {
+          const nextShared = {
+            ...shared,
+            tmall_status: status,
+            prefer_legacy_pc_detail: true,
+            return_old_confirm_attempts: confirmAttempts + 1,
+            return_old_confirm_wait_attempts: 0,
+            pc_detail_ocr_attempted: false,
+            current_store: '确认切回旧版图文描述',
+          }
+          const cdpClick = cdpClickElement(returnOldConfirmBeforeOcr, 'wait_tmall_ready', 2000, nextShared)
+          if (cdpClick) return cdpClick
+          if (smartClick(returnOldConfirmBeforeOcr)) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
+        }
+        const waitAttempts = Number(shared.return_old_confirm_wait_attempts || 0)
+        if (waitAttempts < 6) {
+          return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
+            ...shared,
+            tmall_status: status,
+            prefer_legacy_pc_detail: true,
+            return_old_confirm_wait_attempts: waitAttempts + 1,
+            pc_detail_ocr_attempted: false,
+            current_store: `等待切回旧版确认弹窗关闭 ${waitAttempts + 1}/6`,
+          })
+        }
+        return failCurrentJob('切回旧版图文描述确认弹窗未关闭，已阻止继续发布', '预检阻止')
+      }
+      if (returnOldSwitchBeforeOcr && (shared.prefer_legacy_pc_detail || aggregateNewDescNeedsLegacyBeforeOcr)) {
+        const attempts = Number(shared.legacy_switch_attempts || 0)
+        if (attempts < 5) {
+          const reason = aggregateNewDescNeedsLegacyBeforeOcr
+            ? aggregateNewDescLegacyFallbackLabel(newDescValueBeforeOcr)
+            : '切回旧版图文描述'
+          const nextShared = {
+            ...shared,
+            tmall_status: status,
+            prefer_legacy_pc_detail: true,
+            legacy_switch_attempts: attempts + 1,
+            legacy_wait_attempts: 0,
+            pc_detail_ocr_attempted: false,
+            pc_detail_visual_anchors: null,
+            new_desc_aggregate_legacy_fallback: !!(shared.new_desc_aggregate_legacy_fallback || aggregateNewDescNeedsLegacyBeforeOcr),
+            current_store: `${reason}，切回旧版图文描述 ${attempts + 1}/5`,
+          }
+          const cdpClick = cdpClickElement(returnOldSwitchBeforeOcr, 'wait_tmall_ready', 2500, nextShared)
+          if (cdpClick) return cdpClick
+          if (clickReturnOldDescriptionSwitch()) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
+        }
+        return failCurrentJob('已决定走旧版图文描述，但页面仍停留在新版详情，未能切回旧版，已阻止继续发布', '预检阻止')
+      }
       const allowLegacyCountImageReplace = shouldAllowLegacyCountPcDetailReplace(shared.current_result_rows, job) ||
         !!shared.pc_detail_allow_legacy_count_replace
-      const detected = await detectPcDetailOcrAnchors(params, { allowLegacyCountImageReplace })
+      const detected = await detectPcDetailOcrAnchors(params, {
+        allowLegacyCountImageReplace,
+        legacyCountDetailImageCount: downloadedPcDetailRowCount(shared.current_result_rows),
+        preferLegacyPcDetail: !!shared.prefer_legacy_pc_detail,
+      })
       const ocrSummary = {
         ok: detected.ok,
         reason: detected.reason || '',
@@ -5099,15 +6052,53 @@
           current_store: 'OCR锚点已识别，开始上传图片',
         })
       }
+      if (isSparseNewDescOcrFailure(detected)) {
+        const returnOldSwitch = findReturnOldDescriptionSwitch()
+        const attempts = Number(shared.legacy_switch_attempts || 0)
+        if (returnOldSwitch && attempts < 5) {
+          const nextShared = {
+            ...shared,
+            tmall_status: status,
+            prefer_legacy_pc_detail: true,
+            legacy_switch_attempts: attempts + 1,
+            legacy_wait_attempts: 0,
+            pc_detail_visual_anchors: null,
+            pc_detail_ocr_result: ocrSummary,
+            pc_detail_replacement_probe: detected.probe || shared.pc_detail_replacement_probe,
+            pc_detail_ocr_attempted: false,
+            pc_detail_allow_legacy_count_replace: allowLegacyCountImageReplace,
+            new_desc_sparse_ocr_fallback: true,
+            current_store: `新版详情仅${detected.images.length}张图且OCR失败，切回旧版图文描述 ${attempts + 1}/5`,
+          }
+          const cdpClick = cdpClickElement(returnOldSwitch, 'wait_tmall_ready', 2500, nextShared)
+          if (cdpClick) return cdpClick
+          if (clickReturnOldDescriptionSwitch()) {
+            return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
+        }
+        return failCurrentJob('新版详情仅有1-2张图且OCR识别失败，但未能切回旧版图文描述，已阻止继续发布', '预检阻止')
+      }
+      if (shared.pc_detail_replacement_probe?.ok) {
+        return nextPhase('inject_local_files', 0, {
+          ...shared,
+          tmall_status: status,
+          pc_detail_ocr_result: ocrSummary,
+          pc_detail_replacement_probe: shared.pc_detail_replacement_probe,
+          pc_detail_structure_anchor_fallback: true,
+          pc_detail_allow_legacy_count_replace: allowLegacyCountImageReplace,
+          current_store: 'OCR未识别锚点，使用页面结构锚点继续上传',
+        })
+      }
       const note = compact([
         'OCR未识别到可靠PC详情锚点，已阻止自动替换',
         detected.reason,
       ].filter(Boolean).join('；'))
-      const rows = buildOutputStatusRows(
+      const rows = markRowsBlockedBeforeUpload(
         shared.current_result_rows,
         status,
+        '预检阻止',
         note,
-      ).map(row => row['上传结果'] ? row : { ...row, '上传结果': '已阻止', '执行结果': '预检阻止' })
+      )
       return advanceToNextJob(rows, {
         ...shared,
         current_result_rows: rows,
@@ -5220,12 +6211,16 @@
         threeToFourImages: getComponentValue('threeToFourImages'),
         guideImageGroup: getComponentValue('guideImageGroup'),
         descRepublicOfSell: getNewDescValue(),
+        descForShenbiPc: getComponentValue('descForShenbiPc'),
         modularDesc: getComponentValue('modularDesc'),
         tmDescription: getLegacyPcDetailHtml(),
+        modularDescVisible: componentVisible('modularDesc'),
+        descForShenbiPcVisible: componentVisible('descForShenbiPc'),
         pcDetailVisualAnchors: shared.pc_detail_visual_anchors,
-        requirePcDetailVisualAnchors: hasDownloadedPcDetailRows(shared.current_result_rows),
+        requirePcDetailVisualAnchors: hasDownloadedPcDetailRows(shared.current_result_rows) && !shared.pc_detail_structure_anchor_fallback,
         allowLegacyCountPcDetailReplace: shouldAllowLegacyCountPcDetailReplace(shared.current_result_rows, shared.current_job || {}) ||
           !!shared.pc_detail_allow_legacy_count_replace,
+        preferLegacyPcDetail: !!shared.prefer_legacy_pc_detail,
       })
       const pcReplacementBlocked = componentValues.pcDetailReplacement?.ok === false
       if (pcReplacementBlocked) {
@@ -5248,7 +6243,9 @@
         mainImagesGroup: applyComponentValue('mainImagesGroup', componentValues.mainImagesGroup),
         threeToFourImages: applyComponentValue('threeToFourImages', componentValues.threeToFourImages),
         guideImageGroup: applyComponentValue('guideImageGroup', componentValues.guideImageGroup),
+        descType: applyFormValue('descType', componentValues.descType),
         descRepublicOfSell: applyFormValue('descRepublicOfSell', componentValues.descRepublicOfSell),
+        descForShenbiPc: applyFormValue('descForShenbiPc', componentValues.descForShenbiPc),
         modularDesc: applyComponentValue('modularDesc', componentValues.modularDesc),
         tmDescription: applyFormValue('tmDescription', componentValues.tmDescription),
       }
@@ -5258,6 +6255,28 @@
       const fullPublishMode = isFullPublishMode(shared.current_job?.execute_mode)
       if (fullPublishMode && componentValues.descRepublicOfSell !== undefined) {
         applied.descRepublicOfSellCommit = await commitNewDescByApi(componentValues.descRepublicOfSell, 15000)
+        if (!applied.descRepublicOfSellCommit.ok) {
+          const returnOldSwitch = findReturnOldDescriptionSwitch()
+          const attempts = Number(shared.legacy_switch_attempts || 0)
+          if (returnOldSwitch && attempts < 5) {
+            const nextShared = {
+              ...shared,
+              prefer_legacy_pc_detail: true,
+              legacy_switch_attempts: attempts + 1,
+              legacy_wait_attempts: 0,
+              pc_detail_visual_anchors: null,
+              pc_detail_replacement_probe: null,
+              pc_detail_ocr_attempted: false,
+              new_desc_aggregate_legacy_fallback: true,
+              current_store: `新版详情接口保存失败（${applied.descRepublicOfSellCommit.reason || '未知原因'}），切回旧版图文描述 ${attempts + 1}/5`,
+            }
+            const cdpClick = cdpClickElement(returnOldSwitch, 'wait_tmall_ready', 2500, nextShared)
+            if (cdpClick) return cdpClick
+            if (clickReturnOldDescriptionSwitch()) {
+              return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+            }
+          }
+        }
       }
       const afterStatus = extractTmallStatus(shared.current_job || {})
       const componentApplyNote = Object.entries(applied)
@@ -5293,6 +6312,9 @@
           applied_components: applied,
           applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
           applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+          applied_desc_republic_of_sell: componentValues.descRepublicOfSell || null,
+          applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
+          applied_desc_type: componentValues.descType || null,
           pc_detail_target: pcDetailTarget,
           publish_wait_attempts: 0,
           publish_stage: 'pc',
@@ -5306,17 +6328,24 @@
         applied_components: applied,
         applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
         applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
+        applied_desc_republic_of_sell: componentValues.descRepublicOfSell || null,
+        applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
+        applied_desc_type: componentValues.descType || null,
         pc_detail_target: pcDetailTarget,
       })
     }
 
     if (phase === 'submit_pc_publish' || phase === 'submit_final_publish') {
       const stage = phase === 'submit_final_publish' ? 'final' : 'pc'
-      if (TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first') {
+      const shouldPreferPayloadSubmit = uploadedPcDetailUrlsFromShared(shared).length > 0 ||
+        !!shared.applied_desc_republic_of_sell ||
+        !!shared.mobile_sync_note
+      const shouldTryApiBeforeDom = TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first' || shouldPreferPayloadSubmit
+      if (shouldTryApiBeforeDom) {
         const apiSubmit = await submitTmallPublishByApi({
           itemId: shared.current_job?.item_id || '',
           timeoutMs: 15000,
-          forceHttpPost: stage === 'final',
+          forceHttpPost: stage === 'final' || shouldPreferPayloadSubmit,
         })
         if (apiSubmit.ok) {
           return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
@@ -5397,20 +6426,37 @@
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}检测到淘宝操作频率限制，冷却 ${Math.round(TMALL_SPEED_LIMIT_COOLDOWN_MS / 1000)} 秒${speedConfirm.ok ? '并关闭提示' : ''}`,
         })
       }
+      if (!hasConfirmedTmallAttributeUpdate(shared, stage)) {
+        const attributeConfirm = clickAttributeUpdateConfirmIfPresent()
+        if (attributeConfirm.ok) {
+          const nextShared = markTmallAttributeUpdateConfirmed(shared, stage)
+          return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
+            ...nextShared,
+            publish_wait_attempts: Number(nextShared.publish_wait_attempts || 0) + 1,
+            last_confirm_method: 'dom_click_attribute_update',
+            current_store: `${stage === 'pc' ? 'PC端' : '最终'}商品属性信息更新确认：${attributeConfirm.text || '确定'}`,
+          })
+        }
+      }
+      if (hasTmallAttributeUpdateDialog() && hasConfirmedTmallAttributeUpdate(shared, stage)) {
+        const attempts = Number(shared.publish_wait_attempts || 0)
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
+          ...shared,
+          publish_wait_attempts: attempts + 1,
+          current_store: `${stage === 'pc' ? 'PC端' : '最终'}商品属性信息更新弹窗已确认，等待页面继续`,
+        })
+      }
       if (publishStatus.success) {
         if (stage === 'pc') {
           if (isNewDescPcDetailTarget(shared)) {
-            const finalNote = compact([
+            const pcNote = compact([
               'PC端新版详情已提交发布',
-              '手机端详情随新版详情同步，无需旧版手机端导入',
-              '更新完毕',
             ].join('；'))
-            const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '更新完成', finalNote)
-            return advanceToNextJob(rows, {
+            return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
               ...shared,
-              current_result_rows: rows,
-              pc_publish_note: finalNote,
-              final_publish_status: publishStatus,
+              pc_publish_note: pcNote,
+              publish_wait_attempts: 0,
+              current_store: '重新进入编辑页校验新版详情并同步手机端详情',
             })
           }
           return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
@@ -5423,25 +6469,45 @@
         const finalNote = compact([
           shared.pc_publish_note,
           shared.mobile_sync_note,
-          '最终提交发布成功，更新完毕',
+          '最终提交发布成功，准备读回校验PC/手机详情',
         ].filter(Boolean).join('；'))
-        const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '更新完成', finalNote)
+        if (uploadedPcDetailUrlsFromShared(shared).length && !shared.final_detail_readback_verified) {
+          return nextPhase('reopen_after_final_publish', TMALL_PUBLISH_WAIT_MS, {
+            ...shared,
+            pc_publish_note: finalNote,
+            final_publish_status: publishStatus,
+            publish_wait_attempts: 0,
+            tmall_wait_attempts: 0,
+            current_store: '最终发布成功，重新进入编辑页读回校验详情',
+          })
+        }
+        const rows = markRowsWithResult(shared.current_result_rows, publishStatus, '更新完成', compact([
+          finalNote,
+          shared.final_detail_readback_note,
+        ].filter(Boolean).join('；')))
         return advanceToNextJob(rows, {
           ...shared,
           current_result_rows: rows,
           final_publish_status: publishStatus,
         })
       }
-      const confirm = clickPublishConfirmIfPresent()
+      const hasUpgradePrompt = hasTmallDetailEditorUpgradePrompt(publishText)
+      const upgradePromptAlreadyConfirmed = hasUpgradePrompt && hasConfirmedTmallUpgradePrompt(shared, stage)
+      const confirm = upgradePromptAlreadyConfirmed
+        ? { ok: false, text: '' }
+        : clickPublishConfirmIfPresent()
       if (confirm.ok) {
+        const nextShared = hasUpgradePrompt
+          ? markTmallUpgradePromptConfirmed(shared, stage)
+          : shared
         return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
-          ...shared,
-          publish_wait_attempts: Number(shared.publish_wait_attempts || 0) + 1,
+          ...nextShared,
+          publish_wait_attempts: Number(nextShared.publish_wait_attempts || 0) + 1,
           last_confirm_method: 'dom_click',
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}提交发布确认：${confirm.text || '确认'}`,
         })
       }
-      if (TMALL_ALLOW_API_CONFIRM_FALLBACK) {
+      if (!upgradePromptAlreadyConfirmed && TMALL_ALLOW_API_CONFIRM_FALLBACK) {
         const apiConfirm = confirmPublishByApiIfPresent()
         if (apiConfirm.ok) {
           return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
@@ -5502,6 +6568,100 @@
       })
     }
 
+    if (phase === 'reopen_after_final_publish') {
+      const itemId = shared.current_job?.item_id || ''
+      const targetUrl = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
+      if (isTmallSubmitSuccessPage() || !location.href.startsWith(TMALL_PUBLISH_URL) || !location.href.includes(`id=${itemId}`)) {
+        location.href = targetUrl
+      } else {
+        try {
+          location.reload()
+        } catch (error) {
+          location.href = targetUrl
+        }
+      }
+      return nextPhase('wait_final_readback_tmall_ready', TMALL_PAGE_WAIT_MS, {
+        ...shared,
+        tmall_wait_attempts: 0,
+        current_store: '等待最终发布后编辑页读回',
+      })
+    }
+
+    if (phase === 'wait_final_readback_tmall_ready') {
+      const status = extractTmallStatus(shared.current_job || {})
+      if (!status.ready) {
+        if (isTmallSubmitSuccessPage()) {
+          const itemId = shared.current_job?.item_id || normalizeItemId(location.href)
+          if (itemId) location.href = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
+        }
+        const attempts = Number(shared.tmall_wait_attempts || 0)
+        if (attempts < 30) {
+          return nextPhase('wait_final_readback_tmall_ready', TMALL_PAGE_WAIT_MS, {
+            ...shared,
+            tmall_wait_attempts: attempts + 1,
+            current_store: `等待最终发布后编辑页读回 ${attempts + 1}/30`,
+          })
+        }
+        return failCurrentJob('最终发布后重新进入编辑页超时，无法校验PC/手机详情是否真实更新', '发布后校验失败')
+      }
+      if (shared.prefer_legacy_pc_detail && !legacyPcDetailReplacementProbe({}) && findReturnOldDescriptionSwitch()) {
+        const attempts = Number(shared.legacy_switch_attempts || 0)
+        if (attempts < 5) {
+          const nextShared = {
+            ...shared,
+            legacy_switch_attempts: attempts + 1,
+            current_store: `读回校验前切回旧版图文描述 ${attempts + 1}/5`,
+          }
+          const cdpClick = cdpClickElement(findReturnOldDescriptionSwitch(), 'wait_final_readback_tmall_ready', 2500, nextShared)
+          if (cdpClick) return cdpClick
+          if (clickReturnOldDescriptionSwitch()) {
+            return nextPhase('wait_final_readback_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+          }
+        }
+      }
+      const verification = verifyPublishedDetailReadback(shared)
+      const returnOldForReadback = findReturnOldDescriptionSwitch()
+      const pcTarget = compact(shared.pc_detail_target || '')
+      const shouldTryOldReadback = returnOldForReadback && !shared.final_readback_returned_old && (
+        !verification.ok ||
+        pcTarget === 'tmDescription' ||
+        pcTarget === 'modularDesc' ||
+        !!shared.prefer_legacy_pc_detail
+      )
+      if (shouldTryOldReadback) {
+        const nextShared = {
+          ...shared,
+          final_readback_returned_old: true,
+          current_store: verification.ok
+            ? '最终读回校验前切回旧版图文描述复核'
+            : '当前详情读回缺少本次素材，切回旧版图文描述复核',
+        }
+        const cdpClick = cdpClickElement(returnOldForReadback, 'wait_final_readback_tmall_ready', 2500, nextShared)
+        if (cdpClick) return cdpClick
+        if (clickReturnOldDescriptionSwitch()) {
+          return nextPhase('wait_final_readback_tmall_ready', TMALL_PAGE_WAIT_MS, nextShared)
+        }
+      }
+      if (!verification.ok) {
+        return failCurrentJob(`${verification.reason}；请人工打开编辑页确认，脚本不再标记更新完成`, '发布后校验失败')
+      }
+      const finalStatus = extractPublishStatus(shared.current_job || {})
+      const note = compact([
+        shared.pc_publish_note,
+        shared.mobile_sync_note,
+        verification.reason,
+        '更新完毕',
+      ].filter(Boolean).join('；'))
+      const rows = markRowsWithResult(shared.current_result_rows, finalStatus, '更新完成', note)
+      return advanceToNextJob(rows, {
+        ...shared,
+        current_result_rows: rows,
+        final_publish_status: finalStatus,
+        final_detail_readback_verified: true,
+        final_detail_readback_note: verification.reason,
+      })
+    }
+
     if (phase === 'reopen_after_pc_publish') {
       const itemId = shared.current_job?.item_id || ''
       const targetUrl = `${TMALL_PUBLISH_URL}?id=${encodeURIComponent(itemId)}`
@@ -5543,6 +6703,67 @@
           })
         }
         return failCurrentJob('PC端发布后重新进入编辑页超时，未继续同步手机端详情', '手机端同步失败')
+      }
+      if (isNewDescPcDetailTarget(shared) && shared.applied_desc_republic_of_sell && !shared.new_desc_reapplied_after_reopen) {
+        const applied = applyFormValue('descRepublicOfSell', shared.applied_desc_republic_of_sell)
+        if (!applied.ok) {
+          return failCurrentJob(`重新进入编辑页后写入新版详情模型失败：${applied.reason || '未知原因'}`, '新版详情回写失败')
+        }
+        const committed = await commitNewDescByApi(shared.applied_desc_republic_of_sell, 15000)
+        if (!committed.ok) {
+          return failCurrentJob(`重新进入编辑页后保存新版详情失败：${committed.reason || '未知原因'}`, '新版详情回写失败')
+        }
+        return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
+          ...shared,
+          tmall_wait_attempts: 0,
+          new_desc_reapplied_after_reopen: true,
+          pc_publish_note: compact([shared.pc_publish_note, '重新进入编辑页后已回写新版详情'].filter(Boolean).join('；')),
+          current_store: '新版详情已回写，继续同步手机端详情',
+        })
+      }
+      if (isModularPcDetailTarget(shared) && Array.isArray(shared.applied_modular_desc) && shared.applied_modular_desc.length && !shared.modular_desc_reapplied_after_reopen) {
+        const descTypeApplied = shared.applied_desc_type ? applyFormValue('descType', shared.applied_desc_type) : { ok: true }
+        if (!descTypeApplied.ok) {
+          return failCurrentJob(`重新进入编辑页后切换文本PC详情失败：${descTypeApplied.reason || '未知原因'}`, 'PC详情回写失败')
+        }
+        const applied = applyComponentValue('modularDesc', shared.applied_modular_desc)
+        if (!applied.ok) {
+          return failCurrentJob(`重新进入编辑页后写入PC详情模块失败：${applied.reason || '未知原因'}`, 'PC详情回写失败')
+        }
+        return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
+          ...shared,
+          tmall_wait_attempts: 0,
+          modular_desc_reapplied_after_reopen: true,
+          pc_publish_note: compact([shared.pc_publish_note, shared.applied_desc_type ? '重新进入编辑页后已切换文本PC详情并回写PC详情模块' : '重新进入编辑页后已回写PC详情模块'].filter(Boolean).join('；')),
+          current_store: shared.applied_desc_type ? '文本PC详情模块已回写，继续同步手机端详情' : 'PC详情模块已回写，继续同步手机端详情',
+        })
+      }
+      if (isShenbiPcDetailTarget(shared) && shared.applied_desc_for_shenbi_pc && !shared.shenbi_pc_reapplied_after_reopen) {
+        const applied = applyFormValue('descForShenbiPc', shared.applied_desc_for_shenbi_pc)
+        if (!applied.ok) {
+          return failCurrentJob(`重新进入编辑页后写入神笔PC详情失败：${applied.reason || '未知原因'}`, 'PC详情回写失败')
+        }
+        return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
+          ...shared,
+          tmall_wait_attempts: 0,
+          shenbi_pc_reapplied_after_reopen: true,
+          pc_publish_note: compact([shared.pc_publish_note, '重新进入编辑页后已回写神笔PC详情'].filter(Boolean).join('；')),
+          current_store: '神笔PC详情已回写，继续同步手机端详情',
+        })
+      }
+      if (isLegacyHtmlPcDetailTarget(shared) && shared.applied_pc_detail_html && !shared.legacy_html_reapplied_after_reopen) {
+        const modelApplied = applyFormValue('tmDescription', shared.applied_pc_detail_html)
+        const domApplied = applyLegacyPcDetailDom(shared.applied_pc_detail_html)
+        if (!modelApplied.ok) {
+          return failCurrentJob(`重新进入编辑页后写入旧版PC详情模型失败：${modelApplied.reason || '未知原因'}`, 'PC详情回写失败')
+        }
+        return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
+          ...shared,
+          tmall_wait_attempts: 0,
+          legacy_html_reapplied_after_reopen: true,
+          pc_publish_note: compact([shared.pc_publish_note, `重新进入编辑页后已回写旧版PC详情${domApplied.ok ? '' : '（未找到可见textarea，仅写入模型）'}`].filter(Boolean).join('；')),
+          current_store: '旧版PC详情已回写，继续同步手机端详情',
+        })
       }
       return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
         ...shared,
@@ -5872,6 +7093,9 @@
 
     return { success: false, error: `未知 phase: ${phase}` }
   } catch (error) {
+    if (isSemirLoginTimeoutError(error) && isSemirLoginWaitPhase(phase)) {
+      return waitForSemirLogin(phase, shared, error)
+    }
     return {
       success: false,
       error: String(error?.message || error),

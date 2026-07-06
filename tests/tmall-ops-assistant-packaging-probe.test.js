@@ -225,6 +225,31 @@ test('OCR results treat global award image as fixed top anchor for probe samples
   assert.equal(anchors.stopAnchorKind, 'wanted_info')
 })
 
+test('OCR results treat professional international award image as fixed top anchor for probe samples', () => {
+  const sample = {
+    anchors: { top: { detected: false }, bottom: { detected: false } },
+    pcDetail: {
+      images: [
+        { globalIndex: 0, src: 'https://img.alicdn.com/imgextra/i3/642320867/O1CN01UAicBE1IH8XX4tcs7_!!642320867.jpg' },
+        { globalIndex: 1, src: 'https://img.example/detail.jpg' },
+        { globalIndex: 2, src: 'https://img.example/wanted.jpg' },
+      ],
+    },
+  }
+
+  const anchors = buildOcrAnchorsFromResults(sample, [
+    { globalIndex: 0, text: '专业国际奖项 为每一次热爱护航 红点设计奖 美国IDA设计金奖 美国MUSE设计金奖 意大利A设计奖 DNA巴黎设计奖 Titan创新奖 纽约产品设计奖 香港设计奖 日本IDPA设计奖 沸腾质量奖', confidence: 89 },
+    { globalIndex: 2, text: '想要的信息看这里 产品名称', confidence: 91 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, true)
+  assert.equal(anchors.fixedTopImageIndex, 0)
+  assert.equal(anchors.fixedTopAnchorKind, 'fixed_top')
+  assert.equal(anchors.stopImageIndex, 2)
+  assert.equal(anchors.stopAnchorKind, 'wanted_info')
+})
+
 test('OCR results can preserve top marketing promo before wanted-info anchors', () => {
   const sample = {
     anchors: { top: { detected: false }, bottom: { detected: false } },

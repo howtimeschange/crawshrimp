@@ -495,6 +495,17 @@ def _backend_runtime_info() -> dict:
     }
 
 
+def _current_local_api_base_url() -> str:
+    port = str(os.environ.get("CRAWSHRIMP_PORT") or "18765").strip() or "18765"
+    return f"http://127.0.0.1:{port}"
+
+
+def _inject_runtime_task_params(run_params: dict) -> dict:
+    if "__crawshrimp_api_base_url" not in run_params or not str(run_params.get("__crawshrimp_api_base_url") or "").strip():
+        run_params["__crawshrimp_api_base_url"] = _current_local_api_base_url()
+    return run_params
+
+
 def _build_run_control() -> dict:
     resume_event = asyncio.Event()
     resume_event.set()
@@ -4033,6 +4044,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
 
+        _inject_runtime_task_params(run_params)
         per_item_review_urls = _resolve_tmall_buyer_review_item_urls(run_params) if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") else []
         runtime_options = runtime_options or {}
         task_param_ids = {p.id for p in task.params}

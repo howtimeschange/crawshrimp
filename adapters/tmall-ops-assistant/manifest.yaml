@@ -118,9 +118,9 @@ tasks:
       - id: block_on_style_mismatch
         type: checkbox
         label: 货号不一致时阻止上传
-        default: true
+        default: false
         ui_span: third
-        hint: 推荐保持开启。检测到天猫编辑页货号与云盘款号不一致时，只输出预检结果，不执行上传。
+        hint: 默认关闭，按表格中的“款号 / 天猫商品ID”对应关系正常执行；开启后若天猫编辑页货号与云盘款号不一致，则只输出预检结果，不执行上传。
       - id: cloud_path
         type: text
         label: 云盘路径
@@ -131,6 +131,11 @@ tasks:
         quick_fill_options:
           - 巴拉巴拉品牌事业部-市场系统//品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q1/正春包装/鞋品/208126140007/
           - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉春/126包装图/鞋品/12.8/208126140007/
+      - id: candidate_cloud_paths
+        type: textarea
+        label: 候选云盘路径
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉春/126包装图/鞋品"
+        hint: 可选，一行一个“挂载点//目录”。默认只在主云盘路径所在挂载点内找图；只有配置候选路径后，主目录素材不足时才会去候选目录搜索同款号图包。
       - id: folder_scan_depth
         type: number
         label: 文件夹扫描层级

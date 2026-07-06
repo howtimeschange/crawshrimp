@@ -75,6 +75,14 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["runtime"]["data_dir"])
         self.assertTrue(result["runtime"]["scripts_dir"])
 
+    async def test_runtime_task_params_include_current_api_base_url(self):
+        run_params = {}
+
+        with patch.dict("os.environ", {"CRAWSHRIMP_PORT": "18768"}, clear=False):
+            api_server._inject_runtime_task_params(run_params)
+
+        self.assertEqual(run_params["__crawshrimp_api_base_url"], "http://127.0.0.1:18768")
+
     async def test_build_live_progress_exposes_shein_detail_stage_fields(self):
         progress = api_server._build_live_progress(
             {

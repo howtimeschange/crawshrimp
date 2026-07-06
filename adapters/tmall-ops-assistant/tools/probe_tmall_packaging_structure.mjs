@@ -16,7 +16,7 @@ const DEFAULT_COOLDOWN_MS = 30000
 const DEFAULT_ARTIFACT_EVERY = 10
 const DEFAULT_CONCURRENCY = 1
 
-const ASIA_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一|全球大奖|国际大奖)/i
+const ASIA_TOP_ANCHOR_RE = /(童装销售额|全亚洲|亚洲第一|全球大奖|国际大奖|专业国际奖项|国际奖项|国际设计奖项|红点设计奖|IDA设计金奖|MUSE设计金奖|Titan创新奖|纽约产品设计奖|香港设计奖|IDPA设计奖|沸腾质量奖)/i
 const WANTED_INFO_ANCHOR_RE = /(想要的信息看这里|想看的信息在这里|想要的信息|信息看这里)/i
 const WASH_FALLBACK_ANCHOR_RE = /(不同材质这样洗|不同材质|衣物洗涤|洗涤|水洗|洗唛)/i
 const SIZE_ANCHOR_RE = /(尺码表|尺码测量|尺码推荐|尺码推荐表|宝贝尺寸|宝贝尺码|商品尺码表|尺码信息|测量图)/i
