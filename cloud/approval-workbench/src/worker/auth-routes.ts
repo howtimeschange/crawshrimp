@@ -27,7 +27,7 @@ interface RoleRow {
 
 type RoleIdByKey = Map<string, number>
 
-interface CurrentUser {
+export interface CurrentUser {
   user: UserRow
   roles: RoleRow[]
   permissions: Permission[]
@@ -101,7 +101,7 @@ async function currentUser(request: Request, env: Env): Promise<CurrentUser | nu
   return { user, roles, permissions, token, sessionHash }
 }
 
-async function requirePermission(request: Request, env: Env, permission: Permission): Promise<CurrentUser | Response> {
+export async function requirePermission(request: Request, env: Env, permission: Permission): Promise<CurrentUser | Response> {
   const actor = await currentUser(request, env)
   if (!actor) return unauthorized()
   if (!actor.permissions.includes(permission)) return forbidden()
