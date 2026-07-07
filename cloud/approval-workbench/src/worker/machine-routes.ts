@@ -306,10 +306,10 @@ export async function heartbeat(request: Request, env: Env): Promise<Response> {
   const now = nowIso()
   await env.DB.prepare(
     `UPDATE task_machines
-     SET health = ?, last_seen_at = ?, app_version = ?, updated_at = ?
+     SET health = ?, last_seen_at = ?, app_version = ?, capabilities_json = ?, updated_at = ?
      WHERE machine_id = ?`,
   )
-    .bind(health, now, appVersion, now, machine.machine_id)
+    .bind(health, now, appVersion, toJson(heartbeatCapabilities), now, machine.machine_id)
     .run()
   await recordAudit(env, { machineId: machine.machine_id }, 'machines.heartbeat', 'machine', machine.machine_id, { health }, request)
   return json({ ok: true, machine_id: machine.machine_id, auth_status: machine.auth_status, health })
@@ -356,9 +356,10 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
          updated_at = ?
      WHERE job_uid = ?
        AND status = 'queued'
+       AND required_capabilities_json = ?
        AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)`,
   )
-    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, machine.machine_id)
+    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, selected.required_capabilities_json, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
   await env.DB.prepare('UPDATE task_machines SET current_job_id = ?, health = ?, updated_at = ? WHERE machine_id = ?')
