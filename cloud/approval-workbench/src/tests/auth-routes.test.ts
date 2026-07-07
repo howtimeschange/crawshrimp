@@ -290,12 +290,14 @@ describe('auth routes', () => {
   it('password hashing uses PBKDF2 and verifies old sha256 hashes for compatibility', async () => {
     const fresh = await hashPassword('secret-pass')
     const legacy = await passwordHash('secret-pass')
+    const unsupportedHighCost = 'pbkdf2-sha256:210000:Zml4ZWQtc2FsdA==:53PQ6H7+AKTD2TO5NOi0Zj0e6j5TWOtqlAWpn/y6QnM='
 
     expect(fresh).toMatch(/^pbkdf2-sha256:100000:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/)
     expect(fresh).not.toContain('secret-pass')
     await expect(verifyPassword('secret-pass', fresh)).resolves.toBe(true)
     await expect(verifyPassword('wrong-pass', fresh)).resolves.toBe(false)
     await expect(verifyPassword('secret-pass', legacy)).resolves.toBe(true)
+    await expect(verifyPassword('password-123', unsupportedHighCost)).resolves.toBe(false)
   })
 
   it('POST /api/admin/users rejects unknown roleKeys without creating a user', async () => {

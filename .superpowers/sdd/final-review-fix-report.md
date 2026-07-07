@@ -138,3 +138,18 @@ Tests run:
 
 - `cd cloud/approval-workbench && npm test -- src/tests/auth-routes.test.ts src/tests/seed-admin.test.ts` - passed, 13 tests.
 - `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
+
+## PBKDF2 Verifier Guard Follow-Up
+
+Status: fixed focused review finding for existing high-cost PBKDF2 rows.
+
+Commit: pending, `fix(cloud): guard unsupported pbkdf2 hashes`.
+
+Addressed issue:
+
+- `verifyPassword` now rejects PBKDF2 iteration counts above the Worker-supported maximum before calling `crypto.subtle.deriveBits`, so old 210000-iteration hashes return a failed login instead of throwing a Worker 500. Re-running the seed helper refreshes the admin row to the supported 100000-iteration format.
+
+Tests run:
+
+- `cd cloud/approval-workbench && npm test -- src/tests/auth-routes.test.ts src/tests/seed-admin.test.ts` - passed, 13 tests.
+- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.

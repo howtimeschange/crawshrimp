@@ -1,6 +1,7 @@
 import { sha256Hex } from './tokens'
 
 const PBKDF2_ITERATIONS = 100_000
+const MAX_PBKDF2_ITERATIONS = 100_000
 const SALT_BYTES = 16
 const HASH_BYTES = 32
 
@@ -19,7 +20,7 @@ export async function verifyPassword(password: string, stored: string): Promise<
   }
   if (parts.length !== 4 || parts[0] !== 'pbkdf2-sha256') return false
   const iterations = Number(parts[1])
-  if (!Number.isInteger(iterations) || iterations < 100_000) return false
+  if (!Number.isInteger(iterations) || iterations < 100_000 || iterations > MAX_PBKDF2_ITERATIONS) return false
   const salt = base64Decode(parts[2])
   const expected = base64Decode(parts[3])
   if (!salt.length || !expected.length) return false
