@@ -120,6 +120,11 @@ class FakeD1Statement {
     if (sql.includes('from ai_image_assets') && sql.includes('where asset_uid = ?')) return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from task_machines') && sql.includes('where machine_id = ?')) return (this.state.machines.find((row) => row.machine_id === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes('where job_type = ? and idempotency_key = ?')) return (this.state.dispatchJobs.find((row) => row.job_type === String(this.params[0]) && row.idempotency_key === String(this.params[1])) ?? null) as T | null
+    if (sql.includes('from dispatch_jobs') && sql.includes("job_type = 'submit_tmall_material_test'")) {
+      const batchUid = String(this.params[0])
+      const active = this.state.dispatchJobs.find((row) => row.batch_uid === batchUid && row.job_type === 'submit_tmall_material_test' && ['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
+      return (active ? { id: active.id } : null) as T | null
+    }
     return null
   }
   async all<T>(): Promise<{ results: T[] }> {
@@ -263,6 +268,27 @@ describe('review routes', () => {
       expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe(decision)
     }
     expect(state.approvalEvents.map((event) => event.event_type)).toEqual(['asset.approved', 'asset.rejected', 'asset.pending'])
+  })
+
+  it('blocks review decision changes while a submit job is active', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-submit-active',
+      batch_uid: 'batch-1',
+      job_type: 'submit_tmall_material_test',
+      status: 'leased',
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-submit',
+    }))
+
+    const response = await fetchWorker(decisionRequest('asset-ai-1', 'rejected', reviewerCookie), fakeEnv(state))
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(409)
+    expect(body.error).toContain('submit job')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('approved')
+    expect(state.approvalEvents).toHaveLength(0)
   })
 
   it('does not let viewers change review decisions', async () => {
@@ -474,6 +500,30 @@ function asset(id: number, assetUid: string, styleId: number, kind: string, stat
     meta_json: '{}',
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
+  }
+}
+
+function dispatchJob(overrides: Partial<DispatchJobRow>): DispatchJobRow {
+  return {
+    id: 1,
+    job_uid: 'job-1',
+    batch_uid: 'batch-1',
+    job_type: 'regenerate_ai_image',
+    status: 'queued',
+    requested_by: 1,
+    assigned_machine_id: null,
+    required_capabilities_json: JSON.stringify(['regenerate_ai_image']),
+    priority: 50,
+    attempt_count: 0,
+    max_attempts: 1,
+    idempotency_key: 'job-1',
+    lease_id: null,
+    lease_expires_at: null,
+    payload_json: '{}',
+    result_json: '{}',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   }
 }
 

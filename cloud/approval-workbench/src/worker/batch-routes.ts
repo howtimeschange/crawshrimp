@@ -208,6 +208,7 @@ export async function saveAssetDecision(request: Request, env: Env): Promise<Res
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const asset = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE asset_uid = ? LIMIT 1').bind(assetUid).first<AssetRow>()
   if (!asset || asset.batch_uid !== batchUid || asset.kind !== 'ai') return json({ error: 'Not found' }, { status: 404 })
+  if (await hasActiveSubmitJob(env, batchUid)) return json({ error: 'review decisions are locked while a submit job is active' }, { status: 409 })
   const now = nowIso()
   await env.DB.prepare("UPDATE ai_image_assets SET status = ?, updated_at = ? WHERE asset_uid = ? AND batch_uid = ? AND kind = 'ai'")
     .bind(decision, now, assetUid, batchUid)
@@ -616,6 +617,19 @@ async function findDispatchJob(env: Env, jobType: string, idempotencyKey: string
   return env.DB.prepare('SELECT * FROM dispatch_jobs WHERE job_type = ? AND idempotency_key = ? LIMIT 1')
     .bind(jobType, idempotencyKey)
     .first<DispatchJobRow>()
+}
+
+async function hasActiveSubmitJob(env: Env, batchUid: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT id FROM dispatch_jobs
+     WHERE batch_uid = ?
+       AND job_type = 'submit_tmall_material_test'
+       AND status IN ('queued', 'leased', 'running', 'uploading_results', 'cancel_requested')
+     LIMIT 1`,
+  )
+    .bind(batchUid)
+    .first<{ id: number }>()
+  return Boolean(row)
 }
 
 function stringArray(value: unknown): string[] {

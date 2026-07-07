@@ -135,6 +135,7 @@ interface FakeState {
   claimRaceMachineAuthStatus?: string
   claimRaceMachineHealth?: string
   claimRaceMachineCapabilitiesJson?: string
+  batchSubmittedWhileJobStatus?: string
 }
 
 class FakeD1Statement {
@@ -211,6 +212,14 @@ class FakeD1Statement {
         .filter((job) => job.status === 'queued' && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
         .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at))
       return { results: results.map((job) => ({ ...job })) as T[] }
+    }
+    if (normalized.includes('from ai_image_assets') && normalized.includes("status = 'approved'")) {
+      const batchUid = String(this.params[0])
+      return {
+        results: this.state.assets
+          .filter((asset) => asset.batch_uid === batchUid && asset.kind === 'ai' && asset.status === 'approved')
+          .map((asset) => ({ asset_uid: asset.asset_uid, style_id: asset.style_id })) as T[],
+      }
     }
     return { results: [] }
   }
@@ -399,6 +408,7 @@ class FakeD1Statement {
       if (!batch) return result(0)
       batch.status = 'submitted'
       batch.updated_at = String(this.params[0])
+      this.state.batchSubmittedWhileJobStatus = this.state.jobs.find((job) => job.batch_uid === batch.batch_uid && job.job_type === 'submit_tmall_material_test')?.status
       return result(1)
     }
     if (normalized.startsWith("update ai_image_assets set status = 'submitted'")) {
@@ -1165,6 +1175,7 @@ describe('machine routes', () => {
     expect(response.status).toBe(200)
     expect(state.jobs[0].status).toBe('succeeded')
     expect(state.batches[0].status).toBe('submitted')
+    expect(state.batchSubmittedWhileJobStatus).toBe('uploading_results')
     expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
       ['source-1', 'uploaded'],
       ['ai-approved-1', 'submitted'],
@@ -1175,6 +1186,247 @@ describe('machine routes', () => {
       job_uid: 'job-submit',
       submitted_asset_uids: ['ai-approved-1'],
     })
+  })
+
+  it('does not mark batch or style submitted when a submit plan asset is no longer approved', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-submit-stale'
+    state.batches.push({ id: 1, batch_uid: 'batch-1', status: 'ready_to_submit', updated_at: '2026-01-01T00:00:00.000Z' })
+    state.styles.push({ id: 10, batch_uid: 'batch-1', style_code: 'style-1', status: 'approved', submit_summary_json: '{}' })
+    state.assets.push(
+      { id: 1, asset_uid: 'source-1', batch_uid: 'batch-1', style_id: 10, kind: 'source', status: 'uploaded', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 2, asset_uid: 'ai-approved-1', batch_uid: 'batch-1', style_id: 10, kind: 'ai', status: 'rejected', updated_at: '2026-01-01T00:00:00.000Z' },
+    )
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit-stale',
+      batch_uid: 'batch-1',
+      job_type: 'submit_tmall_material_test',
+      status: 'leased',
+      lease_id: 'lease-submit',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      payload_json: JSON.stringify({
+        submit_plan: {
+          batch_uid: 'batch-1',
+          assets: [
+            { asset_uid: 'source-1', style_id: 10, kind: 'source' },
+            { asset_uid: 'ai-approved-1', style_id: 10, kind: 'ai' },
+          ],
+        },
+      }),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-submit-stale/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.jobs[0].status).toBe('succeeded')
+    expect(state.batches[0].status).toBe('ready_to_submit')
+    expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
+      ['source-1', 'uploaded'],
+      ['ai-approved-1', 'rejected'],
+    ])
+    expect(state.styles[0].status).toBe('approved')
+    expect(state.styles[0].submit_summary_json).toBe('{}')
+  })
+
+  it('does not mark the batch submitted when only part of the submit plan remains approved', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-submit-partial-stale'
+    state.batches.push({ id: 1, batch_uid: 'batch-1', status: 'ready_to_submit', updated_at: '2026-01-01T00:00:00.000Z' })
+    state.styles.push(
+      { id: 10, batch_uid: 'batch-1', style_code: 'style-1', status: 'approved', submit_summary_json: '{}' },
+      { id: 11, batch_uid: 'batch-1', style_code: 'style-2', status: 'approved', submit_summary_json: '{}' },
+    )
+    state.assets.push(
+      { id: 1, asset_uid: 'source-1', batch_uid: 'batch-1', style_id: 10, kind: 'source', status: 'uploaded', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 2, asset_uid: 'ai-approved-1', batch_uid: 'batch-1', style_id: 10, kind: 'ai', status: 'approved', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 3, asset_uid: 'source-2', batch_uid: 'batch-1', style_id: 11, kind: 'source', status: 'uploaded', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 4, asset_uid: 'ai-stale-2', batch_uid: 'batch-1', style_id: 11, kind: 'ai', status: 'rejected', updated_at: '2026-01-01T00:00:00.000Z' },
+    )
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit-partial-stale',
+      batch_uid: 'batch-1',
+      job_type: 'submit_tmall_material_test',
+      status: 'leased',
+      lease_id: 'lease-submit',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      payload_json: JSON.stringify({
+        submit_plan: {
+          batch_uid: 'batch-1',
+          assets: [
+            { asset_uid: 'source-1', style_id: 10, kind: 'source' },
+            { asset_uid: 'ai-approved-1', style_id: 10, kind: 'ai' },
+            { asset_uid: 'source-2', style_id: 11, kind: 'source' },
+            { asset_uid: 'ai-stale-2', style_id: 11, kind: 'ai' },
+          ],
+        },
+      }),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-submit-partial-stale/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.jobs[0].status).toBe('succeeded')
+    expect(state.batches[0].status).toBe('ready_to_submit')
+    expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
+      ['source-1', 'uploaded'],
+      ['ai-approved-1', 'approved'],
+      ['source-2', 'uploaded'],
+      ['ai-stale-2', 'rejected'],
+    ])
+    expect(state.styles.map((style) => [style.style_code, style.status, style.submit_summary_json])).toEqual([
+      ['style-1', 'approved', '{}'],
+      ['style-2', 'approved', '{}'],
+    ])
+  })
+
+  it('does not mark the batch submitted when current approvals include AI assets missing from the submit plan', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-submit-extra-approved'
+    state.batches.push({ id: 1, batch_uid: 'batch-1', status: 'ready_to_submit', updated_at: '2026-01-01T00:00:00.000Z' })
+    state.styles.push(
+      { id: 10, batch_uid: 'batch-1', style_code: 'style-1', status: 'approved', submit_summary_json: '{}' },
+      { id: 11, batch_uid: 'batch-1', style_code: 'style-2', status: 'approved', submit_summary_json: '{}' },
+    )
+    state.assets.push(
+      { id: 1, asset_uid: 'source-1', batch_uid: 'batch-1', style_id: 10, kind: 'source', status: 'uploaded', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 2, asset_uid: 'ai-approved-1', batch_uid: 'batch-1', style_id: 10, kind: 'ai', status: 'approved', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 3, asset_uid: 'source-2', batch_uid: 'batch-1', style_id: 11, kind: 'source', status: 'uploaded', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 4, asset_uid: 'ai-extra-2', batch_uid: 'batch-1', style_id: 11, kind: 'ai', status: 'approved', updated_at: '2026-01-01T00:00:00.000Z' },
+    )
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit-extra-approved',
+      batch_uid: 'batch-1',
+      job_type: 'submit_tmall_material_test',
+      status: 'leased',
+      lease_id: 'lease-submit',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      payload_json: JSON.stringify({
+        submit_plan: {
+          batch_uid: 'batch-1',
+          assets: [
+            { asset_uid: 'source-1', style_id: 10, kind: 'source' },
+            { asset_uid: 'ai-approved-1', style_id: 10, kind: 'ai' },
+          ],
+        },
+      }),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-submit-extra-approved/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.jobs[0].status).toBe('succeeded')
+    expect(state.batches[0].status).toBe('ready_to_submit')
+    expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
+      ['source-1', 'uploaded'],
+      ['ai-approved-1', 'approved'],
+      ['source-2', 'uploaded'],
+      ['ai-extra-2', 'approved'],
+    ])
+    expect(state.styles.map((style) => [style.style_code, style.status, style.submit_summary_json])).toEqual([
+      ['style-1', 'approved', '{}'],
+      ['style-2', 'approved', '{}'],
+    ])
+  })
+
+  it('does not treat duplicate planned AI asset IDs as a full approved set match', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-submit-duplicate-plan'
+    state.batches.push({ id: 1, batch_uid: 'batch-1', status: 'ready_to_submit', updated_at: '2026-01-01T00:00:00.000Z' })
+    state.styles.push(
+      { id: 10, batch_uid: 'batch-1', style_code: 'style-1', status: 'approved', submit_summary_json: '{}' },
+      { id: 11, batch_uid: 'batch-1', style_code: 'style-2', status: 'approved', submit_summary_json: '{}' },
+    )
+    state.assets.push(
+      { id: 1, asset_uid: 'ai-approved-1', batch_uid: 'batch-1', style_id: 10, kind: 'ai', status: 'approved', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 2, asset_uid: 'ai-approved-2', batch_uid: 'batch-1', style_id: 11, kind: 'ai', status: 'approved', updated_at: '2026-01-01T00:00:00.000Z' },
+    )
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit-duplicate-plan',
+      batch_uid: 'batch-1',
+      job_type: 'submit_tmall_material_test',
+      status: 'leased',
+      lease_id: 'lease-submit',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      payload_json: JSON.stringify({
+        submit_plan: {
+          batch_uid: 'batch-1',
+          assets: [
+            { asset_uid: 'ai-approved-1', style_id: 10, kind: 'ai' },
+            { asset_uid: 'ai-approved-1', style_id: 10, kind: 'ai' },
+          ],
+        },
+      }),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-submit-duplicate-plan/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.jobs[0].status).toBe('succeeded')
+    expect(state.batches[0].status).toBe('ready_to_submit')
+    expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
+      ['ai-approved-1', 'approved'],
+      ['ai-approved-2', 'approved'],
+    ])
+    expect(state.styles.map((style) => [style.style_code, style.status, style.submit_summary_json])).toEqual([
+      ['style-1', 'approved', '{}'],
+      ['style-2', 'approved', '{}'],
+    ])
   })
 
   it('records the dispatch job lease holder and rejects same-lease writes from another machine', async () => {
