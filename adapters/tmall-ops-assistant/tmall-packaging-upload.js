@@ -905,7 +905,64 @@
       })
   }
 
-  function classifyPackagingAssets(items) {
+  function pcDetailSequenceToken(item) {
+    const stem = getFileStem(assetFilename(item))
+    const match = stem.match(/(?:^|[_\-\s])(\d{1,3})(?:\D*)$/) || stem.match(/(\d{1,3})$/)
+    if (!match) return ''
+    const value = Number(match[1])
+    if (!Number.isFinite(value) || value <= 0 || value > 200) return ''
+    return String(value).padStart(3, '0')
+  }
+
+  function pcDetailAssetBlockText(items) {
+    return (Array.isArray(items) ? items : [])
+      .map(item => `${assetFilename(item)} ${normalizedAssetFullpath(item)}`)
+      .join(' ')
+  }
+
+  function pcDetailBlockLooksGenericTemplate(items) {
+    return /模版|模板|template|通用|标准版|固定图|公共图/i.test(pcDetailAssetBlockText(items))
+  }
+
+  function pcDetailBlockLooksStyleSpecific(items, styleCode) {
+    const style = compact(styleCode)
+    if (!style) return false
+    return (Array.isArray(items) ? items : [])
+      .some(item => startsWithCodeToken(getFileStem(assetFilename(item)), style))
+  }
+
+  function dedupePcDetailDuplicateSequences(items, options = {}) {
+    const list = Array.isArray(items) ? items.slice() : []
+    const styleCode = compact(options.styleCode)
+    if (list.length < 6) return { items: list, removed: 0, reason: '' }
+
+    for (let blockSize = Math.floor(list.length / 2); blockSize >= 3; blockSize -= 1) {
+      if (list.length % blockSize !== 0) continue
+      const repeatCount = list.length / blockSize
+      if (repeatCount < 2) continue
+      const blocks = Array.from({ length: repeatCount }, (_, index) => list.slice(index * blockSize, (index + 1) * blockSize))
+      const signatures = blocks.map(block => block.map(pcDetailSequenceToken))
+      if (signatures.some(signature => signature.some(token => !token))) continue
+      const firstSignature = signatures[0].join(',')
+      if (!firstSignature || !signatures.every(signature => signature.join(',') === firstSignature)) continue
+
+      const styleBlockIndex = styleCode
+        ? blocks.findIndex(block => pcDetailBlockLooksStyleSpecific(block, styleCode))
+        : -1
+      const templateBlockIndex = blocks.findIndex(pcDetailBlockLooksGenericTemplate)
+      if (styleBlockIndex < 0 || templateBlockIndex < 0 || styleBlockIndex === templateBlockIndex) continue
+
+      const keptBlock = blocks[styleBlockIndex]
+      return {
+        items: keptBlock,
+        removed: list.length - blockSize,
+        reason: `PC详情候选检测到 ${repeatCount} 段重复 ${blockSize} 张序列（款号图+模版图），源素材异常，已保留款号序列并剔除模版重复图`,
+      }
+    }
+    return { items: list, removed: 0, reason: '' }
+  }
+
+  function classifyPackagingAssets(items, options = {}) {
     const sorted = (Array.isArray(items) ? items : [])
       .filter(isImageItem)
       .slice()
@@ -971,13 +1028,18 @@
       .filter(item => pcDetailAssetScore(item) > 0)
     const optimizedPcDetailPool = allPcDetailPool.filter(isOptimizedPcDetailAsset)
     const pcDetailPool = optimizedPcDetailPool.length ? optimizedPcDetailPool : allPcDetailPool
-    byCategory.pc_detail.push(...assignFirst(pcDetailPool, PC_DETAIL_MAX_COUNT, used))
+    const selectedPcDetail = assignFirst(pcDetailPool, PC_DETAIL_MAX_COUNT, used)
+    const pcDetailDedupe = dedupePcDetailDuplicateSequences(selectedPcDetail, options)
+    byCategory.pc_detail.push(...pcDetailDedupe.items)
 
     const missing = []
+    const warnings = pcDetailDedupe.reason ? [pcDetailDedupe.reason] : []
 
     return {
       byCategory,
       missing,
+      warnings,
+      pcDetailDedupedCount: pcDetailDedupe.removed,
       total: sorted.length,
       selected: CATEGORY_ORDER.reduce((sum, category) => sum + byCategory[category].length, 0),
     }
@@ -1200,6 +1262,25 @@
       meta: {
         action: 'cdp_clicks',
         clicks,
+        next_phase: nextPhaseName,
+        sleep_ms: sleepMs,
+        shared: newShared,
+      },
+    }
+  }
+
+  function cdpTargetEval(expression, nextPhaseName, sleepMs = 500, newShared = shared, options = {}) {
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'cdp_target_eval',
+        expression,
+        target_url_contains: Array.isArray(options.target_url_contains) ? options.target_url_contains : [],
+        target_url_regex: options.target_url_regex || '',
+        target_types: Array.isArray(options.target_types) ? options.target_types : ['page', 'iframe'],
+        shared_key: options.shared_key || '',
+        user_gesture: !!options.user_gesture,
         next_phase: nextPhaseName,
         sleep_ms: sleepMs,
         shared: newShared,
@@ -1578,13 +1659,13 @@
     }
 
     assets = annotateItemsWithSource(dedupeItemsByFullpath(assets), sourceConfig)
-    const plan = classifyPackagingAssets(assets)
+    const plan = classifyPackagingAssets(assets, { styleCode: job.style_code })
     const errors = plan.selected > 0 ? [] : listingIssues
     return {
       ...plan,
       items: assets,
       errors,
-      warnings: plan.selected > 0 ? listingIssues : [],
+      warnings: plan.selected > 0 ? [...(plan.warnings || []), ...listingIssues] : (plan.warnings || []),
       searchCount,
       folderCount,
       searchScope,
@@ -2160,15 +2241,16 @@
       replaceEndIndex: stopPic.globalIndex,
       replacedImageCount: detailList.length,
       insertedImageCount: detailList.length,
-      fixedTopImage: firstPic,
-      fixedTopImageIndex: 0,
-      preserveTopImageCount: 1,
-      stopAnchor: stopPic,
-      stopImageIndex: stopPic.globalIndex,
-      stopAnchorKind: 'legacy_count_tail',
-      note: `新版图片详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailList.length + 1}张，保留第${detailList.length + 2}张及以下尾部`,
-    }
-  }
+	      fixedTopImage: firstPic,
+	      fixedTopImageIndex: 0,
+	      preserveTopImageCount: 1,
+	      stopAnchor: stopPic,
+	      stopImageIndex: stopPic.globalIndex,
+	      stopAnchorKind: 'legacy_count_tail',
+	      currentReplacementUrls: pics.slice(1, detailList.length + 1).map(pic => pic.src).filter(Boolean),
+	      note: `新版图片详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailList.length + 1}张，保留第${detailList.length + 2}张及以下尾部`,
+	    }
+	  }
 
   function legacyCountProbeDetailImages(options = {}) {
     if (!options.probeOnly || !options.allowLegacyCountImageReplace) return []
@@ -2298,6 +2380,7 @@
         visualAnchors: options.visualAnchors,
         requireVisualAnchors: options.requireVisualAnchors,
         allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+        legacyCountDetailImageCount: options.legacyCountDetailImageCount,
       })
     }
     const tmDescription = getLegacyPcDetailHtml()
@@ -2307,6 +2390,7 @@
         visualAnchors: options.visualAnchors,
         requireVisualAnchors: options.requireVisualAnchors,
         allowLegacyCountImageReplace: options.allowLegacyCountImageReplace,
+        legacyCountDetailImageCount: options.legacyCountDetailImageCount,
       })
     }
     return null
@@ -2979,10 +3063,22 @@
 
   function findMobileDetailEditButton() {
     const contextRegex = /(手机端详情描述|手机端详情|手机详情|无线端详情|移动端详情)/
+    const exact = getAccessibleDocuments().flatMap(doc => {
+      if (typeof doc.querySelectorAll !== 'function') return []
+      return Array.from(doc.querySelectorAll('.sell-mobile-detail-header-edit-btn, button') || [])
+        .filter(element => {
+          if (!isVisibleElement(element)) return false
+          const className = compact(element.className || '')
+          const text = compact(elementText(element))
+          return /sell-mobile-detail-header-edit-btn/.test(className) && /编辑详情|编辑/.test(text)
+        })
+    })
+    if (exact.length) return exact[0]
     const scoped = getAccessibleDocuments().flatMap(doc => {
       if (typeof doc.querySelectorAll !== 'function') return []
       return Array.from(doc.querySelectorAll('div,section,article,li,tr,td') || [])
         .filter(root => isVisibleElement(root) && contextRegex.test(elementText(root)))
+        .sort((a, b) => elementText(a).length - elementText(b).length)
         .map(root => findVisibleActionByText(['编辑详情', '编辑'], {
           root,
           allowContains: true,
@@ -3019,6 +3115,690 @@
       finishEdit: /(完成编辑|确认并完成编辑)/.test(text),
       textSample: text.slice(0, 500),
     }
+  }
+
+  function findVisibleMobileDetailIframe() {
+    const frames = getAccessibleDocuments().flatMap(doc => {
+      if (typeof doc.querySelectorAll !== 'function') return []
+      return Array.from(doc.querySelectorAll('iframe') || [])
+    })
+    return frames.find(frame => {
+      if (!isVisibleElement(frame)) return false
+      const src = compact(frame.getAttribute?.('src') || frame.src || '')
+      const className = compact(frame.className || frame.getAttribute?.('class') || '')
+      const title = compact(frame.getAttribute?.('title') || frame.getAttribute?.('name') || '')
+      return /sell-detail-iframe/.test(className) ||
+        /sell\.xiangqing\.taobao\.com\/sell\/transit\/gotoEdit\.do/i.test(src) ||
+        (/clientType=1/.test(src) && /itemId=\d+/.test(src)) ||
+        /手机详情|无线详情|mobile/i.test(title)
+    }) || null
+  }
+
+  function findVisibleMobileEditorContainer() {
+    const iframe = findVisibleMobileDetailIframe()
+    const iframeRect = iframe?.getBoundingClientRect?.()
+    const candidates = getAccessibleDocuments().flatMap(doc => {
+      if (typeof doc.querySelectorAll !== 'function') return []
+      return Array.from(doc.querySelectorAll([
+        '.detail-editor-dialog',
+        '[class*="detail-editor-dialog"]',
+        '[class*="mobile-detail"]',
+        '[class*="sell-detail"]',
+        '[role="dialog"]',
+        '.next-dialog',
+        '.next-overlay-wrapper',
+      ].join(',')) || [])
+    }).filter(element => {
+      if (!isVisibleElement(element)) return false
+      const text = elementText(element)
+      const className = compact(element.className || element.getAttribute?.('class') || '')
+      if (/手机详情|无线详情|移动端详情|detail-editor|sell-detail|mobile-detail/i.test(`${text} ${className}`)) return true
+      if (!iframeRect) return false
+      const rect = element.getBoundingClientRect()
+      const rectRight = Number(rect.right || (Number(rect.left) + Number(rect.width || 0)))
+      const rectBottom = Number(rect.bottom || (Number(rect.top) + Number(rect.height || 0)))
+      const iframeRight = Number(iframeRect.right || (Number(iframeRect.left) + Number(iframeRect.width || 0)))
+      const iframeBottom = Number(iframeRect.bottom || (Number(iframeRect.top) + Number(iframeRect.height || 0)))
+      return rect.left <= iframeRect.left + 8 &&
+        rect.top <= iframeRect.top + 8 &&
+        rectRight >= iframeRight - 8 &&
+        rectBottom >= iframeBottom - 8
+    })
+    candidates.sort((a, b) => {
+      const ar = a.getBoundingClientRect()
+      const br = b.getBoundingClientRect()
+      return (ar.width * ar.height) - (br.width * br.height)
+    })
+    return candidates[0] || iframe || null
+  }
+
+  function mobileEditorFrameRect() {
+    const container = findVisibleMobileEditorContainer()
+    if (!container || typeof container.getBoundingClientRect !== 'function') return null
+    const rect = container.getBoundingClientRect()
+    if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null
+    return rect
+  }
+
+  function visibleCrossOriginMobileEditor() {
+    return !!findVisibleMobileDetailIframe()
+  }
+
+  function mobileEditorPoint(name) {
+    const rect = mobileEditorFrameRect()
+    if (!rect) return null
+    const offset = {
+      importMenu: [0.187, 38],
+      importDetail: [0.194, 87],
+      importPcDetail: [0.292, 130],
+      fullImage: [0.330, 463],
+      confirm: [0.757, 644],
+      save: [0.848, 31],
+      finish: [0.942, 31],
+    }[name]
+    if (!offset) return null
+    const x = Number(rect.left) + Math.max(8, Math.min(Number(rect.width) - 8, Number(rect.width) * offset[0]))
+    const y = Number(rect.top) + Math.max(8, Math.min(Number(rect.height) - 8, offset[1]))
+    return { x, y }
+  }
+
+  function cdpMobileEditorClick(pointName, nextPhaseName, sleepMs = 500, newShared = shared, type = 'click') {
+    const point = mobileEditorPoint(pointName)
+    if (!point) return null
+    const event = type === 'move'
+      ? { type: 'move', x: point.x, y: point.y, delay_ms: sleepMs }
+      : { x: point.x, y: point.y, delay_ms: sleepMs }
+    return cdpClicks([event], nextPhaseName, 120, newShared)
+  }
+
+  function mobileEditorTargetUrlContains(state = shared) {
+    const itemId = compact(state?.current_job?.item_id || state?.current_job?.itemId || state?.item_id || state?.itemId)
+    const contains = ['sell.xiangqing.taobao.com/new_user_panel.htm']
+    if (itemId) contains.push(`itemId=${itemId}`)
+    return contains
+  }
+
+  function mobileEditorClearCanvasExpression() {
+    return String.raw`(async () => {
+  const compact = value => String(value || '').trim().replace(/\s+/g, ' ')
+  const visible = element => {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return false
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+  }
+  const findCanvasProps = () => {
+    const seen = new Set()
+    let canvasProps = null
+    const walk = (value, depth = 0) => {
+      if (!value || typeof value !== 'object' || seen.has(value) || depth > 8 || canvasProps) return
+      seen.add(value)
+      const props = value.props || value
+      if (props && typeof props.clear === 'function' && Array.isArray(props.components) && Array.isArray(props.layout)) {
+        canvasProps = props
+        return
+      }
+      const keys = ['stateNode', '_instance', '_owner', '_currentElement', '_renderedComponent', '_renderedChildren', '_hostParent', 'return', 'child', 'sibling', 'alternate']
+      keys.forEach(key => {
+        try {
+          const next = value[key]
+          if (!next) return
+          if (key === '_renderedChildren' && typeof next === 'object') {
+            Object.values(next).slice(0, 50).forEach(item => walk(item, depth + 1))
+          } else {
+            walk(next, depth + 1)
+          }
+        } catch (error) {}
+      })
+      try {
+        const ownerInstance = value._currentElement?._owner?._instance
+        if (ownerInstance) walk(ownerInstance, depth + 1)
+      } catch (error) {}
+    }
+    Array.from(document.querySelectorAll('*') || []).forEach(element => {
+      const key = Object.keys(element).find(name => name.startsWith('__reactInternalInstance$') || name.startsWith('__reactFiber$'))
+      if (key) walk(element[key], 0)
+      const fiberKey = Object.keys(element).find(name => name.startsWith('__reactFiber$'))
+      if (fiberKey && fiberKey !== key) walk(element[fiberKey], 0)
+    })
+    return canvasProps
+  }
+  const summarize = props => {
+    const text = compact(document.body?.innerText || '')
+    const images = Array.from(document.images || [])
+      .filter(img => visible(img))
+      .map(img => img.currentSrc || img.src || '')
+      .filter(src => /imgextra|alicdn/i.test(src) && !/TB18VOYJ|spaceball\.gif/i.test(src))
+    const groups = Array.isArray(props?.components) ? props.components.filter(item => item?.type === 'group') : []
+    return {
+      componentCount: Array.isArray(props?.components) ? props.components.length : null,
+      groupCount: groups.length,
+      visibleImageCount: images.length,
+      moduleTextCount: (text.match(/图文模块/g) || []).length,
+      hasEmptyNotice: /您还未添加任何模块|请在左侧通过点击选择模块进行装修/.test(text),
+      textSample: text.slice(-500),
+    }
+  }
+  const props = findCanvasProps()
+  if (!props) return { ok: false, reason: '未找到手机详情编辑器画布' }
+  const before = summarize(props)
+  try {
+    props.clear()
+  } catch (error) {
+    return { ok: false, reason: String(error?.message || error), before }
+  }
+  await new Promise(resolve => setTimeout(resolve, 600))
+  const afterProps = findCanvasProps() || props
+  const after = summarize(afterProps)
+  const cleared = after.hasEmptyNotice || (after.visibleImageCount === 0 && after.moduleTextCount === 0)
+  return { ok: cleared, before, after }
+})()`
+  }
+
+  function clearMobileEditorModulesViaTarget(newShared = shared) {
+    return cdpTargetEval(
+      mobileEditorClearCanvasExpression(),
+      'verify_mobile_editor_modules_cleared',
+      800,
+      {
+        ...newShared,
+        current_store: '清空旧手机端详情模块',
+      },
+      {
+        target_url_contains: mobileEditorTargetUrlContains(newShared),
+        target_types: ['page', 'iframe'],
+        shared_key: 'mobile_editor_clear_result',
+        user_gesture: true,
+      },
+    )
+  }
+
+  function mobileEditorExpectedImportImageCount(state = shared) {
+    const detailCount = downloadedPcDetailRowCount(state?.current_result_rows || [])
+    if (!detailCount) return 3
+    return Math.max(1, Math.min(5, detailCount))
+  }
+
+  function mobileEditorImportPcDetailExpression(minExpectedImages = 3, itemId = '', options = {}) {
+    const expected = Math.max(1, Number(minExpectedImages || 3))
+    const expectedJson = JSON.stringify(expected)
+    const itemIdJson = JSON.stringify(compact(itemId || ''))
+    const generateOp = Number(options.generateOp) === 1 ? 1 : 0
+    const generateOpJson = JSON.stringify(generateOp)
+    const expectedUrlsJson = JSON.stringify(uniqueImageUrls(options.expectedUrls || []))
+    return String.raw`(async () => {
+  const minExpectedImages = ${expectedJson}
+  const expectedItemId = ${itemIdJson}
+  const generateOp = ${generateOpJson}
+  const expectedUrls = ${expectedUrlsJson}
+  const compact = value => String(value || '').trim().replace(/\s+/g, ' ')
+  const comparableImageUrl = value => {
+    const raw = String(value || '').trim().replace(/^https?:/i, '').split('?')[0].toLowerCase()
+    return raw
+  }
+  const imageUrlMatches = (actual, expected) => {
+    const actualKey = comparableImageUrl(actual)
+    const expectedKey = comparableImageUrl(expected)
+    return !!actualKey && !!expectedKey && (actualKey === expectedKey || actualKey.includes(expectedKey) || expectedKey.includes(actualKey))
+  }
+  const visible = element => {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return false
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+  }
+  const reactProps = element => {
+    const key = Object.keys(element || {}).find(name => name.startsWith('__reactInternalInstance$') || name.startsWith('__reactFiber$'))
+    const node = key ? element[key] : null
+    return node?.memoizedProps || node?.pendingProps || node?._currentElement?.props || node?._instance?.props || null
+  }
+  const clickReact = (element, names = ['onClick']) => {
+    if (!element) return []
+    const props = reactProps(element) || {}
+    const event = {
+      target: element,
+      currentTarget: element,
+      type: 'click',
+      preventDefault() {},
+      stopPropagation() {},
+      nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true, view: window }),
+    }
+    const calls = []
+    names.forEach(name => {
+      if (typeof props[name] !== 'function') return
+      try {
+        props[name](event)
+        calls.push(name + ':ok')
+      } catch (error) {
+        calls.push(name + ':ERR:' + String(error?.message || error))
+      }
+    })
+    if (!calls.length) {
+      try { element.click?.() } catch (error) { calls.push('native:ERR:' + String(error?.message || error)) }
+    }
+    return calls
+  }
+  const findCanvasProps = () => {
+    const seen = new Set()
+    let canvasProps = null
+    const walk = (value, depth = 0) => {
+      if (!value || typeof value !== 'object' || seen.has(value) || depth > 9 || canvasProps) return
+      seen.add(value)
+      const props = value.props || value.memoizedProps || value.pendingProps || value._currentElement?.props || value._instance?.props || value
+      if (props && typeof props.clear === 'function' && Array.isArray(props.components) && Array.isArray(props.layout)) {
+        canvasProps = props
+        return
+      }
+      const keys = ['stateNode', '_instance', '_owner', '_currentElement', '_renderedComponent', '_renderedChildren', 'return', 'child', 'sibling', 'alternate']
+      keys.forEach(key => {
+        try {
+          const next = value[key]
+          if (!next) return
+          if (key === '_renderedChildren' && typeof next === 'object') {
+            Object.values(next).slice(0, 80).forEach(item => walk(item, depth + 1))
+          } else {
+            walk(next, depth + 1)
+          }
+        } catch (error) {}
+      })
+    }
+    Array.from(document.querySelectorAll('*') || []).forEach(element => {
+      Object.keys(element).filter(key => key.startsWith('__reactInternalInstance$') || key.startsWith('__reactFiber$')).forEach(key => walk(element[key], 0))
+    })
+    return canvasProps
+  }
+  const summarize = () => {
+    const props = findCanvasProps()
+    const text = compact(document.body?.innerText || '')
+    let allText = ''
+    try { allText = JSON.stringify({ components: props?.components, layout: props?.layout }) } catch (error) {}
+    const canvasUrls = Array.from(new Set(
+      (allText.match(/https?:\\?\/\\?\/[^"'\\]+/g) || [])
+        .map(url => url.replace(/\\\//g, '/'))
+        .filter(url => /imgextra|alicdn/i.test(url) && !/spaceball\.gif|W0rsa3mTBu/i.test(url))
+    ))
+    const images = Array.from(document.images || [])
+      .filter(visible)
+      .map(img => img.currentSrc || img.src || '')
+      .filter(url => /imgextra|alicdn/i.test(url) && !/TB18VOYJ|spaceball\.gif|W0rsa3mTBu/i.test(url))
+    const groups = Array.isArray(props?.components) ? props.components.filter(item => item?.type === 'group') : []
+    const canvasExpectedHits = expectedUrls.filter(expected => canvasUrls.some(url => imageUrlMatches(url, expected)))
+    const visibleExpectedHits = expectedUrls.filter(expected => images.some(url => imageUrlMatches(url, expected)))
+    const dialogText = compact(Array.from(document.querySelectorAll('.next-dialog,[role="dialog"],.next-message,.next-feedback,.next-notice') || [])
+      .filter(visible)
+      .map(element => element.innerText || element.textContent || '')
+      .join(' | '))
+    return {
+      componentCount: Array.isArray(props?.components) ? props.components.length : null,
+      groupCount: groups.length,
+      visibleImageCount: images.length,
+      canvasImageCount: canvasUrls.length,
+      expectedUrlCount: expectedUrls.length,
+      canvasExpectedHitCount: canvasExpectedHits.length,
+      visibleExpectedHitCount: visibleExpectedHits.length,
+      hasEmptyNotice: /您还未添加任何模块|请在左侧通过点击选择模块进行装修/.test(text),
+      dialogText: dialogText.slice(0, 1000),
+      textSample: text.slice(-800),
+      imageSamples: Array.from(new Set([...canvasUrls, ...images])).slice(0, 8),
+      canvasExpectedHits: canvasExpectedHits.slice(0, 20),
+    }
+  }
+  const findImportInstance = () => {
+    const seen = new Set()
+    let found = null
+    const walk = (value, depth = 0) => {
+      if (!value || typeof value !== 'object' || seen.has(value) || depth > 12 || found) return
+      seen.add(value)
+      const instance = value._instance || value.stateNode || value
+      const stateItemId = compact(instance?.state?.itemId || '')
+      if (
+        instance &&
+        typeof instance.select === 'function' &&
+        typeof instance.process === 'function' &&
+        instance.state &&
+        (!expectedItemId || stateItemId === expectedItemId)
+      ) {
+        found = instance
+        return
+      }
+      const keys = ['stateNode', '_instance', '_owner', '_currentElement', '_renderedComponent', '_renderedChildren', 'return', 'child', 'sibling', 'alternate']
+      keys.forEach(key => {
+        try {
+          const next = value[key]
+          if (!next) return
+          if (key === '_renderedChildren' && typeof next === 'object') {
+            Object.values(next).slice(0, 80).forEach(item => walk(item, depth + 1))
+          } else {
+            walk(next, depth + 1)
+          }
+        } catch (error) {}
+      })
+    }
+    Array.from(document.querySelectorAll('*') || []).forEach(element => {
+      Object.keys(element).filter(key => key.startsWith('__reactInternalInstance$') || key.startsWith('__reactFiber$')).forEach(key => walk(element[key], 0))
+    })
+    return found
+  }
+  const exactText = label => Array.from(document.querySelectorAll('button,a,li,div,span,[role="menuitem"]') || [])
+    .filter(visible)
+    .find(element => compact(element.innerText || element.textContent) === label)
+  const importSuccessConfirmButton = snapshot => /导入电脑端详情成功/.test(snapshot?.dialogText || '')
+    ? Array.from(document.querySelectorAll('.next-dialog button,button') || [])
+      .filter(visible)
+      .find(element => compact(element.innerText || element.textContent) === '确认')
+    : null
+  const waitFor = async (predicate, attempts = 20, delay = 300) => {
+    for (let i = 0; i < attempts; i += 1) {
+      const value = predicate()
+      if (value) return value
+      await new Promise(resolve => setTimeout(resolve, delay))
+    }
+    return null
+  }
+
+  const before = summarize()
+  const importButton = Array.from(document.querySelectorAll('button') || []).filter(visible).find(element => compact(element.innerText || element.textContent) === '导入') || exactText('导入')
+  if (!importButton) return { ok: false, reason: '未找到“导入”按钮', before }
+  const calls = []
+  calls.push(...clickReact(importButton, ['onMouseEnter', 'onClick']))
+  await waitFor(() => exactText('导入详情'), 20, 300)
+  const importDetail = Array.from(document.querySelectorAll('.next-menu-submenu-title,li,div') || [])
+    .filter(visible)
+    .find(element => compact(element.innerText || element.textContent) === '导入详情' && /submenu-title/.test(String(element.className || ''))) || exactText('导入详情')
+  if (!importDetail) return { ok: false, reason: '未找到“导入详情”菜单', before, calls }
+  calls.push(...clickReact(importDetail, ['onMouseEnter', 'onClick']))
+  const importPc = await waitFor(() => exactText('导入电脑端详情'), 20, 300)
+  if (!importPc) return { ok: false, reason: '未找到“导入电脑端详情”菜单项', before, calls, textSample: compact(document.body?.innerText || '').slice(-1000) }
+  calls.push(...clickReact(importPc, ['onClick']))
+  const importInstance = await waitFor(() => findImportInstance(), 30, 500)
+  if (!importInstance) return { ok: false, reason: '未找到导入电脑端详情弹窗实例', before, calls, afterMenu: summarize() }
+  try {
+    if (importInstance.state?.op !== generateOp) importInstance.select(generateOp)
+  } catch (error) {
+    return { ok: false, reason: '选择手机端生成方式失败：' + String(error?.message || error), before, calls, generateOp }
+  }
+  await new Promise(resolve => setTimeout(resolve, 500))
+  if ((findImportInstance() || importInstance)?.state?.op !== generateOp) {
+    return { ok: false, reason: generateOp === 0 ? '全图生成未选中' : '图文分离未选中', before, calls, importState: importInstance.state, generateOp }
+  }
+  try {
+    ;(findImportInstance() || importInstance).process()
+  } catch (error) {
+    return { ok: false, reason: '导入电脑端详情失败：' + String(error?.message || error), before, calls, importState: importInstance.state }
+  }
+  const snapshots = []
+  for (let i = 0; i < 75; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 1000))
+    const snapshot = summarize()
+    const currentInstance = findImportInstance()
+    snapshots.push({
+      i: i + 1,
+      componentCount: snapshot.componentCount,
+      groupCount: snapshot.groupCount,
+      visibleImageCount: snapshot.visibleImageCount,
+      canvasImageCount: snapshot.canvasImageCount,
+      canvasExpectedHitCount: snapshot.canvasExpectedHitCount,
+      expectedUrlCount: snapshot.expectedUrlCount,
+      hasEmptyNotice: snapshot.hasEmptyNotice,
+      dialogText: snapshot.dialogText.slice(0, 160),
+      stage: currentInstance?.state?.stage,
+      op: currentInstance?.state?.op,
+    })
+    const successConfirmButton = importSuccessConfirmButton(snapshot)
+    if (successConfirmButton) {
+      const closeCalls = clickReact(successConfirmButton, ['onClick'])
+      await new Promise(resolve => setTimeout(resolve, 1500))
+      const afterConfirm = summarize()
+      return {
+        ok: true,
+        before,
+        after: {
+          ...afterConfirm,
+          importSuccessDialog: true,
+          importSuccessDialogText: snapshot.dialogText,
+        },
+        minExpectedImages,
+        generateOp,
+        calls,
+        importSuccessClosed: true,
+        closeCalls,
+        snapshots: snapshots.slice(-10),
+        importState: currentInstance ? {
+          visible: currentInstance.state?.visible,
+          op: currentInstance.state?.op,
+          stage: currentInstance.state?.stage,
+          message: currentInstance.state?.message,
+        } : null,
+      }
+    }
+    if (
+      snapshot.canvasImageCount >= minExpectedImages &&
+      snapshot.groupCount >= 1 &&
+      !snapshot.hasEmptyNotice
+    ) {
+      if (expectedUrls.length && snapshot.canvasExpectedHitCount < expectedUrls.length) {
+        return {
+          ok: false,
+          reason: '导入后手机画布未命中本次PC详情图：' + snapshot.canvasExpectedHitCount + '/' + expectedUrls.length,
+          before,
+          after: snapshot,
+          minExpectedImages,
+          generateOp,
+          calls,
+          snapshots: snapshots.slice(-10),
+        }
+      }
+      const confirmButton = importSuccessConfirmButton(snapshot)
+      const closeCalls = confirmButton ? clickReact(confirmButton, ['onClick']) : []
+      if (confirmButton) await new Promise(resolve => setTimeout(resolve, 500))
+      return {
+        ok: true,
+        before,
+        after: {
+          ...snapshot,
+          importSuccessDialog: !!confirmButton,
+          importSuccessDialogText: confirmButton ? snapshot.dialogText : '',
+        },
+        minExpectedImages,
+        generateOp,
+        calls,
+        importSuccessClosed: !!confirmButton,
+        closeCalls,
+        snapshots: snapshots.slice(-10),
+        importState: currentInstance ? {
+          visible: currentInstance.state?.visible,
+          op: currentInstance.state?.op,
+          stage: currentInstance.state?.stage,
+          message: currentInstance.state?.message,
+        } : null,
+      }
+    }
+    if (/失败|错误|异常/.test(snapshot.dialogText)) {
+      return { ok: false, reason: '导入电脑端详情弹窗报错', before, after: snapshot, calls, snapshots: snapshots.slice(-10) }
+    }
+  }
+  return { ok: false, reason: '导入后未出现新手机详情模块', before, after: summarize(), calls, generateOp, snapshots: snapshots.slice(-20) }
+})()`
+  }
+
+  function importMobilePcDetailViaTarget(newShared = shared) {
+    const itemId = compact(newShared?.current_job?.item_id || newShared?.current_job?.itemId || newShared?.item_id || newShared?.itemId)
+    const generateOp = Number(newShared.mobile_import_generate_op) === 1 ? 1 : 0
+    return cdpTargetEval(
+      mobileEditorImportPcDetailExpression(mobileEditorExpectedImportImageCount(newShared), itemId, {
+        generateOp,
+        expectedUrls: uploadedPcDetailUrlsFromShared(newShared),
+      }),
+      'verify_mobile_editor_imported',
+      1000,
+      {
+        ...newShared,
+        mobile_import_generate_op: generateOp,
+        mobile_generate_mode: generateOp === 1 ? '图文分离' : '全图生成',
+        current_store: generateOp === 1 ? '手机端导入电脑端详情（图文分离）' : '手机端导入电脑端详情（全图生成）',
+      },
+      {
+        target_url_contains: mobileEditorTargetUrlContains(newShared),
+        target_types: ['page', 'iframe'],
+        shared_key: 'mobile_editor_import_result',
+        user_gesture: true,
+      },
+    )
+  }
+
+  function mobileEditorSaveExpression() {
+    return String.raw`(async () => {
+  const compact = value => String(value || '').trim().replace(/\s+/g, ' ')
+  const visible = element => {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return false
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+  }
+  const reactProps = element => {
+    const key = Object.keys(element || {}).find(name => name.startsWith('__reactInternalInstance$') || name.startsWith('__reactFiber$'))
+    const node = key ? element[key] : null
+    return node?.memoizedProps || node?.pendingProps || node?._currentElement?.props || node?._instance?.props || null
+  }
+  const clickReact = element => {
+    const props = reactProps(element) || {}
+    const event = { target: element, currentTarget: element, type: 'click', preventDefault() {}, stopPropagation() {}, nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true, view: window }) }
+    const calls = []
+    if (typeof props.onClick === 'function') {
+      try { props.onClick(event); calls.push('onClick:ok') } catch (error) { calls.push('onClick:ERR:' + String(error?.message || error)) }
+    }
+    if (!calls.length) {
+      try { element.click?.() } catch (error) { calls.push('native:ERR:' + String(error?.message || error)) }
+    }
+    return calls
+  }
+  const findCanvasProps = () => {
+    const seen = new Set()
+    let canvasProps = null
+    const walk = (value, depth = 0) => {
+      if (!value || typeof value !== 'object' || seen.has(value) || depth > 9 || canvasProps) return
+      seen.add(value)
+      const props = value.props || value.memoizedProps || value.pendingProps || value._currentElement?.props || value._instance?.props || value
+      if (props && typeof props.clear === 'function' && Array.isArray(props.components) && Array.isArray(props.layout)) {
+        canvasProps = props
+        return
+      }
+      ;['stateNode', '_instance', '_owner', '_currentElement', '_renderedComponent', '_renderedChildren', 'return', 'child', 'sibling', 'alternate'].forEach(key => {
+        try {
+          const next = value[key]
+          if (!next) return
+          if (key === '_renderedChildren' && typeof next === 'object') Object.values(next).slice(0, 80).forEach(item => walk(item, depth + 1))
+          else walk(next, depth + 1)
+        } catch (error) {}
+      })
+    }
+    Array.from(document.querySelectorAll('*') || []).forEach(element => Object.keys(element).filter(key => key.startsWith('__reactInternalInstance$') || key.startsWith('__reactFiber$')).forEach(key => walk(element[key], 0)))
+    return canvasProps
+  }
+  const summarize = () => {
+    const props = findCanvasProps()
+    let allText = ''
+    try { allText = JSON.stringify({ components: props?.components, layout: props?.layout }) } catch (error) {}
+    const imageUrls = Array.from(new Set((allText.match(/https?:\\?\/\\?\/[^"'\\]+/g) || []).map(url => url.replace(/\\\//g, '/')).filter(url => /imgextra|alicdn/i.test(url) && !/spaceball\.gif/i.test(url))))
+    const groups = Array.isArray(props?.components) ? props.components.filter(item => item?.type === 'group') : []
+    const text = compact(document.body?.innerText || '')
+    const dialogText = compact(Array.from(document.querySelectorAll('.next-dialog,.next-message,.next-feedback,.next-notice') || []).filter(visible).map(element => element.innerText || element.textContent || '').join(' | '))
+    return {
+      componentCount: Array.isArray(props?.components) ? props.components.length : null,
+      groupCount: groups.length,
+      canvasImageCount: imageUrls.length,
+      dialogText: dialogText.slice(0, 800),
+      textSample: text.slice(-500),
+      imageSamples: imageUrls.slice(0, 5),
+    }
+  }
+  const before = summarize()
+  const save = Array.from(document.querySelectorAll('a,button,div') || []).filter(visible).find(element => compact(element.innerText || element.textContent) === '保存')
+  if (!save) return { ok: false, reason: '未找到“保存”按钮', before }
+  const calls = clickReact(save)
+  const snapshots = []
+  for (let i = 0; i < 60; i += 1) {
+    await new Promise(resolve => setTimeout(resolve, 600))
+    const snapshot = summarize()
+    snapshots.push({ i: i + 1, componentCount: snapshot.componentCount, groupCount: snapshot.groupCount, canvasImageCount: snapshot.canvasImageCount, dialogText: snapshot.dialogText.slice(0, 160), textSample: snapshot.textSample.slice(-160) })
+    if (/保存成功|保存已成功|保存完成|操作成功|成功/.test(snapshot.dialogText + ' ' + snapshot.textSample)) {
+      return { ok: true, before, after: snapshot, calls, snapshots: snapshots.slice(-8) }
+    }
+    if (/失败|错误|异常/.test(snapshot.dialogText)) {
+      return { ok: false, reason: '保存手机端详情报错', before, after: snapshot, calls, snapshots: snapshots.slice(-8) }
+    }
+  }
+  return { ok: false, reason: '保存后未确认成功', before, after: summarize(), calls, snapshots: snapshots.slice(-10) }
+})()`
+  }
+
+  function saveMobileEditorViaTarget(newShared = shared) {
+    return cdpTargetEval(
+      mobileEditorSaveExpression(),
+      'verify_mobile_editor_saved',
+      1000,
+      {
+        ...newShared,
+        current_store: '保存手机端详情编辑',
+      },
+      {
+        target_url_contains: mobileEditorTargetUrlContains(newShared),
+        target_types: ['page', 'iframe'],
+        shared_key: 'mobile_editor_save_result',
+        user_gesture: true,
+      },
+    )
+  }
+
+  function mobileEditorFinishExpression() {
+    return String.raw`(async () => {
+  const compact = value => String(value || '').trim().replace(/\s+/g, ' ')
+  const visible = element => {
+    if (!element || typeof element.getBoundingClientRect !== 'function') return false
+    const rect = element.getBoundingClientRect()
+    const style = getComputedStyle(element)
+    return rect.width > 0 && rect.height > 0 && style.display !== 'none' && style.visibility !== 'hidden' && Number(style.opacity || 1) > 0
+  }
+  const reactProps = element => {
+    const key = Object.keys(element || {}).find(name => name.startsWith('__reactInternalInstance$') || name.startsWith('__reactFiber$'))
+    const node = key ? element[key] : null
+    return node?.memoizedProps || node?.pendingProps || node?._currentElement?.props || node?._instance?.props || null
+  }
+  const finish = Array.from(document.querySelectorAll('a,button,div') || []).filter(visible).find(element => compact(element.innerText || element.textContent) === '完成编辑')
+  if (!finish) return { ok: false, reason: '未找到“完成编辑”按钮', textSample: compact(document.body?.innerText || '').slice(-1000) }
+  const props = reactProps(finish) || {}
+  const event = { target: finish, currentTarget: finish, type: 'click', preventDefault() {}, stopPropagation() {}, nativeEvent: new MouseEvent('click', { bubbles: true, cancelable: true, view: window }) }
+  const calls = []
+  if (typeof props.onClick === 'function') {
+    try { props.onClick(event); calls.push('onClick:ok') } catch (error) { calls.push('onClick:ERR:' + String(error?.message || error)) }
+  }
+  if (!calls.length) {
+    try { finish.click?.() } catch (error) { calls.push('native:ERR:' + String(error?.message || error)) }
+  }
+  await new Promise(resolve => setTimeout(resolve, 1200))
+  return { ok: true, calls, textSample: compact(document.body?.innerText || '').slice(-1000), href: location.href }
+})()`
+  }
+
+  function finishMobileEditorViaTarget(newShared = shared) {
+    return cdpTargetEval(
+      mobileEditorFinishExpression(),
+      'wait_after_mobile_finish',
+      1200,
+      {
+        ...newShared,
+        mobile_action_attempts: 0,
+        mobile_wait_attempts: 0,
+        mobile_sync_note: newShared.mobile_sync_note || `手机端详情已导入电脑端详情（${newShared.mobile_generate_mode || '全图生成'}），并已点击保存`,
+        current_store: '手机端详情完成编辑，等待返回商品编辑页',
+      },
+      {
+        target_url_contains: mobileEditorTargetUrlContains(newShared),
+        target_types: ['page', 'iframe'],
+        shared_key: 'mobile_editor_finish_result',
+        user_gesture: true,
+      },
+    )
   }
 
   function clickMobileModuleMenu() {
@@ -3192,6 +3972,16 @@
     return clickDialogConfirm(['确认', '确定'])
   }
 
+  function findMobileSaveEditElement() {
+    return findVisibleActionByText(['保存'], {
+      allowContains: false,
+      maxTextLength: 8,
+      preferBottom: false,
+      preferRight: true,
+      exclude: ['保存模块', '保存草稿', '仅保存', '另存为'],
+    })
+  }
+
   function findMobileFinishEditElement() {
     return findVisibleActionByText(['确认并完成编辑', '完成编辑', '完成'], {
       allowContains: true,
@@ -3221,6 +4011,132 @@
       preferRight: true,
       exclude: ['取消', '关闭'],
     })
+  }
+
+  function findReactInstancesInDocument(doc, predicate, limit = 20) {
+    if (!doc || typeof doc.querySelectorAll !== 'function') return []
+    const results = []
+    const seen = new Set()
+    const walk = (value, depth = 0) => {
+      if (!value || typeof value !== 'object' || seen.has(value) || depth > 9 || results.length >= limit) return
+      seen.add(value)
+      try {
+        if (predicate(value)) results.push(value)
+      } catch (error) {}
+      const keys = [
+        'stateNode',
+        '_instance',
+        '_owner',
+        '_currentElement',
+        '_renderedComponent',
+        '_renderedChildren',
+        '_hostParent',
+        'return',
+        'child',
+        'sibling',
+        'alternate',
+      ]
+      keys.forEach(key => {
+        try {
+          const next = value[key]
+          if (!next) return
+          if (key === '_renderedChildren' && typeof next === 'object') {
+            Object.values(next).slice(0, 30).forEach(item => walk(item, depth + 1))
+          } else {
+            walk(next, depth + 1)
+          }
+        } catch (error) {}
+      })
+      try {
+        const ownerInstance = value._currentElement?._owner?._instance
+        if (ownerInstance) walk(ownerInstance, depth + 1)
+      } catch (error) {}
+    }
+    Array.from(doc.querySelectorAll('*') || []).forEach(element => {
+      const key = Object.keys(element).find(name => name.startsWith('__reactInternalInstance$') || name.startsWith('__reactFiber$'))
+      if (key) walk(element[key], 0)
+    })
+    return results
+  }
+
+  function findMobileEditorCanvasProps() {
+    const predicate = instance => !!(
+      instance?.props &&
+      typeof instance.props.addGroup === 'function' &&
+      typeof instance.props.addComponent === 'function'
+    )
+    for (const doc of getAccessibleDocuments()) {
+      const found = findReactInstancesInDocument(doc, predicate, 1)[0]
+      if (found?.props) return found.props
+    }
+    return null
+  }
+
+  function mobileEditorCanvasText(value) {
+    try {
+      return JSON.stringify(value || '')
+    } catch (error) {
+      return ''
+    }
+  }
+
+  function isBadMobileEditorImportedNode(value) {
+    return /spaceball\.gif|图片在图片空间被删除/.test(mobileEditorCanvasText(value))
+  }
+
+  function cleanupMobileEditorImportedCanvas() {
+    const canvasProps = findMobileEditorCanvasProps()
+    if (!canvasProps) return { ok: false, reason: '未找到旧版手机详情编辑器画布' }
+    const components = Array.isArray(canvasProps.components) ? canvasProps.components : []
+    const badGroupIds = components
+      .filter(item => item?.type === 'group' && isBadMobileEditorImportedNode(item))
+      .map(item => compact(item.id || item.props?.groupId || item.props?.id))
+      .filter(Boolean)
+    const badGroupIdSet = new Set(badGroupIds)
+    const badComponentIds = components
+      .filter(item => {
+        const id = compact(item.id || item.props?.componentId || item.props?.id)
+        const groupId = compact(item.props?.groupId || item.groupId)
+        return id && item?.type !== 'group' && (badGroupIdSet.has(groupId) || isBadMobileEditorImportedNode(item))
+      })
+      .map(item => compact(item.id || item.props?.componentId || item.props?.id))
+      .filter(Boolean)
+
+    const removedGroups = []
+    const removedComponents = []
+    badGroupIds.forEach(id => {
+      try {
+        canvasProps.removeGroup?.(id)
+        removedGroups.push(id)
+      } catch (error) {
+        removedGroups.push(`ERR:${id}:${String(error?.message || error)}`)
+      }
+    })
+    badComponentIds.forEach(id => {
+      try {
+        canvasProps.removeComponent?.(id)
+        removedComponents.push(id)
+      } catch (error) {
+        removedComponents.push(`ERR:${id}:${String(error?.message || error)}`)
+      }
+    })
+
+    const allText = mobileEditorCanvasText({
+      layout: canvasProps.layout,
+      components: canvasProps.components,
+    })
+    const imageUrls = uniqueImageUrls(collectRemoteImageUrls(allText)).filter(url => !/spaceball\.gif/i.test(url))
+    const remainingErrors = (allText.match(/图片在图片空间被删除|spaceball\.gif|单个图文模块高度不得超过12000px/g) || [])
+    return {
+      ok: true,
+      removedGroupCount: badGroupIds.length,
+      removedComponentCount: badComponentIds.length,
+      removedGroups,
+      removedComponents,
+      imageCount: imageUrls.length,
+      remainingErrorCount: remainingErrors.length,
+      remainingErrors: remainingErrors.slice(0, 10),
+    }
   }
 
   function markRowsWithResult(rows, status, result, note) {
@@ -3373,9 +4289,63 @@
     return ''
   }
 
-  async function uploadFileToTmall(file, category) {
+  function uploadErrorMessage(error) {
+    return compact(error?.message || error)
+  }
+
+  function isRetryableTmallImageUploadError(message) {
+    return /(图片存在安全问题|安全问题|图片格式|格式不支持|文件格式|图片损坏|解码失败|image\s+(format|decode)|invalid\s+image)/i.test(String(message || ''))
+  }
+
+  function uploadRetryFileName(fileName) {
+    const raw = truncateUploadFileName(fileName || 'image.jpg', 92)
+    const index = raw.lastIndexOf('.')
+    const base = index > -1 ? raw.slice(0, index) : raw
+    return `${base}_reencoded.jpg`
+  }
+
+  function imageElementFromFile(file) {
+    return new Promise((resolve, reject) => {
+      if (typeof Image !== 'function' || !URL?.createObjectURL) {
+        reject(new Error('当前页面不支持图片重编码'))
+        return
+      }
+      const url = URL.createObjectURL(file)
+      const image = new Image()
+      image.onload = () => {
+        URL.revokeObjectURL(url)
+        resolve(image)
+      }
+      image.onerror = () => {
+        URL.revokeObjectURL(url)
+        reject(new Error('图片重编码前读取失败'))
+      }
+      image.src = url
+    })
+  }
+
+  async function reencodeImageFileForUpload(file, fileName) {
+    if (!file || !document?.createElement || typeof File !== 'function') return null
+    const image = await imageElementFromFile(file)
+    const width = image.naturalWidth || image.width || 0
+    const height = image.naturalHeight || image.height || 0
+    if (!width || !height) return null
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext?.('2d')
+    if (!ctx || typeof canvas.toBlob !== 'function') return null
+    ctx.fillStyle = '#fff'
+    ctx.fillRect(0, 0, width, height)
+    ctx.drawImage(image, 0, 0, width, height)
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.92))
+    if (!blob || !blob.size) return null
+    return new File([blob], uploadRetryFileName(fileName || file?.name || 'image.jpg'), { type: 'image/jpeg' })
+  }
+
+  async function uploadFileToTmallOnce(file, fileName) {
     if (typeof FormData !== 'function') throw new Error('当前页面不支持 FormData 上传')
-    const fileName = truncateUploadFileName(file?.name || 'image.jpg')
+    const uploadName = truncateUploadFileName(fileName || file?.name || 'image.jpg')
     const query = new URLSearchParams({
       appkey: 'tu',
       folderId: '0',
@@ -3385,9 +4355,9 @@
     })
     const form = new FormData()
     form.append('water', 'false')
-    form.append('name', fileName)
+    form.append('name', uploadName)
     form.append('_tb_token_', getCookieValue('_tb_token_'))
-    form.append('file', file, fileName)
+    form.append('file', file, uploadName)
     const response = await fetch(`${PICTURE_CENTER_UPLOAD_ENDPOINT}?${query.toString()}`, {
       method: 'POST',
       credentials: 'include',
@@ -3401,10 +4371,32 @@
       payload = null
     }
     if (!response.ok) throw new Error(`图片上传 HTTP ${response.status}: ${text.slice(0, 240)}`)
-    if (!payload || payload.success === false) throw new Error(payload?.message || payload?.msg || `图片上传失败：${fileName}`)
+    if (!payload || payload.success === false) throw new Error(payload?.message || payload?.msg || `图片上传失败：${uploadName}`)
     const url = normalizeRemoteUrl(payload?.object?.url || findFirstRemoteUrl(payload))
-    if (!url) throw new Error(`图片上传未返回 URL：${fileName}`)
+    if (!url) throw new Error(`图片上传未返回 URL：${uploadName}`)
     return url
+  }
+
+  async function uploadFileToTmall(file, category) {
+    const fileName = truncateUploadFileName(file?.name || 'image.jpg')
+    try {
+      return await uploadFileToTmallOnce(file, fileName)
+    } catch (error) {
+      const firstMessage = uploadErrorMessage(error)
+      if (!isRetryableTmallImageUploadError(firstMessage)) throw error
+      let retryFile = null
+      try {
+        retryFile = await reencodeImageFileForUpload(file, fileName)
+      } catch (retryPrepareError) {
+        throw new Error(`${firstMessage}；重编码重试准备失败：${uploadErrorMessage(retryPrepareError) || '未知原因'}`)
+      }
+      if (!retryFile) throw error
+      try {
+        return await uploadFileToTmallOnce(retryFile, retryFile.name)
+      } catch (retryError) {
+        throw new Error(`${firstMessage}；重编码重试失败：${uploadErrorMessage(retryError) || '未知原因'}`)
+      }
+    }
   }
 
   function buildPcDetailHtml(urls) {
@@ -3830,6 +4822,7 @@
       if (!preserveFirstImage && image.globalIndex < firstImage.globalIndex) return false
       if (boundary.type === 'image') return image.globalIndex < boundary.image.globalIndex
       if (boundary.type === 'module') return image.moduleIndex < boundary.moduleIndex
+      if (boundary.type === 'end') return image.globalIndex < boundary.globalIndex
       return false
     }).length
   }
@@ -3925,14 +4918,18 @@
   function replaceAnchoredDetailContent(modules, firstImage, stopBoundary, detailHtml, options = {}) {
     const sourceModules = (Array.isArray(modules) ? modules : []).map(module => ({ ...module }))
     const startModuleIndex = firstImage.moduleIndex
-    const endModuleIndex = stopBoundary.moduleIndex
+    const endModuleIndex = stopBoundary.type === 'end'
+      ? Math.max(startModuleIndex, Math.min(sourceModules.length - 1, Number(stopBoundary.moduleIndex)))
+      : stopBoundary.moduleIndex
     const preserveFirstImage = !!options.preserveFirstImage
     const startContent = String(sourceModules[startModuleIndex]?.content || '')
     const startBoundary = replacementStartBoundary(startContent, firstImage, preserveFirstImage)
     const endContent = String(sourceModules[endModuleIndex]?.content || '')
-    const endBoundary = stopBoundary.type === 'module'
-      ? 0
-      : anchorBlockStartBeforeImage(endContent, stopBoundary.image.start, stopBoundary.image.moduleName)
+    const endBoundary = stopBoundary.type === 'end'
+      ? endContent.length
+      : (stopBoundary.type === 'module'
+          ? 0
+          : anchorBlockStartBeforeImage(endContent, stopBoundary.image.start, stopBoundary.image.moduleName))
     const insertHtml = options.probeOnly ? '' : detailHtml
 
     if (startModuleIndex === endModuleIndex) {
@@ -3963,10 +4960,14 @@
     return result.filter(module => String(module?.content || '').trim() || module.custom || module.id === sourceModules[startModuleIndex]?.id || module.id === sourceModules[endModuleIndex]?.id)
   }
 
-  function buildAnchoredPcDetailModules(modularDesc, detailUrls = [], options = {}) {
+	  function buildAnchoredPcDetailModules(modularDesc, detailUrls = [], options = {}) {
     const currentModules = Array.isArray(modularDesc) ? modularDesc : []
-    const detailHtml = options.probeOnly ? '<!-- crawshrimp pc detail probe -->' : buildPcDetailHtml(detailUrls)
-    if (!detailHtml) {
+    const normalizedDetailUrls = (Array.isArray(detailUrls) ? detailUrls : []).map(compact).filter(Boolean)
+    const probeDetailUrls = normalizedDetailUrls.length
+      ? normalizedDetailUrls
+      : legacyCountProbeDetailImages(options).map(item => item.url).filter(Boolean)
+    const detailHtml = options.probeOnly ? '<!-- crawshrimp pc detail probe -->' : buildPcDetailHtml(normalizedDetailUrls)
+    if (!detailHtml && !probeDetailUrls.length) {
       return {
         ok: true,
         modules: currentModules,
@@ -3984,6 +4985,7 @@
     }
 
     const images = flattenModularDescImages(currentModules)
+    const isNewDescModuleSource = currentModules.some(module => module && module.__newDescPic)
     const visualAnchors = applyVisualAnchorsToImages(images, options.visualAnchors)
     const requireVisualAnchors = !!options.requireVisualAnchors
     if (!images.length) {
@@ -4015,44 +5017,110 @@
         : legacyImageCountStopBoundary(images, startImage, detailUrls, preserveFirstImage, options)
     }
     if (legacySingleDescription && !stopBoundary) {
-      const detailUrlCount = (Array.isArray(detailUrls) ? detailUrls : []).filter(Boolean).length
-      if (options.allowLegacyCountImageReplace && detailUrlCount && images.length > detailUrlCount + 1) {
+	      const detailUrlCount = probeDetailUrls.length
+	      if (options.allowLegacyCountImageReplace && detailUrlCount && images.length > detailUrlCount + 1) {
         preserveFirstImage = true
         startImage = firstImage
-        const tailImage = images[detailUrlCount + 1]
-        stopBoundary = {
-          type: 'image',
-          image: tailImage,
-          moduleIndex: tailImage.moduleIndex,
-          globalIndex: tailImage.globalIndex,
-          moduleName: tailImage.moduleName,
-          anchorKind: 'legacy_count_tail',
-        }
+        const firstSegment = images.slice(1, detailUrlCount + 1)
+        const secondSegment = images.slice(detailUrlCount + 1, detailUrlCount * 2 + 1)
+        const duplicated = secondSegment.length === detailUrlCount &&
+          imageUrlSequenceMatches(
+            firstSegment.map(image => image.src),
+            secondSegment.map(image => image.src),
+          )
+        const endIndex = duplicated ? detailUrlCount * 2 + 1 : detailUrlCount + 1
+        const tailImage = images[endIndex]
+        stopBoundary = tailImage
+          ? {
+              type: 'image',
+              image: tailImage,
+              moduleIndex: tailImage.moduleIndex,
+              globalIndex: tailImage.globalIndex,
+              moduleName: tailImage.moduleName,
+              anchorKind: duplicated ? 'duplicate_detail_tail' : 'legacy_count_tail',
+            }
+          : {
+              type: duplicated ? 'end' : 'candidate_end',
+              moduleIndex: images[images.length - 1]?.moduleIndex ?? currentModules.length - 1,
+              globalIndex: images.length,
+              moduleName: '详情尾部',
+              anchorKind: duplicated ? 'duplicate_detail_tail' : 'already_match_candidate',
+            }
         const modules = options.probeOnly
+          || stopBoundary.type === 'candidate_end'
           ? currentModules
           : replaceAnchoredDetailContent(currentModules, startImage, stopBoundary, detailHtml, { ...options, preserveFirstImage })
         return {
           ok: true,
           modules,
           detailHtml,
-          mode: 'legacy_count_replace',
+          mode: duplicated
+            ? 'legacy_count_duplicate_cleanup'
+            : (stopBoundary.type === 'candidate_end' ? 'already_match_candidate' : 'legacy_count_replace'),
           replaceStartIndex: 1,
-          replaceEndIndex: tailImage.globalIndex,
-          replacedImageCount: detailUrlCount,
+          replaceEndIndex: stopBoundary.globalIndex,
+          replacedImageCount: duplicated ? detailUrlCount * 2 : detailUrlCount,
           insertedImageCount: detailUrlCount,
+          duplicateSequenceCount: duplicated ? 2 : 1,
+          requiresAlreadyMatch: duplicated || stopBoundary.type === 'candidate_end',
           firstImage,
           startImage,
           fixedTopImage: firstImage,
           fixedTopImageIndex: 0,
           preserveTopImageCount: 1,
-          sizeImage: tailImage,
-          stopAnchor: tailImage,
-          preserveFirstImage: true,
-          stopBoundaryType: 'image',
-          stopAnchorKind: 'legacy_count_tail',
-          note: `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailUrlCount + 1}张，保留第${detailUrlCount + 2}张及以下尾部`,
-        }
-      }
+          sizeImage: tailImage || null,
+          stopAnchor: tailImage || {
+            moduleIndex: stopBoundary.moduleIndex,
+            moduleName: stopBoundary.moduleName,
+            imageIndex: -1,
+            globalIndex: stopBoundary.globalIndex,
+            src: '',
+            context: stopBoundary.moduleName,
+          },
+	          preserveFirstImage: true,
+	          stopBoundaryType: stopBoundary.type,
+	          stopAnchorKind: stopBoundary.anchorKind,
+	          currentReplacementUrls: images.slice(1, endIndex).map(image => image.src).filter(Boolean),
+	          note: duplicated
+	            ? `旧版纯图片PC详情检测到产品包装详情图重复${detailUrlCount}张 x 2，已按本次素材重写为一遍：保留第1张头图，替换第2到第${endIndex}张`
+	            : (stopBoundary.type === 'candidate_end'
+	              ? `旧版纯图片PC详情未识别到下半区锚点，但当前详情数量与本次素材数量一致：保留第1张头图，等待上传后比对一致则跳过PC替换`
+	              : `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailUrlCount + 1}张，保留第${detailUrlCount + 2}张及以下尾部`),
+	        }
+	      }
+	      if (options.allowLegacyCountImageReplace && detailUrlCount && images.length === detailUrlCount + 1) {
+	        return {
+	          ok: true,
+	          modules: currentModules,
+	          detailHtml,
+	          mode: 'already_match_candidate',
+	          replaceStartIndex: 1,
+	          replaceEndIndex: images.length,
+	          replacedImageCount: detailUrlCount,
+	          insertedImageCount: detailUrlCount,
+	          duplicateSequenceCount: 1,
+	          requiresAlreadyMatch: true,
+	          firstImage,
+	          startImage: firstImage,
+	          fixedTopImage: firstImage,
+	          fixedTopImageIndex: 0,
+	          preserveTopImageCount: 1,
+	          sizeImage: null,
+	          stopAnchor: {
+	            moduleIndex: images[images.length - 1]?.moduleIndex ?? currentModules.length - 1,
+	            moduleName: '详情尾部',
+	            imageIndex: -1,
+	            globalIndex: images.length,
+	            src: '',
+	            context: '详情尾部',
+	          },
+	          preserveFirstImage: true,
+	          stopBoundaryType: 'candidate_end',
+	          stopAnchorKind: 'already_match_candidate',
+	          currentReplacementUrls: images.slice(1).map(image => image.src).filter(Boolean),
+	          note: '旧版纯图片PC详情未识别到下半区锚点，但当前详情数量与本次素材数量一致：保留第1张头图，等待上传后比对一致则跳过PC替换',
+	        }
+	      }
       return {
         ok: false,
         modules: currentModules,
@@ -4061,6 +5129,79 @@
       }
     }
     if (!stopBoundary) {
+      const detailUrlCount = probeDetailUrls.length
+      if (!isNewDescModuleSource && options.allowLegacyCountImageReplace && detailUrlCount) {
+        preserveFirstImage = true
+        startImage = detectedFixedTopImage || firstImage
+        const replaceStartIndexForCount = Number(startImage?.globalIndex ?? 0) + 1
+        const firstSegment = images.slice(replaceStartIndexForCount, replaceStartIndexForCount + detailUrlCount)
+        if (firstSegment.length === detailUrlCount) {
+          const secondSegment = images.slice(replaceStartIndexForCount + detailUrlCount, replaceStartIndexForCount + detailUrlCount * 2)
+          const duplicated = secondSegment.length === detailUrlCount &&
+            imageUrlSequenceMatches(
+              firstSegment.map(image => image.src),
+              secondSegment.map(image => image.src),
+            )
+          const endIndex = replaceStartIndexForCount + detailUrlCount * (duplicated ? 2 : 1)
+          const tailImage = images[endIndex]
+          const countStopBoundary = tailImage
+            ? {
+                type: 'image',
+                image: tailImage,
+                moduleIndex: tailImage.moduleIndex,
+                globalIndex: tailImage.globalIndex,
+                moduleName: tailImage.moduleName,
+                anchorKind: duplicated ? 'duplicate_detail_tail' : 'legacy_count_tail',
+              }
+            : {
+                type: duplicated ? 'end' : 'candidate_end',
+                moduleIndex: images[images.length - 1]?.moduleIndex ?? currentModules.length - 1,
+                globalIndex: images.length,
+                moduleName: '详情尾部',
+                anchorKind: duplicated ? 'duplicate_detail_tail' : 'already_match_candidate',
+              }
+          const modules = options.probeOnly || countStopBoundary.type === 'candidate_end'
+            ? currentModules
+            : replaceAnchoredDetailContent(currentModules, startImage, countStopBoundary, detailHtml, { ...options, preserveFirstImage })
+          return {
+            ok: true,
+            modules,
+            detailHtml,
+            mode: duplicated
+              ? 'legacy_count_duplicate_cleanup'
+              : (countStopBoundary.type === 'candidate_end' ? 'already_match_candidate' : 'legacy_count_replace'),
+            replaceStartIndex: replaceStartIndexForCount,
+            replaceEndIndex: countStopBoundary.globalIndex,
+            replacedImageCount: duplicated ? detailUrlCount * 2 : detailUrlCount,
+            insertedImageCount: detailUrlCount,
+            duplicateSequenceCount: duplicated ? 2 : 1,
+            requiresAlreadyMatch: duplicated || countStopBoundary.type === 'candidate_end',
+            firstImage,
+            startImage,
+            fixedTopImage: startImage,
+            fixedTopImageIndex: Number(startImage?.globalIndex ?? firstImage.globalIndex),
+            preserveTopImageCount: Number(startImage?.globalIndex ?? firstImage.globalIndex) + 1,
+            sizeImage: tailImage || null,
+            stopAnchor: tailImage || {
+              moduleIndex: countStopBoundary.moduleIndex,
+              moduleName: countStopBoundary.moduleName,
+              imageIndex: -1,
+              globalIndex: countStopBoundary.globalIndex,
+              src: '',
+              context: countStopBoundary.moduleName,
+            },
+            preserveFirstImage: true,
+            stopBoundaryType: countStopBoundary.type,
+            stopAnchorKind: countStopBoundary.anchorKind,
+            currentReplacementUrls: images.slice(replaceStartIndexForCount, endIndex).map(image => image.src).filter(Boolean),
+            note: duplicated
+              ? `旧版纯图片PC详情检测到产品包装详情图重复${detailUrlCount}张 x 2，已按本次素材重写为一遍：${pcDetailTopPreserveLabel(true, Number(startImage?.globalIndex ?? firstImage.globalIndex))}替换第${replaceStartIndexForCount + 1}到第${endIndex}张`
+              : (countStopBoundary.type === 'candidate_end'
+                ? `旧版纯图片PC详情未识别到下半区锚点，但当前详情数量与本次素材数量一致：${pcDetailTopPreserveLabel(true, Number(startImage?.globalIndex ?? firstImage.globalIndex))}等待上传后比对一致则跳过PC替换`
+                : `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：${pcDetailTopPreserveLabel(true, Number(startImage?.globalIndex ?? firstImage.globalIndex))}替换第${replaceStartIndexForCount + 1}到第${replaceStartIndexForCount + detailUrlCount}张，保留第${endIndex + 1}张及以下尾部`),
+          }
+        }
+      }
       return {
         ok: false,
         modules: currentModules,
@@ -4084,18 +5225,28 @@
     const modules = options.probeOnly
       ? currentModules
       : replaceAnchoredDetailContent(currentModules, startImage, stopBoundary, detailHtml, { ...options, preserveFirstImage })
-    const stopImage = stopBoundary.type === 'image' ? stopBoundary.image : null
-    const stopAnchor = stopImage || {
+	    const stopImage = stopBoundary.type === 'image' ? stopBoundary.image : null
+	    const stopAnchor = stopImage || {
       moduleIndex: stopBoundary.moduleIndex,
       moduleName: stopBoundary.moduleName,
       imageIndex: -1,
       globalIndex: stopBoundary.globalIndex,
       src: '',
-      context: stopBoundary.moduleName,
-    }
-    return {
-      ok: true,
-      modules,
+	      context: stopBoundary.moduleName,
+	    }
+	    const currentReplacementUrls = images
+	      .filter(image => {
+	        if (image.globalIndex < replaceStartIndex) return false
+	        if (stopBoundary.type === 'image') return image.globalIndex < stopBoundary.image.globalIndex
+	        if (stopBoundary.type === 'module') return image.moduleIndex < stopBoundary.moduleIndex
+	        if (stopBoundary.type === 'end') return image.globalIndex < stopBoundary.globalIndex
+	        return false
+	      })
+	      .map(image => image.src)
+	      .filter(Boolean)
+	    return {
+	      ok: true,
+	      modules,
       detailHtml,
       mode: 'anchored_replace',
       replaceStartIndex,
@@ -4109,12 +5260,13 @@
       preserveTopImageCount: preserveFirstImage ? fixedTopImageIndex + 1 : 0,
       sizeImage: stopAnchor,
       stopAnchor,
-      preserveFirstImage,
-      stopBoundaryType: stopBoundary.type,
-      stopAnchorKind: stopBoundary.anchorKind,
-      note: replacedImageCount > 0
-        ? `PC详情锚点区间替换：${pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)}替换第${replaceStartIndex + 1}到第${replaceStartIndex + replacedImageCount}张图，${pcDetailStopAnchorLabel(stopBoundary.anchorKind)}及以下保留`
-        : `PC详情锚点区间插入：${pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)}在${pcDetailStopAnchorLabel(stopBoundary.anchorKind)}前插入新PC详情图，锚点及以下保留`,
+	      preserveFirstImage,
+	      stopBoundaryType: stopBoundary.type,
+	      stopAnchorKind: stopBoundary.anchorKind,
+	      currentReplacementUrls,
+	      note: replacedImageCount > 0
+	        ? `PC详情锚点区间替换：${pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)}替换第${replaceStartIndex + 1}到第${replaceStartIndex + replacedImageCount}张图，${pcDetailStopAnchorLabel(stopBoundary.anchorKind)}及以下保留`
+	        : `PC详情锚点区间插入：${pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)}在${pcDetailStopAnchorLabel(stopBoundary.anchorKind)}前插入新PC详情图，锚点及以下保留`,
     }
   }
 
@@ -4549,6 +5701,13 @@
       const emitted = emitComponentEvent(submitComponent, 'click')
       if (emitted.ok) return { ...emitted, ok: true, note: `已通过天猫发布页 API 触发 ${submitComponent}` }
     }
+    if (options.allowHttpPost === false) {
+      return {
+        ok: false,
+        method: 'api',
+        reason: '当前阶段只允许通过天猫发布页组件触发提交，未执行 submit.htm 原始表单提交',
+      }
+    }
 
     const payload = buildTmallSubmitPayload(getTmallFormValues(), getTmallGlobal(), options)
     if (!compact(payload.catId)) {
@@ -4668,21 +5827,271 @@
     }
   }
 
-  function imageUrlMatches(actual, expected) {
-    const actualKey = comparableImageUrl(actual)
-    const expectedKey = comparableImageUrl(expected)
-    if (!actualKey || !expectedKey) return false
-    return actualKey === expectedKey || actualKey.includes(expectedKey) || expectedKey.includes(actualKey)
-  }
+	  function imageUrlMatches(actual, expected) {
+	    const actualKey = comparableImageUrl(actual)
+	    const expectedKey = comparableImageUrl(expected)
+	    if (!actualKey || !expectedKey) return false
+	    return actualKey === expectedKey || actualKey.includes(expectedKey) || expectedKey.includes(actualKey)
+	  }
+
+	  function imageUrlSequenceMatches(actualUrls = [], expectedUrls = []) {
+	    const actual = (Array.isArray(actualUrls) ? actualUrls : []).map(compact).filter(Boolean)
+	    const expected = (Array.isArray(expectedUrls) ? expectedUrls : []).map(compact).filter(Boolean)
+	    return actual.length === expected.length &&
+	      expected.length > 0 &&
+	      actual.every((url, index) => imageUrlMatches(url, expected[index]))
+	  }
+
+	  function hammingDistance(left = '', right = '') {
+	    const a = String(left || '')
+	    const b = String(right || '')
+	    const length = Math.min(a.length, b.length)
+	    let distance = Math.abs(a.length - b.length)
+	    for (let index = 0; index < length; index += 1) {
+	      if (a[index] !== b[index]) distance += 1
+	    }
+	    return distance
+	  }
+
+	  async function imageVisualFingerprint(src, options = {}) {
+	    const url = thumbUrlForVisualFeature(src)
+	    const size = Math.max(8, Math.min(32, positiveInt(options.size, 16)))
+	    const timeoutMs = positiveInt(options.timeoutMs, 5000)
+	    if (!url || typeof fetch !== 'function' || typeof createImageBitmap !== 'function' || !document?.createElement) {
+	      return { ok: false, url, reason: '当前页面不支持图片视觉指纹' }
+	    }
+	    try {
+	      const response = await withTimeout(fetch(url, { credentials: 'omit' }), timeoutMs, `图片视觉指纹${url}`)
+	      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+	      const blob = await response.blob()
+	      const bitmap = await createImageBitmap(blob)
+	      const canvas = document.createElement('canvas')
+	      canvas.width = size
+	      canvas.height = size
+	      const ctx = canvas.getContext?.('2d', { willReadFrequently: true })
+	      if (!ctx) throw new Error('无法创建 canvas 2d context')
+	      ctx.drawImage(bitmap, 0, 0, size, size)
+	      const data = ctx.getImageData(0, 0, size, size).data
+	      const grays = []
+	      for (let offset = 0; offset < data.length; offset += 4) {
+	        grays.push(Math.round((data[offset] + data[offset + 1] + data[offset + 2]) / 3))
+	      }
+	      const avg = grays.reduce((sum, value) => sum + value, 0) / Math.max(1, grays.length)
+	      return {
+	        ok: true,
+	        url,
+	        size,
+	        hash: grays.map(value => (value >= avg ? '1' : '0')).join(''),
+	      }
+	    } catch (error) {
+	      return { ok: false, url, reason: String(error?.message || error) }
+	    }
+	  }
+
+	  async function mapWithConcurrency(items = [], concurrency = 3, mapper = async item => item) {
+	    const source = Array.isArray(items) ? items : []
+	    const limit = Math.max(1, positiveInt(concurrency, 3))
+	    const results = new Array(source.length)
+	    let cursor = 0
+	    const workers = Array.from({ length: Math.min(limit, source.length) }, async () => {
+	      while (cursor < source.length) {
+	        const index = cursor
+	        cursor += 1
+	        results[index] = await mapper(source[index], index)
+	      }
+	    })
+	    await Promise.all(workers)
+	    return results
+	  }
+
+	  async function imageUrlSequenceVisuallyMatches(actualUrls = [], expectedUrls = [], options = {}) {
+	    const actual = (Array.isArray(actualUrls) ? actualUrls : []).map(compact).filter(Boolean)
+	    const expected = (Array.isArray(expectedUrls) ? expectedUrls : []).map(compact).filter(Boolean)
+	    if (!actual.length || actual.length !== expected.length) {
+	      return { ok: false, matched: false, reason: `图片数量不一致：当前${actual.length}张，本次${expected.length}张` }
+	    }
+	    const maxImages = positiveInt(options.maxImages, 30)
+	    if (actual.length > maxImages) {
+	      return { ok: false, matched: false, reason: `图片数量${actual.length}超过视觉比对上限${maxImages}` }
+	    }
+	    const concurrency = positiveInt(options.concurrency, 3)
+	    const timeoutMs = positiveInt(options.timeoutMs, 5000)
+	    const fingerprints = await mapWithConcurrency(
+	      actual.map((url, index) => ({ actualUrl: url, expectedUrl: expected[index], index })),
+	      concurrency,
+	      async pair => ({
+	        index: pair.index,
+	        actual: await imageVisualFingerprint(pair.actualUrl, { timeoutMs }),
+	        expected: await imageVisualFingerprint(pair.expectedUrl, { timeoutMs }),
+	      }),
+	    )
+	    const failed = fingerprints.find(item => !item.actual.ok || !item.expected.ok)
+	    if (failed) {
+	      return {
+	        ok: false,
+	        matched: false,
+	        reason: `第${failed.index + 1}张图片视觉指纹失败：${failed.actual.reason || failed.expected.reason || '未知原因'}`,
+	        fingerprints,
+	      }
+	    }
+	    const threshold = positiveInt(options.threshold, 30)
+	    const distances = fingerprints.map(item => hammingDistance(item.actual.hash, item.expected.hash))
+	    const matched = distances.every(distance => distance <= threshold)
+	    return {
+	      ok: true,
+	      matched,
+	      distances,
+	      threshold,
+	      reason: matched
+	        ? `当前PC详情替换区与本次素材视觉一致：${actual.length}张`
+	        : `当前PC详情替换区与本次素材视觉不一致：最大差异${Math.max(...distances)}/${threshold}`,
+	    }
+	  }
 
   function missingImageUrls(expectedUrls = [], actualUrls = []) {
     const actual = uniqueImageUrls(actualUrls)
     return uniqueImageUrls(expectedUrls).filter(expected => !actual.some(url => imageUrlMatches(url, expected)))
   }
 
-  function uploadedPcDetailUrlsFromShared(state = shared) {
-    return uniqueImageUrls((state?.uploaded_by_category?.pc_detail || []).map(item => item?.url))
-  }
+	  function uploadedPcDetailUrlsFromShared(state = shared) {
+	    return uniqueImageUrls((state?.uploaded_by_category?.pc_detail || []).map(item => item?.url))
+	  }
+
+	  function uploadedPcDetailItems(uploadedByCategory = {}) {
+	    return (uploadedByCategory?.pc_detail || [])
+	      .map(item => ({
+	        ...item,
+	        url: compact(item?.url || item?.src || item?.picUrl || item?.imageUrl || ''),
+	      }))
+	      .filter(item => item.url)
+	  }
+
+	  async function detectPcDetailAlreadyMatchesUpload(pcDetailReplacement = {}, uploadedItems = [], rawParams = params) {
+	    const expectedUrls = uploadedPcDetailItems({ pc_detail: uploadedItems }).map(item => item.url)
+	    const currentUrls = (Array.isArray(pcDetailReplacement?.currentReplacementUrls)
+	      ? pcDetailReplacement.currentReplacementUrls
+	      : [])
+	      .map(compact)
+	      .filter(Boolean)
+	    if (!expectedUrls.length) return { matched: false, skipped: true, reason: '本次没有PC详情图' }
+	    if (!pcDetailReplacement?.ok) return { matched: false, reason: 'PC详情替换预检未通过' }
+	    if (!currentUrls.length) return { matched: false, reason: '未读到当前PC详情替换区图片' }
+	    const visualOptions = {
+	      maxImages: positiveInt(rawParams.pc_detail_duplicate_compare_max_images, 30),
+	      concurrency: positiveInt(rawParams.pc_detail_duplicate_compare_concurrency, 3),
+	      timeoutMs: positiveInt(rawParams.pc_detail_duplicate_compare_timeout_ms, 5000),
+	      threshold: positiveInt(rawParams.pc_detail_duplicate_compare_threshold, 30),
+	    }
+	    const duplicateSequenceCount = positiveInt(pcDetailReplacement?.duplicateSequenceCount, 0)
+	    if (
+	      duplicateSequenceCount > 1 &&
+	      currentUrls.length === expectedUrls.length * duplicateSequenceCount
+	    ) {
+	      const firstSegment = currentUrls.slice(0, expectedUrls.length)
+	      const firstSegmentMatchesByUrl = imageUrlSequenceMatches(firstSegment, expectedUrls)
+	      if (firstSegmentMatchesByUrl) {
+	        return {
+	          matched: false,
+	          duplicateCleanup: true,
+	          method: 'url_sequence_duplicate_cleanup',
+	          reason: `当前PC详情已有${duplicateSequenceCount}遍重复详情图，第一遍URL与本次素材一致，将清理为一遍`,
+	          currentUrls,
+	          expectedUrls,
+	          compareUrls: firstSegment,
+	        }
+	      }
+	      const duplicateVisual = await imageUrlSequenceVisuallyMatches(firstSegment, expectedUrls, visualOptions)
+	      if (duplicateVisual.ok && duplicateVisual.matched) {
+	        return {
+	          matched: false,
+	          duplicateCleanup: true,
+	          method: 'visual_hash_duplicate_cleanup',
+	          reason: `当前PC详情已有${duplicateSequenceCount}遍重复详情图，第一遍与本次素材视觉一致，将清理为一遍`,
+	          visual: duplicateVisual,
+	          currentUrls,
+	          expectedUrls,
+	          compareUrls: firstSegment,
+	        }
+	      }
+	      return {
+	        matched: false,
+	        method: duplicateVisual.ok ? 'visual_hash_duplicate_cleanup' : 'visual_hash_unavailable',
+	        reason: duplicateVisual.reason || `当前PC详情疑似重复${duplicateSequenceCount}遍，但与本次素材不一致，不能自动清理`,
+	        visual: duplicateVisual,
+	        currentUrls,
+	        expectedUrls,
+	        compareUrls: firstSegment,
+	      }
+	    }
+	    if (currentUrls.length !== expectedUrls.length) {
+	      return {
+	        matched: false,
+	        reason: `当前PC详情替换区${currentUrls.length}张，本次素材${expectedUrls.length}张，不能跳过替换`,
+	        currentUrls,
+	        expectedUrls,
+	      }
+	    }
+	    if (imageUrlSequenceMatches(currentUrls, expectedUrls)) {
+	      return {
+	        matched: true,
+	        method: 'url_sequence',
+	        reason: `当前PC详情替换区URL已与本次素材一致：${expectedUrls.length}张`,
+	        currentUrls,
+	        expectedUrls,
+	      }
+	    }
+	    const visual = await imageUrlSequenceVisuallyMatches(currentUrls, expectedUrls, visualOptions)
+	    if (visual.ok && visual.matched) {
+	      return {
+	        matched: true,
+	        method: 'visual_hash',
+	        reason: visual.reason,
+	        visual,
+	        currentUrls,
+	        expectedUrls,
+	      }
+	    }
+	    return {
+	      matched: false,
+	      method: visual.ok ? 'visual_hash' : 'visual_hash_unavailable',
+	      reason: visual.reason || '当前PC详情替换区与本次素材不一致',
+	      visual,
+	      currentUrls,
+	      expectedUrls,
+	    }
+	  }
+
+	  function markPcDetailReplacementSkipped(componentValues = {}, currentValues = {}, match = {}) {
+	    const currentModules = Array.isArray(currentValues.modularDesc) ? currentValues.modularDesc : []
+	    const currentTmDescription = typeof currentValues.tmDescription === 'string' ? currentValues.tmDescription : ''
+	    const existingDetailHtml = pcDetailHtmlFromSource(currentModules, currentTmDescription)
+	    const replacement = componentValues.pcDetailReplacement && typeof componentValues.pcDetailReplacement === 'object'
+	      ? componentValues.pcDetailReplacement
+	      : {}
+	    return {
+	      ...componentValues,
+	      descRepublicOfSell: undefined,
+	      descForShenbiPc: undefined,
+	      descType: undefined,
+	      modularDesc: undefined,
+	      tmDescription: undefined,
+	      detailHtml: existingDetailHtml,
+	      pcDetailReplacement: {
+	        ...replacement,
+	        ok: true,
+	        skippedBecauseAlreadyMatches: true,
+	        skipMethod: match.method || '',
+	        mode: 'already_matches',
+	        modules: currentModules.length ? currentModules : replacement.modules,
+	        html: currentTmDescription || replacement.html,
+	        detailHtml: existingDetailHtml || replacement.detailHtml || '',
+	        note: compact([
+	          'PC详情与本次素材一致，跳过PC替换，仅继续手机端详情同步',
+	          match.reason,
+	        ].filter(Boolean).join('；')),
+	      },
+	    }
+	  }
 
   function currentPcDetailReadbackUrls() {
     const modularDescUrls = extractPcDetailUrlsFromModules(getComponentValue('modularDesc'))
@@ -4696,32 +6105,62 @@
     return uniqueImageUrls([...modularDescUrls, ...legacyHtmlUrls, ...newDescUrls, ...shenbiPcUrls])
   }
 
-  function currentMobileDetailReadbackUrls() {
-    return uniqueImageUrls(collectRemoteImageUrls(getComponentValue('descForShenbiMobile') || getTmallFormValues().descForShenbiMobile))
-  }
+	  function currentMobileDetailReadbackUrls() {
+	    return uniqueImageUrls(collectRemoteImageUrls(getComponentValue('descForShenbiMobile') || getTmallFormValues().descForShenbiMobile))
+	  }
 
-  function verifyPublishedDetailReadback(state = shared) {
+	  function verifyPublishedDetailReadback(state = shared) {
     const expected = uploadedPcDetailUrlsFromShared(state)
     if (!expected.length) {
       return { ok: true, skipped: true, reason: '本次没有PC详情图，跳过详情读回校验', expectedCount: 0 }
     }
-    const pcUrls = currentPcDetailReadbackUrls()
-    const mobileUrls = currentMobileDetailReadbackUrls()
-    const pcMissing = missingImageUrls(expected, pcUrls)
-    const mobileMissing = missingImageUrls(expected, mobileUrls)
-    const ok = pcMissing.length === 0 && mobileMissing.length === 0
-    return {
-      ok,
-      expectedCount: expected.length,
-      pcImageCount: pcUrls.length,
-      mobileImageCount: mobileUrls.length,
-      pcMissing,
-      mobileMissing,
-      reason: ok
-        ? `发布后读回校验通过：PC详情 ${pcUrls.length} 张，手机详情 ${mobileUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
-        : `发布后读回校验失败：PC缺失 ${pcMissing.length}/${expected.length} 张，手机缺失 ${mobileMissing.length}/${expected.length} 张`,
-    }
-  }
+	    const pcUrls = currentPcDetailReadbackUrls()
+	    const currentMobileValue = getComponentValue('descForShenbiMobile') || getTmallFormValues().descForShenbiMobile
+	    const mobileUrls = uniqueImageUrls(collectRemoteImageUrls(currentMobileValue))
+	    const pcMissing = missingImageUrls(expected, pcUrls)
+	    const mobileMissing = missingImageUrls(expected, mobileUrls)
+	    const mobileDuplicateProbe = cleanDuplicateShenbiMobileImages(currentMobileValue)
+	    const pcAlreadyMatched = !!(
+	      state?.pc_detail_skip_replacement &&
+	      state?.pc_detail_already_match &&
+	      state.pc_detail_already_match.matched
+	    )
+	    const visualMobileEditorVerified = !!(
+	      state?.mobile_editor_imported ||
+	      state?.mobile_editor_saved ||
+	      state?.mobile_editor_finish_result
+	    )
+	    const transformedMobileOk = visualMobileEditorVerified &&
+	      mobileUrls.length >= expected.length &&
+	      !mobileDuplicateProbe.changed
+	    const mobileOk = mobileMissing.length === 0 || transformedMobileOk
+	    const pcOk = pcMissing.length === 0 || pcAlreadyMatched
+	    const ok = pcOk && mobileOk
+	    const pcReason = pcMissing.length === 0
+	      ? `PC详情 ${pcUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
+	      : pcAlreadyMatched
+	        ? `PC详情本轮跳过替换，已在写入前确认与本次素材一致（${state.pc_detail_already_match.method || 'already_match'}）`
+	        : `PC缺失 ${pcMissing.length}/${expected.length} 张`
+	    const mobileReason = mobileMissing.length === 0
+	      ? `手机详情 ${mobileUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
+	      : transformedMobileOk
+	        ? `手机详情 ${mobileUrls.length} 张，旧版手机编辑器已导入保存；天猫已重生成手机图URL，按数量和去重校验通过`
+	        : `手机缺失 ${mobileMissing.length}/${expected.length} 张${mobileDuplicateProbe.changed ? '，且检测到重复图' : ''}`
+	    return {
+	      ok,
+	      expectedCount: expected.length,
+	      pcImageCount: pcUrls.length,
+	      mobileImageCount: mobileUrls.length,
+	      pcMissing,
+	      mobileMissing,
+	      pcAlreadyMatchedAccepted: pcAlreadyMatched && pcMissing.length > 0,
+	      mobileTransformedUrlAccepted: transformedMobileOk && mobileMissing.length > 0,
+	      mobileDuplicateCount: (mobileDuplicateProbe.removedDetailCount || 0) + (mobileDuplicateProbe.removedNativeCount || 0),
+	      reason: ok
+	        ? `发布后读回校验通过：${pcReason}；${mobileReason}`
+	        : `发布后读回校验失败：${pcReason}；${mobileReason}`,
+	    }
+	  }
 
   function currentLegacyPcDetailModulesForOcr() {
     const modularDesc = getComponentValue('modularDesc')
@@ -5203,10 +6642,10 @@
     return JSON.stringify({ data })
   }
 
-  function buildShenbiMobileValueFromPcUrls(urls, currentValue = {}, sizeByUrl = {}) {
-    const normalizedUrls = (Array.isArray(urls) ? urls : []).map(compact).filter(Boolean)
-    const current = currentValue && typeof currentValue === 'object' ? currentValue : {}
-    const descContainer = current.descContainer && typeof current.descContainer === 'object' ? current.descContainer : {}
+	  function buildShenbiMobileValueFromPcUrls(urls, currentValue = {}, sizeByUrl = {}) {
+	    const normalizedUrls = (Array.isArray(urls) ? urls : []).map(compact).filter(Boolean)
+	    const current = currentValue && typeof currentValue === 'object' ? currentValue : {}
+	    const descContainer = current.descContainer && typeof current.descContainer === 'object' ? current.descContainer : {}
     const detail = buildWapDescDetailFromUrls(normalizedUrls, sizeByUrl)
     return {
       ...jsonClone(current),
@@ -5216,13 +6655,159 @@
         detail,
         nativeDetail: buildNativeDetailFromUrls(normalizedUrls, descContainer.nativeDetail, sizeByUrl),
       },
-      empty: normalizedUrls.length === 0,
-    }
-  }
+	      empty: normalizedUrls.length === 0,
+	    }
+	  }
 
-  function buildShenbiMobileValueFromPcModules(modularDesc, currentValue = {}, sizeByUrl = {}) {
-    return buildShenbiMobileValueFromPcUrls(extractPcDetailUrlsFromModules(modularDesc), currentValue, sizeByUrl)
-  }
+	  function wapDescImageAttr(attrs = '', name = '') {
+	    const re = new RegExp(`\\s${name}\\s*=\\s*["']([^"']*)["']`, 'i')
+	    const match = String(attrs || '').match(re)
+	    return match ? decodeHtmlText(match[1]) : ''
+	  }
+
+	  function parseWapDescImageEntries(detail = '') {
+	    const value = String(detail || '')
+	    const entries = []
+	    const re = /<img\b([^>]*)>([\s\S]*?)<\/img>/gi
+	    let match = null
+	    while ((match = re.exec(value))) {
+	      entries.push({
+	        attrs: String(match[1] || ''),
+	        url: compact(decodeHtmlText(match[2] || '')),
+	        size: wapDescImageAttr(match[1], 'size'),
+	      })
+	    }
+	    return entries
+	  }
+
+	  function rebuildWapDescDetail(originalDetail = '', entries = []) {
+	    const source = String(originalDetail || '')
+	    const body = entries
+	      .map(entry => `<img${entry.attrs || ''}>${escapeXmlText(entry.url)}</img>`)
+	      .join('')
+	    if (/<wapDesc\b[^>]*>[\s\S]*?<\/wapDesc>/i.test(source)) {
+	      return source.replace(/(<wapDesc\b[^>]*>)[\s\S]*?(<\/wapDesc>)/i, `$1${body}$2`)
+	    }
+	    return `<wapDesc>${body}</wapDesc>`
+	  }
+
+	  function dedupeImageEntries(entries = []) {
+	    const seen = new Set()
+	    const kept = []
+	    const removed = []
+	    ;(Array.isArray(entries) ? entries : []).forEach((entry, index) => {
+	      const url = compact(entry?.url)
+	      const key = comparableImageUrl(url)
+	      if (!key) {
+	        kept.push(entry)
+	        return
+	      }
+	      if (seen.has(key)) {
+	        removed.push({ ...entry, index, key })
+	        return
+	      }
+	      seen.add(key)
+	      kept.push(entry)
+	    })
+	    return { kept, removed }
+	  }
+
+	  function cleanWapDescDuplicateImages(detail = '') {
+	    const entries = parseWapDescImageEntries(detail)
+	    if (!entries.length) return { changed: false, detail, removed: [], imageCount: 0 }
+	    const deduped = dedupeImageEntries(entries)
+	    if (!deduped.removed.length) return { changed: false, detail, removed: [], imageCount: entries.length }
+	    return {
+	      changed: true,
+	      detail: rebuildWapDescDetail(detail, deduped.kept),
+	      removed: deduped.removed,
+	      imageCount: deduped.kept.length,
+	    }
+	  }
+
+	  function cleanNativeDetailDuplicateImages(nativeDetail = '') {
+	    const parsed = parseNativeDetailJson(nativeDetail)
+	    if (!parsed) return { changed: false, nativeDetail, removed: [], imageCount: 0 }
+	    const clone = jsonClone(parsed)
+	    const seen = new Set()
+	    const removed = []
+	    let imageCount = 0
+	    const cleanChildren = children => {
+	      if (!Array.isArray(children)) return children
+	      const result = []
+	      children.forEach((child, index) => {
+	        const node = child && typeof child === 'object' ? jsonClone(child) : child
+	        const url = compact(node?.params?.picUrl || node?.params?.url || node?.picUrl || node?.url || '')
+	        const key = comparableImageUrl(url)
+	        if (key) {
+	          if (seen.has(key)) {
+	            removed.push({ index, url, key })
+	            return
+	          }
+	          seen.add(key)
+	          imageCount += 1
+	        }
+	        if (node && typeof node === 'object' && Array.isArray(node.children)) {
+	          node.children = cleanChildren(node.children)
+	        }
+	        result.push(node)
+	      })
+	      return result
+	    }
+	    if (clone.data && typeof clone.data === 'object' && Array.isArray(clone.data.children)) {
+	      clone.data.children = cleanChildren(clone.data.children)
+	    } else if (Array.isArray(clone.children)) {
+	      clone.children = cleanChildren(clone.children)
+	    }
+	    if (!removed.length) return { changed: false, nativeDetail, removed: [], imageCount }
+	    return {
+	      changed: true,
+	      nativeDetail: JSON.stringify(clone),
+	      removed,
+	      imageCount,
+	    }
+	  }
+
+	  function cleanDuplicateShenbiMobileImages(currentValue = {}) {
+	    const source = currentValue && typeof currentValue === 'object' ? currentValue : {}
+	    const descContainer = source.descContainer && typeof source.descContainer === 'object' ? source.descContainer : {}
+	    const detailClean = cleanWapDescDuplicateImages(descContainer.detail || '')
+	    const nativeClean = cleanNativeDetailDuplicateImages(descContainer.nativeDetail || '')
+	    const changed = detailClean.changed || nativeClean.changed
+	    if (!changed) {
+	      return {
+	        ok: true,
+	        changed: false,
+	        value: source,
+	        removedDetailCount: 0,
+	        removedNativeCount: 0,
+	        imageCount: Math.max(detailClean.imageCount || 0, nativeClean.imageCount || 0),
+	        note: '手机端详情没有检测到重复图片',
+	      }
+	    }
+	    return {
+	      ok: true,
+	      changed: true,
+	      value: {
+	        ...jsonClone(source),
+	        descContainer: {
+	          ...jsonClone(descContainer),
+	          detail: detailClean.changed ? detailClean.detail : descContainer.detail,
+	          nativeDetail: nativeClean.changed ? nativeClean.nativeDetail : descContainer.nativeDetail,
+	        },
+	      },
+	      removedDetailCount: detailClean.removed.length,
+	      removedNativeCount: nativeClean.removed.length,
+	      imageCount: Math.max(detailClean.imageCount || 0, nativeClean.imageCount || 0),
+	      removedDetailUrls: detailClean.removed.map(item => item.url).filter(Boolean),
+	      removedNativeUrls: nativeClean.removed.map(item => item.url).filter(Boolean),
+	      note: `已清理手机端详情重复图片：wapDesc ${detailClean.removed.length} 张，nativeDetail ${nativeClean.removed.length} 张`,
+	    }
+	  }
+
+	  function buildShenbiMobileValueFromPcModules(modularDesc, currentValue = {}, sizeByUrl = {}) {
+	    return buildShenbiMobileValueFromPcUrls(extractPcDetailUrlsFromModules(modularDesc), currentValue, sizeByUrl)
+	  }
 
   function buildShenbiPcDetailFromUrls(urls = []) {
     const imgs = (Array.isArray(urls) ? urls : [])
@@ -5437,6 +7022,18 @@
     return compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target) === 'tmDescription'
   }
 
+  function shouldUseVisualMobileEditorSync(state = shared, rawParams = params) {
+    if (parseBoolean(rawParams.force_mobile_editor_sync, false)) return true
+    const target = compact(state?.pc_detail_target || state?.pc_detail_replacement_probe?.target)
+    return !!(
+      state?.prefer_legacy_pc_detail ||
+      state?.applied_desc_type ||
+      target === 'tmDescription' ||
+      target === 'modularDesc' ||
+      target === 'descForShenbiPc'
+    )
+  }
+
   function isSparseNewDescOcrFailure(detected) {
     if (!detected || detected.ok) return false
     if (compact(detected.source?.target) !== 'descRepublicOfSell') return false
@@ -5495,11 +7092,15 @@
       return_old_confirm_wait_attempts: 0,
       new_desc_sparse_ocr_fallback: false,
       new_desc_aggregate_legacy_fallback: false,
-      final_detail_readback_verified: false,
-      final_detail_readback_note: '',
-      final_readback_returned_old: false,
-    }
-  }
+	      final_detail_readback_verified: false,
+	      final_detail_readback_note: '',
+	      final_readback_returned_old: false,
+	      pc_detail_already_match: null,
+	      pc_detail_skip_replacement: false,
+	      mobile_detail_duplicates_cleaned: false,
+	      mobile_detail_duplicate_cleanup: null,
+	    }
+	  }
 
   function advanceToNextJob(currentRows = [], state = shared, sleepMs = 0) {
     const jobs = Array.isArray(state.jobs) ? state.jobs : []
@@ -5574,11 +7175,16 @@
       extractPcDetailUrlsFromHtml,
       pcDetailUrlsFromSource,
       collectRemoteImageUrls,
-      missingImageUrls,
-      verifyPublishedDetailReadback,
-      buildWapDescDetailFromUrls,
-      buildShenbiMobileValueFromPcUrls,
-      buildShenbiMobileValueFromPcModules,
+	      missingImageUrls,
+	      verifyPublishedDetailReadback,
+	      buildWapDescDetailFromUrls,
+	      parseWapDescImageEntries,
+	      cleanWapDescDuplicateImages,
+	      cleanNativeDetailDuplicateImages,
+	      cleanDuplicateShenbiMobileImages,
+	      detectPcDetailAlreadyMatchesUpload,
+	      buildShenbiMobileValueFromPcUrls,
+	      buildShenbiMobileValueFromPcModules,
       resolvePackagingSourceConfig,
       collectPackagingAssets,
       validateInjectedAsset,
@@ -5587,6 +7193,7 @@
       shouldAllowLegacyCountPcDetailReplace,
       finalizeRows,
       mobileEditorSignals,
+      cleanupMobileEditorImportedCanvas,
       tmallTimingConfig,
     })
   }
@@ -5743,8 +7350,10 @@
         rawPath: shared.cloud_path,
         candidateSources: shared.candidate_sources || [],
       })
-      const rows = shared.source_warning && plan.rows.length
-        ? plan.rows.map((row, index) => index === 0 ? appendRowNote(row, shared.source_warning) : row)
+      const planWarnings = Array.isArray(plan.plan?.warnings) ? plan.plan.warnings.filter(Boolean) : []
+      const leadingWarnings = [shared.source_warning, ...planWarnings].filter(Boolean)
+      const rows = leadingWarnings.length && plan.rows.length
+        ? plan.rows.map((row, index) => index === 0 ? appendRowNote(row, leadingWarnings.join('；')) : row)
         : plan.rows
       const nextShared = {
         ...clearSemirLoginWaitState(shared),
@@ -5754,6 +7363,8 @@
           total: plan.plan.total,
           selected: plan.plan.selected,
           missing: plan.plan.missing,
+          warnings: planWarnings,
+          pcDetailDedupedCount: plan.plan.pcDetailDedupedCount || 0,
           searchCount: plan.plan.searchCount,
           folderCount: plan.plan.folderCount,
           selectedStyleRoot: plan.plan.selectedStyleRoot,
@@ -6204,26 +7815,27 @@
       })
     }
 
-    if (phase === 'apply_tmall_draft') {
-      const uploadedByCategory = shared.uploaded_by_category || {}
-      const componentValues = buildTmallComponentValues(uploadedByCategory, {
-        mainImagesGroup: getComponentValue('mainImagesGroup'),
-        threeToFourImages: getComponentValue('threeToFourImages'),
-        guideImageGroup: getComponentValue('guideImageGroup'),
-        descRepublicOfSell: getNewDescValue(),
-        descForShenbiPc: getComponentValue('descForShenbiPc'),
+	    if (phase === 'apply_tmall_draft') {
+	      const uploadedByCategory = shared.uploaded_by_category || {}
+	      const currentDraftValues = {
+	        mainImagesGroup: getComponentValue('mainImagesGroup'),
+	        threeToFourImages: getComponentValue('threeToFourImages'),
+	        guideImageGroup: getComponentValue('guideImageGroup'),
+	        descRepublicOfSell: getNewDescValue(),
+	        descForShenbiPc: getComponentValue('descForShenbiPc'),
         modularDesc: getComponentValue('modularDesc'),
         tmDescription: getLegacyPcDetailHtml(),
         modularDescVisible: componentVisible('modularDesc'),
         descForShenbiPcVisible: componentVisible('descForShenbiPc'),
         pcDetailVisualAnchors: shared.pc_detail_visual_anchors,
         requirePcDetailVisualAnchors: hasDownloadedPcDetailRows(shared.current_result_rows) && !shared.pc_detail_structure_anchor_fallback,
-        allowLegacyCountPcDetailReplace: shouldAllowLegacyCountPcDetailReplace(shared.current_result_rows, shared.current_job || {}) ||
-          !!shared.pc_detail_allow_legacy_count_replace,
-        preferLegacyPcDetail: !!shared.prefer_legacy_pc_detail,
-      })
-      const pcReplacementBlocked = componentValues.pcDetailReplacement?.ok === false
-      if (pcReplacementBlocked) {
+	        allowLegacyCountPcDetailReplace: shouldAllowLegacyCountPcDetailReplace(shared.current_result_rows, shared.current_job || {}) ||
+	          !!shared.pc_detail_allow_legacy_count_replace,
+	        preferLegacyPcDetail: !!shared.prefer_legacy_pc_detail,
+	      }
+	      let componentValues = buildTmallComponentValues(uploadedByCategory, currentDraftValues)
+	      const pcReplacementBlocked = componentValues.pcDetailReplacement?.ok === false
+	      if (pcReplacementBlocked) {
         const afterStatus = extractTmallStatus(shared.current_job || {})
         const rows = markRowsWithResult(
           shared.current_result_rows,
@@ -6236,11 +7848,49 @@
           current_result_rows: rows,
           tmall_status_after_apply: afterStatus,
           applied_components: {},
-          applied_modular_desc: getComponentValue('modularDesc'),
-        })
-      }
-      const applied = {
-        mainImagesGroup: applyComponentValue('mainImagesGroup', componentValues.mainImagesGroup),
+	          applied_modular_desc: getComponentValue('modularDesc'),
+	        })
+	      }
+	      let pcDetailAlreadyMatch = null
+	      if (
+	        parseBoolean(params.enable_pc_detail_already_match_skip, true) &&
+	        hasDownloadedPcDetailRows(shared.current_result_rows) &&
+	        componentValues.pcDetailReplacement?.ok &&
+	        !componentValues.pcDetailReplacement?.skippedBecauseAlreadyMatches
+	      ) {
+	        pcDetailAlreadyMatch = await detectPcDetailAlreadyMatchesUpload(
+	          componentValues.pcDetailReplacement,
+	          uploadedByCategory.pc_detail || [],
+	          params,
+	        )
+	        if (pcDetailAlreadyMatch.matched) {
+	          componentValues = markPcDetailReplacementSkipped(componentValues, currentDraftValues, pcDetailAlreadyMatch)
+	        }
+	        if (
+	          componentValues.pcDetailReplacement?.requiresAlreadyMatch &&
+	          !pcDetailAlreadyMatch.matched &&
+	          !pcDetailAlreadyMatch.duplicateCleanup
+	        ) {
+	          const afterStatus = extractTmallStatus(shared.current_job || {})
+	          const rows = markRowsWithResult(
+	            shared.current_result_rows,
+	            afterStatus,
+	            '预检阻止',
+	            pcDetailAlreadyMatch.reason || '当前PC详情无可靠下半区锚点，且与本次素材不一致，已阻止自动替换',
+	          )
+	          return advanceToNextJob(rows, {
+	            ...shared,
+	            current_result_rows: rows,
+	            tmall_status_after_apply: afterStatus,
+	            pc_detail_already_match: pcDetailAlreadyMatch,
+	            pc_detail_replacement_probe: componentValues.pcDetailReplacement,
+	            applied_components: {},
+	            applied_modular_desc: getComponentValue('modularDesc'),
+	          })
+	        }
+	      }
+	      const applied = {
+	        mainImagesGroup: applyComponentValue('mainImagesGroup', componentValues.mainImagesGroup),
         threeToFourImages: applyComponentValue('threeToFourImages', componentValues.threeToFourImages),
         guideImageGroup: applyComponentValue('guideImageGroup', componentValues.guideImageGroup),
         descType: applyFormValue('descType', componentValues.descType),
@@ -6284,11 +7934,15 @@
         .map(([name, result]) => `${name}:${result.reason}`)
         .join('；')
       const hasApplyFailure = Object.values(applied).some(result => result && result.ok === false)
-      const replacementNote = componentValues.pcDetailReplacement?.mode === 'anchored_replace' || componentValues.pcDetailReplacement?.ok === false
-        ? componentValues.pcDetailReplacement?.note
-        : ''
-      const newDescCommitNote = applied.descRepublicOfSellCommit?.ok ? applied.descRepublicOfSellCommit.note : ''
-      const applyNote = [componentApplyNote, replacementNote, newDescCommitNote].filter(Boolean).join('；')
+	      const replacementNote = componentValues.pcDetailReplacement?.mode === 'anchored_replace' || componentValues.pcDetailReplacement?.ok === false
+	        ? componentValues.pcDetailReplacement?.note
+	        : ''
+	      const newDescCommitNote = applied.descRepublicOfSellCommit?.ok ? applied.descRepublicOfSellCommit.note : ''
+	      const alreadyMatchNote = componentValues.pcDetailReplacement?.skippedBecauseAlreadyMatches
+	        ? componentValues.pcDetailReplacement.note
+	        : ''
+	      const duplicateCleanupNote = pcDetailAlreadyMatch?.duplicateCleanup ? pcDetailAlreadyMatch.reason : ''
+	      const applyNote = [componentApplyNote, replacementNote, duplicateCleanupNote, alreadyMatchNote, newDescCommitNote].filter(Boolean).join('；')
       const rows = buildOutputStatusRows(
         shared.current_result_rows,
         afterStatus,
@@ -6312,13 +7966,15 @@
           applied_components: applied,
           applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
           applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
-          applied_desc_republic_of_sell: componentValues.descRepublicOfSell || null,
-          applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
-          applied_desc_type: componentValues.descType || null,
-          pc_detail_target: pcDetailTarget,
-          publish_wait_attempts: 0,
-          publish_stage: 'pc',
-          current_store: '提交PC端详情发布',
+	          applied_desc_republic_of_sell: componentValues.descRepublicOfSell || null,
+	          applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
+	          applied_desc_type: componentValues.descType || null,
+	          pc_detail_target: pcDetailTarget,
+	          pc_detail_already_match: pcDetailAlreadyMatch,
+	          pc_detail_skip_replacement: !!componentValues.pcDetailReplacement?.skippedBecauseAlreadyMatches,
+	          publish_wait_attempts: 0,
+	          publish_stage: 'pc',
+	          current_store: '提交PC端详情发布',
         })
       }
       return advanceToNextJob(rows, {
@@ -6328,24 +7984,30 @@
         applied_components: applied,
         applied_modular_desc: componentValues.modularDesc || componentValues.pcDetailReplacement?.modules || getComponentValue('modularDesc'),
         applied_pc_detail_html: componentValues.detailHtml || componentValues.tmDescription || getComponentValue('tmDescription') || getLegacyPcDetailHtml(),
-        applied_desc_republic_of_sell: componentValues.descRepublicOfSell || null,
-        applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
-        applied_desc_type: componentValues.descType || null,
-        pc_detail_target: pcDetailTarget,
-      })
-    }
+	        applied_desc_republic_of_sell: componentValues.descRepublicOfSell || null,
+	        applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
+	        applied_desc_type: componentValues.descType || null,
+	        pc_detail_target: pcDetailTarget,
+	        pc_detail_already_match: pcDetailAlreadyMatch,
+	        pc_detail_skip_replacement: !!componentValues.pcDetailReplacement?.skippedBecauseAlreadyMatches,
+	      })
+	    }
 
     if (phase === 'submit_pc_publish' || phase === 'submit_final_publish') {
       const stage = phase === 'submit_final_publish' ? 'final' : 'pc'
-      const shouldPreferPayloadSubmit = uploadedPcDetailUrlsFromShared(shared).length > 0 ||
+      const oldDetailMobileEditorFlow = shouldUseVisualMobileEditorSync(shared)
+      const shouldPreferPayloadSubmit = !oldDetailMobileEditorFlow && (
+        uploadedPcDetailUrlsFromShared(shared).length > 0 ||
         !!shared.applied_desc_republic_of_sell ||
         !!shared.mobile_sync_note
+      )
       const shouldTryApiBeforeDom = TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first' || shouldPreferPayloadSubmit
       if (shouldTryApiBeforeDom) {
         const apiSubmit = await submitTmallPublishByApi({
           itemId: shared.current_job?.item_id || '',
           timeoutMs: 15000,
-          forceHttpPost: stage === 'final' || shouldPreferPayloadSubmit,
+          forceHttpPost: TMALL_SUBMIT_MODE === 'api' || (!oldDetailMobileEditorFlow && (stage === 'final' || shouldPreferPayloadSubmit)),
+          allowHttpPost: !(oldDetailMobileEditorFlow && stage === 'pc' && TMALL_SUBMIT_MODE !== 'api'),
         })
         if (apiSubmit.ok) {
           return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
@@ -6378,6 +8040,7 @@
           itemId: shared.current_job?.item_id || '',
           timeoutMs: 15000,
           forceHttpPost: stage === 'final',
+          allowHttpPost: !(oldDetailMobileEditorFlow && stage === 'pc'),
         })
         if (apiSubmit.ok) {
           return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
@@ -6773,11 +8436,14 @@
     }
 
     if (phase === 'sync_mobile_detail_api') {
-      if (parseBoolean(params.force_mobile_editor_sync, false)) {
+      const visualMobileFallbackEligible = shouldUseVisualMobileEditorSync(shared)
+      if (parseBoolean(params.force_mobile_editor_sync, false) || visualMobileFallbackEligible) {
         return nextPhase('open_mobile_detail_editor', 800, {
           ...shared,
-          mobile_sync_note: '已按参数强制使用手机端详情编辑器同步，跳过表单API同步',
-          current_store: '强制打开手机端详情编辑器同步',
+          mobile_sync_note: parseBoolean(params.force_mobile_editor_sync, false)
+            ? '已按参数强制使用手机端详情编辑器同步，跳过表单API同步'
+            : '旧版/文本PC详情按页面完整链路同步：编辑手机端详情、导入电脑端详情、保存、完成编辑',
+          current_store: '打开手机端详情编辑器同步',
         })
       }
       const modularDesc = Array.isArray(shared.applied_modular_desc)
@@ -6817,8 +8483,14 @@
     }
 
     if (phase === 'open_mobile_detail_editor') {
-      const clicked = clickMobileDetailEditButton()
-      if (!clicked.ok) {
+      const editElement = findMobileDetailEditButton()
+      const clicked = cdpClickElement(editElement, 'wait_mobile_editor_ready', 1500, {
+        ...shared,
+        mobile_action_attempts: 0,
+        mobile_wait_attempts: 0,
+        current_store: '等待手机端详情编辑器',
+      })
+      if (!clicked) {
         const attempts = Number(shared.mobile_action_attempts || 0)
         if (attempts < 10) {
           try { window.scrollTo?.({ top: document.body?.scrollHeight || 0, behavior: 'smooth' }) } catch (error) {}
@@ -6830,21 +8502,24 @@
         }
         return failCurrentJob('未找到“手机端详情描述”的“编辑详情”入口', '手机端同步失败')
       }
-      return nextPhase('wait_mobile_editor_ready', 1500, {
-        ...shared,
-        mobile_action_attempts: 0,
-        mobile_wait_attempts: 0,
-        current_store: '等待手机端详情编辑器',
-      })
+      return clicked
     }
 
     if (phase === 'wait_mobile_editor_ready') {
       const signals = mobileEditorSignals()
       if (signals.ready) {
-        return nextPhase('open_mobile_import_menu', 500, {
+        return nextPhase('clear_mobile_editor_modules', 500, {
           ...shared,
           mobile_wait_attempts: 0,
-          current_store: '打开手机端导入菜单',
+          current_store: '准备清空旧手机端详情模块',
+        })
+      }
+      if (visibleCrossOriginMobileEditor()) {
+        return nextPhase('clear_mobile_editor_modules', 500, {
+          ...shared,
+          mobile_wait_attempts: 0,
+          mobile_cross_origin_editor: true,
+          current_store: '检测到跨域手机端详情编辑器，准备清空旧模块',
         })
       }
       const attempts = Number(shared.mobile_wait_attempts || 0)
@@ -6856,6 +8531,107 @@
         })
       }
       return failCurrentJob('手机端详情编辑器未出现“清除所有模块/导入详情/全图生成”等信号', '手机端同步失败')
+    }
+
+    if (phase === 'clear_mobile_editor_modules') {
+      return clearMobileEditorModulesViaTarget({
+        ...shared,
+        mobile_clear_attempts: Number(shared.mobile_clear_attempts || 0),
+      })
+    }
+
+    if (phase === 'verify_mobile_editor_modules_cleared') {
+      const clearEval = shared.mobile_editor_clear_result || {}
+      const clearValue = clearEval.value || {}
+      if (clearEval.ok && clearValue.ok) {
+        return nextPhase('import_mobile_pc_detail_via_target', 500, {
+          ...shared,
+          mobile_editor_cleared: clearValue,
+          mobile_action_attempts: 0,
+          mobile_import_attempts: 0,
+          current_store: '旧手机端详情模块已清空，导入电脑端详情',
+        })
+      }
+      const attempts = Number(shared.mobile_clear_attempts || 0)
+      if (attempts < 3) {
+        return nextPhase('clear_mobile_editor_modules', 1000, {
+          ...shared,
+          mobile_clear_attempts: attempts + 1,
+          current_store: `清空旧手机端详情模块重试 ${attempts + 1}/3：${clearValue.reason || clearEval.error || '未确认清空'}`,
+        })
+      }
+      return failCurrentJob(`清空旧手机端详情模块失败：${clearValue.reason || clearEval.error || '未确认清空'}`, '手机端同步失败')
+    }
+
+    if (phase === 'import_mobile_pc_detail_via_target') {
+      return importMobilePcDetailViaTarget({
+        ...shared,
+        mobile_import_attempts: Number(shared.mobile_import_attempts || 0),
+      })
+    }
+
+    if (phase === 'verify_mobile_editor_imported') {
+      const importEval = shared.mobile_editor_import_result || {}
+      const importValue = importEval.value || {}
+      const after = importValue.after || {}
+      const generateOp = Number(importValue.generateOp ?? shared.mobile_import_generate_op) === 1 ? 1 : 0
+      const expectedUrlCount = Number(after.expectedUrlCount || 0)
+      const expectedHitCount = Math.max(
+        Number(after.canvasExpectedHitCount || 0),
+        Number(after.visibleExpectedHitCount || 0),
+      )
+      const importSuccessDialogConfirmed = !!(after.importSuccessDialog || importValue.importSuccessClosed)
+      const imageCountImported = !!(
+        Number(after.canvasImageCount || after.visibleImageCount || 0) >= mobileEditorExpectedImportImageCount(shared) &&
+        Number(after.groupCount || 0) >= 1 &&
+        !after.hasEmptyNotice
+      )
+      const imported = !!(
+        importEval.ok &&
+        importValue.ok &&
+        (importSuccessDialogConfirmed || imageCountImported) &&
+        (!expectedUrlCount || importSuccessDialogConfirmed || expectedHitCount >= expectedUrlCount)
+      )
+      if (imported) {
+        const modeName = generateOp === 1 ? '图文分离' : '全图生成'
+        const importedImageCount = Number(after.canvasImageCount || after.visibleImageCount || 0)
+        return nextPhase('save_mobile_editor', 800, {
+          ...shared,
+          mobile_editor_imported: importValue,
+          mobile_action_attempts: 0,
+          mobile_save_attempts: 0,
+          mobile_generate_mode: modeName,
+          mobile_full_image_disabled: generateOp !== 0,
+          current_store: importSuccessDialogConfirmed
+            ? `手机端已导入电脑端详情（${modeName}），已确认成功弹窗，准备保存`
+            : `手机端已导入电脑端详情（${modeName}）：${importedImageCount} 张图`,
+        })
+      }
+      const mismatchReason = compact(importValue.reason || importEval.error || '')
+      const shouldRetryAsSplit = generateOp === 0 && (
+        /未命中本次PC详情图/.test(mismatchReason) ||
+        (expectedUrlCount > 0 && expectedHitCount < expectedUrlCount)
+      )
+      if (shouldRetryAsSplit) {
+        return nextPhase('clear_mobile_editor_modules', 1000, {
+          ...shared,
+          mobile_import_generate_op: 1,
+          mobile_import_attempts: 0,
+          mobile_clear_attempts: 0,
+          mobile_editor_import_full_image_mismatch: importValue,
+          current_store: `全图生成未命中本次素材，改用图文分离重试：${expectedHitCount}/${expectedUrlCount || uploadedPcDetailUrlsFromShared(shared).length}`,
+        })
+      }
+      const attempts = Number(shared.mobile_import_attempts || 0)
+      if (attempts < 2) {
+        return nextPhase('clear_mobile_editor_modules', 1000, {
+          ...shared,
+          mobile_import_attempts: attempts + 1,
+          mobile_clear_attempts: 0,
+          current_store: `导入电脑端详情未确认，清空后重试 ${attempts + 1}/2：${importValue.reason || importEval.error || '未出现新模块'}`,
+        })
+      }
+      return failCurrentJob(`导入电脑端详情失败：${importValue.reason || importEval.error || '未出现新手机详情模块'}`, '手机端同步失败')
     }
 
     if (phase === 'open_mobile_module_menu') {
@@ -6920,6 +8696,15 @@
         mobile_action_attempts: 0,
         current_store: '鼠标移入手机端“导入”菜单',
       })
+      if (!moved && visibleCrossOriginMobileEditor()) {
+        const clicked = cdpMobileEditorClick('importMenu', 'click_mobile_import_detail', 700, {
+          ...shared,
+          mobile_action_attempts: 0,
+          mobile_cross_origin_editor: true,
+          current_store: '点击跨域手机端“导入”菜单',
+        })
+        if (clicked) return clicked
+      }
       if (!moved) {
         const attempts = Number(shared.mobile_action_attempts || 0)
         if (attempts < 8) {
@@ -6948,6 +8733,15 @@
         mobile_action_attempts: 0,
         current_store: '鼠标移入手机端“导入详情”菜单',
       })
+      if (!moved && visibleCrossOriginMobileEditor()) {
+        const crossMoved = cdpMobileEditorClick('importDetail', 'click_mobile_import_pc_detail', 700, {
+          ...shared,
+          mobile_action_attempts: 0,
+          mobile_cross_origin_editor: true,
+          current_store: '鼠标移入跨域手机端“导入详情”菜单',
+        }, 'move')
+        if (crossMoved) return crossMoved
+      }
       if (!moved) {
         const attempts = Number(shared.mobile_action_attempts || 0)
         if (attempts < 8) {
@@ -6969,6 +8763,15 @@
         mobile_action_attempts: 0,
         current_store: '点击导入电脑端详情',
       })
+      if (!clicked && visibleCrossOriginMobileEditor()) {
+        const crossClicked = cdpMobileEditorClick('importPcDetail', 'select_mobile_full_image', 1000, {
+          ...shared,
+          mobile_action_attempts: 0,
+          mobile_cross_origin_editor: true,
+          current_store: '点击跨域手机端“导入电脑端详情”',
+        })
+        if (crossClicked) return crossClicked
+      }
       if (!clicked) {
         const attempts = Number(shared.mobile_action_attempts || 0)
         if (attempts < 8) {
@@ -7001,6 +8804,17 @@
         mobile_full_image_disabled: option?.text !== '全图生成',
         current_store: `选择${option?.text || '手机端生成方式'}`,
       })
+      if (!clicked && visibleCrossOriginMobileEditor()) {
+        const crossClicked = cdpMobileEditorClick('fullImage', 'confirm_mobile_import_pc_detail', 500, {
+          ...shared,
+          mobile_action_attempts: 0,
+          mobile_generate_mode: '全图生成',
+          mobile_full_image_disabled: false,
+          mobile_cross_origin_editor: true,
+          current_store: '选择跨域手机端“全图生成”',
+        })
+        if (crossClicked) return crossClicked
+      }
       if (!clicked) {
         const attempts = Number(shared.mobile_action_attempts || 0)
         if (attempts < 10) {
@@ -7016,54 +8830,119 @@
     }
 
     if (phase === 'confirm_mobile_import_pc_detail') {
-      const confirmed = cdpClickElement(findMobileImportConfirmElement(), 'finish_mobile_editor', 1500, {
+      const confirmed = cdpClickElement(findMobileImportConfirmElement(), 'cleanup_mobile_editor_import', 1500, {
         ...shared,
-        current_store: '完成手机端详情编辑',
+        current_store: '清理手机端导入结果',
       })
       if (confirmed) return confirmed
+      if (visibleCrossOriginMobileEditor()) {
+        const crossConfirmed = cdpMobileEditorClick('confirm', 'cleanup_mobile_editor_import', 1800, {
+          ...shared,
+          mobile_cross_origin_editor: true,
+          mobile_import_confirm_clicked: true,
+          current_store: '确认跨域手机端导入电脑端详情',
+        })
+        if (crossConfirmed) return crossConfirmed
+      }
       clickDialogConfirm(['确认', '确定', '生成', '导入'])
-      return nextPhase('finish_mobile_editor', 1500, {
+      return nextPhase('cleanup_mobile_editor_import', 1500, {
         ...shared,
-        current_store: '完成手机端详情编辑',
+        current_store: '清理手机端导入结果',
+      })
+    }
+
+    if (phase === 'cleanup_mobile_editor_import') {
+      const cleanup = cleanupMobileEditorImportedCanvas()
+      if (cleanup.ok) {
+        return nextPhase('save_mobile_editor', 800, {
+          ...shared,
+          mobile_editor_cleanup: cleanup,
+          current_store: cleanup.removedGroupCount || cleanup.removedComponentCount
+            ? `已清理手机端导入占位图：组 ${cleanup.removedGroupCount} 个，组件 ${cleanup.removedComponentCount} 个`
+            : '手机端导入结果无需清理，准备保存',
+        })
+      }
+      if (visibleCrossOriginMobileEditor()) {
+        const attempts = Number(shared.mobile_cleanup_attempts || 0)
+        if (attempts < 4) {
+          return nextPhase('cleanup_mobile_editor_import', 1000, {
+            ...shared,
+            mobile_cleanup_attempts: attempts + 1,
+            mobile_cross_origin_editor: true,
+            current_store: `等待跨域手机端导入完成 ${attempts + 1}/4`,
+          })
+        }
+        return nextPhase('save_mobile_editor', 800, {
+          ...shared,
+          mobile_editor_cleanup: cleanup,
+          mobile_cross_origin_editor: true,
+          current_store: `跨域手机端编辑器无法读取画布，继续保存：${cleanup.reason || '浏览器跨域限制'}`,
+        })
+      }
+      const attempts = Number(shared.mobile_cleanup_attempts || 0)
+      if (attempts < 8) {
+        return nextPhase('cleanup_mobile_editor_import', 800, {
+          ...shared,
+          mobile_cleanup_attempts: attempts + 1,
+          current_store: `等待手机端导入画布可清理 ${attempts + 1}/8`,
+        })
+      }
+      return nextPhase('save_mobile_editor', 800, {
+        ...shared,
+        mobile_editor_cleanup: cleanup,
+        current_store: `未能读取手机端导入画布，继续尝试保存：${cleanup.reason || '未知原因'}`,
+      })
+    }
+
+    if (phase === 'verify_mobile_editor_saved') {
+      const saveEval = shared.mobile_editor_save_result || {}
+      const saveValue = saveEval.value || {}
+      if (saveEval.ok && saveValue.ok) {
+        return nextPhase('finish_mobile_editor', 800, {
+          ...shared,
+          mobile_editor_saved: saveValue,
+          mobile_action_attempts: 0,
+          mobile_sync_note: compact([shared.mobile_sync_note, `手机端详情已导入电脑端详情（${shared.mobile_generate_mode || '全图生成'}），并已点击保存`].filter(Boolean).join('；')),
+          current_store: '手机端详情保存成功，准备完成编辑',
+        })
+      }
+      const attempts = Number(shared.mobile_save_attempts || 0)
+      if (attempts < 2) {
+        return nextPhase('save_mobile_editor', 1200, {
+          ...shared,
+          mobile_save_attempts: attempts + 1,
+          current_store: `保存手机端详情重试 ${attempts + 1}/2：${saveValue.reason || saveEval.error || '未确认保存成功'}`,
+        })
+      }
+      return failCurrentJob(`保存手机端详情失败：${saveValue.reason || saveEval.error || '未确认保存成功'}`, '手机端同步失败')
+    }
+
+    if (phase === 'save_mobile_editor') {
+      return saveMobileEditorViaTarget({
+        ...shared,
+        mobile_save_attempts: Number(shared.mobile_save_attempts || 0),
       })
     }
 
     if (phase === 'finish_mobile_editor') {
-      const dialogConfirm = findVisibleActionByText(['确认', '确定'], {
-        dialogOnly: true,
-        allowContains: false,
-        maxTextLength: 12,
-        preferRight: true,
-        exclude: ['取消', '关闭'],
-      })
-      const closedDialog = cdpClickElement(dialogConfirm, 'finish_mobile_editor', 800, {
+      return finishMobileEditorViaTarget({
         ...shared,
-        current_store: '关闭导入电脑端详情成功提示',
       })
-      if (closedDialog) return closedDialog
-      const finished = cdpClickElement(findMobileFinishEditElement(), 'wait_after_mobile_finish', 1800, {
-        ...shared,
-        mobile_action_attempts: 0,
-        mobile_wait_attempts: 0,
-        mobile_sync_note: `手机端详情已导入电脑端详情（${shared.mobile_generate_mode || '全图生成'}）`,
-        current_store: '返回商品编辑页准备最终提交',
-      })
-      if (!finished) {
-        const attempts = Number(shared.mobile_action_attempts || 0)
-        if (attempts < 10) {
-          return nextPhase('finish_mobile_editor', 1000, {
-            ...shared,
-            mobile_action_attempts: attempts + 1,
-            current_store: `完成手机端详情编辑 ${attempts + 1}/10`,
-          })
-        }
-        return failCurrentJob('未找到“确认并完成编辑/完成编辑”按钮', '手机端同步失败')
-      }
-      return finished
     }
 
     if (phase === 'wait_after_mobile_finish') {
       clickDialogConfirm(['确认', '确定'])
+      if (visibleCrossOriginMobileEditor()) {
+        const attempts = Number(shared.mobile_wait_attempts || 0)
+        if (attempts < 20) {
+          return nextPhase('wait_after_mobile_finish', 1000, {
+            ...shared,
+            mobile_wait_attempts: attempts + 1,
+            mobile_cross_origin_editor: true,
+            current_store: `等待跨域手机端编辑器关闭 ${attempts + 1}/20`,
+          })
+        }
+      }
       const status = extractTmallStatus(shared.current_job || {})
       const submitButton = findVisibleActionByText(['提交发布', '提交并发布', '立即发布', '提交'], {
         allowContains: true,
@@ -7072,11 +8951,36 @@
         preferRight: true,
         exclude: ['保存草稿', '仅保存', '预览', '取消'],
       })
-      if (status.ready && submitButton) {
-        return nextPhase('submit_final_publish', 800, {
-          ...shared,
-          publish_wait_attempts: 0,
-          publish_stage: 'final',
+	      if (status.ready && submitButton) {
+	        if (!shared.mobile_detail_duplicates_cleaned) {
+	          const currentMobileValue = getComponentValue('descForShenbiMobile') || getTmallFormValues().descForShenbiMobile
+	          const cleaned = cleanDuplicateShenbiMobileImages(currentMobileValue)
+	          if (cleaned.changed) {
+	            const applied = applyFormValue('descForShenbiMobile', cleaned.value)
+	            if (!applied.ok) {
+	              return failCurrentJob(`清理手机端重复详情图失败：${applied.reason || '未能写入descForShenbiMobile'}`, '手机端同步失败')
+	            }
+	            return nextPhase('wait_after_mobile_finish', 600, {
+	              ...shared,
+	              mobile_detail_duplicates_cleaned: true,
+	              mobile_detail_duplicate_cleanup: cleaned,
+	              mobile_sync_note: compact([shared.mobile_sync_note, cleaned.note].filter(Boolean).join('；')),
+	              current_store: '已清理手机端重复详情图，准备最终提交',
+	            })
+	          }
+	          return nextPhase('submit_final_publish', 800, {
+	            ...shared,
+	            mobile_detail_duplicates_cleaned: true,
+	            mobile_detail_duplicate_cleanup: cleaned,
+	            publish_wait_attempts: 0,
+	            publish_stage: 'final',
+	            current_store: '最终提交发布',
+	          })
+	        }
+	        return nextPhase('submit_final_publish', 800, {
+	          ...shared,
+	          publish_wait_attempts: 0,
+	          publish_stage: 'final',
           current_store: '最终提交发布',
         })
       }

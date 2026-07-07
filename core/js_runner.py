@@ -123,6 +123,128 @@ class JSRunner:
                 if msg.get("id") == msg_id:
                     return msg
 
+    async def evaluate_cdp_target(
+        self,
+        expression: str,
+        *,
+        target_url_contains: Optional[list[str]] = None,
+        target_url_regex: Optional[str] = None,
+        target_types: Optional[list[str]] = None,
+        user_gesture: bool = False,
+    ) -> dict:
+        """Evaluate JavaScript in another CDP target, such as a cross-origin iframe."""
+        expression = str(expression or "").strip()
+        if not expression:
+            return {"ok": False, "error": "cdp_target_eval 缺少 expression"}
+
+        contains = [
+            str(item or "").strip()
+            for item in (target_url_contains or [])
+            if str(item or "").strip()
+        ]
+        type_set = {
+            str(item or "").strip()
+            for item in (target_types or ["page", "iframe"])
+            if str(item or "").strip()
+        }
+        regex = None
+        if target_url_regex:
+            try:
+                regex = re.compile(str(target_url_regex))
+            except re.error as e:
+                return {"ok": False, "error": f"cdp_target_eval target_url_regex 无效: {e}"}
+
+        tabs = await self._bridge_get_tabs()
+        matches = []
+        for tab in tabs or []:
+            tab_url = str(tab.get("url") or "")
+            tab_type = str(tab.get("type") or "")
+            if type_set and tab_type not in type_set:
+                continue
+            if contains and not all(part in tab_url for part in contains):
+                continue
+            if regex and not regex.search(tab_url):
+                continue
+            if not tab.get("webSocketDebuggerUrl"):
+                continue
+            matches.append(tab)
+
+        if not matches:
+            sample_urls = [
+                str(tab.get("url") or "")[:180]
+                for tab in (tabs or [])
+                if str(tab.get("type") or "") in (type_set or {"page", "iframe"})
+            ][:8]
+            return {
+                "ok": False,
+                "error": "cdp_target_eval 未找到匹配 target",
+                "target_url_contains": contains,
+                "target_url_regex": str(target_url_regex or ""),
+                "sample_urls": sample_urls,
+            }
+
+        target = matches[0]
+        target_runner = JSRunner(
+            str(target.get("webSocketDebuggerUrl") or ""),
+            timeout=self.timeout,
+            tab_id=str(target.get("id") or ""),
+            tab_url=str(target.get("url") or ""),
+            artifact_dir=str(self.artifact_dir),
+        )
+        try:
+            response = await target_runner._evaluate_raw(expression, user_gesture=user_gesture)
+        except Exception as e:
+            return {
+                "ok": False,
+                "error": str(e),
+                "target": {
+                    "id": target.get("id"),
+                    "url": target.get("url"),
+                    "type": target.get("type"),
+                    "title": target.get("title"),
+                },
+            }
+
+        if "error" in response:
+            return {
+                "ok": False,
+                "error": str(response.get("error") or "Runtime.evaluate failed"),
+                "target": {
+                    "id": target.get("id"),
+                    "url": target.get("url"),
+                    "type": target.get("type"),
+                    "title": target.get("title"),
+                },
+            }
+        if response.get("result", {}).get("exceptionDetails"):
+            exception = response.get("result", {}).get("exceptionDetails") or {}
+            return {
+                "ok": False,
+                "error": str(exception.get("text") or exception.get("exception", {}).get("description") or "Runtime exception"),
+                "exception": exception,
+                "target": {
+                    "id": target.get("id"),
+                    "url": target.get("url"),
+                    "type": target.get("type"),
+                    "title": target.get("title"),
+                },
+            }
+
+        result_payload = response.get("result", {}).get("result", {}) or {}
+        value = result_payload.get("value")
+        if value is None and "description" in result_payload:
+            value = result_payload.get("description")
+        return {
+            "ok": True,
+            "value": value,
+            "target": {
+                "id": target.get("id"),
+                "url": target.get("url"),
+                "type": target.get("type"),
+                "title": target.get("title"),
+            },
+        }
+
     async def navigate(self, url: str, wait_seconds: float = 2.0) -> JSResult:
         target_url = str(url or "").strip()
         if not target_url:
@@ -2219,6 +2341,28 @@ class JSRunner:
                             await asyncio.sleep(post_sleep)
                             next_phase = meta.get("next_phase") or phase
                             logger.info(f"cdp_clicks: page={page} phase={phase} 点击 {len(clicks)} 个坐标 -> {next_phase}")
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "cdp_target_eval":
+                            eval_result = await self.evaluate_cdp_target(
+                                str(meta.get("expression") or ""),
+                                target_url_contains=meta.get("target_url_contains") or meta.get("targetUrlContains") or [],
+                                target_url_regex=meta.get("target_url_regex") or meta.get("targetUrlRegex"),
+                                target_types=meta.get("target_types") or meta.get("targetTypes") or ["page", "iframe"],
+                                user_gesture=bool(meta.get("user_gesture") or meta.get("userGesture")),
+                            )
+                            shared_key = str(meta.get("shared_key") or meta.get("sharedKey") or "").strip()
+                            if shared_key:
+                                shared = self._merge_runtime_shared(shared, shared_key, eval_result)
+                            post_sleep = float(meta.get("sleep_ms", 300)) / 1000.0
+                            await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(post_sleep * 1000)})
+                            await asyncio.sleep(post_sleep)
+                            next_phase = meta.get("next_phase") or phase
+                            logger.info(
+                                f"cdp_target_eval: page={page} phase={phase} ok={bool(eval_result.get('ok'))} -> {next_phase}"
+                            )
                             phase = str(next_phase)
                             await self._refresh_ws_url()
                             continue

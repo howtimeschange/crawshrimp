@@ -13,7 +13,7 @@ function jsonResponse(payload, status = 200) {
   }
 }
 
-async function loadExports(fetchImpl = async () => jsonResponse({}), params = {}) {
+async function loadExports(fetchImpl = async () => jsonResponse({}), params = {}, overrides = {}) {
   const scriptPath = path.resolve('adapters/tmall-ops-assistant/tmall-packaging-upload.js')
   const source = fs.readFileSync(scriptPath, 'utf8')
   const exportsBox = {}
@@ -24,12 +24,14 @@ async function loadExports(fetchImpl = async () => jsonResponse({}), params = {}
       __CRAWSHRIMP_SHARED__: {},
       __CRAWSHRIMP_EXPORTS__: exportsBox,
     },
-    document: { cookie: '_tb_token_=test-token' },
+    document: overrides.document || { cookie: '_tb_token_=test-token' },
     location: { href: 'https://fmp.semirapp.com/web/index#/home/file', hash: '#/home/file' },
     fetch: fetchImpl,
     FormData: globalThis.FormData,
     Blob: globalThis.Blob,
     File: globalThis.File,
+    Image: overrides.Image || globalThis.Image,
+    URL: overrides.URL || globalThis.URL,
     URLSearchParams,
     console,
     setTimeout,
@@ -125,6 +127,26 @@ function fakeElement(text, { left = 80, top = 120, scrollTop = top, className = 
     dispatchEvent() {},
     click() {
       onClick()
+    },
+  }
+}
+
+function fakeMobileEditorIframe({ left = 269, top = 0, width = 1190, height = 941 } = {}) {
+  return {
+    innerText: '',
+    textContent: '',
+    className: 'sell-detail-iframe',
+    tagName: 'IFRAME',
+    disabled: false,
+    src: 'https://sell.xiangqing.taobao.com/sell/transit/gotoEdit.do?clientType=1&itemId=1004440515770&isV3=true&back2OldVersion=true',
+    getAttribute(name) {
+      if (name === 'src') return this.src
+      if (name === 'class') return this.className
+      if (name === 'title') return '手机详情编辑器'
+      return ''
+    },
+    getBoundingClientRect() {
+      return { width, height, left, top, right: left + width, bottom: top + height }
     },
   }
 }
@@ -341,6 +363,37 @@ test('packaging classifier caps PC detail images and prefers detail folder asset
 
   assert.equal(plan.byCategory.pc_detail.length, 30)
   assert.equal(plan.byCategory.pc_detail.every(item => String(item.fullpath).includes('/2-详情/')), true)
+})
+
+test('packaging classifier dedupes PC detail template sequence and keeps style-code sequence', async () => {
+  const helpers = await loadExports()
+  const templateDetailImages = Array.from({ length: 11 }, (_, index) => {
+    const seq = String(index + 1).padStart(2, '0')
+    return image(
+      `126新生儿模版_${seq}.jpg`,
+      `2026Q1/2-详情/新生儿/images/126新生儿模版_${seq}.jpg`,
+    )
+  })
+  const styleDetailImages = Array.from({ length: 11 }, (_, index) => {
+    const seq = String(index + 1).padStart(2, '0')
+    return image(
+      `208126156202_${seq}.jpg`,
+      `2026Q1/新生儿/images/208126156202_${seq}.jpg`,
+    )
+  })
+
+  const plan = helpers.classifyPackagingAssets([
+    ...templateDetailImages,
+    ...styleDetailImages,
+  ], {
+    styleCode: '208126156202',
+  })
+
+  assert.equal(plan.byCategory.pc_detail.length, 11)
+  assert.equal(plan.pcDetailDedupedCount, 11)
+  assert.equal(plan.byCategory.pc_detail.every(item => String(item.filename).startsWith('208126156202_')), true)
+  assert.match(plan.warnings[0], /源素材异常/)
+  assert.match(plan.warnings[0], /保留款号序列/)
 })
 
 test('packaging classifier keeps optimized package assets eligible after latest-root selection', async () => {
@@ -733,7 +786,7 @@ test('wait_tmall_ready scrolls offscreen return-old switch before CDP click', as
   assert.equal(result.meta.clicks[0].y, 476)
 })
 
-test('mobile detail editor readiness goes straight to import menu', async () => {
+test('mobile detail editor readiness clears old modules before import', async () => {
   const { result } = await runScript({
     phase: 'wait_mobile_editor_ready',
     shared: {
@@ -747,8 +800,266 @@ test('mobile detail editor readiness goes straight to import menu', async () => 
     },
   })
 
-  assert.equal(result.meta.next_phase, 'open_mobile_import_menu')
-  assert.equal(result.meta.shared.current_store, '打开手机端导入菜单')
+  assert.equal(result.meta.next_phase, 'clear_mobile_editor_modules')
+  assert.equal(result.meta.shared.current_store, '准备清空旧手机端详情模块')
+})
+
+test('cross-origin mobile detail iframe is accepted as editor ready', async () => {
+  const iframe = fakeMobileEditorIframe()
+  const { result } = await runScript({
+    phase: 'wait_mobile_editor_ready',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+    },
+    documentOverride: {
+      body: { innerText: '手机端详情描述' },
+      querySelectorAll(selector) {
+        if (String(selector) === 'iframe') return [iframe]
+        return []
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'clear_mobile_editor_modules')
+  assert.equal(result.meta.shared.mobile_cross_origin_editor, true)
+  assert.equal(result.meta.shared.current_store, '检测到跨域手机端详情编辑器，准备清空旧模块')
+})
+
+test('clear_mobile_editor_modules evaluates clear in matching iframe target', async () => {
+  const { result } = await runScript({
+    phase: 'clear_mobile_editor_modules',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_target_eval')
+  assert.equal(result.meta.next_phase, 'verify_mobile_editor_modules_cleared')
+  assert.equal(result.meta.shared_key, 'mobile_editor_clear_result')
+  assert.equal(Array.from(result.meta.target_url_contains).join('|'), 'sell.xiangqing.taobao.com/new_user_panel.htm|itemId=1004440515770')
+  assert.match(result.meta.expression, /props\.clear\(\)/)
+  assert.equal(result.meta.shared.current_store, '清空旧手机端详情模块')
+})
+
+test('verified mobile editor clear starts target-verified PC detail import', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_modules_cleared',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_editor_clear_result: {
+        ok: true,
+        value: {
+          ok: true,
+          after: { hasEmptyNotice: true, visibleImageCount: 0, moduleTextCount: 0 },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'import_mobile_pc_detail_via_target')
+  assert.equal(result.meta.shared.mobile_editor_cleared.ok, true)
+  assert.equal(result.meta.shared.current_store, '旧手机端详情模块已清空，导入电脑端详情')
+})
+
+test('mobile PC detail import runs inside editor target and verifies generated images', async () => {
+  const { result } = await runScript({
+    phase: 'import_mobile_pc_detail_via_target',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      current_result_rows: Array.from({ length: 9 }, (_, idx) => ({
+        __category: 'pc_detail',
+        '下载结果': '已下载',
+        '上传结果': '已上传',
+        '本地文件': `/tmp/detail-${idx}.jpg`,
+      })),
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_target_eval')
+  assert.equal(result.meta.next_phase, 'verify_mobile_editor_imported')
+  assert.equal(result.meta.shared_key, 'mobile_editor_import_result')
+  assert.match(result.meta.expression, /const generateOp = 0/)
+  assert.match(result.meta.expression, /select\(generateOp\)/)
+  assert.match(result.meta.expression, /process\(\)/)
+  assert.match(result.meta.expression, /导入电脑端详情/)
+  assert.match(result.meta.expression, /minExpectedImages/)
+})
+
+test('mobile PC detail import can request image-text split in editor target', async () => {
+  const { result } = await runScript({
+    phase: 'import_mobile_pc_detail_via_target',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_import_generate_op: 1,
+      uploaded_by_category: {
+        pc_detail: [
+          { url: 'https://img.alicdn.com/imgextra/i3/642320867/O1CN01gasuxe1IH8XZsRto1_!!642320867.jpg' },
+        ],
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_target_eval')
+  assert.equal(result.meta.next_phase, 'verify_mobile_editor_imported')
+  assert.match(result.meta.expression, /select\(generateOp\)/)
+  assert.match(result.meta.expression, /const generateOp = 1/)
+  assert.match(result.meta.expression, /O1CN01gasuxe1IH8XZsRto1/)
+  assert.equal(result.meta.shared.mobile_import_generate_op, 1)
+  assert.equal(result.meta.shared.mobile_generate_mode, '图文分离')
+  assert.equal(result.meta.shared.current_store, '手机端导入电脑端详情（图文分离）')
+})
+
+test('verified mobile editor import proceeds to save only after image count is confirmed', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_imported',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_editor_import_result: {
+        ok: true,
+        value: {
+          ok: true,
+          after: { canvasImageCount: 12, groupCount: 12, hasEmptyNotice: false },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'save_mobile_editor')
+  assert.equal(result.meta.shared.mobile_editor_imported.ok, true)
+  assert.match(result.meta.shared.current_store, /手机端已导入电脑端详情/)
+})
+
+test('full-image mobile import mismatch switches to image-text split instead of save', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_imported',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_import_generate_op: 0,
+      uploaded_by_category: {
+        pc_detail: [
+          { url: 'https://img.alicdn.com/imgextra/i3/642320867/O1CN01gasuxe1IH8XZsRto1_!!642320867.jpg' },
+          { url: 'https://img.alicdn.com/imgextra/i2/642320867/O1CN01vMH8zV1IH8XZiUXt4_!!642320867.jpg' },
+        ],
+      },
+      mobile_editor_import_result: {
+        ok: true,
+        value: {
+          ok: false,
+          generateOp: 0,
+          reason: '导入后手机画布未命中本次PC详情图：0/2',
+          after: {
+            canvasImageCount: 19,
+            groupCount: 19,
+            hasEmptyNotice: false,
+            expectedUrlCount: 2,
+            canvasExpectedHitCount: 0,
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'clear_mobile_editor_modules')
+  assert.equal(result.meta.shared.mobile_import_generate_op, 1)
+  assert.equal(result.meta.shared.mobile_import_attempts, 0)
+  assert.equal(result.meta.shared.mobile_clear_attempts, 0)
+  assert.equal(result.meta.shared.mobile_editor_import_full_image_mismatch.reason, '导入后手机画布未命中本次PC详情图：0/2')
+  assert.match(result.meta.shared.current_store, /改用图文分离重试/)
+})
+
+test('image-text split mobile import success proceeds to save with split mode note', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_imported',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_import_generate_op: 1,
+      mobile_editor_import_result: {
+        ok: true,
+        value: {
+          ok: true,
+          generateOp: 1,
+          after: {
+            canvasImageCount: 21,
+            groupCount: 11,
+            hasEmptyNotice: false,
+            expectedUrlCount: 2,
+            canvasExpectedHitCount: 2,
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'save_mobile_editor')
+  assert.equal(result.meta.shared.mobile_generate_mode, '图文分离')
+  assert.equal(result.meta.shared.mobile_full_image_disabled, true)
+  assert.match(result.meta.shared.current_store, /图文分离/)
+})
+
+test('failed mobile editor import does not continue to save', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_imported',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_import_attempts: 2,
+      mobile_editor_import_result: {
+        ok: true,
+        value: { ok: false, reason: '导入后未出现新手机详情模块' },
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/a.jpg' },
+      ],
+    },
+  })
+
+  assert.notEqual(result.meta.next_phase, 'save_mobile_editor')
+  assert.equal(result.data[0]['执行结果'], '手机端同步失败')
+  assert.match(result.data[0]['备注'], /导入电脑端详情失败/)
+})
+
+test('failed mobile editor clear retries before import', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_modules_cleared',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_clear_attempts: 1,
+      mobile_editor_clear_result: {
+        ok: true,
+        value: { ok: false, reason: '未找到手机详情编辑器画布' },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'clear_mobile_editor_modules')
+  assert.equal(result.meta.shared.mobile_clear_attempts, 2)
+  assert.match(result.meta.shared.current_store, /清空旧手机端详情模块重试 2\/3/)
+})
+
+test('open_mobile_detail_editor uses exact mobile edit button via CDP click', async () => {
+  let nativeClicked = 0
+  const pcEdit = fakeElement('编辑详情', { left: 1180, top: 900 })
+  pcEdit.tagName = 'BUTTON'
+  pcEdit.className = 'next-btn next-medium'
+  const mobileEdit = fakeElement('编辑详情', {
+    left: 703,
+    top: 452,
+    onClick: () => { nativeClicked += 1 },
+  })
+  mobileEdit.tagName = 'BUTTON'
+  mobileEdit.className = 'next-btn next-medium next-btn-primary sell-mobile-detail-header-edit-btn'
+  const { result } = await runScript({
+    phase: 'open_mobile_detail_editor',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+    },
+    documentOverride: fakeDocument([pcEdit, mobileEdit]),
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'wait_mobile_editor_ready')
+  assert.equal(nativeClicked, 0)
+  assert.equal(Math.round(result.meta.clicks[0].x), 793)
+  assert.equal(Math.round(result.meta.clicks[0].y), 468)
 })
 
 test('mobile detail import falls back to image-text split when full-image generation is absent', async () => {
@@ -784,38 +1095,608 @@ test('mobile detail import menu uses CDP hover before opening nested import deta
   assert.equal(result.meta.clicks[0].type, 'move')
 })
 
-test('mobile detail finish closes import success dialog before clicking finish edit', async () => {
-  const confirm = fakeElement('确认', { left: 820 })
-  const finish = fakeElement('完成编辑', { left: 1040 })
-  const dialogRoot = {
-    innerText: '导入电脑端详情成功! 确认',
-    textContent: '导入电脑端详情成功! 确认',
-    className: 'next-dialog',
-    tagName: 'DIV',
-    querySelectorAll() {
-      return [confirm]
-    },
-    getBoundingClientRect() {
-      return { width: 320, height: 180, left: 600, top: 360 }
-    },
-  }
+test('cross-origin mobile detail import menu uses coordinates when DOM is unreadable', async () => {
+  const iframe = fakeMobileEditorIframe()
   const { result } = await runScript({
-    phase: 'finish_mobile_editor',
+    phase: 'open_mobile_import_menu',
     shared: {
-      current_job: { item_id: '736290773760', style_code: '208425107212' },
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
     },
     documentOverride: {
-      body: { innerText: '导入电脑端详情成功! 确认 完成编辑' },
+      body: { innerText: '' },
       querySelectorAll(selector) {
-        if (String(selector).includes('dialog') || String(selector).includes('modal')) return [dialogRoot]
-        return [finish, confirm]
+        if (String(selector) === 'iframe') return [iframe]
+        return []
       },
     },
   })
 
   assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'click_mobile_import_detail')
+  assert.equal(Math.round(result.meta.clicks[0].x), 492)
+  assert.equal(Math.round(result.meta.clicks[0].y), 38)
+  assert.equal(result.meta.shared.current_store, '点击跨域手机端“导入”菜单')
+})
+
+test('cross-origin mobile detail nested import uses hover coordinate', async () => {
+  const iframe = fakeMobileEditorIframe()
+  const { result } = await runScript({
+    phase: 'click_mobile_import_detail',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+    },
+    documentOverride: {
+      body: { innerText: '' },
+      querySelectorAll(selector) {
+        if (String(selector) === 'iframe') return [iframe]
+        return []
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'click_mobile_import_pc_detail')
+  assert.equal(result.meta.clicks[0].type, 'move')
+  assert.equal(Math.round(result.meta.clicks[0].x), 500)
+  assert.equal(Math.round(result.meta.clicks[0].y), 87)
+})
+
+test('cross-origin mobile detail PC import uses click coordinate', async () => {
+  const iframe = fakeMobileEditorIframe()
+  const { result } = await runScript({
+    phase: 'click_mobile_import_pc_detail',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+    },
+    documentOverride: {
+      body: { innerText: '' },
+      querySelectorAll(selector) {
+        if (String(selector) === 'iframe') return [iframe]
+        return []
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_clicks')
+  assert.equal(result.meta.next_phase, 'select_mobile_full_image')
+  assert.equal(Math.round(result.meta.clicks[0].x), 616)
+  assert.equal(Math.round(result.meta.clicks[0].y), 130)
+})
+
+test('legacy PC detail uses visual mobile editor full flow before final submit', async () => {
+  const { result } = await runScript({
+    phase: 'sync_mobile_detail_api',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+      pc_detail_target: 'tmDescription',
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'open_mobile_detail_editor')
+  assert.match(result.meta.shared.mobile_sync_note, /页面完整链路同步/)
+})
+
+test('force_mobile_editor_sync still skips mobile API sync', async () => {
+  const { result } = await runScript({
+    phase: 'sync_mobile_detail_api',
+    params: {
+      force_mobile_editor_sync: true,
+    },
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+      pc_detail_target: 'tmDescription',
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'open_mobile_detail_editor')
+  assert.match(result.meta.shared.mobile_sync_note, /强制使用手机端详情编辑器/)
+})
+
+test('cross-origin mobile detail full-image and confirm use coordinates', async () => {
+  const iframe = fakeMobileEditorIframe()
+  const select = await runScript({
+    phase: 'select_mobile_full_image',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+    },
+    documentOverride: {
+      body: { innerText: '' },
+      querySelectorAll(selector) {
+        if (String(selector) === 'iframe') return [iframe]
+        return []
+      },
+    },
+  })
+
+  assert.equal(select.result.meta.action, 'cdp_clicks')
+  assert.equal(select.result.meta.next_phase, 'confirm_mobile_import_pc_detail')
+  assert.equal(select.result.meta.shared.mobile_generate_mode, '全图生成')
+  assert.equal(Math.round(select.result.meta.clicks[0].x), 662)
+  assert.equal(Math.round(select.result.meta.clicks[0].y), 463)
+
+  const confirm = await runScript({
+    phase: 'confirm_mobile_import_pc_detail',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_generate_mode: '全图生成',
+    },
+    documentOverride: {
+      body: { innerText: '' },
+      querySelectorAll(selector) {
+        if (String(selector) === 'iframe') return [iframe]
+        return []
+      },
+    },
+  })
+
+  assert.equal(confirm.result.meta.action, 'cdp_clicks')
+  assert.equal(confirm.result.meta.next_phase, 'cleanup_mobile_editor_import')
+  assert.equal(confirm.result.meta.shared.mobile_import_confirm_clicked, true)
+  assert.equal(Math.round(confirm.result.meta.clicks[0].x), 1170)
+  assert.equal(Math.round(confirm.result.meta.clicks[0].y), 644)
+})
+
+test('mobile detail save runs inside editor target and waits for success evidence', async () => {
+  const { result } = await runScript({
+    phase: 'save_mobile_editor',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+    },
+  })
+
+  assert.equal(result.meta.action, 'cdp_target_eval')
+  assert.equal(result.meta.next_phase, 'verify_mobile_editor_saved')
+  assert.equal(result.meta.shared_key, 'mobile_editor_save_result')
+  assert.equal(Array.from(result.meta.target_url_contains).join('|'), 'sell.xiangqing.taobao.com/new_user_panel.htm|itemId=736290773760')
+  assert.match(result.meta.expression, /保存/)
+  assert.match(result.meta.expression, /保存成功/)
+  assert.equal(result.meta.shared.current_store, '保存手机端详情编辑')
+})
+
+test('verified mobile detail save proceeds to finish edit', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_saved',
+    shared: {
+      current_job: { item_id: '736290773760', style_code: '208425107212' },
+      mobile_generate_mode: '全图生成',
+      mobile_editor_save_result: {
+        ok: true,
+        value: { ok: true, after: { canvasImageCount: 12, dialogText: '保存成功' } },
+      },
+    },
+  })
+
   assert.equal(result.meta.next_phase, 'finish_mobile_editor')
-  assert.equal(result.meta.shared.current_store, '关闭导入电脑端详情成功提示')
+  assert.match(result.meta.shared.mobile_sync_note, /已点击保存/)
+  assert.equal(result.meta.shared.current_store, '手机端详情保存成功，准备完成编辑')
+})
+
+test('verified mobile editor import proceeds after success dialog is confirmed', async () => {
+  const { result } = await runScript({
+    phase: 'verify_mobile_editor_imported',
+    shared: {
+      current_job: { item_id: '1010470516370', style_code: '208126156202' },
+      mobile_import_generate_op: 0,
+      mobile_editor_import_result: {
+        ok: true,
+        value: {
+          ok: true,
+          importSuccessClosed: true,
+          after: {
+            importSuccessDialog: true,
+            importSuccessDialogText: '导入电脑端详情成功!',
+            canvasImageCount: 0,
+            visibleImageCount: 0,
+            groupCount: 0,
+            expectedUrlCount: 22,
+            canvasExpectedHitCount: 0,
+            visibleExpectedHitCount: 0,
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'save_mobile_editor')
+  assert.match(result.meta.shared.current_store, /已确认成功弹窗/)
+})
+
+test('mobile detail finish runs inside editor target instead of top-toolbar coordinates', async () => {
+  const save = await runScript({
+    phase: 'save_mobile_editor',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_generate_mode: '全图生成',
+      mobile_cross_origin_import_success_closed: true,
+    },
+  })
+
+  assert.equal(save.result.meta.action, 'cdp_target_eval')
+  assert.equal(save.result.meta.next_phase, 'verify_mobile_editor_saved')
+  assert.equal(save.result.meta.shared_key, 'mobile_editor_save_result')
+
+  const finish = await runScript({
+    phase: 'finish_mobile_editor',
+    shared: {
+      ...save.result.meta.shared,
+      mobile_editor_save_result: { ok: true, value: { ok: true } },
+      mobile_editor_saved: { ok: true },
+    },
+  })
+
+  assert.equal(finish.result.meta.action, 'cdp_target_eval')
+  assert.equal(finish.result.meta.next_phase, 'wait_after_mobile_finish')
+  assert.equal(finish.result.meta.shared_key, 'mobile_editor_finish_result')
+  assert.equal(Array.from(finish.result.meta.target_url_contains).join('|'), 'sell.xiangqing.taobao.com/new_user_panel.htm|itemId=1004440515770')
+  assert.match(finish.result.meta.expression, /完成编辑/)
+})
+
+test('cleanDuplicateShenbiMobileImages removes only repeated mobile detail URLs', async () => {
+  const helpers = await loadExports()
+  const duplicate = 'https://img.alicdn.com/imgextra/i1/642320867/header.jpg'
+  const detail = [
+    '<wapDesc>',
+    `<img size="899">${duplicate}</img>`,
+    '<img size="1200">https://img.alicdn.com/imgextra/i1/642320867/detail-1.jpg</img>',
+    `<img size="899">${duplicate}</img>`,
+    '</wapDesc>',
+  ].join('')
+  const mobile = {
+    descContainer: {
+      detail,
+      nativeDetail: JSON.stringify({
+        data: {
+          children: [
+            { params: { picUrl: duplicate } },
+            { params: { picUrl: 'https://img.alicdn.com/imgextra/i1/642320867/detail-1.jpg' } },
+            { params: { picUrl: duplicate } },
+          ],
+        },
+      }),
+    },
+  }
+
+  const cleaned = helpers.cleanDuplicateShenbiMobileImages(mobile)
+
+  assert.equal(cleaned.changed, true)
+  assert.equal(cleaned.removedDetailCount, 1)
+  assert.equal(cleaned.removedNativeCount, 1)
+  assert.equal((cleaned.value.descContainer.detail.match(/header\.jpg/g) || []).length, 1)
+  const native = JSON.parse(cleaned.value.descContainer.nativeDetail)
+  assert.deepEqual(native.data.children.map(item => item.params.picUrl), [
+    duplicate,
+    'https://img.alicdn.com/imgextra/i1/642320867/detail-1.jpg',
+  ])
+})
+
+test('cleanDuplicateShenbiMobileImages preserves distinct top images', async () => {
+  const helpers = await loadExports()
+  const mobile = {
+    descContainer: {
+      detail: [
+        '<wapDesc>',
+        '<img size="899">https://img.alicdn.com/imgextra/i1/642320867/header-1.jpg</img>',
+        '<img size="899">https://img.alicdn.com/imgextra/i1/642320867/header-2.jpg</img>',
+        '</wapDesc>',
+      ].join(''),
+      nativeDetail: JSON.stringify({
+        data: {
+          children: [
+            { params: { picUrl: 'https://img.alicdn.com/imgextra/i1/642320867/header-1.jpg' } },
+            { params: { picUrl: 'https://img.alicdn.com/imgextra/i1/642320867/header-2.jpg' } },
+          ],
+        },
+      }),
+    },
+  }
+
+  const cleaned = helpers.cleanDuplicateShenbiMobileImages(mobile)
+
+  assert.equal(cleaned.changed, false)
+  assert.equal(cleaned.removedDetailCount, 0)
+  assert.equal(cleaned.removedNativeCount, 0)
+})
+
+test('buildAnchoredPcDetailModules exposes already-match candidate when old detail has only one package sequence', async () => {
+  const helpers = await loadExports()
+  const modules = [{
+    id: 'tmDescription',
+    name: '文本PC详情',
+    content: [
+      '<p><img src="https://img.example/top.jpg"/></p>',
+      '<p><img src="https://img.example/detail-1-old.jpg"/></p>',
+      '<p><img src="https://img.example/detail-2-old.jpg"/></p>',
+    ].join(''),
+    custom: true,
+  }]
+
+  const result = helpers.buildAnchoredPcDetailModules(modules, [], {
+    probeOnly: true,
+    allowLegacyCountImageReplace: true,
+    legacyCountDetailImageCount: 2,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.mode, 'already_match_candidate')
+  assert.equal(result.requiresAlreadyMatch, true)
+  assert.deepEqual(plain(result.currentReplacementUrls), [
+    'https://img.example/detail-1-old.jpg',
+    'https://img.example/detail-2-old.jpg',
+  ])
+})
+
+test('buildAnchoredPcDetailModules cleans duplicated old package detail sequence into one sequence', async () => {
+  const helpers = await loadExports()
+  const modules = [{
+    id: 'tmDescription',
+    name: '文本PC详情',
+    content: [
+      '<p><img src="https://img.example/top.jpg"/></p>',
+      '<p><img src="https://img.example/detail-1-old.jpg"/></p>',
+      '<p><img src="https://img.example/detail-2-old.jpg"/></p>',
+      '<p><img src="https://img.example/detail-1-old.jpg"/></p>',
+      '<p><img src="https://img.example/detail-2-old.jpg"/></p>',
+    ].join(''),
+    custom: true,
+  }]
+
+  const result = helpers.buildAnchoredPcDetailModules(modules, [
+    'https://img.example/detail-1-new.jpg',
+    'https://img.example/detail-2-new.jpg',
+  ], {
+    allowLegacyCountImageReplace: true,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.mode, 'legacy_count_duplicate_cleanup')
+  assert.equal(result.duplicateSequenceCount, 2)
+  assert.equal(result.requiresAlreadyMatch, true)
+  assert.deepEqual(plain(result.currentReplacementUrls), [
+    'https://img.example/detail-1-old.jpg',
+    'https://img.example/detail-2-old.jpg',
+    'https://img.example/detail-1-old.jpg',
+    'https://img.example/detail-2-old.jpg',
+  ])
+  assert.match(result.modules[0].content, /top\.jpg/)
+  assert.equal((result.modules[0].content.match(/detail-1-new\.jpg/g) || []).length, 1)
+  assert.equal((result.modules[0].content.match(/detail-2-new\.jpg/g) || []).length, 1)
+  assert.doesNotMatch(result.modules[0].content, /detail-1-old\.jpg/)
+  assert.doesNotMatch(result.modules[0].content, /detail-2-old\.jpg/)
+})
+
+test('buildAnchoredPcDetailModules uses count fallback for multi-module image-only old detail', async () => {
+  const helpers = await loadExports()
+  const modules = [
+    {
+      id: -110,
+      name: '抖音固定图',
+      content: '',
+      custom: true,
+    },
+    {
+      id: -111,
+      name: '宝贝产品',
+      content: [
+        '<p><img src="https://img.example/top.jpg"/></p>',
+        '<p><img src="https://img.example/detail-1-old.jpg"/></p>',
+        '<p><img src="https://img.example/detail-2-old.jpg"/></p>',
+      ].join(''),
+      custom: true,
+    },
+    {
+      id: -112,
+      name: '自定义',
+      content: '<p><img src="https://img.example/tail.jpg"/></p>',
+      custom: true,
+    },
+  ]
+
+  const result = helpers.buildAnchoredPcDetailModules(modules, [
+    'https://img.example/detail-1-new.jpg',
+    'https://img.example/detail-2-new.jpg',
+  ], {
+    allowLegacyCountImageReplace: true,
+  })
+
+  assert.equal(result.ok, true)
+  assert.equal(result.mode, 'legacy_count_replace')
+  assert.equal(result.replaceStartIndex, 1)
+  assert.deepEqual(plain(result.currentReplacementUrls), [
+    'https://img.example/detail-1-old.jpg',
+    'https://img.example/detail-2-old.jpg',
+  ])
+  assert.match(result.modules[1].content, /top\.jpg/)
+  assert.match(result.modules[1].content, /detail-1-new\.jpg/)
+  assert.match(result.modules[1].content, /detail-2-new\.jpg/)
+  assert.match(result.modules[2].content, /tail\.jpg/)
+  assert.doesNotMatch(result.modules[1].content, /detail-1-old\.jpg/)
+})
+
+test('detectPcDetailAlreadyMatchesUpload marks duplicated detail sequence for cleanup when first sequence matches upload', async () => {
+  const helpers = await loadExports()
+  const match = await helpers.detectPcDetailAlreadyMatchesUpload({
+    ok: true,
+    duplicateSequenceCount: 2,
+    currentReplacementUrls: [
+      'https://img.example/detail-1-new.jpg',
+      'https://img.example/detail-2-new.jpg',
+      'https://img.example/detail-1-new.jpg',
+      'https://img.example/detail-2-new.jpg',
+    ],
+  }, [
+    { url: 'https://img.example/detail-1-new.jpg' },
+    { url: 'https://img.example/detail-2-new.jpg' },
+  ])
+
+  assert.equal(match.matched, false)
+  assert.equal(match.duplicateCleanup, true)
+  assert.equal(match.method, 'url_sequence_duplicate_cleanup')
+})
+
+test('wait_after_mobile_finish cleans duplicate mobile detail images before final submit', async () => {
+  const duplicate = 'https://img.alicdn.com/imgextra/i1/642320867/header.jpg'
+  const mobile = {
+    descContainer: {
+      detail: `<wapDesc><img size="899">${duplicate}</img><img size="899">${duplicate}</img></wapDesc>`,
+      nativeDetail: JSON.stringify({
+        data: {
+          children: [
+            { params: { picUrl: duplicate } },
+            { params: { picUrl: duplicate } },
+          ],
+        },
+      }),
+    },
+  }
+  const models = { formValues: { descForShenbiMobile: mobile } }
+  const submit = fakeElement('提交发布', { left: 1400, top: 900, className: 'next-btn-primary' })
+  submit.tagName = 'BUTTON'
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'descForShenbiMobile') return models.formValues.descForShenbiMobile
+      if (name === 'modularDesc') return []
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return models
+      },
+      updateModels(update) {
+        if (update.formValues) models.formValues = update.formValues
+      },
+      getComponent() {
+        return null
+      },
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'wait_after_mobile_finish',
+    shared: {
+      current_job: { item_id: '1004440515770', style_code: '208126104202' },
+      mobile_sync_note: '手机端详情已导入电脑端详情',
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1004440515770',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'wait_after_mobile_finish')
+  assert.equal(result.meta.shared.mobile_detail_duplicates_cleaned, true)
+  assert.match(result.meta.shared.mobile_sync_note, /已清理手机端详情重复图片/)
+  assert.equal((models.formValues.descForShenbiMobile.descContainer.detail.match(/header\.jpg/g) || []).length, 1)
+})
+
+test('mobile detail import cleanup removes deleted image placeholders before save', async () => {
+  const removedGroups = []
+  const removedComponents = []
+  const badGroup = {
+    id: 'group-bad',
+    type: 'group',
+    props: {
+      groupId: 'group-bad',
+      errorInfo: [{ errorMes: '图片在图片空间被删除，请先删除图片' }],
+      components: [],
+    },
+  }
+  const badComponent = {
+    id: 'component-bad',
+    type: 'pic',
+    props: {
+      componentId: 'component-bad',
+      groupId: 'group-bad',
+      boxStyle: {
+        'background-image': 'https://assets.alicdn.com/kissy/1.0.0/build/imglazyload/spaceball.gif',
+      },
+    },
+  }
+  const realGroup = {
+    id: 'group-real',
+    type: 'group',
+    props: {
+      groupId: 'group-real',
+      components: [],
+    },
+  }
+  const realComponent = {
+    id: 'component-real',
+    type: 'pic',
+    props: {
+      componentId: 'component-real',
+      groupId: 'group-real',
+      boxStyle: {
+        'background-image': 'https://img.alicdn.com/imgextra/i1/642320867/O1CN01RsZJPu1IH8XZCoJD2_!!642320867.jpg',
+      },
+    },
+  }
+  const orphanBadComponent = {
+    id: 'component-orphan',
+    type: 'pic',
+    props: {
+      componentId: 'component-orphan',
+      groupId: 'group-deleted',
+      boxStyle: {
+        'background-image': 'https://assets.alicdn.com/kissy/1.0.0/build/imglazyload/spaceball.gif',
+      },
+    },
+  }
+  const canvasProps = {
+    components: [badGroup, badComponent, realGroup, realComponent, orphanBadComponent],
+    layout: [badGroup, badComponent, realGroup, realComponent, orphanBadComponent],
+    addGroup() {},
+    addComponent() {},
+    removeGroup(id) {
+      removedGroups.push(id)
+    },
+    removeComponent(id) {
+      removedComponents.push(id)
+    },
+  }
+  const reactElement = { tagName: 'DIV' }
+  reactElement['__reactInternalInstance$test'] = {
+    _currentElement: {
+      _owner: {
+        _instance: {
+          props: canvasProps,
+        },
+      },
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'cleanup_mobile_editor_import',
+    shared: {
+      current_job: { item_id: '976685894832', style_code: '201424108107' },
+    },
+    documentOverride: fakeDocument([reactElement]),
+  })
+
+  assert.equal(result.meta.next_phase, 'save_mobile_editor')
+  assert.deepEqual(removedGroups, ['group-bad'])
+  assert.deepEqual(removedComponents.sort(), ['component-bad', 'component-orphan'])
+  assert.equal(result.meta.shared.mobile_editor_cleanup.removedGroupCount, 1)
+  assert.equal(result.meta.shared.mobile_editor_cleanup.removedComponentCount, 2)
+  assert.match(result.meta.shared.current_store, /已清理手机端导入占位图/)
 })
 
 test('buildAnchoredPcDetailModules preserves first image and wanted-info bottom anchor while replacing middle detail images', async () => {
@@ -2277,6 +3158,98 @@ test('apply_tmall_draft commits new desc template before full publish submit', a
   assert.equal(new URLSearchParams(fetchCalls[0].body).get('_tb_token_'), 'test-token')
 })
 
+test('apply_tmall_draft skips PC detail replacement when existing replacement range already matches upload', async () => {
+  const detailUrls = [
+    'https://img.example/new-1.jpg',
+    'https://img.example/new-2.jpg',
+  ]
+  const componentValues = {
+    mainImagesGroup: { images: [] },
+    threeToFourImages: [],
+    guideImageGroup: {},
+    modularDesc: [{
+      id: 30,
+      name: '宝贝详情',
+      content: [
+        '<p><img src="https://img.example/top.jpg"/></p>',
+        `<p><img src="${detailUrls[0]}"/></p>`,
+        `<p><img src="${detailUrls[1]}"/></p>`,
+        '<p><img src="https://img.example/size.jpg"/></p>',
+      ].join(''),
+      custom: false,
+    }],
+  }
+  const models = { formValues: {} }
+  const emitted = []
+  const state = {
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return models
+      },
+      updateModels(update) {
+        if (update.formValues) models.formValues = update.formValues
+      },
+      getComponent(name) {
+        return {
+          emit(eventName, value) {
+            emitted.push({ name, eventName, value })
+            componentValues[name] = value
+          },
+        }
+      },
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'apply_tmall_draft',
+    shared: {
+      current_job: { item_id: '999412782684', style_code: '208425107212', execute_mode: 'publish_and_sync_mobile' },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+      uploaded_by_category: {
+        pc_detail: detailUrls.map(url => ({ url })),
+      },
+      pc_detail_visual_anchors: {
+        fixedTopImageIndex: 0,
+        stopImageIndex: 3,
+        stopAnchorKind: 'size',
+      },
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      cookie: '_tb_token_=test-token',
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'submit_pc_publish')
+  assert.equal(result.meta.shared.pc_detail_skip_replacement, true)
+  assert.equal(result.meta.shared.pc_detail_target, 'modularDesc')
+  assert.equal(result.meta.shared.pc_detail_already_match.method, 'url_sequence')
+  assert.equal(emitted.some(item => item.name === 'modularDesc'), false)
+  assert.match(result.meta.shared.current_result_rows[0]['备注'], /跳过PC替换/)
+})
+
 test('wait_tmall_ready prefers new desc template over return-old switch', async () => {
   const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
   let clicked = 0
@@ -2722,6 +3695,176 @@ test('wait_final_readback_tmall_ready completes only after PC and mobile detail 
   assert.match(result.data[0]['备注'], /发布后读回校验通过/)
 })
 
+test('wait_final_readback_tmall_ready accepts transformed mobile URLs after verified old editor save', async () => {
+  const pcUrls = [
+    'https://img.alicdn.com/new-detail-1.jpg',
+    'https://img.alicdn.com/new-detail-2.jpg',
+  ]
+  const modularDesc = [{
+    id: 'detail',
+    name: '旧版详情',
+    content: `<p><img src="${pcUrls[0]}"/></p><p><img src="${pcUrls[1]}"/></p>`,
+  }]
+  const mobile = {
+    descContainer: {
+      detail: '<wapDesc><img>https://img.alicdn.com/mobile-generated-1.jpg</img><img>https://img.alicdn.com/mobile-generated-2.jpg</img></wapDesc>',
+      nativeDetail: JSON.stringify({
+        data: {
+          children: [
+            { params: { picUrl: 'https://img.alicdn.com/mobile-generated-1.jpg' } },
+            { params: { picUrl: 'https://img.alicdn.com/mobile-generated-2.jpg' } },
+          ],
+        },
+      }),
+    },
+  }
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'modularDesc') return modularDesc
+      if (name === 'descForShenbiMobile') return mobile
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { descForShenbiMobile: mobile } }
+      },
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'wait_final_readback_tmall_ready',
+    shared: {
+      current_job: { item_id: '999412782684', style_code: '208425107212' },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/detail-01.jpg', __category: 'pc_detail' },
+      ],
+      uploaded_by_category: {
+        pc_detail: pcUrls.map(url => ({ url })),
+      },
+      mobile_editor_imported: { ok: true },
+      mobile_editor_saved: { ok: true },
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0]['执行结果'], '更新完成')
+  assert.match(result.data[0]['备注'], /天猫已重生成手机图URL/)
+})
+
+test('wait_final_readback_tmall_ready accepts PC detail skip when pre-apply visual match proved equality', async () => {
+  const uploadedUrls = [
+    'https://img.alicdn.com/uploaded-detail-1.jpg',
+    'https://img.alicdn.com/uploaded-detail-2.jpg',
+  ]
+  const existingUrls = [
+    'https://img.alicdn.com/existing-detail-1.jpg',
+    'https://img.alicdn.com/existing-detail-2.jpg',
+  ]
+  const modularDesc = [{
+    id: 'detail',
+    name: '旧版详情',
+    content: existingUrls.map(url => `<p><img src="${url}"/></p>`).join(''),
+  }]
+  const mobile = {
+    descContainer: {
+      detail: '<wapDesc><img>https://img.alicdn.com/mobile-generated-1.jpg</img><img>https://img.alicdn.com/mobile-generated-2.jpg</img></wapDesc>',
+      nativeDetail: JSON.stringify({
+        data: {
+          children: [
+            { params: { picUrl: 'https://img.alicdn.com/mobile-generated-1.jpg' } },
+            { params: { picUrl: 'https://img.alicdn.com/mobile-generated-2.jpg' } },
+          ],
+        },
+      }),
+    },
+  }
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'modularDesc') return modularDesc
+      if (name === 'descForShenbiMobile') return mobile
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { descForShenbiMobile: mobile } }
+      },
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'wait_final_readback_tmall_ready',
+    shared: {
+      current_job: { item_id: '1010470516370', style_code: '208126156202' },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/detail-01.jpg', __category: 'pc_detail' },
+      ],
+      uploaded_by_category: {
+        pc_detail: uploadedUrls.map(url => ({ url })),
+      },
+      pc_detail_skip_replacement: true,
+      pc_detail_already_match: {
+        matched: true,
+        method: 'visual_hash',
+        currentUrls: existingUrls,
+        expectedUrls: uploadedUrls,
+      },
+      mobile_editor_imported: { ok: true },
+      mobile_editor_saved: { ok: true },
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1010470516370',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0]['执行结果'], '更新完成')
+  assert.match(result.data[0]['备注'], /PC详情本轮跳过替换/)
+  assert.match(result.data[0]['备注'], /天猫已重生成手机图URL/)
+})
+
 test('wait_final_readback_tmall_ready switches to old description before failing missing detail readback', async () => {
   const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
   const state = {
@@ -3163,7 +4306,7 @@ test('submit_pc_publish clicks DOM submit before trying API submit', async () =>
   assert.equal(result.meta.shared.last_submit_method, 'dom_click')
 })
 
-test('submit_pc_publish posts payload first when PC detail images were changed', async () => {
+test('submit_pc_publish does not force raw payload submit for legacy PC detail mobile-editor flow', async () => {
   const fetchCalls = []
   let clicked = 0
   const submit = fakeElement('提交', {
@@ -3183,6 +4326,125 @@ test('submit_pc_publish posts payload first when PC detail images were changed',
   }
   const { result } = await runScript({
     phase: 'submit_pc_publish',
+    shared: {
+      current_job: {
+        item_id: '999412782684',
+        style_code: '208425107212',
+      },
+      current_result_rows: [],
+      uploaded_by_category: {
+        pc_detail: [{ url: 'https://img.alicdn.com/new-detail-1.jpg' }],
+      },
+      pc_detail_target: 'modularDesc',
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=999412782684',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品发布 提交' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return {
+            getGlobal() {
+              return models.global
+            },
+            engine: {
+              getModels() {
+                return models
+              },
+            },
+          }
+        },
+      },
+    },
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url, body: String(options.body || '') })
+      return jsonResponse({ success: true })
+    },
+  })
+
+  assert.equal(clicked, 1)
+  assert.equal(fetchCalls.length, 0)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.last_submit_method, 'dom_click')
+})
+
+test('submit_pc_publish api_first still avoids raw submit.htm for legacy PC first publish', async () => {
+  const fetchCalls = []
+  let clicked = 0
+  const submit = fakeElement('提交', {
+    left: 790,
+    className: 'next-btn next-large next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  submit.tagName = 'BUTTON'
+  const { result } = await runScript({
+    phase: 'submit_pc_publish',
+    params: {
+      tmall_submit_mode: 'api_first',
+    },
+    shared: {
+      current_job: {
+        item_id: '1004440515770',
+        style_code: '208126104202',
+      },
+      current_result_rows: [],
+      uploaded_by_category: {
+        pc_detail: [{ url: 'https://img.alicdn.com/new-detail-1.jpg' }],
+      },
+      pc_detail_target: 'modularDesc',
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1004440515770',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品发布 提交' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url, body: String(options.body || '') })
+      return jsonResponse({ success: true })
+    },
+  })
+
+  assert.equal(clicked, 1)
+  assert.equal(fetchCalls.length, 0)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.last_submit_method, 'dom_click')
+})
+
+test('submit_pc_publish posts raw payload only when API submit mode is explicit', async () => {
+  const fetchCalls = []
+  let clicked = 0
+  const submit = fakeElement('提交', {
+    left: 790,
+    className: 'next-btn next-large next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  submit.tagName = 'BUTTON'
+  const models = {
+    global: { itemId: '999412782684', catId: '50012487' },
+    formValues: {
+      modularDesc: [{
+        id: 'detail',
+        content: '<p><img src="https://img.alicdn.com/new-detail-1.jpg"/></p>',
+      }],
+    },
+  }
+  const { result } = await runScript({
+    phase: 'submit_pc_publish',
+    params: {
+      tmall_submit_mode: 'api',
+    },
     shared: {
       current_job: {
         item_id: '999412782684',
@@ -4114,6 +5376,72 @@ test('uploadFileToTmall uses Tmall picture-center stream upload endpoint', async
   assert.equal(url, 'https://img.alicdn.com/imgextra/i1/test/O1CN.jpg')
 })
 
+test('uploadFileToTmall reencodes once for Tmall safety upload rejection', async () => {
+  const calls = []
+  const documentOverride = {
+    cookie: '_tb_token_=test-token',
+    createElement(tag) {
+      assert.equal(tag, 'canvas')
+      return {
+        width: 0,
+        height: 0,
+        getContext() {
+          return {
+            fillStyle: '',
+            fillRect() {},
+            drawImage() {},
+          }
+        },
+        toBlob(resolve, type, quality) {
+          assert.equal(type, 'image/jpeg')
+          assert.equal(quality, 0.92)
+          resolve(new Blob(['reencoded-image'], { type: 'image/jpeg' }))
+        },
+      }
+    },
+  }
+  class FakeImage {
+    set src(value) {
+      this._src = value
+      this.naturalWidth = 620
+      this.naturalHeight = 1240
+      setTimeout(() => this.onload?.(), 0)
+    }
+  }
+  const helpers = await loadExports(async (url, init = {}) => {
+    calls.push({ url: String(url), body: init.body })
+    if (calls.length === 1) {
+      return jsonResponse({ success: false, message: '图片存在安全问题' })
+    }
+    return jsonResponse({
+      success: true,
+      object: {
+        url: '//img.alicdn.com/imgextra/i1/test/reencoded.jpg',
+      },
+    })
+  }, {}, {
+    document: documentOverride,
+    Image: FakeImage,
+    URL: {
+      createObjectURL(file) {
+        assert.equal(file.name, 'unsafe.jpg')
+        return 'blob:unsafe'
+      },
+      revokeObjectURL() {},
+    },
+  })
+  const file = new File(['unsafe-image'], 'unsafe.jpg', { type: 'image/jpeg' })
+
+  const url = await helpers.uploadFileToTmall(file, 'pc_detail')
+
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].body.get('file').name, 'unsafe.jpg')
+  assert.equal(calls[1].body.get('file').name, 'unsafe_reencoded.jpg')
+  assert.equal(calls[1].body.get('file').type, 'image/jpeg')
+  assert.equal(calls[1].body.get('name'), 'unsafe_reencoded.jpg')
+  assert.equal(url, 'https://img.alicdn.com/imgextra/i1/test/reencoded.jpg')
+})
+
 test('source resolver does not fall back to other Semir mounts unless candidates are configured', async () => {
   const helpers = await loadExports(async (url, init = {}) => {
     if (String(url) === '/fengcloud/1/account/mount') {
@@ -4306,6 +5634,48 @@ test('collectPackagingAssets falls back to mount-wide packaging search when conf
   assert.equal(plan.byCategory.vertical.length, 1)
   assert.equal(plan.byCategory.pc_detail.length, 2)
   assert.equal(plan.items.some(item => String(item.fullpath || '').includes('1-企划拍摄')), false)
+})
+
+test('collectPackagingAssets passes style code when deduping duplicate PC detail sequences', async () => {
+  const detailFolder = '品牌视觉部/服饰包装组/巴拉服饰产品包装/01-产品包装/2026Q1/新生儿/208126156202/images'
+  const templateDetailImages = Array.from({ length: 11 }, (_, index) => {
+    const seq = String(index + 1).padStart(2, '0')
+    return { dir: '0', filename: `126新生儿模版_${seq}.jpg` }
+  })
+  const styleDetailImages = Array.from({ length: 11 }, (_, index) => {
+    const seq = String(index + 1).padStart(2, '0')
+    return { dir: '0', filename: `208126156202_${seq}.jpg` }
+  })
+  const helpers = await loadExports(async (url, init = {}) => {
+    const requestUrl = new URL(String(url), 'https://fmp.semirapp.com')
+    if (requestUrl.pathname === '/fengcloud/2/file/search') {
+      assert.equal(init.method, 'POST')
+      return jsonResponse({ total: 0, list: [] })
+    }
+    if (requestUrl.pathname.startsWith('/fengcloud/') && /\/file\/(?:ls|list)$/.test(requestUrl.pathname)) {
+      const fullpath = requestUrl.searchParams.get('fullpath') || ''
+      if (fullpath === detailFolder) {
+        return jsonResponse({
+          total: 22,
+          list: [...templateDetailImages, ...styleDetailImages],
+        })
+      }
+    }
+    return jsonResponse({ total: 0, list: [] })
+  })
+
+  const plan = await helpers.collectPackagingAssets({
+    style_code: '208126156202',
+    folder_scan_depth: 1,
+  }, {
+    mountId: '1863',
+    relativePath: detailFolder,
+  })
+
+  assert.equal(plan.byCategory.pc_detail.length, 11)
+  assert.equal(plan.pcDetailDedupedCount, 11)
+  assert.equal(plan.byCategory.pc_detail.every(item => String(item.filename).startsWith('208126156202_')), true)
+  assert.match(plan.warnings[0], /保留款号序列/)
 })
 
 test('collectPackagingAssets keeps trying search folders after configured path 404 and sparse latest root', async () => {
