@@ -167,6 +167,7 @@ contextBridge.exposeInMainWorld('cs', {
   getData:         (aid, tid) => ipcRenderer.invoke('get-data', aid, tid),
   exportData:      (aid, tid, fmt) => ipcRenderer.invoke('export-data', aid, tid, fmt),
   openFile:        (path) => ipcRenderer.invoke('open-file', path),
+  openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
   readExcel:       (path) => ipcRenderer.invoke('read-excel', path),
   testNotify:      (channel) => ipcRenderer.invoke('test-notify', channel),
   getTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('get-tmall-approval-batch', batchId, token),

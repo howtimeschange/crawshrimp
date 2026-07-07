@@ -268,6 +268,12 @@ button {
   min-height: 28px;
   padding: 5px 8px;
   font-size: 12px;
+  text-decoration: none;
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .full {
@@ -512,6 +518,26 @@ button {
 
 .asset-row.selected {
   border-color: #2563eb;
+}
+
+.asset-preview,
+.asset-thumb {
+  display: block;
+  width: 100%;
+  border: 1px solid #253044;
+  border-radius: 7px;
+  background: #0d1117;
+  object-fit: contain;
+}
+
+.asset-preview {
+  max-height: 260px;
+  margin: 10px 0;
+}
+
+.asset-thumb {
+  max-height: 150px;
+  margin-bottom: 8px;
 }
 
 @media (max-width: 860px) {

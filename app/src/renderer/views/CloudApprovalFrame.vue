@@ -48,7 +48,7 @@ async function refresh() {
 
 async function openExternal() {
   if (!cloudUrl.value) return
-  await window.cs.openFile(cloudUrl.value)
+  await window.cs.openExternalUrl(cloudUrl.value)
 }
 
 onMounted(refresh)

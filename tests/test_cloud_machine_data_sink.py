@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,6 +28,18 @@ class CloudMachineDataSinkTests(unittest.TestCase):
         self.assertEqual(saved["machine_id"], "machine-1")
         self.assertEqual(loaded["machine_token"], "csr_machine_secret")
         self.assertEqual(loaded["capabilities"], ["regenerate_ai_image"])
+
+    @unittest.skipIf(os.name != "posix", "POSIX file modes only")
+    def test_cloud_credentials_database_is_owner_only(self):
+        data_sink.save_cloud_machine_credentials(
+            machine_id="machine-1",
+            machine_token="csr_machine_secret",
+            machine_name="任务机 1",
+            capabilities=["regenerate_ai_image"],
+        )
+        db_path = Path(self.tmp.name) / "crawshrimp.db"
+
+        self.assertEqual(db_path.stat().st_mode & 0o777, 0o600)
 
     def test_record_cloud_job_event(self):
         data_sink.record_cloud_job_event(

@@ -32,10 +32,10 @@ class FakeCloudClient:
         self.uploads.append({"upload_url": upload_url, "path": Path(path), "content_type": content_type})
         return {"ok": True}
 
-    def download_asset(self, asset_uid, target_path):
+    def download_asset(self, asset_uid, target_path, *, job_uid="", lease_id=""):
         target = Path(target_path)
         target.write_bytes(f"asset:{asset_uid}".encode("utf-8"))
-        self.downloads.append({"asset_uid": asset_uid, "path": target})
+        self.downloads.append({"asset_uid": asset_uid, "path": target, "job_uid": job_uid, "lease_id": lease_id})
         return target
 
 

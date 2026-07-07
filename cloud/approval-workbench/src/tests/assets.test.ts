@@ -74,6 +74,17 @@ interface AssetRow {
   updated_at: string
 }
 
+interface DispatchJobRow {
+  job_uid: string
+  batch_uid: string
+  job_type: string
+  status: string
+  assigned_machine_id: string | null
+  lease_id: string | null
+  lease_expires_at: string | null
+  payload_json: string
+}
+
 interface FakeState {
   users: UserRow[]
   roles: RoleRow[]
@@ -81,6 +92,7 @@ interface FakeState {
   sessions: SessionRow[]
   machines: MachineRow[]
   machineTokens: MachineTokenRow[]
+  dispatchJobs: DispatchJobRow[]
   assets: AssetRow[]
   r2Gets: string[]
   r2Puts: Array<{ key: string; body: string; contentType: string }>
@@ -120,6 +132,9 @@ class FakeD1Statement {
     }
     if (normalized.includes('from ai_image_assets') && normalized.includes('where object_key = ?')) {
       return (this.state.assets.find((row) => row.object_key === String(this.params[0])) ?? null) as T | null
+    }
+    if (normalized.includes('from dispatch_jobs') && normalized.includes('where job_uid = ?')) {
+      return (this.state.dispatchJobs.find((row) => row.job_uid === String(this.params[0])) ?? null) as T | null
     }
     return null
   }
@@ -236,7 +251,19 @@ describe('asset upload planning routes', () => {
     expect(state.assets).toHaveLength(0)
   })
 
-  it('allows active machine bearer tokens to create upload plans', async () => {
+  it('rejects active machine bearer tokens without a current asset lease', async () => {
+    const { state, machineToken } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify({ ...validPresignBody(), job_uid: '', lease_id: '' }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(400)
+    expect(state.assets).toHaveLength(0)
+  })
+
+  it('allows active leased machine bearer tokens to create scoped upload plans', async () => {
     const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
@@ -289,7 +316,7 @@ describe('asset upload planning routes', () => {
   it('rejects stale upload object keys without a planned asset row', async () => {
     const { state, machineToken } = await baseState()
     const objectKey = 'batches/batch-20260707/ai/stale.jpg'
-    const response = await fetchWorker(new Request(`https://example.test/api/assets/upload/${encodeURIComponent(objectKey)}`, {
+    const response = await fetchWorker(new Request(`https://example.test/api/assets/upload/${encodeURIComponent(objectKey)}?job_uid=job-upload&lease_id=lease-upload`, {
       method: 'PUT',
       headers: { authorization: `Bearer ${machineToken}` },
       body: 'image-bytes',
@@ -358,10 +385,21 @@ describe('asset upload planning routes', () => {
     expect(state.r2Gets).toEqual(['batches/batch-20260707/ai/asset-ai-1-ai.jpg'])
   })
 
-  it('allows active machine bearer tokens to reach the R2 download lookup path', async () => {
+  it('rejects active machine bearer token downloads without a current asset lease', async () => {
     const { state, machineToken } = await baseState()
     state.assets.push(assetRow())
     const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download', {
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(400)
+    expect(state.r2Gets).toEqual([])
+  })
+
+  it('allows active leased machine bearer tokens to reach the R2 download lookup path', async () => {
+    const { state, machineToken } = await baseState()
+    state.assets.push(assetRow())
+    const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download?job_uid=job-download&lease_id=lease-download', {
       headers: { authorization: `Bearer ${machineToken}` },
     }), fakeEnv(state))
 
@@ -381,6 +419,8 @@ describe('asset upload planning routes', () => {
         kind: 'ai',
         filename: '../look 1.png',
         content_hash: 'hash-1',
+        job_uid: 'job-upload',
+        lease_id: 'lease-upload',
       }),
     }), fakeEnv(state))
     const body = await response.json() as { object_key: string }
@@ -391,10 +431,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('rejects paths outside allowed asset suffixes', async () => {
-    const { state, machineToken } = await baseState()
+    const { state, adminCookie } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
-      headers: { authorization: `Bearer ${machineToken}` },
+      headers: { cookie: adminCookie },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -409,10 +449,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('stores sanitized source_path_label metadata without raw local absolute paths', async () => {
-    const { state, machineToken } = await baseState()
+    const { state, adminCookie } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
-      headers: { authorization: `Bearer ${machineToken}` },
+      headers: { cookie: adminCookie },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -429,10 +469,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('sanitizes absolute source_path_label and nested local paths while keeping safe metadata', async () => {
-    const { state, machineToken } = await baseState()
+    const { state, adminCookie } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
-      headers: { authorization: `Bearer ${machineToken}` },
+      headers: { cookie: adminCookie },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -472,10 +512,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('scrubs generic POSIX local paths and object-key metadata while preserving safe URLs', async () => {
-    const { state, machineToken } = await baseState()
+    const { state, adminCookie } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
-      headers: { authorization: `Bearer ${machineToken}` },
+      headers: { cookie: adminCookie },
       body: JSON.stringify({
         batch_uid: 'batch-1',
         style_id: 7,
@@ -567,6 +607,38 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
         revoked_at: null,
       },
     ],
+    dispatchJobs: [
+      {
+        job_uid: 'job-upload',
+        batch_uid: 'batch-20260707',
+        job_type: 'regenerate_ai_image',
+        status: 'leased',
+        assigned_machine_id: 'machine-1',
+        lease_id: 'lease-upload',
+        lease_expires_at: '2999-01-01T00:00:00.000Z',
+        payload_json: JSON.stringify({
+          batch_uid: 'batch-20260707',
+          style_id: 7,
+          asset_uid: 'asset-ai-1',
+          reference_asset_uids: ['asset-source-1'],
+        }),
+      },
+      {
+        job_uid: 'job-download',
+        batch_uid: 'batch-20260707',
+        job_type: 'submit_tmall_material_test',
+        status: 'leased',
+        assigned_machine_id: 'machine-1',
+        lease_id: 'lease-download',
+        lease_expires_at: '2999-01-01T00:00:00.000Z',
+        payload_json: JSON.stringify({
+          submit_plan: {
+            batch_uid: 'batch-20260707',
+            assets: [{ asset_uid: 'asset-ai-1', style_id: 7, kind: 'ai' }],
+          },
+        }),
+      },
+    ],
     assets: [],
     r2Gets: [],
     r2Puts: [],
@@ -587,6 +659,8 @@ function validPresignBody(): Record<string, unknown> {
     kind: 'ai',
     filename: 'ai.jpg',
     content_hash: 'hash-1',
+    job_uid: 'job-upload',
+    lease_id: 'lease-upload',
   }
 }
 

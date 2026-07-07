@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import mimetypes
-import urllib.request
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -51,7 +50,7 @@ class CloudJobExecutor:
         task_dir = self._task_dir(job)
         self._progress(job, "downloading_assets", "下载参考素材")
         reference_paths = [
-            str(self._download_asset(uid, task_dir / "references"))
+            str(self._download_asset(job, uid, task_dir / "references"))
             for uid in _text_list(payload.get("reference_asset_uids"))
         ]
         self._renew(job)
@@ -70,6 +69,7 @@ class CloudJobExecutor:
         output_path = _local_file(asset.get("path"), task_dir)
         self._progress(job, "uploading_results", "上传重新生图结果")
         upload_result = self._upload_result_asset(
+            job=job,
             batch_uid=batch_uid,
             style_id=style_id,
             asset_uid=asset_uid,
@@ -128,28 +128,18 @@ class CloudJobExecutor:
         path.mkdir(parents=True, exist_ok=True)
         return path
 
-    def _download_asset(self, asset_uid: str, target_dir: Path) -> Path:
+    def _download_asset(self, job: Mapping[str, Any], asset_uid: str, target_dir: Path) -> Path:
         target_dir.mkdir(parents=True, exist_ok=True)
         safe_uid = _safe_segment(asset_uid)
         target = target_dir / f"{safe_uid}.jpg"
         if hasattr(self.client, "download_asset"):
-            return Path(self.client.download_asset(asset_uid, target))
-        url = self.client._url_for(f"/api/assets/{asset_uid}/download")
-        headers = {"Accept": "*/*"}
-        token = getattr(self.client, "machine_token", "")
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        request = urllib.request.Request(url, headers=headers, method="GET")
-        try:
-            with urllib.request.urlopen(request, timeout=getattr(self.client, "timeout", 30.0)) as response:
-                target.write_bytes(response.read())
-        except Exception as exc:
-            raise CloudApprovalError(f"cloud asset download failed: {type(exc).__name__}") from None
-        return target
+            return Path(self.client.download_asset(asset_uid, target, job_uid=_job_uid(job), lease_id=_lease_id(job)))
+        raise CloudApprovalError("cloud client does not support asset download")
 
     def _upload_result_asset(
         self,
         *,
+        job: Mapping[str, Any],
         batch_uid: str,
         style_id: int,
         asset_uid: str,
@@ -163,6 +153,8 @@ class CloudJobExecutor:
             "batch_uid": batch_uid,
             "style_id": style_id,
             "asset_uid": asset_uid,
+            "job_uid": _job_uid(job),
+            "lease_id": _lease_id(job),
             "kind": "ai",
             "filename": path.name,
             "content_type": content_type,
@@ -239,11 +231,11 @@ class CloudJobExecutor:
                 continue
             style_id = _positive_int(asset.get("style_id"))
             style = styles_by_id.get(style_id, {})
-            local_path = self._download_asset(str(asset.get("asset_uid") or ""), task_dir / "approved")
+            local_path = self._download_asset(job, str(asset.get("asset_uid") or ""), task_dir / "approved")
             source_asset = source_by_style.get(style_id)
             if not source_asset:
                 raise ValueError(f"approved style {style_id or 'unknown'} is missing a source asset for submit origin")
-            origin_path = str(self._download_asset(str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
+            origin_path = str(self._download_asset(job, str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
             item = items_by_style.setdefault(style_id, {
                 "id": str(style.get("style_uid") or style_id),
                 "style_id": style_id,

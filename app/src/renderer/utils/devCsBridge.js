@@ -210,6 +210,7 @@ export function createDevCsBridge() {
       return { ok: true, result: { url } }
     },
     openFile: openExternalLike,
+    openExternalUrl: openExternalLike,
     readExcel: (path) => apiCall('POST', '/files/read-excel', { path }),
     testNotify: (channel) => apiCall('POST', '/settings/test-notify', { channel }),
     getTmallApprovalBatch: (batchId, token) => apiCall('GET', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),

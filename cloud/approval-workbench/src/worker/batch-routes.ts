@@ -78,6 +78,7 @@ interface DispatchJobRow {
 }
 
 const ALLOWED_KINDS = new Set(['source', 'reference', 'ai', 'table', 'log', 'result'])
+const SUBMIT_MACHINE_MAX_AGE_MS = 2 * 60 * 1000
 
 export async function syncBatch(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -221,7 +222,9 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
   const styleId = Number(body.style_id)
   const assetUid = stringValue(body.asset_uid)
   const filename = stringValue(body.filename)
+  const kind = stringValue(body.kind) || 'ai'
   if (!batchUid || !Number.isInteger(styleId) || styleId <= 0 || !assetUid || !filename) return badRequest('batch_uid, style_id, asset_uid, and filename are required')
+  if (!ALLOWED_KINDS.has(kind) || !['source', 'reference', 'ai'].includes(kind)) return badRequest('kind must be source, reference, or ai')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
@@ -232,9 +235,9 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
     assetUid,
     batchUid,
     styleId,
-    kind: 'ai',
+    kind,
     status: stringValue(body.status) || 'pending',
-    objectKey: batchObjectKey(batchUid, 'ai', `${assetUid}-${safeAssetFilename}`),
+    objectKey: batchObjectKey(batchUid, kind, `${assetUid}-${safeAssetFilename}`),
     filename: safeAssetFilename,
     contentHash: stringValue(body.content_hash),
     promptTemplateVersionId: numberOrNull(body.prompt_template_version_id),
@@ -244,10 +247,18 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
     meta: sanitizedMeta(body),
     now,
   })
-  await appendApprovalEvent(env, batchUid, styleId, assetUid, 'asset.manual_create', actor.user.id, { prompt_template_version_id: numberOrNull(body.prompt_template_version_id), prompt_text: stringValue(body.prompt_text) }, now)
+  await appendApprovalEvent(env, batchUid, styleId, assetUid, 'asset.manual_create', actor.user.id, { kind, prompt_template_version_id: numberOrNull(body.prompt_template_version_id), prompt_text: stringValue(body.prompt_text) }, now)
   await recomputeReviewState(env, batchUid)
   await recordAudit(env, { userId: actor.user.id }, 'batches.asset.manual_create', 'ai_image_asset', assetUid, { batch_uid: batchUid }, request)
-  return json({ ok: true, asset_uid: assetUid }, { status: 201 })
+  const objectKey = batchObjectKey(batchUid, kind, `${assetUid}-${safeAssetFilename}`)
+  return json({
+    ok: true,
+    asset_uid: assetUid,
+    object_key: objectKey,
+    upload_url: `/api/assets/upload/${encodeURIComponent(objectKey)}`,
+    method: 'PUT',
+    headers: {},
+  }, { status: 201 })
 }
 
 export async function createRegenerationJobs(request: Request, env: Env): Promise<Response> {
@@ -256,6 +267,7 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
   const batchUid = batchUidFromRegeneratePath(request)
   const body = await readJsonObject(request)
   const selected = stringArray(body.asset_uids ?? body.assetUids)
+  const promptOverrides = promptOverrideMap(body.prompt_overrides ?? body.promptOverrides)
   if (!batchUid || selected.length === 0) return badRequest('batch_uid and asset_uids are required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
@@ -279,7 +291,8 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
       batch_uid: batchUid,
       style_id: asset.style_id,
       asset_uid: asset.asset_uid,
-      prompt_text: asset.prompt_text,
+      prompt_text: promptOverrides.get(asset.asset_uid) || asset.prompt_text,
+      original_prompt_text: asset.prompt_text,
       reference_asset_uids: referenceAssetUids,
       parent_asset_uid: asset.parent_asset_uid,
     }
@@ -349,6 +362,7 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
   if (batch.status !== 'ready_to_submit') return json({ error: 'submit requires batch status ready_to_submit' }, { status: 409 })
   const machine = await env.DB.prepare('SELECT * FROM task_machines WHERE machine_id = ? LIMIT 1').bind(machineId).first<MachineRow>()
   if (!machine || machine.auth_status !== 'active') return badRequest('selected machine must be active')
+  if (!isFreshOnlineSubmitMachine(machine)) return json({ error: 'selected machine must be online and recently seen before submit' }, { status: 409 })
   if (!parseArray(machine.capabilities_json).includes('submit_tmall_material_test')) return badRequest('selected machine lacks submit_tmall_material_test capability')
   const submitPlan = await buildSubmitPlan(env, batchUid)
   if (submitPlan.assets.length === 0) return json({ error: 'submit plan requires at least one approved AI asset' }, { status: 409 })
@@ -602,6 +616,24 @@ async function findDispatchJob(env: Env, jobType: string, idempotencyKey: string
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()) : []
+}
+
+function promptOverrideMap(value: unknown): Map<string, string> {
+  const result = new Map<string, string>()
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return result
+  for (const [assetUid, prompt] of Object.entries(value as Record<string, unknown>)) {
+    const uid = stringValue(assetUid)
+    const text = stringValue(prompt)
+    if (uid && text) result.set(uid, text)
+  }
+  return result
+}
+
+function isFreshOnlineSubmitMachine(machine: MachineRow): boolean {
+  if (!['online_idle', 'online_busy'].includes(machine.health)) return false
+  if (!machine.last_seen_at) return false
+  const lastSeen = Date.parse(machine.last_seen_at)
+  return Number.isFinite(lastSeen) && Date.now() - lastSeen <= SUBMIT_MACHINE_MAX_AGE_MS
 }
 
 function stringValue(value: unknown): string {

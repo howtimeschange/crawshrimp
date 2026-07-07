@@ -35,9 +35,25 @@ def _db_path() -> Path:
     return runtime_paths.data_root() / "crawshrimp.db"
 
 
+def _harden_db_file_permissions() -> None:
+    """Best-effort POSIX hardening for the local SQLite file that stores machine tokens."""
+    if os.name != "posix":
+        return
+    db_path = _db_path()
+    try:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(db_path.parent, 0o700)
+        if db_path.exists():
+            os.chmod(db_path, 0o600)
+    except OSError as exc:
+        logger.warning("Unable to harden Crawshrimp SQLite permissions: %s", exc)
+
+
 def _get_conn() -> sqlite3.Connection:
+    _harden_db_file_permissions()
     conn = sqlite3.connect(str(_db_path()))
     conn.row_factory = sqlite3.Row
+    _harden_db_file_permissions()
     return conn
 
 
@@ -182,6 +198,7 @@ def init_db():
             )
         """)
         conn.commit()
+    _harden_db_file_permissions()
 
 
 def _ensure_column(conn: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:

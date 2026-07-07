@@ -1582,6 +1582,15 @@ secureHandle('open-file', async (_, filePath) => {
   return { ok: true }
 })
 
+secureHandle('open-external-url', async (_, rawUrl) => {
+  const parsed = new URL(String(rawUrl || ''))
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error('Only HTTP(S) URLs can be opened externally')
+  }
+  await shell.openExternal(parsed.toString())
+  return { ok: true }
+})
+
 function approvalTokenQuery(token) {
   return `token=${encodeURIComponent(String(token || ''))}`
 }

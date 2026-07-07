@@ -356,6 +356,21 @@ describe('review routes', () => {
     expect(firstBody.jobs[0].job_uid).toBe(state.dispatchJobs[0].job_uid)
   })
 
+  it('passes per-asset prompt overrides into regeneration payloads', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'], prompt_overrides: { 'asset-ai-2': 'override prompt' } }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(JSON.parse(state.dispatchJobs[0].payload_json)).toMatchObject({
+      prompt_text: 'override prompt',
+      original_prompt_text: 'Prompt 2',
+    })
+  })
+
   it('requires jobs:submit, an active selected machine, and ready_to_submit status for submit jobs', async () => {
     const { state, reviewerCookie, operatorCookie } = await baseState()
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
@@ -367,6 +382,10 @@ describe('review routes', () => {
     state.batches[0].status = 'ready_to_submit'
     response = await fetchWorker(submitRequest(operatorCookie, 'missing-machine'), fakeEnv(state))
     expect(response.status).toBe(400)
+    state.machines[0].last_seen_at = '2026-01-01T00:00:00.000Z'
+    response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
+    expect(response.status).toBe(409)
+    state.machines[0].last_seen_at = '2999-01-01T00:00:00.000Z'
     response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
     expect(response.status).toBe(201)
     expect(state.dispatchJobs[0]).toMatchObject({ job_type: 'submit_tmall_material_test', assigned_machine_id: 'machine-1' })
@@ -397,7 +416,7 @@ async function baseState(): Promise<{ state: State; reviewerCookie: string; view
       { user_id: 3, session_hash: await sha256Hex(operatorSession), expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
     ],
     machines: [
-      { id: 1, machine_id: 'machine-1', machine_name: 'Machine 1', owner_user_id: null, app_version: '1.0.0', fingerprint_hash: 'fp', capabilities_json: '["submit_tmall_material_test"]', auth_status: 'active', health: 'online_idle', current_job_id: null, last_seen_at: null, registered_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 1, machine_id: 'machine-1', machine_name: 'Machine 1', owner_user_id: null, app_version: '1.0.0', fingerprint_hash: 'fp', capabilities_json: '["submit_tmall_material_test"]', auth_status: 'active', health: 'online_idle', current_job_id: null, last_seen_at: '2999-01-01T00:00:00.000Z', registered_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
     ],
     batches: [{ id: 1, batch_uid: 'batch-1', local_instance_uid: 'local-1', local_run_id: 'run-1', title: 'Batch 1', status: 'pending_review', prompt_library_id: 1, prompt_version_set_json: '[]', source_machine_id: null, created_by: 1, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' }],
     styles: [

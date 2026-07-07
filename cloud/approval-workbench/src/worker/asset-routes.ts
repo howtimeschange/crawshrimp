@@ -1,6 +1,6 @@
-import { nowIso, toJson } from './db'
+import { fromJsonObject, nowIso, toJson } from './db'
 import type { Env } from './env'
-import { badRequest, json } from './http'
+import { badRequest, forbidden, json, readJsonObject } from './http'
 import { requirePermission } from './auth-routes'
 import { requireActiveMachine } from './machine-routes'
 import type { Permission } from './security/rbac'
@@ -22,13 +22,31 @@ interface AssetUploadBody {
   source_path?: unknown
   source_path_label?: unknown
   meta?: unknown
+  job_uid?: unknown
+  jobUid?: unknown
+  lease_id?: unknown
+  leaseId?: unknown
 }
 
 interface AssetRow {
   asset_uid: string
+  batch_uid: string
+  style_id: number
+  kind: string
   object_key: string
   filename: string
   meta_json: string
+}
+
+interface DispatchJobRow {
+  job_uid: string
+  batch_uid: string
+  job_type: string
+  status: string
+  assigned_machine_id: string | null
+  lease_id: string | null
+  lease_expires_at: string | null
+  payload_json: string
 }
 
 export function batchObjectKey(batchUid: string, kind: string, filename: string): string {
@@ -36,9 +54,9 @@ export function batchObjectKey(batchUid: string, kind: string, filename: string)
 }
 
 export async function createAssetUploadPlan(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonObject(request) as AssetUploadBody
   const actor = await requireMachineOrUserPermission(request, env, 'machines:write')
   if (actor instanceof Response) return actor
-  const body = await requestJson(request) as AssetUploadBody
   const batchUid = stringValue(body.batch_uid)
   const assetUid = stringValue(body.asset_uid)
   const kind = stringValue(body.kind)
@@ -50,6 +68,13 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
   if (!isSafeIdentifier(batchUid) || !isSafeIdentifier(assetUid)) return badRequest('batch_uid and asset_uid must be safe identifiers')
   if (!ALLOWED_KINDS.has(kind)) return badRequest('invalid asset kind')
   if (!hasAllowedSuffix(filename)) return badRequest('asset filename suffix is not allowed')
+  if (isMachineActor(actor)) {
+    const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, batchUid, body)
+    if (job instanceof Response) return job
+    if (!isAssetAllowedForMachineJob(job, { assetUid, batchUid, styleId, kind, access: 'upload' })) {
+      return forbidden('Machine lease does not include this asset upload')
+    }
+  }
 
   const objectKey = batchObjectKey(batchUid, kind, `${safePathSegment(assetUid)}-${safeFilename(filename)}`)
   if (!objectKey.startsWith(`batches/${safePathSegment(batchUid)}/`) || objectKey.includes('..')) {
@@ -75,21 +100,28 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
   return json({
     asset_uid: assetUid,
     object_key: objectKey,
-    upload_url: `/api/assets/upload/${encodeURIComponent(objectKey)}`,
+    upload_url: uploadUrlForObjectKey(objectKey, isMachineActor(actor) ? leaseFields(request, body) : null),
     method: 'PUT',
     headers: {},
   })
 }
 
 export async function uploadAsset(request: Request, env: Env): Promise<Response> {
-  const actor = await requireMachineOrUserPermission(request, env, 'machines:write')
+  const actor = await requireMachineOrUserPermission(request, env, 'batches:review')
   if (actor instanceof Response) return actor
   const objectKey = objectKeyFromUploadPath(request)
   if (!isValidUploadObjectKey(objectKey)) return badRequest('invalid object key')
-  const asset = await env.DB.prepare('SELECT asset_uid, object_key, filename, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
+  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, object_key, filename, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
     .bind(objectKey)
     .first<AssetRow>()
   if (!asset) return json({ error: 'Asset upload plan not found' }, { status: 404 })
+  if (isMachineActor(actor)) {
+    const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, asset.batch_uid)
+    if (job instanceof Response) return job
+    if (!isAssetAllowedForMachineJob(job, { assetUid: asset.asset_uid, batchUid: asset.batch_uid, styleId: asset.style_id, kind: asset.kind, access: 'upload' })) {
+      return forbidden('Machine lease does not include this asset upload')
+    }
+  }
   await env.ASSETS.put(objectKey, request.body, {
     httpMetadata: {
       contentType: request.headers.get('content-type') || 'application/octet-stream',
@@ -106,10 +138,17 @@ export async function getAssetDownload(request: Request, env: Env): Promise<Resp
   if (actor instanceof Response) return actor
   const assetUid = new URL(request.url).pathname.match(/^\/api\/assets\/([^/]+)\/download$/)?.[1] || ''
   if (!assetUid) return badRequest('asset_uid is required')
-  const asset = await env.DB.prepare('SELECT asset_uid, object_key, filename, meta_json FROM ai_image_assets WHERE asset_uid = ? LIMIT 1')
+  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, object_key, filename, meta_json FROM ai_image_assets WHERE asset_uid = ? LIMIT 1')
     .bind(decodeURIComponent(assetUid))
     .first<AssetRow>()
   if (!asset) return json({ error: 'Not found' }, { status: 404 })
+  if (isMachineActor(actor)) {
+    const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, asset.batch_uid)
+    if (job instanceof Response) return job
+    if (!isAssetAllowedForMachineJob(job, { assetUid: asset.asset_uid, batchUid: asset.batch_uid, styleId: asset.style_id, kind: asset.kind, access: 'download' })) {
+      return forbidden('Machine lease does not include this asset download')
+    }
+  }
   const object = await env.ASSETS.get(asset.object_key)
   if (!object) return json({ error: 'Asset object not found' }, { status: 404 })
   return new Response(object.body, {
@@ -127,6 +166,63 @@ async function requireMachineOrUserPermission(request: Request, env: Env, permis
 
 function hasBearerToken(request: Request): boolean {
   return /^Bearer\s+\S+/i.test(request.headers.get('authorization') || '')
+}
+
+async function requireMachineLeaseForBatch(request: Request, env: Env, machineId: string, batchUid: string, body?: { job_uid?: unknown; jobUid?: unknown; lease_id?: unknown; leaseId?: unknown }): Promise<DispatchJobRow | Response> {
+  const { jobUid, leaseId } = leaseFields(request, body)
+  if (!jobUid || !leaseId) return badRequest('machine asset access requires job_uid and lease_id')
+  const job = await env.DB.prepare(
+    `SELECT job_uid, batch_uid, job_type, status, assigned_machine_id, lease_id, lease_expires_at, payload_json
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+     LIMIT 1`,
+  )
+    .bind(jobUid)
+    .first<DispatchJobRow>()
+  if (!job) return forbidden('Machine lease was not found')
+  if (job.batch_uid !== batchUid || job.assigned_machine_id !== machineId || job.lease_id !== leaseId) return forbidden('Machine lease does not match this batch')
+  if (!['leased', 'running', 'uploading_results'].includes(job.status)) return forbidden('Machine lease is not active')
+  if (!job.lease_expires_at || job.lease_expires_at <= nowIso()) return forbidden('Machine lease is expired')
+  return job
+}
+
+function leaseFields(request: Request, body?: { job_uid?: unknown; jobUid?: unknown; lease_id?: unknown; leaseId?: unknown } | null): { jobUid: string; leaseId: string } {
+  const url = new URL(request.url)
+  return {
+    jobUid: stringValue(body?.job_uid) || stringValue(body?.jobUid) || url.searchParams.get('job_uid') || url.searchParams.get('jobUid') || '',
+    leaseId: stringValue(body?.lease_id) || stringValue(body?.leaseId) || url.searchParams.get('lease_id') || url.searchParams.get('leaseId') || '',
+  }
+}
+
+function isMachineActor(actor: unknown): actor is { machine_id: string } {
+  return Boolean(actor && typeof actor === 'object' && typeof (actor as { machine_id?: unknown }).machine_id === 'string')
+}
+
+function isAssetAllowedForMachineJob(job: DispatchJobRow, asset: { assetUid: string; batchUid: string; styleId: number; kind: string; access: 'download' | 'upload' }): boolean {
+  const payload = fromJsonObject(job.payload_json)
+  if (job.job_type === 'regenerate_ai_image') {
+    if (stringValue(payload.batch_uid) !== asset.batchUid || Number(payload.style_id) !== asset.styleId) return false
+    if (asset.access === 'download') return stringArray(payload.reference_asset_uids).includes(asset.assetUid)
+    return asset.kind === 'ai' && stringValue(payload.asset_uid) === asset.assetUid
+  }
+  if (job.job_type === 'submit_tmall_material_test') {
+    const submitPlan = payload.submit_plan && typeof payload.submit_plan === 'object' && !Array.isArray(payload.submit_plan) ? payload.submit_plan as Record<string, unknown> : {}
+    if (stringValue(submitPlan.batch_uid) !== asset.batchUid) return false
+    const assets = Array.isArray(submitPlan.assets) ? submitPlan.assets : []
+    const allowed = assets.some((entry) => {
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false
+      const row = entry as Record<string, unknown>
+      return stringValue(row.asset_uid) === asset.assetUid && Number(row.style_id) === asset.styleId
+    })
+    return asset.access === 'download' && allowed
+  }
+  return false
+}
+
+function uploadUrlForObjectKey(objectKey: string, lease: { jobUid: string; leaseId: string } | null): string {
+  const base = `/api/assets/upload/${encodeURIComponent(objectKey)}`
+  if (!lease) return base
+  return `${base}?job_uid=${encodeURIComponent(lease.jobUid)}&lease_id=${encodeURIComponent(lease.leaseId)}`
 }
 
 function objectKeyFromUploadPath(request: Request): string {
@@ -289,6 +385,10 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()) : []
+}
+
 function isSafeIdentifier(value: string): boolean {
   return /^[a-zA-Z0-9._-]+$/.test(value)
 }
@@ -302,12 +402,4 @@ function numberOrNull(value: unknown): number | null {
   if (value === null || value === undefined || value === '') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
-}
-
-async function requestJson(request: Request): Promise<unknown> {
-  try {
-    return await request.json()
-  } catch {
-    return {}
-  }
 }

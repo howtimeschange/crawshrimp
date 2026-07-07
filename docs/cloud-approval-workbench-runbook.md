@@ -102,6 +102,8 @@ GET /cloud-approval/status
 
 After enrollment, the desktop stores the long-lived machine token locally through `core.data_sink`; the status route intentionally does not return that token.
 
+Current local credential hardening is file-permission based: on POSIX systems the Crawshrimp SQLite data directory is chmod `0700` and `crawshrimp.db` is chmod `0600` when the data sink opens or initializes the database. The machine token value is still stored in the local SQLite row until a later OS keychain migration is implemented, so treat the local user account and data directory as sensitive.
+
 ## Run A Local AI Batch And Sync To Cloud
 
 Run `巴拉-AI测图全链路` locally until it creates a local approval batch. Keep the local approval token from the generated approval URL.

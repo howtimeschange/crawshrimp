@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -71,6 +72,36 @@ class CloudApprovalClient:
         if status >= 400:
             raise CloudApprovalError(f"cloud upload failed: HTTP {status}")
         return _payload
+
+    def download_asset(self, asset_uid: str, target_path: Path, *, job_uid: str = "", lease_id: str = "", token_type: str = "machine") -> Path:
+        """Download one cloud asset to target_path using the current token."""
+        query = {}
+        if job_uid:
+            query["job_uid"] = job_uid
+        if lease_id:
+            query["lease_id"] = lease_id
+        suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
+        url = self._url_for(f"/api/assets/{urllib.parse.quote(str(asset_uid or ''), safe='')}/download{suffix}")
+        headers = {"Accept": "*/*", "User-Agent": self.user_agent}
+        token = self._token_for(token_type)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        target = Path(target_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            response = self._open(request)
+            status = int(getattr(response, "status", 0) or response.getcode() or 0)
+            if status >= 400:
+                raise CloudApprovalError(f"cloud asset download failed: HTTP {status}")
+            target.write_bytes(response.read())
+        except urllib.error.HTTPError as exc:
+            raise CloudApprovalError(f"cloud asset download failed: HTTP {int(exc.code or 0)}") from None
+        except CloudApprovalError:
+            raise
+        except Exception as exc:
+            raise CloudApprovalError(f"cloud asset download failed: {type(exc).__name__}") from None
+        return target
 
     def _send_json_with_retry(self, method: str, url: str, data: bytes | None, headers: Mapping[str, str], token: str) -> dict:
         max_attempts = 3
