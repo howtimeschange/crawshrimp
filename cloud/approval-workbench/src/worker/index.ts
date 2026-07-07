@@ -35,6 +35,16 @@ import {
   resolvePrompts,
   updatePromptTemplate,
 } from './prompt-routes'
+import {
+  createAssetUploadPlan,
+  getAssetDownload,
+} from './asset-routes'
+import {
+  getBatch,
+  listBatches,
+  syncBatch,
+  syncBatchComplete,
+} from './batch-routes'
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -77,6 +87,12 @@ export default {
     if (/^\/api\/prompt-templates\/\d+$/.test(url.pathname) && request.method === 'PATCH') return updatePromptTemplate(request, env)
     if (/^\/api\/prompt-libraries\/\d+\/publish-version$/.test(url.pathname) && request.method === 'POST') return publishPromptLibrary(request, env)
     if (/^\/api\/prompt-libraries\/\d+\/resolved$/.test(url.pathname) && request.method === 'GET') return resolvePrompts(request, env)
+    if (url.pathname === '/api/assets/presign' && request.method === 'POST') return createAssetUploadPlan(request, env)
+    if (/^\/api\/assets\/[^/]+\/download$/.test(url.pathname) && request.method === 'GET') return getAssetDownload(request, env)
+    if (url.pathname === '/api/ai-image-batches' && request.method === 'GET') return listBatches(request, env)
+    if (url.pathname === '/api/ai-image-batches/sync' && request.method === 'POST') return syncBatch(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/sync-complete$/.test(url.pathname) && request.method === 'POST') return syncBatchComplete(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+$/.test(url.pathname) && request.method === 'GET') return getBatch(request, env)
     if (url.pathname.startsWith('/api/')) return json({ error: 'Not found' }, { status: 404 })
 
     return new Response('Crawshrimp cloud approval workbench scaffold', {

@@ -22,7 +22,7 @@ interface EnrollmentTokenRow {
   revoked_at: string | null
 }
 
-interface MachineRow {
+export interface MachineRow {
   id: number
   machine_id: string
   machine_name: string
@@ -107,7 +107,7 @@ async function requireMachine(request: Request, env: Env): Promise<MachineRow | 
   return machine
 }
 
-async function requireActiveMachine(request: Request, env: Env): Promise<MachineRow | Response> {
+export async function requireActiveMachine(request: Request, env: Env): Promise<MachineRow | Response> {
   const machine = await requireMachine(request, env)
   if (machine instanceof Response) return machine
   if (machine.auth_status !== 'active') return forbidden('Machine is not approved')
