@@ -109,6 +109,16 @@ class FakeD1Statement {
       })
       return { success: true, meta: { last_row_id: id } } as D1Result
     }
+    if (normalized.startsWith('delete from user_roles')) {
+      const userId = Number(this.params[0])
+      this.state.userRoles = this.state.userRoles.filter((userRole) => userRole.user_id !== userId)
+    }
+    if (normalized.startsWith('insert or ignore into user_roles')) {
+      const userId = Number(this.params[0])
+      const roleId = Number(this.params[1])
+      const exists = this.state.userRoles.some((userRole) => userRole.user_id === userId && userRole.role_id === roleId)
+      if (!exists) this.state.userRoles.push({ user_id: userId, role_id: roleId })
+    }
     if (normalized.startsWith('insert into sessions')) {
       this.state.sessions.push({
         user_id: Number(this.params[0]),
@@ -176,6 +186,7 @@ async function stateWithUsers(): Promise<FakeState> {
     roles: [
       { id: 1, role_key: 'admin', name: '管理员' },
       { id: 2, role_key: 'reviewer', name: '审图人员' },
+      { id: 3, role_key: 'viewer', name: '只读查看' },
     ],
     userRoles: [
       { user_id: 1, role_id: 1 },
@@ -251,5 +262,65 @@ describe('auth routes', () => {
     expect(state.users).toHaveLength(4)
     expect(state.users[3].password_hash).not.toBe('secret-pass')
     expect(state.users[3].password_hash).toMatch(/^sha256:/)
+    expect(state.userRoles).toContainEqual({ user_id: 4, role_id: 3 })
+  })
+
+  it('POST /api/admin/users rejects unknown roleKeys without creating a user', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users', {
+        method: 'POST',
+        headers: { cookie },
+        body: JSON.stringify({ email: 'new@example.com', name: 'New User', password: 'secret-pass', roleKeys: ['viewer', 'missing_role'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'unknown roleKeys: missing_role' })
+    expect(state.users).toHaveLength(3)
+    expect(state.userRoles).toEqual([
+      { user_id: 1, role_id: 1 },
+      { user_id: 2, role_id: 2 },
+    ])
+    expect(state.audits).toHaveLength(0)
+  })
+
+  it('PUT /api/admin/users/:id/roles rejects unknown roleKeys without clearing existing assignments', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/2/roles', {
+        method: 'PUT',
+        headers: { cookie },
+        body: JSON.stringify({ roleKeys: ['viewer', 'missing_role'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'unknown roleKeys: missing_role' })
+    expect(state.userRoles).toContainEqual({ user_id: 2, role_id: 2 })
+    expect(state.userRoles).not.toContainEqual({ user_id: 2, role_id: 3 })
+    expect(state.audits).toHaveLength(0)
+  })
+
+  it('PATCH /api/admin/users/:id/roles rejects unknown roleKeys without clearing existing assignments', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/2/roles', {
+        method: 'PATCH',
+        headers: { cookie },
+        body: JSON.stringify({ roleKeys: ['missing_role'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'unknown roleKeys: missing_role' })
+    expect(state.userRoles).toContainEqual({ user_id: 2, role_id: 2 })
+    expect(state.audits).toHaveLength(0)
   })
 })

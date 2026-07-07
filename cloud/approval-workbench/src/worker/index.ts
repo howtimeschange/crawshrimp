@@ -30,7 +30,7 @@ export default {
     if (url.pathname === '/api/admin/users' && request.method === 'GET') return listUsers(request, env)
     if (url.pathname === '/api/admin/users' && request.method === 'POST') return createUser(request, env)
     if (/^\/api\/admin\/users\/\d+$/.test(url.pathname) && request.method === 'PATCH') return updateUser(request, env)
-    if (/^\/api\/admin\/users\/\d+\/roles$/.test(url.pathname) && request.method === 'PUT') return updateUserRoles(request, env)
+    if (/^\/api\/admin\/users\/\d+\/roles$/.test(url.pathname) && ['PATCH', 'PUT'].includes(request.method)) return updateUserRoles(request, env)
     if (url.pathname === '/api/admin/roles' && request.method === 'GET') return listRoles(request, env)
     if (url.pathname === '/api/admin/audit-logs' && request.method === 'GET') return listAuditLogs(request, env)
     if (url.pathname.startsWith('/api/')) return json({ error: 'Not found' }, { status: 404 })

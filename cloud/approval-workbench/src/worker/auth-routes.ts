@@ -25,6 +25,8 @@ interface RoleRow {
   name: string
 }
 
+type RoleIdByKey = Map<string, number>
+
 interface CurrentUser {
   user: UserRow
   roles: RoleRow[]
@@ -173,6 +175,8 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
   const status = typeof body.status === 'string' ? body.status : 'active'
   const roleKeys = Array.isArray(body.roleKeys) ? body.roleKeys.filter((roleKey): roleKey is string => typeof roleKey === 'string') : []
   if (!email || !name || password.length < 8) return badRequest('email, name, and password of at least 8 characters are required')
+  const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
+  if (roleIdByKey instanceof Response) return roleIdByKey
 
   const now = nowIso()
   const passwordHash = await hashPassword(password)
@@ -183,7 +187,7 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
     .run()
   const userId = Number(result.meta.last_row_id)
   if (roleKeys.length > 0) {
-    await assignUserRoles(env, userId, roleKeys, actor.user.id)
+    await assignUserRoles(env, userId, roleKeys, actor.user.id, roleIdByKey)
   }
   await recordAudit(env, { userId: actor.user.id }, 'users.create', 'user', String(userId), { email, roleKeys }, request)
   return json({ user: { id: userId, email, name, status } }, { status: 201 })
@@ -225,8 +229,10 @@ export async function updateUserRoles(request: Request, env: Env): Promise<Respo
   if (!Number.isInteger(userId) || userId <= 0) return badRequest('valid user id is required')
   const body = await readJsonObject(request)
   const roleKeys = Array.isArray(body.roleKeys) ? body.roleKeys.filter((roleKey): roleKey is string => typeof roleKey === 'string') : []
+  const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
+  if (roleIdByKey instanceof Response) return roleIdByKey
   await env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(userId).run()
-  await assignUserRoles(env, userId, roleKeys, actor.user.id)
+  await assignUserRoles(env, userId, roleKeys, actor.user.id, roleIdByKey)
   await recordAudit(env, { userId: actor.user.id }, 'users.roles.update', 'user', String(userId), { roleKeys }, request)
   return json({ ok: true })
 }
@@ -243,13 +249,22 @@ export async function listAuditLogs(request: Request, env: Env): Promise<Respons
   return json({ auditLogs: results })
 }
 
-async function assignUserRoles(env: Env, userId: number, roleKeys: string[], assignedBy: number): Promise<void> {
-  if (roleKeys.length === 0) return
+async function roleIdMapForValidatedKeys(env: Env, roleKeys: string[]): Promise<RoleIdByKey | Response> {
+  if (roleKeys.length === 0) return new Map()
   const { results } = await env.DB.prepare('SELECT id, role_key, name FROM roles ORDER BY role_key').all<RoleRow>()
-  const rolesByKey = new Map(results.map((role) => [role.role_key, role.id]))
+  const roleIdByKey = new Map(results.flatMap((role) => (role.id ? [[role.role_key, role.id] as const] : [])))
+  const missingRoleKeys = [...new Set(roleKeys)].filter((roleKey) => !roleIdByKey.has(roleKey))
+  if (missingRoleKeys.length > 0) {
+    return badRequest(`unknown roleKeys: ${missingRoleKeys.join(', ')}`)
+  }
+  return roleIdByKey
+}
+
+async function assignUserRoles(env: Env, userId: number, roleKeys: string[], assignedBy: number, roleIdByKey: RoleIdByKey): Promise<void> {
+  if (roleKeys.length === 0) return
   for (const roleKey of roleKeys) {
-    const roleId = rolesByKey.get(roleKey)
-    if (!roleId) continue
+    const roleId = roleIdByKey.get(roleKey)
+    if (!roleId) throw new Error(`validated role key missing from role map: ${roleKey}`)
     await env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?)')
       .bind(userId, roleId, assignedBy, nowIso())
       .run()
