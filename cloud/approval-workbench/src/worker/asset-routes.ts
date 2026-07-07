@@ -164,7 +164,7 @@ export function sanitizedMeta(body: { meta?: unknown; source_path?: unknown; sou
 }
 
 function sanitizeMetaValue(key: string, value: unknown): unknown {
-  if (isRawPathKey(key)) return undefined
+  if (isRawPathKey(key) || isObjectKeyMetadataKey(key)) return undefined
   if (typeof value === 'string') return containsLocalAbsolutePath(value) ? undefined : value
   if (Array.isArray(value)) {
     const sanitized = value
@@ -191,6 +191,13 @@ function isRawPathKey(key: string): boolean {
     || normalized === 'originalpath'
     || normalized === 'filesystempath'
     || normalized === 'fullpath'
+}
+
+function isObjectKeyMetadataKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return normalized === 'objectkey'
+    || normalized.endsWith('objectkey')
+    || normalized === 'storagekey'
 }
 
 function sourcePathLabel(value: string): string {

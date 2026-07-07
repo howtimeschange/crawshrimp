@@ -202,7 +202,7 @@ describe('asset upload planning routes', () => {
     expect(state.assets[0].meta_json).not.toContain('D:\\')
   })
 
-  it('scrubs generic POSIX local paths while preserving safe URLs and object keys', async () => {
+  it('scrubs generic POSIX local paths and object-key metadata while preserving safe URLs', async () => {
     const state: FakeState = { assets: [] }
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
@@ -216,8 +216,12 @@ describe('asset upload planning routes', () => {
         meta: {
           preview_url: 'https://cdn.example.test/source.jpg',
           object_key: 'batches/batch-1/ai/asset-a-file.jpg',
+          objectKey: 'batches/other-batch/source/other-file.jpg',
+          r2_object_key: 'batches/batch-1/reference/asset-a-file.jpg',
+          storage_key: 'batches/batch-1/log/asset-a.txt',
           nested: {
             mount_path: '/mnt/share/source.jpg',
+            object_key: 'batches/other-batch/ai/nested.jpg',
             labels: ['keep-me', '/opt/crawshrimp/raw/other.jpg'],
           },
         },
@@ -228,14 +232,17 @@ describe('asset upload planning routes', () => {
     const meta = JSON.parse(state.assets[0].meta_json)
     expect(meta).toEqual({
       preview_url: 'https://cdn.example.test/source.jpg',
-      object_key: 'batches/batch-1/ai/asset-a-file.jpg',
       nested: {
         labels: ['keep-me'],
       },
       source_path_label: 'source.jpg',
     })
+    expect(state.assets[0].object_key).toBe('batches/batch-1/ai/asset-a-file.jpg')
     expect(state.assets[0].meta_json).not.toContain('/opt/')
     expect(state.assets[0].meta_json).not.toContain('/mnt/')
+    expect(state.assets[0].meta_json).not.toContain('other-batch')
+    expect(state.assets[0].meta_json).not.toContain('r2_object_key')
+    expect(state.assets[0].meta_json).not.toContain('storage_key')
   })
 })
 
