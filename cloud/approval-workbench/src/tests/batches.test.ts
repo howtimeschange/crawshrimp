@@ -491,6 +491,73 @@ describe('batch sync routes', () => {
     expect(state.assets[0].meta_json).not.toContain('D:\\')
   })
 
+  it('scrubs generic POSIX paths from synced metadata while preserving safe URLs and object keys', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.source_path_label = '/mnt/share/source.jpg'
+    aiAsset.meta = {
+      preview_url: 'https://cdn.example.test/source.jpg',
+      object_key: 'batches/batch-20260707/ai/asset-ai-1-ai.jpg',
+      nested: {
+        raw_path: '/opt/crawshrimp/raw/source.jpg',
+        labels: ['front', '/mnt/share/front.jpg'],
+      },
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    const meta = JSON.parse(state.assets[1].meta_json)
+    expect(meta).toEqual({
+      preview_url: 'https://cdn.example.test/source.jpg',
+      object_key: 'batches/batch-20260707/ai/asset-ai-1-ai.jpg',
+      nested: {
+        labels: ['front'],
+      },
+      source_path_label: 'source.jpg',
+    })
+    expect(state.assets[1].meta_json).not.toContain('/opt/')
+    expect(state.assets[1].meta_json).not.toContain('/mnt/')
+  })
+
+  it('persists canonical object keys for synced assets instead of caller-provided malformed keys', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.object_key = 'batches/batch-20260707/ai/not-the-asset-id-ai.jpg'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai.jpg')
+  })
+
+  it('does not persist caller object keys whose kind segment mismatches the asset kind', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.object_key = 'batches/batch-20260707/source/asset-ai-1-ai.jpg'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].kind).toBe('ai')
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai.jpg')
+  })
+
   it('prevents a non-admin user session from creating a machine-origin batch', async () => {
     const { state, reviewerCookie } = await baseState()
     const env = fakeEnv(state)

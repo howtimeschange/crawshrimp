@@ -201,6 +201,42 @@ describe('asset upload planning routes', () => {
     expect(state.assets[0].meta_json).not.toContain('C:\\')
     expect(state.assets[0].meta_json).not.toContain('D:\\')
   })
+
+  it('scrubs generic POSIX local paths while preserving safe URLs and object keys', async () => {
+    const state: FakeState = { assets: [] }
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      body: JSON.stringify({
+        batch_uid: 'batch-1',
+        style_id: 7,
+        asset_uid: 'asset-a',
+        kind: 'ai',
+        filename: 'file.jpg',
+        source_path_label: '/opt/crawshrimp/raw/source.jpg',
+        meta: {
+          preview_url: 'https://cdn.example.test/source.jpg',
+          object_key: 'batches/batch-1/ai/asset-a-file.jpg',
+          nested: {
+            mount_path: '/mnt/share/source.jpg',
+            labels: ['keep-me', '/opt/crawshrimp/raw/other.jpg'],
+          },
+        },
+      }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    const meta = JSON.parse(state.assets[0].meta_json)
+    expect(meta).toEqual({
+      preview_url: 'https://cdn.example.test/source.jpg',
+      object_key: 'batches/batch-1/ai/asset-a-file.jpg',
+      nested: {
+        labels: ['keep-me'],
+      },
+      source_path_label: 'source.jpg',
+    })
+    expect(state.assets[0].meta_json).not.toContain('/opt/')
+    expect(state.assets[0].meta_json).not.toContain('/mnt/')
+  })
 })
 
 function normalizeSql(sql: string): string {

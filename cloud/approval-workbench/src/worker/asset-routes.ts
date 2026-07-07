@@ -200,7 +200,13 @@ function sourcePathLabel(value: string): string {
 }
 
 function containsLocalAbsolutePath(value: string): boolean {
-  return /(^|[\s"'([{])(?:\/(?:Users|home|Volumes|private|tmp|var)\/[^\s"'()[\]{}<>]+|[a-zA-Z]:[\\/][^\s"'()[\]{}<>]+|\\\\[^\s"'()[\]{}<>\\]+[\\/][^\s"'()[\]{}<>]+)/.test(value)
+  if (isSafeCloudReference(value)) return false
+  return /(^|[\s"'([{])(?:\/(?!\/)[^\s"'()[\]{}<>]+|[a-zA-Z]:[\\/][^\s"'()[\]{}<>]+|\\\\[^\s"'()[\]{}<>\\]+[\\/][^\s"'()[\]{}<>]+)/.test(value)
+}
+
+function isSafeCloudReference(value: string): boolean {
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(value)
+    || /^batches\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+\/[a-zA-Z0-9._-]+$/.test(value)
 }
 
 function hasAllowedSuffix(filename: string): boolean {
