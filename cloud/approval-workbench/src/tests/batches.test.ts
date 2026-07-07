@@ -451,6 +451,46 @@ describe('batch sync routes', () => {
     expect(state.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
   })
 
+  it('scrubs local absolute paths from synced asset metadata recursively', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const sourceAsset = payload.styles[0].assets[0] as Record<string, unknown>
+    sourceAsset.source_path_label = '/Users/xingyicheng/Desktop/raw/source.jpg'
+    sourceAsset.meta = {
+      model: 'source-camera',
+      safe_label: 'Desktop reference',
+      original_path: '/Users/xingyicheng/Desktop/raw/source.jpg',
+      windows_path: 'C:\\Users\\xingyicheng\\Desktop\\raw\\source.jpg',
+      nested: {
+        local_path: '/private/tmp/raw/source.jpg',
+        labels: ['front', '/Users/xingyicheng/Desktop/raw/front.jpg'],
+        object: { absolute_path: 'D:\\raw\\back.jpg', color: 'blue' },
+      },
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    const meta = JSON.parse(state.assets[0].meta_json)
+    expect(meta).toEqual({
+      model: 'source-camera',
+      safe_label: 'Desktop reference',
+      nested: {
+        labels: ['front'],
+        object: { color: 'blue' },
+      },
+      source_path_label: 'source.jpg',
+    })
+    expect(state.assets[0].meta_json).not.toContain('/Users/')
+    expect(state.assets[0].meta_json).not.toContain('/private/tmp')
+    expect(state.assets[0].meta_json).not.toContain('C:\\')
+    expect(state.assets[0].meta_json).not.toContain('D:\\')
+  })
+
   it('prevents a non-admin user session from creating a machine-origin batch', async () => {
     const { state, reviewerCookie } = await baseState()
     const env = fakeEnv(state)

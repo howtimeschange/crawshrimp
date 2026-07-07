@@ -159,6 +159,48 @@ describe('asset upload planning routes', () => {
     expect(JSON.parse(state.assets[0].meta_json)).toEqual({ source_path_label: 'source.jpg' })
     expect(state.assets[0].meta_json).not.toContain('/Users/xingyicheng')
   })
+
+  it('sanitizes absolute source_path_label and nested local paths while keeping safe metadata', async () => {
+    const state: FakeState = { assets: [] }
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      body: JSON.stringify({
+        batch_uid: 'batch-20260707',
+        style_id: 7,
+        asset_uid: 'asset-source-2',
+        kind: 'source',
+        filename: 'source.jpg',
+        source_path_label: '/Users/xingyicheng/Desktop/raw/source.jpg',
+        meta: {
+          model: '1xm',
+          note: 'review source image',
+          original_path: '/Users/xingyicheng/Desktop/raw/source.jpg',
+          windows_path: 'C:\\Users\\xingyicheng\\Desktop\\raw\\source.jpg',
+          nested: {
+            label: 'safe folder label',
+            local_path: '/private/tmp/raw/source.jpg',
+            values: ['keep-me', '/Users/xingyicheng/Desktop/raw/a.jpg', { absolute_path: 'D:\\raw\\b.jpg', color: 'red' }],
+          },
+        },
+      }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    const meta = JSON.parse(state.assets[0].meta_json)
+    expect(meta).toEqual({
+      model: '1xm',
+      note: 'review source image',
+      nested: {
+        label: 'safe folder label',
+        values: ['keep-me', { color: 'red' }],
+      },
+      source_path_label: 'source.jpg',
+    })
+    expect(state.assets[0].meta_json).not.toContain('/Users/')
+    expect(state.assets[0].meta_json).not.toContain('/private/tmp')
+    expect(state.assets[0].meta_json).not.toContain('C:\\')
+    expect(state.assets[0].meta_json).not.toContain('D:\\')
+  })
 })
 
 function normalizeSql(sql: string): string {

@@ -153,17 +153,54 @@ export function sanitizedMeta(body: { meta?: unknown; source_path?: unknown; sou
   const source = body.meta && typeof body.meta === 'object' && !Array.isArray(body.meta) ? body.meta as Record<string, unknown> : {}
   const meta: Record<string, unknown> = {}
   for (const [key, value] of Object.entries(source)) {
-    if (key === 'source_path' || key === 'local_path' || key === 'absolute_path') continue
-    meta[key] = value
+    const sanitized = sanitizeMetaValue(key, value)
+    if (sanitized !== undefined) meta[key] = sanitized
   }
-  const labelSource = stringValue(body.source_path_label) || stringValue(source.source_path_label) || sourcePathLabel(stringValue(body.source_path) || stringValue(source.source_path))
+  const labelSource = sourcePathLabel(stringValue(body.source_path_label))
+    || sourcePathLabel(stringValue(source.source_path_label))
+    || sourcePathLabel(stringValue(body.source_path) || stringValue(source.source_path))
   if (labelSource) meta.source_path_label = labelSource
   return meta
 }
 
+function sanitizeMetaValue(key: string, value: unknown): unknown {
+  if (isRawPathKey(key)) return undefined
+  if (typeof value === 'string') return containsLocalAbsolutePath(value) ? undefined : value
+  if (Array.isArray(value)) {
+    const sanitized = value
+      .map((entry) => sanitizeMetaValue('', entry))
+      .filter((entry) => entry !== undefined)
+    return sanitized
+  }
+  if (value && typeof value === 'object') {
+    const sanitized: Record<string, unknown> = {}
+    for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+      const child = sanitizeMetaValue(childKey, childValue)
+      if (child !== undefined) sanitized[childKey] = child
+    }
+    return sanitized
+  }
+  return value
+}
+
+function isRawPathKey(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '')
+  return normalized === 'sourcepath'
+    || normalized === 'localpath'
+    || normalized === 'absolutepath'
+    || normalized === 'originalpath'
+    || normalized === 'filesystempath'
+    || normalized === 'fullpath'
+}
+
 function sourcePathLabel(value: string): string {
   if (!value) return ''
-  return safeFilename(value.split(/[\\/]/).filter(Boolean).at(-1) || value)
+  if (containsLocalAbsolutePath(value) || value.includes('/') || value.includes('\\')) return safeFilename(value)
+  return value
+}
+
+function containsLocalAbsolutePath(value: string): boolean {
+  return /(^|[\s"'([{])(?:\/(?:Users|home|Volumes|private|tmp|var)\/[^\s"'()[\]{}<>]+|[a-zA-Z]:[\\/][^\s"'()[\]{}<>]+|\\\\[^\s"'()[\]{}<>\\]+[\\/][^\s"'()[\]{}<>]+)/.test(value)
 }
 
 function hasAllowedSuffix(filename: string): boolean {
