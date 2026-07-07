@@ -13,6 +13,9 @@ class CloudApprovalError(RuntimeError):
     pass
 
 
+DEFAULT_USER_AGENT = "CrawshrimpCloudApproval/1.0"
+
+
 class CloudApprovalClient:
     def __init__(
         self,
@@ -22,6 +25,7 @@ class CloudApprovalClient:
         timeout: float = 30.0,
         transport=None,
         sleep=None,
+        user_agent: str = DEFAULT_USER_AGENT,
     ):
         self.base_url = str(base_url or "").rstrip("/")
         self.user_token = str(user_token or "")
@@ -29,12 +33,13 @@ class CloudApprovalClient:
         self.timeout = float(timeout or 30.0)
         self.transport = transport
         self._sleep = sleep or time.sleep
+        self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
 
     def request_json(self, method: str, path: str, body: Optional[Mapping[str, Any]] = None, *, token_type: str = "machine") -> dict:
         """Send JSON to the cloud API, retry 429/5xx, and return a JSON object."""
         url = self._url_for(path)
         data = None if body is None else json.dumps(dict(body), ensure_ascii=False).encode("utf-8")
-        headers = {"Accept": "application/json"}
+        headers = {"Accept": "application/json", "User-Agent": self.user_agent}
         if data is not None:
             headers["Content-Type"] = "application/json"
         token = self._token_for(token_type)
@@ -46,7 +51,7 @@ class CloudApprovalClient:
         """Upload one local file to the cloud-provided upload URL."""
         asset_path = Path(path)
         url = self._url_for(upload_url)
-        headers = {"Content-Type": content_type or "application/octet-stream"}
+        headers = {"Content-Type": content_type or "application/octet-stream", "User-Agent": self.user_agent}
         token = self._token_for(token_type)
         if token:
             headers["Authorization"] = f"Bearer {token}"

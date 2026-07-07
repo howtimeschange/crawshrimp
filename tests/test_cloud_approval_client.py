@@ -55,6 +55,7 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(request.full_url, "https://approval.example.com/api/test")
         self.assertEqual(request.get_method(), "POST")
         self.assertEqual(request.headers["Authorization"], "Bearer machine-secret-token")
+        self.assertEqual(request.headers["User-agent"], "CrawshrimpCloudApproval/1.0")
         self.assertEqual(request.headers["Content-type"], "application/json")
         self.assertEqual(timeout, 30.0)
         self.assertEqual(json.loads(request.data.decode("utf-8")), {"hello": "world"})
@@ -98,6 +99,7 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "PUT")
         self.assertEqual(request.data, b"image-bytes")
         self.assertEqual(request.headers["Content-type"], "image/jpeg")
+        self.assertEqual(request.headers["User-agent"], "CrawshrimpCloudApproval/1.0")
         self.assertEqual(request.headers["Authorization"], "Bearer machine-secret-token")
 
     def test_upload_asset_resolves_worker_relative_upload_url(self):
