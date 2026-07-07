@@ -1,6 +1,6 @@
 import { sha256Hex } from './tokens'
 
-const PBKDF2_ITERATIONS = 210_000
+const PBKDF2_ITERATIONS = 100_000
 const SALT_BYTES = 16
 const HASH_BYTES = 32
 

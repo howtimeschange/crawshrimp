@@ -26,7 +26,7 @@ describe('seed-admin operator SQL', () => {
     expect(sql).toContain("INSERT INTO users")
     expect(sql).toContain("admin@example.com")
     expect(sql).toContain("首个管理员")
-    expect(sql).toContain("pbkdf2-sha256:210000:")
+    expect(sql).toContain("pbkdf2-sha256:100000:")
     expect(sql).toContain("INSERT OR IGNORE INTO user_roles")
     expect(sql).not.toContain("Do-Not-Print-This-Password")
   })
@@ -34,8 +34,8 @@ describe('seed-admin operator SQL', () => {
   it('hashes passwords in the same format as the worker auth module', async () => {
     const hash = await hashPasswordForSeed('password-123', 'Zml4ZWQtc2FsdA==')
 
-    expect(hash).toMatch(/^pbkdf2-sha256:210000:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/)
-    expect(hash).toBe('pbkdf2-sha256:210000:Zml4ZWQtc2FsdA==:53PQ6H7+AKTD2TO5NOi0Zj0e6j5TWOtqlAWpn/y6QnM=')
+    expect(hash).toMatch(/^pbkdf2-sha256:100000:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/)
+    expect(hash).toBe('pbkdf2-sha256:100000:Zml4ZWQtc2FsdA==:RqTh2oRUDMF0uUviaT6AHoc8LQOxwuyMKTV628YYsqs=')
     expect(hash).not.toContain('password-123')
   })
 

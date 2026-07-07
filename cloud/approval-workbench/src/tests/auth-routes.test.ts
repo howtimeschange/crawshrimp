@@ -282,7 +282,7 @@ describe('auth routes', () => {
     expect(response.status).toBe(201)
     expect(state.users).toHaveLength(4)
     expect(state.users[3].password_hash).not.toBe('secret-pass')
-    expect(state.users[3].password_hash).toMatch(/^pbkdf2-sha256:210000:/)
+    expect(state.users[3].password_hash).toMatch(/^pbkdf2-sha256:100000:/)
     expect(state.users[3].password_hash).not.toContain('secret-pass')
     expect(state.userRoles).toContainEqual({ user_id: 4, role_id: 3 })
   })
@@ -291,7 +291,7 @@ describe('auth routes', () => {
     const fresh = await hashPassword('secret-pass')
     const legacy = await passwordHash('secret-pass')
 
-    expect(fresh).toMatch(/^pbkdf2-sha256:210000:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/)
+    expect(fresh).toMatch(/^pbkdf2-sha256:100000:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/)
     expect(fresh).not.toContain('secret-pass')
     await expect(verifyPassword('secret-pass', fresh)).resolves.toBe(true)
     await expect(verifyPassword('wrong-pass', fresh)).resolves.toBe(false)

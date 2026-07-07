@@ -123,3 +123,18 @@ Tests run:
 
 - `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/batches.test.ts src/tests/review.test.ts` - passed, 49 tests.
 - `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
+
+## Cloudflare Runtime Follow-Up
+
+Status: fixed live Worker login failure found during deployment smoke.
+
+Commit: pending, `fix(cloud): use worker-supported pbkdf2 cost`.
+
+Addressed issue:
+
+- Cloudflare Workers rejected PBKDF2 iteration counts above 100000 at login time. Worker password hashing and the seed-admin helper now generate PBKDF2 hashes with 100000 iterations, which is within the runtime limit. The verifier still rejects lower-cost PBKDF2 hashes and retains legacy SHA compatibility.
+
+Tests run:
+
+- `cd cloud/approval-workbench && npm test -- src/tests/auth-routes.test.ts src/tests/seed-admin.test.ts` - passed, 13 tests.
+- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
