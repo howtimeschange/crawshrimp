@@ -398,6 +398,19 @@
                   class="input"
                 />
               </div>
+              <div class="field">
+                <label>任务能力</label>
+                <div class="capability-list">
+                  <label v-for="option in cloudCapabilityOptions" :key="option.value" class="check-row">
+                    <input
+                      v-model="cfg['cloud_approval.capabilities']"
+                      type="checkbox"
+                      :value="option.value"
+                    />
+                    <span>{{ option.label }}</span>
+                  </label>
+                </div>
+              </div>
               <label class="check-row">
                 <input v-model="cfg['cloud_approval.machine_enabled']" type="checkbox" />
                 <span>启用任务机</span>
@@ -432,6 +445,7 @@
               <p>状态只显示是否已注册、运行状态和任务机 ID；长期任务机凭证不会在界面展示。</p>
               <p v-if="cloudStatus?.machine_id">任务机 ID：{{ cloudStatus.machine_id }}</p>
               <p v-if="cloudStatus?.base_url">云端地址：{{ cloudStatus.base_url }}</p>
+              <p v-if="cloudStatus?.capabilities?.length">任务能力：{{ cloudStatus.capabilities.join(', ') }}</p>
             </div>
           </div>
         </section>
@@ -464,6 +478,11 @@ const cloudStatus = ref(null)
 const cloudBusy = reactive({ config: false, enroll: false, start: false, stop: false })
 const cloudMsg = ref('')
 const cloudMsgOk = ref(true)
+const defaultCloudCapabilities = ['regenerate_ai_image', 'submit_tmall_material_test']
+const cloudCapabilityOptions = [
+  { value: 'regenerate_ai_image', label: 'regenerate_ai_image' },
+  { value: 'submit_tmall_material_test', label: 'submit_tmall_material_test' },
+]
 
 const saveState = reactive({})
 
@@ -524,7 +543,7 @@ const panelFields = {
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
   'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key'],
-  'cloud-approval': ['cloud_approval.base_url', 'cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled'],
+  'cloud-approval': ['cloud_approval.base_url', 'cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
 const notifyPanelByChannel = {
@@ -595,6 +614,7 @@ function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
   flat['cloud_approval.machine_enabled'] = Boolean(flat['cloud_approval.machine_enabled'])
+  flat['cloud_approval.capabilities'] = normalizeCloudCapabilities(flat['cloud_approval.capabilities'])
   return flat
 }
 
@@ -632,9 +652,26 @@ async function browseDir() {
 function buildPatch(panelId) {
   const keys = panelFields[panelId] || []
   return keys.reduce((patch, key) => {
-    patch[key] = cfg.value[key] ?? ''
+    patch[key] = key === 'cloud_approval.capabilities'
+      ? selectedCloudCapabilities()
+      : cfg.value[key] ?? ''
     return patch
   }, {})
+}
+
+function normalizeCloudCapabilities(value) {
+  const raw = Array.isArray(value) ? value : []
+  const allowed = new Set(defaultCloudCapabilities)
+  const capabilities = raw
+    .map(item => String(item || '').trim())
+    .filter((item, index, list) => item && allowed.has(item) && list.indexOf(item) === index)
+  return capabilities.length ? capabilities : [...defaultCloudCapabilities]
+}
+
+function selectedCloudCapabilities() {
+  const capabilities = normalizeCloudCapabilities(cfg.value['cloud_approval.capabilities'])
+  cfg.value['cloud_approval.capabilities'] = capabilities
+  return capabilities
 }
 
 async function savePanel(panelId, options = {}) {
@@ -673,6 +710,7 @@ function cloudConfigPayload() {
     registration_token: cfg.value['cloud_approval.registration_token'] || '',
     machine_name: cfg.value['cloud_approval.machine_name'] || '',
     machine_enabled: Boolean(cfg.value['cloud_approval.machine_enabled']),
+    capabilities: selectedCloudCapabilities(),
   }
 }
 
@@ -681,6 +719,7 @@ function applyCloudStatus(status) {
   if (status?.base_url !== undefined) cfg.value['cloud_approval.base_url'] = status.base_url || cfg.value['cloud_approval.base_url'] || ''
   if (status?.machine_name !== undefined) cfg.value['cloud_approval.machine_name'] = status.machine_name || cfg.value['cloud_approval.machine_name'] || ''
   if (status?.machine_enabled !== undefined) cfg.value['cloud_approval.machine_enabled'] = Boolean(status.machine_enabled)
+  if (status?.capabilities !== undefined) cfg.value['cloud_approval.capabilities'] = normalizeCloudCapabilities(status.capabilities)
 }
 
 async function loadCloudStatus() {
@@ -717,6 +756,7 @@ async function enrollCloudMachine() {
     const result = await window.cs.enrollCloudMachine({
       registration_token: cfg.value['cloud_approval.registration_token'] || '',
       machine_name: cfg.value['cloud_approval.machine_name'] || '',
+      capabilities: selectedCloudCapabilities(),
     })
     applyCloudStatus(result?.status)
     cloudMsg.value = '任务机已注册'
@@ -1328,6 +1368,12 @@ onMounted(() => {
   width: 15px;
   height: 15px;
   accent-color: var(--orange);
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
 }
 
 .cloud-actions {

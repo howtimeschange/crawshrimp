@@ -6525,7 +6525,7 @@ def sync_data_files_to_odps(req: SyncDataFilesRequest):
 
 # ─── Settings ───
 
-DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["regenerate_ai_image", "generate_ai_image"]
+DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["regenerate_ai_image", "submit_tmall_material_test"]
 
 
 class CloudApprovalConfigRequest(BaseModel):
@@ -6622,16 +6622,18 @@ def _normalize_cloud_base_url(base_url: str) -> str:
 
 
 def _cloud_capabilities(*sources) -> list[str]:
-    capabilities: list[str] = []
     for source in sources:
         raw = source.get("capabilities") if isinstance(source, dict) else source
         if not isinstance(raw, list):
             continue
+        capabilities: list[str] = []
         for item in raw:
             text = str(item or "").strip()
             if text and text not in capabilities:
                 capabilities.append(text)
-    return capabilities or list(DEFAULT_CLOUD_APPROVAL_CAPABILITIES)
+        if capabilities:
+            return capabilities
+    return list(DEFAULT_CLOUD_APPROVAL_CAPABILITIES)
 
 
 def _build_cloud_client() -> CloudApprovalClient:

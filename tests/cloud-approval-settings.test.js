@@ -12,9 +12,14 @@ function read(relPath) {
 test('settings page contains cloud approval operational settings group', () => {
   const source = read('app/src/renderer/views/SettingsPage.vue')
 
-  for (const text of ['云端审批', '云端地址', '注册 token', '任务机名称', '启用任务机']) {
+  for (const text of ['云端审批', '云端地址', '注册 token', '任务机名称', '任务能力', '启用任务机']) {
     assert.match(source, new RegExp(text))
   }
+  assert.match(source, /cloud_approval\.capabilities/)
+  assert.match(source, /regenerate_ai_image/)
+  assert.match(source, /submit_tmall_material_test/)
+  assert.match(source, /saveCloudApprovalConfig\(cloudConfigPayload\(\)\)/)
+  assert.match(source, /enrollCloudMachine\(\{[\s\S]*capabilities: selectedCloudCapabilities\(\)/)
   for (const method of ['getCloudApprovalStatus', 'saveCloudApprovalConfig', 'enrollCloudMachine', 'startCloudMachine', 'stopCloudMachine']) {
     assert.match(source, new RegExp(method))
   }

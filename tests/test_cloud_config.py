@@ -19,6 +19,7 @@ class CloudConfigTests(unittest.TestCase):
         self.assertEqual(cloud["base_url"], "")
         self.assertEqual(cloud["machine_name"], "")
         self.assertFalse(cloud["machine_enabled"])
+        self.assertEqual(cloud["capabilities"], ["regenerate_ai_image", "submit_tmall_material_test"])
 
     def test_patch_config_expands_cloud_approval_keys(self):
         cfg = patch_config({

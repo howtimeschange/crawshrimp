@@ -101,19 +101,26 @@ class CloudApiServerTests(unittest.TestCase):
         self.assertNotIn("machine_token", payload)
         self.assertNotIn("csr_machine_secret", str(payload))
 
+    def test_status_defaults_to_v1_capabilities_without_saved_list(self):
+        payload = api_server.get_cloud_approval_status()
+
+        self.assertEqual(payload["capabilities"], ["regenerate_ai_image", "submit_tmall_material_test"])
+        self.assertNotIn("generate_ai_image", payload["capabilities"])
+        self.assertNotIn("machine_token", payload)
+
     def test_config_route_persists_cloud_approval_settings_without_credentials(self):
         result = api_server.configure_cloud_approval(api_server.CloudApprovalConfigRequest(
             base_url="https://approval.example.test/",
             registration_token="registration-secret",
             machine_name="设计部任务机",
             machine_enabled=True,
-            capabilities=["regenerate_ai_image"],
+            capabilities=["regenerate_ai_image", "submit_tmall_material_test"],
         ))
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"]["base_url"], "https://approval.example.test")
         self.assertEqual(result["status"]["machine_name"], "设计部任务机")
-        self.assertEqual(result["status"]["capabilities"], ["regenerate_ai_image"])
+        self.assertEqual(result["status"]["capabilities"], ["regenerate_ai_image", "submit_tmall_material_test"])
         self.assertNotIn("machine_token", result["status"])
 
     def test_enroll_machine_uses_registration_token_and_hides_machine_token(self):
@@ -129,11 +136,11 @@ class CloudApiServerTests(unittest.TestCase):
 
         with patch("core.api_server.CloudMachineAgent", FakeCloudMachineAgent):
             payload = api_server.enroll_cloud_machine(api_server.CloudApprovalEnrollRequest(
-                capabilities=["regenerate_ai_image"],
+                capabilities=["regenerate_ai_image", "submit_tmall_material_test"],
             ))
 
         self.assertEqual(FakeCloudMachineAgent.enroll_calls, [
-            ("registration-secret", "设计部任务机", ["regenerate_ai_image"]),
+            ("registration-secret", "设计部任务机", ["regenerate_ai_image", "submit_tmall_material_test"]),
         ])
         self.assertEqual(payload["machine_id"], "machine-cloud-1")
         self.assertTrue(payload["status"]["token_present"])

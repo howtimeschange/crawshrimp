@@ -82,7 +82,7 @@ In the desktop app, open Settings -> Cloud Approval and set:
 - Cloud approval base URL: the deployed Worker URL, without a trailing slash.
 - Registration token: the one-time token created in the cloud workbench.
 - Machine name: a recognizable local workstation name.
-- Capabilities: `regenerate_ai_image,submit_tmall_material_test`.
+- Task capabilities (`任务能力`): select `regenerate_ai_image` and `submit_tmall_material_test`.
 
 Implemented desktop routes:
 

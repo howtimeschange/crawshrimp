@@ -16,3 +16,33 @@ Validation:
 
 Concerns:
 - No checked-in first-admin seed command exists. The runbook documents the implemented D1 schema and operator-controlled seed path instead of inventing a command.
+
+## Task 13 Fix - 2026-07-08
+
+Changed files:
+- `core/config.py`
+- `core/api_server.py`
+- `app/src/renderer/views/SettingsPage.vue`
+- `tests/test_cloud_config.py`
+- `tests/test_cloud_api_server.py`
+- `tests/cloud-approval-settings.test.js`
+- `docs/cloud-approval-workbench-runbook.md`
+- `.superpowers/sdd/task-13-report.md`
+
+Fix summary:
+- Changed default V1 cloud approval capabilities to `regenerate_ai_image` and `submit_tmall_material_test`.
+- Added task capability controls to Settings -> Cloud Approval.
+- Made Settings save and machine enrollment send the same normalized capability list.
+- Kept cloud status and enrollment responses free of long-lived machine tokens while returning safe capabilities.
+- Aligned the runbook wording with the visible `任务能力` Settings control.
+
+Validation:
+- `python -m unittest tests.test_cloud_api_server tests.test_cloud_approval_dry_run -v` passed, 13 tests.
+- `node --test tests/cloud-approval-ipc.test.js tests/cloud-approval-settings.test.js` passed, 5 tests.
+- `python scripts/cloud_approval_dry_run.py` passed and printed `DRY RUN PASS`.
+- `python -m unittest tests.test_cloud_config -v` passed, 2 tests.
+- `cd app && npm test` passed, 68 tests; existing module-type warnings only.
+- `git diff --check` passed.
+
+Concerns:
+- Existing machines already enrolled with a non-empty saved capability list keep reporting that saved list until re-enrolled or reconfigured.

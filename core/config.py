@@ -31,6 +31,7 @@ DEFAULT_CONFIG = {
         "machine_name": "",
         "machine_enabled": False,
         "registration_token": "",
+        "capabilities": ["regenerate_ai_image", "submit_tmall_material_test"],
         "poll_timeout_seconds": 45,
         "idle_heartbeat_seconds": 60,
         "busy_heartbeat_seconds": 10,
