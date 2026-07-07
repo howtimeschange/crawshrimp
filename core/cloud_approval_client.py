@@ -60,9 +60,9 @@ class CloudApprovalClient:
             response = self._open(request)
             status, _payload = self._response_status_payload(response)
         except urllib.error.HTTPError as exc:
-            raise CloudApprovalError(f"cloud upload failed: HTTP {int(exc.code or 0)}") from exc
+            raise CloudApprovalError(f"cloud upload failed: HTTP {int(exc.code or 0)}") from None
         except Exception as exc:
-            raise CloudApprovalError(f"cloud upload failed: {type(exc).__name__}") from exc
+            raise CloudApprovalError(f"cloud upload failed: {type(exc).__name__}") from None
         if status >= 400:
             raise CloudApprovalError(f"cloud upload failed: HTTP {status}")
         return _payload
@@ -78,7 +78,7 @@ class CloudApprovalClient:
                 status = int(exc.code or 0)
                 payload = self._json_from_bytes(exc.read())
             except Exception as exc:
-                raise CloudApprovalError(f"cloud request failed: {type(exc).__name__}: {self._redact(str(exc), token)}") from exc
+                raise CloudApprovalError(f"cloud request failed: {type(exc).__name__}: {self._redact(str(exc), token)}") from None
             if status < 400:
                 return payload
             if status in {429} or 500 <= status <= 599:

@@ -174,3 +174,42 @@ OK
 - Verified desktop uploads now match the machine-token auth used by the Worker upload tests.
 - Verified upload error messages still omit signed upload URLs, upload signatures, and the full machine token.
 - Verified `tests/test_cloud_batch_sync.py` does not need changes because it checks the upload call boundary, not raw HTTP headers.
+
+## Fix Report: Token-Safe Exception Chaining
+
+### Changed Files
+
+- `core/cloud_approval_client.py`
+  - Suppressed original exception chaining for token-bearing request and upload transport failures by raising sanitized `CloudApprovalError`s with `from None`.
+  - Kept request failure messages useful by preserving the exception type and redacted exception text.
+  - Kept upload failure messages stable with sanitized HTTP status or exception type text.
+- `tests/test_cloud_approval_client.py`
+  - Added regression coverage for `request_json()` generic transport failures where the lower-level exception message contains the full machine token.
+  - Added regression coverage for `upload_asset()` generic transport failures where the lower-level exception message contains the full machine token.
+  - Each regression checks `str(error)`, the chained cause representation when present, and formatted traceback output.
+
+### Tests Run
+
+```text
+python -m unittest tests.test_cloud_approval_client -v
+Ran 9 tests in 0.002s
+OK
+```
+
+```text
+python -m unittest tests.test_cloud_approval_client tests.test_cloud_batch_sync tests.test_tmall_ai_image_chain_script -v
+Ran 45 tests in 0.629s
+OK
+```
+
+```text
+git diff --check -- core/cloud_approval_client.py tests/test_cloud_approval_client.py
+OK
+```
+
+### Self-Review
+
+- Verified the new regression tests fail before the client fix because `CloudApprovalError.__cause__` retains the lower-level token-bearing exception.
+- Verified the final formatted traceback no longer contains the full machine token for request or upload transport failures.
+- Verified upload requests still send machine bearer auth through the existing upload header test.
+- Verified retry behavior is unchanged through the existing 429/5xx retry test and the broader Tmall chain regression suite.

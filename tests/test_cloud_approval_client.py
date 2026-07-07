@@ -1,4 +1,5 @@
 import json
+import traceback
 import urllib.error
 import unittest
 from pathlib import Path
@@ -131,6 +132,27 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertNotIn(token, str(ctx.exception))
         self.assertIn("mach...", str(ctx.exception))
 
+    def test_request_json_transport_exception_does_not_chain_full_token(self):
+        token = "machine-token-value-that-must-not-leak"
+        transport = FakeTransport([
+            RuntimeError(f"transport failed with Authorization: Bearer {token}"),
+        ])
+        client = CloudApprovalClient(
+            "https://approval.example.com",
+            machine_token=token,
+            transport=transport,
+        )
+
+        with self.assertRaises(CloudApprovalError) as ctx:
+            client.request_json("POST", "/api/test", {"hello": "world"})
+
+        self.assertNotIn(token, str(ctx.exception))
+        self.assertTrue(ctx.exception.__cause__ is None or token not in repr(ctx.exception.__cause__))
+        formatted = "".join(traceback.format_exception(ctx.exception))
+        self.assertNotIn(token, formatted)
+        self.assertIn("RuntimeError", str(ctx.exception))
+        self.assertIn("mach...", str(ctx.exception))
+
     def test_upload_asset_exception_does_not_return_signed_upload_url(self):
         signed_url = "https://upload.example.com/object?signature=secret-upload-token"
         transport = FakeTransport([
@@ -152,6 +174,29 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertNotIn(signed_url, str(ctx.exception))
         self.assertNotIn("secret-upload-token", str(ctx.exception))
         self.assertNotIn(token, str(ctx.exception))
+
+    def test_upload_asset_transport_exception_does_not_chain_full_token(self):
+        token = "machine-token-value-that-must-not-leak"
+        transport = FakeTransport([
+            RuntimeError(f"upload failed with Authorization: Bearer {token}"),
+        ])
+        client = CloudApprovalClient(
+            "https://approval.example.com",
+            machine_token=token,
+            transport=transport,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "asset.jpg"
+            path.write_bytes(b"image-bytes")
+            with self.assertRaises(CloudApprovalError) as ctx:
+                client.upload_asset("https://upload.example.com/object", path, "image/jpeg")
+
+        self.assertNotIn(token, str(ctx.exception))
+        self.assertTrue(ctx.exception.__cause__ is None or token not in repr(ctx.exception.__cause__))
+        formatted = "".join(traceback.format_exception(ctx.exception))
+        self.assertNotIn(token, formatted)
+        self.assertIn("RuntimeError", str(ctx.exception))
 
 
 if __name__ == "__main__":
