@@ -104,6 +104,9 @@ interface FakeState {
   events: unknown[]
   audits: unknown[]
   claimRaceRequiredCapabilitiesJson?: string
+  claimRaceMachineAuthStatus?: string
+  claimRaceMachineHealth?: string
+  claimRaceMachineCapabilitiesJson?: string
 }
 
 class FakeD1Statement {
@@ -281,6 +284,19 @@ class FakeD1Statement {
       if (!job) return result(0)
       if (this.state.claimRaceRequiredCapabilitiesJson) job.required_capabilities_json = this.state.claimRaceRequiredCapabilitiesJson
       if (requiredCapabilitiesParam !== null && job.required_capabilities_json !== requiredCapabilitiesParam) return result(0)
+      const machine = this.state.machines.find((row) => row.machine_id === machineId)
+      if (machine) {
+        if (this.state.claimRaceMachineAuthStatus) machine.auth_status = this.state.claimRaceMachineAuthStatus
+        if (this.state.claimRaceMachineHealth) machine.health = this.state.claimRaceMachineHealth
+        if (this.state.claimRaceMachineCapabilitiesJson) machine.capabilities_json = this.state.claimRaceMachineCapabilitiesJson
+      }
+      if (normalized.includes('from task_machines')) {
+        if (!machine || machine.auth_status !== 'active' || !['online_idle', 'online_busy'].includes(machine.health)) return result(0)
+        const machineCapabilities = parseStringArray(machine.capabilities_json)
+        const machineCapabilitySet = new Set(machineCapabilities)
+        const requiredCapabilities = parseStringArray(job.required_capabilities_json)
+        if (requiredCapabilities.some((capability) => !machineCapabilitySet.has(capability))) return result(0)
+      }
       job.lease_id = String(this.params[0])
       job.lease_expires_at = String(this.params[1])
       job.assigned_machine_id = machineId
@@ -345,6 +361,17 @@ function normalizeSql(sql: string): string {
 
 function numberOrNull(value: unknown): number | null {
   return value === null || value === undefined ? null : Number(value)
+}
+
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+  if (typeof value !== 'string' || !value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0) : []
+  } catch {
+    return []
+  }
 }
 
 function result(changes: number, lastRowId = 0): D1Result {
@@ -761,6 +788,62 @@ describe('machine routes', () => {
     expect(state.jobs[0].status).toBe('queued')
     expect(state.jobs[0].assigned_machine_id).toBeNull()
     expect(state.jobs[0].required_capabilities_json).toBe(JSON.stringify(['submit_tmall_material_test']))
+  })
+
+  it.each([
+    { label: 'disabled', authStatus: 'disabled', health: undefined },
+    { label: 'revoked', authStatus: 'revoked', health: undefined },
+    { label: 'unhealthy', authStatus: undefined, health: 'needs_login' },
+  ])('does not lease a selected job when the machine becomes $label before update', async ({ authStatus, health }) => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token, ['regenerate_ai_image'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({ job_uid: 'job-machine-race' }))
+    state.claimRaceMachineAuthStatus = authStatus
+    state.claimRaceMachineHealth = health
+
+    const claim = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const claimBody = await claim.json() as { job: null }
+
+    expect(claim.status).toBe(200)
+    expect(claimBody.job).toBeNull()
+    expect(state.jobs[0].status).toBe('queued')
+    expect(state.jobs[0].assigned_machine_id).toBeNull()
+  })
+
+  it('does not lease a selected job when current machine capabilities narrow before update', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['regenerate_ai_image', 'submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['regenerate_ai_image', 'submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({ job_uid: 'job-capability-race' }))
+    state.claimRaceMachineCapabilitiesJson = JSON.stringify(['submit_tmall_material_test'])
+
+    const claim = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const claimBody = await claim.json() as { job: null }
+
+    expect(claim.status).toBe(200)
+    expect(claimBody.job).toBeNull()
+    expect(state.jobs[0].status).toBe('queued')
+    expect(state.jobs[0].assigned_machine_id).toBeNull()
+    expect(state.machines[0].capabilities_json).toBe(JSON.stringify(['submit_tmall_material_test']))
   })
 
   it('claim returns next_poll_after_seconds when no jobs are available', async () => {

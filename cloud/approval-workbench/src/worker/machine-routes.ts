@@ -373,9 +373,26 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
      WHERE job_uid = ?
        AND status = 'queued'
        AND required_capabilities_json = ?
-       AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)`,
+       AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)
+       AND EXISTS (
+         SELECT 1
+         FROM task_machines m
+         WHERE m.machine_id = ?
+           AND m.auth_status = 'active'
+           AND m.health IN ('online_idle', 'online_busy')
+           AND NOT EXISTS (
+             SELECT 1
+             FROM json_each(dispatch_jobs.required_capabilities_json) req
+             WHERE req.type = 'text'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM json_each(m.capabilities_json) capability
+                 WHERE capability.value = req.value
+               )
+           )
+       )`,
   )
-    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, selected.required_capabilities_json, machine.machine_id)
+    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, selected.required_capabilities_json, machine.machine_id, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
   await env.DB.prepare('UPDATE task_machines SET current_job_id = ?, health = ?, updated_at = ? WHERE machine_id = ?')
