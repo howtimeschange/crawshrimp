@@ -1,0 +1,16 @@
+name = "crawshrimp-cloud-approval-workbench"
+main = "src/worker/index.ts"
+compatibility_date = "2026-07-07"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "crawshrimp_cloud_approval"
+database_id = "00000000-0000-0000-0000-000000000000"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "crawshrimp-cloud-approval-assets"
+
+[vars]
+SESSION_TTL_SECONDS = "604800"
