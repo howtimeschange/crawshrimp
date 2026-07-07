@@ -40,14 +40,18 @@ If a live admin route is needed, pass the current admin session cookie at the sh
 
 There is no public registration route. The implemented auth surface starts at `POST /api/auth/login`, and admin user management is under `/api/admin/users`.
 
-For a new D1 database, create the first admin during deployment with controlled D1 SQL or an operator-only script that writes these tables from `cloud/approval-workbench/migrations/0001_init.sql`:
+For a new D1 database, create the first admin during deployment with the operator-only SQL generator. It reads the password from the current shell environment and writes SQL to stdout; do not commit the generated SQL file.
 
-- `roles`
-- `role_permissions`
-- `users`
-- `user_roles`
+```bash
+cd /Users/xingyicheng/Documents/crawshrimp/cloud/approval-workbench
+export CLOUD_APPROVAL_ADMIN_PASSWORD='replace-with-a-strong-password'
+node scripts/seed-admin.mjs --email admin@example.com --name "Cloud Approval Admin" > /tmp/cloud-approval-seed-admin.sql
+npx wrangler d1 execute crawshrimp_cloud_approval --remote --file /tmp/cloud-approval-seed-admin.sql
+rm -f /tmp/cloud-approval-seed-admin.sql
+unset CLOUD_APPROVAL_ADMIN_PASSWORD
+```
 
-Use the role keys and permissions from `cloud/approval-workbench/src/worker/security/rbac.ts`. The password hash format implemented by `cloud/approval-workbench/src/worker/security/password.ts` is:
+The script seeds the built-in roles and permissions from `cloud/approval-workbench/src/worker/security/rbac.ts`, then creates or resets the first `super_admin` user. The password hash format implemented by `cloud/approval-workbench/src/worker/security/password.ts` is:
 
 ```text
 sha256:<salt>:<sha256(salt:password)>

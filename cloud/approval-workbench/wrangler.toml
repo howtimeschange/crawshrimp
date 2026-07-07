@@ -10,7 +10,7 @@ run_worker_first = ["/api/*", "/health"]
 [[d1_databases]]
 binding = "DB"
 database_name = "crawshrimp_cloud_approval"
-database_id = "00000000-0000-0000-0000-000000000000"
+database_id = "e7acab75-f0f8-4a02-a8e0-7ed7506617b6"
 migrations_dir = "migrations"
 
 [[r2_buckets]]
