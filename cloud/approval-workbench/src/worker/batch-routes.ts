@@ -116,12 +116,19 @@ export async function syncBatchComplete(request: Request, env: Env): Promise<Res
   if (actor instanceof Response) return actor
   const batchUid = batchUidFromCompletePath(request)
   if (!batchUid) return badRequest('batch_uid is required')
+  const batch = await env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
+  if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  if (batch.status !== 'syncing' && batch.status !== 'pending_review') {
+    return json({ error: 'sync-complete requires batch status syncing or pending_review' }, { status: 409 })
+  }
   const styleCount = await env.DB.prepare('SELECT COUNT(*) as count FROM ai_image_styles WHERE batch_uid = ?').bind(batchUid).first<{ count: number }>()
   const aiAssetCount = await env.DB.prepare("SELECT COUNT(*) as count FROM ai_image_assets WHERE batch_uid = ? AND kind = 'ai'").bind(batchUid).first<{ count: number }>()
   if (!styleCount?.count || !aiAssetCount?.count) return badRequest('sync-complete requires at least one style and one AI asset')
-  await env.DB.prepare("UPDATE ai_image_batches SET status = 'pending_review', updated_at = ? WHERE batch_uid = ?")
-    .bind(nowIso(), batchUid)
-    .run()
+  if (batch.status === 'syncing') {
+    await env.DB.prepare("UPDATE ai_image_batches SET status = 'pending_review', updated_at = ? WHERE batch_uid = ?")
+      .bind(nowIso(), batchUid)
+      .run()
+  }
   await recordAudit(env, { machineId: actor.machine_id }, 'batches.sync_complete', 'ai_image_batch', batchUid, {}, request)
   return json({ ok: true, status: 'pending_review' })
 }

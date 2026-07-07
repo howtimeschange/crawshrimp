@@ -669,6 +669,48 @@ describe('batch sync routes', () => {
     expect(state.batches[0].status).toBe('pending_review')
   })
 
+  it('keeps pending_review sync-complete idempotent', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.batches[0].status = 'pending_review'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), env)
+
+    expect(response.status).toBe(200)
+    expect(state.batches[0].status).toBe('pending_review')
+  })
+
+  it('rejects sync-complete for non-syncing reviewed batches without changing status', async () => {
+    for (const status of ['ready_to_submit', 'submitted', 'rejected']) {
+      const { state, machineToken } = await baseState()
+      const env = fakeEnv(state)
+      await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${machineToken}` },
+        body: JSON.stringify(batchPayload()),
+      }), env)
+      state.batches[0].status = status
+
+      const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${machineToken}` },
+      }), env)
+      const body = await response.json() as { error: string }
+
+      expect(response.status).toBe(409)
+      expect(body.error).toContain('status syncing')
+      expect(state.batches[0].status).toBe(status)
+    }
+  })
+
   it('updates duplicate batch_uid metadata idempotently', async () => {
     const { state, machineToken } = await baseState()
     const env = fakeEnv(state)
