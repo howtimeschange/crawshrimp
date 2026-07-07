@@ -257,6 +257,8 @@ API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认
 
 `capture` 和 `probe` 默认不保存响应 body；确需排查响应内容时再显式追加 `--response-body`，返回内容会先做 token、cookie、密码等敏感字段脱敏。
 
+云端审批工作台是 `巴拉-AI测图全链路` 的可选协作流程，用于把本地 AI 生图批次同步到 Cloudflare 审批页，并由受控任务机执行退回重生图或天猫测图提交；部署、配置和安全注意事项见 [Cloud Approval Workbench Runbook](docs/cloud-approval-workbench-runbook.md)。
+
 ### 桌面构建与发布
 
 仓库已接入 GitHub Actions 桌面构建：
