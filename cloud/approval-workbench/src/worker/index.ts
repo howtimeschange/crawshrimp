@@ -28,6 +28,13 @@ import {
   revokeMachine,
   rotateMachineToken,
 } from './machine-routes'
+import {
+  createPromptLibrary,
+  listPromptLibraries,
+  publishPromptLibrary,
+  resolvePrompts,
+  updatePromptTemplate,
+} from './prompt-routes'
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -65,6 +72,11 @@ export default {
     if (/^\/api\/jobs\/[^/]+\/progress$/.test(url.pathname) && request.method === 'POST') return progressJob(request, env)
     if (/^\/api\/jobs\/[^/]+\/complete$/.test(url.pathname) && request.method === 'POST') return completeJob(request, env)
     if (/^\/api\/jobs\/[^/]+\/fail$/.test(url.pathname) && request.method === 'POST') return failJob(request, env)
+    if (url.pathname === '/api/prompt-libraries' && request.method === 'GET') return listPromptLibraries(request, env)
+    if (url.pathname === '/api/prompt-libraries' && request.method === 'POST') return createPromptLibrary(request, env)
+    if (/^\/api\/prompt-templates\/\d+$/.test(url.pathname) && request.method === 'PATCH') return updatePromptTemplate(request, env)
+    if (/^\/api\/prompt-libraries\/\d+\/publish-version$/.test(url.pathname) && request.method === 'POST') return publishPromptLibrary(request, env)
+    if (/^\/api\/prompt-libraries\/\d+\/resolved$/.test(url.pathname) && request.method === 'GET') return resolvePrompts(request, env)
     if (url.pathname.startsWith('/api/')) return json({ error: 'Not found' }, { status: 404 })
 
     return new Response('Crawshrimp cloud approval workbench scaffold', {
