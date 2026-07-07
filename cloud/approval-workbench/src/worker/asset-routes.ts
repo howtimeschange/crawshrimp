@@ -1,6 +1,9 @@
 import { nowIso, toJson } from './db'
 import type { Env } from './env'
 import { badRequest, json } from './http'
+import { requirePermission } from './auth-routes'
+import { requireActiveMachine } from './machine-routes'
+import type { Permission } from './security/rbac'
 
 const ALLOWED_KINDS = new Set(['source', 'reference', 'ai', 'table', 'log', 'result'])
 const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.csv', '.xlsx', '.xls', '.json', '.txt', '.log'])
@@ -33,6 +36,8 @@ export function batchObjectKey(batchUid: string, kind: string, filename: string)
 }
 
 export async function createAssetUploadPlan(request: Request, env: Env): Promise<Response> {
+  const actor = await requireMachineOrUserPermission(request, env, 'machines:write')
+  if (actor instanceof Response) return actor
   const body = await requestJson(request) as AssetUploadBody
   const batchUid = stringValue(body.batch_uid)
   const assetUid = stringValue(body.asset_uid)
@@ -77,6 +82,8 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
 }
 
 export async function getAssetDownload(request: Request, env: Env): Promise<Response> {
+  const actor = await requireMachineOrUserPermission(request, env, 'batches:read')
+  if (actor instanceof Response) return actor
   const assetUid = new URL(request.url).pathname.match(/^\/api\/assets\/([^/]+)\/download$/)?.[1] || ''
   if (!assetUid) return badRequest('asset_uid is required')
   const asset = await env.DB.prepare('SELECT asset_uid, object_key, filename, meta_json FROM ai_image_assets WHERE asset_uid = ? LIMIT 1')
@@ -91,6 +98,15 @@ export async function getAssetDownload(request: Request, env: Env): Promise<Resp
       'content-disposition': `attachment; filename="${asset.filename.replace(/"/g, '')}"`,
     },
   })
+}
+
+async function requireMachineOrUserPermission(request: Request, env: Env, permission: Permission): Promise<unknown | Response> {
+  if (hasBearerToken(request)) return requireActiveMachine(request, env)
+  return requirePermission(request, env, permission)
+}
+
+function hasBearerToken(request: Request): boolean {
+  return /^Bearer\s+\S+/i.test(request.headers.get('authorization') || '')
 }
 
 export async function upsertAsset(env: Env, asset: {

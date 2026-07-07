@@ -1,5 +1,59 @@
 import { describe, expect, it } from 'vitest'
 import worker from '../worker/index'
+import { sha256Hex } from '../worker/security/tokens'
+
+interface UserRow {
+  id: number
+  email: string
+  name: string
+  status: string
+}
+
+interface RoleRow {
+  id: number
+  role_key: string
+  name: string
+}
+
+interface UserRoleRow {
+  user_id: number
+  role_id: number
+}
+
+interface SessionRow {
+  user_id: number
+  session_hash: string
+  expires_at: string
+  revoked_at: string | null
+}
+
+interface MachineRow {
+  id: number
+  machine_id: string
+  machine_name: string
+  owner_user_id: number | null
+  app_version: string
+  fingerprint_hash: string
+  capabilities_json: string
+  auth_status: string
+  health: string
+  current_job_id: string | null
+  last_seen_at: string | null
+  registered_at: string
+  updated_at: string
+}
+
+interface MachineTokenRow {
+  id: number
+  machine_id: string
+  token_hash: string
+  token_version: number
+  status: string
+  issued_by: number | null
+  issued_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
 
 interface AssetRow {
   id: number
@@ -21,7 +75,14 @@ interface AssetRow {
 }
 
 interface FakeState {
+  users: UserRow[]
+  roles: RoleRow[]
+  userRoles: UserRoleRow[]
+  sessions: SessionRow[]
+  machines: MachineRow[]
+  machineTokens: MachineTokenRow[]
   assets: AssetRow[]
+  r2Gets: string[]
 }
 
 class FakeD1Statement {
@@ -39,6 +100,20 @@ class FakeD1Statement {
 
   async first<T>(): Promise<T | null> {
     const normalized = normalizeSql(this.sql)
+    if (normalized.includes('from sessions') && normalized.includes('join users')) {
+      const sessionHash = String(this.params[0])
+      const now = String(this.params[1])
+      const session = this.state.sessions.find((row) => row.session_hash === sessionHash && !row.revoked_at && row.expires_at > now)
+      if (!session) return null
+      return (this.state.users.find((user) => user.id === session.user_id && user.status === 'active') ?? null) as T | null
+    }
+    if (normalized.includes('from machine_tokens') && normalized.includes('join task_machines')) {
+      const tokenHash = String(this.params[0])
+      const token = this.state.machineTokens.find((row) => row.token_hash === tokenHash && row.status === 'active' && !row.revoked_at)
+      if (!token) return null
+      const machine = this.state.machines.find((row) => row.machine_id === token.machine_id)
+      return (machine ? { ...machine, token_hash: token.token_hash } : null) as T | null
+    }
     if (normalized.includes('from ai_image_assets') && normalized.includes('where asset_uid = ?')) {
       return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
     }
@@ -46,11 +121,26 @@ class FakeD1Statement {
   }
 
   async all<T>(): Promise<{ results: T[] }> {
+    const normalized = normalizeSql(this.sql)
+    if (normalized.includes('from roles') && normalized.includes('join user_roles')) {
+      const userId = Number(this.params[0])
+      return {
+        results: this.state.userRoles
+          .filter((userRole) => userRole.user_id === userId)
+          .map((userRole) => this.state.roles.find((role) => role.id === userRole.role_id))
+          .filter((role): role is RoleRow => Boolean(role)) as T[],
+      }
+    }
     return { results: [] }
   }
 
   async run(): Promise<D1Result> {
     const normalized = normalizeSql(this.sql)
+    if (normalized.startsWith('update machine_tokens set last_used_at')) {
+      const token = this.state.machineTokens.find((row) => row.token_hash === String(this.params[1]))
+      if (token) token.last_used_at = String(this.params[0])
+      return result(token ? 1 : 0)
+    }
     if (normalized.startsWith('insert into ai_image_assets')) {
       const existing = this.state.assets.find((row) => row.asset_uid === String(this.params[0]))
       if (existing) return result(1, existing.id)
@@ -91,7 +181,8 @@ function fakeEnv(state: FakeState) {
   return {
     DB: new FakeD1Database(state) as unknown as D1Database,
     ASSETS: {
-      async get() {
+      async get(key: string) {
+        state.r2Gets.push(key)
         return null
       },
     } as unknown as R2Bucket,
@@ -104,10 +195,89 @@ function fetchWorker(request: Request, env: ReturnType<typeof fakeEnv>): Promise
 }
 
 describe('asset upload planning routes', () => {
-  it('returns deterministic object keys under the batch prefix', async () => {
-    const state: FakeState = { assets: [] }
+  it('rejects unauthenticated presign requests', async () => {
+    const { state } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
+      body: JSON.stringify(validPresignBody()),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(401)
+    expect(state.assets).toHaveLength(0)
+  })
+
+  it('allows active machine bearer tokens to create upload plans', async () => {
+    const { state, machineToken } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(validPresignBody()),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(state.assets[0].asset_uid).toBe('asset-ai-1')
+  })
+
+  it('rejects non-admin user sessions without machines:write for presign', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify(validPresignBody()),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(403)
+    expect(state.assets).toHaveLength(0)
+  })
+
+  it('allows admin users with machines:write to create upload plans', async () => {
+    const { state, adminCookie } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { cookie: adminCookie },
+      body: JSON.stringify(validPresignBody()),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(state.assets[0].asset_uid).toBe('asset-ai-1')
+  })
+
+  it('rejects unauthenticated download requests before R2 lookup', async () => {
+    const { state } = await baseState()
+    state.assets.push(assetRow())
+    const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download'), fakeEnv(state))
+
+    expect(response.status).toBe(401)
+    expect(state.r2Gets).toEqual([])
+  })
+
+  it('allows users with batches:read to reach the R2 download lookup path', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.push(assetRow())
+    const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download', {
+      headers: { cookie: reviewerCookie },
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(404)
+    expect(state.r2Gets).toEqual(['batches/batch-20260707/ai/asset-ai-1-ai.jpg'])
+  })
+
+  it('allows active machine bearer tokens to reach the R2 download lookup path', async () => {
+    const { state, machineToken } = await baseState()
+    state.assets.push(assetRow())
+    const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download', {
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(404)
+    expect(state.r2Gets).toEqual(['batches/batch-20260707/ai/asset-ai-1-ai.jpg'])
+  })
+
+  it('returns deterministic object keys under the batch prefix', async () => {
+    const { state, machineToken } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -125,9 +295,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('rejects paths outside allowed asset suffixes', async () => {
-    const state: FakeState = { assets: [] }
+    const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -142,9 +313,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('stores sanitized source_path_label metadata without raw local absolute paths', async () => {
-    const state: FakeState = { assets: [] }
+    const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -161,9 +333,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('sanitizes absolute source_path_label and nested local paths while keeping safe metadata', async () => {
-    const state: FakeState = { assets: [] }
+    const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify({
         batch_uid: 'batch-20260707',
         style_id: 7,
@@ -203,9 +376,10 @@ describe('asset upload planning routes', () => {
   })
 
   it('scrubs generic POSIX local paths and object-key metadata while preserving safe URLs', async () => {
-    const state: FakeState = { assets: [] }
+    const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify({
         batch_uid: 'batch-1',
         style_id: 7,
@@ -245,6 +419,100 @@ describe('asset upload planning routes', () => {
     expect(state.assets[0].meta_json).not.toContain('storage_key')
   })
 })
+
+async function baseState(): Promise<{ state: FakeState; machineToken: string; reviewerCookie: string; adminCookie: string }> {
+  const machineToken = 'csr_machine_test'
+  const reviewerSession = 'sess_reviewer'
+  const adminSession = 'sess_admin'
+  const state: FakeState = {
+    users: [
+      { id: 1, email: 'admin@example.com', name: 'Admin', status: 'active' },
+      { id: 2, email: 'reviewer@example.com', name: 'Reviewer', status: 'active' },
+    ],
+    roles: [
+      { id: 1, role_key: 'admin', name: 'Admin' },
+      { id: 2, role_key: 'reviewer', name: 'Reviewer' },
+    ],
+    userRoles: [
+      { user_id: 1, role_id: 1 },
+      { user_id: 2, role_id: 2 },
+    ],
+    sessions: [
+      { user_id: 1, session_hash: await sha256Hex(adminSession), expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
+      { user_id: 2, session_hash: await sha256Hex(reviewerSession), expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
+    ],
+    machines: [
+      {
+        id: 1,
+        machine_id: 'machine-1',
+        machine_name: 'Machine 1',
+        owner_user_id: null,
+        app_version: '1.0.0',
+        fingerprint_hash: 'fp',
+        capabilities_json: '["ai-image-sync"]',
+        auth_status: 'active',
+        health: 'online_idle',
+        current_job_id: null,
+        last_seen_at: null,
+        registered_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    machineTokens: [
+      {
+        id: 1,
+        machine_id: 'machine-1',
+        token_hash: await sha256Hex(machineToken),
+        token_version: 1,
+        status: 'active',
+        issued_by: null,
+        issued_at: '2026-01-01T00:00:00.000Z',
+        last_used_at: null,
+        revoked_at: null,
+      },
+    ],
+    assets: [],
+    r2Gets: [],
+  }
+  return {
+    state,
+    machineToken,
+    reviewerCookie: `cs_session=${reviewerSession}`,
+    adminCookie: `cs_session=${adminSession}`,
+  }
+}
+
+function validPresignBody(): Record<string, unknown> {
+  return {
+    batch_uid: 'batch-20260707',
+    style_id: 7,
+    asset_uid: 'asset-ai-1',
+    kind: 'ai',
+    filename: 'ai.jpg',
+    content_hash: 'hash-1',
+  }
+}
+
+function assetRow(): AssetRow {
+  return {
+    id: 1,
+    asset_uid: 'asset-ai-1',
+    batch_uid: 'batch-20260707',
+    style_id: 7,
+    kind: 'ai',
+    status: 'uploaded',
+    object_key: 'batches/batch-20260707/ai/asset-ai-1-ai.jpg',
+    filename: 'ai.jpg',
+    content_hash: 'hash-1',
+    prompt_template_version_id: null,
+    prompt_text: '',
+    parent_asset_uid: null,
+    generation_job_id: null,
+    meta_json: '{}',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+  }
+}
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/g, ' ').trim()
