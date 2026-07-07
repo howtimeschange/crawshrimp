@@ -91,6 +91,9 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
   if (!isSafeIdentifier(batchUid)) return badRequest('batch_uid must be a safe identifier')
   const styles = Array.isArray(body.styles) ? body.styles.filter((style): style is Record<string, unknown> => style && typeof style === 'object' && !Array.isArray(style)) : []
   const existing = await env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
+  if (actor.machine && existing?.source_machine_id && existing.source_machine_id !== actor.machine.machine_id) {
+    return forbidden('Only the source machine can sync this batch')
+  }
   const now = nowIso()
   await env.DB.prepare(
     `INSERT INTO ai_image_batches
@@ -143,6 +146,7 @@ export async function syncBatchComplete(request: Request, env: Env): Promise<Res
   if (!batchUid) return badRequest('batch_uid is required')
   const batch = await env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  if (batch.source_machine_id !== actor.machine_id) return forbidden('Only the source machine can complete sync for this batch')
   if (batch.status !== 'syncing' && batch.status !== 'pending_review') {
     return json({ error: 'sync-complete requires batch status syncing or pending_review' }, { status: 409 })
   }

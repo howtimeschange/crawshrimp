@@ -443,7 +443,7 @@ def _run_flow(
         "expires_in_seconds": 3600,
     }, token_type="user")
     _assert(str(enrollment.get("token") or "").startswith("csr_enroll"), "enrollment token was not created")
-    summary["enrollment_token"] = enrollment
+    summary["enrollment_token"] = {"enrollment_token": dict(enrollment.get("enrollment_token") or {})}
 
     printer("Phase 3: enroll fake task machine")
     machine = client.request_json("POST", "/api/machines/enroll", {
@@ -457,7 +457,7 @@ def _run_flow(
     _assert(machine.get("auth_status") == "active", "fake task machine did not become active")
     _assert(machine.get("machine_token"), "fake task machine did not receive a machine token")
     client.machine_token = str(machine["machine_token"])
-    summary["machine"] = machine
+    summary["machine"] = {key: value for key, value in machine.items() if key != "machine_token"}
     heartbeat = client.request_json("POST", "/api/machines/heartbeat", {
         "health": "online_idle",
         "capabilities": CAPABILITIES,

@@ -92,6 +92,31 @@ interface DispatchJobRow {
   updated_at: string
 }
 
+interface BatchRow {
+  id: number
+  batch_uid: string
+  status: string
+  updated_at: string
+}
+
+interface StyleRow {
+  id: number
+  batch_uid: string
+  style_code: string
+  status: string
+  submit_summary_json: string
+}
+
+interface AssetRow {
+  id: number
+  asset_uid: string
+  batch_uid: string
+  style_id: number
+  kind: string
+  status: string
+  updated_at: string
+}
+
 interface FakeState {
   users: UserRow[]
   roles: RoleRow[]
@@ -101,6 +126,9 @@ interface FakeState {
   machines: MachineRow[]
   machineTokens: MachineTokenRow[]
   jobs: DispatchJobRow[]
+  batches: BatchRow[]
+  styles: StyleRow[]
+  assets: AssetRow[]
   events: unknown[]
   audits: unknown[]
   claimRaceRequiredCapabilitiesJson?: string
@@ -158,6 +186,9 @@ class FakeD1Statement {
         .filter((job) => job.status === 'queued' && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
         .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at))
       return (sorted[0] ?? null) as T | null
+    }
+    if (normalized.includes('from dispatch_jobs') && normalized.includes('where job_uid = ?')) {
+      return (this.state.jobs.find((job) => job.job_uid === String(this.params[0])) ?? null) as T | null
     }
     return null
   }
@@ -363,6 +394,41 @@ class FakeD1Statement {
       job.updated_at = String(this.params[2])
       return result(1)
     }
+    if (normalized.startsWith("update ai_image_batches set status = 'submitted'")) {
+      const batch = this.state.batches.find((row) => row.batch_uid === String(this.params[1]))
+      if (!batch) return result(0)
+      batch.status = 'submitted'
+      batch.updated_at = String(this.params[0])
+      return result(1)
+    }
+    if (normalized.startsWith("update ai_image_assets set status = 'submitted'")) {
+      const now = String(this.params[0])
+      const batchUid = String(this.params[1])
+      const assetUids = new Set(this.params.slice(2).map(String))
+      let changes = 0
+      for (const asset of this.state.assets) {
+        if (asset.batch_uid === batchUid && asset.kind === 'ai' && assetUids.has(asset.asset_uid)) {
+          asset.status = 'submitted'
+          asset.updated_at = now
+          changes += 1
+        }
+      }
+      return result(changes)
+    }
+    if (normalized.startsWith("update ai_image_styles set status = 'submitted'")) {
+      const summary = String(this.params[0])
+      const batchUid = String(this.params[1])
+      const styleIds = new Set([Number(this.params[2])])
+      let changes = 0
+      for (const style of this.state.styles) {
+        if (style.batch_uid === batchUid && styleIds.has(style.id)) {
+          style.status = 'submitted'
+          style.submit_summary_json = summary
+          changes += 1
+        }
+      }
+      return result(changes)
+    }
     return result(1)
   }
 }
@@ -420,6 +486,9 @@ async function emptyState(): Promise<FakeState> {
     machines: [],
     machineTokens: [],
     jobs: [],
+    batches: [],
+    styles: [],
+    assets: [],
     events: [],
     audits: [],
   }
@@ -1047,6 +1116,65 @@ describe('machine routes', () => {
     expect(JSON.parse(state.jobs[0].result_json)).toEqual({ status: 'blocked_needs_login' })
     expect(state.machines[0].current_job_id).toBeNull()
     expect(state.machines[0].health).toBe('needs_login')
+  })
+
+  it('persists submitted batch, style, and approved AI asset state when a submit job completes', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-submit'
+    state.batches.push({ id: 1, batch_uid: 'batch-1', status: 'ready_to_submit', updated_at: '2026-01-01T00:00:00.000Z' })
+    state.styles.push({ id: 10, batch_uid: 'batch-1', style_code: 'style-1', status: 'approved', submit_summary_json: '{}' })
+    state.assets.push(
+      { id: 1, asset_uid: 'source-1', batch_uid: 'batch-1', style_id: 10, kind: 'source', status: 'uploaded', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 2, asset_uid: 'ai-approved-1', batch_uid: 'batch-1', style_id: 10, kind: 'ai', status: 'approved', updated_at: '2026-01-01T00:00:00.000Z' },
+      { id: 3, asset_uid: 'ai-rejected-1', batch_uid: 'batch-1', style_id: 10, kind: 'ai', status: 'rejected', updated_at: '2026-01-01T00:00:00.000Z' },
+    )
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit',
+      batch_uid: 'batch-1',
+      job_type: 'submit_tmall_material_test',
+      status: 'leased',
+      lease_id: 'lease-submit',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      payload_json: JSON.stringify({
+        submit_plan: {
+          batch_uid: 'batch-1',
+          assets: [
+            { asset_uid: 'source-1', style_id: 10, kind: 'source' },
+            { asset_uid: 'ai-approved-1', style_id: 10, kind: 'ai' },
+          ],
+        },
+      }),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-submit/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-submit', result: { dry_run: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.jobs[0].status).toBe('succeeded')
+    expect(state.batches[0].status).toBe('submitted')
+    expect(state.assets.map((asset) => [asset.asset_uid, asset.status])).toEqual([
+      ['source-1', 'uploaded'],
+      ['ai-approved-1', 'submitted'],
+      ['ai-rejected-1', 'rejected'],
+    ])
+    expect(state.styles[0].status).toBe('submitted')
+    expect(JSON.parse(state.styles[0].submit_summary_json)).toMatchObject({
+      job_uid: 'job-submit',
+      submitted_asset_uids: ['ai-approved-1'],
+    })
   })
 
   it('records the dispatch job lease holder and rejects same-lease writes from another machine', async () => {

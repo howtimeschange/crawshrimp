@@ -32,7 +32,9 @@ class CloudApprovalDryRunTests(unittest.TestCase):
 
         self.assertIn("seed_admin", summary["instructions"])
         self.assertEqual(summary["enrollment_token"]["enrollment_token"]["status"], "issued")
+        self.assertNotIn("token", summary["enrollment_token"])
         self.assertEqual(summary["machine"]["auth_status"], "active")
+        self.assertNotIn("machine_token", summary["machine"])
         self.assertEqual(summary["sync"]["status"], "pending_review")
         self.assertEqual(summary["regeneration_job"]["job_type"], "regenerate_ai_image")
         self.assertEqual(summary["regeneration_job"]["status"], "queued")

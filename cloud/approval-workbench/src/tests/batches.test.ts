@@ -678,6 +678,43 @@ describe('batch sync routes', () => {
     expect(state.batches[0]).toMatchObject({ created_by: 1, source_machine_id: 'machine-override' })
   })
 
+  it('rejects machine sync attempts against a batch owned by another machine', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const first = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload('Machine 1 batch')),
+    }), env)
+    const secondMachineToken = 'csr_machine_test_2'
+    state.machines.push({
+      ...state.machines[0],
+      id: 2,
+      machine_id: 'machine-2',
+      machine_name: 'Machine 2',
+    })
+    state.machineTokens.push({
+      ...state.machineTokens[0],
+      id: 2,
+      machine_id: 'machine-2',
+      token_hash: await sha256Hex(secondMachineToken),
+    })
+
+    const second = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secondMachineToken}` },
+      body: JSON.stringify(batchPayload('Hijack attempt')),
+    }), env)
+    const body = await second.json() as { error: string }
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(403)
+    expect(body.error).toContain('source machine')
+    expect(state.batches).toHaveLength(1)
+    expect(state.batches[0]).toMatchObject({ title: 'Machine 1 batch', source_machine_id: 'machine-1' })
+    expect(state.assets).toHaveLength(2)
+  })
+
   it('changes a valid syncing batch to pending_review on sync-complete', async () => {
     const { state, machineToken } = await baseState()
     const env = fakeEnv(state)
@@ -695,6 +732,40 @@ describe('batch sync routes', () => {
 
     expect(response.status).toBe(200)
     expect(state.batches[0].status).toBe('pending_review')
+  })
+
+  it('rejects sync-complete from a machine that does not own the synced batch', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.assets.forEach((asset) => { asset.status = 'uploaded' })
+    const secondMachineToken = 'csr_machine_test_2'
+    state.machines.push({
+      ...state.machines[0],
+      id: 2,
+      machine_id: 'machine-2',
+      machine_name: 'Machine 2',
+    })
+    state.machineTokens.push({
+      ...state.machineTokens[0],
+      id: 2,
+      machine_id: 'machine-2',
+      token_hash: await sha256Hex(secondMachineToken),
+    })
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secondMachineToken}` },
+    }), env)
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(403)
+    expect(body.error).toContain('source machine')
+    expect(state.batches[0].status).toBe('syncing')
   })
 
   it('keeps synced asset rows planned until upload succeeds', async () => {

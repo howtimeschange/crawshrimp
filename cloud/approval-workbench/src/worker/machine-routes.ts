@@ -489,7 +489,7 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
   const jobUid = typeof body.job_uid === 'string' ? body.job_uid : jobUidFromPath(request)
   const leaseId = typeof body.lease_id === 'string' ? body.lease_id : ''
   if (!jobUid || !leaseId) return badRequest('job_uid and lease_id are required')
-  const result = body.result && typeof body.result === 'object' ? body.result : {}
+  const result = body.result && typeof body.result === 'object' && !Array.isArray(body.result) ? body.result as Record<string, unknown> : {}
   const update = await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET status = ?, result_json = ?, updated_at = ?
@@ -507,14 +507,67 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
       .bind(nextHealth, nowIso(), machine.machine_id)
       .run()
   }
+  if (status === 'succeeded') {
+    const job = await env.DB.prepare('SELECT * FROM dispatch_jobs WHERE job_uid = ? LIMIT 1').bind(jobUid).first<DispatchJobRow>()
+    if (job?.job_type === 'submit_tmall_material_test') await persistSubmitCompletion(env, job, result)
+  }
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, eventType, typeof body.message === 'string' ? body.message : '', { status, result })
   return json({ ok: true, status })
+}
+
+async function persistSubmitCompletion(env: Env, job: DispatchJobRow, result: Record<string, unknown>): Promise<void> {
+  const payload = objectValue(fromJsonObject(job.payload_json))
+  const submitPlan = objectValue(payload.submit_plan)
+  const planBatchUid = stringValue(submitPlan.batch_uid) || job.batch_uid
+  if (!planBatchUid || planBatchUid !== job.batch_uid) return
+  const planAssets = Array.isArray(submitPlan.assets) ? submitPlan.assets.map(objectValue).filter((asset) => Object.keys(asset).length > 0) : []
+  const submittedAiAssets = planAssets
+    .filter((asset) => stringValue(asset.kind) === 'ai')
+    .map((asset) => ({
+      assetUid: stringValue(asset.asset_uid),
+      styleId: Number(asset.style_id),
+    }))
+    .filter((asset) => asset.assetUid && Number.isFinite(asset.styleId) && asset.styleId > 0)
+  if (submittedAiAssets.length === 0) return
+
+  const now = nowIso()
+  await env.DB.prepare("UPDATE ai_image_batches SET status = 'submitted', updated_at = ? WHERE batch_uid = ?")
+    .bind(now, job.batch_uid)
+    .run()
+
+  const assetPlaceholders = submittedAiAssets.map(() => '?').join(', ')
+  await env.DB.prepare(`UPDATE ai_image_assets SET status = 'submitted', updated_at = ? WHERE batch_uid = ? AND kind = 'ai' AND status = 'approved' AND asset_uid IN (${assetPlaceholders})`)
+    .bind(now, job.batch_uid, ...submittedAiAssets.map((asset) => asset.assetUid))
+    .run()
+
+  const byStyle = new Map<number, string[]>()
+  for (const asset of submittedAiAssets) {
+    byStyle.set(asset.styleId, [...(byStyle.get(asset.styleId) || []), asset.assetUid])
+  }
+  for (const [styleId, submittedAssetUids] of byStyle.entries()) {
+    await env.DB.prepare("UPDATE ai_image_styles SET status = 'submitted', submit_summary_json = ? WHERE batch_uid = ? AND id = ?")
+      .bind(toJson({
+        job_uid: job.job_uid,
+        submitted_at: now,
+        submitted_asset_uids: submittedAssetUids,
+        result,
+      }), job.batch_uid, styleId)
+      .run()
+  }
 }
 
 function failStatusFromBody(body: Record<string, unknown>): DispatchStatus {
   const result = body.result && typeof body.result === 'object' ? body.result as Record<string, unknown> : {}
   const explicitStatus = typeof body.status === 'string' ? body.status : typeof result.status === 'string' ? result.status : ''
   return explicitStatus === 'blocked_needs_login' ? 'blocked_needs_login' : 'retryable_failed'
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 async function recordJobEvent(env: Env, jobUid: string, machineId: string, leaseId: string, eventType: string, message: string, payload: unknown): Promise<void> {
