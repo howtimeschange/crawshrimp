@@ -120,8 +120,10 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
     )
     .run()
 
+  const syncedStyles: Array<Record<string, string | number>> = []
   for (const style of styles) {
     const styleId = await upsertStyle(env, batchUid, style, now)
+    syncedStyles.push(syncedStyleResponse(style, styleId))
     const assets = Array.isArray(style.assets) ? style.assets.filter((asset): asset is Record<string, unknown> => asset && typeof asset === 'object' && !Array.isArray(asset)) : []
     for (const asset of assets) {
       await upsertSyncedAsset(env, batchUid, styleId, asset, now)
@@ -130,7 +132,7 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
 
   await recordAudit(env, auditActor(actor), 'batches.sync', 'ai_image_batch', batchUid, { style_count: styles.length }, request)
   const batch = await env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
-  return json({ batch }, { status: existing ? 200 : 201 })
+  return json({ batch, styles: syncedStyles }, { status: existing ? 200 : 201 })
 }
 
 export async function syncBatchComplete(request: Request, env: Env): Promise<Response> {
@@ -420,6 +422,24 @@ async function upsertStyle(env: Env, batchUid: string, style: Record<string, unk
     .first<StyleRow>()
   if (!row) throw new Error(`style was not created: ${styleCode}`)
   return row.id
+}
+
+function syncedStyleResponse(style: Record<string, unknown>, styleId: number): Record<string, string | number> {
+  const response: Record<string, string | number> = {
+    id: styleId,
+    style_id: styleId,
+    style_code: stringValue(style.style_code),
+    item_id: stringValue(style.item_id),
+  }
+  const styleUid = safeResponseString(style.style_uid)
+  if (styleUid) response.style_uid = styleUid
+  return response
+}
+
+function safeResponseString(value: unknown): string {
+  const text = stringValue(value)
+  if (!text || text.includes('/') || text.includes('\\')) return ''
+  return text
 }
 
 async function upsertSyncedAsset(env: Env, batchUid: string, styleId: number, asset: Record<string, unknown>, now: string): Promise<void> {

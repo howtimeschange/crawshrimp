@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from core.cloud_approval_client import CloudApprovalError
 from core.cloud_batch_sync import build_cloud_batch_payload, sync_local_approval_batch
 
 
@@ -20,13 +19,13 @@ class FakeClient:
                 "batch": {"batch_uid": body["batch_uid"]},
                 "styles": [
                     {
-                        "id": style["style_id"],
+                        "id": 101 + index,
+                        "style_id": 101 + index,
                         "style_uid": style["style_uid"],
                         "style_code": style["style_code"],
                         "item_id": style["item_id"],
                     }
-                    for style in body["styles"]
-                    if style.get("style_id")
+                    for index, style in enumerate(body["styles"])
                 ],
             }
         if path == "/api/assets/presign":
@@ -66,7 +65,6 @@ class CloudBatchSyncTests(unittest.TestCase):
                     "id": "item-1",
                     "row_no": 2,
                     "style_code": "208326100202",
-                    "style_id": 101,
                     "item_id": "1002178235142",
                     "category": "长袖T恤",
                     "gender": "中性",
@@ -107,7 +105,7 @@ class CloudBatchSyncTests(unittest.TestCase):
         self.assertEqual(payload["task_run_uid"], "run-123")
         self.assertEqual(len(payload["styles"]), 1)
         self.assertEqual(payload["styles"][0]["style_code"], "208326100202")
-        self.assertEqual(payload["styles"][0]["style_id"], 101)
+        self.assertIsNone(payload["styles"][0]["style_id"])
         self.assertNotIn("assets", {key for key in payload.keys()})
         self.assertEqual(len(payload["styles"][0]["assets"]), 3)
         prompts = {asset["asset_uid"]: asset for asset in payload["styles"][0]["assets"]}
@@ -170,19 +168,25 @@ class CloudBatchSyncTests(unittest.TestCase):
         self.assertEqual(complete_body["batch_uid"], "batch-20260707")
         self.assertEqual(len(complete_body["assets"]), 2)
 
-    def test_sync_local_approval_batch_does_not_presign_without_numeric_style_id(self):
+    def test_sync_local_approval_batch_uses_worker_style_id_without_local_style_id(self):
         with TemporaryDirectory() as temp:
             batch = self._local_batch(Path(temp))
-            batch["items"][0].pop("style_id")
             client = FakeClient()
 
-            with self.assertRaises(CloudApprovalError):
-                sync_local_approval_batch(batch, client)
+            result = sync_local_approval_batch(batch, client)
 
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(len(client.uploads), 2)
         self.assertEqual(
             [(method, path) for method, path, _body, _token in client.calls],
-            [("POST", "/api/ai-image-batches/sync")],
+            [
+                ("POST", "/api/ai-image-batches/sync"),
+                ("POST", "/api/assets/presign"),
+                ("POST", "/api/assets/presign"),
+                ("POST", "/api/ai-image-batches/batch-20260707/sync-complete"),
+            ],
         )
+        self.assertEqual(client.calls[1][2]["style_id"], 101)
 
 
 if __name__ == "__main__":

@@ -81,6 +81,26 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
   })
 }
 
+export async function uploadAsset(request: Request, env: Env): Promise<Response> {
+  const actor = await requireMachineOrUserPermission(request, env, 'machines:write')
+  if (actor instanceof Response) return actor
+  const objectKey = objectKeyFromUploadPath(request)
+  if (!isValidUploadObjectKey(objectKey)) return badRequest('invalid object key')
+  const asset = await env.DB.prepare('SELECT asset_uid, object_key, filename, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
+    .bind(objectKey)
+    .first<AssetRow>()
+  if (!asset) return json({ error: 'Asset upload plan not found' }, { status: 404 })
+  await env.ASSETS.put(objectKey, request.body, {
+    httpMetadata: {
+      contentType: request.headers.get('content-type') || 'application/octet-stream',
+    },
+  })
+  await env.DB.prepare("UPDATE ai_image_assets SET status = ?, updated_at = ? WHERE object_key = ?")
+    .bind('uploaded', nowIso(), objectKey)
+    .run()
+  return json({ ok: true, object_key: objectKey })
+}
+
 export async function getAssetDownload(request: Request, env: Env): Promise<Response> {
   const actor = await requireMachineOrUserPermission(request, env, 'batches:read')
   if (actor instanceof Response) return actor
@@ -107,6 +127,24 @@ async function requireMachineOrUserPermission(request: Request, env: Env, permis
 
 function hasBearerToken(request: Request): boolean {
   return /^Bearer\s+\S+/i.test(request.headers.get('authorization') || '')
+}
+
+function objectKeyFromUploadPath(request: Request): string {
+  const prefix = '/api/assets/upload/'
+  const pathname = new URL(request.url).pathname
+  if (!pathname.startsWith(prefix)) return ''
+  try {
+    return decodeURIComponent(pathname.slice(prefix.length))
+  } catch {
+    return ''
+  }
+}
+
+function isValidUploadObjectKey(objectKey: string): boolean {
+  if (!objectKey || !objectKey.startsWith('batches/')) return false
+  const parts = objectKey.split('/')
+  if (parts.length < 4) return false
+  return parts.every((part) => Boolean(part) && part !== '.' && part !== '..')
 }
 
 export async function upsertAsset(env: Env, asset: {

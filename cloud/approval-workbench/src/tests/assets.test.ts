@@ -83,6 +83,7 @@ interface FakeState {
   machineTokens: MachineTokenRow[]
   assets: AssetRow[]
   r2Gets: string[]
+  r2Puts: Array<{ key: string; body: string; contentType: string }>
 }
 
 class FakeD1Statement {
@@ -116,6 +117,9 @@ class FakeD1Statement {
     }
     if (normalized.includes('from ai_image_assets') && normalized.includes('where asset_uid = ?')) {
       return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
+    }
+    if (normalized.includes('from ai_image_assets') && normalized.includes('where object_key = ?')) {
+      return (this.state.assets.find((row) => row.object_key === String(this.params[0])) ?? null) as T | null
     }
     return null
   }
@@ -165,6 +169,13 @@ class FakeD1Statement {
       })
       return result(1, id)
     }
+    if (normalized.startsWith('update ai_image_assets set status')) {
+      const asset = this.state.assets.find((row) => row.object_key === String(this.params[2]))
+      if (!asset) return result(0)
+      asset.status = String(this.params[0])
+      asset.updated_at = String(this.params[1])
+      return result(1)
+    }
     return result(1)
   }
 }
@@ -183,6 +194,25 @@ function fakeEnv(state: FakeState) {
     ASSETS: {
       async get(key: string) {
         state.r2Gets.push(key)
+        return null
+      },
+      async put(key: string, value: ReadableStream | ArrayBuffer | string | null, options?: R2PutOptions) {
+        const body = typeof value === 'string'
+          ? value
+          : value instanceof ArrayBuffer
+            ? new TextDecoder().decode(value)
+            : value
+              ? await new Response(value).text()
+              : ''
+        const httpMetadata = options?.httpMetadata
+        const contentType = httpMetadata instanceof Headers
+          ? httpMetadata.get('content-type') || ''
+          : httpMetadata?.contentType || ''
+        state.r2Puts.push({
+          key,
+          body,
+          contentType,
+        })
         return null
       },
     } as unknown as R2Bucket,
@@ -216,6 +246,72 @@ describe('asset upload planning routes', () => {
 
     expect(response.status).toBe(200)
     expect(state.assets[0].asset_uid).toBe('asset-ai-1')
+  })
+
+  it('allows machine bearer tokens to upload a planned asset object and marks it uploaded', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const presignResponse = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(validPresignBody()),
+    }), env)
+    const presign = await presignResponse.json() as { upload_url: string; object_key: string }
+
+    const response = await fetchWorker(new Request(`https://example.test${presign.upload_url}`, {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${machineToken}`,
+        'content-type': 'image/jpeg',
+      },
+      body: 'image-bytes',
+    }), env)
+    const body = await response.json() as { ok: boolean; object_key: string }
+
+    expect(response.status).toBe(200)
+    expect(body).toEqual({ ok: true, object_key: presign.object_key })
+    expect(state.r2Puts).toEqual([{ key: presign.object_key, body: 'image-bytes', contentType: 'image/jpeg' }])
+    expect(state.assets[0].status).toBe('uploaded')
+  })
+
+  it('rejects upload object keys outside the batches prefix', async () => {
+    const { state, machineToken } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/assets/upload/tmp%2Fasset.jpg', {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: 'image-bytes',
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(400)
+    expect(state.r2Puts).toEqual([])
+  })
+
+  it('rejects stale upload object keys without a planned asset row', async () => {
+    const { state, machineToken } = await baseState()
+    const objectKey = 'batches/batch-20260707/ai/stale.jpg'
+    const response = await fetchWorker(new Request(`https://example.test/api/assets/upload/${encodeURIComponent(objectKey)}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: 'image-bytes',
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(404)
+    expect(state.r2Puts).toEqual([])
+  })
+
+  it('rejects unauthenticated upload requests', async () => {
+    const { state } = await baseState()
+    const objectKey = 'batches/batch-20260707/ai/asset-ai-1-ai.jpg'
+    state.assets.push(assetRow({ status: 'planned', object_key: objectKey }))
+
+    const response = await fetchWorker(new Request(`https://example.test/api/assets/upload/${encodeURIComponent(objectKey)}`, {
+      method: 'PUT',
+      body: 'image-bytes',
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(401)
+    expect(state.r2Puts).toEqual([])
+    expect(state.assets[0].status).toBe('planned')
   })
 
   it('rejects non-admin user sessions without machines:write for presign', async () => {
@@ -473,6 +569,7 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
     ],
     assets: [],
     r2Gets: [],
+    r2Puts: [],
   }
   return {
     state,
@@ -493,7 +590,7 @@ function validPresignBody(): Record<string, unknown> {
   }
 }
 
-function assetRow(): AssetRow {
+function assetRow(overrides: Partial<AssetRow> = {}): AssetRow {
   return {
     id: 1,
     asset_uid: 'asset-ai-1',
@@ -511,6 +608,7 @@ function assetRow(): AssetRow {
     meta_json: '{}',
     created_at: '2026-01-01T00:00:00.000Z',
     updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   }
 }
 

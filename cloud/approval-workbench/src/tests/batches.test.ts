@@ -451,6 +451,33 @@ describe('batch sync routes', () => {
     expect(state.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
   })
 
+  it('returns safe synced style ids for desktop upload matching', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const syncedStyle = payload.styles[0] as Record<string, unknown>
+    syncedStyle.style_uid = 'local-style-1'
+    syncedStyle.source_path = '/Users/xingyicheng/Desktop/raw/source.jpg'
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+    const body = await response.json() as { styles: Array<Record<string, unknown>> }
+
+    expect(response.status).toBe(201)
+    expect(body.styles).toEqual([
+      {
+        id: state.styles[0].id,
+        style_id: state.styles[0].id,
+        style_uid: 'local-style-1',
+        style_code: '208326140201',
+        item_id: '1065477260163',
+      },
+    ])
+    expect(JSON.stringify(body.styles)).not.toContain('assets')
+    expect(JSON.stringify(body.styles)).not.toContain('/Users/')
+  })
+
   it('scrubs local absolute paths from synced asset metadata recursively', async () => {
     const { state, machineToken } = await baseState()
     const payload = batchPayload()
