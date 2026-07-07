@@ -690,6 +690,74 @@ def approval_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def cloud_approval_sync_warning_row(batch: Mapping[str, Any], message: str) -> dict[str, Any]:
+    return {
+        "表格行号": "",
+        "款号": "",
+        "商品ID": "",
+        "阶段": "云端审批同步",
+        "审批批次ID": batch.get("batch_id", ""),
+        "审批状态": batch.get("status", ""),
+        "执行结果": "警告",
+        "备注": compact(message),
+    }
+
+
+def maybe_sync_approval_batch_to_cloud(batch: dict[str, Any], *, log=print) -> dict[str, Any] | None:
+    from core.cloud_approval_client import CloudApprovalClient
+    from core.cloud_batch_sync import sync_local_approval_batch
+    from core.config import load_config
+
+    cloud_config = (load_config().get("cloud_approval") or {})
+    if not cloud_config.get("machine_enabled") or not compact(cloud_config.get("base_url")):
+        return None
+    credentials = data_sink.get_cloud_machine_credentials() or {}
+    machine_token = compact(credentials.get("machine_token"))
+    if not machine_token:
+        return None
+    job_uid = approval_batch_run_uid(batch) or compact(batch.get("batch_id")) or "approval-batch"
+    base_url = compact(cloud_config.get("base_url"))
+    client = CloudApprovalClient(
+        base_url,
+        machine_token=machine_token,
+        timeout=float(cloud_config.get("poll_timeout_seconds") or 30),
+    )
+    try:
+        result = sync_local_approval_batch(batch, client)
+        batch["cloud_sync"] = {
+            "status": "synced",
+            "base_url": base_url,
+            "result": json_safe(result),
+            "synced_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        }
+        data_sink.record_cloud_job_event(
+            job_uid,
+            "approval_batch_sync_complete",
+            "local approval batch synced to cloud",
+            {"batch_id": batch.get("batch_id"), "asset_count": len(result.get("assets") or []) if isinstance(result, Mapping) else 0},
+        )
+        save_approval_batch(batch)
+        return result
+    except Exception as exc:
+        warning = f"云端审批同步失败：{exc}"
+        batch["cloud_sync"] = {
+            "status": "warning",
+            "base_url": base_url,
+            "warning": compact(warning),
+            "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        }
+        data_sink.record_cloud_job_event(
+            job_uid,
+            "approval_batch_sync_warning",
+            "local approval batch cloud sync failed",
+            {"batch_id": batch.get("batch_id"), "error": compact(str(exc))},
+        )
+        save_approval_batch(batch)
+        if log:
+            log(f"[warn] {warning}")
+        return None
+
+
 def notify_approval_batch(batch: Mapping[str, Any], *, channel: str = "dingtalk", log=None) -> None:
     try:
         from core import notifier
@@ -3816,10 +3884,13 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
             run_params=vars(args),
             base_url=getattr(args, "approval_base_url", ""),
         )
+        maybe_sync_approval_batch_to_cloud(batch, log=log)
         notify_channel = compact(getattr(args, "approval_notify_channel", "dingtalk")).lower()
         if notify_channel and notify_channel != "none":
             notify_approval_batch(batch, channel=notify_channel, log=log)
         all_rows.extend(approval_result_rows(batch))
+        if (batch.get("cloud_sync") or {}).get("status") == "warning":
+            all_rows.append(cloud_approval_sync_warning_row(batch, (batch.get("cloud_sync") or {}).get("warning", "")))
 
     return all_rows
 
