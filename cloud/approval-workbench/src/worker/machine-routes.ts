@@ -298,14 +298,18 @@ export async function heartbeat(request: Request, env: Env): Promise<Response> {
   const health = typeof body.health === 'string' ? body.health : 'online_idle'
   if (!['offline', 'online_idle', 'online_busy', 'needs_login', 'config_missing', 'version_blocked'].includes(health)) return badRequest('invalid health')
   const appVersion = typeof body.app_version === 'string' ? body.app_version : machine.app_version
-  const capabilities = parseStringArray(body.capabilities).length > 0 ? parseStringArray(body.capabilities) : parseStringArray(machine.capabilities_json)
+  const registeredCapabilities = parseStringArray(machine.capabilities_json)
+  const heartbeatCapabilities = parseStringArray(body.capabilities)
+  const registeredCapabilitySet = new Set(registeredCapabilities)
+  const unsupportedCapabilities = heartbeatCapabilities.filter((capability) => !registeredCapabilitySet.has(capability))
+  if (unsupportedCapabilities.length > 0) return badRequest(`capability not registered: ${unsupportedCapabilities.join(', ')}`)
   const now = nowIso()
   await env.DB.prepare(
     `UPDATE task_machines
-     SET health = ?, last_seen_at = ?, app_version = ?, capabilities_json = ?, updated_at = ?
+     SET health = ?, last_seen_at = ?, app_version = ?, updated_at = ?
      WHERE machine_id = ?`,
   )
-    .bind(health, now, appVersion, toJson(capabilities), now, machine.machine_id)
+    .bind(health, now, appVersion, now, machine.machine_id)
     .run()
   await recordAudit(env, { machineId: machine.machine_id }, 'machines.heartbeat', 'machine', machine.machine_id, { health }, request)
   return json({ ok: true, machine_id: machine.machine_id, auth_status: machine.auth_status, health })
@@ -324,7 +328,7 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
      WHERE status = 'queued'
        AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)
      ORDER BY priority ASC, created_at ASC
-     LIMIT 20`,
+    `,
   )
     .bind(machine.machine_id)
     .all<DispatchJobRow>()
@@ -347,13 +351,14 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
      SET lease_id = ?,
          lease_expires_at = ?,
          status = 'leased',
+         assigned_machine_id = ?,
          attempt_count = attempt_count + 1,
          updated_at = ?
      WHERE job_uid = ?
        AND status = 'queued'
        AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)`,
   )
-    .bind(leaseId, leaseExpiresAt, now, selected.job_uid, machine.machine_id)
+    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
   await env.DB.prepare('UPDATE task_machines SET current_job_id = ?, health = ?, updated_at = ? WHERE machine_id = ?')
@@ -382,14 +387,16 @@ export async function renewJob(request: Request, env: Env): Promise<Response> {
   const jobUid = typeof body.job_uid === 'string' ? body.job_uid : jobUidFromPath(request)
   const leaseId = typeof body.lease_id === 'string' ? body.lease_id : ''
   if (!jobUid || !leaseId) return badRequest('job_uid and lease_id are required')
-  if (machine.current_job_id !== jobUid) return forbidden('Machine does not hold this job lease')
   const leaseExpiresAt = new Date(Date.now() + JOB_LEASE_SECONDS * 1000).toISOString()
   const update = await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET lease_expires_at = ?, updated_at = ?
-     WHERE job_uid = ? AND lease_id = ? AND status IN ('leased', 'running', 'uploading_results')`,
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status IN ('leased', 'running', 'uploading_results')`,
   )
-    .bind(leaseExpiresAt, nowIso(), jobUid, leaseId)
+    .bind(leaseExpiresAt, nowIso(), jobUid, leaseId, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, 'lease_renewed', '', { lease_expires_at: leaseExpiresAt })
@@ -417,14 +424,16 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
   const jobUid = typeof body.job_uid === 'string' ? body.job_uid : jobUidFromPath(request)
   const leaseId = typeof body.lease_id === 'string' ? body.lease_id : ''
   if (!jobUid || !leaseId) return badRequest('job_uid and lease_id are required')
-  if (machine.current_job_id !== jobUid) return forbidden('Machine does not hold this job lease')
   const result = body.result && typeof body.result === 'object' ? body.result : {}
   const update = await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET status = ?, result_json = ?, updated_at = ?
-     WHERE job_uid = ? AND lease_id = ? AND status IN ('leased', 'running', 'uploading_results')`,
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status IN ('leased', 'running', 'uploading_results')`,
   )
-    .bind(status, toJson(result), nowIso(), jobUid, leaseId)
+    .bind(status, toJson(result), nowIso(), jobUid, leaseId, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
   if (['succeeded', 'retryable_failed', 'terminal_failed'].includes(status)) {
