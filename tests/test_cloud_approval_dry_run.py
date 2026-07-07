@@ -42,6 +42,7 @@ class CloudApprovalDryRunTests(unittest.TestCase):
         args = parser.parse_args([])
         self.assertFalse(args.live_cloud_url)
         self.assertEqual(args.machine_id, "")
+        self.assertEqual(args.batch_id, "")
 
     def test_assertion_failure_returns_non_zero_and_prints_failure(self):
         class BrokenTransport(cloud_approval_dry_run.FakeCloudApprovalTransport):
@@ -58,6 +59,7 @@ class CloudApprovalDryRunTests(unittest.TestCase):
                 batch_factory=cloud_approval_dry_run.build_fake_local_batch,
                 printer=print,
                 machine_id=cloud_approval_dry_run.MACHINE_ID,
+                batch_id=cloud_approval_dry_run.DEFAULT_BATCH_ID,
             )
 
         self.assertEqual(result, 1)

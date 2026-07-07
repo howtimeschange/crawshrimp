@@ -22,6 +22,7 @@ from core.cloud_batch_sync import sync_local_approval_batch
 
 ADMIN_TOKEN = "fake-admin-session"
 MACHINE_ID = "dry-run-machine-1"
+DEFAULT_BATCH_ID = "cloud-dry-run-batch"
 MACHINE_TOKEN = "csr_machine_dry_run"
 CAPABILITIES = ["regenerate_ai_image", "submit_tmall_material_test"]
 
@@ -289,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--live-cloud-url", default="", help="Opt in to real cloud API calls against this Worker URL.")
     parser.add_argument("--admin-cookie", default="", help="Admin cs_session cookie for live admin routes. Never store this in files.")
     parser.add_argument("--machine-id", default="", help="Override task machine id; live mode defaults to a unique dry-run id.")
+    parser.add_argument("--batch-id", default="", help="Override approval batch id; live mode defaults to a unique dry-run id.")
     return parser
 
 
@@ -298,9 +300,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.live_cloud_url:
         transport = CookieTransport(args.admin_cookie)
         client = CloudApprovalClient(args.live_cloud_url, user_token=ADMIN_TOKEN, transport=transport)
-        machine_id = args.machine_id or f"{MACHINE_ID}-{int(time.time())}"
-        return run_dry_run(client=client, transport=None, batch_factory=build_fake_local_batch, printer=print, machine_id=machine_id)
-    return run_dry_run(transport=FakeCloudApprovalTransport(), batch_factory=build_fake_local_batch, printer=print, machine_id=args.machine_id or MACHINE_ID)
+        suffix = int(time.time())
+        machine_id = args.machine_id or f"{MACHINE_ID}-{suffix}"
+        batch_id = args.batch_id or f"{DEFAULT_BATCH_ID}-{suffix}"
+        return run_dry_run(client=client, transport=None, batch_factory=build_fake_local_batch, printer=print, machine_id=machine_id, batch_id=batch_id)
+    return run_dry_run(transport=FakeCloudApprovalTransport(), batch_factory=build_fake_local_batch, printer=print, machine_id=args.machine_id or MACHINE_ID, batch_id=args.batch_id or DEFAULT_BATCH_ID)
 
 
 def run_fake_dry_run(printer: Callable[[str], None] = print) -> dict:
@@ -311,6 +315,7 @@ def run_fake_dry_run(printer: Callable[[str], None] = print) -> dict:
         printer=printer,
         summary=summary,
         machine_id=MACHINE_ID,
+        batch_id=DEFAULT_BATCH_ID,
     )
     return summary
 
@@ -322,12 +327,13 @@ def run_dry_run(
     printer: Callable[[str], None],
     client: CloudApprovalClient | None = None,
     machine_id: str = MACHINE_ID,
+    batch_id: str = DEFAULT_BATCH_ID,
 ) -> int:
     if client is None:
         client = CloudApprovalClient("https://approval.example.test", user_token=ADMIN_TOKEN, transport=transport)
     summary: dict[str, Any] = {}
     try:
-        _run_flow(client=client, batch_factory=batch_factory, printer=printer, summary=summary, machine_id=machine_id)
+        _run_flow(client=client, batch_factory=batch_factory, printer=printer, summary=summary, machine_id=machine_id, batch_id=batch_id)
     except AssertionError as exc:
         printer(f"DRY RUN FAIL: {exc}")
         return 1
@@ -345,6 +351,7 @@ def _run_flow(
     printer: Callable[[str], None],
     summary: dict[str, Any],
     machine_id: str,
+    batch_id: str,
 ) -> None:
     printer("Phase 1: seed first admin")
     instructions = seed_admin_instructions()
@@ -384,10 +391,12 @@ def _run_flow(
     printer("Phase 4: sync fake local AI batch")
     with tempfile.TemporaryDirectory(prefix="crawshrimp-cloud-approval-dry-run-") as temp:
         batch = batch_factory(Path(temp))
+        batch["batch_id"] = batch_id
+        batch["title"] = f"Cloud Approval Dry Run Batch {batch_id}"
         sync_result = sync_local_approval_batch(batch, client)
     _assert(sync_result.get("status") == "pending_review", "fake local batch did not sync to pending_review")
     summary["sync"] = sync_result
-    batch_uid = "cloud-dry-run-batch"
+    batch_uid = batch_id
 
     printer("Phase 5: reject image and create regeneration job")
     rejected = client.request_json("PATCH", f"/api/ai-image-batches/{batch_uid}/assets/ai-reject-1/decision", {
@@ -441,7 +450,7 @@ def build_fake_local_batch(root: Path) -> dict:
     reject.write_bytes(b"rejected-ai-image")
     approve.write_bytes(b"approved-ai-image")
     return {
-        "batch_id": "cloud-dry-run-batch",
+        "batch_id": DEFAULT_BATCH_ID,
         "title": "Cloud Approval Dry Run Batch",
         "status": "pending_approval",
         "created_at": "2026-07-07T10:00:00+08:00",

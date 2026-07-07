@@ -168,3 +168,18 @@ Tests run:
 
 - `python -m unittest tests.test_cloud_approval_dry_run -v` - passed, 5 tests.
 - `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.
+
+## Live Dry-Run Batch Isolation Follow-Up
+
+Status: made live smoke batches unique against existing remote review data.
+
+Commit: pending, `fix(cloud): make live dry-run batch unique`.
+
+Addressed issue:
+
+- Live dry-run now accepts `--batch-id` and defaults to a timestamped `cloud-dry-run-batch-*` id in live mode. This keeps smoke runs isolated from previous remote batches whose status may already be reviewed/submitted, while fake mode remains deterministic.
+
+Tests run:
+
+- `python -m unittest tests.test_cloud_approval_dry_run -v` - passed, 5 tests.
+- `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.
