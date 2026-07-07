@@ -170,7 +170,6 @@ async function uploadManualAsset() {
       asset_uid: assetUid,
       kind: manualKind.value,
       filename: file.name,
-      status: manualKind.value === 'ai' ? 'pending' : 'uploaded',
       prompt_text: manualKind.value === 'ai' ? '' : undefined,
       meta: { source: 'manual_upload' },
     })

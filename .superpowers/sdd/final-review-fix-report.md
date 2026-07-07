@@ -50,3 +50,30 @@ Implemented the final-review fixes for machine-scoped asset access, review-board
 
 - Machine tokens are still stored as plaintext values inside the local SQLite row. File permissions reduce local exposure on POSIX systems, but a future OS secure-storage/keychain migration is still needed.
 - Review-board upload support is scoped to source/reference/AI images and existing planned-object upload flow; it does not add client-side image transformations or resumable uploads.
+
+## Focused Re-Review Follow-Up
+
+Status: implemented the manual upload status fix.
+
+Commit: this commit, `fix(cloud): keep manual uploads planned`.
+
+Changed files:
+
+- `cloud/approval-workbench/src/worker/batch-routes.ts`
+- `cloud/approval-workbench/src/app/views/BatchReviewView.vue`
+- `cloud/approval-workbench/src/tests/assets.test.ts`
+- `cloud/approval-workbench/src/tests/review.test.ts`
+- `.superpowers/sdd/final-review-fix-report.md`
+
+Addressed issue:
+
+- Manual source/reference/AI asset creation now always creates a `planned` asset row. The review UI no longer asks the API to mark source/reference assets uploaded before PUT. Regeneration and submit payload builders only include uploaded source/reference assets, so interrupted manual uploads are not usable. The existing upload route remains the transition point that marks a planned asset `uploaded` after a successful PUT.
+
+Tests run:
+
+- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/review.test.ts` - passed, 30 tests.
+- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 110 Vitest tests, Vite build.
+
+Residual risks:
+
+- Failed uploads still leave planned rows visible in the batch detail until retried or superseded; they are intentionally not usable in regeneration or submit payloads.

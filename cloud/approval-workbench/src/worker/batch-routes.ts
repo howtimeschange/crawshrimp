@@ -236,7 +236,7 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
     batchUid,
     styleId,
     kind,
-    status: stringValue(body.status) || 'pending',
+    status: 'planned',
     objectKey: batchObjectKey(batchUid, kind, `${assetUid}-${safeAssetFilename}`),
     filename: safeAssetFilename,
     contentHash: stringValue(body.content_hash),
@@ -285,7 +285,7 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
       continue
     }
     const referenceAssetUids = assets
-      .filter((row) => row.style_id === asset.style_id && ['source', 'reference'].includes(row.kind))
+      .filter((row) => row.style_id === asset.style_id && ['source', 'reference'].includes(row.kind) && row.status === 'uploaded')
       .map((row) => row.asset_uid)
     const payload = {
       batch_uid: batchUid,
@@ -573,7 +573,7 @@ async function buildSubmitPlan(env: Env, batchUid: string): Promise<{ batch_uid:
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const approvedAiAssets = assets.filter((asset) => asset.kind === 'ai' && asset.status === 'approved')
   const styleIds = new Set(approvedAiAssets.map((asset) => asset.style_id))
-  const sourceAssets = assets.filter((asset) => styleIds.has(asset.style_id) && ['source', 'reference'].includes(asset.kind))
+  const sourceAssets = assets.filter((asset) => styleIds.has(asset.style_id) && ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded')
   return {
     batch_uid: batchUid,
     styles: styles.filter((style) => styleIds.has(style.id)),

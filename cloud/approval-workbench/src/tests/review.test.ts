@@ -312,7 +312,7 @@ describe('review routes', () => {
     expect(state.approvalEvents).toHaveLength(0)
   })
 
-  it('creates a manual asset for a style_id in the route batch', async () => {
+  it('creates a planned manual asset for a style_id in the route batch', async () => {
     const { state, reviewerCookie } = await baseState()
     const response = await fetchWorker(manualAssetRequest(reviewerCookie, 2, 'manual-valid-style'), fakeEnv(state))
     expect(response.status).toBe(201)
@@ -320,14 +320,26 @@ describe('review routes', () => {
       batch_uid: 'batch-1',
       style_id: 2,
       kind: 'ai',
-      status: 'approved',
+      status: 'planned',
       filename: 'manual.jpg',
     })
     expect(state.approvalEvents.map((event) => event.event_type)).toEqual(['asset.manual_create'])
   })
 
+  it('creates manual source uploads as planned even if the client asks for uploaded', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const response = await fetchWorker(manualAssetRequest(reviewerCookie, 2, 'manual-source-planned', 'source', 'uploaded'), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets.find((asset) => asset.asset_uid === 'manual-source-planned')).toMatchObject({
+      kind: 'source',
+      status: 'planned',
+    })
+  })
+
   it('creates one idempotent regeneration job per selected rejected asset', async () => {
     const { state, reviewerCookie } = await baseState()
+    state.assets.push(asset(99, 'asset-reference-planned', 1, 'reference', 'planned', '', null))
     const request = new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
       method: 'POST',
       headers: { cookie: reviewerCookie },
@@ -375,6 +387,7 @@ describe('review routes', () => {
     const { state, reviewerCookie, operatorCookie } = await baseState()
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+    state.assets.push(asset(99, 'asset-source-planned', 1, 'source', 'planned', '', null))
     let response = await fetchWorker(submitRequest(reviewerCookie, 'machine-1'), fakeEnv(state))
     expect(response.status).toBe(403)
     response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
@@ -480,15 +493,16 @@ function submitRequest(cookie: string, machineId: string): Request {
   })
 }
 
-function manualAssetRequest(cookie: string, styleId: number, assetUid: string): Request {
+function manualAssetRequest(cookie: string, styleId: number, assetUid: string, kind = 'ai', status = 'approved'): Request {
   return new Request('https://example.test/api/ai-image-batches/batch-1/manual-assets', {
     method: 'POST',
     headers: { cookie },
     body: JSON.stringify({
       style_id: styleId,
       asset_uid: assetUid,
+      kind,
       filename: 'manual.jpg',
-      status: 'approved',
+      status,
       prompt_text: 'Manual prompt',
     }),
   })

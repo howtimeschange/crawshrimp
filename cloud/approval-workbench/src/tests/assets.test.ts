@@ -341,6 +341,28 @@ describe('asset upload planning routes', () => {
     expect(state.assets[0].status).toBe('planned')
   })
 
+  it('lets reviewer sessions upload planned manual source assets and mark them uploaded', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const objectKey = 'batches/batch-20260707/source/manual-source.jpg'
+    state.assets.push(assetRow({
+      asset_uid: 'manual-source',
+      kind: 'source',
+      status: 'planned',
+      object_key: objectKey,
+      filename: 'manual-source.jpg',
+    }))
+
+    const response = await fetchWorker(new Request(`https://example.test/api/assets/upload/${encodeURIComponent(objectKey)}`, {
+      method: 'PUT',
+      headers: { cookie: reviewerCookie, 'content-type': 'image/jpeg' },
+      body: 'source-bytes',
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(state.r2Puts).toEqual([{ key: objectKey, body: 'source-bytes', contentType: 'image/jpeg' }])
+    expect(state.assets[0].status).toBe('uploaded')
+  })
+
   it('rejects non-admin user sessions without machines:write for presign', async () => {
     const { state, reviewerCookie } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
