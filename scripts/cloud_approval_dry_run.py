@@ -199,6 +199,7 @@ class FakeCloudApprovalTransport:
                     job_type="regenerate_ai_image",
                     assigned_machine_id=None,
                     required_capabilities=["regenerate_ai_image"],
+                    priority=50,
                     idempotency_key=f"regenerate_ai_image:{batch_uid}:{asset_uid}",
                     payload={
                         "batch_uid": batch_uid,
@@ -241,10 +242,82 @@ class FakeCloudApprovalTransport:
                 job_type="submit_tmall_material_test",
                 assigned_machine_id=machine_id,
                 required_capabilities=["submit_tmall_material_test"],
+                priority=40,
                 idempotency_key=f"submit_tmall_material_test:{batch_uid}:{machine_id}",
                 payload={"submit_plan": submit_plan},
             )
             return 201, {"job": job, "submit_plan": submit_plan}
+
+        if method == "POST" and path == "/api/machines/jobs/claim":
+            machine = self._machine_for_token()
+            if not machine:
+                return 401, {"error": "Invalid machine token"}
+            if machine.get("auth_status") != "active" or machine.get("health") not in {"online_idle", "online_busy"}:
+                return 403, {"error": "Machine is not available for claims"}
+            machine_capabilities = set(machine.get("capabilities") or [])
+            claimable = [
+                job for job in self.jobs
+                if job.get("status") == "queued"
+                and (not job.get("assigned_machine_id") or job.get("assigned_machine_id") == machine["machine_id"])
+                and set(json.loads(job.get("required_capabilities_json") or "[]")).issubset(machine_capabilities)
+            ]
+            if not claimable:
+                return 200, {"job": None, "next_poll_after_seconds": 10}
+            selected = sorted(claimable, key=lambda job: (int(job.get("priority") or 100), int(job.get("id") or 0)))[0]
+            lease_id = f"lease_dry_run_{selected['id']}"
+            selected["status"] = "leased"
+            selected["assigned_machine_id"] = machine["machine_id"]
+            selected["attempt_count"] = int(selected.get("attempt_count") or 0) + 1
+            selected["lease_id"] = lease_id
+            selected["lease_expires_at"] = "2099-01-01T00:00:00Z"
+            machine["health"] = "online_busy"
+            machine["current_job_id"] = selected["job_uid"]
+            return 200, {
+                "job": {
+                    "job_uid": selected["job_uid"],
+                    "batch_uid": selected["batch_uid"],
+                    "job_type": selected["job_type"],
+                    "lease_id": lease_id,
+                    "lease_expires_at": selected["lease_expires_at"],
+                    "payload": selected["payload"],
+                    "required_capabilities": json.loads(selected["required_capabilities_json"]),
+                    "attempt_count": selected["attempt_count"],
+                },
+                "next_poll_after_seconds": 0,
+            }
+
+        if method == "POST" and path.startswith("/api/jobs/") and path.endswith("/complete"):
+            machine = self._machine_for_token()
+            if not machine:
+                return 401, {"error": "Invalid machine token"}
+            job_uid = path.removesuffix("/complete").rsplit("/", 1)[-1]
+            lease_id = str(body.get("lease_id") or "")
+            for job in self.jobs:
+                if (
+                    job["job_uid"] == job_uid
+                    and job.get("lease_id") == lease_id
+                    and job.get("assigned_machine_id") == machine["machine_id"]
+                    and job.get("status") in {"leased", "running", "uploading_results"}
+                ):
+                    job["status"] = "succeeded"
+                    job["result"] = dict(body.get("result") or {})
+                    machine["health"] = "online_idle"
+                    machine["current_job_id"] = None
+                    return 200, {"ok": True, "status": "succeeded"}
+            return 403, {"error": "Stale lease"}
+
+        if method == "GET" and path.endswith("/submit-result"):
+            batch_uid = _batch_uid(path, "/submit-result")
+            jobs = [
+                {
+                    **job,
+                    "required_capabilities": json.loads(job.get("required_capabilities_json") or "[]"),
+                    "result": dict(job.get("result") or {}),
+                }
+                for job in self.jobs
+                if job.get("batch_uid") == batch_uid and job.get("job_type") == "submit_tmall_material_test"
+            ]
+            return 200, {"jobs": jobs}
 
         return 404, {"error": f"Unhandled fake route: {method} {path}"}
 
@@ -261,6 +334,7 @@ class FakeCloudApprovalTransport:
         job_type: str,
         assigned_machine_id: str | None,
         required_capabilities: list[str],
+        priority: int,
         idempotency_key: str,
         payload: Mapping[str, Any],
     ) -> dict:
@@ -275,10 +349,13 @@ class FakeCloudApprovalTransport:
             "status": "queued",
             "assigned_machine_id": assigned_machine_id,
             "required_capabilities_json": json.dumps(required_capabilities),
+            "priority": priority,
+            "attempt_count": 0,
             "idempotency_key": idempotency_key,
             "lease_id": None,
             "lease_expires_at": None,
             "payload": dict(payload),
+            "result": {},
         }
         self._next_job_id += 1
         self.jobs.append(job)
@@ -428,6 +505,32 @@ def _run_flow(
     _assert(submit_job.get("status") == "queued", "submit job is not queued")
     _assert(submit_job.get("assigned_machine_id") == machine_id, "submit job was not assigned to selected task machine")
     summary["submit_job"] = submit_job
+
+    printer("Phase 7: task machine claims submit job")
+    claim = client.request_json("POST", "/api/machines/jobs/claim", {})
+    claimed_job = claim.get("job") or {}
+    _assert(claimed_job.get("job_uid") == submit_job.get("job_uid"), "task machine did not claim the submit job")
+    _assert(claimed_job.get("job_type") == "submit_tmall_material_test", "claimed job is not a submit job")
+    _assert(claimed_job.get("lease_id"), "claimed submit job did not include a lease")
+    summary["claimed_job"] = claimed_job
+
+    printer("Phase 8: task machine completes submit job")
+    completed = client.request_json("POST", f"/api/jobs/{claimed_job['job_uid']}/complete", {
+        "lease_id": claimed_job["lease_id"],
+        "result": {"dry_run": True, "batch_uid": batch_uid},
+    })
+    _assert(completed.get("status") == "succeeded", "submit job completion was not accepted")
+    submit_job["status"] = "succeeded"
+    summary["completed_job"] = {
+        "job_uid": claimed_job["job_uid"],
+        "status": completed.get("status"),
+    }
+
+    printer("Phase 9: verify submit result is visible to reviewers")
+    submit_result = client.request_json("GET", f"/api/ai-image-batches/{batch_uid}/submit-result", token_type="user")
+    submit_result_jobs = submit_result.get("jobs") or []
+    _assert(any(job.get("job_uid") == submit_job.get("job_uid") and job.get("status") == "succeeded" for job in submit_result_jobs), "completed submit job is not visible in submit result")
+    summary["submit_result_jobs"] = submit_result_jobs
 
 
 def seed_admin_instructions() -> dict:
