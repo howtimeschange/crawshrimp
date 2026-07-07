@@ -18,7 +18,7 @@
       <!-- 一级菜单 -->
       <nav v-if="!activeScript">
         <button
-          v-for="item in navItems" :key="item.id"
+          v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
           @click="selectNav(item)"
         >
@@ -129,6 +129,7 @@ const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const activeInstanceUid = ref('')
 const scriptGroups = ref([])
+const cloudApprovalStatus = ref(null)
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
@@ -138,9 +139,35 @@ const navItems = [
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
 
+const cloudApprovalConfigured = computed(() => {
+  const cloudStatus = cloudApprovalStatus.value || {}
+  return Boolean(cloudStatus.configured || String(cloudStatus.base_url || '').trim())
+})
+
+const filteredNavItems = computed(() =>
+  navItems.filter(item => item.id !== 'cloud_approval' || cloudApprovalConfigured.value)
+)
+
 function selectNav(item) {
   currentView.value = item.id
   activeInstanceUid.value = ''
+}
+
+async function refreshCloudApprovalStatus() {
+  if (typeof window.cs.getCloudApprovalStatus !== 'function') {
+    cloudApprovalStatus.value = null
+    if (currentView.value === 'cloud_approval') currentView.value = 'settings'
+    return
+  }
+  try {
+    cloudApprovalStatus.value = await window.cs.getCloudApprovalStatus()
+  } catch (error) {
+    console.error('Failed to get cloud approval status', error)
+    cloudApprovalStatus.value = null
+  }
+  if (!cloudApprovalConfigured.value && currentView.value === 'cloud_approval') {
+    currentView.value = 'settings'
+  }
 }
 
 async function loadScriptGroups(options = {}) {
@@ -223,6 +250,7 @@ onMounted(async () => {
   } catch (error) {
     console.error('Failed to load initial script groups', error)
   }
+  await refreshCloudApprovalStatus()
 
   pollTimer = setInterval(async () => {
     const s = await window.cs.getStatus()
@@ -231,6 +259,7 @@ onMounted(async () => {
     status.value.chrome = s.chrome
     status.value.apiPort = s.apiPort || status.value.apiPort
     status.value.cdpPort = s.cdpPort || status.value.cdpPort
+    await refreshCloudApprovalStatus()
   }, 5000)
 })
 onUnmounted(() => {

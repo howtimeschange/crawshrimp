@@ -21,12 +21,18 @@ test('settings page contains cloud approval operational settings group', () => {
   assert.doesNotMatch(source, /machine_token/)
 })
 
-test('cloud approval frame is registered in app navigation', () => {
+test('cloud approval nav item is gated by safe cloud approval status', () => {
   const appSource = read('app/src/renderer/App.vue')
   const frameSource = read('app/src/renderer/views/CloudApprovalFrame.vue')
 
   assert.match(appSource, /云端审批/)
   assert.match(appSource, /CloudApprovalFrame/)
+  assert.match(appSource, /getCloudApprovalStatus/)
+  assert.match(appSource, /filteredNavItems/)
+  assert.match(appSource, /cloudApprovalConfigured/)
+  assert.match(appSource, /currentView\.value === 'cloud_approval'/)
+  assert.match(appSource, /currentView\.value = 'settings'/)
+  assert.doesNotMatch(appSource, /machine_token/)
   assert.match(frameSource, /getCloudApprovalStatus/)
   assert.match(frameSource, /iframe/)
   assert.doesNotMatch(frameSource, /machine_token/)

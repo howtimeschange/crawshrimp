@@ -23,7 +23,7 @@ Status: DONE
   - `syncCloudApprovalBatch`
 - Added a `云端审批` operational settings group to `SettingsPage.vue` with `云端地址`, `注册 token`, `任务机名称`, and `启用任务机`.
 - Added `CloudApprovalFrame.vue` to show local safe status and embed/open the configured cloud URL.
-- Added a `云端审批` App nav item. It is always visible; the frame shows a no-URL warning when cloud approval is not configured.
+- Added a `云端审批` App nav item. See the Task 12 Fix section below for the later gating correction.
 
 ## Tests
 
@@ -35,3 +35,22 @@ Status: DONE
 
 - Existing unrelated untracked runtime/temp files were left unstaged and untouched.
 - `cd app && npm test` still emits existing Node module-type warnings for some ES module test files, but all tests pass.
+
+## Task 12 Fix
+
+Changed files:
+
+- `app/src/renderer/App.vue`
+- `tests/cloud-approval-settings.test.js`
+- `.superpowers/sdd/task-12-report.md`
+
+Fix summary:
+
+- Gated the `云端审批` sidebar nav item behind safe `getCloudApprovalStatus()` fields (`configured` or `base_url`).
+- Kept direct/edge rendering support for `CloudApprovalFrame`, but redirects from `cloud_approval` to `settings` if the cloud URL/status becomes unavailable.
+- Added static coverage that requires App navigation to use the cloud approval status gate and avoids full machine token references.
+
+Test commands and results:
+
+- `node --test tests/cloud-approval-ipc.test.js tests/cloud-approval-settings.test.js` passed: 5 tests.
+- `cd app && npm test` passed: 68 tests.
