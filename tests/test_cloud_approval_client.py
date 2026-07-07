@@ -78,7 +78,7 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 3)
         self.assertEqual(sleeps, [0.25, 0.5])
 
-    def test_upload_asset_calls_upload_url_with_bytes_and_content_type(self):
+    def test_upload_asset_calls_upload_url_with_bytes_content_type_and_machine_token(self):
         transport = FakeTransport([FakeResponse(body={"uploaded": True})])
         client = CloudApprovalClient(
             "https://approval.example.com",
@@ -97,7 +97,7 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(request.get_method(), "PUT")
         self.assertEqual(request.data, b"image-bytes")
         self.assertEqual(request.headers["Content-type"], "image/jpeg")
-        self.assertNotIn("Authorization", request.headers)
+        self.assertEqual(request.headers["Authorization"], "Bearer machine-secret-token")
 
     def test_upload_asset_resolves_worker_relative_upload_url(self):
         transport = FakeTransport([FakeResponse(body={"uploaded": True})])
@@ -136,8 +136,10 @@ class CloudApprovalClientTests(unittest.TestCase):
         transport = FakeTransport([
             urllib.error.HTTPError(signed_url, 403, "Forbidden", {}, None),
         ])
+        token = "machine-token-value-that-must-not-leak"
         client = CloudApprovalClient(
             "https://approval.example.com",
+            machine_token=token,
             transport=transport,
         )
 
@@ -149,6 +151,7 @@ class CloudApprovalClientTests(unittest.TestCase):
 
         self.assertNotIn(signed_url, str(ctx.exception))
         self.assertNotIn("secret-upload-token", str(ctx.exception))
+        self.assertNotIn(token, str(ctx.exception))
 
 
 if __name__ == "__main__":

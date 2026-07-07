@@ -42,11 +42,14 @@ class CloudApprovalClient:
             headers["Authorization"] = f"Bearer {token}"
         return self._send_json_with_retry(method.upper(), url, data, headers, token)
 
-    def upload_asset(self, upload_url: str, path: Path, content_type: str) -> dict:
+    def upload_asset(self, upload_url: str, path: Path, content_type: str, *, token_type: str = "machine") -> dict:
         """Upload one local file to the cloud-provided upload URL."""
         asset_path = Path(path)
         url = self._url_for(upload_url)
         headers = {"Content-Type": content_type or "application/octet-stream"}
+        token = self._token_for(token_type)
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(
             url,
             data=asset_path.read_bytes(),
