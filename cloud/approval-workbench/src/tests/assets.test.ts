@@ -147,6 +147,7 @@ class FakeD1Statement {
       return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
     }
     if (normalized.includes('from ai_image_assets') && normalized.includes('where object_key = ?')) {
+      if (!normalized.includes('status')) throw new Error('asset upload lookup must select status')
       return (this.state.assets.find((row) => row.object_key === String(this.params[0])) ?? null) as T | null
     }
     if (normalized.includes('from ai_image_batches') && normalized.includes('where batch_uid = ?')) {

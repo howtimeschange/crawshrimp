@@ -108,3 +108,18 @@ Tests run:
 Residual risks:
 
 - Source-machine sync upload remains intentionally limited by batch ownership, batch status, and planned asset rows; it is not a general machine asset credential. A future short-lived upload-token model would make this even tighter.
+
+## Sync Upload Projection Follow-Up
+
+Status: fixed a focused review finding in the no-lease sync PUT path.
+
+Commit: pending, `fix(cloud): include sync upload asset status`.
+
+Addressed issue:
+
+- The upload route's object-key lookup now selects asset `status`, so real D1 rows can pass the source-machine planned-asset check. The assets route test fake now fails if this projection omits `status`, preventing another false positive.
+
+Tests run:
+
+- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/batches.test.ts src/tests/review.test.ts` - passed, 49 tests.
+- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.

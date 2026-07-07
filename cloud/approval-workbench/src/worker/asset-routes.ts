@@ -125,7 +125,7 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
   if (actor instanceof Response) return actor
   const objectKey = objectKeyFromUploadPath(request)
   if (!isValidUploadObjectKey(objectKey)) return badRequest('invalid object key')
-  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, object_key, filename, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
+  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
     .bind(objectKey)
     .first<AssetRow>()
   if (!asset) return json({ error: 'Asset upload plan not found' }, { status: 404 })
