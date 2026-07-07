@@ -266,8 +266,9 @@ export async function resolvePrompts(request: Request, env: Env): Promise<Respon
     .bind(libraryId)
     .all<PromptTemplateRow>()
 
-  const latestVersions = await latestVersionsByTemplate(env, templates.map((template) => template.id))
-  const resolved = templates
+  const enabledTemplates = templates.filter((template) => Boolean(template.enabled))
+  const latestVersions = await latestVersionsByTemplate(env, enabledTemplates.map((template) => template.id))
+  const resolved = enabledTemplates
     .flatMap((template) => resolvedTemplateFor(template, latestVersions.get(template.id)))
     .filter((template) => matchesRules(template.category_rules, category) && matchesRules(template.gender_rules, gender))
     .sort((a, b) => a.priority - b.priority || a.template_id - b.template_id)

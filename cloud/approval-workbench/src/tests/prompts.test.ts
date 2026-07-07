@@ -498,4 +498,38 @@ describe('prompt routes', () => {
     expect(body.templates.map((template) => template.prompt_text)).not.toContain('draft prompt B changed after publish')
     expect(JSON.parse(state.versions.find((version) => version.template_id === 2)?.snapshot_json || '{}').prompt_text).toBe('published prompt B')
   })
+
+  it('excludes a disabled template even when it has a published version', async () => {
+    const state = await stateWithPrompts()
+    const libraryId = await createLibraryWithTemplates(state)
+    await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/publish-version`, {
+        method: 'POST',
+        headers: managerHeaders(),
+      }),
+      fakeEnv(state),
+    )
+
+    const updateResponse = await fetchWorker(
+      new Request('https://example.test/api/prompt-templates/2', {
+        method: 'PATCH',
+        headers: managerHeaders(),
+        body: JSON.stringify({ enabled: false }),
+      }),
+      fakeEnv(state),
+    )
+    expect(updateResponse.status).toBe(200)
+
+    const response = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/resolved?category=童装&gender=女童`, {
+        headers: reviewerHeaders(),
+      }),
+      fakeEnv(state),
+    )
+
+    const body = await response.json() as { templates: Array<Record<string, unknown>> }
+    expect(body.templates.map((template) => template.template_id)).toEqual([1])
+    expect(body.templates.map((template) => template.prompt_text)).not.toContain('published prompt B')
+    expect(state.versions.some((version) => version.template_id === 2)).toBe(true)
+  })
 })
