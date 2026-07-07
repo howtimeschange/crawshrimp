@@ -153,3 +153,18 @@ Tests run:
 
 - `cd cloud/approval-workbench && npm test -- src/tests/auth-routes.test.ts src/tests/seed-admin.test.ts` - passed, 13 tests.
 - `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
+
+## Live Dry-Run Reusability Follow-Up
+
+Status: made the live smoke harness reusable against an existing remote database.
+
+Commit: pending, `fix(cloud): make live dry-run machine unique`.
+
+Addressed issue:
+
+- Live dry-run now accepts `--machine-id` and defaults to a timestamped `dry-run-machine-*` id in live mode, avoiding conflicts with previous smoke-test machines while keeping fake-mode behavior deterministic.
+
+Tests run:
+
+- `python -m unittest tests.test_cloud_approval_dry_run -v` - passed, 5 tests.
+- `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.

@@ -6,6 +6,7 @@ import argparse
 import json
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -287,6 +288,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a cloud approval workbench dry run.")
     parser.add_argument("--live-cloud-url", default="", help="Opt in to real cloud API calls against this Worker URL.")
     parser.add_argument("--admin-cookie", default="", help="Admin cs_session cookie for live admin routes. Never store this in files.")
+    parser.add_argument("--machine-id", default="", help="Override task machine id; live mode defaults to a unique dry-run id.")
     return parser
 
 
@@ -296,8 +298,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.live_cloud_url:
         transport = CookieTransport(args.admin_cookie)
         client = CloudApprovalClient(args.live_cloud_url, user_token=ADMIN_TOKEN, transport=transport)
-        return run_dry_run(client=client, transport=None, batch_factory=build_fake_local_batch, printer=print)
-    return run_dry_run(transport=FakeCloudApprovalTransport(), batch_factory=build_fake_local_batch, printer=print)
+        machine_id = args.machine_id or f"{MACHINE_ID}-{int(time.time())}"
+        return run_dry_run(client=client, transport=None, batch_factory=build_fake_local_batch, printer=print, machine_id=machine_id)
+    return run_dry_run(transport=FakeCloudApprovalTransport(), batch_factory=build_fake_local_batch, printer=print, machine_id=args.machine_id or MACHINE_ID)
 
 
 def run_fake_dry_run(printer: Callable[[str], None] = print) -> dict:
@@ -307,6 +310,7 @@ def run_fake_dry_run(printer: Callable[[str], None] = print) -> dict:
         batch_factory=build_fake_local_batch,
         printer=printer,
         summary=summary,
+        machine_id=MACHINE_ID,
     )
     return summary
 
@@ -317,12 +321,13 @@ def run_dry_run(
     batch_factory: Callable[[Path], dict],
     printer: Callable[[str], None],
     client: CloudApprovalClient | None = None,
+    machine_id: str = MACHINE_ID,
 ) -> int:
     if client is None:
         client = CloudApprovalClient("https://approval.example.test", user_token=ADMIN_TOKEN, transport=transport)
     summary: dict[str, Any] = {}
     try:
-        _run_flow(client=client, batch_factory=batch_factory, printer=printer, summary=summary)
+        _run_flow(client=client, batch_factory=batch_factory, printer=printer, summary=summary, machine_id=machine_id)
     except AssertionError as exc:
         printer(f"DRY RUN FAIL: {exc}")
         return 1
@@ -339,6 +344,7 @@ def _run_flow(
     batch_factory: Callable[[Path], dict],
     printer: Callable[[str], None],
     summary: dict[str, Any],
+    machine_id: str,
 ) -> None:
     printer("Phase 1: seed first admin")
     instructions = seed_admin_instructions()
@@ -358,7 +364,7 @@ def _run_flow(
     printer("Phase 3: enroll fake task machine")
     machine = client.request_json("POST", "/api/machines/enroll", {
         "enrollment_token": enrollment["token"],
-        "machine_id": MACHINE_ID,
+        "machine_id": machine_id,
         "machine_name": "Dry Run Task Machine",
         "fingerprint": "dry-run-fingerprint",
         "app_version": "dry-run",
@@ -406,12 +412,12 @@ def _run_flow(
     ready = client.request_json("POST", f"/api/ai-image-batches/{batch_uid}/mark-ready", {}, token_type="user")
     _assert(ready.get("status") == "ready_to_submit", "approved image did not make batch ready")
     submit = client.request_json("POST", f"/api/ai-image-batches/{batch_uid}/submit", {
-        "machine_id": MACHINE_ID,
+        "machine_id": machine_id,
     }, token_type="user")
     submit_job = submit.get("job") or {}
     _assert(submit_job.get("job_type") == "submit_tmall_material_test", "approved image did not create submit job")
     _assert(submit_job.get("status") == "queued", "submit job is not queued")
-    _assert(submit_job.get("assigned_machine_id") == MACHINE_ID, "submit job was not assigned to selected task machine")
+    _assert(submit_job.get("assigned_machine_id") == machine_id, "submit job was not assigned to selected task machine")
     summary["submit_job"] = submit_job
 
 
