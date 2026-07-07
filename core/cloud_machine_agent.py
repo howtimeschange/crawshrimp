@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping
 
 from core import data_sink
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
+from core.cloud_job_executors import CloudJobBlocked, CloudJobExecutor, CloudJobTerminalFailure
 
 
 DEFAULT_IDLE_SECONDS = 45.0
@@ -24,6 +25,8 @@ class CloudMachineAgent:
         app_version: str = "",
         machine_id_factory: Callable[[], str] | None = None,
         fingerprint_factory: Callable[[], str] | None = None,
+        job_executor_factory: Callable[[CloudApprovalClient], Any] | None = None,
+        heartbeat_callback: Callable[[str], None] | None = None,
     ):
         self.client = client
         self.sleep = sleep
@@ -31,6 +34,8 @@ class CloudMachineAgent:
         self.app_version = str(app_version or "")
         self.machine_id_factory = machine_id_factory or self._default_machine_id
         self.fingerprint_factory = fingerprint_factory or self._default_fingerprint
+        self.job_executor_factory = job_executor_factory or (lambda client: CloudJobExecutor(client))
+        self.heartbeat_callback = heartbeat_callback
 
     def enroll(self, registration_token: str, machine_name: str, capabilities: list[str]) -> dict:
         capability_list = list(capabilities or [])
@@ -81,10 +86,14 @@ class CloudMachineAgent:
         response = self._request_machine_json("POST", "/api/machines/jobs/claim", {})
         job = response.get("job")
         next_poll = self._coerce_sleep_seconds(response.get("next_poll_after_seconds"), DEFAULT_IDLE_SECONDS)
-        idle_sleep = next_poll if job else self._idle_sleep_seconds(next_poll)
+        job_result = None
+        if isinstance(job, Mapping):
+            job_result = self._execute_claimed_job(job)
+        idle_sleep = next_poll if job_result else self._idle_sleep_seconds(next_poll)
         return {
             **response,
             "job": job,
+            "job_result": job_result,
             "next_poll_after_seconds": next_poll,
             "idle_sleep_seconds": idle_sleep,
         }
@@ -111,6 +120,50 @@ class CloudMachineAgent:
             self._clear_credentials_if_revoked(exc)
             raise
 
+    def _execute_claimed_job(self, job: Mapping[str, Any]) -> dict:
+        executor = self.job_executor_factory(self.client)
+        try:
+            result = executor.execute(job)
+        except CloudJobBlocked as exc:
+            payload = {"status": f"blocked_{exc.status}", "message": exc.message}
+            if exc.status == "needs_login" and self.heartbeat_callback is not None:
+                self.heartbeat_callback("needs_login")
+            self._fail_job(job, payload, terminal=False)
+            return payload
+        except CloudJobTerminalFailure as exc:
+            payload = {"status": "terminal_failed", "message": str(exc)}
+            self._fail_job(job, payload, terminal=True)
+            return payload
+        except Exception as exc:
+            payload = {"status": "retryable_failed", "message": str(exc)}
+            self._fail_job(job, payload, terminal=False)
+            return payload
+        try:
+            self._complete_job(job, result.get("result") if isinstance(result, Mapping) else result)
+        except CloudApprovalError as exc:
+            if "stale lease" in str(exc).lower() or "http 403" in str(exc).lower():
+                return {"status": "stale_lease", "message": str(exc)}
+            raise
+        if isinstance(result, Mapping):
+            return dict(result)
+        return {"status": "succeeded", "result": result}
+
+    def _complete_job(self, job: Mapping[str, Any], result: Any) -> dict:
+        return self._request_machine_json("POST", f"/api/jobs/{self._job_uid(job)}/complete", {
+            "job_uid": self._job_uid(job),
+            "lease_id": self._lease_id(job),
+            "result": result if isinstance(result, Mapping) else {"value": result},
+        })
+
+    def _fail_job(self, job: Mapping[str, Any], result: Mapping[str, Any], *, terminal: bool) -> dict:
+        return self._request_machine_json("POST", f"/api/jobs/{self._job_uid(job)}/fail", {
+            "job_uid": self._job_uid(job),
+            "lease_id": self._lease_id(job),
+            "terminal": terminal,
+            "message": str(result.get("message") or result.get("status") or ""),
+            "result": dict(result),
+        })
+
     def _load_credentials(self) -> dict:
         saved = data_sink.get_cloud_machine_credentials() or {}
         machine_token = str(saved.get("machine_token") or "")
@@ -121,6 +174,14 @@ class CloudMachineAgent:
     def _set_client_machine_token(self, machine_token: str) -> None:
         if hasattr(self.client, "machine_token"):
             self.client.machine_token = machine_token
+
+    @staticmethod
+    def _job_uid(job: Mapping[str, Any]) -> str:
+        return str(job.get("job_uid") or "")
+
+    @staticmethod
+    def _lease_id(job: Mapping[str, Any]) -> str:
+        return str(job.get("lease_id") or "")
 
     @staticmethod
     def _clear_credentials_if_revoked(exc: CloudApprovalError) -> None:
