@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from core.cloud_approval_client import CloudApprovalError
 from core.cloud_batch_sync import build_cloud_batch_payload, sync_local_approval_batch
 
 
@@ -13,18 +14,31 @@ class FakeClient:
 
     def request_json(self, method, path, body=None, *, token_type="machine"):
         self.calls.append((method, path, body, token_type))
-        if path == "/api/ai-image-batches/presign":
+        if path == "/api/ai-image-batches/sync":
             return {
-                "uploads": [
+                "ok": True,
+                "batch": {"batch_uid": body["batch_uid"]},
+                "styles": [
                     {
-                        "asset_uid": item["asset_uid"],
-                        "upload_url": f"https://upload.example.com/{item['asset_uid']}",
+                        "id": style["style_id"],
+                        "style_uid": style["style_uid"],
+                        "style_code": style["style_code"],
+                        "item_id": style["item_id"],
                     }
-                    for item in body["assets"]
-                ]
+                    for style in body["styles"]
+                    if style.get("style_id")
+                ],
             }
-        if path == "/api/ai-image-batches/sync-complete":
-            return {"ok": True, "batch_uid": body["batch_uid"]}
+        if path == "/api/assets/presign":
+            return {
+                "asset_uid": body["asset_uid"],
+                "object_key": f"batches/{body['batch_uid']}/{body['kind']}/{body['asset_uid']}-{body['filename']}",
+                "upload_url": f"/api/assets/upload/{body['asset_uid']}",
+                "method": "PUT",
+                "headers": {},
+            }
+        if path == "/api/ai-image-batches/batch-20260707/sync-complete":
+            return {"ok": True, "status": "pending_review"}
         return {"ok": True, "batch_uid": body["batch_uid"]}
 
     def upload_asset(self, upload_url, path, content_type):
@@ -52,6 +66,7 @@ class CloudBatchSyncTests(unittest.TestCase):
                     "id": "item-1",
                     "row_no": 2,
                     "style_code": "208326100202",
+                    "style_id": 101,
                     "item_id": "1002178235142",
                     "category": "长袖T恤",
                     "gender": "中性",
@@ -70,7 +85,8 @@ class CloudBatchSyncTests(unittest.TestCase):
                         },
                         {
                             "kind": "ai",
-                            "path": str(ai2),
+                            "path": str(ai2).replace("/", "\\"),
+                            "filename": "C:\\tmp\\ai-2.png",
                             "label": "AI 图 2",
                             "prompt": "侧身展示",
                             "prompt_index": 2,
@@ -87,16 +103,22 @@ class CloudBatchSyncTests(unittest.TestCase):
             payload = build_cloud_batch_payload(batch)
 
         self.assertEqual(payload["batch_uid"], "batch-20260707")
+        self.assertEqual(payload["title"], "batch-20260707")
         self.assertEqual(payload["task_run_uid"], "run-123")
         self.assertEqual(len(payload["styles"]), 1)
         self.assertEqual(payload["styles"][0]["style_code"], "208326100202")
-        self.assertEqual(len(payload["assets"]), 3)
-        prompts = {asset["asset_uid"]: asset for asset in payload["assets"]}
+        self.assertEqual(payload["styles"][0]["style_id"], 101)
+        self.assertNotIn("assets", {key for key in payload.keys()})
+        self.assertEqual(len(payload["styles"][0]["assets"]), 3)
+        prompts = {asset["asset_uid"]: asset for asset in payload["styles"][0]["assets"]}
         self.assertEqual(prompts["ai-1"]["prompt"], "保留主商品")
+        self.assertEqual(prompts["ai-1"]["prompt_text"], "保留主商品")
         self.assertEqual(prompts["ai-1"]["prompt_version"], "2026-07")
         self.assertEqual(prompts["ai-1"]["prompt_version_label"], "v3")
         self.assertEqual(prompts["origin-1"]["kind"], "source")
         self.assertEqual(prompts["ai-1"]["kind"], "ai")
+        self.assertTrue(prompts["origin-1"]["content_hash"])
+        self.assertEqual(payload["prompt_version_set"], [{"prompt_version": "2026-07", "label": "v3"}])
 
     def test_build_cloud_batch_payload_keeps_absolute_paths_outside_safe_metadata(self):
         with TemporaryDirectory() as temp:
@@ -105,9 +127,12 @@ class CloudBatchSyncTests(unittest.TestCase):
             encoded = json.dumps(payload, ensure_ascii=False)
 
             self.assertNotIn(str(Path(temp)), encoded)
-            for asset in payload["assets"]:
-                self.assertNotIn("/", asset["metadata"]["source_path_label"])
-                self.assertNotIn("\\", asset["metadata"]["source_path_label"])
+            for style in payload["styles"]:
+                for asset in style["assets"]:
+                    self.assertNotIn("/", asset["source_path_label"])
+                    self.assertNotIn("\\", asset["source_path_label"])
+                    self.assertNotIn("/", asset["meta"]["source_path_label"])
+                    self.assertNotIn("\\", asset["meta"]["source_path_label"])
 
     def test_sync_local_approval_batch_presigns_uploads_and_marks_complete(self):
         with TemporaryDirectory() as temp:
@@ -116,27 +141,48 @@ class CloudBatchSyncTests(unittest.TestCase):
 
             result = sync_local_approval_batch(batch, client)
 
-        self.assertEqual(result, {"ok": True, "batch_uid": "batch-20260707"})
+        self.assertEqual(result["ok"], True)
+        self.assertEqual(result["status"], "pending_review")
+        self.assertEqual(len(result["assets"]), 2)
         self.assertEqual(
             [(method, path) for method, path, _body, _token in client.calls],
             [
-                ("POST", "/api/ai-image-batches"),
-                ("POST", "/api/ai-image-batches/presign"),
-                ("POST", "/api/ai-image-batches/sync-complete"),
+                ("POST", "/api/ai-image-batches/sync"),
+                ("POST", "/api/assets/presign"),
+                ("POST", "/api/assets/presign"),
+                ("POST", "/api/ai-image-batches/batch-20260707/sync-complete"),
             ],
         )
-        self.assertEqual(len(client.uploads), 3)
+        self.assertEqual(len(client.uploads), 2)
         self.assertEqual(
             [upload[0] for upload in client.uploads],
             [
-                "https://upload.example.com/origin-1",
-                "https://upload.example.com/ai-1",
-                f"https://upload.example.com/{client.calls[1][2]['assets'][2]['asset_uid']}",
+                "/api/assets/upload/origin-1",
+                "/api/assets/upload/ai-1",
             ],
         )
+        presign_body = client.calls[1][2]
+        self.assertEqual(presign_body["batch_uid"], "batch-20260707")
+        self.assertEqual(presign_body["style_id"], 101)
+        self.assertEqual(presign_body["asset_uid"], "origin-1")
+        self.assertNotIn("assets", presign_body)
         complete_body = client.calls[-1][2]
         self.assertEqual(complete_body["batch_uid"], "batch-20260707")
-        self.assertEqual(len(complete_body["assets"]), 3)
+        self.assertEqual(len(complete_body["assets"]), 2)
+
+    def test_sync_local_approval_batch_does_not_presign_without_numeric_style_id(self):
+        with TemporaryDirectory() as temp:
+            batch = self._local_batch(Path(temp))
+            batch["items"][0].pop("style_id")
+            client = FakeClient()
+
+            with self.assertRaises(CloudApprovalError):
+                sync_local_approval_batch(batch, client)
+
+        self.assertEqual(
+            [(method, path) for method, path, _body, _token in client.calls],
+            [("POST", "/api/ai-image-batches/sync")],
+        )
 
 
 if __name__ == "__main__":

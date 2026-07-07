@@ -45,9 +45,10 @@ class CloudApprovalClient:
     def upload_asset(self, upload_url: str, path: Path, content_type: str) -> dict:
         """Upload one local file to the cloud-provided upload URL."""
         asset_path = Path(path)
+        url = self._url_for(upload_url)
         headers = {"Content-Type": content_type or "application/octet-stream"}
         request = urllib.request.Request(
-            str(upload_url),
+            url,
             data=asset_path.read_bytes(),
             headers=headers,
             method="PUT",

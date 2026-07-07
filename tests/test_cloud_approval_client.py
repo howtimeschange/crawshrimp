@@ -99,6 +99,23 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(request.headers["Content-type"], "image/jpeg")
         self.assertNotIn("Authorization", request.headers)
 
+    def test_upload_asset_resolves_worker_relative_upload_url(self):
+        transport = FakeTransport([FakeResponse(body={"uploaded": True})])
+        client = CloudApprovalClient(
+            "https://approval.example.com/",
+            machine_token="machine-secret-token",
+            transport=transport,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "asset.jpg"
+            path.write_bytes(b"image-bytes")
+            result = client.upload_asset("/api/assets/upload/object-key", path, "image/jpeg")
+
+        self.assertEqual(result, {"uploaded": True})
+        request, _timeout = transport.calls[0]
+        self.assertEqual(request.full_url, "https://approval.example.com/api/assets/upload/object-key")
+
     def test_client_exception_redacts_full_tokens(self):
         transport = FakeTransport([FakeResponse(status=403, body={"error": "denied"})])
         token = "machine-token-value-that-must-not-leak"
