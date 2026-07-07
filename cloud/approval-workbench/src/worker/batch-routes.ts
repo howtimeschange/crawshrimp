@@ -222,6 +222,8 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
   if (!batchUid || !Number.isInteger(styleId) || styleId <= 0 || !assetUid || !filename) return badRequest('batch_uid, style_id, asset_uid, and filename are required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
+  if (!style) return badRequest('style_id is not in batch')
   const safeAssetFilename = safeFilename(filename)
   const now = nowIso()
   await upsertAsset(env, {

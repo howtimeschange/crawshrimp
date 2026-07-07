@@ -116,6 +116,7 @@ class FakeD1Statement {
       return (session ? this.state.users.find((user) => user.id === session.user_id && user.status === 'active') ?? null : null) as T | null
     }
     if (sql.includes('from ai_image_batches') && sql.includes('where batch_uid = ?')) return (this.state.batches.find((row) => row.batch_uid === String(this.params[0])) ?? null) as T | null
+    if (sql.includes('from ai_image_styles') && sql.includes('where id = ? and batch_uid = ?')) return (this.state.styles.find((row) => row.id === Number(this.params[0]) && row.batch_uid === String(this.params[1])) ?? null) as T | null
     if (sql.includes('from ai_image_assets') && sql.includes('where asset_uid = ?')) return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from task_machines') && sql.includes('where machine_id = ?')) return (this.state.machines.find((row) => row.machine_id === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes('where job_type = ? and idempotency_key = ?')) return (this.state.dispatchJobs.find((row) => row.job_type === String(this.params[0]) && row.idempotency_key === String(this.params[1])) ?? null) as T | null
@@ -155,6 +156,46 @@ class FakeD1Statement {
       batch.status = String(this.params[0])
       batch.updated_at = String(this.params[1])
       return result(1)
+    }
+    if (sql.startsWith('insert into ai_image_assets')) {
+      const assetUid = String(this.params[0])
+      const existing = this.state.assets.find((row) => row.asset_uid === assetUid)
+      if (existing) {
+        existing.batch_uid = String(this.params[1])
+        existing.style_id = Number(this.params[2])
+        existing.kind = String(this.params[3])
+        existing.status = String(this.params[4])
+        existing.object_key = String(this.params[5])
+        existing.filename = String(this.params[6])
+        existing.content_hash = String(this.params[7])
+        existing.prompt_template_version_id = numberOrNull(this.params[8])
+        existing.prompt_text = String(this.params[9])
+        existing.parent_asset_uid = stringOrNull(this.params[10])
+        existing.generation_job_id = stringOrNull(this.params[11])
+        existing.meta_json = String(this.params[12])
+        existing.updated_at = String(this.params[14])
+        return result(1, existing.id)
+      }
+      const id = this.state.assets.length + 1
+      this.state.assets.push({
+        id,
+        asset_uid: assetUid,
+        batch_uid: String(this.params[1]),
+        style_id: Number(this.params[2]),
+        kind: String(this.params[3]),
+        status: String(this.params[4]),
+        object_key: String(this.params[5]),
+        filename: String(this.params[6]),
+        content_hash: String(this.params[7]),
+        prompt_template_version_id: numberOrNull(this.params[8]),
+        prompt_text: String(this.params[9]),
+        parent_asset_uid: stringOrNull(this.params[10]),
+        generation_job_id: stringOrNull(this.params[11]),
+        meta_json: String(this.params[12]),
+        created_at: String(this.params[13]),
+        updated_at: String(this.params[14]),
+      })
+      return result(1, id)
     }
     if (sql.startsWith('insert into approval_events')) {
       const id = this.state.approvalEvents.length + 1
@@ -251,6 +292,37 @@ describe('review routes', () => {
     response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/mark-ready', { method: 'POST', headers: { cookie: reviewerCookie } }), fakeEnv(state))
     expect(response.status).toBe(200)
     expect(state.batches[0].status).toBe('ready_to_submit')
+  })
+
+  it('rejects manual asset creation for a nonexistent style_id in the route batch', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const response = await fetchWorker(manualAssetRequest(reviewerCookie, 999, 'manual-missing-style'), fakeEnv(state))
+    expect(response.status).toBe(400)
+    expect(state.assets.some((asset) => asset.asset_uid === 'manual-missing-style')).toBe(false)
+    expect(state.approvalEvents).toHaveLength(0)
+  })
+
+  it('rejects manual asset creation for a style_id from another batch', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.styles.push({ id: 4, batch_uid: 'batch-2', style_code: 'style-other', item_id: 'item-other', skc_code: 'skc-other', category: 'cat', gender: 'girl', status: 'pending_review', missing_prompt_reason: '', source_summary_json: '{}', review_summary_json: '{}', submit_summary_json: '{}' })
+    const response = await fetchWorker(manualAssetRequest(reviewerCookie, 4, 'manual-cross-batch'), fakeEnv(state))
+    expect(response.status).toBe(400)
+    expect(state.assets.some((asset) => asset.asset_uid === 'manual-cross-batch')).toBe(false)
+    expect(state.approvalEvents).toHaveLength(0)
+  })
+
+  it('creates a manual asset for a style_id in the route batch', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const response = await fetchWorker(manualAssetRequest(reviewerCookie, 2, 'manual-valid-style'), fakeEnv(state))
+    expect(response.status).toBe(201)
+    expect(state.assets.find((asset) => asset.asset_uid === 'manual-valid-style')).toMatchObject({
+      batch_uid: 'batch-1',
+      style_id: 2,
+      kind: 'ai',
+      status: 'approved',
+      filename: 'manual.jpg',
+    })
+    expect(state.approvalEvents.map((event) => event.event_type)).toEqual(['asset.manual_create'])
   })
 
   it('creates one idempotent regeneration job per selected rejected asset', async () => {
@@ -384,6 +456,20 @@ function submitRequest(cookie: string, machineId: string): Request {
     method: 'POST',
     headers: { cookie },
     body: JSON.stringify({ machine_id: machineId }),
+  })
+}
+
+function manualAssetRequest(cookie: string, styleId: number, assetUid: string): Request {
+  return new Request('https://example.test/api/ai-image-batches/batch-1/manual-assets', {
+    method: 'POST',
+    headers: { cookie },
+    body: JSON.stringify({
+      style_id: styleId,
+      asset_uid: assetUid,
+      filename: 'manual.jpg',
+      status: 'approved',
+      prompt_text: 'Manual prompt',
+    }),
   })
 }
 
