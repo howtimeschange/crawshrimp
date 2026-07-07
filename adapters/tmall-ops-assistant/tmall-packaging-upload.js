@@ -2202,21 +2202,32 @@
     return cloned
   }
 
+  function fixedTopNewDescPicIndex(pics = [], options = {}) {
+    const list = Array.isArray(pics) ? pics : []
+    const anchors = normalizeVisualAnchors(options.visualAnchors)
+    if (anchors.fixedTopImageIndex !== null && list[anchors.fixedTopImageIndex]) return anchors.fixedTopImageIndex
+    const signatureIndex = list.findIndex(pic => isFixedTopAnchorImage(pic?.src))
+    return signatureIndex >= 0 ? signatureIndex : -1
+  }
+
   function buildNewDescImageCountFallback(parsed, newDescValue, pics = [], detailList = [], options = {}) {
     if (!options.allowLegacyCountImageReplace) return null
-    if (!detailList.length || pics.length <= detailList.length + 1) return null
+    if (!detailList.length) return null
     const groups = Array.isArray(parsed?.template?.groups) ? parsed.template.groups : []
-    const firstPic = pics[0]
-    const startPic = pics[1]
-    const stopPic = pics[detailList.length + 1]
-    const referenceGroup = startPic?.group || firstPic?.group
-    if (!startPic || !stopPic || !referenceGroup) return null
+    const fixedTopImageIndex = fixedTopNewDescPicIndex(pics, options)
+    const preserveTopImageCount = fixedTopImageIndex >= 0 ? fixedTopImageIndex + 1 : 0
+    const replaceStartIndex = preserveTopImageCount
+    if (pics.length < replaceStartIndex + detailList.length) return null
+    const startPic = pics[replaceStartIndex]
+    const stopPic = pics[replaceStartIndex + detailList.length]
+    const referenceGroup = startPic?.group || pics[0]?.group
+    if (!startPic || !referenceGroup) return null
     const template = jsonClone(parsed.template)
     const newGroups = detailList.map((item, index) => cloneNewDescPicGroup(referenceGroup, item, index, options))
     template.groups = [
       ...groups.slice(0, startPic.groupIndex),
       ...newGroups,
-      ...groups.slice(stopPic.groupIndex),
+      ...groups.slice(stopPic ? stopPic.groupIndex : groups.length),
     ]
     const nextValue = {
       ...(newDescValue && typeof newDescValue === 'object' ? newDescValue : {}),
@@ -2226,6 +2237,10 @@
         changed: true,
       },
     }
+    const replaceEndIndex = stopPic ? stopPic.globalIndex : pics.length
+    const fixedTopImage = fixedTopImageIndex >= 0 ? pics[fixedTopImageIndex] : null
+    const topLabel = pcDetailTopPreserveLabel(!!fixedTopImage, fixedTopImageIndex)
+    const tailLabel = stopPic ? `，保留第${replaceEndIndex + 1}张及以下尾部` : ''
     return {
       ok: true,
       target: 'descRepublicOfSell',
@@ -2236,19 +2251,23 @@
       pics,
       insertedGroupCount: newGroups.length,
       replacedGroupStartIndex: startPic.groupIndex,
-      replacedGroupEndIndex: stopPic.groupIndex,
-      replaceStartIndex: 1,
-      replaceEndIndex: stopPic.globalIndex,
+      replacedGroupEndIndex: stopPic ? stopPic.groupIndex : groups.length,
+      replaceStartIndex,
+      replaceEndIndex,
       replacedImageCount: detailList.length,
       insertedImageCount: detailList.length,
-	      fixedTopImage: firstPic,
-	      fixedTopImageIndex: 0,
-	      preserveTopImageCount: 1,
-	      stopAnchor: stopPic,
-	      stopImageIndex: stopPic.globalIndex,
+	      fixedTopImage,
+	      fixedTopImageIndex: fixedTopImageIndex >= 0 ? fixedTopImageIndex : null,
+	      preserveTopImageCount,
+	      stopAnchor: stopPic || {
+	        groupIndex: groups.length,
+	        globalIndex: pics.length,
+	        src: '',
+	      },
+	      stopImageIndex: stopPic ? stopPic.globalIndex : pics.length,
 	      stopAnchorKind: 'legacy_count_tail',
-	      currentReplacementUrls: pics.slice(1, detailList.length + 1).map(pic => pic.src).filter(Boolean),
-	      note: `新版图片详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailList.length + 1}张，保留第${detailList.length + 2}张及以下尾部`,
+	      currentReplacementUrls: pics.slice(replaceStartIndex, replaceEndIndex).map(pic => pic.src).filter(Boolean),
+	      note: `新版图片详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换：${topLabel}替换第${replaceStartIndex + 1}到第${replaceEndIndex}张${tailLabel}`,
 	    }
 	  }
 
@@ -4471,6 +4490,16 @@
     return MARKETING_TOP_ANCHOR_RE.test(String(value || ''))
   }
 
+  function hasTrustedFixedTopAnchorEvidence(value = {}) {
+    const source = value && typeof value === 'object' ? value : {}
+    const kind = compact(source.fixedTopAnchorKind || source.topAnchorKind || source.anchorKind)
+    if (kind === 'fixed_top' || kind === 'marketing_top') return true
+    if (isFixedTopAnchorText(source.fixedTopText || source.text || source.matchedText || '')) return true
+    if (isMarketingTopAnchorText(source.fixedTopText || source.text || source.matchedText || '')) return true
+    if (isFixedTopAnchorImage(source.fixedTopImageUrl || source.imageUrl || source.src || source.url || '')) return true
+    return false
+  }
+
   function ocrAnchorText(value) {
     const raw = compact(value)
     const joined = raw.replace(/[\s:：,，.。;；|｜_\\/\-—~～]+/g, '')
@@ -4615,6 +4644,7 @@
       source: compact(visualFallback.source || 'visual_canvas_white_black'),
       confidence: Number(visualFallback.confidence || ocrAnchors.confidence || 0),
       fixedTopImageIndex,
+      fixedTopAnchorKind: compact(ocrAnchors.fixedTopAnchorKind || visualFallback.fixedTopAnchorKind),
       stopImageIndex: Number(visualFallback.stopImageIndex),
       stopAnchorKind: fallbackKind,
       matchedText: compact(ocrAnchors.matchedText),
@@ -4718,7 +4748,8 @@
 
   function normalizeVisualAnchors(value) {
     const source = value && typeof value === 'object' ? value : {}
-    const fixedTopImageIndex = Number.isFinite(Number(source.fixedTopImageIndex)) ? Number(source.fixedTopImageIndex) : null
+    const hasFixedTopImageIndex = Number.isFinite(Number(source.fixedTopImageIndex)) && hasTrustedFixedTopAnchorEvidence(source)
+    const fixedTopImageIndex = hasFixedTopImageIndex ? Number(source.fixedTopImageIndex) : null
     const stopImageIndex = Number.isFinite(Number(source.stopImageIndex)) ? Number(source.stopImageIndex) : null
     const rawKind = compact(source.stopAnchorKind || source.anchorKind || 'lower_preserve')
     const stopAnchorKind = /wanted|想要/.test(rawKind)
@@ -4729,7 +4760,7 @@
           ? 'white_black_fallback'
           : rawKind === 'size' ? 'visual_size' : 'visual_lower_preserve'
     return {
-      preserveFirstImage: !!source.preserveFirstImage || fixedTopImageIndex !== null,
+      preserveFirstImage: fixedTopImageIndex !== null,
       fixedTopImageIndex,
       stopImageIndex,
       stopAnchorKind,
@@ -4740,9 +4771,7 @@
   function applyVisualAnchorsToImages(images, visualAnchors) {
     const list = Array.isArray(images) ? images : []
     const anchors = normalizeVisualAnchors(visualAnchors)
-    const fixedTopIndex = anchors.fixedTopImageIndex !== null
-      ? anchors.fixedTopImageIndex
-      : (anchors.preserveFirstImage ? 0 : null)
+    const fixedTopIndex = anchors.fixedTopImageIndex !== null ? anchors.fixedTopImageIndex : null
     if (fixedTopIndex !== null && list[fixedTopIndex]) {
       list[fixedTopIndex].isFixedTop = true
       list[fixedTopIndex].isVisualFixedTop = true
@@ -4828,7 +4857,9 @@
   }
 
   function visualFixedTopImage(images, visualAnchors = {}) {
-    const index = Number(visualAnchors.fixedTopImageIndex)
+    const rawIndex = visualAnchors?.fixedTopImageIndex
+    if (rawIndex === null || rawIndex === undefined || rawIndex === '') return null
+    const index = Number(rawIndex)
     if (!Number.isFinite(index) || index < 0) return null
     return (Array.isArray(images) ? images : []).find(image => Number(image.globalIndex) === index) || null
   }
@@ -5010,25 +5041,23 @@
       visualAnchorsOnly: requireVisualAnchors,
     })
     if (!stopBoundary && legacySingleDescription && options.allowLegacyImageCountFallback) {
-      preserveFirstImage = true
-      startImage = fixedTopDetailImage(images, firstImage) || firstImage
+      if (preserveFirstImage) startImage = fixedTopDetailImage(images, firstImage) || firstImage
       stopBoundary = requireVisualAnchors
         ? null
         : legacyImageCountStopBoundary(images, startImage, detailUrls, preserveFirstImage, options)
     }
     if (legacySingleDescription && !stopBoundary) {
 	      const detailUrlCount = probeDetailUrls.length
-	      if (options.allowLegacyCountImageReplace && detailUrlCount && images.length > detailUrlCount + 1) {
-        preserveFirstImage = true
-        startImage = firstImage
-        const firstSegment = images.slice(1, detailUrlCount + 1)
-        const secondSegment = images.slice(detailUrlCount + 1, detailUrlCount * 2 + 1)
+	      const replacementStartIndex = Number(startImage?.globalIndex ?? firstImage.globalIndex) + (preserveFirstImage ? 1 : 0)
+	      if (options.allowLegacyCountImageReplace && detailUrlCount && images.length >= replacementStartIndex + detailUrlCount) {
+        const firstSegment = images.slice(replacementStartIndex, replacementStartIndex + detailUrlCount)
+        const secondSegment = images.slice(replacementStartIndex + detailUrlCount, replacementStartIndex + detailUrlCount * 2)
         const duplicated = secondSegment.length === detailUrlCount &&
           imageUrlSequenceMatches(
             firstSegment.map(image => image.src),
             secondSegment.map(image => image.src),
           )
-        const endIndex = duplicated ? detailUrlCount * 2 + 1 : detailUrlCount + 1
+        const endIndex = replacementStartIndex + detailUrlCount * (duplicated ? 2 : 1)
         const tailImage = images[endIndex]
         stopBoundary = tailImage
           ? {
@@ -5040,34 +5069,37 @@
               anchorKind: duplicated ? 'duplicate_detail_tail' : 'legacy_count_tail',
             }
           : {
-              type: duplicated ? 'end' : 'candidate_end',
+              type: 'end',
               moduleIndex: images[images.length - 1]?.moduleIndex ?? currentModules.length - 1,
               globalIndex: images.length,
               moduleName: '详情尾部',
-              anchorKind: duplicated ? 'duplicate_detail_tail' : 'already_match_candidate',
+              anchorKind: duplicated ? 'duplicate_detail_tail' : 'legacy_count_tail',
             }
         const modules = options.probeOnly
-          || stopBoundary.type === 'candidate_end'
           ? currentModules
           : replaceAnchoredDetailContent(currentModules, startImage, stopBoundary, detailHtml, { ...options, preserveFirstImage })
+        const fixedTopImageIndex = preserveFirstImage ? Number(startImage?.globalIndex ?? firstImage.globalIndex) : null
+        const topLabel = pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)
+        const replaceRangeLabel = `${topLabel}替换第${replacementStartIndex + 1}到第${endIndex}张`
+        const tailLabel = tailImage ? `，保留第${endIndex + 1}张及以下尾部` : ''
         return {
           ok: true,
           modules,
           detailHtml,
           mode: duplicated
             ? 'legacy_count_duplicate_cleanup'
-            : (stopBoundary.type === 'candidate_end' ? 'already_match_candidate' : 'legacy_count_replace'),
-          replaceStartIndex: 1,
+            : 'legacy_count_replace',
+          replaceStartIndex: replacementStartIndex,
           replaceEndIndex: stopBoundary.globalIndex,
           replacedImageCount: duplicated ? detailUrlCount * 2 : detailUrlCount,
           insertedImageCount: detailUrlCount,
           duplicateSequenceCount: duplicated ? 2 : 1,
-          requiresAlreadyMatch: duplicated || stopBoundary.type === 'candidate_end',
+          requiresAlreadyMatch: duplicated,
           firstImage,
           startImage,
-          fixedTopImage: firstImage,
-          fixedTopImageIndex: 0,
-          preserveTopImageCount: 1,
+          fixedTopImage: preserveFirstImage ? startImage : null,
+          fixedTopImageIndex,
+          preserveTopImageCount: preserveFirstImage ? fixedTopImageIndex + 1 : 0,
           sizeImage: tailImage || null,
           stopAnchor: tailImage || {
             moduleIndex: stopBoundary.moduleIndex,
@@ -5077,48 +5109,13 @@
             src: '',
             context: stopBoundary.moduleName,
           },
-	          preserveFirstImage: true,
+	          preserveFirstImage,
 	          stopBoundaryType: stopBoundary.type,
 	          stopAnchorKind: stopBoundary.anchorKind,
-	          currentReplacementUrls: images.slice(1, endIndex).map(image => image.src).filter(Boolean),
+	          currentReplacementUrls: images.slice(replacementStartIndex, endIndex).map(image => image.src).filter(Boolean),
 	          note: duplicated
-	            ? `旧版纯图片PC详情检测到产品包装详情图重复${detailUrlCount}张 x 2，已按本次素材重写为一遍：保留第1张头图，替换第2到第${endIndex}张`
-	            : (stopBoundary.type === 'candidate_end'
-	              ? `旧版纯图片PC详情未识别到下半区锚点，但当前详情数量与本次素材数量一致：保留第1张头图，等待上传后比对一致则跳过PC替换`
-	              : `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：保留第1张头图，替换第2到第${detailUrlCount + 1}张，保留第${detailUrlCount + 2}张及以下尾部`),
-	        }
-	      }
-	      if (options.allowLegacyCountImageReplace && detailUrlCount && images.length === detailUrlCount + 1) {
-	        return {
-	          ok: true,
-	          modules: currentModules,
-	          detailHtml,
-	          mode: 'already_match_candidate',
-	          replaceStartIndex: 1,
-	          replaceEndIndex: images.length,
-	          replacedImageCount: detailUrlCount,
-	          insertedImageCount: detailUrlCount,
-	          duplicateSequenceCount: 1,
-	          requiresAlreadyMatch: true,
-	          firstImage,
-	          startImage: firstImage,
-	          fixedTopImage: firstImage,
-	          fixedTopImageIndex: 0,
-	          preserveTopImageCount: 1,
-	          sizeImage: null,
-	          stopAnchor: {
-	            moduleIndex: images[images.length - 1]?.moduleIndex ?? currentModules.length - 1,
-	            moduleName: '详情尾部',
-	            imageIndex: -1,
-	            globalIndex: images.length,
-	            src: '',
-	            context: '详情尾部',
-	          },
-	          preserveFirstImage: true,
-	          stopBoundaryType: 'candidate_end',
-	          stopAnchorKind: 'already_match_candidate',
-	          currentReplacementUrls: images.slice(1).map(image => image.src).filter(Boolean),
-	          note: '旧版纯图片PC详情未识别到下半区锚点，但当前详情数量与本次素材数量一致：保留第1张头图，等待上传后比对一致则跳过PC替换',
+	            ? `旧版纯图片PC详情检测到产品包装详情图重复${detailUrlCount}张 x 2，已按本次素材重写为一遍：${replaceRangeLabel}`
+	            : `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换：${replaceRangeLabel}${tailLabel}`,
 	        }
 	      }
       return {
@@ -5131,9 +5128,7 @@
     if (!stopBoundary) {
       const detailUrlCount = probeDetailUrls.length
       if (!isNewDescModuleSource && options.allowLegacyCountImageReplace && detailUrlCount) {
-        preserveFirstImage = true
-        startImage = detectedFixedTopImage || firstImage
-        const replaceStartIndexForCount = Number(startImage?.globalIndex ?? 0) + 1
+        const replaceStartIndexForCount = Number(startImage?.globalIndex ?? firstImage.globalIndex) + (preserveFirstImage ? 1 : 0)
         const firstSegment = images.slice(replaceStartIndexForCount, replaceStartIndexForCount + detailUrlCount)
         if (firstSegment.length === detailUrlCount) {
           const secondSegment = images.slice(replaceStartIndexForCount + detailUrlCount, replaceStartIndexForCount + detailUrlCount * 2)
@@ -5154,33 +5149,37 @@
                 anchorKind: duplicated ? 'duplicate_detail_tail' : 'legacy_count_tail',
               }
             : {
-                type: duplicated ? 'end' : 'candidate_end',
+                type: 'end',
                 moduleIndex: images[images.length - 1]?.moduleIndex ?? currentModules.length - 1,
                 globalIndex: images.length,
                 moduleName: '详情尾部',
-                anchorKind: duplicated ? 'duplicate_detail_tail' : 'already_match_candidate',
+                anchorKind: duplicated ? 'duplicate_detail_tail' : 'legacy_count_tail',
               }
-          const modules = options.probeOnly || countStopBoundary.type === 'candidate_end'
+          const modules = options.probeOnly
             ? currentModules
             : replaceAnchoredDetailContent(currentModules, startImage, countStopBoundary, detailHtml, { ...options, preserveFirstImage })
+          const fixedTopImageIndex = preserveFirstImage ? Number(startImage?.globalIndex ?? firstImage.globalIndex) : null
+          const topLabel = pcDetailTopPreserveLabel(preserveFirstImage, fixedTopImageIndex)
+          const replaceRangeLabel = `${topLabel}替换第${replaceStartIndexForCount + 1}到第${endIndex}张`
+          const tailLabel = tailImage ? `，保留第${endIndex + 1}张及以下尾部` : ''
           return {
             ok: true,
             modules,
             detailHtml,
             mode: duplicated
               ? 'legacy_count_duplicate_cleanup'
-              : (countStopBoundary.type === 'candidate_end' ? 'already_match_candidate' : 'legacy_count_replace'),
+              : 'legacy_count_replace',
             replaceStartIndex: replaceStartIndexForCount,
             replaceEndIndex: countStopBoundary.globalIndex,
             replacedImageCount: duplicated ? detailUrlCount * 2 : detailUrlCount,
             insertedImageCount: detailUrlCount,
             duplicateSequenceCount: duplicated ? 2 : 1,
-            requiresAlreadyMatch: duplicated || countStopBoundary.type === 'candidate_end',
+            requiresAlreadyMatch: duplicated,
             firstImage,
             startImage,
-            fixedTopImage: startImage,
-            fixedTopImageIndex: Number(startImage?.globalIndex ?? firstImage.globalIndex),
-            preserveTopImageCount: Number(startImage?.globalIndex ?? firstImage.globalIndex) + 1,
+            fixedTopImage: preserveFirstImage ? startImage : null,
+            fixedTopImageIndex,
+            preserveTopImageCount: preserveFirstImage ? fixedTopImageIndex + 1 : 0,
             sizeImage: tailImage || null,
             stopAnchor: tailImage || {
               moduleIndex: countStopBoundary.moduleIndex,
@@ -5190,15 +5189,13 @@
               src: '',
               context: countStopBoundary.moduleName,
             },
-            preserveFirstImage: true,
+            preserveFirstImage,
             stopBoundaryType: countStopBoundary.type,
             stopAnchorKind: countStopBoundary.anchorKind,
             currentReplacementUrls: images.slice(replaceStartIndexForCount, endIndex).map(image => image.src).filter(Boolean),
             note: duplicated
-              ? `旧版纯图片PC详情检测到产品包装详情图重复${detailUrlCount}张 x 2，已按本次素材重写为一遍：${pcDetailTopPreserveLabel(true, Number(startImage?.globalIndex ?? firstImage.globalIndex))}替换第${replaceStartIndexForCount + 1}到第${endIndex}张`
-              : (countStopBoundary.type === 'candidate_end'
-                ? `旧版纯图片PC详情未识别到下半区锚点，但当前详情数量与本次素材数量一致：${pcDetailTopPreserveLabel(true, Number(startImage?.globalIndex ?? firstImage.globalIndex))}等待上传后比对一致则跳过PC替换`
-                : `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换中段：${pcDetailTopPreserveLabel(true, Number(startImage?.globalIndex ?? firstImage.globalIndex))}替换第${replaceStartIndexForCount + 1}到第${replaceStartIndexForCount + detailUrlCount}张，保留第${endIndex + 1}张及以下尾部`),
+              ? `旧版纯图片PC详情检测到产品包装详情图重复${detailUrlCount}张 x 2，已按本次素材重写为一遍：${replaceRangeLabel}`
+              : `旧版纯图片PC详情未识别到可靠文字锚点，已按产品包装PC详情图数量替换：${replaceRangeLabel}${tailLabel}`,
           }
         }
       }
