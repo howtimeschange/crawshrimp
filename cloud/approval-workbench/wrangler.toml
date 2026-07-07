@@ -2,6 +2,11 @@ name = "crawshrimp-cloud-approval-workbench"
 main = "src/worker/index.ts"
 compatibility_date = "2026-07-07"
 
+[assets]
+directory = "./dist/client"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/health"]
+
 [[d1_databases]]
 binding = "DB"
 database_name = "crawshrimp_cloud_approval"
