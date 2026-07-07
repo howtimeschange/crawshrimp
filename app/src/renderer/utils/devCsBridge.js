@@ -218,6 +218,12 @@ export function createDevCsBridge() {
     regenerateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/regenerate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     generateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/generate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalBatch: (batchId, token) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit?token=${encodeURIComponent(String(token || ''))}`, {}),
+    getCloudApprovalStatus: () => apiCall('GET', '/cloud-approval/status'),
+    saveCloudApprovalConfig: (payload) => apiCall('POST', '/cloud-approval/config', payload || {}),
+    enrollCloudMachine: (payload) => apiCall('POST', '/cloud-approval/enroll-machine', payload || {}),
+    startCloudMachine: () => apiCall('POST', '/cloud-approval/machine/start', {}),
+    stopCloudMachine: () => apiCall('POST', '/cloud-approval/machine/stop', {}),
+    syncCloudApprovalBatch: (payload) => apiCall('POST', '/cloud-approval/sync-batch', payload || {}),
 
     getSettings: () => apiCall('GET', '/settings'),
     saveSettings: (cfg) => apiCall('PUT', '/settings', cfg || {}),

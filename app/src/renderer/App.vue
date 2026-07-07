@@ -103,6 +103,8 @@
       />
       <!-- 数据文件 -->
       <DataFiles v-else-if="currentView === 'files'" />
+      <!-- 云端审批 -->
+      <CloudApprovalFrame v-else-if="currentView === 'cloud_approval'" />
       <!-- 设置 -->
       <SettingsPage v-else-if="currentView === 'settings'" :status="status" @launch-chrome="launchChrome" />
     </main>
@@ -117,6 +119,7 @@ import TaskCenter  from './views/TaskCenter.vue'
 import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
+import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 
@@ -131,6 +134,7 @@ const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
   { id: 'task_center', icon: '📋', label: '任务中心' },
   { id: 'files',    icon: '📁', label: '数据文件' },
+  { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
 

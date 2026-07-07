@@ -358,6 +358,83 @@
             </div>
           </div>
         </section>
+
+        <section v-else-if="activePanelId === 'cloud-approval'" key="cloud-approval" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">云端审批</p>
+              <h3>云端审批</h3>
+            </div>
+            <span :class="['badge', cloudStatus?.configured ? 'on' : 'off']">
+              {{ cloudStatus?.configured ? '已配置' : '未配置' }}
+            </span>
+          </div>
+
+          <div class="panel-layout">
+            <div class="form-stack">
+              <div class="field">
+                <label>云端地址</label>
+                <input
+                  v-model="cfg['cloud_approval.base_url']"
+                  placeholder="https://approval.example.com"
+                  class="input"
+                />
+              </div>
+              <div class="field">
+                <label>注册 token</label>
+                <input
+                  v-model="cfg['cloud_approval.registration_token']"
+                  placeholder="用于首次注册任务机"
+                  class="input"
+                  type="password"
+                  autocomplete="off"
+                />
+              </div>
+              <div class="field">
+                <label>任务机名称</label>
+                <input
+                  v-model="cfg['cloud_approval.machine_name']"
+                  placeholder="例如：设计部任务机"
+                  class="input"
+                />
+              </div>
+              <label class="check-row">
+                <input v-model="cfg['cloud_approval.machine_enabled']" type="checkbox" />
+                <span>启用任务机</span>
+              </label>
+              <div class="action-strip cloud-actions">
+                <button class="btn-orange" :disabled="cloudBusy.config" @click="saveCloudApprovalConfig">
+                  {{ cloudBusy.config ? '保存中...' : '保存配置' }}
+                </button>
+                <button class="btn-ghost" :disabled="cloudBusy.enroll" @click="enrollCloudMachine">
+                  {{ cloudBusy.enroll ? '注册中...' : '注册任务机' }}
+                </button>
+                <button class="btn-ghost" :disabled="cloudBusy.start || cloudStatus?.running" @click="startCloudMachine">
+                  {{ cloudBusy.start ? '启动中...' : '启动' }}
+                </button>
+                <button class="btn-ghost" :disabled="cloudBusy.stop || !cloudStatus?.running" @click="stopCloudMachine">
+                  {{ cloudBusy.stop ? '停止中...' : '停止' }}
+                </button>
+              </div>
+              <p v-if="cloudMsg" :class="['inline-msg', cloudMsgOk ? 'ok' : 'err']">{{ cloudMsg }}</p>
+            </div>
+            <div class="side-note">
+              <strong>任务机状态</strong>
+              <div class="key-states">
+                <span :class="['key-pill', cloudStatus?.running ? 'on' : 'off']">
+                  {{ cloudStatus?.running ? '在线' : '离线' }}
+                </span>
+                <span :class="['key-pill', cloudStatus?.token_present ? 'on' : 'off']">
+                  {{ cloudStatus?.token_present ? '已注册' : '未注册' }}
+                </span>
+                <span class="key-pill neutral">{{ cloudStatus?.health || 'stopped' }}</span>
+              </div>
+              <p>状态只显示是否已注册、运行状态和任务机 ID；长期任务机凭证不会在界面展示。</p>
+              <p v-if="cloudStatus?.machine_id">任务机 ID：{{ cloudStatus.machine_id }}</p>
+              <p v-if="cloudStatus?.base_url">云端地址：{{ cloudStatus.base_url }}</p>
+            </div>
+          </div>
+        </section>
         </Transition>
       </main>
     </div>
@@ -383,6 +460,10 @@ const chromeMsgOk = ref(true)
 const testing = reactive({ dingtalk: false, feishu: false, webhook: false })
 const testMsg = reactive({ dingtalk: '', feishu: '', webhook: '' })
 const testOk = reactive({ dingtalk: true, feishu: true, webhook: true })
+const cloudStatus = ref(null)
+const cloudBusy = reactive({ config: false, enroll: false, start: false, stop: false })
+const cloudMsg = ref('')
+const cloudMsgOk = ref(true)
 
 const saveState = reactive({})
 
@@ -427,6 +508,13 @@ const menuGroups = [
     desc: '1XM 生图密钥',
     children: [{ id: 'ai-1xm', label: '1XM GPT-Image-2', statusKey: 'ai.1xm.gpt_image_2k_key' }],
   },
+  {
+    id: 'cloud',
+    icon: '●',
+    label: '云端审批',
+    desc: '审批入口 / 任务机',
+    children: [{ id: 'cloud-approval', label: '云端审批', statusKey: 'cloud_approval.base_url' }],
+  },
 ]
 
 const panelFields = {
@@ -436,6 +524,7 @@ const panelFields = {
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
   'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key'],
+  'cloud-approval': ['cloud_approval.base_url', 'cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled'],
 }
 
 const notifyPanelByChannel = {
@@ -505,6 +594,7 @@ function flattenSettings(source, prefix = '', target = {}) {
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
+  flat['cloud_approval.machine_enabled'] = Boolean(flat['cloud_approval.machine_enabled'])
   return flat
 }
 
@@ -512,6 +602,7 @@ async function load() {
   const flat = normalizedSettings(await window.cs.getSettings() || {})
   cfg.value = { ...flat }
   savedCfg.value = { ...flat }
+  await loadCloudStatus()
 }
 
 function selectGroup(groupId) {
@@ -573,6 +664,100 @@ async function savePanel(panelId, options = {}) {
     throw e
   } finally {
     state.saving = false
+  }
+}
+
+function cloudConfigPayload() {
+  return {
+    base_url: cfg.value['cloud_approval.base_url'] || '',
+    registration_token: cfg.value['cloud_approval.registration_token'] || '',
+    machine_name: cfg.value['cloud_approval.machine_name'] || '',
+    machine_enabled: Boolean(cfg.value['cloud_approval.machine_enabled']),
+  }
+}
+
+function applyCloudStatus(status) {
+  cloudStatus.value = status || null
+  if (status?.base_url !== undefined) cfg.value['cloud_approval.base_url'] = status.base_url || cfg.value['cloud_approval.base_url'] || ''
+  if (status?.machine_name !== undefined) cfg.value['cloud_approval.machine_name'] = status.machine_name || cfg.value['cloud_approval.machine_name'] || ''
+  if (status?.machine_enabled !== undefined) cfg.value['cloud_approval.machine_enabled'] = Boolean(status.machine_enabled)
+}
+
+async function loadCloudStatus() {
+  if (typeof window.cs.getCloudApprovalStatus !== 'function') return
+  try {
+    applyCloudStatus(await window.cs.getCloudApprovalStatus())
+  } catch (e) {
+    cloudMsg.value = e?.message || '读取云端审批状态失败'
+    cloudMsgOk.value = false
+  }
+}
+
+async function saveCloudApprovalConfig() {
+  cloudBusy.config = true
+  cloudMsg.value = ''
+  try {
+    const result = await window.cs.saveCloudApprovalConfig(cloudConfigPayload())
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '已保存'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '保存失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.config = false
+  }
+}
+
+async function enrollCloudMachine() {
+  cloudBusy.enroll = true
+  cloudMsg.value = ''
+  try {
+    await window.cs.saveCloudApprovalConfig(cloudConfigPayload())
+    const result = await window.cs.enrollCloudMachine({
+      registration_token: cfg.value['cloud_approval.registration_token'] || '',
+      machine_name: cfg.value['cloud_approval.machine_name'] || '',
+    })
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '任务机已注册'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '注册失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.enroll = false
+  }
+}
+
+async function startCloudMachine() {
+  cloudBusy.start = true
+  cloudMsg.value = ''
+  try {
+    const result = await window.cs.startCloudMachine()
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '任务机已启动'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '启动失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.start = false
+  }
+}
+
+async function stopCloudMachine() {
+  cloudBusy.stop = true
+  cloudMsg.value = ''
+  try {
+    const result = await window.cs.stopCloudMachine()
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '任务机已停止'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '停止失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.stop = false
   }
 }
 
@@ -1122,6 +1307,31 @@ onMounted(() => {
 .key-pill.off {
   color: var(--text3);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.key-pill.neutral {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.check-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--orange);
+}
+
+.cloud-actions {
+  flex-wrap: wrap;
 }
 
 .btn-orange,

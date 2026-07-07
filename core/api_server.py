@@ -19,6 +19,7 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 from contextlib import asynccontextmanager
@@ -34,6 +35,9 @@ from pydantic import BaseModel
 
 from core import runtime_paths
 from core.config import load_config, patch_config, save_config
+from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
+from core.cloud_batch_sync import sync_local_approval_batch
+from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
 from core import data_sink
 from core import notifier
@@ -6520,6 +6524,242 @@ def sync_data_files_to_odps(req: SyncDataFilesRequest):
 
 
 # ─── Settings ───
+
+DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["regenerate_ai_image", "generate_ai_image"]
+
+
+class CloudApprovalConfigRequest(BaseModel):
+    base_url: str = ""
+    registration_token: str = ""
+    machine_name: str = ""
+    machine_enabled: bool = False
+    capabilities: list[str] = []
+
+
+class CloudApprovalEnrollRequest(BaseModel):
+    registration_token: str = ""
+    machine_name: str = ""
+    capabilities: list[str] = []
+
+
+class CloudApprovalSyncBatchRequest(BaseModel):
+    batch_id: str
+    token: str
+
+
+class CloudMachineLoopController:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop_event: threading.Event | None = None
+        self.last_health = "stopped"
+        self.last_error = ""
+
+    def is_running(self) -> bool:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return True
+            self._thread = None
+            self._stop_event = None
+            if self.last_health == "running":
+                self.last_health = "stopped"
+            return False
+
+    def start(self, agent: CloudMachineAgent) -> bool:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return False
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            self.last_health = "running"
+            self.last_error = ""
+
+            def run_loop():
+                try:
+                    agent.run_forever(stop_event)
+                except Exception as exc:
+                    logger.exception("cloud approval machine loop stopped with error")
+                    self.last_health = "error"
+                    self.last_error = str(exc)
+                finally:
+                    if stop_event.is_set() and self.last_health != "error":
+                        self.last_health = "stopped"
+
+            self._thread = threading.Thread(target=run_loop, name="cloud-approval-machine", daemon=True)
+            self._thread.start()
+            return True
+
+    def stop(self) -> bool:
+        with self._lock:
+            thread = self._thread
+            stop_event = self._stop_event
+            if not thread or not thread.is_alive() or not stop_event:
+                self._thread = None
+                self._stop_event = None
+                self.last_health = "stopped"
+                return False
+            stop_event.set()
+        thread.join(timeout=2.0)
+        with self._lock:
+            if not thread.is_alive():
+                self._thread = None
+                self._stop_event = None
+                self.last_health = "stopped"
+        return True
+
+
+cloud_machine_controller = CloudMachineLoopController()
+
+
+def _cloud_approval_config() -> dict:
+    cfg = load_config()
+    cloud = cfg.get("cloud_approval") if isinstance(cfg.get("cloud_approval"), dict) else {}
+    return cloud if isinstance(cloud, dict) else {}
+
+
+def _normalize_cloud_base_url(base_url: str) -> str:
+    return str(base_url or "").strip().rstrip("/")
+
+
+def _cloud_capabilities(*sources) -> list[str]:
+    capabilities: list[str] = []
+    for source in sources:
+        raw = source.get("capabilities") if isinstance(source, dict) else source
+        if not isinstance(raw, list):
+            continue
+        for item in raw:
+            text = str(item or "").strip()
+            if text and text not in capabilities:
+                capabilities.append(text)
+    return capabilities or list(DEFAULT_CLOUD_APPROVAL_CAPABILITIES)
+
+
+def _build_cloud_client() -> CloudApprovalClient:
+    cloud = _cloud_approval_config()
+    saved = data_sink.get_cloud_machine_credentials() or {}
+    return CloudApprovalClient(
+        base_url=_normalize_cloud_base_url(cloud.get("base_url") or ""),
+        machine_token=str(saved.get("machine_token") or ""),
+    )
+
+
+def _cloud_machine_agent(client: CloudApprovalClient) -> CloudMachineAgent:
+    return CloudMachineAgent(
+        client,
+        app_version=API_VERSION,
+        heartbeat_callback=lambda health: setattr(cloud_machine_controller, "last_health", str(health or "")),
+    )
+
+
+def _safe_cloud_enrollment_response(response: dict) -> dict:
+    safe = dict(response or {})
+    safe.pop("machine_token", None)
+    return safe
+
+
+def _cloud_approval_status() -> dict:
+    cloud = _cloud_approval_config()
+    saved = data_sink.get_cloud_machine_credentials() or {}
+    base_url = _normalize_cloud_base_url(cloud.get("base_url") or "")
+    machine_name = str(cloud.get("machine_name") or saved.get("machine_name") or "").strip()
+    machine_id = str(saved.get("machine_id") or "").strip()
+    token_present = bool(str(saved.get("machine_token") or "").strip())
+    running = cloud_machine_controller.is_running()
+    health = "running" if running and cloud_machine_controller.last_health == "stopped" else cloud_machine_controller.last_health
+    return {
+        "configured": bool(base_url),
+        "running": running,
+        "auth": "enrolled" if token_present else "missing_token",
+        "health": health or ("running" if running else "stopped"),
+        "base_url": base_url,
+        "machine_name": machine_name,
+        "machine_id": machine_id,
+        "token_present": token_present,
+        "machine_enabled": bool(cloud.get("machine_enabled")),
+        "capabilities": _cloud_capabilities(saved, cloud),
+        "last_error": cloud_machine_controller.last_error,
+    }
+
+
+@app.get("/cloud-approval/status")
+def get_cloud_approval_status():
+    return _cloud_approval_status()
+
+
+@app.post("/cloud-approval/config")
+def configure_cloud_approval(req: CloudApprovalConfigRequest):
+    patch_config({
+        "cloud_approval": {
+            **_cloud_approval_config(),
+            "base_url": _normalize_cloud_base_url(req.base_url),
+            "registration_token": str(req.registration_token or "").strip(),
+            "machine_name": str(req.machine_name or "").strip(),
+            "machine_enabled": bool(req.machine_enabled),
+            "capabilities": _cloud_capabilities(req.capabilities),
+        },
+    })
+    return {"ok": True, "status": _cloud_approval_status()}
+
+
+@app.post("/cloud-approval/enroll-machine")
+def enroll_cloud_machine(req: CloudApprovalEnrollRequest):
+    cloud = _cloud_approval_config()
+    base_url = _normalize_cloud_base_url(cloud.get("base_url") or "")
+    if not base_url:
+        raise HTTPException(400, "cloud approval base_url is required")
+    registration_token = str(req.registration_token or cloud.get("registration_token") or "").strip()
+    if not registration_token:
+        raise HTTPException(400, "registration token is required")
+    machine_name = str(req.machine_name or cloud.get("machine_name") or "").strip()
+    if not machine_name:
+        raise HTTPException(400, "machine name is required")
+    capabilities = _cloud_capabilities(req.capabilities, cloud)
+    client = CloudApprovalClient(base_url=base_url)
+    try:
+        response = _cloud_machine_agent(client).enroll(registration_token, machine_name, capabilities)
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    patch_config({
+        "cloud_approval": {
+            **cloud,
+            "base_url": base_url,
+            "machine_name": machine_name,
+            "capabilities": capabilities,
+        },
+    })
+    return {**_safe_cloud_enrollment_response(response), "status": _cloud_approval_status()}
+
+
+@app.post("/cloud-approval/sync-batch")
+def sync_cloud_approval_batch(req: CloudApprovalSyncBatchRequest):
+    batch = _load_tmall_approval_batch(req.batch_id)
+    _validate_tmall_approval_token(batch, req.token)
+    try:
+        result = sync_local_approval_batch(batch, _build_cloud_client())
+    except (CloudApprovalError, ValueError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"ok": True, "result": result}
+
+
+@app.post("/cloud-approval/machine/start")
+def start_cloud_machine():
+    status = _cloud_approval_status()
+    if not status["configured"]:
+        raise HTTPException(400, "cloud approval base_url is required")
+    if not status["token_present"]:
+        raise HTTPException(400, "machine enrollment is required before start")
+    client = _build_cloud_client()
+    cloud_machine_controller.start(_cloud_machine_agent(client))
+    patch_config({"cloud_approval": {**_cloud_approval_config(), "machine_enabled": True}})
+    return {"ok": True, "status": _cloud_approval_status()}
+
+
+@app.post("/cloud-approval/machine/stop")
+def stop_cloud_machine():
+    cloud_machine_controller.stop()
+    patch_config({"cloud_approval": {**_cloud_approval_config(), "machine_enabled": False}})
+    return {"ok": True, "status": _cloud_approval_status()}
+
 
 @app.get("/settings")
 def get_settings():

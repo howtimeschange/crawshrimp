@@ -1633,6 +1633,18 @@ secureHandle('submit-tmall-approval-batch', async (_, batchId, token) => {
   )
 })
 
+secureHandle('get-cloud-approval-status', async () => apiCall('GET', '/cloud-approval/status'))
+secureHandle('save-cloud-approval-config', async (_, payload) =>
+  apiCall('POST', '/cloud-approval/config', payload || {}))
+secureHandle('enroll-cloud-machine', async (_, payload) =>
+  apiCall('POST', '/cloud-approval/enroll-machine', payload || {}))
+secureHandle('start-cloud-machine', async () =>
+  apiCall('POST', '/cloud-approval/machine/start', {}))
+secureHandle('stop-cloud-machine', async () =>
+  apiCall('POST', '/cloud-approval/machine/stop', {}))
+secureHandle('sync-cloud-approval-batch', async (_, payload) =>
+  apiCall('POST', '/cloud-approval/sync-batch', payload || {}, { timeoutMs: 20 * 60 * 1000 }))
+
 secureHandle('get-settings', async () => {
   const cfg = await apiCall('GET', '/settings')
   const desktopCfg = readDesktopConfig()

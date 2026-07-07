@@ -175,6 +175,12 @@ contextBridge.exposeInMainWorld('cs', {
   regenerateTmallApprovalAsset: (batchId, token, payload) => ipcRenderer.invoke('regenerate-tmall-approval-asset', batchId, token, payload),
   generateTmallApprovalAsset: (batchId, token, payload) => ipcRenderer.invoke('generate-tmall-approval-asset', batchId, token, payload),
   submitTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('submit-tmall-approval-batch', batchId, token),
+  getCloudApprovalStatus: () => ipcRenderer.invoke('get-cloud-approval-status'),
+  saveCloudApprovalConfig: (payload) => ipcRenderer.invoke('save-cloud-approval-config', payload),
+  enrollCloudMachine: (payload) => ipcRenderer.invoke('enroll-cloud-machine', payload),
+  startCloudMachine: () => ipcRenderer.invoke('start-cloud-machine'),
+  stopCloudMachine: () => ipcRenderer.invoke('stop-cloud-machine'),
+  syncCloudApprovalBatch: (payload) => ipcRenderer.invoke('sync-cloud-approval-batch', payload),
 
   getSettings:     () => ipcRenderer.invoke('get-settings'),
   saveSettings:    (cfg) => ipcRenderer.invoke('save-settings', cfg),
