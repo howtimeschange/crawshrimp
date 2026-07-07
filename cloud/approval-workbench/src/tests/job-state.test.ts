@@ -29,6 +29,8 @@ describe('dispatch job state machine', () => {
   it('requeues leased jobs after lease expiry', () => {
     expect(nextJobStatusAfterLeaseExpiry('leased')).toBe('queued')
     expect(nextJobStatusAfterLeaseExpiry('running')).toBe('retryable_failed')
+    expect(nextJobStatusAfterLeaseExpiry('uploading_results')).toBe('retryable_failed')
+    expect(nextJobStatusAfterLeaseExpiry('terminal_failed')).toBe('terminal_failed')
   })
 
   it('rejects stale lease writes', () => {

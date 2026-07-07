@@ -144,8 +144,11 @@ class CloudApiServerTests(unittest.TestCase):
         ])
         self.assertEqual(payload["machine_id"], "machine-cloud-1")
         self.assertTrue(payload["status"]["token_present"])
+        self.assertEqual(payload["status"]["capabilities"], ["regenerate_ai_image", "submit_tmall_material_test"])
         self.assertNotIn("machine_token", payload)
         self.assertNotIn("csr_machine_secret", str(payload))
+        self.assertEqual(api_server._cloud_approval_config().get("registration_token"), "")
+        self.assertNotIn("registration-secret", str(payload))
 
     def test_sync_batch_validates_local_token_and_calls_cloud_sync(self):
         batch = {"batch_id": "batch-1", "approval_token": "local-token", "items": []}

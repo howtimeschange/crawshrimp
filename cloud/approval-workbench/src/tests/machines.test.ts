@@ -179,7 +179,7 @@ class FakeD1Statement {
       const results = [...this.state.jobs]
         .filter((job) => job.status === 'queued' && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
         .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at))
-      return { results: results as T[] }
+      return { results: results.map((job) => ({ ...job })) as T[] }
     }
     return { results: [] }
   }
@@ -275,6 +275,26 @@ class FakeD1Statement {
       const token = this.state.machineTokens.find((row) => row.token_hash === tokenHash)
       if (token) token.last_used_at = String(this.params[0])
       return result(token ? 1 : 0)
+    }
+    if (normalized.startsWith("update dispatch_jobs set status = 'queued'")) {
+      const now = String(this.params[0])
+      const cutoff = this.params.length > 1 ? String(this.params[1]) : ''
+      let changes = 0
+      for (const job of this.state.jobs) {
+        const expiredLease = ['leased', 'running', 'uploading_results'].includes(job.status)
+          && Boolean(job.lease_expires_at)
+          && String(job.lease_expires_at) < cutoff
+        const retryable = job.status === 'retryable_failed'
+        if ((expiredLease || retryable) && job.attempt_count < job.max_attempts) {
+          job.status = 'queued'
+          job.assigned_machine_id = null
+          job.lease_id = null
+          job.lease_expires_at = null
+          job.updated_at = now
+          changes += 1
+        }
+      }
+      return result(changes)
     }
     if (normalized.startsWith('update dispatch_jobs set lease_id')) {
       const machineId = String(this.params[2])
@@ -597,6 +617,108 @@ describe('machine routes', () => {
     expect(state.jobs[0].attempt_count).toBe(1)
     expect(state.jobs[0].assigned_machine_id).toBe('machine-1')
     expect(state.machines[0].capabilities_json).toBe(JSON.stringify(['regenerate_ai_image']))
+  })
+
+  it.each([
+    { label: 'expired leased', status: 'leased' },
+    { label: 'expired running', status: 'running' },
+    { label: 'expired uploading', status: 'uploading_results' },
+    { label: 'retryable failed', status: 'retryable_failed' },
+  ])('recovers and claims $label jobs when attempts remain', async ({ status }) => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: `job-${status}`,
+      status,
+      assigned_machine_id: 'machine-old',
+      lease_id: 'lease-old',
+      lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
+      attempt_count: 1,
+      max_attempts: 3,
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { job: { job_uid: string; attempt_count: number } }
+
+    expect(response.status).toBe(200)
+    expect(body.job.job_uid).toBe(`job-${status}`)
+    expect(body.job.attempt_count).toBe(2)
+    expect(state.jobs[0].status).toBe('leased')
+    expect(state.jobs[0].assigned_machine_id).toBe('machine-1')
+  })
+
+  it.each([
+    { label: 'expired leased', status: 'leased', lease_expires_at: new Date(Date.now() - 60_000).toISOString() },
+    { label: 'retryable failed', status: 'retryable_failed', lease_expires_at: null },
+  ])('does not recover $label jobs after attempts are exhausted', async ({ status, lease_expires_at }) => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: `job-exhausted-${status}`,
+      status,
+      assigned_machine_id: 'machine-old',
+      lease_id: 'lease-old',
+      lease_expires_at,
+      attempt_count: 3,
+      max_attempts: 3,
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { job: null }
+
+    expect(response.status).toBe(200)
+    expect(body.job).toBeNull()
+    expect(state.jobs[0].status).toBe(status)
+    expect(state.jobs[0].assigned_machine_id).toBe('machine-old')
+  })
+
+  it('does not recover terminal submit failures during claim', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: 'job-terminal-submit',
+      job_type: 'submit_tmall_material_test',
+      status: 'terminal_failed',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      attempt_count: 1,
+      max_attempts: 3,
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { job: null }
+
+    expect(response.status).toBe(200)
+    expect(body.job).toBeNull()
+    expect(state.jobs[0].status).toBe('terminal_failed')
   })
 
   it('rejects heartbeat capability expansion and blocks submit-only claims', async () => {

@@ -336,6 +336,7 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
   if (machine instanceof Response) return machine
   if (!['online_idle', 'online_busy'].includes(machine.health)) return forbidden('Machine is not available for claims')
   const machineCapabilities = parseStringArray(machine.capabilities_json)
+  await recoverClaimableJobs(env)
   const { results } = await env.DB.prepare(
     `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id, required_capabilities_json,
             priority, attempt_count, max_attempts, idempotency_key, lease_id, lease_expires_at, payload_json,
@@ -412,6 +413,36 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
     },
     next_poll_after_seconds: 0,
   })
+}
+
+async function recoverClaimableJobs(env: Env): Promise<void> {
+  const now = nowIso()
+  await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = 'queued',
+         assigned_machine_id = NULL,
+         lease_id = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status IN ('leased', 'running', 'uploading_results')
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?
+       AND attempt_count < max_attempts`,
+  )
+    .bind(now, now)
+    .run()
+  await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = 'queued',
+         assigned_machine_id = NULL,
+         lease_id = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status = 'retryable_failed'
+       AND attempt_count < max_attempts`,
+  )
+    .bind(now)
+    .run()
 }
 
 export async function renewJob(request: Request, env: Env): Promise<Response> {

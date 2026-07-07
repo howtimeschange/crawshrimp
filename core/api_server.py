@@ -6725,6 +6725,7 @@ def enroll_cloud_machine(req: CloudApprovalEnrollRequest):
         "cloud_approval": {
             **cloud,
             "base_url": base_url,
+            "registration_token": "",
             "machine_name": machine_name,
             "capabilities": capabilities,
         },

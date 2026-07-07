@@ -167,6 +167,77 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertTrue(Path(item["assets"][0]["path"]).is_relative_to(Path(self.tmp.name) / "cloud-jobs" / "job-submit"))
         self.assertTrue(any(call["path"] == "/api/jobs/job-submit/progress" for call in client.calls))
 
+    def test_submit_tmall_material_test_prefers_source_when_reference_precedes_source(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        captured = {}
+
+        async def upload_batch(batch):
+            captured["batch"] = batch
+            result_path = Path(batch["artifact_dir"]) / "submit-result.json"
+            result_path.write_text("{}", encoding="utf-8")
+            return {"ok": True, "status": "created", "result_path": str(result_path), "submitted": 1}
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=SimpleNamespace(
+            upload_approved_tmall_batch=upload_batch,
+        ))
+        job = {
+            "job_uid": "job-submit-source-order",
+            "batch_uid": "batch-submit",
+            "job_type": "submit_tmall_material_test",
+            "lease_id": "lease-submit",
+            "payload": {
+                "submit_plan": {
+                    "batch_uid": "batch-submit",
+                    "styles": [{"id": 7, "style_uid": "style-7"}],
+                    "assets": [
+                        {"asset_uid": "reference-1", "style_id": 7, "kind": "reference", "status": "uploaded"},
+                        {"asset_uid": "source-main-1", "style_id": 7, "kind": "source", "status": "uploaded"},
+                        {"asset_uid": "ai-approved-1", "style_id": 7, "kind": "ai", "status": "approved"},
+                    ],
+                },
+            },
+        }
+
+        executor.execute(job)
+
+        item = captured["batch"]["items"][0]
+        self.assertEqual(Path(item["origin_path"]).name, "source-main-1.jpg")
+        self.assertNotIn("reference-1", [download["asset_uid"] for download in client.downloads])
+
+    def test_submit_tmall_material_test_raises_when_approved_style_has_no_source(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        async def upload_batch(_batch):
+            self.fail("submit should not run without a source origin")
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=SimpleNamespace(
+            upload_approved_tmall_batch=upload_batch,
+        ))
+        job = {
+            "job_uid": "job-submit-missing-source",
+            "batch_uid": "batch-submit",
+            "job_type": "submit_tmall_material_test",
+            "lease_id": "lease-submit",
+            "payload": {
+                "submit_plan": {
+                    "batch_uid": "batch-submit",
+                    "styles": [{"id": 7, "style_uid": "style-7"}],
+                    "assets": [
+                        {"asset_uid": "reference-1", "style_id": 7, "kind": "reference", "status": "uploaded"},
+                        {"asset_uid": "ai-approved-1", "style_id": 7, "kind": "ai", "status": "approved"},
+                    ],
+                },
+            },
+        }
+
+        with self.assertRaises(ValueError) as raised:
+            executor.execute(job)
+
+        self.assertIn("missing a source asset", str(raised.exception))
+
     def test_submit_tmall_material_test_treats_real_uploader_create_failed_result_as_terminal_failure(self):
         from core.cloud_job_executors import CloudJobExecutor, CloudJobTerminalFailure
 

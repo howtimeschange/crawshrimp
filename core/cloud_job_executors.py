@@ -225,7 +225,7 @@ class CloudJobExecutor:
             if not isinstance(asset, Mapping):
                 continue
             kind = str(asset.get("kind") or "")
-            if kind not in ("source", "origin", "main", "reference"):
+            if kind not in ("source", "origin", "main"):
                 continue
             style_id = _positive_int(asset.get("style_id"))
             if style_id <= 0 or style_id in source_by_style:
@@ -241,9 +241,9 @@ class CloudJobExecutor:
             style = styles_by_id.get(style_id, {})
             local_path = self._download_asset(str(asset.get("asset_uid") or ""), task_dir / "approved")
             source_asset = source_by_style.get(style_id)
-            origin_path = ""
-            if source_asset:
-                origin_path = str(self._download_asset(str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
+            if not source_asset:
+                raise ValueError(f"approved style {style_id or 'unknown'} is missing a source asset for submit origin")
+            origin_path = str(self._download_asset(str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
             item = items_by_style.setdefault(style_id, {
                 "id": str(style.get("style_uid") or style_id),
                 "style_id": style_id,

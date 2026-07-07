@@ -16,7 +16,7 @@ describe('seed-admin operator SQL', () => {
       email: 'Admin@Example.COM',
       name: '首个管理员',
       password: 'Do-Not-Print-This-Password',
-      salt: 'fixed-salt',
+      salt: 'Zml4ZWQtc2FsdA==',
       now: '2026-07-07T17:20:00.000Z',
     })
 
@@ -26,16 +26,17 @@ describe('seed-admin operator SQL', () => {
     expect(sql).toContain("INSERT INTO users")
     expect(sql).toContain("admin@example.com")
     expect(sql).toContain("首个管理员")
-    expect(sql).toContain("sha256:fixed-salt:")
+    expect(sql).toContain("pbkdf2-sha256:210000:")
     expect(sql).toContain("INSERT OR IGNORE INTO user_roles")
     expect(sql).not.toContain("Do-Not-Print-This-Password")
   })
 
   it('hashes passwords in the same format as the worker auth module', async () => {
-    const hash = await hashPasswordForSeed('password-123', 'fixed-salt')
+    const hash = await hashPasswordForSeed('password-123', 'Zml4ZWQtc2FsdA==')
 
-    expect(hash).toMatch(/^sha256:fixed-salt:[a-f0-9]{64}$/)
-    expect(hash).toBe('sha256:fixed-salt:54f3d5a90698fdf1259464559f23c4be148ee55df2f96e30ec4352b1da99677a')
+    expect(hash).toMatch(/^pbkdf2-sha256:210000:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/)
+    expect(hash).toBe('pbkdf2-sha256:210000:Zml4ZWQtc2FsdA==:53PQ6H7+AKTD2TO5NOi0Zj0e6j5TWOtqlAWpn/y6QnM=')
+    expect(hash).not.toContain('password-123')
   })
 
   it('reads the admin password from an explicit environment variable', () => {

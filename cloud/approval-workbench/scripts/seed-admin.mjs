@@ -1,5 +1,9 @@
 #!/usr/bin/env node
-import { createHash, randomUUID } from 'node:crypto'
+import { pbkdf2Sync, randomBytes } from 'node:crypto'
+
+const PBKDF2_ITERATIONS = 210_000
+const SALT_BYTES = 16
+const HASH_BYTES = 32
 
 export const SEED_BUILT_IN_ROLES = [
   {
@@ -53,9 +57,11 @@ export const SEED_BUILT_IN_ROLES = [
   },
 ]
 
-export async function hashPasswordForSeed(password, salt = randomUUID()) {
-  const hash = createHash('sha256').update(`${salt}:${password}`).digest('hex')
-  return `sha256:${salt}:${hash}`
+export async function hashPasswordForSeed(password, salt = randomBytes(SALT_BYTES).toString('base64')) {
+  const saltBytes = Buffer.from(String(salt), 'base64')
+  const normalizedSalt = saltBytes.length > 0 ? saltBytes : Buffer.from(String(salt))
+  const hash = pbkdf2Sync(String(password), normalizedSalt, PBKDF2_ITERATIONS, HASH_BYTES, 'sha256')
+  return `pbkdf2-sha256:${PBKDF2_ITERATIONS}:${normalizedSalt.toString('base64')}:${hash.toString('base64')}`
 }
 
 export function readPasswordFromEnv(env = process.env, envName = 'CLOUD_APPROVAL_ADMIN_PASSWORD') {
