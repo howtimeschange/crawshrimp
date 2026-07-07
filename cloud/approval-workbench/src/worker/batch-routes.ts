@@ -147,7 +147,7 @@ export async function syncBatchComplete(request: Request, env: Env): Promise<Res
     return json({ error: 'sync-complete requires batch status syncing or pending_review' }, { status: 409 })
   }
   const styleCount = await env.DB.prepare('SELECT COUNT(*) as count FROM ai_image_styles WHERE batch_uid = ?').bind(batchUid).first<{ count: number }>()
-  const aiAssetCount = await env.DB.prepare("SELECT COUNT(*) as count FROM ai_image_assets WHERE batch_uid = ? AND kind = 'ai'").bind(batchUid).first<{ count: number }>()
+  const aiAssetCount = await env.DB.prepare("SELECT COUNT(*) as count FROM ai_image_assets WHERE batch_uid = ? AND kind = 'ai' AND status = 'uploaded'").bind(batchUid).first<{ count: number }>()
   if (!styleCount?.count || !aiAssetCount?.count) return badRequest('sync-complete requires at least one style and one AI asset')
   if (batch.status === 'syncing') {
     await env.DB.prepare("UPDATE ai_image_batches SET status = 'pending_review', updated_at = ? WHERE batch_uid = ?")
@@ -470,7 +470,7 @@ async function upsertSyncedAsset(env: Env, batchUid: string, styleId: number, as
     batchUid,
     styleId,
     kind,
-    status: stringValue(asset.status) || 'uploaded',
+    status: 'planned',
     objectKey,
     filename: safeAssetFilename,
     contentHash: stringValue(asset.content_hash),

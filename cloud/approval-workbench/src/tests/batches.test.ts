@@ -156,7 +156,7 @@ class FakeD1Statement {
       return { count: this.state.styles.filter((row) => row.batch_uid === String(this.params[0])).length } as T
     }
     if (normalized.includes('select count(*) as count from ai_image_assets')) {
-      return { count: this.state.assets.filter((row) => row.batch_uid === String(this.params[0]) && row.kind === 'ai').length } as T
+      return { count: this.state.assets.filter((row) => row.batch_uid === String(this.params[0]) && row.kind === 'ai' && (!normalized.includes("status = 'uploaded'") || row.status === 'uploaded')).length } as T
     }
     return null
   }
@@ -686,6 +686,7 @@ describe('batch sync routes', () => {
       headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify(batchPayload()),
     }), env)
+    state.assets.forEach((asset) => { asset.status = 'uploaded' })
 
     const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
       method: 'POST',
@@ -696,6 +697,19 @@ describe('batch sync routes', () => {
     expect(state.batches[0].status).toBe('pending_review')
   })
 
+  it('keeps synced asset rows planned until upload succeeds', async () => {
+    const { state, machineToken } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets).toHaveLength(2)
+    expect(state.assets.map((asset) => asset.status)).toEqual(['planned', 'planned'])
+  })
+
   it('keeps pending_review sync-complete idempotent', async () => {
     const { state, machineToken } = await baseState()
     const env = fakeEnv(state)
@@ -704,6 +718,7 @@ describe('batch sync routes', () => {
       headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify(batchPayload()),
     }), env)
+    state.assets.forEach((asset) => { asset.status = 'uploaded' })
     state.batches[0].status = 'pending_review'
 
     const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
@@ -724,6 +739,7 @@ describe('batch sync routes', () => {
         headers: { authorization: `Bearer ${machineToken}` },
         body: JSON.stringify(batchPayload()),
       }), env)
+      state.assets.forEach((asset) => { asset.status = 'uploaded' })
       state.batches[0].status = status
 
       const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {

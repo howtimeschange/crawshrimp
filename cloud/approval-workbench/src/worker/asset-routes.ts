@@ -33,9 +33,16 @@ interface AssetRow {
   batch_uid: string
   style_id: number
   kind: string
+  status: string
   object_key: string
   filename: string
   meta_json: string
+}
+
+interface BatchRow {
+  batch_uid: string
+  status: string
+  source_machine_id: string | null
 }
 
 interface DispatchJobRow {
@@ -69,10 +76,16 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
   if (!ALLOWED_KINDS.has(kind)) return badRequest('invalid asset kind')
   if (!hasAllowedSuffix(filename)) return badRequest('asset filename suffix is not allowed')
   if (isMachineActor(actor)) {
-    const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, batchUid, body)
-    if (job instanceof Response) return job
-    if (!isAssetAllowedForMachineJob(job, { assetUid, batchUid, styleId, kind, access: 'upload' })) {
-      return forbidden('Machine lease does not include this asset upload')
+    const lease = leaseFields(request, body)
+    if (lease.jobUid || lease.leaseId) {
+      const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, batchUid, body)
+      if (job instanceof Response) return job
+      if (!isAssetAllowedForMachineJob(job, { assetUid, batchUid, styleId, kind, access: 'upload' })) {
+        return forbidden('Machine lease does not include this asset upload')
+      }
+    } else {
+      const syncScope = await requireMachineSyncUploadPlan(env, actor.machine_id, { assetUid, batchUid, styleId, kind, filename: safeFilename(filename) })
+      if (syncScope instanceof Response) return syncScope
     }
   }
 
@@ -97,10 +110,11 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
     meta: sanitizedMeta(body),
     now,
   })
+  const lease = isMachineActor(actor) ? leaseFields(request, body) : null
   return json({
     asset_uid: assetUid,
     object_key: objectKey,
-    upload_url: uploadUrlForObjectKey(objectKey, isMachineActor(actor) ? leaseFields(request, body) : null),
+    upload_url: uploadUrlForObjectKey(objectKey, lease && lease.jobUid && lease.leaseId ? lease : null),
     method: 'PUT',
     headers: {},
   })
@@ -116,10 +130,16 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
     .first<AssetRow>()
   if (!asset) return json({ error: 'Asset upload plan not found' }, { status: 404 })
   if (isMachineActor(actor)) {
-    const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, asset.batch_uid)
-    if (job instanceof Response) return job
-    if (!isAssetAllowedForMachineJob(job, { assetUid: asset.asset_uid, batchUid: asset.batch_uid, styleId: asset.style_id, kind: asset.kind, access: 'upload' })) {
-      return forbidden('Machine lease does not include this asset upload')
+    const lease = leaseFields(request)
+    if (lease.jobUid || lease.leaseId) {
+      const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, asset.batch_uid)
+      if (job instanceof Response) return job
+      if (!isAssetAllowedForMachineJob(job, { assetUid: asset.asset_uid, batchUid: asset.batch_uid, styleId: asset.style_id, kind: asset.kind, access: 'upload' })) {
+        return forbidden('Machine lease does not include this asset upload')
+      }
+    } else {
+      const syncScope = await requireMachineSyncUploadObject(env, actor.machine_id, asset)
+      if (syncScope instanceof Response) return syncScope
     }
   }
   await env.ASSETS.put(objectKey, request.body, {
@@ -184,6 +204,36 @@ async function requireMachineLeaseForBatch(request: Request, env: Env, machineId
   if (!['leased', 'running', 'uploading_results'].includes(job.status)) return forbidden('Machine lease is not active')
   if (!job.lease_expires_at || job.lease_expires_at <= nowIso()) return forbidden('Machine lease is expired')
   return job
+}
+
+async function requireMachineSyncUploadPlan(
+  env: Env,
+  machineId: string,
+  asset: { assetUid: string; batchUid: string; styleId: number; kind: string; filename: string },
+): Promise<true | Response> {
+  const existing = await env.DB.prepare(
+    `SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, meta_json
+     FROM ai_image_assets
+     WHERE asset_uid = ?
+     LIMIT 1`,
+  )
+    .bind(asset.assetUid)
+    .first<AssetRow>()
+  if (!existing) return forbidden('Machine sync upload requires a planned synced asset')
+  if (existing.batch_uid !== asset.batchUid || existing.style_id !== asset.styleId || existing.kind !== asset.kind || existing.filename !== asset.filename) {
+    return forbidden('Machine sync upload does not match the planned asset')
+  }
+  return requireMachineSyncUploadObject(env, machineId, existing)
+}
+
+async function requireMachineSyncUploadObject(env: Env, machineId: string, asset: AssetRow): Promise<true | Response> {
+  const batch = await env.DB.prepare('SELECT batch_uid, status, source_machine_id FROM ai_image_batches WHERE batch_uid = ? LIMIT 1')
+    .bind(asset.batch_uid)
+    .first<BatchRow>()
+  if (!batch || batch.source_machine_id !== machineId) return forbidden('Machine cannot upload assets for this batch')
+  if (!['syncing', 'pending_review'].includes(batch.status)) return forbidden('Machine sync upload is closed for this batch')
+  if (asset.status !== 'planned') return forbidden('Machine sync upload requires a planned asset')
+  return true
 }
 
 function leaseFields(request: Request, body?: { job_uid?: unknown; jobUid?: unknown; lease_id?: unknown; leaseId?: unknown } | null): { jobUid: string; leaseId: string } {

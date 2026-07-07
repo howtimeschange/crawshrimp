@@ -129,6 +129,8 @@ The desktop validates the local approval token, builds the cloud payload through
 POST /api/ai-image-batches/{batch_uid}/sync-complete
 ```
 
+Synced asset rows are created as `planned` first. They become `uploaded` only after the upload route writes the object to R2; `sync-complete` requires at least one uploaded AI image. Machine-origin sync uploads are limited to the source machine for that batch and do not grant general task-asset download access.
+
 ## Review And Trigger Regeneration
 
 Open the cloud approval workbench Batches page, then select the synced batch.

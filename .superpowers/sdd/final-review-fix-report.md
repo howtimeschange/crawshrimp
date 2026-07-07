@@ -77,3 +77,34 @@ Tests run:
 Residual risks:
 
 - Failed uploads still leave planned rows visible in the batch detail until retried or superseded; they are intentionally not usable in regeneration or submit payloads.
+
+## Deployment Smoke Follow-Up
+
+Status: fixed the interaction between job-scoped machine asset access and the initial local-to-cloud batch sync path.
+
+Commit: pending, `fix(cloud): preserve scoped sync uploads`.
+
+Changed files:
+
+- `cloud/approval-workbench/src/worker/asset-routes.ts`
+- `cloud/approval-workbench/src/worker/batch-routes.ts`
+- `cloud/approval-workbench/src/tests/assets.test.ts`
+- `cloud/approval-workbench/src/tests/batches.test.ts`
+- `docs/cloud-approval-workbench-runbook.md`
+- `.superpowers/sdd/final-review-fix-report.md`
+
+Addressed issue:
+
+- Initial Crawshrimp batch sync is machine-originated, but job-scoped asset hardening made every machine presign/upload require a dispatch job lease. The worker now keeps dispatch-job asset access lease-scoped while allowing the batch source machine to upload only planned assets for its own syncing/pending-review batch. Synced asset rows are planned until the upload route stores the object and marks them uploaded; sync-complete now requires at least one uploaded AI asset.
+
+Tests run:
+
+- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/batches.test.ts src/tests/review.test.ts` - passed, 49 tests.
+- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
+- `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.
+- `python -m unittest tests.test_cloud_config tests.test_cloud_machine_data_sink tests.test_cloud_approval_client tests.test_cloud_batch_sync tests.test_cloud_machine_agent tests.test_cloud_job_executors tests.test_cloud_api_server tests.test_cloud_approval_dry_run -v` - passed, 48 tests.
+- `node --test tests/cloud-approval-ipc.test.js tests/cloud-approval-settings.test.js` - passed, 5 tests.
+
+Residual risks:
+
+- Source-machine sync upload remains intentionally limited by batch ownership, batch status, and planned asset rows; it is not a general machine asset credential. A future short-lived upload-token model would make this even tighter.

@@ -55,6 +55,21 @@ interface MachineTokenRow {
   revoked_at: string | null
 }
 
+interface BatchRow {
+  id: number
+  batch_uid: string
+  local_instance_uid: string
+  local_run_id: string
+  title: string
+  status: string
+  prompt_library_id: number | null
+  prompt_version_set_json: string
+  source_machine_id: string | null
+  created_by: number | null
+  created_at: string
+  updated_at: string
+}
+
 interface AssetRow {
   id: number
   asset_uid: string
@@ -92,6 +107,7 @@ interface FakeState {
   sessions: SessionRow[]
   machines: MachineRow[]
   machineTokens: MachineTokenRow[]
+  batches: BatchRow[]
   dispatchJobs: DispatchJobRow[]
   assets: AssetRow[]
   r2Gets: string[]
@@ -132,6 +148,9 @@ class FakeD1Statement {
     }
     if (normalized.includes('from ai_image_assets') && normalized.includes('where object_key = ?')) {
       return (this.state.assets.find((row) => row.object_key === String(this.params[0])) ?? null) as T | null
+    }
+    if (normalized.includes('from ai_image_batches') && normalized.includes('where batch_uid = ?')) {
+      return (this.state.batches.find((row) => row.batch_uid === String(this.params[0])) ?? null) as T | null
     }
     if (normalized.includes('from dispatch_jobs') && normalized.includes('where job_uid = ?')) {
       return (this.state.dispatchJobs.find((row) => row.job_uid === String(this.params[0])) ?? null) as T | null
@@ -251,7 +270,7 @@ describe('asset upload planning routes', () => {
     expect(state.assets).toHaveLength(0)
   })
 
-  it('rejects active machine bearer tokens without a current asset lease', async () => {
+  it('rejects active machine bearer tokens without a current asset lease or sync upload plan', async () => {
     const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
@@ -259,7 +278,7 @@ describe('asset upload planning routes', () => {
       body: JSON.stringify({ ...validPresignBody(), job_uid: '', lease_id: '' }),
     }), fakeEnv(state))
 
-    expect(response.status).toBe(400)
+    expect(response.status).toBe(403)
     expect(state.assets).toHaveLength(0)
   })
 
@@ -299,6 +318,66 @@ describe('asset upload planning routes', () => {
     expect(body).toEqual({ ok: true, object_key: presign.object_key })
     expect(state.r2Puts).toEqual([{ key: presign.object_key, body: 'image-bytes', contentType: 'image/jpeg' }])
     expect(state.assets[0].status).toBe('uploaded')
+  })
+
+  it('allows source machines to upload planned assets for their syncing batch without a job lease', async () => {
+    const { state, machineToken } = await baseState()
+    state.assets.push(assetRow({
+      asset_uid: 'sync-source-1',
+      kind: 'source',
+      status: 'planned',
+      object_key: 'batches/batch-20260707/source/sync-source-1-source.jpg',
+      filename: 'source.jpg',
+    }))
+    const env = fakeEnv(state)
+    const presignResponse = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify({
+        batch_uid: 'batch-20260707',
+        style_id: 7,
+        asset_uid: 'sync-source-1',
+        kind: 'source',
+        filename: 'source.jpg',
+      }),
+    }), env)
+    const presign = await presignResponse.json() as { upload_url: string; object_key: string }
+
+    const uploadResponse = await fetchWorker(new Request(`https://example.test${presign.upload_url}`, {
+      method: 'PUT',
+      headers: { authorization: `Bearer ${machineToken}`, 'content-type': 'image/jpeg' },
+      body: 'source-bytes',
+    }), env)
+
+    expect(presignResponse.status).toBe(200)
+    expect(presign.upload_url).not.toContain('job_uid=')
+    expect(uploadResponse.status).toBe(200)
+    expect(state.r2Puts).toEqual([{ key: presign.object_key, body: 'source-bytes', contentType: 'image/jpeg' }])
+    expect(state.assets[0].status).toBe('uploaded')
+  })
+
+  it('rejects source-machine sync uploads for assets that are not still planned', async () => {
+    const { state, machineToken } = await baseState()
+    state.assets.push(assetRow({
+      asset_uid: 'sync-source-1',
+      kind: 'source',
+      status: 'uploaded',
+      object_key: 'batches/batch-20260707/source/sync-source-1-source.jpg',
+      filename: 'source.jpg',
+    }))
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify({
+        batch_uid: 'batch-20260707',
+        style_id: 7,
+        asset_uid: 'sync-source-1',
+        kind: 'source',
+        filename: 'source.jpg',
+      }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(403)
   })
 
   it('rejects upload object keys outside the batches prefix', async () => {
@@ -627,6 +706,22 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
         issued_at: '2026-01-01T00:00:00.000Z',
         last_used_at: null,
         revoked_at: null,
+      },
+    ],
+    batches: [
+      {
+        id: 1,
+        batch_uid: 'batch-20260707',
+        local_instance_uid: 'local-instance',
+        local_run_id: 'local-run',
+        title: 'Batch',
+        status: 'syncing',
+        prompt_library_id: null,
+        prompt_version_set_json: '[]',
+        source_machine_id: 'machine-1',
+        created_by: null,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
       },
     ],
     dispatchJobs: [
