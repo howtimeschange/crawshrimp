@@ -376,6 +376,9 @@ class JSRunner:
             "        dt.items.add(file);\n"
             "      }\n"
             "      input.files = dt.files;\n"
+            "      if (!input.files || input.files.length !== dt.files.length) {\n"
+            "        return { success: false, error: `文件注入后页面只识别到 ${input.files ? input.files.length : 0}/${dt.files.length} 个文件: ${item.selector}` };\n"
+            "      }\n"
             "      input.dispatchEvent(new Event('input', { bubbles: true }));\n"
             "      input.dispatchEvent(new Event('change', { bubbles: true }));\n"
             "      results.push({ selector: item.selector, count: dt.files.length });\n"
@@ -387,7 +390,11 @@ class JSRunner:
             "})()\n"
         )
 
-    async def inject_files(self, items: list[dict], retry_with_full_seed: bool = True) -> JSResult:
+    async def inject_files(
+        self,
+        items: list[dict],
+        retry_with_full_seed: bool = True,
+    ) -> JSResult:
         normalized_items: list[dict] = []
         seed_payloads: list[dict] = []
 

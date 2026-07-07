@@ -39,6 +39,7 @@
   const TMALL_SUBMIT_MODE = compact(params.tmall_submit_mode || 'dom').toLowerCase()
   const TMALL_ALLOW_API_SUBMIT_FALLBACK = params.tmall_allow_api_submit_fallback === true || TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first'
   const TMALL_ALLOW_API_CONFIRM_FALLBACK = params.tmall_allow_api_confirm_fallback === true
+  const AGGREGATE_NEW_DESC_HYDRATE_WAIT_ATTEMPTS = Math.max(0, Number(params.aggregate_new_desc_hydrate_wait_attempts ?? 6) || 0)
   const SEMIR_LOGIN_WAIT_MS = Math.max(1000, Number(params.semir_login_wait_ms || 60000) || 60000)
   const SEMIR_LOGIN_RETRY_MS = Math.min(5000, Math.max(1000, Number(params.semir_login_retry_ms || 5000) || 5000))
   const SEMIR_LOGIN_WAIT_MAX_ATTEMPTS = Math.max(1, Math.ceil(SEMIR_LOGIN_WAIT_MS / SEMIR_LOGIN_RETRY_MS))
@@ -1059,6 +1060,55 @@
     return stem.toLowerCase().endsWith(`.${ext}`) ? stem : `${stem}.${ext}`
   }
 
+  function localPathSeparator(path) {
+    const raw = String(path || '')
+    return raw.includes('\\') && !raw.includes('/') ? '\\' : '/'
+  }
+
+  function joinLocalPath(...parts) {
+    const cleanParts = parts
+      .map(part => String(part || '').trim())
+      .filter(Boolean)
+    if (!cleanParts.length) return ''
+    const sep = localPathSeparator(cleanParts[0])
+    const first = cleanParts.shift()
+    const firstClean = sep === '\\'
+      ? first.replace(/[\\/]+$/g, '')
+      : first.replace(/\/+$/g, '')
+    const rest = cleanParts.map(part => sep === '\\'
+      ? part.replace(/^[\\/]+|[\\/]+$/g, '')
+      : part.replace(/^\/+|\/+$/g, ''))
+    return [firstClean, ...rest].filter(Boolean).join(sep)
+  }
+
+  function runtimePathInfo(rawParams = params) {
+    const runtimeDir = compact(rawParams.__crawshrimp_runtime_artifact_dir || rawParams.runtime_artifact_dir || rawParams.artifact_dir)
+    if (!runtimeDir) return { runtimeDir: '', taskRoot: '', runId: '' }
+    const normalized = runtimeDir.replace(/\\/g, '/').replace(/\/+$/g, '')
+    const marker = '/runtime/'
+    const markerIndex = normalized.lastIndexOf(marker)
+    const taskRoot = markerIndex >= 0 ? normalized.slice(0, markerIndex) : normalized.replace(/\/[^/]*$/g, '')
+    const runId = markerIndex >= 0 ? normalized.slice(markerIndex + marker.length).split('/')[0] : ''
+    return { runtimeDir, taskRoot, runId }
+  }
+
+  function packagingLocalDownloadRoot(job, rawParams = params) {
+    const info = runtimePathInfo(rawParams)
+    const runFolder = toSafeFilename(info.runId || `run_${Date.now()}`, 'run')
+    const styleFolder = toSafeFilename(`${job?.style_code || 'unknown'}_${job?.item_id || 'tmall'}`, 'tmall_item')
+    const exportFolder = compact(rawParams.export_folder)
+    if (exportFolder) return joinLocalPath(exportFolder, '下载素材', runFolder, styleFolder)
+    const explicit = compact(
+      rawParams.packaging_download_dir ||
+      rawParams.local_download_dir ||
+      rawParams.download_dir ||
+      rawParams.download_folder,
+    )
+    if (explicit) return joinLocalPath(explicit, styleFolder)
+    if (!info.taskRoot) return ''
+    return joinLocalPath(info.taskRoot, 'downloaded-materials', runFolder, styleFolder)
+  }
+
   function baseOutputRow(job) {
     return {
       '表格行号': job.row_no || '',
@@ -1730,6 +1780,7 @@
     const downloadItems = []
     let globalIndex = 0
     const planSourcePath = plan.sourceRelativePath || sourceConfig.relativePath
+    const localDownloadRoot = packagingLocalDownloadRoot(job)
 
     if (!plan.items.length) {
       rows.push({
@@ -1792,6 +1843,8 @@
             filename: runtimeFilename,
             label: `${job.style_code} / ${CATEGORY_LABELS[category]} / ${item?.filename || runtimeFilename}`,
             headers: buildDownloadHeaders(),
+            target_dir: localDownloadRoot,
+            target_relative_path: localDownloadRoot ? `${CATEGORY_PREFIXES[category] || '99_未分类'}/${packageFilename}` : '',
             no_proxy: true,
           })
         } catch (error) {
@@ -2033,6 +2086,23 @@
       summary.aggregateItemImagesImageCount <= 2
   }
 
+  function shouldWaitForAggregateNewDescHydration(value = getNewDescValue(), state = shared) {
+    if (!shouldFallbackAggregateNewDescToLegacy(value)) return false
+    if (state.prefer_legacy_pc_detail || state.new_desc_aggregate_legacy_fallback) return false
+    const attempts = Number(state.aggregate_new_desc_hydrate_wait_attempts || 0)
+    return attempts < AGGREGATE_NEW_DESC_HYDRATE_WAIT_ATTEMPTS
+  }
+
+  function waitForAggregateNewDescHydration(state = shared, extra = {}) {
+    const attempts = Number(state.aggregate_new_desc_hydrate_wait_attempts || 0)
+    return nextPhase('wait_tmall_ready', TMALL_PAGE_WAIT_MS, {
+      ...state,
+      ...extra,
+      aggregate_new_desc_hydrate_wait_attempts: attempts + 1,
+      current_store: `等待新版详情图文模块完整加载 ${attempts + 1}/${AGGREGATE_NEW_DESC_HYDRATE_WAIT_ATTEMPTS}`,
+    })
+  }
+
   function aggregateNewDescLegacyFallbackLabel(value = getNewDescValue()) {
     const summary = summarizeNewDescTemplate(value)
     const moduleCount = summary.visibleGroupCount || summary.groupCount || summary.aggregateItemImagesGroupCount || 1
@@ -2239,6 +2309,14 @@
     }
     const replaceEndIndex = stopPic ? stopPic.globalIndex : pics.length
     const fixedTopImage = fixedTopImageIndex >= 0 ? pics[fixedTopImageIndex] : null
+    const fallbackProbe = {
+      target: 'descRepublicOfSell',
+      mode: 'new_desc_legacy_count_replace',
+      pics,
+      replacedImageCount: detailList.length,
+      preserveTopImageCount,
+    }
+    if (options.requireVisualAnchors && isUnsafeNewDescCountFallbackProbe(fallbackProbe)) return null
     const topLabel = pcDetailTopPreserveLabel(!!fixedTopImage, fixedTopImageIndex)
     const tailLabel = stopPic ? `，保留第${replaceEndIndex + 1}张及以下尾部` : ''
     return {
@@ -2833,11 +2911,17 @@
       ])
   }
 
+  function isBlockingTmallValidationMessage(message) {
+    const text = compact(message)
+    if (!text) return false
+    if (text.includes('请至少维护1个商品视频')) return false
+    return true
+  }
+
   function extractTmallStatus(job = {}) {
     const text = String(document.body?.innerText || '')
     const validationMessages = []
     if (text.includes('必填项鞋帮高度不能为空')) validationMessages.push('必填项鞋帮高度不能为空')
-    if (text.includes('请至少维护1个商品视频')) validationMessages.push('请至少维护1个商品视频')
     const itemPropProps = (() => {
       try {
         const state = getSellState()
@@ -2851,7 +2935,7 @@
       const messages = Array.isArray(entry?.message) ? entry.message : []
       messages.forEach(message => {
         const msg = compact(message?.msg)
-        if (msg && !validationMessages.includes(msg)) validationMessages.push(msg)
+        if (isBlockingTmallValidationMessage(msg) && !validationMessages.includes(msg)) validationMessages.push(msg)
       })
     })
     const merchantCode = extractMerchantCodeFromTmallState()
@@ -3646,7 +3730,7 @@
     return cdpTargetEval(
       mobileEditorImportPcDetailExpression(mobileEditorExpectedImportImageCount(newShared), itemId, {
         generateOp,
-        expectedUrls: uploadedPcDetailUrlsFromShared(newShared),
+        expectedUrls: expectedPcDetailUrlsFromShared(newShared),
       }),
       'verify_mobile_editor_imported',
       1000,
@@ -4556,9 +4640,16 @@
       }),
       ...imageFixedTopResults,
     ].sort((a, b) => a.globalIndex - b.globalIndex)
-    const asiaTopResult = fixedTopResults[0] || null
-    let fixedTopResult = asiaTopResult
-    let fixedTopAnchorKind = fixedTopResult ? fixedTopResult.anchorKind : ''
+    const marketingTopResults = resultList.filter(result => {
+      if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
+      return result.anchorKind === 'marketing_top'
+    })
+    const trustedTopResults = [
+      ...fixedTopResults,
+      ...marketingTopResults,
+    ].sort((a, b) => a.globalIndex - b.globalIndex)
+    let fixedTopResult = null
+    let fixedTopAnchorKind = ''
     const priorities = [
       ['wanted_info', 'wanted_info'],
       ['wash_fallback', 'wash_fallback'],
@@ -4578,21 +4669,15 @@
       return { stop: null, stopAnchorKind: '' }
     }
 
-    let minStopIndex = fixedTopResult ? fixedTopResult.globalIndex + 1 : 0
+    let minStopIndex = 0
     let { stop, stopAnchorKind } = findStopAfter(minStopIndex)
-    if (!fixedTopResult) {
-      const marketingTopResult = resultList.find(result => {
-        if (!imageByIndex.has(result.globalIndex) && imageList.length) return false
-        if (result.anchorKind !== 'marketing_top') return false
-        return !stop || result.globalIndex < stop.globalIndex
-      })
-      if (marketingTopResult) {
-        fixedTopResult = marketingTopResult
-        fixedTopAnchorKind = marketingTopResult.anchorKind
-        minStopIndex = fixedTopResult.globalIndex + 1
-        if (stop && stop.globalIndex < minStopIndex) {
-          ;({ stop, stopAnchorKind } = findStopAfter(minStopIndex))
-        }
+    const topResultsBeforeStop = trustedTopResults.filter(result => !stop || result.globalIndex < stop.globalIndex)
+    if (topResultsBeforeStop.length) {
+      fixedTopResult = topResultsBeforeStop[topResultsBeforeStop.length - 1]
+      fixedTopAnchorKind = fixedTopResult.anchorKind
+      minStopIndex = fixedTopResult.globalIndex + 1
+      if (stop && stop.globalIndex < minStopIndex) {
+        ;({ stop, stopAnchorKind } = findStopAfter(minStopIndex))
       }
     }
     const fixedTopImageIndex = fixedTopResult ? fixedTopResult.globalIndex : null
@@ -4665,6 +4750,15 @@
     return `${before} ${text}`
   }
 
+  function nearestFixedTopContext(content, imgStart, previousImageEnd = 0) {
+    const raw = String(content || '')
+    const priorImageEnd = Number(previousImageEnd || 0)
+    const windowStart = priorImageEnd > 0 ? Math.min(priorImageEnd, imgStart) : Math.max(0, imgStart - 600)
+    const before = raw.slice(windowStart, imgStart)
+    const text = htmlAnchorText(before)
+    return `${before} ${text}`
+  }
+
   function flattenModularDescImages(modules) {
     const images = []
     const sourceModules = Array.isArray(modules) ? modules : []
@@ -4678,6 +4772,7 @@
         const tag = String(match[0] || '')
         const end = start + tag.length
         const context = `${moduleName} ${nearestAnchorContext(content, start, previousImageEnd)} ${tag}`
+        const fixedTopContext = `${moduleName} ${nearestFixedTopContext(content, start, previousImageEnd)} ${tag}`
         images.push({
           module,
           moduleIndex,
@@ -4694,7 +4789,7 @@
           isWashFallbackAnchor: isWashFallbackAnchorText(context),
           isStopAnchor: isStopAnchorText(context),
           isInfoAnchor: isInfoAnchorText(context),
-          isFixedTop: isFixedTopAnchorText(context) || isFixedTopAnchorImage(tag),
+          isFixedTop: isFixedTopAnchorText(fixedTopContext) || isFixedTopAnchorImage(tag),
         })
         previousImageEnd = end
       })
@@ -4804,7 +4899,8 @@
 
   function fixedTopDetailImage(images, fallbackImage) {
     const list = Array.isArray(images) ? images : []
-    return list.find(image => image.isFixedTop) || fallbackImage || null
+    const fixed = list.filter(image => image.isFixedTop)
+    return fixed.length ? fixed[fixed.length - 1] : (fallbackImage || null)
   }
 
   function canUseLegacyImageCountFallback(images, detailUrls, preserveFirstImage, startImage) {
@@ -5954,6 +6050,17 @@
 	    return uniqueImageUrls((state?.uploaded_by_category?.pc_detail || []).map(item => item?.url))
 	  }
 
+	  function matchedCurrentPcDetailUrlsFromShared(state = shared) {
+	    if (!state?.pc_detail_skip_replacement || !state?.pc_detail_already_match?.matched) return []
+	    return uniqueImageUrls(state.pc_detail_already_match.currentUrls || [])
+	  }
+
+	  function expectedPcDetailUrlsFromShared(state = shared) {
+	    return matchedCurrentPcDetailUrlsFromShared(state).length
+	      ? matchedCurrentPcDetailUrlsFromShared(state)
+	      : uploadedPcDetailUrlsFromShared(state)
+	  }
+
 	  function uploadedPcDetailItems(uploadedByCategory = {}) {
 	    return (uploadedByCategory?.pc_detail || [])
 	      .map(item => ({
@@ -6061,10 +6168,15 @@
 	  function markPcDetailReplacementSkipped(componentValues = {}, currentValues = {}, match = {}) {
 	    const currentModules = Array.isArray(currentValues.modularDesc) ? currentValues.modularDesc : []
 	    const currentTmDescription = typeof currentValues.tmDescription === 'string' ? currentValues.tmDescription : ''
-	    const existingDetailHtml = pcDetailHtmlFromSource(currentModules, currentTmDescription)
 	    const replacement = componentValues.pcDetailReplacement && typeof componentValues.pcDetailReplacement === 'object'
 	      ? componentValues.pcDetailReplacement
 	      : {}
+	    const replacementModules = Array.isArray(replacement.modules) ? replacement.modules : []
+	    const preferReplacementModules = compact(replacement.target) === 'descRepublicOfSell' && replacementModules.length
+	    const sourceModules = preferReplacementModules
+	      ? replacementModules
+	      : (currentModules.length ? currentModules : replacementModules)
+	    const existingDetailHtml = pcDetailHtmlFromSource(sourceModules, currentTmDescription) || replacement.detailHtml || ''
 	    return {
 	      ...componentValues,
 	      descRepublicOfSell: undefined,
@@ -6079,11 +6191,13 @@
 	        skippedBecauseAlreadyMatches: true,
 	        skipMethod: match.method || '',
 	        mode: 'already_matches',
-	        modules: currentModules.length ? currentModules : replacement.modules,
+	        modules: sourceModules,
 	        html: currentTmDescription || replacement.html,
-	        detailHtml: existingDetailHtml || replacement.detailHtml || '',
+	        detailHtml: existingDetailHtml,
 	        note: compact([
-	          'PC详情与本次素材一致，跳过PC替换，仅继续手机端详情同步',
+	          compact(replacement.target) === 'descRepublicOfSell'
+	            ? '新版详情PC详情区与本次素材一致，跳过替换，仅继续最终发布读回校验'
+	            : 'PC详情与本次素材一致，跳过PC替换，仅继续手机端详情同步',
 	          match.reason,
 	        ].filter(Boolean).join('；')),
 	      },
@@ -6107,7 +6221,7 @@
 	  }
 
 	  function verifyPublishedDetailReadback(state = shared) {
-    const expected = uploadedPcDetailUrlsFromShared(state)
+    const expected = expectedPcDetailUrlsFromShared(state)
     if (!expected.length) {
       return { ok: true, skipped: true, reason: '本次没有PC详情图，跳过详情读回校验', expectedCount: 0 }
     }
@@ -6131,18 +6245,21 @@
 	      mobileUrls.length >= expected.length &&
 	      !mobileDuplicateProbe.changed
 	    const mobileOk = mobileMissing.length === 0 || transformedMobileOk
+	    const newDescSameComponent = isNewDescPcDetailTarget(state)
 	    const pcOk = pcMissing.length === 0 || pcAlreadyMatched
-	    const ok = pcOk && mobileOk
-	    const pcReason = pcMissing.length === 0
-	      ? `PC详情 ${pcUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
-	      : pcAlreadyMatched
-	        ? `PC详情本轮跳过替换，已在写入前确认与本次素材一致（${state.pc_detail_already_match.method || 'already_match'}）`
-	        : `PC缺失 ${pcMissing.length}/${expected.length} 张`
-	    const mobileReason = mobileMissing.length === 0
-	      ? `手机详情 ${mobileUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
-	      : transformedMobileOk
-	        ? `手机详情 ${mobileUrls.length} 张，旧版手机编辑器已导入保存；天猫已重生成手机图URL，按数量和去重校验通过`
-	        : `手机缺失 ${mobileMissing.length}/${expected.length} 张${mobileDuplicateProbe.changed ? '，且检测到重复图' : ''}`
+	    const ok = pcOk && (newDescSameComponent || mobileOk)
+	    const pcReason = pcAlreadyMatched
+	      ? `PC详情本轮跳过替换，已在写入前确认与本次素材一致（${state.pc_detail_already_match.method || 'already_match'}）${pcMissing.length === 0 ? `；PC详情 ${pcUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配` : ''}`
+	      : (pcMissing.length === 0
+	          ? `PC详情 ${pcUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
+	          : `PC缺失 ${pcMissing.length}/${expected.length} 张`)
+	    const mobileReason = newDescSameComponent
+	      ? `新版详情同组件发布，无需旧版手机端导入；以PC图文详情读回 ${pcUrls.length} 张为准`
+	      : (mobileMissing.length === 0
+	          ? `手机详情 ${mobileUrls.length} 张，本次PC详情图 ${expected.length} 张均已匹配`
+	          : transformedMobileOk
+	            ? `手机详情 ${mobileUrls.length} 张，旧版手机编辑器已导入保存；天猫已重生成手机图URL，按数量和去重校验通过`
+	            : `手机缺失 ${mobileMissing.length}/${expected.length} 张${mobileDuplicateProbe.changed ? '，且检测到重复图' : ''}`)
 	    return {
 	      ok,
 	      expectedCount: expected.length,
@@ -6919,10 +7036,10 @@
   }
 
   async function syncMobileDetailByApi(modularDesc, options = {}) {
-    const currentValues = getTmallFormValues()
-    const sizeByUrl = buildImageSizeMapFromUploadedCategory(options.uploadedByCategory || {})
-    const pcDetailHtml = options.pcDetailHtml || ''
-    const urls = pcDetailUrlsFromSource(modularDesc, pcDetailHtml)
+	    const currentValues = getTmallFormValues()
+	    const sizeByUrl = buildImageSizeMapFromUploadedCategory(options.uploadedByCategory || {})
+	    const pcDetailHtml = options.pcDetailHtml || ''
+	    const urls = uniqueImageUrls(options.pcDetailUrls || pcDetailUrlsFromSource(modularDesc, pcDetailHtml))
     if (!urls.length) return { ok: false, reason: 'PC详情中未识别到图片，无法生成手机端详情' }
 
     const generated = await generateMobileDescByApi(modularDesc, options.timeoutMs || 5000, pcDetailHtml)
@@ -7039,6 +7156,16 @@
     const ocrResults = Array.isArray(detected.ocr?.results) ? detected.ocr.results : []
     const hasReadableText = ocrResults.some(item => compact(item?.text))
     return !hasReadableText || /未识别|无法 OCR|OCR|锚点/.test(String(detected.reason || detected.probe?.note || ''))
+  }
+
+  function isUnsafeNewDescCountFallbackProbe(probe = null) {
+    if (!probe || compact(probe.target) !== 'descRepublicOfSell') return false
+    if (compact(probe.mode) !== 'new_desc_legacy_count_replace') return false
+    const picCount = Array.isArray(probe.pics) ? probe.pics.length : 0
+    const replacedCount = positiveInt(probe.replacedImageCount, 0)
+    const preservedTopCount = positiveInt(probe.preserveTopImageCount, 0)
+    const tailCount = Math.max(0, picCount - replacedCount - preservedTopCount)
+    return picCount >= 10 && tailCount >= 3
   }
 
   function currentJobFromShared(state = shared) {
@@ -7173,6 +7300,7 @@
       pcDetailUrlsFromSource,
       collectRemoteImageUrls,
 	      missingImageUrls,
+	      expectedPcDetailUrlsFromShared,
 	      verifyPublishedDetailReadback,
 	      buildWapDescDetailFromUrls,
 	      parseWapDescImageEntries,
@@ -7187,8 +7315,9 @@
       validateInjectedAsset,
       uploadFileToTmall,
       blockingUploadFailureRows,
-      shouldAllowLegacyCountPcDetailReplace,
-      finalizeRows,
+	      shouldAllowLegacyCountPcDetailReplace,
+	      isUnsafeNewDescCountFallbackProbe,
+	      finalizeRows,
       mobileEditorSignals,
       cleanupMobileEditorImportedCanvas,
       tmallTimingConfig,
@@ -7431,6 +7560,11 @@
       const legacyProbeBeforeSwitch = legacyPcDetailReplacementProbe({
         allowLegacyCountImageReplace: shouldAllowLegacyCountPcDetailReplace(shared.current_result_rows, job),
       })
+      if (returnOldSwitch && shouldWaitForAggregateNewDescHydration(newDescValue, shared)) {
+        return waitForAggregateNewDescHydration(shared, {
+          tmall_status: status,
+        })
+      }
       const aggregateNewDescNeedsLegacy = !!returnOldSwitch &&
         !shared.prefer_legacy_pc_detail &&
         shouldFallbackAggregateNewDescToLegacy(newDescValue)
@@ -7542,12 +7676,15 @@
             current_store: 'OCR识别PC详情锚点',
           })
         }
-        if (!replacementProbe.ok) {
+        const unsafeNewDescCountFallback = isUnsafeNewDescCountFallbackProbe(replacementProbe)
+        if (!replacementProbe.ok || unsafeNewDescCountFallback) {
           const rows = markRowsBlockedBeforeUpload(
             shared.current_result_rows,
             status,
             '预检阻止',
-            replacementProbe.note || 'PC详情锚点未识别，已阻止自动替换',
+            unsafeNewDescCountFallback
+              ? '新版详情未识别到“想要的信息看这里/尺码/洗涤”等可靠下半区锚点，且页面存在明显尾部固定信息区，已阻止按数量兜底替换'
+              : (replacementProbe.note || 'PC详情锚点未识别，已阻止自动替换'),
           )
           return advanceToNextJob(rows, {
             ...shared,
@@ -7572,6 +7709,13 @@
       }
       const returnOldSwitchBeforeOcr = findReturnOldDescriptionSwitch()
       const newDescValueBeforeOcr = getNewDescValue()
+      if (returnOldSwitchBeforeOcr && shouldWaitForAggregateNewDescHydration(newDescValueBeforeOcr, shared)) {
+        return waitForAggregateNewDescHydration(shared, {
+          tmall_status: status,
+          pc_detail_ocr_attempted: false,
+          pc_detail_visual_anchors: null,
+        })
+      }
       const aggregateNewDescNeedsLegacyBeforeOcr = !!returnOldSwitchBeforeOcr &&
         !shared.prefer_legacy_pc_detail &&
         shouldFallbackAggregateNewDescToLegacy(newDescValueBeforeOcr)
@@ -7649,7 +7793,8 @@
         probeMode: detected.probe?.mode || '',
         probeNote: detected.probe?.note || '',
       }
-      if (detected.ok) {
+      const unsafeDetectedNewDescCountFallback = isUnsafeNewDescCountFallbackProbe(detected.probe)
+      if (detected.ok && !unsafeDetectedNewDescCountFallback) {
         return nextPhase('inject_local_files', 0, {
           ...shared,
           tmall_status: status,
@@ -7686,7 +7831,7 @@
         }
         return failCurrentJob('新版详情仅有1-2张图且OCR识别失败，但未能切回旧版图文描述，已阻止继续发布', '预检阻止')
       }
-      if (shared.pc_detail_replacement_probe?.ok) {
+      if (shared.pc_detail_replacement_probe?.ok && !isUnsafeNewDescCountFallbackProbe(shared.pc_detail_replacement_probe)) {
         return nextPhase('inject_local_files', 0, {
           ...shared,
           tmall_status: status,
@@ -7699,6 +7844,9 @@
       }
       const note = compact([
         'OCR未识别到可靠PC详情锚点，已阻止自动替换',
+        unsafeDetectedNewDescCountFallback
+          ? '新版详情存在明显尾部固定信息区，不能按产品包装图数量兜底替换'
+          : '',
         detected.reason,
       ].filter(Boolean).join('；'))
       const rows = markRowsBlockedBeforeUpload(
@@ -7956,7 +8104,8 @@
             applied_components: applied,
           })
         }
-        return nextPhase('submit_pc_publish', TMALL_PAGE_WAIT_MS, {
+        const nextSubmitPhase = pcDetailTarget === 'descRepublicOfSell' ? 'submit_final_publish' : 'submit_pc_publish'
+        return nextPhase(nextSubmitPhase, TMALL_PAGE_WAIT_MS, {
           ...shared,
           current_result_rows: rows,
           tmall_status_after_apply: afterStatus,
@@ -7967,11 +8116,11 @@
 	          applied_desc_for_shenbi_pc: componentValues.descForShenbiPc || null,
 	          applied_desc_type: componentValues.descType || null,
 	          pc_detail_target: pcDetailTarget,
-	          pc_detail_already_match: pcDetailAlreadyMatch,
-	          pc_detail_skip_replacement: !!componentValues.pcDetailReplacement?.skippedBecauseAlreadyMatches,
-	          publish_wait_attempts: 0,
-	          publish_stage: 'pc',
-	          current_store: '提交PC端详情发布',
+          pc_detail_already_match: pcDetailAlreadyMatch,
+          pc_detail_skip_replacement: !!componentValues.pcDetailReplacement?.skippedBecauseAlreadyMatches,
+          publish_wait_attempts: 0,
+          publish_stage: nextSubmitPhase === 'submit_final_publish' ? 'final' : 'pc',
+          current_store: nextSubmitPhase === 'submit_final_publish' ? '提交新版详情发布' : '提交PC端详情发布',
         })
       }
       return advanceToNextJob(rows, {
@@ -7996,6 +8145,7 @@
       const shouldPreferPayloadSubmit = !oldDetailMobileEditorFlow && (
         uploadedPcDetailUrlsFromShared(shared).length > 0 ||
         !!shared.applied_desc_republic_of_sell ||
+        isNewDescPcDetailTarget(shared) ||
         !!shared.mobile_sync_note
       )
       const shouldTryApiBeforeDom = TMALL_SUBMIT_MODE === 'api' || TMALL_SUBMIT_MODE === 'api_first' || shouldPreferPayloadSubmit
@@ -8111,12 +8261,15 @@
           if (isNewDescPcDetailTarget(shared)) {
             const pcNote = compact([
               'PC端新版详情已提交发布',
+              '手机端详情随新版详情同组件同步，无需旧版手机端导入',
             ].join('；'))
-            return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
+            return nextPhase('reopen_after_final_publish', TMALL_PUBLISH_WAIT_MS, {
               ...shared,
               pc_publish_note: pcNote,
+              final_publish_status: publishStatus,
               publish_wait_attempts: 0,
-              current_store: '重新进入编辑页校验新版详情并同步手机端详情',
+              tmall_wait_attempts: 0,
+              current_store: '新版详情发布成功，重新进入编辑页读回校验详情',
             })
           }
           return nextPhase('reopen_after_pc_publish', TMALL_PUBLISH_WAIT_MS, {
@@ -8364,21 +8517,15 @@
         }
         return failCurrentJob('PC端发布后重新进入编辑页超时，未继续同步手机端详情', '手机端同步失败')
       }
-      if (isNewDescPcDetailTarget(shared) && shared.applied_desc_republic_of_sell && !shared.new_desc_reapplied_after_reopen) {
-        const applied = applyFormValue('descRepublicOfSell', shared.applied_desc_republic_of_sell)
-        if (!applied.ok) {
-          return failCurrentJob(`重新进入编辑页后写入新版详情模型失败：${applied.reason || '未知原因'}`, '新版详情回写失败')
-        }
-        const committed = await commitNewDescByApi(shared.applied_desc_republic_of_sell, 15000)
-        if (!committed.ok) {
-          return failCurrentJob(`重新进入编辑页后保存新版详情失败：${committed.reason || '未知原因'}`, '新版详情回写失败')
-        }
-        return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
+      if (isNewDescPcDetailTarget(shared)) {
+        return nextPhase('wait_final_readback_tmall_ready', 0, {
           ...shared,
           tmall_wait_attempts: 0,
-          new_desc_reapplied_after_reopen: true,
-          pc_publish_note: compact([shared.pc_publish_note, '重新进入编辑页后已回写新版详情'].filter(Boolean).join('；')),
-          current_store: '新版详情已回写，继续同步手机端详情',
+          pc_publish_note: compact([
+            shared.pc_publish_note,
+            '新版详情同组件，无需旧版手机端详情同步',
+          ].filter(Boolean).join('；')),
+          current_store: '新版详情无需手机端同步，进入最终读回校验',
         })
       }
       if (isModularPcDetailTarget(shared) && Array.isArray(shared.applied_modular_desc) && shared.applied_modular_desc.length && !shared.modular_desc_reapplied_after_reopen) {
@@ -8450,6 +8597,7 @@
       const synced = await syncMobileDetailByApi(modularDesc, {
         uploadedByCategory: shared.uploaded_by_category || {},
         pcDetailHtml,
+        pcDetailUrls: expectedPcDetailUrlsFromShared(shared),
         timeoutMs: 5000,
       })
       if (synced.ok) {

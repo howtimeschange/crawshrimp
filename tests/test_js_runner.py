@@ -1360,6 +1360,22 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(Path(result["items"][0]["path"]).exists())
             self.assertEqual(Path(result["items"][0]["path"]).name, "eu.xlsx")
 
+    def test_file_inject_expression_verifies_real_input_file_count(self):
+        runner = JSRunner("ws://example.invalid")
+
+        expression = runner._build_file_inject_expression(
+            [{"selector": "#upload", "cache_keys": ["file:sample"]}],
+            [{
+                "cache_key": "file:sample",
+                "name": "sample.png",
+                "mime": "image/png",
+                "b64": "AA==",
+            }],
+        )
+
+        self.assertIn("input.files.length !== dt.files.length", expression)
+        self.assertIn("文件注入后页面只识别到", expression)
+
     async def test_upload_via_file_chooser_sets_files_after_native_chooser_event(self):
         runner = JSRunner("ws://example.invalid")
 

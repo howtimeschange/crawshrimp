@@ -500,9 +500,11 @@ def _current_local_api_base_url() -> str:
     return f"http://127.0.0.1:{port}"
 
 
-def _inject_runtime_task_params(run_params: dict) -> dict:
+def _inject_runtime_task_params(run_params: dict, runtime_artifact_dir: Optional[str] = None) -> dict:
     if "__crawshrimp_api_base_url" not in run_params or not str(run_params.get("__crawshrimp_api_base_url") or "").strip():
         run_params["__crawshrimp_api_base_url"] = _current_local_api_base_url()
+    if runtime_artifact_dir and not str(run_params.get("__crawshrimp_runtime_artifact_dir") or "").strip():
+        run_params["__crawshrimp_runtime_artifact_dir"] = str(runtime_artifact_dir)
     return run_params
 
 
@@ -3424,7 +3426,12 @@ def _finalize_tmall_packaging_upload_outputs(
         if external_refs:
             final_refs = external_refs
 
-    _cleanup_semir_runtime_artifacts(runtime_files, package_root)
+    runtime_files_to_cleanup = []
+    for file_path in runtime_files or []:
+        source = Path(str(file_path or "")).expanduser()
+        if _is_within_directory(source, runtime_dir):
+            runtime_files_to_cleanup.append(str(source))
+    _cleanup_semir_runtime_artifacts(runtime_files_to_cleanup, package_root)
     _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
     return final_refs
 
@@ -4044,7 +4051,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     try:
         log(f"[{adapter_id}/{task_id}] Starting...")
 
-        _inject_runtime_task_params(run_params)
+        _inject_runtime_task_params(run_params, runtime_artifact_dir)
         per_item_review_urls = _resolve_tmall_buyer_review_item_urls(run_params) if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") else []
         runtime_options = runtime_options or {}
         task_param_ids = {p.id for p in task.params}

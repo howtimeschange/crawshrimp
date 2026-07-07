@@ -2162,6 +2162,27 @@ test('buildPcDetailVisualAnchorsFromOcrResults detects fixed top and wanted-info
   assert.equal(anchors.source, 'tesseract_ocr')
 })
 
+test('buildPcDetailVisualAnchorsFromOcrResults preserves multiple fixed top images before wanted-info anchor', async () => {
+  const helpers = await loadExports()
+  const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([
+    { globalIndex: 0, src: 'https://img.example/global-awards.jpg' },
+    { globalIndex: 1, src: 'https://img.example/asia-first.jpg' },
+    { globalIndex: 2, src: 'https://img.example/old-01.jpg' },
+    { globalIndex: 3, src: 'https://img.example/wanted.jpg' },
+  ], [
+    { globalIndex: 0, text: '斩获多项全球大奖 多项国际大奖 以专业定义童鞋标准', confidence: 87 },
+    { globalIndex: 1, text: '童装销售额 全亚洲 第一', confidence: 84 },
+    { globalIndex: 3, text: '想要的信息看这里 产品名称', confidence: 91 },
+  ])
+
+  assert.equal(anchors.ocrStatus, 'recognized')
+  assert.equal(anchors.preserveFirstImage, true)
+  assert.equal(anchors.fixedTopImageIndex, 1)
+  assert.equal(anchors.fixedTopAnchorKind, 'fixed_top')
+  assert.equal(anchors.stopImageIndex, 3)
+  assert.equal(anchors.stopAnchorKind, 'wanted_info')
+})
+
 test('buildPcDetailVisualAnchorsFromOcrResults treats global award image as fixed top anchor', async () => {
   const helpers = await loadExports()
   const anchors = helpers.buildPcDetailVisualAnchorsFromOcrResults([
@@ -2747,7 +2768,7 @@ test('wait_tmall_ready skips return-old click when legacy tmDescription is alrea
   assert.equal(result.meta.shared.pc_detail_replacement_probe.target, 'tmDescription')
 })
 
-test('wait_tmall_ready switches sparse aggregate itemImages new desc to legacy before hidden modularDesc replacement', async () => {
+test('wait_tmall_ready waits for sparse aggregate itemImages new desc to hydrate before legacy fallback', async () => {
   const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
   const aggregateNewDesc = aggregateNewDescValueFromImgs([
     '//img.alicdn.com/old-1.jpg',
@@ -2797,6 +2818,86 @@ test('wait_tmall_ready switches sparse aggregate itemImages new desc to legacy b
       current_result_rows: [
         { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
       ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1012647077224',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '宝贝详情 返回旧版图文描述 商品图片 1' },
+      querySelectorAll(selector) {
+        if (String(selector).includes('input')) return []
+        return [returnOld]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'wait_tmall_ready')
+  assert.equal(result.meta.shared.prefer_legacy_pc_detail, undefined)
+  assert.equal(result.meta.shared.new_desc_aggregate_legacy_fallback, undefined)
+  assert.equal(result.meta.shared.aggregate_new_desc_hydrate_wait_attempts, 1)
+  assert.match(result.meta.shared.current_store, /等待新版详情图文模块完整加载 1\/6/)
+})
+
+test('wait_tmall_ready switches sparse aggregate itemImages new desc to legacy after hydration wait is exhausted', async () => {
+  const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
+  const aggregateNewDesc = aggregateNewDescValueFromImgs([
+    '//img.alicdn.com/old-1.jpg',
+    '//img.alicdn.com/old-2.jpg',
+  ])
+  const modularDesc = [{
+    id: 30,
+    name: '宝贝详情',
+    content: [
+      '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
+      '<p><img src="https://img.example/old-product.jpg"/></p>',
+      '<p>不同材质这样洗<img src="https://img.example/wash.jpg"/></p>',
+    ].join(''),
+    custom: false,
+  }]
+  const componentValues = {
+    outerId: '208926179201',
+    mainImagesGroup: { images: [] },
+    threeToFourImages: [],
+    guideImageGroup: { verticalImage: [] },
+    descRepublicOfSell: aggregateNewDesc,
+    modularDesc,
+    tmDescription: '',
+  }
+  const state = {
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: componentValues }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    params: { enable_ocr_anchor_detection: false },
+    shared: {
+      current_job: {
+        item_id: '1012647077224',
+        style_code: '208926179201',
+        execute_mode: 'publish_and_sync_mobile',
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+      aggregate_new_desc_hydrate_wait_attempts: 6,
     },
     locationOverride: {
       href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1012647077224',
@@ -2904,6 +3005,79 @@ test('wait_tmall_ready keeps rich aggregate itemImages new desc on modularDesc p
   assert.equal(result.meta.shared.new_desc_aggregate_legacy_fallback, undefined)
   assert.equal(result.meta.shared.pc_detail_replacement_probe.ok, true)
   assert.match(result.meta.shared.current_store, /OCR识别PC详情锚点/)
+})
+
+test('wait_tmall_ready keeps hydrated new detail modules on new-desc path even when hidden legacy desc exists', async () => {
+  const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
+  const newDesc = newDescValueFromUrls(Array.from({ length: 30 }, (_, index) => `//img.alicdn.com/current-${index + 1}.jpg`))
+  const modularDesc = [{
+    id: 30,
+    name: '旧描述',
+    content: '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p><p><img src="https://img.example/old-product.jpg"/></p><p>不同材质这样洗<img src="https://img.example/wash.jpg"/></p>',
+    custom: false,
+  }]
+  const componentValues = {
+    outerId: '208326140201',
+    mainImagesGroup: { images: [] },
+    threeToFourImages: [],
+    guideImageGroup: { verticalImage: [] },
+    descRepublicOfSell: newDesc,
+    modularDesc,
+    descForShenbiPc: { detail: '<div>old</div>' },
+    tmDescription: '',
+  }
+  const state = {
+    getComponentValue(name) {
+      return componentValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: componentValues }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_tmall_ready',
+    params: { enable_ocr_anchor_detection: false },
+    shared: {
+      current_job: {
+        item_id: '1065477260163',
+        style_code: '208326140201',
+        execute_mode: 'publish_and_sync_mobile',
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', __category: 'pc_detail', '本地文件': '/tmp/detail-01.jpg' },
+      ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '宝贝详情 返回旧版图文描述 图文模块 30' },
+      querySelectorAll(selector) {
+        if (String(selector).includes('input')) return []
+        return [returnOld]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'detect_pc_detail_ocr_anchors')
+  assert.equal(result.meta.shared.prefer_legacy_pc_detail, undefined)
+  assert.equal(result.meta.shared.new_desc_aggregate_legacy_fallback, undefined)
+  assert.equal(result.meta.shared.aggregate_new_desc_hydrate_wait_attempts, undefined)
+  assert.equal(result.meta.shared.pc_detail_replacement_probe.target, 'descRepublicOfSell')
 })
 
 test('wait_tmall_ready keeps clicking return-old while legacy fallback is pending', async () => {
@@ -3148,6 +3322,100 @@ test('buildTmallComponentValues replaces anchored range inside new desc template
   assert.equal(pics[1].height, 827)
 })
 
+test('buildTmallComponentValues preserves wanted-info and lower fixed modules in rich new desc template', async () => {
+  const helpers = await loadExports()
+  const currentUrls = Array.from(
+    { length: 30 },
+    (_, index) => `//img.alicdn.com/current-${String(index + 1).padStart(2, '0')}.jpg`,
+  )
+  const currentNewDesc = newDescValueFromUrls(currentUrls)
+  const detailImages = Array.from(
+    { length: 13 },
+    (_, index) => ({
+      url: `//img.alicdn.com/new-detail-${String(index + 1).padStart(2, '0')}.jpg`,
+      width: 1440,
+      height: 1920,
+    }),
+  )
+
+  const values = helpers.buildTmallComponentValues({
+    pc_detail: detailImages,
+  }, {
+    descRepublicOfSell: currentNewDesc,
+    pcDetailVisualAnchors: {
+      fixedTopImageIndex: 0,
+      fixedTopAnchorKind: 'fixed_top',
+      fixedTopText: '童装销售额 全亚洲 第一',
+      stopImageIndex: 14,
+      stopAnchorKind: 'wanted_info',
+      matchedText: '想要的信息看这里',
+      source: 'tesseract_ocr',
+    },
+    requirePcDetailVisualAnchors: true,
+  })
+
+  const pics = helpers.flattenNewDescPicComponents(values.descRepublicOfSell)
+
+  assert.equal(values.pcDetailReplacement.target, 'descRepublicOfSell')
+  assert.equal(values.pcDetailReplacement.mode, 'anchored_replace')
+  assert.equal(values.pcDetailReplacement.replaceStartIndex, 1)
+  assert.equal(values.pcDetailReplacement.replaceEndIndex, 14)
+  assert.equal(values.pcDetailReplacement.stopAnchorKind, 'wanted_info')
+  assert.equal(values.pcDetailReplacement.replacedImageCount, 13)
+  assert.deepEqual(plain(pics.map(pic => pic.src)), [
+    currentUrls[0],
+    ...detailImages.map(item => item.url),
+    ...currentUrls.slice(14),
+  ])
+})
+
+test('buildTmallComponentValues preserves two fixed top images before wanted-info in rich new desc template', async () => {
+  const helpers = await loadExports()
+  const currentUrls = Array.from(
+    { length: 31 },
+    (_, index) => `//img.alicdn.com/current-${String(index + 1).padStart(2, '0')}.jpg`,
+  )
+  const currentNewDesc = newDescValueFromUrls(currentUrls)
+  const detailImages = Array.from(
+    { length: 13 },
+    (_, index) => ({
+      url: `//img.alicdn.com/new-detail-${String(index + 1).padStart(2, '0')}.jpg`,
+      width: 1440,
+      height: 1920,
+    }),
+  )
+
+  const values = helpers.buildTmallComponentValues({
+    pc_detail: detailImages,
+  }, {
+    descRepublicOfSell: currentNewDesc,
+    pcDetailVisualAnchors: {
+      fixedTopImageIndex: 1,
+      fixedTopAnchorKind: 'fixed_top',
+      fixedTopText: '童装销售额 全亚洲 第一',
+      stopImageIndex: 15,
+      stopAnchorKind: 'wanted_info',
+      matchedText: '想要的信息看这里',
+      source: 'tesseract_ocr',
+    },
+    requirePcDetailVisualAnchors: true,
+  })
+
+  const pics = helpers.flattenNewDescPicComponents(values.descRepublicOfSell)
+
+  assert.equal(values.pcDetailReplacement.target, 'descRepublicOfSell')
+  assert.equal(values.pcDetailReplacement.mode, 'anchored_replace')
+  assert.equal(values.pcDetailReplacement.replaceStartIndex, 2)
+  assert.equal(values.pcDetailReplacement.replaceEndIndex, 15)
+  assert.equal(values.pcDetailReplacement.preserveTopImageCount, 2)
+  assert.deepEqual(plain(pics.map(pic => pic.src)), [
+    currentUrls[0],
+    currentUrls[1],
+    ...detailImages.map(item => item.url),
+    ...currentUrls.slice(15),
+  ])
+})
+
 test('buildTmallComponentValues replaces image-only new desc from first image when no fixed top exists', async () => {
   const helpers = await loadExports()
   const currentNewDesc = newDescValueFromUrls([
@@ -3308,6 +3576,53 @@ test('buildTmallComponentValues preserves fixed top in new desc count fallback o
   assert.match(values.pcDetailReplacement.note, /保留首图/)
 })
 
+test('new desc count fallback is unsafe for rich detail pages with preserved lower modules', async () => {
+  const helpers = await loadExports()
+  const probe = {
+    target: 'descRepublicOfSell',
+    mode: 'new_desc_legacy_count_replace',
+    pics: Array.from({ length: 30 }, (_, index) => ({ globalIndex: index, src: `https://img.example/current-${index + 1}.jpg` })),
+    replacedImageCount: 13,
+    preserveTopImageCount: 1,
+  }
+  assert.equal(helpers.isUnsafeNewDescCountFallbackProbe(probe), true)
+  assert.equal(helpers.isUnsafeNewDescCountFallbackProbe({
+    ...probe,
+    pics: Array.from({ length: 4 }, (_, index) => ({ globalIndex: index })),
+    replacedImageCount: 2,
+    preserveTopImageCount: 1,
+  }), false)
+})
+
+test('buildTmallComponentValues blocks rich new desc count fallback without reliable stop anchor', async () => {
+  const helpers = await loadExports()
+  const currentNewDesc = newDescValueFromUrls(Array.from(
+    { length: 30 },
+    (_, index) => `//img.alicdn.com/current-${String(index + 1).padStart(2, '0')}.jpg`,
+  ))
+  const detailImages = Array.from(
+    { length: 13 },
+    (_, index) => ({
+      url: `//img.alicdn.com/new-detail-${String(index + 1).padStart(2, '0')}.jpg`,
+      width: 1440,
+      height: 1920,
+    }),
+  )
+
+  const values = helpers.buildTmallComponentValues({
+    pc_detail: detailImages,
+  }, {
+    descRepublicOfSell: currentNewDesc,
+    requirePcDetailVisualAnchors: true,
+    allowLegacyCountPcDetailReplace: true,
+  })
+
+  assert.equal(values.pcDetailReplacement.target, 'descRepublicOfSell')
+  assert.equal(values.pcDetailReplacement.ok, false)
+  assert.equal(values.pcDetailReplacement.mode, 'blocked_stop_anchor_missing')
+  assert.equal(values.descRepublicOfSell, undefined)
+})
+
 test('apply_tmall_draft commits new desc template before full publish submit', async () => {
   const newDesc = newDescValueFromUrls([
     '//img.alicdn.com/top.jpg',
@@ -3385,8 +3700,9 @@ test('apply_tmall_draft commits new desc template before full publish submit', a
     },
   })
 
-  assert.equal(result.meta.next_phase, 'submit_pc_publish')
+  assert.equal(result.meta.next_phase, 'submit_final_publish')
   assert.equal(result.meta.shared.pc_detail_target, 'descRepublicOfSell')
+  assert.equal(result.meta.shared.publish_stage, 'final')
   assert.equal(fetchCalls.length, 1)
   assert.match(fetchCalls[0].url, /commit_item_description\.do/)
   assert.match(fetchCalls[0].body, /templateContent=/)
@@ -3745,7 +4061,7 @@ test('wait_publish_result does not repeatedly confirm loading or hidden Tmall di
   assert.match(result.meta.shared.current_store, /PC端提交发布等待 1\/12/)
 })
 
-test('wait_publish_result reopens new desc publish to reapply and sync mobile detail', async () => {
+test('wait_publish_result reopens new desc publish only for final readback', async () => {
   const currentRows = [{
     '款号': '208425107212',
     '商品ID': '999412782684',
@@ -3779,9 +4095,10 @@ test('wait_publish_result reopens new desc publish to reapply and sync mobile de
   })
 
   assert.equal(result.meta.action, 'next_phase')
-  assert.equal(result.meta.next_phase, 'reopen_after_pc_publish')
+  assert.equal(result.meta.next_phase, 'reopen_after_final_publish')
   assert.match(result.meta.shared.pc_publish_note, /PC端新版详情已提交发布/)
-  assert.match(result.meta.shared.current_store, /重新进入编辑页/)
+  assert.match(result.meta.shared.pc_publish_note, /无需旧版手机端导入/)
+  assert.match(result.meta.shared.current_store, /读回校验/)
 })
 
 test('wait_publish_result keeps legacy PC publish on mobile sync path', async () => {
@@ -3930,6 +4247,71 @@ test('wait_final_readback_tmall_ready completes only after PC and mobile detail 
   assert.equal(result.meta.action, 'complete')
   assert.equal(result.data[0]['执行结果'], '更新完成')
   assert.match(result.data[0]['备注'], /发布后读回校验通过/)
+})
+
+test('wait_final_readback_tmall_ready accepts new desc same component without old mobile detail', async () => {
+  const pcUrls = [
+    'https://img.alicdn.com/new-detail-1.jpg',
+    'https://img.alicdn.com/new-detail-2.jpg',
+  ]
+  const newDesc = newDescValueFromUrls(pcUrls)
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'descRepublicOfSell') return newDesc
+      if (name === 'descForShenbiMobile') return undefined
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { descRepublicOfSell: newDesc } }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_final_readback_tmall_ready',
+    shared: {
+      current_job: {
+        item_id: '1065477260163',
+        style_code: '208326140201',
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/detail-01.jpg', __category: 'pc_detail' },
+      ],
+      uploaded_by_category: {
+        pc_detail: pcUrls.map(url => ({ url })),
+      },
+      pc_detail_target: 'descRepublicOfSell',
+      pc_publish_note: '新版详情已提交发布',
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0]['执行结果'], '更新完成')
+  assert.match(result.data[0]['备注'], /新版详情同组件发布/)
+  assert.doesNotMatch(result.data[0]['备注'], /手机缺失/)
 })
 
 test('wait_final_readback_tmall_ready accepts transformed mobile URLs after verified old editor save', async () => {
@@ -4102,6 +4484,94 @@ test('wait_final_readback_tmall_ready accepts PC detail skip when pre-apply visu
   assert.match(result.data[0]['备注'], /天猫已重生成手机图URL/)
 })
 
+test('wait_final_readback_tmall_ready verifies mobile against current PC urls after skip replacement', async () => {
+  const uploadedUrls = [
+    'https://img.alicdn.com/uploaded-detail-1.jpg',
+    'https://img.alicdn.com/uploaded-detail-2.jpg',
+  ]
+  const existingUrls = [
+    'https://img.alicdn.com/existing-detail-1.jpg',
+    'https://img.alicdn.com/existing-detail-2.jpg',
+  ]
+  const modularDesc = [{
+    id: 'detail',
+    name: '旧版详情',
+    content: existingUrls.map(url => `<p><img src="${url}"/></p>`).join(''),
+  }]
+  const mobile = {
+    descContainer: {
+      detail: `<wapDesc>${existingUrls.map(url => `<img>${url}</img>`).join('')}</wapDesc>`,
+      nativeDetail: JSON.stringify({
+        data: {
+          children: existingUrls.map(url => ({ params: { picUrl: url } })),
+        },
+      }),
+    },
+  }
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'modularDesc') return modularDesc
+      if (name === 'descForShenbiMobile') return mobile
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { descForShenbiMobile: mobile } }
+      },
+    },
+  }
+
+  const { result } = await runScript({
+    phase: 'wait_final_readback_tmall_ready',
+    shared: {
+      current_job: { item_id: '1065477260163', style_code: '208326140201' },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/detail-01.jpg', __category: 'pc_detail' },
+      ],
+      uploaded_by_category: {
+        pc_detail: uploadedUrls.map(url => ({ url })),
+      },
+      pc_detail_skip_replacement: true,
+      pc_detail_already_match: {
+        matched: true,
+        method: 'visual_hash',
+        currentUrls: existingUrls,
+        expectedUrls: uploadedUrls,
+      },
+      mobile_sync_note: '已通过API导入电脑端详情',
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'complete')
+  assert.equal(result.data[0]['执行结果'], '更新完成')
+  assert.match(result.data[0]['备注'], /PC详情本轮跳过替换/)
+  assert.match(result.data[0]['备注'], /手机详情 2 张/)
+  assert.doesNotMatch(result.data[0]['备注'], /手机缺失/)
+})
+
 test('wait_final_readback_tmall_ready switches to old description before failing missing detail readback', async () => {
   const returnOld = fakeElement('返回旧版图文描述', { left: 1680 })
   const state = {
@@ -4256,7 +4726,7 @@ test('wait_publish_result cools down after Taobao operation-speed warning', asyn
   assert.match(result.meta.shared.current_store, /淘宝操作频率限制/)
 })
 
-test('wait_reopened_tmall_ready reapplies new desc before mobile sync', async () => {
+test('wait_reopened_tmall_ready sends new desc directly to final readback without mobile sync', async () => {
   const newDesc = {
     descPageCommitParam: {
       templateContent: JSON.stringify({ groups: [], sellergroups: [] }),
@@ -4322,14 +4792,11 @@ test('wait_reopened_tmall_ready reapplies new desc before mobile sync', async ()
     },
   })
 
-  assert.equal(result.meta.next_phase, 'sync_mobile_detail_api')
-  assert.equal(result.meta.shared.new_desc_reapplied_after_reopen, true)
-  assert.equal(models.formValues.descRepublicOfSell, newDesc)
-  assert.equal(fetchCalls.length, 1)
-  assert.match(fetchCalls[0].url, /commit_item_description\.do/)
-  assert.match(fetchCalls[0].body, /templateContent=/)
-  assert.match(fetchCalls[0].body, /_tb_token_=global-token/)
-  assert.match(result.meta.shared.pc_publish_note, /已回写新版详情/)
+  assert.equal(result.meta.next_phase, 'wait_final_readback_tmall_ready')
+  assert.equal(models.formValues.descRepublicOfSell, undefined)
+  assert.equal(fetchCalls.length, 0)
+  assert.match(result.meta.shared.pc_publish_note, /无需旧版手机端详情同步/)
+  assert.match(result.meta.shared.current_store, /最终读回校验/)
 })
 
 test('wait_reopened_tmall_ready reapplies modular PC detail before mobile sync', async () => {
@@ -4733,6 +5200,166 @@ test('submit_pc_publish posts raw payload only when API submit mode is explicit'
   assert.equal(result.meta.shared.last_submit_method, 'http_post')
 })
 
+test('submit_final_publish posts raw payload for new desc before DOM click', async () => {
+  const fetchCalls = []
+  let clicked = 0
+  const submit = fakeElement('提交', {
+    left: 790,
+    className: 'next-btn next-large next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  submit.tagName = 'BUTTON'
+  const models = {
+    global: { itemId: '1065477260163', catId: '50012487' },
+    formValues: {
+      descRepublicOfSell: {
+        descPageCommitParam: {
+          templateContent: '{"groups":[]}',
+          changed: true,
+        },
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'submit_final_publish',
+    shared: {
+      current_job: {
+        item_id: '1065477260163',
+        style_code: '208326140201',
+      },
+      current_result_rows: [],
+      uploaded_by_category: {
+        pc_detail: [{ url: 'https://img.alicdn.com/new-detail-1.jpg' }],
+      },
+      pc_detail_target: 'descRepublicOfSell',
+      applied_desc_republic_of_sell: true,
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品发布 提交' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return {
+            getGlobal() {
+              return models.global
+            },
+            engine: {
+              getModels() {
+                return models
+              },
+              getComponent() {
+                return null
+              },
+            },
+          }
+        },
+      },
+    },
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url, body: String(options.body || '') })
+      return jsonResponse({ success: true })
+    },
+  })
+
+  assert.equal(clicked, 0)
+  assert.equal(fetchCalls.length, 1)
+  assert.match(fetchCalls[0].url, /submit\.htm/)
+  assert.match(decodeURIComponent(fetchCalls[0].body), /descRepublicOfSell/)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.publish_stage, 'final')
+  assert.equal(result.meta.shared.last_submit_method, 'http_post')
+})
+
+test('submit_final_publish keeps API-first when new desc replacement was skipped as already matching', async () => {
+  const fetchCalls = []
+  let clicked = 0
+  const submit = fakeElement('提交', {
+    left: 790,
+    className: 'next-btn next-large next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  submit.tagName = 'BUTTON'
+  const models = {
+    global: { itemId: '1065478568738', catId: '50012487' },
+    formValues: {
+      descRepublicOfSell: {
+        descPageCommitParam: {
+          templateContent: '{"groups":[{"components":[]}]}',
+          changed: false,
+        },
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'submit_final_publish',
+    shared: {
+      current_job: {
+        item_id: '1065478568738',
+        style_code: '204326140101',
+      },
+      current_result_rows: [],
+      uploaded_by_category: {
+        pc_detail: [{ url: 'https://img.alicdn.com/current-detail-1.jpg' }],
+      },
+      pc_detail_target: 'descRepublicOfSell',
+      pc_detail_skip_replacement: true,
+      pc_detail_already_match: {
+        matched: true,
+        method: 'visual_hash',
+        currentUrls: ['https://img.alicdn.com/current-detail-1.jpg'],
+      },
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065478568738',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品发布 提交' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return {
+            getGlobal() {
+              return models.global
+            },
+            engine: {
+              getModels() {
+                return models
+              },
+              getComponent() {
+                return null
+              },
+            },
+          }
+        },
+      },
+    },
+    fetchImpl: async (url, options = {}) => {
+      fetchCalls.push({ url, body: String(options.body || '') })
+      return jsonResponse({ success: true })
+    },
+  })
+
+  assert.equal(clicked, 0)
+  assert.equal(fetchCalls.length, 1)
+  assert.match(fetchCalls[0].url, /submit\.htm/)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.publish_stage, 'final')
+  assert.equal(result.meta.shared.last_submit_method, 'http_post')
+})
+
 test('wait_publish_result clicks visible DOM risk confirmation before API confirm', async () => {
   let emitted = 0
   let clicked = 0
@@ -4962,7 +5589,7 @@ test('wait_publish_result does not treat the page submit button as a publish con
   assert.notEqual(result.meta.shared.last_confirm_method, 'dom_click')
 })
 
-test('wait_publish_result fails fast when Tmall requires a product video', async () => {
+test('wait_publish_result does not fail fast when Tmall only suggests product video', async () => {
   const state = {
     getComponentValue(name) {
       if (name === 'mainImagesGroup') return { images: [] }
@@ -5012,9 +5639,10 @@ test('wait_publish_result fails fast when Tmall requires a product video', async
     },
   })
 
-  assert.equal(result.meta.action, 'complete')
-  assert.equal(result.data[0]['执行结果'], '发布失败')
-  assert.match(result.data[0]['备注'], /请至少维护1个商品视频/)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.publish_wait_attempts, 2)
+  assert.match(result.meta.shared.current_store, /提交发布等待 2\/12/)
 })
 
 test('wait_publish_result does not click Tmall upgrade prompt confirmation twice', async () => {
@@ -6169,6 +6797,10 @@ test('collect_cloud_assets uses explicit candidate sources stored during prepare
         searchOnly: true,
       }],
     },
+    params: {
+      export_folder: '/tmp/tmall-packaging-export',
+      __crawshrimp_runtime_artifact_dir: '/tmp/crawshrimp-data/tmall-ops-assistant/tmall_packaging_upload/runtime/88',
+    },
     fetchImpl: async (url, init = {}) => {
       const requestUrl = new URL(String(url), 'https://fmp.semirapp.com')
       if (requestUrl.pathname === '/fengcloud/2/file/search') {
@@ -6250,6 +6882,12 @@ test('collect_cloud_assets uses explicit candidate sources stored during prepare
 
   assert.equal(result.meta.action, 'download_urls')
   assert.ok(result.meta.shared.pending_download_items.length > 0)
+  assert.equal(
+    result.meta.items[0].target_dir,
+    '/tmp/tmall-packaging-export/下载素材/88/209126145208_1009107190556',
+  )
+  assert.match(result.meta.items[0].target_relative_path, /^01_1比1主图\//)
+  assert.ok(!result.meta.items[0].target_dir.includes('/runtime/88'))
   assert.ok(result.meta.shared.current_result_rows.some(row => String(row['云盘路径'] || '').includes(candidateRoot)))
   assert.equal(result.meta.shared.plan_summary.selectedStyleRoot, candidateRoot)
 })
