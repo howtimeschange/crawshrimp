@@ -114,6 +114,21 @@ async function requireActiveMachine(request: Request, env: Env): Promise<Machine
   return machine
 }
 
+async function allowedCapabilitiesForMachine(env: Env, machineId: string): Promise<string[] | null> {
+  const tokenRow = await env.DB.prepare(
+    `SELECT id, token_hash, label, owner_user_id, allowed_capabilities_json, require_approval, status,
+            expires_at, used_by_machine_id, created_by, created_at, used_at, revoked_at
+     FROM machine_enrollment_tokens
+     WHERE used_by_machine_id = ?
+     ORDER BY used_at DESC, id DESC
+     LIMIT 1`,
+  )
+    .bind(machineId)
+    .first<EnrollmentTokenRow>()
+  if (!tokenRow) return null
+  return parseStringArray(tokenRow.allowed_capabilities_json)
+}
+
 function secondsFromBody(value: unknown): number {
   const seconds = Number(value ?? 86_400)
   return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 31_536_000) : 86_400
@@ -298,7 +313,8 @@ export async function heartbeat(request: Request, env: Env): Promise<Response> {
   const health = typeof body.health === 'string' ? body.health : 'online_idle'
   if (!['offline', 'online_idle', 'online_busy', 'needs_login', 'config_missing', 'version_blocked'].includes(health)) return badRequest('invalid health')
   const appVersion = typeof body.app_version === 'string' ? body.app_version : machine.app_version
-  const registeredCapabilities = parseStringArray(machine.capabilities_json)
+  const registeredCapabilities = await allowedCapabilitiesForMachine(env, machine.machine_id)
+  if (!registeredCapabilities) return forbidden('Machine enrollment authorization is unavailable')
   const heartbeatCapabilities = parseStringArray(body.capabilities)
   const registeredCapabilitySet = new Set(registeredCapabilities)
   const unsupportedCapabilities = heartbeatCapabilities.filter((capability) => !registeredCapabilitySet.has(capability))

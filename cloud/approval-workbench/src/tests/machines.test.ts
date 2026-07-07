@@ -128,6 +128,16 @@ class FakeD1Statement {
       if (!session) return null
       return (this.state.users.find((user) => user.id === session.user_id && user.status === 'active') ?? null) as T | null
     }
+    if (normalized.includes('from machine_enrollment_tokens') && normalized.includes('where used_by_machine_id = ?')) {
+      const machineId = String(this.params[0])
+      const rows = this.state.enrollmentTokens
+        .filter((row) => row.used_by_machine_id === machineId)
+        .sort((a, b) => {
+          const usedAtOrder = String(b.used_at ?? '').localeCompare(String(a.used_at ?? ''))
+          return usedAtOrder || b.id - a.id
+        })
+      return (rows[0] ?? null) as T | null
+    }
     if (normalized.includes('from machine_enrollment_tokens') && normalized.includes('token_hash')) {
       const tokenHash = String(this.params[0])
       return (this.state.enrollmentTokens.find((row) => row.token_hash === tokenHash) ?? null) as T | null
@@ -634,6 +644,96 @@ describe('machine routes', () => {
     expect(claim.status).toBe(200)
     expect(claimBody.job).toBeNull()
     expect(state.jobs[0].status).toBe('queued')
+  })
+
+  it('restores originally authorized capabilities after a narrowed heartbeat', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['regenerate_ai_image', 'submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['regenerate_ai_image', 'submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit',
+      job_type: 'submit_tmall_material_test',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    }))
+
+    const narrowHeartbeat = await fetchWorker(
+      new Request('https://example.test/api/machines/heartbeat', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ health: 'online_idle', capabilities: ['regenerate_ai_image'] }),
+      }),
+      fakeEnv(state),
+    )
+    const blockedClaim = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const blockedClaimBody = await blockedClaim.json() as { job: null }
+
+    expect(narrowHeartbeat.status).toBe(200)
+    expect(blockedClaim.status).toBe(200)
+    expect(blockedClaimBody.job).toBeNull()
+    expect(state.jobs[0].status).toBe('queued')
+
+    const restoredHeartbeat = await fetchWorker(
+      new Request('https://example.test/api/machines/heartbeat', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ health: 'online_idle', capabilities: ['submit_tmall_material_test'] }),
+      }),
+      fakeEnv(state),
+    )
+    const restoredClaim = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const restoredClaimBody = await restoredClaim.json() as { job: { job_uid: string } }
+
+    expect(restoredHeartbeat.status).toBe(200)
+    expect(state.machines[0].capabilities_json).toBe(JSON.stringify(['submit_tmall_material_test']))
+    expect(restoredClaim.status).toBe(200)
+    expect(restoredClaimBody.job.job_uid).toBe('job-submit')
+    expect(state.jobs[0].status).toBe('leased')
+  })
+
+  it('rejects never-authorized heartbeat capabilities without expanding current capabilities', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['regenerate_ai_image', 'submit_tmall_material_test']),
+    })
+    const machineToken = await enrollMachine(state, token, ['regenerate_ai_image', 'submit_tmall_material_test'])
+    state.machines[0].auth_status = 'active'
+
+    const narrowHeartbeat = await fetchWorker(
+      new Request('https://example.test/api/machines/heartbeat', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ health: 'online_idle', capabilities: ['regenerate_ai_image'] }),
+      }),
+      fakeEnv(state),
+    )
+    const invalidHeartbeat = await fetchWorker(
+      new Request('https://example.test/api/machines/heartbeat', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ health: 'online_idle', capabilities: ['regenerate_ai_image', 'export_platform_product'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(narrowHeartbeat.status).toBe(200)
+    expect(invalidHeartbeat.status).toBe(400)
+    expect(state.machines[0].capabilities_json).toBe(JSON.stringify(['regenerate_ai_image']))
   })
 
   it('does not lease a selected job when required capabilities changed before update', async () => {
