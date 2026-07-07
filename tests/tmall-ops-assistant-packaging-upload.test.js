@@ -4314,6 +4314,155 @@ test('wait_final_readback_tmall_ready accepts new desc same component without ol
   assert.doesNotMatch(result.data[0]['备注'], /手机缺失/)
 })
 
+test('wait_final_readback_tmall_ready submits once before moving from editor to next job', async () => {
+  const pcUrls = [
+    'https://img.alicdn.com/new-detail-1.jpg',
+    'https://img.alicdn.com/new-detail-2.jpg',
+  ]
+  const newDesc = newDescValueFromUrls(pcUrls)
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'threeToFourImages') return []
+      if (name === 'guideImageGroup') return { verticalImage: [] }
+      if (name === 'descRepublicOfSell') return newDesc
+      return undefined
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return { formValues: { descRepublicOfSell: newDesc } }
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_final_readback_tmall_ready',
+    shared: {
+      jobs: [
+        { item_id: '1065477260163', style_code: '208326140201', cloud_path: 'cloud-a' },
+        { item_id: '1065506128863', style_code: '204326140101', cloud_path: 'cloud-b' },
+      ],
+      job_index: 0,
+      current_job: {
+        item_id: '1065477260163',
+        style_code: '208326140201',
+      },
+      current_result_rows: [
+        { '下载结果': '已下载', '上传结果': '已上传', '本地文件': '/tmp/detail-01.jpg', __category: 'pc_detail' },
+      ],
+      uploaded_by_category: {
+        pc_detail: pcUrls.map(url => ({ url })),
+      },
+      pc_detail_target: 'descRepublicOfSell',
+      pc_publish_note: '新版详情已提交发布',
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑 提交' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'submit_after_final_readback_exit')
+  assert.equal(result.meta.shared.final_detail_readback_verified, true)
+  assert.equal(result.meta.shared.final_readback_completed_rows[0]['执行结果'], '更新完成')
+  assert.match(result.meta.shared.current_store, /提交一次退出天猫编辑页/)
+})
+
+test('submit_after_final_readback_exit clicks submit before waiting for next-job handoff', async () => {
+  let clicked = 0
+  const submit = fakeElement('提交', {
+    left: 790,
+    className: 'next-btn next-large next-btn-primary',
+    onClick: () => { clicked += 1 },
+  })
+  submit.tagName = 'BUTTON'
+  const { result } = await runScript({
+    phase: 'submit_after_final_readback_exit',
+    shared: {
+      current_job: {
+        item_id: '1065477260163',
+        style_code: '208326140201',
+      },
+      final_readback_completed_rows: [
+        { '执行结果': '更新完成', '备注': '发布后读回校验通过' },
+      ],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '商品编辑 提交' },
+      querySelectorAll() {
+        return [submit]
+      },
+    },
+  })
+
+  assert.equal(clicked, 1)
+  assert.equal(result.meta.next_phase, 'wait_publish_result')
+  assert.equal(result.meta.shared.after_final_readback_exit_submit, true)
+  assert.equal(result.meta.shared.last_submit_method, 'dom_click_exit_after_readback')
+})
+
+test('wait_publish_result advances to next job after exit submit succeeds', async () => {
+  const completedRows = [
+    { '执行结果': '更新完成', '备注': '发布后读回校验通过', __category: 'pc_detail' },
+  ]
+  const { result } = await runScript({
+    phase: 'wait_publish_result',
+    shared: {
+      jobs: [
+        { item_id: '1065477260163', style_code: '208326140201', cloud_path: 'cloud-a' },
+        { item_id: '1065506128863', style_code: '204326140101', cloud_path: 'cloud-b' },
+      ],
+      job_index: 0,
+      current_job: {
+        item_id: '1065477260163',
+        style_code: '208326140201',
+      },
+      current_result_rows: completedRows,
+      final_readback_completed_rows: completedRows,
+      after_final_readback_exit_submit: true,
+      publish_stage: 'final',
+      publish_wait_attempts: 0,
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/success.htm?id=1065477260163',
+    },
+    documentOverride: {
+      title: '商品提交成功',
+      body: { innerText: '商品提交成功' },
+      querySelectorAll() {
+        return []
+      },
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'prepare_job')
+  assert.equal(result.meta.shared.job_index, 1)
+  assert.equal(result.meta.shared.current_buyer_id, '1065506128863')
+  assert.equal(result.meta.shared.current_store, 'cloud-b')
+  assert.equal(result.meta.shared.result_rows[0]['执行结果'], '更新完成')
+})
+
 test('wait_final_readback_tmall_ready accepts transformed mobile URLs after verified old editor save', async () => {
   const pcUrls = [
     'https://img.alicdn.com/new-detail-1.jpg',
@@ -5428,7 +5577,7 @@ test('wait_publish_result clicks visible DOM risk confirmation before API confir
   assert.deepEqual(plain(result.meta.shared.tmall_upgrade_prompt_confirmed_tokens), ['pc:999412782684'])
 })
 
-test('wait_publish_result clicks Tmall attribute update confirmation once', async () => {
+test('wait_publish_result clicks Tmall attribute update confirmation whenever dialog is present', async () => {
   let clicked = 0
   const confirm = fakeElement('确定', {
     left: 820,
@@ -5523,9 +5672,10 @@ test('wait_publish_result clicks Tmall attribute update confirmation once', asyn
     },
   })
 
-  assert.equal(clicked, 1)
+  assert.equal(clicked, 2)
   assert.equal(second.result.meta.next_phase, 'wait_publish_result')
-  assert.match(second.result.meta.shared.current_store, /商品属性信息更新弹窗已确认/)
+  assert.equal(second.result.meta.shared.last_confirm_method, 'dom_click_attribute_update')
+  assert.match(second.result.meta.shared.current_store, /商品属性信息更新确认/)
 })
 
 test('wait_publish_result does not treat the page submit button as a publish confirmation', async () => {

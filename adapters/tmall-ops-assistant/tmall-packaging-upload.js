@@ -6061,6 +6061,12 @@
 	      : uploadedPcDetailUrlsFromShared(state)
 	  }
 
+	  function hasNextPendingJob(state = shared) {
+	    const jobs = Array.isArray(state?.jobs) ? state.jobs : []
+	    const index = Number(state?.job_index || 0)
+	    return !!jobs[index + 1]
+	  }
+
 	  function uploadedPcDetailItems(uploadedByCategory = {}) {
 	    return (uploadedByCategory?.pc_detail || [])
 	      .map(item => ({
@@ -8236,17 +8242,15 @@
           current_store: `${stage === 'pc' ? 'PC端' : '最终'}检测到淘宝操作频率限制，冷却 ${Math.round(TMALL_SPEED_LIMIT_COOLDOWN_MS / 1000)} 秒${speedConfirm.ok ? '并关闭提示' : ''}`,
         })
       }
-      if (!hasConfirmedTmallAttributeUpdate(shared, stage)) {
-        const attributeConfirm = clickAttributeUpdateConfirmIfPresent()
-        if (attributeConfirm.ok) {
-          const nextShared = markTmallAttributeUpdateConfirmed(shared, stage)
-          return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
-            ...nextShared,
-            publish_wait_attempts: Number(nextShared.publish_wait_attempts || 0) + 1,
-            last_confirm_method: 'dom_click_attribute_update',
-            current_store: `${stage === 'pc' ? 'PC端' : '最终'}商品属性信息更新确认：${attributeConfirm.text || '确定'}`,
-          })
-        }
+      const attributeConfirm = clickAttributeUpdateConfirmIfPresent()
+      if (attributeConfirm.ok) {
+        const nextShared = markTmallAttributeUpdateConfirmed(shared, stage)
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_CONFIRM_WAIT_MS, {
+          ...nextShared,
+          publish_wait_attempts: Number(nextShared.publish_wait_attempts || 0) + 1,
+          last_confirm_method: 'dom_click_attribute_update',
+          current_store: `${stage === 'pc' ? 'PC端' : '最终'}商品属性信息更新确认：${attributeConfirm.text || '确定'}`,
+        })
       }
       if (hasTmallAttributeUpdateDialog() && hasConfirmedTmallAttributeUpdate(shared, stage)) {
         const attempts = Number(shared.publish_wait_attempts || 0)
@@ -8277,6 +8281,23 @@
             pc_publish_note: 'PC端详情已提交发布',
             publish_wait_attempts: 0,
             current_store: '重新进入编辑页同步手机端详情',
+          })
+        }
+        if (shared.after_final_readback_exit_submit) {
+          const rows = Array.isArray(shared.final_readback_completed_rows) && shared.final_readback_completed_rows.length
+            ? shared.final_readback_completed_rows
+            : markRowsWithResult(shared.current_result_rows, publishStatus, '更新完成', compact([
+              shared.pc_publish_note,
+              shared.mobile_sync_note,
+              shared.final_detail_readback_note,
+              '读回校验后已再次提交以退出天猫编辑页',
+            ].filter(Boolean).join('；')))
+          return advanceToNextJob(rows, {
+            ...shared,
+            current_result_rows: rows,
+            final_publish_status: publishStatus,
+            after_final_readback_exit_submit: false,
+            final_readback_completed_rows: [],
           })
         }
         const finalNote = compact([
@@ -8466,6 +8487,19 @@
         '更新完毕',
       ].filter(Boolean).join('；'))
       const rows = markRowsWithResult(shared.current_result_rows, finalStatus, '更新完成', note)
+      if (hasNextPendingJob(shared) && location.href.startsWith(TMALL_PUBLISH_URL)) {
+        return nextPhase('submit_after_final_readback_exit', 0, {
+          ...shared,
+          current_result_rows: rows,
+          final_readback_completed_rows: rows,
+          final_publish_status: finalStatus,
+          final_detail_readback_verified: true,
+          final_detail_readback_note: verification.reason,
+          submit_click_attempts: 0,
+          publish_wait_attempts: 0,
+          current_store: '读回校验通过，提交一次退出天猫编辑页后继续下一款',
+        })
+      }
       return advanceToNextJob(rows, {
         ...shared,
         current_result_rows: rows,
@@ -8473,6 +8507,34 @@
         final_detail_readback_verified: true,
         final_detail_readback_note: verification.reason,
       })
+    }
+
+    if (phase === 'submit_after_final_readback_exit') {
+      const clicked = clickSubmitPublishButton()
+      if (clicked.ok) {
+        return nextPhase('wait_publish_result', TMALL_PUBLISH_WAIT_MS, {
+          ...shared,
+          after_final_readback_exit_submit: true,
+          publish_stage: 'final',
+          submit_click_attempts: 0,
+          publish_wait_attempts: 0,
+          last_submit_method: 'dom_click_exit_after_readback',
+          current_store: '等待读回校验后二次提交结果，成功后继续下一款',
+        })
+      }
+      const attempts = Number(shared.submit_click_attempts || 0)
+      if (attempts < 6) {
+        try { window.scrollTo?.({ top: document.body?.scrollHeight || 0, behavior: 'smooth' }) } catch (error) {}
+        return nextPhase('submit_after_final_readback_exit', 1000, {
+          ...shared,
+          submit_click_attempts: attempts + 1,
+          current_store: `读回校验后退出编辑页提交按钮重试 ${attempts + 1}/6`,
+        })
+      }
+      return failCurrentJob(
+        '读回校验已通过，但未找到二次提交按钮，已停止跳转下一款以避免天猫编辑页离开确认卡住流程',
+        '退出编辑页失败',
+      )
     }
 
     if (phase === 'reopen_after_pc_publish') {
