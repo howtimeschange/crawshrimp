@@ -574,6 +574,40 @@ describe('batch sync routes', () => {
     expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai.jpg')
   })
 
+  it('stores a safe basename filename and canonical object key for macOS absolute synced filenames', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.filename = '/Users/xingyicheng/Desktop/raw/ai hero.jpg'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].filename).toBe('ai-hero.jpg')
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai-hero.jpg')
+  })
+
+  it('stores a safe basename filename and canonical object key for Windows absolute synced filenames', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.filename = 'C:\\Users\\xingyicheng\\Desktop\\raw\\ai final.png'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].filename).toBe('ai-final.png')
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai-final.png')
+  })
+
   it('does not persist caller object keys whose kind segment mismatches the asset kind', async () => {
     const { state, machineToken } = await baseState()
     const payload = batchPayload()

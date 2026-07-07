@@ -212,7 +212,8 @@ async function upsertSyncedAsset(env: Env, batchUid: string, styleId: number, as
   if (!assetUid || !kind || !filename) throw new Error('asset_uid, kind, and filename are required')
   if (!isSafeIdentifier(assetUid)) throw new Error('asset_uid must be a safe identifier')
   if (!ALLOWED_KINDS.has(kind)) throw new Error(`invalid asset kind: ${kind}`)
-  const objectKey = batchObjectKey(batchUid, kind, `${assetUid}-${safeFilename(filename)}`)
+  const safeAssetFilename = safeFilename(filename)
+  const objectKey = batchObjectKey(batchUid, kind, `${assetUid}-${safeAssetFilename}`)
   await upsertAsset(env, {
     assetUid,
     batchUid,
@@ -220,7 +221,7 @@ async function upsertSyncedAsset(env: Env, batchUid: string, styleId: number, as
     kind,
     status: stringValue(asset.status) || 'uploaded',
     objectKey,
-    filename,
+    filename: safeAssetFilename,
     contentHash: stringValue(asset.content_hash),
     promptTemplateVersionId: numberOrNull(asset.prompt_template_version_id),
     promptText: stringValue(asset.prompt_text),
