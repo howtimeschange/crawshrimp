@@ -40,11 +40,24 @@ import {
   getAssetDownload,
 } from './asset-routes'
 import {
+  createManualStyleAsset,
+  createRegenerationJobs,
+  createSubmitJob,
+  exportReviewDetail,
   getBatch,
+  getSubmitPlan,
+  getSubmitResult,
   listBatches,
+  markBatchReady,
+  saveAssetDecision,
   syncBatch,
   syncBatchComplete,
 } from './batch-routes'
+import {
+  getDashboardSummary,
+  getMachinePerformance,
+  getPromptPerformance,
+} from './dashboard-routes'
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -89,9 +102,20 @@ export default {
     if (/^\/api\/prompt-libraries\/\d+\/resolved$/.test(url.pathname) && request.method === 'GET') return resolvePrompts(request, env)
     if (url.pathname === '/api/assets/presign' && request.method === 'POST') return createAssetUploadPlan(request, env)
     if (/^\/api\/assets\/[^/]+\/download$/.test(url.pathname) && request.method === 'GET') return getAssetDownload(request, env)
+    if (url.pathname === '/api/dashboard/summary' && request.method === 'GET') return getDashboardSummary(request, env)
+    if (url.pathname === '/api/dashboard/prompt-performance' && request.method === 'GET') return getPromptPerformance(request, env)
+    if (url.pathname === '/api/dashboard/machine-performance' && request.method === 'GET') return getMachinePerformance(request, env)
     if (url.pathname === '/api/ai-image-batches' && request.method === 'GET') return listBatches(request, env)
     if (url.pathname === '/api/ai-image-batches/sync' && request.method === 'POST') return syncBatch(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/sync-complete$/.test(url.pathname) && request.method === 'POST') return syncBatchComplete(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/assets\/[^/]+\/decision$/.test(url.pathname) && request.method === 'PATCH') return saveAssetDecision(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/manual-assets$/.test(url.pathname) && request.method === 'POST') return createManualStyleAsset(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/regenerate$/.test(url.pathname) && request.method === 'POST') return createRegenerationJobs(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/review-detail$/.test(url.pathname) && request.method === 'GET') return exportReviewDetail(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/mark-ready$/.test(url.pathname) && request.method === 'POST') return markBatchReady(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/submit-plan$/.test(url.pathname) && request.method === 'GET') return getSubmitPlan(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/submit$/.test(url.pathname) && request.method === 'POST') return createSubmitJob(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/submit-result$/.test(url.pathname) && request.method === 'GET') return getSubmitResult(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+$/.test(url.pathname) && request.method === 'GET') return getBatch(request, env)
     if (url.pathname.startsWith('/api/')) return json({ error: 'Not found' }, { status: 404 })
 
