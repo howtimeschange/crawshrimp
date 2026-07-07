@@ -554,15 +554,16 @@ async function recomputeReviewState(env: Env, batchUid: string): Promise<{ ready
   return { ready: batchStatus === 'ready_to_submit', batchStatus }
 }
 
-async function buildSubmitPlan(env: Env, batchUid: string): Promise<{ batch_uid: string; styles: StyleRow[]; assets: AssetRow[] }> {
+async function buildSubmitPlan(env: Env, batchUid: string): Promise<{ batch_uid: string; styles: StyleRow[]; assets: Array<AssetRow & { meta: unknown }> }> {
   const { results: styles } = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<StyleRow>()
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const approvedAiAssets = assets.filter((asset) => asset.kind === 'ai' && asset.status === 'approved')
   const styleIds = new Set(approvedAiAssets.map((asset) => asset.style_id))
+  const sourceAssets = assets.filter((asset) => styleIds.has(asset.style_id) && ['source', 'reference'].includes(asset.kind))
   return {
     batch_uid: batchUid,
     styles: styles.filter((style) => styleIds.has(style.id)),
-    assets: approvedAiAssets.map((asset) => ({ ...asset, meta: fromJsonObject(asset.meta_json) })),
+    assets: [...sourceAssets, ...approvedAiAssets].map((asset) => ({ ...asset, meta: fromJsonObject(asset.meta_json) })),
   }
 }
 

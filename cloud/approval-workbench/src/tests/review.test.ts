@@ -273,14 +273,15 @@ describe('review routes', () => {
     expect(state.approvalEvents).toHaveLength(0)
   })
 
-  it('builds a submit plan with only approved AI assets', async () => {
+  it('builds a submit plan with source assets and only approved AI assets', async () => {
     const { state, reviewerCookie } = await baseState()
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-2')!.status = 'rejected'
     const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/submit-plan', { headers: { cookie: reviewerCookie } }), fakeEnv(state))
     const body = await response.json() as { submit_plan: { assets: AssetRow[] } }
     expect(response.status).toBe(200)
-    expect(body.submit_plan.assets.map((asset) => asset.asset_uid)).toEqual(['asset-ai-1'])
+    expect(body.submit_plan.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
+    expect(body.submit_plan.assets.filter((asset) => asset.kind === 'ai').map((asset) => asset.asset_uid)).toEqual(['asset-ai-1'])
   })
 
   it('marks a batch ready only when each non-skipped style has an approved AI asset', async () => {
@@ -370,7 +371,7 @@ describe('review routes', () => {
     expect(response.status).toBe(201)
     expect(state.dispatchJobs[0]).toMatchObject({ job_type: 'submit_tmall_material_test', assigned_machine_id: 'machine-1' })
     expect(JSON.parse(state.dispatchJobs[0].required_capabilities_json)).toEqual(['submit_tmall_material_test'])
-    expect(JSON.parse(state.dispatchJobs[0].payload_json).submit_plan.assets.map((asset: AssetRow) => asset.asset_uid)).toEqual(['asset-ai-1', 'asset-ai-3'])
+    expect(JSON.parse(state.dispatchJobs[0].payload_json).submit_plan.assets.map((asset: AssetRow) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-source-2', 'asset-ai-1', 'asset-ai-3'])
   })
 })
 
@@ -408,7 +409,8 @@ async function baseState(): Promise<{ state: State; reviewerCookie: string; view
       asset(1, 'asset-source-1', 1, 'source', 'uploaded', '', null),
       asset(2, 'asset-ai-1', 1, 'ai', 'pending', 'Prompt 1', 'asset-source-1'),
       asset(3, 'asset-ai-2', 1, 'ai', 'rejected', 'Prompt 2', 'asset-source-1'),
-      asset(4, 'asset-ai-3', 2, 'ai', 'pending', 'Prompt 3', 'asset-source-2'),
+      asset(4, 'asset-source-2', 2, 'source', 'uploaded', '', null),
+      asset(5, 'asset-ai-3', 2, 'ai', 'pending', 'Prompt 3', 'asset-source-2'),
     ],
     approvalEvents: [],
     dispatchJobs: [],

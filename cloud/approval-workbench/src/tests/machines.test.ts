@@ -889,6 +889,44 @@ describe('machine routes', () => {
     expect(state.jobs[0].status).toBe('leased')
   })
 
+  it('persists blocked_needs_login failures and keeps machine health needs_login', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-login'
+    state.jobs.push(jobRow({
+      job_uid: 'job-login',
+      status: 'leased',
+      lease_id: 'lease-login',
+      assigned_machine_id: 'machine-1',
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-login/fail', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({
+          lease_id: 'lease-login',
+          status: 'blocked_needs_login',
+          terminal: false,
+          message: 'Chrome CDP unavailable',
+          result: { status: 'blocked_needs_login' },
+        }),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { status: string }
+
+    expect(response.status).toBe(200)
+    expect(body.status).toBe('blocked_needs_login')
+    expect(state.jobs[0].status).toBe('blocked_needs_login')
+    expect(JSON.parse(state.jobs[0].result_json)).toEqual({ status: 'blocked_needs_login' })
+    expect(state.machines[0].current_job_id).toBeNull()
+    expect(state.machines[0].health).toBe('needs_login')
+  })
+
   it('records the dispatch job lease holder and rejects same-lease writes from another machine', async () => {
     const state = await emptyState()
     const tokenOne = await seedEnrollmentToken(state, { id: 1 })

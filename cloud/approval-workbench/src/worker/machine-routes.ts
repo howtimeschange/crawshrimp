@@ -448,7 +448,7 @@ export async function completeJob(request: Request, env: Env): Promise<Response>
 export async function failJob(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
   const terminal = body.terminal === true
-  return updateJobWithLease(request, env, terminal ? 'terminal_failed' : 'retryable_failed', 'failed', body)
+  return updateJobWithLease(request, env, terminal ? 'terminal_failed' : failStatusFromBody(body), 'failed', body)
 }
 
 async function updateJobWithLease(request: Request, env: Env, status: DispatchStatus, eventType: string, existingBody?: Record<string, unknown>): Promise<Response> {
@@ -470,13 +470,20 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
     .bind(status, toJson(result), nowIso(), jobUid, leaseId, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
-  if (['succeeded', 'retryable_failed', 'terminal_failed'].includes(status)) {
+  if (['succeeded', 'retryable_failed', 'terminal_failed', 'blocked_needs_login'].includes(status)) {
+    const nextHealth = status === 'blocked_needs_login' ? 'needs_login' : 'online_idle'
     await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE machine_id = ?')
-      .bind('online_idle', nowIso(), machine.machine_id)
+      .bind(nextHealth, nowIso(), machine.machine_id)
       .run()
   }
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, eventType, typeof body.message === 'string' ? body.message : '', { status, result })
   return json({ ok: true, status })
+}
+
+function failStatusFromBody(body: Record<string, unknown>): DispatchStatus {
+  const result = body.result && typeof body.result === 'object' ? body.result as Record<string, unknown> : {}
+  const explicitStatus = typeof body.status === 'string' ? body.status : typeof result.status === 'string' ? result.status : ''
+  return explicitStatus === 'blocked_needs_login' ? 'blocked_needs_login' : 'retryable_failed'
 }
 
 async function recordJobEvent(env: Env, jobUid: string, machineId: string, leaseId: string, eventType: string, message: string, payload: unknown): Promise<void> {

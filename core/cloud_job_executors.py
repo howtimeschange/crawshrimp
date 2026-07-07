@@ -107,6 +107,8 @@ class CloudJobExecutor:
             if _looks_like_login_block(str(exc)):
                 raise CloudJobBlocked("needs_login", str(exc)) from exc
             raise CloudJobTerminalFailure(str(exc)) from exc
+        if _submit_result_failed(result):
+            raise CloudJobTerminalFailure(_submit_failure_message(result))
         self._renew(job)
         return {
             "status": "succeeded",
@@ -218,6 +220,17 @@ class CloudJobExecutor:
             for style in submit_plan.get("styles") or []
             if isinstance(style, Mapping) and _positive_int(style.get("id")) > 0
         }
+        source_by_style: dict[int, Mapping[str, Any]] = {}
+        for asset in submit_plan.get("assets") or []:
+            if not isinstance(asset, Mapping):
+                continue
+            kind = str(asset.get("kind") or "")
+            if kind not in ("source", "origin", "main", "reference"):
+                continue
+            style_id = _positive_int(asset.get("style_id"))
+            if style_id <= 0 or style_id in source_by_style:
+                continue
+            source_by_style[style_id] = asset
         items_by_style: dict[int, dict] = {}
         for asset in submit_plan.get("assets") or []:
             if not isinstance(asset, Mapping) or str(asset.get("kind") or "") != "ai":
@@ -227,12 +240,16 @@ class CloudJobExecutor:
             style_id = _positive_int(asset.get("style_id"))
             style = styles_by_id.get(style_id, {})
             local_path = self._download_asset(str(asset.get("asset_uid") or ""), task_dir / "approved")
+            source_asset = source_by_style.get(style_id)
+            origin_path = ""
+            if source_asset:
+                origin_path = str(self._download_asset(str(source_asset.get("asset_uid") or ""), task_dir / "origins"))
             item = items_by_style.setdefault(style_id, {
                 "id": str(style.get("style_uid") or style_id),
                 "style_id": style_id,
                 "style_code": str(style.get("style_code") or ""),
                 "item_id": str(style.get("item_id") or ""),
-                "origin_path": "",
+                "origin_path": origin_path,
                 "workflow": {
                     "row_no": style.get("row_no", ""),
                     "style_code": str(style.get("style_code") or ""),
@@ -341,3 +358,30 @@ def _safe_result_path(value: Any, root: Path) -> str:
 def _looks_like_login_block(message: str) -> bool:
     lowered = str(message or "").lower()
     return any(marker in lowered for marker in ("login", "登录", "cdp", "chrome", "cookie"))
+
+
+def _submit_result_failed(result: Any) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    if result.get("ok") is False:
+        return True
+    if _positive_int(result.get("failed")) > 0:
+        return True
+    return str(result.get("status") or "") in {"create_failed", "partial_failed"}
+
+
+def _submit_failure_message(result: Any) -> str:
+    if not isinstance(result, Mapping):
+        return "tmall_submit_failed"
+    status = str(result.get("status") or "tmall_submit_failed")
+    failed = _positive_int(result.get("failed"))
+    attempted = _positive_int(result.get("attempted"))
+    parts = [status]
+    if failed:
+        parts.append(f"failed={failed}")
+    if attempted:
+        parts.append(f"attempted={attempted}")
+    message = str(result.get("message") or result.get("error") or "")
+    if message:
+        parts.append(message)
+    return "; ".join(parts)

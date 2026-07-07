@@ -141,7 +141,7 @@ class CloudMachineAgent:
         try:
             self._complete_job(job, result.get("result") if isinstance(result, Mapping) else result)
         except CloudApprovalError as exc:
-            if "stale lease" in str(exc).lower() or "http 403" in str(exc).lower():
+            if self._is_stale_lease_error(exc):
                 return {"status": "stale_lease", "message": str(exc)}
             raise
         if isinstance(result, Mapping):
@@ -160,6 +160,7 @@ class CloudMachineAgent:
             "job_uid": self._job_uid(job),
             "lease_id": self._lease_id(job),
             "terminal": terminal,
+            "status": str(result.get("status") or ""),
             "message": str(result.get("message") or result.get("status") or ""),
             "result": dict(result),
         })
@@ -188,6 +189,10 @@ class CloudMachineAgent:
         text = str(exc).lower()
         if "http 401" in text and "machine_token_revoked" in text:
             data_sink.clear_cloud_machine_credentials()
+
+    @staticmethod
+    def _is_stale_lease_error(exc: CloudApprovalError) -> bool:
+        return "stale lease" in str(exc).lower()
 
     @staticmethod
     def _failure_backoff_seconds(failure_count: int) -> float:

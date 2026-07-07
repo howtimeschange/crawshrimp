@@ -108,7 +108,7 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertTrue(renew_bodies)
         self.assertTrue(all(body["lease_id"] == "lease-1" for body in progress_bodies + renew_bodies))
 
-    def test_submit_tmall_material_test_downloads_approved_images_and_completes_with_result_path(self):
+    def test_submit_tmall_material_test_downloads_source_and_approved_images_and_completes_with_result_path(self):
         from core.cloud_job_executors import CloudJobExecutor
 
         captured = {}
@@ -132,15 +132,24 @@ class CloudJobExecutorTests(unittest.TestCase):
                 "submit_plan": {
                     "batch_uid": "batch-submit",
                     "styles": [{"id": 7, "style_uid": "style-7", "style_code": "208326100202", "item_id": "1001"}],
-                    "assets": [{
-                        "asset_uid": "ai-approved-1",
-                        "style_id": 7,
-                        "kind": "ai",
-                        "status": "approved",
-                        "filename": "ai.jpg",
-                        "prompt_text": "prompt",
-                        "meta": {"prompt_group": "front"},
-                    }],
+                    "assets": [
+                        {
+                            "asset_uid": "source-main-1",
+                            "style_id": 7,
+                            "kind": "source",
+                            "status": "uploaded",
+                            "filename": "source.jpg",
+                        },
+                        {
+                            "asset_uid": "ai-approved-1",
+                            "style_id": 7,
+                            "kind": "ai",
+                            "status": "approved",
+                            "filename": "ai.jpg",
+                            "prompt_text": "prompt",
+                            "meta": {"prompt_group": "front"},
+                        },
+                    ],
                 },
             },
         }
@@ -149,12 +158,47 @@ class CloudJobExecutorTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["result"]["result_path"], str(Path(self.tmp.name) / "cloud-jobs" / "job-submit" / "submit-result.json"))
-        self.assertEqual(client.downloads[0]["asset_uid"], "ai-approved-1")
+        self.assertEqual([download["asset_uid"] for download in client.downloads], ["ai-approved-1", "source-main-1"])
         item = captured["batch"]["items"][0]
         self.assertEqual(item["style_code"], "208326100202")
+        self.assertTrue(Path(item["origin_path"]).is_relative_to(Path(self.tmp.name) / "cloud-jobs" / "job-submit"))
+        self.assertEqual(Path(item["origin_path"]).name, "source-main-1.jpg")
         self.assertEqual(item["assets"][0]["status"], "approved")
         self.assertTrue(Path(item["assets"][0]["path"]).is_relative_to(Path(self.tmp.name) / "cloud-jobs" / "job-submit"))
         self.assertTrue(any(call["path"] == "/api/jobs/job-submit/progress" for call in client.calls))
+
+    def test_submit_tmall_material_test_treats_real_uploader_create_failed_result_as_terminal_failure(self):
+        from core.cloud_job_executors import CloudJobExecutor, CloudJobTerminalFailure
+
+        async def upload_batch(_batch):
+            return {"ok": False, "status": "create_failed", "attempted": 1, "failed": 1}
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=SimpleNamespace(
+            upload_approved_tmall_batch=upload_batch,
+        ))
+        job = {
+            "job_uid": "job-submit-failed",
+            "batch_uid": "batch-submit",
+            "job_type": "submit_tmall_material_test",
+            "lease_id": "lease-submit",
+            "payload": {
+                "submit_plan": {
+                    "batch_uid": "batch-submit",
+                    "styles": [{"id": 7, "style_uid": "style-7"}],
+                    "assets": [
+                        {"asset_uid": "source-main-1", "style_id": 7, "kind": "source", "status": "uploaded"},
+                        {"asset_uid": "ai-approved-1", "style_id": 7, "kind": "ai", "status": "approved"},
+                    ],
+                },
+            },
+        }
+
+        with self.assertRaises(CloudJobTerminalFailure) as raised:
+            executor.execute(job)
+
+        self.assertIn("create_failed", str(raised.exception))
+        self.assertIn("failed=1", str(raised.exception))
 
     def test_stale_lease_completion_is_not_retried_as_success(self):
         data_sink.save_cloud_machine_credentials("machine-1", "machine-secret", "任务机", ["regenerate_ai_image"])
@@ -183,6 +227,27 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(fail_calls, [])
         self.assertEqual(complete_calls[0]["body"]["lease_id"], "lease-old")
 
+    def test_non_stale_lease_http_403_completion_error_is_reraised(self):
+        data_sink.save_cloud_machine_credentials("machine-1", "machine-secret", "任务机", ["regenerate_ai_image"])
+        client = FakeCloudClient([
+            {
+                "job": {
+                    "job_uid": "job-forbidden",
+                    "batch_uid": "batch-1",
+                    "job_type": "regenerate_ai_image",
+                    "lease_id": "lease-current",
+                    "payload": {"asset_uid": "ai-1", "generation_row": {"完整Prompt": "prompt"}},
+                },
+                "next_poll_after_seconds": 0,
+            },
+            CloudApprovalError("cloud request failed: HTTP 403; Machine is disabled"),
+        ])
+        executor = SimpleNamespace(execute=lambda _job: {"status": "succeeded", "result": {"ok": True}})
+        agent = CloudMachineAgent(client, job_executor_factory=lambda _client: executor)
+
+        with self.assertRaises(CloudApprovalError):
+            agent.claim_once()
+
     def test_blocked_needs_login_is_returned_when_local_browser_readiness_fails(self):
         from core.cloud_job_executors import CloudJobBlocked
 
@@ -210,6 +275,7 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(heartbeats, ["needs_login"])
         fail_call = next(call for call in client.calls if call["path"] == "/api/jobs/job-login/fail")
         self.assertEqual(fail_call["body"]["lease_id"], "lease-login")
+        self.assertEqual(fail_call["body"]["status"], "blocked_needs_login")
         self.assertEqual(fail_call["body"]["result"]["status"], "blocked_needs_login")
         self.assertFalse(fail_call["body"].get("terminal", False))
 
