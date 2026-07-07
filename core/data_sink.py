@@ -161,6 +161,26 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_task_schedules_adapter_task_enabled
             ON task_schedules (adapter_id, task_id, enabled, archived, updated_at)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_machine_credentials (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                machine_id TEXT NOT NULL DEFAULT '',
+                machine_token TEXT NOT NULL DEFAULT '',
+                machine_name TEXT NOT NULL DEFAULT '',
+                capabilities_json TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_job_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_uid TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT NOT NULL DEFAULT '',
+                payload_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            )
+        """)
         conn.commit()
 
 
@@ -191,6 +211,84 @@ def _json_loads_object(value: Any) -> dict:
     except Exception:
         return {}
     return parsed if isinstance(parsed, dict) else {}
+
+
+def save_cloud_machine_credentials(machine_id: str, machine_token: str, machine_name: str, capabilities: list[str]) -> dict:
+    now = _now_iso()
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO cloud_machine_credentials (
+                id, machine_id, machine_token, machine_name, capabilities_json, updated_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                machine_id = excluded.machine_id,
+                machine_token = excluded.machine_token,
+                machine_name = excluded.machine_name,
+                capabilities_json = excluded.capabilities_json,
+                updated_at = excluded.updated_at
+            """,
+            (machine_id, machine_token, machine_name, json.dumps(capabilities or [], ensure_ascii=False), now),
+        )
+        conn.commit()
+    return get_cloud_machine_credentials() or {}
+
+
+def get_cloud_machine_credentials() -> dict | None:
+    with _get_conn() as conn:
+        row = conn.execute("SELECT * FROM cloud_machine_credentials WHERE id = 1").fetchone()
+    if not row:
+        return None
+    data = dict(row)
+    try:
+        data["capabilities"] = json.loads(data.pop("capabilities_json") or "[]")
+    except Exception:
+        data["capabilities"] = []
+    return data
+
+
+def clear_cloud_machine_credentials() -> None:
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM cloud_machine_credentials WHERE id = 1")
+        conn.commit()
+
+
+def record_cloud_job_event(job_uid: str, event_type: str, message: str = "", payload: Optional[Mapping[str, Any]] = None) -> dict:
+    now = _now_iso()
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            """
+            INSERT INTO cloud_job_events (job_uid, event_type, message, payload_json, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (job_uid, event_type, message, _json_dumps(dict(payload or {})), now),
+        )
+        conn.commit()
+        event_id = cursor.lastrowid
+        row = conn.execute("SELECT * FROM cloud_job_events WHERE id = ?", (event_id,)).fetchone()
+    data = dict(row)
+    data["payload"] = _json_loads_object(data.pop("payload_json"))
+    return data
+
+
+def list_cloud_job_events(job_uid: str, limit: int = 100) -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM cloud_job_events
+            WHERE job_uid = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (job_uid, max(1, int(limit or 100))),
+        ).fetchall()
+    result = []
+    for row in reversed(rows):
+        data = dict(row)
+        data["payload"] = _json_loads_object(data.pop("payload_json"))
+        result.append(data)
+    return result
 
 
 def create_task_instance(adapter_id: str, task_id: str, title: str, params: Optional[Mapping[str, Any]] = None) -> dict:

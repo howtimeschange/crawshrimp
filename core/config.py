@@ -26,6 +26,15 @@ DEFAULT_CONFIG = {
             "gpt_image_4k_key": "",
         },
     },
+    "cloud_approval": {
+        "base_url": "",
+        "machine_name": "",
+        "machine_enabled": False,
+        "registration_token": "",
+        "poll_timeout_seconds": 45,
+        "idle_heartbeat_seconds": 60,
+        "busy_heartbeat_seconds": 10,
+    },
     "api_port": 18765,
 }
 
