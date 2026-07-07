@@ -31,4 +31,12 @@ describe('cloud approval UI contract', () => {
       expect(review).toContain(text)
     }
   })
+
+  it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
+    const adminUsers = read('src/app/views/AdminUsersView.vue')
+    expect(adminUsers).toContain('function loadedRoleKey')
+    expect(adminUsers).toContain(':disabled="!canAssignRole(user)"')
+    expect(adminUsers).toContain('角色未加载，禁止覆盖保存')
+    expect(adminUsers).not.toMatch(/users\.value\.map\(\(user\) => \[user\.id, 'viewer'\]\)/)
+  })
 })

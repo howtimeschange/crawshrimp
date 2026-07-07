@@ -9,6 +9,8 @@ interface UserRow {
   name: string
   status: string
   created_at?: string
+  roles?: RoleRow[]
+  roleKeys?: string[]
 }
 
 interface RoleRow {
@@ -27,6 +29,16 @@ const form = ref({ email: '', name: '', password: '', status: 'active', roleKeys
 
 const activeUsers = computed(() => users.value.filter((user) => user.status === 'active').length)
 
+function loadedRoleKey(user: UserRow): string | null {
+  if (Array.isArray(user.roleKeys)) return user.roleKeys[0] ?? null
+  if (Array.isArray(user.roles)) return user.roles[0]?.role_key ?? null
+  return null
+}
+
+function canAssignRole(user: UserRow): boolean {
+  return loadedRoleKey(user) !== null && Boolean(selectedRoleKeys.value[user.id])
+}
+
 async function load() {
   loading.value = true
   error.value = ''
@@ -37,7 +49,12 @@ async function load() {
     ])
     users.value = userData.users
     roles.value = roleData.roles
-    selectedRoleKeys.value = Object.fromEntries(users.value.map((user) => [user.id, 'viewer']))
+    selectedRoleKeys.value = Object.fromEntries(
+      users.value.flatMap((user) => {
+        const roleKey = loadedRoleKey(user)
+        return roleKey ? [[user.id, roleKey] as const] : []
+      }),
+    )
   } catch (caught) {
     error.value = (caught as ApiError).message
   } finally {
@@ -60,8 +77,19 @@ async function createUser() {
 }
 
 async function assignRole(user: UserRow) {
-  await apiPatch(`/api/admin/users/${user.id}/roles`, { roleKeys: [selectedRoleKeys.value[user.id]] })
-  message.value = `${user.email} 角色已更新`
+  message.value = ''
+  error.value = ''
+  if (!canAssignRole(user)) {
+    error.value = `${user.email} 当前角色未加载，已阻止覆盖保存`
+    return
+  }
+  try {
+    await apiPatch(`/api/admin/users/${user.id}/roles`, { roleKeys: [selectedRoleKeys.value[user.id]] })
+    message.value = `${user.email} 角色已更新`
+    await load()
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+  }
 }
 
 async function disableUser(user: UserRow) {
@@ -103,7 +131,8 @@ onMounted(load)
                 <select v-model="selectedRoleKeys[user.id]">
                   <option v-for="role in roles" :key="role.role_key" :value="role.role_key">{{ role.name }}</option>
                 </select>
-                <button class="small-button" type="button" @click="assignRole(user)">保存角色</button>
+                <button class="small-button" type="button" :disabled="!canAssignRole(user)" @click="assignRole(user)">保存角色</button>
+                <span v-if="loadedRoleKey(user) === null" class="muted">角色未加载，禁止覆盖保存</span>
               </div>
             </td>
             <td>{{ user.created_at || '-' }}</td>

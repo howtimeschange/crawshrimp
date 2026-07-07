@@ -246,6 +246,26 @@ describe('auth routes', () => {
     expect(state.users).toHaveLength(3)
   })
 
+  it('GET /api/admin/users returns current role data for each user', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users', {
+        headers: { cookie },
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      users: [
+        { id: 1, roleKeys: ['admin'], roles: [{ role_key: 'admin', name: '管理员' }] },
+        { id: 2, roleKeys: ['reviewer'], roles: [{ role_key: 'reviewer', name: '审图人员' }] },
+        { id: 3, roleKeys: [], roles: [] },
+      ],
+    })
+  })
+
   it('POST /api/admin/users succeeds for admin and stores no plain password', async () => {
     const state = await stateWithUsers()
     const cookie = await addSession(state, 1, 'admin-token')

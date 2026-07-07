@@ -161,8 +161,18 @@ export async function me(request: Request, env: Env): Promise<Response> {
 export async function listUsers(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'users:write')
   if (actor instanceof Response) return actor
-  const { results } = await env.DB.prepare('SELECT id, email, name, status, created_at, updated_at FROM users ORDER BY id DESC').all()
-  return json({ users: results })
+  const { results } = await env.DB.prepare('SELECT id, email, name, status, created_at, updated_at FROM users ORDER BY id DESC').all<UserRow>()
+  const users = await Promise.all(
+    results.map(async (user) => {
+      const roles = await rolesForUser(env, user.id)
+      return {
+        ...publicUser(user),
+        roles,
+        roleKeys: roles.map((role) => role.role_key),
+      }
+    }),
+  )
+  return json({ users })
 }
 
 export async function createUser(request: Request, env: Env): Promise<Response> {
