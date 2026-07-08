@@ -1,5 +1,5 @@
 <template>
-  <div :class="['layout', { 'layout-focus': currentView === 'ai_image' }]">
+  <div class="layout">
     <!-- 标题栏 -->
     <div class="titlebar">
       <span class="logo">🦐 抓虾</span>
@@ -14,7 +14,7 @@
     </div>
 
     <!-- 侧边栏 -->
-    <aside v-if="currentView !== 'ai_image'" class="sidebar">
+    <aside class="sidebar">
       <!-- 一级菜单 -->
       <nav v-if="!activeScript">
         <button
@@ -77,7 +77,7 @@
     </aside>
 
     <!-- 主内容区 -->
-    <main :class="['content', { 'content-focus': currentView === 'ai_image' }]">
+    <main class="content">
       <!-- 我的脚本：脚本列表 -->
       <ScriptList
         v-if="currentView === 'scripts' && !activeScript"
@@ -329,10 +329,6 @@ input, select, textarea { font-family: inherit; }
   height: 100vh;
 }
 
-.layout-focus {
-  grid-template-columns: 1fr;
-}
-
 /* 标题栏 */
 .titlebar {
   grid-column: 1 / -1;
@@ -476,5 +472,4 @@ nav {
 
 /* 主内容 */
 .content { overflow: hidden; background: var(--bg); height: 100%; min-height: 0; }
-.content-focus { grid-column: 1 / -1; }
 </style>

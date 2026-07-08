@@ -21,12 +21,13 @@ test('App registers AI image route after task center and before data files', () 
   assert.match(app, /<AiImageWorkbench[\s\S]*@open-settings="openSettingsPanel\('ai-1xm'\)"/)
 })
 
-test('App hides global sidebar in AI image focus mode', () => {
+test('App keeps the global sidebar visible on the AI image page', () => {
   const app = read('app/src/renderer/App.vue')
 
-  assert.match(app, /v-if="currentView !== 'ai_image'"[\s\S]*class="sidebar"/)
-  assert.match(app, /:class="\['content', \{ 'content-focus': currentView === 'ai_image' \}\]"/)
-  assert.match(app, /\.layout-focus\s*\{[^}]*grid-template-columns:\s*1fr;/s)
+  assert.doesNotMatch(app, /v-if="currentView !== 'ai_image'"[\s\S]*class="sidebar"/)
+  assert.doesNotMatch(app, /layout-focus/)
+  assert.doesNotMatch(app, /content-focus/)
+  assert.match(app, /<aside class="sidebar">/)
 })
 
 test('Settings page accepts focus panel id and exposes 1XM image model keys', () => {
