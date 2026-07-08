@@ -45,12 +45,21 @@ const visibleNav = computed(() => {
 
 const activeTitle = computed(() => navItems.find((item) => item.key === activePage.value)?.label ?? '数据看板')
 
+function applyDirectBatchLink(): boolean {
+  const params = new URLSearchParams(window.location.search)
+  const directBatchUid = String(params.get('batch_uid') || '').trim()
+  if (!directBatchUid) return false
+  selectedBatchUid.value = directBatchUid
+  activePage.value = 'review'
+  return true
+}
+
 async function loadMe() {
   loadingSession.value = true
   appError.value = ''
   try {
     me.value = await apiGet<CurrentUser>('/api/auth/me')
-    if (!visibleNav.value.some((item) => item.key === activePage.value)) {
+    if (!applyDirectBatchLink() && !visibleNav.value.some((item) => item.key === activePage.value)) {
       activePage.value = visibleNav.value[0]?.key ?? 'dashboard'
     }
   } catch (error) {

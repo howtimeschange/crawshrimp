@@ -127,6 +127,55 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertIn("AI 图 1", html)
             self.assertIn("保留主商品", html)
 
+    def test_cloud_sync_rewrites_approval_message_to_cloud_board_url(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            item = module.build_approval_item(
+                workflow,
+                {"chosenMain": {"filename": "橱窗1.jpg"}},
+                str(artifact_dir / "main.jpg"),
+                "",
+                [{"提示词序号": 1, "提示词字段名": "正面", "完整Prompt": "保留主商品", "本地生成图文件": str(artifact_dir / "ai-1.jpg")}],
+                [str(artifact_dir / "ai-1.jpg")],
+                reference_mode="main_only",
+            )
+            batch = module.write_approval_batch(
+                artifact_dir,
+                [item],
+                run_params={"approval_message_template": "请打开审批看板确认后创建测图任务：{{board_url}}"},
+                base_url="http://127.0.0.1:18765",
+                batch_id="batch-cloud",
+                token="token-local",
+                created_at="2026-07-08T12:00:00+08:00",
+            )
+            local_board_url = batch["board_url"]
+            cloud_board_url = "https://approval.crawshrimp.com/?batch_uid=batch-cloud"
+
+            with patch("core.config.load_config", return_value={
+                "cloud_approval": {
+                    "machine_enabled": True,
+                    "base_url": "https://approval.crawshrimp.com",
+                    "poll_timeout_seconds": 30,
+                },
+            }), patch.object(module.data_sink, "get_cloud_machine_credentials", return_value={
+                "machine_token": "csr_machine_secret",
+            }), patch.object(module.data_sink, "record_cloud_job_event"), patch(
+                "core.cloud_batch_sync.sync_local_approval_batch",
+                return_value={"ok": True, "assets": []},
+            ):
+                module.maybe_sync_approval_batch_to_cloud(batch, log=lambda _line: None)
+
+            self.assertEqual(batch.get("local_board_url"), local_board_url)
+            self.assertEqual(batch.get("cloud_board_url"), cloud_board_url)
+            self.assertEqual(batch["board_url"], cloud_board_url)
+            self.assertIn(cloud_board_url, batch["approval_message"])
+            self.assertNotIn(local_board_url, batch["approval_message"])
+            saved = json.loads(Path(batch["json_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(saved["board_url"], cloud_board_url)
+
     def test_selected_upload_plan_from_approval_batch_only_keeps_confirmed_ai_images(self):
         module = load_script()
         batch = {

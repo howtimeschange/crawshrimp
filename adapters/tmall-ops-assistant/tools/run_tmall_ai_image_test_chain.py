@@ -352,6 +352,11 @@ def approval_base_url(value: object = "") -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def cloud_approval_board_url(base_url: object, batch_id: object) -> str:
+    query = urllib.parse.urlencode({"batch_uid": compact(batch_id)})
+    return f"{approval_base_url(base_url)}/?{query}"
+
+
 def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     payload = json.dumps(json_safe(batch), ensure_ascii=False).replace("</", "<\\/")
     title = "天猫AI测图审批看板"
@@ -724,9 +729,20 @@ def maybe_sync_approval_batch_to_cloud(batch: dict[str, Any], *, log=print) -> d
     )
     try:
         result = sync_local_approval_batch(batch, client)
+        local_board_url = compact(batch.get("local_board_url") or batch.get("board_url"))
+        cloud_board_url = cloud_approval_board_url(base_url, batch.get("batch_id"))
+        batch["local_board_url"] = local_board_url
+        batch["cloud_board_url"] = cloud_board_url
+        batch["board_url"] = cloud_board_url
+        run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+        batch["approval_message"] = render_approval_message_template(
+            str(run_params.get("approval_message_template") or ""),
+            batch,
+        )
         batch["cloud_sync"] = {
             "status": "synced",
             "base_url": base_url,
+            "board_url": cloud_board_url,
             "result": json_safe(result),
             "synced_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         }

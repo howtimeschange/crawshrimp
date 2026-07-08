@@ -32,6 +32,14 @@ describe('cloud approval UI contract', () => {
     }
   })
 
+  it('opens batch review from batch_uid query links', () => {
+    const app = read('src/app/App.vue')
+    expect(app).toContain('new URLSearchParams(window.location.search)')
+    expect(app).toContain("'batch_uid'")
+    expect(app).toContain("activePage.value = 'review'")
+    expect(app).toContain('selectedBatchUid.value = directBatchUid')
+  })
+
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
     const adminUsers = read('src/app/views/AdminUsersView.vue')
     expect(adminUsers).toContain('function loadedRoleKey')
