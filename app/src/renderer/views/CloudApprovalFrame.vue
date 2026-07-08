@@ -18,24 +18,19 @@
     </section>
 
     <section v-else class="frame-shell">
-      <div class="frame-toolbar">
-        <div>
-          <strong>{{ status?.machine_name || '本机任务机' }}</strong>
-          <span>{{ cloudUrl }}</span>
-        </div>
-        <button class="btn-ghost" @click="openExternal">外部打开</button>
-      </div>
-      <iframe :src="cloudUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" />
+      <iframe :src="embeddedUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" />
     </section>
   </div>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { buildEmbeddedCloudApprovalUrl } from '../utils/cloudApprovalUrl.js'
 
 const status = ref(null)
 const error = ref('')
 const cloudUrl = computed(() => String(status.value?.base_url || '').trim())
+const embeddedUrl = computed(() => buildEmbeddedCloudApprovalUrl(cloudUrl.value))
 
 async function refresh() {
   try {
@@ -44,11 +39,6 @@ async function refresh() {
   } catch (e) {
     error.value = e?.message || '读取云端审批状态失败'
   }
-}
-
-async function openExternal() {
-  if (!cloudUrl.value) return
-  await window.cs.openExternalUrl(cloudUrl.value)
 }
 
 onMounted(refresh)
@@ -140,57 +130,14 @@ onMounted(refresh)
   min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: 16px 20px 20px;
-  gap: 12px;
-}
-
-.frame-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  min-height: 44px;
-}
-
-.frame-toolbar div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.frame-toolbar strong {
-  font-size: 13px;
-}
-
-.frame-toolbar span {
-  color: var(--text3);
-  font-size: 12px;
-  overflow-wrap: anywhere;
+  padding: 0;
 }
 
 iframe {
   flex: 1;
   min-height: 0;
   width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  border: 0;
   background: white;
-}
-
-.btn-ghost {
-  flex: 0 0 auto;
-  padding: 9px 13px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text2);
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.btn-ghost:hover {
-  background: var(--bg2);
-  color: var(--text);
 }
 </style>

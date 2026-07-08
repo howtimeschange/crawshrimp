@@ -49,12 +49,16 @@ function cookieValue(request: Request, name: string): string | null {
   return null
 }
 
+function cookieAttributes(ttlSeconds: number): string {
+  return `Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${ttlSeconds}`
+}
+
 function sessionCookie(token: string, ttlSeconds: number): string {
-  return `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${ttlSeconds}`
+  return `${SESSION_COOKIE}=${token}; ${cookieAttributes(ttlSeconds)}`
 }
 
 function expiredSessionCookie(): string {
-  return `${SESSION_COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0`
+  return `${SESSION_COOKIE}=; ${cookieAttributes(0)}`
 }
 
 function responseFor(user: UserRow, roles: RoleRow[]): Record<string, unknown> {

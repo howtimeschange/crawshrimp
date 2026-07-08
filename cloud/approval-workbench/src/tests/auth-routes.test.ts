@@ -210,6 +210,23 @@ async function addSession(state: FakeState, userId: number, token: string): Prom
 }
 
 describe('auth routes', () => {
+  it('POST /api/auth/login returns an embeddable secure session cookie', async () => {
+    const state = await stateWithUsers()
+    const response = await fetchWorker(
+      new Request('https://example.test/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: 'admin@example.com', password: 'admin-pass' }),
+      }),
+      fakeEnv(state),
+    )
+
+    const cookie = response.headers.get('set-cookie') || ''
+    expect(response.status).toBe(200)
+    expect(cookie).toContain('HttpOnly')
+    expect(cookie).toContain('Secure')
+    expect(cookie).toContain('SameSite=None')
+  })
+
   it('POST /api/auth/login rejects inactive users', async () => {
     const state = await stateWithUsers()
     const response = await fetchWorker(
