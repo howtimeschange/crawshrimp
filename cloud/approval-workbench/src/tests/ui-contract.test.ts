@@ -32,6 +32,14 @@ describe('cloud approval UI contract', () => {
     }
   })
 
+  it('batch review is an image-review workbench instead of another batch list table', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    for (const marker of ['review-workbench', 'style-nav-panel', 'review-gallery', 'review-inspector']) {
+      expect(review).toContain(marker)
+    }
+    expect(review).not.toContain('class="data-table"')
+  })
+
   it('opens batch review from batch_uid query links', () => {
     const app = read('src/app/App.vue')
     expect(app).toContain('new URLSearchParams(window.location.search)')
