@@ -162,6 +162,21 @@ describe('cloud approval UI contract', () => {
     expect(clearCount).toBeGreaterThanOrEqual(2)
   })
 
+  it('online generation discards stale resolved prompt responses before mutating prompt state', () => {
+    const generate = read('src/app/views/OnlineGenerationView.vue')
+    const loadResolvedPromptsBody = generate.match(/async function loadResolvedPrompts\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+
+    expect(generate).toContain('let promptLoadSequence = 0')
+    expect(loadResolvedPromptsBody).toContain('const requestSequence = ++promptLoadSequence')
+    expect(loadResolvedPromptsBody).toContain('const requestSignature = currentPromptRequestSignature()')
+    expect(loadResolvedPromptsBody).toContain('isCurrentPromptRequest(requestSequence, requestSignature)')
+
+    const staleGuardIndex = loadResolvedPromptsBody.indexOf('isCurrentPromptRequest(requestSequence, requestSignature)')
+    const templateMutationIndex = loadResolvedPromptsBody.indexOf('promptTemplates.value = data.templates')
+    expect(staleGuardIndex).toBeGreaterThanOrEqual(0)
+    expect(templateMutationIndex).toBeGreaterThan(staleGuardIndex)
+  })
+
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
     const adminUsers = read('src/app/views/AdminUsersView.vue')
     expect(adminUsers).toContain('function loadedRoleKey')

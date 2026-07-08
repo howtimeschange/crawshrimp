@@ -67,6 +67,7 @@ const count = ref(1)
 const message = ref('')
 const error = ref('')
 const submitting = ref(false)
+let promptLoadSequence = 0
 
 const styles = computed(() => batch.value?.styles ?? [])
 const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? styles.value[0] ?? null)
@@ -163,27 +164,50 @@ async function loadPromptLibraries() {
 }
 
 async function loadResolvedPrompts() {
-  if (!selectedLibraryId.value || !selectedStyle.value) {
+  const requestSequence = ++promptLoadSequence
+  const requestSignature = currentPromptRequestSignature()
+  const libraryId = selectedLibraryId.value
+  const style = selectedStyle.value
+  if (!requestSignature || !libraryId || !style) {
     promptTemplates.value = []
     selectedTemplateKey.value = ''
     promptText.value = ''
     return
   }
   const params = new URLSearchParams()
-  if (selectedStyle.value.category) params.set('category', selectedStyle.value.category)
-  if (selectedStyle.value.gender) params.set('gender', selectedStyle.value.gender)
-  if (selectedStyle.value.style_code) params.set('style_code', selectedStyle.value.style_code)
-  if (selectedStyle.value.item_id) params.set('item_id', selectedStyle.value.item_id)
+  if (style.category) params.set('category', style.category)
+  if (style.gender) params.set('gender', style.gender)
+  if (style.style_code) params.set('style_code', style.style_code)
+  if (style.item_id) params.set('item_id', style.item_id)
   try {
-    const data = await apiGet<{ templates: PromptTemplate[] }>(`/api/prompt-libraries/${selectedLibraryId.value}/resolved?${params.toString()}`)
+    const data = await apiGet<{ templates: PromptTemplate[] }>(`/api/prompt-libraries/${libraryId}/resolved?${params.toString()}`)
+    if (!isCurrentPromptRequest(requestSequence, requestSignature)) return
     promptTemplates.value = data.templates
     selectedTemplateKey.value = templateKey(data.templates[0])
     promptText.value = data.templates[0]?.prompt_text ?? ''
   } catch {
+    if (!isCurrentPromptRequest(requestSequence, requestSignature)) return
     promptTemplates.value = []
     selectedTemplateKey.value = ''
     promptText.value = ''
   }
+}
+
+function currentPromptRequestSignature(): string {
+  const style = selectedStyle.value
+  if (!selectedLibraryId.value || !style) return ''
+  return [
+    selectedLibraryId.value,
+    style.id,
+    style.style_code,
+    style.item_id,
+    style.category,
+    style.gender,
+  ].join('|')
+}
+
+function isCurrentPromptRequest(sequence: number, signature: string): boolean {
+  return sequence === promptLoadSequence && signature === currentPromptRequestSignature()
 }
 
 function templateKey(template?: PromptTemplate): string {
