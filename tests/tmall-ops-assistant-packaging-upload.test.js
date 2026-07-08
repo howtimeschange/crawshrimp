@@ -5048,6 +5048,76 @@ test('wait_reopened_tmall_ready reapplies modular PC detail before mobile sync',
   assert.match(result.meta.shared.pc_publish_note, /已切换文本PC详情并回写PC详情模块/)
 })
 
+test('wait_reopened_tmall_ready reapplies legacy html PC detail after switching text editor', async () => {
+  const oldHtml = '<p><img src="https://img.alicdn.com/old-detail.jpg"/></p>'
+  const appliedHtml = '<p><img src="https://img.alicdn.com/new-detail.jpg"/></p>'
+  const models = {
+    formValues: {
+      tmDescription: oldHtml,
+      descType: { text: '使用旺铺详情编辑器', value: 1 },
+    },
+  }
+  const state = {
+    getComponentValue(name) {
+      if (name === 'mainImagesGroup') return { images: [] }
+      if (name === 'outerId') return '208926179201'
+      return models.formValues[name]
+    },
+    getComponentProps() {
+      return {}
+    },
+    engine: {
+      getModels() {
+        return models
+      },
+      updateModels(update) {
+        Object.assign(models, update)
+      },
+      getComponent() {
+        return null
+      },
+    },
+  }
+  const { result } = await runScript({
+    phase: 'wait_reopened_tmall_ready',
+    shared: {
+      publish_stage: 'pc',
+      pc_detail_target: 'tmDescription',
+      pc_publish_note: 'PC端详情已提交发布',
+      applied_pc_detail_html: appliedHtml,
+      applied_desc_type: { text: '使用文本编辑', value: 0 },
+      current_job: {
+        item_id: '1012647077224',
+        style_code: '208926179201',
+      },
+      current_result_rows: [],
+    },
+    locationOverride: {
+      href: 'https://sell.publish.tmall.com/tmall/publish.htm?id=1012647077224',
+    },
+    documentOverride: {
+      title: '商品编辑',
+      body: { innerText: '' },
+      querySelectorAll() {
+        return []
+      },
+    },
+    windowOverride: {
+      __SELL_STATE__: {
+        getState() {
+          return state
+        },
+      },
+    },
+  })
+
+  assert.equal(result.meta.next_phase, 'sync_mobile_detail_api')
+  assert.equal(result.meta.shared.legacy_html_reapplied_after_reopen, true)
+  assert.deepEqual(models.formValues.descType, { text: '使用文本编辑', value: 0 })
+  assert.equal(models.formValues.tmDescription, appliedHtml)
+  assert.match(result.meta.shared.pc_publish_note, /已切换文本PC详情并回写旧版PC详情/)
+})
+
 test('wait_reopened_tmall_ready reapplies Shenbi PC detail before mobile sync', async () => {
   const shenbiPcValue = {
     detail: '<div><img src="https://img.alicdn.com/new-detail.jpg"/></div>',
@@ -6190,6 +6260,7 @@ test('buildTmallComponentValues writes old text PC detail through tmDescription 
   const values = helpers.buildTmallComponentValues({
     pc_detail: [{ url: 'https://img.example/detail-1.jpg' }],
   }, {
+    descType: { text: '使用旺铺详情编辑器', value: 1 },
     tmDescription: [
       '<p>童装销售额全亚洲第一<img src="https://img.example/top.jpg"/></p>',
       '<p>产品信息</p>',
@@ -6203,6 +6274,8 @@ test('buildTmallComponentValues writes old text PC detail through tmDescription 
   assert.match(values.tmDescription, /detail-1\.jpg/)
   assert.doesNotMatch(values.tmDescription, /old\.jpg/)
   assert.equal(values.pcDetailReplacement.target, 'tmDescription')
+  assert.equal(values.descType.value, 0)
+  assert.equal(values.descType.text, '使用文本编辑')
 })
 
 test('buildTmallSubmitPayload mirrors Tmall submit.htm form fields', async () => {

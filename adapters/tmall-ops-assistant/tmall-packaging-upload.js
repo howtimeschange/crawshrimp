@@ -5462,14 +5462,18 @@
       (aggregateNewDescValue ? 'descRepublicOfSell' : '') ||
       (pcDetailReplacement?.ok && currentModules.length ? 'modularDesc' : '') ||
       (pcDetailReplacement?.ok && currentTmDescription ? 'tmDescription' : '')
+    const useTextPcDetailForLegacyHtml = !!(pcDetailReplacement?.ok && pcDetailReplacementTarget === 'tmDescription')
+    const useTextPcDetail = useTextPcDetailForShenbi || useTextPcDetailForLegacyHtml
     const normalizedPcDetailReplacement = pcDetailReplacement
       ? {
           ...pcDetailReplacement,
           target: pcDetailReplacementTarget,
-          textPcDetailMode: useTextPcDetailForShenbi,
+          textPcDetailMode: useTextPcDetail,
           note: useTextPcDetailForShenbi
             ? compact([pcDetailReplacement.note, '旺铺PC详情组件不可直接表单持久化，已自动切换为“使用文本编辑”并回写文本PC详情模块'].filter(Boolean).join('；'))
-            : pcDetailReplacement.note,
+            : useTextPcDetailForLegacyHtml
+              ? compact([pcDetailReplacement.note, '已自动切换为“使用文本编辑”并回写旧版文本PC详情'].filter(Boolean).join('；'))
+              : pcDetailReplacement.note,
         }
       : pcDetailReplacement
     const modularDesc = currentModules.length && pcDetailReplacementTarget === 'modularDesc' && pcDetailReplacement.ok ? pcDetailReplacement.modules : undefined
@@ -5486,7 +5490,7 @@
       guideImageGroup: vertical.length ? { ...currentGuide, verticalImage: vertical } : undefined,
       descRepublicOfSell,
       descForShenbiPc,
-      descType: useTextPcDetailForShenbi ? buildTextPcDescTypeValue(currentValues.descType) : undefined,
+      descType: useTextPcDetail ? buildTextPcDescTypeValue(currentValues.descType) : undefined,
       modularDesc,
       tmDescription,
       detailHtml: pcDetailReplacement.detailHtml || '',
@@ -5605,7 +5609,7 @@
     const current = currentValue && typeof currentValue === 'object' ? jsonClone(currentValue) : {}
     return {
       ...current,
-      text: compact(current.text) || '使用文本编辑',
+      text: '使用文本编辑',
       value: 0,
     }
   }
@@ -8621,6 +8625,10 @@
         })
       }
       if (isLegacyHtmlPcDetailTarget(shared) && shared.applied_pc_detail_html && !shared.legacy_html_reapplied_after_reopen) {
+        const descTypeApplied = shared.applied_desc_type ? applyFormValue('descType', shared.applied_desc_type) : { ok: true }
+        if (!descTypeApplied.ok) {
+          return failCurrentJob(`重新进入编辑页后切换文本PC详情失败：${descTypeApplied.reason || '未知原因'}`, 'PC详情回写失败')
+        }
         const modelApplied = applyFormValue('tmDescription', shared.applied_pc_detail_html)
         const domApplied = applyLegacyPcDetailDom(shared.applied_pc_detail_html)
         if (!modelApplied.ok) {
@@ -8630,8 +8638,8 @@
           ...shared,
           tmall_wait_attempts: 0,
           legacy_html_reapplied_after_reopen: true,
-          pc_publish_note: compact([shared.pc_publish_note, `重新进入编辑页后已回写旧版PC详情${domApplied.ok ? '' : '（未找到可见textarea，仅写入模型）'}`].filter(Boolean).join('；')),
-          current_store: '旧版PC详情已回写，继续同步手机端详情',
+          pc_publish_note: compact([shared.pc_publish_note, `${shared.applied_desc_type ? '重新进入编辑页后已切换文本PC详情并回写旧版PC详情' : '重新进入编辑页后已回写旧版PC详情'}${domApplied.ok ? '' : '（未找到可见textarea，仅写入模型）'}`].filter(Boolean).join('；')),
+          current_store: shared.applied_desc_type ? '文本旧版PC详情已回写，继续同步手机端详情' : '旧版PC详情已回写，继续同步手机端详情',
         })
       }
       return nextPhase('sync_mobile_detail_api', TMALL_PAGE_WAIT_MS, {
