@@ -192,6 +192,26 @@ class CloudApiServerTests(unittest.TestCase):
         self.assertTrue(second["status"]["running"])
         self.assertEqual(len(FakeCloudMachineAgent.run_calls), 1)
 
+    def test_enabled_machine_auto_start_uses_saved_enrollment(self):
+        data_sink.save_cloud_machine_credentials("machine-cloud-1", "csr_machine_secret", "任务机", ["cap"])
+        save_config({
+            **DEFAULT_CONFIG,
+            "cloud_approval": {
+                **DEFAULT_CONFIG["cloud_approval"],
+                "base_url": "https://approval.example.test",
+                "machine_name": "任务机",
+                "machine_enabled": True,
+            },
+        })
+
+        with patch("core.api_server.CloudMachineAgent", FakeCloudMachineAgent):
+            started = api_server._start_cloud_machine_if_enabled()
+            started_again = api_server._start_cloud_machine_if_enabled()
+
+        self.assertTrue(started)
+        self.assertFalse(started_again)
+        self.assertEqual(len(FakeCloudMachineAgent.run_calls), 1)
+
     def test_machine_stop_stops_controller_thread(self):
         data_sink.save_cloud_machine_credentials("machine-cloud-1", "csr_machine_secret", "任务机", ["cap"])
         save_config({

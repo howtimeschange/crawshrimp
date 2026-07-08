@@ -4955,6 +4955,10 @@ async def lifespan(app: FastAPI):
             sched_module.start()
         except Exception:
             logger.exception("scheduler startup failed; continuing without scheduled jobs")
+        try:
+            _start_cloud_machine_if_enabled()
+        except Exception:
+            logger.exception("cloud approval machine auto-start failed; continuing without cloud machine loop")
     logger.info("crawshrimp core started")
     try:
         yield
@@ -6755,6 +6759,17 @@ def start_cloud_machine():
     cloud_machine_controller.start(_cloud_machine_agent(client))
     patch_config({"cloud_approval": {**_cloud_approval_config(), "machine_enabled": True}})
     return {"ok": True, "status": _cloud_approval_status()}
+
+
+def _start_cloud_machine_if_enabled() -> bool:
+    cloud = _cloud_approval_config()
+    if not bool(cloud.get("machine_enabled")):
+        return False
+    status = _cloud_approval_status()
+    if not status["configured"] or not status["token_present"]:
+        logger.warning("Cloud approval machine is enabled but not configured or enrolled; skip auto-start")
+        return False
+    return cloud_machine_controller.start(_cloud_machine_agent(_build_cloud_client()))
 
 
 @app.post("/cloud-approval/machine/stop")
