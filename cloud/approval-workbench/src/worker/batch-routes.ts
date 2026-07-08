@@ -112,6 +112,11 @@ interface ImageResourceRow {
 
 const ALLOWED_KINDS = new Set(['source', 'reference', 'ai', 'table', 'log', 'result'])
 const SUBMIT_MACHINE_MAX_AGE_MS = 2 * 60 * 1000
+const GENERATION_MODELS = new Set(['gpt-image-2', 'gemini-3.1-flash-image-preview', 'gemini-3-pro-image-preview'])
+const GENERATION_SIZES = new Set(['1:1', '3:4', '4:3', '16:9', '9:16', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '4096x4096'])
+const GENERATION_QUALITIES = new Set(['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K'])
+const GENERATION_FORMATS = new Set(['png', 'jpeg', 'jpg', 'webp'])
+const SECRET_FIELD_PATTERN = /^(api[_-]?key|webhook[_-]?secret|authorization)$/i
 
 export async function syncBatch(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -400,6 +405,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   if (actor instanceof Response) return actor
   const batchUid = batchUidFromGeneratePath(request)
   const body = await readJsonObject(request)
+  if (containsSecretishInput(body)) return badRequest('generation request must not include secrets or data URLs')
   const styleId = Number(body.style_id ?? body.styleId)
   const sourceAssetUid = stringValue(body.source_asset_uid ?? body.sourceAssetUid)
   const referenceAssetUids = stringArray(body.reference_asset_uids ?? body.referenceAssetUids)
@@ -407,9 +413,19 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   const promptTemplateVersionId = numberOrNull(body.prompt_template_version_id ?? body.promptTemplateVersionId)
   const machineId = stringValue(body.machine_id ?? body.machineId)
   const requestNonce = stringValue(body.request_nonce ?? body.requestNonce)
+  const model = stringValue(body.model) || 'gpt-image-2'
+  const size = stringValue(body.size) || '1:1'
+  const quality = stringValue(body.quality) || 'auto'
+  const outputFormat = normalizeOutputFormat(stringValue(body.output_format ?? body.outputFormat) || 'png')
+  const count = Number(body.count ?? 1)
   if (!batchUid || !Number.isInteger(styleId) || styleId <= 0 || !sourceAssetUid || !promptText) {
     return badRequest('batch_uid, style_id, source_asset_uid, and prompt_text are required')
   }
+  if (!GENERATION_MODELS.has(model)) return badRequest('unsupported generation model')
+  if (!GENERATION_SIZES.has(size)) return badRequest('unsupported generation size')
+  if (!GENERATION_QUALITIES.has(quality)) return badRequest('unsupported generation quality')
+  if (!GENERATION_FORMATS.has(outputFormat)) return badRequest('unsupported output_format')
+  if (!Number.isInteger(count) || count < 1 || count > 8) return badRequest('count must be an integer from 1 to 8')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
@@ -427,9 +443,11 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   const promptHash = await sha256Hex(promptText)
   const refsHash = await sha256Hex(JSON.stringify(referenceAssetUids))
   const promptTemplateVersionKey = promptTemplateVersionId ?? ''
-  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${machineId}:${requestNonce}`
+  const settingsHash = await sha256Hex(JSON.stringify({ model, size, quality, output_format: outputFormat, count }))
+  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${settingsHash}:${machineId}:${requestNonce}`
   const existing = await findDispatchJob(env, 'generate_ai_image', idempotencyKey)
   const requestUid = existing ? '' : randomToken('gen')
+  const resultAssetUids = Array.from({ length: count }, (_, index) => `gen-result-${randomToken('job').replace(/^job-/, '')}-${index + 1}`)
   const payload = {
     request_uid: requestUid,
     batch_uid: batchUid,
@@ -443,6 +461,13 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
     reference_asset_uids: referenceAssetUids,
     prompt_template_version_id: promptTemplateVersionId,
     prompt_text: promptText,
+    model,
+    size,
+    quality,
+    output_format: outputFormat,
+    count,
+    machine_id: machineId || null,
+    result_asset_uids: resultAssetUids,
     request_nonce: requestNonce,
   }
   const job = existing ?? await insertDispatchJob(env, {
@@ -896,6 +921,21 @@ async function hasActiveSubmitJob(env: Env, batchUid: string): Promise<boolean> 
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0).map((item) => item.trim()) : []
+}
+
+function normalizeOutputFormat(value: string): string {
+  return value.toLowerCase() === 'jpeg' ? 'jpg' : value.toLowerCase()
+}
+
+function containsSecretishInput(value: unknown): boolean {
+  if (typeof value === 'string') return /data:image/i.test(value)
+  if (!value || typeof value !== 'object') return false
+  if (Array.isArray(value)) return value.some(containsSecretishInput)
+  for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+    if (SECRET_FIELD_PATTERN.test(key)) return true
+    if (containsSecretishInput(child)) return true
+  }
+  return false
 }
 
 function promptOverrideMap(value: unknown): Map<string, string> {

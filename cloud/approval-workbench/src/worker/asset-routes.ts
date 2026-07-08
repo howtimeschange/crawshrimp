@@ -328,6 +328,13 @@ function isAssetAllowedForMachineJob(job: DispatchJobRow, asset: { assetUid: str
     if (asset.access === 'download') return stringArray(payload.reference_asset_uids).includes(asset.assetUid)
     return asset.kind === 'ai' && stringValue(payload.asset_uid) === asset.assetUid
   }
+  if (job.job_type === 'generate_ai_image') {
+    if (stringValue(payload.batch_uid) !== asset.batchUid || Number(payload.style_id) !== asset.styleId) return false
+    if (asset.access === 'download') {
+      return stringValue(payload.source_asset_uid) === asset.assetUid || stringArray(payload.reference_asset_uids).includes(asset.assetUid)
+    }
+    return asset.kind === 'ai' && stringArray(payload.result_asset_uids).includes(asset.assetUid)
+  }
   if (job.job_type === 'submit_tmall_material_test') {
     const submitPlan = payload.submit_plan && typeof payload.submit_plan === 'object' && !Array.isArray(payload.submit_plan) ? payload.submit_plan as Record<string, unknown> : {}
     if (stringValue(submitPlan.batch_uid) !== asset.batchUid) return false

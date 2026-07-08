@@ -115,7 +115,7 @@ interface State {
   approvalEvents: ApprovalEventRow[]
   dispatchJobs: DispatchJobRow[]
   generationRequests: GenerationRequestRow[]
-  audits: unknown[]
+  audits: Array<{ action: string; payload_json: string }>
 }
 
 class FakeD1Statement {
@@ -271,7 +271,7 @@ class FakeD1Statement {
       return result(1, id)
     }
     if (sql.startsWith('insert into audit_logs')) {
-      this.state.audits.push({ action: String(this.params[2]) })
+      this.state.audits.push({ action: String(this.params[2]), payload_json: String(this.params[5]) })
       return result(1)
     }
     return result(1)
@@ -520,6 +520,11 @@ describe('review routes', () => {
         reference_asset_uids: ['asset-source-1'],
         prompt_template_version_id: 31,
         prompt_text: 'fresh prompt',
+        model: 'gpt-image-2',
+        size: '1024x1024',
+        quality: 'high',
+        output_format: 'jpeg',
+        count: 3,
         machine_id: 'machine-1',
       }),
     }), fakeEnv(state))
@@ -537,7 +542,14 @@ describe('review routes', () => {
       reference_asset_uids: ['asset-source-1'],
       prompt_template_version_id: 31,
       prompt_text: 'fresh prompt',
+      model: 'gpt-image-2',
+      size: '1024x1024',
+      quality: 'high',
+      output_format: 'jpg',
+      count: 3,
+      machine_id: 'machine-1',
     })
+    expect(state.dispatchJobs[0].payload_json).not.toMatch(/api_key|webhook_secret|Authorization|data:image/i)
     expect(state.generationRequests[0]).toMatchObject({
       batch_uid: 'batch-1',
       style_id: 1,
@@ -547,6 +559,45 @@ describe('review routes', () => {
       status: 'queued',
       dispatch_job_uid: state.dispatchJobs[0].job_uid,
     })
+    expect(state.generationRequests[0].reference_asset_uids_json).not.toMatch(/api_key|webhook_secret|Authorization|data:image/i)
+    expect(JSON.stringify(state.audits)).not.toMatch(/api_key|webhook_secret|Authorization|data:image/i)
+  })
+
+  it('rejects unsupported or unsafe online generation parameters', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const cases: Array<[string, Record<string, unknown>]> = [
+      ['unsupported model', { model: 'dall-e-3' }],
+      ['invalid size', { size: '10000x1' }],
+      ['invalid ratio', { size: '2:3' }],
+      ['invalid quality', { quality: 'ultra' }],
+      ['invalid format', { output_format: 'tiff' }],
+      ['count too small', { count: 0 }],
+      ['count too large', { count: 9 }],
+      ['secret field', { api_key: 'sk-secret' }],
+      ['data url prompt', { prompt_text: 'use data:image/png;base64,abc' }],
+    ]
+
+    for (const [label, override] of cases) {
+      const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+        method: 'POST',
+        headers: { cookie: reviewerCookie },
+        body: JSON.stringify({
+          style_id: 1,
+          source_asset_uid: 'asset-source-1',
+          prompt_text: 'fresh prompt',
+          model: 'gpt-image-2',
+          size: '1:1',
+          quality: 'auto',
+          output_format: 'png',
+          count: 1,
+          ...override,
+        }),
+      }), fakeEnv(state))
+
+      expect(response.status, label).toBe(400)
+    }
+    expect(state.dispatchJobs).toHaveLength(0)
+    expect(state.generationRequests).toHaveLength(0)
   })
 
   it('online generation idempotency includes template version and target machine choices', async () => {

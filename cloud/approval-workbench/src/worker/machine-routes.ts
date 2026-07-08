@@ -570,8 +570,8 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
   const leaseId = typeof body.lease_id === 'string' ? body.lease_id : ''
   if (!jobUid || !leaseId) return badRequest('job_uid and lease_id are required')
   const result = body.result && typeof body.result === 'object' && !Array.isArray(body.result) ? body.result as Record<string, unknown> : {}
+  const activeJob = await activeJobForLease(env, jobUid, leaseId, machine.machine_id)
   if (status === 'succeeded') {
-    const activeJob = await activeJobForLease(env, jobUid, leaseId, machine.machine_id)
     if (activeJob?.job_type === 'submit_tmall_material_test') {
       return completeSubmitJobWithLease(env, machine, activeJob, leaseId, body, result, eventType)
     }
@@ -593,9 +593,19 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
       .bind(nextHealth, nowIso(), machine.machine_id)
       .run()
   }
+  if (activeJob?.job_type === 'generate_ai_image') {
+    await updateGenerationRequestStatus(env, jobUid, status)
+  }
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, eventType, typeof body.message === 'string' ? body.message : '', { status, result })
   const nextJob = await jobForLease(env, jobUid, leaseId, machine.machine_id)
   return json({ ok: true, status, cancel_requested: Boolean(nextJob?.cancel_requested) })
+}
+
+async function updateGenerationRequestStatus(env: Env, jobUid: string, status: DispatchStatus): Promise<void> {
+  const requestStatus = status === 'succeeded' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'failed'
+  await env.DB.prepare('UPDATE ai_generation_requests SET status = ?, updated_at = ? WHERE dispatch_job_uid = ?')
+    .bind(requestStatus, nowIso(), jobUid)
+    .run()
 }
 
 async function activeJobForLease(env: Env, jobUid: string, leaseId: string, machineId: string): Promise<DispatchJobRow | null> {

@@ -118,6 +118,13 @@ interface AssetRow {
   updated_at: string
 }
 
+interface GenerationRequestRow {
+  request_uid: string
+  dispatch_job_uid: string
+  status: string
+  updated_at: string
+}
+
 interface FakeState {
   users: UserRow[]
   roles: RoleRow[]
@@ -130,6 +137,7 @@ interface FakeState {
   batches: BatchRow[]
   styles: StyleRow[]
   assets: AssetRow[]
+  generationRequests: GenerationRequestRow[]
   events: unknown[]
   audits: unknown[]
   claimRaceRequiredCapabilitiesJson?: string
@@ -465,6 +473,15 @@ class FakeD1Statement {
       job.updated_at = String(this.params[2])
       return result(1)
     }
+    if (normalized.startsWith('update ai_generation_requests set status')) {
+      const status = String(this.params[0])
+      const jobUid = String(this.params[2])
+      const request = this.state.generationRequests.find((row) => row.dispatch_job_uid === jobUid)
+      if (!request) return result(0)
+      request.status = status
+      request.updated_at = String(this.params[1])
+      return result(1)
+    }
     if (normalized.startsWith("update ai_image_batches set status = 'submitted'")) {
       const batch = this.state.batches.find((row) => row.batch_uid === String(this.params[1]))
       if (!batch) return result(0)
@@ -561,6 +578,7 @@ async function emptyState(): Promise<FakeState> {
     batches: [],
     styles: [],
     assets: [],
+    generationRequests: [],
     events: [],
     audits: [],
   }
@@ -1624,6 +1642,58 @@ describe('machine routes', () => {
       expect(state.jobs[0].assigned_machine_id).toBe('machine-1')
       expect(state.jobs[0].status).toBe('leased')
     }
+  })
+
+  it('updates generation request status when generate_ai_image jobs complete or fail', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['generate_ai_image']),
+    })
+    const machineToken = await enrollMachine(state, token, ['generate_ai_image'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.jobs.push(
+      jobRow({
+        job_uid: 'job-generate-complete',
+        job_type: 'generate_ai_image',
+        status: 'running',
+        assigned_machine_id: 'machine-1',
+        required_capabilities_json: JSON.stringify(['generate_ai_image']),
+        lease_id: 'lease-complete',
+      }),
+      jobRow({
+        id: 2,
+        job_uid: 'job-generate-fail',
+        job_type: 'generate_ai_image',
+        status: 'running',
+        assigned_machine_id: 'machine-1',
+        required_capabilities_json: JSON.stringify(['generate_ai_image']),
+        lease_id: 'lease-fail',
+      }),
+    )
+    state.generationRequests.push(
+      { request_uid: 'gen-request-complete', dispatch_job_uid: 'job-generate-complete', status: 'queued', updated_at: '2026-01-01T00:00:00.000Z' },
+      { request_uid: 'gen-request-fail', dispatch_job_uid: 'job-generate-fail', status: 'queued', updated_at: '2026-01-01T00:00:00.000Z' },
+    )
+
+    const complete = await fetchWorker(new Request('https://example.test/api/jobs/job-generate-complete/complete', {
+      method: 'POST',
+      headers: bearer(machineToken),
+      body: JSON.stringify({ lease_id: 'lease-complete', result: { generated_asset_uids: ['asset-ai-result-1'] } }),
+    }), fakeEnv(state))
+    state.machines[0].health = 'online_busy'
+    const fail = await fetchWorker(new Request('https://example.test/api/jobs/job-generate-fail/fail', {
+      method: 'POST',
+      headers: bearer(machineToken),
+      body: JSON.stringify({ lease_id: 'lease-fail', result: { error: 'provider timeout' } }),
+    }), fakeEnv(state))
+
+    expect(complete.status).toBe(200)
+    expect(fail.status).toBe(200)
+    expect(state.generationRequests.map((request) => [request.request_uid, request.status])).toEqual([
+      ['gen-request-complete', 'completed'],
+      ['gen-request-fail', 'failed'],
+    ])
   })
 
   it('claims a matching job beyond earlier non-matching queued jobs', async () => {

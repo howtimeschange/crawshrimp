@@ -708,6 +708,80 @@ describe('asset upload planning routes', () => {
     expect(state.r2Gets).toEqual(['batches/batch-20260707/ai/asset-ai-1-ai.jpg'])
   })
 
+  it('scopes generate_ai_image leases to source/reference downloads and generated AI result uploads', async () => {
+    const { state, machineToken } = await baseState()
+    state.dispatchJobs.push({
+      job_uid: 'job-generate',
+      batch_uid: 'batch-20260707',
+      job_type: 'generate_ai_image',
+      status: 'leased',
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-generate',
+      lease_expires_at: '2999-01-01T00:00:00.000Z',
+      payload_json: JSON.stringify({
+        batch_uid: 'batch-20260707',
+        style_id: 7,
+        request_uid: 'gen-request-1',
+        source_asset_uid: 'asset-source-1',
+        reference_asset_uids: ['asset-reference-1'],
+        result_asset_uids: ['asset-ai-result-1'],
+      }),
+    })
+    state.assets.push(
+      assetRow({ id: 1, asset_uid: 'asset-source-1', kind: 'source', object_key: 'batches/batch-20260707/source/source.jpg', filename: 'source.jpg' }),
+      assetRow({ id: 2, asset_uid: 'asset-reference-1', kind: 'reference', object_key: 'batches/batch-20260707/reference/reference.jpg', filename: 'reference.jpg' }),
+      assetRow({ id: 3, asset_uid: 'asset-unrelated', kind: 'source', object_key: 'batches/batch-20260707/source/unrelated.jpg', filename: 'unrelated.jpg' }),
+    )
+    const env = fakeEnv(state)
+
+    const sourceDownload = await fetchWorker(new Request('https://example.test/api/assets/asset-source-1/download?job_uid=job-generate&lease_id=lease-generate', {
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), env)
+    const referenceDownload = await fetchWorker(new Request('https://example.test/api/assets/asset-reference-1/download?job_uid=job-generate&lease_id=lease-generate', {
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), env)
+    const unrelatedDownload = await fetchWorker(new Request('https://example.test/api/assets/asset-unrelated/download?job_uid=job-generate&lease_id=lease-generate', {
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), env)
+    const resultUpload = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify({
+        batch_uid: 'batch-20260707',
+        style_id: 7,
+        asset_uid: 'asset-ai-result-1',
+        kind: 'ai',
+        filename: 'generated.png',
+        generation_job_id: 'gen-request-1',
+        job_uid: 'job-generate',
+        lease_id: 'lease-generate',
+      }),
+    }), env)
+    const unrelatedUpload = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify({
+        batch_uid: 'batch-20260707',
+        style_id: 7,
+        asset_uid: 'asset-ai-other',
+        kind: 'ai',
+        filename: 'other.png',
+        job_uid: 'job-generate',
+        lease_id: 'lease-generate',
+      }),
+    }), env)
+
+    expect(sourceDownload.status).toBe(404)
+    expect(referenceDownload.status).toBe(404)
+    expect(unrelatedDownload.status).toBe(403)
+    expect(resultUpload.status).toBe(200)
+    expect(unrelatedUpload.status).toBe(403)
+    expect(state.r2Gets).toEqual([
+      'batches/batch-20260707/source/source.jpg',
+      'batches/batch-20260707/reference/reference.jpg',
+    ])
+  })
+
   it('returns deterministic object keys under the batch prefix', async () => {
     const { state, machineToken } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
