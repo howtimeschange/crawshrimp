@@ -186,7 +186,7 @@ function normalizeDetailRow(row: Record<string, unknown>): MaterialTestDetailRow
     test_channel: text(mapped.test_channel),
     material_count: integer(mapped.material_count),
     statistic_type: text(mapped.statistic_type),
-    statistic_date: text(mapped.statistic_date),
+    statistic_date: normalizeStatisticDate(mapped.statistic_date),
     image_type: text(mapped.image_type),
     material_id: text(mapped.material_id),
     material_ratio: text(mapped.material_ratio),
@@ -226,6 +226,15 @@ function hasDetailIdentity(row: MaterialTestDetailRow): boolean {
 
 function text(value: unknown): string {
   return value === null || value === undefined ? '' : String(value).trim()
+}
+
+function normalizeStatisticDate(value: unknown): string {
+  const raw = text(value)
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw)
+  if (ymd) return `${ymd[1]}${ymd[2]}${ymd[3]}`
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(raw)
+  if (compact) return `${compact[1]}${compact[2]}${compact[3]}`
+  return raw
 }
 
 function integer(value: unknown): number {

@@ -79,3 +79,27 @@ Verification:
 Concerns:
 
 - `npm run build` still emits the existing Vite chunk-size warning for the bundled app asset; build exits successfully.
+
+## Second Re-review Fix Report
+
+Status: DONE
+
+Fixed the Task 6 re-review findings.
+
+- Added a deployable Worker cron trigger in `cloud/approval-workbench/wrangler.toml` with a five-minute cadence.
+- Normalized material-test `statistic_date` values to `YYYYMMDD` during workbook parsing and server import, and normalized UI query dates before filtering.
+- Reused the immediate crawl machine validation for schedule creation so selected machines must be active and must include `crawl_tmall_material_test_data`.
+- Restricted schedule creation `status` to `active` or `paused`, and validated `timezone` through `Intl.DateTimeFormat` before schedules can be stored.
+- Added regression coverage for `date=2026-06-30` matching rows stored as `20260630`, schedule machine validation, and invalid status/timezone rejection.
+
+Verification:
+
+- `cd cloud/approval-workbench && npm run test -- src/tests/material-data.test.ts`: passed
+- `cd cloud/approval-workbench && npm run typecheck`: passed
+- `cd cloud/approval-workbench && npm run build`: passed
+- `python -m unittest tests.test_cloud_material_data_export tests.test_cloud_job_executors`: passed
+- `git diff --check`: passed
+
+Concerns:
+
+- `npm run build` still emits the existing Vite chunk-size warning for the bundled app asset; build exits successfully.

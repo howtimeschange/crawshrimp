@@ -107,6 +107,7 @@ interface MaterialTestScheduleRow {
 
 const IMPORT_BATCH_SIZE = 500
 const ACTIVE_IMPORT_LEASE_STATUSES = new Set(['leased', 'running', 'uploading_results'])
+const VALID_SCHEDULE_STATUSES = new Set(['active', 'paused'])
 
 export async function importMaterialTestData(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -223,7 +224,7 @@ export async function listMaterialTestImages(request: Request, env: Env): Promis
   const filters: string[] = []
   const values: string[] = []
   addEqualFilter(filters, values, 'statistic_type', params.get('statistic_type'))
-  addEqualFilter(filters, values, 'statistic_date', params.get('date') || params.get('statistic_date'))
+  addEqualFilter(filters, values, 'statistic_date', normalizeStatisticDate(params.get('date') || params.get('statistic_date')))
   addEqualFilter(filters, values, 'image_type', params.get('image_type'))
   const search = stringValue(params.get('q') || params.get('search'))
   if (search) {
@@ -251,11 +252,8 @@ export async function createMaterialTestCrawlJob(request: Request, env: Env): Pr
   if (actor instanceof Response) return actor
   const body = await readJsonObject(request)
   const machineId = stringValue(body.machine_id ?? body.machineId)
-  if (machineId) {
-    const machine = await env.DB.prepare('SELECT * FROM task_machines WHERE machine_id = ? LIMIT 1').bind(machineId).first<MachineRow>()
-    if (!machine || machine.auth_status !== 'active') return badRequest('selected machine must be active')
-    if (!parseArray(machine.capabilities_json).includes('crawl_tmall_material_test_data')) return badRequest('selected machine lacks crawl_tmall_material_test_data capability')
-  }
+  const machineValidation = await validateMaterialTestMachine(env, machineId || null)
+  if (machineValidation instanceof Response) return machineValidation
   const payload = {
     run_params: objectValue(body.run_params ?? body.runParams),
     source: objectValue(body.source),
@@ -280,6 +278,13 @@ export async function createMaterialTestSchedule(request: Request, env: Env): Pr
   const body = await readJsonObject(request)
   const scheduleTime = stringValue(body.schedule_time ?? body.scheduleTime)
   if (!validScheduleTime(scheduleTime)) return badRequest('schedule_time must be HH:mm from 00:00 to 23:59')
+  const machineId = nullableString(body.machine_id ?? body.machineId)
+  const machineValidation = await validateMaterialTestMachine(env, machineId)
+  if (machineValidation instanceof Response) return machineValidation
+  const timezone = stringValue(body.timezone) || 'Asia/Shanghai'
+  if (!validTimeZone(timezone)) return badRequest('timezone must be a valid IANA time zone')
+  const status = stringValue(body.status) || 'active'
+  if (!VALID_SCHEDULE_STATUSES.has(status)) return badRequest('status must be active or paused')
   const now = nowIso()
   const scheduleUid = stringValue(body.schedule_uid ?? body.scheduleUid) || randomToken('mts')
   await env.DB.prepare(
@@ -296,7 +301,7 @@ export async function createMaterialTestSchedule(request: Request, env: Env): Pr
        payload_json = excluded.payload_json,
        updated_at = excluded.updated_at`,
   )
-    .bind(scheduleUid, stringValue(body.label) || '天猫测图数据抓取', stringValue(body.statistic_type ?? body.statisticType) || 'ACCUMULATE_30_DAYS', scheduleTime, stringValue(body.timezone) || 'Asia/Shanghai', stringValue(body.status) || 'active', nullableString(body.machine_id ?? body.machineId), toJson(objectValue(body.payload)), actor.user.id, now, now)
+    .bind(scheduleUid, stringValue(body.label) || '天猫测图数据抓取', stringValue(body.statistic_type ?? body.statisticType) || 'ACCUMULATE_30_DAYS', scheduleTime, timezone, status, machineId, toJson(objectValue(body.payload)), actor.user.id, now, now)
     .run()
   const schedule = await env.DB.prepare('SELECT * FROM material_test_crawl_schedules WHERE schedule_uid = ? LIMIT 1').bind(scheduleUid).first()
   await recordAudit(env, { userId: actor.user.id }, 'material_test.schedule.upsert', 'material_test_crawl_schedule', scheduleUid, { schedule_time: scheduleTime }, request)
@@ -391,7 +396,7 @@ function normalizeDetail(row: DetailRow, sourceUid: string, sourceFilename: stri
   return {
     ...base,
     statistic_type: stringValue(row.statistic_type ?? row.统计口径),
-    statistic_date: stringValue(row.statistic_date ?? row.统计日期),
+    statistic_date: normalizeStatisticDate(row.statistic_date ?? row.统计日期),
     image_type: stringValue(row.image_type ?? row.图片类型),
     material_id: stringValue(row.material_id ?? row.素材ID),
     material_ratio: stringValue(row.material_ratio ?? row.素材比例),
@@ -427,6 +432,14 @@ async function insertDispatchJob(env: Env, job: { requestedBy: number | null; as
   return row
 }
 
+async function validateMaterialTestMachine(env: Env, machineId: string | null): Promise<null | Response> {
+  if (!machineId) return null
+  const machine = await env.DB.prepare('SELECT * FROM task_machines WHERE machine_id = ? LIMIT 1').bind(machineId).first<MachineRow>()
+  if (!machine || machine.auth_status !== 'active') return badRequest('selected machine must be active')
+  if (!parseArray(machine.capabilities_json).includes('crawl_tmall_material_test_data')) return badRequest('selected machine lacks crawl_tmall_material_test_data capability')
+  return null
+}
+
 function findDispatchJob(env: Env, idempotencyKey: string): Promise<DispatchJobRow | null> {
   return env.DB.prepare("SELECT * FROM dispatch_jobs WHERE job_type = 'crawl_tmall_material_test_data' AND idempotency_key = ? LIMIT 1")
     .bind(idempotencyKey)
@@ -457,6 +470,15 @@ function validScheduleTime(value: string): boolean {
   const hour = Number(match[1])
   const minute = Number(match[2])
   return Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+}
+
+function validTimeZone(value: string): boolean {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value }).format(new Date())
+    return true
+  } catch {
+    return false
+  }
 }
 
 function scheduleOccurrence(schedule: MaterialTestScheduleRow, now: Date): { idempotencyKey: string } | null {
@@ -504,6 +526,16 @@ function addEqualFilter(filters: string[], values: string[], field: string, valu
   if (!text) return
   filters.push(`${field} = ?`)
   values.push(text)
+}
+
+function normalizeStatisticDate(value: unknown): string {
+  const text = stringValue(value)
+  if (!text) return ''
+  const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(text)
+  if (ymd) return `${ymd[1]}${ymd[2]}${ymd[3]}`
+  const compact = /^(\d{4})(\d{2})(\d{2})$/.exec(text)
+  if (compact) return `${compact[1]}${compact[2]}${compact[3]}`
+  return text
 }
 
 function auditActor(actor: MachineRow | CurrentUser): { machineId?: string; userId?: number } {

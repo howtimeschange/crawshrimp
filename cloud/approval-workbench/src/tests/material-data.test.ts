@@ -21,6 +21,7 @@ interface State {
   detailRows: Record<string, unknown>[]
   jobs: Record<string, unknown>[]
   schedules: Record<string, unknown>[]
+  machines: Array<{ machine_id: string; auth_status: string; capabilities_json: string }>
   batchCalls: number[]
   runCalls: number
 }
@@ -83,11 +84,7 @@ class FakeD1Statement {
       return (this.state.schedules.find((schedule) => schedule.schedule_uid === this.params[0]) ?? null) as T | null
     }
     if (sql.includes('from task_machines')) {
-      return {
-        machine_id: 'machine-1',
-        auth_status: 'active',
-        capabilities_json: JSON.stringify(['crawl_tmall_material_test_data']),
-      } as T
+      return (this.state.machines.find((machine) => machine.machine_id === String(this.params[0])) ?? null) as T | null
     }
     return null
   }
@@ -98,7 +95,14 @@ class FakeD1Statement {
       return { results: this.state.userRoles.filter((row) => row.user_id === userId).map((row) => this.state.roles.find((role) => role.id === row.role_id)).filter(Boolean) as T[] }
     }
     if (sql.includes('from material_test_image_metrics')) {
-      return { results: this.state.detailRows as T[] }
+      let rows = [...this.state.detailRows]
+      const statisticType = filterValueFor(sql, 'statistic_type', this.params)
+      const statisticDate = filterValueFor(sql, 'statistic_date', this.params)
+      const imageType = filterValueFor(sql, 'image_type', this.params)
+      if (statisticType) rows = rows.filter((row) => row.statistic_type === statisticType)
+      if (statisticDate) rows = rows.filter((row) => row.statistic_date === statisticDate)
+      if (imageType) rows = rows.filter((row) => row.image_type === imageType)
+      return { results: rows as T[] }
     }
     if (sql.includes('from material_test_crawl_schedules')) {
       return { results: this.state.schedules.filter((row) => row.status === 'active') as T[] }
@@ -203,6 +207,7 @@ describe('material test data import', () => {
 
     expect(percentToDecimal('7.79%')).toBeCloseTo(0.0779)
     expect(parsed.overview_rows).toHaveLength(1)
+    expect(parsed.detail_rows[0].statistic_date).toBe('20260701')
     expect(parsed.detail_rows[0].search_ctr).toBeCloseTo(0.0779)
     expect(parsed.detail_rows[0].detail_pay_conversion_rate).toBeCloseTo(0.025)
   })
@@ -216,7 +221,7 @@ describe('material test data import', () => {
       item_id: `100${index}`,
       task_id: 'T1',
       statistic_type: 'ACCUMULATE_30_DAYS',
-      statistic_date: '2026-07-01',
+      statistic_date: '20260630',
       image_type: '主图',
       material_id: `M${index}`,
       material_url: `https://img.test/${index}.jpg`,
@@ -249,6 +254,8 @@ describe('material test data import', () => {
 
     const images = await listMaterialTestImages(new Request('https://example.test/api/material-test/images', { headers: { cookie: 'cs_session=sess_material' } }), env)
     expect((await images.json() as { images: unknown[] }).images).toHaveLength(1001)
+    const dateFilteredImages = await listMaterialTestImages(new Request('https://example.test/api/material-test/images?date=2026-06-30', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    expect((await dateFilteredImages.json() as { images: unknown[] }).images).toHaveLength(1001)
 
     const crawl = await createMaterialTestCrawlJob(new Request('https://example.test/api/material-test/crawl-jobs', {
       method: 'POST',
@@ -320,6 +327,18 @@ describe('material test data import', () => {
       body: JSON.stringify({ schedule_time: '24:60' }),
     }), env)
     expect(invalid.status).toBe(400)
+    const invalidStatus = await createMaterialTestSchedule(new Request('https://example.test/api/material-test/schedules', {
+      method: 'POST',
+      headers: { cookie: 'cs_session=sess_material' },
+      body: JSON.stringify({ schedule_time: '09:30', status: 'pending' }),
+    }), env)
+    expect(invalidStatus.status).toBe(400)
+    const invalidTimezone = await createMaterialTestSchedule(new Request('https://example.test/api/material-test/schedules', {
+      method: 'POST',
+      headers: { cookie: 'cs_session=sess_material' },
+      body: JSON.stringify({ schedule_time: '09:30', timezone: 'Mars/Base' }),
+    }), env)
+    expect(invalidTimezone.status).toBe(400)
 
     const valid = await createMaterialTestSchedule(new Request('https://example.test/api/material-test/schedules', {
       method: 'POST',
@@ -333,6 +352,28 @@ describe('material test data import', () => {
     expect(second).toEqual({ checked: 1, enqueued: 0 })
     const queued = state.jobs.find((job) => String(job.idempotency_key).includes('schedule:sched-1:2026-07-08:09:30'))
     expect(queued).toMatchObject({ assigned_machine_id: 'machine-1', job_type: 'crawl_tmall_material_test_data' })
+  })
+
+  it('rejects schedules for inactive machines or machines without material crawl capability', async () => {
+    const state = await baseState()
+    state.machines.push({ machine_id: 'machine-paused', auth_status: 'paused', capabilities_json: JSON.stringify(['crawl_tmall_material_test_data']) })
+    state.machines.push({ machine_id: 'machine-submit', auth_status: 'active', capabilities_json: JSON.stringify(['submit_tmall_material_test']) })
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+
+    const inactive = await createMaterialTestSchedule(new Request('https://example.test/api/material-test/schedules', {
+      method: 'POST',
+      headers: { cookie: 'cs_session=sess_material' },
+      body: JSON.stringify({ schedule_time: '09:30', machine_id: 'machine-paused' }),
+    }), env)
+    const incapable = await createMaterialTestSchedule(new Request('https://example.test/api/material-test/schedules', {
+      method: 'POST',
+      headers: { cookie: 'cs_session=sess_material' },
+      body: JSON.stringify({ schedule_time: '09:30', machine_id: 'machine-submit' }),
+    }), env)
+
+    expect(inactive.status).toBe(400)
+    expect(incapable.status).toBe(400)
+    expect(state.schedules).toHaveLength(0)
   })
 })
 
@@ -348,6 +389,7 @@ async function baseState(): Promise<State> {
     detailRows: [],
     jobs: [],
     schedules: [],
+    machines: [{ machine_id: 'machine-1', auth_status: 'active', capabilities_json: JSON.stringify(['crawl_tmall_material_test_data']) }],
     batchCalls: [],
     runCalls: 0,
   }
@@ -383,4 +425,10 @@ function sum(rows: Record<string, unknown>[], field: string): number {
 
 function normalizeSql(sql: string): string {
   return sql.replace(/\s+/g, ' ').trim().toLowerCase()
+}
+
+function filterValueFor(sql: string, field: string, params: unknown[]): string {
+  const fields = ['statistic_type', 'statistic_date', 'image_type'].filter((candidate) => sql.includes(`${candidate} = ?`))
+  const index = fields.indexOf(field)
+  return index >= 0 ? String(params[index] || '') : ''
 }
