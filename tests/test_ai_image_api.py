@@ -40,16 +40,25 @@ class AiImageApiTests(unittest.TestCase):
             self.assertRouteRegistered(path, method)
 
     def test_job_crud_api_uses_data_sink(self):
+        output_dir = str(self.root / "api-exports")
         created = api_server.create_ai_image_job(api_server.AiImageJobRequest(
             title="主图",
             prompt="prompt",
+            output_dir=output_dir,
             params={"size": "1024x1024"},
         ))
 
         self.assertEqual(api_server.get_ai_image_job(created["job_uid"])["title"], "主图")
-        updated = api_server.update_ai_image_job(created["job_uid"], api_server.AiImageJobPatchRequest(status="ready"))
+        self.assertEqual(api_server.get_ai_image_job(created["job_uid"])["output_dir"], output_dir)
+        updated = api_server.update_ai_image_job(
+            created["job_uid"],
+            api_server.AiImageJobPatchRequest(status="ready", output_dir=str(self.root / "api-exports-2")),
+        )
         self.assertEqual(updated["status"], "ready")
-        self.assertEqual(api_server.list_ai_image_jobs()[0]["job_uid"], created["job_uid"])
+        self.assertEqual(updated["output_dir"], str(self.root / "api-exports-2"))
+        listed = api_server.list_ai_image_jobs()
+        self.assertEqual(listed[0]["job_uid"], created["job_uid"])
+        self.assertEqual(listed[0]["output_dir"], str(self.root / "api-exports-2"))
 
     def test_job_create_and_patch_ignore_client_controlled_summary(self):
         unsafe_summary = {

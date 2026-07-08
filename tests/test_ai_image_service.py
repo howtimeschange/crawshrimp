@@ -193,6 +193,35 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertNotIn("webhook_secret", summary_text)
         self.assertNotIn("secret-key", summary_text)
 
+    def test_run_job_marks_failed_when_download_setup_raises_before_saving_files(self):
+        job = data_sink.create_ai_image_job({
+            "title": "download setup failure",
+            "prompt": "prompt",
+            "params": {"size": "1024x1024"},
+        })
+
+        def fake_runner(*_args, **_kwargs):
+            return {"ok": True, "image_urls": ["https://cdn.example/one.png"]}
+
+        with patch("core.ai_image_service._unique_path", side_effect=RuntimeError("allocate failed api_key=secret-key data:image/png;base64,abc webhook_secret=hidden")):
+            result = ai_image_service.run_job_with_one_xm(
+                job["job_uid"],
+                settings={"2k": "secret-key", "4k": ""},
+                runner=fake_runner,
+                downloader=lambda _url, target: Path(target).write_bytes(b"png"),
+            )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        summary_text = json.dumps(refreshed["summary"], ensure_ascii=False)
+        self.assertFalse(result["ok"])
+        self.assertEqual(refreshed["status"], "failed")
+        self.assertIn("allocate failed", refreshed["summary"]["error"])
+        self.assertEqual(refreshed["summary"]["output_files"], [])
+        self.assertNotEqual(refreshed["status"], "running")
+        self.assertNotIn("secret-key", summary_text)
+        self.assertNotIn("data:image", summary_text)
+        self.assertNotIn("webhook_secret", summary_text)
+
     def test_download_outputs_uses_unique_names_without_overwriting_existing_files(self):
         output_dir = self.root / "downloads"
         output_dir.mkdir()

@@ -205,12 +205,14 @@ def init_db():
                 prompt TEXT NOT NULL DEFAULT '',
                 model_key TEXT NOT NULL DEFAULT 'gpt-image-2',
                 status TEXT NOT NULL DEFAULT 'draft',
+                output_dir TEXT NOT NULL DEFAULT '',
                 params_json TEXT NOT NULL DEFAULT '{}',
                 summary_json TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
         """)
+        _ensure_column(conn, "ai_image_jobs", "output_dir", "TEXT NOT NULL DEFAULT ''")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_ai_image_jobs_updated
             ON ai_image_jobs (updated_at)
@@ -394,10 +396,10 @@ def create_ai_image_job(payload: Optional[Mapping[str, Any]] = None) -> dict:
         conn.execute(
             """
             INSERT INTO ai_image_jobs (
-                job_uid, title, prompt, model_key, status, params_json,
+                job_uid, title, prompt, model_key, status, output_dir, params_json,
                 summary_json, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_uid,
@@ -405,6 +407,7 @@ def create_ai_image_job(payload: Optional[Mapping[str, Any]] = None) -> dict:
                 str(source.get("prompt") or "").strip(),
                 str(source.get("model_key") or "gpt-image-2").strip() or "gpt-image-2",
                 str(source.get("status") or "draft").strip() or "draft",
+                str(source.get("output_dir") or "").strip(),
                 _json_dumps(source.get("params") if isinstance(source.get("params"), Mapping) else {}),
                 _json_dumps(source.get("summary") if isinstance(source.get("summary"), Mapping) else {}),
                 now,
@@ -444,7 +447,7 @@ def list_ai_image_jobs(limit: int = 100) -> list[dict]:
 
 def update_ai_image_job(job_uid: str, payload: Optional[Mapping[str, Any]] = None) -> dict:
     source = dict(payload or {})
-    allowed = {"title", "prompt", "model_key", "status"}
+    allowed = {"title", "prompt", "model_key", "status", "output_dir"}
     updates: dict[str, Any] = {}
     for key in allowed:
         if key in source:

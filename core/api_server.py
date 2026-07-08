@@ -5064,6 +5064,7 @@ class AiImageJobRequest(BaseModel):
     prompt: str = ""
     model_key: str = "gpt-image-2"
     status: str = "draft"
+    output_dir: str = ""
     params: dict = {}
     summary: dict = {}
 
@@ -5073,6 +5074,7 @@ class AiImageJobPatchRequest(BaseModel):
     prompt: Optional[str] = None
     model_key: Optional[str] = None
     status: Optional[str] = None
+    output_dir: Optional[str] = None
     params: Optional[dict] = None
     summary: Optional[dict] = None
 

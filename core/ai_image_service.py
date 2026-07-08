@@ -138,15 +138,19 @@ def _extension_from_url(url: str, fallback: str = ".png") -> str:
 
 
 def _download_outputs(image_urls: list[str], output_dir: Path, downloader: Callable[[str, Path], None]) -> list[str]:
-    output_dir.mkdir(parents=True, exist_ok=True)
     files: list[str] = []
+    try:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        raise DownloadOutputsError(str(exc), files) from exc
     for index, url in enumerate(image_urls, start=1):
         suffix = _extension_from_url(url)
-        target = _unique_path(output_dir / f"result-{index:02d}{suffix}")
+        target: Path | None = None
         try:
+            target = _unique_path(output_dir / f"result-{index:02d}{suffix}")
             downloader(url, target)
         except Exception as exc:
-            if target.exists():
+            if target is not None and target.exists():
                 target.unlink()
             raise DownloadOutputsError(str(exc), files) from exc
         files.append(str(target))
@@ -246,7 +250,7 @@ def run_job_with_one_xm(
         summary["ok"] = False
         summary["error"] = download_error
     data_sink.update_ai_image_job(job_uid, {
-        "status": "partial_failed" if download_error else ("completed" if result.get("ok") else "failed"),
+        "status": ("partial_failed" if output_files else "failed") if download_error else ("completed" if result.get("ok") else "failed"),
         "summary": summary,
     })
     return {"ok": bool(result.get("ok")) and not download_error, "job_uid": job_uid, "summary": summary}

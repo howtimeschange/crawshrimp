@@ -17,28 +17,37 @@ class AiImageDataSinkTests(unittest.TestCase):
         data_sink.init_db()
 
     def test_job_crud_round_trips_structured_fields(self):
+        output_dir = str(self.root / "exports")
         job = data_sink.create_ai_image_job({
             "title": "秋装主图",
             "prompt": "clean studio photo",
             "model_key": "gpt-image-2",
             "status": "draft",
+            "output_dir": output_dir,
             "params": {"size": "2048x2048", "quality": "high"},
             "summary": {"source": "workbench"},
         })
 
         self.assertTrue(job["job_uid"])
         self.assertEqual(job["title"], "秋装主图")
+        self.assertEqual(job["output_dir"], output_dir)
         self.assertEqual(job["params"]["size"], "2048x2048")
-        self.assertEqual(data_sink.get_ai_image_job(job["job_uid"])["prompt"], "clean studio photo")
+        loaded = data_sink.get_ai_image_job(job["job_uid"])
+        self.assertEqual(loaded["prompt"], "clean studio photo")
+        self.assertEqual(loaded["output_dir"], output_dir)
 
         updated = data_sink.update_ai_image_job(job["job_uid"], {
             "status": "completed",
+            "output_dir": str(self.root / "exports-2"),
             "summary": {"image_urls": ["https://cdn.example/result.png"]},
         })
 
         self.assertEqual(updated["status"], "completed")
+        self.assertEqual(updated["output_dir"], str(self.root / "exports-2"))
         self.assertEqual(updated["summary"]["image_urls"], ["https://cdn.example/result.png"])
-        self.assertEqual([item["job_uid"] for item in data_sink.list_ai_image_jobs()], [job["job_uid"]])
+        listed = data_sink.list_ai_image_jobs()
+        self.assertEqual([item["job_uid"] for item in listed], [job["job_uid"]])
+        self.assertEqual(listed[0]["output_dir"], str(self.root / "exports-2"))
 
     def test_asset_crud_preserves_order_and_metadata(self):
         job = data_sink.create_ai_image_job({"title": "asset job"})

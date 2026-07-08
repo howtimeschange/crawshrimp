@@ -117,3 +117,35 @@ Status: DONE
 ## Concerns
 
 - No functional concerns.
+
+# Task 2 Persistence And Download Failure Fix Report
+
+Status: DONE
+
+## RED evidence
+
+- `python -m unittest tests.test_ai_image_data_sink tests.test_ai_image_service tests.test_ai_image_api -v` failed with 22 tests run, 3 errors:
+  - `test_job_crud_round_trips_structured_fields` raised `KeyError: 'output_dir'` because `ai_image_jobs` rows did not expose persisted `output_dir`.
+  - `test_job_crud_api_uses_data_sink` raised `KeyError: 'output_dir'` because `AiImageJobRequest` / API CRUD did not pass through `output_dir`.
+  - `test_run_job_marks_failed_when_download_setup_raises_before_saving_files` raised `RuntimeError` from `_unique_path`, leaving the download setup/allocation failure outside the job status update path.
+
+## Implementation notes
+
+- Added `ai_image_jobs.output_dir` with `_ensure_column` migration and included it in create, get/list row shape, and update mapping.
+- Added `output_dir` to `AiImageJobRequest` and `AiImageJobPatchRequest`; existing API code still strips client-controlled `summary` before persistence.
+- Wrapped output directory creation and unique-name allocation in `DownloadOutputsError`, preserving any already-saved files.
+- Changed download failure status selection to `failed` when no output files were saved and `partial_failed` when at least one output file was saved.
+- Stored download setup/allocation errors through the existing sanitized summary path, covering API keys, data URLs, and `webhook_secret`.
+
+## Tests
+
+- `python -m unittest tests.test_ai_image_data_sink tests.test_ai_image_service tests.test_ai_image_api -v`: passed, 22 tests.
+- `node --test tests/ai-image-ipc-bridge.test.js`: passed, 3 tests.
+
+## Commit hash
+
+- Recorded in the final Task 2 persistence/download failure fix response after commit creation.
+
+## Concerns
+
+- No functional concerns.
