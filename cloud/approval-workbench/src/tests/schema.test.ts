@@ -47,5 +47,6 @@ describe('initial D1 schema', () => {
     expect(imageResourceSchema).toContain('CREATE TABLE IF NOT EXISTS image_resources')
     expect(imageResourceSchema).toContain('resource_uid TEXT NOT NULL UNIQUE')
     expect(imageResourceSchema).toContain('asset_uid TEXT NOT NULL')
+    expect(imageResourceSchema).toContain('idx_image_resources_batch_style_item')
   })
 })

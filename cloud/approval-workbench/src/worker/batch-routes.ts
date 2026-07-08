@@ -463,10 +463,20 @@ export async function listImageResources(request: Request, env: Env): Promise<Re
   if (!batchUid) return badRequest('batch_uid is required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
-  const styleCode = stringValue(new URL(request.url).searchParams.get('style_code'))
-  const statement = styleCode
-    ? env.DB.prepare('SELECT * FROM image_resources WHERE batch_uid = ? AND style_code = ? ORDER BY id ASC').bind(batchUid, styleCode)
-    : env.DB.prepare('SELECT * FROM image_resources WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid)
+  const searchParams = new URL(request.url).searchParams
+  const styleCode = stringValue(searchParams.get('style_code'))
+  const itemId = stringValue(searchParams.get('item_id'))
+  const filters = ['batch_uid = ?']
+  const values: string[] = [batchUid]
+  if (styleCode) {
+    filters.push('style_code = ?')
+    values.push(styleCode)
+  }
+  if (itemId) {
+    filters.push('item_id = ?')
+    values.push(itemId)
+  }
+  const statement = env.DB.prepare(`SELECT * FROM image_resources WHERE ${filters.join(' AND ')} ORDER BY id ASC`).bind(...values)
   const { results } = await statement.all<ImageResourceRow>()
   return json({ image_resources: results })
 }

@@ -15,3 +15,6 @@ CREATE TABLE IF NOT EXISTS image_resources (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_image_resources_batch_style_item
+  ON image_resources(batch_uid, style_code, item_id);

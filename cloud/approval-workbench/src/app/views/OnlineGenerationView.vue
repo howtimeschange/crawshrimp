@@ -5,7 +5,18 @@ import { apiGet, apiPost, type ApiError } from '../api'
 
 interface BatchRow { batch_uid: string; title: string; status: string }
 interface AssetRow { asset_uid: string; style_id: number; kind: string; status: string; filename: string; prompt_text: string }
-interface StyleRow { id: number; style_code: string; item_id: string; category: string; gender: string; assets: AssetRow[] }
+interface ImageResourceRow {
+  resource_uid: string
+  batch_uid: string
+  style_code: string
+  item_id: string
+  kind: string
+  asset_uid: string
+  object_key: string
+  filename: string
+  source_label: string
+}
+interface StyleRow { id: number; style_code: string; item_id: string; category: string; gender: string; assets: AssetRow[]; image_resources?: ImageResourceRow[] }
 interface DispatchJob { job_uid: string; job_type: string; status: string; assigned_machine_id: string | null; payload?: Record<string, unknown> }
 interface BatchDetail { batch_uid: string; title: string; status: string; styles: StyleRow[]; jobs?: DispatchJob[] }
 interface MachineRow { machine_id: string; machine_name: string; auth_status: string; health: string; capabilities_json: string }
@@ -31,12 +42,28 @@ const error = ref('')
 const styles = computed(() => batch.value?.styles ?? [])
 const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? null)
 const sourceAssets = computed(() => selectedStyle.value?.assets.filter((asset) => ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded') ?? [])
+const sourceResources = computed(() => selectedStyle.value?.image_resources?.filter((resource) => ['source', 'reference'].includes(resource.kind)) ?? [])
+const selectableResources = computed(() => {
+  const resources = sourceResources.value
+  if (resources.length > 0) return resources
+  return sourceAssets.value.map((asset) => ({
+    resource_uid: asset.asset_uid,
+    batch_uid: batch.value?.batch_uid ?? '',
+    style_code: selectedStyle.value?.style_code ?? '',
+    item_id: selectedStyle.value?.item_id ?? '',
+    kind: asset.kind,
+    asset_uid: asset.asset_uid,
+    object_key: '',
+    filename: asset.filename,
+    source_label: '',
+  }))
+})
 const generationMachines = computed(() => machines.value.filter((machine) => machine.auth_status === 'active' && machine.capabilities_json.includes('generate_ai_image')))
 const generationJobs = computed(() => (batch.value?.jobs ?? []).filter((job) => job.job_type === 'generate_ai_image'))
 
 watch(selectedStyleId, () => {
-  sourceAssetUid.value = sourceAssets.value[0]?.asset_uid ?? ''
-  referenceAssetUids.value = sourceAssets.value.slice(0, 3).map((asset) => asset.asset_uid)
+  sourceAssetUid.value = selectableResources.value[0]?.asset_uid ?? ''
+  referenceAssetUids.value = selectableResources.value.slice(0, 3).map((resource) => resource.asset_uid)
 })
 
 watch([selectedLibraryId, selectedStyleId], () => {
@@ -118,6 +145,10 @@ function toggleReference(assetUid: string) {
     : [...referenceAssetUids.value, assetUid]
 }
 
+function resourceDownloadUrl(resource: ImageResourceRow): string {
+  return `/api/assets/${encodeURIComponent(resource.asset_uid)}/download`
+}
+
 async function submitGeneration() {
   if (!batch.value || !selectedStyle.value) return
   error.value = ''
@@ -171,7 +202,7 @@ onMounted(() => {
             <tr v-for="style in styles" :key="style.id" @click="selectedStyleId = style.id">
               <td><strong>{{ style.style_code }}</strong><br /><span class="muted">{{ style.item_id || '-' }}</span></td>
               <td>{{ style.category || '-' }} / {{ style.gender || '-' }}</td>
-              <td>{{ style.assets.filter((asset) => ['source', 'reference'].includes(asset.kind)).length }}</td>
+              <td>{{ style.image_resources?.filter((resource) => ['source', 'reference'].includes(resource.kind)).length ?? style.assets.filter((asset) => ['source', 'reference'].includes(asset.kind)).length }}</td>
             </tr>
           </tbody>
         </table>
@@ -182,14 +213,18 @@ onMounted(() => {
         <label class="field">
           <span>主图</span>
           <select v-model="sourceAssetUid">
-            <option v-for="asset in sourceAssets" :key="asset.asset_uid" :value="asset.asset_uid">{{ asset.filename }}</option>
+            <option v-for="resource in selectableResources" :key="resource.resource_uid" :value="resource.asset_uid">{{ resource.source_label || resource.kind }} / {{ resource.filename }}</option>
           </select>
         </label>
         <div class="asset-rail">
-          <h2>参考图</h2>
-          <label v-for="asset in sourceAssets" :key="asset.asset_uid" class="inline-check">
-            <input type="checkbox" :checked="referenceAssetUids.includes(asset.asset_uid)" @change="toggleReference(asset.asset_uid)" />
-            <span>{{ asset.filename }}</span>
+          <h2>资源库</h2>
+          <div v-if="selectableResources.length === 0" class="asset-row muted">当前款式还没有可用于生图的来源资源。</div>
+          <label v-for="resource in selectableResources" :key="resource.resource_uid" class="asset-row inline-check">
+            <input type="checkbox" :checked="referenceAssetUids.includes(resource.asset_uid)" @change="toggleReference(resource.asset_uid)" />
+            <span class="badge">{{ resource.kind }}</span>
+            <span v-if="resource.source_label" class="badge">{{ resource.source_label }}</span>
+            <span>{{ resource.filename }}</span>
+            <a class="small-button" :href="resourceDownloadUrl(resource)" target="_blank" rel="noopener" @click.stop>下载</a>
           </label>
         </div>
         <label class="field">

@@ -203,10 +203,14 @@ class FakeD1Statement {
     }
     if (normalized.includes('from image_resources')) {
       const batchUid = String(this.params[0])
-      const styleCode = this.params.length > 1 ? String(this.params[1]) : ''
+      const hasStyleFilter = normalized.includes('style_code = ?')
+      const hasItemFilter = normalized.includes('item_id = ?')
+      let paramIndex = 1
+      const styleCode = hasStyleFilter ? String(this.params[paramIndex++]) : ''
+      const itemId = hasItemFilter ? String(this.params[paramIndex++]) : ''
       return {
         results: this.state.imageResources
-          .filter((row) => row.batch_uid === batchUid && (!styleCode || row.style_code === styleCode))
+          .filter((row) => row.batch_uid === batchUid && (!styleCode || row.style_code === styleCode) && (!itemId || row.item_id === itemId))
           .sort((left, right) => left.id - right.id) as T[],
       }
     }
@@ -463,14 +467,15 @@ describe('asset upload planning routes', () => {
     expect(body.batch.styles[0].image_resources).toHaveLength(1)
   })
 
-  it('lists image resources for the current batch and optional style', async () => {
+  it('lists image resources for the current batch and optional style item identity', async () => {
     const { state, reviewerCookie } = await baseState()
     state.imageResources.push(
-      imageResourceRow({ resource_uid: 'source-1', kind: 'source', style_code: '208326100202' }),
-      imageResourceRow({ id: 2, resource_uid: 'source-2', kind: 'source', style_code: '208326100203' }),
+      imageResourceRow({ resource_uid: 'source-1', kind: 'source', style_code: '208326100202', item_id: '1002178235142' }),
+      imageResourceRow({ id: 2, resource_uid: 'source-2', kind: 'source', style_code: '208326100202', item_id: '1002178235143' }),
+      imageResourceRow({ id: 3, resource_uid: 'source-3', kind: 'source', style_code: '208326100203', item_id: '1002178235144' }),
     )
 
-    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/image-resources?style_code=208326100202', {
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/image-resources?style_code=208326100202&item_id=1002178235142', {
       headers: { cookie: reviewerCookie },
     }), fakeEnv(state))
     const body = await response.json() as { image_resources: ImageResourceRow[] }

@@ -13,6 +13,18 @@ interface AssetRow {
   parent_asset_uid: string | null
 }
 
+interface ImageResourceRow {
+  resource_uid: string
+  batch_uid: string
+  style_code: string
+  item_id: string
+  kind: string
+  asset_uid: string
+  object_key: string
+  filename: string
+  source_label: string
+}
+
 interface DispatchJob {
   job_uid: string
   job_type: string
@@ -30,6 +42,7 @@ interface StyleRow {
   status: string
   missing_prompt_reason: string
   assets: AssetRow[]
+  image_resources?: ImageResourceRow[]
 }
 
 interface BatchDetail {
@@ -56,6 +69,7 @@ const batch = ref<BatchDetail | null>(null)
 const machines = ref<MachineRow[]>([])
 const selectedStyleId = ref<number | null>(null)
 const selectedAssetUids = ref<string[]>([])
+const selectedResourceUids = ref<string[]>([])
 const selectedMachineId = ref('')
 const message = ref('')
 const error = ref('')
@@ -68,6 +82,7 @@ const styles = computed(() => batch.value?.styles ?? [])
 const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? styles.value[0])
 const aiAssets = computed(() => selectedStyle.value?.assets.filter((asset) => asset.kind === 'ai') ?? [])
 const sourceAssets = computed(() => selectedStyle.value?.assets.filter((asset) => asset.kind !== 'ai') ?? [])
+const imageResources = computed(() => selectedStyle.value?.image_resources ?? [])
 const rejectedAssets = computed(() => batch.value?.styles.flatMap((style) => style.assets).filter((asset) => asset.kind === 'ai' && asset.status === 'rejected') ?? [])
 const submitMachines = computed(() => machines.value.filter((machine) => machine.auth_status === 'active' && machine.health && ['online_idle', 'online_busy'].includes(machine.health) && isFresh(machine.last_seen_at) && machine.capabilities_json.includes('submit_tmall_material_test')))
 
@@ -86,6 +101,7 @@ async function loadBatch() {
     batch.value = data.batch
     selectedStyleId.value = data.batch.styles[0]?.id ?? null
     selectedAssetUids.value = []
+    selectedResourceUids.value = []
     promptOverrides.value = Object.fromEntries(data.batch.styles.flatMap((style) => style.assets.filter((asset) => asset.kind === 'ai').map((asset) => [asset.asset_uid, asset.prompt_text || ''])))
   } catch (caught) {
     error.value = (caught as ApiError).message
@@ -102,11 +118,23 @@ async function loadMachines() {
   }
 }
 
+watch(selectedStyleId, () => {
+  selectedResourceUids.value = []
+})
+
 function toggleAsset(asset: AssetRow) {
   if (selectedAssetUids.value.includes(asset.asset_uid)) {
     selectedAssetUids.value = selectedAssetUids.value.filter((assetUid) => assetUid !== asset.asset_uid)
   } else {
     selectedAssetUids.value = [...selectedAssetUids.value, asset.asset_uid]
+  }
+}
+
+function toggleResource(resource: ImageResourceRow) {
+  if (selectedResourceUids.value.includes(resource.resource_uid)) {
+    selectedResourceUids.value = selectedResourceUids.value.filter((resourceUid) => resourceUid !== resource.resource_uid)
+  } else {
+    selectedResourceUids.value = [...selectedResourceUids.value, resource.resource_uid]
   }
 }
 
@@ -175,7 +203,11 @@ function assetDownloadUrl(asset: AssetRow): string {
   return `/api/assets/${encodeURIComponent(asset.asset_uid)}/download`
 }
 
-function isPreviewable(asset: AssetRow): boolean {
+function resourceDownloadUrl(resource: ImageResourceRow): string {
+  return `/api/assets/${encodeURIComponent(resource.asset_uid)}/download`
+}
+
+function isPreviewable(asset: Pick<AssetRow | ImageResourceRow, 'filename'>): boolean {
   return /\.(jpe?g|png|webp|gif)$/i.test(asset.filename)
 }
 
@@ -272,6 +304,26 @@ onMounted(() => {
         <div>
           <h2>{{ selectedStyle?.style_code || '选择款式' }}</h2>
           <p class="muted">{{ selectedStyle?.missing_prompt_reason || '逐张确认 AI 图，并按需重生图或提交测图任务。' }}</p>
+        </div>
+
+        <div class="asset-rail">
+          <h2>资源库</h2>
+          <div v-if="imageResources.length === 0" class="asset-row muted">当前款式还没有同步资源。</div>
+          <div
+            v-for="resource in imageResources"
+            :key="resource.resource_uid"
+            class="asset-row"
+            :class="{ selected: selectedResourceUids.includes(resource.resource_uid) }"
+          >
+            <img v-if="isPreviewable(resource)" class="asset-thumb" :src="resourceDownloadUrl(resource)" :alt="resource.filename" />
+            <div class="row-actions">
+              <input type="checkbox" :checked="selectedResourceUids.includes(resource.resource_uid)" @change="toggleResource(resource)" />
+              <span class="badge">{{ resource.kind }}</span>
+              <span v-if="resource.source_label" class="badge">{{ resource.source_label }}</span>
+              <strong>{{ resource.filename }}</strong>
+              <a class="small-button" :href="resourceDownloadUrl(resource)" target="_blank" rel="noopener">下载</a>
+            </div>
+          </div>
         </div>
 
         <div class="asset-rail">
