@@ -35,6 +35,7 @@ const error = ref('')
 const filters = ref({ statistic_type: '', date: '', image_type: '', q: '' })
 const crawlMachineId = ref('')
 const scheduleTime = ref('09:30')
+const DETAIL_IMPORT_CHUNK_SIZE = 800
 
 const queryString = computed(() => {
   const params = new URLSearchParams()
@@ -70,14 +71,46 @@ async function importWorkbook(event: Event) {
   error.value = ''
   try {
     const parsed = await parseMaterialTestWorkbook(file)
-    const response = await apiPost<{ overview_rows: number; detail_rows: number }>('/api/material-test/import', parsed)
-    actionMessage.value = `已导入 ${response.overview_rows} 条概览、${response.detail_rows} 条明细`
+    const sourceUid = `manual-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    const source = { ...parsed.source, source_uid: sourceUid }
+    let overviewRows = 0
+    let detailRows = 0
+    let insertedOrUpdated = 0
+    const detailChunks = chunkRows(parsed.detail_rows, DETAIL_IMPORT_CHUNK_SIZE)
+    const firstDetailChunk = detailChunks.shift() ?? []
+    const firstResponse = await apiPost<{ overview_rows: number; detail_rows: number; inserted_or_updated: number }>('/api/material-test/import', {
+      source,
+      overview_rows: parsed.overview_rows,
+      detail_rows: firstDetailChunk,
+    })
+    overviewRows += firstResponse.overview_rows
+    detailRows += firstResponse.detail_rows
+    insertedOrUpdated += firstResponse.inserted_or_updated
+    for (const detailChunk of detailChunks) {
+      const response = await apiPost<{ overview_rows: number; detail_rows: number; inserted_or_updated: number }>('/api/material-test/import', {
+        source,
+        overview_rows: [],
+        detail_rows: detailChunk,
+      })
+      detailRows += response.detail_rows
+      insertedOrUpdated += response.inserted_or_updated
+      actionMessage.value = `正在导入 ${overviewRows} 条概览、${detailRows}/${parsed.detail_rows.length} 条明细`
+    }
+    actionMessage.value = `已导入 ${overviewRows} 条概览、${detailRows} 条明细，写入 ${insertedOrUpdated} 条`
     await refresh()
   } catch (err) {
     error.value = (err as ApiError).message
   } finally {
     input.value = ''
   }
+}
+
+function chunkRows<T>(rows: T[], size: number): T[][] {
+  const chunks: T[][] = []
+  for (let index = 0; index < rows.length; index += size) {
+    chunks.push(rows.slice(index, index + size))
+  }
+  return chunks
 }
 
 async function triggerCrawl() {

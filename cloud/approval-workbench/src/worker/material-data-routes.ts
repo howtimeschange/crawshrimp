@@ -93,10 +93,25 @@ interface DispatchJobRow {
   updated_at: string
 }
 
+interface MaterialTestScheduleRow {
+  schedule_uid: string
+  label: string
+  statistic_type: string
+  schedule_time: string
+  timezone: string
+  status: string
+  target_machine_id: string | null
+  payload_json: string
+  created_by: number | null
+}
+
+const IMPORT_BATCH_SIZE = 500
+const ACTIVE_IMPORT_LEASE_STATUSES = new Set(['leased', 'running', 'uploading_results'])
+
 export async function importMaterialTestData(request: Request, env: Env): Promise<Response> {
-  const actor = await requireMachineOrUser(request, env, 'dashboard:read')
-  if (actor instanceof Response) return actor
   const body = await readJsonObject(request)
+  const actor = await requireMachineOrUser(request, env, 'dashboard:read', body)
+  if (actor instanceof Response) return actor
   const source = objectValue(body.source)
   const sourceUid = stringValue(source.source_uid ?? source.sourceUid) || `material-${await sha256Hex(JSON.stringify(source).slice(0, 4096) + nowIso())}`
   const sourceFilename = stringValue(source.filename ?? source.source_filename ?? source.sourceFilename)
@@ -105,9 +120,8 @@ export async function importMaterialTestData(request: Request, env: Env): Promis
   const detailRows = arrayOfObjects(body.detail_rows ?? body.detailRows).map((row) => normalizeDetail(row, sourceUid, sourceFilename)).filter((row) => row.item_id && row.task_id && row.statistic_type && row.material_url)
 
   let changed = 0
-  for (const row of overviewRows) {
-    const result = await env.DB.prepare(
-      `INSERT INTO material_test_task_overviews
+  const overviewStatements = overviewRows.map((row) => env.DB.prepare(
+    `INSERT INTO material_test_task_overviews
          (source_uid, source_filename, record_type, row_no, style_code, item_id, item_title, task_id,
           test_status, test_channel, material_count, statistic_type, best_material, execution_result,
           remark, imported_at, updated_at)
@@ -127,14 +141,9 @@ export async function importMaterialTestData(request: Request, env: Env): Promis
          remark = excluded.remark,
          imported_at = excluded.imported_at,
          updated_at = excluded.updated_at`,
-    )
-      .bind(row.source_uid, row.source_filename, row.record_type, row.row_no, row.style_code, row.item_id, row.item_title, row.task_id, row.test_status, row.test_channel, row.material_count, row.statistic_type, row.best_material, row.execution_result, row.remark, importedAt, importedAt)
-      .run()
-    changed += Number(result.meta.changes ?? 0)
-  }
-  for (const row of detailRows) {
-    const result = await env.DB.prepare(
-      `INSERT INTO material_test_image_metrics
+  ).bind(row.source_uid, row.source_filename, row.record_type, row.row_no, row.style_code, row.item_id, row.item_title, row.task_id, row.test_status, row.test_channel, row.material_count, row.statistic_type, row.best_material, row.execution_result, row.remark, importedAt, importedAt))
+  const detailStatements = detailRows.map((row) => env.DB.prepare(
+    `INSERT INTO material_test_image_metrics
          (source_uid, source_filename, record_type, row_no, style_code, item_id, item_title, task_id,
           test_status, test_channel, material_count, statistic_type, statistic_date, image_type,
           material_id, material_ratio, material_share, material_url, search_impressions, search_clicks,
@@ -169,11 +178,9 @@ export async function importMaterialTestData(request: Request, env: Env): Promis
          remark = excluded.remark,
          imported_at = excluded.imported_at,
          updated_at = excluded.updated_at`,
-    )
-      .bind(row.source_uid, row.source_filename, row.record_type, row.row_no, row.style_code, row.item_id, row.item_title, row.task_id, row.test_status, row.test_channel, row.material_count, row.statistic_type, row.statistic_date, row.image_type, row.material_id, row.material_ratio, row.material_share, row.material_url, row.search_impressions, row.search_clicks, row.search_ctr, row.detail_impressions, row.detail_clicks, row.detail_ctr, row.detail_add_to_cart, row.detail_pay_conversion, row.detail_pay_conversion_rate, row.data_download_url, row.execution_result, row.remark, importedAt, importedAt)
-      .run()
-    changed += Number(result.meta.changes ?? 0)
-  }
+  ).bind(row.source_uid, row.source_filename, row.record_type, row.row_no, row.style_code, row.item_id, row.item_title, row.task_id, row.test_status, row.test_channel, row.material_count, row.statistic_type, row.statistic_date, row.image_type, row.material_id, row.material_ratio, row.material_share, row.material_url, row.search_impressions, row.search_clicks, row.search_ctr, row.detail_impressions, row.detail_clicks, row.detail_ctr, row.detail_add_to_cart, row.detail_pay_conversion, row.detail_pay_conversion_rate, row.data_download_url, row.execution_result, row.remark, importedAt, importedAt))
+  changed += await runD1Statements(env, overviewStatements)
+  changed += await runD1Statements(env, detailStatements)
 
   await recordAudit(env, auditActor(actor), 'material_test.import', 'material_test_source', sourceUid, { source_filename: sourceFilename, overview_rows: overviewRows.length, detail_rows: detailRows.length }, request)
   return json({
@@ -253,8 +260,9 @@ export async function createMaterialTestCrawlJob(request: Request, env: Env): Pr
     run_params: objectValue(body.run_params ?? body.runParams),
     source: objectValue(body.source),
   }
-  const keySource = JSON.stringify({ machineId, payload, schedule_uid: stringValue(body.schedule_uid ?? body.scheduleUid) })
-  const idempotencyKey = stringValue(body.idempotency_key ?? body.idempotencyKey) || `crawl_tmall_material_test_data:${await sha256Hex(keySource)}`
+  const explicitIdempotencyKey = stringValue(body.idempotency_key ?? body.idempotencyKey)
+  const keySource = JSON.stringify({ machineId, payload, schedule_uid: stringValue(body.schedule_uid ?? body.scheduleUid), request_uid: randomToken('request') })
+  const idempotencyKey = explicitIdempotencyKey || `crawl_tmall_material_test_data:${await sha256Hex(keySource)}`
   const existing = await findDispatchJob(env, idempotencyKey)
   const job = existing ?? await insertDispatchJob(env, {
     requestedBy: actor.user.id,
@@ -271,7 +279,7 @@ export async function createMaterialTestSchedule(request: Request, env: Env): Pr
   if (actor instanceof Response) return actor
   const body = await readJsonObject(request)
   const scheduleTime = stringValue(body.schedule_time ?? body.scheduleTime)
-  if (!/^\d{1,2}:\d{2}$/.test(scheduleTime)) return badRequest('schedule_time must be HH:mm')
+  if (!validScheduleTime(scheduleTime)) return badRequest('schedule_time must be HH:mm from 00:00 to 23:59')
   const now = nowIso()
   const scheduleUid = stringValue(body.schedule_uid ?? body.scheduleUid) || randomToken('mts')
   await env.DB.prepare(
@@ -295,9 +303,67 @@ export async function createMaterialTestSchedule(request: Request, env: Env): Pr
   return json({ schedule }, { status: 201 })
 }
 
-async function requireMachineOrUser(request: Request, env: Env, permission: Parameters<typeof requirePermission>[2]): Promise<MachineRow | CurrentUser | Response> {
-  if (request.headers.get('authorization')) return requireActiveMachine(request, env)
+export async function dispatchDueMaterialTestSchedules(env: Env, scheduledAt = new Date()): Promise<{ checked: number; enqueued: number }> {
+  const { results } = await env.DB.prepare(
+    `SELECT schedule_uid, label, statistic_type, schedule_time, timezone, status, target_machine_id, payload_json, created_by
+     FROM material_test_crawl_schedules
+     WHERE status = 'active'`,
+  ).all<MaterialTestScheduleRow>()
+  let enqueued = 0
+  for (const schedule of results) {
+    const occurrence = scheduleOccurrence(schedule, scheduledAt)
+    if (!occurrence) continue
+    const payload = {
+      run_params: {
+        ...fromJsonObject(schedule.payload_json),
+        statistic_type: schedule.statistic_type || 'ACCUMULATE_30_DAYS',
+      },
+      source: { schedule_uid: schedule.schedule_uid },
+      schedule_uid: schedule.schedule_uid,
+      schedule_time: schedule.schedule_time,
+      timezone: schedule.timezone,
+    }
+    const before = await findDispatchJob(env, occurrence.idempotencyKey)
+    if (before) continue
+    await insertDispatchJob(env, {
+      requestedBy: schedule.created_by,
+      assignedMachineId: schedule.target_machine_id || null,
+      idempotencyKey: occurrence.idempotencyKey,
+      payload,
+    })
+    enqueued += 1
+  }
+  return { checked: results.length, enqueued }
+}
+
+async function requireMachineOrUser(request: Request, env: Env, permission: Parameters<typeof requirePermission>[2], body: Record<string, unknown>): Promise<MachineRow | CurrentUser | Response> {
+  if (hasBearerToken(request)) {
+    const machine = await requireActiveMachine(request, env)
+    if (machine instanceof Response) return machine
+    return requireMaterialImportLease(env, machine, body)
+  }
   return requirePermission(request, env, permission)
+}
+
+async function requireMaterialImportLease(env: Env, machine: MachineRow, body: Record<string, unknown>): Promise<MachineRow | Response> {
+  if (!parseArray(machine.capabilities_json).includes('crawl_tmall_material_test_data')) return forbidden('Machine lacks crawl_tmall_material_test_data capability')
+  const jobUid = stringValue(body.job_uid ?? body.jobUid)
+  const leaseId = stringValue(body.lease_id ?? body.leaseId)
+  if (!jobUid || !leaseId) return badRequest('machine import requires job_uid and lease_id')
+  const job = await env.DB.prepare(
+    `SELECT job_uid, batch_uid, job_type, status, assigned_machine_id, lease_id, lease_expires_at, payload_json
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+     LIMIT 1`,
+  )
+    .bind(jobUid)
+    .first<DispatchJobRow>()
+  if (!job) return forbidden('Machine lease was not found')
+  if (job.job_type !== 'crawl_tmall_material_test_data') return forbidden('Machine lease does not allow material data import')
+  if (job.assigned_machine_id !== machine.machine_id || job.lease_id !== leaseId) return forbidden('Machine lease does not match this import')
+  if (!ACTIVE_IMPORT_LEASE_STATUSES.has(job.status)) return forbidden('Machine lease is not active')
+  if (!job.lease_expires_at || job.lease_expires_at <= nowIso()) return forbidden('Machine lease is expired')
+  return machine
 }
 
 function normalizeOverview(row: OverviewRow, sourceUid: string, sourceFilename: string) {
@@ -344,7 +410,7 @@ function normalizeDetail(row: DetailRow, sourceUid: string, sourceFilename: stri
   }
 }
 
-async function insertDispatchJob(env: Env, job: { requestedBy: number; assignedMachineId: string | null; idempotencyKey: string; payload: unknown }): Promise<DispatchJobRow> {
+async function insertDispatchJob(env: Env, job: { requestedBy: number | null; assignedMachineId: string | null; idempotencyKey: string; payload: unknown }): Promise<DispatchJobRow> {
   const now = nowIso()
   const jobUid = randomToken('job')
   await env.DB.prepare(
@@ -365,6 +431,64 @@ function findDispatchJob(env: Env, idempotencyKey: string): Promise<DispatchJobR
   return env.DB.prepare("SELECT * FROM dispatch_jobs WHERE job_type = 'crawl_tmall_material_test_data' AND idempotency_key = ? LIMIT 1")
     .bind(idempotencyKey)
     .first<DispatchJobRow>()
+}
+
+async function runD1Statements(env: Env, statements: D1PreparedStatement[]): Promise<number> {
+  let changed = 0
+  for (let index = 0; index < statements.length; index += IMPORT_BATCH_SIZE) {
+    const chunk = statements.slice(index, index + IMPORT_BATCH_SIZE)
+    if (chunk.length === 0) continue
+    const db = env.DB as D1Database & { batch?: (statements: D1PreparedStatement[]) => Promise<D1Result[]> }
+    const results = typeof db.batch === 'function'
+      ? await db.batch(chunk)
+      : await Promise.all(chunk.map((statement) => statement.run()))
+    changed += results.reduce((total, result) => total + Number(result.meta.changes ?? 0), 0)
+  }
+  return changed
+}
+
+function hasBearerToken(request: Request): boolean {
+  return /^Bearer\s+\S+/i.test(request.headers.get('authorization') || '')
+}
+
+function validScheduleTime(value: string): boolean {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(value)
+  if (!match) return false
+  const hour = Number(match[1])
+  const minute = Number(match[2])
+  return Number.isInteger(hour) && Number.isInteger(minute) && hour >= 0 && hour <= 23 && minute >= 0 && minute <= 59
+}
+
+function scheduleOccurrence(schedule: MaterialTestScheduleRow, now: Date): { idempotencyKey: string } | null {
+  if (!validScheduleTime(schedule.schedule_time)) return null
+  const local = localDateParts(now, schedule.timezone || 'Asia/Shanghai')
+  if (`${local.hour}:${local.minute}` < normalizeScheduleTime(schedule.schedule_time)) return null
+  return {
+    idempotencyKey: `crawl_tmall_material_test_data:schedule:${schedule.schedule_uid}:${local.date}:${normalizeScheduleTime(schedule.schedule_time)}`,
+  }
+}
+
+function normalizeScheduleTime(value: string): string {
+  const [hour, minute] = value.split(':')
+  return `${hour.padStart(2, '0')}:${minute}`
+}
+
+function localDateParts(date: Date, timeZone: string): { date: string; hour: string; minute: string } {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date)
+  const value = (type: string) => parts.find((part) => part.type === type)?.value || '00'
+  return {
+    date: `${value('year')}-${value('month')}-${value('day')}`,
+    hour: value('hour').padStart(2, '0'),
+    minute: value('minute').padStart(2, '0'),
+  }
 }
 
 function publicJob(job: DispatchJobRow) {

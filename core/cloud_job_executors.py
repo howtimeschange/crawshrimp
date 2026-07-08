@@ -10,6 +10,8 @@ from typing import Any, Mapping
 from core import runtime_paths
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 
+MATERIAL_IMPORT_DETAIL_CHUNK_SIZE = 1000
+
 
 class CloudJobBlocked(RuntimeError):
     def __init__(self, status: str, message: str = ""):
@@ -216,17 +218,17 @@ class CloudJobExecutor:
         upload_result = self._upload_material_result_workbook(job, workbook_path, asset_uid)
         self._renew(job)
 
-        import_payload = {
+        import_payload_base = {
+            "job_uid": _job_uid(job),
+            "lease_id": _lease_id(job),
             "source": {
                 "source_uid": asset_uid,
                 "filename": workbook_path.name,
                 "object_key": upload_result.get("object_key", ""),
             },
-            "overview_rows": parsed["overview_rows"],
-            "detail_rows": parsed["detail_rows"],
         }
         self._progress(job, "importing", "导入测图数据到云端")
-        import_result = self.client.request_json("POST", "/api/material-test/import", import_payload)
+        import_result = self._import_material_rows(import_payload_base, parsed["overview_rows"], parsed["detail_rows"])
         self._renew(job)
         return {
             "status": "succeeded",
@@ -239,6 +241,21 @@ class CloudJobExecutor:
                 "inserted_or_updated": import_result.get("inserted_or_updated", 0),
             },
         }
+
+    def _import_material_rows(self, payload_base: Mapping[str, Any], overview_rows: list[dict], detail_rows: list[dict]) -> dict:
+        totals = {"overview_rows": 0, "detail_rows": 0, "inserted_or_updated": 0}
+        chunks = list(_chunks(detail_rows, MATERIAL_IMPORT_DETAIL_CHUNK_SIZE)) or [[]]
+        for index, detail_chunk in enumerate(chunks):
+            payload = {
+                **payload_base,
+                "overview_rows": overview_rows if index == 0 else [],
+                "detail_rows": detail_chunk,
+            }
+            result = self.client.request_json("POST", "/api/material-test/import", payload)
+            totals["overview_rows"] += int(result.get("overview_rows") or 0)
+            totals["detail_rows"] += int(result.get("detail_rows") or 0)
+            totals["inserted_or_updated"] += int(result.get("inserted_or_updated") or 0)
+        return totals
 
     def _task_dir(self, job: Mapping[str, Any]) -> Path:
         job_uid = _safe_segment(str(job.get("job_uid") or "job"))
@@ -590,6 +607,11 @@ def _job_uid(job: Mapping[str, Any]) -> str:
 
 def _lease_id(job: Mapping[str, Any]) -> str:
     return _required_text(job, "lease_id")
+
+
+def _chunks(rows: list[dict], size: int):
+    for index in range(0, len(rows), size):
+        yield rows[index:index + size]
 
 
 def _text_list(value: Any) -> list[str]:

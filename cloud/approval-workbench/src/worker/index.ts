@@ -68,6 +68,7 @@ import {
 import {
   createMaterialTestCrawlJob,
   createMaterialTestSchedule,
+  dispatchDueMaterialTestSchedules,
   getMaterialTestSummary,
   importMaterialTestData,
   listMaterialTestImages,
@@ -148,5 +149,8 @@ export default {
     return new Response('Crawshrimp cloud approval workbench scaffold', {
       headers: { 'content-type': 'text/plain; charset=utf-8' },
     })
+  },
+  async scheduled(event, env, ctx): Promise<void> {
+    ctx.waitUntil(dispatchDueMaterialTestSchedules(env, new Date(event.scheduledTime)))
   },
 } satisfies ExportedHandler<Env>

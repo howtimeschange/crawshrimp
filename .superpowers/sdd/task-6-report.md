@@ -52,3 +52,30 @@ Additional scoped checks:
 - The production crawl executor delegates to the existing local `tmall_material_test_data_export` task through `core.api_server._execute_task`, using a job-scoped export directory.
 - The executor result payload avoids returning local absolute workbook paths; it reports row counts and the uploaded workbook object key/asset UID.
 - No `.crawshrimp-runtime/`, tokens, cookies, or generated secrets were staged.
+
+## Review Fix Report
+
+Status: DONE
+
+Fixed all Critical, Important, and Minor review findings from the Task 6 review.
+
+- Changed manual workbook import to preserve one generated `source_uid` while posting detail rows in 800-row chunks instead of sending the full workbook detail sheet in one request.
+- Changed `POST /api/material-test/import` to build bounded D1 statement groups and execute them through `DB.batch()` in 500-statement chunks when available, with a bounded fallback.
+- Added machine-token import lease enforcement: machine imports now require `job_uid` and `lease_id`, validate the active lease belongs to the same machine, require `job_type = crawl_tmall_material_test_data`, require an active lease status, reject expired leases, and require the machine capability.
+- Updated the crawl executor to send `job_uid` and `lease_id` on every import request and to import parsed detail rows in 1000-row chunks with one shared source UID.
+- Changed immediate crawl job default idempotency so repeated UI clicks create distinct jobs; explicit `idempotency_key` still dedupes.
+- Added Worker scheduled dispatch for active material-test crawl schedules, using `schedule_uid + local date + schedule_time` as the occurrence idempotency key.
+- Added `schedule_time` range validation for `00:00` through `23:59`.
+- Extended tests for D1 batch chunking, machine lease rejection, immediate rerun behavior, scheduled dispatch, invalid schedule times, and executor chunked import lease fields.
+
+Verification:
+
+- `cd cloud/approval-workbench && npm run test -- src/tests/material-data.test.ts`: passed
+- `cd cloud/approval-workbench && npm run typecheck`: passed
+- `cd cloud/approval-workbench && npm run build`: passed
+- `python -m unittest tests.test_cloud_material_data_export tests.test_cloud_job_executors`: passed
+- `git diff --check`: passed
+
+Concerns:
+
+- `npm run build` still emits the existing Vite chunk-size warning for the bundled app asset; build exits successfully.

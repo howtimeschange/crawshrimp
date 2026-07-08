@@ -28,6 +28,13 @@ class FakeCloudClient:
             return response
         if path == "/api/assets/presign":
             return {"upload_url": f"/upload/{body.get('asset_uid')}", "object_key": f"objects/{body.get('asset_uid')}"}
+        if path == "/api/material-test/import":
+            return {
+                "overview_rows": len(body.get("overview_rows") or []),
+                "detail_rows": len(body.get("detail_rows") or []),
+                "inserted_or_updated": len(body.get("overview_rows") or []) + len(body.get("detail_rows") or []),
+                "source_uid": (body.get("source") or {}).get("source_uid", ""),
+            }
         return {"ok": True}
 
     def upload_asset(self, upload_url, path, content_type, *, token_type="machine"):
@@ -353,7 +360,8 @@ class CloudJobExecutorTests(unittest.TestCase):
             overview.append(["概览", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "M1", "成功", ""])
             detail = workbook.create_sheet("明细")
             detail.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "统计口径", "统计日期", "图片类型", "素材ID", "素材比例", "素材占比", "素材URL", "搜索曝光", "搜索点击", "搜索点击率", "详情曝光", "详情点击", "详情点击率", "详情加购", "详情支付转化", "详情支付转化率", "数据下载链接", "执行结果", "备注"])
-            detail.append(["明细", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "2026-07-01", "主图", "M1", "1:1", "7.79%", "https://img.test/1.jpg", 1000, 77, "7.79%", 500, 40, "8%", 12, 3, "2.50%", "", "成功", ""])
+            for index in range(1001):
+                detail.append(["明细", index + 2, "208326", f"100{index}", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "2026-07-01", "主图", f"M{index}", "1:1", "7.79%", f"https://img.test/{index}.jpg", 1000, 77, "7.79%", 500, 40, "8%", 12, 3, "2.50%", "", "成功", ""])
             workbook.save(path)
             return {"workbook_path": str(path)}
 
@@ -371,15 +379,21 @@ class CloudJobExecutorTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(result["result"]["overview_rows"], 1)
-        self.assertEqual(result["result"]["detail_rows"], 1)
+        self.assertEqual(result["result"]["detail_rows"], 1001)
         self.assertEqual(captured["run_params"]["output_dir"], str(Path(self.tmp.name) / "cloud-jobs" / "job-crawl" / "exports"))
         self.assertEqual(client.uploads[0]["path"].name, "material-export.xlsx")
         presign_call = next(call for call in client.calls if call["path"] == "/api/assets/presign")
         self.assertEqual(presign_call["body"]["batch_uid"], "material-test")
         self.assertEqual(presign_call["body"]["kind"], "result")
-        import_call = next(call for call in client.calls if call["path"] == "/api/material-test/import")
-        self.assertEqual(len(import_call["body"]["overview_rows"]), 1)
-        self.assertEqual(len(import_call["body"]["detail_rows"]), 1)
+        import_calls = [call for call in client.calls if call["path"] == "/api/material-test/import"]
+        self.assertEqual(len(import_calls), 2)
+        self.assertEqual(len(import_calls[0]["body"]["overview_rows"]), 1)
+        self.assertEqual(len(import_calls[0]["body"]["detail_rows"]), 1000)
+        self.assertEqual(len(import_calls[1]["body"]["overview_rows"]), 0)
+        self.assertEqual(len(import_calls[1]["body"]["detail_rows"]), 1)
+        self.assertTrue(all(call["body"]["job_uid"] == "job-crawl" for call in import_calls))
+        self.assertTrue(all(call["body"]["lease_id"] == "lease-crawl" for call in import_calls))
+        self.assertEqual({call["body"]["source"]["source_uid"] for call in import_calls}, {"gen-material-test-job-crawl"})
         self.assertNotIn("workbook_path", result["result"])
 
     def test_stale_lease_completion_is_not_retried_as_success(self):
