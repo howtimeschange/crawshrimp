@@ -13,6 +13,13 @@ interface AssetRow {
   parent_asset_uid: string | null
 }
 
+interface DispatchJob {
+  job_uid: string
+  job_type: string
+  status: string
+  payload?: Record<string, unknown>
+}
+
 interface StyleRow {
   id: number
   style_code: string
@@ -30,6 +37,7 @@ interface BatchDetail {
   title: string
   status: string
   styles: StyleRow[]
+  jobs?: DispatchJob[]
 }
 
 interface MachineRow {
@@ -60,6 +68,7 @@ const styles = computed(() => batch.value?.styles ?? [])
 const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? styles.value[0])
 const aiAssets = computed(() => selectedStyle.value?.assets.filter((asset) => asset.kind === 'ai') ?? [])
 const sourceAssets = computed(() => selectedStyle.value?.assets.filter((asset) => asset.kind !== 'ai') ?? [])
+const rejectedAssets = computed(() => batch.value?.styles.flatMap((style) => style.assets).filter((asset) => asset.kind === 'ai' && asset.status === 'rejected') ?? [])
 const submitMachines = computed(() => machines.value.filter((machine) => machine.auth_status === 'active' && machine.health && ['online_idle', 'online_busy'].includes(machine.health) && isFresh(machine.last_seen_at) && machine.capabilities_json.includes('submit_tmall_material_test')))
 
 watch(() => props.initialBatchUid, (value) => {
@@ -122,6 +131,23 @@ async function regenerateSelected() {
   } catch (caught) {
     error.value = (caught as ApiError).message
   }
+}
+
+async function regenerateRejected() {
+  if (!batch.value || rejectedAssets.value.length === 0) return
+  try {
+    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate-rejected`, { prompt_overrides: promptOverrides.value })
+    message.value = `已创建 ${rejectedAssets.value.length} 个舍弃图重跑任务`
+    await loadBatch()
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+  }
+}
+
+async function regenerateOne(asset: AssetRow) {
+  selectedAssetUids.value = [asset.asset_uid]
+  await regenerateSelected()
+  await loadBatch()
 }
 
 async function markReady() {
@@ -194,6 +220,13 @@ function isFresh(lastSeenAt: string | null): boolean {
   if (!lastSeenAt) return false
   const timestamp = Date.parse(lastSeenAt)
   return Number.isFinite(timestamp) && Date.now() - timestamp <= 2 * 60 * 1000
+}
+
+function jobsForAsset(asset: AssetRow): DispatchJob[] {
+  return (batch.value?.jobs ?? []).filter((job) => {
+    const payload = job.payload ?? {}
+    return payload.asset_uid === asset.asset_uid || payload.source_asset_uid === asset.asset_uid
+  })
 }
 
 onMounted(() => {
@@ -284,6 +317,7 @@ onMounted(() => {
               <input type="checkbox" :checked="selectedAssetUids.includes(asset.asset_uid)" @change="toggleAsset(asset)" />
               <strong>{{ asset.filename }}</strong>
               <span class="badge">{{ asset.status }}</span>
+              <span v-for="job in jobsForAsset(asset)" :key="job.job_uid" class="badge">{{ job.status }}</span>
               <a class="small-button" :href="assetDownloadUrl(asset)" target="_blank" rel="noopener">下载</a>
             </div>
             <img v-if="isPreviewable(asset)" class="asset-preview" :src="assetDownloadUrl(asset)" :alt="asset.filename" />
@@ -295,12 +329,14 @@ onMounted(() => {
               <button class="small-button" type="button" @click="decide(asset, 'approved')">确认</button>
               <button class="danger-button" type="button" @click="decide(asset, 'rejected')">舍弃</button>
               <button class="ghost-button" type="button" @click="decide(asset, 'pending')">待定</button>
+              <button class="ghost-button" type="button" :disabled="asset.status !== 'rejected'" @click="regenerateOne(asset)">换 Prompt 重跑</button>
             </div>
           </div>
         </div>
 
         <div class="row-actions">
-          <button class="danger-button" type="button" @click="regenerateSelected">一键重生图</button>
+          <button class="danger-button" type="button" @click="regenerateSelected">所选重生图</button>
+          <button class="danger-button" type="button" :disabled="rejectedAssets.length === 0" @click="regenerateRejected">一键重跑舍弃图</button>
           <button class="ghost-button" type="button" @click="markReady">重新计算可提交状态</button>
         </div>
 

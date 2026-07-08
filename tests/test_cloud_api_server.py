@@ -101,11 +101,10 @@ class CloudApiServerTests(unittest.TestCase):
         self.assertNotIn("machine_token", payload)
         self.assertNotIn("csr_machine_secret", str(payload))
 
-    def test_status_defaults_to_v1_capabilities_without_saved_list(self):
+    def test_status_defaults_to_generation_and_submit_capabilities_without_saved_list(self):
         payload = api_server.get_cloud_approval_status()
 
-        self.assertEqual(payload["capabilities"], ["regenerate_ai_image", "submit_tmall_material_test"])
-        self.assertNotIn("generate_ai_image", payload["capabilities"])
+        self.assertEqual(payload["capabilities"], ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test"])
         self.assertNotIn("machine_token", payload)
 
     def test_config_route_persists_cloud_approval_settings_without_credentials(self):

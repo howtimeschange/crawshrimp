@@ -5,7 +5,7 @@ import { badRequest, forbidden, json, readJsonObject } from './http'
 import { requirePermission, type CurrentUser } from './auth-routes'
 import { requireActiveMachine, type MachineRow } from './machine-routes'
 import { batchObjectKey, sanitizedMeta, upsertAsset } from './asset-routes'
-import { randomToken } from './security/tokens'
+import { randomToken, sha256Hex } from './security/tokens'
 
 interface BatchRow {
   id: number
@@ -171,10 +171,12 @@ export async function getBatch(request: Request, env: Env): Promise<Response> {
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const { results: styles } = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<StyleRow>()
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
+  const { results: jobs } = await env.DB.prepare('SELECT * FROM dispatch_jobs WHERE batch_uid = ? ORDER BY id DESC').bind(batchUid).all<DispatchJobRow>()
   return json({
     batch: {
       ...batch,
       prompt_version_set: parseArray(batch.prompt_version_set_json),
+      jobs: jobs.map((job) => ({ ...job, payload: fromJsonObject(job.payload_json), result: fromJsonObject(job.result_json) })),
       styles: styles.map((style) => ({
         ...style,
         source_summary: fromJsonObject(style.source_summary_json),
@@ -274,6 +276,33 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
   const selected = stringArray(body.asset_uids ?? body.assetUids)
   const promptOverrides = promptOverrideMap(body.prompt_overrides ?? body.promptOverrides)
   if (!batchUid || selected.length === 0) return badRequest('batch_uid and asset_uids are required')
+  return createRegenerationJobsForAssets(request, env, actor, batchUid, selected, promptOverrides, false)
+}
+
+export async function createRejectedRegenerationJobs(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'jobs:regenerate')
+  if (actor instanceof Response) return actor
+  const batchUid = batchUidFromRegenerateRejectedPath(request)
+  const body = await readJsonObject(request)
+  const promptOverrides = promptOverrideMap(body.prompt_overrides ?? body.promptOverrides)
+  if (!batchUid) return badRequest('batch_uid is required')
+  const batch = await loadBatch(env, batchUid)
+  if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
+  const rejectedAssetUids = assets.filter((asset) => asset.kind === 'ai' && asset.status === 'rejected').map((asset) => asset.asset_uid)
+  if (rejectedAssetUids.length === 0) return json({ jobs: [] })
+  return createRegenerationJobsForAssets(request, env, actor, batchUid, rejectedAssetUids, promptOverrides, true)
+}
+
+async function createRegenerationJobsForAssets(
+  request: Request,
+  env: Env,
+  actor: CurrentUser,
+  batchUid: string,
+  selected: string[],
+  promptOverrides: Map<string, string>,
+  includePromptHash: boolean,
+): Promise<Response> {
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
@@ -283,7 +312,9 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
     const asset = assets.find((row) => row.asset_uid === assetUid && row.kind === 'ai')
     if (!asset) return badRequest(`asset is not in batch: ${assetUid}`)
     if (asset.status !== 'rejected') return json({ error: 'regeneration requires selected rejected assets' }, { status: 409 })
-    const idempotencyKey = `regenerate_ai_image:${batchUid}:${assetUid}`
+    const promptText = promptOverrides.get(asset.asset_uid) || asset.prompt_text
+    const promptHash = includePromptHash ? `:${await sha256Hex(promptText)}` : ''
+    const idempotencyKey = `regenerate_ai_image:${batchUid}:${assetUid}${promptHash}`
     const existing = await findDispatchJob(env, 'regenerate_ai_image', idempotencyKey)
     if (existing) {
       jobs.push(existing)
@@ -296,7 +327,7 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
       batch_uid: batchUid,
       style_id: asset.style_id,
       asset_uid: asset.asset_uid,
-      prompt_text: promptOverrides.get(asset.asset_uid) || asset.prompt_text,
+      prompt_text: promptText,
       original_prompt_text: asset.prompt_text,
       reference_asset_uids: referenceAssetUids,
       parent_asset_uid: asset.parent_asset_uid,
@@ -317,6 +348,78 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
   }
   await recordAudit(env, { userId: actor.user.id }, 'jobs.regenerate_ai_image.create', 'ai_image_batch', batchUid, { asset_uids: selected }, request)
   return json({ jobs }, { status: created ? 201 : 200 })
+}
+
+export async function createGenerationJob(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'jobs:generate')
+  if (actor instanceof Response) return actor
+  const batchUid = batchUidFromGeneratePath(request)
+  const body = await readJsonObject(request)
+  const styleId = Number(body.style_id ?? body.styleId)
+  const sourceAssetUid = stringValue(body.source_asset_uid ?? body.sourceAssetUid)
+  const referenceAssetUids = stringArray(body.reference_asset_uids ?? body.referenceAssetUids)
+  const promptText = stringValue(body.prompt_text ?? body.promptText)
+  const promptTemplateVersionId = numberOrNull(body.prompt_template_version_id ?? body.promptTemplateVersionId)
+  const machineId = stringValue(body.machine_id ?? body.machineId)
+  if (!batchUid || !Number.isInteger(styleId) || styleId <= 0 || !sourceAssetUid || !promptText) {
+    return badRequest('batch_uid, style_id, source_asset_uid, and prompt_text are required')
+  }
+  const batch = await loadBatch(env, batchUid)
+  if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
+  if (!style) return badRequest('style_id is not in batch')
+  const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
+  const sourceAsset = assets.find((asset) => asset.asset_uid === sourceAssetUid && asset.style_id === styleId && ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded')
+  if (!sourceAsset) return badRequest('source_asset_uid must be an uploaded source/reference asset in the selected style')
+  const missingReference = referenceAssetUids.find((assetUid) => !assets.some((asset) => asset.asset_uid === assetUid && asset.style_id === styleId && ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded'))
+  if (missingReference) return badRequest(`reference asset is not uploaded in style: ${missingReference}`)
+  if (machineId) {
+    const machine = await env.DB.prepare('SELECT * FROM task_machines WHERE machine_id = ? LIMIT 1').bind(machineId).first<MachineRow>()
+    if (!machine || machine.auth_status !== 'active') return badRequest('selected machine must be active')
+    if (!parseArray(machine.capabilities_json).includes('generate_ai_image')) return badRequest('selected machine lacks generate_ai_image capability')
+  }
+  const promptHash = await sha256Hex(promptText)
+  const refsHash = await sha256Hex(JSON.stringify(referenceAssetUids))
+  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}`
+  const existing = await findDispatchJob(env, 'generate_ai_image', idempotencyKey)
+  const requestUid = existing ? '' : randomToken('gen')
+  const payload = {
+    request_uid: requestUid,
+    batch_uid: batchUid,
+    style_id: styleId,
+    style_code: style.style_code,
+    item_id: style.item_id,
+    skc_code: style.skc_code,
+    category: style.category,
+    gender: style.gender,
+    source_asset_uid: sourceAssetUid,
+    reference_asset_uids: referenceAssetUids,
+    prompt_template_version_id: promptTemplateVersionId,
+    prompt_text: promptText,
+  }
+  const job = existing ?? await insertDispatchJob(env, {
+    batchUid,
+    jobType: 'generate_ai_image',
+    requestedBy: actor.user.id,
+    assignedMachineId: machineId || null,
+    requiredCapabilities: ['generate_ai_image'],
+    priority: 50,
+    maxAttempts: 1,
+    idempotencyKey,
+    payload,
+  })
+  if (!existing) {
+    await env.DB.prepare(
+      `INSERT INTO ai_generation_requests
+         (request_uid, batch_uid, style_id, source_asset_uid, reference_asset_uids_json,
+          prompt_template_version_id, prompt_text, status, dispatch_job_uid, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(requestUid, batchUid, styleId, sourceAssetUid, toJson(referenceAssetUids), promptTemplateVersionId, promptText, 'queued', job.job_uid, actor.user.id, nowIso(), nowIso())
+      .run()
+  }
+  await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.create', 'ai_image_batch', batchUid, { style_id: styleId, source_asset_uid: sourceAssetUid, machine_id: machineId }, request)
+  return json({ job, request_uid: requestUid }, { status: existing ? 200 : 201 })
 }
 
 export async function exportReviewDetail(request: Request, env: Env): Promise<Response> {
@@ -514,6 +617,14 @@ function batchUidFromManualAssetPath(request: Request): string {
 
 function batchUidFromRegeneratePath(request: Request): string {
   return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/ai-image-batches\/([^/]+)\/regenerate$/)?.[1] || '')
+}
+
+function batchUidFromRegenerateRejectedPath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/ai-image-batches\/([^/]+)\/regenerate-rejected$/)?.[1] || '')
+}
+
+function batchUidFromGeneratePath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/ai-image-batches\/([^/]+)\/generate$/)?.[1] || '')
 }
 
 function batchUidFromReviewDetailPath(request: Request): string {

@@ -36,6 +36,8 @@ class CloudJobExecutor:
 
     def execute(self, job: Mapping[str, Any]) -> dict:
         job_type = str(job.get("job_type") or "")
+        if job_type == "generate_ai_image":
+            return self.execute_generate_ai_image(job)
         if job_type == "regenerate_ai_image":
             return self.execute_regenerate_ai_image(job)
         if job_type == "submit_tmall_material_test":
@@ -86,6 +88,61 @@ class CloudJobExecutor:
                 "filename": output_path.name,
                 "object_key": upload_result.get("object_key", ""),
                 "local_result_path": str(output_path),
+            },
+        }
+
+    def execute_generate_ai_image(self, job: Mapping[str, Any]) -> dict:
+        payload = _payload(job)
+        batch_uid = str(payload.get("batch_uid") or job.get("batch_uid") or "")
+        style_id = _positive_int(payload.get("style_id"))
+        source_asset_uid = _required_text(payload, "source_asset_uid")
+        prompt_text = _required_text(payload, "prompt_text")
+        task_dir = self._task_dir(job)
+        self._progress(job, "downloading_assets", "下载在线生图素材")
+        source_path = self._download_asset(job, source_asset_uid, task_dir / "source")
+        reference_paths = [
+            str(self._download_asset(job, uid, task_dir / "references"))
+            for uid in _text_list(payload.get("reference_asset_uids"))
+        ]
+        self._renew(job)
+
+        module = self._tmall_module()
+        batch = self._generation_batch(job, payload, task_dir, str(source_path), reference_paths)
+        self._progress(job, "generating", "本地执行在线生图")
+        asset = module.generate_approval_asset_for_item(
+            batch,
+            item_id=str(payload.get("item_id") or ""),
+            style_code=str(payload.get("style_code") or ""),
+            prompt=prompt_text,
+            main_image_path=str(source_path),
+            reference_paths=reference_paths,
+        )
+        self._renew(job)
+
+        output_path = _local_file(asset.get("path"), task_dir)
+        result_asset_uid = _safe_generated_asset_uid(str(payload.get("request_uid") or ""), _job_uid(job))
+        generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), Mapping) else {}
+        self._progress(job, "uploading_results", "上传在线生图结果")
+        upload_result = self._upload_result_asset(
+            job=job,
+            batch_uid=batch_uid,
+            style_id=style_id,
+            asset_uid=result_asset_uid,
+            path=output_path,
+            prompt_text=str(asset.get("prompt") or prompt_text),
+            parent_asset_uid=source_asset_uid,
+            generation_job_id=str(generation_row.get("任务ID") or generation_row.get("1XM任务ID") or generation_row.get("__1xm_task_id") or ""),
+            prompt_template_version_id=_positive_int(payload.get("prompt_template_version_id")) or None,
+        )
+        self._renew(job)
+        return {
+            "status": "succeeded",
+            "result": {
+                "asset_uid": result_asset_uid,
+                "filename": output_path.name,
+                "object_key": upload_result.get("object_key", ""),
+                "local_result_path": str(output_path),
+                "generation": generation_row,
             },
         }
 
@@ -147,6 +204,7 @@ class CloudJobExecutor:
         prompt_text: str,
         parent_asset_uid: str,
         generation_job_id: str,
+        prompt_template_version_id: int | None = None,
     ) -> dict:
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
         presign = self.client.request_json("POST", "/api/assets/presign", {
@@ -159,6 +217,7 @@ class CloudJobExecutor:
             "filename": path.name,
             "content_type": content_type,
             "prompt_text": prompt_text,
+            "prompt_template_version_id": prompt_template_version_id,
             "parent_asset_uid": parent_asset_uid,
             "generation_job_id": generation_job_id,
         })
@@ -202,6 +261,44 @@ class CloudJobExecutor:
                     "reference_paths": reference_paths,
                     "generation_row": dict(payload.get("generation_row") or {"完整Prompt": str(payload.get("prompt_text") or "")}),
                 }],
+            }],
+        }
+
+    def _generation_batch(self, job: Mapping[str, Any], payload: Mapping[str, Any], task_dir: Path, source_path: str, reference_paths: list[str]) -> dict:
+        batch_uid = str(payload.get("batch_uid") or job.get("batch_uid") or "")
+        style_id = payload.get("style_id")
+        style_code = str(payload.get("style_code") or "")
+        item_id = str(payload.get("item_id") or style_id or "")
+        return {
+            "batch_id": batch_uid,
+            "task_run_uid": _job_uid(job),
+            "artifact_dir": str(task_dir),
+            "run_params": {},
+            "items": [{
+                "id": item_id,
+                "style_id": style_id,
+                "style_code": style_code,
+                "item_id": item_id,
+                "skc_code": str(payload.get("skc_code") or ""),
+                "category": str(payload.get("category") or ""),
+                "gender": str(payload.get("gender") or ""),
+                "origin_path": source_path,
+                "workflow": {
+                    "style_code": style_code,
+                    "item_id": item_id,
+                    "skc_code": str(payload.get("skc_code") or ""),
+                    "category": str(payload.get("category") or ""),
+                    "gender": str(payload.get("gender") or ""),
+                },
+                "assets": [
+                    {
+                        "id": str(payload.get("source_asset_uid") or ""),
+                        "kind": "source",
+                        "status": "uploaded",
+                        "path": source_path,
+                        "reference_paths": reference_paths,
+                    }
+                ],
             }],
         }
 
@@ -329,6 +426,12 @@ def _safe_segment(value: str) -> str:
     text = str(value or "").strip().replace("\\", "/").split("/")[-1]
     safe = "".join(ch if ch.isalnum() or ch in "._-" else "-" for ch in text)
     return safe.strip(".-") or "item"
+
+
+def _safe_generated_asset_uid(request_uid: str, job_uid: str) -> str:
+    source = request_uid or f"gen-{job_uid}"
+    safe = _safe_segment(source)
+    return safe if safe.startswith("gen-") else f"gen-{safe}"
 
 
 def _local_file(value: Any, root: Path) -> Path:

@@ -478,8 +478,9 @@ const cloudStatus = ref(null)
 const cloudBusy = reactive({ config: false, enroll: false, start: false, stop: false })
 const cloudMsg = ref('')
 const cloudMsgOk = ref(true)
-const defaultCloudCapabilities = ['regenerate_ai_image', 'submit_tmall_material_test']
+const defaultCloudCapabilities = ['generate_ai_image', 'regenerate_ai_image', 'submit_tmall_material_test']
 const cloudCapabilityOptions = [
+  { value: 'generate_ai_image', label: 'generate_ai_image' },
   { value: 'regenerate_ai_image', label: 'regenerate_ai_image' },
   { value: 'submit_tmall_material_test', label: 'submit_tmall_material_test' },
 ]

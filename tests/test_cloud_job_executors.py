@@ -108,6 +108,69 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertTrue(renew_bodies)
         self.assertTrue(all(body["lease_id"] == "lease-1" for body in progress_bodies + renew_bodies))
 
+    def test_generate_ai_image_downloads_source_and_references_uploads_new_asset(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        captured = {}
+
+        def generate(batch, *, item_id="", style_code="", prompt="", main_image_path="", reference_paths=None):
+            captured["batch"] = batch
+            captured["item_id"] = item_id
+            captured["style_code"] = style_code
+            captured["prompt"] = prompt
+            captured["main_image_path"] = main_image_path
+            captured["reference_paths"] = list(reference_paths or [])
+            output = Path(batch["artifact_dir"]) / "generated.jpg"
+            output.write_bytes(b"new generated image")
+            return {
+                "id": "generated-local-id",
+                "kind": "ai",
+                "path": str(output),
+                "filename": "generated.jpg",
+                "prompt": prompt,
+                "generation_row": {"1XM任务ID": "1xm-new"},
+            }
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=SimpleNamespace(
+            generate_approval_asset_for_item=generate,
+        ))
+        job = {
+            "job_uid": "job-generate",
+            "batch_uid": "batch-1",
+            "job_type": "generate_ai_image",
+            "lease_id": "lease-generate",
+            "payload": {
+                "request_uid": "gen-1",
+                "batch_uid": "batch-1",
+                "style_id": 101,
+                "style_code": "208326100202",
+                "item_id": "1001",
+                "source_asset_uid": "source-1",
+                "reference_asset_uids": ["ref-1", "ref-2"],
+                "prompt_template_version_id": 31,
+                "prompt_text": "fresh prompt",
+            },
+        }
+
+        result = executor.execute(job)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual([download["asset_uid"] for download in client.downloads], ["source-1", "ref-1", "ref-2"])
+        self.assertEqual(captured["style_code"], "208326100202")
+        self.assertEqual(captured["item_id"], "1001")
+        self.assertEqual(captured["prompt"], "fresh prompt")
+        self.assertEqual(Path(captured["main_image_path"]).name, "source-1.jpg")
+        self.assertEqual([Path(path).name for path in captured["reference_paths"]], ["ref-1.jpg", "ref-2.jpg"])
+        presign_call = next(call for call in client.calls if call["path"] == "/api/assets/presign")
+        self.assertTrue(str(presign_call["body"]["asset_uid"]).startswith("gen-"))
+        self.assertEqual(presign_call["body"]["batch_uid"], "batch-1")
+        self.assertEqual(presign_call["body"]["style_id"], 101)
+        self.assertEqual(presign_call["body"]["prompt_template_version_id"], 31)
+        self.assertEqual(presign_call["body"]["prompt_text"], "fresh prompt")
+        self.assertEqual(presign_call["body"]["parent_asset_uid"], "source-1")
+        self.assertEqual(result["result"]["filename"], "generated.jpg")
+
     def test_submit_tmall_material_test_downloads_source_and_approved_images_and_completes_with_result_path(self):
         from core.cloud_job_executors import CloudJobExecutor
 

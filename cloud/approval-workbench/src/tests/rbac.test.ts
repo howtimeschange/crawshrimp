@@ -10,6 +10,7 @@ describe('RBAC matrix', () => {
 
   it('keeps reviewers away from submit and admin actions', () => {
     expect(hasPermission(['reviewer'], 'batches:review')).toBe(true)
+    expect(hasPermission(['reviewer'], 'jobs:generate')).toBe(true)
     expect(hasPermission(['reviewer'], 'jobs:regenerate')).toBe(true)
     expect(hasPermission(['reviewer'], 'jobs:submit')).toBe(false)
     expect(hasPermission(['reviewer'], 'users:write')).toBe(false)

@@ -45,7 +45,9 @@ import {
 } from './asset-routes'
 import {
   createManualStyleAsset,
+  createGenerationJob,
   createRegenerationJobs,
+  createRejectedRegenerationJobs,
   createSubmitJob,
   exportReviewDetail,
   getBatch,
@@ -118,7 +120,9 @@ export default {
     if (/^\/api\/ai-image-batches\/[^/]+\/sync-complete$/.test(url.pathname) && request.method === 'POST') return syncBatchComplete(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/assets\/[^/]+\/decision$/.test(url.pathname) && request.method === 'PATCH') return saveAssetDecision(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/manual-assets$/.test(url.pathname) && request.method === 'POST') return createManualStyleAsset(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/generate$/.test(url.pathname) && request.method === 'POST') return createGenerationJob(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/regenerate$/.test(url.pathname) && request.method === 'POST') return createRegenerationJobs(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/regenerate-rejected$/.test(url.pathname) && request.method === 'POST') return createRejectedRegenerationJobs(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/review-detail$/.test(url.pathname) && request.method === 'GET') return exportReviewDetail(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/mark-ready$/.test(url.pathname) && request.method === 'POST') return markBatchReady(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/submit-plan$/.test(url.pathname) && request.method === 'GET') return getSubmitPlan(request, env)

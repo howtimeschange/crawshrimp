@@ -6,6 +6,7 @@ export type Permission =
   | 'prompts:write'
   | 'batches:read'
   | 'batches:review'
+  | 'jobs:generate'
   | 'jobs:regenerate'
   | 'jobs:submit'
   | 'machines:read'
@@ -31,6 +32,7 @@ export const BUILT_IN_ROLES: BuiltInRole[] = [
       'prompts:write',
       'batches:read',
       'batches:review',
+      'jobs:generate',
       'jobs:regenerate',
       'jobs:submit',
       'machines:read',
@@ -42,7 +44,7 @@ export const BUILT_IN_ROLES: BuiltInRole[] = [
   {
     roleKey: 'admin',
     name: '管理员',
-    permissions: ['users:write', 'roles:read', 'audit:read', 'prompts:read', 'prompts:write', 'batches:read', 'batches:review', 'jobs:regenerate', 'jobs:submit', 'machines:read', 'machines:write', 'dashboard:read'],
+    permissions: ['users:write', 'roles:read', 'audit:read', 'prompts:read', 'prompts:write', 'batches:read', 'batches:review', 'jobs:generate', 'jobs:regenerate', 'jobs:submit', 'machines:read', 'machines:write', 'dashboard:read'],
   },
   {
     roleKey: 'prompt_manager',
@@ -52,12 +54,12 @@ export const BUILT_IN_ROLES: BuiltInRole[] = [
   {
     roleKey: 'reviewer',
     name: '审图人员',
-    permissions: ['prompts:read', 'batches:read', 'batches:review', 'jobs:regenerate', 'dashboard:read'],
+    permissions: ['prompts:read', 'batches:read', 'batches:review', 'jobs:generate', 'jobs:regenerate', 'dashboard:read'],
   },
   {
     roleKey: 'operator',
     name: '提交操作员',
-    permissions: ['batches:read', 'jobs:regenerate', 'jobs:submit', 'machines:read', 'dashboard:read'],
+    permissions: ['batches:read', 'jobs:generate', 'jobs:regenerate', 'jobs:submit', 'machines:read', 'dashboard:read'],
   },
   {
     roleKey: 'machine_operator',

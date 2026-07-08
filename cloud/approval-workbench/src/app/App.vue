@@ -8,6 +8,7 @@ import MachinesView from './views/MachinesView.vue'
 import PromptLibraryView from './views/PromptLibraryView.vue'
 import BatchListView from './views/BatchListView.vue'
 import BatchReviewView from './views/BatchReviewView.vue'
+import OnlineGenerationView from './views/OnlineGenerationView.vue'
 import DashboardView from './views/DashboardView.vue'
 
 type PageKey =
@@ -41,7 +42,7 @@ const navItems: Array<{ key: PageKey; label: string; permission: string }> = [
   { key: 'dashboard', label: '总览', permission: 'dashboard:read' },
   { key: 'batches', label: '审批批次', permission: 'batches:read' },
   { key: 'review', label: '批次审图', permission: 'batches:read' },
-  { key: 'generate', label: 'AI 生图', permission: 'jobs:regenerate' },
+  { key: 'generate', label: 'AI 生图', permission: 'jobs:generate' },
   { key: 'prompts', label: 'Prompt 库', permission: 'prompts:read' },
   { key: 'materialData', label: '测图数据', permission: 'dashboard:read' },
   { key: 'machines', label: '任务机', permission: 'machines:read' },
@@ -150,7 +151,7 @@ onMounted(loadMe)
       <BatchListView v-else-if="activePage === 'batches'" @review="openReview" />
       <BatchReviewView v-else-if="activePage === 'review'" :initial-batch-uid="selectedBatchUid" />
       <PromptLibraryView v-else-if="activePage === 'prompts'" />
-      <div v-else-if="activePage === 'generate'" class="panel empty-state">AI 生图模块待接入云端执行链路。</div>
+      <OnlineGenerationView v-else-if="activePage === 'generate'" />
       <div v-else-if="activePage === 'materialData'" class="panel empty-state">测图数据模块待接入数据服务。</div>
       <MachinesView v-else-if="activePage === 'machines'" />
       <AdminUsersView v-else-if="activePage === 'users'" />

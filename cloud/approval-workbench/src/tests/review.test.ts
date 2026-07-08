@@ -88,6 +88,21 @@ interface DispatchJobRow {
   created_at: string
   updated_at: string
 }
+interface GenerationRequestRow {
+  id: number
+  request_uid: string
+  batch_uid: string
+  style_id: number
+  source_asset_uid: string
+  reference_asset_uids_json: string
+  prompt_template_version_id: number | null
+  prompt_text: string
+  status: string
+  dispatch_job_uid: string
+  created_by: number | null
+  created_at: string
+  updated_at: string
+}
 interface State {
   users: UserRow[]
   roles: RoleRow[]
@@ -99,6 +114,7 @@ interface State {
   assets: AssetRow[]
   approvalEvents: ApprovalEventRow[]
   dispatchJobs: DispatchJobRow[]
+  generationRequests: GenerationRequestRow[]
   audits: unknown[]
 }
 
@@ -232,6 +248,25 @@ class FakeD1Statement {
         result_json: '{}',
         created_at: String(this.params[11]),
         updated_at: String(this.params[12]),
+      })
+      return result(1, id)
+    }
+    if (sql.startsWith('insert into ai_generation_requests')) {
+      const id = this.state.generationRequests.length + 1
+      this.state.generationRequests.push({
+        id,
+        request_uid: String(this.params[0]),
+        batch_uid: String(this.params[1]),
+        style_id: Number(this.params[2]),
+        source_asset_uid: String(this.params[3]),
+        reference_asset_uids_json: String(this.params[4]),
+        prompt_template_version_id: numberOrNull(this.params[5]),
+        prompt_text: String(this.params[6]),
+        status: String(this.params[7]),
+        dispatch_job_uid: String(this.params[8]),
+        created_by: numberOrNull(this.params[9]),
+        created_at: String(this.params[10]),
+        updated_at: String(this.params[11]),
       })
       return result(1, id)
     }
@@ -409,6 +444,107 @@ describe('review routes', () => {
     })
   })
 
+  it('rejected asset batch rerun creates one job per rejected AI asset with prompt-hash idempotency', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'rejected'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate-rejected', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ prompt_overrides: { 'asset-ai-2': 'override prompt' } }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.dispatchJobs.map((job) => job.job_type)).toEqual(['regenerate_ai_image', 'regenerate_ai_image'])
+    expect(state.dispatchJobs.map((job) => job.idempotency_key)).toEqual([
+      'regenerate_ai_image:batch-1:asset-ai-2:cb79718d18e173d5c2ea554c080c41c94a6bd5394e5b6d7348355056231304c0',
+      'regenerate_ai_image:batch-1:asset-ai-3:9b1adf0c46edaef90badf75c98cab9558bbf1085684b1b36d4c852d01e8c2251',
+    ])
+    expect(JSON.parse(state.dispatchJobs[0].payload_json)).toMatchObject({
+      asset_uid: 'asset-ai-2',
+      prompt_text: 'override prompt',
+      original_prompt_text: 'Prompt 2',
+    })
+  })
+
+  it('online generation from a style creates a generate_ai_image job and request row', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.machines[0].capabilities_json = '["generate_ai_image","submit_tmall_material_test"]'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({
+        style_id: 1,
+        source_asset_uid: 'asset-source-1',
+        reference_asset_uids: ['asset-source-1'],
+        prompt_template_version_id: 31,
+        prompt_text: 'fresh prompt',
+        machine_id: 'machine-1',
+      }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.dispatchJobs[0]).toMatchObject({
+      job_type: 'generate_ai_image',
+      assigned_machine_id: 'machine-1',
+    })
+    expect(JSON.parse(state.dispatchJobs[0].required_capabilities_json)).toEqual(['generate_ai_image'])
+    expect(JSON.parse(state.dispatchJobs[0].payload_json)).toMatchObject({
+      batch_uid: 'batch-1',
+      style_id: 1,
+      source_asset_uid: 'asset-source-1',
+      reference_asset_uids: ['asset-source-1'],
+      prompt_template_version_id: 31,
+      prompt_text: 'fresh prompt',
+    })
+    expect(state.generationRequests[0]).toMatchObject({
+      batch_uid: 'batch-1',
+      style_id: 1,
+      source_asset_uid: 'asset-source-1',
+      prompt_template_version_id: 31,
+      prompt_text: 'fresh prompt',
+      status: 'queued',
+      dispatch_job_uid: state.dispatchJobs[0].job_uid,
+    })
+  })
+
+  it('online generation persists prompt override in job payload', async () => {
+    const { state, reviewerCookie } = await baseState()
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({
+        style_id: 1,
+        source_asset_uid: 'asset-source-1',
+        prompt_text: 'manual override prompt',
+      }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(JSON.parse(state.dispatchJobs[0].payload_json).prompt_text).toBe('manual override prompt')
+    expect(state.generationRequests[0].prompt_text).toBe('manual override prompt')
+  })
+
+  it('does not let viewers create generation or rerun jobs', async () => {
+    const { state, viewerCookie } = await baseState()
+    const generate = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: viewerCookie },
+      body: JSON.stringify({ style_id: 1, source_asset_uid: 'asset-source-1', prompt_text: 'prompt' }),
+    }), fakeEnv(state))
+    const rerun = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate-rejected', {
+      method: 'POST',
+      headers: { cookie: viewerCookie },
+      body: JSON.stringify({}),
+    }), fakeEnv(state))
+
+    expect(generate.status).toBe(403)
+    expect(rerun.status).toBe(403)
+    expect(state.dispatchJobs).toHaveLength(0)
+  })
+
   it('requires jobs:submit, an active selected machine, and ready_to_submit status for submit jobs', async () => {
     const { state, reviewerCookie, operatorCookie } = await baseState()
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
@@ -472,6 +608,7 @@ async function baseState(): Promise<{ state: State; reviewerCookie: string; view
     ],
     approvalEvents: [],
     dispatchJobs: [],
+    generationRequests: [],
     audits: [],
   }
   return {

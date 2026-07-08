@@ -16,6 +16,7 @@ test('settings page contains cloud approval operational settings group', () => {
     assert.match(source, new RegExp(text))
   }
   assert.match(source, /cloud_approval\.capabilities/)
+  assert.match(source, /generate_ai_image/)
   assert.match(source, /regenerate_ai_image/)
   assert.match(source, /submit_tmall_material_test/)
   assert.match(source, /saveCloudApprovalConfig\(cloudConfigPayload\(\)\)/)
