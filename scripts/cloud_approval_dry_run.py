@@ -11,6 +11,9 @@ import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from uuid import uuid4
+
+from openpyxl import load_workbook
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -24,7 +27,27 @@ ADMIN_TOKEN = "fake-admin-session"
 MACHINE_ID = "dry-run-machine-1"
 DEFAULT_BATCH_ID = "cloud-dry-run-batch"
 MACHINE_TOKEN = "csr_machine_dry_run"
-CAPABILITIES = ["regenerate_ai_image", "submit_tmall_material_test"]
+CAPABILITIES = ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test", "crawl_tmall_material_test_data"]
+PROMPT_HEADERS = {
+    "字段名": "field_name",
+    "字段 ID": "source_field_id",
+    "字段ID": "source_field_id",
+    "字段顺序": "field_order",
+    "在当前视图": "visible",
+    "尺寸": "size_label",
+    "格式": "output_format",
+    "引用字段": "reference_fields",
+    "描述内容": "prompt_text",
+    "字数": "word_count",
+    "字段类型": "field_type",
+    "女性优先度": "female_priority",
+    "男性/中性优先度": "male_neutral_priority",
+    "男性优先度": "male_neutral_priority",
+    "中性优先度": "male_neutral_priority",
+}
+MATERIAL_OVERVIEW_REQUIRED = {"记录类型", "商品ID", "任务ID", "测试状态", "测试渠道", "测试素材数", "最优素材"}
+MATERIAL_DETAIL_REQUIRED = {"记录类型", "商品ID", "任务ID", "统计口径", "统计日期", "图片类型", "素材ID", "素材URL"}
+WORKFLOW_REQUIRED = {"款号", "ID（用于测图的ID）", "品类（后期匹配）", "模特性别"}
 
 
 class FakeResponse:
@@ -59,6 +82,9 @@ class FakeCloudApprovalTransport:
         self.machines: dict[str, dict[str, Any]] = {}
         self.batches: dict[str, dict[str, Any]] = {}
         self.jobs: list[dict[str, Any]] = []
+        self.prompt_libraries: list[dict[str, Any]] = []
+        self.material_imports: list[dict[str, Any]] = []
+        self.material_schedules: list[dict[str, Any]] = []
         self._next_token_id = 1
         self._next_style_id = 101
         self._next_job_id = 1
@@ -127,6 +153,63 @@ class FakeCloudApprovalTransport:
             machine["health"] = str(body.get("health") or "online_idle")
             machine["capabilities"] = list(body.get("capabilities") or machine["capabilities"])
             return 200, {"ok": True, "machine_id": machine["machine_id"], "auth_status": machine["auth_status"], "health": machine["health"]}
+
+        if method == "POST" and path == "/api/prompt-libraries/import":
+            templates = list(body.get("templates") or [])
+            if not templates:
+                return 400, {"error": "templates are required"}
+            library = {
+                "id": len(self.prompt_libraries) + 1,
+                "name": str(body.get("name") or "AI 测图提示词库 默认版"),
+                "scenario": str(body.get("scenario") or "裂变图"),
+                "status": "draft",
+                "templates": templates,
+            }
+            self.prompt_libraries.append(library)
+            return 201, {"library": library}
+
+        if method == "POST" and path == "/api/material-test/import":
+            overview_rows = list(body.get("overview_rows") or [])
+            detail_rows = list(body.get("detail_rows") or [])
+            source = dict(body.get("source") or {})
+            source_uid = str(source.get("source_uid") or f"material-dry-run-{len(self.material_imports) + 1}")
+            result = {
+                "overview_rows": len(overview_rows),
+                "detail_rows": len(detail_rows),
+                "inserted_or_updated": len(overview_rows) + len(detail_rows),
+                "source_uid": source_uid,
+            }
+            self.material_imports.append({**result, "source": source})
+            return 200, result
+
+        if method == "POST" and path == "/api/material-test/crawl-jobs":
+            machine_id = str(body.get("machine_id") or "")
+            machine = self.machines.get(machine_id) if machine_id else None
+            if machine_id and (not machine or "crawl_tmall_material_test_data" not in machine["capabilities"]):
+                return 400, {"error": "selected machine lacks crawl_tmall_material_test_data capability"}
+            job = self._job(
+                batch_uid="material-test",
+                job_type="crawl_tmall_material_test_data",
+                assigned_machine_id=machine_id or None,
+                required_capabilities=["crawl_tmall_material_test_data"],
+                priority=60,
+                idempotency_key=str(body.get("idempotency_key") or f"crawl_tmall_material_test_data:{uuid4()}"),
+                payload={"run_params": dict(body.get("run_params") or {}), "source": dict(body.get("source") or {})},
+            )
+            return 201, {"job": job}
+
+        if method == "POST" and path == "/api/material-test/schedules":
+            schedule = {
+                "schedule_uid": str(body.get("schedule_uid") or f"mts_dry_run_{len(self.material_schedules) + 1}"),
+                "label": str(body.get("label") or "天猫测图数据抓取"),
+                "statistic_type": str(body.get("statistic_type") or "ACCUMULATE_30_DAYS"),
+                "schedule_time": str(body.get("schedule_time") or "08:30"),
+                "timezone": str(body.get("timezone") or "Asia/Shanghai"),
+                "status": str(body.get("status") or "active"),
+                "target_machine_id": body.get("machine_id"),
+            }
+            self.material_schedules.append(schedule)
+            return 201, {"schedule": schedule}
 
         if method == "POST" and path == "/api/ai-image-batches/sync":
             batch_uid = str(body.get("batch_uid") or "")
@@ -364,6 +447,15 @@ class FakeCloudApprovalTransport:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a cloud approval workbench dry run.")
+    parser.add_argument(
+        "--scenario",
+        default="default",
+        choices=["default", "embedded-login", "prompt-import", "material-data-import", "mvp-ai-test"],
+        help="Dry-run scenario to execute. The default keeps the original fake approval loop.",
+    )
+    parser.add_argument("--prompt-file", default="", help="Workbook for --scenario prompt-import.")
+    parser.add_argument("--data-file", default="", help="Workbook for --scenario material-data-import.")
+    parser.add_argument("--workflow-file", default="", help="Workbook for --scenario mvp-ai-test.")
     parser.add_argument("--live-cloud-url", default="", help="Opt in to real cloud API calls against this Worker URL.")
     parser.add_argument("--admin-cookie", default="", help="Admin cs_session cookie for live admin routes. Never store this in files.")
     parser.add_argument("--machine-id", default="", help="Override task machine id; live mode defaults to a unique dry-run id.")
@@ -374,6 +466,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     """Run a local fake cloud approval loop without Tmall side effects."""
     args = build_parser().parse_args(argv)
+    if args.scenario == "embedded-login":
+        return run_embedded_login_scenario(args, print)
+    if args.scenario == "prompt-import":
+        return run_prompt_import_scenario(Path(args.prompt_file), print)
+    if args.scenario == "material-data-import":
+        return run_material_data_import_scenario(Path(args.data_file), print)
+    if args.scenario == "mvp-ai-test":
+        return run_mvp_ai_test_scenario(Path(args.workflow_file), args, print)
     if args.live_cloud_url:
         transport = CookieTransport(args.admin_cookie)
         client = CloudApprovalClient(args.live_cloud_url, user_token=ADMIN_TOKEN, transport=transport)
@@ -382,6 +482,110 @@ def main(argv: list[str] | None = None) -> int:
         batch_id = args.batch_id or f"{DEFAULT_BATCH_ID}-{suffix}"
         return run_dry_run(client=client, transport=None, batch_factory=build_fake_local_batch, printer=print, machine_id=machine_id, batch_id=batch_id)
     return run_dry_run(transport=FakeCloudApprovalTransport(), batch_factory=build_fake_local_batch, printer=print, machine_id=args.machine_id or MACHINE_ID, batch_id=args.batch_id or DEFAULT_BATCH_ID)
+
+
+def run_embedded_login_scenario(args: argparse.Namespace, printer: Callable[[str], None]) -> int:
+    app_source = REPO_ROOT / "cloud/approval-workbench/src/app/App.vue"
+    text = app_source.read_text(encoding="utf-8")
+    try:
+        _assert("get('embed') === '1'" in text, "embed=1 query handling is missing")
+        _assert(".app-shell.embedded" in text and ".embedded .workspace" in text, "embedded shell CSS is missing")
+        _assert("v-if=\"!isEmbedded\"" in text, "embedded mode must hide standalone navigation")
+        if args.live_cloud_url:
+            if not args.admin_cookie:
+                raise AssertionError("live embedded-login requires --admin-cookie from the current shell")
+            url = f"{args.live_cloud_url.rstrip('/')}/?embed=1"
+            request = urllib.request.Request(url)
+            CookieTransport(args.admin_cookie)(request, timeout=20).read()
+            printer(f"embedded-login live URL accepted admin cookie: {url}")
+        else:
+            printer("embedded-login fake check: embed=1 hides standalone chrome and uses the existing admin cookie session surface")
+    except Exception as exc:
+        printer(f"DRY RUN FAIL: {type(exc).__name__}: {exc}")
+        return 1
+    printer("DRY RUN PASS")
+    return 0
+
+
+def run_prompt_import_scenario(prompt_file: Path, printer: Callable[[str], None]) -> int:
+    try:
+        rows = parse_prompt_workbook(prompt_file)
+        _assert(rows, "prompt workbook produced no templates")
+        groups = sorted({row["group_name"] for row in rows})
+        _assert(any(row.get("female_priority") is not None or row.get("male_neutral_priority") is not None for row in rows), "priority columns were not mapped")
+        transport = FakeCloudApprovalTransport()
+        client = CloudApprovalClient("https://approval.example.test", user_token=ADMIN_TOKEN, transport=transport)
+        imported = client.request_json("POST", "/api/prompt-libraries/import", {
+            "name": prompt_file.stem,
+            "scenario": "裂变图",
+            "templates": rows,
+        }, token_type="user")
+        library = imported.get("library") or {}
+        _assert(len(library.get("templates") or []) == len(rows), "fake prompt import did not preserve every row")
+        printer(f"prompt-import workbook={prompt_file} sheets={len(groups)} templates={len(rows)} groups={','.join(groups)}")
+    except Exception as exc:
+        printer(f"DRY RUN FAIL: {type(exc).__name__}: {exc}")
+        return 1
+    printer("DRY RUN PASS")
+    return 0
+
+
+def run_material_data_import_scenario(data_file: Path, printer: Callable[[str], None]) -> int:
+    try:
+        parsed = parse_material_workbook(data_file)
+        _assert(parsed["overview_rows"], "material workbook produced no overview rows")
+        _assert(parsed["detail_rows"], "material workbook produced no detail rows")
+        transport = FakeCloudApprovalTransport()
+        client = CloudApprovalClient("https://approval.example.test", user_token=ADMIN_TOKEN, transport=transport)
+        imported = client.request_json("POST", "/api/material-test/import", {
+            "source": {"filename": data_file.name, "source_uid": f"dry-run-{int(time.time())}"},
+            "overview_rows": parsed["overview_rows"],
+            "detail_rows": parsed["detail_rows"],
+        }, token_type="user")
+        _assert(imported.get("overview_rows") == len(parsed["overview_rows"]), "overview import count mismatch")
+        _assert(imported.get("detail_rows") == len(parsed["detail_rows"]), "detail import count mismatch")
+        printer(
+            f"material-data-import workbook={data_file} overview_rows={len(parsed['overview_rows'])} "
+            f"detail_rows={len(parsed['detail_rows'])} sheets={','.join(parsed['sheet_names'])}"
+        )
+    except Exception as exc:
+        printer(f"DRY RUN FAIL: {type(exc).__name__}: {exc}")
+        return 1
+    printer("DRY RUN PASS")
+    return 0
+
+
+def run_mvp_ai_test_scenario(workflow_file: Path, args: argparse.Namespace, printer: Callable[[str], None]) -> int:
+    try:
+        rows = parse_workflow_workbook(workflow_file)
+        _assert(rows, "workflow workbook produced no rows")
+        transport = FakeCloudApprovalTransport()
+        client = CloudApprovalClient("https://approval.example.test", user_token=ADMIN_TOKEN, transport=transport)
+        batch_factory = lambda root: build_workflow_batch(root, rows)
+        exit_code = run_dry_run(
+            transport=transport,
+            batch_factory=batch_factory,
+            printer=printer,
+            client=client,
+            machine_id=args.machine_id or MACHINE_ID,
+            batch_id=args.batch_id or DEFAULT_BATCH_ID,
+        )
+        if exit_code != 0:
+            return exit_code
+        crawl = client.request_json("POST", "/api/material-test/crawl-jobs", {
+            "machine_id": args.machine_id or MACHINE_ID,
+            "run_params": {"statistic_type": "ACCUMULATE_30_DAYS"},
+            "source": {"workflow_file": str(workflow_file), "rows": len(rows)},
+            "idempotency_key": f"crawl_tmall_material_test_data:{workflow_file.name}:{len(rows)}",
+        }, token_type="user")
+        job = crawl.get("job") or {}
+        _assert(job.get("job_type") == "crawl_tmall_material_test_data", "crawl job type mismatch")
+        _assert(job.get("required_capabilities_json") == json.dumps(["crawl_tmall_material_test_data"]), "crawl capability mismatch")
+        printer(f"mvp-ai-test workflow={workflow_file} workflow_rows={len(rows)} crawl_job={job.get('job_uid')}")
+    except Exception as exc:
+        printer(f"DRY RUN FAIL: {type(exc).__name__}: {exc}")
+        return 1
+    return 0
 
 
 def run_fake_dry_run(printer: Callable[[str], None] = print) -> dict:
@@ -594,6 +798,167 @@ def build_fake_local_batch(root: Path) -> dict:
             ],
         }],
     }
+
+
+def build_workflow_batch(root: Path, workflow_rows: list[dict[str, Any]]) -> dict:
+    row = workflow_rows[0]
+    root.mkdir(parents=True, exist_ok=True)
+    source = root / f"{row['style_code']}-source.jpg"
+    reject = root / f"{row['style_code']}-ai-reject.jpg"
+    approve = root / f"{row['style_code']}-ai-approve.jpg"
+    source.write_bytes(b"workflow-source-image")
+    reject.write_bytes(b"workflow-rejected-ai-image")
+    approve.write_bytes(b"workflow-approved-ai-image")
+    return {
+        "batch_id": DEFAULT_BATCH_ID,
+        "title": "Cloud Approval MVP AI Test Dry Run",
+        "status": "pending_approval",
+        "created_at": "2026-07-08T10:00:00+08:00",
+        "adapter_id": "tmall-ops-assistant",
+        "task_id": "tmall_ai_image_test_chain",
+        "task_run_uid": "mvp-ai-test-dry-run",
+        "items": [{
+            "id": f"style-{row['style_code']}",
+            "row_no": row["row_no"],
+            "style_code": row["style_code"],
+            "item_id": row["item_id"],
+            "category": row["category"],
+            "gender": row["gender"],
+            "skc_code": row["style_code"],
+            "origin_path": str(source),
+            "assets": [
+                {"id": "source-main-1", "kind": "origin", "path": str(source), "filename": source.name, "label": "原图/主图"},
+                {
+                    "id": "ai-reject-1",
+                    "kind": "ai",
+                    "path": str(reject),
+                    "filename": reject.name,
+                    "label": "AI 图-退回",
+                    "prompt": f"{row['category']} {row['gender']} 测图干跑重生图",
+                    "prompt_index": 1,
+                    "generation_row": {"prompt_version": "mvp-dry-run", "提示词版本": "MVP Dry Run"},
+                },
+                {
+                    "id": "ai-approve-1",
+                    "kind": "ai",
+                    "path": str(approve),
+                    "filename": approve.name,
+                    "label": "AI 图-通过",
+                    "prompt": f"{row['category']} {row['gender']} 测图干跑提交",
+                    "prompt_index": 2,
+                    "generation_row": {"prompt_version": "mvp-dry-run", "提示词版本": "MVP Dry Run"},
+                },
+            ],
+        }],
+    }
+
+
+def parse_prompt_workbook(path: Path) -> list[dict[str, Any]]:
+    _assert(path and path.exists(), f"prompt workbook not found: {path}")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    templates: list[dict[str, Any]] = []
+    for sheet in workbook.worksheets:
+        rows = list(sheet.iter_rows(values_only=True))
+        header_index = next((index for index, row in enumerate(rows) if any(_cell_text(cell) == "字段名" for cell in row)), -1)
+        if header_index < 0:
+            continue
+        headers = [_cell_text(cell) for cell in rows[header_index]]
+        index_by_key = {PROMPT_HEADERS[header]: index for index, header in enumerate(headers) if header in PROMPT_HEADERS}
+        for row in rows[header_index + 1:]:
+            template = {
+                "group_name": sheet.title.strip(),
+                "field_name": _value_at(row, index_by_key, "field_name"),
+                "source_field_id": _value_at(row, index_by_key, "source_field_id"),
+                "field_order": _int_or_none(_value_at(row, index_by_key, "field_order")),
+                "visible": _value_at(row, index_by_key, "visible").lower() not in {"否", "false", "0", "no"},
+                "size_label": _value_at(row, index_by_key, "size_label") or "960x1280",
+                "output_format": _value_at(row, index_by_key, "output_format") or "jpeg",
+                "reference_fields": _value_at(row, index_by_key, "reference_fields"),
+                "prompt_text": _value_at(row, index_by_key, "prompt_text"),
+                "word_count": _int_or_none(_value_at(row, index_by_key, "word_count")),
+                "field_type": _value_at(row, index_by_key, "field_type"),
+                "female_priority": _int_or_none(_value_at(row, index_by_key, "female_priority")),
+                "male_neutral_priority": _int_or_none(_value_at(row, index_by_key, "male_neutral_priority")),
+                "enabled": True,
+            }
+            if template["field_name"] and template["prompt_text"]:
+                templates.append(template)
+    return templates
+
+
+def parse_material_workbook(path: Path) -> dict[str, Any]:
+    _assert(path and path.exists(), f"material data workbook not found: {path}")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    _assert("概览" in workbook.sheetnames and "明细" in workbook.sheetnames, "material workbook must contain 概览 and 明细 sheets")
+    overview_rows = _rows_from_header_sheet(workbook["概览"], MATERIAL_OVERVIEW_REQUIRED)
+    detail_rows = _rows_from_header_sheet(workbook["明细"], MATERIAL_DETAIL_REQUIRED)
+    return {
+        "overview_rows": overview_rows,
+        "detail_rows": detail_rows,
+        "sheet_names": workbook.sheetnames,
+    }
+
+
+def parse_workflow_workbook(path: Path) -> list[dict[str, Any]]:
+    _assert(path and path.exists(), f"workflow workbook not found: {path}")
+    workbook = load_workbook(path, read_only=True, data_only=True)
+    sheet = workbook.worksheets[0]
+    rows = list(sheet.iter_rows(values_only=True))
+    _assert(rows, "workflow workbook is empty")
+    headers = [_cell_text(cell) for cell in rows[0]]
+    missing = WORKFLOW_REQUIRED - set(headers)
+    _assert(not missing, f"workflow workbook missing headers: {', '.join(sorted(missing))}")
+    index = {header: headers.index(header) for header in WORKFLOW_REQUIRED}
+    workflow_rows = []
+    for row_no, row in enumerate(rows[1:], start=2):
+        style_code = _cell_text(row[index["款号"]])
+        item_id = _cell_text(row[index["ID（用于测图的ID）"]])
+        if not style_code or not item_id:
+            continue
+        workflow_rows.append({
+            "row_no": row_no,
+            "style_code": style_code,
+            "item_id": item_id,
+            "category": _cell_text(row[index["品类（后期匹配）"]]),
+            "gender": _cell_text(row[index["模特性别"]]),
+        })
+    return workflow_rows
+
+
+def _rows_from_header_sheet(sheet, required_headers: set[str]) -> list[dict[str, Any]]:
+    rows = list(sheet.iter_rows(values_only=True))
+    if not rows:
+        return []
+    headers = [_cell_text(cell) for cell in rows[0]]
+    missing = required_headers - set(headers)
+    _assert(not missing, f"{sheet.title} sheet missing headers: {', '.join(sorted(missing))}")
+    parsed = []
+    for row in rows[1:]:
+        item = {header: _cell_text(row[index]) for index, header in enumerate(headers) if header}
+        if any(item.values()):
+            parsed.append(item)
+    return parsed
+
+
+def _value_at(row: tuple[Any, ...], index_by_key: Mapping[str, int], key: str) -> str:
+    index = index_by_key.get(key, -1)
+    return _cell_text(row[index]) if index >= 0 and index < len(row) else ""
+
+
+def _int_or_none(value: str) -> int | None:
+    try:
+        number = int(float(str(value).strip()))
+    except Exception:
+        return None
+    return number
+
+
+def _cell_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
 
 
 def _json_from_request(request) -> dict:

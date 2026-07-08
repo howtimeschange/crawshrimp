@@ -26,6 +26,10 @@ Dry-run harness with no Cloudflare or Tmall side effects:
 ```bash
 cd /Users/xingyicheng/Documents/crawshrimp
 python scripts/cloud_approval_dry_run.py
+python scripts/cloud_approval_dry_run.py --scenario embedded-login
+python scripts/cloud_approval_dry_run.py --scenario prompt-import --prompt-file "/Users/xingyicheng/Downloads/AI 测图提示词库.xlsx"
+python scripts/cloud_approval_dry_run.py --scenario material-data-import --data-file "/Users/xingyicheng/Downloads/天猫测图数据抓取导出_20260701-183953.xlsx"
+python scripts/cloud_approval_dry_run.py --scenario mvp-ai-test --workflow-file "/Users/xingyicheng/Downloads/AI测图任务导入模板.xlsx"
 ```
 
 The harness uses a deterministic fake HTTP transport by default. Real cloud calls are opt-in only:
@@ -88,7 +92,7 @@ In the desktop app, open Settings -> Cloud Approval and set:
 - Cloud approval base URL: the deployed Worker URL, without a trailing slash.
 - Registration token: the one-time token created in the cloud workbench.
 - Machine name: a recognizable local workstation name.
-- Task capabilities (`任务能力`): select `regenerate_ai_image` and `submit_tmall_material_test`.
+- Task capabilities (`任务能力`): select the required subset of `generate_ai_image`, `regenerate_ai_image`, `submit_tmall_material_test`, and `crawl_tmall_material_test_data`.
 
 Implemented desktop routes:
 
@@ -103,6 +107,72 @@ GET /cloud-approval/status
 After enrollment, the desktop stores the long-lived machine token locally through `core.data_sink`; the status route intentionally does not return that token.
 
 Current local credential hardening is file-permission based: on POSIX systems the Crawshrimp SQLite data directory is chmod `0700` and `crawshrimp.db` is chmod `0600` when the data sink opens or initializes the database. The machine token value is still stored in the local SQLite row until a later OS keychain migration is implemented, so treat the local user account and data directory as sensitive.
+
+## Embedded Workbench Mode
+
+Open the Worker in Crawshrimp with `?embed=1`:
+
+```text
+https://approval.crawshrimp.com/?embed=1
+https://approval.crawshrimp.com/?batch_uid=batch-cloud&embed=1
+```
+
+Embedded mode uses the same `cs_session` admin cookie and RBAC checks as the standalone site. It hides the standalone cloud sidebar and keeps the workbench inside the Crawshrimp chrome with top tabs only; there is no iframe-specific token or public registration path.
+
+Use the dry-run check before desktop smoke:
+
+```bash
+python scripts/cloud_approval_dry_run.py --scenario embedded-login
+```
+
+For a live cookie check, pass the current admin cookie only through the shell:
+
+```bash
+python scripts/cloud_approval_dry_run.py --scenario embedded-login --live-cloud-url https://approval.crawshrimp.com --admin-cookie "$CS_SESSION_COOKIE"
+```
+
+Do not store the cookie in repo files.
+
+## Prompt Library Import And Export
+
+The Prompt 库 page imports the user workbook format with row-4 headers:
+
+```text
+字段名, 字段 ID, 字段顺序, 在当前视图, 尺寸, 格式, 引用字段, 描述内容, 字数, 字段类型, 女性优先度, 男性/中性优先度
+```
+
+Each sheet becomes `group_name`; each valid row becomes a prompt template. Import preserves the field name, source field ID, field order, visibility, size, output format, reference fields, prompt text, word count, field type, female priority, and male/neutral priority. Export writes the same columns grouped by sheet.
+
+Routes:
+
+```http
+POST /api/prompt-libraries/import
+GET /api/prompt-libraries/{library_id}/export
+POST /api/prompt-libraries/{library_id}/publish-version
+GET /api/prompt-libraries/{library_id}/resolved?category=...&gender=...
+```
+
+Workbook dry run:
+
+```bash
+python scripts/cloud_approval_dry_run.py --scenario prompt-import --prompt-file "/Users/xingyicheng/Downloads/AI 测图提示词库.xlsx"
+```
+
+## Online Generation And Review
+
+Online generation is still task-machine based. The cloud Worker creates a `generate_ai_image` dispatch job and a selected task machine executes the local 1XM/provider call; the Worker does not call 1XM directly.
+
+Flow:
+
+```http
+GET /api/ai-image-batches/{batch_uid}
+GET /api/prompt-libraries/{library_id}/resolved?category=...&gender=...
+POST /api/ai-image-batches/{batch_uid}/generate
+POST /api/machines/jobs/claim
+POST /api/jobs/{job_uid}/complete
+```
+
+Reviewers can select source/reference resources from the batch, choose a published prompt template, override prompt text, and generate a new AI asset through the selected machine. Re-run/regeneration for rejected images uses `regenerate_ai_image` jobs with lease renewal, cancellation, idempotency, and audit logs through the shared dispatch state machine.
 
 ## Run A Local AI Batch And Sync To Cloud
 
@@ -153,6 +223,8 @@ The job type is `regenerate_ai_image`, and task machines claim it through:
 POST /api/machines/jobs/claim
 ```
 
+Use the resource picker and generation tab only when an active machine has `generate_ai_image`. Use the review drawer regeneration controls only when a claimable machine has `regenerate_ai_image`.
+
 ## Submit Through A Task Machine
 
 Approve at least one AI image for every non-skipped style, then mark the batch ready:
@@ -178,6 +250,59 @@ Payload:
 
 The submit job type is `submit_tmall_material_test`. The selected desktop machine downloads the approved cloud assets, rebuilds a local submit batch, and calls the Tmall uploader in `core/cloud_job_executors.py`.
 
+## Material Test Data Import And Crawl
+
+The 测图数据 page consumes the Tmall material-test export workbook with exact sheets:
+
+```text
+概览
+明细
+```
+
+Manual import parses the current export schema and posts bounded row batches to:
+
+```http
+POST /api/material-test/import
+GET /api/material-test/summary
+GET /api/material-test/images
+```
+
+The cloud database stores task overview rows and image metric rows separately so the dashboard can filter by statistic type, statistic date, image type, style code, and item ID.
+
+Workbook dry run:
+
+```bash
+python scripts/cloud_approval_dry_run.py --scenario material-data-import --data-file "/Users/xingyicheng/Downloads/天猫测图数据抓取导出_20260701-183953.xlsx"
+```
+
+Tmall data crawl must run on a local task machine because seller login and CDP access are local. Create machines or registration tokens with the `crawl_tmall_material_test_data` capability, then dispatch:
+
+```http
+POST /api/material-test/crawl-jobs
+```
+
+Schedules create the same job type through the Worker cron handler:
+
+```http
+POST /api/material-test/schedules
+```
+
+`wrangler.toml` must include `triggers.crons`, and the Worker must keep a `scheduled()` handler that calls the material-test schedule dispatcher. Each due schedule uses an idempotency key shaped like:
+
+```text
+crawl_tmall_material_test_data:schedule:{schedule_uid}:{local_date}:{HH:mm}
+```
+
+The task machine imports crawl results back with its machine token plus the active crawl job lease. Machine-origin import is rejected unless the machine has `crawl_tmall_material_test_data`, the job type is `crawl_tmall_material_test_data`, and the lease is still active.
+
+## MVP Dry Run
+
+The MVP AI-test dry run uses the workflow workbook rows to build a fake approval batch, verifies reject/regenerate/approve/submit through the shared job state machine, then dispatches a material data crawl job:
+
+```bash
+python scripts/cloud_approval_dry_run.py --scenario mvp-ai-test --workflow-file "/Users/xingyicheng/Downloads/AI测图任务导入模板.xlsx"
+```
+
 ## Revoke A Task Machine
 
 Use the Machines page or call:
@@ -195,3 +320,43 @@ This sets the machine auth status to `revoked` and revokes active machine tokens
 - Duplicate submit prevention is cloud-side and machine-scoped: submit jobs use the idempotency key `submit_tmall_material_test:{batch_uid}:{machine_id}`. Re-clicking submit for the same batch and machine returns the existing job instead of creating another one.
 - A different machine ID creates a different submit idempotency key. Only submit from a second machine after confirming the first job did not create a Tmall material-test task.
 - Keep Cloudflare API tokens, admin session cookies, enrollment tokens, and machine tokens out of commits, docs, screenshots, and shell history where possible.
+
+## Verification Commands
+
+Cloud Worker checks:
+
+```bash
+cd /Users/xingyicheng/Documents/crawshrimp/.worktrees/cloud-approval-workbench/cloud/approval-workbench
+npm run typecheck
+npm run test
+npm run build
+```
+
+Desktop/backend checks:
+
+```bash
+cd /Users/xingyicheng/Documents/crawshrimp/.worktrees/cloud-approval-workbench
+python -m unittest \
+  tests.test_cloud_approval_client \
+  tests.test_cloud_batch_sync \
+  tests.test_cloud_machine_agent \
+  tests.test_cloud_job_executors \
+  tests.test_tmall_ai_image_chain_script
+cd app && npm test
+```
+
+Desktop smoke command:
+
+```bash
+cd /Users/xingyicheng/Documents/crawshrimp/.worktrees/cloud-approval-workbench/app
+CRAWSHRIMP_DATA=/Users/xingyicheng/Documents/crawshrimp/.worktrees/cloud-approval-workbench/.crawshrimp-runtime CRAWSHRIMP_PORT=18765 npm run dev
+```
+
+Cloudflare deploy and embedded readback, only when Wrangler is already authenticated or `CLOUDFLARE_API_TOKEN` is present:
+
+```bash
+cd /Users/xingyicheng/Documents/crawshrimp/.worktrees/cloud-approval-workbench/cloud/approval-workbench
+npx wrangler deploy
+curl -I "https://approval.crawshrimp.com/?embed=1"
+curl -I "https://approval.crawshrimp.com/?batch_uid=batch-cloud&embed=1"
+```

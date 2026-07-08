@@ -388,7 +388,7 @@ onMounted(() => {
 
         <div class="row-actions">
           <button class="danger-button" type="button" @click="regenerateSelected">所选重生图</button>
-          <button class="danger-button" type="button" :disabled="rejectedAssets.length === 0" @click="regenerateRejected">一键重跑舍弃图</button>
+          <button class="danger-button" type="button" :disabled="rejectedAssets.length === 0" @click="regenerateRejected">一键重生图</button>
           <button class="ghost-button" type="button" @click="markReady">重新计算可提交状态</button>
         </div>
 
