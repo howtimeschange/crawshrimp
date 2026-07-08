@@ -4,7 +4,7 @@
       <div>
         <p class="aiw-kicker">AI 生图</p>
         <h2>本地 1XM 图片模型工作台</h2>
-        <p class="aiw-subtitle">围绕商品素材、提示词和历史结果的单屏生成入口，后续接入任务链路。</p>
+        <p class="aiw-subtitle">支持主图、参考图、Prompt、自定义尺寸和多模型生成</p>
       </div>
       <button class="aiw-ghost" type="button" @click="emit('open-settings')">去设置 1XM Key</button>
     </header>
@@ -86,7 +86,7 @@
     <footer class="aiw-generate-footer">
       <div>
         <strong>本地生成队列</strong>
-        <span>当前版本提供工作台壳和设置入口，生成执行由后续任务接入。</span>
+        <span>默认输出文件夹：~/Downloads/抓虾导出/AI生图；Windows：%USERPROFILE%\Downloads\抓虾导出\AI生图</span>
       </div>
       <button type="button" disabled>开始生成</button>
     </footer>
