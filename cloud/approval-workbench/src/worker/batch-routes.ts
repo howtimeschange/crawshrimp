@@ -276,7 +276,7 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
   const selected = stringArray(body.asset_uids ?? body.assetUids)
   const promptOverrides = promptOverrideMap(body.prompt_overrides ?? body.promptOverrides)
   if (!batchUid || selected.length === 0) return badRequest('batch_uid and asset_uids are required')
-  return createRegenerationJobsForAssets(request, env, actor, batchUid, selected, promptOverrides, false)
+  return createRegenerationJobsForAssets(request, env, actor, batchUid, selected, promptOverrides)
 }
 
 export async function createRejectedRegenerationJobs(request: Request, env: Env): Promise<Response> {
@@ -291,7 +291,7 @@ export async function createRejectedRegenerationJobs(request: Request, env: Env)
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const rejectedAssetUids = assets.filter((asset) => asset.kind === 'ai' && asset.status === 'rejected').map((asset) => asset.asset_uid)
   if (rejectedAssetUids.length === 0) return json({ jobs: [] })
-  return createRegenerationJobsForAssets(request, env, actor, batchUid, rejectedAssetUids, promptOverrides, true)
+  return createRegenerationJobsForAssets(request, env, actor, batchUid, rejectedAssetUids, promptOverrides)
 }
 
 async function createRegenerationJobsForAssets(
@@ -301,7 +301,6 @@ async function createRegenerationJobsForAssets(
   batchUid: string,
   selected: string[],
   promptOverrides: Map<string, string>,
-  includePromptHash: boolean,
 ): Promise<Response> {
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
@@ -313,8 +312,8 @@ async function createRegenerationJobsForAssets(
     if (!asset) return badRequest(`asset is not in batch: ${assetUid}`)
     if (asset.status !== 'rejected') return json({ error: 'regeneration requires selected rejected assets' }, { status: 409 })
     const promptText = promptOverrides.get(asset.asset_uid) || asset.prompt_text
-    const promptHash = includePromptHash ? `:${await sha256Hex(promptText)}` : ''
-    const idempotencyKey = `regenerate_ai_image:${batchUid}:${assetUid}${promptHash}`
+    const promptHash = await sha256Hex(promptText)
+    const idempotencyKey = `regenerate_ai_image:${batchUid}:${assetUid}:${promptHash}`
     const existing = await findDispatchJob(env, 'regenerate_ai_image', idempotencyKey)
     if (existing) {
       jobs.push(existing)
@@ -380,7 +379,8 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   }
   const promptHash = await sha256Hex(promptText)
   const refsHash = await sha256Hex(JSON.stringify(referenceAssetUids))
-  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}`
+  const promptTemplateVersionKey = promptTemplateVersionId ?? ''
+  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${machineId}`
   const existing = await findDispatchJob(env, 'generate_ai_image', idempotencyKey)
   const requestUid = existing ? '' : randomToken('gen')
   const payload = {

@@ -39,6 +39,10 @@ watch(selectedStyleId, () => {
   referenceAssetUids.value = sourceAssets.value.slice(0, 3).map((asset) => asset.asset_uid)
 })
 
+watch([selectedLibraryId, selectedStyleId], () => {
+  void loadResolvedPrompts()
+})
+
 watch(selectedTemplateKey, () => {
   const template = promptTemplates.value.find((item) => templateKey(item) === selectedTemplateKey.value)
   if (template?.prompt_text) promptText.value = template.prompt_text
@@ -80,14 +84,17 @@ async function loadPromptLibraries() {
     const data = await apiGet<{ libraries: PromptLibrary[] }>('/api/prompt-libraries')
     promptLibraries.value = data.libraries.filter((library) => library.status === 'published')
     selectedLibraryId.value = promptLibraries.value[0]?.id ?? null
-    await loadResolvedPrompts()
   } catch {
     promptLibraries.value = []
   }
 }
 
 async function loadResolvedPrompts() {
-  if (!selectedLibraryId.value || !selectedStyle.value) return
+  if (!selectedLibraryId.value || !selectedStyle.value) {
+    promptTemplates.value = []
+    selectedTemplateKey.value = ''
+    return
+  }
   const params = new URLSearchParams()
   if (selectedStyle.value.category) params.set('category', selectedStyle.value.category)
   if (selectedStyle.value.gender) params.set('gender', selectedStyle.value.gender)
@@ -161,7 +168,7 @@ onMounted(() => {
         <table class="data-table">
           <thead><tr><th>款式</th><th>类目</th><th>可用素材</th></tr></thead>
           <tbody>
-            <tr v-for="style in styles" :key="style.id" @click="selectedStyleId = style.id; loadResolvedPrompts()">
+            <tr v-for="style in styles" :key="style.id" @click="selectedStyleId = style.id">
               <td><strong>{{ style.style_code }}</strong><br /><span class="muted">{{ style.item_id || '-' }}</span></td>
               <td>{{ style.category || '-' }} / {{ style.gender || '-' }}</td>
               <td>{{ style.assets.filter((asset) => ['source', 'reference'].includes(asset.kind)).length }}</td>
@@ -187,7 +194,7 @@ onMounted(() => {
         </div>
         <label class="field">
           <span>Prompt 库</span>
-          <select v-model="selectedLibraryId" @change="loadResolvedPrompts">
+          <select v-model="selectedLibraryId">
             <option v-for="library in promptLibraries" :key="library.id" :value="library.id">{{ library.name }}</option>
           </select>
         </label>

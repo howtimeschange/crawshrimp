@@ -416,7 +416,10 @@ describe('review routes', () => {
     expect(first.status).toBe(201)
     expect(second.status).toBe(200)
     expect(state.dispatchJobs).toHaveLength(1)
-    expect(state.dispatchJobs[0]).toMatchObject({ job_type: 'regenerate_ai_image', idempotency_key: 'regenerate_ai_image:batch-1:asset-ai-2' })
+    expect(state.dispatchJobs[0]).toMatchObject({
+      job_type: 'regenerate_ai_image',
+      idempotency_key: `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('Prompt 2')}`,
+    })
     expect(JSON.parse(state.dispatchJobs[0].required_capabilities_json)).toEqual(['regenerate_ai_image'])
     expect(JSON.parse(state.dispatchJobs[0].payload_json)).toMatchObject({
       batch_uid: 'batch-1',
@@ -442,6 +445,36 @@ describe('review routes', () => {
       prompt_text: 'override prompt',
       original_prompt_text: 'Prompt 2',
     })
+  })
+
+  it('creates a distinct normal regeneration job when the prompt override changes', async () => {
+    const { state, reviewerCookie } = await baseState()
+
+    const first = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'], prompt_overrides: { 'asset-ai-2': 'first prompt' } }),
+    }), fakeEnv(state))
+    const second = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'], prompt_overrides: { 'asset-ai-2': 'second prompt' } }),
+    }), fakeEnv(state))
+    const repeatSecond = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'], prompt_overrides: { 'asset-ai-2': 'second prompt' } }),
+    }), fakeEnv(state))
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(201)
+    expect(repeatSecond.status).toBe(200)
+    expect(state.dispatchJobs).toHaveLength(2)
+    expect(state.dispatchJobs.map((job) => job.idempotency_key)).toEqual([
+      `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('first prompt')}`,
+      `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('second prompt')}`,
+    ])
+    expect(state.dispatchJobs.map((job) => JSON.parse(job.payload_json).prompt_text)).toEqual(['first prompt', 'second prompt'])
   })
 
   it('rejected asset batch rerun creates one job per rejected AI asset with prompt-hash idempotency', async () => {
@@ -507,6 +540,49 @@ describe('review routes', () => {
       status: 'queued',
       dispatch_job_uid: state.dispatchJobs[0].job_uid,
     })
+  })
+
+  it('online generation idempotency includes template version and target machine choices', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.machines[0].capabilities_json = '["generate_ai_image","submit_tmall_material_test"]'
+    state.machines.push({ ...state.machines[0], id: 2, machine_id: 'machine-2', machine_name: 'Machine 2' })
+    const basePayload = {
+      style_id: 1,
+      source_asset_uid: 'asset-source-1',
+      reference_asset_uids: ['asset-source-1'],
+      prompt_text: 'fresh prompt',
+      machine_id: 'machine-1',
+    }
+
+    const first = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ ...basePayload, prompt_template_version_id: 31 }),
+    }), fakeEnv(state))
+    const differentTemplate = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ ...basePayload, prompt_template_version_id: 32 }),
+    }), fakeEnv(state))
+    const differentMachine = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ ...basePayload, prompt_template_version_id: 31, machine_id: 'machine-2' }),
+    }), fakeEnv(state))
+    const repeatFirst = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ ...basePayload, prompt_template_version_id: 31 }),
+    }), fakeEnv(state))
+
+    expect(first.status).toBe(201)
+    expect(differentTemplate.status).toBe(201)
+    expect(differentMachine.status).toBe(201)
+    expect(repeatFirst.status).toBe(200)
+    expect(state.dispatchJobs).toHaveLength(3)
+    expect(new Set(state.dispatchJobs.map((job) => job.idempotency_key)).size).toBe(3)
+    expect(state.dispatchJobs.map((job) => job.assigned_machine_id)).toEqual(['machine-1', 'machine-1', 'machine-2'])
+    expect(state.generationRequests).toHaveLength(3)
   })
 
   it('online generation persists prompt override in job payload', async () => {
