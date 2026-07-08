@@ -41,10 +41,17 @@ interface PromptTemplateRow {
   library_id: number
   group_name: string
   field_name: string
+  source_field_id: string
+  field_order: number | null
+  visible: number
   prompt_text: string
   size_label: string
   output_format: string
   quality: string
+  reference_fields_json: string
+  word_count: number | null
+  field_type: string
+  excel_meta_json: string
   category_rules_json: string
   gender_rules_json: string
   priority_json: string
@@ -170,15 +177,22 @@ class FakeD1Statement {
         library_id: Number(this.params[0]),
         group_name: String(this.params[1]),
         field_name: String(this.params[2]),
-        prompt_text: String(this.params[3]),
-        size_label: String(this.params[4]),
-        output_format: String(this.params[5]),
-        quality: String(this.params[6]),
-        category_rules_json: String(this.params[7]),
-        gender_rules_json: String(this.params[8]),
-        priority_json: String(this.params[9]),
-        enabled: Number(this.params[10]),
-        updated_at: String(this.params[11]),
+        source_field_id: String(this.params[3]),
+        field_order: numberOrNull(this.params[4]),
+        visible: Number(this.params[5]),
+        prompt_text: String(this.params[6]),
+        size_label: String(this.params[7]),
+        output_format: String(this.params[8]),
+        quality: String(this.params[9]),
+        reference_fields_json: String(this.params[10]),
+        word_count: numberOrNull(this.params[11]),
+        field_type: String(this.params[12]),
+        excel_meta_json: String(this.params[13]),
+        category_rules_json: String(this.params[14]),
+        gender_rules_json: String(this.params[15]),
+        priority_json: String(this.params[16]),
+        enabled: Number(this.params[17]),
+        updated_at: String(this.params[18]),
       })
       return result(1, id)
     }
@@ -188,15 +202,22 @@ class FakeD1Statement {
       if (!template) return result(0)
       template.group_name = String(this.params[0])
       template.field_name = String(this.params[1])
-      template.prompt_text = String(this.params[2])
-      template.size_label = String(this.params[3])
-      template.output_format = String(this.params[4])
-      template.quality = String(this.params[5])
-      template.category_rules_json = String(this.params[6])
-      template.gender_rules_json = String(this.params[7])
-      template.priority_json = String(this.params[8])
-      template.enabled = Number(this.params[9])
-      template.updated_at = String(this.params[10])
+      template.source_field_id = String(this.params[2])
+      template.field_order = numberOrNull(this.params[3])
+      template.visible = Number(this.params[4])
+      template.prompt_text = String(this.params[5])
+      template.size_label = String(this.params[6])
+      template.output_format = String(this.params[7])
+      template.quality = String(this.params[8])
+      template.reference_fields_json = String(this.params[9])
+      template.word_count = numberOrNull(this.params[10])
+      template.field_type = String(this.params[11])
+      template.excel_meta_json = String(this.params[12])
+      template.category_rules_json = String(this.params[13])
+      template.gender_rules_json = String(this.params[14])
+      template.priority_json = String(this.params[15])
+      template.enabled = Number(this.params[16])
+      template.updated_at = String(this.params[17])
       return result(1)
     }
     if (normalized.startsWith('insert into prompt_template_versions')) {
@@ -378,6 +399,90 @@ describe('prompt routes', () => {
       output_format: 'jpeg',
       quality: 'high',
       enabled: 1,
+    })
+  })
+
+  it('imports, edits, and exports workbook-mapped prompt templates', async () => {
+    const state = await stateWithPrompts()
+    const importResponse = await fetchWorker(
+      new Request('https://example.test/api/prompt-libraries/import', {
+        method: 'POST',
+        headers: managerHeaders(),
+        body: JSON.stringify({
+          templates: [{
+            group_name: '上装',
+            field_name: '正面标准站姿',
+            source_field_id: 'rX2NWyE',
+            field_order: 4,
+            visible: true,
+            size_label: '2K',
+            output_format: 'jpeg',
+            reference_fields: '图片 (ghzXVED)',
+            prompt_text: '引用图片，8K 超清',
+            word_count: 159,
+            field_type: 'file',
+            female_priority: 1,
+            male_neutral_priority: 2,
+          }],
+        }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(importResponse.status).toBe(201)
+    const importBody = await importResponse.json() as { library: { id: number, templates: Array<{ id: number }> } }
+    const templateId = importBody.library.templates[0].id
+
+    const bulkResponse = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${importBody.library.id}/templates/bulk`, {
+        method: 'POST',
+        headers: managerHeaders(),
+        body: JSON.stringify({
+          templates: [{
+            id: templateId,
+            group_name: '上装',
+            field_name: '正面标准站姿',
+            source_field_id: 'rX2NWyE',
+            field_order: 4,
+            visible: false,
+            size_label: '4K',
+            output_format: 'png',
+            reference_fields: ['图片 (ghzXVED)'],
+            prompt_text: '在线表格更新后的提示词',
+            word_count: 88,
+            field_type: 'file',
+            female_priority: 3,
+            male_neutral_priority: 4,
+            enabled: true,
+          }],
+        }),
+      }),
+      fakeEnv(state),
+    )
+    expect(bulkResponse.status).toBe(200)
+
+    const exportResponse = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${importBody.library.id}/export`, {
+        headers: managerHeaders(),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(exportResponse.status).toBe(200)
+    const exportBody = await exportResponse.json() as { templates: Array<Record<string, unknown>> }
+    expect(exportBody.templates[0]).toMatchObject({
+      group_name: '上装',
+      field_name: '正面标准站姿',
+      source_field_id: 'rX2NWyE',
+      field_order: 4,
+      visible: false,
+      prompt_text: '在线表格更新后的提示词',
+      size_label: '4K',
+      output_format: 'png',
+      word_count: 88,
+      field_type: 'file',
+      female_priority: 3,
+      male_neutral_priority: 4,
     })
   })
 

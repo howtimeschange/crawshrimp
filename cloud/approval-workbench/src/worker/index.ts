@@ -29,7 +29,10 @@ import {
   rotateMachineToken,
 } from './machine-routes'
 import {
+  bulkUpdatePromptTemplates,
   createPromptLibrary,
+  exportPromptLibrary,
+  importPromptLibrary,
   listPromptLibraries,
   publishPromptLibrary,
   resolvePrompts,
@@ -98,7 +101,10 @@ export default {
     if (/^\/api\/jobs\/[^/]+\/fail$/.test(url.pathname) && request.method === 'POST') return failJob(request, env)
     if (url.pathname === '/api/prompt-libraries' && request.method === 'GET') return listPromptLibraries(request, env)
     if (url.pathname === '/api/prompt-libraries' && request.method === 'POST') return createPromptLibrary(request, env)
+    if (url.pathname === '/api/prompt-libraries/import' && request.method === 'POST') return importPromptLibrary(request, env)
     if (/^\/api\/prompt-templates\/\d+$/.test(url.pathname) && request.method === 'PATCH') return updatePromptTemplate(request, env)
+    if (/^\/api\/prompt-libraries\/\d+\/templates\/bulk$/.test(url.pathname) && request.method === 'POST') return bulkUpdatePromptTemplates(request, env)
+    if (/^\/api\/prompt-libraries\/\d+\/export$/.test(url.pathname) && request.method === 'GET') return exportPromptLibrary(request, env)
     if (/^\/api\/prompt-libraries\/\d+\/publish-version$/.test(url.pathname) && request.method === 'POST') return publishPromptLibrary(request, env)
     if (/^\/api\/prompt-libraries\/\d+\/resolved$/.test(url.pathname) && request.method === 'GET') return resolvePrompts(request, env)
     if (url.pathname === '/api/assets/presign' && request.method === 'POST') return createAssetUploadPlan(request, env)
