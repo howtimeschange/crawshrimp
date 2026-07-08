@@ -2733,6 +2733,24 @@ def _resolve_one_xm_settings() -> dict:
             or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
             or os.environ.get("ONE_XM_API_KEY", "").strip()
         ),
+        "ai.1xm.gpt_image_2k_key": (
+            os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            or os.environ.get("ONE_XM_API_KEY", "").strip()
+        ),
+        "ai.1xm.gpt_image_4k_key": (
+            os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            or os.environ.get("ONE_XM_API_KEY", "").strip()
+        ),
+        "ai.1xm.gemini_3_1_flash_image_preview_key": (
+            os.environ.get("ONE_XM_GEMINI_3_1_FLASH_IMAGE_PREVIEW_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gemini_3_1_flash_image_preview_key")
+        ),
+        "ai.1xm.gemini_3_pro_image_preview_key": (
+            os.environ.get("ONE_XM_GEMINI_3_PRO_IMAGE_PREVIEW_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gemini_3_pro_image_preview_key")
+        ),
     }
 
 
@@ -5093,7 +5111,9 @@ def list_ai_image_jobs():
 
 @app.post("/ai-image/jobs")
 def create_ai_image_job(req: AiImageJobRequest):
-    return data_sink.create_ai_image_job(_model_payload(req, exclude_none=True))
+    payload = _model_payload(req, exclude_none=True)
+    payload.pop("summary", None)
+    return data_sink.create_ai_image_job(payload)
 
 
 @app.get("/ai-image/jobs/{job_uid}")
@@ -5109,6 +5129,7 @@ def get_ai_image_job(job_uid: str):
 @app.patch("/ai-image/jobs/{job_uid}")
 def update_ai_image_job(job_uid: str, req: AiImageJobPatchRequest):
     payload = _model_payload(req, exclude_unset=True, exclude_none=True)
+    payload.pop("summary", None)
     job = data_sink.update_ai_image_job(job_uid, payload)
     if not job:
         raise HTTPException(404, f"AI image job not found: {job_uid}")
@@ -5121,6 +5142,11 @@ def run_ai_image_job(job_uid: str):
         raise HTTPException(404, f"AI image job not found: {job_uid}")
     try:
         return ai_image_service.run_job_with_one_xm(job_uid)
+    except ai_image_service.MissingModelKeyError as exc:
+        raise HTTPException(400, {
+            "message": str(exc),
+            "config_id": exc.config_id,
+        }) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 

@@ -13,6 +13,24 @@ from core import data_sink, runtime_paths
 from core.one_xm_image import DEFAULT_BASE_URL, OneXMImageClient, file_to_data_url, run_image_task_until_done
 
 
+GPT_2K_CONFIG_ID = "ai.1xm.gpt_image_2k_key"
+GPT_4K_CONFIG_ID = "ai.1xm.gpt_image_4k_key"
+GEMINI_FLASH_CONFIG_ID = "ai.1xm.gemini_3_1_flash_image_preview_key"
+GEMINI_PRO_CONFIG_ID = "ai.1xm.gemini_3_pro_image_preview_key"
+
+
+class MissingModelKeyError(ValueError):
+    def __init__(self, message: str, *, config_id: str):
+        super().__init__(message)
+        self.config_id = config_id
+
+
+class DownloadOutputsError(RuntimeError):
+    def __init__(self, message: str, output_files: list[str]):
+        super().__init__(message)
+        self.output_files = output_files
+
+
 def _compact(value: Any) -> str:
     return str(value or "").strip()
 
@@ -34,13 +52,38 @@ def _size_tier(size: str) -> str:
     return "2k"
 
 
+def _settings_value(settings: Mapping[str, Any], config_id: str, alias: str = "") -> str:
+    return _compact(settings.get(config_id) or (settings.get(alias) if alias else ""))
+
+
 def select_model_key(job_or_params: Mapping[str, Any], settings: Mapping[str, Any]) -> tuple[str, str]:
     params = _params(job_or_params)
+    model = _compact(job_or_params.get("model_key") or params.get("model") or params.get("model_key") or "gpt-image-2")
+    if model == "gemini-3.1-flash-image-preview":
+        key = _settings_value(settings, GEMINI_FLASH_CONFIG_ID)
+        if not key:
+            raise MissingModelKeyError(
+                f"设置菜单未配置 1XM 图片模型 API Key: {GEMINI_FLASH_CONFIG_ID}",
+                config_id=GEMINI_FLASH_CONFIG_ID,
+            )
+        return GEMINI_FLASH_CONFIG_ID, key
+    if model == "gemini-3-pro-image-preview":
+        key = _settings_value(settings, GEMINI_PRO_CONFIG_ID)
+        if not key:
+            raise MissingModelKeyError(
+                f"设置菜单未配置 1XM 图片模型 API Key: {GEMINI_PRO_CONFIG_ID}",
+                config_id=GEMINI_PRO_CONFIG_ID,
+            )
+        return GEMINI_PRO_CONFIG_ID, key
     explicit = _compact(job_or_params.get("model_key_tier") or params.get("model_key_tier") or params.get("key_tier")).lower()
     tier = explicit if explicit in {"2k", "4k"} else _size_tier(_compact(job_or_params.get("size") or params.get("size")))
-    key = _compact(settings.get(tier))
+    config_id = GPT_4K_CONFIG_ID if tier == "4k" else GPT_2K_CONFIG_ID
+    key = _settings_value(settings, config_id, tier)
     if not key:
-        raise ValueError(f"设置菜单未配置 1XM GPT Image {tier.upper()} Key")
+        raise MissingModelKeyError(
+            f"设置菜单未配置 1XM 图片模型 API Key: {config_id} (1XM GPT Image {tier.upper()} Key)",
+            config_id=config_id,
+        )
     return tier, key
 
 
@@ -97,10 +140,37 @@ def _download_outputs(image_urls: list[str], output_dir: Path, downloader: Calla
     files: list[str] = []
     for index, url in enumerate(image_urls, start=1):
         suffix = _extension_from_url(url)
-        target = output_dir / f"result-{index:02d}{suffix}"
-        downloader(url, target)
+        target = _unique_path(output_dir / f"result-{index:02d}{suffix}")
+        try:
+            downloader(url, target)
+        except Exception as exc:
+            if target.exists():
+                target.unlink()
+            raise DownloadOutputsError(str(exc), files) from exc
         files.append(str(target))
     return files
+
+
+def _unique_path(path: Path) -> Path:
+    if not path.exists():
+        return path
+    for index in range(1, 10_000):
+        candidate = path.with_name(f"{path.stem}-{index}{path.suffix}")
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError(f"Cannot allocate unique file name for {path.name}")
+
+
+def _sanitize_error(value: Any, secrets: list[str] | None = None) -> str:
+    text = _compact(value)
+    for secret in secrets or []:
+        if secret:
+            text = text.replace(secret, "[redacted]")
+    text = re.sub(r"data:image/[^,\s]+,[^\s]+", "[data-url-redacted]", text, flags=re.IGNORECASE)
+    text = re.sub(r"(?i)api[_-]?key\s*=\s*[^\s,;]+", "[api-key-redacted]", text)
+    text = re.sub(r"(?i)webhook[_-]?secret\s*=\s*[^\s,;]+", "[webhook-secret-redacted]", text)
+    text = re.sub(r"(?i)webhook[_-]?secret", "webhook-secret-redacted", text)
+    return text[:500]
 
 
 def _safe_summary(result: Mapping[str, Any], output_files: list[str], tier: str) -> dict:
@@ -111,7 +181,7 @@ def _safe_summary(result: Mapping[str, Any], output_files: list[str], tier: str)
         "poll_url": _compact(result.get("poll_url")),
         "image_urls": [str(url) for url in result.get("image_urls") or []],
         "output_files": output_files,
-        "error": _compact(result.get("error")),
+        "error": _sanitize_error(result.get("error")),
         "create_attempts": int(result.get("create_attempts") or 0),
         "poll_attempts": int(result.get("poll_attempts") or 0),
         "compensation_attempts": int(result.get("compensation_attempts") or 0),
@@ -142,24 +212,42 @@ def run_job_with_one_xm(
 
     client = OneXMImageClient(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
     data_sink.update_ai_image_job(job_uid, {"status": "running"})
-    result = runner(
-        client,
-        payload,
-        idempotency_key=f"ai_image_{job_uid}",
-        task_attempts=1,
-        request_retries=3,
-        request_timeout_seconds=120,
-        poll_timeout_seconds=600,
-    )
+    try:
+        result = runner(
+            client,
+            payload,
+            idempotency_key=f"ai_image_{job_uid}",
+            task_attempts=1,
+            request_retries=3,
+            request_timeout_seconds=120,
+            poll_timeout_seconds=600,
+        )
+    except Exception as exc:
+        summary = _safe_summary(
+            {"ok": False, "error": _sanitize_error(exc, [api_key])},
+            [],
+            tier,
+        )
+        data_sink.update_ai_image_job(job_uid, {"status": "failed", "summary": summary})
+        return {"ok": False, "job_uid": job_uid, "summary": summary}
+
     output_files: list[str] = []
+    download_error = ""
     if result.get("ok"):
-        output_files = _download_outputs([str(url) for url in result.get("image_urls") or []], default_output_dir(job), downloader)
+        try:
+            output_files = _download_outputs([str(url) for url in result.get("image_urls") or []], default_output_dir(job), downloader)
+        except DownloadOutputsError as exc:
+            output_files = exc.output_files
+            download_error = _sanitize_error(exc, [api_key])
     summary = _safe_summary(result, output_files, tier)
+    if download_error:
+        summary["ok"] = False
+        summary["error"] = download_error
     data_sink.update_ai_image_job(job_uid, {
-        "status": "completed" if result.get("ok") else "failed",
+        "status": "partial_failed" if download_error else ("completed" if result.get("ok") else "failed"),
         "summary": summary,
     })
-    return {"ok": bool(result.get("ok")), "job_uid": job_uid, "summary": summary}
+    return {"ok": bool(result.get("ok")) and not download_error, "job_uid": job_uid, "summary": summary}
 
 
 def copy_assets_to_directory(assets: list[Mapping[str, Any]], directory: str | Path) -> list[str]:
@@ -170,9 +258,7 @@ def copy_assets_to_directory(assets: list[Mapping[str, Any]], directory: str | P
         source = Path(_compact(asset.get("path"))).expanduser()
         if not source.is_file():
             continue
-        target = target_dir / source.name
-        if target.exists():
-            target = target_dir / f"{source.stem}-{len(copied) + 1}{source.suffix}"
+        target = _unique_path(target_dir / source.name)
         shutil.copy2(source, target)
         copied.append(str(target))
     return copied

@@ -2,7 +2,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+from fastapi import HTTPException
 
+from core import ai_image_service
 from core import api_server
 from core import data_sink
 
@@ -49,6 +51,28 @@ class AiImageApiTests(unittest.TestCase):
         self.assertEqual(updated["status"], "ready")
         self.assertEqual(api_server.list_ai_image_jobs()[0]["job_uid"], created["job_uid"])
 
+    def test_job_create_and_patch_ignore_client_controlled_summary(self):
+        unsafe_summary = {
+            "api_key": "super-secret",
+            "image": "data:image/png;base64,abc",
+            "webhook_secret": "hook-secret",
+            "raw": {"payload": "upstream"},
+        }
+
+        created = api_server.create_ai_image_job(api_server.AiImageJobRequest(
+            title="unsafe",
+            prompt="prompt",
+            summary=unsafe_summary,
+        ))
+        updated = api_server.update_ai_image_job(
+            created["job_uid"],
+            api_server.AiImageJobPatchRequest(summary=unsafe_summary),
+        )
+
+        self.assertEqual(created["summary"], {})
+        self.assertEqual(updated["summary"], {})
+        self.assertEqual(data_sink.get_ai_image_job(created["job_uid"])["summary"], {})
+
     def test_asset_and_canvas_creation_api(self):
         job = data_sink.create_ai_image_job({"title": "api job"})
 
@@ -75,6 +99,20 @@ class AiImageApiTests(unittest.TestCase):
 
         self.assertEqual(result, {"ok": True, "job_uid": job["job_uid"]})
         run.assert_called_once_with(job["job_uid"])
+
+    def test_run_job_api_missing_key_error_exposes_config_id(self):
+        job = data_sink.create_ai_image_job({"title": "missing key"})
+        error = ai_image_service.MissingModelKeyError(
+            "设置菜单未配置 1XM 图片模型 API Key",
+            config_id="ai.1xm.gemini_3_pro_image_preview_key",
+        )
+
+        with patch("core.api_server.ai_image_service.run_job_with_one_xm", side_effect=error):
+            with self.assertRaises(HTTPException) as ctx:
+                api_server.run_ai_image_job(job["job_uid"])
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertEqual(ctx.exception.detail["config_id"], "ai.1xm.gemini_3_pro_image_preview_key")
 
     def test_save_as_api_uses_service_copy(self):
         job = data_sink.create_ai_image_job({"title": "save job"})

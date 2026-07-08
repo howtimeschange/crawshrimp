@@ -34,6 +34,30 @@ class AiImageServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "1XM GPT Image 4K Key"):
             ai_image_service.select_model_key({"size": "4096x4096"}, {"2k": "key-2k", "4k": ""})
 
+    def test_select_model_key_uses_independent_gemini_config_ids(self):
+        settings = {
+            "2k": "gpt-2k",
+            "4k": "gpt-4k",
+            "ai.1xm.gemini_3_1_flash_image_preview_key": "flash-key",
+            "ai.1xm.gemini_3_pro_image_preview_key": "pro-key",
+        }
+
+        self.assertEqual(
+            ai_image_service.select_model_key({"model_key": "gemini-3.1-flash-image-preview"}, settings),
+            ("ai.1xm.gemini_3_1_flash_image_preview_key", "flash-key"),
+        )
+        self.assertEqual(
+            ai_image_service.select_model_key({"model_key": "gemini-3-pro-image-preview"}, settings),
+            ("ai.1xm.gemini_3_pro_image_preview_key", "pro-key"),
+        )
+
+        with self.assertRaisesRegex(ValueError, "ai\\.1xm\\.gemini_3_pro_image_preview_key") as ctx:
+            ai_image_service.select_model_key(
+                {"model_key": "gemini-3-pro-image-preview"},
+                {"2k": "gpt-2k", "4k": "gpt-4k", "ai.1xm.gemini_3_pro_image_preview_key": ""},
+            )
+        self.assertEqual(ctx.exception.config_id, "ai.1xm.gemini_3_pro_image_preview_key")
+
     def test_build_payload_orders_reference_images_and_uses_file_to_data_url(self):
         job = {
             "prompt": "make a hero image",
@@ -103,6 +127,76 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertNotIn("data:image", summary_text)
         self.assertNotIn("raw upstream", summary_text)
 
+    def test_run_job_marks_failed_when_runner_raises_after_start(self):
+        job = data_sink.create_ai_image_job({
+            "title": "runner failure",
+            "prompt": "prompt",
+            "params": {"size": "1024x1024"},
+        })
+
+        def failing_runner(*_args, **_kwargs):
+            raise RuntimeError("upstream exploded with api_key=super-secret and data:image/png;base64,abc")
+
+        result = ai_image_service.run_job_with_one_xm(
+            job["job_uid"],
+            settings={"2k": "super-secret", "4k": ""},
+            runner=failing_runner,
+        )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        summary_text = json.dumps(refreshed["summary"], ensure_ascii=False)
+        self.assertFalse(result["ok"])
+        self.assertEqual(refreshed["status"], "failed")
+        self.assertIn("upstream exploded", refreshed["summary"]["error"])
+        self.assertNotIn("super-secret", summary_text)
+        self.assertNotIn("data:image", summary_text)
+
+    def test_run_job_marks_partial_failed_when_download_raises_after_outputs(self):
+        job = data_sink.create_ai_image_job({
+            "title": "download failure",
+            "prompt": "prompt",
+            "params": {"size": "1024x1024"},
+        })
+
+        def fake_runner(*_args, **_kwargs):
+            return {"ok": True, "image_urls": ["https://cdn.example/one.png", "https://cdn.example/two.png"]}
+
+        def flaky_download(url, target):
+            if "two" in url:
+                raise RuntimeError("download failed for webhook_secret=hidden")
+            Path(target).write_bytes(b"png")
+
+        result = ai_image_service.run_job_with_one_xm(
+            job["job_uid"],
+            settings={"2k": "secret-key", "4k": ""},
+            runner=fake_runner,
+            downloader=flaky_download,
+        )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        summary_text = json.dumps(refreshed["summary"], ensure_ascii=False)
+        self.assertFalse(result["ok"])
+        self.assertEqual(refreshed["status"], "partial_failed")
+        self.assertEqual(len(refreshed["summary"]["output_files"]), 1)
+        self.assertNotIn("webhook_secret", summary_text)
+        self.assertNotIn("secret-key", summary_text)
+
+    def test_download_outputs_uses_unique_names_without_overwriting_existing_files(self):
+        output_dir = self.root / "downloads"
+        output_dir.mkdir()
+        existing = output_dir / "result-01.png"
+        existing.write_bytes(b"existing")
+
+        files = ai_image_service._download_outputs(
+            ["https://cdn.example/out.png"],
+            output_dir,
+            lambda _url, target: Path(target).write_bytes(b"new"),
+        )
+
+        self.assertEqual(existing.read_bytes(), b"existing")
+        self.assertEqual(Path(files[0]).name, "result-01-1.png")
+        self.assertEqual(Path(files[0]).read_bytes(), b"new")
+
     def test_copy_assets_to_directory_copies_local_assets(self):
         source = self.root / "source.png"
         source.write_bytes(b"image")
@@ -115,6 +209,20 @@ class AiImageServiceTests(unittest.TestCase):
 
         self.assertEqual(len(copied), 1)
         self.assertEqual(Path(copied[0]).read_bytes(), b"image")
+
+    def test_copy_assets_to_directory_loops_until_unique_name(self):
+        source = self.root / "source.png"
+        source.write_bytes(b"image")
+        target_dir = self.root / "export"
+        target_dir.mkdir()
+        (target_dir / "source.png").write_bytes(b"existing")
+        (target_dir / "source-1.png").write_bytes(b"existing alternate")
+
+        copied = ai_image_service.copy_assets_to_directory([{"path": str(source)}], target_dir)
+
+        self.assertEqual(Path(copied[0]).name, "source-2.png")
+        self.assertEqual((target_dir / "source.png").read_bytes(), b"existing")
+        self.assertEqual((target_dir / "source-1.png").read_bytes(), b"existing alternate")
 
 
 if __name__ == "__main__":
