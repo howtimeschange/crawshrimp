@@ -1012,9 +1012,13 @@ def regenerate_approval_asset(
         }
     nonce = apply_fresh_approval_generation_key(generation_row, batch, "retry")
     settings = resolve_one_xm_settings()
-    if not (settings.get("2k") or settings.get("4k")):
-        raise RuntimeError("未配置 1XM Key，无法重新生图")
     defaults = approval_generation_defaults(batch, item, generation_row)
+    require_one_xm_key_for_generation(
+        settings,
+        model=defaults["model"],
+        image_size=defaults["image_size"],
+        key_tier=defaults["one_xm_key_tier"],
+    )
     patched = run_one_xm_generation_row(generation_row, {
         "one_xm_key_tier": defaults["one_xm_key_tier"],
         "retry_attempts": defaults["retry_attempts"],
@@ -1106,8 +1110,12 @@ def generate_approval_asset_for_item(
     }
     nonce = apply_fresh_approval_generation_key(generation_row, batch, "manual")
     settings = resolve_one_xm_settings()
-    if not (settings.get("2k") or settings.get("4k")):
-        raise RuntimeError("未配置 1XM Key，无法新增生图")
+    require_one_xm_key_for_generation(
+        settings,
+        model=defaults["model"],
+        image_size=defaults["image_size"],
+        key_tier=defaults["one_xm_key_tier"],
+    )
     patched = run_one_xm_generation_row(generation_row, {
         "one_xm_key_tier": defaults["one_xm_key_tier"],
         "retry_attempts": defaults["retry_attempts"],
@@ -1166,6 +1174,20 @@ def resolve_one_xm_settings() -> dict:
     from core.api_server import _resolve_one_xm_settings
 
     return _resolve_one_xm_settings()
+
+
+def require_one_xm_key_for_generation(settings: Mapping[str, Any], *, model: str, image_size: str, key_tier: str = "auto") -> str:
+    from core import ai_image_service
+
+    try:
+        config_id, _api_key = ai_image_service.select_model_key({
+            "model_key": compact(model) or "gpt-image-2",
+            "size": compact(image_size),
+            "model_key_tier": compact(key_tier).lower() or "auto",
+        }, settings)
+    except ai_image_service.MissingModelKeyError as exc:
+        raise RuntimeError(f"未配置 1XM Key：{exc}") from exc
+    return config_id
 
 
 def run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dict) -> dict:
@@ -1388,6 +1410,7 @@ def make_generation_row(
     quality: str,
     output_format: str,
     key_tier: str,
+    model: str = "gpt-image-2",
     prompt_index: int = 1,
     run_nonce: str = "",
 ) -> dict[str, Any]:
@@ -1435,7 +1458,7 @@ def make_generation_row(
         "__task_run_uid": compact(run_nonce),
         "__1xm_reference_paths": references,
         "__1xm_payload": {
-            "model": "gpt-image-2",
+            "model": compact(model) or "gpt-image-2",
             "prompt": final_prompt,
             "size": image_size,
             "quality": normalized_quality,
@@ -3429,6 +3452,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tmall-batch-delay-seconds", type=float, default=12.0, help="Delay between Tmall batch.add calls.")
     parser.add_argument("--tmall-readback-delay-seconds", type=float, default=5.0, help="Delay after task.online before readback.")
     parser.add_argument("--image-size", default="960x1280")
+    parser.add_argument("--model", default="gpt-image-2")
     parser.add_argument("--ai-image-count", type=int, default=4)
     parser.add_argument("--generation-concurrency", type=int, default=100)
     parser.add_argument("--reference-mode", default="main_only", choices=["main_only", "main_and_detail"])
@@ -3473,8 +3497,13 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
     tmall_runner: JSRunner | None = None
 
     settings = resolve_one_xm_settings()
-    if args.generate and not (settings.get("2k") or settings.get("4k")):
-        raise RuntimeError("未配置 1XM Key。请在抓虾设置菜单填写，或设置 ONE_XM_GPT_IMAGE_2K_KEY/ONE_XM_GPT_IMAGE_4K_KEY 环境变量")
+    if args.generate:
+        require_one_xm_key_for_generation(
+            settings,
+            model=getattr(args, "model", "gpt-image-2"),
+            image_size=args.image_size,
+            key_tier=args.one_xm_key_tier,
+        )
 
     total = len(workflow_rows)
     reference_mode = compact(getattr(args, "reference_mode", "main_only")) or "main_only"
@@ -3623,6 +3652,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 quality=args.quality,
                 output_format=args.output_format,
                 key_tier=args.one_xm_key_tier,
+                model=getattr(args, "model", "gpt-image-2"),
                 prompt_index=prompt_index,
                 run_nonce=args.task_run_uid,
             )

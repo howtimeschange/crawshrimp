@@ -651,6 +651,80 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertIn(captured["output_token"], asset["path"])
         self.assertEqual(len([item for item in batch["items"][0]["assets"] if item.get("kind") == "ai"]), 1)
 
+    def test_generate_approval_asset_uses_gemini_model_key_from_cloud_run_params(self):
+        module = load_script()
+        captured = {}
+
+        class FakeOneXMClient:
+            def __init__(self, api_key, *, base_url=None):
+                captured["api_key"] = api_key
+                captured["base_url"] = base_url
+
+        def fake_runner(client, payload, **kwargs):
+            captured["payload"] = dict(payload)
+            captured["idempotency_key"] = kwargs.get("idempotency_key")
+            return {
+                "ok": True,
+                "task_id": "task-gemini",
+                "poll_url": "https://1xm.example/tasks/task-gemini",
+                "image_urls": ["https://img.example/gemini.jpg"],
+            }
+
+        def fake_download(row, artifact_dir):
+            captured["result_row"] = dict(row)
+            return [str(Path(artifact_dir) / "gemini.jpg")]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-gemini",
+                "task_run_uid": "run-gemini",
+                "artifact_dir": temp_dir,
+                "run_params": {
+                    "model": "gemini-3-pro-image-preview",
+                    "image_size": "2048x2048",
+                    "output_format": "webp",
+                    "quality": "high",
+                },
+                "items": [{
+                    "id": "item-1",
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "workflow": {
+                        "row_no": 2,
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "assets": [{"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"}],
+                }],
+            }
+            settings = {
+                "2k": "",
+                "4k": "",
+                "ai.1xm.gemini_3_1_flash_image_preview_key": "",
+                "ai.1xm.gemini_3_pro_image_preview_key": "gemini-pro-key",
+            }
+            with patch.object(module, "resolve_one_xm_settings", return_value=settings), \
+                patch("core.api_server.OneXMImageClient", FakeOneXMClient), \
+                patch("core.api_server.run_image_task_until_done", fake_runner), \
+                patch.object(module, "download_generated_images", fake_download), \
+                patch.object(module, "save_approval_batch"):
+                asset = module.generate_approval_asset_for_item(
+                    batch,
+                    item_id="item-1",
+                    prompt="manual prompt",
+                    main_image_path="/tmp/main.jpg",
+                )
+
+        self.assertEqual(captured["api_key"], "gemini-pro-key")
+        self.assertEqual(captured["payload"]["model"], "gemini-3-pro-image-preview")
+        self.assertEqual(captured["payload"]["size"], "2048x2048")
+        self.assertEqual(captured["payload"]["output_format"], "webp")
+        self.assertEqual(captured["result_row"]["执行结果"], "已生成")
+        self.assertNotIn("gemini-pro-key", json.dumps(asset, ensure_ascii=False))
+
     def test_upload_approved_batch_marks_create_failed_when_only_task_returns_error_with_task_id(self):
         module = load_script()
 

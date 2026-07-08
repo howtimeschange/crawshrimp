@@ -2822,13 +2822,18 @@ def _prepare_one_xm_payload(row: dict) -> dict:
 def _run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dict) -> dict:
     patched = dict(row)
     tier = _normalize_one_xm_key_tier(patched, run_params)
-    api_key = str(one_xm_settings.get(tier) or "").strip()
-    if not api_key:
+    payload = _prepare_one_xm_payload(patched)
+    try:
+        selected_key_id, api_key = ai_image_service.select_model_key({
+            "model_key": payload.get("model"),
+            "size": payload.get("size"),
+            "model_key_tier": tier,
+        }, one_xm_settings)
+    except ai_image_service.MissingModelKeyError as exc:
         patched["执行结果"] = "配置缺失"
-        patched["备注"] = f"设置菜单未配置 1XM GPT Image {tier.upper()} Key"
+        patched["备注"] = str(exc)
         return patched
 
-    payload = _prepare_one_xm_payload(patched)
     if not payload.get("prompt"):
         patched["执行结果"] = "参数缺失"
         patched["备注"] = "缺少最终提示词"
@@ -2853,6 +2858,7 @@ def _run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dic
         patched["生成图URL"] = "\n".join(urls)
         patched["生成图数量"] = len(urls)
         patched["执行结果"] = "已生成"
+        patched["__1xm_key_tier"] = selected_key_id
         retry_note = []
         if int(result.get("compensation_attempts") or 0) > 0:
             retry_note.append(f"补偿 {result.get('compensation_attempts')} 次")
@@ -3081,6 +3087,7 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         live_upload=bool(execution["live_upload"]),
         live_create=bool(execution["live_create"]),
         live_online=bool(execution["live_online"]),
+        model=str((run_params or {}).get("model") or "gpt-image-2").strip() or "gpt-image-2",
         image_size=str((run_params or {}).get("image_size") or "960x1280").strip(),
         ai_image_count=_task_int_param(run_params, "ai_image_count", 4, min_value=1, max_value=20),
         generation_concurrency=_task_int_param(run_params, "generation_concurrency", 100, min_value=1, max_value=100),
