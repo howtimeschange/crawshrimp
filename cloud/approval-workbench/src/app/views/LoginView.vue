@@ -28,7 +28,7 @@ async function submitLogin() {
   <main class="login-screen">
     <form class="login-panel" @submit.prevent="submitLogin">
       <div>
-        <p class="section-kicker">Crawshrimp Cloud Approval</p>
+        <p class="section-kicker">Crawshrimp 云端审批台</p>
         <h1>登录</h1>
       </div>
       <p v-if="error" class="notice danger">{{ error }}</p>
@@ -53,22 +53,34 @@ async function submitLogin() {
   min-height: 100vh;
   place-items: center;
   padding: 20px;
-  background: #0d1117;
+  background: var(--bg);
 }
 
 .login-panel {
   display: grid;
   width: min(380px, 100%);
-  gap: 14px;
-  border: 1px solid #242b36;
+  gap: 12px;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #111721;
-  padding: 22px;
+  background: var(--bg2);
+  padding: 20px;
 }
 
 h1 {
   margin: 4px 0 0;
-  font-size: 24px;
+  color: var(--text);
+  font-size: 22px;
   line-height: 1.2;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+}
+
+.field span {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
 }
 </style>

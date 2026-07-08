@@ -14,7 +14,7 @@ describe('cloud approval UI contract', () => {
 
   it('has pages for machines prompts batches dashboard and admin users', () => {
     const app = read('src/app/App.vue')
-    for (const label of ['账号', '任务机', 'Prompt', '审批批次', '数据看板']) {
+    for (const label of ['账号', '任务机', 'Prompt 库', '审批批次', '总览']) {
       expect(app).toContain(label)
     }
   })
@@ -38,6 +38,14 @@ describe('cloud approval UI contract', () => {
     expect(app).toContain("'batch_uid'")
     expect(app).toContain("activePage.value = 'review'")
     expect(app).toContain('selectedBatchUid.value = directBatchUid')
+  })
+
+  it('uses embed-aware top tabs instead of an internal sidebar', () => {
+    const app = read('src/app/App.vue')
+    expect(app).toContain('URLSearchParams')
+    expect(app).toContain('embed')
+    expect(app).toContain('top-tabs')
+    expect(app).not.toContain('side-nav')
   })
 
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
