@@ -197,8 +197,10 @@ class FakeD1Statement {
       return result(1, id)
     }
     if (normalized.startsWith('update prompt_templates set')) {
-      const templateId = Number(this.params[this.params.length - 1])
-      const template = this.state.templates.find((row) => row.id === templateId)
+      const checksLibraryId = normalized.includes('and library_id = ?')
+      const templateId = Number(this.params[checksLibraryId ? this.params.length - 2 : this.params.length - 1])
+      const libraryId = checksLibraryId ? Number(this.params[this.params.length - 1]) : null
+      const template = this.state.templates.find((row) => row.id === templateId && (libraryId === null || row.library_id === libraryId))
       if (!template) return result(0)
       template.group_name = String(this.params[0])
       template.field_name = String(this.params[1])
@@ -484,6 +486,34 @@ describe('prompt routes', () => {
       female_priority: 3,
       male_neutral_priority: 4,
     })
+  })
+
+  it('rejects bulk updates for templates outside the URL-scoped library', async () => {
+    const state = await stateWithPrompts()
+    const libraryAId = await createLibraryWithTemplates(state)
+    const libraryBId = await createLibraryWithTemplates(state)
+    const libraryBTemplate = state.templates.find((template) => template.library_id === libraryBId)
+    expect(libraryBTemplate).toBeDefined()
+    const originalPromptText = libraryBTemplate?.prompt_text
+
+    const response = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryAId}/templates/bulk`, {
+        method: 'POST',
+        headers: managerHeaders(),
+        body: JSON.stringify({
+          templates: [{
+            id: libraryBTemplate?.id,
+            group_name: 'cross-library',
+            field_name: 'should_not_update',
+            prompt_text: 'mutated through wrong library',
+          }],
+        }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(404)
+    expect(state.templates.find((template) => template.id === libraryBTemplate?.id)?.prompt_text).toBe(originalPromptText)
   })
 
   it('lets reviewer read resolved prompts but not publish versions', async () => {

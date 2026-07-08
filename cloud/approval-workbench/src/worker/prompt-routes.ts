@@ -206,7 +206,8 @@ export async function bulkUpdatePromptTemplates(request: Request, env: Env): Pro
     if (template instanceof Response) return template
     const id = Number(input.id)
     if (Number.isInteger(id) && id > 0) {
-      await updateTemplateRecord(env, id, template, now)
+      const update = await updateTemplateRecord(env, id, libraryId, template, now)
+      if (Number(update.meta.changes ?? 0) === 0) return json({ error: 'Not found' }, { status: 404 })
       savedTemplates.push({ id, ...template })
     } else {
       const templateResult = await insertTemplate(env, libraryId, template, now)
@@ -455,7 +456,7 @@ async function insertTemplate(env: Env, libraryId: number, template: TemplateInp
     .run()
 }
 
-async function updateTemplateRecord(env: Env, templateId: number, template: TemplateInput, now: string): Promise<D1Result> {
+async function updateTemplateRecord(env: Env, templateId: number, libraryId: number, template: TemplateInput, now: string): Promise<D1Result> {
   return env.DB.prepare(
     `UPDATE prompt_templates
      SET group_name = ?,
@@ -476,7 +477,8 @@ async function updateTemplateRecord(env: Env, templateId: number, template: Temp
          priority_json = ?,
          enabled = ?,
          updated_at = ?
-     WHERE id = ?`,
+     WHERE id = ?
+       AND library_id = ?`,
   )
     .bind(
       template.group_name,
@@ -498,6 +500,7 @@ async function updateTemplateRecord(env: Env, templateId: number, template: Temp
       template.enabled,
       now,
       templateId,
+      libraryId,
     )
     .run()
 }
