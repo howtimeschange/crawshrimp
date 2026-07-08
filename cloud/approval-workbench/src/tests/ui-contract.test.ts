@@ -153,6 +153,15 @@ describe('cloud approval UI contract', () => {
     }
   })
 
+  it('online generation clears stale prompt text when no resolved template is available', () => {
+    const generate = read('src/app/views/OnlineGenerationView.vue')
+    expect(generate).toContain("promptText.value = data.templates[0]?.prompt_text ?? ''")
+    expect(generate).toContain("promptText.value = template?.prompt_text ?? ''")
+
+    const clearCount = generate.match(/promptText\.value = ''/g)?.length ?? 0
+    expect(clearCount).toBeGreaterThanOrEqual(2)
+  })
+
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
     const adminUsers = read('src/app/views/AdminUsersView.vue')
     expect(adminUsers).toContain('function loadedRoleKey')

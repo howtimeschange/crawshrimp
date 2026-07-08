@@ -115,7 +115,7 @@ watch(selectedLibraryId, () => {
 
 watch(selectedTemplateKey, () => {
   const template = promptTemplates.value.find((item) => templateKey(item) === selectedTemplateKey.value)
-  if (template?.prompt_text) promptText.value = template.prompt_text
+  promptText.value = template?.prompt_text ?? ''
 })
 
 async function loadBatches() {
@@ -166,6 +166,7 @@ async function loadResolvedPrompts() {
   if (!selectedLibraryId.value || !selectedStyle.value) {
     promptTemplates.value = []
     selectedTemplateKey.value = ''
+    promptText.value = ''
     return
   }
   const params = new URLSearchParams()
@@ -177,9 +178,11 @@ async function loadResolvedPrompts() {
     const data = await apiGet<{ templates: PromptTemplate[] }>(`/api/prompt-libraries/${selectedLibraryId.value}/resolved?${params.toString()}`)
     promptTemplates.value = data.templates
     selectedTemplateKey.value = templateKey(data.templates[0])
+    promptText.value = data.templates[0]?.prompt_text ?? ''
   } catch {
     promptTemplates.value = []
     selectedTemplateKey.value = ''
+    promptText.value = ''
   }
 }
 
