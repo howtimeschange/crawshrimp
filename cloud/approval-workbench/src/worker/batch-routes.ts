@@ -56,6 +56,21 @@ interface AssetRow {
   updated_at: string
 }
 
+interface AssetPreviewRow {
+  id: number
+  asset_uid: string
+  batch_uid: string
+  style_id: number
+  kind: string
+  status: string
+  object_key: string
+  filename: string
+  content_hash: string
+  parent_asset_uid: string | null
+  created_at: string
+  updated_at: string
+}
+
 interface DispatchJobRow {
   id: number
   job_uid: string
@@ -215,7 +230,15 @@ export async function listBatches(request: Request, env: Env): Promise<Response>
   const actor = await requirePermission(request, env, 'batches:read')
   if (actor instanceof Response) return actor
   const { results } = await env.DB.prepare('SELECT * FROM ai_image_batches ORDER BY created_at DESC LIMIT 100').all<BatchRow>()
-  return json({ batches: results.map((batch) => ({ ...batch, prompt_version_set: parseArray(batch.prompt_version_set_json) })) })
+  const batchUids = results.map((batch) => batch.batch_uid)
+  const previews = await loadBatchPreviews(env, batchUids)
+  return json({
+    batches: results.map((batch) => ({
+      ...batch,
+      prompt_version_set: parseArray(batch.prompt_version_set_json),
+      previews: previewsForBatch(previews, batch.batch_uid),
+    })),
+  })
 }
 
 export async function saveAssetDecision(request: Request, env: Env): Promise<Response> {
@@ -383,6 +406,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   const promptText = stringValue(body.prompt_text ?? body.promptText)
   const promptTemplateVersionId = numberOrNull(body.prompt_template_version_id ?? body.promptTemplateVersionId)
   const machineId = stringValue(body.machine_id ?? body.machineId)
+  const requestNonce = stringValue(body.request_nonce ?? body.requestNonce)
   if (!batchUid || !Number.isInteger(styleId) || styleId <= 0 || !sourceAssetUid || !promptText) {
     return badRequest('batch_uid, style_id, source_asset_uid, and prompt_text are required')
   }
@@ -403,7 +427,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   const promptHash = await sha256Hex(promptText)
   const refsHash = await sha256Hex(JSON.stringify(referenceAssetUids))
   const promptTemplateVersionKey = promptTemplateVersionId ?? ''
-  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${machineId}`
+  const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${machineId}:${requestNonce}`
   const existing = await findDispatchJob(env, 'generate_ai_image', idempotencyKey)
   const requestUid = existing ? '' : randomToken('gen')
   const payload = {
@@ -419,6 +443,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
     reference_asset_uids: referenceAssetUids,
     prompt_template_version_id: promptTemplateVersionId,
     prompt_text: promptText,
+    request_nonce: requestNonce,
   }
   const job = existing ?? await insertDispatchJob(env, {
     batchUid,
@@ -515,7 +540,11 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
   if (!batchUid || !machineId) return badRequest('batch_uid and machine_id are required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
-  if (batch.status !== 'ready_to_submit') return json({ error: 'submit requires batch status ready_to_submit' }, { status: 409 })
+  if (batch.status === 'submitted') return json({ error: 'batch has already been submitted' }, { status: 409 })
+  const reviewState = await recomputeReviewState(env, batchUid)
+  if (!reviewState.ready) {
+    return json({ error: 'every non-skipped style must have at least one approved AI asset before submit' }, { status: 409 })
+  }
   const machine = await env.DB.prepare('SELECT * FROM task_machines WHERE machine_id = ? LIMIT 1').bind(machineId).first<MachineRow>()
   if (!machine || machine.auth_status !== 'active') return badRequest('selected machine must be active')
   if (!isFreshOnlineSubmitMachine(machine)) return json({ error: 'selected machine must be online and recently seen before submit' }, { status: 409 })
@@ -701,6 +730,76 @@ function batchUidFromSubmitResultPath(request: Request): string {
 
 async function loadBatch(env: Env, batchUid: string): Promise<BatchRow | null> {
   return env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
+}
+
+async function loadBatchPreviews(env: Env, batchUids: string[]): Promise<AssetPreviewRow[]> {
+  if (batchUids.length === 0) return []
+  const placeholders = batchUids.map(() => '?').join(', ')
+  const { results } = await env.DB.prepare(
+    `WITH ranked_previews AS (
+       SELECT
+         id,
+         asset_uid,
+         batch_uid,
+         style_id,
+         kind,
+         status,
+         object_key,
+         filename,
+         content_hash,
+         parent_asset_uid,
+         created_at,
+         updated_at,
+         ROW_NUMBER() OVER (
+           PARTITION BY batch_uid, CASE WHEN kind IN ('source', 'reference') THEN 'source' ELSE 'ai' END
+           ORDER BY
+             CASE kind WHEN 'source' THEN 0 WHEN 'reference' THEN 1 ELSE 2 END,
+             style_id ASC,
+             id ASC
+         ) AS preview_rank
+       FROM ai_image_assets
+       WHERE batch_uid IN (${placeholders})
+         AND kind IN ('source', 'reference', 'ai')
+         AND (
+           lower(filename) LIKE '%.jpg'
+           OR lower(filename) LIKE '%.jpeg'
+           OR lower(filename) LIKE '%.png'
+           OR lower(filename) LIKE '%.webp'
+           OR lower(filename) LIKE '%.gif'
+         )
+     )
+     SELECT
+       id,
+       asset_uid,
+       batch_uid,
+       style_id,
+       kind,
+       status,
+       object_key,
+       filename,
+       content_hash,
+       parent_asset_uid,
+       created_at,
+       updated_at
+     FROM ranked_previews
+     WHERE (kind IN ('source', 'reference') AND preview_rank <= 1)
+        OR (kind = 'ai' AND preview_rank <= 4)
+     ORDER BY batch_uid ASC, CASE kind WHEN 'source' THEN 0 WHEN 'reference' THEN 1 ELSE 2 END, style_id ASC, id ASC`,
+  )
+    .bind(...batchUids)
+    .all<AssetPreviewRow>()
+  return results
+}
+
+function previewsForBatch(assets: AssetPreviewRow[], batchUid: string): AssetPreviewRow[] {
+  const rows = assets.filter((asset) => asset.batch_uid === batchUid && isPreviewImage(asset.filename))
+  const source = rows.find((asset) => asset.kind === 'source') ?? rows.find((asset) => asset.kind === 'reference')
+  const aiRows = rows.filter((asset) => asset.kind === 'ai').slice(0, 4)
+  return [...(source ? [source] : []), ...aiRows].slice(0, 5)
+}
+
+function isPreviewImage(filename: string): boolean {
+  return /\.(jpe?g|png|webp|gif)$/i.test(filename)
 }
 
 async function appendApprovalEvent(env: Env, batchUid: string, styleId: number | null, assetUid: string | null, eventType: string, userId: number, payload: unknown, now: string): Promise<void> {

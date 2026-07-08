@@ -115,6 +115,7 @@ interface FakeState {
   styles: StyleRow[]
   assets: AssetRow[]
   audits: unknown[]
+  assetSelectSqls: string[]
 }
 
 class FakeD1Statement {
@@ -176,7 +177,35 @@ class FakeD1Statement {
       return { results: this.state.styles.filter((row) => row.batch_uid === String(this.params[0])) as T[] }
     }
     if (normalized.includes('from ai_image_assets')) {
-      return { results: this.state.assets.filter((row) => row.batch_uid === String(this.params[0])) as T[] }
+      this.state.assetSelectSqls.push(normalized)
+      const batchUid = this.params[0]
+      if (normalized.includes('ranked_previews')) {
+        const batchUids = new Set(this.params.map(String))
+        const imageRows = this.state.assets.filter((row) => batchUids.has(row.batch_uid) && ['source', 'reference', 'ai'].includes(row.kind) && /\.(jpe?g|png|webp|gif)$/i.test(row.filename))
+        const previews = this.state.batches.flatMap((batch) => {
+          const rows = imageRows.filter((row) => row.batch_uid === batch.batch_uid)
+          const source = rows.find((row) => row.kind === 'source') ?? rows.find((row) => row.kind === 'reference')
+          const aiRows = rows.filter((row) => row.kind === 'ai').slice(0, 4)
+          return [...(source ? [source] : []), ...aiRows]
+        })
+        return {
+          results: previews.map((row) => ({
+            id: row.id,
+            asset_uid: row.asset_uid,
+            batch_uid: row.batch_uid,
+            style_id: row.style_id,
+            kind: row.kind,
+            status: row.status,
+            object_key: row.object_key,
+            filename: row.filename,
+            content_hash: row.content_hash,
+            parent_asset_uid: row.parent_asset_uid,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          })) as T[],
+        }
+      }
+      return { results: this.state.assets.filter((row) => !batchUid || row.batch_uid === String(batchUid)) as T[] }
     }
     if (normalized.includes('from ai_image_batches')) {
       return { results: this.state.batches as T[] }
@@ -383,6 +412,7 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
     styles: [],
     assets: [],
     audits: [],
+    assetSelectSqls: [],
   }
   return {
     state,
@@ -864,6 +894,63 @@ describe('batch sync routes', () => {
       prompt_template_version_id: 30,
       prompt_text: 'Generate a clean catalog image',
     })
+  })
+
+  it('returns lightweight source and AI previews in the batch list', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batches: Array<BatchRow & { previews: AssetRow[] }> }
+
+    expect(response.status).toBe(200)
+    expect(body.batches[0].previews.map((asset) => ({ kind: asset.kind, asset_uid: asset.asset_uid }))).toEqual([
+      { kind: 'source', asset_uid: 'asset-source-1' },
+      { kind: 'ai', asset_uid: 'asset-ai-1' },
+    ])
+  })
+
+  it('caps batch list previews per batch and omits heavyweight asset fields', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    for (let index = 2; index <= 10; index += 1) {
+      state.assets.push({
+        ...state.assets[1],
+        id: index + 10,
+        asset_uid: `asset-ai-${index}`,
+        kind: 'ai',
+        filename: `ai-${index}.jpg`,
+        prompt_text: `large prompt ${index}`.repeat(100),
+        meta_json: JSON.stringify({ large: 'metadata'.repeat(100) }),
+      })
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batches: Array<BatchRow & { previews: Array<Record<string, unknown>> }> }
+    const previewSql = state.assetSelectSqls.at(-1) || ''
+
+    expect(response.status).toBe(200)
+    expect(body.batches[0].previews).toHaveLength(5)
+    expect(body.batches[0].previews.filter((asset) => asset.kind === 'source')).toHaveLength(1)
+    expect(body.batches[0].previews.filter((asset) => asset.kind === 'ai')).toHaveLength(4)
+    expect(body.batches[0].previews[0]).not.toHaveProperty('prompt_text')
+    expect(body.batches[0].previews[0]).not.toHaveProperty('meta_json')
+    expect(previewSql).not.toContain('select *')
+    expect(previewSql).toContain('row_number()')
   })
 })
 

@@ -17,6 +17,7 @@ describe('cloud approval UI contract', () => {
     for (const label of ['账号', '任务机', 'Prompt 库', '审批批次', '总览']) {
       expect(app).toContain(label)
     }
+    expect(app).not.toContain("label: '批次审图'")
   })
 
   it('machine page includes one-time token warning', () => {
@@ -27,17 +28,66 @@ describe('cloud approval UI contract', () => {
 
   it('batch review has approve reject regenerate and submit actions', () => {
     const review = read('src/app/views/BatchReviewView.vue')
-    for (const text of ['确认', '舍弃', '一键重生图', '提交创建测图任务']) {
+    for (const text of ['确认通过', '标记舍弃', '批量重跑舍弃图', '提交创建测图任务']) {
       expect(review).toContain(text)
+    }
+    for (const vagueText of ['所选重生图', '一键重生图', '换 Prompt 重跑']) {
+      expect(review).not.toContain(vagueText)
     }
   })
 
   it('batch review is an image-review workbench instead of another batch list table', () => {
     const review = read('src/app/views/BatchReviewView.vue')
-    for (const marker of ['review-workbench', 'style-nav-panel', 'review-gallery', 'review-inspector']) {
+    for (const marker of ['review-workbench', 'review-batch-summary', 'style-nav-panel', 'review-gallery', 'review-inspector']) {
       expect(review).toContain(marker)
     }
     expect(review).not.toContain('class="data-table"')
+    expect(review).not.toContain('review-loadbar')
+    expect(review).not.toContain('批次 UID')
+    expect(review).not.toContain('加载批次')
+  })
+
+  it('batch list exposes Beijing time and image previews before entering review', () => {
+    const list = read('src/app/views/BatchListView.vue')
+    expect(list).toContain('formatBeijingTime')
+    expect(list).toContain('batch-preview-strip')
+    expect(list).toContain('assetDownloadUrl')
+    expect(list).not.toContain('{{ batch.created_at }}')
+    expect(list).not.toContain('{{ batch.updated_at }}')
+  })
+
+  it('batch review keeps task-machine submit at batch level with per-style validation copy', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    expect(review).toContain('batch-submit-panel')
+    expect(review).toContain('submitValidationMessage')
+    expect(review).toContain('每个款式至少确认 1 张 AI 图后才能提交')
+    expect(review).not.toContain('class="submit-panel"')
+  })
+
+  it('batch submit does not require the reviewer-only mark-ready endpoint first', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    const submitJobBody = review.match(/async function submitJob\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(submitJobBody).toContain('/submit')
+    expect(submitJobBody).not.toContain('/mark-ready')
+    expect(review).toContain('async function markReady()')
+  })
+
+  it('batch review supports prompt-library selection for rerun and style-level generation', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    for (const marker of ['promptLibraries', 'promptTemplates', 'selectedPromptTemplateKey', 'applySelectedPromptTemplate']) {
+      expect(review).toContain(marker)
+    }
+    expect(review).toContain('给当前款式新增 AI 图')
+    expect(review).toContain('从 Prompt 库选择')
+    expect(review).toContain('批量重跑选中图')
+  })
+
+  it('batch review reloads resolved prompt templates when the selected style changes', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    const styleWatcher = review.match(/watch\(selectedStyleId,[\s\S]*?\n\}\)/)?.[0] ?? ''
+    expect(styleWatcher).toContain('loadPromptTemplates')
+    expect(review).toContain("params.set('style_code'")
+    expect(review).toContain("params.set('item_id'")
   })
 
   it('opens batch review from batch_uid query links', () => {

@@ -628,18 +628,16 @@ describe('review routes', () => {
     expect(state.dispatchJobs).toHaveLength(0)
   })
 
-  it('requires jobs:submit, an active selected machine, and ready_to_submit status for submit jobs', async () => {
+  it('requires jobs:submit, an active selected machine, and recomputes stale batch status for submit jobs', async () => {
     const { state, reviewerCookie, operatorCookie } = await baseState()
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
     state.assets.push(asset(99, 'asset-source-planned', 1, 'source', 'planned', '', null))
     let response = await fetchWorker(submitRequest(reviewerCookie, 'machine-1'), fakeEnv(state))
     expect(response.status).toBe(403)
-    response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
-    expect(response.status).toBe(409)
-    state.batches[0].status = 'ready_to_submit'
     response = await fetchWorker(submitRequest(operatorCookie, 'missing-machine'), fakeEnv(state))
     expect(response.status).toBe(400)
+    expect(state.batches[0].status).toBe('ready_to_submit')
     state.machines[0].last_seen_at = '2026-01-01T00:00:00.000Z'
     response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
     expect(response.status).toBe(409)
@@ -649,6 +647,34 @@ describe('review routes', () => {
     expect(state.dispatchJobs[0]).toMatchObject({ job_type: 'submit_tmall_material_test', assigned_machine_id: 'machine-1' })
     expect(JSON.parse(state.dispatchJobs[0].required_capabilities_json)).toEqual(['submit_tmall_material_test'])
     expect(JSON.parse(state.dispatchJobs[0].payload_json).submit_plan.assets.map((asset: AssetRow) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-source-2', 'asset-ai-1', 'asset-ai-3'])
+  })
+
+  it('blocks repeat submit after the batch has already been submitted', async () => {
+    const { state, operatorCookie } = await baseState()
+    state.batches[0].status = 'submitted'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+
+    const response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(409)
+    expect(body.error).toContain('already been submitted')
+    expect(state.dispatchJobs).toHaveLength(0)
+  })
+
+  it('blocks submit when any non-skipped style has no approved AI asset even if batch status is stale ready_to_submit', async () => {
+    const { state, operatorCookie } = await baseState()
+    state.batches[0].status = 'ready_to_submit'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'rejected'
+
+    const response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(409)
+    expect(body.error).toContain('every non-skipped style')
+    expect(state.dispatchJobs).toHaveLength(0)
   })
 })
 

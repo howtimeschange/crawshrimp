@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import mimetypes
+import sys
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -464,7 +465,6 @@ class CloudJobExecutor:
             })
         return {
             "batch_id": batch_uid,
-            "task_run_uid": _job_uid(job),
             "artifact_dir": str(task_dir),
             "run_params": {},
             "items": list(items_by_style.values()),
@@ -487,6 +487,7 @@ def _load_tmall_module():
     if spec is None or spec.loader is None:
         raise RuntimeError(f"Unable to load Tmall cloud executor module: {script}")
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 

@@ -1,4 +1,5 @@
 import tempfile
+import sys
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,23 @@ class CloudJobExecutorTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         data_sink.init_db()
+
+    def test_load_tmall_module_registers_module_for_dataclass_annotations(self):
+        from core.cloud_job_executors import _load_tmall_module
+
+        sys.modules.pop("cloud_tmall_ai_image_test_chain", None)
+
+        module = _load_tmall_module()
+
+        self.assertIs(sys.modules.get("cloud_tmall_ai_image_test_chain"), module)
+        workflow = module.WorkflowItem(
+            row_no=2,
+            style_code="208326100202",
+            item_id="1002178235142",
+            category="长袖T恤",
+            gender="中性",
+        )
+        self.assertEqual(workflow.style_code, "208326100202")
 
     def test_regenerate_ai_image_downloads_references_uploads_new_asset_and_completes_job(self):
         from core.cloud_job_executors import CloudJobExecutor
@@ -240,6 +258,40 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(item["assets"][0]["status"], "approved")
         self.assertTrue(Path(item["assets"][0]["path"]).is_relative_to(Path(self.tmp.name) / "cloud-jobs" / "job-submit"))
         self.assertTrue(any(call["path"] == "/api/jobs/job-submit/progress" for call in client.calls))
+
+    def test_submit_tmall_material_test_cloud_batch_is_accepted_by_legacy_upload_planner(self):
+        from core.cloud_job_executors import CloudJobExecutor, _load_tmall_module
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs")
+        job = {
+            "job_uid": "job-submit-cloud",
+            "batch_uid": "batch-submit",
+            "job_type": "submit_tmall_material_test",
+            "lease_id": "lease-submit",
+            "payload": {},
+        }
+        submit_plan = {
+            "batch_uid": "batch-submit",
+            "styles": [{"id": 7, "style_uid": "style-7", "style_code": "208326100202", "item_id": "1001"}],
+            "assets": [
+                {"asset_uid": "source-main-1", "style_id": 7, "kind": "source", "status": "uploaded"},
+                {
+                    "asset_uid": "ai-approved-1",
+                    "style_id": 7,
+                    "kind": "ai",
+                    "status": "approved",
+                    "meta": {"generation": {"__task_run_uid": "original-local-run"}},
+                },
+            ],
+        }
+
+        batch = executor._submit_batch(job, submit_plan, Path(self.tmp.name) / "cloud-jobs" / "job-submit-cloud")
+        upload_plan = _load_tmall_module().selected_upload_plan_from_approval_batch(batch)
+
+        self.assertNotIn("task_run_uid", batch)
+        self.assertEqual(len(upload_plan), 1)
+        self.assertEqual([Path(path).name for path in upload_plan[0]["generated_paths"]], ["ai-approved-1.jpg"])
 
     def test_submit_tmall_material_test_prefers_source_when_reference_precedes_source(self):
         from core.cloud_job_executors import CloudJobExecutor

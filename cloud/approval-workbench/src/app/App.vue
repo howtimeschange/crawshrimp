@@ -42,7 +42,6 @@ const isEmbedded = computed(() => new URLSearchParams(window.location.search).ge
 const navItems: Array<{ key: PageKey; label: string; permission: string }> = [
   { key: 'dashboard', label: '总览', permission: 'dashboard:read' },
   { key: 'batches', label: '审批批次', permission: 'batches:read' },
-  { key: 'review', label: '批次审图', permission: 'batches:read' },
   { key: 'generate', label: 'AI 生图', permission: 'jobs:generate' },
   { key: 'prompts', label: 'Prompt 库', permission: 'prompts:read' },
   { key: 'materialData', label: '测图数据', permission: 'dashboard:read' },
@@ -56,7 +55,7 @@ const visibleNav = computed(() => {
   return navItems.filter((item) => permissions.has(item.permission))
 })
 
-const activeTitle = computed(() => navItems.find((item) => item.key === activePage.value)?.label ?? '总览')
+const activeTitle = computed(() => activePage.value === 'review' ? '审图详情' : navItems.find((item) => item.key === activePage.value)?.label ?? '总览')
 
 function applyDirectBatchLink(): boolean {
   const params = new URLSearchParams(window.location.search)
