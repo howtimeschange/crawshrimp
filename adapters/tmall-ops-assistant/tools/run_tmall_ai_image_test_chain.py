@@ -961,10 +961,13 @@ def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, An
     source_row = generation_row if isinstance(generation_row, Mapping) else {}
     existing_ai = next((asset for asset in item.get("assets") or [] if isinstance(asset, Mapping) and asset.get("kind") == "ai"), {})
     existing_row = existing_ai.get("generation_row") if isinstance(existing_ai.get("generation_row"), Mapping) else {}
+    count = to_int(source_row.get("生成数量") or existing_row.get("生成数量") or run_params.get("ai_image_count") or run_params.get("count"), 1)
     return {
+        "model": compact(source_row.get("模型") or existing_row.get("模型") or run_params.get("model")) or "gpt-image-2",
         "image_size": compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280",
         "quality": normalize_quality(source_row.get("质量") or existing_row.get("质量") or run_params.get("quality") or "auto"),
-        "output_format": compact(source_row.get("格式")) or compact(existing_row.get("格式")) or compact(run_params.get("output_format")) or "jpeg",
+        "output_format": normalize_output_format(source_row.get("格式") or existing_row.get("格式") or run_params.get("output_format"), "jpeg"),
+        "count": max(1, min(8, count)),
         "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto",
         "retry_attempts": to_int(run_params.get("retry_attempts"), 3),
         "compensate_attempts": to_int(run_params.get("compensate_attempts"), 2),
@@ -1000,12 +1003,12 @@ def regenerate_approval_asset(
     else:
         defaults = approval_generation_defaults(batch, item, generation_row)
         generation_row["__1xm_payload"] = {
-            "model": "gpt-image-2",
+            "model": defaults["model"],
             "prompt": final_prompt,
             "size": defaults["image_size"],
             "quality": defaults["quality"],
             "output_format": defaults["output_format"],
-            "n": 1,
+            "n": defaults["count"],
         }
     nonce = apply_fresh_approval_generation_key(generation_row, batch, "retry")
     settings = resolve_one_xm_settings()
@@ -1076,6 +1079,7 @@ def generate_approval_asset_for_item(
         "尺寸": defaults["image_size"],
         "格式": defaults["output_format"],
         "质量": defaults["quality"],
+        "生成数量": defaults["count"],
         "参考图文件": "\n".join(refs),
         "主参考图文件": refs[0],
         "细节参考图文件": "\n".join(refs[1:]),
@@ -1092,12 +1096,12 @@ def generate_approval_asset_for_item(
         "__task_run_uid": approval_batch_run_uid(batch),
         "__1xm_reference_paths": refs,
         "__1xm_payload": {
-            "model": "gpt-image-2",
+            "model": defaults["model"],
             "prompt": final_prompt,
             "size": defaults["image_size"],
             "quality": defaults["quality"],
             "output_format": defaults["output_format"],
-            "n": 1,
+            "n": defaults["count"],
         },
     }
     nonce = apply_fresh_approval_generation_key(generation_row, batch, "manual")
@@ -1146,7 +1150,7 @@ def generate_approval_asset_for_item(
 
 def normalize_quality(value: object) -> str:
     text = compact(value).lower()
-    return text if text in {"auto", "low", "medium", "high"} else "auto"
+    return text if text in {"auto", "standard", "low", "medium", "high"} else "auto"
 
 
 def read_workbook_table(path: str, sheet: str | None = None, header_row: int = 1) -> dict[str, Any]:

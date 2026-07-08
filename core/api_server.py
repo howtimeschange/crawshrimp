@@ -2789,10 +2789,10 @@ def _prepare_one_xm_payload(row: dict) -> dict:
         raw_payload = {}
 
     quality = str(raw_payload.get("quality") or row.get("质量") or "auto").strip().lower()
-    if quality not in {"auto", "low", "medium", "high"}:
+    if quality not in {"auto", "standard", "low", "medium", "high"}:
         quality = "auto"
     payload = {
-        "model": "gpt-image-2",
+        "model": str(raw_payload.get("model") or row.get("模型") or "gpt-image-2").strip() or "gpt-image-2",
         "prompt": str(raw_payload.get("prompt") or row.get("最终提示词") or "").strip(),
         "size": str(raw_payload.get("size") or row.get("尺寸") or "1024x1024").strip(),
         "quality": quality,

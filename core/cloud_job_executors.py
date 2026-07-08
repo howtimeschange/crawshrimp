@@ -99,7 +99,6 @@ class CloudJobExecutor:
                 "asset_uid": asset_uid,
                 "filename": output_path.name,
                 "object_key": upload_result.get("object_key", ""),
-                "local_result_path": str(output_path),
             },
         }
 
@@ -131,30 +130,39 @@ class CloudJobExecutor:
         )
         self._renew(job)
 
-        output_path = _local_file(asset.get("path"), task_dir)
-        result_asset_uid = _safe_generated_asset_uid(str(payload.get("request_uid") or ""), _job_uid(job))
         generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), Mapping) else {}
+        output_paths = _generated_output_paths(asset, generation_row, task_dir)
+        result_asset_uids = _result_asset_uids(payload, job)
+        upload_count = max(1, min(_generation_count(payload), len(result_asset_uids), len(output_paths)))
         self._progress(job, "uploading_results", "上传在线生图结果")
-        upload_result = self._upload_result_asset(
-            job=job,
-            batch_uid=batch_uid,
-            style_id=style_id,
-            asset_uid=result_asset_uid,
-            path=output_path,
-            prompt_text=str(asset.get("prompt") or prompt_text),
-            parent_asset_uid=source_asset_uid,
-            generation_job_id=str(generation_row.get("任务ID") or generation_row.get("1XM任务ID") or generation_row.get("__1xm_task_id") or ""),
-            prompt_template_version_id=_positive_int(payload.get("prompt_template_version_id")) or None,
-        )
-        self._renew(job)
-        return {
-            "status": "succeeded",
-            "result": {
+        uploaded_assets = []
+        for result_asset_uid, output_path in zip(result_asset_uids[:upload_count], output_paths[:upload_count]):
+            upload_result = self._upload_result_asset(
+                job=job,
+                batch_uid=batch_uid,
+                style_id=style_id,
+                asset_uid=result_asset_uid,
+                path=output_path,
+                prompt_text=str(asset.get("prompt") or prompt_text),
+                parent_asset_uid=source_asset_uid,
+                generation_job_id=str(generation_row.get("任务ID") or generation_row.get("1XM任务ID") or generation_row.get("__1xm_task_id") or ""),
+                prompt_template_version_id=_positive_int(payload.get("prompt_template_version_id")) or None,
+            )
+            uploaded_assets.append({
                 "asset_uid": result_asset_uid,
                 "filename": output_path.name,
                 "object_key": upload_result.get("object_key", ""),
-                "local_result_path": str(output_path),
-                "generation": generation_row,
+            })
+        self._renew(job)
+        first_asset = uploaded_assets[0]
+        return {
+            "status": "succeeded",
+            "result": {
+                "asset_uid": first_asset["asset_uid"],
+                "filename": first_asset["filename"],
+                "object_key": first_asset["object_key"],
+                "assets": uploaded_assets,
+                "generation": _safe_generation_metadata(generation_row),
             },
         }
 
@@ -356,7 +364,7 @@ class CloudJobExecutor:
             "batch_id": batch_uid,
             "task_run_uid": _job_uid(job),
             "artifact_dir": str(task_dir),
-            "run_params": {},
+            "run_params": _generation_run_params(payload),
             "items": [{
                 "id": str(style_id or ""),
                 "style_id": style_id,
@@ -380,7 +388,7 @@ class CloudJobExecutor:
             "batch_id": batch_uid,
             "task_run_uid": _job_uid(job),
             "artifact_dir": str(task_dir),
-            "run_params": {},
+            "run_params": _generation_run_params(payload),
             "items": [{
                 "id": item_id,
                 "style_id": style_id,
@@ -629,6 +637,85 @@ def _text_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item) for item in value if str(item or "")]
+
+
+def _generation_count(payload: Mapping[str, Any]) -> int:
+    for key in ("count", "ai_image_count", "n"):
+        count = _positive_int(payload.get(key))
+        if count:
+            return min(count, 8)
+    return 1
+
+
+def _result_asset_uids(payload: Mapping[str, Any], job: Mapping[str, Any]) -> list[str]:
+    allowed = _text_list(payload.get("result_asset_uids"))
+    if allowed:
+        return allowed[:8]
+    return [_safe_generated_asset_uid(str(payload.get("request_uid") or ""), _job_uid(job))]
+
+
+def _generation_run_params(payload: Mapping[str, Any]) -> dict[str, Any]:
+    run_params: dict[str, Any] = {}
+    model = _text(payload.get("model"))
+    if model:
+        run_params["model"] = model
+    size = _text(payload.get("size") or payload.get("image_size"))
+    if size:
+        run_params["image_size"] = size
+    quality = _text(payload.get("quality")).lower()
+    if quality:
+        run_params["quality"] = quality
+    output_format = _text(payload.get("output_format") or payload.get("response_format") or payload.get("format")).lower()
+    if output_format:
+        run_params["output_format"] = output_format
+    run_params["ai_image_count"] = _generation_count(payload)
+    return run_params
+
+
+def _generated_output_paths(asset: Mapping[str, Any], generation_row: Mapping[str, Any], task_dir: Path) -> list[Path]:
+    candidates = _text_list(generation_row.get("本地生成图文件"))
+    if not candidates and generation_row.get("本地生成图文件"):
+        candidates = [
+            item.strip()
+            for item in str(generation_row.get("本地生成图文件") or "").replace("\r", "\n").split("\n")
+            if item.strip()
+        ]
+    candidates.insert(0, str(asset.get("path") or ""))
+    paths: list[Path] = []
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = _local_file(candidate, task_dir)
+        key = str(path.resolve())
+        if key in seen:
+            continue
+        seen.add(key)
+        paths.append(path)
+    if not paths:
+        raise ValueError("cloud job generation did not produce local task files")
+    return paths
+
+
+def _safe_generation_metadata(generation_row: Mapping[str, Any]) -> dict[str, Any]:
+    blocked_keys = {
+        "本地生成图文件",
+        "参考图文件",
+        "主参考图文件",
+        "细节参考图文件",
+        "__1xm_reference_paths",
+        "__1xm_payload",
+        "local_result_path",
+        "path",
+        "output_files",
+    }
+    safe: dict[str, Any] = {}
+    for key, value in dict(generation_row).items():
+        if key in blocked_keys:
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[str(key)] = value
+    return safe
 
 
 def _positive_int(value: Any) -> int:

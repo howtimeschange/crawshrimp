@@ -77,6 +77,7 @@ class AiImageServiceTests(unittest.TestCase):
         }
         assets = [
             {"kind": "reference", "path": "/tmp/back.png", "sort_order": 20},
+            {"kind": "main", "path": "/tmp/main.png", "sort_order": 999},
             {"kind": "mask", "path": "/tmp/mask.png", "sort_order": 5},
             {"kind": "reference", "path": "/tmp/front.png", "sort_order": 10},
         ]
@@ -92,9 +93,21 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertEqual(payload["quality"], "high")
         self.assertEqual(payload["n"], 2)
         self.assertEqual(payload["image"], [
+            "data:image/png;base64,main",
             "data:image/png;base64,front",
             "data:image/png;base64,back",
         ])
+
+    def test_build_payload_accepts_ui_response_format_and_standard_quality(self):
+        job = {
+            "prompt": "make a product image",
+            "params": {"quality": "standard", "response_format": "webp"},
+        }
+
+        payload = ai_image_service.build_one_xm_payload(job)
+
+        self.assertEqual(payload["quality"], "standard")
+        self.assertEqual(payload["output_format"], "webp")
 
     def test_run_job_downloads_outputs_and_keeps_key_and_data_urls_out_of_summary(self):
         job = data_sink.create_ai_image_job({

@@ -97,14 +97,14 @@ def build_one_xm_payload(
 ) -> dict:
     params = _params(job)
     quality = _compact(params.get("quality") or "auto").lower()
-    if quality not in {"auto", "low", "medium", "high"}:
+    if quality not in {"auto", "standard", "low", "medium", "high"}:
         quality = "auto"
     payload: dict[str, Any] = {
         "model": _compact(job.get("model_key") or params.get("model") or "gpt-image-2") or "gpt-image-2",
         "prompt": _compact(job.get("prompt") or params.get("prompt")),
         "size": _compact(params.get("size") or "1024x1024") or "1024x1024",
         "quality": quality,
-        "output_format": _compact(params.get("output_format") or params.get("format") or "png") or "png",
+        "output_format": _compact(params.get("output_format") or params.get("response_format") or params.get("format") or "png") or "png",
         "n": int(params.get("n") or 1),
     }
     for optional_key in ("webhook_url", "webhook_secret", "mask"):
@@ -113,6 +113,12 @@ def build_one_xm_payload(
 
     ordered_assets = sorted(list(assets or []), key=lambda item: (int(item.get("sort_order") or 0), int(item.get("id") or 0)))
     images = []
+    for asset in ordered_assets:
+        if _compact(asset.get("kind")).lower() != "main":
+            continue
+        path = _compact(asset.get("path"))
+        if path:
+            images.append(file_to_data_url_fn(path))
     for asset in ordered_assets:
         if _compact(asset.get("kind")).lower() != "reference":
             continue

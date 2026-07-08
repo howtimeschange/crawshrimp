@@ -80,6 +80,40 @@ Concerns:
 
 - `npm run build` still emits the existing Vite chunk-size warning for the bundled app asset; build exits successfully.
 
+## Final Whole-Branch Review Fix Report
+
+Status: DONE
+
+Fixed the final Critical and Important findings for the local/cloud AI image workbench.
+
+RED evidence:
+
+- `python -m unittest tests.test_ai_image_service tests.test_cloud_job_executors -v`: failed before fixes because main images were omitted, `standard` quality was coerced to `auto`, and the cloud executor uploaded `gen-1` instead of Worker-leased `result_asset_uids`.
+
+GREEN evidence:
+
+- `python -m unittest tests.test_ai_image_service tests.test_cloud_job_executors -v`: passed, 27 tests.
+- `python -m unittest tests.test_tmall_ai_image_chain_script.TmallAiImageChainScriptTests.test_generate_approval_asset_for_item_accepts_product_item_id tests.test_tmall_ai_image_chain_script.TmallAiImageChainScriptTests.test_regenerate_approval_asset_uses_fresh_1xm_key_and_current_batch_run tests.test_tmall_ai_image_chain_script.TmallAiImageChainScriptTests.test_generate_approval_asset_for_item_appends_manual_ai_asset_to_current_batch -v`: passed, 3 tests.
+- `git diff --check`: passed.
+
+Files changed:
+
+- `core/cloud_job_executors.py`
+- `core/ai_image_service.py`
+- `core/api_server.py`
+- `adapters/tmall-ops-assistant/tools/run_tmall_ai_image_test_chain.py`
+- `tests/test_ai_image_service.py`
+- `tests/test_cloud_job_executors.py`
+- `.superpowers/sdd/task-6-report.md`
+
+Self-review:
+
+- Generated cloud uploads now use Worker-provided `result_asset_uids` as the source of truth, with a single-asset fallback only when older payloads omit the allowlist.
+- Cloud generation payload fields now flow into task-machine `run_params` and 1XM payload defaults; `count` is capped at the Worker maximum of 8.
+- Cloud completion metadata no longer includes local generated or reference file paths.
+- Local workbench payloads include the `main` image before references, read UI `response_format`, and preserve `standard` quality.
+- No `.crawshrimp-runtime/`, `.wrangler/`, unrelated docs, or generated assets were staged.
+
 ## Second Re-review Fix Report
 
 Status: DONE

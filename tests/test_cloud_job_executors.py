@@ -13,12 +13,13 @@ from core.cloud_machine_agent import CloudMachineAgent
 
 
 class FakeCloudClient:
-    def __init__(self, responses=None):
+    def __init__(self, responses=None, *, allowed_asset_uids=None):
         self.responses = list(responses or [])
         self.calls = []
         self.uploads = []
         self.downloads = []
         self.machine_token = "machine-secret"
+        self.allowed_asset_uids = set(allowed_asset_uids or [])
 
     def request_json(self, method, path, body=None, *, token_type="machine"):
         self.calls.append({"method": method, "path": path, "body": dict(body or {})})
@@ -28,6 +29,8 @@ class FakeCloudClient:
                 raise response
             return response
         if path == "/api/assets/presign":
+            if self.allowed_asset_uids and body.get("asset_uid") not in self.allowed_asset_uids:
+                raise CloudApprovalError(f"asset {body.get('asset_uid')} is not leased for upload")
             return {"upload_url": f"/upload/{body.get('asset_uid')}", "object_key": f"objects/{body.get('asset_uid')}"}
         if path == "/api/material-test/import":
             return {
@@ -137,7 +140,7 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertTrue(all(body["lease_id"] == "lease-1" for body in progress_bodies + renew_bodies))
         self.assertEqual(result["result"]["asset_uid"], "regen-job-1")
 
-    def test_generate_ai_image_downloads_source_and_references_uploads_new_asset(self):
+    def test_generate_ai_image_downloads_source_and_references_uploads_allowed_result_assets(self):
         from core.cloud_job_executors import CloudJobExecutor
 
         captured = {}
@@ -151,16 +154,18 @@ class CloudJobExecutorTests(unittest.TestCase):
             captured["reference_paths"] = list(reference_paths or [])
             output = Path(batch["artifact_dir"]) / "generated.jpg"
             output.write_bytes(b"new generated image")
+            second = Path(batch["artifact_dir"]) / "generated-2.jpg"
+            second.write_bytes(b"second generated image")
             return {
                 "id": "generated-local-id",
                 "kind": "ai",
                 "path": str(output),
                 "filename": "generated.jpg",
                 "prompt": prompt,
-                "generation_row": {"1XM任务ID": "1xm-new"},
+                "generation_row": {"1XM任务ID": "1xm-new", "本地生成图文件": f"{output}\n{second}"},
             }
 
-        client = FakeCloudClient()
+        client = FakeCloudClient(allowed_asset_uids={"cloud-result-1", "cloud-result-2"})
         executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=SimpleNamespace(
             generate_approval_asset_for_item=generate,
         ))
@@ -177,8 +182,14 @@ class CloudJobExecutorTests(unittest.TestCase):
                 "item_id": "1001",
                 "source_asset_uid": "source-1",
                 "reference_asset_uids": ["ref-1", "ref-2"],
+                "result_asset_uids": ["cloud-result-1", "cloud-result-2"],
                 "prompt_template_version_id": 31,
                 "prompt_text": "fresh prompt",
+                "model": "gemini-3-pro-image-preview",
+                "size": "2048x2048",
+                "quality": "high",
+                "output_format": "webp",
+                "count": 2,
             },
         }
 
@@ -191,14 +202,22 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(captured["prompt"], "fresh prompt")
         self.assertEqual(Path(captured["main_image_path"]).name, "source-1.jpg")
         self.assertEqual([Path(path).name for path in captured["reference_paths"]], ["ref-1.jpg", "ref-2.jpg"])
-        presign_call = next(call for call in client.calls if call["path"] == "/api/assets/presign")
-        self.assertTrue(str(presign_call["body"]["asset_uid"]).startswith("gen-"))
+        self.assertEqual(captured["batch"]["run_params"]["model"], "gemini-3-pro-image-preview")
+        self.assertEqual(captured["batch"]["run_params"]["image_size"], "2048x2048")
+        self.assertEqual(captured["batch"]["run_params"]["quality"], "high")
+        self.assertEqual(captured["batch"]["run_params"]["output_format"], "webp")
+        self.assertEqual(captured["batch"]["run_params"]["ai_image_count"], 2)
+        presign_calls = [call for call in client.calls if call["path"] == "/api/assets/presign"]
+        self.assertEqual([call["body"]["asset_uid"] for call in presign_calls], ["cloud-result-1", "cloud-result-2"])
+        presign_call = presign_calls[0]
         self.assertEqual(presign_call["body"]["batch_uid"], "batch-1")
         self.assertEqual(presign_call["body"]["style_id"], 101)
         self.assertEqual(presign_call["body"]["prompt_template_version_id"], 31)
         self.assertEqual(presign_call["body"]["prompt_text"], "fresh prompt")
         self.assertEqual(presign_call["body"]["parent_asset_uid"], "source-1")
+        self.assertEqual([asset["asset_uid"] for asset in result["result"]["assets"]], ["cloud-result-1", "cloud-result-2"])
         self.assertEqual(result["result"]["filename"], "generated.jpg")
+        self.assertNotIn(str(Path(self.tmp.name)), str(result["result"]))
 
     def test_submit_tmall_material_test_downloads_source_and_approved_images_and_completes_with_result_path(self):
         from core.cloud_job_executors import CloudJobExecutor
