@@ -3,6 +3,7 @@ import fs from 'node:fs'
 
 const schema = fs.readFileSync('migrations/0001_init.sql', 'utf8')
 const generationSchema = fs.readFileSync('migrations/0003_generation_jobs.sql', 'utf8')
+const imageResourceSchema = fs.readFileSync('migrations/0004_image_resources.sql', 'utf8')
 
 describe('initial D1 schema', () => {
   it('contains auth rbac machine job prompt batch and audit tables', () => {
@@ -40,5 +41,11 @@ describe('initial D1 schema', () => {
     expect(generationSchema).toContain('CREATE TABLE IF NOT EXISTS ai_generation_requests')
     expect(generationSchema).toContain('request_uid TEXT NOT NULL UNIQUE')
     expect(generationSchema).toContain('dispatch_job_uid TEXT NOT NULL DEFAULT')
+  })
+
+  it('adds image resource library tracking in the task 5 migration', () => {
+    expect(imageResourceSchema).toContain('CREATE TABLE IF NOT EXISTS image_resources')
+    expect(imageResourceSchema).toContain('resource_uid TEXT NOT NULL UNIQUE')
+    expect(imageResourceSchema).toContain('asset_uid TEXT NOT NULL')
   })
 })

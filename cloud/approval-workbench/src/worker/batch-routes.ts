@@ -77,6 +77,24 @@ interface DispatchJobRow {
   updated_at: string
 }
 
+interface ImageResourceRow {
+  id: number
+  resource_uid: string
+  batch_uid: string
+  style_code: string
+  item_id: string
+  kind: string
+  asset_uid: string
+  object_key: string
+  filename: string
+  content_hash: string
+  source_label: string
+  created_by_machine_id: string | null
+  created_by_user_id: number | null
+  created_at: string
+  updated_at: string
+}
+
 const ALLOWED_KINDS = new Set(['source', 'reference', 'ai', 'table', 'log', 'result'])
 const SUBMIT_MACHINE_MAX_AGE_MS = 2 * 60 * 1000
 
@@ -172,16 +190,19 @@ export async function getBatch(request: Request, env: Env): Promise<Response> {
   const { results: styles } = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<StyleRow>()
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const { results: jobs } = await env.DB.prepare('SELECT * FROM dispatch_jobs WHERE batch_uid = ? ORDER BY id DESC').bind(batchUid).all<DispatchJobRow>()
+  const { results: imageResources } = await env.DB.prepare('SELECT * FROM image_resources WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<ImageResourceRow>()
   return json({
     batch: {
       ...batch,
       prompt_version_set: parseArray(batch.prompt_version_set_json),
       jobs: jobs.map((job) => ({ ...job, payload: fromJsonObject(job.payload_json), result: fromJsonObject(job.result_json) })),
+      image_resources: imageResources,
       styles: styles.map((style) => ({
         ...style,
         source_summary: fromJsonObject(style.source_summary_json),
         review_summary: fromJsonObject(style.review_summary_json),
         submit_summary: fromJsonObject(style.submit_summary_json),
+        image_resources: imageResources.filter((resource) => resource.style_code === style.style_code && resource.item_id === style.item_id),
         assets: assets
           .filter((asset) => asset.style_id === style.id)
           .map((asset) => ({ ...asset, meta: fromJsonObject(asset.meta_json) })),
@@ -435,6 +456,21 @@ export async function exportReviewDetail(request: Request, env: Env): Promise<Re
   return json({ batch, styles, assets, approval_events: events })
 }
 
+export async function listImageResources(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'batches:read')
+  if (actor instanceof Response) return actor
+  const batchUid = batchUidFromImageResourcesPath(request)
+  if (!batchUid) return badRequest('batch_uid is required')
+  const batch = await loadBatch(env, batchUid)
+  if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const styleCode = stringValue(new URL(request.url).searchParams.get('style_code'))
+  const statement = styleCode
+    ? env.DB.prepare('SELECT * FROM image_resources WHERE batch_uid = ? AND style_code = ? ORDER BY id ASC').bind(batchUid, styleCode)
+    : env.DB.prepare('SELECT * FROM image_resources WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid)
+  const { results } = await statement.all<ImageResourceRow>()
+  return json({ image_resources: results })
+}
+
 export async function markBatchReady(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'batches:review')
   if (actor instanceof Response) return actor
@@ -629,6 +665,10 @@ function batchUidFromGeneratePath(request: Request): string {
 
 function batchUidFromReviewDetailPath(request: Request): string {
   return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/ai-image-batches\/([^/]+)\/review-detail$/)?.[1] || '')
+}
+
+function batchUidFromImageResourcesPath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/ai-image-batches\/([^/]+)\/image-resources$/)?.[1] || '')
 }
 
 function batchUidFromMarkReadyPath(request: Request): string {

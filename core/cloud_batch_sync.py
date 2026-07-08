@@ -179,6 +179,7 @@ def _asset_meta(item: Mapping[str, Any], asset: Mapping[str, Any], asset_index: 
     generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), Mapping) else {}
     return _sanitize_meta({
         "local_asset_id": str(asset.get("id") or ""),
+        "source_label": str(asset.get("source_label") or asset.get("label") or ""),
         "source_path_label": _source_path_label(asset.get("path")),
         "style_code": str(item.get("style_code") or ""),
         "item_id": str(item.get("item_id") or ""),

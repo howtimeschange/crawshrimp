@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from core.cloud_batch_sync import build_cloud_batch_payload, sync_local_approval_batch
+from core.cloud_batch_sync import build_cloud_batch_payload, iter_local_asset_files, sync_local_approval_batch
 
 
 class FakeClient:
@@ -48,9 +48,10 @@ class FakeClient:
 class CloudBatchSyncTests(unittest.TestCase):
     def _local_batch(self, temp_dir: Path) -> dict:
         origin = temp_dir / "origin.jpg"
+        detail = temp_dir / "detail-reference.webp"
         ai1 = temp_dir / "ai-1.jpg"
         ai2 = temp_dir / "ai-2.png"
-        for path in (origin, ai1, ai2):
+        for path in (origin, detail, ai1, ai2):
             path.write_bytes(b"image")
         return {
             "batch_id": "batch-20260707",
@@ -70,8 +71,10 @@ class CloudBatchSyncTests(unittest.TestCase):
                     "gender": "中性",
                     "skc_code": "208326100202-00482",
                     "origin_path": str(origin),
+                    "detail_reference_path": str(detail),
                     "assets": [
                         {"id": "origin-1", "kind": "origin", "path": str(origin), "label": "原图/主图"},
+                        {"id": "detail-1", "kind": "detail_reference", "path": str(detail), "label": "款色参考图"},
                         {
                             "id": "ai-1",
                             "kind": "ai",
@@ -94,6 +97,20 @@ class CloudBatchSyncTests(unittest.TestCase):
             ],
         }
 
+    def test_iter_local_asset_files_includes_source_reference_and_ai_assets(self):
+        with TemporaryDirectory() as temp:
+            batch = self._local_batch(Path(temp))
+
+            files = iter_local_asset_files(batch)
+
+        self.assertEqual([item["asset_uid"] for item in files], ["origin-1", "detail-1", "ai-1"])
+        self.assertEqual([item["kind"] for item in files], ["source", "reference", "ai"])
+        self.assertEqual([item["style_code"] for item in files], ["208326100202"] * 3)
+        self.assertEqual([item["item_id"] for item in files], ["1002178235142"] * 3)
+        self.assertTrue(all(item["content_hash"] for item in files))
+        self.assertEqual(files[0]["meta"]["source_label"], "原图/主图")
+        self.assertEqual(files[1]["meta"]["source_label"], "款色参考图")
+
     def test_build_cloud_batch_payload_includes_styles_assets_and_prompt_versions(self):
         with TemporaryDirectory() as temp:
             batch = self._local_batch(Path(temp))
@@ -107,13 +124,14 @@ class CloudBatchSyncTests(unittest.TestCase):
         self.assertEqual(payload["styles"][0]["style_code"], "208326100202")
         self.assertIsNone(payload["styles"][0]["style_id"])
         self.assertNotIn("assets", {key for key in payload.keys()})
-        self.assertEqual(len(payload["styles"][0]["assets"]), 3)
+        self.assertEqual(len(payload["styles"][0]["assets"]), 4)
         prompts = {asset["asset_uid"]: asset for asset in payload["styles"][0]["assets"]}
         self.assertEqual(prompts["ai-1"]["prompt"], "保留主商品")
         self.assertEqual(prompts["ai-1"]["prompt_text"], "保留主商品")
         self.assertEqual(prompts["ai-1"]["prompt_version"], "2026-07")
         self.assertEqual(prompts["ai-1"]["prompt_version_label"], "v3")
         self.assertEqual(prompts["origin-1"]["kind"], "source")
+        self.assertEqual(prompts["detail-1"]["kind"], "reference")
         self.assertEqual(prompts["ai-1"]["kind"], "ai")
         self.assertTrue(prompts["origin-1"]["content_hash"])
         self.assertEqual(payload["prompt_version_set"], [{"prompt_version": "2026-07", "label": "v3"}])
@@ -141,21 +159,23 @@ class CloudBatchSyncTests(unittest.TestCase):
 
         self.assertEqual(result["ok"], True)
         self.assertEqual(result["status"], "pending_review")
-        self.assertEqual(len(result["assets"]), 2)
+        self.assertEqual(len(result["assets"]), 3)
         self.assertEqual(
             [(method, path) for method, path, _body, _token in client.calls],
             [
                 ("POST", "/api/ai-image-batches/sync"),
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
+                ("POST", "/api/assets/presign"),
                 ("POST", "/api/ai-image-batches/batch-20260707/sync-complete"),
             ],
         )
-        self.assertEqual(len(client.uploads), 2)
+        self.assertEqual(len(client.uploads), 3)
         self.assertEqual(
             [upload[0] for upload in client.uploads],
             [
                 "/api/assets/upload/origin-1",
+                "/api/assets/upload/detail-1",
                 "/api/assets/upload/ai-1",
             ],
         )
@@ -166,7 +186,7 @@ class CloudBatchSyncTests(unittest.TestCase):
         self.assertNotIn("assets", presign_body)
         complete_body = client.calls[-1][2]
         self.assertEqual(complete_body["batch_uid"], "batch-20260707")
-        self.assertEqual(len(complete_body["assets"]), 2)
+        self.assertEqual(len(complete_body["assets"]), 3)
 
     def test_sync_local_approval_batch_uses_worker_style_id_without_local_style_id(self):
         with TemporaryDirectory() as temp:
@@ -176,11 +196,12 @@ class CloudBatchSyncTests(unittest.TestCase):
             result = sync_local_approval_batch(batch, client)
 
         self.assertEqual(result["ok"], True)
-        self.assertEqual(len(client.uploads), 2)
+        self.assertEqual(len(client.uploads), 3)
         self.assertEqual(
             [(method, path) for method, path, _body, _token in client.calls],
             [
                 ("POST", "/api/ai-image-batches/sync"),
+                ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/ai-image-batches/batch-20260707/sync-complete"),

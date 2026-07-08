@@ -51,6 +51,7 @@ import {
   createSubmitJob,
   exportReviewDetail,
   getBatch,
+  listImageResources,
   getSubmitPlan,
   getSubmitResult,
   listBatches,
@@ -124,6 +125,7 @@ export default {
     if (/^\/api\/ai-image-batches\/[^/]+\/regenerate$/.test(url.pathname) && request.method === 'POST') return createRegenerationJobs(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/regenerate-rejected$/.test(url.pathname) && request.method === 'POST') return createRejectedRegenerationJobs(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/review-detail$/.test(url.pathname) && request.method === 'GET') return exportReviewDetail(request, env)
+    if (/^\/api\/ai-image-batches\/[^/]+\/image-resources$/.test(url.pathname) && request.method === 'GET') return listImageResources(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/mark-ready$/.test(url.pathname) && request.method === 'POST') return markBatchReady(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/submit-plan$/.test(url.pathname) && request.method === 'GET') return getSubmitPlan(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/submit$/.test(url.pathname) && request.method === 'POST') return createSubmitJob(request, env)

@@ -100,6 +100,24 @@ interface DispatchJobRow {
   payload_json: string
 }
 
+interface ImageResourceRow {
+  id: number
+  resource_uid: string
+  batch_uid: string
+  style_code: string
+  item_id: string
+  kind: string
+  asset_uid: string
+  object_key: string
+  filename: string
+  content_hash: string
+  source_label: string
+  created_by_machine_id: string | null
+  created_by_user_id: number | null
+  created_at: string
+  updated_at: string
+}
+
 interface FakeState {
   users: UserRow[]
   roles: RoleRow[]
@@ -110,6 +128,7 @@ interface FakeState {
   batches: BatchRow[]
   dispatchJobs: DispatchJobRow[]
   assets: AssetRow[]
+  imageResources: ImageResourceRow[]
   r2Gets: string[]
   r2Puts: Array<{ key: string; body: string; contentType: string }>
 }
@@ -156,6 +175,9 @@ class FakeD1Statement {
     if (normalized.includes('from dispatch_jobs') && normalized.includes('where job_uid = ?')) {
       return (this.state.dispatchJobs.find((row) => row.job_uid === String(this.params[0])) ?? null) as T | null
     }
+    if (normalized.includes('from ai_image_styles') && normalized.includes('where id = ?')) {
+      return (styleRow(Number(this.params[0]), String(this.params[1])) ?? null) as T | null
+    }
     return null
   }
 
@@ -168,6 +190,24 @@ class FakeD1Statement {
           .filter((userRole) => userRole.user_id === userId)
           .map((userRole) => this.state.roles.find((role) => role.id === userRole.role_id))
           .filter((role): role is RoleRow => Boolean(role)) as T[],
+      }
+    }
+    if (normalized.includes('from ai_image_styles') && normalized.includes('where batch_uid = ?')) {
+      return { results: [styleRow(7, String(this.params[0]))] as T[] }
+    }
+    if (normalized.includes('from ai_image_assets') && normalized.includes('where batch_uid = ?')) {
+      return { results: this.state.assets.filter((row) => row.batch_uid === String(this.params[0])) as T[] }
+    }
+    if (normalized.includes('from dispatch_jobs') && normalized.includes('where batch_uid = ?')) {
+      return { results: this.state.dispatchJobs.filter((row) => row.batch_uid === String(this.params[0])) as T[] }
+    }
+    if (normalized.includes('from image_resources')) {
+      const batchUid = String(this.params[0])
+      const styleCode = this.params.length > 1 ? String(this.params[1]) : ''
+      return {
+        results: this.state.imageResources
+          .filter((row) => row.batch_uid === batchUid && (!styleCode || row.style_code === styleCode))
+          .sort((left, right) => left.id - right.id) as T[],
       }
     }
     return { results: [] }
@@ -210,6 +250,43 @@ class FakeD1Statement {
       asset.status = String(this.params[0])
       asset.updated_at = String(this.params[1])
       return result(1)
+    }
+    if (normalized.startsWith('insert into image_resources')) {
+      const existing = this.state.imageResources.find((row) => row.resource_uid === String(this.params[0]))
+      if (existing) {
+        existing.batch_uid = String(this.params[1])
+        existing.style_code = String(this.params[2])
+        existing.item_id = String(this.params[3])
+        existing.kind = String(this.params[4])
+        existing.asset_uid = String(this.params[5])
+        existing.object_key = String(this.params[6])
+        existing.filename = String(this.params[7])
+        existing.content_hash = String(this.params[8])
+        existing.source_label = String(this.params[9])
+        existing.created_by_machine_id = stringOrNull(this.params[10])
+        existing.created_by_user_id = numberOrNull(this.params[11])
+        existing.updated_at = String(this.params[13])
+        return result(1, existing.id)
+      }
+      const id = this.state.imageResources.length + 1
+      this.state.imageResources.push({
+        id,
+        resource_uid: String(this.params[0]),
+        batch_uid: String(this.params[1]),
+        style_code: String(this.params[2]),
+        item_id: String(this.params[3]),
+        kind: String(this.params[4]),
+        asset_uid: String(this.params[5]),
+        object_key: String(this.params[6]),
+        filename: String(this.params[7]),
+        content_hash: String(this.params[8]),
+        source_label: String(this.params[9]),
+        created_by_machine_id: stringOrNull(this.params[10]),
+        created_by_user_id: numberOrNull(this.params[11]),
+        created_at: String(this.params[12]),
+        updated_at: String(this.params[13]),
+      })
+      return result(1, id)
     }
     return result(1)
   }
@@ -319,6 +396,87 @@ describe('asset upload planning routes', () => {
     expect(body).toEqual({ ok: true, object_key: presign.object_key })
     expect(state.r2Puts).toEqual([{ key: presign.object_key, body: 'image-bytes', contentType: 'image/jpeg' }])
     expect(state.assets[0].status).toBe('uploaded')
+  })
+
+  it('upserts an image resource when an uploaded image asset completes', async () => {
+    const { state, machineToken } = await baseState()
+    const objectKey = 'batches/batch-20260707/source/source-1-source.jpg'
+    state.assets.push(assetRow({
+      asset_uid: 'source-1',
+      kind: 'source',
+      status: 'planned',
+      object_key: objectKey,
+      filename: 'source.jpg',
+      content_hash: 'hash-source',
+      meta_json: JSON.stringify({ source_label: '原图/主图', source_path_label: 'source.jpg' }),
+    }))
+
+    const response = await fetchWorker(new Request(`https://example.test/api/assets/upload/${encodeURIComponent(objectKey)}`, {
+      method: 'PUT',
+      headers: {
+        authorization: `Bearer ${machineToken}`,
+        'content-type': 'image/jpeg',
+      },
+      body: 'source-bytes',
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(state.imageResources).toHaveLength(1)
+    expect(state.imageResources[0]).toMatchObject({
+      resource_uid: 'source-1',
+      batch_uid: 'batch-20260707',
+      style_code: '208326100202',
+      item_id: '1002178235142',
+      kind: 'source',
+      asset_uid: 'source-1',
+      object_key: objectKey,
+      filename: 'source.jpg',
+      content_hash: 'hash-source',
+      source_label: '原图/主图',
+      created_by_machine_id: 'machine-1',
+      created_by_user_id: null,
+    })
+  })
+
+  it('lists uploaded image resources scoped to a batch detail response', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.push(assetRow({ asset_uid: 'source-1', kind: 'source', status: 'uploaded' }))
+    state.imageResources.push(imageResourceRow({
+      resource_uid: 'source-1',
+      kind: 'source',
+      source_label: '原图/主图',
+    }))
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707', {
+      headers: { cookie: reviewerCookie },
+    }), fakeEnv(state))
+    const body = await response.json() as { batch: { image_resources: ImageResourceRow[]; styles: Array<{ image_resources: ImageResourceRow[] }> } }
+
+    expect(response.status).toBe(200)
+    expect(body.batch.image_resources).toHaveLength(1)
+    expect(body.batch.image_resources[0]).toMatchObject({
+      resource_uid: 'source-1',
+      kind: 'source',
+      style_code: '208326100202',
+      item_id: '1002178235142',
+    })
+    expect(body.batch.styles[0].image_resources).toHaveLength(1)
+  })
+
+  it('lists image resources for the current batch and optional style', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.imageResources.push(
+      imageResourceRow({ resource_uid: 'source-1', kind: 'source', style_code: '208326100202' }),
+      imageResourceRow({ id: 2, resource_uid: 'source-2', kind: 'source', style_code: '208326100203' }),
+    )
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/image-resources?style_code=208326100202', {
+      headers: { cookie: reviewerCookie },
+    }), fakeEnv(state))
+    const body = await response.json() as { image_resources: ImageResourceRow[] }
+
+    expect(response.status).toBe(200)
+    expect(body.image_resources.map((resource) => resource.resource_uid)).toEqual(['source-1'])
   })
 
   it('allows source machines to upload planned assets for their syncing batch without a job lease', async () => {
@@ -758,6 +916,7 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
       },
     ],
     assets: [],
+    imageResources: [],
     r2Gets: [],
     r2Puts: [],
   }
@@ -766,6 +925,44 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
     machineToken,
     reviewerCookie: `cs_session=${reviewerSession}`,
     adminCookie: `cs_session=${adminSession}`,
+  }
+}
+
+function styleRow(id = 7, batchUid = 'batch-20260707') {
+  return {
+    id,
+    batch_uid: batchUid,
+    style_code: '208326100202',
+    item_id: '1002178235142',
+    skc_code: '208326100202-00482',
+    category: '长袖T恤',
+    gender: '中性',
+    status: 'pending_review',
+    missing_prompt_reason: '',
+    source_summary_json: '{}',
+    review_summary_json: '{}',
+    submit_summary_json: '{}',
+  }
+}
+
+function imageResourceRow(overrides: Partial<ImageResourceRow> = {}): ImageResourceRow {
+  return {
+    id: 1,
+    resource_uid: 'asset-ai-1',
+    batch_uid: 'batch-20260707',
+    style_code: '208326100202',
+    item_id: '1002178235142',
+    kind: 'ai',
+    asset_uid: 'asset-ai-1',
+    object_key: 'batches/batch-20260707/ai/asset-ai-1-ai.jpg',
+    filename: 'ai.jpg',
+    content_hash: 'hash-1',
+    source_label: '',
+    created_by_machine_id: null,
+    created_by_user_id: null,
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
   }
 }
 

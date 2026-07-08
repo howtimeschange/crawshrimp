@@ -36,7 +36,15 @@ interface AssetRow {
   status: string
   object_key: string
   filename: string
+  content_hash: string
   meta_json: string
+}
+
+interface StyleRow {
+  id: number
+  batch_uid: string
+  style_code: string
+  item_id: string
 }
 
 interface BatchRow {
@@ -125,7 +133,7 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
   if (actor instanceof Response) return actor
   const objectKey = objectKeyFromUploadPath(request)
   if (!isValidUploadObjectKey(objectKey)) return badRequest('invalid object key')
-  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
+  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash, meta_json FROM ai_image_assets WHERE object_key = ? LIMIT 1')
     .bind(objectKey)
     .first<AssetRow>()
   if (!asset) return json({ error: 'Asset upload plan not found' }, { status: 404 })
@@ -147,9 +155,11 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
       contentType: request.headers.get('content-type') || 'application/octet-stream',
     },
   })
+  const now = nowIso()
   await env.DB.prepare("UPDATE ai_image_assets SET status = ?, updated_at = ? WHERE object_key = ?")
-    .bind('uploaded', nowIso(), objectKey)
+    .bind('uploaded', now, objectKey)
     .run()
+  await upsertImageResourceForUploadedAsset(env, asset, actor, now)
   return json({ ok: true, object_key: objectKey })
 }
 
@@ -158,7 +168,7 @@ export async function getAssetDownload(request: Request, env: Env): Promise<Resp
   if (actor instanceof Response) return actor
   const assetUid = new URL(request.url).pathname.match(/^\/api\/assets\/([^/]+)\/download$/)?.[1] || ''
   if (!assetUid) return badRequest('asset_uid is required')
-  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, object_key, filename, meta_json FROM ai_image_assets WHERE asset_uid = ? LIMIT 1')
+  const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, object_key, filename, content_hash, meta_json FROM ai_image_assets WHERE asset_uid = ? LIMIT 1')
     .bind(decodeURIComponent(assetUid))
     .first<AssetRow>()
   if (!asset) return json({ error: 'Not found' }, { status: 404 })
@@ -212,7 +222,7 @@ async function requireMachineSyncUploadPlan(
   asset: { assetUid: string; batchUid: string; styleId: number; kind: string; filename: string },
 ): Promise<true | Response> {
   const existing = await env.DB.prepare(
-    `SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, meta_json
+    `SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash, meta_json
      FROM ai_image_assets
      WHERE asset_uid = ?
      LIMIT 1`,
@@ -236,6 +246,51 @@ async function requireMachineSyncUploadObject(env: Env, machineId: string, asset
   return true
 }
 
+async function upsertImageResourceForUploadedAsset(env: Env, asset: AssetRow, actor: unknown, now: string): Promise<void> {
+  if (!['source', 'reference', 'ai', 'result'].includes(asset.kind)) return
+  const style = await env.DB.prepare('SELECT id, batch_uid, style_code, item_id FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1')
+    .bind(asset.style_id, asset.batch_uid)
+    .first<StyleRow>()
+  const meta = fromJsonObject(asset.meta_json)
+  const sourceLabel = stringValue(meta.source_label) || stringValue(meta.label) || stringValue(meta.source_path_label)
+  await env.DB.prepare(
+    `INSERT INTO image_resources
+       (resource_uid, batch_uid, style_code, item_id, kind, asset_uid, object_key, filename, content_hash,
+        source_label, created_by_machine_id, created_by_user_id, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(resource_uid) DO UPDATE SET
+       batch_uid = excluded.batch_uid,
+       style_code = excluded.style_code,
+       item_id = excluded.item_id,
+       kind = excluded.kind,
+       asset_uid = excluded.asset_uid,
+       object_key = excluded.object_key,
+       filename = excluded.filename,
+       content_hash = excluded.content_hash,
+       source_label = excluded.source_label,
+       created_by_machine_id = excluded.created_by_machine_id,
+       created_by_user_id = excluded.created_by_user_id,
+       updated_at = excluded.updated_at`,
+  )
+    .bind(
+      asset.asset_uid,
+      asset.batch_uid,
+      style?.style_code || '',
+      style?.item_id || '',
+      asset.kind,
+      asset.asset_uid,
+      asset.object_key,
+      asset.filename,
+      asset.content_hash,
+      sourceLabel,
+      isMachineActor(actor) ? actor.machine_id : null,
+      userIdForActor(actor),
+      now,
+      now,
+    )
+    .run()
+}
+
 function leaseFields(request: Request, body?: { job_uid?: unknown; jobUid?: unknown; lease_id?: unknown; leaseId?: unknown } | null): { jobUid: string; leaseId: string } {
   const url = new URL(request.url)
   return {
@@ -246,6 +301,12 @@ function leaseFields(request: Request, body?: { job_uid?: unknown; jobUid?: unkn
 
 function isMachineActor(actor: unknown): actor is { machine_id: string } {
   return Boolean(actor && typeof actor === 'object' && typeof (actor as { machine_id?: unknown }).machine_id === 'string')
+}
+
+function userIdForActor(actor: unknown): number | null {
+  if (!actor || typeof actor !== 'object') return null
+  const user = (actor as { user?: { id?: unknown } }).user
+  return typeof user?.id === 'number' ? user.id : null
 }
 
 function isAssetAllowedForMachineJob(job: DispatchJobRow, asset: { assetUid: string; batchUid: string; styleId: number; kind: string; access: 'download' | 'upload' }): boolean {

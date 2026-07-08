@@ -256,6 +256,7 @@ def build_approval_item(
             label="原图/主图",
             index=1,
             status="reference",
+            extra={"source_label": "原图/主图"},
         ))
     if compact(detail_reference_path):
         assets.append(_image_asset(
@@ -265,6 +266,7 @@ def build_approval_item(
             label="款色参考图",
             index=1,
             status="reference",
+            extra={"source_label": "款色参考图"},
         ))
 
     selected_paths = [compact(path) for path in (generated_paths or []) if compact(path)]
@@ -296,6 +298,7 @@ def build_approval_item(
                     "prompt": compact(generation_row.get("完整Prompt") or generation_row.get("最终提示词")),
                     "generation_row": json_safe(generation_row),
                     "reference_paths": parse_list(generation_row.get("参考图文件")),
+                    "reference_labels": [Path(path).name for path in parse_list(generation_row.get("参考图文件"))],
                     "task_run_uid": compact(generation_row.get("__task_run_uid")),
                     "custom_prompt": "",
                     "review_note": "",
