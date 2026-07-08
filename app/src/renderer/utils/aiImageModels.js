@@ -48,6 +48,25 @@ export function getAiImageModel(modelId) {
   return AI_IMAGE_MODELS.find((model) => model.id === modelId) || AI_IMAGE_MODELS[0]
 }
 
+export function modelIdForJob(job = {}) {
+  const directId = job.model_id || job.modelId
+  if (AI_IMAGE_MODELS.some((model) => model.id === directId)) return directId
+
+  const modelKey = job.model_key || job.modelKey || ''
+  const directModel = AI_IMAGE_MODELS.find((model) => model.key === modelKey && model.key !== 'gpt-image-2')
+  if (directModel) return directModel.id
+
+  if (modelKey === 'gpt-image-2') {
+    const tier = String(job.model_key_tier || job.params?.model_key_tier || '').toLowerCase()
+    if (tier === '4k') return 'gpt-image-4k'
+    if (tier === '2k') return 'gpt-image-2k'
+    if (job.params?.size === '4096x4096' || job.size === '4096x4096') return 'gpt-image-4k'
+    return 'gpt-image-2k'
+  }
+
+  return AI_IMAGE_MODELS[0].id
+}
+
 export function defaultAiImageForm(overrides = {}) {
   const model = getAiImageModel(overrides.modelId)
   return {

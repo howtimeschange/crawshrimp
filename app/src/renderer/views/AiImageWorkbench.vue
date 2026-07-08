@@ -195,6 +195,7 @@ import {
   defaultAiImageForm,
   getAiImageModel,
   missingKeyForModel,
+  modelIdForJob,
   outputDirHint,
 } from '../utils/aiImageModels.js'
 import { createCanvasDocument, insertImageNode } from '../utils/aiImageCanvas.js'
@@ -436,19 +437,28 @@ function removeReferencePath(index) {
   form.referenceImagePaths.splice(index, 1)
 }
 
-function restoreJob(job) {
-  currentJob.value = job
-  form.title = job.title || form.title
-  form.prompt = job.prompt || ''
-  form.modelId = AI_IMAGE_MODELS.find((model) => model.key === job.model_key)?.id || form.modelId
-  form.model_key = job.model_key || activeModel.value.key
-  form.output_dir = job.output_dir || form.output_dir
-  if (job.params && typeof job.params === 'object') {
-    form.size = job.params.size || form.size
-    form.ratio = job.params.ratio || form.ratio
-    form.quality = job.params.quality || form.quality
-    form.format = job.params.response_format || form.format
-    form.count = job.params.n || form.count
+async function restoreJob(job) {
+  let detail = job
+  if (job?.job_uid && typeof window.cs.getAiImageJob === 'function') {
+    try {
+      detail = await window.cs.getAiImageJob(job.job_uid) || job
+    } catch (error) {
+      logs.value.push(`读取任务详情失败：${error.message || error}`)
+    }
+  }
+  currentJob.value = detail
+  form.title = detail.title || form.title
+  form.prompt = detail.prompt || ''
+  form.modelId = modelIdForJob(detail)
+  form.model_key = activeModel.value.key
+  form.model_key_tier = activeModel.value.keyTier
+  form.output_dir = detail.output_dir || form.output_dir
+  if (detail.params && typeof detail.params === 'object') {
+    form.size = detail.params.size || form.size
+    form.ratio = detail.params.ratio || form.ratio
+    form.quality = detail.params.quality || form.quality
+    form.format = detail.params.response_format || form.format
+    form.count = detail.params.n || form.count
   }
   selectedResults.clear()
 }

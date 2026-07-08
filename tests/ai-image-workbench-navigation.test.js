@@ -58,3 +58,17 @@ test('AI image workbench renders option 3 shell regions and settings action', ()
   assert.match(workbench, /去设置 1XM Key/)
   assert.match(workbench, /defineEmits\(\['open-settings'\]\)/)
 })
+
+test('AI image workbench restores history from detail payload before setting current job', () => {
+  const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+  const restoreStart = workbench.indexOf('async function restoreJob(job)')
+  const restoreEnd = workbench.indexOf('function openOutputFolder', restoreStart)
+  const restoreBody = workbench.slice(restoreStart, restoreEnd)
+
+  assert.notEqual(restoreStart, -1, 'restoreJob should be async')
+  assert.match(restoreBody, /window\.cs\.getAiImageJob\(job\.job_uid\)/)
+  assert.ok(
+    restoreBody.indexOf('window.cs.getAiImageJob(job.job_uid)') < restoreBody.indexOf('currentJob.value ='),
+    'restoreJob should fetch detail before assigning currentJob',
+  )
+})

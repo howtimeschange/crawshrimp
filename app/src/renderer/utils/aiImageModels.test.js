@@ -5,6 +5,7 @@ import {
   AI_IMAGE_MODELS,
   defaultAiImageForm,
   missingKeyForModel,
+  modelIdForJob,
   outputDirHint,
 } from './aiImageModels.js'
 
@@ -59,6 +60,38 @@ test('missing key detection returns the active model config id', () => {
       'ai.1xm.gemini_3_pro_image_preview_key': 'gemini-key',
     }),
     '',
+  )
+})
+
+test('model id resolves from persisted job payload model tier and size', () => {
+  assert.equal(
+    modelIdForJob({
+      model_key: 'gpt-image-2',
+      model_key_tier: '4k',
+      params: { size: '1024x1024' },
+    }),
+    'gpt-image-4k',
+  )
+  assert.equal(
+    modelIdForJob({
+      model_key: 'gpt-image-2',
+      params: { size: '4096x4096' },
+    }),
+    'gpt-image-4k',
+  )
+  assert.equal(
+    modelIdForJob({
+      model_key: 'gpt-image-2',
+      model_key_tier: '2k',
+      params: { size: '4096x4096' },
+    }),
+    'gpt-image-2k',
+  )
+  assert.equal(
+    modelIdForJob({
+      model_key: 'gemini-3-pro-image-preview',
+    }),
+    'gemini-3-pro-image-preview',
   )
 })
 
