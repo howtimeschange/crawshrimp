@@ -517,6 +517,7 @@ def _material_workbook_path(result: Any, export_dir: Path, task_dir: Path) -> Pa
             if isinstance(value, list):
                 candidates.extend(Path(str(item)) for item in value if str(item or ""))
     candidates.extend(sorted(export_dir.glob("*.xlsx"), key=lambda path: path.stat().st_mtime, reverse=True))
+    candidates.extend(sorted(export_dir.rglob("*.xlsx"), key=lambda path: path.stat().st_mtime, reverse=True))
     for candidate in candidates:
         path = candidate.expanduser().resolve()
         if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and path.is_file() and (

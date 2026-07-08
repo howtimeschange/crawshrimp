@@ -450,6 +450,39 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual({call["body"]["source"]["source_uid"] for call in import_calls}, {"gen-material-test-job-crawl"})
         self.assertNotIn("workbook_path", result["result"])
 
+    def test_crawl_tmall_material_test_data_finds_nested_export_workbook(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        def runner(run_params, _task_dir, _job):
+            table_dir = Path(run_params["output_dir"]) / "数据表格"
+            table_dir.mkdir(parents=True, exist_ok=True)
+            path = table_dir / "巴拉-AI测图数据抓取导出.xlsx"
+            workbook = openpyxl.Workbook()
+            overview = workbook.active
+            overview.title = "概览"
+            overview.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "最优素材", "执行结果", "备注"])
+            overview.append(["概览", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "M1", "成功", ""])
+            detail = workbook.create_sheet("明细")
+            detail.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "统计口径", "统计日期", "图片类型", "素材ID", "素材比例", "素材占比", "素材URL", "搜索曝光", "搜索点击", "搜索点击率", "详情曝光", "详情点击", "详情点击率", "详情加购", "详情支付转化", "详情支付转化率", "数据下载链接", "执行结果", "备注"])
+            detail.append(["明细", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "2026-07-01", "主图", "M1", "1:1", "7.79%", "https://img.test/1.jpg", 1000, 77, "7.79%", 500, 40, "8%", 12, 3, "2.50%", "", "成功", ""])
+            workbook.save(path)
+            return {"status": "ok"}
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", material_test_runner=runner)
+        result = executor.execute({
+            "job_uid": "job-crawl-nested",
+            "batch_uid": "material-test",
+            "job_type": "crawl_tmall_material_test_data",
+            "lease_id": "lease-crawl",
+            "payload": {"run_params": {}},
+        })
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["result"]["overview_rows"], 1)
+        self.assertEqual(result["result"]["detail_rows"], 1)
+        self.assertEqual(client.uploads[0]["path"].parent.name, "数据表格")
+
     def test_stale_lease_completion_is_not_retried_as_success(self):
         data_sink.save_cloud_machine_credentials("machine-1", "machine-secret", "任务机", ["regenerate_ai_image"])
         client = FakeCloudClient([
