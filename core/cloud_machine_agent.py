@@ -8,7 +8,7 @@ from typing import Any, Callable, Mapping
 
 from core import data_sink
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
-from core.cloud_job_executors import CloudJobBlocked, CloudJobExecutor, CloudJobTerminalFailure
+from core.cloud_job_executors import CloudJobBlocked, CloudJobCancelled, CloudJobExecutor, CloudJobTerminalFailure
 
 
 DEFAULT_IDLE_SECONDS = 45.0
@@ -128,6 +128,10 @@ class CloudMachineAgent:
         executor = self.job_executor_factory(self.client)
         try:
             result = executor.execute(job)
+        except CloudJobCancelled as exc:
+            payload = {"status": "cancelled", "message": str(exc) or "cloud job cancellation requested"}
+            self._fail_job(job, payload, terminal=True)
+            return payload
         except CloudJobBlocked as exc:
             payload = {"status": f"blocked_{exc.status}", "message": exc.message}
             if exc.status == "needs_login" and self.heartbeat_callback is not None:

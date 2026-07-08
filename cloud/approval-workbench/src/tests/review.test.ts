@@ -421,14 +421,17 @@ describe('review routes', () => {
       idempotency_key: `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('Prompt 2')}`,
     })
     expect(JSON.parse(state.dispatchJobs[0].required_capabilities_json)).toEqual(['regenerate_ai_image'])
-    expect(JSON.parse(state.dispatchJobs[0].payload_json)).toMatchObject({
+    const payload = JSON.parse(state.dispatchJobs[0].payload_json)
+    expect(payload).toMatchObject({
       batch_uid: 'batch-1',
       style_id: 1,
-      asset_uid: 'asset-ai-2',
+      rejected_asset_uid: 'asset-ai-2',
       prompt_text: 'Prompt 2',
       reference_asset_uids: ['asset-source-1'],
-      parent_asset_uid: 'asset-source-1',
+      parent_asset_uid: 'asset-ai-2',
     })
+    expect(payload.asset_uid).toMatch(/^regen-/)
+    expect(payload.asset_uid).not.toBe('asset-ai-2')
     expect(firstBody.jobs[0].job_uid).toBe(state.dispatchJobs[0].job_uid)
   })
 
@@ -493,11 +496,15 @@ describe('review routes', () => {
       'regenerate_ai_image:batch-1:asset-ai-2:cb79718d18e173d5c2ea554c080c41c94a6bd5394e5b6d7348355056231304c0',
       'regenerate_ai_image:batch-1:asset-ai-3:9b1adf0c46edaef90badf75c98cab9558bbf1085684b1b36d4c852d01e8c2251',
     ])
-    expect(JSON.parse(state.dispatchJobs[0].payload_json)).toMatchObject({
-      asset_uid: 'asset-ai-2',
+    const payload = JSON.parse(state.dispatchJobs[0].payload_json)
+    expect(payload).toMatchObject({
+      rejected_asset_uid: 'asset-ai-2',
       prompt_text: 'override prompt',
       original_prompt_text: 'Prompt 2',
+      parent_asset_uid: 'asset-ai-2',
     })
+    expect(payload.asset_uid).toMatch(/^regen-/)
+    expect(payload.asset_uid).not.toBe('asset-ai-2')
   })
 
   it('online generation from a style creates a generate_ai_image job and request row', async () => {

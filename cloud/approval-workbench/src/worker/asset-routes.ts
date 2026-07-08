@@ -166,6 +166,9 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
 export async function getAssetDownload(request: Request, env: Env): Promise<Response> {
   const actor = await requireMachineOrUserPermission(request, env, 'batches:read')
   if (actor instanceof Response) return actor
+  if (!isMachineActor(actor) && isRejectedCrossSiteCookieDownload(request)) {
+    return forbidden('Cross-site cookie asset downloads are not allowed')
+  }
   const assetUid = new URL(request.url).pathname.match(/^\/api\/assets\/([^/]+)\/download$/)?.[1] || ''
   if (!assetUid) return badRequest('asset_uid is required')
   const asset = await env.DB.prepare('SELECT asset_uid, batch_uid, style_id, kind, object_key, filename, content_hash, meta_json FROM ai_image_assets WHERE asset_uid = ? LIMIT 1')
@@ -185,6 +188,10 @@ export async function getAssetDownload(request: Request, env: Env): Promise<Resp
     headers: {
       'content-type': object.httpMetadata?.contentType || 'application/octet-stream',
       'content-disposition': `attachment; filename="${asset.filename.replace(/"/g, '')}"`,
+      'cross-origin-resource-policy': 'same-origin',
+      'content-security-policy': "default-src 'none'; frame-ancestors 'none'; sandbox",
+      'cache-control': 'private, no-store',
+      'x-content-type-options': 'nosniff',
     },
   })
 }
@@ -196,6 +203,11 @@ async function requireMachineOrUserPermission(request: Request, env: Env, permis
 
 function hasBearerToken(request: Request): boolean {
   return /^Bearer\s+\S+/i.test(request.headers.get('authorization') || '')
+}
+
+function isRejectedCrossSiteCookieDownload(request: Request): boolean {
+  if (!request.headers.get('cookie')) return false
+  return (request.headers.get('sec-fetch-site') || '').toLowerCase() === 'cross-site'
 }
 
 async function requireMachineLeaseForBatch(request: Request, env: Env, machineId: string, batchUid: string, body?: { job_uid?: unknown; jobUid?: unknown; lease_id?: unknown; leaseId?: unknown }): Promise<DispatchJobRow | Response> {

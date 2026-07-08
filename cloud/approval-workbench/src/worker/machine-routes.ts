@@ -54,6 +54,7 @@ interface DispatchJobRow {
   idempotency_key: string
   lease_id: string | null
   lease_expires_at: string | null
+  cancel_requested: number
   payload_json: string
   result_json: string
   created_at: string
@@ -339,7 +340,7 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
   await recoverClaimableJobs(env)
   const { results } = await env.DB.prepare(
     `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id, required_capabilities_json,
-            priority, attempt_count, max_attempts, idempotency_key, lease_id, lease_expires_at, payload_json,
+            priority, attempt_count, max_attempts, idempotency_key, lease_id, lease_expires_at, cancel_requested, payload_json,
             result_json, created_at, updated_at
      FROM dispatch_jobs
      WHERE status = 'queued'
@@ -424,7 +425,7 @@ async function recoverClaimableJobs(env: Env): Promise<void> {
          lease_id = NULL,
          lease_expires_at = NULL,
          updated_at = ?
-     WHERE status IN ('leased', 'running', 'uploading_results')
+     WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
        AND lease_expires_at IS NOT NULL
        AND lease_expires_at < ?
        AND attempt_count < max_attempts`,
@@ -459,13 +460,14 @@ export async function renewJob(request: Request, env: Env): Promise<Response> {
      WHERE job_uid = ?
        AND lease_id = ?
        AND assigned_machine_id = ?
-       AND status IN ('leased', 'running', 'uploading_results')`,
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')`,
   )
     .bind(leaseExpiresAt, nowIso(), jobUid, leaseId, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
+  const job = await jobForLease(env, jobUid, leaseId, machine.machine_id)
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, 'lease_renewed', '', { lease_expires_at: leaseExpiresAt })
-  return json({ ok: true, lease_expires_at: leaseExpiresAt })
+  return json({ ok: true, lease_expires_at: leaseExpiresAt, cancel_requested: Boolean(job?.cancel_requested) })
 }
 
 export async function progressJob(request: Request, env: Env): Promise<Response> {
@@ -479,7 +481,47 @@ export async function completeJob(request: Request, env: Env): Promise<Response>
 export async function failJob(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
   const terminal = body.terminal === true
-  return updateJobWithLease(request, env, terminal ? 'terminal_failed' : failStatusFromBody(body), 'failed', body)
+  const explicitStatus = explicitStatusFromBody(body)
+  return updateJobWithLease(request, env, explicitStatus === 'cancelled' ? 'cancelled' : terminal ? 'terminal_failed' : failStatusFromBody(body), explicitStatus === 'cancelled' ? 'cancelled' : 'failed', body)
+}
+
+export async function cancelJob(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'jobs:regenerate')
+  if (actor instanceof Response) return actor
+  const jobUid = jobUidFromCancelPath(request)
+  if (!jobUid) return badRequest('job_uid is required')
+  const job = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+     LIMIT 1`,
+  )
+    .bind(jobUid)
+    .first<DispatchJobRow>()
+  if (!job) return json({ error: 'Not found' }, { status: 404 })
+  if (!['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)) {
+    return json({ error: 'job is not cancellable' }, { status: 409 })
+  }
+  const now = nowIso()
+  const nextStatus: DispatchStatus = job.status === 'queued' ? 'cancelled' : 'cancel_requested'
+  await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET cancel_requested = 1, status = ?, updated_at = ?
+     WHERE job_uid = ?
+       AND status IN ('queued', 'leased', 'running', 'uploading_results', 'cancel_requested')`,
+  )
+    .bind(nextStatus, now, jobUid)
+    .run()
+  if (nextStatus === 'cancelled') {
+    await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE current_job_id = ?')
+      .bind('online_idle', now, jobUid)
+      .run()
+  }
+  await recordAudit(env, { userId: actor.user.id }, 'jobs.cancel.request', 'dispatch_job', jobUid, { status: nextStatus, previous_status: job.status }, request)
+  await recordJobEvent(env, jobUid, job.assigned_machine_id || '', job.lease_id || '', 'cancel_requested', '', { previous_status: job.status, status: nextStatus })
+  return json({ ok: true, job_uid: jobUid, status: nextStatus, cancel_requested: true })
 }
 
 async function updateJobWithLease(request: Request, env: Env, status: DispatchStatus, eventType: string, existingBody?: Record<string, unknown>): Promise<Response> {
@@ -502,31 +544,47 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
      WHERE job_uid = ?
        AND lease_id = ?
        AND assigned_machine_id = ?
-       AND status IN ('leased', 'running', 'uploading_results')`,
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')`,
   )
     .bind(status, toJson(result), nowIso(), jobUid, leaseId, machine.machine_id)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
-  if (['succeeded', 'retryable_failed', 'terminal_failed', 'blocked_needs_login'].includes(status)) {
+  if (['succeeded', 'retryable_failed', 'terminal_failed', 'blocked_needs_login', 'cancelled'].includes(status)) {
     const nextHealth = status === 'blocked_needs_login' ? 'needs_login' : 'online_idle'
     await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE machine_id = ?')
       .bind(nextHealth, nowIso(), machine.machine_id)
       .run()
   }
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, eventType, typeof body.message === 'string' ? body.message : '', { status, result })
-  return json({ ok: true, status })
+  const nextJob = await jobForLease(env, jobUid, leaseId, machine.machine_id)
+  return json({ ok: true, status, cancel_requested: Boolean(nextJob?.cancel_requested) })
 }
 
 async function activeJobForLease(env: Env, jobUid: string, leaseId: string, machineId: string): Promise<DispatchJobRow | null> {
   return env.DB.prepare(
     `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
             required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
-            lease_id, lease_expires_at, payload_json, result_json, created_at, updated_at
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
      FROM dispatch_jobs
      WHERE job_uid = ?
        AND lease_id = ?
        AND assigned_machine_id = ?
-       AND status IN ('leased', 'running', 'uploading_results')
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+     LIMIT 1`,
+  )
+    .bind(jobUid, leaseId, machineId)
+    .first<DispatchJobRow>()
+}
+
+async function jobForLease(env: Env, jobUid: string, leaseId: string, machineId: string): Promise<DispatchJobRow | null> {
+  return env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
      LIMIT 1`,
   )
     .bind(jobUid, leaseId, machineId)
@@ -549,7 +607,7 @@ async function completeSubmitJobWithLease(
      WHERE job_uid = ?
        AND lease_id = ?
        AND assigned_machine_id = ?
-       AND status IN ('leased', 'running', 'uploading_results')`,
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')`,
   )
     .bind('uploading_results', toJson(result), stagedAt, job.job_uid, leaseId, machine.machine_id)
     .run()
@@ -641,9 +699,14 @@ async function currentApprovedAiAssets(env: Env, batchUid: string): Promise<Arra
 }
 
 function failStatusFromBody(body: Record<string, unknown>): DispatchStatus {
-  const result = body.result && typeof body.result === 'object' ? body.result as Record<string, unknown> : {}
-  const explicitStatus = typeof body.status === 'string' ? body.status : typeof result.status === 'string' ? result.status : ''
+  const explicitStatus = explicitStatusFromBody(body)
+  if (explicitStatus === 'cancelled') return 'cancelled'
   return explicitStatus === 'blocked_needs_login' ? 'blocked_needs_login' : 'retryable_failed'
+}
+
+function explicitStatusFromBody(body: Record<string, unknown>): string {
+  const result = body.result && typeof body.result === 'object' ? body.result as Record<string, unknown> : {}
+  return typeof body.status === 'string' ? body.status : typeof result.status === 'string' ? result.status : ''
 }
 
 function objectValue(value: unknown): Record<string, unknown> {
@@ -669,4 +732,8 @@ function machineIdFromAdminPath(request: Request): string {
 
 function jobUidFromPath(request: Request): string {
   return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/jobs\/([^/]+)\//)?.[1] || '')
+}
+
+function jobUidFromCancelPath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/)?.[1] || '')
 }

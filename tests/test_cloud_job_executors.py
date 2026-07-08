@@ -90,7 +90,8 @@ class CloudJobExecutorTests(unittest.TestCase):
             "payload": {
                 "batch_uid": "batch-1",
                 "style_id": 101,
-                "asset_uid": "cloud-ai-1",
+                "asset_uid": "regen-job-1",
+                "rejected_asset_uid": "old-ai-1",
                 "prompt_text": "new prompt",
                 "reference_asset_uids": ["source-1", "ref-1"],
                 "parent_asset_uid": "old-ai-1",
@@ -103,19 +104,20 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(result["status"], "succeeded")
         self.assertEqual(client.downloads[0]["asset_uid"], "source-1")
         self.assertEqual(client.downloads[1]["asset_uid"], "ref-1")
-        self.assertEqual(captured["asset_id"], "cloud-ai-1")
+        self.assertEqual(captured["asset_id"], "old-ai-1")
         self.assertEqual(captured["prompt"], "new prompt")
         self.assertTrue(all(Path(path).is_relative_to(Path(self.tmp.name)) for path in captured["reference_paths"]))
         self.assertTrue(Path(captured["batch"]["artifact_dir"]).is_relative_to(Path(self.tmp.name) / "cloud-jobs" / "job-1"))
         self.assertEqual(client.uploads[0]["path"].name, "regenerated.jpg")
         presign_call = next(call for call in client.calls if call["path"] == "/api/assets/presign")
-        self.assertEqual(presign_call["body"]["asset_uid"], "cloud-ai-1")
+        self.assertEqual(presign_call["body"]["asset_uid"], "regen-job-1")
         self.assertEqual(presign_call["body"]["parent_asset_uid"], "old-ai-1")
         progress_bodies = [call["body"] for call in client.calls if call["path"].endswith("/progress")]
         renew_bodies = [call["body"] for call in client.calls if call["path"].endswith("/renew")]
         self.assertTrue(progress_bodies)
         self.assertTrue(renew_bodies)
         self.assertTrue(all(body["lease_id"] == "lease-1" for body in progress_bodies + renew_bodies))
+        self.assertEqual(result["result"]["asset_uid"], "regen-job-1")
 
     def test_generate_ai_image_downloads_source_and_references_uploads_new_asset(self):
         from core.cloud_job_executors import CloudJobExecutor

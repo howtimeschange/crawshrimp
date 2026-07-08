@@ -86,6 +86,7 @@ interface DispatchJobRow {
   idempotency_key: string
   lease_id: string | null
   lease_expires_at: string | null
+  cancel_requested: number
   payload_json: string
   result_json: string
   created_at: string
@@ -385,9 +386,19 @@ class FakeD1Statement {
       const jobUid = String(this.params[2])
       const leaseId = String(this.params[3])
       const machineId = String(this.params[4])
-      const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && ['leased', 'running', 'uploading_results'].includes(row.status))
+      const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
       if (!job) return result(0)
       job.lease_expires_at = String(this.params[0])
+      job.updated_at = String(this.params[1])
+      return result(1)
+    }
+    if (normalized.startsWith('update dispatch_jobs set cancel_requested')) {
+      const status = String(this.params[0])
+      const jobUid = String(this.params[2])
+      const job = this.state.jobs.find((row) => row.job_uid === jobUid && ['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
+      if (!job) return result(0)
+      job.cancel_requested = 1
+      job.status = status
       job.updated_at = String(this.params[1])
       return result(1)
     }
@@ -396,7 +407,7 @@ class FakeD1Statement {
       const jobUid = String(this.params[3])
       const leaseId = String(this.params[4])
       const machineId = String(this.params[5])
-      const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && ['leased', 'running', 'uploading_results'].includes(row.status))
+      const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
       if (!job) return result(0)
       job.status = status
       job.result_json = String(this.params[1])
@@ -1090,6 +1101,39 @@ describe('machine routes', () => {
     expect(state.jobs[0].status).toBe('leased')
   })
 
+  it('lets user sessions request cancellation and leased machines observe it on renew', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-1'
+    state.jobs.push(jobRow({ job_uid: 'job-1', status: 'running', assigned_machine_id: 'machine-1', lease_id: 'lease-current' }))
+    const cookie = await addSession(state, 1, 'admin-cancel-token')
+
+    const cancel = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-1/cancel', {
+        method: 'POST',
+        headers: { cookie },
+      }),
+      fakeEnv(state),
+    )
+    const renew = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-1/renew', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-current' }),
+      }),
+      fakeEnv(state),
+    )
+    const body = await renew.json() as { cancel_requested: boolean }
+
+    expect(cancel.status).toBe(200)
+    expect(state.jobs[0].status).toBe('cancel_requested')
+    expect(state.jobs[0].cancel_requested).toBe(1)
+    expect(body.cancel_requested).toBe(true)
+  })
+
   it('persists blocked_needs_login failures and keeps machine health needs_login', async () => {
     const state = await emptyState()
     const token = await seedEnrollmentToken(state)
@@ -1525,6 +1569,7 @@ function jobRow(overrides: Partial<DispatchJobRow>): DispatchJobRow {
     idempotency_key: 'idem-1',
     lease_id: null,
     lease_expires_at: null,
+    cancel_requested: 0,
     payload_json: '{}',
     result_json: '{}',
     created_at: new Date().toISOString(),

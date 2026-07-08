@@ -70,7 +70,7 @@ After the first admin can log in, create all other users through `POST /api/admi
 From the cloud workbench Machines page, create an enrollment token with these capabilities:
 
 ```text
-regenerate_ai_image,submit_tmall_material_test
+generate_ai_image,regenerate_ai_image,submit_tmall_material_test,crawl_tmall_material_test_data
 ```
 
 The backing route is:

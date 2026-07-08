@@ -1,18 +1,20 @@
 <template>
   <div class="view">
-    <header class="view-header">
-      <div>
-        <h2>云端审批</h2>
-        <p>打开已配置的云端审批工作台，并显示本机任务机的安全状态。</p>
-      </div>
+    <div v-if="showMachineStatus" class="status-strip">
+      <span>任务机需要处理</span>
       <div class="status-pills">
         <span :class="['pill', status?.running ? 'on' : 'off']">{{ status?.running ? '在线' : '离线' }}</span>
         <span :class="['pill', status?.token_present ? 'on' : 'off']">{{ status?.token_present ? '已注册' : '未注册' }}</span>
         <span class="pill neutral">{{ status?.health || 'stopped' }}</span>
       </div>
-    </header>
+    </div>
 
-    <section v-if="!cloudUrl" class="empty-state">
+    <section v-if="error" class="empty-state">
+      <h3>云端审批暂不可用</h3>
+      <p>{{ error }}</p>
+    </section>
+
+    <section v-else-if="!cloudUrl" class="empty-state">
       <h3>未配置云端地址</h3>
       <p>请先在设置的「云端审批」中配置云端地址，注册任务机后再进入审批工作台。</p>
     </section>
@@ -31,6 +33,7 @@ const status = ref(null)
 const error = ref('')
 const cloudUrl = computed(() => String(status.value?.base_url || '').trim())
 const embeddedUrl = computed(() => buildEmbeddedCloudApprovalUrl(cloudUrl.value))
+const showMachineStatus = computed(() => Boolean(status.value && (!status.value.running || !status.value.token_present || ['needs_login', 'config_missing', 'version_blocked'].includes(status.value.health))))
 
 async function refresh() {
   try {
@@ -52,26 +55,16 @@ onMounted(refresh)
   min-height: 0;
 }
 
-.view-header {
+.status-strip {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 20px 28px 16px;
+  padding: 8px 14px;
   border-bottom: 1px solid var(--border);
-}
-
-.view-header h2 {
-  margin: 0;
-  font-size: 19px;
-  font-weight: 750;
-}
-
-.view-header p {
-  margin: 6px 0 0;
-  color: var(--text3);
+  background: var(--bg2);
+  color: var(--text2);
   font-size: 12px;
-  line-height: 1.4;
 }
 
 .status-pills {

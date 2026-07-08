@@ -343,14 +343,16 @@ async function createRegenerationJobsForAssets(
     const referenceAssetUids = assets
       .filter((row) => row.style_id === asset.style_id && ['source', 'reference'].includes(row.kind) && row.status === 'uploaded')
       .map((row) => row.asset_uid)
+    const resultAssetUid = `regen-${randomToken('job').replace(/^job-/, '')}`
     const payload = {
       batch_uid: batchUid,
       style_id: asset.style_id,
-      asset_uid: asset.asset_uid,
+      asset_uid: resultAssetUid,
+      rejected_asset_uid: asset.asset_uid,
       prompt_text: promptText,
       original_prompt_text: asset.prompt_text,
       reference_asset_uids: referenceAssetUids,
-      parent_asset_uid: asset.parent_asset_uid,
+      parent_asset_uid: asset.asset_uid,
     }
     const job = await insertDispatchJob(env, {
       batchUid,

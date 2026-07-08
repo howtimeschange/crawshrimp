@@ -131,6 +131,7 @@ interface FakeState {
   imageResources: ImageResourceRow[]
   r2Gets: string[]
   r2Puts: Array<{ key: string; body: string; contentType: string }>
+  r2Objects: Record<string, { body: string; contentType: string }>
 }
 
 class FakeD1Statement {
@@ -310,6 +311,13 @@ function fakeEnv(state: FakeState) {
     ASSETS: {
       async get(key: string) {
         state.r2Gets.push(key)
+        const object = state.r2Objects[key]
+        if (object) {
+          return {
+            body: new Blob([object.body]).stream(),
+            httpMetadata: { contentType: object.contentType },
+          } as unknown as R2ObjectBody
+        }
         return null
       },
       async put(key: string, value: ReadableStream | ArrayBuffer | string | null, options?: R2PutOptions) {
@@ -650,6 +658,34 @@ describe('asset upload planning routes', () => {
     expect(state.r2Gets).toEqual(['batches/batch-20260707/ai/asset-ai-1-ai.jpg'])
   })
 
+  it('adds same-origin protection headers to cookie-authenticated asset downloads', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const asset = assetRow()
+    state.assets.push(asset)
+    state.r2Objects[asset.object_key] = { body: 'image-bytes', contentType: 'image/jpeg' }
+
+    const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download', {
+      headers: { cookie: reviewerCookie, 'sec-fetch-site': 'same-origin' },
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cross-origin-resource-policy')).toBe('same-origin')
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'none'")
+    expect(response.headers.get('cache-control')).toBe('private, no-store')
+    expect(await response.text()).toBe('image-bytes')
+  })
+
+  it('rejects cross-site cookie-authenticated asset downloads before R2 lookup', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.push(assetRow())
+    const response = await fetchWorker(new Request('https://example.test/api/assets/asset-ai-1/download', {
+      headers: { cookie: reviewerCookie, 'sec-fetch-site': 'cross-site' },
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(403)
+    expect(state.r2Gets).toEqual([])
+  })
+
   it('rejects active machine bearer token downloads without a current asset lease', async () => {
     const { state, machineToken } = await baseState()
     state.assets.push(assetRow())
@@ -924,6 +960,7 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
     imageResources: [],
     r2Gets: [],
     r2Puts: [],
+    r2Objects: {},
   }
   return {
     state,

@@ -13,6 +13,7 @@ import {
 } from './auth-routes'
 import {
   approveMachine,
+  cancelJob,
   claimJob,
   completeJob,
   createEnrollmentToken,
@@ -107,6 +108,7 @@ export default {
     if (url.pathname === '/api/machines/heartbeat' && request.method === 'POST') return heartbeat(request, env)
     if (url.pathname === '/api/machines/jobs/claim' && request.method === 'POST') return claimJob(request, env)
     if (/^\/api\/jobs\/[^/]+\/renew$/.test(url.pathname) && request.method === 'POST') return renewJob(request, env)
+    if (/^\/api\/jobs\/[^/]+\/cancel$/.test(url.pathname) && request.method === 'POST') return cancelJob(request, env)
     if (/^\/api\/jobs\/[^/]+\/progress$/.test(url.pathname) && request.method === 'POST') return progressJob(request, env)
     if (/^\/api\/jobs\/[^/]+\/complete$/.test(url.pathname) && request.method === 'POST') return completeJob(request, env)
     if (/^\/api\/jobs\/[^/]+\/fail$/.test(url.pathname) && request.method === 'POST') return failJob(request, env)

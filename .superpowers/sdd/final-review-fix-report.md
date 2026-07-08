@@ -1,185 +1,45 @@
-# Cloud Approval Workbench Final Review Fix Report
+# Final Review Fix Report
 
-## Status
+## Changed files
 
-Implemented the final-review fixes for machine-scoped asset access, review-board workflows, submit-machine freshness, local SQLite permission hardening, explicit ready-state copy, and explicit external URL opening.
-
-## Commits
-
-- This commit: `fix(cloud): scope machine asset access`
-
-## Changed Files
-
-- `cloud/approval-workbench/src/worker/asset-routes.ts`
 - `cloud/approval-workbench/src/worker/batch-routes.ts`
-- `cloud/approval-workbench/src/app/views/BatchReviewView.vue`
-- `cloud/approval-workbench/src/app/App.vue`
-- `cloud/approval-workbench/src/tests/assets.test.ts`
-- `cloud/approval-workbench/src/tests/review.test.ts`
-- `core/cloud_approval_client.py`
+- `cloud/approval-workbench/src/worker/asset-routes.ts`
+- `cloud/approval-workbench/src/worker/machine-routes.ts`
+- `cloud/approval-workbench/src/worker/index.ts`
+- `cloud/approval-workbench/migrations/0006_dispatch_job_cancel_requested.sql`
 - `core/cloud_job_executors.py`
-- `core/data_sink.py`
-- `tests/test_cloud_job_executors.py`
-- `tests/test_cloud_machine_data_sink.py`
-- `app/src/main.js`
-- `app/src/preload.js`
-- `app/src/renderer/utils/devCsBridge.js`
+- `core/cloud_machine_agent.py`
 - `app/src/renderer/views/CloudApprovalFrame.vue`
 - `docs/cloud-approval-workbench-runbook.md`
-- `.superpowers/sdd/final-review-fix-report.md`
-
-## Findings Addressed
-
-1. Machine asset access is now job-scoped. Machine presign, upload, and download require `job_uid` and `lease_id`; the worker validates an active lease owned by that machine and checks the asset/batch/style membership against the leased job payload. User asset access remains RBAC-based.
-2. The cloud review board now renders image previews and download links, supports per-image regeneration prompt overrides, supports manual source/reference/AI image upload through a planned upload URL, and passes prompt overrides into regeneration job payloads.
-3. Submit jobs now require the selected machine to be active, capable, in an online health state, and recently seen within the freshness window. Stale/offline selections return a clear conflict error, and the UI only lists fresh online submit-capable machines.
-4. Local machine tokens remain in SQLite for this pass, but the data sink now applies POSIX owner-only permissions to the data directory and database file. The runbook documents the remaining keychain-migration risk.
-5. The ready action UI now says it recalculates the submit-ready state instead of implying a separate manual status override.
-6. `CloudApprovalFrame.vue` now uses an explicit `openExternalUrl` IPC path for HTTP(S) cloud URLs.
-
-## Tests Run
-
-- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/review.test.ts` - passed, 28 tests.
-- `python -m unittest tests.test_cloud_machine_data_sink tests.test_cloud_job_executors -v` - passed, 12 tests.
-- `cd cloud/approval-workbench && npm run typecheck` - passed.
-- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 108 Vitest tests, Vite build.
-- `python -m unittest tests.test_cloud_config tests.test_cloud_machine_data_sink tests.test_cloud_approval_client tests.test_cloud_batch_sync tests.test_cloud_machine_agent tests.test_cloud_job_executors tests.test_cloud_api_server tests.test_cloud_approval_dry_run -v` - passed, 48 tests.
-- `node --test tests/cloud-approval-ipc.test.js tests/cloud-approval-settings.test.js` - passed, 5 tests.
-
-## Residual Risks
-
-- Machine tokens are still stored as plaintext values inside the local SQLite row. File permissions reduce local exposure on POSIX systems, but a future OS secure-storage/keychain migration is still needed.
-- Review-board upload support is scoped to source/reference/AI images and existing planned-object upload flow; it does not add client-side image transformations or resumable uploads.
-
-## Focused Re-Review Follow-Up
-
-Status: implemented the manual upload status fix.
-
-Commit: this commit, `fix(cloud): keep manual uploads planned`.
-
-Changed files:
-
-- `cloud/approval-workbench/src/worker/batch-routes.ts`
-- `cloud/approval-workbench/src/app/views/BatchReviewView.vue`
 - `cloud/approval-workbench/src/tests/assets.test.ts`
+- `cloud/approval-workbench/src/tests/machines.test.ts`
 - `cloud/approval-workbench/src/tests/review.test.ts`
-- `.superpowers/sdd/final-review-fix-report.md`
+- `tests/test_cloud_job_executors.py`
+- `tests/test_cloud_machine_agent.py`
 
-Addressed issue:
+## Fix summary
 
-- Manual source/reference/AI asset creation now always creates a `planned` asset row. The review UI no longer asks the API to mark source/reference assets uploaded before PUT. Regeneration and submit payload builders only include uploaded source/reference assets, so interrupted manual uploads are not usable. The existing upload route remains the transition point that marks a planned asset `uploaded` after a successful PUT.
+1. Regeneration now creates a new generated child asset uid (`regen-*`) instead of reusing the rejected asset uid. The rejected asset is preserved through `rejected_asset_uid`, and `parent_asset_uid` points to that rejected asset.
+2. Added user-session job cancellation at `POST /api/jobs/:job_uid/cancel`, persisted `cancel_requested`, audited the request, and made active leases surface cancellation through renew/progress so the desktop agent reports `cancelled`.
+3. Added cross-site protection for cookie-authenticated asset downloads: `Sec-Fetch-Site: cross-site` is rejected for session downloads, while machine bearer-token downloads remain lease-scoped. Download responses now include same-origin/CSP/no-store protections.
+4. Removed the always-visible local `CloudApprovalFrame` header chrome. It now fills the right workspace and only shows compact error/missing-url or machine-attention status states.
+5. Updated the runbook enrollment-token example to include `generate_ai_image`, `regenerate_ai_image`, `submit_tmall_material_test`, and `crawl_tmall_material_test_data`.
 
-Tests run:
+## Tests run
 
-- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/review.test.ts` - passed, 30 tests.
-- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 110 Vitest tests, Vite build.
+- PASS: `cd cloud/approval-workbench && npm run test -- src/tests/assets.test.ts src/tests/machines.test.ts src/tests/batches.test.ts src/tests/auth-routes.test.ts src/tests/material-data.test.ts`
+- PASS: `cd cloud/approval-workbench && npm run test -- src/tests/schema.test.ts src/tests/machines.test.ts src/tests/assets.test.ts src/tests/review.test.ts`
+- PASS: `cd cloud/approval-workbench && npm run test`
+- PASS: `cd cloud/approval-workbench && npm run typecheck`
+- PASS: `cd cloud/approval-workbench && npm run build` (Vite large chunk warning only)
+- PASS: `python -m unittest tests.test_cloud_job_executors tests.test_cloud_machine_agent`
+- PASS: `cd app && npm test -- --runInBand` (existing module-type warnings only)
+- PASS: `git diff --check`
 
-Residual risks:
+## Commit
 
-- Failed uploads still leave planned rows visible in the batch detail until retried or superseded; they are intentionally not usable in regeneration or submit payloads.
+`ae8a0cc8`
 
-## Deployment Smoke Follow-Up
+## Residual risk
 
-Status: fixed the interaction between job-scoped machine asset access and the initial local-to-cloud batch sync path.
-
-Commit: pending, `fix(cloud): preserve scoped sync uploads`.
-
-Changed files:
-
-- `cloud/approval-workbench/src/worker/asset-routes.ts`
-- `cloud/approval-workbench/src/worker/batch-routes.ts`
-- `cloud/approval-workbench/src/tests/assets.test.ts`
-- `cloud/approval-workbench/src/tests/batches.test.ts`
-- `docs/cloud-approval-workbench-runbook.md`
-- `.superpowers/sdd/final-review-fix-report.md`
-
-Addressed issue:
-
-- Initial Crawshrimp batch sync is machine-originated, but job-scoped asset hardening made every machine presign/upload require a dispatch job lease. The worker now keeps dispatch-job asset access lease-scoped while allowing the batch source machine to upload only planned assets for its own syncing/pending-review batch. Synced asset rows are planned until the upload route stores the object and marks them uploaded; sync-complete now requires at least one uploaded AI asset.
-
-Tests run:
-
-- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/batches.test.ts src/tests/review.test.ts` - passed, 49 tests.
-- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
-- `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.
-- `python -m unittest tests.test_cloud_config tests.test_cloud_machine_data_sink tests.test_cloud_approval_client tests.test_cloud_batch_sync tests.test_cloud_machine_agent tests.test_cloud_job_executors tests.test_cloud_api_server tests.test_cloud_approval_dry_run -v` - passed, 48 tests.
-- `node --test tests/cloud-approval-ipc.test.js tests/cloud-approval-settings.test.js` - passed, 5 tests.
-
-Residual risks:
-
-- Source-machine sync upload remains intentionally limited by batch ownership, batch status, and planned asset rows; it is not a general machine asset credential. A future short-lived upload-token model would make this even tighter.
-
-## Sync Upload Projection Follow-Up
-
-Status: fixed a focused review finding in the no-lease sync PUT path.
-
-Commit: pending, `fix(cloud): include sync upload asset status`.
-
-Addressed issue:
-
-- The upload route's object-key lookup now selects asset `status`, so real D1 rows can pass the source-machine planned-asset check. The assets route test fake now fails if this projection omits `status`, preventing another false positive.
-
-Tests run:
-
-- `cd cloud/approval-workbench && npm test -- src/tests/assets.test.ts src/tests/batches.test.ts src/tests/review.test.ts` - passed, 49 tests.
-- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
-
-## Cloudflare Runtime Follow-Up
-
-Status: fixed live Worker login failure found during deployment smoke.
-
-Commit: pending, `fix(cloud): use worker-supported pbkdf2 cost`.
-
-Addressed issue:
-
-- Cloudflare Workers rejected PBKDF2 iteration counts above 100000 at login time. Worker password hashing and the seed-admin helper now generate PBKDF2 hashes with 100000 iterations, which is within the runtime limit. The verifier still rejects lower-cost PBKDF2 hashes and retains legacy SHA compatibility.
-
-Tests run:
-
-- `cd cloud/approval-workbench && npm test -- src/tests/auth-routes.test.ts src/tests/seed-admin.test.ts` - passed, 13 tests.
-- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
-
-## PBKDF2 Verifier Guard Follow-Up
-
-Status: fixed focused review finding for existing high-cost PBKDF2 rows.
-
-Commit: pending, `fix(cloud): guard unsupported pbkdf2 hashes`.
-
-Addressed issue:
-
-- `verifyPassword` now rejects PBKDF2 iteration counts above the Worker-supported maximum before calling `crypto.subtle.deriveBits`, so old 210000-iteration hashes return a failed login instead of throwing a Worker 500. Re-running the seed helper refreshes the admin row to the supported 100000-iteration format.
-
-Tests run:
-
-- `cd cloud/approval-workbench && npm test -- src/tests/auth-routes.test.ts src/tests/seed-admin.test.ts` - passed, 13 tests.
-- `cd cloud/approval-workbench && npm run check` - passed: typecheck, 113 Vitest tests, Vite build.
-
-## Live Dry-Run Reusability Follow-Up
-
-Status: made the live smoke harness reusable against an existing remote database.
-
-Commit: pending, `fix(cloud): make live dry-run machine unique`.
-
-Addressed issue:
-
-- Live dry-run now accepts `--machine-id` and defaults to a timestamped `dry-run-machine-*` id in live mode, avoiding conflicts with previous smoke-test machines while keeping fake-mode behavior deterministic.
-
-Tests run:
-
-- `python -m unittest tests.test_cloud_approval_dry_run -v` - passed, 5 tests.
-- `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.
-
-## Live Dry-Run Batch Isolation Follow-Up
-
-Status: made live smoke batches unique against existing remote review data.
-
-Commit: pending, `fix(cloud): make live dry-run batch unique`.
-
-Addressed issue:
-
-- Live dry-run now accepts `--batch-id` and defaults to a timestamped `cloud-dry-run-batch-*` id in live mode. This keeps smoke runs isolated from previous remote batches whose status may already be reviewed/submitted, while fake mode remains deterministic.
-
-Tests run:
-
-- `python -m unittest tests.test_cloud_approval_dry_run -v` - passed, 5 tests.
-- `python scripts/cloud_approval_dry_run.py` - passed, 6 phases.
+- Cloudflare deployment was not run in this final-review fix pass.

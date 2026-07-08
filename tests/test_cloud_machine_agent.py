@@ -202,6 +202,39 @@ class CloudMachineAgentTests(unittest.TestCase):
 
         self.assertIsNone(data_sink.get_cloud_machine_credentials())
 
+    def test_claimed_job_cancellation_is_reported_as_cancelled(self):
+        from core.cloud_job_executors import CloudJobCancelled
+
+        class CancellingExecutor:
+            def __init__(self, _client):
+                pass
+
+            def execute(self, _job):
+                raise CloudJobCancelled("stop requested")
+
+        data_sink.save_cloud_machine_credentials("machine-1", "csr_machine_secret", "任务机", ["regenerate_ai_image"])
+        client = FakeClient([
+            {
+                "job": {
+                    "job_uid": "job-cancel",
+                    "batch_uid": "batch-1",
+                    "job_type": "regenerate_ai_image",
+                    "lease_id": "lease-cancel",
+                    "payload": {},
+                },
+                "next_poll_after_seconds": 0,
+            },
+            {"ok": True, "status": "cancelled"},
+        ])
+        agent = CloudMachineAgent(client, job_executor_factory=CancellingExecutor)
+
+        result = agent.claim_once()
+
+        self.assertEqual(result["job_result"]["status"], "cancelled")
+        self.assertEqual(client.calls[1]["path"], "/api/jobs/job-cancel/fail")
+        self.assertEqual(client.calls[1]["body"]["status"], "cancelled")
+        self.assertTrue(client.calls[1]["body"]["terminal"])
+
 
 if __name__ == "__main__":
     unittest.main()

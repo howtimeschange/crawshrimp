@@ -24,6 +24,10 @@ class CloudJobTerminalFailure(RuntimeError):
     pass
 
 
+class CloudJobCancelled(RuntimeError):
+    pass
+
+
 class CloudJobExecutor:
     def __init__(
         self,
@@ -53,6 +57,7 @@ class CloudJobExecutor:
     def execute_regenerate_ai_image(self, job: Mapping[str, Any]) -> dict:
         payload = _payload(job)
         asset_uid = _required_text(payload, "asset_uid")
+        rejected_asset_uid = str(payload.get("rejected_asset_uid") or payload.get("parent_asset_uid") or "")
         batch_uid = str(payload.get("batch_uid") or job.get("batch_uid") or "")
         style_id = _positive_int(payload.get("style_id"))
         task_dir = self._task_dir(job)
@@ -68,7 +73,7 @@ class CloudJobExecutor:
         self._progress(job, "regenerating", "本地重新生图")
         asset = module.regenerate_approval_asset(
             batch,
-            asset_uid,
+            rejected_asset_uid or asset_uid,
             prompt=str(payload.get("prompt_text") or ""),
             reference_paths=reference_paths,
         )
@@ -83,7 +88,7 @@ class CloudJobExecutor:
             asset_uid=asset_uid,
             path=output_path,
             prompt_text=str(asset.get("prompt") or payload.get("prompt_text") or ""),
-            parent_asset_uid=str(payload.get("parent_asset_uid") or ""),
+            parent_asset_uid=str(payload.get("parent_asset_uid") or rejected_asset_uid),
             generation_job_id=str((asset.get("generation_row") or {}).get("任务ID") or (asset.get("generation_row") or {}).get("__1xm_task_id") or ""),
         )
         self._renew(job)
@@ -325,18 +330,22 @@ class CloudJobExecutor:
         return presign
 
     def _progress(self, job: Mapping[str, Any], phase: str, message: str) -> dict:
-        return self.client.request_json("POST", f"/api/jobs/{_job_uid(job)}/progress", {
+        response = self.client.request_json("POST", f"/api/jobs/{_job_uid(job)}/progress", {
             "job_uid": _job_uid(job),
             "lease_id": _lease_id(job),
             "message": message,
             "result": {"phase": phase},
         })
+        _raise_if_cancel_requested(response)
+        return response
 
     def _renew(self, job: Mapping[str, Any]) -> dict:
-        return self.client.request_json("POST", f"/api/jobs/{_job_uid(job)}/renew", {
+        response = self.client.request_json("POST", f"/api/jobs/{_job_uid(job)}/renew", {
             "job_uid": _job_uid(job),
             "lease_id": _lease_id(job),
         })
+        _raise_if_cancel_requested(response)
+        return response
 
     def _regeneration_batch(self, job: Mapping[str, Any], payload: Mapping[str, Any], task_dir: Path, reference_paths: list[str]) -> dict:
         batch_uid = str(payload.get("batch_uid") or job.get("batch_uid") or "")
@@ -674,6 +683,11 @@ def _safe_generated_asset_uid(request_uid: str, job_uid: str) -> str:
     source = request_uid or f"gen-{job_uid}"
     safe = _safe_segment(source)
     return safe if safe.startswith("gen-") else f"gen-{safe}"
+
+
+def _raise_if_cancel_requested(response: Mapping[str, Any]) -> None:
+    if response.get("cancel_requested") is True:
+        raise CloudJobCancelled("cloud job cancellation requested")
 
 
 def _local_file(value: Any, root: Path) -> Path:
