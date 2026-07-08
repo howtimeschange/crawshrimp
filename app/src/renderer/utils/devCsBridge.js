@@ -157,6 +157,14 @@ export function createDevCsBridge() {
     updateTaskSchedule: (uid, payload) => apiCall('PATCH', `/task-schedules/${encodePathPart(uid)}`, payload || {}),
     deleteTaskSchedule: (uid) => apiCall('DELETE', `/task-schedules/${encodePathPart(uid)}`),
     runTaskScheduleNow: (uid) => apiCall('POST', `/task-schedules/${encodePathPart(uid)}/run-now`, {}),
+    listAiImageJobs: () => apiCall('GET', '/ai-image/jobs'),
+    createAiImageJob: (payload) => apiCall('POST', '/ai-image/jobs', payload || {}),
+    getAiImageJob: (uid) => apiCall('GET', `/ai-image/jobs/${encodePathPart(uid)}`),
+    updateAiImageJob: (uid, payload) => apiCall('PATCH', `/ai-image/jobs/${encodePathPart(uid)}`, payload || {}),
+    runAiImageJob: (uid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {}),
+    saveAsAiImageJob: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {}),
+    createAiImageAsset: (payload) => apiCall('POST', '/ai-image/assets', payload || {}),
+    createAiImageCanvas: (payload) => apiCall('POST', '/ai-image/canvases', payload || {}),
 
     probeTaskParams: (aid, tid, params, options = {}) => apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/params/probe`, {
       params: params || {},

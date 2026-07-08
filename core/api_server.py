@@ -39,6 +39,7 @@ from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 from core.cloud_batch_sync import sync_local_approval_batch
 from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
+from core import ai_image_service
 from core import data_sink
 from core import notifier
 from core import odps_sync
@@ -5038,6 +5039,116 @@ def get_adapter_asset(adapter_id: str, asset_path: str):
         raise HTTPException(400, str(exc))
 
     return FileResponse(path, headers=_adapter_asset_headers())
+
+
+class AiImageJobRequest(BaseModel):
+    title: str = ""
+    prompt: str = ""
+    model_key: str = "gpt-image-2"
+    status: str = "draft"
+    params: dict = {}
+    summary: dict = {}
+
+
+class AiImageJobPatchRequest(BaseModel):
+    title: Optional[str] = None
+    prompt: Optional[str] = None
+    model_key: Optional[str] = None
+    status: Optional[str] = None
+    params: Optional[dict] = None
+    summary: Optional[dict] = None
+
+
+class AiImageAssetRequest(BaseModel):
+    job_uid: str
+    kind: str = "reference"
+    source_type: str = "local"
+    path: str = ""
+    url: str = ""
+    mime_type: str = ""
+    sort_order: int = 0
+    meta: dict = {}
+
+
+class AiImageCanvasRequest(BaseModel):
+    job_uid: str
+    title: str = ""
+    canvas: dict = {}
+
+
+class AiImageSaveAsRequest(BaseModel):
+    directory: str
+
+
+def _model_payload(model: BaseModel, **kwargs) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(**kwargs)
+    return model.dict(**kwargs)
+
+
+@app.get("/ai-image/jobs")
+def list_ai_image_jobs():
+    return data_sink.list_ai_image_jobs()
+
+
+@app.post("/ai-image/jobs")
+def create_ai_image_job(req: AiImageJobRequest):
+    return data_sink.create_ai_image_job(_model_payload(req, exclude_none=True))
+
+
+@app.get("/ai-image/jobs/{job_uid}")
+def get_ai_image_job(job_uid: str):
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    job["assets"] = data_sink.list_ai_image_assets(job_uid)
+    job["canvases"] = data_sink.list_ai_image_canvases(job_uid)
+    return job
+
+
+@app.patch("/ai-image/jobs/{job_uid}")
+def update_ai_image_job(job_uid: str, req: AiImageJobPatchRequest):
+    payload = _model_payload(req, exclude_unset=True, exclude_none=True)
+    job = data_sink.update_ai_image_job(job_uid, payload)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    return job
+
+
+@app.post("/ai-image/jobs/{job_uid}/run")
+def run_ai_image_job(job_uid: str):
+    if not data_sink.get_ai_image_job(job_uid):
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    try:
+        return ai_image_service.run_job_with_one_xm(job_uid)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/save-as")
+def save_as_ai_image_job(job_uid: str, req: AiImageSaveAsRequest):
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    summary = job.get("summary") if isinstance(job.get("summary"), dict) else {}
+    output_assets = [{"path": str(path)} for path in summary.get("output_files") or []]
+    output_assets.extend(data_sink.list_ai_image_assets(job_uid))
+    files = ai_image_service.copy_assets_to_directory(output_assets, req.directory)
+    return {"ok": True, "job_uid": job_uid, "files": files}
+
+
+@app.post("/ai-image/assets")
+def create_ai_image_asset(req: AiImageAssetRequest):
+    if not data_sink.get_ai_image_job(req.job_uid):
+        raise HTTPException(404, f"AI image job not found: {req.job_uid}")
+    return data_sink.create_ai_image_asset(_model_payload(req, exclude_none=True))
+
+
+@app.post("/ai-image/canvases")
+def create_ai_image_canvas(req: AiImageCanvasRequest):
+    if not data_sink.get_ai_image_job(req.job_uid):
+        raise HTTPException(404, f"AI image job not found: {req.job_uid}")
+    return data_sink.create_ai_image_canvas(_model_payload(req, exclude_none=True))
 
 
 def _normalize_tmall_approval_batch_id(batch_id: str) -> str:

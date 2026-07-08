@@ -1507,6 +1507,22 @@ secureHandle('delete-task-schedule', async (_, scheduleUid) =>
   apiCall('DELETE', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}`))
 secureHandle('run-task-schedule-now', async (_, scheduleUid) =>
   apiCall('POST', `/task-schedules/${encodeURIComponent(String(scheduleUid || ''))}/run-now`, {}))
+secureHandle('list-ai-image-jobs', async () =>
+  apiCall('GET', '/ai-image/jobs'))
+secureHandle('create-ai-image-job', async (_, payload) =>
+  apiCall('POST', '/ai-image/jobs', payload || {}))
+secureHandle('get-ai-image-job', async (_, jobUid) =>
+  apiCall('GET', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`))
+secureHandle('update-ai-image-job', async (_, jobUid, payload) =>
+  apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`, payload || {}))
+secureHandle('run-ai-image-job', async (_, jobUid) =>
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/run`, {}, { timeoutMs: 20 * 60 * 1000 }))
+secureHandle('save-as-ai-image-job', async (_, jobUid, payload) =>
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/save-as`, payload || {}))
+secureHandle('create-ai-image-asset', async (_, payload) =>
+  apiCall('POST', '/ai-image/assets', payload || {}))
+secureHandle('create-ai-image-canvas', async (_, payload) =>
+  apiCall('POST', '/ai-image/canvases', payload || {}))
 secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},

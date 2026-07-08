@@ -197,6 +197,59 @@ def init_db():
                 created_at TEXT NOT NULL
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_image_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_uid TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                model_key TEXT NOT NULL DEFAULT 'gpt-image-2',
+                status TEXT NOT NULL DEFAULT 'draft',
+                params_json TEXT NOT NULL DEFAULT '{}',
+                summary_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_image_jobs_updated
+            ON ai_image_jobs (updated_at)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_image_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_uid TEXT NOT NULL UNIQUE,
+                job_uid TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'reference',
+                source_type TEXT NOT NULL DEFAULT 'local',
+                path TEXT NOT NULL DEFAULT '',
+                url TEXT NOT NULL DEFAULT '',
+                mime_type TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                meta_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_image_assets_job_order
+            ON ai_image_assets (job_uid, sort_order, id)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_image_canvases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                canvas_uid TEXT NOT NULL UNIQUE,
+                job_uid TEXT NOT NULL DEFAULT '',
+                title TEXT NOT NULL DEFAULT '',
+                canvas_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_image_canvases_job
+            ON ai_image_canvases (job_uid, updated_at)
+        """)
         conn.commit()
     _harden_db_file_permissions()
 
@@ -306,6 +359,222 @@ def list_cloud_job_events(job_uid: str, limit: int = 100) -> list[dict]:
         data["payload"] = _json_loads_object(data.pop("payload_json"))
         result.append(data)
     return result
+
+
+def _ai_image_job_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    data = _row_to_dict(row)
+    if not data:
+        return None
+    data["params"] = _json_loads_object(data.pop("params_json", "{}"))
+    data["summary"] = _json_loads_object(data.pop("summary_json", "{}"))
+    return data
+
+
+def _ai_image_asset_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    data = _row_to_dict(row)
+    if not data:
+        return None
+    data["meta"] = _json_loads_object(data.pop("meta_json", "{}"))
+    return data
+
+
+def _ai_image_canvas_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    data = _row_to_dict(row)
+    if not data:
+        return None
+    data["canvas"] = _json_loads_object(data.pop("canvas_json", "{}"))
+    return data
+
+
+def create_ai_image_job(payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    now = _now_iso()
+    job_uid = str(source.get("job_uid") or "").strip() or uuid.uuid4().hex
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_image_jobs (
+                job_uid, title, prompt, model_key, status, params_json,
+                summary_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_uid,
+                str(source.get("title") or "").strip() or "未命名生图任务",
+                str(source.get("prompt") or "").strip(),
+                str(source.get("model_key") or "gpt-image-2").strip() or "gpt-image-2",
+                str(source.get("status") or "draft").strip() or "draft",
+                _json_dumps(source.get("params") if isinstance(source.get("params"), Mapping) else {}),
+                _json_dumps(source.get("summary") if isinstance(source.get("summary"), Mapping) else {}),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+    return get_ai_image_job(job_uid) or {}
+
+
+def get_ai_image_job(job_uid: str) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_image_jobs WHERE job_uid=? LIMIT 1",
+            (str(job_uid or "").strip(),),
+        ).fetchone()
+    return _ai_image_job_from_row(row)
+
+
+def list_ai_image_jobs(limit: int = 100) -> list[dict]:
+    try:
+        safe_limit = max(1, min(int(limit), 500))
+    except Exception:
+        safe_limit = 100
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM ai_image_jobs
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    return [item for row in rows if (item := _ai_image_job_from_row(row))]
+
+
+def update_ai_image_job(job_uid: str, payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    allowed = {"title", "prompt", "model_key", "status"}
+    updates: dict[str, Any] = {}
+    for key in allowed:
+        if key in source:
+            updates[key] = str(source.get(key) or "").strip()
+    if "params" in source:
+        updates["params_json"] = _json_dumps(source.get("params") if isinstance(source.get("params"), Mapping) else {})
+    if "summary" in source:
+        updates["summary_json"] = _json_dumps(source.get("summary") if isinstance(source.get("summary"), Mapping) else {})
+    updates["updated_at"] = _now_iso()
+    uid = str(job_uid or "").strip()
+    assignments = ", ".join(f"{key}=?" for key in updates)
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE ai_image_jobs SET {assignments} WHERE job_uid=?", [*updates.values(), uid])
+        conn.commit()
+    return get_ai_image_job(uid) or {}
+
+
+def create_ai_image_asset(payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    now = _now_iso()
+    asset_uid = str(source.get("asset_uid") or "").strip() or uuid.uuid4().hex
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_image_assets (
+                asset_uid, job_uid, kind, source_type, path, url, mime_type,
+                sort_order, meta_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                asset_uid,
+                str(source.get("job_uid") or "").strip(),
+                str(source.get("kind") or "reference").strip() or "reference",
+                str(source.get("source_type") or "local").strip() or "local",
+                str(source.get("path") or "").strip(),
+                str(source.get("url") or "").strip(),
+                str(source.get("mime_type") or source.get("mime") or "").strip(),
+                int(source.get("sort_order") or 0),
+                _json_dumps(source.get("meta") if isinstance(source.get("meta"), Mapping) else {}),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM ai_image_assets WHERE asset_uid=?", (asset_uid,)).fetchone()
+    return _ai_image_asset_from_row(row) or {}
+
+
+def list_ai_image_assets(job_uid: str = "", limit: int = 200) -> list[dict]:
+    clauses = []
+    params: list[Any] = []
+    uid = str(job_uid or "").strip()
+    if uid:
+        clauses.append("job_uid=?")
+        params.append(uid)
+    where = "WHERE " + " AND ".join(clauses) if clauses else ""
+    try:
+        safe_limit = max(1, min(int(limit), 1000))
+    except Exception:
+        safe_limit = 200
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM ai_image_assets
+            {where}
+            ORDER BY sort_order ASC, id ASC
+            LIMIT ?
+            """,
+            [*params, safe_limit],
+        ).fetchall()
+    return [item for row in rows if (item := _ai_image_asset_from_row(row))]
+
+
+def create_ai_image_canvas(payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    now = _now_iso()
+    canvas_uid = str(source.get("canvas_uid") or "").strip() or uuid.uuid4().hex
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_image_canvases (
+                canvas_uid, job_uid, title, canvas_json, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                canvas_uid,
+                str(source.get("job_uid") or "").strip(),
+                str(source.get("title") or "").strip() or "未命名画布",
+                _json_dumps(source.get("canvas") if isinstance(source.get("canvas"), Mapping) else {}),
+                now,
+                now,
+            ),
+        )
+        conn.commit()
+        row = conn.execute("SELECT * FROM ai_image_canvases WHERE canvas_uid=?", (canvas_uid,)).fetchone()
+    return _ai_image_canvas_from_row(row) or {}
+
+
+def get_ai_image_canvas(canvas_uid: str) -> Optional[dict]:
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_image_canvases WHERE canvas_uid=? LIMIT 1",
+            (str(canvas_uid or "").strip(),),
+        ).fetchone()
+    return _ai_image_canvas_from_row(row)
+
+
+def list_ai_image_canvases(job_uid: str = "", limit: int = 100) -> list[dict]:
+    uid = str(job_uid or "").strip()
+    where = "WHERE job_uid=?" if uid else ""
+    params: list[Any] = [uid] if uid else []
+    try:
+        safe_limit = max(1, min(int(limit), 500))
+    except Exception:
+        safe_limit = 100
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM ai_image_canvases
+            {where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            [*params, safe_limit],
+        ).fetchall()
+    return [item for row in rows if (item := _ai_image_canvas_from_row(row))]
 
 
 def create_task_instance(adapter_id: str, task_id: str, title: str, params: Optional[Mapping[str, Any]] = None) -> dict:
