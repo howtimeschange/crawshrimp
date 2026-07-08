@@ -116,7 +116,7 @@ const GENERATION_MODELS = new Set(['gpt-image-2', 'gemini-3.1-flash-image-previe
 const GENERATION_SIZES = new Set(['1:1', '3:4', '4:3', '16:9', '9:16', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '4096x4096'])
 const GENERATION_QUALITIES = new Set(['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K'])
 const GENERATION_FORMATS = new Set(['png', 'jpeg', 'jpg', 'webp'])
-const SECRET_FIELD_PATTERN = /^(api[_-]?key|webhook[_-]?secret|authorization)$/i
+const SECRET_FIELD_PATTERN = /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization)$/i
 
 export async function syncBatch(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -446,7 +446,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   const settingsHash = await sha256Hex(JSON.stringify({ model, size, quality, output_format: outputFormat, count }))
   const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${settingsHash}:${machineId}:${requestNonce}`
   const existing = await findDispatchJob(env, 'generate_ai_image', idempotencyKey)
-  const requestUid = existing ? '' : randomToken('gen')
+  const requestUid = existing ? await generationRequestUidForJob(env, existing) : randomToken('gen')
   const resultAssetUids = Array.from({ length: count }, (_, index) => `gen-result-${randomToken('job').replace(/^job-/, '')}-${index + 1}`)
   const payload = {
     request_uid: requestUid,
@@ -904,6 +904,16 @@ async function findDispatchJob(env: Env, jobType: string, idempotencyKey: string
   return env.DB.prepare('SELECT * FROM dispatch_jobs WHERE job_type = ? AND idempotency_key = ? LIMIT 1')
     .bind(jobType, idempotencyKey)
     .first<DispatchJobRow>()
+}
+
+async function generationRequestUidForJob(env: Env, job: DispatchJobRow): Promise<string> {
+  const payload = fromJsonObject(job.payload_json)
+  const payloadRequestUid = typeof payload.request_uid === 'string' ? payload.request_uid : ''
+  if (payloadRequestUid) return payloadRequestUid
+  const row = await env.DB.prepare('SELECT request_uid FROM ai_generation_requests WHERE dispatch_job_uid = ? LIMIT 1')
+    .bind(job.job_uid)
+    .first<{ request_uid: string }>()
+  return typeof row?.request_uid === 'string' ? row.request_uid : ''
 }
 
 async function hasActiveSubmitJob(env: Env, batchUid: string): Promise<boolean> {

@@ -602,7 +602,15 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
 }
 
 async function updateGenerationRequestStatus(env: Env, jobUid: string, status: DispatchStatus): Promise<void> {
-  const requestStatus = status === 'succeeded' ? 'completed' : status === 'cancelled' ? 'cancelled' : 'failed'
+  const terminalRequestStatuses: Partial<Record<DispatchStatus, string>> = {
+    succeeded: 'completed',
+    retryable_failed: 'failed',
+    terminal_failed: 'failed',
+    blocked_needs_login: 'failed',
+    cancelled: 'cancelled',
+  }
+  const requestStatus = terminalRequestStatuses[status]
+  if (!requestStatus) return
   await env.DB.prepare('UPDATE ai_generation_requests SET status = ?, updated_at = ? WHERE dispatch_job_uid = ?')
     .bind(requestStatus, nowIso(), jobUid)
     .run()

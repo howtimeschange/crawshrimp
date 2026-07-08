@@ -1696,6 +1696,41 @@ describe('machine routes', () => {
     ])
   })
 
+  it('does not fail generation requests on generate_ai_image progress updates', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state, {
+      allowed_capabilities_json: JSON.stringify(['generate_ai_image']),
+    })
+    const machineToken = await enrollMachine(state, token, ['generate_ai_image'])
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-generate-progress'
+    state.jobs.push(jobRow({
+      job_uid: 'job-generate-progress',
+      job_type: 'generate_ai_image',
+      status: 'leased',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['generate_ai_image']),
+      lease_id: 'lease-progress',
+    }))
+    state.generationRequests.push({
+      request_uid: 'gen-request-progress',
+      dispatch_job_uid: 'job-generate-progress',
+      status: 'queued',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })
+
+    const response = await fetchWorker(new Request('https://example.test/api/jobs/job-generate-progress/progress', {
+      method: 'POST',
+      headers: bearer(machineToken),
+      body: JSON.stringify({ lease_id: 'lease-progress', result: { pct: 50 } }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(state.jobs[0].status).toBe('running')
+    expect(state.generationRequests[0].status).toBe('queued')
+  })
+
   it('claims a matching job beyond earlier non-matching queued jobs', async () => {
     const state = await emptyState()
     const token = await seedEnrollmentToken(state)

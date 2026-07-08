@@ -574,6 +574,12 @@ describe('review routes', () => {
       ['count too small', { count: 0 }],
       ['count too large', { count: 9 }],
       ['secret field', { api_key: 'sk-secret' }],
+      ['prefixed secret field', { openai_api_key: 'sk-secret' }],
+      ['hyphenated secret field', { provider: { 'x-api-key': 'sk-secret' } }],
+      ['nested access token', { provider: { auth: { access_token: 'token' } } }],
+      ['nested refresh token', { provider: { auth: { refresh_token: 'token' } } }],
+      ['nested password', { provider: { auth: { password: 'secret' } } }],
+      ['nested secret suffix', { provider: { client_secret: 'secret' } }],
       ['data url prompt', { prompt_text: 'use data:image/png;base64,abc' }],
     ]
 
@@ -632,11 +638,15 @@ describe('review routes', () => {
       headers: { cookie: reviewerCookie },
       body: JSON.stringify({ ...basePayload, prompt_template_version_id: 31 }),
     }), fakeEnv(state))
+    const firstBody = await first.json() as { request_uid: string }
+    const repeatFirstBody = await repeatFirst.json() as { request_uid: string }
 
     expect(first.status).toBe(201)
     expect(differentTemplate.status).toBe(201)
     expect(differentMachine.status).toBe(201)
     expect(repeatFirst.status).toBe(200)
+    expect(firstBody.request_uid).toMatch(/^gen_/)
+    expect(repeatFirstBody.request_uid).toBe(firstBody.request_uid)
     expect(state.dispatchJobs).toHaveLength(3)
     expect(new Set(state.dispatchJobs.map((job) => job.idempotency_key)).size).toBe(3)
     expect(state.dispatchJobs.map((job) => job.assigned_machine_id)).toEqual(['machine-1', 'machine-1', 'machine-2'])
