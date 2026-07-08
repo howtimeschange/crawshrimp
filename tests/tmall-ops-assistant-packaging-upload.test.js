@@ -333,6 +333,33 @@ test('packaging classifier reads underscore dimensions from Semir packaging file
   assert.equal(plan.missing.length, 0)
 })
 
+test('packaging classifier caps Tmall main and micro buckets by leading sequence', async () => {
+  const helpers = await loadExports()
+  const plan = helpers.classifyPackagingAssets([
+    image('1440_1440(天猫)2.jpg', '208126140007/主图/1440_1440(天猫)2.jpg'),
+    image('1440_1440(天猫).jpg', '208126140007/主图/1440_1440(天猫).jpg'),
+    image('1440_1440(天猫)1.jpg', '208126140007/主图/1440_1440(天猫)1.jpg'),
+    image('1440_14401.jpg', '208126140007/微详情/1440_14401.jpg'),
+    image('1440_14402.jpg', '208126140007/微详情/1440_14402.jpg'),
+    image('1440_14403.jpg', '208126140007/微详情/1440_14403.jpg'),
+    image('1440_1920(天猫)2.jpg', '208126140007/主图/1440_1920(天猫)2.jpg'),
+    image('1440_1920(天猫).jpg', '208126140007/主图/1440_1920(天猫).jpg'),
+    image('1440_1920(天猫)1.jpg', '208126140007/主图/1440_1920(天猫)1.jpg'),
+    image('1440_192014.jpg', '208126140007/微详情/1440_192014.jpg'),
+    image('1440_192012.jpg', '208126140007/微详情/1440_192012.jpg'),
+    image('1440_192013.jpg', '208126140007/微详情/1440_192013.jpg'),
+    image('1440_19201.jpg', '208126140007/微详情/1440_19201.jpg'),
+    image('1440_2160(天猫)1.jpg', '208126140007/主图/1440_2160(天猫)1.jpg'),
+    image('1440_2160(天猫).jpg', '208126140007/主图/1440_2160(天猫).jpg'),
+  ])
+
+  assert.deepEqual(plain(plan.byCategory.main_1x1.map(item => item.filename)), ['1440_1440(天猫).jpg', '1440_1440(天猫)1.jpg'])
+  assert.deepEqual(plain(plan.byCategory.micro_1x1.map(item => item.filename)), ['1440_14401.jpg', '1440_14402.jpg'])
+  assert.deepEqual(plain(plan.byCategory.main_3x4.map(item => item.filename)), ['1440_1920(天猫).jpg', '1440_1920(天猫)1.jpg'])
+  assert.deepEqual(plain(plan.byCategory.micro_3x4.map(item => item.filename)), ['1440_19201.jpg', '1440_192012.jpg', '1440_192013.jpg'])
+  assert.deepEqual(plain(plan.byCategory.vertical.map(item => item.filename)), ['1440_2160(天猫).jpg'])
+})
+
 test('packaging classifier caps PC detail images and prefers detail folder assets', async () => {
   const helpers = await loadExports()
   const detailImages = Array.from({ length: 40 }, (_, index) => {

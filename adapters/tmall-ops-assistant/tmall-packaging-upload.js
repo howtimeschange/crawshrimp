@@ -989,7 +989,7 @@
       ),
       [[1440, 1440]],
     )
-    byCategory.main_1x1.push(...selectUploadAssets(main1x1Pool, TMALL_MAIN_IMAGE_MAX_COUNT, used))
+    byCategory.main_1x1.push(...selectUploadAssets(main1x1Pool, REQUIRED_COUNTS.main_1x1, used))
 
     const micro1x1Pool = sortAssetsBySizePriority(
       preferExactDimensionsIfAvailable(
@@ -1000,7 +1000,7 @@
     )
     byCategory.micro_1x1.push(...selectUploadAssets(
       micro1x1Pool,
-      Math.min(MICRO_1X1_MAX_COUNT, TMALL_MAIN_IMAGE_MAX_COUNT - byCategory.main_1x1.length),
+      MICRO_1X1_MAX_COUNT,
       used,
     ))
 
@@ -1008,7 +1008,7 @@
       mainTmallAssets.filter(item => isExactDimension(item, 1440, 1920)),
       [[1440, 1920]],
     )
-    byCategory.main_3x4.push(...selectUploadAssets(main3x4Pool, TMALL_MAIN_IMAGE_MAX_COUNT, used))
+    byCategory.main_3x4.push(...selectUploadAssets(main3x4Pool, REQUIRED_COUNTS.main_3x4, used))
 
     const micro3x4Pool = sortAssetsBySizePriority(
       microAssets.filter(item => isExactDimension(item, 1440, 1920)),
@@ -1016,7 +1016,7 @@
     )
     byCategory.micro_3x4.push(...selectUploadAssets(
       micro3x4Pool,
-      Math.min(MICRO_3X4_MAX_COUNT, TMALL_MAIN_IMAGE_MAX_COUNT - byCategory.main_3x4.length),
+      MICRO_3X4_MAX_COUNT,
       used,
     ))
 
