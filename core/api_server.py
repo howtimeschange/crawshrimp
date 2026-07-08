@@ -6529,7 +6529,7 @@ def sync_data_files_to_odps(req: SyncDataFilesRequest):
 
 # ─── Settings ───
 
-DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test"]
+DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test", "crawl_tmall_material_test_data"]
 
 
 class CloudApprovalConfigRequest(BaseModel):

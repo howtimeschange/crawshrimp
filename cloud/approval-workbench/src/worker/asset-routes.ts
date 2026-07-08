@@ -327,6 +327,9 @@ function isAssetAllowedForMachineJob(job: DispatchJobRow, asset: { assetUid: str
     })
     return asset.access === 'download' && allowed
   }
+  if (job.job_type === 'crawl_tmall_material_test_data') {
+    return asset.access === 'upload' && asset.batchUid === 'material-test' && asset.kind === 'result'
+  }
   return false
 }
 

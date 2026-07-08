@@ -10,6 +10,7 @@ import BatchListView from './views/BatchListView.vue'
 import BatchReviewView from './views/BatchReviewView.vue'
 import OnlineGenerationView from './views/OnlineGenerationView.vue'
 import DashboardView from './views/DashboardView.vue'
+import MaterialDataDashboardView from './views/MaterialDataDashboardView.vue'
 
 type PageKey =
   | 'dashboard'
@@ -152,7 +153,7 @@ onMounted(loadMe)
       <BatchReviewView v-else-if="activePage === 'review'" :initial-batch-uid="selectedBatchUid" />
       <PromptLibraryView v-else-if="activePage === 'prompts'" />
       <OnlineGenerationView v-else-if="activePage === 'generate'" />
-      <div v-else-if="activePage === 'materialData'" class="panel empty-state">测图数据模块待接入数据服务。</div>
+      <MaterialDataDashboardView v-else-if="activePage === 'materialData'" />
       <MachinesView v-else-if="activePage === 'machines'" />
       <AdminUsersView v-else-if="activePage === 'users'" />
     </section>
@@ -325,6 +326,7 @@ button {
 .nav-button,
 .ghost-button,
 .primary-button,
+.secondary-button,
 .danger-button,
 .small-button {
   min-height: 32px;
@@ -355,6 +357,10 @@ button {
 
 .ghost-button {
   background: transparent;
+}
+
+.secondary-button {
+  background: var(--bg3);
 }
 
 .danger-button {
@@ -632,6 +638,145 @@ button:disabled {
   margin-bottom: 8px;
 }
 
+.material-dashboard {
+  display: grid;
+  gap: 14px;
+}
+
+.toolbar-row,
+.action-strip {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 12px;
+}
+
+.filter-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
+  gap: 10px;
+}
+
+.filter-grid label {
+  display: grid;
+  gap: 5px;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.filter-grid input,
+.filter-grid select,
+.action-strip input {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.metric-card {
+  display: grid;
+  gap: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 12px;
+}
+
+.metric-card span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.metric-card strong {
+  font-size: 24px;
+}
+
+.file-action {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid rgba(255, 107, 43, 0.5);
+  border-radius: 6px;
+  background: var(--orange-bg);
+  color: var(--orange);
+  font-weight: 700;
+  padding: 0 12px;
+  overflow: hidden;
+}
+
+.file-action input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.machine-input {
+  flex: 1;
+}
+
+.time-input {
+  width: 124px;
+}
+
+.table-shell {
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.table-shell table {
+  width: 100%;
+  min-width: 980px;
+  border-collapse: collapse;
+  background: var(--bg2);
+}
+
+.table-shell th,
+.table-shell td {
+  border-bottom: 1px solid var(--border);
+  padding: 9px 10px;
+  text-align: left;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.table-shell th {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.thumb-link {
+  display: block;
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg3);
+}
+
+.thumb-link img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
 @media (max-width: 860px) {
   .app-header,
   .workspace-chrome,
@@ -659,6 +804,22 @@ button:disabled {
   .data-table {
     display: block;
     overflow-x: auto;
+  }
+
+  .toolbar-row,
+  .action-strip {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .filter-grid,
+  .kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .machine-input,
+  .time-input {
+    width: 100%;
   }
 }
 </style>

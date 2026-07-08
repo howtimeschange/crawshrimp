@@ -29,10 +29,12 @@ class CloudJobExecutor:
         work_dir: Path | None = None,
         *,
         tmall_module=None,
+        material_test_runner=None,
     ):
         self.client = client
         self.work_dir = Path(work_dir) if work_dir is not None else runtime_paths.data_root() / "cloud-jobs"
         self.tmall_module = tmall_module
+        self.material_test_runner = material_test_runner
 
     def execute(self, job: Mapping[str, Any]) -> dict:
         job_type = str(job.get("job_type") or "")
@@ -42,6 +44,8 @@ class CloudJobExecutor:
             return self.execute_regenerate_ai_image(job)
         if job_type == "submit_tmall_material_test":
             return self.execute_submit_tmall_material_test(job)
+        if job_type == "crawl_tmall_material_test_data":
+            return self.execute_crawl_tmall_material_test_data(job)
         raise ValueError(f"Unsupported cloud job type: {job_type}")
 
     def execute_regenerate_ai_image(self, job: Mapping[str, Any]) -> dict:
@@ -179,6 +183,63 @@ class CloudJobExecutor:
             },
         }
 
+    def execute_crawl_tmall_material_test_data(self, job: Mapping[str, Any]) -> dict:
+        payload = _payload(job)
+        task_dir = self._task_dir(job)
+        export_dir = task_dir / "exports"
+        export_dir.mkdir(parents=True, exist_ok=True)
+        run_params = {
+            "mode": "new",
+            "output_dir": str(export_dir),
+            "test_status": "1",
+            "statistic_type": "ACCUMULATE_30_DAYS",
+            "page_size": 20,
+        }
+        provided_params = payload.get("run_params")
+        if isinstance(provided_params, Mapping):
+            run_params.update({str(key): value for key, value in provided_params.items()})
+        run_params["output_dir"] = str(export_dir)
+
+        self._progress(job, "crawling", "本地抓取天猫测图数据")
+        try:
+            raw_result = _run_maybe_async(self._material_test_runner()(run_params, task_dir, job))
+        except RuntimeError as exc:
+            if _looks_like_login_block(str(exc)):
+                raise CloudJobBlocked("needs_login", str(exc)) from exc
+            raise CloudJobTerminalFailure(str(exc)) from exc
+        self._renew(job)
+
+        workbook_path = _material_workbook_path(raw_result, export_dir, task_dir)
+        parsed = parse_tmall_material_test_workbook(workbook_path)
+        asset_uid = _safe_generated_asset_uid(f"material-test-{_job_uid(job)}", _job_uid(job))
+        self._progress(job, "uploading_results", "上传测图数据工作簿")
+        upload_result = self._upload_material_result_workbook(job, workbook_path, asset_uid)
+        self._renew(job)
+
+        import_payload = {
+            "source": {
+                "source_uid": asset_uid,
+                "filename": workbook_path.name,
+                "object_key": upload_result.get("object_key", ""),
+            },
+            "overview_rows": parsed["overview_rows"],
+            "detail_rows": parsed["detail_rows"],
+        }
+        self._progress(job, "importing", "导入测图数据到云端")
+        import_result = self.client.request_json("POST", "/api/material-test/import", import_payload)
+        self._renew(job)
+        return {
+            "status": "succeeded",
+            "result": {
+                "workbook_asset_uid": asset_uid,
+                "workbook_filename": workbook_path.name,
+                "workbook_object_key": upload_result.get("object_key", ""),
+                "overview_rows": import_result.get("overview_rows", len(parsed["overview_rows"])),
+                "detail_rows": import_result.get("detail_rows", len(parsed["detail_rows"])),
+                "inserted_or_updated": import_result.get("inserted_or_updated", 0),
+            },
+        }
+
     def _task_dir(self, job: Mapping[str, Any]) -> Path:
         job_uid = _safe_segment(str(job.get("job_uid") or "job"))
         path = self.work_dir / job_uid
@@ -224,6 +285,25 @@ class CloudJobExecutor:
         upload_url = str(presign.get("upload_url") or "")
         if not upload_url:
             raise CloudApprovalError(f"cloud presign response missing upload_url for asset {asset_uid}")
+        self.client.upload_asset(upload_url, path, content_type)
+        return presign
+
+    def _upload_material_result_workbook(self, job: Mapping[str, Any], path: Path, asset_uid: str) -> dict:
+        content_type = mimetypes.guess_type(path.name)[0] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        presign = self.client.request_json("POST", "/api/assets/presign", {
+            "batch_uid": "material-test",
+            "style_id": 1,
+            "asset_uid": asset_uid,
+            "job_uid": _job_uid(job),
+            "lease_id": _lease_id(job),
+            "kind": "result",
+            "filename": path.name,
+            "content_type": content_type,
+            "meta": {"job_type": "crawl_tmall_material_test_data"},
+        })
+        upload_url = str(presign.get("upload_url") or "")
+        if not upload_url:
+            raise CloudApprovalError("cloud presign response missing upload_url for material test workbook")
         self.client.upload_asset(upload_url, path, content_type)
         return presign
 
@@ -369,6 +449,11 @@ class CloudJobExecutor:
             self.tmall_module = _load_tmall_module()
         return self.tmall_module
 
+    def _material_test_runner(self):
+        if self.material_test_runner is None:
+            self.material_test_runner = _default_material_test_runner
+        return self.material_test_runner
+
 
 def _load_tmall_module():
     script = Path(__file__).resolve().parents[1] / "adapters" / "tmall-ops-assistant" / "tools" / "run_tmall_ai_image_test_chain.py"
@@ -384,6 +469,105 @@ def _run_maybe_async(value):
     if asyncio.iscoroutine(value):
         return asyncio.run(value)
     return value
+
+
+def _default_material_test_runner(run_params: Mapping[str, Any], _task_dir: Path, _job: Mapping[str, Any]) -> Any:
+    from core import api_server
+
+    return api_server._execute_task("tmall-ops-assistant", "tmall_material_test_data_export", dict(run_params), {}, run_control=None)
+
+
+def _material_workbook_path(result: Any, export_dir: Path, task_dir: Path) -> Path:
+    candidates: list[Path] = []
+    if isinstance(result, (str, Path)):
+        candidates.append(Path(result))
+    if isinstance(result, Mapping):
+        for key in ("workbook_path", "result_path", "path"):
+            if result.get(key):
+                candidates.append(Path(str(result.get(key))))
+        for key in ("output_files", "exported_files", "files"):
+            value = result.get(key)
+            if isinstance(value, list):
+                candidates.extend(Path(str(item)) for item in value if str(item or ""))
+    candidates.extend(sorted(export_dir.glob("*.xlsx"), key=lambda path: path.stat().st_mtime, reverse=True))
+    for candidate in candidates:
+        path = candidate.expanduser().resolve()
+        if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and path.is_file() and (
+            path.is_relative_to(task_dir.resolve()) or path.is_relative_to(export_dir.resolve())
+        ):
+            return path
+    raise ValueError("material test crawl did not produce an XLSX workbook in the task directory")
+
+
+def parse_tmall_material_test_workbook(path: Path) -> dict:
+    try:
+        import openpyxl
+    except Exception as exc:  # pragma: no cover - dependency is declared in core/requirements.txt
+        raise RuntimeError("openpyxl is required to parse material test workbooks") from exc
+
+    workbook = openpyxl.load_workbook(path, read_only=True, data_only=True)
+    overview_rows = _sheet_records(workbook, "概览", _normalize_material_overview_row)
+    detail_rows = _sheet_records(workbook, "明细", _normalize_material_detail_row)
+    workbook.close()
+    return {"overview_rows": overview_rows, "detail_rows": detail_rows}
+
+
+def _sheet_records(workbook: Any, sheet_name: str, normalizer) -> list[dict]:
+    if sheet_name not in workbook.sheetnames:
+        return []
+    sheet = workbook[sheet_name]
+    rows = sheet.iter_rows(values_only=True)
+    headers = [str(cell or "").strip() for cell in next(rows, [])]
+    records = []
+    for values in rows:
+        source = {headers[index]: values[index] if index < len(values) else "" for index in range(len(headers)) if headers[index]}
+        record = normalizer(source)
+        if record:
+            records.append(record)
+    return records
+
+
+def _normalize_material_overview_row(row: Mapping[str, Any]) -> dict:
+    record = {
+        "record_type": _text(row.get("记录类型")),
+        "row_no": _nullable_int(row.get("表格行号")),
+        "style_code": _text(row.get("款号")),
+        "item_id": _text(row.get("商品ID")),
+        "item_title": _text(row.get("商品标题")),
+        "task_id": _text(row.get("任务ID")),
+        "test_status": _text(row.get("测试状态")),
+        "test_channel": _text(row.get("测试渠道")),
+        "material_count": _int(row.get("测试素材数")),
+        "statistic_type": _text(row.get("统计口径") or row.get("测试渠道")),
+        "best_material": _text(row.get("最优素材")),
+        "execution_result": _text(row.get("执行结果")),
+        "remark": _text(row.get("备注")),
+    }
+    return record if record["item_id"] and record["task_id"] else {}
+
+
+def _normalize_material_detail_row(row: Mapping[str, Any]) -> dict:
+    record = {
+        **_normalize_material_overview_row(row),
+        "statistic_type": _text(row.get("统计口径")),
+        "statistic_date": _text(row.get("统计日期")),
+        "image_type": _text(row.get("图片类型")),
+        "material_id": _text(row.get("素材ID")),
+        "material_ratio": _text(row.get("素材比例")),
+        "material_share": _decimal(row.get("素材占比")),
+        "material_url": _text(row.get("素材URL")),
+        "search_impressions": _int(row.get("搜索曝光")),
+        "search_clicks": _int(row.get("搜索点击")),
+        "search_ctr": _decimal(row.get("搜索点击率")),
+        "detail_impressions": _int(row.get("详情曝光")),
+        "detail_clicks": _int(row.get("详情点击")),
+        "detail_ctr": _decimal(row.get("详情点击率")),
+        "detail_add_to_cart": _int(row.get("详情加购")),
+        "detail_pay_conversion": _int(row.get("详情支付转化")),
+        "detail_pay_conversion_rate": _decimal(row.get("详情支付转化率")),
+        "data_download_url": _text(row.get("数据下载链接")),
+    }
+    return record if record.get("item_id") and record.get("task_id") and record.get("statistic_type") and record.get("material_url") else {}
 
 
 def _payload(job: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -420,6 +604,42 @@ def _positive_int(value: Any) -> int:
     except (TypeError, ValueError):
         return 0
     return number if number > 0 else 0
+
+
+def _text(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _int(value: Any) -> int:
+    try:
+        text = str(value or "").replace(",", "").strip()
+        return int(float(text)) if text else 0
+    except (TypeError, ValueError):
+        return 0
+
+
+def _nullable_int(value: Any) -> int | None:
+    number = _int(value)
+    return number if number > 0 else None
+
+
+def _decimal(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").replace(",", "").strip()
+    if not text or text == "-":
+        return 0.0
+    if text.endswith("%"):
+        try:
+            return float(text[:-1]) / 100
+        except ValueError:
+            return 0.0
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
 
 
 def _safe_segment(value: str) -> str:

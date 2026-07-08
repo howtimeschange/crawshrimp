@@ -104,7 +104,7 @@ class CloudApiServerTests(unittest.TestCase):
     def test_status_defaults_to_generation_and_submit_capabilities_without_saved_list(self):
         payload = api_server.get_cloud_approval_status()
 
-        self.assertEqual(payload["capabilities"], ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test"])
+        self.assertEqual(payload["capabilities"], ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test", "crawl_tmall_material_test_data"])
         self.assertNotIn("machine_token", payload)
 
     def test_config_route_persists_cloud_approval_settings_without_credentials(self):

@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import openpyxl
+
 from core import data_sink
 from core.cloud_approval_client import CloudApprovalError
 from core.cloud_machine_agent import CloudMachineAgent
@@ -333,6 +335,52 @@ class CloudJobExecutorTests(unittest.TestCase):
 
         self.assertIn("create_failed", str(raised.exception))
         self.assertIn("failed=1", str(raised.exception))
+
+    def test_crawl_tmall_material_test_data_uploads_workbook_and_imports_rows(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        captured = {}
+
+        def runner(run_params, task_dir, job):
+            captured["run_params"] = dict(run_params)
+            captured["task_dir"] = task_dir
+            captured["job_uid"] = job["job_uid"]
+            path = Path(run_params["output_dir"]) / "material-export.xlsx"
+            workbook = openpyxl.Workbook()
+            overview = workbook.active
+            overview.title = "概览"
+            overview.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "最优素材", "执行结果", "备注"])
+            overview.append(["概览", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "M1", "成功", ""])
+            detail = workbook.create_sheet("明细")
+            detail.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "统计口径", "统计日期", "图片类型", "素材ID", "素材比例", "素材占比", "素材URL", "搜索曝光", "搜索点击", "搜索点击率", "详情曝光", "详情点击", "详情点击率", "详情加购", "详情支付转化", "详情支付转化率", "数据下载链接", "执行结果", "备注"])
+            detail.append(["明细", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "2026-07-01", "主图", "M1", "1:1", "7.79%", "https://img.test/1.jpg", 1000, 77, "7.79%", 500, 40, "8%", 12, 3, "2.50%", "", "成功", ""])
+            workbook.save(path)
+            return {"workbook_path": str(path)}
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", material_test_runner=runner)
+        job = {
+            "job_uid": "job-crawl",
+            "batch_uid": "material-test",
+            "job_type": "crawl_tmall_material_test_data",
+            "lease_id": "lease-crawl",
+            "payload": {"run_params": {"statistic_type": "ACCUMULATE_30_DAYS"}},
+        }
+
+        result = executor.execute(job)
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertEqual(result["result"]["overview_rows"], 1)
+        self.assertEqual(result["result"]["detail_rows"], 1)
+        self.assertEqual(captured["run_params"]["output_dir"], str(Path(self.tmp.name) / "cloud-jobs" / "job-crawl" / "exports"))
+        self.assertEqual(client.uploads[0]["path"].name, "material-export.xlsx")
+        presign_call = next(call for call in client.calls if call["path"] == "/api/assets/presign")
+        self.assertEqual(presign_call["body"]["batch_uid"], "material-test")
+        self.assertEqual(presign_call["body"]["kind"], "result")
+        import_call = next(call for call in client.calls if call["path"] == "/api/material-test/import")
+        self.assertEqual(len(import_call["body"]["overview_rows"]), 1)
+        self.assertEqual(len(import_call["body"]["detail_rows"]), 1)
+        self.assertNotIn("workbook_path", result["result"])
 
     def test_stale_lease_completion_is_not_retried_as_success(self):
         data_sink.save_cloud_machine_credentials("machine-1", "machine-secret", "任务机", ["regenerate_ai_image"])

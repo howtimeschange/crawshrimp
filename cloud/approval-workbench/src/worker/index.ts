@@ -65,6 +65,13 @@ import {
   getMachinePerformance,
   getPromptPerformance,
 } from './dashboard-routes'
+import {
+  createMaterialTestCrawlJob,
+  createMaterialTestSchedule,
+  getMaterialTestSummary,
+  importMaterialTestData,
+  listMaterialTestImages,
+} from './material-data-routes'
 
 export default {
   async fetch(request, env): Promise<Response> {
@@ -116,6 +123,11 @@ export default {
     if (url.pathname === '/api/dashboard/summary' && request.method === 'GET') return getDashboardSummary(request, env)
     if (url.pathname === '/api/dashboard/prompt-performance' && request.method === 'GET') return getPromptPerformance(request, env)
     if (url.pathname === '/api/dashboard/machine-performance' && request.method === 'GET') return getMachinePerformance(request, env)
+    if (url.pathname === '/api/material-test/summary' && request.method === 'GET') return getMaterialTestSummary(request, env)
+    if (url.pathname === '/api/material-test/images' && request.method === 'GET') return listMaterialTestImages(request, env)
+    if (url.pathname === '/api/material-test/import' && request.method === 'POST') return importMaterialTestData(request, env)
+    if (url.pathname === '/api/material-test/crawl-jobs' && request.method === 'POST') return createMaterialTestCrawlJob(request, env)
+    if (url.pathname === '/api/material-test/schedules' && request.method === 'POST') return createMaterialTestSchedule(request, env)
     if (url.pathname === '/api/ai-image-batches' && request.method === 'GET') return listBatches(request, env)
     if (url.pathname === '/api/ai-image-batches/sync' && request.method === 'POST') return syncBatch(request, env)
     if (/^\/api\/ai-image-batches\/[^/]+\/sync-complete$/.test(url.pathname) && request.method === 'POST') return syncBatchComplete(request, env)
