@@ -18,12 +18,24 @@ class AiImageServiceTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         data_sink.init_db()
 
-    def test_default_output_dir_is_job_scoped_under_runtime_data(self):
+    def test_default_output_dir_uses_user_visible_downloads_folder(self):
         job = {"job_uid": "job-123"}
+        home = self.root.parent / f"home-{self.root.name}"
+
+        with patch("pathlib.Path.home", return_value=home):
+            path = ai_image_service.default_output_dir(job)
+
+        self.assertEqual(path, home / "Downloads" / "抓虾导出" / "AI生图")
+        self.assertNotIn(str(self.root), str(path))
+        self.assertNotIn("job-123", str(path))
+
+    def test_default_output_dir_honors_explicit_output_dir(self):
+        output_dir = self.root / "custom-export"
+        job = {"job_uid": "job-123", "output_dir": str(output_dir)}
 
         path = ai_image_service.default_output_dir(job)
 
-        self.assertEqual(path, self.root / "ai-image" / "jobs" / "job-123")
+        self.assertEqual(path, output_dir)
 
     def test_select_model_key_prefers_size_tier_and_raises_without_key(self):
         settings = {"2k": "key-2k", "4k": "key-4k"}

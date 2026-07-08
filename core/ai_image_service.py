@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
-from core import data_sink, runtime_paths
+from core import data_sink
 from core.one_xm_image import DEFAULT_BASE_URL, OneXMImageClient, file_to_data_url, run_image_task_until_done
 
 
@@ -36,8 +36,10 @@ def _compact(value: Any) -> str:
 
 
 def default_output_dir(job: Mapping[str, Any]) -> Path:
-    job_uid = _compact(job.get("job_uid")) or "unassigned"
-    return runtime_paths.data_root() / "ai-image" / "jobs" / job_uid
+    output_dir = _compact(job.get("output_dir"))
+    if output_dir:
+        return Path(output_dir).expanduser()
+    return Path.home() / "Downloads" / "抓虾导出" / "AI生图"
 
 
 def _params(job: Mapping[str, Any]) -> dict:

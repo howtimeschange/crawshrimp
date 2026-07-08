@@ -87,3 +87,33 @@ Status: DONE
 ## Concerns
 
 - No functional concerns. The existing Node `MODULE_TYPELESS_PACKAGE_JSON` warnings remain unrelated to this fix.
+
+# Task 2 Output Directory Fix Report
+
+Status: DONE
+
+## RED evidence
+
+- `python -m unittest tests.test_ai_image_service -v` failed with 11 tests run, 2 failures:
+  - `test_default_output_dir_uses_user_visible_downloads_folder` expected `~/Downloads/抓虾导出/AI生图`, but received the runtime-data job path.
+  - `test_default_output_dir_honors_explicit_output_dir` expected the job `output_dir`, but received the runtime-data job path.
+
+## Implementation
+
+- Changed `default_output_dir(job)` to honor non-empty `job["output_dir"]` via `Path(...).expanduser()`.
+- Changed the fallback default to `Path.home() / "Downloads" / "抓虾导出" / "AI生图"`.
+- Left directory creation in `_download_outputs`, not in default path resolution.
+- Removed the runtime data and per-job UID default folder behavior.
+
+## Tests
+
+- `python -m unittest tests.test_ai_image_service -v`: passed, 11 tests.
+- `python -m unittest tests.test_ai_image_data_sink tests.test_ai_image_service tests.test_ai_image_api -v`: passed, 21 tests.
+
+## Commit hash
+
+- Recorded in the final Task 2 output directory fix response after commit creation.
+
+## Concerns
+
+- No functional concerns.
