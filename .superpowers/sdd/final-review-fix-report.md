@@ -43,3 +43,19 @@ Code-fix commit: `8f740bd1`
 ## Residual risk
 
 - Cloudflare deployment was not run in this final-review fix pass.
+
+## Follow-up fix: cancelled lease recovery
+
+- Fixed cancelled leased/running dispatch jobs so expired leases with `cancel_requested = 1` transition to terminal `cancelled`, clear lease ownership fields, and record a `cancelled` dispatch job event.
+- Tightened machine claim selection and the final lease update to explicitly require `cancel_requested != 1`, preventing malformed queued cancel-requested jobs from being claimed.
+- Added focused regression coverage for expired cancel-requested lease recovery and queued cancel-requested claim exclusion.
+
+## Follow-up tests
+
+- PASS: `cd cloud/approval-workbench && npm test -- src/tests/machines.test.ts`
+- PASS: `cd cloud/approval-workbench && npm run typecheck`
+- PASS: `git diff --check`
+
+## Follow-up commit
+
+- Code-fix commit: `4f88ffcaa03c924171cfab5c7cd05c4d7ae95f7a`
