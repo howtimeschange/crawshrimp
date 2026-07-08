@@ -106,6 +106,53 @@ describe('cloud approval UI contract', () => {
     expect(app).not.toContain('side-nav')
   })
 
+  it('online generation uses the option-3 workbench shell instead of a batch-list side form', () => {
+    const generate = read('src/app/views/OnlineGenerationView.vue')
+    for (const marker of [
+      'cloud-aiw-param-ribbon',
+      'cloud-aiw-prompt-panel',
+      'cloud-aiw-results-grid',
+      'cloud-aiw-history-drawer',
+      'cloud-aiw-generate-footer',
+    ]) {
+      expect(generate).toContain(marker)
+    }
+    expect(generate).toContain('支持主图、参考图、Prompt、自定义尺寸和多模型生成')
+    expect(generate).not.toContain('split-grid')
+    expect(generate).not.toContain('class="data-table"')
+    expect(generate).not.toContain('form-panel')
+  })
+
+  it('online generation submits the extended cloud generation contract', () => {
+    const generate = read('src/app/views/OnlineGenerationView.vue')
+    const submitGenerationBody = generate.match(/async function submitGeneration\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+    for (const field of [
+      'style_id',
+      'source_asset_uid',
+      'reference_asset_uids',
+      'prompt_template_version_id',
+      'prompt_text',
+      'machine_id',
+      'model',
+      'size',
+      'quality',
+      'output_format',
+      'count',
+    ]) {
+      expect(submitGenerationBody).toContain(field)
+    }
+    for (const option of [
+      'gpt-image-2',
+      'gemini-3.1-flash-image-preview',
+      'gemini-3-pro-image-preview',
+      '4096x4096',
+      '4K',
+      'webp',
+    ]) {
+      expect(generate).toContain(option)
+    }
+  })
+
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
     const adminUsers = read('src/app/views/AdminUsersView.vue')
     expect(adminUsers).toContain('function loadedRoleKey')
