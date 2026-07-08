@@ -184,8 +184,9 @@ class FakeD1Statement {
     }
     if (normalized.includes('from dispatch_jobs') && normalized.includes("status = 'queued'")) {
       const machineId = String(this.params[0])
+      const excludesCancelRequested = normalized.includes('cancel_requested != 1')
       const sorted = [...this.state.jobs]
-        .filter((job) => job.status === 'queued' && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
+        .filter((job) => job.status === 'queued' && (!excludesCancelRequested || job.cancel_requested !== 1) && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
         .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at))
       return (sorted[0] ?? null) as T | null
     }
@@ -207,10 +208,26 @@ class FakeD1Statement {
     }
     if (normalized.includes('from machine_enrollment_tokens')) return { results: this.state.enrollmentTokens as T[] }
     if (normalized.includes('from task_machines')) return { results: this.state.machines as T[] }
+    if (normalized.includes('from dispatch_jobs') && normalized.includes('cancel_requested = 1')) {
+      const cutoff = String(this.params[0])
+      const results = this.state.jobs
+        .filter((job) => job.cancel_requested === 1
+          && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
+          && Boolean(job.lease_expires_at)
+          && String(job.lease_expires_at) < cutoff)
+        .map((job) => ({
+          job_uid: job.job_uid,
+          status: job.status,
+          assigned_machine_id: job.assigned_machine_id,
+          lease_id: job.lease_id,
+        }))
+      return { results: results as T[] }
+    }
     if (normalized.includes('from dispatch_jobs')) {
       const machineId = String(this.params[0])
+      const excludesCancelRequested = normalized.includes('cancel_requested != 1')
       const results = [...this.state.jobs]
-        .filter((job) => job.status === 'queued' && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
+        .filter((job) => job.status === 'queued' && (!excludesCancelRequested || job.cancel_requested !== 1) && (!job.assigned_machine_id || job.assigned_machine_id === machineId))
         .sort((a, b) => a.priority - b.priority || a.created_at.localeCompare(b.created_at))
       return { results: results.map((job) => ({ ...job })) as T[] }
     }
@@ -290,6 +307,18 @@ class FakeD1Statement {
       })
       return result(1, id)
     }
+    if (normalized.startsWith('insert into dispatch_job_events')) {
+      this.state.events.push({
+        job_uid: String(this.params[0]),
+        machine_id: String(this.params[1]),
+        lease_id: String(this.params[2]),
+        event_type: String(this.params[3]),
+        message: String(this.params[4]),
+        payload_json: String(this.params[5]),
+        created_at: String(this.params[6]),
+      })
+      return result(1, this.state.events.length)
+    }
     if (normalized.startsWith('update task_machines set auth_status')) {
       const machine = this.state.machines.find((row) => row.machine_id === String(this.params[2]))
       if (machine) machine.auth_status = String(this.params[0])
@@ -317,15 +346,36 @@ class FakeD1Statement {
       if (token) token.last_used_at = String(this.params[0])
       return result(token ? 1 : 0)
     }
+    if (normalized.startsWith("update dispatch_jobs set status = 'cancelled'")) {
+      const now = String(this.params[0])
+      const cutoff = String(this.params[1])
+      let changes = 0
+      for (const job of this.state.jobs) {
+        const expiredLease = job.cancel_requested === 1
+          && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
+          && Boolean(job.lease_expires_at)
+          && String(job.lease_expires_at) < cutoff
+        if (expiredLease) {
+          job.status = 'cancelled'
+          job.assigned_machine_id = null
+          job.lease_id = null
+          job.lease_expires_at = null
+          job.updated_at = now
+          changes += 1
+        }
+      }
+      return result(changes)
+    }
     if (normalized.startsWith("update dispatch_jobs set status = 'queued'")) {
       const now = String(this.params[0])
       const cutoff = this.params.length > 1 ? String(this.params[1]) : ''
       let changes = 0
       for (const job of this.state.jobs) {
-        const expiredLease = ['leased', 'running', 'uploading_results'].includes(job.status)
+        const expiredLease = ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
+          && job.cancel_requested !== 1
           && Boolean(job.lease_expires_at)
           && String(job.lease_expires_at) < cutoff
-        const retryable = job.status === 'retryable_failed'
+        const retryable = job.status === 'retryable_failed' && job.cancel_requested !== 1
         if ((expiredLease || retryable) && job.attempt_count < job.max_attempts) {
           job.status = 'queued'
           job.assigned_machine_id = null
@@ -343,6 +393,7 @@ class FakeD1Statement {
       const requiredCapabilitiesParam = normalized.includes('required_capabilities_json = ?') ? String(this.params[5]) : null
       const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.status === 'queued' && (!row.assigned_machine_id || row.assigned_machine_id === machineId))
       if (!job) return result(0)
+      if (normalized.includes('cancel_requested != 1') && job.cancel_requested === 1) return result(0)
       if (this.state.claimRaceRequiredCapabilitiesJson) job.required_capabilities_json = this.state.claimRaceRequiredCapabilitiesJson
       if (requiredCapabilitiesParam !== null && job.required_capabilities_json !== requiredCapabilitiesParam) return result(0)
       const machine = this.state.machines.find((row) => row.machine_id === machineId)
@@ -744,6 +795,68 @@ describe('machine routes', () => {
     expect(body.job.attempt_count).toBe(2)
     expect(state.jobs[0].status).toBe('leased')
     expect(state.jobs[0].assigned_machine_id).toBe('machine-1')
+  })
+
+  it('expires cancel-requested leases as cancelled instead of reclaiming them', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: 'job-cancel-expired',
+      status: 'cancel_requested',
+      cancel_requested: 1,
+      assigned_machine_id: 'machine-old',
+      lease_id: 'lease-old',
+      lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
+      attempt_count: 1,
+      max_attempts: 3,
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { job: null }
+
+    expect(response.status).toBe(200)
+    expect(body.job).toBeNull()
+    expect(state.jobs[0].status).toBe('cancelled')
+    expect(state.jobs[0].assigned_machine_id).toBeNull()
+    expect(state.jobs[0].lease_id).toBeNull()
+    expect(state.jobs[0].lease_expires_at).toBeNull()
+  })
+
+  it('does not claim queued jobs with cancel requested even if state is malformed', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: 'job-cancel-queued',
+      status: 'queued',
+      cancel_requested: 1,
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { job: null }
+
+    expect(response.status).toBe(200)
+    expect(body.job).toBeNull()
+    expect(state.jobs[0].status).toBe('queued')
+    expect(state.jobs[0].lease_id).toBeNull()
+    expect(state.jobs[0].assigned_machine_id).toBeNull()
   })
 
   it.each([

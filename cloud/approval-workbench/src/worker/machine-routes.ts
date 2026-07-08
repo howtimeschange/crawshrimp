@@ -344,6 +344,7 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
             result_json, created_at, updated_at
      FROM dispatch_jobs
      WHERE status = 'queued'
+       AND cancel_requested != 1
        AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)
      ORDER BY priority ASC, created_at ASC
     `,
@@ -374,6 +375,7 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
          updated_at = ?
      WHERE job_uid = ?
        AND status = 'queued'
+       AND cancel_requested != 1
        AND required_capabilities_json = ?
        AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)
        AND EXISTS (
@@ -418,6 +420,41 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
 
 async function recoverClaimableJobs(env: Env): Promise<void> {
   const now = nowIso()
+  const { results: cancelledJobs } = await env.DB.prepare(
+    `SELECT job_uid, status, assigned_machine_id, lease_id
+     FROM dispatch_jobs
+     WHERE cancel_requested = 1
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?`,
+  )
+    .bind(now)
+    .all<Pick<DispatchJobRow, 'job_uid' | 'status' | 'assigned_machine_id' | 'lease_id'>>()
+  if (cancelledJobs.length > 0) {
+    await env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'cancelled',
+           assigned_machine_id = NULL,
+           lease_id = NULL,
+           lease_expires_at = NULL,
+           updated_at = ?
+       WHERE cancel_requested = 1
+         AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at < ?`,
+    )
+      .bind(now, now)
+      .run()
+    await Promise.all(cancelledJobs.map((job) => recordJobEvent(
+      env,
+      job.job_uid,
+      job.assigned_machine_id || '',
+      job.lease_id || '',
+      'cancelled',
+      '',
+      { previous_status: job.status, status: 'cancelled', reason: 'lease_expired_after_cancel_requested' },
+    )))
+  }
   await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET status = 'queued',
@@ -426,6 +463,7 @@ async function recoverClaimableJobs(env: Env): Promise<void> {
          lease_expires_at = NULL,
          updated_at = ?
      WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND cancel_requested != 1
        AND lease_expires_at IS NOT NULL
        AND lease_expires_at < ?
        AND attempt_count < max_attempts`,
