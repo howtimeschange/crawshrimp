@@ -8,6 +8,12 @@ import type { Permission } from './security/rbac'
 const ALLOWED_KINDS = new Set(['source', 'reference', 'ai', 'table', 'log', 'result'])
 const ALLOWED_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif', '.csv', '.xlsx', '.xls', '.json', '.txt', '.log'])
 
+class AssetUidConflictError extends Error {
+  constructor() {
+    super('asset_uid already belongs to a different asset scope')
+  }
+}
+
 interface AssetUploadBody {
   batch_uid?: unknown
   style_id?: unknown
@@ -102,22 +108,28 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
     return badRequest('invalid object key')
   }
   const now = nowIso()
-  await upsertAsset(env, {
-    assetUid,
-    batchUid,
-    styleId,
-    kind,
-    status: 'planned',
-    objectKey,
-    filename: safeFilename(filename),
-    contentHash: stringValue(body.content_hash),
-    promptTemplateVersionId: numberOrNull(body.prompt_template_version_id),
-    promptText: stringValue(body.prompt_text),
-    parentAssetUid: nullableString(body.parent_asset_uid),
-    generationJobId: nullableString(body.generation_job_id),
-    meta: sanitizedMeta(body),
-    now,
-  })
+  try {
+    await upsertAsset(env, {
+      assetUid,
+      batchUid,
+      styleId,
+      kind,
+      status: 'planned',
+      objectKey,
+      filename: safeFilename(filename),
+      contentHash: stringValue(body.content_hash),
+      promptTemplateVersionId: numberOrNull(body.prompt_template_version_id),
+      promptText: stringValue(body.prompt_text),
+      parentAssetUid: nullableString(body.parent_asset_uid),
+      generationJobId: nullableString(body.generation_job_id),
+      meta: sanitizedMeta(body),
+      now,
+    })
+  } catch (error) {
+    const response = assetUidConflictResponse(error)
+    if (response) return response
+    throw error
+  }
   const lease = isMachineActor(actor) ? leaseFields(request, body) : null
   return json({
     asset_uid: assetUid,
@@ -392,7 +404,23 @@ export async function upsertAsset(env: Env, asset: {
   meta: Record<string, unknown>
   now: string
 }): Promise<void> {
-  await env.DB.prepare(
+  const existing = await env.DB.prepare(
+    `SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash, meta_json
+     FROM ai_image_assets
+     WHERE asset_uid = ?
+     LIMIT 1`,
+  )
+    .bind(asset.assetUid)
+    .first<AssetRow>()
+  if (existing && (
+    existing.batch_uid !== asset.batchUid
+    || existing.style_id !== asset.styleId
+    || existing.kind !== asset.kind
+    || existing.object_key !== asset.objectKey
+  )) {
+    throw new AssetUidConflictError()
+  }
+  const result = await env.DB.prepare(
     `INSERT INTO ai_image_assets
        (asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash,
         prompt_template_version_id, prompt_text, parent_asset_uid, generation_job_id, meta_json, created_at, updated_at)
@@ -410,7 +438,11 @@ export async function upsertAsset(env: Env, asset: {
        parent_asset_uid = excluded.parent_asset_uid,
        generation_job_id = excluded.generation_job_id,
        meta_json = excluded.meta_json,
-       updated_at = excluded.updated_at`,
+       updated_at = excluded.updated_at
+     WHERE ai_image_assets.batch_uid = excluded.batch_uid
+       AND ai_image_assets.style_id = excluded.style_id
+       AND ai_image_assets.kind = excluded.kind
+       AND ai_image_assets.object_key = excluded.object_key`,
   )
     .bind(
       asset.assetUid,
@@ -430,6 +462,12 @@ export async function upsertAsset(env: Env, asset: {
       asset.now,
     )
     .run()
+  if (Number(result.meta.changes ?? 0) === 0) throw new AssetUidConflictError()
+}
+
+export function assetUidConflictResponse(error: unknown): Response | null {
+  if (error instanceof AssetUidConflictError) return json({ error: error.message }, { status: 409 })
+  return null
 }
 
 export function sanitizedMeta(body: { meta?: unknown; source_path?: unknown; source_path_label?: unknown }): Record<string, unknown> {

@@ -361,7 +361,14 @@ def cloud_approval_board_url(base_url: object, batch_id: object) -> str:
 
 
 def render_approval_board_html(batch: Mapping[str, Any]) -> str:
-    payload = json.dumps(json_safe(batch), ensure_ascii=False).replace("</", "<\\/")
+    payload = (
+        json.dumps(json_safe(batch), ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
     title = "天猫AI测图审批看板"
     return f"""<!doctype html>
 <html lang="zh-CN">
@@ -444,6 +451,12 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     function allAssets() {{
       return batch.items.flatMap((item) => (item.assets || []).map((asset) => [item, asset]));
     }}
+    function escapeHtml(value) {{
+      return String(value || '').replace(/[&<>"']/g, (char) => ({{ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }}[char]));
+    }}
+    function safeClassName(value) {{
+      return String(value || '').replace(/[^a-zA-Z0-9_-]+/g, '-');
+    }}
     function updateAsset(asset, patch) {{
       Object.assign(asset, patch);
       state.set(asset.id, {{ status: asset.status, custom_prompt: asset.custom_prompt || '', reference_paths: asset.reference_paths || [], review_note: asset.review_note || '' }});
@@ -461,23 +474,25 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
       for (const item of batch.items || []) {{
         const section = document.createElement('article');
         section.className = 'item';
-        section.innerHTML = `<div class="item-head"><div><div class="item-title">${{item.style_code || ''}}</div><div class="item-sub">商品ID ${{item.item_id || '-'}} · ${{item.category || '-'}} · SKC ${{item.skc_code || '-'}}</div></div><div class="item-sub">参考图模式 ${{item.reference_mode || ''}}</div></div><div class="grid"></div>`;
+        section.innerHTML = `<div class="item-head"><div><div class="item-title">${{escapeHtml(item.style_code || '')}}</div><div class="item-sub">商品ID ${{escapeHtml(item.item_id || '-')}} · ${{escapeHtml(item.category || '-')}} · SKC ${{escapeHtml(item.skc_code || '-')}}</div></div><div class="item-sub">参考图模式 ${{escapeHtml(item.reference_mode || '')}}</div></div><div class="grid"></div>`;
         const grid = section.querySelector('.grid');
         for (const asset of item.assets || []) {{
           const tile = document.createElement('div');
           tile.className = 'tile ' + (asset.kind === 'ai' ? '' : 'reference');
           const canApprove = asset.kind === 'ai';
+          const refsValue = escapeHtml((asset.reference_paths || []).join('\\n'));
+          const statusText = asset.status || 'pending';
           tile.innerHTML = `
-            <img class="thumb" src="${{imageUrl(asset)}}" alt="${{asset.label || ''}}" />
+            <img class="thumb" src="${{imageUrl(asset)}}" alt="${{escapeHtml(asset.label || '')}}" />
             <div class="tile-body">
-              <div class="label" title="${{asset.label || ''}}">${{asset.label || ''}}</div>
-              <div class="path" title="${{asset.path || ''}}">${{asset.filename || asset.path || ''}}</div>
+              <div class="label" title="${{escapeHtml(asset.label || '')}}">${{escapeHtml(asset.label || '')}}</div>
+              <div class="path" title="${{escapeHtml(asset.path || '')}}">${{escapeHtml(asset.filename || asset.path || '')}}</div>
               <div class="actions">
                 <button data-act="detail">Prompt</button>
                 ${{canApprove ? '<button data-act="approve">确认</button><button class="danger" data-act="reject">舍弃</button><button data-act="retry">重试/改图</button>' : ''}}
               </div>
-              ${{canApprove ? `<textarea data-field="prompt" placeholder="修改生图 prompt 后点击重试">${{asset.custom_prompt || asset.prompt || ''}}</textarea><div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{(asset.reference_paths || []).join('\\n').replaceAll('"','&quot;')}}" /></div>` : ''}}
-              <div class="status ${{asset.status || ''}}">状态：${{asset.status || 'pending'}}</div>
+              ${{canApprove ? `<textarea data-field="prompt" placeholder="修改生图 prompt 后点击重试">${{escapeHtml(asset.custom_prompt || asset.prompt || '')}}</textarea><div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{refsValue}}" /></div>` : ''}}
+              <div class="status ${{safeClassName(statusText)}}">状态：${{escapeHtml(statusText)}}</div>
             </div>`;
           tile.querySelector('[data-act="detail"]').onclick = () => openDetail(asset);
           const promptInput = tile.querySelector('[data-field="prompt"]');
@@ -717,14 +732,16 @@ def maybe_sync_approval_batch_to_cloud(batch: dict[str, Any], *, log=print) -> d
     from core.config import load_config
 
     cloud_config = (load_config().get("cloud_approval") or {})
-    if not cloud_config.get("machine_enabled") or not compact(cloud_config.get("base_url")):
-        return None
+    job_uid = approval_batch_run_uid(batch) or compact(batch.get("batch_id")) or "approval-batch"
+    base_url = compact(cloud_config.get("base_url"))
+    if not cloud_config.get("machine_enabled"):
+        return record_cloud_approval_sync_warning(batch, job_uid, base_url, "云端审批同步跳过：未启用云端审批任务机", log=log)
+    if not base_url:
+        return record_cloud_approval_sync_warning(batch, job_uid, base_url, "云端审批同步跳过：未配置云端审批地址", log=log)
     credentials = data_sink.get_cloud_machine_credentials() or {}
     machine_token = compact(credentials.get("machine_token"))
     if not machine_token:
-        return None
-    job_uid = approval_batch_run_uid(batch) or compact(batch.get("batch_id")) or "approval-batch"
-    base_url = compact(cloud_config.get("base_url"))
+        return record_cloud_approval_sync_warning(batch, job_uid, base_url, "云端审批同步跳过：未注册任务机或机器 token 缺失", log=log)
     client = CloudApprovalClient(
         base_url,
         machine_token=machine_token,
@@ -775,6 +792,25 @@ def maybe_sync_approval_batch_to_cloud(batch: dict[str, Any], *, log=print) -> d
         if log:
             log(f"[warn] {warning}")
         return None
+
+
+def record_cloud_approval_sync_warning(batch: dict[str, Any], job_uid: str, base_url: str, warning: str, *, log=print) -> None:
+    batch["cloud_sync"] = {
+        "status": "warning",
+        "base_url": compact(base_url),
+        "warning": compact(warning),
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    data_sink.record_cloud_job_event(
+        job_uid,
+        "approval_batch_sync_warning",
+        "local approval batch cloud sync skipped",
+        {"batch_id": batch.get("batch_id"), "warning": compact(warning)},
+    )
+    save_approval_batch(batch)
+    if log:
+        log(f"[warn] {warning}")
+    return None
 
 
 def notify_approval_batch(batch: Mapping[str, Any], *, channel: str = "dingtalk", log=None) -> None:

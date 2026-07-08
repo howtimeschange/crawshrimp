@@ -19,8 +19,13 @@
       <p>请先在设置的「云端审批」中配置云端地址，注册任务机后再进入审批工作台。</p>
     </section>
 
+    <section v-else-if="!embeddedUrl" class="empty-state">
+      <h3>云端地址无效</h3>
+      <p>请在设置的「云端审批」中填写 http 或 https 开头的有效地址。</p>
+    </section>
+
     <section v-else class="frame-shell">
-      <iframe :src="embeddedUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups" />
+      <iframe :src="embeddedUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals" />
     </section>
   </div>
 </template>

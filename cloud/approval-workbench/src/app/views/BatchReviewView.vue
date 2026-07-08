@@ -305,7 +305,11 @@ async function regenerateSelected() {
   if (!batch.value || selectedRejectedAssets.value.length === 0) return
   try {
     const overrides = promptOverridesFor(selectedRejectedAssets.value)
-    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate`, { asset_uids: selectedRejectedAssets.value.map((asset) => asset.asset_uid), prompt_overrides: overrides })
+    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate`, {
+      asset_uids: selectedRejectedAssets.value.map((asset) => asset.asset_uid),
+      prompt_overrides: overrides,
+      request_nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    })
     message.value = `已创建 ${selectedRejectedAssets.value.length} 个选中舍弃图重跑任务`
     await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
   } catch (caught) {
@@ -316,7 +320,10 @@ async function regenerateSelected() {
 async function regenerateRejected() {
   if (!batch.value || rejectedAssets.value.length === 0) return
   try {
-    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate-rejected`, { prompt_overrides: promptOverridesFor(rejectedAssets.value) })
+    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate-rejected`, {
+      prompt_overrides: promptOverridesFor(rejectedAssets.value),
+      request_nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    })
     message.value = `已创建 ${rejectedAssets.value.length} 个舍弃图重跑任务`
     await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
   } catch (caught) {
@@ -363,6 +370,7 @@ async function createStyleGenerationJobs() {
   try {
     const count = Math.max(1, Math.min(12, Number(generationCount.value) || 1))
     const promptTemplateVersionId = selectedPromptTemplateVersionId()
+    const noncePrefix = `${Date.now()}-${Math.random().toString(36).slice(2)}`
     for (let index = 0; index < count; index += 1) {
       await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generate`, {
         style_id: selectedStyle.value.id,
@@ -370,7 +378,7 @@ async function createStyleGenerationJobs() {
         reference_asset_uids: generationReferenceAssetUids.value,
         prompt_template_version_id: promptTemplateVersionId,
         prompt_text: generationPromptText.value.trim(),
-        request_nonce: count > 1 ? `${Date.now()}-${index}` : '',
+        request_nonce: `${noncePrefix}-${index}`,
       })
     }
     message.value = `已给当前款式创建 ${count} 个 AI 生图任务`

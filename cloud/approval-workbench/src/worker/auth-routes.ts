@@ -49,16 +49,20 @@ function cookieValue(request: Request, name: string): string | null {
   return null
 }
 
-function cookieAttributes(ttlSeconds: number): string {
-  return `Path=/; HttpOnly; Secure; SameSite=None; Max-Age=${ttlSeconds}`
+function cookieAttributes(request: Request, ttlSeconds: number): string {
+  const url = new URL(request.url)
+  const secureContext = url.protocol === 'https:'
+  const sameSite = secureContext ? 'None' : 'Lax'
+  const secure = secureContext ? '; Secure' : ''
+  return `Path=/; HttpOnly${secure}; SameSite=${sameSite}; Max-Age=${ttlSeconds}`
 }
 
-function sessionCookie(token: string, ttlSeconds: number): string {
-  return `${SESSION_COOKIE}=${token}; ${cookieAttributes(ttlSeconds)}`
+function sessionCookie(request: Request, token: string, ttlSeconds: number): string {
+  return `${SESSION_COOKIE}=${token}; ${cookieAttributes(request, ttlSeconds)}`
 }
 
-function expiredSessionCookie(): string {
-  return `${SESSION_COOKIE}=; ${cookieAttributes(0)}`
+function expiredSessionCookie(request: Request): string {
+  return `${SESSION_COOKIE}=; ${cookieAttributes(request, 0)}`
 }
 
 function responseFor(user: UserRow, roles: RoleRow[]): Record<string, unknown> {
@@ -112,6 +116,13 @@ export async function requirePermission(request: Request, env: Env, permission: 
   return actor
 }
 
+export async function requireAnyPermission(request: Request, env: Env, permissions: Permission[]): Promise<CurrentUser | Response> {
+  const actor = await currentUser(request, env)
+  if (!actor) return unauthorized()
+  if (!permissions.some((permission) => actor.permissions.includes(permission))) return forbidden()
+  return actor
+}
+
 export async function login(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
   const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
@@ -143,7 +154,7 @@ export async function login(request: Request, env: Env): Promise<Response> {
   await recordAudit(env, { userId: user.id }, 'auth.login', 'user', String(user.id), { email: user.email }, request)
 
   return json(responseFor(user, roles), {
-    headers: { 'set-cookie': sessionCookie(token, ttlSeconds) },
+    headers: { 'set-cookie': sessionCookie(request, token, ttlSeconds) },
   })
 }
 
@@ -153,7 +164,7 @@ export async function logout(request: Request, env: Env): Promise<Response> {
     await env.DB.prepare('UPDATE sessions SET revoked_at = ? WHERE session_hash = ?').bind(nowIso(), actor.sessionHash).run()
     await recordAudit(env, { userId: actor.user.id }, 'auth.logout', 'user', String(actor.user.id), {}, request)
   }
-  return json({ ok: true }, { headers: { 'set-cookie': expiredSessionCookie() } })
+  return json({ ok: true }, { headers: { 'set-cookie': expiredSessionCookie(request) } })
 }
 
 export async function me(request: Request, env: Env): Promise<Response> {
@@ -191,6 +202,8 @@ export async function createUser(request: Request, env: Env): Promise<Response> 
   if (!email || !name || password.length < 8) return badRequest('email, name, and password of at least 8 characters are required')
   const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
   if (roleIdByKey instanceof Response) return roleIdByKey
+  const roleGuard = requireAssignableRoleKeys(actor, roleKeys)
+  if (roleGuard) return roleGuard
 
   const now = nowIso()
   const passwordHash = await hashPassword(password)
@@ -245,6 +258,8 @@ export async function updateUserRoles(request: Request, env: Env): Promise<Respo
   const roleKeys = Array.isArray(body.roleKeys) ? body.roleKeys.filter((roleKey): roleKey is string => typeof roleKey === 'string') : []
   const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
   if (roleIdByKey instanceof Response) return roleIdByKey
+  const roleGuard = requireAssignableRoleKeys(actor, roleKeys)
+  if (roleGuard) return roleGuard
   await env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(userId).run()
   await assignUserRoles(env, userId, roleKeys, actor.user.id, roleIdByKey)
   await recordAudit(env, { userId: actor.user.id }, 'users.roles.update', 'user', String(userId), { roleKeys }, request)
@@ -272,6 +287,13 @@ async function roleIdMapForValidatedKeys(env: Env, roleKeys: string[]): Promise<
     return badRequest(`unknown roleKeys: ${missingRoleKeys.join(', ')}`)
   }
   return roleIdByKey
+}
+
+function requireAssignableRoleKeys(actor: CurrentUser, roleKeys: string[]): Response | null {
+  if (roleKeys.includes('super_admin') && !actor.roles.some((role) => role.role_key === 'super_admin')) {
+    return forbidden('Only super_admin can assign super_admin')
+  }
+  return null
 }
 
 async function assignUserRoles(env: Env, userId: number, roleKeys: string[], assignedBy: number, roleIdByKey: RoleIdByKey): Promise<void> {

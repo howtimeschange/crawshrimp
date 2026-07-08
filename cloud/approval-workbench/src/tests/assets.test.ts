@@ -227,7 +227,22 @@ class FakeD1Statement {
     }
     if (normalized.startsWith('insert into ai_image_assets')) {
       const existing = this.state.assets.find((row) => row.asset_uid === String(this.params[0]))
-      if (existing) return result(1, existing.id)
+      if (existing) {
+        existing.batch_uid = String(this.params[1])
+        existing.style_id = Number(this.params[2])
+        existing.kind = String(this.params[3])
+        existing.status = String(this.params[4])
+        existing.object_key = String(this.params[5])
+        existing.filename = String(this.params[6])
+        existing.content_hash = String(this.params[7])
+        existing.prompt_template_version_id = numberOrNull(this.params[8])
+        existing.prompt_text = String(this.params[9])
+        existing.parent_asset_uid = stringOrNull(this.params[10])
+        existing.generation_job_id = stringOrNull(this.params[11])
+        existing.meta_json = String(this.params[12])
+        existing.updated_at = String(this.params[14])
+        return result(1, existing.id)
+      }
       const id = this.state.assets.length + 1
       this.state.assets.push({
         id,
@@ -636,6 +651,41 @@ describe('asset upload planning routes', () => {
 
     expect(response.status).toBe(200)
     expect(state.assets[0].asset_uid).toBe('asset-ai-1')
+  })
+
+  it('rejects asset_uid reuse that would move an existing asset to another batch', async () => {
+    const { state, adminCookie } = await baseState()
+    state.assets.push(assetRow({
+      asset_uid: 'shared-asset',
+      batch_uid: 'batch-20260707',
+      style_id: 7,
+      kind: 'ai',
+      object_key: 'batches/batch-20260707/ai/shared-asset-old.jpg',
+      filename: 'old.jpg',
+    }))
+
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { cookie: adminCookie },
+      body: JSON.stringify({
+        batch_uid: 'other-batch',
+        style_id: 99,
+        asset_uid: 'shared-asset',
+        kind: 'source',
+        filename: 'new.jpg',
+      }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'asset_uid already belongs to a different asset scope' })
+    expect(state.assets[0]).toMatchObject({
+      asset_uid: 'shared-asset',
+      batch_uid: 'batch-20260707',
+      style_id: 7,
+      kind: 'ai',
+      object_key: 'batches/batch-20260707/ai/shared-asset-old.jpg',
+      filename: 'old.jpg',
+    })
   })
 
   it('rejects unauthenticated download requests before R2 lookup', async () => {

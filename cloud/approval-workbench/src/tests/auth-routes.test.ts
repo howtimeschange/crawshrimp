@@ -188,6 +188,7 @@ async function stateWithUsers(): Promise<FakeState> {
       { id: 1, role_key: 'admin', name: '管理员' },
       { id: 2, role_key: 'reviewer', name: '审图人员' },
       { id: 3, role_key: 'viewer', name: '只读查看' },
+      { id: 4, role_key: 'super_admin', name: '超级管理员' },
     ],
     userRoles: [
       { user_id: 1, role_id: 1 },
@@ -225,6 +226,23 @@ describe('auth routes', () => {
     expect(cookie).toContain('HttpOnly')
     expect(cookie).toContain('Secure')
     expect(cookie).toContain('SameSite=None')
+  })
+
+  it('POST /api/auth/login returns a localhost-compatible session cookie for local dev', async () => {
+    const state = await stateWithUsers()
+    const response = await fetchWorker(
+      new Request('http://127.0.0.1:8787/api/auth/login', {
+        method: 'POST',
+        body: JSON.stringify({ email: 'admin@example.com', password: 'admin-pass' }),
+      }),
+      fakeEnv(state),
+    )
+
+    const cookie = response.headers.get('set-cookie') || ''
+    expect(response.status).toBe(200)
+    expect(cookie).toContain('HttpOnly')
+    expect(cookie).not.toContain('Secure')
+    expect(cookie).toContain('SameSite=Lax')
   })
 
   it('POST /api/auth/login rejects inactive users', async () => {
@@ -304,6 +322,49 @@ describe('auth routes', () => {
     expect(state.userRoles).toContainEqual({ user_id: 4, role_id: 3 })
   })
 
+  it('POST /api/admin/users rejects super_admin assignment from a normal admin', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users', {
+        method: 'POST',
+        headers: { cookie },
+        body: JSON.stringify({ email: 'boss@example.com', name: 'Boss User', password: 'secret-pass', roleKeys: ['super_admin'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Only super_admin can assign super_admin' })
+    expect(state.users).toHaveLength(3)
+    expect(state.userRoles).toEqual([
+      { user_id: 1, role_id: 1 },
+      { user_id: 2, role_id: 2 },
+    ])
+  })
+
+  it('POST /api/admin/users rejects explicit cross-site cookie-authenticated requests', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users', {
+        method: 'POST',
+        headers: {
+          cookie,
+          origin: 'https://evil.example',
+          'sec-fetch-site': 'cross-site',
+        },
+        body: JSON.stringify({ email: 'csrf@example.com', name: 'CSRF User', password: 'secret-pass', roleKeys: ['viewer'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Cross-site cookie requests are not allowed' })
+    expect(state.users).toHaveLength(3)
+    expect(state.audits).toHaveLength(0)
+  })
+
   it('password hashing uses PBKDF2 and verifies old sha256 hashes for compatibility', async () => {
     const fresh = await hashPassword('secret-pass')
     const legacy = await passwordHash('secret-pass')
@@ -355,6 +416,27 @@ describe('auth routes', () => {
     await expect(response.json()).resolves.toEqual({ error: 'unknown roleKeys: missing_role' })
     expect(state.userRoles).toContainEqual({ user_id: 2, role_id: 2 })
     expect(state.userRoles).not.toContainEqual({ user_id: 2, role_id: 3 })
+    expect(state.audits).toHaveLength(0)
+  })
+
+  it('PUT /api/admin/users/:id/roles rejects normal admin escalation to super_admin', async () => {
+    const state = await stateWithUsers()
+    const cookie = await addSession(state, 1, 'admin-token')
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/1/roles', {
+        method: 'PUT',
+        headers: { cookie },
+        body: JSON.stringify({ roleKeys: ['admin', 'super_admin'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Only super_admin can assign super_admin' })
+    expect(state.userRoles).toEqual([
+      { user_id: 1, role_id: 1 },
+      { user_id: 2, role_id: 2 },
+    ])
     expect(state.audits).toHaveLength(0)
   })
 

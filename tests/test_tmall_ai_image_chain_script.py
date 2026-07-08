@@ -127,6 +127,40 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertIn("AI 图 1", html)
             self.assertIn("保留主商品", html)
 
+    def test_render_approval_board_html_escapes_user_controlled_fields(self):
+        module = load_script()
+        batch = {
+            "batch_id": "batch-xss",
+            "status": "pending_approval",
+            "created_at": "2026-07-08T12:00:00+08:00",
+            "token": "local-token",
+            "items": [{
+                "style_code": '<img src=x onerror=alert(1)>',
+                "item_id": '1001"><img src=x onerror=alert(2)>',
+                "category": '<script>alert(3)</script>',
+                "skc_code": "SKC-1",
+                "reference_mode": "main_only",
+                "assets": [{
+                    "id": "asset-1",
+                    "kind": "ai",
+                    "label": '<img src=x onerror=alert(4)>',
+                    "path": "/tmp/ai.jpg",
+                    "filename": "ai.jpg",
+                    "prompt": '</textarea><script>alert(5)</script>',
+                    "status": "pending",
+                }],
+            }],
+        }
+
+        html = module.render_approval_board_html(batch)
+
+        self.assertNotIn('<img src=x onerror=alert(1)>', html)
+        self.assertNotIn('<img src=x onerror=alert(2)>', html)
+        self.assertNotIn('<script>alert(3)</script>', html)
+        self.assertNotIn('<img src=x onerror=alert(4)>', html)
+        self.assertNotIn('</textarea><script>alert(5)</script>', html)
+        self.assertIn("\\u003cimg src=x onerror=alert(1)\\u003e", html)
+
     def test_cloud_sync_rewrites_approval_message_to_cloud_board_url(self):
         module = load_script()
         workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
@@ -175,6 +209,35 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertNotIn(local_board_url, batch["approval_message"])
             saved = json.loads(Path(batch["json_path"]).read_text(encoding="utf-8"))
             self.assertEqual(saved["board_url"], cloud_board_url)
+
+    def test_cloud_sync_records_visible_warning_when_config_is_incomplete(self):
+        module = load_script()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-cloud-missing",
+                "status": "pending_approval",
+                "board_url": "http://127.0.0.1:18765/tmall-ai-image-approval/batch-cloud-missing?token=local",
+                "json_path": str(Path(temp_dir) / "approval-batch.json"),
+                "board_path": str(Path(temp_dir) / "approval-board.html"),
+                "items": [],
+            }
+            Path(batch["json_path"]).write_text(json.dumps(batch, ensure_ascii=False), encoding="utf-8")
+            logs = []
+
+            with patch("core.config.load_config", return_value={
+                "cloud_approval": {
+                    "machine_enabled": True,
+                    "base_url": "https://approval.crawshrimp.com",
+                },
+            }), patch.object(module.data_sink, "get_cloud_machine_credentials", return_value={}):
+                result = module.maybe_sync_approval_batch_to_cloud(batch, log=logs.append)
+
+            self.assertIsNone(result)
+            self.assertEqual(batch["cloud_sync"]["status"], "warning")
+            self.assertIn("未注册任务机", batch["cloud_sync"]["warning"])
+            self.assertTrue(any("云端审批同步跳过" in line for line in logs))
+            saved = json.loads(Path(batch["json_path"]).read_text(encoding="utf-8"))
+            self.assertEqual(saved["cloud_sync"]["status"], "warning")
 
     def test_selected_upload_plan_from_approval_batch_only_keeps_confirmed_ai_images(self):
         module = load_script()

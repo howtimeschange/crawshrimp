@@ -111,7 +111,7 @@ const VALID_SCHEDULE_STATUSES = new Set(['active', 'paused'])
 
 export async function importMaterialTestData(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
-  const actor = await requireMachineOrUser(request, env, 'dashboard:read', body)
+  const actor = await requireMachineOrUser(request, env, 'jobs:generate', body)
   if (actor instanceof Response) return actor
   const source = objectValue(body.source)
   const sourceUid = stringValue(source.source_uid ?? source.sourceUid) || `material-${await sha256Hex(JSON.stringify(source).slice(0, 4096) + nowIso())}`

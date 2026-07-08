@@ -8,3 +8,7 @@ test('cloud approval embedded URL appends embed mode while preserving batch_uid'
 
   assert.equal(url, 'https://approval.example.com/?batch_uid=batch-20260707&embed=1')
 })
+
+test('cloud approval embedded URL returns empty string for invalid configured URLs', () => {
+  assert.equal(buildEmbeddedCloudApprovalUrl('not a url'), '')
+})

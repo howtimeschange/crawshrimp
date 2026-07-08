@@ -862,6 +862,7 @@ async function regenerateSelected() {
   const asset = selectedAsset.value
   if (!asset?.id) return
   regenerating.value = true
+  const previousStatus = asset.status
   asset.status = 'generating'
   try {
     const result = await window.cs.regenerateTmallApprovalAsset(ref.batchId, ref.token, {
@@ -875,7 +876,7 @@ async function regenerateSelected() {
     prepareEditableAsset(asset)
     showToast('重新生成完成')
   } catch (err) {
-    asset.status = 'pending'
+    asset.status = previousStatus || 'pending'
     showToast(err?.message || String(err), true)
   } finally {
     regenerating.value = false

@@ -136,6 +136,7 @@ class FakeD1Statement {
     if (sql.includes('from ai_image_assets') && sql.includes('where asset_uid = ?')) return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from task_machines') && sql.includes('where machine_id = ?')) return (this.state.machines.find((row) => row.machine_id === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes('where job_type = ? and idempotency_key = ?')) return (this.state.dispatchJobs.find((row) => row.job_type === String(this.params[0]) && row.idempotency_key === String(this.params[1])) ?? null) as T | null
+    if (sql.includes('from ai_generation_requests') && sql.includes('dispatch_job_uid = ?')) return (this.state.generationRequests.find((row) => row.dispatch_job_uid === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes("job_type = 'submit_tmall_material_test'")) {
       const batchUid = String(this.params[0])
       const active = this.state.dispatchJobs.find((row) => row.batch_uid === batchUid && row.job_type === 'submit_tmall_material_test' && ['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
@@ -251,6 +252,23 @@ class FakeD1Statement {
       })
       return result(1, id)
     }
+    if (sql.startsWith('update dispatch_jobs set status =')) {
+      const jobUid = String(this.params[9])
+      const job = this.state.dispatchJobs.find((row) => row.job_uid === jobUid)
+      if (!job) return result(0)
+      job.status = String(this.params[0])
+      job.assigned_machine_id = stringOrNull(this.params[1])
+      job.required_capabilities_json = String(this.params[2])
+      job.priority = Number(this.params[3])
+      job.attempt_count = Number(this.params[4])
+      job.max_attempts = Number(this.params[5])
+      job.lease_id = null
+      job.lease_expires_at = null
+      job.payload_json = String(this.params[6])
+      job.result_json = String(this.params[7])
+      job.updated_at = String(this.params[8])
+      return result(1, job.id)
+    }
     if (sql.startsWith('insert into ai_generation_requests')) {
       const id = this.state.generationRequests.length + 1
       this.state.generationRequests.push({
@@ -269,6 +287,13 @@ class FakeD1Statement {
         updated_at: String(this.params[11]),
       })
       return result(1, id)
+    }
+    if (sql.startsWith('update ai_generation_requests set status')) {
+      const request = this.state.generationRequests.find((row) => row.dispatch_job_uid === String(this.params[2]))
+      if (!request) return result(0)
+      request.status = String(this.params[0])
+      request.updated_at = String(this.params[1])
+      return result(1)
     }
     if (sql.startsWith('insert into audit_logs')) {
       this.state.audits.push({ action: String(this.params[2]), payload_json: String(this.params[5]) })
@@ -326,6 +351,37 @@ describe('review routes', () => {
     expect(state.approvalEvents).toHaveLength(0)
   })
 
+  it('redacts secret-like job results when returning batch detail', async () => {
+    const { state, viewerCookie } = await baseState()
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-secret-read',
+      result_json: JSON.stringify({
+        Authorization: 'Bearer seller-secret',
+        nested: {
+          access_token: 'access-secret',
+          machine_token: 'machine-token-secret',
+          local_path: '/Users/xingyicheng/raw/source.jpg',
+        },
+      }),
+    }))
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1', {
+      headers: { cookie: viewerCookie },
+    }), fakeEnv(state))
+    const body = await response.json() as { batch: { jobs: Array<{ result: unknown }> } }
+
+    expect(response.status).toBe(200)
+    expect(body.batch.jobs[0].result).toEqual({
+      Authorization: '[redacted]',
+      nested: {
+        access_token: '[redacted]',
+        machine_token: '[redacted]',
+        local_path: '[redacted]',
+      },
+    })
+    expect(JSON.stringify(body)).not.toMatch(/seller-secret|access-secret|machine-token-secret|xingyicheng/)
+  })
+
   it('does not let viewers change review decisions', async () => {
     const { state, viewerCookie } = await baseState()
     const response = await fetchWorker(decisionRequest('asset-ai-1', 'approved', viewerCookie), fakeEnv(state))
@@ -370,6 +426,14 @@ describe('review routes', () => {
     const response = await fetchWorker(manualAssetRequest(reviewerCookie, 4, 'manual-cross-batch'), fakeEnv(state))
     expect(response.status).toBe(400)
     expect(state.assets.some((asset) => asset.asset_uid === 'manual-cross-batch')).toBe(false)
+    expect(state.approvalEvents).toHaveLength(0)
+  })
+
+  it('rejects manual asset creation with an unsafe asset_uid', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const response = await fetchWorker(manualAssetRequest(reviewerCookie, 2, '../manual-<img>'), fakeEnv(state))
+    expect(response.status).toBe(400)
+    expect(state.assets.some((asset) => asset.asset_uid === '../manual-<img>')).toBe(false)
     expect(state.approvalEvents).toHaveLength(0)
   })
 
@@ -478,6 +542,67 @@ describe('review routes', () => {
       `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('second prompt')}`,
     ])
     expect(state.dispatchJobs.map((job) => JSON.parse(job.payload_json).prompt_text)).toEqual(['first prompt', 'second prompt'])
+  })
+
+  it('uses regeneration request nonce to allow repeated same-prompt variants', async () => {
+    const { state, reviewerCookie } = await baseState()
+
+    const first = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'], request_nonce: 'variant-1' }),
+    }), fakeEnv(state))
+    const second = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'], request_nonce: 'variant-2' }),
+    }), fakeEnv(state))
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(201)
+    expect(state.dispatchJobs).toHaveLength(2)
+    expect(state.dispatchJobs.map((job) => job.idempotency_key)).toEqual([
+      `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('Prompt 2')}:variant-1`,
+      `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('Prompt 2')}:variant-2`,
+    ])
+    expect(state.dispatchJobs.map((job) => JSON.parse(job.payload_json).request_nonce)).toEqual(['variant-1', 'variant-2'])
+  })
+
+  it('requeues terminal regeneration jobs with a fresh result asset', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const idempotencyKey = `regenerate_ai_image:batch-1:asset-ai-2:${await sha256Hex('Prompt 2')}`
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-old-regenerate',
+      status: 'terminal_failed',
+      attempt_count: 1,
+      idempotency_key: idempotencyKey,
+      payload_json: JSON.stringify({
+        batch_uid: 'batch-1',
+        style_id: 1,
+        asset_uid: 'old-result-asset',
+        rejected_asset_uid: 'asset-ai-2',
+        prompt_text: 'Prompt 2',
+      }),
+      result_json: JSON.stringify({ error: 'old failure' }),
+    }))
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'] }),
+    }), fakeEnv(state))
+    const payload = JSON.parse(state.dispatchJobs[0].payload_json)
+
+    expect(response.status).toBe(201)
+    expect(state.dispatchJobs).toHaveLength(1)
+    expect(state.dispatchJobs[0]).toMatchObject({
+      job_uid: 'job-old-regenerate',
+      status: 'queued',
+      attempt_count: 0,
+      result_json: '{}',
+    })
+    expect(payload.asset_uid).toMatch(/^regen-/)
+    expect(payload.asset_uid).not.toBe('old-result-asset')
   })
 
   it('rejected asset batch rerun creates one job per rejected AI asset with prompt-hash idempotency', async () => {
@@ -653,6 +778,69 @@ describe('review routes', () => {
     expect(state.generationRequests).toHaveLength(3)
   })
 
+  it('requeues terminal online generation jobs and resets the request status', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const promptHash = await sha256Hex('fresh prompt')
+    const refsHash = await sha256Hex(JSON.stringify([]))
+    const settingsHash = await sha256Hex(JSON.stringify({ model: 'gpt-image-2', size: '1:1', quality: 'auto', output_format: 'png', count: 1 }))
+    const idempotencyKey = `generate_ai_image:batch-1:1:asset-source-1:${promptHash}:${refsHash}::${settingsHash}::`
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-old-generate',
+      job_type: 'generate_ai_image',
+      status: 'terminal_failed',
+      required_capabilities_json: JSON.stringify(['generate_ai_image']),
+      attempt_count: 1,
+      idempotency_key: idempotencyKey,
+      payload_json: JSON.stringify({
+        request_uid: 'gen-old',
+        batch_uid: 'batch-1',
+        style_id: 1,
+        source_asset_uid: 'asset-source-1',
+        prompt_text: 'fresh prompt',
+        result_asset_uids: ['old-result-asset'],
+      }),
+      result_json: JSON.stringify({ error: 'old failure' }),
+    }))
+    state.generationRequests.push({
+      id: 1,
+      request_uid: 'gen-old',
+      batch_uid: 'batch-1',
+      style_id: 1,
+      source_asset_uid: 'asset-source-1',
+      reference_asset_uids_json: '[]',
+      prompt_template_version_id: null,
+      prompt_text: 'fresh prompt',
+      status: 'failed',
+      dispatch_job_uid: 'job-old-generate',
+      created_by: 2,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({
+        style_id: 1,
+        source_asset_uid: 'asset-source-1',
+        prompt_text: 'fresh prompt',
+      }),
+    }), fakeEnv(state))
+    const payload = JSON.parse(state.dispatchJobs[0].payload_json)
+
+    expect(response.status).toBe(201)
+    expect(state.dispatchJobs).toHaveLength(1)
+    expect(state.dispatchJobs[0]).toMatchObject({
+      job_uid: 'job-old-generate',
+      status: 'queued',
+      attempt_count: 0,
+      result_json: '{}',
+    })
+    expect(payload.result_asset_uids).toHaveLength(1)
+    expect(payload.result_asset_uids[0]).not.toBe('old-result-asset')
+    expect(state.generationRequests[0].status).toBe('queued')
+  })
+
   it('online generation persists prompt override in job payload', async () => {
     const { state, reviewerCookie } = await baseState()
 
@@ -708,6 +896,44 @@ describe('review routes', () => {
     expect(state.dispatchJobs[0]).toMatchObject({ job_type: 'submit_tmall_material_test', assigned_machine_id: 'machine-1' })
     expect(JSON.parse(state.dispatchJobs[0].required_capabilities_json)).toEqual(['submit_tmall_material_test'])
     expect(JSON.parse(state.dispatchJobs[0].payload_json).submit_plan.assets.map((asset: AssetRow) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-source-2', 'asset-ai-1', 'asset-ai-3'])
+  })
+
+  it('requeues terminal submit jobs with a fresh submit plan instead of returning the old job unchanged', async () => {
+    const { state, operatorCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-old-submit',
+      job_type: 'submit_tmall_material_test',
+      status: 'terminal_failed',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      priority: 40,
+      attempt_count: 1,
+      max_attempts: 1,
+      idempotency_key: 'submit_tmall_material_test:batch-1:machine-1',
+      payload_json: JSON.stringify({
+        submit_plan: {
+          batch_uid: 'batch-1',
+          assets: [{ asset_uid: 'asset-ai-1', style_id: 1, kind: 'ai' }],
+        },
+      }),
+      result_json: JSON.stringify({ error: 'old failure' }),
+    }))
+
+    const response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
+    const body = await response.json() as { job: DispatchJobRow; submit_plan: { assets: AssetRow[] } }
+
+    expect(response.status).toBe(201)
+    expect(body.job.job_uid).toBe('job-old-submit')
+    expect(state.dispatchJobs).toHaveLength(1)
+    expect(state.dispatchJobs[0]).toMatchObject({
+      status: 'queued',
+      attempt_count: 0,
+      result_json: '{}',
+    })
+    expect(JSON.parse(state.dispatchJobs[0].payload_json).submit_plan.assets.map((asset: AssetRow) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-source-2', 'asset-ai-1', 'asset-ai-3'])
+    expect(body.submit_plan.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-source-2', 'asset-ai-1', 'asset-ai-3'])
   })
 
   it('blocks repeat submit after the batch has already been submitted', async () => {

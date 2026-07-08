@@ -4,7 +4,8 @@ import type { Env } from './env'
 import { badRequest, forbidden, json, readJsonObject } from './http'
 import { requirePermission, type CurrentUser } from './auth-routes'
 import { requireActiveMachine, type MachineRow } from './machine-routes'
-import { batchObjectKey, sanitizedMeta, upsertAsset } from './asset-routes'
+import { assetUidConflictResponse, batchObjectKey, sanitizedMeta, upsertAsset } from './asset-routes'
+import { redactSensitiveJson } from './security/redact'
 import { randomToken, sha256Hex } from './security/tokens'
 
 interface BatchRow {
@@ -116,7 +117,7 @@ const GENERATION_MODELS = new Set(['gpt-image-2', 'gemini-3.1-flash-image-previe
 const GENERATION_SIZES = new Set(['1:1', '3:4', '4:3', '16:9', '9:16', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '4096x4096'])
 const GENERATION_QUALITIES = new Set(['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K'])
 const GENERATION_FORMATS = new Set(['png', 'jpeg', 'jpg', 'webp'])
-const SECRET_FIELD_PATTERN = /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization)$/i
+const SECRET_FIELD_PATTERN = /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?token|token|password|secret|authorization)$/i
 
 export async function syncBatch(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -163,13 +164,19 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
     .run()
 
   const syncedStyles: Array<Record<string, string | number>> = []
-  for (const style of styles) {
-    const styleId = await upsertStyle(env, batchUid, style, now)
-    syncedStyles.push(syncedStyleResponse(style, styleId))
-    const assets = Array.isArray(style.assets) ? style.assets.filter((asset): asset is Record<string, unknown> => asset && typeof asset === 'object' && !Array.isArray(asset)) : []
-    for (const asset of assets) {
-      await upsertSyncedAsset(env, batchUid, styleId, asset, now)
+  try {
+    for (const style of styles) {
+      const styleId = await upsertStyle(env, batchUid, style, now)
+      syncedStyles.push(syncedStyleResponse(style, styleId))
+      const assets = Array.isArray(style.assets) ? style.assets.filter((asset): asset is Record<string, unknown> => asset && typeof asset === 'object' && !Array.isArray(asset)) : []
+      for (const asset of assets) {
+        await upsertSyncedAsset(env, batchUid, styleId, asset, now)
+      }
     }
+  } catch (error) {
+    const response = assetUidConflictResponse(error)
+    if (response) return response
+    throw error
   }
 
   await recordAudit(env, auditActor(actor), 'batches.sync', 'ai_image_batch', batchUid, { style_count: styles.length }, request)
@@ -215,7 +222,7 @@ export async function getBatch(request: Request, env: Env): Promise<Response> {
     batch: {
       ...batch,
       prompt_version_set: parseArray(batch.prompt_version_set_json),
-      jobs: jobs.map((job) => ({ ...job, payload: fromJsonObject(job.payload_json), result: fromJsonObject(job.result_json) })),
+      jobs: jobs.map(safeJobResponse),
       image_resources: imageResources,
       styles: styles.map((style) => ({
         ...style,
@@ -280,6 +287,7 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
   const filename = stringValue(body.filename)
   const kind = stringValue(body.kind) || 'ai'
   if (!batchUid || !Number.isInteger(styleId) || styleId <= 0 || !assetUid || !filename) return badRequest('batch_uid, style_id, asset_uid, and filename are required')
+  if (!isSafeIdentifier(assetUid)) return badRequest('asset_uid must be a safe identifier')
   if (!ALLOWED_KINDS.has(kind) || !['source', 'reference', 'ai'].includes(kind)) return badRequest('kind must be source, reference, or ai')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
@@ -287,22 +295,28 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
   if (!style) return badRequest('style_id is not in batch')
   const safeAssetFilename = safeFilename(filename)
   const now = nowIso()
-  await upsertAsset(env, {
-    assetUid,
-    batchUid,
-    styleId,
-    kind,
-    status: 'planned',
-    objectKey: batchObjectKey(batchUid, kind, `${assetUid}-${safeAssetFilename}`),
-    filename: safeAssetFilename,
-    contentHash: stringValue(body.content_hash),
-    promptTemplateVersionId: numberOrNull(body.prompt_template_version_id),
-    promptText: stringValue(body.prompt_text),
-    parentAssetUid: nullableString(body.parent_asset_uid),
-    generationJobId: nullableString(body.generation_job_id),
-    meta: sanitizedMeta(body),
-    now,
-  })
+  try {
+    await upsertAsset(env, {
+      assetUid,
+      batchUid,
+      styleId,
+      kind,
+      status: 'planned',
+      objectKey: batchObjectKey(batchUid, kind, `${assetUid}-${safeAssetFilename}`),
+      filename: safeAssetFilename,
+      contentHash: stringValue(body.content_hash),
+      promptTemplateVersionId: numberOrNull(body.prompt_template_version_id),
+      promptText: stringValue(body.prompt_text),
+      parentAssetUid: nullableString(body.parent_asset_uid),
+      generationJobId: nullableString(body.generation_job_id),
+      meta: sanitizedMeta(body),
+      now,
+    })
+  } catch (error) {
+    const response = assetUidConflictResponse(error)
+    if (response) return response
+    throw error
+  }
   await appendApprovalEvent(env, batchUid, styleId, assetUid, 'asset.manual_create', actor.user.id, { kind, prompt_template_version_id: numberOrNull(body.prompt_template_version_id), prompt_text: stringValue(body.prompt_text) }, now)
   await recomputeReviewState(env, batchUid)
   await recordAudit(env, { userId: actor.user.id }, 'batches.asset.manual_create', 'ai_image_asset', assetUid, { batch_uid: batchUid }, request)
@@ -324,8 +338,9 @@ export async function createRegenerationJobs(request: Request, env: Env): Promis
   const body = await readJsonObject(request)
   const selected = stringArray(body.asset_uids ?? body.assetUids)
   const promptOverrides = promptOverrideMap(body.prompt_overrides ?? body.promptOverrides)
+  const requestNonce = stringValue(body.request_nonce ?? body.requestNonce)
   if (!batchUid || selected.length === 0) return badRequest('batch_uid and asset_uids are required')
-  return createRegenerationJobsForAssets(request, env, actor, batchUid, selected, promptOverrides)
+  return createRegenerationJobsForAssets(request, env, actor, batchUid, selected, promptOverrides, requestNonce)
 }
 
 export async function createRejectedRegenerationJobs(request: Request, env: Env): Promise<Response> {
@@ -334,13 +349,14 @@ export async function createRejectedRegenerationJobs(request: Request, env: Env)
   const batchUid = batchUidFromRegenerateRejectedPath(request)
   const body = await readJsonObject(request)
   const promptOverrides = promptOverrideMap(body.prompt_overrides ?? body.promptOverrides)
+  const requestNonce = stringValue(body.request_nonce ?? body.requestNonce)
   if (!batchUid) return badRequest('batch_uid is required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const rejectedAssetUids = assets.filter((asset) => asset.kind === 'ai' && asset.status === 'rejected').map((asset) => asset.asset_uid)
   if (rejectedAssetUids.length === 0) return json({ jobs: [] })
-  return createRegenerationJobsForAssets(request, env, actor, batchUid, rejectedAssetUids, promptOverrides)
+  return createRegenerationJobsForAssets(request, env, actor, batchUid, rejectedAssetUids, promptOverrides, requestNonce)
 }
 
 async function createRegenerationJobsForAssets(
@@ -350,6 +366,7 @@ async function createRegenerationJobsForAssets(
   batchUid: string,
   selected: string[],
   promptOverrides: Map<string, string>,
+  requestNonce: string,
 ): Promise<Response> {
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
@@ -362,12 +379,6 @@ async function createRegenerationJobsForAssets(
     if (asset.status !== 'rejected') return json({ error: 'regeneration requires selected rejected assets' }, { status: 409 })
     const promptText = promptOverrides.get(asset.asset_uid) || asset.prompt_text
     const promptHash = await sha256Hex(promptText)
-    const idempotencyKey = `regenerate_ai_image:${batchUid}:${assetUid}:${promptHash}`
-    const existing = await findDispatchJob(env, 'regenerate_ai_image', idempotencyKey)
-    if (existing) {
-      jobs.push(existing)
-      continue
-    }
     const referenceAssetUids = assets
       .filter((row) => row.style_id === asset.style_id && ['source', 'reference'].includes(row.kind) && row.status === 'uploaded')
       .map((row) => row.asset_uid)
@@ -381,8 +392,13 @@ async function createRegenerationJobsForAssets(
       original_prompt_text: asset.prompt_text,
       reference_asset_uids: referenceAssetUids,
       parent_asset_uid: asset.asset_uid,
+      request_nonce: requestNonce,
     }
-    const job = await insertDispatchJob(env, {
+    const baseIdempotencyKey = `regenerate_ai_image:${batchUid}:${assetUid}:${promptHash}`
+    const idempotencyKey = requestNonce ? `${baseIdempotencyKey}:${requestNonce}` : baseIdempotencyKey
+    const existing = await findDispatchJob(env, 'regenerate_ai_image', idempotencyKey)
+    const requeueExisting = shouldRequeueExistingJob(existing)
+    const jobSpec = {
       batchUid,
       jobType: 'regenerate_ai_image',
       requestedBy: actor.user.id,
@@ -392,9 +408,14 @@ async function createRegenerationJobsForAssets(
       maxAttempts: 1,
       idempotencyKey,
       payload,
-    })
+    }
+    const job = existing
+      ? requeueExisting
+        ? await requeueDispatchJob(env, existing, jobSpec)
+        : existing
+      : await insertDispatchJob(env, jobSpec)
     jobs.push(job)
-    created = true
+    if (!existing || requeueExisting) created = true
   }
   await recordAudit(env, { userId: actor.user.id }, 'jobs.regenerate_ai_image.create', 'ai_image_batch', batchUid, { asset_uids: selected }, request)
   return json({ jobs }, { status: created ? 201 : 200 })
@@ -446,6 +467,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   const settingsHash = await sha256Hex(JSON.stringify({ model, size, quality, output_format: outputFormat, count }))
   const idempotencyKey = `generate_ai_image:${batchUid}:${styleId}:${sourceAssetUid}:${promptHash}:${refsHash}:${promptTemplateVersionKey}:${settingsHash}:${machineId}:${requestNonce}`
   const existing = await findDispatchJob(env, 'generate_ai_image', idempotencyKey)
+  const requeueExisting = shouldRequeueExistingJob(existing)
   const requestUid = existing ? await generationRequestUidForJob(env, existing) : randomToken('gen')
   const resultAssetUids = Array.from({ length: count }, (_, index) => `gen-result-${randomToken('job').replace(/^job-/, '')}-${index + 1}`)
   const payload = {
@@ -470,7 +492,7 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
     result_asset_uids: resultAssetUids,
     request_nonce: requestNonce,
   }
-  const job = existing ?? await insertDispatchJob(env, {
+  const jobSpec = {
     batchUid,
     jobType: 'generate_ai_image',
     requestedBy: actor.user.id,
@@ -480,7 +502,12 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
     maxAttempts: 1,
     idempotencyKey,
     payload,
-  })
+  }
+  const job = existing
+    ? requeueExisting
+      ? await requeueDispatchJob(env, existing, jobSpec)
+      : existing
+    : await insertDispatchJob(env, jobSpec)
   if (!existing) {
     await env.DB.prepare(
       `INSERT INTO ai_generation_requests
@@ -490,9 +517,13 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
     )
       .bind(requestUid, batchUid, styleId, sourceAssetUid, toJson(referenceAssetUids), promptTemplateVersionId, promptText, 'queued', job.job_uid, actor.user.id, nowIso(), nowIso())
       .run()
+  } else if (requeueExisting) {
+    await env.DB.prepare('UPDATE ai_generation_requests SET status = ?, updated_at = ? WHERE dispatch_job_uid = ?')
+      .bind('queued', nowIso(), job.job_uid)
+      .run()
   }
   await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.create', 'ai_image_batch', batchUid, { style_id: styleId, source_asset_uid: sourceAssetUid, machine_id: machineId }, request)
-  return json({ job, request_uid: requestUid }, { status: existing ? 200 : 201 })
+  return json({ job, request_uid: requestUid }, { status: !existing || requeueExisting ? 201 : 200 })
 }
 
 export async function exportReviewDetail(request: Request, env: Env): Promise<Response> {
@@ -578,7 +609,7 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
   if (submitPlan.assets.length === 0) return json({ error: 'submit plan requires at least one approved AI asset' }, { status: 409 })
   const idempotencyKey = `submit_tmall_material_test:${batchUid}:${machineId}`
   const existing = await findDispatchJob(env, 'submit_tmall_material_test', idempotencyKey)
-  const job = existing ?? await insertDispatchJob(env, {
+  const jobSpec = {
     batchUid,
     jobType: 'submit_tmall_material_test',
     requestedBy: actor.user.id,
@@ -588,9 +619,15 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
     maxAttempts: 1,
     idempotencyKey,
     payload: { submit_plan: submitPlan },
-  })
+  }
+  const reusedActiveJob = Boolean(existing && activeDispatchStatuses.has(existing.status))
+  const job = existing
+    ? reusedActiveJob
+      ? existing
+      : await requeueDispatchJob(env, existing, jobSpec)
+    : await insertDispatchJob(env, jobSpec)
   await recordAudit(env, { userId: actor.user.id }, 'jobs.submit_tmall_material_test.create', 'ai_image_batch', batchUid, { machine_id: machineId }, request)
-  return json({ job, submit_plan: submitPlan }, { status: existing ? 200 : 201 })
+  return json({ job, submit_plan: submitPlan }, { status: reusedActiveJob ? 200 : 201 })
 }
 
 export async function getSubmitResult(request: Request, env: Env): Promise<Response> {
@@ -599,7 +636,7 @@ export async function getSubmitResult(request: Request, env: Env): Promise<Respo
   const batchUid = batchUidFromSubmitResultPath(request)
   if (!batchUid) return badRequest('batch_uid is required')
   const { results: jobs } = await env.DB.prepare("SELECT * FROM dispatch_jobs WHERE batch_uid = ? AND job_type = 'submit_tmall_material_test' ORDER BY id DESC").bind(batchUid).all<DispatchJobRow>()
-  return json({ jobs: jobs.map((job) => ({ ...job, payload: fromJsonObject(job.payload_json), result: fromJsonObject(job.result_json) })) })
+  return json({ jobs: jobs.map(safeJobResponse) })
 }
 
 async function syncActor(request: Request, env: Env, body: Record<string, unknown>): Promise<{ machine?: MachineRow; user?: CurrentUser; sourceMachineId: string | null; createdBy: number | null } | Response> {
@@ -900,10 +937,59 @@ async function insertDispatchJob(env: Env, job: {
   return row
 }
 
+async function requeueDispatchJob(env: Env, existing: DispatchJobRow, job: {
+  batchUid: string
+  jobType: string
+  requestedBy: number
+  assignedMachineId: string | null
+  requiredCapabilities: string[]
+  priority: number
+  maxAttempts: number
+  idempotencyKey: string
+  payload: unknown
+}): Promise<DispatchJobRow> {
+  const now = nowIso()
+  await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = ?,
+         assigned_machine_id = ?,
+         required_capabilities_json = ?,
+         priority = ?,
+         attempt_count = ?,
+         max_attempts = ?,
+         lease_id = NULL,
+         lease_expires_at = NULL,
+         payload_json = ?,
+         result_json = ?,
+         updated_at = ?
+     WHERE job_uid = ?`,
+  )
+    .bind('queued', job.assignedMachineId, toJson(job.requiredCapabilities), job.priority, 0, job.maxAttempts, toJson(job.payload), toJson({}), now, existing.job_uid)
+    .run()
+  const row = await findDispatchJob(env, job.jobType, job.idempotencyKey)
+  if (!row) throw new Error(`dispatch job was not requeued: ${job.jobType}`)
+  return row
+}
+
 async function findDispatchJob(env: Env, jobType: string, idempotencyKey: string): Promise<DispatchJobRow | null> {
   return env.DB.prepare('SELECT * FROM dispatch_jobs WHERE job_type = ? AND idempotency_key = ? LIMIT 1')
     .bind(jobType, idempotencyKey)
     .first<DispatchJobRow>()
+}
+
+const activeDispatchStatuses = new Set(['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'])
+
+function shouldRequeueExistingJob(job: DispatchJobRow | null): boolean {
+  return Boolean(job && !activeDispatchStatuses.has(job.status) && job.status !== 'succeeded')
+}
+
+function safeJobResponse(job: DispatchJobRow): Record<string, unknown> {
+  const { payload_json: payloadJson, result_json: resultJson, ...safeJob } = job
+  return {
+    ...safeJob,
+    payload: redactSensitiveJson(fromJsonObject(payloadJson)),
+    result: redactSensitiveJson(fromJsonObject(resultJson)),
+  }
 }
 
 async function generationRequestUidForJob(env: Env, job: DispatchJobRow): Promise<string> {

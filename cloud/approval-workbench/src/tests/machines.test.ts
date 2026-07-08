@@ -144,6 +144,7 @@ interface FakeState {
   claimRaceMachineAuthStatus?: string
   claimRaceMachineHealth?: string
   claimRaceMachineCapabilitiesJson?: string
+  cancelRaceStatus?: string
   batchSubmittedWhileJobStatus?: string
 }
 
@@ -189,6 +190,9 @@ class FakeD1Statement {
       if (!token) return null
       const machine = this.state.machines.find((row) => row.machine_id === token.machine_id)
       return (machine ? { ...machine, token_hash: token.token_hash } : null) as T | null
+    }
+    if (normalized.includes('from task_machines') && normalized.includes('where machine_id = ?')) {
+      return (this.state.machines.find((row) => row.machine_id === String(this.params[0])) ?? null) as T | null
     }
     if (normalized.includes('from dispatch_jobs') && normalized.includes("status = 'queued'")) {
       const machineId = String(this.params[0])
@@ -282,6 +286,9 @@ class FakeD1Statement {
       return result(1)
     }
     if (normalized.startsWith('insert into task_machines')) {
+      if (this.state.machines.some((row) => row.machine_id === String(this.params[0]))) {
+        throw new Error('D1_ERROR: UNIQUE constraint failed: task_machines.machine_id')
+      }
       const id = this.state.machines.length + 1
       this.state.machines.push({
         id,
@@ -447,6 +454,7 @@ class FakeD1Statement {
       const machineId = String(this.params[4])
       const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
       if (!job) return result(0)
+      if (normalized.includes('lease_expires_at > ?') && (!job.lease_expires_at || String(job.lease_expires_at) <= String(this.params[5]))) return result(0)
       job.lease_expires_at = String(this.params[0])
       job.updated_at = String(this.params[1])
       return result(1)
@@ -454,8 +462,12 @@ class FakeD1Statement {
     if (normalized.startsWith('update dispatch_jobs set cancel_requested')) {
       const status = String(this.params[0])
       const jobUid = String(this.params[2])
-      const job = this.state.jobs.find((row) => row.job_uid === jobUid && ['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
+      const expectedStatus = normalized.includes('and status = ?') ? String(this.params[3]) : ''
+      const job = this.state.jobs.find((row) => row.job_uid === jobUid)
       if (!job) return result(0)
+      if (this.state.cancelRaceStatus) job.status = this.state.cancelRaceStatus
+      if (!['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)) return result(0)
+      if (expectedStatus && job.status !== expectedStatus) return result(0)
       job.cancel_requested = 1
       job.status = status
       job.updated_at = String(this.params[1])
@@ -466,8 +478,17 @@ class FakeD1Statement {
       const jobUid = String(this.params[3])
       const leaseId = String(this.params[4])
       const machineId = String(this.params[5])
-      const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
+      const dynamicStatuses = normalized.includes('status in (?') ? this.params.slice(6, -1).map(String) : []
+      const allowedStatuses = dynamicStatuses.length > 0
+        ? dynamicStatuses
+        : normalized.includes("status = 'uploading_results'")
+          ? ['uploading_results']
+          : normalized.includes('cancel_requested')
+            ? ['leased', 'running', 'uploading_results', 'cancel_requested']
+            : ['leased', 'running', 'uploading_results']
+      const job = this.state.jobs.find((row) => row.job_uid === jobUid && row.lease_id === leaseId && row.assigned_machine_id === machineId && allowedStatuses.includes(row.status))
       if (!job) return result(0)
+      if (normalized.includes('lease_expires_at > ?') && (!job.lease_expires_at || String(job.lease_expires_at) <= String(this.params[this.params.length - 1]))) return result(0)
       job.status = status
       job.result_json = String(this.params[1])
       job.updated_at = String(this.params[2])
@@ -681,6 +702,34 @@ describe('machine routes', () => {
     )
 
     expect(response.status).toBe(400)
+  })
+
+  it('rejects duplicate machine ids without consuming the enrollment token', async () => {
+    const state = await emptyState()
+    const firstToken = await seedEnrollmentToken(state)
+    await enrollMachine(state, firstToken)
+    const secondToken = await seedEnrollmentToken(state)
+    const secondTokenHash = state.enrollmentTokens.at(-1)?.token_hash
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/enroll', {
+        method: 'POST',
+        body: JSON.stringify({
+          enrollment_token: secondToken,
+          machine_id: 'machine-1',
+          machine_name: 'Duplicate Mac',
+          fingerprint: 'fingerprint-duplicate',
+          app_version: '1.0.0',
+          capabilities: ['regenerate_ai_image'],
+        }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(409)
+    const tokenRow = state.enrollmentTokens.find((row) => row.token_hash === secondTokenHash)
+    expect(tokenRow).toMatchObject({ status: 'issued', used_by_machine_id: null, used_at: null })
+    expect(state.machines).toHaveLength(1)
   })
 
   it('expired enrollment token fails', async () => {
@@ -1232,6 +1281,64 @@ describe('machine routes', () => {
     expect(state.jobs[0].status).toBe('leased')
   })
 
+  it('rejects expired lease renewals before extending the lease', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-expired'
+    const expiredAt = new Date(Date.now() - 60_000).toISOString()
+    state.jobs.push(jobRow({
+      job_uid: 'job-expired',
+      status: 'leased',
+      lease_id: 'lease-expired',
+      lease_expires_at: expiredAt,
+      assigned_machine_id: 'machine-1',
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-expired/renew', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-expired' }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    expect(state.jobs[0].lease_expires_at).toBe(expiredAt)
+  })
+
+  it('rejects expired lease completion writes', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-expired'
+    state.jobs.push(jobRow({
+      job_uid: 'job-expired',
+      status: 'leased',
+      lease_id: 'lease-expired',
+      lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
+      assigned_machine_id: 'machine-1',
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-expired/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-expired', result: { ok: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    expect(state.jobs[0].status).toBe('leased')
+    expect(state.jobs[0].result_json).toBe('{}')
+  })
+
   it('lets user sessions request cancellation and leased machines observe it on renew', async () => {
     const state = await emptyState()
     const token = await seedEnrollmentToken(state)
@@ -1263,6 +1370,90 @@ describe('machine routes', () => {
     expect(state.jobs[0].status).toBe('cancel_requested')
     expect(state.jobs[0].cancel_requested).toBe(1)
     expect(body.cancel_requested).toBe(true)
+  })
+
+  it('rejects success completion after cancellation has been requested', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-cancelled'
+    state.jobs.push(jobRow({
+      job_uid: 'job-cancelled',
+      status: 'cancel_requested',
+      cancel_requested: 1,
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-current',
+      lease_expires_at: new Date(Date.now() + 60_000).toISOString(),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-cancelled/complete', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({ lease_id: 'lease-current', result: { ok: true } }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'job cancellation has been requested' })
+    expect(state.jobs[0].status).toBe('cancel_requested')
+    expect(state.jobs[0].result_json).toBe('{}')
+  })
+
+  it('requires submit permission to cancel submit jobs', async () => {
+    const state = await emptyState()
+    state.users.push({ id: 2, email: 'reviewer@example.com', name: 'Reviewer', status: 'active' })
+    state.roles.push({ id: 2, role_key: 'reviewer', name: '审图人员' })
+    state.userRoles.push({ user_id: 2, role_id: 2 })
+    state.jobs.push(jobRow({
+      job_uid: 'job-submit-cancel',
+      job_type: 'submit_tmall_material_test',
+      status: 'queued',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    }))
+    const cookie = await addSession(state, 2, 'reviewer-cancel-token')
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-submit-cancel/cancel', {
+        method: 'POST',
+        headers: { cookie },
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    expect(state.jobs[0].status).toBe('queued')
+    expect(state.jobs[0].cancel_requested).toBe(0)
+    expect(state.events).toHaveLength(0)
+  })
+
+  it('returns conflict when a cancellable job changes status during cancellation', async () => {
+    const state = await emptyState()
+    state.jobs.push(jobRow({
+      job_uid: 'job-race-cancel',
+      status: 'running',
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-current',
+    }))
+    state.cancelRaceStatus = 'succeeded'
+    const cookie = await addSession(state, 1, 'admin-race-cancel-token')
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-race-cancel/cancel', {
+        method: 'POST',
+        headers: { cookie },
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(409)
+    expect(await response.json()).toEqual({ error: 'job status changed while cancelling' })
+    expect(state.jobs[0].status).toBe('succeeded')
+    expect(state.jobs[0].cancel_requested).toBe(0)
+    expect(state.events).toHaveLength(0)
   })
 
   it('persists blocked_needs_login failures and keeps machine health needs_login', async () => {
@@ -1301,6 +1492,63 @@ describe('machine routes', () => {
     expect(JSON.parse(state.jobs[0].result_json)).toEqual({ status: 'blocked_needs_login' })
     expect(state.machines[0].current_job_id).toBeNull()
     expect(state.machines[0].health).toBe('needs_login')
+  })
+
+  it('redacts secret-like job result fields before persisting job state and events', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-secret'
+    state.jobs.push(jobRow({
+      job_uid: 'job-secret',
+      status: 'leased',
+      lease_id: 'lease-secret',
+      assigned_machine_id: 'machine-1',
+      lease_expires_at: new Date(Date.now() + 60_000).toISOString(),
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/jobs/job-secret/fail', {
+        method: 'POST',
+        headers: bearer(machineToken),
+        body: JSON.stringify({
+          lease_id: 'lease-secret',
+          terminal: true,
+          message: 'failed with Bearer seller-secret from /Users/xingyicheng/raw/source.jpg',
+          result: {
+            ok: false,
+            Authorization: 'Bearer seller-secret',
+            nested: {
+              api_key: 'sk-secret',
+              cookie: 'seller-cookie',
+              local_path: '/Users/xingyicheng/raw/source.jpg',
+              machine_token: 'machine-token-secret',
+            },
+            values: ['keep-me', { password: 'plain-password' }],
+          },
+        }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(JSON.parse(state.jobs[0].result_json)).toEqual({
+      ok: false,
+      Authorization: '[redacted]',
+      nested: {
+        api_key: '[redacted]',
+        cookie: '[redacted]',
+        local_path: '[redacted]',
+        machine_token: '[redacted]',
+      },
+      values: ['keep-me', { password: '[redacted]' }],
+    })
+    expect(JSON.stringify(state.events)).not.toMatch(/seller-secret|sk-secret|seller-cookie|machine-token-secret|plain-password|xingyicheng/)
+    expect(state.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ message: '[redacted]' }),
+    ]))
   })
 
   it('persists submitted batch, style, and approved AI asset state when a submit job completes', async () => {
@@ -1772,7 +2020,7 @@ describe('machine routes', () => {
 })
 
 function jobRow(overrides: Partial<DispatchJobRow>): DispatchJobRow {
-  return {
+  const row = {
     id: 1,
     job_uid: 'job-1',
     batch_uid: 'batch-1',
@@ -1794,4 +2042,8 @@ function jobRow(overrides: Partial<DispatchJobRow>): DispatchJobRow {
     updated_at: new Date().toISOString(),
     ...overrides,
   }
+  if (row.lease_id && !row.lease_expires_at && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status)) {
+    row.lease_expires_at = '2999-01-01T00:00:00.000Z'
+  }
+  return row
 }

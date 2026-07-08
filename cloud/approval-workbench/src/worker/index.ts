@@ -1,5 +1,5 @@
 import { sessionTtlSeconds, type Env } from './env'
-import { json } from './http'
+import { forbidden, json } from './http'
 import {
   createUser,
   listAuditLogs,
@@ -87,6 +87,10 @@ export default {
       })
     }
 
+    if (isRejectedCrossSiteCookieMutation(request, url)) {
+      return forbidden('Cross-site cookie requests are not allowed')
+    }
+
     if (url.pathname === '/api/auth/login' && request.method === 'POST') return login(request, env)
     if (url.pathname === '/api/auth/logout' && request.method === 'POST') return logout(request, env)
     if (url.pathname === '/api/auth/me' && request.method === 'GET') return me(request, env)
@@ -156,3 +160,20 @@ export default {
     ctx.waitUntil(dispatchDueMaterialTestSchedules(env, new Date(event.scheduledTime)))
   },
 } satisfies ExportedHandler<Env>
+
+const COOKIE_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+function isRejectedCrossSiteCookieMutation(request: Request, url: URL): boolean {
+  if (COOKIE_SAFE_METHODS.has(request.method)) return false
+  if (!/(^|;\s*)cs_session=/.test(request.headers.get('cookie') || '')) return false
+  if (/^Bearer\s+\S+/i.test(request.headers.get('authorization') || '')) return false
+  const fetchSite = (request.headers.get('sec-fetch-site') || '').toLowerCase()
+  if (fetchSite === 'cross-site') return true
+  const origin = request.headers.get('origin')
+  if (!origin) return false
+  try {
+    return new URL(origin).origin !== url.origin
+  } catch {
+    return true
+  }
+}

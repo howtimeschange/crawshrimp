@@ -43,7 +43,7 @@ class CloudApprovalClient:
         headers = {"Accept": "application/json", "User-Agent": self.user_agent}
         if data is not None:
             headers["Content-Type"] = "application/json"
-        token = self._token_for(token_type)
+        token = self._token_for(token_type) if self._should_attach_token(url) else ""
         if token:
             headers["Authorization"] = f"Bearer {token}"
         return self._send_json_with_retry(method.upper(), url, data, headers, token)
@@ -53,25 +53,31 @@ class CloudApprovalClient:
         asset_path = Path(path)
         url = self._url_for(upload_url)
         headers = {"Content-Type": content_type or "application/octet-stream", "User-Agent": self.user_agent}
-        token = self._token_for(token_type)
+        token = self._token_for(token_type) if self._should_attach_token(url) else ""
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        request = urllib.request.Request(
-            url,
-            data=asset_path.read_bytes(),
-            headers=headers,
-            method="PUT",
-        )
-        try:
-            response = self._open(request)
-            status, _payload = self._response_status_payload(response)
-        except urllib.error.HTTPError as exc:
-            raise CloudApprovalError(f"cloud upload failed: HTTP {int(exc.code or 0)}") from None
-        except Exception as exc:
-            raise CloudApprovalError(f"cloud upload failed: {type(exc).__name__}") from None
-        if status >= 400:
+        data = asset_path.read_bytes()
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            request = urllib.request.Request(url, data=data, headers=headers, method="PUT")
+            try:
+                response = self._open(request)
+                status, payload = self._response_status_payload(response)
+            except urllib.error.HTTPError as exc:
+                status = int(exc.code or 0)
+                if self._should_retry_status(status) and attempt < max_attempts - 1:
+                    self._sleep(self._retry_delay(attempt))
+                    continue
+                raise CloudApprovalError(f"cloud upload failed: HTTP {status}") from None
+            except Exception as exc:
+                raise CloudApprovalError(f"cloud upload failed: {type(exc).__name__}") from None
+            if status < 400:
+                return payload
+            if self._should_retry_status(status) and attempt < max_attempts - 1:
+                self._sleep(self._retry_delay(attempt))
+                continue
             raise CloudApprovalError(f"cloud upload failed: HTTP {status}")
-        return _payload
+        raise CloudApprovalError("cloud upload failed after retries")
 
     def download_asset(self, asset_uid: str, target_path: Path, *, job_uid: str = "", lease_id: str = "", token_type: str = "machine") -> Path:
         """Download one cloud asset to target_path using the current token."""
@@ -83,24 +89,33 @@ class CloudApprovalClient:
         suffix = f"?{urllib.parse.urlencode(query)}" if query else ""
         url = self._url_for(f"/api/assets/{urllib.parse.quote(str(asset_uid or ''), safe='')}/download{suffix}")
         headers = {"Accept": "*/*", "User-Agent": self.user_agent}
-        token = self._token_for(token_type)
+        token = self._token_for(token_type) if self._should_attach_token(url) else ""
         if token:
             headers["Authorization"] = f"Bearer {token}"
         request = urllib.request.Request(url, headers=headers, method="GET")
         target = Path(target_path)
         target.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            response = self._open(request)
-            status = int(getattr(response, "status", 0) or response.getcode() or 0)
-            if status >= 400:
-                raise CloudApprovalError(f"cloud asset download failed: HTTP {status}")
-            target.write_bytes(response.read())
-        except urllib.error.HTTPError as exc:
-            raise CloudApprovalError(f"cloud asset download failed: HTTP {int(exc.code or 0)}") from None
-        except CloudApprovalError:
-            raise
-        except Exception as exc:
-            raise CloudApprovalError(f"cloud asset download failed: {type(exc).__name__}") from None
+        max_attempts = 3
+        for attempt in range(max_attempts):
+            request = urllib.request.Request(url, headers=headers, method="GET")
+            try:
+                response = self._open(request)
+                status = int(getattr(response, "status", 0) or response.getcode() or 0)
+                if status < 400:
+                    target.write_bytes(response.read())
+                    return target
+            except urllib.error.HTTPError as exc:
+                status = int(exc.code or 0)
+                if self._should_retry_status(status) and attempt < max_attempts - 1:
+                    self._sleep(self._retry_delay(attempt))
+                    continue
+                raise CloudApprovalError(f"cloud asset download failed: HTTP {status}") from None
+            except Exception as exc:
+                raise CloudApprovalError(f"cloud asset download failed: {type(exc).__name__}") from None
+            if self._should_retry_status(status) and attempt < max_attempts - 1:
+                self._sleep(self._retry_delay(attempt))
+                continue
+            raise CloudApprovalError(f"cloud asset download failed: HTTP {status}")
         return target
 
     def _send_json_with_retry(self, method: str, url: str, data: bytes | None, headers: Mapping[str, str], token: str) -> dict:
@@ -117,15 +132,23 @@ class CloudApprovalClient:
                 raise CloudApprovalError(f"cloud request failed: {type(exc).__name__}: {self._redact(str(exc), token)}") from None
             if status < 400:
                 return payload
-            if status in {429} or 500 <= status <= 599:
+            if self._should_retry_status(status):
                 if attempt < max_attempts - 1:
-                    self._sleep(min(0.25 * (2 ** attempt), 2.0))
+                    self._sleep(self._retry_delay(attempt))
                     continue
             detail = self._error_detail(payload)
             token_hint = self._token_hint(token)
             suffix = f" token={token_hint}" if token_hint else ""
             raise CloudApprovalError(f"cloud request failed: HTTP {status}{suffix}; {self._redact(detail, token)}")
         raise CloudApprovalError("cloud request failed after retries")
+
+    @staticmethod
+    def _should_retry_status(status: int) -> bool:
+        return status == 429 or 500 <= status <= 599
+
+    @staticmethod
+    def _retry_delay(attempt: int) -> float:
+        return min(0.25 * (2 ** attempt), 2.0)
 
     def _open(self, request):
         opener = self.transport or urllib.request.urlopen
@@ -138,6 +161,16 @@ class CloudApprovalClient:
         if not self.base_url:
             raise CloudApprovalError("cloud base_url is required")
         return f"{self.base_url}/{text.lstrip('/')}"
+
+    def _should_attach_token(self, url: str) -> bool:
+        if not self.base_url:
+            return False
+        try:
+            target = urllib.parse.urlparse(url)
+            base = urllib.parse.urlparse(self.base_url)
+        except Exception:
+            return False
+        return (target.scheme, target.netloc) == (base.scheme, base.netloc)
 
     def _token_for(self, token_type: str) -> str:
         if token_type == "user":

@@ -21,6 +21,18 @@ class FakeResponse:
         return self.status
 
 
+class FakeBytesResponse:
+    def __init__(self, status: int = 200, body: bytes = b""):
+        self.status = status
+        self.body = body
+
+    def read(self) -> bytes:
+        return self.body
+
+    def getcode(self) -> int:
+        return self.status
+
+
 class FakeTransport:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -91,16 +103,34 @@ class CloudApprovalClientTests(unittest.TestCase):
         with TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "asset.jpg"
             path.write_bytes(b"image-bytes")
-            result = client.upload_asset("https://upload.example.com/object", path, "image/jpeg")
+            result = client.upload_asset("https://approval.example.com/api/assets/upload/object", path, "image/jpeg")
 
         self.assertEqual(result, {"uploaded": True})
         request, _timeout = transport.calls[0]
-        self.assertEqual(request.full_url, "https://upload.example.com/object")
+        self.assertEqual(request.full_url, "https://approval.example.com/api/assets/upload/object")
         self.assertEqual(request.get_method(), "PUT")
         self.assertEqual(request.data, b"image-bytes")
         self.assertEqual(request.headers["Content-type"], "image/jpeg")
         self.assertEqual(request.headers["User-agent"], "CrawshrimpCloudApproval/1.0")
         self.assertEqual(request.headers["Authorization"], "Bearer machine-secret-token")
+
+    def test_upload_asset_does_not_send_machine_token_to_cross_origin_absolute_url(self):
+        transport = FakeTransport([FakeResponse(body={"uploaded": True})])
+        client = CloudApprovalClient(
+            "https://approval.example.com",
+            machine_token="machine-secret-token",
+            transport=transport,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "asset.jpg"
+            path.write_bytes(b"image-bytes")
+            result = client.upload_asset("https://upload.example.com/object", path, "image/jpeg")
+
+        self.assertEqual(result, {"uploaded": True})
+        request, _timeout = transport.calls[0]
+        self.assertEqual(request.full_url, "https://upload.example.com/object")
+        self.assertNotIn("Authorization", request.headers)
 
     def test_upload_asset_resolves_worker_relative_upload_url(self):
         transport = FakeTransport([FakeResponse(body={"uploaded": True})])
@@ -118,6 +148,50 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(result, {"uploaded": True})
         request, _timeout = transport.calls[0]
         self.assertEqual(request.full_url, "https://approval.example.com/api/assets/upload/object-key")
+
+    def test_upload_asset_retries_5xx_with_bounded_backoff(self):
+        transport = FakeTransport([
+            FakeResponse(status=502, body={"error": "bad gateway"}),
+            FakeResponse(body={"uploaded": True}),
+        ])
+        sleeps = []
+        client = CloudApprovalClient(
+            "https://approval.example.com",
+            machine_token="machine-secret-token",
+            transport=transport,
+            sleep=sleeps.append,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "asset.jpg"
+            path.write_bytes(b"image-bytes")
+            result = client.upload_asset("/api/assets/upload/object-key", path, "image/jpeg")
+
+        self.assertEqual(result, {"uploaded": True})
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(sleeps, [0.25])
+
+    def test_download_asset_retries_5xx_with_bounded_backoff(self):
+        transport = FakeTransport([
+            FakeBytesResponse(status=503, body=b"temporarily unavailable"),
+            FakeBytesResponse(status=200, body=b"image-bytes"),
+        ])
+        sleeps = []
+        client = CloudApprovalClient(
+            "https://approval.example.com",
+            machine_token="machine-secret-token",
+            transport=transport,
+            sleep=sleeps.append,
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "asset.jpg"
+            result = client.download_asset("asset-1", target, job_uid="job-1", lease_id="lease-1")
+            self.assertEqual(result, target)
+            self.assertEqual(target.read_bytes(), b"image-bytes")
+
+        self.assertEqual(len(transport.calls), 2)
+        self.assertEqual(sleeps, [0.25])
 
     def test_client_exception_redacts_full_tokens(self):
         transport = FakeTransport([FakeResponse(status=403, body={"error": "denied"})])

@@ -266,6 +266,26 @@ describe('material test data import', () => {
     expect(state.jobs.find((job) => job.status === 'queued')).toMatchObject({ batch_uid: 'material-test', job_type: 'crawl_tmall_material_test_data' })
   })
 
+  it('rejects manual material imports from read-only dashboard viewers', async () => {
+    const state = await baseState()
+    state.roles[0] = { id: 1, role_key: 'viewer', name: 'Viewer' }
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+
+    const response = await importMaterialTestData(new Request('https://example.test/api/material-test/import', {
+      method: 'POST',
+      headers: { cookie: 'cs_session=sess_material' },
+      body: JSON.stringify({
+        source: { filename: 'manual.xlsx' },
+        overview_rows: [{ style_code: '208326', item_id: '1001', task_id: 'T1', statistic_type: 'ACCUMULATE_30_DAYS' }],
+        detail_rows: [{ style_code: '208326', item_id: '1001', task_id: 'T1', statistic_type: 'ACCUMULATE_30_DAYS', material_url: 'https://img.test/1.jpg' }],
+      }),
+    }), env)
+
+    expect(response.status).toBe(403)
+    expect(state.overviewRows).toHaveLength(0)
+    expect(state.detailRows).toHaveLength(0)
+  })
+
   it('rejects machine imports without a matching active crawl lease', async () => {
     const state = await baseState()
     const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
