@@ -192,6 +192,18 @@ test('Embedded Tmall approval board loads its batch on first render', () => {
   assert.match(runner, /<TmallAiApprovalDrawer[\s\S]*:model-value="true"[\s\S]*embedded/)
 })
 
+test('Tmall AI image runner embeds cloud approval board URLs', () => {
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(runner, /isCloudApprovalBoardUrl/)
+  assert.match(runner, /searchParams\.has\('batch_uid'\)/)
+  assert.match(runner, /cloudApprovalFrameUrl/)
+  assert.match(runner, /buildEmbeddedCloudApprovalUrl\(approvalBoardUrl\.value\)/)
+  assert.match(runner, /class="cloud-approval-embed"/)
+  assert.match(runner, /<TmallAiApprovalDrawer[\s\S]*v-else-if="approvalBoardUrl"/)
+  assert.match(runner, /isLocalTmallApprovalBoardUrl\(path\)/)
+})
+
 test('Tmall AI image runner avoids duplicate step titles under numbered tabs', () => {
   const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
 

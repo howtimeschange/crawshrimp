@@ -530,8 +530,15 @@
         v-if="isTmallAiImageChainTask && aiChainActiveStep === 'approval'"
         class="ai-chain-step-panel ai-chain-approval-panel"
       >
+        <div v-if="approvalBoardUrl && isCloudApprovalBoard" class="cloud-approval-embed">
+          <iframe
+            :src="cloudApprovalFrameUrl"
+            title="云端审批看板"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+          />
+        </div>
         <TmallAiApprovalDrawer
-          v-if="approvalBoardUrl"
+          v-else-if="approvalBoardUrl"
           :model-value="true"
           :board-url="approvalBoardUrl"
           embedded
@@ -883,6 +890,7 @@ import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
 import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
+import { buildEmbeddedCloudApprovalUrl } from '../utils/cloudApprovalUrl'
 
 const props = defineProps({
   adapterId: String,
@@ -1382,16 +1390,19 @@ const aiChainSubmitProgressText = computed(() => {
 })
 const aiChainCreateStartedStatuses = new Set(['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
 const aiChainWorkflowStatuses = new Set(['pending_approval', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const isCloudApprovalBoard = computed(() => isCloudApprovalBoardUrl(approvalBoardUrl.value))
+const cloudApprovalFrameUrl = computed(() => isCloudApprovalBoard.value ? buildEmbeddedCloudApprovalUrl(approvalBoardUrl.value) : '')
 const aiChainLifecycle = computed(() => {
   const createStatus = aiChainCreateStatus.value
   const aiTotal = aiChainAiAssets.value.length
   const approved = aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
   const rejected = aiChainAiAssets.value.filter(asset => asset.status === 'rejected').length
   const pending = aiChainAiAssets.value.filter(asset => !['approved', 'rejected'].includes(asset.status)).length
-  const hasBatchPayload = Boolean(approvalBatch.value?.batch_id || approvalBatch.value?.items?.length || createStatus)
+  const hasCloudApprovalBoard = isCloudApprovalBoard.value && Boolean(approvalBoardUrl.value)
+  const hasBatchPayload = Boolean(approvalBatch.value?.batch_id || approvalBatch.value?.items?.length || createStatus || hasCloudApprovalBoard)
   const createStarted = aiChainCreateRows.value.length > 0 || aiChainCreateStartedStatuses.has(createStatus)
-  const generationDone = aiTotal > 0 || createStarted
-  const approvalStarted = aiTotal > 0 || (aiChainWorkflowStatuses.has(createStatus) && generationDone)
+  const generationDone = aiTotal > 0 || createStarted || hasCloudApprovalBoard
+  const approvalStarted = hasCloudApprovalBoard || aiTotal > 0 || (aiChainWorkflowStatuses.has(createStatus) && generationDone)
   const approvalDone = createStarted || (aiTotal > 0 && pending === 0 && approved > 0)
   const approvalBlocked = aiTotal > 0 && pending === 0 && approved <= 0 && rejected > 0
   return {
@@ -2408,7 +2419,7 @@ function fileName(path) {
   if (isHttpUrl(path)) {
     try {
       const parsed = new URL(String(path || ''))
-      if (parsed.pathname.includes('/tmall-ai-image-approval/')) return '审批看板'
+      if (isApprovalBoardUrl(path)) return '审批看板'
       return parsed.hostname
     } catch {}
   }
@@ -2418,7 +2429,13 @@ function fileName(path) {
 function openFile(path) {
   if (isApprovalBoardUrl(path)) {
     approvalBoardUrl.value = String(path || '').trim()
-    openApprovalDrawer()
+    if (isTmallAiImageChainTask.value) {
+      aiChainActiveStep.value = 'approval'
+    } else if (isLocalTmallApprovalBoardUrl(path)) {
+      openApprovalDrawer()
+    } else {
+      window.cs.openFile(buildEmbeddedCloudApprovalUrl(path))
+    }
     return
   }
   window.cs.openFile(path)
@@ -2454,8 +2471,22 @@ function isHttpUrl(path) {
   return /^https?:\/\//i.test(String(path || '').trim())
 }
 
-function isApprovalBoardUrl(path) {
+function isLocalTmallApprovalBoardUrl(path) {
   return isHttpUrl(path) && String(path || '').includes('/tmall-ai-image-approval/')
+}
+
+function isCloudApprovalBoardUrl(path) {
+  if (!isHttpUrl(path)) return false
+  try {
+    const parsed = new URL(String(path || '').trim())
+    return parsed.searchParams.has('batch_uid') && !parsed.pathname.includes('/tmall-ai-image-approval/')
+  } catch {
+    return false
+  }
+}
+
+function isApprovalBoardUrl(path) {
+  return isLocalTmallApprovalBoardUrl(path) || isCloudApprovalBoardUrl(path)
 }
 
 function visibleOutputFiles(files = []) {
@@ -3540,6 +3571,21 @@ onUnmounted(() => {
 }
 .ai-chain-empty-panel strong {
   color: var(--text);
+}
+.cloud-approval-embed {
+  min-height: 640px;
+  height: min(760px, calc(100vh - 300px));
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: #0f1118;
+}
+.cloud-approval-embed iframe {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  background: #0f1118;
 }
 .ai-chain-result-list {
   display: grid;
