@@ -97,12 +97,14 @@ class CloudMachineAgentTests(unittest.TestCase):
             machine_name="任务机",
             capabilities=["tmall_ai_image_test"],
         )
+        health_updates = []
         client = FakeClient([{"ok": True, "machine_id": "machine-1", "auth_status": "active", "health": "ok"}])
-        agent = CloudMachineAgent(client, app_version="1.4.38")
+        agent = CloudMachineAgent(client, app_version="1.4.38", heartbeat_callback=health_updates.append)
 
         result = agent.heartbeat(health="ok", current_job_id="job-1")
 
         self.assertTrue(result["ok"])
+        self.assertEqual(health_updates, ["ok"])
         self.assertEqual(client.calls[0]["path"], "/api/machines/heartbeat")
         self.assertEqual(client.calls[0]["machine_token"], "csr_machine_secret")
         self.assertEqual(
@@ -130,7 +132,9 @@ class CloudMachineAgentTests(unittest.TestCase):
     def test_idle_loop_uses_server_next_poll_after_seconds(self):
         client = FakeClient(
             [
+                {"ok": True, "machine_id": "machine-1", "health": "online_idle"},
                 {"job": None, "next_poll_after_seconds": 10},
+                {"ok": True, "machine_id": "machine-1", "health": "online_idle"},
                 {"job": None, "next_poll_after_seconds": 12},
             ]
         )
@@ -140,6 +144,15 @@ class CloudMachineAgentTests(unittest.TestCase):
         agent.run_forever(StopAfterSleeps(sleeps, 2))
 
         self.assertEqual(sleeps, [10.0, 12.0])
+        self.assertEqual(
+            [call["path"] for call in client.calls],
+            [
+                "/api/machines/heartbeat",
+                "/api/machines/jobs/claim",
+                "/api/machines/heartbeat",
+                "/api/machines/jobs/claim",
+            ],
+        )
 
     def test_failures_back_off_in_sequence_and_cap_at_120(self):
         client = FakeClient([CloudApprovalError("network down")] * 5)

@@ -71,7 +71,7 @@ class CloudMachineAgent:
     ) -> dict:
         saved = self._load_credentials()
         capability_list = list(capabilities if capabilities is not None else saved.get("capabilities") or [])
-        return self._request_machine_json(
+        response = self._request_machine_json(
             "POST",
             "/api/machines/heartbeat",
             {
@@ -81,6 +81,9 @@ class CloudMachineAgent:
                 "capabilities": capability_list,
             },
         )
+        if self.heartbeat_callback is not None:
+            self.heartbeat_callback(str(response.get("health") or health or ""))
+        return response
 
     def claim_once(self) -> dict:
         response = self._request_machine_json("POST", "/api/machines/jobs/claim", {})
@@ -102,6 +105,7 @@ class CloudMachineAgent:
         failure_count = 0
         while not stop_event.is_set():
             try:
+                self.heartbeat("online_idle")
                 result = self.claim_once()
             except CloudApprovalError as exc:
                 self._clear_credentials_if_revoked(exc)
