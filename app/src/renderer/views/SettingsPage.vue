@@ -307,10 +307,10 @@
           <div class="panel-head">
             <div>
               <p class="panel-kicker">AI 生图</p>
-              <h3>1XM GPT-Image-2</h3>
+              <h3>1XM 图片模型</h3>
             </div>
-            <span :class="['badge', hasAnyFieldConfigured(['ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key']) ? 'on' : 'off']">
-              {{ hasAnyFieldConfigured(['ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key']) ? '已配置' : '未配置' }}
+            <span :class="['badge', hasAnyFieldConfigured(ai1xmKeyFields) ? 'on' : 'off']">
+              {{ hasAnyFieldConfigured(ai1xmKeyFields) ? '已配置' : '未配置' }}
             </span>
           </div>
 
@@ -346,6 +346,28 @@
                   />
                 </div>
               </div>
+              <div class="split-fields">
+                <div class="field">
+                  <label>Gemini 3.1 Flash Image Preview Key</label>
+                  <input
+                    v-model="cfg['ai.1xm.gemini_3_1_flash_image_preview_key']"
+                    placeholder="sk-..."
+                    class="input"
+                    type="password"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="field">
+                  <label>Gemini 3 Pro Image Preview Key</label>
+                  <input
+                    v-model="cfg['ai.1xm.gemini_3_pro_image_preview_key']"
+                    placeholder="sk-..."
+                    class="input"
+                    type="password"
+                    autocomplete="off"
+                  />
+                </div>
+              </div>
               <PanelActions panel-id="ai-1xm" @save="savePanel('ai-1xm')" />
             </div>
             <div class="side-note">
@@ -353,6 +375,8 @@
               <div class="key-states">
                 <span :class="['key-pill', isFieldConfigured('ai.1xm.gpt_image_2k_key') ? 'on' : 'off']">2K</span>
                 <span :class="['key-pill', isFieldConfigured('ai.1xm.gpt_image_4k_key') ? 'on' : 'off']">4K</span>
+                <span :class="['key-pill', isFieldConfigured('ai.1xm.gemini_3_1_flash_image_preview_key') ? 'on' : 'off']">G31</span>
+                <span :class="['key-pill', isFieldConfigured('ai.1xm.gemini_3_pro_image_preview_key') ? 'on' : 'off']">G3P</span>
               </div>
               <p>密钥只保存在本机抓虾配置中，任务运行时由后端读取。</p>
             </div>
@@ -456,9 +480,9 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 
-const props = defineProps(['status'])
+const props = defineProps(['status', 'focusPanelId'])
 const emit = defineEmits(['launch-chrome'])
 
 const cfg = ref({})
@@ -484,6 +508,12 @@ const cloudCapabilityOptions = [
   { value: 'regenerate_ai_image', label: 'regenerate_ai_image' },
   { value: 'submit_tmall_material_test', label: 'submit_tmall_material_test' },
   { value: 'crawl_tmall_material_test_data', label: 'crawl_tmall_material_test_data' },
+]
+const ai1xmKeyFields = [
+  'ai.1xm.gpt_image_2k_key',
+  'ai.1xm.gpt_image_4k_key',
+  'ai.1xm.gemini_3_1_flash_image_preview_key',
+  'ai.1xm.gemini_3_pro_image_preview_key',
 ]
 
 const saveState = reactive({})
@@ -527,7 +557,7 @@ const menuGroups = [
     icon: '●',
     label: 'AI 能力',
     desc: '1XM 生图密钥',
-    children: [{ id: 'ai-1xm', label: '1XM GPT-Image-2', statusKey: 'ai.1xm.gpt_image_2k_key' }],
+    children: [{ id: 'ai-1xm', label: '1XM 图片模型', statusKey: 'ai.1xm.gpt_image_2k_key' }],
   },
   {
     id: 'cloud',
@@ -544,7 +574,7 @@ const panelFields = {
   'notify-custom': ['notify.custom_webhook'],
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
-  'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key'],
+  'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
   'cloud-approval': ['cloud_approval.base_url', 'cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
@@ -635,6 +665,14 @@ function selectGroup(groupId) {
 
 function selectPanel(groupId, panelId) {
   activeGroupId.value = groupId
+  activePanelId.value = panelId
+}
+
+function focusPanel(panelId) {
+  if (!panelId) return
+  const group = menuGroups.find(item => item.children.some(child => child.id === panelId))
+  if (!group) return
+  activeGroupId.value = group.id
   activePanelId.value = panelId
 }
 
@@ -839,6 +877,11 @@ async function testNotify(channel) {
 
 onMounted(() => {
   load()
+  focusPanel(props.focusPanelId)
+})
+
+watch(() => props.focusPanelId, panelId => {
+  focusPanel(panelId)
 })
 </script>
 

@@ -24,6 +24,8 @@ DEFAULT_CONFIG = {
             "base_url": "https://api.1xm.ai/v1",
             "gpt_image_2k_key": "",
             "gpt_image_4k_key": "",
+            "gemini_3_1_flash_image_preview_key": "",
+            "gemini_3_pro_image_preview_key": "",
         },
     },
     "cloud_approval": {

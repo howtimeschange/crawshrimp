@@ -1,5 +1,5 @@
 <template>
-  <div class="layout">
+  <div :class="['layout', { 'layout-focus': currentView === 'ai_image' }]">
     <!-- 标题栏 -->
     <div class="titlebar">
       <span class="logo">🦐 抓虾</span>
@@ -14,7 +14,7 @@
     </div>
 
     <!-- 侧边栏 -->
-    <aside class="sidebar">
+    <aside v-if="currentView !== 'ai_image'" class="sidebar">
       <!-- 一级菜单 -->
       <nav v-if="!activeScript">
         <button
@@ -77,7 +77,7 @@
     </aside>
 
     <!-- 主内容区 -->
-    <main class="content">
+    <main :class="['content', { 'content-focus': currentView === 'ai_image' }]">
       <!-- 我的脚本：脚本列表 -->
       <ScriptList
         v-if="currentView === 'scripts' && !activeScript"
@@ -101,12 +101,22 @@
         :instance-uid="activeInstanceUid"
         @back="activeInstanceUid = ''"
       />
+      <!-- AI 生图 -->
+      <AiImageWorkbench
+        v-else-if="currentView === 'ai_image'"
+        @open-settings="openSettingsPanel('ai-1xm')"
+      />
       <!-- 数据文件 -->
       <DataFiles v-else-if="currentView === 'files'" />
       <!-- 云端审批 -->
       <CloudApprovalFrame v-else-if="currentView === 'cloud_approval'" />
       <!-- 设置 -->
-      <SettingsPage v-else-if="currentView === 'settings'" :status="status" @launch-chrome="launchChrome" />
+      <SettingsPage
+        v-else-if="currentView === 'settings'"
+        :status="status"
+        :focus-panel-id="focusSettingsPanelId"
+        @launch-chrome="launchChrome"
+      />
     </main>
   </div>
 </template>
@@ -117,6 +127,7 @@ import ScriptList  from './views/ScriptList.vue'
 import TaskRunner  from './views/TaskRunner.vue'
 import TaskCenter  from './views/TaskCenter.vue'
 import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
+import AiImageWorkbench from './views/AiImageWorkbench.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
@@ -130,10 +141,12 @@ const activeTaskId = ref(null)
 const activeInstanceUid = ref('')
 const scriptGroups = ref([])
 const cloudApprovalStatus = ref(null)
+const focusSettingsPanelId = ref('')
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
   { id: 'task_center', icon: '📋', label: '任务中心' },
+  { id: 'ai_image', icon: '🎨', label: 'AI 生图' },
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
   { id: 'settings', icon: '⚙️', label: '设置' },
@@ -150,6 +163,15 @@ const filteredNavItems = computed(() =>
 
 function selectNav(item) {
   currentView.value = item.id
+  activeInstanceUid.value = ''
+  if (item.id !== 'settings') focusSettingsPanelId.value = ''
+}
+
+function openSettingsPanel(panelId) {
+  focusSettingsPanelId.value = panelId
+  currentView.value = 'settings'
+  activeScript.value = null
+  activeTaskId.value = null
   activeInstanceUid.value = ''
 }
 
@@ -307,6 +329,10 @@ input, select, textarea { font-family: inherit; }
   height: 100vh;
 }
 
+.layout-focus {
+  grid-template-columns: 1fr;
+}
+
 /* 标题栏 */
 .titlebar {
   grid-column: 1 / -1;
@@ -450,4 +476,5 @@ nav {
 
 /* 主内容 */
 .content { overflow: hidden; background: var(--bg); height: 100%; min-height: 0; }
+.content-focus { grid-column: 1 / -1; }
 </style>
