@@ -1213,6 +1213,86 @@ describe('review routes', () => {
     expect(state.dispatchJobs).toHaveLength(0)
   })
 
+  it('rejects review decisions on already submitted batches without reopening review state', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.batches[0].status = 'submitted'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'submitted'
+
+    const response = await fetchWorker(decisionRequest('asset-ai-1', 'rejected', reviewerCookie), fakeEnv(state))
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(409)
+    expect(body.error).toContain('submitted')
+    expect(state.batches[0].status).toBe('submitted')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('submitted')
+    expect(state.approvalEvents).toHaveLength(0)
+  })
+
+  it('rejects manual assets, regeneration, generation, and mark-ready on submitted batches', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.batches[0].status = 'submitted'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+
+    const manual = await fetchWorker(manualAssetRequest(reviewerCookie, 1, 'manual-after-submit'), fakeEnv(state))
+    const regenerate = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ asset_uids: ['asset-ai-2'] }),
+    }), fakeEnv(state))
+    const regenerateRejected = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/regenerate-rejected', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({}),
+    }), fakeEnv(state))
+    const generate = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ style_id: 1, source_asset_uid: 'asset-source-1', prompt_text: 'fresh prompt' }),
+    }), fakeEnv(state))
+    const ready = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/mark-ready', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+    }), fakeEnv(state))
+
+    expect([manual.status, regenerate.status, regenerateRejected.status, generate.status, ready.status]).toEqual([409, 409, 409, 409, 409])
+    expect(state.batches[0].status).toBe('submitted')
+    expect(state.assets.some((asset) => asset.asset_uid === 'manual-after-submit')).toBe(false)
+    expect(state.dispatchJobs).toHaveLength(0)
+  })
+
+  it('does not requeue a previously succeeded submit job even if the batch status drifted back to ready', async () => {
+    const { state, operatorCookie } = await baseState()
+    state.batches[0].status = 'ready_to_submit'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-succeeded-submit',
+      job_type: 'submit_tmall_material_test',
+      status: 'succeeded',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      priority: 40,
+      attempt_count: 1,
+      max_attempts: 1,
+      idempotency_key: 'submit_tmall_material_test:batch-1:machine-1',
+      payload_json: JSON.stringify({ submit_plan: { batch_uid: 'batch-1', assets: [{ asset_uid: 'asset-ai-1', style_id: 1, kind: 'ai' }] } }),
+      result_json: JSON.stringify({ status: 'created', submitted: 2 }),
+    }))
+
+    const response = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(409)
+    expect(body.error).toContain('already been submitted')
+    expect(state.dispatchJobs).toHaveLength(1)
+    expect(state.dispatchJobs[0]).toMatchObject({
+      job_uid: 'job-succeeded-submit',
+      status: 'succeeded',
+      attempt_count: 1,
+    })
+  })
+
   it('blocks submit when any non-skipped style has no approved AI asset even if batch status is stale ready_to_submit', async () => {
     const { state, operatorCookie } = await baseState()
     state.batches[0].status = 'ready_to_submit'

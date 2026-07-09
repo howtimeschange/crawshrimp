@@ -1,5 +1,10 @@
+import asyncio
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+
+from core import api_server
 
 
 API_SERVER_PATH = Path("core/api_server.py")
@@ -39,6 +44,63 @@ class TmallAiImageApprovalApiTests(unittest.TestCase):
         self.assertIn('cloud_prompt_templates_json', source)
         self.assertIn('缺少云端 Prompt 库', source)
         self.assertIn('缺少 AI 测图提示词库文件', source)
+
+    def test_submit_route_registers_excel_result_as_task_output(self):
+        source = API_SERVER_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('result_path = str(result.get("excel_path") or result.get("result_path") or "").strip()', source)
+        self.assertIn('"result_excel_path": result_path', source)
+        self.assertIn('"audit_result_path": audit_path', source)
+        self.assertIn('summary_files = list(summary.get("output_files") or [])', source)
+        self.assertIn('kind=_task_instance_artifact_kind(result_path)', source)
+        self.assertNotIn('kind="file",\n                label=Path(str(result.get("result_path"))).name', source)
+
+    def test_submit_route_updates_instance_summary_with_excel_output(self):
+        updates = []
+        artifacts = []
+        module = SimpleNamespace(upload_approved_tmall_batch=AsyncMock(return_value={
+            "ok": True,
+            "status": "created",
+            "attempted": 1,
+            "succeeded": 1,
+            "failed": 0,
+            "submitted": 1,
+            "result_path": "/tmp/result.xlsx",
+            "excel_path": "/tmp/result.xlsx",
+            "audit_path": "/tmp/audit.json",
+            "rows": [{"阶段": "天猫上传/创建测图任务"}],
+        }))
+
+        def capture_update(instance_uid, **kwargs):
+            updates.append({"instance_uid": instance_uid, **kwargs})
+            return {}
+
+        def capture_artifact(instance_uid, **kwargs):
+            artifacts.append({"instance_uid": instance_uid, **kwargs})
+            return {}
+
+        with patch.object(api_server, "_load_tmall_approval_batch", return_value={"batch_id": "batch-x"}), \
+            patch.object(api_server, "_validate_tmall_approval_token", return_value=None), \
+            patch.object(api_server, "_load_tmall_ai_image_chain_module", return_value=module), \
+            patch.object(api_server.data_sink, "find_task_instance_by_approval_batch_id", return_value={
+                "instance_uid": "instance-x",
+                "summary_json": '{"output_files":["http://127.0.0.1:18767/tmall-ai-image-approval/batch-x?token=t"]}',
+            }), \
+            patch.object(api_server.data_sink, "update_task_instance", side_effect=capture_update), \
+            patch.object(api_server.data_sink, "add_task_instance_artifact", side_effect=capture_artifact):
+            result = asyncio.run(api_server.submit_tmall_ai_image_approval_batch("batch-x", token="t"))
+
+        self.assertEqual(result["result_path"], "/tmp/result.xlsx")
+        self.assertEqual(len(updates), 1)
+        summary = updates[0]["summary"]
+        self.assertEqual(summary["result_path"], "/tmp/result.xlsx")
+        self.assertEqual(summary["result_excel_path"], "/tmp/result.xlsx")
+        self.assertEqual(summary["audit_result_path"], "/tmp/audit.json")
+        self.assertIn("/tmp/result.xlsx", summary["output_files"])
+        self.assertEqual(len(artifacts), 1)
+        self.assertEqual(artifacts[0]["kind"], "excel")
+        self.assertEqual(artifacts[0]["label"], "result.xlsx")
+        self.assertEqual(artifacts[0]["path"], "/tmp/result.xlsx")
 
 
 if __name__ == "__main__":

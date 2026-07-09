@@ -9,8 +9,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
+from uuid import uuid4
 
-from core import data_sink
+from core import data_sink, runtime_paths
 from core.one_xm_image import DEFAULT_BASE_URL, OneXMImageClient, file_to_data_url, run_image_task_until_done
 
 
@@ -46,6 +47,22 @@ def default_output_dir(job: Mapping[str, Any]) -> Path:
 def _params(job: Mapping[str, Any]) -> dict:
     value = job.get("params")
     return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _requested_image_count(source: Mapping[str, Any], *, default: int = 1, max_count: int = 8) -> int:
+    params = _params(source)
+    raw = source.get("n")
+    if raw is None or raw == "":
+        raw = params.get("n")
+    if raw is None or raw == "":
+        raw = params.get("count")
+    if raw is None or raw == "":
+        raw = default
+    try:
+        count = int(float(str(raw).strip()))
+    except Exception:
+        count = default
+    return max(1, min(int(max_count), count))
 
 
 def _size_tier(size: str) -> str:
@@ -138,7 +155,7 @@ def build_one_xm_payload(
         "size": _normalize_size(params.get("size") or "1024x1024"),
         "quality": quality,
         "output_format": _compact(params.get("output_format") or params.get("response_format") or params.get("format") or "png") or "png",
-        "n": int(params.get("n") or 1),
+        "n": _requested_image_count(job),
     }
     for optional_key in ("webhook_url", "webhook_secret", "mask"):
         if params.get(optional_key):
@@ -196,12 +213,27 @@ def _download_outputs(image_urls: list[str], output_dir: Path, downloader: Calla
         try:
             target = _unique_path(output_dir / f"result-{index:02d}{suffix}")
             downloader(url, target)
+            _validate_downloaded_image(target)
         except Exception as exc:
             if target is not None and target.exists():
                 target.unlink()
             raise DownloadOutputsError(str(exc), files) from exc
         files.append(str(target))
     return files
+
+
+def _validate_downloaded_image(path: Path) -> None:
+    try:
+        header = path.read_bytes()[:16]
+    except FileNotFoundError as exc:
+        raise ValueError(f"downloaded image file is missing: {path.name}") from exc
+    if header.startswith(b"\x89PNG\r\n\x1a\n"):
+        return
+    if header.startswith(b"\xff\xd8\xff"):
+        return
+    if header[:4] == b"RIFF" and header[8:12] == b"WEBP":
+        return
+    raise ValueError(f"downloaded file is not a supported image: {path.name}")
 
 
 def _unique_path(path: Path) -> Path:
@@ -229,6 +261,7 @@ def _sanitize_error(value: Any, secrets: list[str] | None = None) -> str:
 def _safe_summary(result: Mapping[str, Any], output_files: list[str], tier: str) -> dict:
     return {
         "ok": bool(result.get("ok")),
+        "run_uid": _compact(result.get("run_uid")),
         "model_key_tier": tier,
         "task_id": _compact(result.get("task_id")),
         "poll_url": _compact(result.get("poll_url")),
@@ -304,7 +337,7 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
     output_files = _string_list(latest_summary.get("output_files"))
     image_urls = _string_list(latest_summary.get("image_urls"))
     run_record = {
-        "run_uid": _compact(latest_summary.get("task_id")) or f"run-{len(previous_runs) + 1}",
+        "run_uid": _compact(latest_summary.get("run_uid") or latest_summary.get("task_id")) or f"run-{len(previous_runs) + 1}",
         "created_at": _now_iso(),
         "prompt": _compact(job.get("prompt") or params.get("prompt")),
         "model_key": _compact(job.get("model_key") or params.get("model") or "gpt-image-2"),
@@ -349,14 +382,16 @@ def run_job_with_one_xm(
     payload = build_one_xm_payload(job, assets, file_to_data_url_fn=file_to_data_url_fn)
     if not payload.get("prompt"):
         raise ValueError("AI image job prompt is required")
+    requested_count = _requested_image_count(payload)
 
     client = OneXMImageClient(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+    run_uid = uuid4().hex
     data_sink.update_ai_image_job(job_uid, {"status": "running"})
     try:
         result = runner(
             client,
             payload,
-            idempotency_key=f"ai_image_{job_uid}",
+            idempotency_key=f"ai_image_{job_uid}_{run_uid}",
             task_attempts=1,
             request_retries=3,
             request_timeout_seconds=120,
@@ -364,7 +399,7 @@ def run_job_with_one_xm(
         )
     except Exception as exc:
         summary = _safe_summary(
-            {"ok": False, "error": _sanitize_error(exc, [api_key])},
+            {"ok": False, "run_uid": run_uid, "error": _sanitize_error(exc, [api_key])},
             [],
             tier,
         )
@@ -372,18 +407,16 @@ def run_job_with_one_xm(
         data_sink.update_ai_image_job(job_uid, {"status": "failed", "summary": summary})
         return {"ok": False, "job_uid": job_uid, "summary": summary}
 
-    output_files: list[str] = []
-    download_error = ""
-    if result.get("ok"):
-        try:
-            output_files = _download_outputs([str(url) for url in result.get("image_urls") or []], default_output_dir(job), downloader)
-        except DownloadOutputsError as exc:
-            output_files = exc.output_files
-            download_error = _sanitize_error(exc, [api_key])
-    summary = _safe_summary(result, output_files, tier)
-    if download_error:
-        summary["warning"] = f"结果图已生成，但本地保存失败：{download_error}"
-    if result.get("ok") and not summary["image_urls"]:
+    normalized_result = dict(result or {})
+    if normalized_result.get("ok"):
+        normalized_result["image_urls"] = [
+            str(url)
+            for url in (normalized_result.get("image_urls") or [])
+            if str(url or "").strip()
+        ][:requested_count]
+
+    summary = _safe_summary({**normalized_result, "run_uid": run_uid}, [], tier)
+    if normalized_result.get("ok") and not summary["image_urls"]:
         summary["ok"] = False
         summary["error"] = "生成任务成功返回，但没有图片地址"
     status = "completed" if summary.get("ok") else "failed"
@@ -393,6 +426,51 @@ def run_job_with_one_xm(
         "summary": summary,
     })
     return {"ok": bool(summary.get("ok")), "job_uid": job_uid, "summary": summary}
+
+
+def _known_result_urls(job: Mapping[str, Any]) -> list[str]:
+    summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    urls = _string_list(summary.get("image_urls"))
+    for run in summary.get("runs") or []:
+        if isinstance(run, Mapping):
+            urls.extend(_string_list(run.get("image_urls")))
+    for asset in data_sink.list_ai_image_assets(_compact(job.get("job_uid"))) if job.get("job_uid") else []:
+        if _compact(asset.get("kind")).lower() in {"output", "result"}:
+            urls.extend(_string_list([asset.get("url")]))
+    return _append_unique([], urls)
+
+
+def materialize_remote_image(
+    job_uid: str,
+    url: str,
+    *,
+    allow_unlisted: bool = False,
+    downloader: Callable[[str, Path], None] = _default_downloader,
+) -> dict:
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        if not allow_unlisted:
+            raise ValueError(f"AI image job not found: {job_uid}")
+        job = {"job_uid": job_uid}
+    source_url = _compact(url)
+    if not source_url:
+        raise ValueError("图片地址不能为空")
+    if not (source_url.startswith("http://") or source_url.startswith("https://")):
+        raise ValueError("仅支持物化远程图片地址")
+    if not allow_unlisted and source_url not in _known_result_urls(job):
+        raise ValueError("图片 URL 不属于当前任务结果")
+
+    cache_dir = runtime_paths.child_dir("ai-image-cache")
+    suffix = _extension_from_url(source_url)
+    target = _unique_path(cache_dir / f"result-{_compact(job_uid)[:8] or 'job'}-{uuid4().hex[:8]}{suffix}")
+    try:
+        downloader(source_url, target)
+        _validate_downloaded_image(target)
+    except Exception:
+        if target.exists():
+            target.unlink()
+        raise
+    return {"ok": True, "job_uid": job_uid, "url": source_url, "path": str(target)}
 
 
 def copy_assets_to_directory(

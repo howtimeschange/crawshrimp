@@ -59,9 +59,26 @@ class FakeD1Statement {
 
   async first<T>(): Promise<T | null> {
     const normalized = this.sql.replace(/\s+/g, ' ').trim().toLowerCase()
+    if (normalized.includes('count(') && normalized.includes('from users') && normalized.includes('user_roles') && normalized.includes('super_admin')) {
+      const superAdminRole = this.state.roles.find((role) => role.role_key === 'super_admin')
+      const count = superAdminRole
+        ? this.state.userRoles.filter((userRole) => {
+          const user = this.state.users.find((row) => row.id === userRole.user_id)
+          return userRole.role_id === superAdminRole.id && user?.status === 'active'
+        }).length
+        : 0
+      return { count } as T
+    }
     if (normalized.includes('from users') && normalized.includes('lower(email)')) {
       const email = String(this.params[0]).toLowerCase()
       return (this.state.users.find((user) => user.email.toLowerCase() === email) ?? null) as T | null
+    }
+    if (normalized.includes('from users') && normalized.includes('where id = ?')) {
+      const userId = Number(this.params[0])
+      const user = this.state.users.find((row) => row.id === userId)
+      if (!user) return null
+      const { password_hash: _passwordHash, ...safeUser } = user
+      return safeUser as T
     }
     if (normalized.includes('from sessions') && normalized.includes('session_hash')) {
       const sessionHash = String(this.params[0])
@@ -119,6 +136,16 @@ class FakeD1Statement {
       const roleId = Number(this.params[1])
       const exists = this.state.userRoles.some((userRole) => userRole.user_id === userId && userRole.role_id === roleId)
       if (!exists) this.state.userRoles.push({ user_id: userId, role_id: roleId })
+    }
+    if (normalized.startsWith('update users set')) {
+      const userId = Number(this.params[this.params.length - 1])
+      const user = this.state.users.find((row) => row.id === userId)
+      if (user) {
+        const name = this.params[0]
+        const status = this.params[1]
+        if (typeof name === 'string' && name) user.name = name
+        if (typeof status === 'string' && status) user.status = status
+      }
     }
     if (normalized.startsWith('insert into sessions')) {
       this.state.sessions.push({
@@ -438,6 +465,89 @@ describe('auth routes', () => {
       { user_id: 2, role_id: 2 },
     ])
     expect(state.audits).toHaveLength(0)
+  })
+
+  it('PATCH /api/admin/users/:id rejects normal admin changes to an existing super_admin user', async () => {
+    const state = await stateWithUsers()
+    state.users.push({ id: 4, email: 'root@example.com', name: 'Root', status: 'active', password_hash: await passwordHash('root-pass') })
+    state.userRoles.push({ user_id: 4, role_id: 4 })
+    const cookie = await addSession(state, 1, 'admin-token')
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/4', {
+        method: 'PATCH',
+        headers: { cookie },
+        body: JSON.stringify({ status: 'inactive' }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Only super_admin can modify super_admin users' })
+    expect(state.users.find((user) => user.id === 4)?.status).toBe('active')
+    expect(state.audits).toHaveLength(0)
+  })
+
+  it('PUT /api/admin/users/:id/roles rejects normal admin removal of an existing super_admin role', async () => {
+    const state = await stateWithUsers()
+    state.users.push({ id: 4, email: 'root@example.com', name: 'Root', status: 'active', password_hash: await passwordHash('root-pass') })
+    state.userRoles.push({ user_id: 4, role_id: 4 })
+    const cookie = await addSession(state, 1, 'admin-token')
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/4/roles', {
+        method: 'PUT',
+        headers: { cookie },
+        body: JSON.stringify({ roleKeys: ['viewer'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'Only super_admin can modify super_admin users' })
+    expect(state.userRoles).toContainEqual({ user_id: 4, role_id: 4 })
+    expect(state.userRoles).not.toContainEqual({ user_id: 4, role_id: 3 })
+    expect(state.audits).toHaveLength(0)
+  })
+
+  it('PUT /api/admin/users/:id/roles prevents removing the last active super_admin', async () => {
+    const state = await stateWithUsers()
+    state.users.push({ id: 4, email: 'root@example.com', name: 'Root', status: 'active', password_hash: await passwordHash('root-pass') })
+    state.userRoles.push({ user_id: 4, role_id: 4 })
+    const cookie = await addSession(state, 4, 'root-token')
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/4/roles', {
+        method: 'PUT',
+        headers: { cookie },
+        body: JSON.stringify({ roleKeys: ['admin'] }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({ error: 'Cannot remove the last active super_admin' })
+    expect(state.userRoles).toContainEqual({ user_id: 4, role_id: 4 })
+  })
+
+  it('PATCH /api/admin/users/:id prevents deactivating the last active super_admin', async () => {
+    const state = await stateWithUsers()
+    state.users.push({ id: 4, email: 'root@example.com', name: 'Root', status: 'active', password_hash: await passwordHash('root-pass') })
+    state.userRoles.push({ user_id: 4, role_id: 4 })
+    const cookie = await addSession(state, 4, 'root-token')
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/admin/users/4', {
+        method: 'PATCH',
+        headers: { cookie },
+        body: JSON.stringify({ status: 'inactive' }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(409)
+    await expect(response.json()).resolves.toEqual({ error: 'Cannot deactivate the last active super_admin' })
+    expect(state.users.find((user) => user.id === 4)?.status).toBe('active')
   })
 
   it('PATCH /api/admin/users/:id/roles rejects unknown roleKeys without clearing existing assignments', async () => {

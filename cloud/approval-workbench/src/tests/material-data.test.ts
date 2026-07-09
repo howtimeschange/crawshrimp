@@ -353,7 +353,7 @@ describe('material test data import', () => {
     expect(state.detailRows).toHaveLength(0)
   })
 
-  it('allows active task machines to import local manual material exports without a dispatch lease', async () => {
+  it('rejects local manual material exports from task machines without a dispatch lease', async () => {
     const state = await baseState()
     const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
 
@@ -367,10 +367,10 @@ describe('material test data import', () => {
       }),
     }), env)
 
-    expect(response.status).toBe(200)
-    expect(await response.json()).toMatchObject({ overview_rows: 1, detail_rows: 1 })
-    expect(state.overviewRows).toHaveLength(1)
-    expect(state.detailRows).toHaveLength(1)
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: 'machine import requires job_uid and lease_id' })
+    expect(state.overviewRows).toHaveLength(0)
+    expect(state.detailRows).toHaveLength(0)
   })
 
   it('rejects machine imports without a matching active crawl lease', async () => {
@@ -392,7 +392,7 @@ describe('material test data import', () => {
     expect(wrongType.status).toBe(403)
   })
 
-  it('creates distinct immediate crawl jobs unless an explicit idempotency key is supplied', async () => {
+  it('dedupes immediate crawl jobs by stable input unless an explicit idempotency key is supplied', async () => {
     const state = await baseState()
     const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
     const requestBody = { machine_id: 'machine-1', run_params: { statistic_type: 'ACCUMULATE_30_DAYS' } }
@@ -407,8 +407,8 @@ describe('material test data import', () => {
       body: JSON.stringify(requestBody),
     }), env)
     expect(first.status).toBe(201)
-    expect(second.status).toBe(201)
-    expect(state.jobs.filter((job) => job.status === 'queued')).toHaveLength(2)
+    expect(second.status).toBe(200)
+    expect(state.jobs.filter((job) => job.status === 'queued')).toHaveLength(1)
 
     const explicitA = await createMaterialTestCrawlJob(new Request('https://example.test/api/material-test/crawl-jobs', {
       method: 'POST',

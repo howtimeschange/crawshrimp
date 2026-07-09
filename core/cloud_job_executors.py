@@ -133,10 +133,15 @@ class CloudJobExecutor:
         generation_row = asset.get("generation_row") if isinstance(asset.get("generation_row"), Mapping) else {}
         output_paths = _generated_output_paths(asset, generation_row, task_dir)
         result_asset_uids = _result_asset_uids(payload, job)
-        upload_count = max(1, min(_generation_count(payload), len(result_asset_uids), len(output_paths)))
+        requested_count = _generation_count(payload)
+        expected_count = min(requested_count, len(result_asset_uids))
+        if len(result_asset_uids) < requested_count or len(output_paths) < expected_count:
+            raise CloudJobTerminalFailure(
+                f"expected {requested_count} generated output files, got {min(len(result_asset_uids), len(output_paths))}"
+            )
         self._progress(job, "uploading_results", "上传在线生图结果")
         uploaded_assets = []
-        for result_asset_uid, output_path in zip(result_asset_uids[:upload_count], output_paths[:upload_count]):
+        for result_asset_uid, output_path in zip(result_asset_uids[:expected_count], output_paths[:expected_count]):
             upload_result = self._upload_result_asset(
                 job=job,
                 batch_uid=batch_uid,
@@ -711,11 +716,22 @@ def _safe_generation_metadata(generation_row: Mapping[str, Any]) -> dict[str, An
     }
     safe: dict[str, Any] = {}
     for key, value in dict(generation_row).items():
-        if key in blocked_keys:
+        key_text = str(key)
+        normalized_key = key_text.lower().replace("_", "").replace("-", "")
+        if key_text in blocked_keys:
+            continue
+        if any(marker in normalized_key for marker in ("apikey", "secret", "token", "downloadurl", "url")):
             continue
         if isinstance(value, (str, int, float, bool)) or value is None:
-            safe[str(key)] = value
+            if isinstance(value, str) and _looks_like_sensitive_generation_value(value):
+                continue
+            safe[key_text] = value
     return safe
+
+
+def _looks_like_sensitive_generation_value(value: str) -> bool:
+    text = value.strip().lower()
+    return text.startswith(("http://", "https://", "/", "\\\\")) or (len(text) >= 3 and text[1] == ":" and text[2] in {"/", "\\"})
 
 
 def _positive_int(value: Any) -> int:

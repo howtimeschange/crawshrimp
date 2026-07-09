@@ -108,7 +108,6 @@ interface MaterialTestScheduleRow {
 const IMPORT_BATCH_SIZE = 500
 const ACTIVE_IMPORT_LEASE_STATUSES = new Set(['leased', 'running', 'uploading_results'])
 const VALID_SCHEDULE_STATUSES = new Set(['active', 'paused'])
-const LOCAL_MANUAL_EXPORT_SYNC_MODE = 'local_manual_export'
 
 export async function importMaterialTestData(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -277,7 +276,7 @@ export async function createMaterialTestCrawlJob(request: Request, env: Env): Pr
     source: objectValue(body.source),
   }
   const explicitIdempotencyKey = stringValue(body.idempotency_key ?? body.idempotencyKey)
-  const keySource = JSON.stringify({ machineId, payload, schedule_uid: stringValue(body.schedule_uid ?? body.scheduleUid), request_uid: randomToken('request') })
+  const keySource = JSON.stringify({ machineId, payload, schedule_uid: stringValue(body.schedule_uid ?? body.scheduleUid) })
   const idempotencyKey = explicitIdempotencyKey || `crawl_tmall_material_test_data:${await sha256Hex(keySource)}`
   const existing = await findDispatchJob(env, idempotencyKey)
   const job = existing ?? await insertDispatchJob(env, {
@@ -363,21 +362,9 @@ async function requireMachineOrUser(request: Request, env: Env, permission: Para
   if (hasBearerToken(request)) {
     const machine = await requireActiveMachine(request, env)
     if (machine instanceof Response) return machine
-    if (isLocalManualExportImport(body)) return requireMaterialImportMachineCapability(machine)
     return requireMaterialImportLease(env, machine, body)
   }
   return requirePermission(request, env, permission)
-}
-
-function isLocalManualExportImport(body: Record<string, unknown>): boolean {
-  const source = objectValue(body.source)
-  const mode = stringValue(source.sync_mode ?? source.syncMode ?? body.sync_mode ?? body.syncMode)
-  return mode === LOCAL_MANUAL_EXPORT_SYNC_MODE
-}
-
-function requireMaterialImportMachineCapability(machine: MachineRow): MachineRow | Response {
-  if (!parseArray(machine.capabilities_json).includes('crawl_tmall_material_test_data')) return forbidden('Machine lacks crawl_tmall_material_test_data capability')
-  return machine
 }
 
 async function requireMaterialImportLease(env: Env, machine: MachineRow, body: Record<string, unknown>): Promise<MachineRow | Response> {

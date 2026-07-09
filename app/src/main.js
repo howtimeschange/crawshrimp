@@ -3,10 +3,11 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session } = require('electron')
 const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
+const https  = require('https')
 const crypto = require('crypto')
 const { fileURLToPath } = require('url')
 const { spawn, execSync, execFileSync } = require('child_process')
@@ -1091,6 +1092,312 @@ function apiCall(method, urlPath, body = null, options = {}) {
   })
 }
 
+// ── Local prompt library store ───────────────────────────────────────────────
+
+const LOCAL_PROMPT_LIBRARY_STORE_NAME = 'local-prompt-libraries.json'
+const LOCAL_PROMPT_SCENARIOS = new Set(['裂变图', '创意拍摄'])
+
+function localPromptLibraryStorePath() {
+  return path.join(getCrawshrimpDataDir(), LOCAL_PROMPT_LIBRARY_STORE_NAME)
+}
+
+function localPromptUid(prefix = 'local') {
+  return `${prefix}_${Date.now().toString(36)}_${crypto.randomBytes(4).toString('hex')}`
+}
+
+function localPromptNow() {
+  return new Date().toISOString()
+}
+
+function normalizeLocalScenario(value) {
+  const text = String(value || '').trim()
+  return LOCAL_PROMPT_SCENARIOS.has(text) ? text : '裂变图'
+}
+
+function localNumberOrNull(value) {
+  if (value === null || value === undefined || value === '') return null
+  const number = Number(String(value).trim())
+  return Number.isFinite(number) ? number : null
+}
+
+function localNo(value) {
+  const text = String(value ?? '').trim().toLowerCase()
+  return ['否', 'false', '0', 'no', '停用', '禁用'].includes(text)
+}
+
+function localStringArray(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => String(item || '').trim()).filter(Boolean)
+  }
+  return String(value || '')
+    .split(/[,\n，、；;]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function normalizeLocalPromptTemplate(template = {}) {
+  const femalePriority = localNumberOrNull(template.female_priority)
+  const maleNeutralPriority = localNumberOrNull(template.male_neutral_priority)
+  const priority = localNumberOrNull(template.priority) ?? femalePriority ?? maleNeutralPriority ?? 100
+  return {
+    local_uid: String(template.local_uid || localPromptUid('prompt')),
+    group_name: String(template.group_name || '').trim(),
+    field_name: String(template.field_name || '').trim(),
+    source_field_id: String(template.source_field_id || '').trim(),
+    field_order: localNumberOrNull(template.field_order),
+    visible: template.visible === false || template.visible === 0 || localNo(template.visible) ? false : true,
+    prompt_text: String(template.prompt_text || '').trim(),
+    size_label: String(template.size_label || '2K').trim() || '2K',
+    output_format: String(template.output_format || 'jpeg').trim() || 'jpeg',
+    quality: String(template.quality || 'auto').trim() || 'auto',
+    reference_fields: localStringArray(template.reference_fields),
+    word_count: localNumberOrNull(template.word_count),
+    field_type: String(template.field_type || '').trim(),
+    female_priority: femalePriority,
+    male_neutral_priority: maleNeutralPriority,
+    category_rules: localStringArray(template.category_rules),
+    gender_rules: localStringArray(template.gender_rules),
+    priority,
+    enabled: template.enabled === false || template.enabled === 0 || localNo(template.enabled) ? false : true,
+    updated_at: String(template.updated_at || localPromptNow()),
+  }
+}
+
+function normalizeLocalPromptLibrary(library = {}) {
+  const now = localPromptNow()
+  return {
+    library_uid: String(library.library_uid || localPromptUid('library')),
+    name: String(library.name || 'AI 测图提示词库 本地版').trim() || 'AI 测图提示词库 本地版',
+    scenario: normalizeLocalScenario(library.scenario),
+    status: String(library.status || 'draft'),
+    cloud_library_id: library.cloud_library_id ?? null,
+    cloud_synced_at: String(library.cloud_synced_at || ''),
+    import_source_path: String(library.import_source_path || ''),
+    created_at: String(library.created_at || now),
+    updated_at: String(library.updated_at || now),
+    templates: (Array.isArray(library.templates) ? library.templates : []).map(normalizeLocalPromptTemplate),
+  }
+}
+
+function readLocalPromptLibraryState() {
+  try {
+    const raw = fs.readFileSync(localPromptLibraryStorePath(), 'utf8')
+    const parsed = JSON.parse(raw)
+    const libraries = Array.isArray(parsed?.libraries) ? parsed.libraries : []
+    return { libraries: libraries.map(normalizeLocalPromptLibrary) }
+  } catch {
+    return { libraries: [] }
+  }
+}
+
+function writeLocalPromptLibraryState(state) {
+  const storePath = localPromptLibraryStorePath()
+  fs.mkdirSync(path.dirname(storePath), { recursive: true })
+  const libraries = (Array.isArray(state?.libraries) ? state.libraries : []).map(normalizeLocalPromptLibrary)
+  fs.writeFileSync(storePath, JSON.stringify({ libraries }, null, 2), 'utf8')
+  return { libraries }
+}
+
+function sortLocalPromptLibraries(libraries = []) {
+  return [...libraries].sort((left, right) => Date.parse(right.updated_at || '') - Date.parse(left.updated_at || ''))
+}
+
+function listLocalPromptLibraries() {
+  const state = readLocalPromptLibraryState()
+  return { ok: true, libraries: sortLocalPromptLibraries(state.libraries) }
+}
+
+function upsertLocalPromptLibrary(payload = {}) {
+  const state = readLocalPromptLibraryState()
+  const now = localPromptNow()
+  const libraryUid = String(payload.library_uid || '').trim()
+  const existingIndex = state.libraries.findIndex(library => library.library_uid === libraryUid)
+  const existing = existingIndex >= 0 ? state.libraries[existingIndex] : {}
+  const next = normalizeLocalPromptLibrary({
+    ...existing,
+    ...payload,
+    library_uid: existing.library_uid || libraryUid || localPromptUid('library'),
+    status: 'draft',
+    created_at: existing.created_at || now,
+    updated_at: now,
+    cloud_library_id: existing.cloud_library_id ?? null,
+    cloud_synced_at: existing.cloud_synced_at || '',
+  })
+  if (existingIndex >= 0) state.libraries[existingIndex] = next
+  else state.libraries.unshift(next)
+  writeLocalPromptLibraryState(state)
+  return { ok: true, library: next, libraries: sortLocalPromptLibraries(state.libraries) }
+}
+
+function createLocalPromptLibrary(payload = {}) {
+  return upsertLocalPromptLibrary({
+    name: payload.name || 'AI 测图提示词库 本地版',
+    scenario: payload.scenario || '裂变图',
+    templates: Array.isArray(payload.templates) ? payload.templates : [{
+      group_name: '裂变图',
+      field_name: '正面标准站姿',
+      prompt_text: '保留商品主体、颜色和版型，生成适合 AI 测图的电商主图。',
+      field_order: 0,
+      female_priority: 10,
+      enabled: true,
+    }],
+  })
+}
+
+function saveLocalPromptLibrary(libraryUid, payload = {}) {
+  const state = readLocalPromptLibraryState()
+  const index = state.libraries.findIndex(library => library.library_uid === String(libraryUid || '').trim())
+  if (index < 0) throw new Error('本地提示词库不存在')
+  const existing = state.libraries[index]
+  const next = normalizeLocalPromptLibrary({
+    ...existing,
+    ...payload,
+    library_uid: existing.library_uid,
+    status: existing.status === 'synced' ? 'draft' : existing.status || 'draft',
+    cloud_library_id: existing.cloud_library_id ?? null,
+    cloud_synced_at: existing.cloud_synced_at || '',
+    created_at: existing.created_at,
+    updated_at: localPromptNow(),
+  })
+  state.libraries[index] = next
+  writeLocalPromptLibraryState(state)
+  return { ok: true, library: next, libraries: sortLocalPromptLibraries(state.libraries) }
+}
+
+function localPromptLibraryForSync(libraryUid) {
+  const state = readLocalPromptLibraryState()
+  const library = state.libraries.find(item => item.library_uid === String(libraryUid || '').trim())
+  if (!library) throw new Error('本地提示词库不存在')
+  return { state, library }
+}
+
+function cloudPromptPayloadForLibrary(library) {
+  const normalized = normalizeLocalPromptLibrary(library)
+  const templates = normalized.templates.map(template => ({
+    group_name: template.group_name,
+    field_name: template.field_name,
+    source_field_id: template.source_field_id,
+    field_order: template.field_order,
+    visible: template.visible,
+    prompt_text: template.prompt_text,
+    size_label: template.size_label,
+    output_format: template.output_format,
+    quality: template.quality,
+    reference_fields: template.reference_fields,
+    word_count: template.word_count,
+    field_type: template.field_type,
+    female_priority: template.female_priority,
+    male_neutral_priority: template.male_neutral_priority,
+    category_rules: template.category_rules,
+    gender_rules: template.gender_rules,
+    priority: template.priority,
+    enabled: template.enabled,
+  }))
+  const invalid = templates.find(template => !template.group_name || !template.field_name || !template.prompt_text)
+  if (invalid || templates.length === 0) {
+    throw new Error('同步前请补齐每条 Prompt 的分组、字段名和 Prompt 内容')
+  }
+  return {
+    name: normalized.name,
+    scenario: normalized.scenario,
+    templates,
+  }
+}
+
+async function cloudApprovalCookieHeader(baseUrl) {
+  const cookies = await session.defaultSession.cookies.get({ url: baseUrl })
+  const sessionCookie = cookies.find(cookie => cookie.name === 'cs_session' && cookie.value)
+  if (!sessionCookie) {
+    throw new Error('请先在云端审批页面登录，再同步提示词库')
+  }
+  return cookies
+    .filter(cookie => cookie.name && cookie.value)
+    .map(cookie => `${cookie.name}=${cookie.value}`)
+    .join('; ')
+}
+
+function parseJsonBody(text) {
+  try {
+    const parsed = JSON.parse(text || '{}')
+    return parsed && typeof parsed === 'object' ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function cloudErrorMessage(status, payload) {
+  const detail = payload?.error || payload?.message || payload?.detail || 'request rejected'
+  if (status === 401) return `云端登录已过期，请重新登录云端审批：${detail}`
+  if (status === 403) return `当前云端账号没有 Prompt 管理权限：${detail}`
+  return `云端提示词库同步失败：HTTP ${status}; ${detail}`
+}
+
+async function cloudApprovalUserApiCall(baseUrl, method, apiPath, body = null) {
+  const base = String(baseUrl || '').replace(/\/+$/, '')
+  if (!base) throw new Error('请先配置云端审批地址')
+  const cookie = await cloudApprovalCookieHeader(base)
+  const target = new URL(apiPath, `${base}/`)
+  const data = body === null || body === undefined
+    ? null
+    : Buffer.from(JSON.stringify(body), 'utf8')
+  const client = target.protocol === 'https:' ? https : http
+  return new Promise((resolve, reject) => {
+    const req = client.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method,
+      timeout: 30000,
+      headers: {
+        Accept: 'application/json',
+        'User-Agent': 'CrawshrimpDesktop/1.0',
+        Cookie: cookie,
+        ...(data ? { 'Content-Type': 'application/json', 'Content-Length': data.length } : {}),
+      },
+    }, (res) => {
+      const chunks = []
+      res.on('data', chunk => chunks.push(chunk))
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8')
+        const payload = parseJsonBody(text)
+        if (Number(res.statusCode || 0) >= 400) {
+          reject(new Error(cloudErrorMessage(Number(res.statusCode || 0), payload)))
+          return
+        }
+        resolve(payload)
+      })
+    })
+    req.on('error', reject)
+    req.on('timeout', () => {
+      req.destroy(new Error('云端提示词库同步超时'))
+    })
+    if (data) req.write(data)
+    req.end()
+  })
+}
+
+async function syncLocalPromptLibraryToCloud(libraryUid) {
+  const { state, library } = localPromptLibraryForSync(libraryUid)
+  const payload = cloudPromptPayloadForLibrary(library)
+  const status = await apiCall('GET', '/cloud-approval/status')
+  const baseUrl = String(status?.base_url || '').trim()
+  if (!baseUrl) throw new Error('请先在设置里配置云端审批地址')
+  const cloud = await cloudApprovalUserApiCall(baseUrl, 'POST', '/api/prompt-libraries/import', payload)
+  const now = localPromptNow()
+  const next = normalizeLocalPromptLibrary({
+    ...library,
+    status: 'synced',
+    cloud_library_id: cloud?.library?.id ?? library.cloud_library_id ?? null,
+    cloud_synced_at: now,
+    updated_at: now,
+  })
+  const index = state.libraries.findIndex(item => item.library_uid === library.library_uid)
+  if (index >= 0) state.libraries[index] = next
+  writeLocalPromptLibraryState(state)
+  return { ok: true, library: next, cloud }
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 function probeApiReady(timeoutMs = 800) {
@@ -1552,6 +1859,8 @@ secureHandle('run-ai-image-job', async (_, jobUid) =>
   apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/run`, {}, { timeoutMs: 20 * 60 * 1000 }))
 secureHandle('save-as-ai-image-job', async (_, jobUid, payload) =>
   apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/save-as`, payload || {}))
+secureHandle('materialize-ai-image-result', async (_, jobUid, payload) =>
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/materialize`, payload || {}))
 secureHandle('create-ai-image-asset', async (_, payload) =>
   apiCall('POST', '/ai-image/assets', payload || {}))
 secureHandle('create-ai-image-canvas', async (_, payload) =>
@@ -1723,6 +2032,11 @@ secureHandle('resolve-cloud-prompt-templates', async (_, libraryId, query = {}) 
   const suffix = params.toString() ? `?${params.toString()}` : ''
   return apiCall('GET', `/cloud-approval/prompt-libraries/${encodeURIComponent(String(libraryId || ''))}/resolved${suffix}`)
 })
+secureHandle('list-local-prompt-libraries', async () => listLocalPromptLibraries())
+secureHandle('create-local-prompt-library', async (_, payload) => createLocalPromptLibrary(payload || {}))
+secureHandle('import-local-prompt-library', async (_, payload) => upsertLocalPromptLibrary(payload || {}))
+secureHandle('save-local-prompt-library', async (_, libraryUid, payload) => saveLocalPromptLibrary(libraryUid, payload || {}))
+secureHandle('sync-local-prompt-library-to-cloud', async (_, libraryUid) => syncLocalPromptLibraryToCloud(libraryUid))
 
 secureHandle('get-settings', async () => {
   const cfg = await apiCall('GET', '/settings')
@@ -1872,9 +2186,13 @@ secureHandle('render-pdf-preview', async (_, filePath) => {
   }
 })
 
-secureHandle('read-excel', async (_, filePath) => {
+secureHandle('read-excel', async (_, filePath, options = {}) => {
   try {
-    return await apiCall('POST', '/files/read-excel', { path: filePath })
+    return await apiCall('POST', '/files/read-excel', {
+      path: filePath,
+      sheet: options?.sheet || null,
+      header_row: Number(options?.header_row || options?.headerRow || 1) || 1,
+    })
   } catch (e) {
     return { error: e.message, headers: [], rows: [], total: 0 }
   }

@@ -116,6 +116,11 @@ def sync_local_approval_batch(batch: Mapping[str, Any], client: CloudApprovalCli
     """Create/update the cloud batch, upload assets, then mark sync complete."""
     payload = build_cloud_batch_payload(batch)
     sync_response = client.request_json("POST", "/api/ai-image-batches/sync", payload)
+    missing_files = _missing_local_asset_files(batch)
+    if missing_files:
+        labels = ", ".join(missing_files[:5])
+        suffix = "" if len(missing_files) <= 5 else f", and {len(missing_files) - 5} more"
+        raise CloudApprovalError(f"missing local asset files: {labels}{suffix}")
     files = iter_local_asset_files(batch)
     uploaded = []
     style_ids = _style_ids_by_local_key(sync_response, payload)
@@ -187,7 +192,7 @@ def _asset_meta(item: Mapping[str, Any], asset: Mapping[str, Any], asset_index: 
         "prompt_name": str(asset.get("prompt_name") or ""),
         "prompt_group": str(asset.get("prompt_group") or ""),
         "prompt_index": asset.get("prompt_index", ""),
-        "generation": generation_row,
+        "generation": _safe_generation_metadata(generation_row),
     })
 
 
@@ -306,9 +311,56 @@ def _sanitize_meta(value: Any) -> Any:
     return value
 
 
+def _safe_generation_metadata(generation_row: Mapping[str, Any]) -> dict[str, Any]:
+    blocked_keys = {
+        "本地生成图文件",
+        "参考图文件",
+        "主参考图文件",
+        "细节参考图文件",
+        "数据下载链接",
+        "__1xm_reference_paths",
+        "__1xm_payload",
+        "local_result_path",
+        "path",
+        "output_files",
+    }
+    safe: dict[str, Any] = {}
+    for key, value in dict(generation_row).items():
+        key_text = str(key)
+        normalized_key = key_text.lower().replace("_", "").replace("-", "")
+        if key_text in blocked_keys:
+            continue
+        if any(marker in normalized_key for marker in ("apikey", "secret", "token", "downloadurl", "url")):
+            continue
+        if not isinstance(value, (str, int, float, bool)) and value is not None:
+            continue
+        if isinstance(value, str) and (_looks_like_local_path(value) or _looks_like_url(value)):
+            continue
+        safe[key_text] = value
+    return safe
+
+
 def _looks_like_local_path(value: str) -> bool:
     text = value.strip()
     return text.startswith("/") or text.startswith("\\\\") or (len(text) >= 3 and text[1] == ":" and text[2] in {"/", "\\"})
+
+
+def _looks_like_url(value: str) -> bool:
+    return value.strip().lower().startswith(("http://", "https://"))
+
+
+def _missing_local_asset_files(batch: Mapping[str, Any]) -> list[str]:
+    missing = []
+    for item in batch.get("items") or []:
+        if not isinstance(item, Mapping):
+            continue
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, Mapping):
+                continue
+            path_text = str(asset.get("path") or "").strip()
+            if path_text and not Path(path_text).is_file():
+                missing.append(_source_path_label(path_text) or path_text)
+    return missing
 
 
 def _style_ids_by_local_key(sync_response: Mapping[str, Any], payload: Mapping[str, Any]) -> dict[tuple[str, str, str], int]:

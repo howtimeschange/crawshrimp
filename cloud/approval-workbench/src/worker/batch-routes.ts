@@ -150,6 +150,7 @@ const SECRET_FIELD_PATTERN = /(^|[_-])(api[_-]?key|access[_-]?token|refresh[_-]?
 const MAX_DIRECT_GENERATION_INPUT_IMAGES = 8
 const MAX_DIRECT_GENERATION_INPUT_BYTES = 10 * 1024 * 1024
 const MAX_DIRECT_GENERATION_TOTAL_INPUT_BYTES = 32 * 1024 * 1024
+const SUBMITTED_BATCH_STATUSES = new Set(['submitted'])
 
 export async function syncBatch(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -298,6 +299,8 @@ export async function saveAssetDecision(request: Request, env: Env): Promise<Res
   if (!['approved', 'rejected', 'pending'].includes(decision)) return badRequest('decision must be approved, rejected, or pending')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const asset = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE asset_uid = ? LIMIT 1').bind(assetUid).first<AssetRow>()
   if (!asset || asset.batch_uid !== batchUid || asset.kind !== 'ai') return json({ error: 'Not found' }, { status: 404 })
   if (await hasActiveSubmitJob(env, batchUid)) return json({ error: 'review decisions are locked while a submit job is active' }, { status: 409 })
@@ -325,6 +328,8 @@ export async function createManualStyleAsset(request: Request, env: Env): Promis
   if (!ALLOWED_KINDS.has(kind) || !['source', 'reference', 'ai'].includes(kind)) return badRequest('kind must be source, reference, or ai')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
   if (!style) return badRequest('style_id is not in batch')
   const safeAssetFilename = safeFilename(filename)
@@ -387,6 +392,8 @@ export async function createRejectedRegenerationJobs(request: Request, env: Env)
   if (!batchUid) return badRequest('batch_uid is required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const rejectedAssetUids = assets.filter((asset) => asset.kind === 'ai' && asset.status === 'rejected').map((asset) => asset.asset_uid)
   if (rejectedAssetUids.length === 0) return json({ jobs: [] })
@@ -404,6 +411,8 @@ async function createRegenerationJobsForAssets(
 ): Promise<Response> {
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const jobs: DispatchJobRow[] = []
   let created = false
@@ -483,6 +492,8 @@ export async function createGenerationJob(request: Request, env: Env): Promise<R
   if (!Number.isInteger(count) || count < 1 || count > 8) return badRequest('count must be an integer from 1 to 8')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
   if (!style) return badRequest('style_id is not in batch')
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
@@ -586,6 +597,8 @@ export async function createDirectGeneration(request: Request, env: Env): Promis
   if (!Number.isInteger(count) || count < 1 || count > 8) return badRequest('count must be an integer from 1 to 8')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const style = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE id = ? AND batch_uid = ? LIMIT 1').bind(styleId, batchUid).first<StyleRow>()
   if (!style) return badRequest('style_id is not in batch')
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
@@ -680,6 +693,10 @@ export async function pollDirectGeneration(request: Request, env: Env): Promise<
     .bind(requestUid)
     .first<GenerationRequestRow>()
   if (!generationRequest || generationRequest.batch_uid !== batchUid) return json({ error: 'Not found' }, { status: 404 })
+  if (generationRequest.status !== 'completed') {
+    const submittedGuard = submittedBatchGuard(batch)
+    if (submittedGuard) return submittedGuard
+  }
   if (generationRequest.dispatch_job_uid) return json({ error: 'generation request is not a direct cloud generation request' }, { status: 409 })
   if (generationRequest.status === 'completed') {
     return json({
@@ -783,6 +800,8 @@ export async function markBatchReady(request: Request, env: Env): Promise<Respon
   if (!batchUid) return badRequest('batch_uid is required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
+  const submittedGuard = submittedBatchGuard(batch)
+  if (submittedGuard) return submittedGuard
   const state = await recomputeReviewState(env, batchUid)
   if (!state.ready) return json({ error: 'every non-skipped style must have at least one approved AI asset' }, { status: 409 })
   await recordAudit(env, { userId: actor.user.id }, 'batches.ready_to_submit.mark', 'ai_image_batch', batchUid, {}, request)
@@ -808,7 +827,9 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
   if (!batchUid || !machineId) return badRequest('batch_uid and machine_id are required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
-  if (batch.status === 'submitted') return json({ error: 'batch has already been submitted' }, { status: 409 })
+  const idempotencyKey = `submit_tmall_material_test:${batchUid}:${machineId}`
+  const existing = await findDispatchJob(env, 'submit_tmall_material_test', idempotencyKey)
+  if (batch.status === 'submitted' || existing?.status === 'succeeded') return json({ error: 'batch has already been submitted' }, { status: 409 })
   const reviewState = await recomputeReviewState(env, batchUid)
   if (!reviewState.ready) {
     return json({ error: 'every non-skipped style must have at least one approved AI asset before submit' }, { status: 409 })
@@ -819,8 +840,6 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
   if (!parseArray(machine.capabilities_json).includes('submit_tmall_material_test')) return badRequest('selected machine lacks submit_tmall_material_test capability')
   const submitPlan = await buildSubmitPlan(env, batchUid)
   if (submitPlan.assets.length === 0) return json({ error: 'submit plan requires at least one approved AI asset' }, { status: 409 })
-  const idempotencyKey = `submit_tmall_material_test:${batchUid}:${machineId}`
-  const existing = await findDispatchJob(env, 'submit_tmall_material_test', idempotencyKey)
   const jobSpec = {
     batchUid,
     jobType: 'submit_tmall_material_test',
@@ -1018,6 +1037,11 @@ async function loadBatch(env: Env, batchUid: string): Promise<BatchRow | null> {
   return env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
 }
 
+function submittedBatchGuard(batch: BatchRow): Response | null {
+  if (!SUBMITTED_BATCH_STATUSES.has(batch.status)) return null
+  return json({ error: 'batch has already been submitted' }, { status: 409 })
+}
+
 async function loadBatchPreviews(env: Env, batchUids: string[]): Promise<AssetPreviewRow[]> {
   if (batchUids.length === 0) return []
   const placeholders = batchUids.map(() => '?').join(', ')
@@ -1098,6 +1122,10 @@ async function appendApprovalEvent(env: Env, batchUid: string, styleId: number |
 }
 
 async function recomputeReviewState(env: Env, batchUid: string): Promise<{ ready: boolean; batchStatus: string }> {
+  const batch = await loadBatch(env, batchUid)
+  if (batch && SUBMITTED_BATCH_STATUSES.has(batch.status)) {
+    return { ready: true, batchStatus: batch.status }
+  }
   const { results: styles } = await env.DB.prepare('SELECT * FROM ai_image_styles WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<StyleRow>()
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const now = nowIso()

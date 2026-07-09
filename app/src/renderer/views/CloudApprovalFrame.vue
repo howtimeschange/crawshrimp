@@ -25,7 +25,7 @@
     </section>
 
     <section v-else class="frame-shell">
-      <iframe :src="embeddedUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals" />
+      <iframe :src="embeddedUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals" referrerpolicy="no-referrer" />
     </section>
   </div>
 </template>

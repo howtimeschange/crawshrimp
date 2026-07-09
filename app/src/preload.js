@@ -4,6 +4,7 @@ const { contextBridge, ipcRenderer } = require('electron')
 const DEFAULT_API_BASE = 'http://127.0.0.1:18765'
 const TOKEN_STORAGE_KEY = 'crawshrimp.apiToken'
 const API_BASE_STORAGE_KEY = 'crawshrimp.apiBase'
+const LOCAL_PROMPT_LIBRARY_FALLBACK_STORAGE_KEY = 'crawshrimp.localPromptLibraries.fallback.v1'
 const TOKEN_QUERY_KEYS = ['crawshrimp_token', 'api_token', 'token']
 const API_BASE_QUERY_KEYS = ['crawshrimp_api_base', 'api_base']
 
@@ -121,6 +122,110 @@ async function invokeWithApiFallback(channel, args = [], fallback) {
   }
 }
 
+function localPromptFallbackUid(prefix = 'local') {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function localPromptFallbackArray(value) {
+  if (Array.isArray(value)) return value.map(item => String(item || '').trim()).filter(Boolean)
+  return String(value || '')
+    .split(/[,\n，、；;]/)
+    .map(item => item.trim())
+    .filter(Boolean)
+}
+
+function normalizeLocalPromptFallbackTemplate(template = {}) {
+  const femalePriority = template.female_priority === '' || template.female_priority === undefined ? null : Number(template.female_priority)
+  const maleNeutralPriority = template.male_neutral_priority === '' || template.male_neutral_priority === undefined ? null : Number(template.male_neutral_priority)
+  const priority = Number.isFinite(Number(template.priority)) ? Number(template.priority)
+    : Number.isFinite(femalePriority) ? femalePriority
+      : Number.isFinite(maleNeutralPriority) ? maleNeutralPriority
+        : 100
+  return {
+    local_uid: String(template.local_uid || localPromptFallbackUid('prompt')),
+    group_name: String(template.group_name || '').trim(),
+    field_name: String(template.field_name || '').trim(),
+    source_field_id: String(template.source_field_id || '').trim(),
+    field_order: Number.isFinite(Number(template.field_order)) ? Number(template.field_order) : null,
+    visible: template.visible !== false,
+    prompt_text: String(template.prompt_text || '').trim(),
+    size_label: String(template.size_label || '2K').trim() || '2K',
+    output_format: String(template.output_format || 'jpeg').trim() || 'jpeg',
+    quality: String(template.quality || 'auto').trim() || 'auto',
+    reference_fields: localPromptFallbackArray(template.reference_fields),
+    word_count: Number.isFinite(Number(template.word_count)) ? Number(template.word_count) : null,
+    field_type: String(template.field_type || '').trim(),
+    female_priority: Number.isFinite(femalePriority) ? femalePriority : null,
+    male_neutral_priority: Number.isFinite(maleNeutralPriority) ? maleNeutralPriority : null,
+    category_rules: localPromptFallbackArray(template.category_rules),
+    gender_rules: localPromptFallbackArray(template.gender_rules),
+    priority,
+    enabled: template.enabled !== false,
+    updated_at: String(template.updated_at || new Date().toISOString()),
+  }
+}
+
+function normalizeLocalPromptFallbackLibrary(library = {}) {
+  const now = new Date().toISOString()
+  const scenario = String(library.scenario || '').trim()
+  return {
+    library_uid: String(library.library_uid || localPromptFallbackUid('library')),
+    name: String(library.name || 'AI 测图提示词库 本地版').trim() || 'AI 测图提示词库 本地版',
+    scenario: ['裂变图', '创意拍摄'].includes(scenario) ? scenario : '裂变图',
+    status: String(library.status || 'draft'),
+    cloud_library_id: library.cloud_library_id ?? null,
+    cloud_synced_at: String(library.cloud_synced_at || ''),
+    import_source_path: String(library.import_source_path || ''),
+    created_at: String(library.created_at || now),
+    updated_at: String(library.updated_at || now),
+    templates: (Array.isArray(library.templates) ? library.templates : []).map(normalizeLocalPromptFallbackTemplate),
+  }
+}
+
+function readLocalPromptFallbackLibraries() {
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(LOCAL_PROMPT_LIBRARY_FALLBACK_STORAGE_KEY) || '{}')
+    return (Array.isArray(parsed?.libraries) ? parsed.libraries : []).map(normalizeLocalPromptFallbackLibrary)
+  } catch {
+    return []
+  }
+}
+
+function writeLocalPromptFallbackLibraries(libraries) {
+  const normalized = (Array.isArray(libraries) ? libraries : []).map(normalizeLocalPromptFallbackLibrary)
+  try {
+    window.localStorage?.setItem(LOCAL_PROMPT_LIBRARY_FALLBACK_STORAGE_KEY, JSON.stringify({ libraries: normalized }))
+  } catch {}
+  return normalized
+}
+
+function upsertLocalPromptFallbackLibrary(payload = {}) {
+  const libraries = readLocalPromptFallbackLibraries()
+  const libraryUid = String(payload.library_uid || '').trim()
+  const existingIndex = libraries.findIndex(library => library.library_uid === libraryUid)
+  const existing = existingIndex >= 0 ? libraries[existingIndex] : {}
+  const next = normalizeLocalPromptFallbackLibrary({
+    ...existing,
+    ...payload,
+    library_uid: existing.library_uid || libraryUid || localPromptFallbackUid('library'),
+    status: 'draft',
+    created_at: existing.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })
+  if (existingIndex >= 0) libraries[existingIndex] = next
+  else libraries.unshift(next)
+  const saved = writeLocalPromptFallbackLibraries(libraries)
+  return { ok: true, fallback: true, library: next, libraries: saved }
+}
+
+function createLocalPromptFallbackLibrary(payload = {}) {
+  return upsertLocalPromptFallbackLibrary({
+    name: payload.name || 'AI 测图提示词库 本地版',
+    scenario: payload.scenario || '裂变图',
+    templates: Array.isArray(payload.templates) ? payload.templates : [],
+  })
+}
+
 contextBridge.exposeInMainWorld('cs', {
   getStatus:       () => ipcRenderer.invoke('get-status').then(rememberApiConnectionFromStatus),
   launchChrome:    (path) => ipcRenderer.invoke('launch-chrome', path),
@@ -167,6 +272,8 @@ contextBridge.exposeInMainWorld('cs', {
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {})),
   saveAsAiImageJob: (uid, payload) => invokeWithApiFallback('save-as-ai-image-job', [uid, payload],
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {})),
+  materializeAiImageResult: (uid, payload) => invokeWithApiFallback('materialize-ai-image-result', [uid, payload],
+    () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/materialize`, payload || {})),
   createAiImageAsset: (payload) => invokeWithApiFallback('create-ai-image-asset', [payload],
     () => apiCall('POST', '/ai-image/assets', payload || {})),
   createAiImageCanvas: (payload) => invokeWithApiFallback('create-ai-image-canvas', [payload],
@@ -185,7 +292,7 @@ contextBridge.exposeInMainWorld('cs', {
   openFile:        (path) => ipcRenderer.invoke('open-file', path),
   openExternalUrl: (url) => ipcRenderer.invoke('open-external-url', url),
   getApiBase:      () => apiBase(),
-  readExcel:       (path) => ipcRenderer.invoke('read-excel', path),
+  readExcel:       (path, options = {}) => ipcRenderer.invoke('read-excel', path, options || {}),
   testNotify:      (channel) => ipcRenderer.invoke('test-notify', channel),
   getTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('get-tmall-approval-batch', batchId, token),
   saveTmallApprovalDecisions: (batchId, token, decisions) => ipcRenderer.invoke('save-tmall-approval-decisions', batchId, token, decisions),
@@ -200,8 +307,25 @@ contextBridge.exposeInMainWorld('cs', {
   startCloudMachine: () => ipcRenderer.invoke('start-cloud-machine'),
   stopCloudMachine: () => ipcRenderer.invoke('stop-cloud-machine'),
   syncCloudApprovalBatch: (payload) => ipcRenderer.invoke('sync-cloud-approval-batch', payload),
-  listCloudPromptLibraries: () => ipcRenderer.invoke('list-cloud-prompt-libraries'),
-  resolveCloudPromptTemplates: (libraryId, query) => ipcRenderer.invoke('resolve-cloud-prompt-templates', libraryId, query || {}),
+  listCloudPromptLibraries: () => invokeWithApiFallback('list-cloud-prompt-libraries', [],
+    () => apiCall('GET', '/cloud-approval/prompt-libraries')),
+  resolveCloudPromptTemplates: (libraryId, query = {}) => invokeWithApiFallback('resolve-cloud-prompt-templates', [libraryId, query || {}],
+    () => {
+      const suffix = queryString(query || {})
+      return apiCall('GET', `/cloud-approval/prompt-libraries/${encodePathPart(libraryId)}/resolved${suffix ? `?${suffix}` : ''}`)
+    }),
+  listLocalPromptLibraries: () => invokeWithApiFallback('list-local-prompt-libraries', [],
+    async () => ({ ok: true, fallback: true, libraries: readLocalPromptFallbackLibraries() })),
+  createLocalPromptLibrary: (payload) => invokeWithApiFallback('create-local-prompt-library', [payload || {}],
+    async () => createLocalPromptFallbackLibrary(payload || {})),
+  importLocalPromptLibrary: (payload) => invokeWithApiFallback('import-local-prompt-library', [payload || {}],
+    async () => upsertLocalPromptFallbackLibrary(payload || {})),
+  saveLocalPromptLibrary: (libraryUid, payload) => invokeWithApiFallback('save-local-prompt-library', [libraryUid, payload || {}],
+    async () => upsertLocalPromptFallbackLibrary({ ...(payload || {}), library_uid: libraryUid })),
+  syncLocalPromptLibraryToCloud: (libraryUid) => invokeWithApiFallback('sync-local-prompt-library-to-cloud', [libraryUid],
+    async () => {
+      throw new Error('请重启抓虾客户端后再同步线上提示词库')
+    }),
 
   getSettings:     () => ipcRenderer.invoke('get-settings'),
   saveSettings:    (cfg) => ipcRenderer.invoke('save-settings', cfg),

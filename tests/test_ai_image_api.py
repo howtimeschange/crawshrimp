@@ -35,6 +35,7 @@ class AiImageApiTests(unittest.TestCase):
             ("PATCH", "/ai-image/jobs/{job_uid}"),
             ("POST", "/ai-image/jobs/{job_uid}/run"),
             ("POST", "/ai-image/jobs/{job_uid}/save-as"),
+            ("POST", "/ai-image/jobs/{job_uid}/materialize"),
             ("POST", "/ai-image/assets"),
             ("POST", "/ai-image/canvases"),
             ("POST", "/files/local-image-preview"),
@@ -187,6 +188,55 @@ class AiImageApiTests(unittest.TestCase):
         self.assertEqual(result["files"], [str(self.root / "remote.png")])
         copied_assets = copy.call_args.args[0]
         self.assertEqual(copied_assets, [{"url": "https://cdn.example/remote.png"}])
+
+    def test_materialize_api_uses_service_for_known_remote_result(self):
+        job = data_sink.create_ai_image_job({"title": "materialize api job"})
+
+        with patch("core.api_server.ai_image_service.materialize_remote_image", return_value={
+            "ok": True,
+            "url": "https://cdn.example/result.png",
+            "path": str(self.root / "cache" / "result.png"),
+        }) as materialize:
+            result = api_server.materialize_ai_image_job(
+                job["job_uid"],
+                api_server.AiImageMaterializeRequest(file="https://cdn.example/result.png"),
+            )
+
+        self.assertEqual(result["path"], str(self.root / "cache" / "result.png"))
+        materialize.assert_called_once_with(job["job_uid"], "https://cdn.example/result.png")
+
+    def test_materialize_api_caches_remote_url_when_persisted_job_is_missing(self):
+        with patch("core.api_server.ai_image_service.materialize_remote_image", return_value={
+            "ok": True,
+            "url": "https://cdn.example/stale.png",
+            "path": str(self.root / "cache" / "stale.png"),
+        }) as materialize:
+            result = api_server.materialize_ai_image_job(
+                "stale-local-job",
+                api_server.AiImageMaterializeRequest(url="https://cdn.example/stale.png"),
+            )
+
+        self.assertEqual(result["path"], str(self.root / "cache" / "stale.png"))
+        materialize.assert_called_once_with("stale-local-job", "https://cdn.example/stale.png", allow_unlisted=True)
+
+    def test_materialize_api_rejects_unknown_or_empty_remote_result(self):
+        job = data_sink.create_ai_image_job({"title": "materialize api guard"})
+
+        with self.assertRaises(HTTPException) as empty_ctx:
+            api_server.materialize_ai_image_job(
+                job["job_uid"],
+                api_server.AiImageMaterializeRequest(file=""),
+            )
+        self.assertEqual(empty_ctx.exception.status_code, 400)
+
+        with patch("core.api_server.ai_image_service.materialize_remote_image", side_effect=ValueError("URL 不属于当前任务")):
+            with self.assertRaises(HTTPException) as unknown_ctx:
+                api_server.materialize_ai_image_job(
+                    job["job_uid"],
+                    api_server.AiImageMaterializeRequest(url="https://evil.example/out.png"),
+                )
+
+        self.assertEqual(unknown_ctx.exception.status_code, 400)
 
 
 if __name__ == "__main__":

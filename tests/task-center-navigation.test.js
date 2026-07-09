@@ -210,13 +210,16 @@ test('Embedded Tmall approval board loads its batch on first render', () => {
 test('Tmall AI image runner embeds cloud approval board URLs', () => {
   const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
 
-  assert.match(runner, /isCloudApprovalBoardUrl/)
-  assert.match(runner, /searchParams\.has\('batch_uid'\)/)
+  assert.match(runner, /isTrustedCloudApprovalBoardUrl/)
+  assert.match(runner, /cloudApprovalBaseUrl/)
+  assert.match(runner, /getCloudApprovalStatus/)
   assert.match(runner, /cloudApprovalFrameUrl/)
-  assert.match(runner, /buildEmbeddedCloudApprovalUrl\(approvalBoardUrl\.value\)/)
+  assert.match(runner, /buildEmbeddedCloudApprovalUrl\(approvalBoardUrl\.value,\s*cloudApprovalBaseUrl\.value\)/)
   assert.match(runner, /class="cloud-approval-embed"/)
+  assert.match(runner, /referrerpolicy="no-referrer"/)
   assert.match(runner, /<TmallAiApprovalDrawer[\s\S]*v-else-if="approvalBoardUrl"/)
   assert.match(runner, /isLocalTmallApprovalBoardUrl\(path\)/)
+  assert.doesNotMatch(runner, /return parsed\.searchParams\.has\('batch_uid'\) && !parsed\.pathname\.includes\('\/tmall-ai-image-approval\/'\)/)
 })
 
 test('Tmall AI image runner avoids duplicate step titles under numbered tabs', () => {
@@ -294,6 +297,17 @@ test('Tmall generation confirmation board can pick prompts from cloud library', 
   assert.match(drawer, /placeholder="搜索 Prompt 名称 \/ 内容"/)
 })
 
+test('Tmall manual generate modal can edit prompt and pick a concrete cloud prompt', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(drawer, /manual-prompt-head/)
+  assert.match(drawer, /v-model="manualGenerate\.prompt"/)
+  assert.match(drawer, /openPromptLibraryPicker\(manualGenerate\.item, manualGenerate\)/)
+  assert.match(drawer, /选中后会回填当前 Prompt/)
+  assert.match(functionBlock(drawer, 'selectPromptLibraryTemplate'), /if \(prompt === manualGenerate\.value\)/)
+  assert.match(functionBlock(drawer, 'selectPromptLibraryTemplate'), /manualGenerate\.value\.prompt = promptText/)
+})
+
 test('Tmall approval submit shows progress while backend creates test tasks', () => {
   const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
   const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
@@ -304,6 +318,18 @@ test('Tmall approval submit shows progress while backend creates test tasks', ()
   assert.match(drawer, /正在提交已确认图片并创建测图任务/)
   assert.match(runner, /class="ai-chain-submit-progress"/)
   assert.match(runner, /aiChainSubmitProgressPercent/)
+  assert.match(runner, /aiChainSubmitProgressImageCount/)
+})
+
+test('Tmall approval submit distinguishes append and rerun interactions', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(drawer, /submitIntentLabel/)
+  assert.match(drawer, /pendingSubmitImageCount/)
+  assert.match(drawer, /追加提交未提交图片/)
+  assert.match(drawer, /重新提交已确认图片/)
+  assert.match(drawer, /提交项/)
+  assert.match(drawer, /AI图/)
 })
 
 test('Tmall AI image create results expose compact detail links', () => {

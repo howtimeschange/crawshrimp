@@ -7,20 +7,25 @@
         <p class="aiw-subtitle">支持主图、参考图、Prompt、比例尺寸联动和多模型生成</p>
       </div>
       <div class="aiw-top-actions">
-        <button class="aiw-ghost" type="button" @click="createNewTask">新建任务</button>
-        <button class="aiw-ghost" type="button" @click="historyOpen = !historyOpen">
-          {{ historyOpen ? '收起任务记录' : '任务记录' }}
+        <button class="aiw-top-primary" type="button" @click="createNewTask">
+          <span class="aiw-icon-button-content"><AiwIcon name="plus" />新建任务</span>
         </button>
-        <button class="aiw-ghost" type="button" @click="openOutputFolder">打开输出文件夹</button>
-        <button class="aiw-ghost" type="button" @click="openSettings">配置模型 Key</button>
+        <button class="aiw-ghost" type="button" @click="openOutputFolder">
+          <span class="aiw-icon-button-content"><AiwIcon name="folder" />打开输出文件夹</span>
+        </button>
+        <button class="aiw-ghost" type="button" @click="openSettings">
+          <span class="aiw-icon-button-content"><AiwIcon name="settings" />配置</span>
+        </button>
       </div>
     </header>
 
-    <div class="aiw-main-grid" :class="{ 'history-collapsed': !historyOpen }">
+    <div class="aiw-main-grid">
       <aside class="aiw-prompt-panel aiw-task-panel">
         <div class="aiw-panel-head">
           <span>当前任务</span>
-          <button type="button" @click="resetForm">重置</button>
+          <button type="button" @click="resetForm">
+            <span class="aiw-icon-button-content"><AiwIcon name="rotate-ccw" />重置</span>
+          </button>
         </div>
 
         <section class="aiw-material-box aiw-title-box">
@@ -33,7 +38,9 @@
         <section class="aiw-material-box aiw-prompt-box">
           <div class="aiw-panel-head">
             <span>Prompt</span>
-            <button type="button" @click="form.prompt = ''">清空</button>
+            <button type="button" @click="form.prompt = ''">
+              <span class="aiw-icon-button-content"><AiwIcon name="eraser" />清空</span>
+            </button>
           </div>
           <textarea v-model.trim="form.prompt" placeholder="描述商品、卖点、模特姿态、背景和禁用元素..."></textarea>
         </section>
@@ -41,7 +48,11 @@
         <section class="aiw-material-box">
           <div class="aiw-panel-head">
             <span>主图</span>
-            <button type="button" @click="chooseMainImage">{{ form.mainImagePath ? '重新选择' : '选择文件' }}</button>
+            <button type="button" @click="chooseMainImage">
+              <span class="aiw-icon-button-content">
+                <AiwIcon name="image" />{{ form.mainImagePath ? '重新选择' : '选择文件' }}
+              </span>
+            </button>
           </div>
           <button v-if="!form.mainImagePath" class="aiw-upload-tile" type="button" @click="chooseMainImage">
             <strong>点击上传主图</strong>
@@ -63,14 +74,18 @@
               <strong>{{ pathLabel(form.mainImagePath) }}</strong>
               <span>{{ form.mainImagePath }}</span>
             </div>
-            <button type="button" @click="removeMainImage">移除</button>
+            <button type="button" @click="removeMainImage">
+              <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
+            </button>
           </div>
         </section>
 
         <section class="aiw-material-box">
           <div class="aiw-panel-head">
             <span>参考图</span>
-            <button type="button" @click="chooseReferenceImages">添加文件</button>
+            <button type="button" @click="chooseReferenceImages">
+              <span class="aiw-icon-button-content"><AiwIcon name="plus" />添加文件</span>
+            </button>
           </div>
           <button class="aiw-upload-tile compact" type="button" @click="chooseReferenceImages">
             <strong>点击添加参考图</strong>
@@ -90,7 +105,9 @@
                 </div>
               </div>
               <span>{{ pathLabel(path) }}</span>
-              <button type="button" @click="removeReferencePath(index)">移除</button>
+              <button type="button" @click="removeReferencePath(index)">
+                <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
+              </button>
             </article>
           </div>
         </section>
@@ -144,7 +161,9 @@
         <section class="aiw-material-box">
           <div class="aiw-panel-head">
             <span>输出文件夹</span>
-            <button type="button" @click="chooseOutputFolder">选择文件夹</button>
+            <button type="button" @click="chooseOutputFolder">
+              <span class="aiw-icon-button-content"><AiwIcon name="folder" />选择文件夹</span>
+            </button>
           </div>
           <button class="aiw-path-button" type="button" @click="chooseOutputFolder">
             <strong>{{ form.output_dir ? pathLabel(form.output_dir) : '点击选择输出文件夹' }}</strong>
@@ -158,7 +177,9 @@
         </section>
 
         <section class="aiw-generate-card">
-          <button class="aiw-primary-action" type="button" :disabled="generating" @click="generate">{{ generateLabel }}</button>
+          <button class="aiw-primary-action" type="button" :disabled="generating" @click="generate">
+            <span class="aiw-icon-button-content"><AiwIcon name="wand" />{{ generateLabel }}</span>
+          </button>
           <small v-if="errorMessage">{{ errorMessage }}</small>
         </section>
       </aside>
@@ -172,12 +193,16 @@
           <div class="aiw-results-actions">
             <span>{{ selectedResultItems.length ? `已选 ${selectedResultItems.length} 张` : '未选择图片' }}</span>
             <button type="button" :disabled="!allVisibleSelectableItems.length" @click="selectAllVisibleResults">
-              {{ allVisibleSelected ? '取消全选' : '全选图片' }}
+              <span class="aiw-icon-button-content">
+                <AiwIcon :name="allVisibleSelected ? 'minus-square' : 'check-square'" />{{ allVisibleSelected ? '取消全选' : '全选图片' }}
+              </span>
             </button>
-            <button type="button" :disabled="!selectedResultItems.length" @click="saveAs(selectedResultItems)">另存选中</button>
+            <button type="button" :disabled="!selectedResultItems.length" @click="saveAs(selectedResultItems)">
+              <span class="aiw-icon-button-content"><AiwIcon name="download" />下载选中</span>
+            </button>
             <div class="aiw-tabs">
               <button :class="{ active: workspaceMode === 'results' }" type="button" @click="workspaceMode = 'results'">结果</button>
-              <button :class="{ active: workspaceMode === 'logs' }" type="button" @click="workspaceMode = 'logs'">日志</button>
+              <button :class="{ active: workspaceMode === 'tasks' }" type="button" @click="workspaceMode = 'tasks'">任务</button>
             </div>
           </div>
         </div>
@@ -194,7 +219,18 @@
                 <strong>{{ queue.title }}</strong>
                 <span>{{ queueMetaLine(queue) }}</span>
               </div>
-              <p v-if="queuePromptLine(queue)">{{ queuePromptLine(queue) }}</p>
+              <div v-if="queuePromptLine(queue)" class="aiw-result-prompt-row">
+                <button
+                  class="aiw-prompt-preview-button"
+                  type="button"
+                  :title="queuePromptLine(queue)"
+                  aria-label="查看完整 Prompt"
+                  @click="openPromptDialog(queue)"
+                >
+                  <span>{{ queuePromptPreview(queue) }}</span>
+                  <strong><AiwIcon name="eye" />查看完整</strong>
+                </button>
+              </div>
             </header>
             <div class="aiw-result-list">
               <article
@@ -214,10 +250,10 @@
                 </button>
                 <button v-if="!item.loading" class="aiw-preview-button" type="button" @click.stop="openLightbox(item)">
                   <img
-                    v-if="imagePreviewSrc(resultPreviewKey(item))"
-                    :src="imagePreviewSrc(resultPreviewKey(item))"
+                    v-if="resultPreviewSrc(item)"
+                    :src="resultPreviewSrc(item)"
                     :alt="item.label"
-                    @error="markPreviewBroken(resultPreviewKey(item))"
+                    @error="markResultPreviewBroken(item)"
                   />
                   <span v-else class="aiw-result-preview">{{ item.label }}</span>
                 </button>
@@ -226,14 +262,20 @@
                   <strong>{{ item.label }}</strong>
                 </div>
                 <footer v-if="!item.loading">
-                  <div>
+                  <div class="aiw-result-card-meta">
                     <strong>{{ item.label }}</strong>
                     <span>{{ item.model || activeModel.label }} · {{ item.size || form.size }}</span>
                   </div>
-                  <div>
-                    <button type="button" @click.stop="saveAs([item])">另存为</button>
-                    <button type="button" @click.stop="setAsMain(item)">设为主图</button>
-                    <button type="button" @click.stop="addAsReference(item)">加入参考图</button>
+                  <div class="aiw-result-card-actions">
+                    <button type="button" @click.stop="setAsMain(item)">
+                      <span class="aiw-icon-button-content"><AiwIcon name="image" />设为主图</span>
+                    </button>
+                    <button type="button" @click.stop="addAsReference(item)">
+                      <span class="aiw-icon-button-content"><AiwIcon name="plus" />设为参考</span>
+                    </button>
+                    <button type="button" @click.stop="saveAs([item])">
+                      <span class="aiw-icon-button-content"><AiwIcon name="download" />下载</span>
+                    </button>
                   </div>
                 </footer>
               </article>
@@ -245,62 +287,95 @@
           </div>
         </section>
 
-        <section v-else class="aiw-log-panel">
-          <pre>{{ logs.join('\n') || '暂无日志' }}</pre>
+        <section v-else-if="workspaceMode === 'tasks'" class="aiw-task-records-workspace">
+          <section class="aiw-task-detail-panel">
+            <header>
+              <div>
+                <strong>{{ currentJob?.title || '未选择任务' }}</strong>
+                <span>{{ currentJob ? taskMetaLine(currentJob) : '请选择右侧任务记录' }}</span>
+              </div>
+            </header>
+            <div class="aiw-task-detail-summary">
+              <strong>{{ currentJob ? taskResultLine(currentJob) : '暂无任务' }}</strong>
+              <span>{{ currentJob?.job_uid || '新建或选择任务后，这里会显示任务详情。' }}</span>
+            </div>
+            <div class="aiw-task-detail-prompt">
+              <span>Prompt</span>
+              <p>{{ currentJob?.prompt || form.prompt || '暂无 Prompt' }}</p>
+            </div>
+            <div v-if="taskPreviewItems(currentJob || {}).length" class="aiw-task-detail-thumbs">
+              <button
+                v-for="item in taskPreviewItems(currentJob || {})"
+                :key="resultKey(item)"
+                type="button"
+                @click="openLightbox(item)"
+              >
+                <img
+                  v-if="resultPreviewSrc(item)"
+                  :src="resultPreviewSrc(item)"
+                  :alt="item.label"
+                  @error="markResultPreviewBroken(item)"
+                />
+                <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
+              </button>
+            </div>
+            <div v-else class="aiw-empty-state">
+              <strong>暂无结果图</strong>
+              <span>当前任务生成完成后，会在这里显示最近几张输出预览。</span>
+            </div>
+          </section>
+
+          <aside class="aiw-history-sidebar">
+            <div class="aiw-panel-head">
+              <span>任务记录</span>
+            </div>
+            <ol>
+              <li v-for="job in taskRecords" :key="job.job_uid">
+                <button
+                  class="aiw-history-item"
+                  :class="{ active: highlightedJobUid === job.job_uid }"
+                  type="button"
+                  @click="selectTaskRecord(job)"
+                >
+                  <strong>{{ job.title || job.job_uid }}</strong>
+                  <div v-if="taskPreviewItems(job).length" class="aiw-history-thumbs">
+                    <span
+                      v-for="item in taskPreviewItems(job)"
+                      :key="resultKey(item)"
+                      class="aiw-history-thumb"
+                    >
+                      <img
+                        v-if="resultPreviewSrc(item)"
+                        :src="resultPreviewSrc(item)"
+                        :alt="item.label"
+                        @error="markResultPreviewBroken(item)"
+                      />
+                      <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
+                    </span>
+                  </div>
+                  <span>{{ taskMetaLine(job) }}</span>
+                  <small>{{ taskResultLine(job) }}</small>
+                </button>
+              </li>
+            </ol>
+            <div v-if="!taskRecords.length" class="aiw-history-empty">
+              <strong>暂无任务</strong>
+              <span>点击新建任务后，可以在这里切换每一次生图记录。</span>
+            </div>
+          </aside>
         </section>
       </main>
-
-      <aside v-if="historyOpen" class="aiw-history-drawer">
-        <div class="aiw-panel-head">
-          <span>任务记录</span>
-          <div class="aiw-history-actions">
-            <button type="button" @click="createNewTask">新建</button>
-            <button type="button" @click="loadJobs">刷新</button>
-          </div>
-        </div>
-        <ol>
-          <li v-for="job in taskRecords" :key="job.job_uid">
-            <button
-              class="aiw-history-item"
-              :class="{ active: highlightedJobUid === job.job_uid }"
-              type="button"
-              @click="restoreJob(job)"
-            >
-              <strong>{{ job.title || job.job_uid }}</strong>
-              <div v-if="taskPreviewItems(job).length" class="aiw-history-thumbs">
-                <span
-                  v-for="item in taskPreviewItems(job)"
-                  :key="resultKey(item)"
-                  class="aiw-history-thumb"
-                >
-                  <img
-                    v-if="imagePreviewSrc(resultPreviewKey(item))"
-                    :src="imagePreviewSrc(resultPreviewKey(item))"
-                    :alt="item.label"
-                    @error="markPreviewBroken(resultPreviewKey(item))"
-                  />
-                  <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
-                </span>
-              </div>
-              <span>{{ taskMetaLine(job) }}</span>
-              <small>{{ taskResultLine(job) }}</small>
-            </button>
-          </li>
-        </ol>
-        <div v-if="!taskRecords.length" class="aiw-history-empty">
-          <strong>暂无任务</strong>
-          <span>点击新建任务后，可以在这里切换每一次生图记录。</span>
-        </div>
-      </aside>
     </div>
     <div v-if="lightboxItem" class="aiw-lightbox" @click="closeLightbox">
       <figure @click.stop>
-        <button class="aiw-lightbox-close" type="button" @click="closeLightbox">关闭</button>
+        <button class="aiw-lightbox-close" type="button" @click="closeLightbox">
+          <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
+        </button>
         <img
           v-if="lightboxSrc"
           :src="lightboxSrc"
           :alt="lightboxItem.label"
-          @error="markPreviewBroken(resultPreviewKey(lightboxItem))"
+          @error="markResultPreviewBroken(lightboxItem)"
         />
         <div v-else class="aiw-lightbox-fallback">{{ lightboxItem.label }}</div>
         <figcaption>
@@ -309,11 +384,25 @@
         </figcaption>
       </figure>
     </div>
+    <div v-if="promptDialogQueue" class="aiw-prompt-dialog" @click="closePromptDialog">
+      <section role="dialog" aria-modal="true" aria-label="完整 Prompt" @click.stop>
+        <header>
+          <div>
+            <strong>完整 Prompt</strong>
+            <span>{{ promptDialogQueue.title || '生成队列' }}</span>
+          </div>
+          <button type="button" @click="closePromptDialog">
+            <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
+          </button>
+        </header>
+        <pre>{{ promptDialogPrompt }}</pre>
+      </section>
+    </div>
   </section>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AI_IMAGE_FORMATS,
   AI_IMAGE_MODELS,
@@ -334,6 +423,68 @@ const emit = defineEmits(['open-settings'])
 
 const STORAGE_KEY = 'crawshrimp.aiImageWorkbench.state.v2'
 const AUTOSAVE_DELAY_MS = 700
+const AIW_ICON_NODES = {
+  plus: [{ tag: 'path', attrs: { d: 'M12 5v14M5 12h14' } }],
+  folder: [
+    { tag: 'path', attrs: { d: 'M3 7.5A2.5 2.5 0 0 1 5.5 5H9l2 2h7.5A2.5 2.5 0 0 1 21 9.5v7A2.5 2.5 0 0 1 18.5 19h-13A2.5 2.5 0 0 1 3 16.5v-9Z' } },
+  ],
+  settings: [
+    { tag: 'path', attrs: { d: 'M12 3v3M12 18v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M3 12h3M18 12h3M4.9 19.1 7 17M17 7l2.1-2.1' } },
+    { tag: 'circle', attrs: { cx: '12', cy: '12', r: '3.5' } },
+  ],
+  'rotate-ccw': [
+    { tag: 'path', attrs: { d: 'M4 7v5h5' } },
+    { tag: 'path', attrs: { d: 'M5.2 16A7 7 0 1 0 6 7.5L4 12' } },
+  ],
+  eraser: [
+    { tag: 'path', attrs: { d: 'm7 21 10-10a3 3 0 0 0 0-4l-2-2a3 3 0 0 0-4 0L3 13a3 3 0 0 0 0 4l4 4Z' } },
+    { tag: 'path', attrs: { d: 'm14 14-5-5M7 21h14' } },
+  ],
+  image: [
+    { tag: 'rect', attrs: { x: '4', y: '5', width: '16', height: '14', rx: '2' } },
+    { tag: 'circle', attrs: { cx: '9', cy: '10', r: '1.5' } },
+    { tag: 'path', attrs: { d: 'm6.5 17 4.5-4.5 3 3 2-2 2.5 3.5' } },
+  ],
+  trash: [
+    { tag: 'path', attrs: { d: 'M5 7h14M10 11v6M14 11v6M9 7l1-2h4l1 2M7 7l1 13h8l1-13' } },
+  ],
+  wand: [
+    { tag: 'path', attrs: { d: 'm4 20 11-11M13 5l1 3 3 1-3 1-1 3-1-3-3-1 3-1 1-3ZM19 3l.5 1.5L21 5l-1.5.5L19 7l-.5-1.5L17 5l1.5-.5L19 3Z' } },
+  ],
+  'check-square': [
+    { tag: 'rect', attrs: { x: '4', y: '4', width: '16', height: '16', rx: '2' } },
+    { tag: 'path', attrs: { d: 'm8 12 2.5 2.5L16 9' } },
+  ],
+  'minus-square': [
+    { tag: 'rect', attrs: { x: '4', y: '4', width: '16', height: '16', rx: '2' } },
+    { tag: 'path', attrs: { d: 'M8 12h8' } },
+  ],
+  download: [
+    { tag: 'path', attrs: { d: 'M12 4v10M8 10l4 4 4-4M5 20h14' } },
+  ],
+  eye: [
+    { tag: 'path', attrs: { d: 'M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z' } },
+    { tag: 'circle', attrs: { cx: '12', cy: '12', r: '2.5' } },
+  ],
+  x: [{ tag: 'path', attrs: { d: 'M6 6l12 12M18 6 6 18' } }],
+}
+const AiwIcon = {
+  props: {
+    name: { type: String, required: true },
+  },
+  setup(props) {
+    return () => h(
+      'svg',
+      {
+        class: 'aiw-button-icon',
+        viewBox: '0 0 24 24',
+        'aria-hidden': 'true',
+        focusable: 'false',
+      },
+      (AIW_ICON_NODES[props.name] || AIW_ICON_NODES.plus).map((node, index) => h(node.tag, { ...node.attrs, key: index })),
+    )
+  },
+}
 
 const form = reactive(defaultAiImageForm())
 const jobs = ref([])
@@ -341,7 +492,6 @@ const settings = ref({})
 const currentJob = ref(null)
 const selectedResults = reactive(new Set())
 const workspaceMode = ref('results')
-const historyOpen = ref(true)
 const generating = ref(false)
 const errorMessage = ref('')
 const logs = ref([])
@@ -350,6 +500,7 @@ const previewFailures = reactive(new Set())
 const taskDrafts = reactive({})
 const pendingActiveJobUid = ref('')
 const lightboxItem = ref(null)
+const promptDialogQueue = ref(null)
 let autosaveTimer = null
 let restoringState = false
 
@@ -361,7 +512,7 @@ const resultQueues = computed(() => collectResultQueues(currentJob.value))
 const resultCards = computed(() => resultQueues.value.flatMap((queue) => queue.items || []))
 const loadingResultCards = computed(() => {
   if (!generating.value) return []
-  const count = Math.max(1, Math.min(8, Number(form.count) || 1))
+  const count = normalizeImageCount(form.count)
   return Array.from({ length: count }, (_, index) => ({
     key: `loading-${index + 1}`,
     label: `生成中 ${index + 1}`,
@@ -390,8 +541,9 @@ const allVisibleSelected = computed(() => (
 ))
 const sizeOptions = computed(() => sizesForRatio(form.ratio))
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
-const generateLabel = computed(() => activeMissingKey.value ? '配置模型 Key' : generating.value ? '生成中...' : '开始生成')
-const lightboxSrc = computed(() => lightboxItem.value ? imagePreviewSrc(resultPreviewKey(lightboxItem.value)) : '')
+const generateLabel = computed(() => activeMissingKey.value ? '配置' : generating.value ? '生成中...' : '开始生成')
+const lightboxSrc = computed(() => lightboxItem.value ? resultPreviewSrc(lightboxItem.value) : '')
+const promptDialogPrompt = computed(() => queuePromptText(promptDialogQueue.value))
 const taskRecords = computed(() => {
   const records = []
   const seen = new Set()
@@ -401,18 +553,18 @@ const taskRecords = computed(() => {
     const source = jobUid === activeJobUid.value && currentJob.value?.job_uid === jobUid
       ? { ...job, ...currentJob.value }
       : job
-    records.push(mergeJobWithDraft(source))
+    records.push(mergeJobWithDraft(source, { includeGeneratedDrafts: false }))
     seen.add(jobUid)
   }
   if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid)) {
-    records.unshift(mergeJobWithDraft(currentJob.value))
+    records.unshift(mergeJobWithDraft(currentJob.value, { includeGeneratedDrafts: false }))
     seen.add(currentJob.value.job_uid)
   }
   return records
 })
 const summaryLine = computed(() => {
   const status = currentJob.value?.status || '未开始'
-  return `${activeModel.value.label} · ${form.ratio} · ${form.size} · ${form.count} 张 · ${status}`
+  return `${activeModel.value.label} · ${form.ratio} · ${form.size} · ${normalizeImageCount(form.count)} 张 · ${status}`
 })
 
 onMounted(async () => {
@@ -436,12 +588,12 @@ watch(() => [...form.referenceImagePaths], (paths) => {
 })
 
 watch(resultCards, (cards) => {
-  cards.forEach((item) => void refreshImagePreview(resultPreviewKey(item)))
+  refreshResultPreviewCandidates(cards)
 })
 
 watch(taskRecords, (records) => {
   records.forEach((job) => {
-    taskPreviewItems(job).forEach((item) => void refreshImagePreview(resultPreviewKey(item)))
+    refreshResultPreviewCandidates(taskPreviewItems(job))
   })
 })
 
@@ -452,7 +604,7 @@ watch(form, () => {
   scheduleTaskAutosave()
 }, { deep: true })
 
-watch([currentJob, workspaceMode, historyOpen], () => {
+watch([currentJob, workspaceMode], () => {
   if (restoringState) return
   persistWorkbenchState()
 })
@@ -490,7 +642,8 @@ function saveDraftForCurrentTask() {
   taskDrafts[key] = formSnapshot()
 }
 
-function mergeJobWithDraft(job = {}) {
+function mergeJobWithDraft(job = {}, options = {}) {
+  if (!options.includeGeneratedDrafts && hasGeneratedResults(job)) return job
   const draft = taskDrafts[job.job_uid] || {}
   const params = job.params && typeof job.params === 'object' ? job.params : {}
   const draftParams = {
@@ -515,6 +668,21 @@ function mergeJobWithDraft(job = {}) {
   }
 }
 
+function hasGeneratedResults(job = {}) {
+  const summary = job.summary && typeof job.summary === 'object' ? job.summary : {}
+  const runs = Array.isArray(summary.runs) ? summary.runs : []
+  if (runs.some((run) => (
+    Array.isArray(run?.image_urls) && run.image_urls.length
+  ) || (
+    Array.isArray(run?.output_files) && run.output_files.length
+  ))) {
+    return true
+  }
+  if (Array.isArray(summary.image_urls) && summary.image_urls.length) return true
+  if (Array.isArray(summary.output_files) && summary.output_files.length) return true
+  return Array.isArray(job.assets) && job.assets.some((asset) => asset.kind === 'output' || asset.kind === 'result')
+}
+
 function restorePersistedWorkbench() {
   try {
     const raw = window.localStorage?.getItem(STORAGE_KEY)
@@ -528,8 +696,7 @@ function restorePersistedWorkbench() {
       })
     }
     if (saved?.activeJobUid) currentJob.value = { job_uid: saved.activeJobUid, status: 'draft' }
-    if (typeof saved?.historyOpen === 'boolean') historyOpen.value = saved.historyOpen
-    if (saved?.workspaceMode === 'logs' || saved?.workspaceMode === 'results') workspaceMode.value = saved.workspaceMode
+    if (saved?.workspaceMode === 'tasks' || saved?.workspaceMode === 'results') workspaceMode.value = saved.workspaceMode
     if (Array.isArray(saved?.logs)) logs.value = saved.logs.slice(-80)
   } catch (error) {
     logs.value.push(`恢复 AI 生图草稿失败：${error.message || error}`)
@@ -544,7 +711,6 @@ function persistWorkbenchState() {
       activeJobUid: activeJobUid.value,
       form: formSnapshot(),
       drafts: taskDrafts,
-      historyOpen: historyOpen.value,
       workspaceMode: workspaceMode.value,
       logs: logs.value.slice(-80),
     }))
@@ -554,7 +720,9 @@ function persistWorkbenchState() {
 async function restoreInitialTask() {
   if (activeJobUid.value) {
     const matching = jobs.value.find((job) => job.job_uid === activeJobUid.value) || currentJob.value
-    await restoreJob(matching, { preserveCurrentDraft: false })
+    const restored = await restoreJob(matching, { preserveCurrentDraft: false })
+    if (restored) return
+    if (jobs.value[0]) await restoreJob(jobs.value[0], { preserveCurrentDraft: false })
     return
   }
   if (jobs.value[0]) await restoreJob(jobs.value[0], { preserveCurrentDraft: false })
@@ -682,18 +850,21 @@ function parseAdvancedJson(options = {}) {
 function buildJobPayload(options = {}) {
   const normalizedSize = sizeForRatio(form.ratio, form.size, activeModel.value.keyTier)
   if (normalizedSize !== form.size) form.size = normalizedSize
+  const requestedCount = normalizeImageCount(form.count)
   const params = {
+    ...parseAdvancedJson({ silent: options.silentAdvanced }),
     size: normalizedSize,
     ratio: form.ratio,
     quality: form.quality,
     response_format: form.format,
-    n: Number(form.count) || 1,
+    n: requestedCount,
     model_key_tier: activeModel.value.keyTier,
     main_image_path: form.mainImagePath,
     reference_image_paths: [...form.referenceImagePaths],
-    ...parseAdvancedJson({ silent: options.silentAdvanced }),
   }
   params.size = sizeForRatio(form.ratio, params.size, activeModel.value.keyTier)
+  params.n = requestedCount
+  params.model_key_tier = activeModel.value.keyTier
   return {
     title: form.title || 'AI 生图任务',
     prompt: form.prompt,
@@ -701,6 +872,12 @@ function buildJobPayload(options = {}) {
     output_dir: form.output_dir,
     params,
   }
+}
+
+function normalizeImageCount(value) {
+  const count = Number.parseInt(String(value || 1), 10)
+  if (!Number.isFinite(count)) return 1
+  return Math.max(1, Math.min(8, count))
 }
 
 function scheduleTaskAutosave() {
@@ -712,9 +889,11 @@ function scheduleTaskAutosave() {
   }, AUTOSAVE_DELAY_MS)
 }
 
-async function autosaveCurrentTask() {
+async function autosaveCurrentTask(options = {}) {
   const jobUid = activeJobUid.value
-  if (!jobUid || generating.value || typeof window?.cs?.updateAiImageJob !== 'function') return null
+  if (!jobUid || typeof window?.cs?.updateAiImageJob !== 'function') return null
+  if (!options.allowDuringGeneration && generating.value) return null
+  if (!options.force && hasGeneratedResults(currentJob.value)) return null
   try {
     const payload = buildJobPayload({ silentAdvanced: true })
     const status = currentJob.value?.status || 'draft'
@@ -730,7 +909,11 @@ async function autosaveCurrentTask() {
     }
     return updated
   } catch (error) {
-    logs.value.push(`自动保存任务失败：${error.message || error}`)
+    if (isAiImageJobNotFoundError(error)) {
+      logs.value.push(`任务记录已失效，生成前会自动创建新任务：${jobUid}`)
+    } else {
+      logs.value.push(`自动保存任务失败：${error.message || error}`)
+    }
     return null
   }
 }
@@ -744,10 +927,22 @@ function upsertJob(job) {
 
 async function ensureCurrentTask() {
   if (currentJob.value?.job_uid) {
-    const saved = await autosaveCurrentTask()
-    return saved || currentJob.value
+    const saved = await autosaveCurrentTask({ force: true, allowDuringGeneration: true })
+    if (saved) return saved
+    try {
+      const existing = await window.cs.getAiImageJob(currentJob.value.job_uid)
+      if (existing?.job_uid) return existing
+    } catch (error) {
+      if (!isAiImageJobNotFoundError(error)) throw error
+      forgetStaleJob(currentJob.value.job_uid)
+    }
   }
-  const created = await window.cs.createAiImageJob({ ...buildJobPayload({ silentAdvanced: true }), status: 'draft' })
+  const created = await createTaskFromCurrentForm('draft')
+  return created
+}
+
+async function createTaskFromCurrentForm(status = 'draft') {
+  const created = await window.cs.createAiImageJob({ ...buildJobPayload({ silentAdvanced: true }), status })
   currentJob.value = created
   upsertJob(created)
   saveDraftForCurrentTask()
@@ -787,7 +982,6 @@ async function createNewTask() {
     currentJob.value = created
     upsertJob(created)
     taskDrafts[created.job_uid] = formSnapshot()
-    historyOpen.value = true
     logs.value.push(`新建生图任务：${created.job_uid}`)
   } catch (error) {
     currentJob.value = null
@@ -823,7 +1017,7 @@ async function generate() {
     logs.value.push(`提交生成任务：${jobUid}`)
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
-    currentJob.value = mergeJobWithDraft(latest || activeTask)
+    currentJob.value = latest || activeTask
     upsertJob(latest || activeTask)
     if (runResult && runResult.ok === false) {
       throw new Error(runResult.summary?.error || '生成任务失败，请查看日志')
@@ -831,6 +1025,7 @@ async function generate() {
     const warning = runResult?.summary?.warning || latest?.summary?.warning || ''
     if (warning) logs.value.push(warning)
     selectedResults.clear()
+    refreshResultPreviewCandidates(resultCards.value, { force: true })
     logs.value.push(`生成完成：${jobUid}`)
     await loadJobs()
   } catch (error) {
@@ -845,9 +1040,26 @@ function normalizeGenerateError(error) {
   const detail = error?.detail?.message || error?.message || String(error || '')
   const text = String(detail || '').trim()
   if (/^not found$/i.test(text) || /ai image job not found/i.test(text)) {
+    return '当前任务记录不存在，请重新新建任务后再生成'
+  }
+  if (/not implemented|not available|unsupported|window\.cs|runAiImageJob|createAiImageJob/i.test(text)) {
     return '本地 AI 生图服务未就绪，请重启抓虾客户端后再试'
   }
   return text || '生成失败，请查看日志'
+}
+
+function isAiImageJobNotFoundError(error) {
+  const detail = error?.detail?.message || error?.detail || error?.message || String(error || '')
+  return /^not found$/i.test(String(detail || '').trim()) || /ai image job not found/i.test(String(detail || ''))
+}
+
+function forgetStaleJob(jobUid) {
+  const uid = String(jobUid || '').trim()
+  if (!uid) return
+  delete taskDrafts[uid]
+  jobs.value = jobs.value.filter((job) => job.job_uid !== uid)
+  if (currentJob.value?.job_uid === uid) currentJob.value = null
+  if (pendingActiveJobUid.value === uid) pendingActiveJobUid.value = ''
 }
 
 async function createInputAssets(jobUid) {
@@ -975,8 +1187,17 @@ function queueMetaLine(queue = {}) {
 }
 
 function queuePromptLine(queue = {}) {
-  const prompt = String(queue.prompt || '').trim()
+  const prompt = queuePromptText(queue)
   return prompt ? `Prompt：${prompt}` : ''
+}
+
+function queuePromptText(queue = {}) {
+  return String(queue?.prompt || '').trim()
+}
+
+function queuePromptPreview(queue = {}) {
+  const line = queuePromptLine(queue)
+  return line.length > 120 ? `${line.slice(0, 120)}...` : line
 }
 
 function formatDateTime(value) {
@@ -993,11 +1214,56 @@ function formatDateTime(value) {
 }
 
 function resultKey(item) {
-  return item?.path || item?.url || ''
+  return item?.url || item?.path || ''
 }
 
 function resultPreviewKey(item) {
-  return item?.path || item?.url || ''
+  return resultPreviewCandidates(item)[0] || ''
+}
+
+function resultPreviewCandidates(item) {
+  const seen = new Set()
+  return [item?.url, item?.path]
+    .map((value) => String(value || '').trim())
+    .filter((value) => {
+      if (!value || seen.has(value)) return false
+      seen.add(value)
+      return true
+    })
+}
+
+function resultPreviewSrc(item) {
+  for (const key of resultPreviewCandidates(item)) {
+    const src = imagePreviewSrc(key)
+    if (src) return src
+  }
+  return ''
+}
+
+function activeResultPreviewKey(item) {
+  for (const key of resultPreviewCandidates(item)) {
+    if (imagePreviewSrc(key)) return key
+  }
+  return resultPreviewKey(item)
+}
+
+function markResultPreviewBroken(item) {
+  const failedKey = activeResultPreviewKey(item)
+  if (failedKey) markPreviewBroken(failedKey)
+  for (const key of resultPreviewCandidates(item)) {
+    if (key && key !== failedKey && !previewFailures.has(key)) {
+      void refreshImagePreview(key, { force: true })
+      break
+    }
+  }
+}
+
+function refreshResultPreviewCandidates(items, options = {}) {
+  for (const item of items || []) {
+    resultPreviewCandidates(item).forEach((key) => {
+      void refreshImagePreview(key, options)
+    })
+  }
 }
 
 function toggleResult(item) {
@@ -1027,6 +1293,39 @@ function closeLightbox() {
   lightboxItem.value = null
 }
 
+function openPromptDialog(queue) {
+  if (!queuePromptText(queue)) return
+  promptDialogQueue.value = {
+    title: queue?.title || '',
+    prompt: queuePromptText(queue),
+  }
+}
+
+function closePromptDialog() {
+  promptDialogQueue.value = null
+}
+
+async function materializeResultForInput(item) {
+  const key = resultKey(item)
+  if (!key) return ''
+  const remoteUrl = String(item?.url || '').trim()
+  const localPath = String(item?.path || '').trim()
+  if (!/^https?:\/\//i.test(remoteUrl)) return localPath || key
+  if (!currentJob.value?.job_uid) {
+    if (localPath) return localPath
+    throw new Error('当前任务不存在，无法把远程结果加入输入图')
+  }
+  if (typeof window?.cs?.materializeAiImageResult !== 'function') {
+    if (localPath) return localPath
+    throw new Error('本地 AI 生图服务未就绪，无法缓存远程结果')
+  }
+  const result = await window.cs.materializeAiImageResult(currentJob.value.job_uid, {
+    file: resultKey(item),
+    url: remoteUrl,
+  })
+  return result?.path || item?.path || ''
+}
+
 async function saveAs(items) {
   if (!currentJob.value?.job_uid || !items.length) return
   try {
@@ -1042,16 +1341,25 @@ async function saveAs(items) {
   }
 }
 
-function setAsMain(item) {
-  const key = resultKey(item)
-  form.mainImagePath = key
-  void refreshImagePreview(key, { force: true })
+async function setAsMain(item) {
+  try {
+    const key = await materializeResultForInput(item)
+    if (!key) return
+    form.mainImagePath = key
+    void refreshImagePreview(key, { force: true })
+  } catch (error) {
+    errorMessage.value = error.message || String(error)
+  }
 }
 
-function addAsReference(item) {
-  const key = resultKey(item)
-  if (key && !form.referenceImagePaths.includes(key)) form.referenceImagePaths.push(key)
-  void refreshImagePreview(key, { force: true })
+async function addAsReference(item) {
+  try {
+    const key = await materializeResultForInput(item)
+    if (key && !form.referenceImagePaths.includes(key)) form.referenceImagePaths.push(key)
+    void refreshImagePreview(key, { force: true })
+  } catch (error) {
+    errorMessage.value = error.message || String(error)
+  }
 }
 
 function removeReferencePath(index) {
@@ -1078,30 +1386,36 @@ async function restoreJob(job, options = {}) {
     try {
       detail = await window.cs.getAiImageJob(job.job_uid) || job
     } catch (error) {
+      if (isAiImageJobNotFoundError(error)) {
+        logs.value.push(`任务记录不存在，已从本地草稿移除：${job.job_uid}`)
+        forgetStaleJob(job.job_uid)
+        persistWorkbenchState()
+        return null
+      }
       logs.value.push(`读取任务详情失败：${error.message || error}`)
     }
   }
-  detail = mergeJobWithDraft(detail)
+  const formDetail = mergeJobWithDraft(detail, { includeGeneratedDrafts: true })
   restoringState = true
   currentJob.value = detail
   pendingActiveJobUid.value = ''
-  form.title = detail.title || form.title
-  form.prompt = detail.prompt || ''
-  form.modelId = modelIdForJob(detail)
+  form.title = formDetail.title || form.title
+  form.prompt = formDetail.prompt || ''
+  form.modelId = modelIdForJob(formDetail)
   form.model_key = activeModel.value.key
   form.model_key_tier = activeModel.value.keyTier
-  form.output_dir = detail.output_dir || form.output_dir
-  if (detail.params && typeof detail.params === 'object') {
-    const nextSize = detail.params.size || form.size
-    const nextRatio = detail.params.ratio || ratioForSize(nextSize, form.ratio)
+  form.output_dir = formDetail.output_dir || form.output_dir
+  if (formDetail.params && typeof formDetail.params === 'object') {
+    const nextSize = formDetail.params.size || form.size
+    const nextRatio = formDetail.params.ratio || ratioForSize(nextSize, form.ratio)
     form.ratio = nextRatio
     form.size = sizeForRatio(nextRatio, nextSize, activeModel.value.keyTier)
-    form.quality = detail.params.quality || form.quality
-    form.format = detail.params.response_format || form.format
-    form.count = detail.params.n || form.count
-    form.mainImagePath = detail.params.main_image_path || form.mainImagePath
-    form.referenceImagePaths = Array.isArray(detail.params.reference_image_paths)
-      ? detail.params.reference_image_paths
+    form.quality = formDetail.params.quality || form.quality
+    form.format = formDetail.params.response_format || form.format
+    form.count = normalizeImageCount(formDetail.params.n || form.count)
+    form.mainImagePath = formDetail.params.main_image_path || form.mainImagePath
+    form.referenceImagePaths = Array.isArray(formDetail.params.reference_image_paths)
+      ? formDetail.params.reference_image_paths
       : form.referenceImagePaths
   }
   const assets = Array.isArray(detail.assets) ? detail.assets : []
@@ -1117,15 +1431,41 @@ async function restoreJob(job, options = {}) {
   await Promise.all([
     refreshImagePreview(form.mainImagePath),
     ...form.referenceImagePaths.map((path) => refreshImagePreview(path)),
-    ...resultCards.value.map((item) => refreshImagePreview(resultPreviewKey(item))),
+    ...resultCards.value.flatMap((item) => resultPreviewCandidates(item).map((key) => refreshImagePreview(key, { force: true }))),
   ])
   selectedResults.clear()
-  workspaceMode.value = 'results'
+  workspaceMode.value = options.stayInTasks ? 'tasks' : 'results'
   persistWorkbenchState()
+  return detail
 }
 
-function openOutputFolder() {
-  if (form.output_dir && typeof window.cs.openFile === 'function') window.cs.openFile(form.output_dir)
+async function selectTaskRecord(job) {
+  workspaceMode.value = 'results'
+  await restoreJob(job)
+}
+
+async function openOutputFolder() {
+  const directory = form.output_dir || currentJob.value?.output_dir || ''
+  if (!directory) {
+    errorMessage.value = '请先选择输出文件夹'
+    logs.value.push(errorMessage.value)
+    return
+  }
+  try {
+    let result = null
+    if (typeof window?.cs?.openFile === 'function') {
+      result = await window.cs.openFile(directory)
+    } else if (typeof window?.cs?.revealFile === 'function') {
+      result = await window.cs.revealFile(directory)
+    } else {
+      throw new Error('当前环境不支持直接打开输出文件夹')
+    }
+    if (result && result.ok === false) throw new Error(result.error || '打开输出文件夹失败')
+    logs.value.push(`打开输出文件夹：${directory}`)
+  } catch (error) {
+    errorMessage.value = error.message || String(error)
+    logs.value.push(`打开输出文件夹失败：${errorMessage.value}`)
+  }
 }
 
 function pathLabel(path) {
@@ -1224,8 +1564,7 @@ function localFileUrl(path) {
 
 .aiw-topbar,
 .aiw-prompt-panel,
-.aiw-results-grid,
-.aiw-history-drawer {
+.aiw-results-grid {
   border: 1px solid #2e2e3a;
   background: #1c1c22;
 }
@@ -1260,8 +1599,7 @@ function localFileUrl(path) {
 
 .aiw-top-actions,
 .aiw-tabs,
-.aiw-results-actions,
-.aiw-result-card footer div:last-child {
+.aiw-results-actions {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
@@ -1282,7 +1620,7 @@ function localFileUrl(path) {
 .aiw-panel-head,
 .aiw-field-label,
 .aiw-key-status span,
-.aiw-result-card footer span,
+.aiw-result-card-meta span,
 .aiw-path-button span,
 .aiw-upload-tile span,
 .aiw-picked-asset span,
@@ -1290,7 +1628,10 @@ function localFileUrl(path) {
 .aiw-results-actions > span,
 .aiw-empty-state span,
 .aiw-history-item small,
-.aiw-history-empty span {
+.aiw-history-empty span,
+.aiw-task-detail-panel header span,
+.aiw-task-detail-summary span,
+.aiw-task-detail-prompt span {
   color: var(--text2);
   font-size: 12px;
 }
@@ -1334,16 +1675,11 @@ function localFileUrl(path) {
 .aiw-main-grid {
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(300px, 340px) minmax(420px, 1fr) minmax(230px, 260px);
+  grid-template-columns: minmax(320px, 360px) minmax(520px, 1fr);
   gap: 14px;
 }
 
-.aiw-main-grid.history-collapsed {
-  grid-template-columns: minmax(340px, 380px) minmax(520px, 1fr);
-}
-
-.aiw-prompt-panel,
-.aiw-history-drawer {
+.aiw-prompt-panel {
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -1467,7 +1803,7 @@ function localFileUrl(path) {
 
 .aiw-picked-asset strong,
 .aiw-reference-card span,
-.aiw-result-card footer strong {
+.aiw-result-card-meta strong {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1557,15 +1893,44 @@ function localFileUrl(path) {
   gap: 4px;
 }
 
-.aiw-result-queue-head p {
-  max-width: 54%;
-  margin: 0;
+.aiw-result-prompt-row {
+  max-width: min(560px, 58%);
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.aiw-prompt-preview-button {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 6px 8px;
+  border-color: rgba(255, 107, 43, 0.22);
+  background: rgba(255, 107, 43, 0.06);
   color: var(--text2);
+}
+
+.aiw-prompt-preview-button span {
+  min-width: 0;
   font-size: 12px;
   line-height: 1.5;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.aiw-prompt-preview-button strong {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: #ff8b5f;
+  font-size: 12px;
+  line-height: 1;
 }
 
 .aiw-result-list {
@@ -1761,36 +2126,78 @@ function localFileUrl(path) {
 
 .aiw-result-card footer {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
+  flex-direction: column;
+  gap: 8px;
   padding: 10px;
 }
 
-.aiw-result-card footer > div:first-child {
+.aiw-result-card-meta {
   min-width: 0;
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
   gap: 4px;
 }
 
-.aiw-result-card footer div:last-child {
-  justify-content: flex-end;
+.aiw-result-card-meta span {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.aiw-history-drawer ol {
+.aiw-result-card-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.aiw-result-card-actions button {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 6px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.aiw-result-card-actions .aiw-icon-button-content {
+  gap: 4px;
+}
+
+.aiw-task-records-workspace {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 240px);
+  gap: 10px;
+  overflow: hidden;
+}
+
+.aiw-history-sidebar,
+.aiw-task-detail-panel {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #141418;
+  overflow: auto;
+}
+
+.aiw-history-sidebar ol {
   display: flex;
   flex-direction: column;
   gap: 10px;
   margin: 0;
   padding: 0;
   list-style: none;
-}
-
-.aiw-history-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
 }
 
 .aiw-history-item {
@@ -1852,21 +2259,60 @@ function localFileUrl(path) {
   background: #17181d;
 }
 
-.aiw-log-panel {
-  min-height: 0;
-  flex: 1;
-  overflow: auto;
-  border: 1px solid #2e2e3a;
-  border-radius: 8px;
-  background: #141418;
+.aiw-task-detail-panel header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #2e2e3a;
 }
 
-.aiw-log-panel pre {
+.aiw-task-detail-panel header div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.aiw-task-detail-summary,
+.aiw-task-detail-prompt {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #1c1c22;
+}
+
+.aiw-task-detail-summary span,
+.aiw-task-detail-prompt p {
   margin: 0;
-  padding: 12px;
-  white-space: pre-wrap;
-  color: var(--text2);
-  font: 12px/1.6 ui-monospace, SFMono-Regular, Menlo, monospace;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.aiw-task-detail-thumbs {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+}
+
+.aiw-task-detail-thumbs button {
+  min-width: 0;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  background: #f4f2ee;
+  color: #6d6a62;
+}
+
+.aiw-task-detail-thumbs img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .aiw-lightbox {
@@ -1931,6 +2377,63 @@ function localFileUrl(path) {
   backdrop-filter: blur(10px);
 }
 
+.aiw-prompt-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 90;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(10, 10, 14, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.aiw-prompt-dialog section {
+  width: min(760px, 92vw);
+  max-height: 84vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #1c1c22;
+}
+
+.aiw-prompt-dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.aiw-prompt-dialog header div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aiw-prompt-dialog header span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.aiw-prompt-dialog pre {
+  min-height: 180px;
+  max-height: 64vh;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  padding: 14px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #141418;
+  color: var(--text);
+  font: 13px/1.7 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .aiw-empty-state {
   min-height: 220px;
   display: grid;
@@ -1963,6 +2466,27 @@ button {
   font: inherit;
   font-weight: 700;
   padding: 8px 12px;
+}
+
+.aiw-icon-button-content {
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.aiw-button-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
 }
 
 button:disabled {
@@ -1998,27 +2522,33 @@ textarea:focus-visible,
 
 button.active,
 .aiw-primary-action,
+.aiw-top-primary,
 .aiw-ghost {
   border-color: rgba(255, 107, 43, 0.35);
   background: rgba(255, 107, 43, 0.1);
   color: #ff6b2b;
 }
 
-.aiw-primary-action {
+.aiw-primary-action,
+.aiw-top-primary {
   width: 100%;
   min-height: 42px;
   background: #ff6b2b;
   color: #fff;
 }
 
+.aiw-top-primary {
+  width: auto;
+}
+
 .aiw-ghost {
   flex: 0 0 auto;
 }
 
-@media (max-width: 1180px) {
+@media (max-width: 1060px) {
   .aiw-main-grid,
-  .aiw-main-grid.history-collapsed,
-  .aiw-result-list {
+  .aiw-result-list,
+  .aiw-task-records-workspace {
     grid-template-columns: 1fr;
   }
 

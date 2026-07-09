@@ -97,8 +97,9 @@ export async function createAssetUploadPlan(request: Request, env: Env): Promise
       if (!isAssetAllowedForMachineJob(job, { assetUid, batchUid, styleId, kind, access: 'upload' })) {
         return forbidden('Machine lease does not include this asset upload')
       }
-    } else if (isLocalMaterialResultUploadActor(actor, { batchUid, styleId, kind })) {
-      // Registered task machines may sync locally-run material-test exports without a dispatch lease.
+    } else if (isMaterialTestResultUpload({ batchUid, kind })) {
+      const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, batchUid, body)
+      if (job instanceof Response) return job
     } else {
       const syncScope = await requireMachineSyncUploadPlan(env, actor.machine_id, { assetUid, batchUid, styleId, kind, filename: safeFilename(filename) })
       if (syncScope instanceof Response) return syncScope
@@ -159,8 +160,9 @@ export async function uploadAsset(request: Request, env: Env): Promise<Response>
       if (!isAssetAllowedForMachineJob(job, { assetUid: asset.asset_uid, batchUid: asset.batch_uid, styleId: asset.style_id, kind: asset.kind, access: 'upload' })) {
         return forbidden('Machine lease does not include this asset upload')
       }
-    } else if (isLocalMaterialResultUploadActor(actor, { batchUid: asset.batch_uid, styleId: asset.style_id, kind: asset.kind })) {
-      // Same permission as presign: active material-test machines can upload their local export workbook.
+    } else if (isMaterialTestResultUpload({ batchUid: asset.batch_uid, kind: asset.kind })) {
+      const job = await requireMachineLeaseForBatch(request, env, actor.machine_id, asset.batch_uid)
+      if (job instanceof Response) return job
     } else {
       const syncScope = await requireMachineSyncUploadObject(env, actor.machine_id, asset)
       if (syncScope instanceof Response) return syncScope
@@ -331,24 +333,8 @@ function isMachineActor(actor: unknown): actor is { machine_id: string } {
   return Boolean(actor && typeof actor === 'object' && typeof (actor as { machine_id?: unknown }).machine_id === 'string')
 }
 
-function isLocalMaterialResultUploadActor(actor: unknown, asset: { batchUid: string; styleId: number; kind: string }): boolean {
-  if (!actor || typeof actor !== 'object') return false
-  const machine = actor as { capabilities_json?: unknown }
-  return asset.batchUid === 'material-test'
-    && asset.styleId === 1
-    && asset.kind === 'result'
-    && parseStringArray(machine.capabilities_json).includes('crawl_tmall_material_test_data')
-}
-
-function parseStringArray(value: unknown): string[] {
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
-  if (typeof value !== 'string' || !value) return []
-  try {
-    const parsed = JSON.parse(value)
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0) : []
-  } catch {
-    return []
-  }
+function isMaterialTestResultUpload(asset: { batchUid: string; kind: string }): boolean {
+  return asset.batchUid === 'material-test' && asset.kind === 'result'
 }
 
 function userIdForActor(actor: unknown): number | null {

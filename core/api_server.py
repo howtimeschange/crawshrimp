@@ -5247,6 +5247,11 @@ class AiImageSaveAsRequest(BaseModel):
     files: list[str] = []
 
 
+class AiImageMaterializeRequest(BaseModel):
+    file: str = ""
+    url: str = ""
+
+
 class LocalImagePreviewRequest(BaseModel):
     path: str
 
@@ -5364,6 +5369,20 @@ def save_as_ai_image_job(job_uid: str, req: AiImageSaveAsRequest):
         ]
     files = ai_image_service.copy_assets_to_directory(output_assets, req.directory)
     return {"ok": True, "job_uid": job_uid, "files": files}
+
+
+@app.post("/ai-image/jobs/{job_uid}/materialize")
+def materialize_ai_image_job(job_uid: str, req: AiImageMaterializeRequest):
+    source = str(req.url or req.file or "").strip()
+    if not source:
+        raise HTTPException(400, "图片地址不能为空")
+    job = data_sink.get_ai_image_job(job_uid)
+    try:
+        if not job:
+            return ai_image_service.materialize_remote_image(job_uid, source, allow_unlisted=True)
+        return ai_image_service.materialize_remote_image(job_uid, source)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @app.post("/ai-image/assets")
@@ -5750,7 +5769,12 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
         failed = int(result.get("failed") or 0)
         attempted = int(result.get("attempted") or 0)
         status = "completed" if attempted > 0 and failed == 0 else "partial_failed"
+        result_path = str(result.get("excel_path") or result.get("result_path") or "").strip()
+        audit_path = str(result.get("audit_path") or "").strip()
         summary = _parse_json_object(instance.get("summary_json"))
+        summary_files = list(summary.get("output_files") or [])
+        if result_path and result_path not in summary_files:
+            summary_files.append(result_path)
         summary.update({
             "approval_batch_id": batch_id,
             "submit_status": result.get("status"),
@@ -5758,7 +5782,10 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
             "succeeded": int(result.get("succeeded") or 0),
             "failed": failed,
             "submitted": int(result.get("submitted") or 0),
-            "result_path": result.get("result_path") or "",
+            "result_path": result_path,
+            "result_excel_path": result_path,
+            "audit_result_path": audit_path,
+            "output_files": summary_files,
         })
         data_sink.update_task_instance(
             instance["instance_uid"],
@@ -5766,12 +5793,12 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
             current_step="create",
             summary=summary,
         )
-        if result.get("result_path"):
+        if result_path:
             data_sink.add_task_instance_artifact(
                 instance["instance_uid"],
-                kind="file",
-                label=Path(str(result.get("result_path"))).name,
-                path=str(result.get("result_path")),
+                kind=_task_instance_artifact_kind(result_path),
+                label=Path(result_path).name,
+                path=result_path,
                 meta={"approval_batch_id": batch_id},
             )
     return result

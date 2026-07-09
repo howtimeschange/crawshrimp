@@ -229,6 +229,14 @@ export async function updateUser(request: Request, env: Env): Promise<Response> 
   const name = typeof body.name === 'string' ? body.name.trim() : null
   const status = typeof body.status === 'string' ? body.status : null
   if (!name && !status) return badRequest('name or status is required')
+  const target = await userById(env, userId)
+  if (!target) return json({ error: 'Not found' }, { status: 404 })
+  const targetRoles = await rolesForUser(env, userId)
+  const superAdminGuard = await requireCanModifySuperAdminTarget(env, actor, target, targetRoles, {
+    removeSuperAdminRole: false,
+    deactivateSuperAdmin: Boolean(status && status !== 'active'),
+  })
+  if (superAdminGuard) return superAdminGuard
   await env.DB.prepare(
     `UPDATE users
      SET name = COALESCE(?, name),
@@ -256,14 +264,28 @@ export async function updateUserRoles(request: Request, env: Env): Promise<Respo
   if (!Number.isInteger(userId) || userId <= 0) return badRequest('valid user id is required')
   const body = await readJsonObject(request)
   const roleKeys = Array.isArray(body.roleKeys) ? body.roleKeys.filter((roleKey): roleKey is string => typeof roleKey === 'string') : []
+  const target = await userById(env, userId)
+  if (!target) return json({ error: 'Not found' }, { status: 404 })
+  const targetRoles = await rolesForUser(env, userId)
   const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
   if (roleIdByKey instanceof Response) return roleIdByKey
   const roleGuard = requireAssignableRoleKeys(actor, roleKeys)
   if (roleGuard) return roleGuard
+  const superAdminGuard = await requireCanModifySuperAdminTarget(env, actor, target, targetRoles, {
+    removeSuperAdminRole: hasRole(targetRoles, 'super_admin') && !roleKeys.includes('super_admin'),
+    deactivateSuperAdmin: false,
+  })
+  if (superAdminGuard) return superAdminGuard
   await env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(userId).run()
   await assignUserRoles(env, userId, roleKeys, actor.user.id, roleIdByKey)
   await recordAudit(env, { userId: actor.user.id }, 'users.roles.update', 'user', String(userId), { roleKeys }, request)
   return json({ ok: true })
+}
+
+async function userById(env: Env, userId: number): Promise<UserRow | null> {
+  return env.DB.prepare('SELECT id, email, name, status, created_at, updated_at FROM users WHERE id = ? LIMIT 1')
+    .bind(userId)
+    .first<UserRow>()
 }
 
 export async function listAuditLogs(request: Request, env: Env): Promise<Response> {
@@ -294,6 +316,40 @@ function requireAssignableRoleKeys(actor: CurrentUser, roleKeys: string[]): Resp
     return forbidden('Only super_admin can assign super_admin')
   }
   return null
+}
+
+async function requireCanModifySuperAdminTarget(
+  env: Env,
+  actor: CurrentUser,
+  target: UserRow,
+  targetRoles: RoleRow[],
+  options: { removeSuperAdminRole: boolean; deactivateSuperAdmin: boolean },
+): Promise<Response | null> {
+  if (!hasRole(targetRoles, 'super_admin')) return null
+  if (!hasRole(actor.roles, 'super_admin')) return forbidden('Only super_admin can modify super_admin users')
+  if (target.status === 'active' && options.removeSuperAdminRole && await activeSuperAdminCount(env) <= 1) {
+    return json({ error: 'Cannot remove the last active super_admin' }, { status: 409 })
+  }
+  if (target.status === 'active' && options.deactivateSuperAdmin && await activeSuperAdminCount(env) <= 1) {
+    return json({ error: 'Cannot deactivate the last active super_admin' }, { status: 409 })
+  }
+  return null
+}
+
+async function activeSuperAdminCount(env: Env): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id
+     JOIN roles r ON r.id = ur.role_id
+     WHERE u.status = 'active'
+       AND r.role_key = 'super_admin'`,
+  ).first<{ count: number }>()
+  return Number(row?.count ?? 0)
+}
+
+function hasRole(roles: RoleRow[], roleKey: string): boolean {
+  return roles.some((role) => role.role_key === roleKey)
 }
 
 async function assignUserRoles(env: Env, userId: number, roleKeys: string[], assignedBy: number, roleIdByKey: RoleIdByKey): Promise<void> {

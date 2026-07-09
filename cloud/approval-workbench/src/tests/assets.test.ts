@@ -387,11 +387,10 @@ describe('asset upload planning routes', () => {
     expect(state.assets).toHaveLength(0)
   })
 
-  it('allows active material-test machines to upload local manual export workbooks without a dispatch lease', async () => {
+  it('rejects material-test result uploads from task machines without a dispatch lease', async () => {
     const { state, machineToken } = await baseState()
     state.machines[0].capabilities_json = JSON.stringify(['crawl_tmall_material_test_data'])
-    const env = fakeEnv(state)
-    const presignResponse = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+    const response = await fetchWorker(new Request('https://example.test/api/assets/presign', {
       method: 'POST',
       headers: { authorization: `Bearer ${machineToken}` },
       body: JSON.stringify({
@@ -402,6 +401,39 @@ describe('asset upload planning routes', () => {
         filename: 'local-export.xlsx',
         meta: { sync_mode: 'local_manual_export' },
       }),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(400)
+    expect(state.assets).toHaveLength(0)
+    expect(state.r2Puts).toEqual([])
+  })
+
+  it('allows leased material-test crawl jobs to upload result workbooks', async () => {
+    const { state, machineToken } = await baseState()
+    state.machines[0].capabilities_json = JSON.stringify(['crawl_tmall_material_test_data'])
+    state.dispatchJobs.push({
+      job_uid: 'job-material-import',
+      batch_uid: 'material-test',
+      job_type: 'crawl_tmall_material_test_data',
+      status: 'leased',
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-material-import',
+      lease_expires_at: '2999-01-01T00:00:00.000Z',
+      payload_json: JSON.stringify({}),
+    })
+    const env = fakeEnv(state)
+    const presignResponse = await fetchWorker(new Request('https://example.test/api/assets/presign', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify({
+        batch_uid: 'material-test',
+        style_id: 1,
+        asset_uid: 'material-test-job-result',
+        kind: 'result',
+        filename: 'local-export.xlsx',
+        job_uid: 'job-material-import',
+        lease_id: 'lease-material-import',
+      }),
     }), env)
     const presign = await presignResponse.json() as { upload_url: string; object_key: string }
     const uploadResponse = await fetchWorker(new Request(`https://example.test${presign.upload_url}`, {
@@ -411,7 +443,7 @@ describe('asset upload planning routes', () => {
     }), env)
 
     expect(presignResponse.status).toBe(200)
-    expect(presign.upload_url).not.toContain('job_uid=')
+    expect(presign.upload_url).toContain('job_uid=job-material-import')
     expect(uploadResponse.status).toBe(200)
     expect(state.r2Puts).toEqual([{ key: presign.object_key, body: 'workbook-bytes', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }])
     expect(state.assets[0]).toMatchObject({ batch_uid: 'material-test', kind: 'result', status: 'uploaded' })

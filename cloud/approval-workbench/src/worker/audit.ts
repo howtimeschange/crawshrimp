@@ -1,5 +1,6 @@
 import { nowIso, toJson } from './db'
 import type { Env } from './env'
+import { redactSensitiveJson } from './security/redact'
 
 export interface AuditActor {
   userId?: number | null
@@ -34,7 +35,7 @@ export async function recordAudit(
       action,
       resourceType,
       resourceId,
-      toJson(payload),
+      toJson(redactSensitiveJson(payload)),
       request.headers.get('cf-connecting-ip') || '',
       request.headers.get('user-agent') || '',
       nowIso(),

@@ -140,6 +140,18 @@ class CloudMachineAgent:
             raise
 
     def _execute_claimed_job(self, job: Mapping[str, Any]) -> dict:
+        pending_result = data_sink.get_pending_cloud_job_completion(self._job_uid(job))
+        if pending_result is not None:
+            try:
+                complete_response = self._complete_job(job, pending_result)
+            except CloudApprovalError as exc:
+                if self._is_stale_lease_error(exc):
+                    return {"status": "stale_lease", "message": str(exc)}
+                return {"status": "completion_pending", "message": str(exc)}
+            data_sink.clear_pending_cloud_job_completion(self._job_uid(job))
+            status = str(complete_response.get("status") or "succeeded") if isinstance(complete_response, Mapping) else "succeeded"
+            return {"status": status, "result": pending_result}
+
         executor = self.job_executor_factory(self.client)
         try:
             result = executor.execute(job)
@@ -161,12 +173,15 @@ class CloudMachineAgent:
             payload = {"status": "retryable_failed", "message": str(exc)}
             self._fail_job(job, payload, terminal=False)
             return payload
+        complete_result = result.get("result") if isinstance(result, Mapping) else result
         try:
-            self._complete_job(job, result.get("result") if isinstance(result, Mapping) else result)
+            self._complete_job(job, complete_result)
         except CloudApprovalError as exc:
             if self._is_stale_lease_error(exc):
                 return {"status": "stale_lease", "message": str(exc)}
-            raise
+            data_sink.save_pending_cloud_job_completion(self._job_uid(job), complete_result)
+            return {"status": "completion_pending", "message": str(exc)}
+        data_sink.clear_pending_cloud_job_completion(self._job_uid(job))
         if isinstance(result, Mapping):
             return dict(result)
         return {"status": "succeeded", "result": result}

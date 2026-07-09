@@ -1,6 +1,7 @@
 const DEFAULT_API_BASE = 'http://127.0.0.1:18765'
 const TOKEN_STORAGE_KEY = 'crawshrimp.apiToken'
 const API_BASE_STORAGE_KEY = 'crawshrimp.apiBase'
+const LOCAL_PROMPT_LIBRARY_STORAGE_KEY = 'crawshrimp.localPromptLibraries.v1'
 const TOKEN_QUERY_KEYS = ['crawshrimp_token', 'api_token', 'token']
 const API_BASE_QUERY_KEYS = ['crawshrimp_api_base', 'api_base']
 
@@ -117,6 +118,80 @@ function openExternalLike(path) {
   return Promise.resolve({ ok: false, error: '浏览器开发模式不能直接打开本地文件，请在 Electron 开发壳中打开' })
 }
 
+function devPromptUid(prefix = 'local') {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`
+}
+
+function normalizeDevPromptLibrary(library = {}) {
+  const now = new Date().toISOString()
+  return {
+    library_uid: String(library.library_uid || devPromptUid('library')),
+    name: String(library.name || 'AI 测图提示词库 本地版').trim() || 'AI 测图提示词库 本地版',
+    scenario: ['裂变图', '创意拍摄'].includes(String(library.scenario || '').trim()) ? String(library.scenario || '').trim() : '裂变图',
+    status: String(library.status || 'draft'),
+    cloud_library_id: library.cloud_library_id ?? null,
+    cloud_synced_at: String(library.cloud_synced_at || ''),
+    import_source_path: String(library.import_source_path || ''),
+    created_at: String(library.created_at || now),
+    updated_at: String(library.updated_at || now),
+    templates: (Array.isArray(library.templates) ? library.templates : []).map(template => ({
+      local_uid: String(template.local_uid || devPromptUid('prompt')),
+      group_name: String(template.group_name || '').trim(),
+      field_name: String(template.field_name || '').trim(),
+      source_field_id: String(template.source_field_id || '').trim(),
+      field_order: template.field_order ?? null,
+      visible: template.visible !== false,
+      prompt_text: String(template.prompt_text || '').trim(),
+      size_label: String(template.size_label || '2K').trim() || '2K',
+      output_format: String(template.output_format || 'jpeg').trim() || 'jpeg',
+      quality: String(template.quality || 'auto').trim() || 'auto',
+      reference_fields: Array.isArray(template.reference_fields) ? template.reference_fields : [],
+      word_count: template.word_count ?? null,
+      field_type: String(template.field_type || '').trim(),
+      female_priority: template.female_priority ?? null,
+      male_neutral_priority: template.male_neutral_priority ?? null,
+      category_rules: Array.isArray(template.category_rules) ? template.category_rules : [],
+      gender_rules: Array.isArray(template.gender_rules) ? template.gender_rules : [],
+      priority: template.priority ?? template.female_priority ?? template.male_neutral_priority ?? 100,
+      enabled: template.enabled !== false,
+      updated_at: String(template.updated_at || now),
+    })),
+  }
+}
+
+function readDevPromptLibraries() {
+  try {
+    const parsed = JSON.parse(window.localStorage?.getItem(LOCAL_PROMPT_LIBRARY_STORAGE_KEY) || '{}')
+    return (Array.isArray(parsed?.libraries) ? parsed.libraries : []).map(normalizeDevPromptLibrary)
+  } catch {
+    return []
+  }
+}
+
+function writeDevPromptLibraries(libraries) {
+  const normalized = (Array.isArray(libraries) ? libraries : []).map(normalizeDevPromptLibrary)
+  window.localStorage?.setItem(LOCAL_PROMPT_LIBRARY_STORAGE_KEY, JSON.stringify({ libraries: normalized }))
+  return normalized
+}
+
+function upsertDevPromptLibrary(payload = {}) {
+  const libraries = readDevPromptLibraries()
+  const index = libraries.findIndex(library => library.library_uid === String(payload.library_uid || '').trim())
+  const existing = index >= 0 ? libraries[index] : {}
+  const next = normalizeDevPromptLibrary({
+    ...existing,
+    ...payload,
+    library_uid: existing.library_uid || payload.library_uid || devPromptUid('library'),
+    status: 'draft',
+    created_at: existing.created_at || new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })
+  if (index >= 0) libraries[index] = next
+  else libraries.unshift(next)
+  const saved = writeDevPromptLibraries(libraries)
+  return { ok: true, library: next, libraries: saved }
+}
+
 export function createDevCsBridge() {
   return {
     getStatus: async () => {
@@ -163,6 +238,7 @@ export function createDevCsBridge() {
     updateAiImageJob: (uid, payload) => apiCall('PATCH', `/ai-image/jobs/${encodePathPart(uid)}`, payload || {}),
     runAiImageJob: (uid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {}),
     saveAsAiImageJob: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {}),
+    materializeAiImageResult: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/materialize`, payload || {}),
     createAiImageAsset: (payload) => apiCall('POST', '/ai-image/assets', payload || {}),
     createAiImageCanvas: (payload) => apiCall('POST', '/ai-image/canvases', payload || {}),
 
@@ -220,7 +296,11 @@ export function createDevCsBridge() {
     openFile: openExternalLike,
     openExternalUrl: openExternalLike,
     getApiBase: () => apiBase(),
-    readExcel: (path) => apiCall('POST', '/files/read-excel', { path }),
+    readExcel: (path, options = {}) => apiCall('POST', '/files/read-excel', {
+      path,
+      sheet: options?.sheet || null,
+      header_row: Number(options?.header_row || options?.headerRow || 1) || 1,
+    }),
     testNotify: (channel) => apiCall('POST', '/settings/test-notify', { channel }),
     getTmallApprovalBatch: (batchId, token) => apiCall('GET', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
     saveTmallApprovalDecisions: (batchId, token, decisions) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/decisions?token=${encodeURIComponent(String(token || ''))}`, { decisions: decisions || {} }),
@@ -245,6 +325,17 @@ export function createDevCsBridge() {
       }
       const suffix = params.toString() ? `?${params.toString()}` : ''
       return apiCall('GET', `/cloud-approval/prompt-libraries/${encodePathPart(libraryId)}/resolved${suffix}`)
+    },
+    listLocalPromptLibraries: async () => ({ ok: true, libraries: readDevPromptLibraries() }),
+    createLocalPromptLibrary: async (payload = {}) => upsertDevPromptLibrary({
+      name: payload.name || 'AI 测图提示词库 本地版',
+      scenario: payload.scenario || '裂变图',
+      templates: Array.isArray(payload.templates) ? payload.templates : [],
+    }),
+    importLocalPromptLibrary: async (payload = {}) => upsertDevPromptLibrary(payload),
+    saveLocalPromptLibrary: async (libraryUid, payload = {}) => upsertDevPromptLibrary({ ...payload, library_uid: libraryUid }),
+    syncLocalPromptLibraryToCloud: async () => {
+      throw devModeError('浏览器开发模式不能同步云端提示词库，请在 Electron 开发壳中登录云端审批后同步')
     },
 
     getSettings: () => apiCall('GET', '/settings'),

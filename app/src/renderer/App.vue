@@ -108,6 +108,8 @@
           @open-settings="openSettingsPanel('ai-1xm')"
         />
       </KeepAlive>
+      <!-- 提示词库 -->
+      <LocalPromptLibrary v-if="currentView === 'local_prompt_library'" />
       <!-- 数据文件 -->
       <DataFiles v-if="currentView === 'files'" />
       <!-- 云端审批 -->
@@ -130,6 +132,7 @@ import TaskRunner  from './views/TaskRunner.vue'
 import TaskCenter  from './views/TaskCenter.vue'
 import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
 import AiImageWorkbench from './views/AiImageWorkbench.vue'
+import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
@@ -149,6 +152,7 @@ const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
   { id: 'task_center', icon: '📋', label: '任务中心' },
   { id: 'ai_image', icon: '🎨', label: 'AI 生图' },
+  { id: 'local_prompt_library', icon: '💬', label: '提示词库' },
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
   { id: 'settings', icon: '⚙️', label: '设置' },

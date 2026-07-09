@@ -53,6 +53,54 @@ APPROVAL_BATCH_FILENAME_PREFIX = "tmall-ai-image-approval-batch"
 APPROVAL_BOARD_FILENAME_PREFIX = "tmall-ai-image-approval-board"
 APPROVED_ASSET_STATUSES = {"approved", "selected", "confirmed", "通过", "已确认", "确认"}
 GENERATION_CONFIRMATION_STATUS = "pending_generation_confirmation"
+TMALL_LOGIN_READY_TIMEOUT_MS = 300_000
+TMALL_READY_POLL_INTERVAL_SECONDS = 3.0
+TMALL_AI_IMAGE_RESULT_COLUMN_ORDER = [
+    "表格行号",
+    "款号",
+    "商品ID",
+    "阶段",
+    "参考图模式",
+    "品类",
+    "性别",
+    "SKC编码",
+    "云盘路径",
+    "文件名",
+    "主图原图文件",
+    "平铺参考图路径",
+    "平铺参考图文件名",
+    "平铺参考图URL",
+    "主参考图文件",
+    "细节参考图文件",
+    "提示词分组",
+    "提示词字段名",
+    "提示词序号",
+    "尺寸",
+    "格式",
+    "质量",
+    "参考图文件",
+    "完整Prompt",
+    "最终提示词",
+    "1XM任务ID",
+    "1XM轮询URL",
+    "生成图URL",
+    "生成图数量",
+    "审批批次ID",
+    "审批状态",
+    "审批看板",
+    "任务ID",
+    "测图详情URL",
+    "上传图数量",
+    "提交图片数量",
+    "提交图片文件",
+    "提交模式",
+    "上线结果",
+    "页面回读",
+    "素材URL",
+    "本地文件",
+    "执行结果",
+    "备注",
+]
 
 
 def compact(value: object) -> str:
@@ -1086,15 +1134,67 @@ def successful_submit_rows_by_style(batch: Mapping[str, Any]) -> dict[str, Mappi
     }
 
 
+def submit_image_path_key(path: object) -> str:
+    return compact(path).replace("\\", "/")
+
+
+def successful_submit_ai_paths_by_style(batch: Mapping[str, Any]) -> dict[str, set[str]]:
+    submitted: dict[str, set[str]] = {}
+    pending_generation_paths: dict[str, list[str]] = {}
+    for row in batch.get("submit_result_rows") or []:
+        if not isinstance(row, Mapping):
+            continue
+        style_code = compact(row.get("款号"))
+        if not style_code:
+            continue
+        stage = compact(row.get("阶段"))
+        if stage == "1XM生图":
+            paths = [submit_image_path_key(path) for path in parse_list(row.get("本地生成图文件") or row.get("本地文件"))]
+            paths = [path for path in paths if path]
+            if paths:
+                pending_generation_paths.setdefault(style_code, []).extend(paths)
+            continue
+        if stage != "天猫上传/创建测图任务":
+            continue
+        if not tmall_submit_row_is_online_success(row):
+            pending_generation_paths[style_code] = []
+            continue
+        paths = [submit_image_path_key(path) for path in parse_list(row.get("提交图片文件"))]
+        if not paths:
+            paths = list(pending_generation_paths.get(style_code) or [])
+        paths = [path for path in paths if path]
+        if paths:
+            submitted.setdefault(style_code, set()).update(paths)
+        pending_generation_paths[style_code] = []
+    return submitted
+
+
+def make_selected_upload_plan(
+    item: Mapping[str, Any],
+    workflow_data: Mapping[str, Any],
+    generated_paths: list[str],
+    submit_mode: str,
+) -> dict[str, Any]:
+    return {
+        "workflow": workflow_data,
+        "origin_path": compact(item.get("origin_path")),
+        "detail_reference_path": compact(item.get("detail_reference_path")),
+        "generated_paths": generated_paths,
+        "item": item,
+        "submit_mode": submit_mode,
+    }
+
+
 def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
     plans: list[dict[str, Any]] = []
+    rerun_plans: list[dict[str, Any]] = []
     run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
     force_resubmit_success = is_truthy(run_params.get("approval_resubmit_successful"))
     successful_styles = set(successful_submit_rows_by_style(batch)) if not force_resubmit_success else set()
+    submitted_paths_by_style = successful_submit_ai_paths_by_style(batch) if not force_resubmit_success else {}
     for item in batch.get("items") or []:
         workflow_data = workflow_to_dict(item.get("workflow") or item)
-        if workflow_data.get("style_code") in successful_styles:
-            continue
+        style_code = compact(workflow_data.get("style_code"))
         approved_paths = [
             compact(asset.get("path"))
             for asset in item.get("assets") or []
@@ -1105,14 +1205,21 @@ def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[d
         ]
         if not approved_paths:
             continue
-        plans.append({
-            "workflow": workflow_data,
-            "origin_path": compact(item.get("origin_path")),
-            "detail_reference_path": compact(item.get("detail_reference_path")),
-            "generated_paths": approved_paths,
-            "item": item,
-        })
-    return plans
+        submitted_paths = submitted_paths_by_style.get(style_code) or set()
+        unsubmitted_paths = [
+            path for path in approved_paths
+            if submit_image_path_key(path) not in submitted_paths
+        ] if submitted_paths else approved_paths
+        if unsubmitted_paths:
+            mode = (
+                "append_unsubmitted" if submitted_paths else
+                "rerun_confirmed" if style_code in successful_styles else
+                "submit_confirmed"
+            )
+            plans.append(make_selected_upload_plan(item, workflow_data, unsubmitted_paths, mode))
+            continue
+        rerun_plans.append(make_selected_upload_plan(item, workflow_data, approved_paths, "rerun_confirmed"))
+    return plans or rerun_plans
 
 
 def approval_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -2005,6 +2112,102 @@ async def wait_for_semir_api_ready(runner: JSRunner, *, log=None, timeout_ms: in
         log(f"[chain] 森马云盘 API 已就绪：挂载点 {meta.get('mountCount') or 0} 个")
 
 
+async def wait_for_tmall_api_ready(
+    runner: JSRunner,
+    *,
+    log=None,
+    timeout_ms: int = TMALL_LOGIN_READY_TIMEOUT_MS,
+    poll_interval_seconds: float = TMALL_READY_POLL_INTERVAL_SECONDS,
+) -> None:
+    timeout_seconds = max(0.0, float(timeout_ms or 0) / 1000.0)
+    deadline = time.monotonic() + timeout_seconds
+    original_timeout = getattr(runner, "timeout", None)
+    last_status: Mapping[str, Any] = {}
+    last_error = ""
+    attempt = 0
+    navigated_after_login = False
+    probe_timeout = 20
+    try:
+        if original_timeout is not None:
+            try:
+                probe_timeout = min(max(int(float(original_timeout)), 10), 30)
+            except Exception:
+                probe_timeout = 20
+        while True:
+            attempt += 1
+            if original_timeout is not None:
+                try:
+                    runner.timeout = probe_timeout
+                except Exception:
+                    pass
+            result = await runner.evaluate_with_reconnect(
+                js_call(TMALL_READY_PROBE_JS, {}),
+                allow_navigation_retry=True,
+            )
+            if result.success:
+                status = (result.data[0] if isinstance(result.data, list) and result.data else {}) or {}
+                if isinstance(status, Mapping):
+                    last_status = status
+                if bool(status.get("ready")):
+                    if log:
+                        title = compact(status.get("title"))
+                        href = compact(status.get("href"))
+                        log(f"[chain] 天猫测图页面已就绪：{title or href or 'material-test'}")
+                    return
+
+                if (
+                    not navigated_after_login
+                    and bool(status.get("hasMtop"))
+                    and not bool(status.get("isLoginUrl"))
+                    and not bool(status.get("isMaterialUrl"))
+                    and hasattr(runner, "navigate")
+                ):
+                    navigated_after_login = True
+                    nav = await runner.navigate(TMALL_URL, wait_seconds=4)
+                    if not nav.success:
+                        last_error = compact(nav.error) or "切换到天猫测图页面失败"
+                    elif log:
+                        log("[chain] 天猫已登录，正在切换到测图页面")
+
+                if log and (attempt == 1 or attempt % 10 == 0):
+                    href = compact(status.get("href"))
+                    title = compact(status.get("title"))
+                    if bool(status.get("isLoginUrl")):
+                        log(f"[chain] 等待天猫登录（最多 {int(timeout_seconds)} 秒）：当前页面 {title or href or '登录页'}")
+                    elif not bool(status.get("hasMtop")):
+                        log(f"[chain] 等待天猫测图页面加载 mtop：当前页面 {title or href or '未知页面'}")
+                    else:
+                        log(f"[chain] 等待天猫测图页面就绪：当前页面 {title or href or '未知页面'}")
+            else:
+                last_error = compact(result.error) or "天猫页面探针执行失败"
+                if log and (attempt == 1 or attempt % 10 == 0):
+                    log(f"[chain] 等待天猫测图页面就绪：{last_error}")
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                href = compact(last_status.get("href")) if isinstance(last_status, Mapping) else ""
+                title = compact(last_status.get("title")) if isinstance(last_status, Mapping) else ""
+                if isinstance(last_status, Mapping) and bool(last_status.get("isLoginUrl")):
+                    state = "当前仍停留在天猫登录页"
+                elif isinstance(last_status, Mapping) and not bool(last_status.get("hasMtop")):
+                    state = "当前页面还未加载天猫 mtop API"
+                else:
+                    state = "当前天猫测图页面还未就绪"
+                detail = title or href or last_error or "未获取到页面状态"
+                raise RuntimeError(
+                    f"等待天猫登录超时（{int(timeout_seconds)} 秒）：{state}。"
+                    f"当前页面：{detail}。请在 Chrome 9222 的天猫页面完成登录后重试。"
+                )
+            sleep_seconds = min(max(0.0, float(poll_interval_seconds or 0)), remaining)
+            await asyncio.sleep(sleep_seconds)
+    finally:
+        if original_timeout is not None:
+            try:
+                runner.timeout = original_timeout
+            except Exception:
+                pass
+
+
 def js_call(body: str, payload: Mapping[str, Any]) -> str:
     return f"""
 (async () => {{
@@ -2457,6 +2660,41 @@ SEMIR_READY_JS = r"""
   return {
     success: false,
     error: `森马云盘 API 未就绪：${errors.slice(-3).join('；')}`,
+  };
+"""
+
+
+TMALL_READY_PROBE_JS = r"""
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const href = compact(location.href);
+  const host = compact(location.hostname).toLowerCase();
+  const title = compact(document.title);
+  const bodyText = compact(document.body?.innerText || '').slice(0, 500);
+  const hasMtop = !!(window.lib && window.lib.mtop && typeof window.lib.mtop.request === 'function');
+  const isLoginUrl = (
+    host === 'login.taobao.com'
+    || host === 'loginmyseller.taobao.com'
+    || host.endsWith('.login.taobao.com')
+    || href.includes('login.taobao.com')
+    || href.includes('loginmyseller.taobao.com')
+  );
+  const isMaterialUrl = (
+    host === 'myseller.taobao.com'
+    && href.includes('/material-center/material-test')
+  );
+  const hasLoginText = /登录|扫码登录|密码登录|验证码|安全验证/.test(bodyText);
+  return {
+    success: true,
+    data: [{
+      ready: Boolean(hasMtop && isMaterialUrl && !isLoginUrl),
+      hasMtop,
+      isLoginUrl: Boolean(isLoginUrl || (hasLoginText && !hasMtop)),
+      isMaterialUrl,
+      href,
+      title,
+      bodySample: bodyText,
+    }],
+    meta: { has_more: false },
   };
 """
 
@@ -3561,6 +3799,55 @@ def tmall_submission_success(tmall_result: Mapping[str, Any] | None) -> tuple[bo
     return True, task_id, ""
 
 
+def write_submit_result_artifacts(
+    batch: dict[str, Any],
+    result_rows: list[dict[str, Any]],
+    *,
+    status: str,
+    attempted: int,
+    succeeded: int,
+    failed: int,
+    artifact_dir: Path,
+) -> tuple[str, str]:
+    excel_path = data_sink.export_excel(
+        result_rows,
+        ADAPTER_ID,
+        TASK_ID,
+        "天猫AI测图全链路执行证据_{timestamp}.xlsx",
+        column_order=TMALL_AI_IMAGE_RESULT_COLUMN_ORDER,
+    )
+    audit_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
+    audit_path.write_text(json.dumps({
+        "status": status,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "submitted": succeeded,
+        "rows": result_rows,
+        "excel_path": excel_path,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    batch["submit_result_path"] = str(audit_path)
+    batch["submit_result_excel_path"] = str(excel_path)
+    return str(audit_path), str(excel_path)
+
+
+def submit_mode_label(mode: object) -> str:
+    text = compact(mode)
+    if text == "append_unsubmitted":
+        return "追加未提交图片"
+    if text == "rerun_confirmed":
+        return "重新提交已确认图片"
+    return "提交已确认图片"
+
+
+def submit_progress_message_for_plan(plan: Mapping[str, Any], workflow: WorkflowItem) -> str:
+    image_count = len(plan.get("generated_paths") or [])
+    label = submit_mode_label(plan.get("submit_mode"))
+    if image_count > 0:
+        return f"{label}：{workflow.style_code}（AI图 {image_count} 张）"
+    return f"{label}：{workflow.style_code}"
+
+
 async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[str, Any]:
     log = log or (lambda _message: None)
     previous_latest_rows = latest_submit_rows_by_style(batch)
@@ -3603,16 +3890,15 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         status = "created"
         batch["status"] = status
         batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-        result_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
-        result_path.write_text(json.dumps({
-            "status": status,
-            "attempted": attempted,
-            "succeeded": succeeded,
-            "failed": failed,
-            "submitted": succeeded,
-            "rows": result_rows,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        batch["submit_result_path"] = str(result_path)
+        audit_path, excel_path = write_submit_result_artifacts(
+            batch,
+            result_rows,
+            status=status,
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            artifact_dir=artifact_dir,
+        )
         persist_submit_progress("completed", message="全部测图任务已通过历史回读确认")
         save_approval_batch(batch)
         notify_tmall_submission_result(
@@ -3633,7 +3919,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
             "failed": failed,
             "submitted": succeeded,
             "rows": result_rows,
-            "result_path": str(result_path),
+            "result_path": excel_path,
+            "excel_path": excel_path,
+            "audit_path": audit_path,
         }
 
     cdp_url = compact(run_params.get("cdp_url")) or "http://127.0.0.1:9222"
@@ -3650,11 +3938,13 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         runner.timeout = max(int(getattr(runner, "timeout", 60) or 60), 120)
     except Exception:
         pass
+    await wait_for_tmall_api_ready(runner, log=log, timeout_ms=TMALL_LOGIN_READY_TIMEOUT_MS)
     batch["status"] = "submitting"
     persist_submit_progress("running", message="准备提交已确认图片")
     for plan in plans:
         workflow = workflow_from_dict(plan.get("workflow") or {})
         existing_row = previous_latest_rows.get(workflow.style_code)
+        plan_message = submit_progress_message_for_plan(plan, workflow)
         if not workflow.item_id:
             attempted += 1
             failed += 1
@@ -3665,6 +3955,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
                 "阶段": "审批后上传/创建测图任务",
                 "执行结果": "跳过",
                 "备注": "缺少商品 ID",
+                "提交模式": submit_mode_label(plan.get("submit_mode")),
+                "提交图片文件": "\n".join(plan.get("generated_paths") or []),
+                "提交图片数量": len(plan.get("generated_paths") or []),
             })
             persist_submit_progress("running", current_style=workflow.style_code, message="缺少商品 ID，已跳过")
             continue
@@ -3694,10 +3987,11 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
                     list(plan.get("generated_paths") or []),
                     recovered_result,
                     reference_mode=compact((plan.get("item") or {}).get("reference_mode")) or "main_only",
+                    submit_mode=plan.get("submit_mode"),
                 ))
                 persist_submit_progress("running", current_style=workflow.style_code, message="后台回读确认已上线，跳过重复提交")
                 continue
-        persist_submit_progress("running", current_style=workflow.style_code, message=f"正在提交 {workflow.style_code}")
+        persist_submit_progress("running", current_style=workflow.style_code, message=plan_message)
         log(f"[approval] {workflow.style_code} 上传 {len(plan.get('generated_paths') or [])} 张已确认 AI 图并创建测图任务")
         try:
             tmall_result = await upload_and_create_tmall_task(
@@ -3749,6 +4043,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
             list(plan.get("generated_paths") or []),
             tmall_result,
             reference_mode=compact((plan.get("item") or {}).get("reference_mode")) or "main_only",
+            submit_mode=plan.get("submit_mode"),
         ))
         persist_submit_progress("running", current_style=workflow.style_code, message="已完成本款提交" if success else submit_error)
 
@@ -3761,16 +4056,15 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     batch["status"] = status
     batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     batch["submit_result_rows"] = json_safe(result_rows)
-    result_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
-    result_path.write_text(json.dumps({
-        "status": status,
-        "attempted": attempted,
-        "succeeded": succeeded,
-        "failed": failed,
-        "submitted": succeeded,
-        "rows": result_rows,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    batch["submit_result_path"] = str(result_path)
+    audit_path, excel_path = write_submit_result_artifacts(
+        batch,
+        result_rows,
+        status=status,
+        attempted=attempted,
+        succeeded=succeeded,
+        failed=failed,
+        artifact_dir=artifact_dir,
+    )
     batch["submit_summary"] = {
         "attempted": attempted,
         "succeeded": succeeded,
@@ -3778,7 +4072,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     }
     batch["submit_progress"] = {
         "status": "completed" if failed == 0 and attempted > 0 else status,
-        "total": len(plans),
+        "total": submit_total,
         "completed": attempted,
         "attempted": attempted,
         "succeeded": succeeded,
@@ -3807,7 +4101,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         "failed": failed,
         "submitted": succeeded,
         "rows": result_rows,
-        "result_path": str(result_path),
+        "result_path": excel_path,
+        "excel_path": excel_path,
+        "audit_path": audit_path,
     }
 
 
@@ -3821,6 +4117,7 @@ def result_rows_for_workflow(
     tmall_result: Mapping[str, Any] | None,
     error: str = "",
     reference_mode: str = "main_only",
+    submit_mode: object = "",
 ) -> list[dict[str, Any]]:
     chosen = (semir_data or {}).get("chosenMain") or (semir_data or {}).get("chosen") or {}
     detail = (semir_data or {}).get("chosenDetail") or {}
@@ -3927,6 +4224,9 @@ def result_rows_for_workflow(
             "完整Prompt": "\n\n---\n\n".join(compact(row.get("完整Prompt") or row.get("最终提示词")) for row in generation_rows if compact(row.get("完整Prompt") or row.get("最终提示词"))),
             "任务ID": task_id,
             "上传图数量": len([item for item in uploaded if item.get("url")]),
+            "提交图片数量": len(generated_paths),
+            "提交图片文件": "\n".join(generated_paths),
+            "提交模式": submit_mode_label(submit_mode),
             "上线结果": "已上线" if online_ok else "未上线",
             "页面回读": readback_note,
             "素材URL": "\n".join(item.get("picUrl", "") for item in materials),
@@ -4400,6 +4700,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                     TMALL_URL,
                     artifact_dir,
                 )
+                await wait_for_tmall_api_ready(tmall_runner, log=log, timeout_ms=TMALL_LOGIN_READY_TIMEOUT_MS)
             if workflow.item_id and wait_for_control:
                 await wait_for_control({
                     "records": len(all_rows),
@@ -4501,49 +4802,7 @@ async def run_chain(args: argparse.Namespace) -> dict[str, Any]:
             ADAPTER_ID,
             TASK_ID,
             "天猫AI测图全链路执行证据_{timestamp}.xlsx",
-            column_order=[
-                "表格行号",
-                "款号",
-                "商品ID",
-                "阶段",
-                "参考图模式",
-                "品类",
-                "性别",
-                "SKC编码",
-                "云盘路径",
-                "文件名",
-                "主图原图文件",
-                "平铺参考图路径",
-                "平铺参考图文件名",
-                "平铺参考图URL",
-                "主参考图文件",
-                "细节参考图文件",
-                "提示词分组",
-                "提示词字段名",
-                "提示词序号",
-                "尺寸",
-                "格式",
-                "质量",
-                "参考图文件",
-                "完整Prompt",
-                "最终提示词",
-                "1XM任务ID",
-                "1XM轮询URL",
-                "生成图URL",
-                "生成图数量",
-                "审批批次ID",
-                "审批状态",
-                "审批看板",
-                "任务ID",
-                "测图详情URL",
-                "上传图数量",
-                "上线结果",
-                "页面回读",
-                "素材URL",
-                "本地文件",
-                "执行结果",
-                "备注",
-            ],
+            column_order=TMALL_AI_IMAGE_RESULT_COLUMN_ORDER,
         )
         output_files.extend([excel_path, json_path])
         data_sink.finish_run(run_id, len(all_rows), output_files)

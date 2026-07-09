@@ -219,6 +219,50 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(result["result"]["filename"], "generated.jpg")
         self.assertNotIn(str(Path(self.tmp.name)), str(result["result"]))
 
+    def test_generate_ai_image_fails_when_requested_outputs_are_missing(self):
+        from core.cloud_job_executors import CloudJobExecutor, CloudJobTerminalFailure
+
+        def generate(batch, **_kwargs):
+            output = Path(batch["artifact_dir"]) / "generated-only-one.jpg"
+            output.write_bytes(b"one generated image")
+            return {
+                "id": "generated-local-id",
+                "kind": "ai",
+                "path": str(output),
+                "filename": "generated-only-one.jpg",
+                "prompt": "fresh prompt",
+                "generation_row": {"1XM任务ID": "1xm-new"},
+            }
+
+        client = FakeCloudClient(allowed_asset_uids={"cloud-result-1", "cloud-result-2"})
+        executor = CloudJobExecutor(client, Path(self.tmp.name) / "cloud-jobs", tmall_module=SimpleNamespace(
+            generate_approval_asset_for_item=generate,
+        ))
+        job = {
+            "job_uid": "job-generate-short",
+            "batch_uid": "batch-1",
+            "job_type": "generate_ai_image",
+            "lease_id": "lease-generate",
+            "payload": {
+                "request_uid": "gen-1",
+                "batch_uid": "batch-1",
+                "style_id": 101,
+                "style_code": "208326100202",
+                "item_id": "1001",
+                "source_asset_uid": "source-1",
+                "result_asset_uids": ["cloud-result-1", "cloud-result-2"],
+                "prompt_text": "fresh prompt",
+                "count": 2,
+            },
+        }
+
+        with self.assertRaises(CloudJobTerminalFailure) as raised:
+            executor.execute(job)
+
+        self.assertIn("expected 2 generated output", str(raised.exception))
+        self.assertEqual([call["path"] for call in client.calls if call["path"] == "/api/assets/presign"], [])
+        self.assertEqual(client.uploads, [])
+
     def test_submit_tmall_material_test_downloads_source_and_approved_images_and_completes_with_result_path(self):
         from core.cloud_job_executors import CloudJobExecutor
 
@@ -529,7 +573,7 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(fail_calls, [])
         self.assertEqual(complete_calls[0]["body"]["lease_id"], "lease-old")
 
-    def test_non_stale_lease_http_403_completion_error_is_reraised(self):
+    def test_non_stale_completion_error_is_saved_for_retry_after_executor_success(self):
         data_sink.save_cloud_machine_credentials("machine-1", "machine-secret", "任务机", ["regenerate_ai_image"])
         client = FakeCloudClient([
             {
@@ -547,8 +591,15 @@ class CloudJobExecutorTests(unittest.TestCase):
         executor = SimpleNamespace(execute=lambda _job: {"status": "succeeded", "result": {"ok": True}})
         agent = CloudMachineAgent(client, job_executor_factory=lambda _client: executor)
 
-        with self.assertRaises(CloudApprovalError):
-            agent.claim_once()
+        result = agent.claim_once()
+
+        self.assertEqual(result["job_result"]["status"], "completion_pending")
+        self.assertIn("Machine is disabled", result["job_result"]["message"])
+        self.assertEqual(data_sink.get_pending_cloud_job_completion("job-forbidden"), {"ok": True})
+        complete_calls = [call for call in client.calls if call["path"] == "/api/jobs/job-forbidden/complete"]
+        fail_calls = [call for call in client.calls if call["path"] == "/api/jobs/job-forbidden/fail"]
+        self.assertEqual(len(complete_calls), 1)
+        self.assertEqual(fail_calls, [])
 
     def test_blocked_needs_login_is_returned_when_local_browser_readiness_fails(self):
         from core.cloud_job_executors import CloudJobBlocked

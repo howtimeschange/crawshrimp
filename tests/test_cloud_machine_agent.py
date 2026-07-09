@@ -189,6 +189,54 @@ class CloudMachineAgentTests(unittest.TestCase):
         self.assertEqual(result["job_result"]["status"], "succeeded")
         self.assertEqual(health_updates, ["online_busy", "online_idle"])
 
+    def test_complete_failure_after_executor_success_reclaim_does_not_rerun_executor(self):
+        class CountingExecutor:
+            def __init__(self):
+                self.calls = 0
+
+            def execute(self, _job):
+                self.calls += 1
+                return {"status": "succeeded", "result": {"submitted": 1, "status": "created"}}
+
+        data_sink.save_cloud_machine_credentials("machine-1", "csr_machine_secret", "任务机", ["submit_tmall_material_test"])
+        client = FakeClient([
+            {
+                "job": {
+                    "job_uid": "job-submit-once",
+                    "batch_uid": "batch-1",
+                    "job_type": "submit_tmall_material_test",
+                    "lease_id": "lease-1",
+                    "payload": {},
+                },
+                "next_poll_after_seconds": 0,
+            },
+            CloudApprovalError("cloud request failed: HTTP 502; gateway timeout"),
+            {
+                "job": {
+                    "job_uid": "job-submit-once",
+                    "batch_uid": "batch-1",
+                    "job_type": "submit_tmall_material_test",
+                    "lease_id": "lease-2",
+                    "payload": {},
+                },
+                "next_poll_after_seconds": 0,
+            },
+            {"ok": True, "status": "succeeded"},
+        ])
+        executor = CountingExecutor()
+        agent = CloudMachineAgent(client, job_executor_factory=lambda _client: executor)
+
+        first = agent.claim_once()
+        second = agent.claim_once()
+
+        self.assertEqual(first["job_result"]["status"], "completion_pending")
+        self.assertEqual(second["job_result"]["status"], "succeeded")
+        self.assertEqual(executor.calls, 1)
+        complete_calls = [call for call in client.calls if call["path"] == "/api/jobs/job-submit-once/complete"]
+        self.assertEqual(len(complete_calls), 2)
+        self.assertEqual([call["body"]["lease_id"] for call in complete_calls], ["lease-1", "lease-2"])
+        self.assertEqual(complete_calls[1]["body"]["result"], {"submitted": 1, "status": "created"})
+
     def test_idle_loop_uses_server_next_poll_after_seconds(self):
         client = FakeClient(
             [

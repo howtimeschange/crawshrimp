@@ -552,7 +552,8 @@
           <iframe
             :src="cloudApprovalFrameUrl"
             title="云端审批看板"
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups"
+            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+            referrerpolicy="no-referrer"
           />
         </div>
         <TmallAiApprovalDrawer
@@ -584,7 +585,8 @@
             <span :style="{ width: `${aiChainSubmitProgressPercent}%` }"></span>
           </div>
           <div class="ai-chain-submit-progress-meta">
-            <span>已处理 {{ aiChainSubmitProgressCompleted }} / {{ aiChainSubmitProgressTotal }} 款</span>
+            <span>已处理 {{ aiChainSubmitProgressCompleted }} / {{ aiChainSubmitProgressTotal }} 个提交项</span>
+            <span>本次AI图 {{ aiChainSubmitProgressImageCount }} 张</span>
             <span>成功 {{ aiChainCreateCounts.succeeded }} / 失败 {{ aiChainCreateCounts.failed }}</span>
             <span v-if="aiChainSubmitProgress.current_style">当前 {{ aiChainSubmitProgress.current_style }}</span>
           </div>
@@ -976,7 +978,7 @@ import { summarizePrecheckRows } from '../utils/precheckSummary'
 import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../utils/taskProgress'
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
 import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
-import { buildEmbeddedCloudApprovalUrl } from '../utils/cloudApprovalUrl'
+import { buildEmbeddedCloudApprovalUrl, isTrustedCloudApprovalBoardUrl } from '../utils/cloudApprovalUrl'
 
 const props = defineProps({
   adapterId: String,
@@ -993,6 +995,7 @@ const lastResult = ref(null)
 const localLiveSnapshot = ref(null)
 const outputFiles = ref([])
 const approvalBoardUrl = ref('')
+const cloudApprovalBaseUrl = ref('')
 const approvalBatch = ref(null)
 const approvalDrawerOpen = ref(false)
 const aiChainActiveStep = ref('config')
@@ -1510,6 +1513,14 @@ const aiChainSubmitProgressCompleted = computed(() => {
   if (Number.isFinite(completed) && completed > 0) return Math.min(completed, aiChainSubmitProgressTotal.value || completed)
   return aiChainCreateCounts.value.attempted || aiChainCreateRows.value.length
 })
+const aiChainSubmitProgressImageCount = computed(() => {
+  const explicit = Number(aiChainSubmitProgress.value?.image_total || aiChainSubmitProgress.value?.current_images || 0)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  const lastRow = aiChainCreateRows.value[aiChainCreateRows.value.length - 1] || {}
+  const lastCount = Number(lastRow?.提交图片数量 || 0)
+  if (Number.isFinite(lastCount) && lastCount > 0) return lastCount
+  return aiChainAiAssets.value.filter(asset => asset.status === 'approved').length
+})
 const aiChainSubmitProgressPercent = computed(() => {
   const total = aiChainSubmitProgressTotal.value
   if (!total) return 0
@@ -1531,7 +1542,7 @@ const aiChainCreateStartedStatuses = new Set(['submitting', 'submitted', 'create
 const aiChainGenerationConfirmationStatus = 'pending_generation_confirmation'
 const aiChainWorkflowStatuses = new Set([aiChainGenerationConfirmationStatus, 'pending_approval', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
 const isCloudApprovalBoard = computed(() => isCloudApprovalBoardUrl(approvalBoardUrl.value))
-const cloudApprovalFrameUrl = computed(() => isCloudApprovalBoard.value ? buildEmbeddedCloudApprovalUrl(approvalBoardUrl.value) : '')
+const cloudApprovalFrameUrl = computed(() => isCloudApprovalBoard.value ? buildEmbeddedCloudApprovalUrl(approvalBoardUrl.value, cloudApprovalBaseUrl.value) : '')
 const aiChainLifecycle = computed(() => {
   const createStatus = aiChainCreateStatus.value
   const aiTotal = aiChainAiAssets.value.length
@@ -1572,11 +1583,11 @@ const aiChainCreateSummary = computed(() => {
   if (!lifecycle.generationDone && lifecycle.hasBatchPayload) return '等待 AI 图生成'
   if (!lifecycle.generationDone) return '审批批次读取中'
   if (lifecycle.createStatus === 'submitting') {
-    return String(aiChainSubmitProgress.value?.message || '').trim() || `提交 ${aiChainSubmitProgressCompleted.value}/${aiChainSubmitProgressTotal.value || '?'} 款`
+    return String(aiChainSubmitProgress.value?.message || '').trim() || `提交 ${aiChainSubmitProgressCompleted.value}/${aiChainSubmitProgressTotal.value || '?'} 项`
   }
   if (!aiChainCreateRows.value.length) return '确认图片后触发上传和创建'
   const counts = aiChainCreateCounts.value
-  return `尝试 ${counts.attempted || aiChainCreateRows.value.length} 款 / 成功 ${counts.succeeded} / 失败 ${counts.failed}`
+  return `尝试 ${counts.attempted || aiChainCreateRows.value.length} 个提交项 / 成功 ${counts.succeeded} / 失败 ${counts.failed}`
 })
 const aiChainSteps = computed(() => {
   const lifecycle = aiChainLifecycle.value
@@ -1721,6 +1732,16 @@ function chooseCloudPromptLibrary(library) {
   values.value.cloud_prompt_library_id = String(library.id)
   values.value.cloud_prompt_library_name = String(library.name || `Prompt 库 ${library.id}`)
   closeCloudPromptLibraryDialog()
+}
+
+async function refreshCloudApprovalBaseUrl() {
+  try {
+    if (typeof window.cs?.getCloudApprovalStatus !== 'function') return
+    const status = await window.cs.getCloudApprovalStatus()
+    cloudApprovalBaseUrl.value = String(status?.base_url || '').trim()
+  } catch {
+    cloudApprovalBaseUrl.value = ''
+  }
 }
 
 watch(approvalBoardUrl, (url, previousUrl) => {
@@ -2678,7 +2699,7 @@ function openFile(path) {
     } else if (isLocalTmallApprovalBoardUrl(path)) {
       openApprovalDrawer()
     } else {
-      window.cs.openFile(buildEmbeddedCloudApprovalUrl(path))
+      window.cs.openFile(buildEmbeddedCloudApprovalUrl(path, cloudApprovalBaseUrl.value))
     }
     return
   }
@@ -2727,13 +2748,7 @@ function isLocalTmallApprovalBoardUrl(path) {
 }
 
 function isCloudApprovalBoardUrl(path) {
-  if (!isHttpUrl(path)) return false
-  try {
-    const parsed = new URL(String(path || '').trim())
-    return parsed.searchParams.has('batch_uid') && !parsed.pathname.includes('/tmall-ai-image-approval/')
-  } catch {
-    return false
-  }
+  return isTrustedCloudApprovalBoardUrl(path, cloudApprovalBaseUrl.value)
 }
 
 function isApprovalBoardUrl(path) {
@@ -3606,6 +3621,7 @@ async function downloadTemplate(task, param, template) {
 }
 
 onMounted(() => {
+  void refreshCloudApprovalBaseUrl()
   loadPdfCropSavedTemplates()
   applyDefaultPdfCropTemplatesToValues()
   document.addEventListener('pointerdown', handleDocumentPointerDown)

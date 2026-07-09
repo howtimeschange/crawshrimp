@@ -41,6 +41,7 @@ test('cloud approval nav item is gated by safe cloud approval status', () => {
   assert.doesNotMatch(appSource, /machine_token/)
   assert.match(frameSource, /getCloudApprovalStatus/)
   assert.match(frameSource, /iframe/)
+  assert.match(frameSource, /referrerpolicy="no-referrer"/)
   assert.match(frameSource, /allow-downloads/)
   assert.match(frameSource, /allow-modals/)
   assert.doesNotMatch(frameSource, /machine_token/)

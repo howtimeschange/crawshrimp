@@ -35,7 +35,7 @@
               {{ saving ? '保存中' : '保存审批状态' }}
             </button>
             <button type="button" class="primary-btn submit" :disabled="saving || submitting || summary.approved <= 0" @click="submitApproved">
-              {{ submitting ? '提交中' : '提交已确认图片并创建测图任务' }}
+              {{ submitting ? '提交中' : submitIntentLabel }}
             </button>
           </template>
         </div>
@@ -53,7 +53,8 @@
           <span :style="{ width: `${submitProgressPercent}%` }"></span>
         </div>
         <div class="submit-progress-meta">
-          <span>已处理 {{ submitProgressCompleted }} / {{ submitProgressTotal }} 款</span>
+          <span>已处理 {{ submitProgressCompleted }} / {{ submitProgressTotal }} 个提交项</span>
+          <span>本次AI图 {{ submitProgressImageCount }} 张</span>
           <span>成功 {{ createSummary.succeeded }} / 失败 {{ createSummary.failed }}</span>
           <span v-if="submitProgress.current_style">当前 {{ submitProgress.current_style }}</span>
         </div>
@@ -78,8 +79,12 @@
               <strong>{{ row.任务ID || '-' }}</strong>
             </div>
             <div>
-              <span>上传图</span>
-              <strong>{{ row.上传图数量 ?? '-' }}</strong>
+              <span>AI图 / 上传图</span>
+              <strong>{{ row.提交图片数量 ?? '-' }} / {{ row.上传图数量 ?? '-' }}</strong>
+            </div>
+            <div>
+              <span>提交模式</span>
+              <strong>{{ row.提交模式 || '-' }}</strong>
             </div>
             <div>
               <span>页面回读</span>
@@ -138,6 +143,7 @@
                   <span class="asset-label">{{ asset.label || asset.filename }}</span>
                   <span class="asset-file">{{ asset.filename || asset.path }}</span>
                   <span class="asset-status">{{ statusLabel(asset) }}</span>
+                  <span v-if="asset.kind === 'ai' && assetAlreadySubmitted(item, asset)" class="asset-submit-mark">已提交过</span>
                 </button>
                 <div v-if="asset.kind === 'ai'" class="asset-card-actions">
                   <button type="button" class="asset-action ok" @click.stop="setAssetStatus(item, asset, 'approved')">确认</button>
@@ -241,10 +247,13 @@
             <button type="button" class="icon-btn" aria-label="关闭新增生图" :disabled="manualGenerating" @click="closeManualGenerate">×</button>
           </header>
 
-          <label class="inspector-field">
-            <span>Prompt</span>
+          <section class="inspector-field">
+            <div class="manual-prompt-head">
+              <span>Prompt</span>
+              <button type="button" class="ghost-btn" :disabled="manualGenerating" @click="openPromptLibraryPicker(manualGenerate.item, manualGenerate)">从 Prompt 库选择</button>
+            </div>
             <textarea v-model="manualGenerate.prompt" placeholder="输入本次新增生图 Prompt"></textarea>
-          </label>
+          </section>
 
           <div class="manual-image-columns">
             <div class="manual-image-panel">
@@ -507,11 +516,51 @@ const createSummary = computed(() => {
     failed: Number.isFinite(failed) ? failed : 0,
   }
 })
+const submittedAiPathsByStyle = computed(() =>
+  submittedAiPathMapFromRows(batch.value?.submit_result_rows || [])
+)
+const hasKnownSubmittedImages = computed(() =>
+  Array.from(submittedAiPathsByStyle.value.values()).some(paths => paths.size > 0)
+)
+const approvedSubmitImages = computed(() =>
+  (batch.value?.items || []).flatMap(item =>
+    (item.assets || [])
+      .filter(asset => asset.kind === 'ai' && asset.status === 'approved' && asset.path)
+      .map(asset => ({
+        styleCode: String(item.style_code || item.workflow?.style_code || '').trim(),
+        path: String(asset.path || '').trim(),
+      }))
+  )
+)
+const approvedSubmitImageCount = computed(() => approvedSubmitImages.value.length)
+const pendingSubmitImageCount = computed(() =>
+  approvedSubmitImages.value.filter(image => {
+    const submittedPaths = submittedAiPathsByStyle.value.get(image.styleCode)
+    return !submittedPaths || !submittedPaths.has(submitImagePathKey(image.path))
+  }).length
+)
 const approvedSubmitStyleCount = computed(() =>
   (batch.value?.items || []).filter(item =>
     (item.assets || []).some(asset => asset.kind === 'ai' && asset.status === 'approved')
   ).length
 )
+const submitIntentLabel = computed(() => {
+  if (hasKnownSubmittedImages.value) {
+    if (pendingSubmitImageCount.value > 0) return `追加提交未提交图片（${pendingSubmitImageCount.value}张）`
+    return `重新提交已确认图片（${approvedSubmitImageCount.value}张）`
+  }
+  if (hasSubmitResult.value) return `重新提交已确认图片（${approvedSubmitImageCount.value}张）`
+  return '提交已确认图片并创建测图任务'
+})
+const submitStartMessage = computed(() => {
+  if (hasKnownSubmittedImages.value && pendingSubmitImageCount.value > 0) {
+    return `正在追加提交 ${pendingSubmitImageCount.value} 张未提交 AI 图并创建测图任务`
+  }
+  if (hasSubmitResult.value || hasKnownSubmittedImages.value) {
+    return `正在重新提交 ${approvedSubmitImageCount.value} 张已确认 AI 图并创建测图任务`
+  }
+  return '正在提交已确认图片并创建测图任务'
+})
 const generationPromptCount = computed(() =>
   (batch.value?.items || []).reduce((total, item) => total + activeGenerationPrompts(item).length, 0)
 )
@@ -524,6 +573,15 @@ const submitProgressCompleted = computed(() => {
   const completed = Number(submitProgress.value?.completed ?? submitProgress.value?.attempted ?? 0)
   if (Number.isFinite(completed) && completed > 0) return Math.min(completed, submitProgressTotal.value || completed)
   return createSummary.value.attempted || createRows.value.length || 0
+})
+const submitProgressImageCount = computed(() => {
+  const explicit = Number(submitProgress.value?.image_total || submitProgress.value?.current_images || 0)
+  if (Number.isFinite(explicit) && explicit > 0) return explicit
+  if (submitting.value) return pendingSubmitImageCount.value || approvedSubmitImageCount.value || summary.value.approved
+  const lastRow = createRows.value[createRows.value.length - 1] || {}
+  const lastCount = Number(lastRow?.提交图片数量 || 0)
+  if (Number.isFinite(lastCount) && lastCount > 0) return lastCount
+  return pendingSubmitImageCount.value || approvedSubmitImageCount.value || 0
 })
 const submitProgressPercent = computed(() => {
   const total = submitProgressTotal.value
@@ -576,9 +634,9 @@ const createStageClass = computed(() => {
   return 'pending'
 })
 const createStageLabel = computed(() => {
-  if (effectiveStatus.value === 'submitting') return `提交 ${submitProgressCompleted.value}/${submitProgressTotal.value || '?'} 款`
-  if (effectiveStatus.value === 'created') return `创建成功 ${createSummary.value.succeeded} 款`
-  if (effectiveStatus.value === 'partial_failed') return `部分失败 ${createSummary.value.failed} 款`
+  if (effectiveStatus.value === 'submitting') return `提交 ${submitProgressCompleted.value}/${submitProgressTotal.value || '?'} 项`
+  if (effectiveStatus.value === 'created') return `创建成功 ${createSummary.value.succeeded} 项`
+  if (effectiveStatus.value === 'partial_failed') return `部分失败 ${createSummary.value.failed} 项`
   if (effectiveStatus.value === 'create_failed') return '创建失败'
   if (effectiveStatus.value === 'submitted') return '已提交，等待回读'
   return '确认后触发'
@@ -595,7 +653,7 @@ const batchStatusLabel = computed(() => {
 const submitSummaryText = computed(() => {
   if (!hasSubmitResult.value) return '暂无创建结果'
   const { attempted, succeeded, failed } = createSummary.value
-  return `尝试 ${attempted || createRows.value.length} 款 / 成功 ${succeeded} / 失败 ${failed}`
+  return `累计尝试 ${attempted || createRows.value.length} 个提交项 / 成功 ${succeeded} / 失败 ${failed}`
 })
 const selectedReferencePaths = computed(() => plainStringArray(selectedAsset.value?.reference_paths))
 const canSubmitManualGenerate = computed(() =>
@@ -834,6 +892,57 @@ function normalizePromptReferencePaths(item, prompt) {
   return Array.from(new Set([mainPath, ...initiallySelectedReferences].filter(Boolean))).slice(0, MAX_CONFIRMATION_IMAGES)
 }
 
+function submitImagePathKey(path) {
+  return String(path || '').trim().replace(/\\/g, '/')
+}
+
+function submitRowIsOnlineSuccess(row) {
+  if (String(row?.阶段 || '').trim() !== '天猫上传/创建测图任务') return false
+  const resultText = String(row?.执行结果 || '').trim()
+  if (!resultText || resultText.includes('失败') || resultText.includes('跳过')) return false
+  const taskId = String(row?.任务ID || '').trim()
+  if (!taskId || taskId === '<experimentTaskId>') return false
+  const onlineText = String(row?.上线结果 || '').trim()
+  const readbackText = String(row?.页面回读 || '').replace(/\s+/g, '')
+  return onlineText === '已上线' || readbackText.includes('status=1') || readbackText.includes('status：1')
+}
+
+function submittedAiPathMapFromRows(rows) {
+  const submitted = new Map()
+  const pendingGenerationPaths = new Map()
+  for (const row of rows || []) {
+    const styleCode = String(row?.款号 || '').trim()
+    if (!styleCode) continue
+    const stage = String(row?.阶段 || '').trim()
+    if (stage === '1XM生图') {
+      const paths = plainStringArray(row?.本地生成图文件 || row?.本地文件).map(submitImagePathKey).filter(Boolean)
+      if (paths.length) pendingGenerationPaths.set(styleCode, [...(pendingGenerationPaths.get(styleCode) || []), ...paths])
+      continue
+    }
+    if (stage !== '天猫上传/创建测图任务') continue
+    if (!submitRowIsOnlineSuccess(row)) {
+      pendingGenerationPaths.set(styleCode, [])
+      continue
+    }
+    const explicitPaths = plainStringArray(row?.提交图片文件).map(submitImagePathKey).filter(Boolean)
+    const paths = explicitPaths.length ? explicitPaths : (pendingGenerationPaths.get(styleCode) || [])
+    if (paths.length) {
+      const target = submitted.get(styleCode) || new Set()
+      for (const path of paths) target.add(path)
+      submitted.set(styleCode, target)
+    }
+    pendingGenerationPaths.set(styleCode, [])
+  }
+  return submitted
+}
+
+function assetAlreadySubmitted(item, asset) {
+  if (!item || !asset?.path) return false
+  const styleCode = String(item.style_code || item.workflow?.style_code || '').trim()
+  const submittedPaths = submittedAiPathsByStyle.value.get(styleCode)
+  return Boolean(submittedPaths?.has(submitImagePathKey(asset.path)))
+}
+
 function referenceImageSelected(prompt, asset) {
   const path = String(asset?.path || '').trim()
   return Boolean(path && plainStringArray(prompt?.reference_paths).includes(path))
@@ -909,6 +1018,8 @@ async function submitApproved() {
     const saved = await saveDecisions()
     if (!saved) return
     const total = approvedSubmitStyleCount.value || summary.value.styles || 0
+    const imageTotal = pendingSubmitImageCount.value || approvedSubmitImageCount.value || summary.value.approved || 0
+    const message = submitStartMessage.value
     batch.value = {
       ...(batch.value || {}),
       status: 'submitting',
@@ -919,13 +1030,14 @@ async function submitApproved() {
         attempted: 0,
         succeeded: 0,
         failed: 0,
+        image_total: imageTotal,
         current_style: '',
-        message: '正在提交已确认图片并创建测图任务',
+        message,
       },
     }
     emit('batch-updated', batch.value)
     emit('submit-started', batch.value)
-    showToast('正在提交已确认图片并创建测图任务')
+    showToast(message)
     startSubmitProgressPolling()
     const result = await window.cs.submitTmallApprovalBatch(ref.batchId, ref.token)
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
@@ -1214,6 +1326,11 @@ function selectPromptLibraryTemplate(template) {
   const promptText = String(template?.prompt_text || template?.prompt || '').trim()
   if (!item || !promptText) return
   const promptName = String(template?.field_name || template?.name || 'Prompt').trim()
+  if (prompt === manualGenerate.value) {
+    manualGenerate.value.prompt = promptText
+    closePromptLibraryPicker()
+    return
+  }
   if (prompt) {
     prompt.prompt_name = promptName
     prompt.prompt_group = String(template?.group_name || prompt.prompt_group || '')
@@ -1814,7 +1931,7 @@ function showToast(message, isError = false) {
 }
 .submit-result-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.2fr) minmax(88px, .7fr) minmax(70px, .45fr) minmax(160px, 1fr) minmax(220px, 1.6fr);
+  grid-template-columns: minmax(120px, 1.1fr) minmax(82px, .65fr) minmax(82px, .55fr) minmax(96px, .7fr) minmax(130px, 1fr) minmax(200px, 1.5fr);
   gap: 12px;
   align-items: start;
   border: 1px solid var(--border);
@@ -1952,7 +2069,8 @@ function showToast(message, isError = false) {
 }
 .asset-label,
 .asset-file,
-.asset-status {
+.asset-status,
+.asset-submit-mark {
   display: block;
   padding: 0 10px;
 }
@@ -1974,6 +2092,16 @@ function showToast(message, isError = false) {
   padding-bottom: 10px;
   color: var(--text2);
   font-size: 12px;
+}
+.asset-submit-mark {
+  margin: -4px 10px 10px;
+  width: fit-content;
+  border-radius: 999px;
+  padding: 3px 7px;
+  background: rgba(74, 222, 128, .12);
+  color: #86efac;
+  font-size: 11px;
+  font-weight: 800;
 }
 .asset-card-actions {
   display: grid;
@@ -2283,6 +2411,15 @@ function showToast(message, isError = false) {
   color: var(--text2);
   font-size: 12px;
   font-weight: 700;
+}
+.manual-prompt-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.manual-prompt-head span {
+  min-width: 0;
 }
 .inspector-field textarea {
   min-height: 132px;

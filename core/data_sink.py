@@ -198,6 +198,14 @@ def init_db():
             )
         """)
         conn.execute("""
+            CREATE TABLE IF NOT EXISTS cloud_job_completion_results (
+                job_uid TEXT PRIMARY KEY,
+                result_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS ai_image_jobs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 job_uid TEXT NOT NULL UNIQUE,
@@ -323,6 +331,47 @@ def get_cloud_machine_credentials() -> dict | None:
 def clear_cloud_machine_credentials() -> None:
     with _get_conn() as conn:
         conn.execute("DELETE FROM cloud_machine_credentials WHERE id = 1")
+        conn.commit()
+
+
+def save_pending_cloud_job_completion(job_uid: str, result: Any) -> dict:
+    job_uid = str(job_uid or "").strip()
+    if not job_uid:
+        return {}
+    now = _now_iso()
+    result_json = _json_dumps(result if isinstance(result, Mapping) else {"value": result})
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO cloud_job_completion_results (job_uid, result_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(job_uid) DO UPDATE SET
+                result_json = excluded.result_json,
+                updated_at = excluded.updated_at
+            """,
+            (job_uid, result_json, now, now),
+        )
+        conn.commit()
+    return get_pending_cloud_job_completion(job_uid) or {}
+
+
+def get_pending_cloud_job_completion(job_uid: str) -> dict | None:
+    job_uid = str(job_uid or "").strip()
+    if not job_uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute("SELECT * FROM cloud_job_completion_results WHERE job_uid = ?", (job_uid,)).fetchone()
+    if not row:
+        return None
+    return _json_loads_object(dict(row).get("result_json"))
+
+
+def clear_pending_cloud_job_completion(job_uid: str) -> None:
+    job_uid = str(job_uid or "").strip()
+    if not job_uid:
+        return
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM cloud_job_completion_results WHERE job_uid = ?", (job_uid,))
         conn.commit()
 
 
@@ -814,9 +863,36 @@ def add_task_instance_artifact(
     path: str,
     meta: Optional[Mapping[str, Any]] = None,
 ) -> dict:
-    """Insert an artifact row and return it."""
+    """Insert or update an artifact row and return it."""
     uid = str(instance_uid or "").strip()
+    path_text = str(path or "").strip()
+    now = _now_iso()
     with _get_conn() as conn:
+        existing = None
+        if path_text:
+            existing = conn.execute("""
+                SELECT id
+                FROM task_instance_artifacts
+                WHERE instance_uid=? AND path=?
+                ORDER BY id ASC
+                LIMIT 1
+            """, (uid, path_text)).fetchone()
+        if existing:
+            artifact_id = int(existing["id"])
+            conn.execute("""
+                UPDATE task_instance_artifacts
+                SET kind=?, label=?, meta_json=?
+                WHERE id=?
+            """, (
+                str(kind or "").strip() or "file",
+                str(label or "").strip() or "输出文件",
+                _json_dumps(dict(meta or {})),
+                artifact_id,
+            ))
+            conn.execute("UPDATE task_instances SET updated_at=? WHERE instance_uid=?", (now, uid))
+            conn.commit()
+            row = conn.execute("SELECT * FROM task_instance_artifacts WHERE id=?", (artifact_id,)).fetchone()
+            return dict(row) if row else {}
         cur = conn.execute("""
             INSERT INTO task_instance_artifacts (instance_uid, kind, label, path, meta_json, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
@@ -824,11 +900,11 @@ def add_task_instance_artifact(
             uid,
             str(kind or "").strip() or "file",
             str(label or "").strip() or "输出文件",
-            str(path or "").strip(),
+            path_text,
             _json_dumps(dict(meta or {})),
-            _now_iso(),
+            now,
         ))
-        conn.execute("UPDATE task_instances SET updated_at=? WHERE instance_uid=?", (_now_iso(), uid))
+        conn.execute("UPDATE task_instances SET updated_at=? WHERE instance_uid=?", (now, uid))
         conn.commit()
         row = conn.execute("SELECT * FROM task_instance_artifacts WHERE id=?", (cur.lastrowid,)).fetchone()
         return dict(row) if row else {}

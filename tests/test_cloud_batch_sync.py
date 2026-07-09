@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+from core.cloud_approval_client import CloudApprovalError
 from core.cloud_batch_sync import build_cloud_batch_payload, iter_local_asset_files, sync_local_approval_batch
 
 
@@ -86,7 +87,7 @@ class CloudBatchSyncTests(unittest.TestCase):
                         },
                         {
                             "kind": "ai",
-                            "path": str(ai2).replace("/", "\\"),
+                            "path": str(ai2),
                             "filename": "C:\\tmp\\ai-2.png",
                             "label": "AI 图 2",
                             "prompt": "侧身展示",
@@ -103,10 +104,10 @@ class CloudBatchSyncTests(unittest.TestCase):
 
             files = iter_local_asset_files(batch)
 
-        self.assertEqual([item["asset_uid"] for item in files], ["origin-1", "detail-1", "ai-1"])
-        self.assertEqual([item["kind"] for item in files], ["source", "reference", "ai"])
-        self.assertEqual([item["style_code"] for item in files], ["208326100202"] * 3)
-        self.assertEqual([item["item_id"] for item in files], ["1002178235142"] * 3)
+        self.assertEqual([item["asset_uid"] for item in files[:3]], ["origin-1", "detail-1", "ai-1"])
+        self.assertEqual([item["kind"] for item in files], ["source", "reference", "ai", "ai"])
+        self.assertEqual([item["style_code"] for item in files], ["208326100202"] * 4)
+        self.assertEqual([item["item_id"] for item in files], ["1002178235142"] * 4)
         self.assertTrue(all(item["content_hash"] for item in files))
         self.assertEqual(files[0]["meta"]["source_label"], "原图/主图")
         self.assertEqual(files[1]["meta"]["source_label"], "款色参考图")
@@ -159,7 +160,7 @@ class CloudBatchSyncTests(unittest.TestCase):
 
         self.assertEqual(result["ok"], True)
         self.assertEqual(result["status"], "pending_review")
-        self.assertEqual(len(result["assets"]), 3)
+        self.assertEqual(len(result["assets"]), 4)
         self.assertEqual(
             [(method, path) for method, path, _body, _token in client.calls],
             [
@@ -167,18 +168,20 @@ class CloudBatchSyncTests(unittest.TestCase):
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
+                ("POST", "/api/assets/presign"),
                 ("POST", "/api/ai-image-batches/batch-20260707/sync-complete"),
             ],
         )
-        self.assertEqual(len(client.uploads), 3)
+        self.assertEqual(len(client.uploads), 4)
         self.assertEqual(
-            [upload[0] for upload in client.uploads],
+            [upload[0] for upload in client.uploads[:3]],
             [
                 "/api/assets/upload/origin-1",
                 "/api/assets/upload/detail-1",
                 "/api/assets/upload/ai-1",
             ],
         )
+        self.assertTrue(client.uploads[3][0].startswith("/api/assets/upload/"))
         presign_body = client.calls[1][2]
         self.assertEqual(presign_body["batch_uid"], "batch-20260707")
         self.assertEqual(presign_body["style_id"], 101)
@@ -186,7 +189,7 @@ class CloudBatchSyncTests(unittest.TestCase):
         self.assertNotIn("assets", presign_body)
         complete_body = client.calls[-1][2]
         self.assertEqual(complete_body["batch_uid"], "batch-20260707")
-        self.assertEqual(len(complete_body["assets"]), 3)
+        self.assertEqual(len(complete_body["assets"]), 4)
 
     def test_sync_local_approval_batch_uses_worker_style_id_without_local_style_id(self):
         with TemporaryDirectory() as temp:
@@ -196,7 +199,7 @@ class CloudBatchSyncTests(unittest.TestCase):
             result = sync_local_approval_batch(batch, client)
 
         self.assertEqual(result["ok"], True)
-        self.assertEqual(len(client.uploads), 3)
+        self.assertEqual(len(client.uploads), 4)
         self.assertEqual(
             [(method, path) for method, path, _body, _token in client.calls],
             [
@@ -204,10 +207,46 @@ class CloudBatchSyncTests(unittest.TestCase):
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
                 ("POST", "/api/assets/presign"),
+                ("POST", "/api/assets/presign"),
                 ("POST", "/api/ai-image-batches/batch-20260707/sync-complete"),
             ],
         )
         self.assertEqual(client.calls[1][2]["style_id"], 101)
+
+    def test_sync_local_approval_batch_rejects_missing_required_asset_files_before_complete(self):
+        with TemporaryDirectory() as temp:
+            batch = self._local_batch(Path(temp))
+            Path(batch["items"][0]["assets"][2]["path"]).unlink()
+            client = FakeClient()
+
+            with self.assertRaises(CloudApprovalError) as raised:
+                sync_local_approval_batch(batch, client)
+
+        self.assertIn("missing local asset files", str(raised.exception))
+        self.assertEqual(
+            [(method, path) for method, path, _body, _token in client.calls],
+            [("POST", "/api/ai-image-batches/sync")],
+        )
+        self.assertEqual(client.uploads, [])
+
+    def test_build_cloud_batch_payload_redacts_generation_metadata_before_sync(self):
+        with TemporaryDirectory() as temp:
+            batch = self._local_batch(Path(temp))
+            batch["items"][0]["assets"][2]["generation_row"].update({
+                "__1xm_payload": {"api_key": "sk-secret"},
+                "__1xm_reference_paths": ["/Users/xingyicheng/raw/source.jpg"],
+                "数据下载链接": "https://download.example.test/export.xlsx",
+                "任务ID": "task-safe",
+            })
+
+            payload = build_cloud_batch_payload(batch)
+            encoded = json.dumps(payload, ensure_ascii=False)
+
+        self.assertIn("task-safe", encoded)
+        self.assertNotIn("sk-secret", encoded)
+        self.assertNotIn("api_key", encoded)
+        self.assertNotIn("/Users/xingyicheng", encoded)
+        self.assertNotIn("download.example.test", encoded)
 
 
 if __name__ == "__main__":
