@@ -15,6 +15,7 @@ const { createLifecycleController } = require('./lifecycleController')
 const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChrome')
 const { startDesktopServices } = require('./startupServices')
 const { requestBackendApi } = require('./backendApi')
+const { collectCrawshrimpDataDirCandidates } = require('./dataDirRecovery')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 let apiPort = DEFAULT_API_PORT
@@ -299,16 +300,13 @@ function resolveCrawshrimpDataDir() {
 }
 
 function prepareCrawshrimpDataDir() {
-  const explicit = String(process.env.CRAWSHRIMP_DATA || '').trim()
-  const candidates = [resolveCrawshrimpDataDir()]
-  if (!explicit && process.platform === 'win32') {
-    candidates.push(path.join(app.getPath('home'), '.crawshrimp'))
-    candidates.push(getWindowsLocalCrawshrimpDataDir())
-  }
-  if (!explicit && process.platform === 'darwin') {
-    candidates.push(path.join(app.getPath('home'), '.crawshrimp'))
-    candidates.push(getMacLocalCrawshrimpDataDir())
-  }
+  const candidates = collectCrawshrimpDataDirCandidates({
+    primaryDataDir: resolveCrawshrimpDataDir(),
+    platform: process.platform,
+    legacyDataDir: path.join(app.getPath('home'), '.crawshrimp'),
+    windowsLocalDataDir: getWindowsLocalCrawshrimpDataDir(),
+    macLocalDataDir: getMacLocalCrawshrimpDataDir(),
+  })
 
   const seen = new Set()
   const errors = []
