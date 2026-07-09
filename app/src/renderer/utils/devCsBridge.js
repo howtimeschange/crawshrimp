@@ -219,6 +219,7 @@ export function createDevCsBridge() {
     },
     openFile: openExternalLike,
     openExternalUrl: openExternalLike,
+    getApiBase: () => apiBase(),
     readExcel: (path) => apiCall('POST', '/files/read-excel', { path }),
     testNotify: (channel) => apiCall('POST', '/settings/test-notify', { channel }),
     getTmallApprovalBatch: (batchId, token) => apiCall('GET', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
@@ -226,6 +227,7 @@ export function createDevCsBridge() {
     importTmallApprovalReferenceFiles: (batchId, token, paths) => apiCall('POST', `/tmall-ai-image-approval-local/api/${encodePathPart(batchId)}/reference-files?token=${encodeURIComponent(String(token || ''))}`, { paths: Array.isArray(paths) ? paths : [] }),
     regenerateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/regenerate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     generateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/generate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
+    submitTmallApprovalGeneration: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit-generation?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalBatch: (batchId, token) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit?token=${encodeURIComponent(String(token || ''))}`, {}),
     getCloudApprovalStatus: () => apiCall('GET', '/cloud-approval/status'),
     saveCloudApprovalConfig: (payload) => apiCall('POST', '/cloud-approval/config', payload || {}),
@@ -233,11 +235,23 @@ export function createDevCsBridge() {
     startCloudMachine: () => apiCall('POST', '/cloud-approval/machine/start', {}),
     stopCloudMachine: () => apiCall('POST', '/cloud-approval/machine/stop', {}),
     syncCloudApprovalBatch: (payload) => apiCall('POST', '/cloud-approval/sync-batch', payload || {}),
+    listCloudPromptLibraries: () => apiCall('GET', '/cloud-approval/prompt-libraries'),
+    resolveCloudPromptTemplates: (libraryId, query = {}) => {
+      const params = new URLSearchParams()
+      for (const [key, value] of Object.entries(query || {})) {
+        if (value !== undefined && value !== null && String(value).trim() !== '') {
+          params.set(key, String(value))
+        }
+      }
+      const suffix = params.toString() ? `?${params.toString()}` : ''
+      return apiCall('GET', `/cloud-approval/prompt-libraries/${encodePathPart(libraryId)}/resolved${suffix}`)
+    },
 
     getSettings: () => apiCall('GET', '/settings'),
     saveSettings: (cfg) => apiCall('PUT', '/settings', cfg || {}),
     patchSettings: (cfg) => apiCall('PATCH', '/settings', cfg || {}),
     browseFile: promptPath,
+    readLocalImagePreview: (path) => apiCall('POST', '/files/local-image-preview', { path }),
     listDirectoryFiles: async () => ({ ok: false, paths: [], error: '浏览器开发模式不支持直接扫描本地目录' }),
     renderPdfPreview: async () => ({ ok: false, error: '浏览器开发模式不支持本地 PDF 预览' }),
 

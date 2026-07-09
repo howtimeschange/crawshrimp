@@ -33,11 +33,13 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         approval = module.normalize_chain_execution_mode("approval_then_create")
         direct = module.normalize_chain_execution_mode("direct_create")
 
-        self.assertTrue(approval["generate"])
+        self.assertFalse(approval["generate"])
+        self.assertTrue(approval["confirm_generation"])
         self.assertTrue(approval["approval_required"])
         self.assertFalse(approval["live_upload"])
         self.assertFalse(approval["live_create"])
         self.assertTrue(direct["generate"])
+        self.assertFalse(direct["confirm_generation"])
         self.assertFalse(direct["approval_required"])
         self.assertTrue(direct["live_upload"])
         self.assertTrue(direct["live_create"])
@@ -89,6 +91,126 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 
         ai_assets = [asset for asset in item["assets"] if asset["kind"] == "ai"]
         self.assertEqual([asset["path"] for asset in ai_assets], ["/tmp/ai-1-a.jpg", "/tmp/ai-2.jpg"])
+
+    def test_generation_confirmation_item_groups_source_images_and_prompts_before_generation(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        item = module.build_generation_confirmation_item(
+            workflow,
+            {"chosenMain": {"filename": "橱窗1.jpg"}, "chosenDetail": {"filename": "208326100202-00482.jpg"}},
+            "/tmp/main.jpg",
+            "/tmp/flat.jpg",
+            [
+                {"提示词序号": 1, "提示词字段名": "正面", "完整Prompt": "prompt 1", "参考图文件": "/tmp/main.jpg"},
+                {"提示词序号": 2, "提示词字段名": "侧身", "完整Prompt": "prompt 2", "参考图文件": "/tmp/main.jpg"},
+            ],
+            reference_mode="main_only",
+        )
+
+        self.assertEqual(item["status"], "pending_generation_confirmation")
+        self.assertEqual([asset["label"] for asset in item["assets"]], ["原图/主图", "款色参考图"])
+        main_asset, detail_asset = item["assets"]
+        self.assertTrue(main_asset["use_for_generation"])
+        self.assertFalse(detail_asset["use_for_generation"])
+        self.assertEqual(main_asset["slot"], "main")
+        self.assertEqual(detail_asset["slot"], "reference")
+        self.assertEqual([prompt["prompt_name"] for prompt in item["generation_prompts"]], ["正面", "侧身"])
+        self.assertEqual(item["generation_prompts"][0]["prompt"], "prompt 1")
+        self.assertEqual(item["generation_prompts"][1]["reference_paths"], ["/tmp/main.jpg"])
+        self.assertEqual(item["generation_prompts"][1]["status"], "pending")
+
+    def test_cloud_prompt_templates_normalize_to_prompt_items(self):
+        module = load_script()
+
+        prompts = module.prompt_items_from_cloud_templates([
+            {
+                "template_id": 11,
+                "group_name": "上装",
+                "field_name": "动态定格",
+                "field_order": 2,
+                "size_label": "960x1280",
+                "output_format": "jpeg",
+                "prompt_text": "云端 prompt A",
+                "female_priority": 3,
+                "male_neutral_priority": 4,
+            },
+            {
+                "template_id": 12,
+                "group_name": "下装",
+                "field_name": "裤装正面",
+                "prompt": "云端 prompt B",
+                "priority": 7,
+            },
+            {"field_name": "空内容"},
+        ])
+
+        self.assertEqual(len(prompts), 2)
+        self.assertEqual(prompts[0].sheet_name, "上装")
+        self.assertEqual(prompts[0].field_name, "动态定格")
+        self.assertEqual(prompts[0].field_order, 2)
+        self.assertEqual(prompts[0].size_label, "960x1280")
+        self.assertEqual(prompts[0].output_format, "jpeg")
+        self.assertEqual(prompts[0].prompt, "云端 prompt A")
+        self.assertEqual(prompts[0].female_priority, 3)
+        self.assertEqual(prompts[0].neutral_priority, 4)
+        self.assertEqual(prompts[1].neutral_priority, 7)
+
+    def test_load_prompt_library_uses_cloud_templates_when_selected(self):
+        module = load_script()
+        args = SimpleNamespace(
+            prompt_source="cloud_prompt_library",
+            prompt_file="/tmp/should-not-read.xlsx",
+            cloud_prompt_library_id="42",
+            cloud_prompt_templates_json=json.dumps({
+                "templates": [{
+                    "group_name": "上装",
+                    "field_name": "正面",
+                    "prompt_text": "来自线上 Prompt 库",
+                    "priority": 1,
+                }],
+            }, ensure_ascii=False),
+        )
+
+        with patch.object(module, "read_prompt_library") as read_local:
+            prompts = module.load_prompt_library_for_args(args)
+
+        read_local.assert_not_called()
+        self.assertEqual(len(prompts), 1)
+        self.assertEqual(prompts[0].sheet_name, "上装")
+        self.assertEqual(prompts[0].prompt, "来自线上 Prompt 库")
+
+    def test_write_generation_confirmation_batch_waits_for_generation_submit(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            item = module.build_generation_confirmation_item(
+                workflow,
+                {"chosenMain": {"filename": "橱窗1.jpg"}},
+                str(artifact_dir / "main.jpg"),
+                "",
+                [{"提示词序号": 1, "提示词字段名": "正面", "完整Prompt": "保留主商品", "参考图文件": str(artifact_dir / "main.jpg")}],
+                reference_mode="main_only",
+            )
+
+            batch = module.write_generation_confirmation_batch(
+                artifact_dir,
+                [item],
+                run_params={"approval_message_template": "批次 {{batch_id}}：{{board_url}}"},
+                base_url="http://127.0.0.1:18765",
+                batch_id="confirm-test",
+                token="token-test",
+                created_at="2026-07-09T12:00:00+08:00",
+            )
+
+            self.assertEqual(batch["status"], "pending_generation_confirmation")
+            self.assertEqual(batch["generation_prompt_total"], 1)
+            self.assertIn("token=token-test", batch["board_url"])
+            html = Path(batch["board_path"]).read_text(encoding="utf-8")
+            self.assertIn("确认提交生图任务", html)
+            self.assertIn("保留主商品", html)
 
     def test_write_approval_batch_creates_board_and_renders_message_template(self):
         module = load_script()
@@ -1429,7 +1551,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 
         self.assertEqual([item.field_name for item in selected], ["优先1", "优先2", "优先3", "优先4"])
 
-    def test_run_chain_finds_all_semir_images_before_submitting_1xm_batch(self):
+    def test_run_chain_finds_all_semir_images_before_generation_confirmation(self):
         module = load_script()
         logs: list[str] = []
         progress_events: list[dict] = []
@@ -1458,8 +1580,18 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         async def fake_wait_for_semir_ready(*_args, **_kwargs):
             return None
 
-        async def fake_find_semir(_runner, workflow, *_args, **_kwargs):
-            return {"chosenMain": {"filename": f"{workflow.style_code}.jpg"}}, f"/tmp/{workflow.style_code}-main.jpg", ""
+        download_detail_values = []
+
+        async def fake_find_semir(_runner, workflow, *_args, **kwargs):
+            download_detail_values.append(kwargs.get("download_detail"))
+            return (
+                {
+                    "chosenMain": {"filename": f"{workflow.style_code}.jpg"},
+                    "chosenDetail": {"filename": f"{workflow.style_code}-flat.jpg"},
+                },
+                f"/tmp/{workflow.style_code}-main.jpg",
+                f"/tmp/{workflow.style_code}-flat.jpg",
+            )
 
         def fake_generate(row, *_args, **_kwargs):
             patched = dict(row)
@@ -1518,12 +1650,12 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         find_indexes = [index for index, line in enumerate(logs) if "森马云盘找图" in line]
         generation_indexes = [index for index, line in enumerate(logs) if "1XM 生图提交" in line]
         self.assertEqual(len(find_indexes), 2)
-        self.assertEqual(len(generation_indexes), 4)
-        self.assertGreater(min(generation_indexes), max(find_indexes))
-        self.assertTrue(any("1XM 生图批量提交 4 张，并发 100" in line for line in logs))
-        self.assertTrue(any(event.get("shared", {}).get("generation_total_jobs") == 4 for event in progress_events))
-        self.assertTrue(any(event.get("shared", {}).get("generation_submitted_jobs", 0) > 0 for event in progress_events))
-        self.assertTrue(any(row.get("阶段") == "图片审批" for row in rows))
+        self.assertEqual(download_detail_values, [True, True])
+        self.assertEqual(generation_indexes, [])
+        self.assertFalse(any("1XM 生图批量提交" in line for line in logs))
+        self.assertTrue(any(event.get("shared", {}).get("generation_total_jobs") == 0 for event in progress_events))
+        self.assertTrue(any(row.get("阶段") == "确认提交生图" for row in rows))
+        self.assertTrue(any(row.get("执行结果") == "等待确认提交生图任务" for row in rows))
 
     def test_select_prompts_skips_multi_item_prompts_by_default(self):
         module = load_script()

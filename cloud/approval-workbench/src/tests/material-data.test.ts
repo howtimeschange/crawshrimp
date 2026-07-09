@@ -58,13 +58,20 @@ class FakeD1Statement {
       return (session ? this.state.users.find((user) => user.id === session.user_id) ?? null : null) as T | null
     }
     if (sql.includes('from material_test_image_metrics') && sql.includes('count(distinct item_id)')) {
-      const detail = this.state.detailRows
-      const exposure = sum(detail, 'search_impressions')
+      const detail = filteredMetricRows(this.state.detailRows, sql, this.params)
+      const snapshot = latestMetricRows(detail)
+      const exposure = sum(snapshot, 'search_impressions')
       return {
-        total_items: new Set(detail.map((row) => row.item_id)).size,
-        total_materials: new Set(detail.map((row) => `${row.material_id}|${row.material_url}`)).size,
+        total_items: new Set(snapshot.map((row) => row.item_id)).size,
+        total_materials: snapshot.length,
         total_search_exposure: exposure,
-        total_search_clicks: sum(detail, 'search_clicks'),
+        total_search_clicks: sum(snapshot, 'search_clicks'),
+        snapshot_material_rows: snapshot.length,
+        raw_snapshot_rows: detail.length,
+        merged_snapshot_rows: detail.length - snapshot.length,
+        statistic_date_count: new Set(detail.map((row) => row.statistic_date)).size,
+        earliest_statistic_date: minString(detail.map((row) => String(row.statistic_date || ''))),
+        latest_statistic_date: maxString(detail.map((row) => String(row.statistic_date || ''))),
       } as T
     }
     if (sql.includes('from material_test_task_overviews') && sql.includes('best_image_count')) {
@@ -95,13 +102,9 @@ class FakeD1Statement {
       return { results: this.state.userRoles.filter((row) => row.user_id === userId).map((row) => this.state.roles.find((role) => role.id === row.role_id)).filter(Boolean) as T[] }
     }
     if (sql.includes('from material_test_image_metrics')) {
-      let rows = [...this.state.detailRows]
-      const statisticType = filterValueFor(sql, 'statistic_type', this.params)
-      const statisticDate = filterValueFor(sql, 'statistic_date', this.params)
-      const imageType = filterValueFor(sql, 'image_type', this.params)
-      if (statisticType) rows = rows.filter((row) => row.statistic_type === statisticType)
-      if (statisticDate) rows = rows.filter((row) => row.statistic_date === statisticDate)
-      if (imageType) rows = rows.filter((row) => row.image_type === imageType)
+      let rows = filteredMetricRows(this.state.detailRows, sql, this.params)
+      if (sql.includes('latest_metrics') || sql.includes('snapshot_rank')) rows = latestMetricRows(rows)
+      rows.sort((left, right) => Number(right.search_impressions || 0) - Number(left.search_impressions || 0) || Number(right.detail_clicks || 0) - Number(left.detail_clicks || 0))
       return { results: rows as T[] }
     }
     if (sql.includes('from material_test_crawl_schedules')) {
@@ -266,6 +269,70 @@ describe('material test data import', () => {
     expect(state.jobs.find((job) => job.status === 'queued')).toMatchObject({ batch_uid: 'material-test', job_type: 'crawl_tmall_material_test_data' })
   })
 
+  it('reports the latest cumulative statistic snapshot instead of summing repeated material dates', async () => {
+    const state = await baseState()
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+    state.detailRows.push(
+      materialMetric({ id: 1, statistic_date: '20260701', search_impressions: 31, search_clicks: 1, search_ctr: 0.0323 }),
+      materialMetric({ id: 2, statistic_date: '20260702', search_impressions: 45, search_clicks: 1, search_ctr: 0.0222 }),
+      materialMetric({ id: 3, statistic_date: '20260703', search_impressions: 58, search_clicks: 2, search_ctr: 0.0345 }),
+      materialMetric({ id: 4, statistic_date: '20260704', search_impressions: 74, search_clicks: 2, search_ctr: 0.027 }),
+      materialMetric({ id: 5, material_id: 'AI-1', material_url: 'https://img.test/ai-1.jpg', image_type: '测图', statistic_date: '20260704', search_impressions: 20, search_clicks: 1, search_ctr: 0.05 }),
+    )
+
+    const summary = await getMaterialTestSummary(new Request('https://example.test/api/material-test/summary', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const summaryBody = await summary.json() as Record<string, unknown>
+
+    expect(summary.status).toBe(200)
+    expect(summaryBody).toMatchObject({
+      total_items: 1,
+      total_materials: 2,
+      total_search_exposure: 94,
+      total_search_clicks: 3,
+      weighted_search_ctr: 3 / 94,
+      raw_snapshot_rows: 5,
+      merged_snapshot_rows: 3,
+      latest_statistic_date: '20260704',
+    })
+
+    const images = await listMaterialTestImages(new Request('https://example.test/api/material-test/images', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const imageBody = await images.json() as { images: Array<Record<string, unknown>> }
+    expect(imageBody.images.map((image) => image.search_impressions)).toEqual([74, 20])
+    expect(imageBody.images.map((image) => image.statistic_date)).toEqual(['20260704', '20260704'])
+
+    const dateImages = await listMaterialTestImages(new Request('https://example.test/api/material-test/images?date=2026-07-02', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const dateBody = await dateImages.json() as { images: Array<Record<string, unknown>> }
+    expect(dateBody.images).toHaveLength(1)
+    expect(dateBody.images[0]).toMatchObject({ statistic_date: '20260702', search_impressions: 45 })
+  })
+
+  it('dedupes same-day material snapshots by image URL before dashboard totals', async () => {
+    const state = await baseState()
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+    state.detailRows.push(
+      materialMetric({ id: 1, statistic_date: '20260704', material_id: 'M-OLD', material_url: 'https://img.test/repeated.jpg', search_impressions: 60, search_clicks: 3, imported_at: '2026-07-08T01:00:00.000Z' }),
+      materialMetric({ id: 2, statistic_date: '20260704', material_id: 'M-NEW', material_url: 'https://img.test/repeated.jpg', search_impressions: 80, search_clicks: 4, imported_at: '2026-07-08T02:00:00.000Z' }),
+      materialMetric({ id: 3, statistic_date: '20260704', material_id: 'AI-1', material_url: 'https://img.test/ai-1.jpg', image_type: '测图', search_impressions: 25, search_clicks: 1 }),
+    )
+
+    const summary = await getMaterialTestSummary(new Request('https://example.test/api/material-test/summary?date=2026-07-04', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const summaryBody = await summary.json() as Record<string, unknown>
+
+    expect(summaryBody).toMatchObject({
+      total_items: 1,
+      total_materials: 2,
+      total_search_exposure: 105,
+      total_search_clicks: 5,
+      raw_snapshot_rows: 3,
+      merged_snapshot_rows: 1,
+    })
+
+    const images = await listMaterialTestImages(new Request('https://example.test/api/material-test/images?date=2026-07-04', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const imageBody = await images.json() as { images: Array<Record<string, unknown>> }
+    expect(imageBody.images.map((image) => image.material_url)).toEqual(['https://img.test/repeated.jpg', 'https://img.test/ai-1.jpg'])
+    expect(imageBody.images.map((image) => image.search_impressions)).toEqual([80, 25])
+  })
+
   it('rejects manual material imports from read-only dashboard viewers', async () => {
     const state = await baseState()
     state.roles[0] = { id: 1, role_key: 'viewer', name: 'Viewer' }
@@ -284,6 +351,26 @@ describe('material test data import', () => {
     expect(response.status).toBe(403)
     expect(state.overviewRows).toHaveLength(0)
     expect(state.detailRows).toHaveLength(0)
+  })
+
+  it('allows active task machines to import local manual material exports without a dispatch lease', async () => {
+    const state = await baseState()
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+
+    const response = await importMaterialTestData(new Request('https://example.test/api/material-test/import', {
+      method: 'POST',
+      headers: { authorization: 'Bearer machine-secret' },
+      body: JSON.stringify({
+        source: { filename: 'local-export.xlsx', sync_mode: 'local_manual_export' },
+        overview_rows: [{ style_code: '208326', item_id: '1001', task_id: 'T1', statistic_type: 'ACCUMULATE_30_DAYS' }],
+        detail_rows: [{ style_code: '208326', item_id: '1001', task_id: 'T1', statistic_type: 'ACCUMULATE_30_DAYS', material_id: 'M1', material_url: 'https://img.test/1.jpg' }],
+      }),
+    }), env)
+
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ overview_rows: 1, detail_rows: 1 })
+    expect(state.overviewRows).toHaveLength(1)
+    expect(state.detailRows).toHaveLength(1)
   })
 
   it('rejects machine imports without a matching active crawl lease', async () => {
@@ -439,8 +526,78 @@ function jobRow(overrides: Record<string, unknown> = {}): Record<string, unknown
   }
 }
 
+function materialMetric(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id: 1,
+    style_code: '208326',
+    item_id: '1002178235142',
+    item_title: 'title',
+    task_id: 'T1',
+    statistic_type: 'ACCUMULATE_30_DAYS',
+    statistic_date: '20260701',
+    image_type: '原图',
+    material_id: 'ORIGIN-1',
+    material_url: 'https://img.test/origin.jpg',
+    search_impressions: 0,
+    search_clicks: 0,
+    search_ctr: 0,
+    detail_impressions: 0,
+    detail_clicks: 0,
+    detail_ctr: 0,
+    detail_add_to_cart: 0,
+    detail_pay_conversion: 0,
+    detail_pay_conversion_rate: 0,
+    source_filename: 'export.xlsx',
+    imported_at: '2026-07-08T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
 function sum(rows: Record<string, unknown>[], field: string): number {
   return rows.reduce((total, row) => total + Number(row[field] || 0), 0)
+}
+
+function filteredMetricRows(rows: Record<string, unknown>[], sql: string, params: unknown[]): Record<string, unknown>[] {
+  let filtered = [...rows]
+  const statisticType = filterValueFor(sql, 'statistic_type', params)
+  const statisticDate = filterValueFor(sql, 'statistic_date', params)
+  const imageType = filterValueFor(sql, 'image_type', params)
+  if (statisticType) filtered = filtered.filter((row) => row.statistic_type === statisticType)
+  if (statisticDate) filtered = filtered.filter((row) => row.statistic_date === statisticDate)
+  if (imageType) filtered = filtered.filter((row) => row.image_type === imageType)
+  return filtered
+}
+
+function latestMetricRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const latest = new Map<string, Record<string, unknown>>()
+  for (const row of rows) {
+    const identity = [
+      row.item_id,
+      row.task_id,
+      row.statistic_type,
+      row.image_type,
+      row.material_url || row.material_id,
+    ].join('|')
+    const current = latest.get(identity)
+    if (!current || compareMetricSnapshot(row, current) > 0) latest.set(identity, row)
+  }
+  return [...latest.values()]
+}
+
+function compareMetricSnapshot(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  return String(left.statistic_date || '').localeCompare(String(right.statistic_date || ''))
+    || String(left.imported_at || '').localeCompare(String(right.imported_at || ''))
+    || Number(left.id || 0) - Number(right.id || 0)
+}
+
+function minString(values: string[]): string | null {
+  const clean = values.filter(Boolean).sort()
+  return clean[0] ?? null
+}
+
+function maxString(values: string[]): string | null {
+  const clean = values.filter(Boolean).sort()
+  return clean.at(-1) ?? null
 }
 
 function normalizeSql(sql: string): string {

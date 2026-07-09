@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import platform
+import hashlib
 import time
 import uuid
 from typing import Any, Callable, Mapping
@@ -38,6 +39,16 @@ class CloudMachineAgent:
         self.heartbeat_callback = heartbeat_callback
 
     def enroll(self, registration_token: str, machine_name: str, capabilities: list[str]) -> dict:
+        saved = data_sink.get_cloud_machine_credentials() or {}
+        saved_machine_id = str(saved.get("machine_id") or "")
+        saved_machine_token = str(saved.get("machine_token") or "")
+        if saved_machine_id and saved_machine_token:
+            self._set_client_machine_token(saved_machine_token)
+            return {
+                "machine_id": saved_machine_id,
+                "auth_status": "enrolled",
+                "already_enrolled": True,
+            }
         capability_list = list(capabilities or [])
         response = self.client.request_json(
             "POST",
@@ -91,7 +102,11 @@ class CloudMachineAgent:
         next_poll = self._coerce_sleep_seconds(response.get("next_poll_after_seconds"), DEFAULT_IDLE_SECONDS)
         job_result = None
         if isinstance(job, Mapping):
+            if self.heartbeat_callback is not None:
+                self.heartbeat_callback("online_busy")
             job_result = self._execute_claimed_job(job)
+            if self.heartbeat_callback is not None and str((job_result or {}).get("status") or "") != "blocked_needs_login":
+                self.heartbeat_callback("online_idle")
         idle_sleep = next_poll if job_result else self._idle_sleep_seconds(next_poll)
         return {
             **response,
@@ -221,9 +236,9 @@ class CloudMachineAgent:
 
     @staticmethod
     def _default_machine_id() -> str:
-        return str(uuid.uuid4())
+        return "csr-machine-" + hashlib.sha256(CloudMachineAgent._default_fingerprint().encode("utf-8")).hexdigest()[:20]
 
     @staticmethod
     def _default_fingerprint() -> str:
-        parts = [platform.node(), platform.machine(), platform.system()]
+        parts = [platform.node(), platform.machine(), platform.system(), str(uuid.getnode())]
         return ":".join(part for part in parts if part)

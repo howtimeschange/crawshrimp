@@ -68,6 +68,30 @@ interface PromptTemplateVersionRow {
   created_by: number | null
 }
 
+interface MachineRow {
+  id: number
+  machine_id: string
+  machine_name: string
+  owner_user_id: number | null
+  app_version: string
+  fingerprint_hash: string
+  capabilities_json: string
+  auth_status: string
+  health: string
+  current_job_id: string | null
+  last_seen_at: string | null
+  registered_at: string
+  updated_at: string
+}
+
+interface MachineTokenRow {
+  machine_id: string
+  token_hash: string
+  status: string
+  revoked_at: string | null
+  last_used_at: string | null
+}
+
 interface AuditRow {
   actor_user_id: number | null
   action: string
@@ -84,6 +108,8 @@ interface FakeState {
   libraries: PromptLibraryRow[]
   templates: PromptTemplateRow[]
   versions: PromptTemplateVersionRow[]
+  machines: MachineRow[]
+  machineTokens: MachineTokenRow[]
   audits: AuditRow[]
 }
 
@@ -108,6 +134,12 @@ class FakeD1Statement {
       const session = this.state.sessions.find((row) => row.session_hash === sessionHash && !row.revoked_at && row.expires_at > now)
       if (!session) return null
       return (this.state.users.find((user) => user.id === session.user_id && user.status === 'active') ?? null) as T | null
+    }
+    if (normalized.includes('from machine_tokens') && normalized.includes('join task_machines')) {
+      const tokenHash = String(this.params[0])
+      const token = this.state.machineTokens.find((row) => row.token_hash === tokenHash && row.status === 'active' && !row.revoked_at)
+      if (!token) return null
+      return (this.state.machines.find((machine) => machine.machine_id === token.machine_id) ?? null) as T | null
     }
     if (normalized.includes('select max(version_no)') && normalized.includes('from prompt_template_versions')) {
       const templateId = Number(this.params[0])
@@ -234,12 +266,27 @@ class FakeD1Statement {
       })
       return result(1, id)
     }
+    if (normalized.startsWith('update prompt_libraries set name')) {
+      const library = this.state.libraries.find((row) => row.id === Number(this.params[4]))
+      if (!library) return result(0)
+      library.name = String(this.params[0])
+      library.scenario = String(this.params[1])
+      library.status = String(this.params[2])
+      library.updated_at = String(this.params[3])
+      return result(1)
+    }
     if (normalized.startsWith('update prompt_libraries set status')) {
       const library = this.state.libraries.find((row) => row.id === Number(this.params[2]))
       if (!library) return result(0)
       library.status = String(this.params[0])
       library.updated_at = String(this.params[1])
       return result(1)
+    }
+    if (normalized.startsWith('update machine_tokens set last_used_at')) {
+      const tokenHash = String(this.params[1])
+      const token = this.state.machineTokens.find((row) => row.token_hash === tokenHash)
+      if (token) token.last_used_at = String(this.params[0])
+      return result(token ? 1 : 0)
     }
     if (normalized.startsWith('insert into audit_logs')) {
       this.state.audits.push({
@@ -292,11 +339,39 @@ async function stateWithPrompts(): Promise<FakeState> {
     libraries: [],
     templates: [],
     versions: [],
+    machines: [],
+    machineTokens: [],
     audits: [],
   }
   await addSession(state, 1, 'manager-token')
   await addSession(state, 2, 'reviewer-token')
   return state
+}
+
+async function addMachine(state: FakeState, token: string, capabilities: string[]): Promise<void> {
+  const machineId = `machine-${state.machines.length + 1}`
+  state.machines.push({
+    id: state.machines.length + 1,
+    machine_id: machineId,
+    machine_name: 'Local task machine',
+    owner_user_id: null,
+    app_version: 'test',
+    fingerprint_hash: 'fingerprint',
+    capabilities_json: JSON.stringify(capabilities),
+    auth_status: 'active',
+    health: 'online_idle',
+    current_job_id: null,
+    last_seen_at: null,
+    registered_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  })
+  state.machineTokens.push({
+    machine_id: machineId,
+    token_hash: await sha256Hex(token),
+    status: 'active',
+    revoked_at: null,
+    last_used_at: null,
+  })
 }
 
 async function addSession(state: FakeState, userId: number, token: string): Promise<void> {
@@ -402,6 +477,44 @@ describe('prompt routes', () => {
       quality: 'high',
       enabled: 1,
     })
+  })
+
+  it('lets prompt_manager update library metadata as a new draft', async () => {
+    const state = await stateWithPrompts()
+    const libraryId = await createLibraryWithTemplates(state)
+    const publishResponse = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/publish-version`, {
+        method: 'POST',
+        headers: managerHeaders(),
+      }),
+      fakeEnv(state),
+    )
+    expect(publishResponse.status).toBe(200)
+    expect(state.libraries[0].status).toBe('published')
+
+    const response = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}`, {
+        method: 'PATCH',
+        headers: managerHeaders(),
+        body: JSON.stringify({ name: 'AI 测图提示词库 运营版', scenario: '创意拍摄' }),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    const body = await response.json() as { library: { id: number, name: string, scenario: string, status: string } }
+    expect(body.library).toMatchObject({
+      id: libraryId,
+      name: 'AI 测图提示词库 运营版',
+      scenario: '创意拍摄',
+      status: 'draft',
+    })
+    expect(state.libraries[0]).toMatchObject({
+      name: 'AI 测图提示词库 运营版',
+      scenario: '创意拍摄',
+      status: 'draft',
+    })
+    expect(state.audits.some((audit) => audit.action === 'prompts.library.update' && audit.resource_id === String(libraryId))).toBe(true)
   })
 
   it('imports, edits, and exports workbook-mapped prompt templates', async () => {
@@ -539,6 +652,35 @@ describe('prompt routes', () => {
     )
     expect(publishResponse.status).toBe(403)
     expect(state.versions).toHaveLength(0)
+  })
+
+  it('lets active task machines read prompt libraries with a machine bearer token', async () => {
+    const state = await stateWithPrompts()
+    const libraryId = await createLibraryWithTemplates(state)
+    await addMachine(state, 'machine-token', ['generate_ai_image'])
+
+    const listResponse = await fetchWorker(
+      new Request('https://example.test/api/prompt-libraries', {
+        headers: { authorization: 'Bearer machine-token' },
+      }),
+      fakeEnv(state),
+    )
+    expect(listResponse.status).toBe(200)
+    const listBody = await listResponse.json() as { libraries: Array<Record<string, unknown>> }
+    expect(listBody.libraries[0]).toMatchObject({ id: libraryId, name: 'Bala AI prompts' })
+
+    const resolveResponse = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/resolved?category=童装&gender=女童`, {
+        headers: { authorization: 'Bearer machine-token' },
+      }),
+      fakeEnv(state),
+    )
+    expect(resolveResponse.status).toBe(200)
+    const resolveBody = await resolveResponse.json() as { templates: Array<Record<string, unknown>> }
+    expect(resolveBody.templates.map((template) => template.prompt_text)).toEqual([
+      'published prompt B',
+      'published prompt A',
+    ])
   })
 
   it('publishes immutable prompt_template_versions', async () => {

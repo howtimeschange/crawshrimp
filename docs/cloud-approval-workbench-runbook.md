@@ -160,19 +160,18 @@ python scripts/cloud_approval_dry_run.py --scenario prompt-import --prompt-file 
 
 ## Online Generation And Review
 
-Online generation is still task-machine based. The cloud Worker creates a `generate_ai_image` dispatch job and a selected task machine executes the local 1XM/provider call; the Worker does not call 1XM directly.
+Online generation is cloud-direct. The browser calls the Cloudflare Worker, the Worker keeps the 1XM credential in environment secrets, creates a 1XM `/images/tasks` request, stores the request state in D1, writes completed images to R2, and appends generated AI assets to the selected style. Task machines are still used for local-dependent upload and data-crawl steps, not for this online generation path.
 
 Flow:
 
 ```http
 GET /api/ai-image-batches/{batch_uid}
 GET /api/prompt-libraries/{library_id}/resolved?category=...&gender=...
-POST /api/ai-image-batches/{batch_uid}/generate
-POST /api/machines/jobs/claim
-POST /api/jobs/{job_uid}/complete
+POST /api/ai-image-batches/{batch_uid}/generate-direct
+POST /api/ai-image-batches/{batch_uid}/generation-requests/{request_uid}/poll
 ```
 
-Reviewers can select source/reference resources from the batch, choose a published prompt template, override prompt text, and generate a new AI asset through the selected machine. Re-run/regeneration for rejected images uses `regenerate_ai_image` jobs with lease renewal, cancellation, idempotency, and audit logs through the shared dispatch state machine.
+Reviewers can select source/reference resources from the batch, choose a published prompt template, override prompt text, and generate a new AI asset directly through the cloud Worker. Re-run/regeneration for rejected images can still use `regenerate_ai_image` jobs with lease renewal, cancellation, idempotency, and audit logs through the shared dispatch state machine until those flows are migrated to cloud-direct generation.
 
 ## Run A Local AI Batch And Sync To Cloud
 

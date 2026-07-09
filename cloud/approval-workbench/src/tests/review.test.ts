@@ -99,6 +99,10 @@ interface GenerationRequestRow {
   prompt_text: string
   status: string
   dispatch_job_uid: string
+  request_meta_json?: string
+  upstream_task_json?: string
+  result_asset_uids_json?: string
+  error_message?: string
   created_by: number | null
   created_at: string
   updated_at: string
@@ -137,6 +141,7 @@ class FakeD1Statement {
     if (sql.includes('from task_machines') && sql.includes('where machine_id = ?')) return (this.state.machines.find((row) => row.machine_id === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes('where job_type = ? and idempotency_key = ?')) return (this.state.dispatchJobs.find((row) => row.job_type === String(this.params[0]) && row.idempotency_key === String(this.params[1])) ?? null) as T | null
     if (sql.includes('from ai_generation_requests') && sql.includes('dispatch_job_uid = ?')) return (this.state.generationRequests.find((row) => row.dispatch_job_uid === String(this.params[0])) ?? null) as T | null
+    if (sql.includes('from ai_generation_requests') && sql.includes('request_uid = ?')) return (this.state.generationRequests.find((row) => row.request_uid === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes("job_type = 'submit_tmall_material_test'")) {
       const batchUid = String(this.params[0])
       const active = this.state.dispatchJobs.find((row) => row.batch_uid === batchUid && row.job_type === 'submit_tmall_material_test' && ['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
@@ -271,6 +276,7 @@ class FakeD1Statement {
     }
     if (sql.startsWith('insert into ai_generation_requests')) {
       const id = this.state.generationRequests.length + 1
+      const hasDirectColumns = sql.includes('request_meta_json')
       this.state.generationRequests.push({
         id,
         request_uid: String(this.params[0]),
@@ -282,11 +288,25 @@ class FakeD1Statement {
         prompt_text: String(this.params[6]),
         status: String(this.params[7]),
         dispatch_job_uid: String(this.params[8]),
-        created_by: numberOrNull(this.params[9]),
-        created_at: String(this.params[10]),
-        updated_at: String(this.params[11]),
+        request_meta_json: hasDirectColumns ? String(this.params[9]) : '{}',
+        upstream_task_json: hasDirectColumns ? String(this.params[10]) : '{}',
+        result_asset_uids_json: hasDirectColumns ? String(this.params[11]) : '[]',
+        error_message: hasDirectColumns ? String(this.params[12]) : '',
+        created_by: numberOrNull(this.params[hasDirectColumns ? 13 : 9]),
+        created_at: String(this.params[hasDirectColumns ? 14 : 10]),
+        updated_at: String(this.params[hasDirectColumns ? 15 : 11]),
       })
       return result(1, id)
+    }
+    if (sql.startsWith('update ai_generation_requests set status =') && sql.includes('request_uid = ?')) {
+      const request = this.state.generationRequests.find((row) => row.request_uid === String(this.params[5]))
+      if (!request) return result(0)
+      request.status = String(this.params[0])
+      request.upstream_task_json = String(this.params[1])
+      request.result_asset_uids_json = String(this.params[2])
+      request.error_message = String(this.params[3])
+      request.updated_at = String(this.params[4])
+      return result(1)
     }
     if (sql.startsWith('update ai_generation_requests set status')) {
       const request = this.state.generationRequests.find((row) => row.dispatch_job_uid === String(this.params[2]))
@@ -310,8 +330,54 @@ class FakeD1Database {
   }
 }
 
+class FakeR2Bucket {
+  readonly objects = new Map<string, { body: Uint8Array; contentType: string }>()
+
+  constructor(state: State) {
+    const encoder = new TextEncoder()
+    for (const asset of state.assets) {
+      if (['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded') {
+        this.objects.set(asset.object_key, {
+          body: encoder.encode(`fake-${asset.asset_uid}`),
+          contentType: asset.filename.endsWith('.png') ? 'image/png' : 'image/jpeg',
+        })
+      }
+    }
+  }
+
+  async get(key: string) {
+    const object = this.objects.get(key)
+    if (!object) return null
+    return {
+      httpMetadata: { contentType: object.contentType },
+      arrayBuffer: async () => object.body.buffer.slice(object.body.byteOffset, object.body.byteOffset + object.body.byteLength),
+    }
+  }
+
+  async put(key: string, body: ReadableStream | ArrayBuffer | ArrayBufferView | string | null, options?: { httpMetadata?: { contentType?: string } }) {
+    let bytes: Uint8Array
+    if (typeof body === 'string') {
+      bytes = new TextEncoder().encode(body)
+    } else if (body instanceof ArrayBuffer) {
+      bytes = new Uint8Array(body)
+    } else if (ArrayBuffer.isView(body)) {
+      bytes = new Uint8Array(body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength))
+    } else {
+      bytes = new Uint8Array()
+    }
+    this.objects.set(key, { body: bytes, contentType: options?.httpMetadata?.contentType || 'application/octet-stream' })
+  }
+}
+
 function fakeEnv(state: State) {
-  return { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+  return {
+    DB: new FakeD1Database(state) as unknown as D1Database,
+    ASSETS: new FakeR2Bucket(state) as unknown as R2Bucket,
+    SESSION_TTL_SECONDS: '604800',
+    ONE_XM_API_KEY: 'sk-test',
+    ONE_XM_IMAGE_MAX_POLLS: '1',
+    ONE_XM_IMAGE_POLL_INTERVAL_MS: '0',
+  }
 }
 
 function fetchWorker(request: Request, env: ReturnType<typeof fakeEnv>): Promise<Response> {
@@ -857,6 +923,203 @@ describe('review routes', () => {
     expect(response.status).toBe(201)
     expect(JSON.parse(state.dispatchJobs[0].payload_json).prompt_text).toBe('manual override prompt')
     expect(state.generationRequests[0].prompt_text).toBe('manual override prompt')
+  })
+
+  it('direct cloud generation calls 1XM and appends AI assets without dispatching a task-machine job', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const originalFetch = globalThis.fetch
+    const upstreamCalls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = async (input, init) => {
+      upstreamCalls.push({ url: String(input), init })
+      return new Response(JSON.stringify({
+        status: 'succeeded',
+        data: [{ b64_json: 'Z2VuZXJhdGVkLWltYWdl' }],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+
+    try {
+      const env = fakeEnv(state)
+      const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate-direct', {
+        method: 'POST',
+        headers: { cookie: reviewerCookie },
+        body: JSON.stringify({
+          style_id: 1,
+          source_asset_uid: 'asset-source-1',
+          reference_asset_uids: ['asset-source-1'],
+          prompt_template_version_id: 31,
+          prompt_text: 'fresh prompt',
+          model: 'gpt-image-2',
+          size: '1024x1024',
+          quality: 'high',
+          output_format: 'png',
+          count: 1,
+        }),
+      }), env)
+      const body = await response.json() as { status: string; request_uid: string; assets: Array<{ asset_uid: string }> }
+
+      expect(response.status).toBe(201)
+      expect(body.status).toBe('completed')
+      expect(body.request_uid).toMatch(/^gen_/)
+      expect(body.assets).toHaveLength(1)
+      expect(upstreamCalls).toHaveLength(1)
+      expect(upstreamCalls[0].url).toBe('https://api.1xm.ai/v1/images/tasks')
+      expect(upstreamCalls[0].init?.headers).toMatchObject({
+        Authorization: 'Bearer sk-test',
+        'Content-Type': 'application/json',
+      })
+      const upstreamPayload = JSON.parse(String(upstreamCalls[0].init?.body))
+      expect(upstreamPayload).toMatchObject({
+        model: 'gpt-image-2',
+        prompt: expect.stringContaining('fresh prompt'),
+        n: 1,
+        size: '1024x1024',
+        quality: 'high',
+        output_format: 'png',
+      })
+      expect(upstreamPayload.image).toEqual(['data:image/jpeg;base64,ZmFrZS1hc3NldC1zb3VyY2UtMQ=='])
+      expect(state.dispatchJobs).toHaveLength(0)
+      expect(state.generationRequests[0]).toMatchObject({
+        batch_uid: 'batch-1',
+        style_id: 1,
+        source_asset_uid: 'asset-source-1',
+        prompt_text: 'fresh prompt',
+        status: 'completed',
+        dispatch_job_uid: '',
+      })
+      const generated = state.assets.find((asset) => asset.asset_uid === body.assets[0].asset_uid)
+      expect(generated).toMatchObject({
+        batch_uid: 'batch-1',
+        style_id: 1,
+        kind: 'ai',
+        status: 'pending',
+        prompt_template_version_id: 31,
+        prompt_text: 'fresh prompt',
+        generation_job_id: body.request_uid,
+      })
+      expect((env.ASSETS as unknown as FakeR2Bucket).objects.has(generated!.object_key)).toBe(true)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('rejects direct cloud generation when too many source and reference images are requested', async () => {
+    const { state, reviewerCookie } = await baseState()
+    for (let index = 1; index <= 8; index += 1) {
+      state.assets.push(asset(100 + index, `asset-ref-${index}`, 1, 'reference', 'uploaded', '', null))
+    }
+    const originalFetch = globalThis.fetch
+    let upstreamCalled = false
+    globalThis.fetch = async () => {
+      upstreamCalled = true
+      throw new Error('1XM should not be called')
+    }
+
+    try {
+      const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate-direct', {
+        method: 'POST',
+        headers: { cookie: reviewerCookie },
+        body: JSON.stringify({
+          style_id: 1,
+          source_asset_uid: 'asset-source-1',
+          reference_asset_uids: Array.from({ length: 8 }, (_, index) => `asset-ref-${index + 1}`),
+          prompt_text: 'fresh prompt',
+          model: 'gpt-image-2',
+          size: '1024x1024',
+          quality: 'high',
+          output_format: 'png',
+          count: 1,
+        }),
+      }), fakeEnv(state))
+      const body = await response.json() as { error: string }
+
+      expect(response.status).toBe(400)
+      expect(body.error).toContain('at most 8')
+      expect(upstreamCalled).toBe(false)
+      expect(state.generationRequests).toHaveLength(0)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  it('direct cloud generation can continue polling a pending 1XM task without dispatching a task-machine job', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const originalFetch = globalThis.fetch
+    const upstreamCalls: Array<{ url: string; init?: RequestInit }> = []
+    globalThis.fetch = async (input, init) => {
+      upstreamCalls.push({ url: String(input), init })
+      if (upstreamCalls.length === 1) {
+        return new Response(JSON.stringify({
+          id: 'task-1',
+          model: 'gpt-image-2',
+          status: 'queued',
+          poll_after: 0,
+        }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({
+        id: 'task-1',
+        model: 'gpt-image-2',
+        status: 'succeeded',
+        data: [{ b64_json: 'cG9sbGVkLWltYWdl' }],
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+
+    try {
+      const env = fakeEnv(state)
+      env.ONE_XM_IMAGE_MAX_POLLS = '0'
+      const pending = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate-direct', {
+        method: 'POST',
+        headers: { cookie: reviewerCookie },
+        body: JSON.stringify({
+          style_id: 1,
+          source_asset_uid: 'asset-source-1',
+          prompt_text: 'fresh prompt',
+          model: 'gpt-image-2',
+          size: '1024x1024',
+          quality: 'high',
+          output_format: 'png',
+          count: 1,
+        }),
+      }), env)
+      const pendingBody = await pending.json() as { request_uid: string; status: string }
+      env.ONE_XM_IMAGE_MAX_POLLS = '1'
+      const completed = await fetchWorker(new Request(`https://example.test/api/ai-image-batches/batch-1/generation-requests/${pendingBody.request_uid}/poll`, {
+        method: 'POST',
+        headers: { cookie: reviewerCookie },
+      }), env)
+      const completedBody = await completed.json() as { status: string; assets: Array<{ asset_uid: string }> }
+
+      expect(pending.status).toBe(202)
+      expect(pendingBody.status).toBe('running')
+      expect(completed.status).toBe(201)
+      expect(completedBody.status).toBe('completed')
+      expect(completedBody.assets).toHaveLength(1)
+      expect(upstreamCalls.map((call) => call.url)).toEqual([
+        'https://api.1xm.ai/v1/images/tasks',
+        'https://api.1xm.ai/v1/images/tasks/task-1',
+      ])
+      expect(state.dispatchJobs).toHaveLength(0)
+      expect(state.generationRequests[0]).toMatchObject({
+        status: 'completed',
+        dispatch_job_uid: '',
+      })
+      expect(JSON.parse(state.generationRequests[0].upstream_task_json || '{}')).toMatchObject({ status: 'succeeded' })
+      expect(state.assets.find((asset) => asset.asset_uid === completedBody.assets[0].asset_uid)).toMatchObject({
+        kind: 'ai',
+        status: 'pending',
+        generation_job_id: pendingBody.request_uid,
+      })
+    } finally {
+      globalThis.fetch = originalFetch
+    }
   })
 
   it('does not let viewers create generation or rerun jobs', async () => {

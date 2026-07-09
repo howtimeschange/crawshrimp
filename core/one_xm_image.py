@@ -14,7 +14,9 @@ from typing import Any, Callable, Mapping, Optional
 
 
 DEFAULT_BASE_URL = "https://api.1xm.ai/v1"
-FINAL_STATUSES = {"succeeded", "failed", "cancelled", "canceled"}
+SUCCESS_STATUSES = {"success", "succeeded", "completed", "complete"}
+FAILED_STATUSES = {"failed", "failure", "error", "cancelled", "canceled"}
+FINAL_STATUSES = SUCCESS_STATUSES | FAILED_STATUSES
 RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
 HEADER_TOKEN_RE = re.compile(r"[^A-Za-z0-9._~-]+")
 
@@ -88,7 +90,9 @@ def _error_message(payload: Mapping[str, Any], fallback: str = "1XM image task f
     error = payload.get("error") if isinstance(payload, Mapping) else None
     if isinstance(error, Mapping):
         return _compact(error.get("message") or error.get("code")) or fallback
-    return _compact(payload.get("message") if isinstance(payload, Mapping) else "") or fallback
+    if isinstance(payload, Mapping):
+        return _compact(payload.get("message") or payload.get("fail_reason")) or fallback
+    return fallback
 
 
 def _normalize_base_url(base_url: str) -> str:
@@ -231,13 +235,27 @@ def _retry_call(
     raise OneXMImageError("1XM request failed")
 
 
+def _iter_image_items(task_payload: Mapping[str, Any]) -> list[Any]:
+    data = task_payload.get("data") if isinstance(task_payload, Mapping) else None
+    if isinstance(data, Mapping):
+        nested = data.get("data")
+        if isinstance(nested, list):
+            return nested
+    if isinstance(data, list):
+        return data
+    return []
+
+
 def extract_image_urls(task_payload: Mapping[str, Any]) -> list[str]:
     urls = []
-    for item in task_payload.get("data") or []:
+    result_url = _compact(task_payload.get("result_url") if isinstance(task_payload, Mapping) else "")
+    if result_url:
+        urls.append(result_url)
+    for item in _iter_image_items(task_payload):
         if not isinstance(item, Mapping):
             continue
         url = _compact(item.get("url"))
-        if url:
+        if url and url not in urls:
             urls.append(url)
     return urls
 
@@ -276,17 +294,17 @@ def run_image_task_until_done(
             retry_delay_seconds=retry_delay_seconds,
             sleep_fn=sleep_fn,
         )
-        task_id = _compact(task.get("id"))
+        task_id = _compact(task.get("task_id")) or _compact(task.get("id"))
         poll_url = _compact(task.get("poll_url")) or (f"/images/tasks/{task_id}" if task_id else "")
         started = monotonic_fn()
         current = dict(task)
 
         while True:
             status = _compact(current.get("status")).lower()
-            if status == "succeeded":
+            if status in SUCCESS_STATUSES:
                 return {
                     "ok": True,
-                    "task_id": _compact(current.get("id")) or task_id,
+                    "task_id": _compact(current.get("task_id")) or _compact(current.get("id")) or task_id,
                     "poll_url": poll_url,
                     "status": status,
                     "image_urls": extract_image_urls(current),
@@ -295,7 +313,7 @@ def run_image_task_until_done(
                     "poll_attempts": poll_attempts,
                     "compensation_attempts": attempt - 1,
                 }
-            if status in {"failed", "cancelled", "canceled"}:
+            if status in FAILED_STATUSES:
                 last_error = _error_message(current, f"1XM task {status}")
                 break
             if monotonic_fn() - started > max(1, int(poll_timeout_seconds or 1)):

@@ -10,6 +10,7 @@ Bundling notes (for electron-builder / python-build-standalone):
 """
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -26,7 +27,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import urlencode, parse_qs, urlparse
+from urllib.parse import urlencode, parse_qs, urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1979,7 +1980,7 @@ def _truthy_param(value: object) -> bool:
     if isinstance(value, (list, tuple, set)):
         return any(_truthy_param(item) for item in value)
     normalized = str(value or "").strip().lower()
-    return normalized in {"1", "true", "yes", "y", "on", "zip", "auto_zip", "auto_zip_package", "是", "压缩"}
+    return normalized in {"1", "true", "yes", "y", "on", "enabled", "zip", "auto_zip", "auto_zip_package", "是", "压缩"}
 
 
 def _shenhui_auto_zip_enabled(run_params: Optional[dict]) -> bool:
@@ -2959,6 +2960,11 @@ def _task_file_param_path(run_params: dict, key: str, default: str = "") -> str:
     return candidate or default
 
 
+def _normalize_prompt_source(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return "cloud_prompt_library" if text == "cloud_prompt_library" else "local_excel"
+
+
 def _task_int_param(run_params: dict, key: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
     try:
         value = int(float(str((run_params or {}).get(key, default)).strip()))
@@ -3001,6 +3007,24 @@ def _extract_first_approval_board_url(data_rows: list) -> str:
         if url.startswith("http://") or url.startswith("https://"):
             return url
     return ""
+
+
+def _is_tmall_ai_generation_confirmation_result(adapter_id: str, task_id: str, data_rows: list) -> bool:
+    if (adapter_id, task_id) != ("tmall-ops-assistant", "tmall_ai_image_test_chain"):
+        return False
+    rows = [row for row in (data_rows or []) if isinstance(row, dict)]
+    if not rows:
+        return False
+    return any(
+        str(row.get("阶段") or "").strip() == "确认提交生图"
+        or str(row.get("审批状态") or "").strip() == "pending_generation_confirmation"
+        for row in rows
+    )
+
+
+def _is_table_output_file_ref(value: object) -> bool:
+    text = str(value or "").strip().split("?", 1)[0].lower()
+    return text.endswith((".xlsx", ".xlsm", ".xls", ".csv"))
 
 
 def _parse_tmall_approval_board_url(url: str) -> dict:
@@ -3067,21 +3091,33 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     module = _load_tmall_ai_image_chain_module()
     execute_mode = str((run_params or {}).get("execute_mode") or "approval_then_create").strip().lower()
     execution = module.normalize_chain_execution_mode(execute_mode)
+    prompt_source = _normalize_prompt_source((run_params or {}).get("prompt_source") or "local_excel")
 
     workflow_file = _task_file_param_path(run_params, "workflow_file", getattr(module, "DEFAULT_WORKFLOW_FILE", ""))
     prompt_file = _task_file_param_path(run_params, "prompt_file", getattr(module, "DEFAULT_PROMPT_FILE", ""))
+    cloud_prompt_library_id = str((run_params or {}).get("cloud_prompt_library_id") or "").strip()
+    cloud_prompt_templates_json = ""
     if not workflow_file:
         raise RuntimeError("缺少测图任务导入模板文件")
-    if not prompt_file:
+    if prompt_source == "local_excel" and not prompt_file:
         raise RuntimeError("缺少 AI 测图提示词库文件")
+    if prompt_source == "cloud_prompt_library":
+        if not cloud_prompt_library_id:
+            raise RuntimeError("缺少云端 Prompt 库")
+        templates_payload = _cloud_prompt_library_export(cloud_prompt_library_id)
+        cloud_prompt_templates_json = json.dumps(templates_payload, ensure_ascii=False)
 
     args = argparse.Namespace(
         execute_mode=execution["mode"],
         workflow_file=workflow_file,
+        prompt_source=prompt_source,
         prompt_file=prompt_file,
+        cloud_prompt_library_id=cloud_prompt_library_id,
+        cloud_prompt_templates_json=cloud_prompt_templates_json,
         limit=0,
         cloud_path=str((run_params or {}).get("cloud_path") or getattr(module, "DEFAULT_CLOUD_PATH", "")).strip(),
         cdp_url=str((run_params or {}).get("cdp_url") or "http://127.0.0.1:9222").strip(),
+        confirm_generation=bool(execution["confirm_generation"]),
         generate=bool(execution["generate"]),
         approval_required=bool(execution["approval_required"]),
         live_upload=bool(execution["live_upload"]),
@@ -3118,7 +3154,7 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
 
     log(
         "[tmall-ai-chain] 后端编排执行："
-        f"mode={args.execute_mode}, generate={args.generate}, "
+        f"mode={args.execute_mode}, confirm_generation={args.confirm_generation}, generate={args.generate}, "
         f"approval={args.approval_required}, upload={args.live_upload}, create={args.live_create}, online={args.live_online}, "
         f"ai_image_count={args.ai_image_count}, quality={args.quality}"
     )
@@ -3346,7 +3382,96 @@ def _finalize_tmall_material_test_data_export_outputs(
     table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
     if log:
         log(f"巴拉-AI测图数据抓取导出本地导出：表格 {len(table_refs)} 个，目录 {target_root}")
-    return table_refs or fallback_refs
+    final_refs = table_refs or fallback_refs
+    if _truthy_param((run_params or {}).get("sync_to_cloud")):
+        workbook_path = _first_excel_output_path(final_refs)
+        if workbook_path is None:
+            if log:
+                log("[warn] 云端测图数据看板同步跳过：未找到可同步的 Excel 文件")
+        else:
+            try:
+                sync_result = sync_tmall_material_test_workbook_to_cloud(workbook_path)
+                if log:
+                    log(
+                        "云端测图数据看板同步完成："
+                        f"概览 {sync_result.get('overview_rows', 0)} 条，"
+                        f"明细 {sync_result.get('detail_rows', 0)} 条，"
+                        f"写入/更新 {sync_result.get('inserted_or_updated', 0)} 条"
+                    )
+            except Exception as exc:
+                if log:
+                    log(f"[warn] 云端测图数据看板同步失败：{exc}")
+    return final_refs
+
+
+def _first_excel_output_path(paths: list) -> Path | None:
+    for item in paths or []:
+        path = Path(str(item or "")).expanduser()
+        if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and path.is_file():
+            return path
+    return None
+
+
+def sync_tmall_material_test_workbook_to_cloud(workbook_path: Path, *, client: CloudApprovalClient | None = None) -> dict:
+    from core.cloud_job_executors import MATERIAL_IMPORT_DETAIL_CHUNK_SIZE, parse_tmall_material_test_workbook
+
+    path = Path(workbook_path).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"material test workbook not found: {path}")
+    cloud_client = client or _build_cloud_client()
+    parsed = parse_tmall_material_test_workbook(path)
+    asset_uid = _local_material_test_workbook_asset_uid(path)
+    content_type = mimetypes.guess_type(path.name)[0] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    presign = cloud_client.request_json("POST", "/api/assets/presign", {
+        "batch_uid": "material-test",
+        "style_id": 1,
+        "asset_uid": asset_uid,
+        "kind": "result",
+        "filename": path.name,
+        "content_type": content_type,
+        "meta": {
+            "job_type": "tmall_material_test_data_export",
+            "sync_mode": "local_manual_export",
+        },
+    })
+    upload_url = str(presign.get("upload_url") or "")
+    if not upload_url:
+        raise CloudApprovalError("cloud presign response missing upload_url for material test workbook")
+    cloud_client.upload_asset(upload_url, path, content_type)
+    source = {
+        "source_uid": asset_uid,
+        "filename": path.name,
+        "object_key": str(presign.get("object_key") or ""),
+        "sync_mode": "local_manual_export",
+    }
+    totals = {"overview_rows": 0, "detail_rows": 0, "inserted_or_updated": 0}
+    detail_rows = parsed.get("detail_rows") or []
+    chunks = [detail_rows[index:index + MATERIAL_IMPORT_DETAIL_CHUNK_SIZE] for index in range(0, len(detail_rows), MATERIAL_IMPORT_DETAIL_CHUNK_SIZE)] or [[]]
+    for index, detail_chunk in enumerate(chunks):
+        response = cloud_client.request_json("POST", "/api/material-test/import", {
+            "source": source,
+            "overview_rows": parsed.get("overview_rows") or [] if index == 0 else [],
+            "detail_rows": detail_chunk,
+        })
+        totals["overview_rows"] += int(response.get("overview_rows") or 0)
+        totals["detail_rows"] += int(response.get("detail_rows") or 0)
+        totals["inserted_or_updated"] += int(response.get("inserted_or_updated") or 0)
+    return {
+        **totals,
+        "workbook_asset_uid": asset_uid,
+        "workbook_filename": path.name,
+        "workbook_object_key": str(presign.get("object_key") or ""),
+    }
+
+
+def _local_material_test_workbook_asset_uid(path: Path) -> str:
+    try:
+        stat = path.stat()
+        seed = f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        seed = str(path)
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+    return f"local-material-test-{digest}"
 
 
 def _tmall_packaging_style_folder(row: dict) -> str:
@@ -4703,8 +4828,17 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before export")
 
         runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
-        exported_files = await export_outputs(data)
-        output_files = await finalize_output_files(data, runtime_files, exported_files)
+        skip_table_export = _is_tmall_ai_generation_confirmation_result(adapter_id, task_id, data)
+        if skip_table_export:
+            log("确认提交生图阶段不导出表格文件，等待最终创建结果后再输出")
+            exported_files = []
+            output_files = merge_output_file_refs([
+                ref for ref in runtime_files
+                if not _is_table_output_file_ref(ref)
+            ])
+        else:
+            exported_files = await export_outputs(data)
+            output_files = await finalize_output_files(data, runtime_files, exported_files)
         approval_board_url = _extract_first_approval_board_url(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else ""
         if approval_board_url:
             output_files = merge_output_file_refs([approval_board_url], output_files)
@@ -4727,18 +4861,23 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         _set_live_status(live_jids, done_status)
         if instance_uid:
             approval_summary = _parse_tmall_approval_board_url(approval_board_url)
+            generation_confirmation_pending = any(
+                isinstance(row, dict) and str(row.get("阶段") or "").strip() == "确认提交生图"
+                for row in data or []
+            )
             instance_summary = {
                 "records": len(data),
                 "output_files": output_files,
                 "approval_board_url": approval_board_url,
+                "approval_stage": "confirm_generation" if generation_confirmation_pending else "approval",
                 "run_id": run_id,
                 **approval_summary,
             }
             if approval_board_url:
                 data_sink.update_task_instance(
                     instance_uid,
-                    status="waiting_approval",
-                    current_step="approval",
+                    status="waiting_generation_confirmation" if generation_confirmation_pending else "waiting_approval",
+                    current_step="confirm" if generation_confirmation_pending else "approval",
                     summary=instance_summary,
                 )
             else:
@@ -5105,12 +5244,60 @@ class AiImageCanvasRequest(BaseModel):
 
 class AiImageSaveAsRequest(BaseModel):
     directory: str
+    files: list[str] = []
+
+
+class LocalImagePreviewRequest(BaseModel):
+    path: str
 
 
 def _model_payload(model: BaseModel, **kwargs) -> dict:
     if hasattr(model, "model_dump"):
         return model.model_dump(**kwargs)
     return model.dict(**kwargs)
+
+
+def _resolve_local_preview_path(raw_path: str) -> Path:
+    value = str(raw_path or "").strip()
+    if not value:
+        raise HTTPException(400, "图片路径不能为空")
+    if value.lower().startswith("file://"):
+        parsed = urlparse(value)
+        value = unquote(parsed.path or "")
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else path.resolve(strict=False)
+
+
+def _local_image_mime(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    guessed = mimetypes.guess_type(str(path))[0] or ""
+    return guessed if guessed in {"image/jpeg", "image/png", "image/webp", "image/gif"} else ""
+
+
+@app.post("/files/local-image-preview")
+def read_local_image_preview(req: LocalImagePreviewRequest):
+    path = _resolve_local_preview_path(req.path)
+    mime = _local_image_mime(path)
+    if not mime:
+        raise HTTPException(400, "请选择 PNG、JPG、WEBP 或 GIF 图片")
+    try:
+        stat = path.stat()
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "图片文件不存在") from exc
+    if not path.is_file():
+        raise HTTPException(400, "图片文件不存在")
+    if stat.st_size > 25 * 1024 * 1024:
+        raise HTTPException(400, "图片超过 25MB，无法预览")
+    data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    return {"ok": True, "path": str(path), "data_url": data_url}
 
 
 @app.get("/ai-image/jobs")
@@ -5167,7 +5354,14 @@ def save_as_ai_image_job(job_uid: str, req: AiImageSaveAsRequest):
         raise HTTPException(404, f"AI image job not found: {job_uid}")
     summary = job.get("summary") if isinstance(job.get("summary"), dict) else {}
     output_assets = [{"path": str(path)} for path in summary.get("output_files") or []]
+    output_assets.extend({"url": str(url)} for url in summary.get("image_urls") or [])
     output_assets.extend(data_sink.list_ai_image_assets(job_uid))
+    requested_files = {str(path or "").strip() for path in (req.files or []) if str(path or "").strip()}
+    if requested_files:
+        output_assets = [
+            asset for asset in output_assets
+            if str(asset.get("path") or asset.get("url") or "").strip() in requested_files
+        ]
     files = ai_image_service.copy_assets_to_directory(output_assets, req.directory)
     return {"ok": True, "job_uid": job_uid, "files": files}
 
@@ -5331,6 +5525,37 @@ class TmallApprovalGenerateRequest(BaseModel):
     reference_paths: Optional[List[str]] = None
 
 
+class TmallApprovalGenerationConfirmRequest(BaseModel):
+    items: List[dict] = []
+
+
+def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) -> list[dict]:
+    safe_items: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        for key, label in [("origin_path", "主图"), ("detail_reference_path", "参考图")]:
+            if key not in safe_item:
+                continue
+            value = str(safe_item.get(key) or "").strip()
+            safe_item[key] = (_safe_tmall_approval_paths(batch, [value], field_label=label) or [""])[0] if value else ""
+        safe_prompts = []
+        for prompt in safe_item.get("generation_prompts") or []:
+            if not isinstance(prompt, dict):
+                continue
+            safe_prompt = dict(prompt)
+            safe_prompt["reference_paths"] = _safe_tmall_approval_paths(
+                batch,
+                [str(path or "").strip() for path in (safe_prompt.get("reference_paths") or []) if str(path or "").strip()],
+                field_label="参考图",
+            )
+            safe_prompts.append(safe_prompt)
+        safe_item["generation_prompts"] = safe_prompts
+        safe_items.append(safe_item)
+    return safe_items
+
+
 @app.get("/tmall-ai-image-approval/api/{batch_id}")
 def get_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
     batch = _load_tmall_approval_batch(batch_id)
@@ -5473,6 +5698,38 @@ async def generate_tmall_ai_image_approval_asset(batch_id: str, req: TmallApprov
             reference_paths=safe_reference_paths,
         )
         return {"ok": True, "asset": asset}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/tmall-ai-image-approval/api/{batch_id}/submit-generation")
+async def submit_tmall_ai_image_generation_confirmation(batch_id: str, req: TmallApprovalGenerationConfirmRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        safe_items = _safe_tmall_generation_confirmation_items(batch, list(req.items or []))
+        if safe_items:
+            batch = module.update_generation_confirmation(batch, safe_items)
+        result = await asyncio.to_thread(module.submit_generation_confirmation_batch, batch, log=logger.info)
+        instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
+        if instance:
+            summary = _parse_json_object(instance.get("summary_json"))
+            summary.update({
+                "approval_batch_id": batch_id,
+                "generation_status": result.get("status"),
+                "generated": int(result.get("generated") or 0),
+                "generation_failed": int(result.get("failed") or 0),
+            })
+            data_sink.update_task_instance(
+                instance["instance_uid"],
+                status="waiting_approval" if result.get("status") == "pending_approval" else "generation_failed",
+                current_step="approval" if result.get("status") == "pending_approval" else "confirm",
+                summary=summary,
+            )
+        return result
     except HTTPException:
         raise
     except Exception as exc:
@@ -5754,6 +6011,7 @@ class TaskScheduleCreateRequest(BaseModel):
     time_of_day: str
     weekday: Optional[int] = None
     params: Optional[dict] = None
+    sync_to_cloud: bool = True
     notify_channel: str = "dingtalk"
     notify_template: str = DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE
     enabled: bool = True
@@ -5825,6 +6083,12 @@ def _normalize_task_schedule_create(req: TaskScheduleCreateRequest) -> dict:
     task_id = str(req.task_id or TMALL_MATERIAL_EXPORT_TASK_ID).strip()
     frequency, weekday = _validate_schedule_frequency(req.frequency, req.weekday)
     time_of_day = _validate_schedule_time(req.time_of_day)
+    params = dict(req.params or {})
+    if adapter_id == TMALL_OPS_ADAPTER_ID and task_id == TMALL_MATERIAL_EXPORT_TASK_ID:
+        if req.sync_to_cloud:
+            params["sync_to_cloud"] = ["enabled"]
+        else:
+            params.pop("sync_to_cloud", None)
     return {
         "adapter_id": adapter_id,
         "task_id": task_id,
@@ -5832,7 +6096,7 @@ def _normalize_task_schedule_create(req: TaskScheduleCreateRequest) -> dict:
         "frequency": frequency,
         "time_of_day": time_of_day,
         "weekday": weekday,
-        "params": _normalize_schedule_params(adapter_id, task_id, req.params),
+        "params": _normalize_schedule_params(adapter_id, task_id, params),
         "notify_channel": str(req.notify_channel or "dingtalk").strip() or "dingtalk",
         "notify_template": str(req.notify_template or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE),
         "enabled": bool(req.enabled),
@@ -6675,7 +6939,7 @@ def sync_data_files_to_odps(req: SyncDataFilesRequest):
 
 # ─── Settings ───
 
-DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test", "crawl_tmall_material_test_data"]
+DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test", "crawl_tmall_material_test_data", "read_prompt_library"]
 
 
 class CloudApprovalConfigRequest(BaseModel):
@@ -6795,6 +7059,36 @@ def _build_cloud_client() -> CloudApprovalClient:
     )
 
 
+def _cloud_prompt_libraries(client: CloudApprovalClient | None = None) -> dict:
+    active_client = client or _build_cloud_client()
+    return active_client.request_json("GET", "/api/prompt-libraries", token_type="machine")
+
+
+def _cloud_prompt_templates(
+    library_id: str | int,
+    *,
+    category: str = "",
+    gender: str = "",
+    limit: int = 200,
+    client: CloudApprovalClient | None = None,
+) -> dict:
+    active_client = client or _build_cloud_client()
+    query = {
+        "limit": max(1, min(int(limit or 200), 500)),
+    }
+    if str(category or "").strip():
+        query["category"] = str(category or "").strip()
+    if str(gender or "").strip():
+        query["gender"] = str(gender or "").strip()
+    path = f"/api/prompt-libraries/{library_id}/resolved?{urlencode(query)}"
+    return active_client.request_json("GET", path, token_type="machine")
+
+
+def _cloud_prompt_library_export(library_id: str | int, *, client: CloudApprovalClient | None = None) -> dict:
+    active_client = client or _build_cloud_client()
+    return active_client.request_json("GET", f"/api/prompt-libraries/{library_id}/export", token_type="machine")
+
+
 def _cloud_machine_agent(client: CloudApprovalClient) -> CloudMachineAgent:
     return CloudMachineAgent(
         client,
@@ -6892,6 +7186,30 @@ def sync_cloud_approval_batch(req: CloudApprovalSyncBatchRequest):
     except (CloudApprovalError, ValueError) as exc:
         raise HTTPException(502, str(exc)) from exc
     return {"ok": True, "result": result}
+
+
+@app.get("/cloud-approval/prompt-libraries")
+def get_cloud_prompt_libraries():
+    try:
+        return _cloud_prompt_libraries()
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/cloud-approval/prompt-libraries/{library_id}/resolved")
+def get_cloud_prompt_templates(library_id: str, category: str = "", gender: str = "", limit: int = 200):
+    try:
+        return _cloud_prompt_templates(library_id, category=category, gender=gender, limit=limit)
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/cloud-approval/prompt-libraries/{library_id}/export")
+def get_cloud_prompt_library_export(library_id: str):
+    try:
+        return _cloud_prompt_library_export(library_id)
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
 
 
 @app.post("/cloud-approval/machine/start")

@@ -22,3 +22,8 @@ bucket_name = "crawshrimp-cloud-approval-assets"
 
 [vars]
 SESSION_TTL_SECONDS = "604800"
+ONE_XM_BASE_URL = "https://api.1xm.ai/v1"
+ONE_XM_IMAGE_TIMEOUT_MS = "30000"
+ONE_XM_IMAGE_FETCH_TIMEOUT_MS = "30000"
+ONE_XM_IMAGE_POLL_INTERVAL_MS = "3000"
+ONE_XM_IMAGE_MAX_POLLS = "0"

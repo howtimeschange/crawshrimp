@@ -30,6 +30,7 @@ async function submitLogin() {
       <div>
         <p class="section-kicker">Crawshrimp 云端审批台</p>
         <h1>登录</h1>
+        <p class="login-help">账号由管理员创建并分配权限，不开放自助注册。</p>
       </div>
       <p v-if="error" class="notice danger">{{ error }}</p>
       <label class="field">
@@ -71,6 +72,13 @@ h1 {
   color: var(--text);
   font-size: 22px;
   line-height: 1.2;
+}
+
+.login-help {
+  margin: 8px 0 0;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.5;
 }
 
 .field {

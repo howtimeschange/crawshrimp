@@ -18,6 +18,7 @@ test('main process registers ai image IPC handlers backed by local API routes', 
     ['save-as-ai-image-job', "/save-as`"],
     ['create-ai-image-asset', "apiCall('POST', '/ai-image/assets'"],
     ['create-ai-image-canvas', "apiCall('POST', '/ai-image/canvases'"],
+    ['read-local-image-preview', 'readLocalImageDataUrl'],
   ]
   for (const [channel, route] of expected) {
     assert.match(main, new RegExp(`secureHandle\\('${channel}'`))
@@ -35,12 +36,15 @@ test('preload exposes ai image methods with IPC fallback to HTTP', () => {
     'saveAsAiImageJob',
     'createAiImageAsset',
     'createAiImageCanvas',
+    'readLocalImagePreview',
   ]
   for (const method of methods) {
     assert.match(preload, new RegExp(`${method}:`))
   }
   assert.match(preload, /invokeWithApiFallback\('list-ai-image-jobs'/)
   assert.match(preload, /apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/run`/)
+  assert.match(preload, /readLocalImagePreview: \(path\) => invokeWithApiFallback\('read-local-image-preview'/)
+  assert.match(preload, /apiCall\('POST', '\/files\/local-image-preview', \{ path \}\)/)
 })
 
 test('dev bridge maps ai image methods directly to local HTTP API', () => {
@@ -50,4 +54,5 @@ test('dev bridge maps ai image methods directly to local HTTP API', () => {
   assert.match(devBridge, /runAiImageJob: \(uid\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/run`, \{\}\)/)
   assert.match(devBridge, /createAiImageAsset: \(payload\) => apiCall\('POST', '\/ai-image\/assets', payload \|\| \{\}\)/)
   assert.match(devBridge, /createAiImageCanvas: \(payload\) => apiCall\('POST', '\/ai-image\/canvases', payload \|\| \{\}\)/)
+  assert.match(devBridge, /readLocalImagePreview: \(path\) => apiCall\('POST', '\/files\/local-image-preview', \{ path \}\)/)
 })

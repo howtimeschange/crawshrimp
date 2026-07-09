@@ -98,6 +98,57 @@ class AiImageServiceTests(unittest.TestCase):
             "data:image/png;base64,back",
         ])
 
+    def test_build_payload_allows_text_to_image_without_reference_assets(self):
+        job = {
+            "prompt": "make a dragon dance on the great wall",
+            "params": {"size": "1024x1024", "quality": "high", "n": 1},
+        }
+
+        payload = ai_image_service.build_one_xm_payload(
+            job,
+            [],
+            file_to_data_url_fn=lambda path: self.fail(f"unexpected image read: {path}"),
+        )
+
+        self.assertEqual(payload["prompt"], "make a dragon dance on the great wall")
+        self.assertEqual(payload["size"], "1024x1024")
+        self.assertNotIn("image", payload)
+
+    def test_build_payload_reads_persisted_input_paths_from_params(self):
+        job = {
+            "prompt": "make a product image",
+            "params": {
+                "size": "1024x1024",
+                "main_image_path": "/tmp/main.png",
+                "reference_image_paths": ["/tmp/ref-a.png", "/tmp/ref-b.png"],
+            },
+        }
+
+        payload = ai_image_service.build_one_xm_payload(
+            job,
+            [],
+            file_to_data_url_fn=lambda path: f"data:image/png;base64,{Path(path).stem}",
+        )
+
+        self.assertEqual(payload["image"], [
+            "data:image/png;base64,main",
+            "data:image/png;base64,ref-a",
+            "data:image/png;base64,ref-b",
+        ])
+
+    def test_build_payload_normalizes_oversized_4k_dimensions_to_provider_limit(self):
+        payload = ai_image_service.build_one_xm_payload({
+            "prompt": "make a product image",
+            "params": {"size": "4096x4096"},
+        })
+        self.assertEqual(payload["size"], "2048x2048")
+
+        wide_payload = ai_image_service.build_one_xm_payload({
+            "prompt": "make a product banner",
+            "params": {"size": "4096x2304"},
+        })
+        self.assertEqual(wide_payload["size"], "2048x1152")
+
     def test_build_payload_accepts_ui_response_format_and_standard_quality(self):
         job = {
             "prompt": "make a product image",
@@ -152,6 +203,88 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertNotIn("data:image", summary_text)
         self.assertNotIn("raw upstream", summary_text)
 
+    def test_run_job_supports_prompt_only_generation_without_assets(self):
+        job = data_sink.create_ai_image_job({
+            "title": "prompt only",
+            "prompt": "make a dragon dance on the great wall",
+            "params": {"size": "1024x1024"},
+        })
+
+        def fake_runner(client, payload, **kwargs):
+            self.assertNotIn("image", payload)
+            self.assertEqual(payload["prompt"], "make a dragon dance on the great wall")
+            return {
+                "ok": True,
+                "task_id": "task-text-only",
+                "poll_url": "https://poll.example/task-text-only",
+                "image_urls": ["https://cdn.example/text-only.png"],
+            }
+
+        def fake_download(url, target):
+            Path(target).write_bytes(b"png")
+
+        result = ai_image_service.run_job_with_one_xm(
+            job["job_uid"],
+            settings={"base_url": "https://api.example", "2k": "super-secret", "4k": ""},
+            runner=fake_runner,
+            downloader=fake_download,
+            file_to_data_url_fn=lambda path: self.fail(f"unexpected image read: {path}"),
+        )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(refreshed["status"], "completed")
+        self.assertEqual(refreshed["summary"]["task_id"], "task-text-only")
+
+    def test_run_job_appends_generation_runs_without_replacing_previous_results(self):
+        job = data_sink.create_ai_image_job({
+            "title": "same task feed",
+            "prompt": "first prompt",
+            "params": {"size": "1024x1024", "n": 1},
+        })
+        calls = []
+
+        def fake_runner(_client, payload, **_kwargs):
+            calls.append(payload["prompt"])
+            return {
+                "ok": True,
+                "task_id": f"task-{len(calls)}",
+                "poll_url": f"https://poll.example/task-{len(calls)}",
+                "image_urls": [f"https://cdn.example/out-{len(calls)}.png"],
+            }
+
+        def fake_download(_url, target):
+            Path(target).write_bytes(b"png")
+
+        first = ai_image_service.run_job_with_one_xm(
+            job["job_uid"],
+            settings={"2k": "key-2k", "4k": ""},
+            runner=fake_runner,
+            downloader=fake_download,
+        )
+        data_sink.update_ai_image_job(job["job_uid"], {
+            "prompt": "second prompt",
+            "params": {"size": "1024x1024", "n": 1},
+        })
+        second = ai_image_service.run_job_with_one_xm(
+            job["job_uid"],
+            settings={"2k": "key-2k", "4k": ""},
+            runner=fake_runner,
+            downloader=fake_download,
+        )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        self.assertTrue(first["ok"])
+        self.assertTrue(second["ok"])
+        self.assertEqual(refreshed["status"], "completed")
+        self.assertEqual([run["prompt"] for run in refreshed["summary"]["runs"]], ["first prompt", "second prompt"])
+        self.assertEqual([run["task_id"] for run in refreshed["summary"]["runs"]], ["task-1", "task-2"])
+        self.assertEqual(len(refreshed["summary"]["output_files"]), 2)
+        self.assertEqual(refreshed["summary"]["image_urls"], [
+            "https://cdn.example/out-1.png",
+            "https://cdn.example/out-2.png",
+        ])
+
     def test_run_job_marks_failed_when_runner_raises_after_start(self):
         job = data_sink.create_ai_image_job({
             "title": "runner failure",
@@ -176,7 +309,7 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertNotIn("super-secret", summary_text)
         self.assertNotIn("data:image", summary_text)
 
-    def test_run_job_marks_partial_failed_when_download_raises_after_outputs(self):
+    def test_run_job_keeps_upstream_success_when_download_raises_after_outputs(self):
         job = data_sink.create_ai_image_job({
             "title": "download failure",
             "prompt": "prompt",
@@ -200,13 +333,14 @@ class AiImageServiceTests(unittest.TestCase):
 
         refreshed = data_sink.get_ai_image_job(job["job_uid"])
         summary_text = json.dumps(refreshed["summary"], ensure_ascii=False)
-        self.assertFalse(result["ok"])
-        self.assertEqual(refreshed["status"], "partial_failed")
+        self.assertTrue(result["ok"])
+        self.assertEqual(refreshed["status"], "completed")
         self.assertEqual(len(refreshed["summary"]["output_files"]), 1)
+        self.assertIn("本地保存失败", refreshed["summary"]["warning"])
         self.assertNotIn("webhook_secret", summary_text)
         self.assertNotIn("secret-key", summary_text)
 
-    def test_run_job_marks_failed_when_download_setup_raises_before_saving_files(self):
+    def test_run_job_keeps_remote_results_when_download_setup_raises_before_saving_files(self):
         job = data_sink.create_ai_image_job({
             "title": "download setup failure",
             "prompt": "prompt",
@@ -226,10 +360,11 @@ class AiImageServiceTests(unittest.TestCase):
 
         refreshed = data_sink.get_ai_image_job(job["job_uid"])
         summary_text = json.dumps(refreshed["summary"], ensure_ascii=False)
-        self.assertFalse(result["ok"])
-        self.assertEqual(refreshed["status"], "failed")
-        self.assertIn("allocate failed", refreshed["summary"]["error"])
+        self.assertTrue(result["ok"])
+        self.assertEqual(refreshed["status"], "completed")
+        self.assertIn("allocate failed", refreshed["summary"]["warning"])
         self.assertEqual(refreshed["summary"]["output_files"], [])
+        self.assertEqual(refreshed["summary"]["image_urls"], ["https://cdn.example/one.png"])
         self.assertNotEqual(refreshed["status"], "running")
         self.assertNotIn("secret-key", summary_text)
         self.assertNotIn("data:image", summary_text)
@@ -258,11 +393,23 @@ class AiImageServiceTests(unittest.TestCase):
 
         copied = ai_image_service.copy_assets_to_directory([
             {"path": str(source), "kind": "reference"},
-            {"url": "https://cdn.example/skip.png", "kind": "generated"},
         ], target_dir)
 
         self.assertEqual(len(copied), 1)
         self.assertEqual(Path(copied[0]).read_bytes(), b"image")
+
+    def test_copy_assets_to_directory_downloads_remote_assets(self):
+        target_dir = self.root / "remote-export"
+
+        copied = ai_image_service.copy_assets_to_directory(
+            [{"url": "https://cdn.example/generated.png", "kind": "generated"}],
+            target_dir,
+            downloader=lambda _url, target: Path(target).write_bytes(b"remote"),
+        )
+
+        self.assertEqual(len(copied), 1)
+        self.assertEqual(Path(copied[0]).name, "result-01.png")
+        self.assertEqual(Path(copied[0]).read_bytes(), b"remote")
 
     def test_copy_assets_to_directory_loops_until_unique_name(self):
         source = self.root / "source.png"

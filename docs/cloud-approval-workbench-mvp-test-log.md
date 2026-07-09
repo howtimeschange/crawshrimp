@@ -27,7 +27,7 @@ Workbooks used:
 | Prompt workbook import | `prompt-import` parsed 33 templates across 6 sheets and preserved priority columns | PASS |
 | Review state machine | `mvp-ai-test` rejected one AI asset, created `regenerate_ai_image`, approved one AI asset, marked ready, and created `submit_tmall_material_test` | PASS |
 | Task machine lease/complete | Fake task machine claimed submit job with a lease and completed it; submit result was visible to reviewers | PASS |
-| Online generation routing | Cloud Worker tests cover `generate_ai_image` as task-machine dispatch, not cloud-side provider execution | PASS |
+| Online generation routing | Cloud Worker tests cover `/generate-direct` calling 1XM cloud tasks, storing completed R2 assets, and `/generation-requests/{request_uid}/poll` completing pending requests without `dispatch_jobs` | PASS |
 | Live admin login in Crawshrimp | Not fully browser-verified because no live authenticated Worker session was available | BLOCKED |
 
 ## MVP Loop 2: Material Test Data Import, Crawl, Dashboard

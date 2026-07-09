@@ -1,8 +1,9 @@
 import { recordAudit } from './audit'
 import { fromJsonObject, nowIso, toJson } from './db'
 import type { Env } from './env'
-import { badRequest, json, readJsonObject } from './http'
+import { badRequest, forbidden, json, readJsonObject } from './http'
 import { requirePermission } from './auth-routes'
+import { requireActiveMachine } from './machine-routes'
 
 const ALLOWED_SCENARIOS = new Set(['裂变图', '创意拍摄'])
 const TEMPLATE_COLUMNS = `id, library_id, group_name, field_name, source_field_id, field_order, visible,
@@ -97,8 +98,34 @@ interface ResolvedTemplate {
   priority: number
 }
 
+function hasBearerToken(request: Request): boolean {
+  return /^Bearer\s+.+$/i.test(request.headers.get('authorization') || '')
+}
+
+function canMachineReadPromptLibrary(capabilitiesJson: string): boolean {
+  const capabilities = new Set(parseStringArray(capabilitiesJson))
+  return (
+    capabilities.has('read_prompt_library') ||
+    capabilities.has('generate_ai_image') ||
+    capabilities.has('regenerate_ai_image') ||
+    capabilities.has('submit_tmall_material_test')
+  )
+}
+
+async function requirePromptReadAccess(request: Request, env: Env): Promise<unknown | Response> {
+  if (hasBearerToken(request)) {
+    const machine = await requireActiveMachine(request, env)
+    if (machine instanceof Response) return machine
+    if (!canMachineReadPromptLibrary(machine.capabilities_json)) {
+      return forbidden('Machine cannot read prompt libraries')
+    }
+    return machine
+  }
+  return requirePermission(request, env, 'prompts:read')
+}
+
 export async function listPromptLibraries(request: Request, env: Env): Promise<Response> {
-  const actor = await requirePermission(request, env, 'prompts:read')
+  const actor = await requirePromptReadAccess(request, env)
   if (actor instanceof Response) return actor
 
   const { results: libraries } = await env.DB.prepare(
@@ -111,7 +138,7 @@ export async function listPromptLibraries(request: Request, env: Env): Promise<R
       `SELECT ${TEMPLATE_COLUMNS}
        FROM prompt_templates
        WHERE library_id = ?
-       ORDER BY id`,
+       ORDER BY COALESCE(field_order, 999999), id`,
     )
       .bind(libraryId)
       .all<PromptTemplateRow>()
@@ -184,6 +211,47 @@ export async function importPromptLibrary(request: Request, env: Env): Promise<R
   return json({ library: { id: libraryId, name, scenario, status: 'draft', templates: createdTemplates } }, { status: 201 })
 }
 
+export async function updatePromptLibrary(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'prompts:write')
+  if (actor instanceof Response) return actor
+  const libraryId = Number(new URL(request.url).pathname.match(/^\/api\/prompt-libraries\/(\d+)$/)?.[1])
+  if (!Number.isInteger(libraryId) || libraryId <= 0) return badRequest('valid library id is required')
+
+  const existing = await env.DB.prepare('SELECT id, name, scenario, status, created_at, updated_at FROM prompt_libraries WHERE id = ? LIMIT 1')
+    .bind(libraryId)
+    .first<PromptLibraryRow>()
+  if (!existing) return json({ error: 'Not found' }, { status: 404 })
+
+  const body = await readJsonObject(request)
+  const name = typeof body.name === 'string' ? body.name.trim() : existing.name
+  const scenario = typeof body.scenario === 'string' ? body.scenario.trim() : existing.scenario
+  if (!name) return badRequest('name is required')
+  if (!ALLOWED_SCENARIOS.has(scenario)) return badRequest('scenario must be 裂变图 or 创意拍摄')
+
+  const now = nowIso()
+  await env.DB.prepare(
+    `UPDATE prompt_libraries
+     SET name = ?,
+         scenario = ?,
+         status = ?,
+         updated_at = ?
+     WHERE id = ?`,
+  )
+    .bind(name, scenario, 'draft', now, libraryId)
+    .run()
+
+  await recordAudit(env, { userId: actor.user.id }, 'prompts.library.update', 'prompt_library', String(libraryId), { name, scenario }, request)
+  return json({
+    library: {
+      ...existing,
+      name,
+      scenario,
+      status: 'draft',
+      updated_at: now,
+    },
+  })
+}
+
 export async function bulkUpdatePromptTemplates(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'prompts:write')
   if (actor instanceof Response) return actor
@@ -222,7 +290,7 @@ export async function bulkUpdatePromptTemplates(request: Request, env: Env): Pro
 }
 
 export async function exportPromptLibrary(request: Request, env: Env): Promise<Response> {
-  const actor = await requirePermission(request, env, 'prompts:read')
+  const actor = await requirePromptReadAccess(request, env)
   if (actor instanceof Response) return actor
   const libraryId = libraryIdFromPath(request, 'export')
   if (!Number.isInteger(libraryId) || libraryId <= 0) return badRequest('valid library id is required')
@@ -381,7 +449,7 @@ export async function publishPromptLibrary(request: Request, env: Env): Promise<
 }
 
 export async function resolvePrompts(request: Request, env: Env): Promise<Response> {
-  const actor = await requirePermission(request, env, 'prompts:read')
+  const actor = await requirePromptReadAccess(request, env)
   if (actor instanceof Response) return actor
   const url = new URL(request.url)
   const libraryId = libraryIdFromPath(request, 'resolved')

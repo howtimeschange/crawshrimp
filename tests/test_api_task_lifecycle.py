@@ -175,6 +175,116 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit",
         )
 
+    async def test_tmall_ai_chain_generation_confirmation_skips_excel_export(self):
+        rows = [
+            {
+                "阶段": "确认提交生图",
+                "审批状态": "pending_generation_confirmation",
+                "审批看板": "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit",
+                "执行结果": "等待确认提交生图任务",
+            }
+        ]
+
+        self.assertTrue(api_server._is_tmall_ai_generation_confirmation_result(
+            "tmall-ops-assistant",
+            "tmall_ai_image_test_chain",
+            rows,
+        ))
+        self.assertFalse(api_server._is_tmall_ai_generation_confirmation_result(
+            "tmall-ops-assistant",
+            "tmall_ai_image_test_chain",
+            [{**rows[0], "阶段": "创建结果", "审批状态": "created"}],
+        ))
+
+    async def test_execute_tmall_ai_chain_generation_confirmation_outputs_only_board_url(self):
+        board_url = "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit"
+
+        class FakeBridge:
+            def get_tabs(self):
+                return []
+
+            def new_tab(self, url):
+                return {"id": "tab-1", "url": url, "webSocketDebuggerUrl": "ws://example.invalid"}
+
+            def find_tab(self, url):
+                return {"id": "tab-1", "url": url, "webSocketDebuggerUrl": "ws://example.invalid"}
+
+            def get_tab_ws_url(self, tab):
+                return "ws://example.invalid"
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.runtime_output_files = ["/tmp/intermediate.xlsx"]
+                self.tab_id = "tab-1"
+                self.tab_url = "https://fmp.semirapp.com/web/index#/home/file"
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return []
+
+        class FakeTask:
+            id = "tmall_ai_image_test_chain"
+            name = "巴拉-AI测图全链路"
+            description = ""
+            entry_url = "https://fmp.semirapp.com/web/index#/home/file"
+            tab_match_prefixes = []
+            output = [
+                type(
+                    "Output",
+                    (),
+                    {
+                        "type": OutputType.excel,
+                        "filename": "summary.xlsx",
+                        "columns": None,
+                        "column_groups": None,
+                        "sheet_key": None,
+                        "sheets": None,
+                    },
+                )()
+            ]
+            script = "tmall-ai-image-test-chain.js"
+            skip_auth = True
+            params = []
+
+        class FakeAdapter:
+            id = "tmall-ops-assistant"
+            name = "天猫运营助手"
+            entry_url = "https://fmp.semirapp.com/web/index#/home/file"
+            tab_match_prefixes = []
+            tasks = [FakeTask()]
+            auth = None
+
+        async def fake_apply(*args, **kwargs):
+            return [{
+                "阶段": "确认提交生图",
+                "审批状态": "pending_generation_confirmation",
+                "审批看板": board_url,
+                "执行结果": "等待确认提交生图任务",
+            }]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            script_path = Path(tmpdir) / "tmall-ai-image-test-chain.js"
+            script_path.write_text("", encoding="utf-8")
+
+            with patch("core.api_server.adapter_loader.scan_all"):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                        with patch("core.js_runner.JSRunner", FakeRunner):
+                            with patch("core.api_server.data_sink.begin_run", return_value=2101):
+                                with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                    with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                                        with patch("core.api_server._apply_tmall_ai_image_test_chain", side_effect=fake_apply):
+                                            with patch("core.api_server.data_sink.export_excel") as export_excel:
+                                                with patch("core.api_server.data_sink.finish_run") as finish_run:
+                                                    await api_server._execute_task(
+                                                        "tmall-ops-assistant",
+                                                        "tmall_ai_image_test_chain",
+                                                        {},
+                                                        {},
+                                                    )
+
+        export_excel.assert_not_called()
+        finish_run.assert_called_once_with(2101, 1, [board_url])
+
     async def test_lifespan_uses_instance_lock_as_startup_owner(self):
         calls = []
 

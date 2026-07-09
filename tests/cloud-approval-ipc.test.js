@@ -16,6 +16,7 @@ const METHODS = [
   ['startCloudMachine', 'start-cloud-machine', 'POST', '/cloud-approval/machine/start'],
   ['stopCloudMachine', 'stop-cloud-machine', 'POST', '/cloud-approval/machine/stop'],
   ['syncCloudApprovalBatch', 'sync-cloud-approval-batch', 'POST', '/cloud-approval/sync-batch'],
+  ['listCloudPromptLibraries', 'list-cloud-prompt-libraries', 'GET', '/cloud-approval/prompt-libraries'],
 ]
 
 test('main process exposes cloud approval IPC handlers to local API routes', () => {
@@ -25,6 +26,19 @@ test('main process exposes cloud approval IPC handlers to local API routes', () 
     assert.match(source, new RegExp(`secureHandle\\('${channel}'`))
     assert.match(source, new RegExp(`apiCall\\('${verb}', '${route.replaceAll('/', '\\/')}`))
   }
+})
+
+test('cloud prompt template IPC includes library-scoped resolved route', () => {
+  const main = read('app/src/main.js')
+  const preload = read('app/src/preload.js')
+  const devBridge = read('app/src/renderer/utils/devCsBridge.js')
+
+  assert.match(main, /secureHandle\('resolve-cloud-prompt-templates'/)
+  assert.match(main, /\/cloud-approval\/prompt-libraries\/\$\{encodeURIComponent\(String\(libraryId \|\| ''\)\)\}\/resolved/)
+  assert.match(preload, /resolveCloudPromptTemplates:/)
+  assert.match(preload, /ipcRenderer\.invoke\('resolve-cloud-prompt-templates'/)
+  assert.match(devBridge, /resolveCloudPromptTemplates:/)
+  assert.match(devBridge, /\/cloud-approval\/prompt-libraries\/\$\{encodePathPart\(libraryId\)\}\/resolved/)
 })
 
 test('preload exposes cloud approval methods on window.cs', () => {

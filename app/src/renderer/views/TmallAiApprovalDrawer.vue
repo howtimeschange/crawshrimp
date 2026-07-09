@@ -18,43 +18,26 @@
         </div>
       </header>
 
-      <section v-if="!collapsed || embedded" class="approval-lifecycle">
-        <div :class="['approval-stage', generationStageClass]">
-          <span class="stage-dot"></span>
-          <div>
-            <strong>生图完成</strong>
-            <span>{{ generationStageLabel }}</span>
-          </div>
-        </div>
-        <div :class="['approval-stage', approvalStageClass]">
-          <span class="stage-dot"></span>
-          <div>
-            <strong>人工审批</strong>
-            <span>{{ approvalStageLabel }}</span>
-          </div>
-        </div>
-        <div :class="['approval-stage', createStageClass]">
-          <span class="stage-dot"></span>
-          <div>
-            <strong>上传创建</strong>
-            <span>{{ createStageLabel }}</span>
-          </div>
-        </div>
-      </section>
-
       <div v-if="!collapsed || embedded" class="approval-toolbar">
         <div class="approval-search">
           <input v-model="filterText" placeholder="筛选款号 / 商品ID / Prompt" />
         </div>
         <div class="approval-bulk">
-          <button type="button" class="ghost-btn" @click="markAllPending('approved')">待定全确认</button>
-          <button type="button" class="ghost-btn danger" @click="markAllPending('rejected')">待定全舍弃</button>
-          <button type="button" class="primary-btn" :disabled="saving || submitting" @click="saveDecisions">
-            {{ saving ? '保存中' : '保存审批状态' }}
-          </button>
-          <button type="button" class="primary-btn submit" :disabled="saving || submitting || summary.approved <= 0" @click="submitApproved">
-            {{ submitting ? '提交中' : '提交已确认图片并创建测图任务' }}
-          </button>
+          <template v-if="isGenerationConfirmation">
+            <button type="button" class="primary-btn submit" :disabled="generationSubmitting || generationPromptCount <= 0" @click="submitGenerationConfirmation">
+              {{ generationSubmitting ? '生图中' : '确认提交生图任务' }}
+            </button>
+          </template>
+          <template v-else>
+            <button type="button" class="ghost-btn" @click="markAllPending('approved')">待定全确认</button>
+            <button type="button" class="ghost-btn danger" @click="markAllPending('rejected')">待定全舍弃</button>
+            <button type="button" class="primary-btn" :disabled="saving || submitting" @click="saveDecisions">
+              {{ saving ? '保存中' : '保存审批状态' }}
+            </button>
+            <button type="button" class="primary-btn submit" :disabled="saving || submitting || summary.approved <= 0" @click="submitApproved">
+              {{ submitting ? '提交中' : '提交已确认图片并创建测图任务' }}
+            </button>
+          </template>
         </div>
       </div>
 
@@ -135,18 +118,21 @@
                   SKC {{ item.skc_code || '-' }}
                 </p>
               </div>
-              <span class="style-mode">参考图 {{ item.reference_mode || '-' }}</span>
+              <div class="style-actions">
+                <span class="style-mode">参考图 {{ item.reference_mode || '-' }}</span>
+                <button v-if="isGenerationConfirmation" type="button" class="ghost-btn" @click="openPromptEditor(item)">新增 Prompt</button>
+              </div>
             </div>
-            <div class="asset-rail">
+            <div v-if="!isGenerationConfirmation" class="asset-rail">
               <div
                 v-for="asset in item.assets || []"
                 :key="asset.id"
-                :class="['asset-card', asset.kind, asset.status, { selected: selectedAsset?.id === asset.id }]"
+                :class="['asset-card', asset.kind, asset.status]"
               >
                 <button
                   type="button"
                   class="asset-tile"
-                  @click="selectAsset(item, asset)"
+                  @click="openImagePreview(asset, item)"
                 >
                   <img :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
                   <span class="asset-label">{{ asset.label || asset.filename }}</span>
@@ -168,57 +154,81 @@
                 <small>单独为本款补一张 AI 图</small>
               </button>
             </div>
+            <div v-if="isGenerationConfirmation" class="generation-confirm-list">
+              <article
+                v-for="prompt in activeGenerationPrompts(item)"
+                :key="prompt.id"
+                class="generation-prompt-card"
+              >
+                <header class="generation-prompt-head">
+                  <input v-model="prompt.prompt_name" class="prompt-name-input" placeholder="Prompt 名称" />
+                  <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">从 Prompt 库选择</button>
+                  <button type="button" class="ghost-btn" @click="openPromptEditor(item, prompt)">弹窗编辑</button>
+                  <button type="button" class="ghost-btn danger" @click="removeGenerationPrompt(item, prompt)">删除</button>
+                </header>
+                <textarea v-model="prompt.custom_prompt" placeholder="确认或修改本条生图 Prompt"></textarea>
+
+                <div class="confirmation-image-slots">
+                  <section class="main-image-slot">
+                    <div class="slot-head">
+                      <div>
+                        <strong>主图位</strong>
+                        <span>默认参与生图</span>
+                      </div>
+                    </div>
+                    <figure v-if="itemMainAsset(item)" class="slot-card selected">
+                      <button type="button" class="slot-image-button" @click="openImagePreview(itemMainAsset(item), item)">
+                        <img :src="referenceImageUrl(itemMainAsset(item).path)" :alt="referenceFileName(itemMainAsset(item).path)" />
+                      </button>
+                      <figcaption>{{ referenceFileName(itemMainAsset(item).path) }}</figcaption>
+                      <div class="slot-actions">
+                        <button type="button" class="ghost-btn" @click="replaceItemMainImage(item)">替换</button>
+                        <button type="button" class="ghost-btn danger" @click="clearItemMainImage(item)">删除</button>
+                      </div>
+                    </figure>
+                    <button v-else type="button" class="empty-slot" @click="replaceItemMainImage(item)">选择主图</button>
+                  </section>
+
+                  <section class="reference-image-slots">
+                    <div class="slot-head">
+                      <div>
+                        <strong>参考图位</strong>
+                        <span>默认不参与生图，可按 Prompt 勾选</span>
+                      </div>
+                      <button type="button" class="ghost-btn" :disabled="itemImageCount(item) >= MAX_CONFIRMATION_IMAGES" @click="addItemReferenceImage(item)">新增参考图</button>
+                    </div>
+                    <div v-if="itemReferenceAssets(item).length" class="reference-slot-grid">
+                      <figure
+                        v-for="asset in itemReferenceAssets(item)"
+                        :key="asset.id"
+                        :class="['reference-image-slot', { selected: referenceImageSelected(prompt, asset) }]"
+                      >
+                        <label class="slot-check">
+                          <input
+                            type="checkbox"
+                            :checked="referenceImageSelected(prompt, asset)"
+                            :disabled="!referenceImageSelected(prompt, asset) && promptImageCount(prompt) >= MAX_CONFIRMATION_IMAGES"
+                            @change="togglePromptReferenceImage(prompt, asset)"
+                          />
+                          <span>参与</span>
+                        </label>
+                        <button type="button" class="slot-image-button" @click="openImagePreview(asset, item)">
+                          <img :src="referenceImageUrl(asset.path)" :alt="referenceFileName(asset.path)" />
+                        </button>
+                        <figcaption>{{ referenceFileName(asset.path) }}</figcaption>
+                        <div class="slot-actions">
+                          <button type="button" class="ghost-btn" @click="replaceItemReference(item, asset)">替换</button>
+                          <button type="button" class="ghost-btn danger" @click="clearItemReference(item, asset)">删除</button>
+                        </div>
+                      </figure>
+                    </div>
+                    <button v-else type="button" class="empty-slot" @click="addItemReferenceImage(item)">新增参考图</button>
+                  </section>
+                </div>
+              </article>
+            </div>
           </article>
         </main>
-
-        <aside class="approval-inspector">
-          <div v-if="!selectedAsset" class="inspector-empty">
-            <strong>选择一张图</strong>
-            <span>查看完整 Prompt，确认、舍弃或重新生成。</span>
-          </div>
-          <template v-else>
-            <div class="inspector-preview">
-              <img :src="imageUrlWithVersion(selectedAsset)" :alt="selectedAsset.label || selectedAsset.filename" />
-            </div>
-            <div class="inspector-title">
-              <div>
-                <strong>{{ selectedItem?.style_code }} · {{ selectedAsset.label }}</strong>
-                <span>{{ selectedAsset.filename || selectedAsset.path }}</span>
-              </div>
-              <span :class="['status-pill', selectedAsset.status]">{{ statusLabel(selectedAsset) }}</span>
-            </div>
-
-            <label class="inspector-field">
-              <span>详细生图 Prompt</span>
-              <textarea
-                v-model="selectedAsset.custom_prompt"
-                :readonly="selectedAsset.kind !== 'ai'"
-                placeholder="输入调整后的详细 Prompt"
-              ></textarea>
-            </label>
-
-            <div v-if="selectedAsset.kind === 'ai'" class="inspector-field">
-              <span>参考图</span>
-              <div v-if="selectedReferencePaths.length" class="reference-preview-grid">
-                <figure v-for="path in selectedReferencePaths" :key="path" class="reference-preview-card">
-                  <img :src="referenceImageUrl(path)" :alt="referenceFileName(path)" />
-                  <figcaption>{{ referenceFileName(path) }}</figcaption>
-                  <button type="button" aria-label="移除参考图" @click="removeReferencePath(path)">×</button>
-                </figure>
-              </div>
-              <div v-else class="reference-empty">暂无参考图</div>
-            </div>
-
-            <div v-if="selectedAsset.kind === 'ai'" class="reference-tools">
-              <button type="button" class="ghost-btn" @click="useItemReferences">使用本款参考图</button>
-              <button type="button" class="ghost-btn" @click="pickReferenceFiles({ replace: true })">替换参考图</button>
-              <button type="button" class="ghost-btn" @click="pickReferenceFiles({ replace: false })">追加参考图</button>
-              <button type="button" class="primary-btn" :disabled="regenerating" @click="regenerateSelected">
-                {{ regenerating ? '重新生成中' : '重试/改图' }}
-              </button>
-            </div>
-          </template>
-        </aside>
       </div>
 
       <div v-if="manualGenerate.open" class="manual-modal-backdrop" @click.self="closeManualGenerate">
@@ -281,6 +291,94 @@
         </section>
       </div>
 
+      <div v-if="promptEditor.open" class="prompt-editor-modal" @click.self="closePromptEditor">
+        <section class="prompt-editor-panel">
+          <header class="manual-modal-head">
+            <div>
+              <strong>{{ promptEditor.prompt ? '编辑 Prompt' : '新增 Prompt' }}</strong>
+              <span>{{ promptEditor.item?.style_code || '-' }}，保存后会作为一条生图任务提交。</span>
+            </div>
+            <button type="button" class="icon-btn" aria-label="关闭 Prompt 弹窗" @click="closePromptEditor">×</button>
+          </header>
+
+          <label class="inspector-field">
+            <span>Prompt 名称</span>
+            <input v-model="promptEditor.promptName" class="prompt-editor-input" placeholder="例如 动态定格 · 全身展示" />
+          </label>
+
+          <label class="inspector-field">
+            <span>Prompt 内容</span>
+            <textarea v-model="promptEditor.promptText" placeholder="输入完整生图 Prompt"></textarea>
+          </label>
+
+          <footer class="manual-modal-actions">
+            <button type="button" class="ghost-btn" @click="closePromptEditor">取消</button>
+            <button type="button" class="primary-btn" :disabled="!promptEditor.promptText.trim()" @click="savePromptEditor">保存</button>
+          </footer>
+        </section>
+      </div>
+
+      <div v-if="promptLibraryPicker.open" class="prompt-library-picker-modal" @click.self="closePromptLibraryPicker">
+        <section class="prompt-library-picker-panel">
+          <header class="manual-modal-head">
+            <div>
+              <strong>从 Prompt 库选择</strong>
+              <span>{{ promptLibraryPicker.item?.style_code || '-' }}，选中后会回填当前 Prompt。</span>
+            </div>
+            <button type="button" class="icon-btn" aria-label="关闭 Prompt 库选择" @click="closePromptLibraryPicker">×</button>
+          </header>
+
+          <div class="prompt-library-picker-filters">
+            <select v-model="promptLibraryPicker.selectedLibraryId" class="prompt-library-select" @change="loadPromptLibraryTemplates(promptLibraryPicker.selectedLibraryId)">
+              <option value="">选择 Prompt 库</option>
+              <option v-for="library in promptLibraryPicker.libraries" :key="library.id" :value="String(library.id)">
+                {{ library.name || `Prompt 库 ${library.id}` }}
+              </option>
+            </select>
+            <input v-model="promptLibrarySearch" class="prompt-library-search" placeholder="搜索 Prompt 名称 / 内容" />
+            <select v-model="promptLibraryCategory" class="prompt-library-category">
+              <option value="">全部分类</option>
+              <option v-for="category in promptLibraryCategories" :key="category" :value="category">{{ category }}</option>
+            </select>
+            <button type="button" class="ghost-btn" :disabled="promptLibraryPicker.loading" @click="loadPromptLibraries">
+              {{ promptLibraryPicker.loading ? '刷新中' : '刷新' }}
+            </button>
+          </div>
+
+          <div v-if="promptLibraryPicker.error" class="prompt-library-picker-empty error">{{ promptLibraryPicker.error }}</div>
+          <div v-else-if="promptLibraryPicker.loading || promptLibraryPicker.templatesLoading" class="prompt-library-picker-empty">正在读取 Prompt 库…</div>
+          <div v-else class="prompt-library-template-list">
+            <button
+              v-for="template in filteredPromptLibraryTemplates"
+              :key="template.template_id || template.id || `${template.group_name}-${template.field_name}`"
+              type="button"
+              class="prompt-library-template-row"
+              @click="selectPromptLibraryTemplate(template)"
+            >
+              <span>{{ template.group_name || '未分类' }}</span>
+              <strong>{{ template.field_name || '未命名 Prompt' }}</strong>
+              <p>{{ template.prompt_text || template.prompt || '' }}</p>
+            </button>
+            <div v-if="!filteredPromptLibraryTemplates.length" class="prompt-library-picker-empty">没有匹配的 Prompt</div>
+          </div>
+        </section>
+      </div>
+
+      <div v-if="imagePreview.open" class="image-preview-modal" @click.self="closeImagePreview">
+        <section class="image-preview-panel">
+          <header class="manual-modal-head">
+            <div>
+              <strong>{{ imagePreview.title }}</strong>
+              <span>{{ imagePreview.subtitle }}</span>
+            </div>
+            <button type="button" class="icon-btn" aria-label="关闭图片预览" @click="closeImagePreview">×</button>
+          </header>
+          <div class="image-preview-stage">
+            <img :src="imagePreview.src" :alt="imagePreview.title" />
+          </div>
+        </section>
+      </div>
+
       <div v-if="toast" class="approval-toast" :class="{ error: toastError }">{{ toast }}</div>
     </aside>
   </div>
@@ -300,10 +398,13 @@ const props = defineProps({
 })
 const emit = defineEmits(['update:modelValue', 'batch-updated', 'submit-started', 'committed'])
 
+const MAX_CONFIRMATION_IMAGES = 10
+
 const collapsed = ref(false)
 const loading = ref(false)
 const saving = ref(false)
 const submitting = ref(false)
+const generationSubmitting = ref(false)
 const regenerating = ref(false)
 const manualGenerating = ref(false)
 const error = ref('')
@@ -313,6 +414,32 @@ const filterText = ref('')
 const batch = ref(null)
 const selectedItem = ref(null)
 const selectedAsset = ref(null)
+const imagePreview = ref({
+  open: false,
+  src: '',
+  title: '',
+  subtitle: '',
+})
+const promptEditor = ref({
+  open: false,
+  item: null,
+  prompt: null,
+  promptName: '',
+  promptText: '',
+})
+const promptLibrarySearch = ref('')
+const promptLibraryCategory = ref('')
+const promptLibraryPicker = ref({
+  open: false,
+  item: null,
+  prompt: null,
+  loading: false,
+  templatesLoading: false,
+  error: '',
+  libraries: [],
+  selectedLibraryId: '',
+  templates: [],
+})
 const manualGenerate = ref({
   open: false,
   item: null,
@@ -322,6 +449,9 @@ const manualGenerate = ref({
 })
 
 const approvalRef = computed(() => parseApprovalUrl(props.boardUrl))
+const isGenerationConfirmation = computed(() =>
+  String(batch.value?.status || '').trim() === 'pending_generation_confirmation'
+)
 const filteredItems = computed(() => {
   const text = filterText.value.trim().toLowerCase()
   const items = batch.value?.items || []
@@ -382,6 +512,9 @@ const approvedSubmitStyleCount = computed(() =>
     (item.assets || []).some(asset => asset.kind === 'ai' && asset.status === 'approved')
   ).length
 )
+const generationPromptCount = computed(() =>
+  (batch.value?.items || []).reduce((total, item) => total + activeGenerationPrompts(item).length, 0)
+)
 const submitProgressTotal = computed(() => {
   const total = Number(submitProgress.value?.total || 0)
   if (Number.isFinite(total) && total > 0) return total
@@ -398,7 +531,7 @@ const submitProgressPercent = computed(() => {
   return Math.max(0, Math.min(100, Math.round((submitProgressCompleted.value / total) * 100)))
 })
 const showSubmitProgress = computed(() =>
-  submitting.value || submitProgressTotal.value > 0 || createStarted.value
+  submitting.value || generationSubmitting.value || submitProgressTotal.value > 0 || createStarted.value
 )
 const submitProgressText = computed(() => {
   const message = String(submitProgress.value?.message || '').trim()
@@ -409,18 +542,22 @@ const submitProgressText = computed(() => {
   return '审批完成后提交到天猫后台'
 })
 const generationStageClass = computed(() => {
+  if (isGenerationConfirmation.value) return 'active'
   if (summary.value.aiTotal > 0 || createStarted.value) return 'done'
   if (loading.value || batch.value?.batch_id || effectiveStatus.value === 'generating') return 'active'
   return 'pending'
 })
 const generationStageLabel = computed(() => {
+  if (isGenerationConfirmation.value) return `${generationPromptCount.value} 条 Prompt 待确认`
   if (summary.value.aiTotal > 0) return `${summary.value.aiTotal} 张 AI 图`
+  if (generationSubmitting.value) return '正在批量生图'
   if (loading.value) return '正在读取批次'
   if (batch.value?.batch_id || effectiveStatus.value === 'generating') return '等待 AI 图生成'
   return '未开始'
 })
 const approvalStageClass = computed(() => {
   if (createStarted.value) return 'done'
+  if (isGenerationConfirmation.value) return 'pending'
   if (summary.value.aiTotal <= 0) return 'pending'
   if (summary.value.pending > 0) return 'active'
   if (summary.value.approved > 0) return 'done'
@@ -428,6 +565,7 @@ const approvalStageClass = computed(() => {
   return 'pending'
 })
 const approvalStageLabel = computed(() => {
+  if (isGenerationConfirmation.value) return '确认提交后进入审批'
   if (summary.value.aiTotal <= 0) return '等待生图完成'
   return `确认 ${summary.value.approved} / 舍弃 ${summary.value.rejected} / 待定 ${summary.value.pending}`
 })
@@ -464,6 +602,30 @@ const canSubmitManualGenerate = computed(() =>
   Boolean(String(manualGenerate.value.prompt || '').trim()
   && String(manualGenerate.value.mainImagePath || '').trim())
 )
+const promptLibraryCategories = computed(() => {
+  const seen = new Set()
+  for (const template of promptLibraryPicker.value.templates || []) {
+    const group = String(template?.group_name || '').trim()
+    if (group) seen.add(group)
+  }
+  return Array.from(seen)
+})
+const filteredPromptLibraryTemplates = computed(() => {
+  const search = promptLibrarySearch.value.trim().toLowerCase()
+  const category = promptLibraryCategory.value.trim()
+  return (promptLibraryPicker.value.templates || []).filter(template => {
+    if (category && String(template?.group_name || '').trim() !== category) return false
+    if (!search) return true
+    const haystack = [
+      template?.group_name,
+      template?.field_name,
+      template?.prompt_text,
+      template?.prompt,
+      template?.size_label,
+    ].join(' ').toLowerCase()
+    return haystack.includes(search)
+  })
+})
 
 watch(() => [props.modelValue, props.boardUrl], ([open]) => {
   if (open) reload()
@@ -547,16 +709,26 @@ function close() {
   emit('update:modelValue', false)
 }
 
+function normalizeUrlBase(value) {
+  return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function tmallApprovalApiBase() {
+  const bridgeBase = normalizeUrlBase(window.cs?.getApiBase?.())
+  if (bridgeBase) return bridgeBase
+  return normalizeUrlBase(approvalRef.value?.origin) || 'http://127.0.0.1:18765'
+}
+
 function imageUrl(asset) {
   const ref = approvalRef.value
   if (!ref.batchId || !asset?.id) return ''
-  return `${ref.origin}/tmall-ai-image-approval/api/${encodeURIComponent(ref.batchId)}/image/${encodeURIComponent(asset.id)}?token=${encodeURIComponent(ref.token)}`
+  return `${tmallApprovalApiBase()}/tmall-ai-image-approval/api/${encodeURIComponent(ref.batchId)}/image/${encodeURIComponent(asset.id)}?token=${encodeURIComponent(ref.token)}`
 }
 
 function referenceImageUrl(path) {
   const ref = approvalRef.value
   if (!ref.batchId || !path) return ''
-  return `${ref.origin}/tmall-ai-image-approval/api/${encodeURIComponent(ref.batchId)}/reference-image?token=${encodeURIComponent(ref.token)}&path=${encodeURIComponent(path)}`
+  return `${tmallApprovalApiBase()}/tmall-ai-image-approval/api/${encodeURIComponent(ref.batchId)}/reference-image?token=${encodeURIComponent(ref.token)}&path=${encodeURIComponent(path)}`
 }
 
 function assetImageVersion(asset) {
@@ -564,6 +736,9 @@ function assetImageVersion(asset) {
 }
 
 function imageUrlWithVersion(asset) {
+  if (isGenerationConfirmation.value && asset?.kind !== 'ai' && asset?.path) {
+    return referenceImageUrl(asset.path)
+  }
   const url = imageUrl(asset)
   const version = assetImageVersion(asset)
   return version ? `${url}&v=${version}` : url
@@ -585,10 +760,32 @@ function prepareEditableAsset(asset) {
   }
 }
 
+function prepareReferenceAsset(asset) {
+  if (!asset || asset.kind === 'ai') return
+  if (asset.kind === 'origin') {
+    asset.slot = 'main'
+    asset.use_for_generation = true
+    return
+  }
+  asset.slot = asset.slot || 'reference'
+  asset.use_for_generation = Boolean(asset.use_for_generation)
+}
+
 function prepareEditableBatch(payload) {
+  const confirmation = String(payload?.status || '').trim() === 'pending_generation_confirmation'
   for (const item of payload?.items || []) {
     for (const asset of item?.assets || []) {
+      prepareReferenceAsset(asset)
       prepareEditableAsset(asset)
+    }
+    for (const prompt of item?.generation_prompts || []) {
+      if (!String(prompt.custom_prompt || '').trim()) {
+        prompt.custom_prompt = String(prompt.prompt || prompt.generation_row?.完整Prompt || prompt.generation_row?.最终提示词 || '')
+      }
+      prompt.reference_paths = plainStringArray(prompt.reference_paths?.length ? prompt.reference_paths : prompt.generation_row?.参考图文件)
+      if (confirmation) {
+        prompt.reference_paths = normalizePromptReferencePaths(item, prompt)
+      }
     }
   }
 }
@@ -601,6 +798,60 @@ function statusLabel(asset) {
   if (status === 'generating') return '生成中'
   if (status === 'generated') return '已重试'
   return '待审批'
+}
+
+function itemMainAsset(item) {
+  return (item?.assets || []).find(asset =>
+    asset?.kind === 'origin' || asset?.slot === 'main'
+  ) || null
+}
+
+function itemReferenceAssets(item) {
+  return (item?.assets || []).filter(asset =>
+    asset?.kind !== 'ai'
+    && asset?.path
+    && asset?.kind !== 'origin'
+    && asset?.slot !== 'main'
+  )
+}
+
+function itemImageCount(item) {
+  return (item?.assets || []).filter(asset => asset?.kind !== 'ai' && asset?.path).length
+}
+
+function promptImageCount(prompt) {
+  return plainStringArray(prompt?.reference_paths).length
+}
+
+function normalizePromptReferencePaths(item, prompt) {
+  const refs = plainStringArray(prompt?.reference_paths)
+  const mainPath = String(itemMainAsset(item)?.path || item?.origin_path || '').trim()
+  const selectedReferences = refs.filter(path => path && path !== mainPath)
+  const initiallySelectedReferences = selectedReferences.filter(path => {
+    const asset = itemReferenceAssets(item).find(row => row.path === path)
+    return Boolean(asset?.use_for_generation)
+  })
+  return Array.from(new Set([mainPath, ...initiallySelectedReferences].filter(Boolean))).slice(0, MAX_CONFIRMATION_IMAGES)
+}
+
+function referenceImageSelected(prompt, asset) {
+  const path = String(asset?.path || '').trim()
+  return Boolean(path && plainStringArray(prompt?.reference_paths).includes(path))
+}
+
+function togglePromptReferenceImage(prompt, asset) {
+  const path = String(asset?.path || '').trim()
+  if (!path) return
+  const current = plainStringArray(prompt.reference_paths)
+  if (current.includes(path)) {
+    prompt.reference_paths = current.filter(item => item !== path)
+    return
+  }
+  if (current.length >= MAX_CONFIRMATION_IMAGES) {
+    showToast(`单条 Prompt 最多选择 ${MAX_CONFIRMATION_IMAGES} 张图`, true)
+    return
+  }
+  prompt.reference_paths = [...current, path]
 }
 
 function setAssetStatus(item, asset, status) {
@@ -693,12 +944,376 @@ async function submitApproved() {
   }
 }
 
+function activeGenerationPrompts(item) {
+  return (item?.generation_prompts || []).filter(prompt =>
+    !['removed', 'deleted', 'disabled', 'skip', 'skipped'].includes(String(prompt?.status || '').trim().toLowerCase())
+  )
+}
+
+function generationConfirmationPayload() {
+  return {
+    items: (batch.value?.items || []).map(item => {
+      const main = itemMainAsset(item)
+      const references = itemReferenceAssets(item)
+      return {
+        id: String(item.id || ''),
+        style_code: String(item.style_code || ''),
+        item_id: String(item.item_id || ''),
+        origin_path: String(main?.path || item.origin_path || ''),
+        detail_reference_path: String(item.detail_reference_path || references[0]?.path || ''),
+        reference_assets: references.map(asset => ({
+          id: String(asset.id || ''),
+          kind: String(asset.kind || 'detail_reference'),
+          slot: 'reference',
+          label: String(asset.label || '参考图'),
+          path: String(asset.path || ''),
+          filename: String(asset.filename || referenceFileName(asset.path)),
+          use_for_generation: false,
+        })),
+        generation_prompts: activeGenerationPrompts(item).map((prompt, index) => ({
+          id: String(prompt.id || ''),
+          prompt_index: Number(prompt.prompt_index || index + 1),
+          prompt_name: String(prompt.prompt_name || `Prompt ${index + 1}`),
+          prompt_group: String(prompt.prompt_group || ''),
+          prompt: String(prompt.custom_prompt || prompt.prompt || ''),
+          custom_prompt: String(prompt.custom_prompt || ''),
+          reference_paths: plainStringArray(prompt.reference_paths).slice(0, MAX_CONFIRMATION_IMAGES),
+          status: String(prompt.status || 'pending'),
+          generation_row: prompt.generation_row || {},
+        })),
+      }
+    }),
+  }
+}
+
+async function submitGenerationConfirmation() {
+  const ref = approvalRef.value
+  generationSubmitting.value = true
+  try {
+    const result = await window.cs.submitTmallApprovalGeneration(ref.batchId, ref.token, generationConfirmationPayload())
+    if (result?.detail || result?.error) throw new Error(result.detail || result.error)
+    if (result?.batch) {
+      prepareEditableBatch(result.batch)
+      batch.value = result.batch
+      emit('batch-updated', result.batch)
+    } else {
+      await reload()
+    }
+    showToast(`生图完成：${result?.generated || summary.value.aiTotal || 0} 张`)
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  } finally {
+    generationSubmitting.value = false
+  }
+}
+
 function useItemReferences() {
   if (!selectedAsset.value || !selectedItem.value) return
   const refs = (selectedItem.value.assets || [])
     .filter(asset => asset.kind !== 'ai' && asset.path)
     .map(asset => asset.path)
   selectedAsset.value.reference_paths = refs
+}
+
+function updateReferenceAssetLocal(asset, path) {
+  asset.slot = asset.kind === 'origin' ? 'main' : (asset.slot || 'reference')
+  asset.use_for_generation = asset.kind === 'origin'
+  asset.path = String(path || '').trim()
+  asset.filename = referenceFileName(asset.path)
+  asset.updated_at = new Date().toISOString()
+}
+
+async function replaceItemReference(item, asset) {
+  try {
+    const path = await window.cs.browseFile?.({
+      title: asset?.kind === 'origin' ? '选择主图' : '选择参考图',
+      images: true,
+    })
+    const importedPaths = await importApprovalImageFiles(path ? [path] : [])
+    if (!importedPaths.length) return
+    const selected = importedPaths[0]
+    const previousPath = String(asset?.path || '').trim()
+    if (asset.kind === 'origin') item.origin_path = selected
+    if (asset.kind === 'detail_reference' && (!item.detail_reference_path || item.detail_reference_path === previousPath)) {
+      item.detail_reference_path = selected
+    }
+    updateReferenceAssetLocal(asset, selected)
+    for (const prompt of item.generation_prompts || []) {
+      const refs = plainStringArray(prompt.reference_paths)
+      prompt.reference_paths = refs.map(ref => ref === previousPath ? selected : ref)
+      if (asset.kind === 'origin' && !prompt.reference_paths.includes(selected)) {
+        prompt.reference_paths = [selected, ...prompt.reference_paths].slice(0, MAX_CONFIRMATION_IMAGES)
+      }
+    }
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  }
+}
+
+async function replaceItemMainImage(item) {
+  let asset = itemMainAsset(item)
+  if (!asset) {
+    asset = {
+      id: `${item.style_code || 'style'}-origin-${Date.now()}`,
+      kind: 'origin',
+      label: '原图/主图',
+      slot: 'main',
+      status: 'reference',
+      use_for_generation: true,
+      path: '',
+      filename: '',
+    }
+    item.assets = [asset, ...(item.assets || [])]
+  }
+  await replaceItemReference(item, asset)
+}
+
+function clearItemMainImage(item) {
+  const asset = itemMainAsset(item)
+  if (!asset) return
+  const removedPath = String(asset.path || '').trim()
+  item.origin_path = ''
+  item.assets = (item.assets || []).filter(row => row !== asset)
+  for (const prompt of item.generation_prompts || []) {
+    prompt.reference_paths = plainStringArray(prompt.reference_paths).filter(path => path !== removedPath)
+  }
+}
+
+function clearItemReference(item, asset) {
+  if (!asset || asset.kind === 'origin' || asset.slot === 'main') return
+  const removedPath = String(asset.path || '').trim()
+  if (String(item.detail_reference_path || '').trim() === removedPath) item.detail_reference_path = ''
+  item.assets = (item.assets || []).filter(row => row.id !== asset.id)
+  for (const prompt of item.generation_prompts || []) {
+    prompt.reference_paths = plainStringArray(prompt.reference_paths).filter(path => path !== removedPath)
+  }
+}
+
+function createReferenceAsset(item, path, index = 1) {
+  return {
+    id: `${item.style_code || 'style'}-reference-${Date.now()}-${index}`,
+    kind: 'detail_reference',
+    label: '参考图',
+    slot: 'reference',
+    status: 'reference',
+    use_for_generation: false,
+    path,
+    filename: referenceFileName(path),
+    updated_at: new Date().toISOString(),
+  }
+}
+
+async function addItemReferenceImage(item) {
+  if (itemImageCount(item) >= MAX_CONFIRMATION_IMAGES) {
+    showToast(`每款最多保留 ${MAX_CONFIRMATION_IMAGES} 张确认图片`, true)
+    return
+  }
+  try {
+    const paths = await window.cs.browseFile?.({
+      title: '选择参考图',
+      images: true,
+      multi: true,
+      multiSelections: true,
+    })
+    const importedPaths = await importApprovalImageFiles(paths)
+    if (!importedPaths.length) return
+    const remaining = Math.max(0, MAX_CONFIRMATION_IMAGES - itemImageCount(item))
+    const assets = importedPaths.slice(0, remaining).map((path, index) => createReferenceAsset(item, path, index + 1))
+    item.assets = [...(item.assets || []), ...assets]
+    if (!String(item.detail_reference_path || '').trim() && assets[0]?.path) {
+      item.detail_reference_path = assets[0].path
+    }
+    if (importedPaths.length > remaining) {
+      showToast(`已达到 ${MAX_CONFIRMATION_IMAGES} 张上限，超出图片未加入`, true)
+    }
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  }
+}
+
+function addGenerationPrompt(item, values = {}) {
+  const prompts = item.generation_prompts || []
+  const first = prompts[0] || {}
+  const nextIndex = prompts.length + 1
+  const mainPath = String(itemMainAsset(item)?.path || item.origin_path || '').trim()
+  const prompt = {
+    id: `${item.style_code || 'style'}-manual-${Date.now()}`,
+    prompt_index: nextIndex,
+    prompt_name: String(values.promptName || `新增 Prompt ${nextIndex}`),
+    prompt_group: first.prompt_group || '',
+    prompt: String(values.promptText || ''),
+    custom_prompt: String(values.promptText || ''),
+    reference_paths: mainPath ? [mainPath] : [],
+    status: 'pending',
+    generation_row: first.generation_row || {},
+  }
+  item.generation_prompts = [...prompts, prompt]
+}
+
+async function openPromptLibraryPicker(item, prompt) {
+  promptLibraryPicker.value = {
+    ...promptLibraryPicker.value,
+    open: true,
+    item,
+    prompt,
+    error: '',
+  }
+  if (!(promptLibraryPicker.value.libraries || []).length) {
+    await loadPromptLibraries()
+  } else if (promptLibraryPicker.value.selectedLibraryId) {
+    await loadPromptLibraryTemplates(promptLibraryPicker.value.selectedLibraryId)
+  }
+}
+
+function closePromptLibraryPicker() {
+  promptLibraryPicker.value.open = false
+}
+
+async function loadPromptLibraries() {
+  promptLibraryPicker.value.loading = true
+  promptLibraryPicker.value.error = ''
+  try {
+    const payload = await window.cs.listCloudPromptLibraries()
+    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
+    const libraries = Array.isArray(payload?.libraries) ? payload.libraries : []
+    promptLibraryPicker.value.libraries = libraries
+    const nextLibraryId = String(promptLibraryPicker.value.selectedLibraryId || libraries[0]?.id || '').trim()
+    promptLibraryPicker.value.selectedLibraryId = nextLibraryId
+    if (nextLibraryId) await loadPromptLibraryTemplates(nextLibraryId)
+  } catch (err) {
+    promptLibraryPicker.value.error = err?.message || String(err)
+  } finally {
+    promptLibraryPicker.value.loading = false
+  }
+}
+
+async function loadPromptLibraryTemplates(libraryId) {
+  const id = String(libraryId || '').trim()
+  if (!id) {
+    promptLibraryPicker.value.templates = []
+    return
+  }
+  promptLibraryPicker.value.templatesLoading = true
+  promptLibraryPicker.value.error = ''
+  try {
+    const payload = await window.cs.resolveCloudPromptTemplates(id, { limit: 500 })
+    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
+    promptLibraryPicker.value.templates = Array.isArray(payload?.templates) ? payload.templates : []
+    promptLibraryCategory.value = ''
+  } catch (err) {
+    promptLibraryPicker.value.error = err?.message || String(err)
+    promptLibraryPicker.value.templates = []
+  } finally {
+    promptLibraryPicker.value.templatesLoading = false
+  }
+}
+
+function selectPromptLibraryTemplate(template) {
+  const item = promptLibraryPicker.value.item
+  const prompt = promptLibraryPicker.value.prompt
+  const promptText = String(template?.prompt_text || template?.prompt || '').trim()
+  if (!item || !promptText) return
+  const promptName = String(template?.field_name || template?.name || 'Prompt').trim()
+  if (prompt) {
+    prompt.prompt_name = promptName
+    prompt.prompt_group = String(template?.group_name || prompt.prompt_group || '')
+    prompt.prompt = promptText
+    prompt.custom_prompt = promptText
+  } else {
+    addGenerationPrompt(item, {
+      promptName,
+      promptText,
+    })
+  }
+  closePromptLibraryPicker()
+}
+
+function openPromptEditor(item, prompt = null) {
+  promptEditor.value = {
+    open: true,
+    item,
+    prompt,
+    promptName: String(prompt?.prompt_name || ''),
+    promptText: String(prompt?.custom_prompt || prompt?.prompt || ''),
+  }
+}
+
+function closePromptEditor() {
+  promptEditor.value = {
+    open: false,
+    item: null,
+    prompt: null,
+    promptName: '',
+    promptText: '',
+  }
+}
+
+function savePromptEditor() {
+  const editor = promptEditor.value
+  const item = editor.item
+  const promptText = String(editor.promptText || '').trim()
+  if (!item || !promptText) return
+  if (editor.prompt) {
+    editor.prompt.prompt_name = String(editor.promptName || editor.prompt.prompt_name || 'Prompt')
+    editor.prompt.prompt = promptText
+    editor.prompt.custom_prompt = promptText
+  } else {
+    addGenerationPrompt(item, {
+      promptName: String(editor.promptName || '').trim(),
+      promptText,
+    })
+  }
+  closePromptEditor()
+}
+
+function openImagePreview(asset, item = null) {
+  if (!asset) return
+  imagePreview.value = {
+    open: true,
+    src: asset.kind === 'ai' ? imageUrlWithVersion(asset) : referenceImageUrl(asset.path),
+    title: `${item?.style_code || ''} ${asset.label || asset.filename || '图片'}`.trim(),
+    subtitle: asset.filename || asset.path || '',
+  }
+}
+
+function closeImagePreview() {
+  imagePreview.value = {
+    open: false,
+    src: '',
+    title: '',
+    subtitle: '',
+  }
+}
+
+function removeGenerationPrompt(item, prompt) {
+  prompt.status = 'removed'
+  item.generation_prompts = (item.generation_prompts || []).filter(row => row !== prompt)
+}
+
+function useItemReferencesForPrompt(item, prompt) {
+  prompt.reference_paths = itemReferencePaths(item)
+}
+
+async function pickPromptReferenceFiles(prompt, options = {}) {
+  try {
+    const paths = await window.cs.browseFile?.({
+      title: '选择参考图',
+      images: true,
+      multi: true,
+      multiSelections: true,
+    })
+    const importedPaths = await importApprovalImageFiles(paths)
+    if (!importedPaths.length) return
+    prompt.reference_paths = options.replace
+      ? importedPaths
+      : Array.from(new Set([...plainStringArray(prompt.reference_paths), ...importedPaths]))
+  } catch (err) {
+    showToast(err?.message || String(err), true)
+  }
+}
+
+function removePromptReferencePath(prompt, path) {
+  prompt.reference_paths = plainStringArray(prompt.reference_paths).filter(item => item !== path)
 }
 
 async function pickReferenceFiles(options = {}) {
@@ -958,18 +1573,6 @@ function showToast(message, isError = false) {
 .approval-drawer.embedded .approval-meta {
   margin-top: 0;
 }
-.approval-drawer.embedded .approval-lifecycle {
-  padding: 8px 14px;
-  gap: 8px;
-}
-.approval-drawer.embedded .approval-stage {
-  border-radius: 9px;
-  padding: 8px 10px;
-  gap: 8px;
-}
-.approval-drawer.embedded .approval-stage span:last-child {
-  margin-top: 2px;
-}
 .approval-drawer.embedded .approval-toolbar {
   padding: 9px 14px;
 }
@@ -1073,47 +1676,6 @@ function showToast(message, isError = false) {
   color: #86efac;
   border-color: rgba(74, 222, 128, .24);
 }
-.approval-lifecycle {
-  padding: 14px 22px;
-  border-bottom: 1px solid var(--border);
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  background: linear-gradient(180deg, rgba(255, 106, 41, .06), rgba(255, 255, 255, .015));
-}
-.approval-stage {
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px;
-  background: var(--bg2);
-  display: flex;
-  gap: 10px;
-}
-.stage-dot {
-  width: 9px;
-  height: 9px;
-  margin-top: 5px;
-  border-radius: 50%;
-  background: var(--text3);
-}
-.approval-stage.done .stage-dot { background: #4ade80; }
-.approval-stage.active .stage-dot { background: var(--orange); }
-.approval-stage.error .stage-dot { background: #f87171; }
-.approval-stage.error {
-  border-color: rgba(248, 113, 113, .34);
-  background: rgba(248, 113, 113, .055);
-}
-.approval-stage strong {
-  display: block;
-  color: var(--text);
-  font-size: 13px;
-}
-.approval-stage span:last-child {
-  display: block;
-  margin-top: 4px;
-  color: var(--text3);
-  font-size: 12px;
-}
 .approval-toolbar {
   padding: 12px 22px;
   border-bottom: 1px solid var(--border);
@@ -1143,7 +1705,7 @@ function showToast(message, isError = false) {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(0, 1fr);
   align-items: start;
   overflow: hidden;
 }
@@ -1320,6 +1882,7 @@ function showToast(message, isError = false) {
 .style-head {
   display: flex;
   justify-content: space-between;
+  align-items: flex-start;
   gap: 14px;
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
@@ -1336,6 +1899,16 @@ function showToast(message, isError = false) {
   font-size: 12px;
 }
 .style-head p span { margin: 0 6px; }
+.style-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.style-actions .style-mode {
+  margin: 0;
+}
 .asset-rail {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
@@ -1478,72 +2051,176 @@ function showToast(message, isError = false) {
   font-size: 11px;
   line-height: 1.35;
 }
-.approval-inspector {
-  min-width: 0;
-  height: 100%;
-  border-left: 1px solid var(--border);
-  background: var(--bg2);
-  overflow: auto;
-  padding: 18px;
-  position: sticky;
-  top: 12px;
-  align-self: start;
-  max-height: calc(100vh - 24px);
-}
-.inspector-empty {
-  min-height: 180px;
-  border: 1px dashed var(--border);
-  border-radius: 12px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  color: var(--text3);
-  text-align: center;
-}
-.inspector-empty strong { color: var(--text); }
-.inspector-preview img {
-  width: 100%;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
-  aspect-ratio: 3 / 4;
-  object-fit: cover;
-}
-.inspector-title {
-  margin-top: 14px;
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-.inspector-title strong,
-.inspector-title span {
-  display: block;
-}
-.inspector-title strong {
-  color: var(--text);
-  font-size: 14px;
-}
-.inspector-title span {
-  color: var(--text3);
-  font-size: 11px;
-  margin-top: 4px;
-  word-break: break-all;
-}
-.status-pill {
-  align-self: flex-start;
-  white-space: nowrap;
-  border-radius: 999px;
-  padding: 5px 8px;
-  background: var(--bg3);
-  color: var(--text2);
-  font-size: 11px;
-}
-.status-pill.approved { color: #86efac; background: rgba(74, 222, 128, .08); }
-.status-pill.rejected { color: #fca5a5; background: rgba(248, 113, 113, .08); }
 .reference-tools {
   margin-top: 14px;
+}
+.reference-tools.inline {
+  margin-top: 10px;
+}
+.generation-confirm-list {
+  display: grid;
+  gap: 12px;
+  padding: 0 16px 16px;
+}
+.generation-prompt-card {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+}
+.generation-prompt-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.prompt-name-input {
+  min-width: 0;
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+}
+.generation-prompt-card textarea {
+  width: 100%;
+  min-height: 76px;
+  resize: vertical;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+}
+.confirmation-image-slots {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: minmax(132px, 168px) minmax(0, 1fr);
+  gap: 12px;
+  align-items: stretch;
+}
+.main-image-slot,
+.reference-image-slots {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .018);
+  padding: 10px;
+}
+.slot-head {
+  min-height: 32px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.slot-head strong,
+.slot-head span {
+  display: block;
+}
+.slot-head strong {
+  color: var(--text);
+  font-size: 12px;
+}
+.slot-head span {
+  margin-top: 2px;
+  color: var(--text3);
+  font-size: 11px;
+}
+.slot-card,
+.reference-image-slot {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+.slot-card.selected,
+.reference-image-slot.selected {
+  border-color: rgba(31, 184, 156, .68);
+  box-shadow: inset 0 0 0 1px rgba(31, 184, 156, .18);
+}
+.slot-image-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  display: block;
+  cursor: zoom-in;
+}
+.slot-image-button img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  display: block;
+  background: rgba(255, 255, 255, .04);
+}
+.slot-card figcaption,
+.reference-image-slot figcaption {
+  padding: 7px 8px 0;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.slot-actions {
+  display: flex;
+  gap: 6px;
+  padding: 8px;
+}
+.slot-actions .ghost-btn {
+  flex: 1;
+  padding: 6px 8px;
+}
+.reference-slot-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 10px;
+}
+.slot-check {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  left: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .62);
+  color: #fff;
+  padding: 4px 7px;
+  font-size: 11px;
+  font-weight: 800;
+}
+.slot-check input {
+  width: 13px;
+  height: 13px;
+  margin: 0;
+  accent-color: #1fb89c;
+}
+.empty-slot {
+  width: 100%;
+  min-height: 118px;
+  border: 1px dashed var(--border);
+  border-radius: 9px;
+  background: transparent;
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+.empty-slot:hover {
+  border-color: var(--orange);
+  color: var(--text);
+}
+.reference-preview-grid.compact {
+  margin-top: 10px;
 }
 .reference-preview-grid {
   display: grid;
@@ -1622,9 +2299,18 @@ function showToast(message, isError = false) {
 .inspector-field textarea:focus {
   border-color: var(--orange);
 }
-.approval-drawer.embedded .approval-inspector {
-  top: 0;
-  max-height: none;
+.prompt-editor-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--text);
+  padding: 10px 11px;
+  font-size: 13px;
+  outline: none;
+}
+.prompt-editor-input:focus {
+  border-color: var(--orange);
 }
 .manual-modal-backdrop {
   position: absolute;
@@ -1644,6 +2330,139 @@ function showToast(message, isError = false) {
   background: var(--bg);
   box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
   padding: 18px;
+}
+.prompt-editor-modal,
+.prompt-library-picker-modal,
+.image-preview-modal {
+  position: absolute;
+  inset: 0;
+  z-index: 9;
+  background: rgba(3, 5, 12, .72);
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+.prompt-editor-panel {
+  width: min(720px, 100%);
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
+  padding: 18px;
+}
+.prompt-library-picker-panel {
+  width: min(920px, 100%);
+  max-height: calc(100vh - 72px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
+  padding: 18px;
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+.prompt-library-picker-filters {
+  margin-top: 14px;
+  display: grid;
+  grid-template-columns: minmax(160px, .75fr) minmax(220px, 1.1fr) minmax(130px, .55fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+.prompt-library-select,
+.prompt-library-search,
+.prompt-library-category {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg3);
+  color: var(--text);
+  padding: 9px 10px;
+  font-size: 12px;
+  outline: none;
+}
+.prompt-library-select:focus,
+.prompt-library-search:focus,
+.prompt-library-category:focus {
+  border-color: var(--orange);
+}
+.prompt-library-template-list {
+  min-height: 0;
+  overflow: auto;
+  margin-top: 12px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+.prompt-library-template-row {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+  color: var(--text);
+  text-align: left;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+.prompt-library-template-row:hover {
+  border-color: var(--orange);
+  background: rgba(255, 106, 41, .07);
+}
+.prompt-library-template-row span {
+  color: var(--orange);
+  font-size: 11px;
+  font-weight: 800;
+}
+.prompt-library-template-row strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 13px;
+}
+.prompt-library-template-row p {
+  margin: 6px 0 0;
+  max-height: 42px;
+  overflow: hidden;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.prompt-library-picker-empty {
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  color: var(--text3);
+  padding: 24px;
+  text-align: center;
+}
+.prompt-library-picker-empty.error {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, .36);
+}
+.image-preview-panel {
+  width: min(920px, 100%);
+  max-height: calc(100vh - 72px);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
+  padding: 18px;
+}
+.image-preview-stage {
+  margin-top: 14px;
+  display: grid;
+  place-items: center;
+  min-height: 0;
+}
+.image-preview-stage img {
+  max-width: 100%;
+  max-height: min(72vh, 720px);
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  object-fit: contain;
+  background: rgba(255, 255, 255, .04);
 }
 .manual-modal-head,
 .manual-modal-actions,
@@ -1754,11 +2573,12 @@ function showToast(message, isError = false) {
 @media (max-width: 980px) {
   .approval-drawer { width: 100vw; }
   .approval-drawer.embedded { height: auto; max-height: none; overflow: visible; }
-  .approval-lifecycle { grid-template-columns: 1fr; }
   .approval-toolbar { flex-direction: column; }
   .approval-body { grid-template-columns: 1fr; overflow: visible; }
   .approval-list { height: auto; max-height: none; }
-  .approval-inspector { height: auto; position: static; border-left: none; border-top: 1px solid var(--border); }
+  .style-head { flex-direction: column; }
+  .style-actions { justify-content: flex-start; }
+  .confirmation-image-slots { grid-template-columns: 1fr; }
   .manual-image-columns { grid-template-columns: 1fr; }
   .submit-result-row { grid-template-columns: 1fr; }
 }

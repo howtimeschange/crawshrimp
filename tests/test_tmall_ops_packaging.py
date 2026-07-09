@@ -4,6 +4,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
+import openpyxl
+
 from core.api_server import _finalize_tmall_ops_assistant_outputs
 
 
@@ -183,6 +185,84 @@ class TmallOpsPackagingTests(unittest.TestCase):
             self.assertTrue(copied_excel.is_file())
             self.assertTrue(copied_json.is_file())
             self.assertEqual(result, [str(copied_excel), str(copied_json)])
+
+    def test_material_test_data_export_syncs_to_cloud_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+            export_dir = base / "exports"
+            excel_file = base / "巴拉-AI测图数据抓取导出.xlsx"
+            excel_file.write_bytes(b"excel")
+            logs = []
+
+            with patch("core.api_server.sync_tmall_material_test_workbook_to_cloud", create=True) as sync:
+                sync.return_value = {"overview_rows": 1, "detail_rows": 2, "inserted_or_updated": 3}
+                result = _finalize_tmall_ops_assistant_outputs(
+                    task_id="tmall_material_test_data_export",
+                    data_rows=[],
+                    runtime_files=[],
+                    exported_files=[str(excel_file)],
+                    run_params={"output_dir": str(export_dir), "sync_to_cloud": ["enabled"]},
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=logs.append,
+                )
+
+            copied_excel = export_dir / "数据表格" / excel_file.name
+            self.assertEqual(result, [str(copied_excel)])
+            sync.assert_called_once_with(copied_excel)
+            self.assertTrue(any("云端测图数据看板同步完成" in message for message in logs))
+
+    def test_sync_material_test_workbook_to_cloud_uploads_workbook_and_imports_rows(self):
+        from core.api_server import sync_tmall_material_test_workbook_to_cloud
+
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
+                self.uploads = []
+
+            def request_json(self, method, path, body=None, *, token_type="machine"):
+                self.calls.append({"method": method, "path": path, "body": dict(body or {})})
+                if path == "/api/assets/presign":
+                    return {"upload_url": "/upload/local-export", "object_key": "objects/local-export"}
+                if path == "/api/material-test/import":
+                    return {
+                        "overview_rows": len(body.get("overview_rows") or []),
+                        "detail_rows": len(body.get("detail_rows") or []),
+                        "inserted_or_updated": len(body.get("overview_rows") or []) + len(body.get("detail_rows") or []),
+                    }
+                return {}
+
+            def upload_asset(self, upload_url, path, content_type):
+                self.uploads.append({"upload_url": upload_url, "path": Path(path), "content_type": content_type})
+                return {"ok": True}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            workbook_path = Path(tmpdir) / "local-export.xlsx"
+            workbook = openpyxl.Workbook()
+            overview = workbook.active
+            overview.title = "概览"
+            overview.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "统计口径", "最优素材", "执行结果", "备注"])
+            overview.append(["概览", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "M1", "成功", ""])
+            detail = workbook.create_sheet("明细")
+            detail.append(["记录类型", "表格行号", "款号", "商品ID", "商品标题", "任务ID", "测试状态", "测试渠道", "测试素材数", "统计口径", "统计日期", "图片类型", "素材ID", "素材比例", "素材占比", "素材URL", "搜索曝光", "搜索点击", "搜索点击率", "详情曝光", "详情点击", "详情点击率", "详情加购", "详情支付转化", "详情支付转化率", "数据下载链接", "执行结果", "备注"])
+            detail.append(["明细", 2, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "2026-07-01", "主图", "M1", "1:1", "50%", "https://img.test/1.jpg", 1000, 77, "7.70%", 500, 40, "8%", 12, 3, "2.50%", "", "成功", ""])
+            detail.append(["明细", 3, "208326", "1001", "标题", "T1", "完成", "搜索", 2, "ACCUMULATE_30_DAYS", "2026-07-02", "AI图", "M2", "1:1", "50%", "https://img.test/2.jpg", 900, 90, "10%", 450, 45, "10%", 10, 4, "4%", "", "成功", ""])
+            workbook.save(workbook_path)
+
+            client = FakeClient()
+            result = sync_tmall_material_test_workbook_to_cloud(workbook_path, client=client)
+
+        self.assertEqual(result["overview_rows"], 1)
+        self.assertEqual(result["detail_rows"], 2)
+        self.assertEqual(client.uploads[0]["path"].name, "local-export.xlsx")
+        presign = client.calls[0]
+        self.assertEqual(presign["path"], "/api/assets/presign")
+        self.assertEqual(presign["body"]["batch_uid"], "material-test")
+        self.assertEqual(presign["body"]["kind"], "result")
+        import_call = next(call for call in client.calls if call["path"] == "/api/material-test/import")
+        self.assertEqual(import_call["body"]["source"]["sync_mode"], "local_manual_export")
+        self.assertEqual(import_call["body"]["source"]["object_key"], "objects/local-export")
 
     def test_tmall_export_dir_expands_windows_style_environment_path(self):
         with tempfile.TemporaryDirectory() as tmpdir:

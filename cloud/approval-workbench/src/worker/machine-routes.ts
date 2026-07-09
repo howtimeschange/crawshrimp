@@ -65,6 +65,7 @@ interface DispatchJobRow {
 
 const CLAIM_POLL_AFTER_SECONDS = 10
 const JOB_LEASE_SECONDS = 300
+const ACTIVE_LEASE_STATUSES: DispatchStatus[] = ['leased', 'running', 'uploading_results', 'cancel_requested']
 
 function parseStringArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
@@ -200,6 +201,7 @@ export async function listEnrollmentTokens(request: Request, env: Env): Promise<
 export async function listMachines(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'machines:read')
   if (actor instanceof Response) return actor
+  await recoverClaimableJobs(env)
   const { results } = await env.DB.prepare(
     `SELECT id, machine_id, machine_name, owner_user_id, app_version, fingerprint_hash, capabilities_json,
             auth_status, health, current_job_id, last_seen_at, registered_at, updated_at
@@ -207,7 +209,8 @@ export async function listMachines(request: Request, env: Env): Promise<Response
      ORDER BY id DESC
      LIMIT 100`,
   ).all<MachineRow>()
-  return json({ machines: results })
+  const queueSummary = await dispatchQueueSummary(env)
+  return json({ machines: results, queue_summary: queueSummary })
 }
 
 export async function approveMachine(request: Request, env: Env): Promise<Response> {
@@ -263,6 +266,7 @@ export async function enrollMachine(request: Request, env: Env): Promise<Respons
   if (!enrollmentToken || !machineId || !fingerprint) return badRequest('enrollment_token, machine_id, and fingerprint are required')
 
   const tokenHash = await sha256Hex(enrollmentToken)
+  const fingerprintHash = await sha256Hex(fingerprint)
   const tokenRow = await env.DB.prepare(
     `SELECT id, token_hash, label, owner_user_id, allowed_capabilities_json, require_approval, status,
             expires_at, used_by_machine_id, created_by, created_at, used_at, revoked_at
@@ -281,6 +285,12 @@ export async function enrollMachine(request: Request, env: Env): Promise<Respons
   if (existingMachine) {
     return json({ error: 'machine_id is already enrolled' }, { status: 409 })
   }
+  const existingDevice = await env.DB.prepare('SELECT machine_id FROM task_machines WHERE fingerprint_hash = ? LIMIT 1')
+    .bind(fingerprintHash)
+    .first<{ machine_id: string }>()
+  if (existingDevice) {
+    return json({ error: 'device is already enrolled as a task machine', machine_id: existingDevice.machine_id }, { status: 409 })
+  }
   const allowedCapabilities = parseStringArray(tokenRow.allowed_capabilities_json)
   const allowed = new Set(allowedCapabilities)
   const invalidCapabilities = capabilities.filter((capability) => !allowed.has(capability))
@@ -288,7 +298,6 @@ export async function enrollMachine(request: Request, env: Env): Promise<Respons
 
   const now = nowIso()
   const authStatus: MachineAuthStatus = tokenRow.require_approval ? 'pending_approval' : 'active'
-  const fingerprintHash = await sha256Hex(fingerprint)
   const machineToken = randomToken('csr_machine')
   const machineTokenHash = await sha256Hex(machineToken)
   const tokenUpdate = await env.DB.prepare(
@@ -320,7 +329,7 @@ export async function enrollMachine(request: Request, env: Env): Promise<Respons
       .bind(tokenHash, machineId)
       .run()
     if (isUniqueConstraintFailure(error)) {
-      return json({ error: 'machine_id is already enrolled' }, { status: 409 })
+      return json({ error: 'machine_id or device fingerprint is already enrolled' }, { status: 409 })
     }
     throw error
   }
@@ -350,12 +359,14 @@ export async function heartbeat(request: Request, env: Env): Promise<Response> {
   const unsupportedCapabilities = heartbeatCapabilities.filter((capability) => !registeredCapabilitySet.has(capability))
   if (unsupportedCapabilities.length > 0) return badRequest(`capability not registered: ${unsupportedCapabilities.join(', ')}`)
   const now = nowIso()
+  const currentJobId = stringValue(body.current_job_id ?? body.currentJobId)
+  const nextCurrentJobId = health === 'online_busy' ? currentJobId || machine.current_job_id || null : null
   await env.DB.prepare(
     `UPDATE task_machines
-     SET health = ?, last_seen_at = ?, app_version = ?, capabilities_json = ?, updated_at = ?
+     SET health = ?, current_job_id = ?, last_seen_at = ?, app_version = ?, capabilities_json = ?, updated_at = ?
      WHERE machine_id = ?`,
   )
-    .bind(health, now, appVersion, toJson(heartbeatCapabilities), now, machine.machine_id)
+    .bind(health, nextCurrentJobId, now, appVersion, toJson(heartbeatCapabilities), now, machine.machine_id)
     .run()
   await recordAudit(env, { machineId: machine.machine_id }, 'machines.heartbeat', 'machine', machine.machine_id, { health }, request)
   return json({ ok: true, machine_id: machine.machine_id, auth_status: machine.auth_status, health })
@@ -364,7 +375,7 @@ export async function heartbeat(request: Request, env: Env): Promise<Response> {
 export async function claimJob(request: Request, env: Env): Promise<Response> {
   const machine = await requireActiveMachine(request, env)
   if (machine instanceof Response) return machine
-  if (!['online_idle', 'online_busy'].includes(machine.health)) return forbidden('Machine is not available for claims')
+  if (machine.health !== 'online_idle' || machine.current_job_id) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
   const machineCapabilities = parseStringArray(machine.capabilities_json)
   await recoverClaimableJobs(env)
   const { results } = await env.DB.prepare(
@@ -394,6 +405,21 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
   const leaseId = randomToken('lease')
   const now = nowIso()
   const leaseExpiresAt = new Date(Date.now() + JOB_LEASE_SECONDS * 1000).toISOString()
+  const reservation = await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = ?,
+         health = 'online_busy',
+         last_seen_at = ?,
+         updated_at = ?
+     WHERE machine_id = ?
+       AND auth_status = 'active'
+       AND health = 'online_idle'
+       AND (current_job_id IS NULL OR current_job_id = '')
+       AND capabilities_json = ?`,
+  )
+    .bind(selected.job_uid, now, now, machine.machine_id, machine.capabilities_json)
+    .run()
+  if (Number(reservation.meta.changes ?? 0) === 0) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
   const update = await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET lease_id = ?,
@@ -412,7 +438,8 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
          FROM task_machines m
          WHERE m.machine_id = ?
            AND m.auth_status = 'active'
-           AND m.health IN ('online_idle', 'online_busy')
+           AND m.health = 'online_busy'
+           AND m.current_job_id = ?
            AND NOT EXISTS (
              SELECT 1
              FROM json_each(dispatch_jobs.required_capabilities_json) req
@@ -425,12 +452,12 @@ export async function claimJob(request: Request, env: Env): Promise<Response> {
            )
        )`,
   )
-    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, selected.required_capabilities_json, machine.machine_id, machine.machine_id)
+    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, selected.required_capabilities_json, machine.machine_id, machine.machine_id, selected.job_uid)
     .run()
-  if (Number(update.meta.changes ?? 0) === 0) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
-  await env.DB.prepare('UPDATE task_machines SET current_job_id = ?, health = ?, updated_at = ? WHERE machine_id = ?')
-    .bind(selected.job_uid, 'online_busy', now, machine.machine_id)
-    .run()
+  if (Number(update.meta.changes ?? 0) === 0) {
+    await releaseMachineReservation(env, machine.machine_id, selected.job_uid, now)
+    return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
+  }
   await recordJobEvent(env, selected.job_uid, machine.machine_id, leaseId, 'leased', '', { attempt_count: selected.attempt_count + 1 })
   return json({
     job: {
@@ -483,7 +510,19 @@ async function recoverClaimableJobs(env: Env): Promise<void> {
       '',
       { previous_status: job.status, status: 'cancelled', reason: 'lease_expired_after_cancel_requested' },
     )))
+    await releaseMachinesForJobs(env, cancelledJobs.map((job) => job.job_uid), now)
   }
+  const { results: expiredJobs } = await env.DB.prepare(
+    `SELECT job_uid, status, assigned_machine_id, lease_id
+     FROM dispatch_jobs
+     WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND cancel_requested != 1
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?
+       AND attempt_count < max_attempts`,
+  )
+    .bind(now)
+    .all<Pick<DispatchJobRow, 'job_uid' | 'status' | 'assigned_machine_id' | 'lease_id'>>()
   await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET status = 'queued',
@@ -499,6 +538,7 @@ async function recoverClaimableJobs(env: Env): Promise<void> {
   )
     .bind(now, now)
     .run()
+  await releaseMachinesForJobs(env, expiredJobs.map((job) => job.job_uid), now)
   await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET status = 'queued',
@@ -534,6 +574,7 @@ export async function renewJob(request: Request, env: Env): Promise<Response> {
     .bind(leaseExpiresAt, now, jobUid, leaseId, machine.machine_id, now)
     .run()
   if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
+  await touchMachineRuntime(env, machine.machine_id, 'online_busy', jobUid)
   const job = await jobForLease(env, jobUid, leaseId, machine.machine_id)
   await recordJobEvent(env, jobUid, machine.machine_id, leaseId, 'lease_renewed', '', { lease_expires_at: leaseExpiresAt })
   return json({ ok: true, lease_expires_at: leaseExpiresAt, cancel_requested: Boolean(job?.cancel_requested) })
@@ -649,6 +690,8 @@ async function updateJobWithLease(request: Request, env: Env, status: DispatchSt
     await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE machine_id = ?')
       .bind(nextHealth, nowIso(), machine.machine_id)
       .run()
+  } else {
+    await touchMachineRuntime(env, machine.machine_id, 'online_busy', jobUid)
   }
   if (activeJob?.job_type === 'generate_ai_image') {
     await updateGenerationRequestStatus(env, jobUid, status)
@@ -832,6 +875,68 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+async function dispatchQueueSummary(env: Env): Promise<{ queued: number; active: number; terminal: number; by_status: Record<string, number> }> {
+  const { results } = await env.DB.prepare(
+    `SELECT status, COUNT(*) AS count
+     FROM dispatch_jobs
+     GROUP BY status`,
+  ).all<{ status: string; count: number }>()
+  const byStatus: Record<string, number> = {}
+  for (const row of results) {
+    byStatus[row.status] = Number(row.count) || 0
+  }
+  const active = ACTIVE_LEASE_STATUSES.reduce((sum, status) => sum + (byStatus[status] || 0), 0)
+  const terminal = ['succeeded', 'cancelled', 'terminal_failed', 'blocked_needs_login', 'blocked_config_missing'].reduce((sum, status) => sum + (byStatus[status] || 0), 0)
+  return {
+    queued: byStatus.queued || 0,
+    active,
+    terminal,
+    by_status: byStatus,
+  }
+}
+
+async function touchMachineRuntime(env: Env, machineId: string, health: MachineHealth, currentJobId: string | null): Promise<void> {
+  const now = nowIso()
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = ?,
+         health = ?,
+         last_seen_at = ?,
+         updated_at = ?
+     WHERE machine_id = ?`,
+  )
+    .bind(currentJobId, health, now, now, machineId)
+    .run()
+}
+
+async function releaseMachineReservation(env: Env, machineId: string, jobUid: string, now: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = NULL,
+         health = 'online_idle',
+         updated_at = ?
+     WHERE machine_id = ?
+       AND current_job_id = ?`,
+  )
+    .bind(now, machineId, jobUid)
+    .run()
+}
+
+async function releaseMachinesForJobs(env: Env, jobUids: string[], now: string): Promise<void> {
+  const uniqueJobUids = Array.from(new Set(jobUids.filter(Boolean)))
+  if (uniqueJobUids.length === 0) return
+  const placeholders = uniqueJobUids.map(() => '?').join(', ')
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = NULL,
+         health = 'online_idle',
+         updated_at = ?
+     WHERE current_job_id IN (${placeholders})`,
+  )
+    .bind(now, ...uniqueJobUids)
+    .run()
 }
 
 async function recordJobEvent(env: Env, jobUid: string, machineId: string, leaseId: string, eventType: string, message: string, payload: unknown): Promise<void> {

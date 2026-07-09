@@ -92,7 +92,7 @@ onMounted(load)
       <label class="field">
         <span>状态筛选</span>
         <select v-model="statusFilter">
-          <option v-for="status in statuses" :key="status" :value="status">{{ status === 'all' ? '全部' : status }}</option>
+          <option v-for="status in statuses" :key="status" :value="status">{{ status === 'all' ? '全部' : batchStatusLabel(status) }}</option>
         </select>
       </label>
       <label class="field">

@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import base64
 from pathlib import Path
 from unittest.mock import patch
 from fastapi import HTTPException
@@ -36,8 +37,21 @@ class AiImageApiTests(unittest.TestCase):
             ("POST", "/ai-image/jobs/{job_uid}/save-as"),
             ("POST", "/ai-image/assets"),
             ("POST", "/ai-image/canvases"),
+            ("POST", "/files/local-image-preview"),
         ]:
             self.assertRouteRegistered(path, method)
+
+    def test_local_image_preview_api_returns_data_url_for_desktop_fallback(self):
+        source = self.root / "result-01.png"
+        source.write_bytes(base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        ))
+
+        result = api_server.read_local_image_preview(api_server.LocalImagePreviewRequest(path=str(source)))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["path"], str(source))
+        self.assertTrue(result["data_url"].startswith("data:image/png;base64,"))
 
     def test_job_crud_api_uses_data_sink(self):
         output_dir = str(self.root / "api-exports")
@@ -133,6 +147,46 @@ class AiImageApiTests(unittest.TestCase):
 
         self.assertEqual(result["files"], [str(self.root / "copy.png")])
         copy.assert_called_once()
+
+    def test_save_as_api_filters_to_requested_files(self):
+        job = data_sink.create_ai_image_job({"title": "save selected job"})
+        selected = self.root / "selected.png"
+        skipped = self.root / "skipped.png"
+        data_sink.update_ai_image_job(job["job_uid"], {
+            "summary": {"output_files": [str(selected), str(skipped)]},
+        })
+
+        with patch("core.api_server.ai_image_service.copy_assets_to_directory", return_value=[str(self.root / "copy.png")]) as copy:
+            result = api_server.save_as_ai_image_job(
+                job["job_uid"],
+                api_server.AiImageSaveAsRequest(
+                    directory=str(self.root / "export"),
+                    files=[str(selected)],
+                ),
+            )
+
+        self.assertEqual(result["files"], [str(self.root / "copy.png")])
+        copied_assets = copy.call_args.args[0]
+        self.assertEqual(copied_assets, [{"path": str(selected)}])
+
+    def test_save_as_api_can_copy_remote_image_urls(self):
+        job = data_sink.create_ai_image_job({"title": "save remote job"})
+        data_sink.update_ai_image_job(job["job_uid"], {
+            "summary": {"image_urls": ["https://cdn.example/remote.png"]},
+        })
+
+        with patch("core.api_server.ai_image_service.copy_assets_to_directory", return_value=[str(self.root / "remote.png")]) as copy:
+            result = api_server.save_as_ai_image_job(
+                job["job_uid"],
+                api_server.AiImageSaveAsRequest(
+                    directory=str(self.root / "export"),
+                    files=["https://cdn.example/remote.png"],
+                ),
+            )
+
+        self.assertEqual(result["files"], [str(self.root / "remote.png")])
+        copied_assets = copy.call_args.args[0]
+        self.assertEqual(copied_assets, [{"url": "https://cdn.example/remote.png"}])
 
 
 if __name__ == "__main__":

@@ -34,6 +34,7 @@ describe('initial D1 schema', () => {
   it('defines uniqueness for idempotency and machine identity', () => {
     expect(schema).toContain('UNIQUE(email)')
     expect(schema).toContain('UNIQUE(machine_id)')
+    expect(schema).toContain('UNIQUE(fingerprint_hash)')
     expect(schema).toContain('UNIQUE(job_type, idempotency_key)')
   })
 

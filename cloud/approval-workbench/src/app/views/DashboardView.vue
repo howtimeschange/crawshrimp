@@ -29,6 +29,9 @@ const machineMetrics = ref<MachineMetric[]>([])
 const error = ref('')
 
 const batchTotal = computed(() => Object.values(summary.value?.batch_totals_by_status ?? {}).reduce((total, value) => total + value, 0))
+const pendingReview = computed(() => summary.value?.batch_totals_by_status.pending_review ?? 0)
+const readyToSubmit = computed(() => summary.value?.batch_totals_by_status.ready_to_submit ?? 0)
+const syncing = computed(() => summary.value?.batch_totals_by_status.syncing ?? 0)
 
 async function load() {
   error.value = ''
@@ -46,6 +49,15 @@ async function load() {
   }
 }
 
+function batchStatusLabel(status: string): string {
+  if (status === 'syncing') return '同步中'
+  if (status === 'pending_review') return '待审批'
+  if (status === 'ready_to_submit') return '待提交'
+  if (status === 'submitted') return '已提交'
+  if (status === 'rejected') return '已退回'
+  return status || '-'
+}
+
 onMounted(load)
 </script>
 
@@ -53,9 +65,16 @@ onMounted(load)
   <section class="view-stack">
     <p v-if="error" class="notice danger">{{ error }}</p>
     <div class="metric-grid">
-      <div class="metric"><span>批次总数</span><strong>{{ batchTotal }}</strong></div>
+      <div class="metric"><span>待审批批次</span><strong>{{ pendingReview }}</strong></div>
+      <div class="metric"><span>待提交批次</span><strong>{{ readyToSubmit }}</strong></div>
+      <div class="metric"><span>同步中批次</span><strong>{{ syncing }}</strong></div>
+      <div class="metric"><span>累计批次</span><strong>{{ batchTotal }}</strong></div>
+    </div>
+
+    <div class="metric-grid">
       <div class="metric"><span>生成图片</span><strong>{{ summary?.image_funnel.generated ?? 0 }}</strong></div>
       <div class="metric"><span>确认图片</span><strong>{{ summary?.image_funnel.approved ?? 0 }}</strong></div>
+      <div class="metric"><span>舍弃图片</span><strong>{{ summary?.image_funnel.rejected ?? 0 }}</strong></div>
       <div class="metric"><span>重生图</span><strong>{{ summary?.image_funnel.regenerated ?? 0 }}</strong></div>
     </div>
 
@@ -65,7 +84,7 @@ onMounted(load)
         <thead><tr><th>状态</th><th>数量</th></tr></thead>
         <tbody>
           <tr v-for="(count, status) in summary?.batch_totals_by_status ?? {}" :key="status">
-            <td><span class="badge">{{ status }}</span></td>
+            <td><span class="badge">{{ batchStatusLabel(String(status)) }}</span></td>
             <td>{{ count }}</td>
           </tr>
         </tbody>

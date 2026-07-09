@@ -219,16 +219,38 @@ tasks:
             description: 本期只需要填写“款号、天猫商品ID、品类、性别”四列；脚本按款号找橱窗1/yz(1)主图，并按品类/性别自动匹配提示词。
             version: "2026.07.01.3"
         hint: 必须包含款号；真实上传/上线时必须包含天猫商品ID。SKC编码本期不用填，脚本会在需要时从款号-五位款色码图片名推断平铺参考图。
+      - id: prompt_source
+        type: radio
+        label: Prompt 来源
+        default: local_excel
+        options:
+          - value: local_excel
+            label: 线下表格提示词库
+          - value: cloud_prompt_library
+            label: 线上 Prompt 库
+        hint: 可继续使用线下 Excel；也可以连接云端审批看板里的线上 Prompt 库。
       - id: prompt_file
         type: file_excel
         label: AI 测图提示词库
         required: true
+        visible_when:
+          field: prompt_source
+          equals: local_excel
         templates:
           - file: templates/tmall-ai-prompt-library-template.csv
             label: AI 测图提示词导入模板
             description: 与 AI 测图提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度；支持多 sheet 与第 4 行表头。
             version: "2026.07.01.2"
         hint: 支持用户提供的“AI 测图提示词库.xlsx”；后端会按多 sheet 和真实表头格式读取。
+      - id: cloud_prompt_library_id
+        type: text
+        label: 云端 Prompt 库
+        required: true
+        visible_when:
+          field: prompt_source
+          equals: cloud_prompt_library
+        placeholder: 点击选择线上 Prompt 库
+        hint: 从云端审批看板的 Prompt 库选择；运行时会按品类、性别匹配线上模板。
       - id: cloud_path
         type: text
         label: 森马云盘路径
@@ -477,6 +499,15 @@ tasks:
         placeholder: "点击选择本地导出目录"
         hint: 可选。完成后会把数据表格复制到这里的“数据表格”目录；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图数据抓取导出”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图数据抓取导出）。
         ui_span: third
+      - id: sync_to_cloud
+        type: checkbox
+        label: 云端同步
+        default: []
+        ui_span: third
+        options:
+          - value: enabled
+            label: 完成后同步到云端测图数据看板
+        hint: 需要先在设置里完成云端审批任务机注册；开启后会上传原始 Excel，并把解析后的测图数据写入云端测图数据看板。
       - id: test_status
         type: select
         label: 测试状态

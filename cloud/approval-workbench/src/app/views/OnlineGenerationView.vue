@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 
 import { apiGet, apiPost, type ApiError } from '../api'
 
@@ -17,16 +17,23 @@ interface ImageResourceRow {
   source_label: string
 }
 interface StyleRow { id: number; style_code: string; item_id: string; category: string; gender: string; assets: AssetRow[]; image_resources?: ImageResourceRow[] }
-interface DispatchJob {
-  job_uid: string
-  job_type: string
+interface GenerationRequest {
+  request_uid: string
   status: string
-  assigned_machine_id: string | null
-  payload?: Record<string, unknown>
-  result?: Record<string, unknown>
+  style_id: number
+  prompt_text: string
+  dispatch_job_uid?: string
+  request_meta?: Record<string, unknown>
+  result_asset_uids?: string[]
+  error_message?: string
 }
-interface BatchDetail { batch_uid: string; title: string; status: string; styles: StyleRow[]; jobs?: DispatchJob[] }
-interface MachineRow { machine_id: string; machine_name: string; auth_status: string; health: string; capabilities_json: string }
+interface DirectGenerationResponse {
+  status: string
+  request_uid: string
+  assets?: Array<{ asset_uid: string }>
+  next_poll_after_ms?: number
+}
+interface BatchDetail { batch_uid: string; title: string; status: string; styles: StyleRow[]; generation_requests?: GenerationRequest[] }
 interface PromptLibrary { id: number; name: string; status: string }
 interface PromptTemplate { id: number; template_id?: number; version_id?: number; prompt_text: string; field_name?: string; group_name?: string }
 interface SelectableResource {
@@ -52,8 +59,6 @@ const batch = ref<BatchDetail | null>(null)
 const selectedStyleId = ref<number | null>(null)
 const sourceAssetUid = ref('')
 const referenceAssetUids = ref<string[]>([])
-const machines = ref<MachineRow[]>([])
-const selectedMachineId = ref('')
 const promptLibraries = ref<PromptLibrary[]>([])
 const selectedLibraryId = ref<number | null>(null)
 const promptTemplates = ref<PromptTemplate[]>([])
@@ -68,6 +73,7 @@ const message = ref('')
 const error = ref('')
 const submitting = ref(false)
 let promptLoadSequence = 0
+const generationPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
 
 const styles = computed(() => batch.value?.styles ?? [])
 const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? styles.value[0] ?? null)
@@ -92,9 +98,8 @@ const selectableResources = computed<SelectableResource[]>(() => {
     source_label: '',
   }))
 })
-const generationMachines = computed(() => machines.value.filter((machine) => machine.auth_status === 'active' && hasCapability(machine, 'generate_ai_image')))
-const generationJobs = computed(() => (batch.value?.jobs ?? []).filter((job) => job.job_type === 'generate_ai_image'))
-const selectedStyleJobs = computed(() => generationJobs.value.filter((job) => String(job.payload?.style_id ?? '') === String(selectedStyle.value?.id ?? '')))
+const generationRequests = computed(() => batch.value?.generation_requests ?? [])
+const selectedStyleRequests = computed(() => generationRequests.value.filter((item) => String(item.style_id) === String(selectedStyle.value?.id ?? '') && item.status !== 'completed'))
 const canSubmit = computed(() => Boolean(batch.value && selectedStyle.value && sourceAssetUid.value && promptText.value.trim() && !submitting.value))
 const selectedTemplateVersionId = computed(() => {
   const template = promptTemplates.value.find((item) => templateKey(item) === selectedTemplateKey.value)
@@ -139,17 +144,9 @@ async function loadBatch() {
     batch.value = data.batch
     selectedStyleId.value = data.batch.styles.some((style) => style.id === previousStyleId) ? previousStyleId : data.batch.styles[0]?.id ?? null
     resetMaterialSelection()
+    schedulePendingGenerationPolls()
   } catch (caught) {
     error.value = (caught as ApiError).message
-  }
-}
-
-async function loadMachines() {
-  try {
-    const data = await apiGet<{ machines: MachineRow[] }>('/api/admin/machines')
-    machines.value = data.machines
-  } catch {
-    machines.value = []
   }
 }
 
@@ -249,15 +246,6 @@ function isPreviewable(item: Pick<AssetRow | SelectableResource, 'filename'>): b
   return /\.(jpe?g|png|webp|gif)$/i.test(item.filename)
 }
 
-function hasCapability(machine: MachineRow, capability: string): boolean {
-  try {
-    const parsed = JSON.parse(machine.capabilities_json)
-    return Array.isArray(parsed) && parsed.includes(capability)
-  } catch {
-    return machine.capabilities_json.includes(capability)
-  }
-}
-
 function kindLabel(kind: string): string {
   if (kind === 'source') return '主图'
   if (kind === 'reference') return '参考图'
@@ -271,25 +259,21 @@ function statusLabel(status: string): string {
   if (status === 'running') return '生成中'
   if (status === 'uploading_results') return '上传结果'
   if (status === 'succeeded') return '已完成'
+  if (status === 'completed') return '已完成'
   if (status === 'failed' || status === 'terminal_failed') return '失败'
   return status || '-'
 }
 
-function jobSummary(job: DispatchJob): string {
-  const payload = job.payload ?? {}
+function generationRequestSummary(item: GenerationRequest): string {
+  const meta = item.request_meta ?? {}
   const parts = [
-    payload.model,
-    payload.size,
-    payload.quality,
-    payload.output_format,
-    payload.count ? `${payload.count} 张` : '',
+    meta.model,
+    meta.size,
+    meta.quality,
+    meta.output_format,
+    meta.count ? `${meta.count} 张` : '',
   ].filter(Boolean)
-  return parts.join(' / ') || '使用默认参数'
-}
-
-function resultAssetUids(job: DispatchJob): string[] {
-  const value = job.result?.generated_asset_uids
-  return Array.isArray(value) ? value.map(String) : []
+  return parts.join(' / ') || '使用当前参数'
 }
 
 async function submitGeneration() {
@@ -298,21 +282,23 @@ async function submitGeneration() {
   message.value = ''
   submitting.value = true
   try {
-    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generate`, {
+    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generate-direct`, {
       style_id: selectedStyle.value.id,
       source_asset_uid: sourceAssetUid.value,
       reference_asset_uids: referenceAssetUids.value,
       prompt_template_version_id: selectedTemplateVersionId.value,
       prompt_text: promptText.value.trim(),
-      machine_id: selectedMachineId.value || undefined,
       model: model.value,
       size: size.value,
       quality: quality.value,
       output_format: outputFormat.value,
       count: Math.max(1, Math.min(8, Number(count.value) || 1)),
     })
-    message.value = '在线生图任务已创建'
+    message.value = result.status === 'completed'
+      ? `云端直接生成完成，新增 ${result.assets?.length ?? 0} 张 AI 图`
+      : '云端正在生成，完成后会自动追加到当前款式'
     await loadBatch()
+    if (result.status !== 'completed') scheduleGenerationPoll(result.request_uid, result.next_poll_after_ms)
   } catch (caught) {
     error.value = (caught as ApiError).message
   } finally {
@@ -320,10 +306,61 @@ async function submitGeneration() {
   }
 }
 
+function schedulePendingGenerationPolls() {
+  for (const item of generationRequests.value) {
+    if (isPollableGenerationRequest(item)) scheduleGenerationPoll(item.request_uid)
+  }
+}
+
+function isPollableGenerationRequest(item: GenerationRequest): boolean {
+  return ['queued', 'running'].includes(item.status) && !item.dispatch_job_uid
+}
+
+function scheduleGenerationPoll(requestUid: string, delayMs?: number) {
+  if (!requestUid || generationPollTimers.has(requestUid)) return
+  const delay = normalizePollDelay(delayMs)
+  const timer = setTimeout(() => {
+    generationPollTimers.delete(requestUid)
+    void pollGenerationRequest(requestUid)
+  }, delay)
+  generationPollTimers.set(requestUid, timer)
+}
+
+function normalizePollDelay(value: unknown): number {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return 3000
+  return Math.max(500, Math.min(30000, number))
+}
+
+async function pollGenerationRequest(requestUid: string) {
+  if (!batch.value) return
+  try {
+    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generation-requests/${encodeURIComponent(requestUid)}/poll`)
+    if (result.status === 'completed') {
+      message.value = `云端直接生成完成，新增 ${result.assets?.length ?? 0} 张 AI 图`
+      await loadBatch()
+      return
+    }
+    await loadBatch()
+    scheduleGenerationPoll(requestUid, result.next_poll_after_ms)
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+    await loadBatch()
+  }
+}
+
+function clearGenerationPollTimers() {
+  for (const timer of generationPollTimers.values()) clearTimeout(timer)
+  generationPollTimers.clear()
+}
+
 onMounted(() => {
   void loadBatches()
-  void loadMachines()
   void loadPromptLibraries()
+})
+
+onUnmounted(() => {
+  clearGenerationPollTimers()
 })
 </script>
 
@@ -333,7 +370,7 @@ onMounted(() => {
       <div>
         <p class="section-kicker">在线 AI 生图</p>
         <h2>AI 生图工作台</h2>
-        <p>支持主图、参考图、Prompt、自定义尺寸和多模型生成</p>
+        <p>支持主图、参考图、Prompt、自定义尺寸和多模型生成，结果自动追加到当前款式</p>
       </div>
       <button class="ghost-button" type="button" @click="loadBatch">刷新</button>
     </header>
@@ -341,54 +378,64 @@ onMounted(() => {
     <p v-if="message" class="notice">{{ message }}</p>
     <p v-if="error" class="notice danger">{{ error }}</p>
 
-    <section class="cloud-aiw-param-ribbon" aria-label="生成参数">
-      <label class="field">
-        <span>批次</span>
-        <select v-model="batchUid">
-          <option v-for="item in batches" :key="item.batch_uid" :value="item.batch_uid">{{ item.title }}</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>款式</span>
-        <select v-model.number="selectedStyleId">
-          <option v-for="style in styles" :key="style.id" :value="style.id">{{ style.style_code || `款式 ${style.id}` }} / {{ style.item_id || '-' }}</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>模型</span>
-        <select v-model="model">
-          <option v-for="item in modelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>尺寸</span>
-        <select v-model="size">
-          <option v-for="item in sizeOptions" :key="item" :value="item">{{ item }}</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>质量</span>
-        <select v-model="quality">
-          <option v-for="item in qualityOptions" :key="item" :value="item">{{ item }}</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>格式</span>
-        <select v-model="outputFormat">
-          <option v-for="item in formatOptions" :key="item" :value="item">{{ item }}</option>
-        </select>
-      </label>
-      <label class="field count-field">
-        <span>张数</span>
-        <input v-model.number="count" type="number" min="1" max="8" />
-      </label>
-      <label class="field machine-field">
-        <span>任务机</span>
-        <select v-model="selectedMachineId">
-          <option value="">任意生图任务机</option>
-          <option v-for="machine in generationMachines" :key="machine.machine_id" :value="machine.machine_id">{{ machine.machine_name }} / {{ machine.health }}</option>
-        </select>
-      </label>
+    <section class="cloud-aiw-flow-panel" aria-label="生成参数">
+      <div class="cloud-aiw-step-block primary-step">
+        <span class="step-index">1</span>
+        <div class="step-fields">
+          <label class="field">
+            <span>批次</span>
+            <select v-model="batchUid">
+              <option v-for="item in batches" :key="item.batch_uid" :value="item.batch_uid">{{ item.title }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>款式</span>
+            <select v-model.number="selectedStyleId">
+              <option v-for="style in styles" :key="style.id" :value="style.id">{{ style.style_code || `款式 ${style.id}` }} / {{ style.item_id || '-' }}</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <details class="cloud-aiw-step-block advanced-step">
+        <summary>
+          <span class="step-index">2</span>
+          <div>
+            <strong>高级生成参数</strong>
+            <small>{{ model }} · {{ size }} · {{ quality }} · {{ outputFormat }} · {{ Math.max(1, Math.min(8, Number(count) || 1)) }} 张</small>
+          </div>
+        </summary>
+        <div class="advanced-fields">
+          <label class="field">
+            <span>模型</span>
+            <select v-model="model">
+              <option v-for="item in modelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>尺寸</span>
+            <select v-model="size">
+              <option v-for="item in sizeOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>质量</span>
+            <select v-model="quality">
+              <option v-for="item in qualityOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>格式</span>
+            <select v-model="outputFormat">
+              <option v-for="item in formatOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="field count-field">
+            <span>张数</span>
+            <input v-model.number="count" type="number" min="1" max="8" />
+          </label>
+        </div>
+      </details>
     </section>
 
     <section v-if="batch" class="cloud-aiw-workspace">
@@ -473,32 +520,32 @@ onMounted(() => {
             <p v-if="asset.prompt_text">{{ asset.prompt_text }}</p>
           </article>
 
-          <article v-for="job in selectedStyleJobs" :key="job.job_uid" class="cloud-aiw-result-card queued">
+          <article v-for="item in selectedStyleRequests" :key="item.request_uid" class="cloud-aiw-result-card queued">
             <div class="cloud-aiw-job-placeholder">
-              <span class="badge">{{ statusLabel(job.status) }}</span>
-              <strong>{{ jobSummary(job) }}</strong>
-              <small>{{ resultAssetUids(job).length ? `已回传 ${resultAssetUids(job).length} 张结果` : job.job_uid }}</small>
+              <span class="badge">{{ statusLabel(item.status) }}</span>
+              <strong>{{ generationRequestSummary(item) }}</strong>
+              <small>{{ item.result_asset_uids?.length ? `已生成 ${item.result_asset_uids.length} 张结果` : item.request_uid }}</small>
             </div>
           </article>
 
-          <p v-if="aiAssets.length === 0 && selectedStyleJobs.length === 0" class="cloud-aiw-empty">选择左侧素材与 Prompt 后创建任务，结果会在这里按款式聚合。</p>
+          <p v-if="aiAssets.length === 0 && selectedStyleRequests.length === 0" class="cloud-aiw-empty">选择左侧素材与 Prompt 后云端直接生成，结果会在这里按款式聚合。</p>
         </div>
       </main>
 
       <aside class="cloud-aiw-history-drawer">
         <div class="cloud-aiw-panel-head">
           <h3>生成历史</h3>
-          <span class="badge">{{ generationJobs.length }}</span>
+          <span class="badge">{{ generationRequests.length }}</span>
         </div>
-        <article v-for="job in generationJobs" :key="job.job_uid" class="cloud-aiw-history-item">
+        <article v-for="item in generationRequests" :key="item.request_uid" class="cloud-aiw-history-item">
           <div>
-            <strong>{{ statusLabel(job.status) }}</strong>
-            <span>{{ jobSummary(job) }}</span>
+            <strong>{{ statusLabel(item.status) }}</strong>
+            <span>{{ generationRequestSummary(item) }}</span>
           </div>
-          <small>{{ job.job_uid }}</small>
-          <p>款式 {{ job.payload?.style_code || job.payload?.style_id || '-' }} · 任务机 {{ job.assigned_machine_id || '任意' }}</p>
+          <small>{{ item.request_uid }}</small>
+          <p>款式 {{ item.style_id || '-' }} · {{ item.result_asset_uids?.length ? `已生成 ${item.result_asset_uids.length} 张` : item.error_message || '云端直接生成' }}</p>
         </article>
-        <p v-if="generationJobs.length === 0" class="cloud-aiw-empty">暂无在线生图任务。</p>
+        <p v-if="generationRequests.length === 0" class="cloud-aiw-empty">暂无云端生成记录。</p>
       </aside>
     </section>
 
@@ -510,7 +557,7 @@ onMounted(() => {
         <span>{{ model }} · {{ size }} · {{ quality }} · {{ outputFormat }} · {{ Math.max(1, Math.min(8, Number(count) || 1)) }} 张</span>
       </div>
       <button class="primary-button" type="button" :disabled="!canSubmit" @click="submitGeneration">
-        {{ submitting ? '创建中...' : '创建在线生图任务' }}
+        {{ submitting ? '生成中...' : '云端直接生成' }}
       </button>
     </footer>
   </section>
@@ -520,11 +567,11 @@ onMounted(() => {
 .cloud-aiw-shell {
   display: grid;
   gap: 12px;
-  padding-bottom: 72px;
+  padding-bottom: 12px;
 }
 
 .cloud-aiw-header,
-.cloud-aiw-param-ribbon,
+.cloud-aiw-flow-panel,
 .cloud-aiw-prompt-panel,
 .cloud-aiw-results-grid,
 .cloud-aiw-history-drawer,
@@ -554,19 +601,92 @@ onMounted(() => {
   font-size: 13px;
 }
 
-.cloud-aiw-param-ribbon {
+.cloud-aiw-flow-panel {
   display: grid;
-  grid-template-columns: minmax(180px, 1.3fr) minmax(180px, 1.2fr) repeat(5, minmax(98px, 0.7fr)) minmax(180px, 1fr);
-  gap: 10px;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+  gap: 12px;
   padding: 12px;
 }
 
-.cloud-aiw-param-ribbon .field,
+.cloud-aiw-step-block {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.primary-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.step-index {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid rgba(255, 107, 43, 0.48);
+  border-radius: 8px;
+  background: rgba(255, 107, 43, 0.1);
+  color: #ffd8c7;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.step-fields,
+.advanced-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.25fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  gap: 10px;
+}
+
+.advanced-step summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  list-style: none;
+  cursor: pointer;
+}
+
+.advanced-step summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-step summary strong,
+.advanced-step summary small {
+  display: block;
+}
+
+.advanced-step summary strong {
+  font-size: 13px;
+}
+
+.advanced-step summary small {
+  margin-top: 4px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.advanced-step[open] summary {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+
+.advanced-fields {
+  grid-template-columns: repeat(5, minmax(92px, 1fr));
+}
+
+.cloud-aiw-flow-panel .field,
 .cloud-aiw-prompt-panel .field {
   gap: 5px;
 }
 
-.cloud-aiw-param-ribbon .field > span,
+.cloud-aiw-flow-panel .field > span,
 .cloud-aiw-prompt-panel .field > span {
   color: var(--text2);
   font-size: 12px;
@@ -746,14 +866,11 @@ onMounted(() => {
 }
 
 .cloud-aiw-generate-footer {
-  position: sticky;
-  bottom: 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 14px;
   padding: 10px 12px;
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28);
 }
 
 .cloud-aiw-generate-footer div {
@@ -767,7 +884,7 @@ onMounted(() => {
 }
 
 @media (max-width: 1180px) {
-  .cloud-aiw-param-ribbon,
+  .cloud-aiw-flow-panel,
   .cloud-aiw-workspace {
     grid-template-columns: 1fr 1fr;
   }
@@ -785,7 +902,9 @@ onMounted(() => {
     flex-direction: column;
   }
 
-  .cloud-aiw-param-ribbon,
+  .cloud-aiw-flow-panel,
+  .step-fields,
+  .advanced-fields,
   .cloud-aiw-workspace {
     grid-template-columns: 1fr;
   }

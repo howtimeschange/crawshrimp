@@ -15,7 +15,7 @@ export interface ClaimInput {
 export function canClaimJob(input: ClaimInput): boolean {
   if (input.jobStatus !== 'queued') return false
   if (input.machineAuthStatus !== 'active') return false
-  if (!['online_idle', 'online_busy'].includes(input.machineHealth)) return false
+  if (input.machineHealth !== 'online_idle') return false
   if (input.assignedMachineId && input.assignedMachineId !== input.machineId) return false
   const machineCaps = new Set(input.machineCapabilities)
   return input.requiredCapabilities.every((capability) => machineCaps.has(capability))

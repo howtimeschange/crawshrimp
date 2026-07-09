@@ -8,7 +8,8 @@ function read(path: string): string {
 describe('cloud approval UI contract', () => {
   it('does not expose public registration copy', () => {
     const login = read('src/app/views/LoginView.vue')
-    expect(login).not.toMatch(/注册|sign up|create account/i)
+    expect(login).toContain('不开放自助注册')
+    expect(login).not.toMatch(/sign up|create account|立即注册|免费注册/i)
     expect(login).toMatch(/登录/)
   })
 
@@ -26,9 +27,15 @@ describe('cloud approval UI contract', () => {
     expect(machines).toContain('注册 token')
   })
 
+  it('machine page hides AI generation capability labels from the cloud approval UI', () => {
+    const machines = read('src/app/views/MachinesView.vue')
+    expect(machines).toContain('visibleCapabilities')
+    expect(machines).not.toContain('AI 生图')
+  })
+
   it('batch review has approve reject regenerate and submit actions', () => {
     const review = read('src/app/views/BatchReviewView.vue')
-    for (const text of ['确认通过', '标记舍弃', '批量重跑舍弃图', '提交创建测图任务']) {
+    for (const text of ['确认通过', '标记舍弃', '重跑本批全部舍弃图', '提交创建测图任务']) {
       expect(review).toContain(text)
     }
     for (const vagueText of ['所选重生图', '一键重生图', '换 Prompt 重跑']) {
@@ -72,14 +79,17 @@ describe('cloud approval UI contract', () => {
     expect(review).toContain('async function markReady()')
   })
 
-  it('batch review supports prompt-library selection for rerun and style-level generation', () => {
+  it('batch review supports prompt-library selection for rerun without exposing style-level generation', () => {
     const review = read('src/app/views/BatchReviewView.vue')
     for (const marker of ['promptLibraries', 'promptTemplates', 'selectedPromptTemplateKey', 'applySelectedPromptTemplate']) {
       expect(review).toContain(marker)
     }
-    expect(review).toContain('给当前款式新增 AI 图')
-    expect(review).toContain('从 Prompt 库选择')
-    expect(review).toContain('批量重跑选中图')
+    expect(review).toContain('Prompt 重跑')
+    expect(review).toContain('重跑已选舍弃图')
+    expect(review).not.toContain('给当前款式新增 AI 图')
+    expect(review).not.toContain('style-generation-panel')
+    expect(review).not.toContain('createStyleGenerationJobs')
+    expect(review).not.toContain("applySelectedPromptTemplate('generate')")
   })
 
   it('batch review reloads resolved prompt templates when the selected style changes', () => {
@@ -88,6 +98,44 @@ describe('cloud approval UI contract', () => {
     expect(styleWatcher).toContain('loadPromptTemplates')
     expect(review).toContain("params.set('style_code'")
     expect(review).toContain("params.set('item_id'")
+  })
+
+  it('prompt library defaults to display mode and gates editing by prompts write permission', () => {
+    const prompts = read('src/app/views/PromptLibraryView.vue')
+    expect(prompts).toContain('canEditPrompts')
+    expect(prompts).toContain('prompts:write')
+    expect(prompts).toContain('Prompt 明细')
+    expect(prompts).toContain('编辑 Prompt')
+    expect(prompts).toContain('只读权限')
+    for (const hiddenHeader of ['<th>字段 ID</th>', '<th>顺序</th>', '<th>视图</th>', '<th>尺寸</th>', '<th>格式</th>', '<th>引用字段</th>', '<th>字数</th>', '<th>类型</th>']) {
+      expect(prompts).not.toContain(hiddenHeader)
+    }
+  })
+
+  it('prompt library separates library management from prompt row editing', () => {
+    const prompts = read('src/app/views/PromptLibraryView.vue')
+    for (const marker of [
+      '库管理',
+      'Prompt 明细',
+      'libraryDraft',
+      'creatingLibrary',
+      'saveLibraryMeta',
+      '保存库信息',
+      '发布新版本',
+    ]) {
+      expect(prompts).toContain(marker)
+    }
+    expect(prompts).toContain("apiPatch(`/api/prompt-libraries/${selectedLibrary.value.id}`")
+    expect(prompts).toContain('编辑 Prompt')
+    expect(prompts).not.toContain('编辑 Prompt 库')
+  })
+
+  it('prompt library inserts newly-added prompts at the top of the visible list', () => {
+    const prompts = read('src/app/views/PromptLibraryView.vue')
+    const addRowBody = prompts.match(/function addRow\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
+    expect(addRowBody).toContain('templates.unshift')
+    expect(addRowBody).toContain("groupFilter.value !== 'all'")
+    expect(addRowBody).not.toContain('templates.push')
   })
 
   it('opens batch review from batch_uid query links', () => {
@@ -106,75 +154,23 @@ describe('cloud approval UI contract', () => {
     expect(app).not.toContain('side-nav')
   })
 
-  it('online generation uses the option-3 workbench shell instead of a batch-list side form', () => {
-    const generate = read('src/app/views/OnlineGenerationView.vue')
-    for (const marker of [
-      'cloud-aiw-param-ribbon',
-      'cloud-aiw-prompt-panel',
-      'cloud-aiw-results-grid',
-      'cloud-aiw-history-drawer',
-      'cloud-aiw-generate-footer',
-    ]) {
-      expect(generate).toContain(marker)
-    }
-    expect(generate).toContain('支持主图、参考图、Prompt、自定义尺寸和多模型生成')
-    expect(generate).not.toContain('split-grid')
-    expect(generate).not.toContain('class="data-table"')
-    expect(generate).not.toContain('form-panel')
+  it('cloud approval frontend hides the immature AI generation page and entry points', () => {
+    const app = read('src/app/App.vue')
+    expect(app).not.toContain("label: 'AI 生图'")
+    expect(app).not.toContain("key: 'generate'")
+    expect(app).not.toContain('OnlineGenerationView')
+    expect(app).not.toContain("activePage === 'generate'")
   })
 
-  it('online generation submits the extended cloud generation contract', () => {
-    const generate = read('src/app/views/OnlineGenerationView.vue')
-    const submitGenerationBody = generate.match(/async function submitGeneration\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
-    for (const field of [
-      'style_id',
-      'source_asset_uid',
-      'reference_asset_uids',
-      'prompt_template_version_id',
-      'prompt_text',
-      'machine_id',
-      'model',
-      'size',
-      'quality',
-      'output_format',
-      'count',
-    ]) {
-      expect(submitGenerationBody).toContain(field)
+  it('material data dashboard explains cumulative snapshots and exposes an integrated report view', () => {
+    const materialData = read('src/app/views/MaterialDataDashboardView.vue')
+    for (const text of ['最新累计快照', '已合并重复/跨日期快照', '统计日期', '按款式汇总', '素材表现明细']) {
+      expect(materialData).toContain(text)
     }
-    for (const option of [
-      'gpt-image-2',
-      'gemini-3.1-flash-image-preview',
-      'gemini-3-pro-image-preview',
-      '4096x4096',
-      '4K',
-      'webp',
-    ]) {
-      expect(generate).toContain(option)
-    }
-  })
-
-  it('online generation clears stale prompt text when no resolved template is available', () => {
-    const generate = read('src/app/views/OnlineGenerationView.vue')
-    expect(generate).toContain("promptText.value = data.templates[0]?.prompt_text ?? ''")
-    expect(generate).toContain("promptText.value = template?.prompt_text ?? ''")
-
-    const clearCount = generate.match(/promptText\.value = ''/g)?.length ?? 0
-    expect(clearCount).toBeGreaterThanOrEqual(2)
-  })
-
-  it('online generation discards stale resolved prompt responses before mutating prompt state', () => {
-    const generate = read('src/app/views/OnlineGenerationView.vue')
-    const loadResolvedPromptsBody = generate.match(/async function loadResolvedPrompts\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
-
-    expect(generate).toContain('let promptLoadSequence = 0')
-    expect(loadResolvedPromptsBody).toContain('const requestSequence = ++promptLoadSequence')
-    expect(loadResolvedPromptsBody).toContain('const requestSignature = currentPromptRequestSignature()')
-    expect(loadResolvedPromptsBody).toContain('isCurrentPromptRequest(requestSequence, requestSignature)')
-
-    const staleGuardIndex = loadResolvedPromptsBody.indexOf('isCurrentPromptRequest(requestSequence, requestSignature)')
-    const templateMutationIndex = loadResolvedPromptsBody.indexOf('promptTemplates.value = data.templates')
-    expect(staleGuardIndex).toBeGreaterThanOrEqual(0)
-    expect(templateMutationIndex).toBeGreaterThan(staleGuardIndex)
+    expect(materialData).toContain('styleReports')
+    expect(materialData).toContain('formatStatisticDate')
+    expect(materialData).toContain('summary?.latest_statistic_date')
+    expect(materialData).not.toContain('<th>款号</th>\\n            <th>商品ID</th>')
   })
 
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {

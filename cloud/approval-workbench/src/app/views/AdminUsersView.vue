@@ -98,6 +98,28 @@ async function disableUser(user: UserRow) {
   await load()
 }
 
+function userStatusLabel(status: string): string {
+  if (status === 'active') return '启用'
+  if (status === 'disabled') return '停用'
+  return status || '-'
+}
+
+function formatBeijingTime(value?: string): string {
+  if (!value) return '-'
+  const timestamp = Date.parse(value)
+  if (!Number.isFinite(timestamp)) return value
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  }).format(new Date(timestamp))
+}
+
 onMounted(load)
 </script>
 
@@ -125,7 +147,7 @@ onMounted(load)
         <tbody>
           <tr v-for="user in users" :key="user.id">
             <td><strong>{{ user.name }}</strong><br /><span class="muted">{{ user.email }}</span></td>
-            <td><span class="badge">{{ user.status }}</span></td>
+            <td><span class="badge">{{ userStatusLabel(user.status) }}</span></td>
             <td>
               <div class="inline-fields">
                 <select v-model="selectedRoleKeys[user.id]">
@@ -135,7 +157,7 @@ onMounted(load)
                 <span v-if="loadedRoleKey(user) === null" class="muted">角色未加载，禁止覆盖保存</span>
               </div>
             </td>
-            <td>{{ user.created_at || '-' }}</td>
+            <td>{{ formatBeijingTime(user.created_at) }}</td>
             <td><button class="danger-button" type="button" @click="disableUser(user)">停用</button></td>
           </tr>
         </tbody>

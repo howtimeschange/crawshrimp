@@ -509,6 +509,41 @@ function pdfPreviewPageFromImage(imagePath, page, width = 0, height = 0) {
   }
 }
 
+function resolveLocalImagePath(rawPath = '') {
+  const value = String(rawPath || '').trim()
+  if (!value) return ''
+  if (/^file:\/\//i.test(value)) return fileURLToPath(value)
+  if (value === '~') return app.getPath('home')
+  if (value.startsWith(`~${path.sep}`) || value.startsWith('~/')) {
+    return path.join(app.getPath('home'), value.slice(2))
+  }
+  return path.resolve(value)
+}
+
+function imageMimeForPath(filePath = '') {
+  const ext = path.extname(filePath).toLowerCase()
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return ''
+}
+
+function readLocalImageDataUrl(rawPath = '') {
+  const imagePath = resolveLocalImagePath(rawPath)
+  const mime = imageMimeForPath(imagePath)
+  if (!imagePath || !mime) throw new Error('请选择 PNG、JPG、WEBP 或 GIF 图片')
+  const stat = fs.statSync(imagePath)
+  if (!stat.isFile()) throw new Error('图片文件不存在')
+  if (stat.size > 25 * 1024 * 1024) throw new Error('图片超过 25MB，无法预览')
+  const raw = fs.readFileSync(imagePath)
+  return {
+    ok: true,
+    path: imagePath,
+    data_url: `data:${mime};base64,${raw.toString('base64')}`,
+  }
+}
+
 function renderPdfPreviewWithPyMuPDF(pdfPath, outputDir) {
   const pythonBin = getPythonBin()
   fs.mkdirSync(outputDir, { recursive: true })
@@ -1649,6 +1684,15 @@ secureHandle('generate-tmall-approval-asset', async (_, batchId, token, payload)
   )
 })
 
+secureHandle('submit-tmall-approval-generation', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/tmall-ai-image-approval/api/${encodeURIComponent(String(batchId || ''))}/submit-generation?${approvalTokenQuery(token)}`,
+    payload || {},
+    { timeoutMs: 20 * 60 * 1000 },
+  )
+})
+
 secureHandle('submit-tmall-approval-batch', async (_, batchId, token) => {
   return apiCall(
     'POST',
@@ -1669,6 +1713,18 @@ secureHandle('stop-cloud-machine', async () =>
   apiCall('POST', '/cloud-approval/machine/stop', {}))
 secureHandle('sync-cloud-approval-batch', async (_, payload) =>
   apiCall('POST', '/cloud-approval/sync-batch', payload || {}, { timeoutMs: 20 * 60 * 1000 }))
+secureHandle('list-cloud-prompt-libraries', async () =>
+  apiCall('GET', '/cloud-approval/prompt-libraries'))
+secureHandle('resolve-cloud-prompt-templates', async (_, libraryId, query = {}) => {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      params.set(key, String(value))
+    }
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  return apiCall('GET', `/cloud-approval/prompt-libraries/${encodeURIComponent(String(libraryId || ''))}/resolved${suffix}`)
+})
 
 secureHandle('get-settings', async () => {
   const cfg = await apiCall('GET', '/settings')
@@ -1786,7 +1842,7 @@ secureHandle('browse-file', async (_, opts = {}) => {
   const filters = opts.filters || (opts.excel
     ? [{ name: 'Excel / CSV', extensions: ['xlsx', 'xls', 'csv'] }, { name: '所有文件', extensions: ['*'] }]
     : opts.images
-      ? [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg'] }, { name: '所有文件', extensions: ['*'] }]
+      ? [{ name: '图片文件', extensions: ['png', 'jpg', 'jpeg', 'webp'] }, { name: '所有文件', extensions: ['*'] }]
       : opts.zip
         ? [{ name: 'ZIP 压缩包', extensions: ['zip'] }, { name: '所有文件', extensions: ['*'] }]
         : opts.pdf
@@ -1794,11 +1850,16 @@ secureHandle('browse-file', async (_, opts = {}) => {
           : [{ name: '所有文件', extensions: ['*'] }])
   const res = await dialog.showOpenDialog(mainWindow, {
     title: opts.title || '选择文件',
+    defaultPath: opts.defaultPath || undefined,
     properties: props,
     filters,
   })
   if (res.canceled) return opts.multi ? [] : ''
   return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
+})
+
+secureHandle('read-local-image-preview', async (_, filePath) => {
+  return readLocalImageDataUrl(filePath)
 })
 
 secureHandle('list-directory-files', async (_, rootPath, opts = {}) => {

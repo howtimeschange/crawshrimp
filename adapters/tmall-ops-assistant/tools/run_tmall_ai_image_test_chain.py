@@ -19,6 +19,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,6 +52,7 @@ CHAIN_EXECUTION_MODES = ("approval_then_create", "direct_create")
 APPROVAL_BATCH_FILENAME_PREFIX = "tmall-ai-image-approval-batch"
 APPROVAL_BOARD_FILENAME_PREFIX = "tmall-ai-image-approval-board"
 APPROVED_ASSET_STATUSES = {"approved", "selected", "confirmed", "通过", "已确认", "确认"}
+GENERATION_CONFIRMATION_STATUS = "pending_generation_confirmation"
 
 
 def compact(value: object) -> str:
@@ -75,9 +77,11 @@ def normalize_chain_execution_mode(value: object) -> dict[str, bool | str]:
     if mode not in CHAIN_EXECUTION_MODES:
         raise ValueError(f"天猫AI测图全链路只支持执行模式：{', '.join(CHAIN_EXECUTION_MODES)}")
     approval_required = mode == "approval_then_create"
+    confirm_generation = approval_required
     return {
         "mode": mode,
-        "generate": True,
+        "confirm_generation": confirm_generation,
+        "generate": not confirm_generation,
         "approval_required": approval_required,
         "live_upload": not approval_required,
         "live_create": not approval_required,
@@ -88,6 +92,7 @@ def normalize_chain_execution_mode(value: object) -> dict[str, bool | str]:
 def apply_chain_execution_mode(args: argparse.Namespace) -> argparse.Namespace:
     normalized = normalize_chain_execution_mode(getattr(args, "execute_mode", "approval_then_create"))
     args.execute_mode = str(normalized["mode"])
+    args.confirm_generation = bool(normalized["confirm_generation"])
     args.generate = bool(normalized["generate"])
     args.approval_required = bool(normalized["approval_required"])
     args.live_upload = bool(normalized["live_upload"])
@@ -256,7 +261,7 @@ def build_approval_item(
             label="原图/主图",
             index=1,
             status="reference",
-            extra={"source_label": "原图/主图"},
+            extra={"source_label": "原图/主图", "slot": "main", "use_for_generation": True},
         ))
     if compact(detail_reference_path):
         assets.append(_image_asset(
@@ -266,7 +271,7 @@ def build_approval_item(
             label="款色参考图",
             index=1,
             status="reference",
-            extra={"source_label": "款色参考图"},
+            extra={"source_label": "款色参考图", "slot": "reference", "use_for_generation": False},
         ))
 
     selected_paths = [compact(path) for path in (generated_paths or []) if compact(path)]
@@ -323,6 +328,123 @@ def build_approval_item(
     }
 
 
+def _generation_prompt_id(style_code: str, index: object, prompt: object) -> str:
+    return "-".join([
+        safe_token(style_code, "style"),
+        "prompt",
+        safe_token(index, "1"),
+        stable_hash(prompt)[:8],
+    ])
+
+
+def generation_prompt_from_row(
+    workflow: WorkflowItem,
+    generation_row: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any]:
+    prompt_text = compact(generation_row.get("完整Prompt") or generation_row.get("最终提示词"))
+    reference_paths = parse_list(generation_row.get("参考图文件") or generation_row.get("__1xm_reference_paths"))
+    return {
+        "id": _generation_prompt_id(workflow.style_code, generation_row.get("提示词序号") or index, prompt_text),
+        "prompt_index": int(generation_row.get("提示词序号") or index),
+        "prompt_name": compact(generation_row.get("提示词字段名")) or f"Prompt {index}",
+        "prompt_group": compact(generation_row.get("提示词分组")),
+        "prompt": prompt_text,
+        "custom_prompt": "",
+        "reference_paths": reference_paths,
+        "reference_labels": [Path(path).name for path in reference_paths],
+        "status": "pending",
+        "generation_row": json_safe(generation_row),
+    }
+
+
+def build_generation_confirmation_item(
+    workflow: WorkflowItem,
+    semir_data: Mapping[str, Any],
+    main_origin_path: str,
+    detail_reference_path: str,
+    generation_rows: list[Mapping[str, Any]],
+    *,
+    reference_mode: str = "main_only",
+) -> dict[str, Any]:
+    item = build_approval_item(
+        workflow,
+        semir_data,
+        main_origin_path,
+        detail_reference_path,
+        generation_rows,
+        [],
+        reference_mode=reference_mode,
+    )
+    item["status"] = GENERATION_CONFIRMATION_STATUS
+    item["generation_rows"] = json_safe(list(generation_rows or []))
+    item["generation_prompts"] = [
+        generation_prompt_from_row(workflow, row, index=index)
+        for index, row in enumerate(generation_rows or [], start=1)
+    ]
+    return item
+
+
+def generation_confirmation_prompt_total(items: Iterable[Mapping[str, Any]]) -> int:
+    total = 0
+    for item in items or []:
+        total += len([
+            prompt
+            for prompt in item.get("generation_prompts") or []
+            if compact(prompt.get("status")).lower() not in {"removed", "deleted", "disabled", "skip", "skipped"}
+        ])
+    return total
+
+
+def write_generation_confirmation_batch(
+    artifact_dir: Path,
+    items: list[Mapping[str, Any]],
+    *,
+    run_params: Mapping[str, Any] | None = None,
+    base_url: str = "",
+    batch_id: str = "",
+    token: str = "",
+    created_at: str = "",
+) -> dict[str, Any]:
+    batch = write_approval_batch(
+        artifact_dir,
+        items,
+        run_params=run_params,
+        base_url=base_url,
+        batch_id=batch_id,
+        token=token,
+        created_at=created_at,
+    )
+    batch["status"] = GENERATION_CONFIRMATION_STATUS
+    batch["generation_prompt_total"] = generation_confirmation_prompt_total(batch.get("items") or [])
+    batch["approval_message"] = (
+        f"天猫AI测图待确认提交生图批次 {batch.get('batch_id')} 已准备完成，"
+        f"共 {len(batch.get('items') or [])} 款、{batch.get('generation_prompt_total') or 0} 条 Prompt。"
+        f"\n请打开确认提交看板检查素材和 Prompt：{batch.get('board_url')}"
+    )
+    save_approval_batch(batch)
+    return batch
+
+
+def generation_confirmation_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for item in batch.get("items") or []:
+        prompt_total = len(item.get("generation_prompts") or [])
+        rows.append({
+            "表格行号": item.get("row_no", ""),
+            "款号": item.get("style_code", ""),
+            "商品ID": item.get("item_id", ""),
+            "阶段": "确认提交生图",
+            "审批批次ID": batch.get("batch_id", ""),
+            "审批状态": batch.get("status", ""),
+            "审批看板": batch.get("board_url", ""),
+            "执行结果": "等待确认提交生图任务",
+            "备注": f"Prompt={prompt_total}；{batch.get('approval_message', '')}",
+        })
+    return rows
+
+
 def render_approval_message_template(template: str, batch: Mapping[str, Any]) -> str:
     item_count = len(batch.get("items") or [])
     ai_count = sum(
@@ -369,7 +491,9 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
         .replace("\u2028", "\\u2028")
         .replace("\u2029", "\\u2029")
     )
-    title = "天猫AI测图审批看板"
+    is_generation_confirmation = compact(batch.get("status")) == GENERATION_CONFIRMATION_STATUS
+    title = "天猫AI测图确认提交看板" if is_generation_confirmation else "天猫AI测图审批看板"
+    submit_label = "确认提交生图任务" if is_generation_confirmation else "提交已确认图片并创建测图任务"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -396,6 +520,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; padding:14px; }}
     .tile {{ border:1px solid var(--line); border-radius:8px; background:#fff; overflow:hidden; min-width:0; }}
     .tile.reference {{ background:#f8fbfb; }}
+    .tile.prompt-card {{ background:#fffaf7; }}
     .thumb {{ width:100%; aspect-ratio:3/4; object-fit:cover; background:#eef3f6; display:block; }}
     .tile-body {{ padding:10px; }}
     .label {{ font-size:13px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
@@ -427,7 +552,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
   </header>
   <main>
     <div class="toolbar">
-      <button class="primary" id="submit">提交已确认图片并创建测图任务</button>
+      <button class="primary" id="submit">{submit_label}</button>
       <button id="save">保存审批状态</button>
       <span id="message" class="meta"></span>
     </div>
@@ -439,6 +564,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
   </dialog>
   <script>
     const batch = {payload};
+    const isGenerationConfirmation = batch.status === '{GENERATION_CONFIRMATION_STATUS}';
     const token = new URLSearchParams(location.search).get('token') || batch.token || '';
     const api = (suffix) => `/tmall-ai-image-approval/api/${{encodeURIComponent(batch.batch_id)}}${{suffix}}?token=${{encodeURIComponent(token)}}`;
     const imageUrl = (asset) => `/tmall-ai-image-approval/api/${{encodeURIComponent(batch.batch_id)}}/image/${{encodeURIComponent(asset.id)}}?token=${{encodeURIComponent(token)}}`;
@@ -515,6 +641,40 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
           }};
           grid.appendChild(tile);
         }}
+        if (isGenerationConfirmation) {{
+          for (const prompt of item.generation_prompts || []) {{
+            const tile = document.createElement('div');
+            tile.className = 'tile prompt-card';
+            const refsValue = escapeHtml((prompt.reference_paths || []).join('\\n'));
+            tile.innerHTML = `
+              <div class="tile-body">
+                <div class="label" title="${{escapeHtml(prompt.prompt_name || '')}}">${{escapeHtml(prompt.prompt_name || 'Prompt')}}</div>
+                <div class="path">待提交生图 · 序号 ${{escapeHtml(prompt.prompt_index || '')}}</div>
+                <textarea data-field="prompt" placeholder="确认或修改本条生图 Prompt">${{escapeHtml(prompt.custom_prompt || prompt.prompt || '')}}</textarea>
+                <div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{refsValue}}" /></div>
+                <div class="actions"><button class="danger" data-act="remove">删除本条 Prompt</button></div>
+                <div class="status ${{safeClassName(prompt.status || 'pending')}}">状态：${{escapeHtml(prompt.status || 'pending')}}</div>
+              </div>`;
+            const promptInput = tile.querySelector('[data-field="prompt"]');
+            if (promptInput) promptInput.oninput = () => {{ prompt.custom_prompt = promptInput.value; }};
+            const refsInput = tile.querySelector('[data-field="refs"]');
+            if (refsInput) refsInput.oninput = () => {{ prompt.reference_paths = refsInput.value.split(/[\\n,，、；;]+/).map((v) => v.trim()).filter(Boolean); }};
+            const remove = tile.querySelector('[data-act="remove"]');
+            if (remove) remove.onclick = () => {{ prompt.status = 'removed'; render(); }};
+            if (prompt.status !== 'removed') grid.appendChild(tile);
+          }}
+          const add = document.createElement('button');
+          add.type = 'button';
+          add.className = 'tile prompt-card';
+          add.innerHTML = '<div class="tile-body"><div class="label">+ 新增 Prompt</div><div class="path">增加一张待生成 AI 图</div></div>';
+          add.onclick = () => {{
+            item.generation_prompts = item.generation_prompts || [];
+            const nextIndex = item.generation_prompts.length + 1;
+            item.generation_prompts.push({{ id: `${{item.style_code || 'style'}}-manual-${{Date.now()}}`, prompt_index: nextIndex, prompt_name: `新增 Prompt ${{nextIndex}}`, prompt: '', custom_prompt: '', reference_paths: (item.assets || []).filter((asset) => asset.kind !== 'ai' && asset.path).map((asset) => asset.path), status: 'pending' }});
+            render();
+          }};
+          grid.appendChild(add);
+        }}
         root.appendChild(section);
       }}
     }}
@@ -527,6 +687,19 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     }}
     document.getElementById('save').onclick = saveDecisions;
     document.getElementById('submit').onclick = async () => {{
+      if (isGenerationConfirmation) {{
+        if (!confirm('确认提交当前主图、参考图和 Prompt，开始批量生图？')) return;
+        setMessage('正在提交批量生图任务...');
+        const items = (batch.items || []).map((item) => ({{ id: item.id, style_code: item.style_code, origin_path: item.origin_path, detail_reference_path: item.detail_reference_path, generation_prompts: item.generation_prompts || [] }}));
+        const res = await fetch(api('/submit-generation'), {{ method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{ items }}) }});
+        const payload = await res.json();
+        if (!res.ok || payload.error) return setMessage(payload.error || '提交生图失败', true);
+        Object.assign(batch, payload.batch || {{}});
+        document.getElementById('batch-status').textContent = batch.status || payload.status || 'pending_approval';
+        setMessage(`生图完成：${{payload.generated || 0}} 张`);
+        render();
+        return;
+      }}
       await saveDecisions();
       if (!confirm('确认只上传已确认的 AI 图并创建天猫测图任务？')) return;
       setMessage('正在上传并创建测图任务...');
@@ -614,6 +787,253 @@ def update_approval_decisions(batch: dict[str, Any], decisions: Mapping[str, Any
     batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     save_approval_batch(batch)
     return batch
+
+
+def _find_confirmation_item(batch: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any] | None:
+    patch_id = compact(patch.get("id"))
+    patch_style = compact(patch.get("style_code"))
+    patch_item_id = compact(patch.get("item_id"))
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if patch_id and patch_id == compact(item.get("id")):
+            return item
+        if patch_style and patch_style == compact(item.get("style_code")):
+            return item
+        if patch_item_id and patch_item_id == compact(item.get("item_id")):
+            return item
+    return None
+
+
+def _upsert_reference_asset(item: dict[str, Any], *, kind: str, label: str, path: str) -> None:
+    clean_path = compact(path)
+    assets = item.setdefault("assets", [])
+    existing = next((asset for asset in assets if asset.get("kind") == kind), None)
+    if not clean_path:
+        item_key = "origin_path" if kind == "origin" else "detail_reference_path"
+        item[item_key] = ""
+        item["assets"] = [asset for asset in assets if asset.get("kind") != kind]
+        return
+    asset = _image_asset(
+        clean_path,
+        style_code=compact(item.get("style_code")),
+        kind=kind,
+        label=label,
+        index=1,
+        status="reference",
+        extra={"source_label": label},
+    )
+    if existing:
+        existing.update(asset)
+    else:
+        assets.insert(0 if kind == "origin" else min(1, len(assets)), asset)
+
+
+def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    for patch in items or []:
+        if not isinstance(patch, Mapping):
+            continue
+        item = _find_confirmation_item(batch, patch)
+        if not item:
+            continue
+        if "origin_path" in patch:
+            item["origin_path"] = compact(patch.get("origin_path"))
+            _upsert_reference_asset(item, kind="origin", label="原图/主图", path=item["origin_path"])
+        if "detail_reference_path" in patch:
+            item["detail_reference_path"] = compact(patch.get("detail_reference_path"))
+            _upsert_reference_asset(item, kind="detail_reference", label="款色参考图", path=item["detail_reference_path"])
+        if "generation_prompts" in patch and isinstance(patch.get("generation_prompts"), list):
+            prompts = []
+            for index, prompt in enumerate(patch.get("generation_prompts") or [], start=1):
+                if not isinstance(prompt, Mapping):
+                    continue
+                status = compact(prompt.get("status")) or "pending"
+                if status.lower() in {"removed", "deleted", "disabled", "skip", "skipped"}:
+                    continue
+                prompt_text = compact(prompt.get("custom_prompt") or prompt.get("prompt"))
+                if not prompt_text:
+                    continue
+                prompt_index = int(prompt.get("prompt_index") or index)
+                prompts.append({
+                    **json_safe(dict(prompt)),
+                    "id": compact(prompt.get("id")) or _generation_prompt_id(compact(item.get("style_code")), prompt_index, prompt_text),
+                    "prompt_index": prompt_index,
+                    "prompt_name": compact(prompt.get("prompt_name")) or f"新增 Prompt {prompt_index}",
+                    "prompt": prompt_text,
+                    "custom_prompt": compact(prompt.get("custom_prompt")),
+                    "reference_paths": parse_list(prompt.get("reference_paths")),
+                    "status": status,
+                })
+            item["generation_prompts"] = prompts
+            item["generation_rows"] = [
+                generation_confirmation_prompt_to_row(batch, item, prompt, index=index)
+                for index, prompt in enumerate(prompts, start=1)
+            ]
+    batch["generation_prompt_total"] = generation_confirmation_prompt_total(batch.get("items") or [])
+    batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    save_approval_batch(batch)
+    return batch
+
+
+def generation_confirmation_prompt_to_row(
+    batch: Mapping[str, Any],
+    item: Mapping[str, Any],
+    prompt: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any]:
+    template = prompt.get("generation_row") if isinstance(prompt.get("generation_row"), Mapping) else {}
+    if not template:
+        rows = item.get("generation_rows") if isinstance(item.get("generation_rows"), list) else []
+        template = next((row for row in rows if isinstance(row, Mapping)), {})
+    row = dict(template or {})
+    workflow = workflow_to_dict(item.get("workflow") or item)
+    prompt_index = int(prompt.get("prompt_index") or index)
+    prompt_text = compact(prompt.get("custom_prompt") or prompt.get("prompt"))
+    reference_paths = parse_list(prompt.get("reference_paths"))
+    if not reference_paths:
+        reference_paths = [compact(item.get("origin_path"))]
+        reference_paths = [path for path in reference_paths if path]
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    row.update({
+        "表格行号": workflow.get("row_no", ""),
+        "款号": workflow.get("style_code", ""),
+        "商品ID": workflow.get("item_id", ""),
+        "品类": workflow.get("category", ""),
+        "性别": workflow.get("gender", ""),
+        "SKC编码": workflow.get("skc_code", ""),
+        "提示词分组": compact(prompt.get("prompt_group")) or compact(row.get("提示词分组")) or category_to_prompt_sheet(workflow.get("category", "")),
+        "提示词字段名": compact(prompt.get("prompt_name")) or f"新增 Prompt {prompt_index}",
+        "提示词序号": prompt_index,
+        "最终提示词": prompt_text,
+        "完整Prompt": prompt_text,
+        "参考图文件": "\n".join(reference_paths),
+        "__1xm_generate": True,
+        "__1xm_reference_paths": reference_paths,
+        "__task_run_uid": approval_batch_run_uid(batch),
+    })
+    row["尺寸"] = compact(row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280"
+    row["格式"] = compact(row.get("格式")) or compact(run_params.get("output_format")) or "jpeg"
+    row["质量"] = compact(row.get("质量")) or compact(run_params.get("quality")) or "auto"
+    row["模型"] = compact(row.get("模型")) or compact(run_params.get("model")) or "gpt-image-2"
+    row["__1xm_key_tier"] = compact(row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto"
+    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), Mapping) else {}
+    row["__1xm_payload"] = {
+        **dict(payload),
+        "model": row["模型"],
+        "prompt": prompt_text,
+        "size": row["尺寸"],
+        "quality": row["质量"],
+        "output_format": row["格式"],
+        "n": 1,
+    }
+    apply_fresh_approval_generation_key(row, batch, "confirm")
+    return row
+
+
+def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) -> dict[str, Any]:
+    if compact(batch.get("status")) != GENERATION_CONFIRMATION_STATUS:
+        raise ValueError("当前批次不在确认提交生图状态")
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    settings = resolve_one_xm_settings()
+    require_one_xm_key_for_generation(
+        settings,
+        model=compact(run_params.get("model")) or "gpt-image-2",
+        image_size=compact(run_params.get("image_size")) or "960x1280",
+        key_tier=compact(run_params.get("one_xm_key_tier")) or "auto",
+    )
+    artifact_dir = Path(compact(batch.get("artifact_dir")) or compact(Path(compact(batch.get("json_path"))).parent) or ".")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs: list[tuple[dict[str, Any], dict[str, Any], int, dict[str, Any]]] = []
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item["assets"] = [asset for asset in item.get("assets") or [] if asset.get("kind") != "ai"]
+        prompts = item.get("generation_prompts") if isinstance(item.get("generation_prompts"), list) else []
+        item_rows = []
+        for index, prompt in enumerate(prompts, start=1):
+            if not isinstance(prompt, dict):
+                continue
+            status = compact(prompt.get("status")).lower()
+            if status in {"removed", "deleted", "disabled", "skip", "skipped"}:
+                continue
+            row = generation_confirmation_prompt_to_row(batch, item, prompt, index=index)
+            item_rows.append(row)
+            jobs.append((item, prompt, index, row))
+        item["generation_rows"] = json_safe(item_rows)
+
+    concurrency = max(1, min(100, int(run_params.get("generation_concurrency") or 100)))
+    options = {
+        "one_xm_key_tier": compact(run_params.get("one_xm_key_tier")) or "auto",
+        "retry_attempts": int(run_params.get("retry_attempts") or 3),
+        "compensate_attempts": int(run_params.get("compensate_attempts") or 2),
+        "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
+    }
+
+    def generate(job: tuple[dict[str, Any], dict[str, Any], int, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], int, dict[str, Any], list[str]]:
+        item, prompt, index, row = job
+        patched = run_one_xm_generation_row(row, options, settings)
+        paths = download_generated_images(patched, artifact_dir)
+        patched["本地生成图文件"] = "\n".join(paths)
+        return item, prompt, index, patched, paths
+
+    generated = 0
+    failures = 0
+    if jobs:
+        log(f"[approval] 确认提交生图任务 {len(jobs)} 张，并发 {concurrency}")
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        future_map = {executor.submit(generate, job): job for job in jobs}
+        for future in as_completed(future_map):
+            item, prompt, index, row = future_map[future]
+            try:
+                _item, _prompt, prompt_index, patched, paths = future.result()
+            except Exception as exc:
+                failures += 1
+                prompt["status"] = "failed"
+                prompt["error"] = str(exc)
+                continue
+            prompt["status"] = "generated"
+            prompt["generation_row"] = json_safe(patched)
+            if paths:
+                generated += len(paths)
+            for image_offset, path in enumerate(paths, start=1):
+                display_index = prompt_index if len(paths) == 1 else f"{prompt_index}-{image_offset}"
+                asset = _image_asset(
+                    path,
+                    style_code=compact(item.get("style_code")),
+                    kind="ai",
+                    label=f"AI 图 {display_index}",
+                    index=display_index,
+                    status="pending",
+                    extra={
+                        "prompt_index": prompt_index,
+                        "prompt_name": compact(prompt.get("prompt_name")),
+                        "prompt_group": compact(prompt.get("prompt_group")),
+                        "prompt": compact(patched.get("完整Prompt") or patched.get("最终提示词")),
+                        "generation_row": json_safe(patched),
+                        "reference_paths": parse_list(patched.get("参考图文件")),
+                        "reference_labels": [Path(ref).name for ref in parse_list(patched.get("参考图文件"))],
+                        "task_run_uid": compact(patched.get("__task_run_uid")) or approval_batch_run_uid(batch),
+                        "custom_prompt": "",
+                        "review_note": "",
+                    },
+                )
+                item.setdefault("assets", []).append(asset)
+
+    batch["status"] = "pending_approval" if generated else "generation_failed"
+    batch["generation_summary"] = {"requested": len(jobs), "generated": generated, "failed": failures}
+    batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    batch["approval_message"] = render_approval_message_template(
+        str(run_params.get("approval_message_template") or ""),
+        batch,
+    )
+    save_approval_batch(batch)
+    notify_channel = compact(run_params.get("approval_notify_channel") or "dingtalk").lower()
+    if generated and notify_channel and notify_channel != "none":
+        notify_approval_batch(batch, channel=notify_channel, log=log)
+    maybe_sync_approval_batch_to_cloud(batch, log=log)
+    return {"ok": generated > 0, "generated": generated, "failed": failures, "status": batch.get("status"), "batch": batch}
 
 
 def approval_asset_matches_batch_run(batch: Mapping[str, Any], asset: Mapping[str, Any]) -> bool:
@@ -1361,6 +1781,52 @@ def read_prompt_library(path: str) -> list[PromptItem]:
     finally:
         wb.close()
     return prompts
+
+
+def prompt_items_from_cloud_templates(templates: object) -> list[PromptItem]:
+    source = templates
+    if isinstance(source, Mapping):
+        source = source.get("templates") or []
+    if not isinstance(source, list):
+        return []
+
+    prompts: list[PromptItem] = []
+    for index, item in enumerate(source, start=1):
+        if not isinstance(item, Mapping):
+            continue
+        field_name = compact(item.get("field_name") or item.get("prompt_name") or item.get("name"))
+        prompt_text = compact(item.get("prompt_text") or item.get("prompt") or item.get("content"))
+        if not field_name or not prompt_text:
+            continue
+        priority = to_int(item.get("priority"), index)
+        prompts.append(PromptItem(
+            sheet_name=compact(item.get("group_name") or item.get("sheet_name") or item.get("category")) or "上装",
+            field_name=field_name,
+            field_order=to_int(item.get("field_order"), index),
+            size_label=compact(item.get("size_label") or item.get("size") or ""),
+            output_format=normalize_output_format(item.get("output_format") or item.get("format"), "jpeg"),
+            prompt=prompt_text,
+            female_priority=to_int(item.get("female_priority"), priority),
+            neutral_priority=to_int(item.get("male_neutral_priority") or item.get("neutral_priority"), priority),
+        ))
+    return prompts
+
+
+def load_prompt_library_for_args(args: argparse.Namespace) -> list[PromptItem]:
+    source = compact(getattr(args, "prompt_source", "local_excel")).lower() or "local_excel"
+    if source == "cloud_prompt_library":
+        payload_text = compact(getattr(args, "cloud_prompt_templates_json", ""))
+        if not payload_text:
+            raise RuntimeError("云端 Prompt 库未返回可用模板")
+        try:
+            payload = json.loads(payload_text)
+        except Exception as exc:
+            raise RuntimeError("云端 Prompt 库模板 JSON 解析失败") from exc
+        prompts = prompt_items_from_cloud_templates(payload)
+        if not prompts:
+            raise RuntimeError("云端 Prompt 库未解析到可用提示词")
+        return prompts
+    return read_prompt_library(getattr(args, "prompt_file", ""))
 
 
 def category_to_prompt_sheet(category: str) -> str:
@@ -3479,7 +3945,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Tmall AI image-test chain through CDP page APIs.")
     parser.add_argument("--execute-mode", default="approval_then_create", choices=CHAIN_EXECUTION_MODES)
     parser.add_argument("--workflow-file", default=DEFAULT_WORKFLOW_FILE)
+    parser.add_argument("--prompt-source", default="local_excel", choices=["local_excel", "cloud_prompt_library"])
     parser.add_argument("--prompt-file", default=DEFAULT_PROMPT_FILE)
+    parser.add_argument("--cloud-prompt-library-id", default="")
+    parser.add_argument("--cloud-prompt-templates-json", default="")
     parser.add_argument("--limit", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--cloud-path", default=DEFAULT_CLOUD_PATH)
     parser.add_argument("--cdp-url", default="http://127.0.0.1:9222")
@@ -3519,7 +3988,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
 
     workflow_table = read_workbook_table(args.workflow_file)
     workflow_rows, invalid_rows = normalize_workflow_rows(workflow_table, int(getattr(args, "limit", 0) or 0))
-    prompts = read_prompt_library(args.prompt_file)
+    prompts = load_prompt_library_for_args(args)
     if not workflow_rows:
         raise RuntimeError("工作流表未解析到款号")
     if not prompts:
@@ -3544,6 +4013,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
     total = len(workflow_rows)
     reference_mode = compact(getattr(args, "reference_mode", "main_only")) or "main_only"
     requires_detail_reference = reference_mode == "main_and_detail"
+    should_download_detail_reference = requires_detail_reference or bool(getattr(args, "confirm_generation", False))
     for completed, workflow in enumerate(workflow_rows, start=1):
         if wait_for_control:
             await wait_for_control({
@@ -3570,7 +4040,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 args.cloud_path,
                 artifact_dir,
                 allow_global_fallback=bool(getattr(args, "allow_global_semir_fallback", False)),
-                download_detail=requires_detail_reference,
+                download_detail=should_download_detail_reference,
             )
         except Exception as exc:
             workflow_results.append({"kind": "rows", "rows": [{
@@ -3677,7 +4147,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 })
             continue
         reference_paths = [main_origin_path]
-        if requires_detail_reference and detail_reference_path:
+        if requires_detail_reference and not getattr(args, "confirm_generation", False) and detail_reference_path:
             reference_paths.append(detail_reference_path)
         generation_rows: list[dict[str, Any]] = [
             make_generation_row(
@@ -3728,6 +4198,32 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
     for plan_index, plan in enumerate(generation_plans):
         for row_index, generation_row in enumerate(plan["generation_rows"]):
             generation_jobs.append((plan_index, row_index, generation_row))
+
+    if getattr(args, "confirm_generation", False) and generation_plans:
+        for entry in workflow_results:
+            if entry.get("kind") == "rows":
+                all_rows.extend(entry.get("rows") or [])
+        confirmation_items = [
+            build_generation_confirmation_item(
+                plan["workflow"],
+                plan["semir_data"],
+                plan["main_origin_path"],
+                plan["detail_reference_path"],
+                plan["generation_rows"],
+                reference_mode=plan.get("reference_mode") or reference_mode,
+            )
+            for plan in generation_plans
+        ]
+        batch = write_generation_confirmation_batch(
+            artifact_dir,
+            confirmation_items,
+            run_params=vars(args),
+            base_url=getattr(args, "approval_base_url", ""),
+        )
+        all_rows.extend(generation_confirmation_result_rows(batch))
+        if invalid_rows:
+            all_rows.extend(invalid_rows)
+        return all_rows
 
     generation_total = len(generation_jobs)
     if args.generate and generation_jobs:

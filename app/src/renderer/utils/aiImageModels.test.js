@@ -3,10 +3,15 @@ import assert from 'node:assert/strict'
 
 import {
   AI_IMAGE_MODELS,
+  AI_IMAGE_SIZES,
+  defaultSizeForRatio,
   defaultAiImageForm,
   missingKeyForModel,
   modelIdForJob,
   outputDirHint,
+  ratioForSize,
+  sizeForRatio,
+  sizesForRatio,
 } from './aiImageModels.js'
 
 test('ai image models expose supported 1XM model ids and config keys', () => {
@@ -47,6 +52,24 @@ test('default ai image form uses compact local generation defaults', () => {
   assert.equal(form.output_dir, '~/Downloads/抓虾导出/AI生图')
 })
 
+test('ratio and size helpers keep generation dimensions compatible', () => {
+  assert.deepEqual(AI_IMAGE_SIZES, [...new Set(AI_IMAGE_SIZES)])
+  assert.ok(AI_IMAGE_SIZES.every((size) => Math.max(...size.split('x').map(Number)) <= 2048))
+  assert.deepEqual(sizesForRatio('3:4'), ['960x1280', '1536x2048'])
+  assert.equal(sizeForRatio('3:4', '1024x1024', '2k'), '960x1280')
+  assert.equal(defaultSizeForRatio('3:4', '4k'), '1536x2048')
+  assert.equal(ratioForSize('1536x1024'), '3:2')
+  assert.equal(ratioForSize('1024x1536'), '2:3')
+
+  const threeFour = defaultAiImageForm({ ratio: '3:4' })
+  assert.equal(threeFour.size, '960x1280')
+  assert.equal(threeFour.ratio, '3:4')
+
+  const wide4k = defaultAiImageForm({ modelId: 'gpt-image-4k', ratio: '16:9' })
+  assert.equal(wide4k.size, '1920x1080')
+  assert.equal(wide4k.ratio, '16:9')
+})
+
 test('missing key detection returns the active model config id', () => {
   assert.equal(
     missingKeyForModel('gpt-image-2k', {
@@ -75,7 +98,7 @@ test('model id resolves from persisted job payload model tier and size', () => {
   assert.equal(
     modelIdForJob({
       model_key: 'gpt-image-2',
-      params: { size: '4096x4096' },
+      params: { size: '3840x2160' },
     }),
     'gpt-image-4k',
   )

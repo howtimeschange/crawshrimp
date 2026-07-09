@@ -8,7 +8,6 @@ import MachinesView from './views/MachinesView.vue'
 import PromptLibraryView from './views/PromptLibraryView.vue'
 import BatchListView from './views/BatchListView.vue'
 import BatchReviewView from './views/BatchReviewView.vue'
-import OnlineGenerationView from './views/OnlineGenerationView.vue'
 import DashboardView from './views/DashboardView.vue'
 import MaterialDataDashboardView from './views/MaterialDataDashboardView.vue'
 
@@ -16,7 +15,6 @@ type PageKey =
   | 'dashboard'
   | 'batches'
   | 'review'
-  | 'generate'
   | 'prompts'
   | 'materialData'
   | 'machines'
@@ -42,7 +40,6 @@ const isEmbedded = computed(() => new URLSearchParams(window.location.search).ge
 const navItems: Array<{ key: PageKey; label: string; permission: string }> = [
   { key: 'dashboard', label: '总览', permission: 'dashboard:read' },
   { key: 'batches', label: '审批批次', permission: 'batches:read' },
-  { key: 'generate', label: 'AI 生图', permission: 'jobs:generate' },
   { key: 'prompts', label: 'Prompt 库', permission: 'prompts:read' },
   { key: 'materialData', label: '测图数据', permission: 'dashboard:read' },
   { key: 'machines', label: '任务机', permission: 'machines:read' },
@@ -150,8 +147,7 @@ onMounted(loadMe)
       <DashboardView v-else-if="activePage === 'dashboard'" />
       <BatchListView v-else-if="activePage === 'batches'" @review="openReview" />
       <BatchReviewView v-else-if="activePage === 'review'" :initial-batch-uid="selectedBatchUid" />
-      <PromptLibraryView v-else-if="activePage === 'prompts'" />
-      <OnlineGenerationView v-else-if="activePage === 'generate'" />
+      <PromptLibraryView v-else-if="activePage === 'prompts'" :permissions="me.permissions" />
       <MaterialDataDashboardView v-else-if="activePage === 'materialData'" />
       <MachinesView v-else-if="activePage === 'machines'" />
       <AdminUsersView v-else-if="activePage === 'users'" />
@@ -170,7 +166,7 @@ onMounted(loadMe)
   --border: #2e2e3a;
   --text: #e2e0f0;
   --text2: #8b8aa0;
-  --text3: #555468;
+  --text3: #77768c;
   --green: #4ade80;
   --red: #f87171;
   font-family:
@@ -302,7 +298,7 @@ button {
 
 .title-block h1 {
   margin: 2px 0 0;
-  font-size: 20px;
+  font-size: 22px;
   line-height: 1.2;
 }
 
@@ -416,7 +412,7 @@ button:disabled {
 
 .topbar h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: 18px;
   line-height: 1.2;
 }
 
@@ -503,7 +499,7 @@ button:disabled {
 .form-panel h2,
 .modal-panel h2 {
   margin: 0;
-  font-size: 15px;
+  font-size: 16px;
 }
 
 .data-table {
@@ -819,6 +815,17 @@ button:disabled {
   .machine-input,
   .time-input {
     width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
   }
 }
 </style>

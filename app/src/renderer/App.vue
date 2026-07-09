@@ -102,17 +102,19 @@
         @back="activeInstanceUid = ''"
       />
       <!-- AI 生图 -->
-      <AiImageWorkbench
-        v-else-if="currentView === 'ai_image'"
-        @open-settings="openSettingsPanel('ai-1xm')"
-      />
+      <KeepAlive>
+        <AiImageWorkbench
+          v-if="currentView === 'ai_image'"
+          @open-settings="openSettingsPanel('ai-1xm')"
+        />
+      </KeepAlive>
       <!-- 数据文件 -->
-      <DataFiles v-else-if="currentView === 'files'" />
+      <DataFiles v-if="currentView === 'files'" />
       <!-- 云端审批 -->
-      <CloudApprovalFrame v-else-if="currentView === 'cloud_approval'" />
+      <CloudApprovalFrame v-if="currentView === 'cloud_approval'" />
       <!-- 设置 -->
       <SettingsPage
-        v-else-if="currentView === 'settings'"
+        v-if="currentView === 'settings'"
         :status="status"
         :focus-panel-id="focusSettingsPanelId"
         @launch-chrome="launchChrome"

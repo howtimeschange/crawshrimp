@@ -90,7 +90,8 @@ CREATE TABLE IF NOT EXISTS task_machines (
   last_seen_at TEXT,
   registered_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
-  UNIQUE(machine_id)
+  UNIQUE(machine_id),
+  UNIQUE(fingerprint_hash)
 );
 
 CREATE TABLE IF NOT EXISTS machine_tokens (

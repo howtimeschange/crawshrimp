@@ -103,11 +103,6 @@ const promptTemplates = ref<PromptTemplate[]>([])
 const selectedPromptLibraryId = ref<number | null>(null)
 const selectedPromptTemplateKey = ref('')
 const bulkPromptText = ref('')
-const generationSourceAssetUid = ref('')
-const generationReferenceAssetUids = ref<string[]>([])
-const generationPromptText = ref('')
-const generationCount = ref(1)
-const generatingStyle = ref(false)
 const manualKind = ref<'source' | 'reference' | 'ai'>('reference')
 const manualFile = ref<File | null>(null)
 const manualUploading = ref(false)
@@ -136,8 +131,6 @@ const batchStats = computed(() => {
   return reviewStats(allAiAssets)
 })
 const submitMachines = computed(() => machines.value.filter((machine) => machine.auth_status === 'active' && machine.health && ['online_idle', 'online_busy'].includes(machine.health) && isFresh(machine.last_seen_at) && machine.capabilities_json.includes('submit_tmall_material_test')))
-const generationSourceOptions = computed(() => sourceAssets.value.filter((asset) => ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded'))
-const generationReferenceOptions = computed(() => generationSourceOptions.value.filter((asset) => asset.asset_uid !== generationSourceAssetUid.value))
 const submitValidationMessage = computed(() => {
   if (!batch.value) return '请先从审批批次进入审图详情'
   const missingStyles = styles.value.filter((style) => style.status !== 'skipped' && statsForStyle(style).approved === 0)
@@ -163,7 +156,6 @@ watch(selectedStyleId, () => {
   if (!style?.assets.some((asset) => asset.asset_uid === selectedAssetUid.value)) {
     selectedAssetUid.value = defaultAssetUid(style)
   }
-  resetGenerationInputs(style)
   void loadPromptTemplates()
 })
 
@@ -188,7 +180,6 @@ async function loadBatch(preferred: { styleId?: number | null; assetUid?: string
     selectedAssetUids.value = []
     selectedResourceUids.value = []
     promptOverrides.value = Object.fromEntries(data.batch.styles.flatMap((style) => style.assets.filter((asset) => asset.kind === 'ai').map((asset) => [asset.asset_uid, asset.prompt_text || ''])))
-    resetGenerationInputs(nextStyle)
   } catch (caught) {
     error.value = (caught as ApiError).message
   }
@@ -282,14 +273,6 @@ function toggleResource(resource: ImageResourceRow) {
   }
 }
 
-function toggleGenerationReference(asset: AssetRow) {
-  if (generationReferenceAssetUids.value.includes(asset.asset_uid)) {
-    generationReferenceAssetUids.value = generationReferenceAssetUids.value.filter((assetUid) => assetUid !== asset.asset_uid)
-  } else {
-    generationReferenceAssetUids.value = [...generationReferenceAssetUids.value, asset.asset_uid]
-  }
-}
-
 async function decide(asset: AssetRow, decision: 'approved' | 'rejected' | 'pending') {
   if (!batch.value) return
   try {
@@ -363,33 +346,6 @@ async function submitJob() {
   }
 }
 
-async function createStyleGenerationJobs() {
-  if (!batch.value || !selectedStyle.value || !generationSourceAssetUid.value || !generationPromptText.value.trim()) return
-  generatingStyle.value = true
-  error.value = ''
-  try {
-    const count = Math.max(1, Math.min(12, Number(generationCount.value) || 1))
-    const promptTemplateVersionId = selectedPromptTemplateVersionId()
-    const noncePrefix = `${Date.now()}-${Math.random().toString(36).slice(2)}`
-    for (let index = 0; index < count; index += 1) {
-      await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generate`, {
-        style_id: selectedStyle.value.id,
-        source_asset_uid: generationSourceAssetUid.value,
-        reference_asset_uids: generationReferenceAssetUids.value,
-        prompt_template_version_id: promptTemplateVersionId,
-        prompt_text: generationPromptText.value.trim(),
-        request_nonce: `${noncePrefix}-${index}`,
-      })
-    }
-    message.value = `已给当前款式创建 ${count} 个 AI 生图任务`
-    await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
-  } catch (caught) {
-    error.value = (caught as ApiError).message
-  } finally {
-    generatingStyle.value = false
-  }
-}
-
 function assetDownloadUrl(asset: AssetRow): string {
   return `/api/assets/${encodeURIComponent(asset.asset_uid)}/download`
 }
@@ -445,12 +401,6 @@ function isFresh(lastSeenAt: string | null): boolean {
   return Number.isFinite(timestamp) && Date.now() - timestamp <= 2 * 60 * 1000
 }
 
-function resetGenerationInputs(style: StyleRow | null) {
-  const sources = style?.assets.filter((asset) => ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded') ?? []
-  generationSourceAssetUid.value = sources[0]?.asset_uid ?? ''
-  generationReferenceAssetUids.value = sources.slice(1).map((asset) => asset.asset_uid)
-}
-
 function promptOverridesFor(assets: AssetRow[]): Record<string, string> {
   return Object.fromEntries(assets
     .map((asset) => [asset.asset_uid, (promptOverrides.value[asset.asset_uid] || bulkPromptText.value || asset.prompt_text || '').trim()])
@@ -470,28 +420,18 @@ function selectedPromptTemplate(): PromptTemplate | null {
   return promptTemplates.value.find((template) => templateKey(template) === selectedPromptTemplateKey.value) ?? null
 }
 
-function selectedPromptTemplateVersionId(): number | null {
-  const template = selectedPromptTemplate()
-  return Number(template?.version_id ?? template?.id) || null
-}
-
-function applySelectedPromptTemplate(target: 'rerun' | 'generate' | 'both' = 'both') {
+function applySelectedPromptTemplate() {
   const template = selectedPromptTemplate()
   if (!template?.prompt_text) return
-  if (target === 'rerun' || target === 'both') {
-    bulkPromptText.value = template.prompt_text
-    const targetUids = selectedAssetUids.value.length > 0
-      ? selectedAssetUids.value
-      : selectedAsset.value?.kind === 'ai'
-        ? [selectedAsset.value.asset_uid]
-        : []
-    promptOverrides.value = {
-      ...promptOverrides.value,
-      ...Object.fromEntries(targetUids.map((assetUid) => [assetUid, template.prompt_text])),
-    }
-  }
-  if (target === 'generate' || target === 'both') {
-    generationPromptText.value = template.prompt_text
+  bulkPromptText.value = template.prompt_text
+  const targetUids = selectedAssetUids.value.length > 0
+    ? selectedAssetUids.value
+    : selectedAsset.value?.kind === 'ai'
+      ? [selectedAsset.value.asset_uid]
+      : []
+  promptOverrides.value = {
+    ...promptOverrides.value,
+    ...Object.fromEntries(targetUids.map((assetUid) => [assetUid, template.prompt_text])),
   }
 }
 
@@ -615,8 +555,8 @@ onMounted(() => {
             <span>{{ selectedStyle?.item_id || '-' }} / {{ selectedStyle?.category || '-' }} / {{ selectedStyle?.gender || '-' }}</span>
           </div>
           <div class="selected-style-actions">
-            <button class="danger-button" type="button" :disabled="selectedRejectedAssets.length === 0" @click="regenerateSelected">批量重跑选中图</button>
-            <button class="danger-button" type="button" :disabled="rejectedAssets.length === 0" @click="regenerateRejected">批量重跑舍弃图</button>
+            <button class="danger-button" type="button" :disabled="selectedRejectedAssets.length === 0" @click="regenerateSelected">重跑已选舍弃图</button>
+            <button class="danger-button" type="button" :disabled="rejectedAssets.length === 0" @click="regenerateRejected">重跑本批全部舍弃图</button>
           </div>
         </header>
 
@@ -661,7 +601,7 @@ onMounted(() => {
             <span v-if="selectedStyle">确认 {{ statsForStyle(selectedStyle).approved }} / 舍弃 {{ statsForStyle(selectedStyle).rejected }} / 待定 {{ statsForStyle(selectedStyle).pending }}</span>
           </div>
           <div v-if="aiAssets.length === 0" class="gallery-empty">
-            当前款式还没有 AI 图，可先在 AI 生图页或右侧上传一张 AI 图。
+            当前款式还没有 AI 图，可在右侧补充素材中上传一张 AI 图。
           </div>
           <div v-else class="review-gallery">
             <article
@@ -711,8 +651,11 @@ onMounted(() => {
             </div>
           </section>
 
-          <section class="prompt-control-panel">
-            <h3>从 Prompt 库选择</h3>
+          <details class="inspector-fold prompt-control-panel" :open="selectedAsset.kind === 'ai' && selectedAsset.status === 'rejected'">
+            <summary>
+              <span>Prompt 重跑</span>
+              <small>从词库选择或微调当前图 Prompt</small>
+            </summary>
             <label class="field">
               <span>词库</span>
               <select v-model="selectedPromptLibraryId">
@@ -728,17 +671,16 @@ onMounted(() => {
               </select>
             </label>
             <div class="prompt-control-actions">
-              <button class="ghost-button" type="button" :disabled="!selectedPromptTemplateKey" @click="applySelectedPromptTemplate('rerun')">用于批量重跑</button>
-              <button class="ghost-button" type="button" :disabled="!selectedPromptTemplateKey" @click="applySelectedPromptTemplate('generate')">用于新增生图</button>
+              <button class="ghost-button" type="button" :disabled="!selectedPromptTemplateKey" @click="applySelectedPromptTemplate">应用到重跑</button>
             </div>
             <label class="field">
-              <span>批量重跑 Prompt</span>
-              <textarea v-model="bulkPromptText" placeholder="可从词库带入，也可手动补充；执行批量重跑时会应用到选中的舍弃图"></textarea>
+              <span>重跑 Prompt</span>
+              <textarea v-model="bulkPromptText" placeholder="可从词库带入，也可手动补充；执行重跑时会应用到选中的舍弃图"></textarea>
             </label>
-          </section>
+          </details>
 
           <label v-if="selectedAsset.kind === 'ai'" class="field inspector-prompt">
-            <span>原始 / 重跑 Prompt</span>
+            <span>当前图 Prompt</span>
             <textarea v-model="promptOverrides[selectedAsset.asset_uid]" placeholder="可从 Prompt 库带入，或仅对当前图片手动调整"></textarea>
           </label>
 
@@ -746,56 +688,34 @@ onMounted(() => {
             <button class="small-button approve-action" type="button" @click="decide(selectedAsset, 'approved')">确认通过</button>
             <button class="danger-button" type="button" @click="decide(selectedAsset, 'rejected')">标记舍弃</button>
             <button class="ghost-button" type="button" @click="decide(selectedAsset, 'pending')">待审批</button>
-            <button class="primary-button" type="button" :disabled="selectedAsset.status !== 'rejected'" @click="regenerateOne(selectedAsset)">用当前 Prompt 重跑</button>
+            <button class="primary-button" type="button" :disabled="selectedAsset.status !== 'rejected'" @click="regenerateOne(selectedAsset)">重跑当前舍弃图</button>
           </section>
 
           <a class="ghost-button download-link" :href="assetDownloadUrl(selectedAsset)" target="_blank" rel="noopener">下载当前图</a>
         </template>
         <div v-else class="inspector-empty">选择一张图片后查看 Prompt 和审批动作。</div>
 
-        <form class="style-generation-panel" @submit.prevent="createStyleGenerationJobs">
-          <h3>给当前款式新增 AI 图</h3>
-          <label class="field">
-            <span>主图</span>
-            <select v-model="generationSourceAssetUid">
-              <option value="">选择主图/参考图</option>
-              <option v-for="asset in generationSourceOptions" :key="asset.asset_uid" :value="asset.asset_uid">{{ kindLabel(asset.kind) }} / {{ asset.filename }}</option>
-            </select>
-          </label>
-          <div class="reference-checks">
-            <span>参考图</span>
-            <label v-for="asset in generationReferenceOptions" :key="asset.asset_uid">
-              <input type="checkbox" :checked="generationReferenceAssetUids.includes(asset.asset_uid)" @change="toggleGenerationReference(asset)" />
-              {{ kindLabel(asset.kind) }} / {{ asset.filename }}
+        <details class="inspector-fold manual-upload-panel">
+          <summary>
+            <span>补充素材</span>
+            <small>追加素材，不替换当前主图</small>
+          </summary>
+          <form class="fold-form" @submit.prevent="uploadManualAsset">
+            <label class="field">
+              <span>类型</span>
+              <select v-model="manualKind">
+                <option value="source">主图（新增，不替换）</option>
+                <option value="reference">参考图（追加）</option>
+                <option value="ai">AI 图（人工补图）</option>
+              </select>
             </label>
-          </div>
-          <label class="field">
-            <span>Prompt</span>
-            <textarea v-model="generationPromptText" placeholder="可从 Prompt 库带入，也可自己写"></textarea>
-          </label>
-          <label class="field compact-number">
-            <span>生成张数</span>
-            <input v-model.number="generationCount" type="number" min="1" max="12" />
-          </label>
-          <button class="primary-button full" type="submit" :disabled="generatingStyle || !generationSourceAssetUid || !generationPromptText.trim()">创建生图任务</button>
-        </form>
-
-        <form class="manual-upload-panel" @submit.prevent="uploadManualAsset">
-          <h3>补充素材（追加，不替换）</h3>
-          <label class="field">
-            <span>类型</span>
-            <select v-model="manualKind">
-              <option value="source">主图（新增，不替换）</option>
-              <option value="reference">参考图（追加）</option>
-              <option value="ai">AI 图（人工补图）</option>
-            </select>
-          </label>
-          <label class="field">
-            <span>文件</span>
-            <input type="file" accept="image/*" @change="onManualFile" />
-          </label>
-          <button class="ghost-button full" type="submit" :disabled="manualUploading || !manualFile">上传到当前款式</button>
-        </form>
+            <label class="field">
+              <span>文件</span>
+              <input type="file" accept="image/*" @change="onManualFile" />
+            </label>
+            <button class="ghost-button full" type="submit" :disabled="manualUploading || !manualFile">上传到当前款式</button>
+          </form>
+        </details>
       </aside>
     </section>
 
@@ -823,8 +743,7 @@ onMounted(() => {
 .summary-copy span,
 .style-panel-head p,
 .style-panel-head strong,
-.prompt-control-panel h3,
-.style-generation-panel h3 {
+.prompt-control-panel h3 {
   margin: 0;
 }
 
@@ -900,7 +819,6 @@ onMounted(() => {
 .manual-upload-panel .field > span,
 .batch-submit-panel .field > span,
 .prompt-control-panel .field > span,
-.style-generation-panel .field > span,
 .reference-checks > span {
   color: var(--text2);
   font-size: 12px;
@@ -1370,14 +1288,56 @@ onMounted(() => {
 
 .inspector-section,
 .manual-upload-panel,
-.prompt-control-panel,
-.style-generation-panel {
+.prompt-control-panel {
   display: grid;
   gap: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg3);
   padding: 10px;
+}
+
+.inspector-fold {
+  align-content: start;
+}
+
+.inspector-fold summary {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  cursor: pointer;
+}
+
+.inspector-fold summary::-webkit-details-marker {
+  display: none;
+}
+
+.inspector-fold summary span {
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.inspector-fold summary small {
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.inspector-fold[open] summary {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+}
+
+.fold-form {
+  display: grid;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.inspector-fold > .field,
+.inspector-fold > .prompt-control-actions {
+  margin-top: 10px;
 }
 
 .inspector-title {
@@ -1389,8 +1349,7 @@ onMounted(() => {
 
 .inspector-title h3,
 .manual-upload-panel h3,
-.prompt-control-panel h3,
-.style-generation-panel h3 {
+.prompt-control-panel h3 {
   font-size: 14px;
 }
 
@@ -1405,8 +1364,7 @@ onMounted(() => {
 }
 
 .inspector-prompt textarea,
-.prompt-control-panel textarea,
-.style-generation-panel textarea {
+.prompt-control-panel textarea {
   min-height: 180px;
 }
 

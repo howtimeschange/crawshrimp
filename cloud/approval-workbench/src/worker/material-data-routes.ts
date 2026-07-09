@@ -108,6 +108,7 @@ interface MaterialTestScheduleRow {
 const IMPORT_BATCH_SIZE = 500
 const ACTIVE_IMPORT_LEASE_STATUSES = new Set(['leased', 'running', 'uploading_results'])
 const VALID_SCHEDULE_STATUSES = new Set(['active', 'paused'])
+const LOCAL_MANUAL_EXPORT_SYNC_MODE = 'local_manual_export'
 
 export async function importMaterialTestData(request: Request, env: Env): Promise<Response> {
   const body = await readJsonObject(request)
@@ -195,14 +196,35 @@ export async function importMaterialTestData(request: Request, env: Env): Promis
 export async function getMaterialTestSummary(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'dashboard:read')
   if (actor instanceof Response) return actor
+  const scope = materialMetricFilterScope(new URL(request.url).searchParams)
   const row = await env.DB.prepare(
-    `SELECT
+    `${latestMaterialMetricCte(scope.where)}
+     SELECT
        COUNT(DISTINCT item_id) AS total_items,
-       COUNT(DISTINCT material_id || '|' || material_url) AS total_materials,
+       COUNT(*) AS total_materials,
        COALESCE(SUM(search_impressions), 0) AS total_search_exposure,
-       COALESCE(SUM(search_clicks), 0) AS total_search_clicks
-     FROM material_test_image_metrics`,
-  ).first<{ total_items: number; total_materials: number; total_search_exposure: number; total_search_clicks: number }>()
+       COALESCE(SUM(search_clicks), 0) AS total_search_clicks,
+       COUNT(*) AS snapshot_material_rows,
+       (SELECT COUNT(*) FROM scoped_metrics) AS raw_snapshot_rows,
+       (SELECT COUNT(*) FROM scoped_metrics WHERE snapshot_rank > 1) AS merged_snapshot_rows,
+       (SELECT COUNT(DISTINCT statistic_date) FROM scoped_metrics) AS statistic_date_count,
+       (SELECT MIN(statistic_date) FROM scoped_metrics) AS earliest_statistic_date,
+       (SELECT MAX(statistic_date) FROM scoped_metrics) AS latest_statistic_date
+     FROM latest_metrics`,
+  )
+    .bind(...scope.values)
+    .first<{
+      total_items: number
+      total_materials: number
+      total_search_exposure: number
+      total_search_clicks: number
+      snapshot_material_rows: number
+      raw_snapshot_rows: number
+      merged_snapshot_rows: number
+      statistic_date_count: number
+      earliest_statistic_date: string | null
+      latest_statistic_date: string | null
+    }>()
   const best = await env.DB.prepare("SELECT COUNT(*) AS best_image_count FROM material_test_task_overviews WHERE best_material <> ''").first<{ best_image_count: number }>()
   const latest = await env.DB.prepare('SELECT source_filename, imported_at FROM material_test_image_metrics ORDER BY imported_at DESC LIMIT 1').first<{ source_filename: string; imported_at: string }>()
   const totalSearchExposure = Number(row?.total_search_exposure ?? 0)
@@ -211,8 +233,15 @@ export async function getMaterialTestSummary(request: Request, env: Env): Promis
     total_items: Number(row?.total_items ?? 0),
     total_materials: Number(row?.total_materials ?? 0),
     total_search_exposure: totalSearchExposure,
+    total_search_clicks: totalSearchClicks,
     weighted_search_ctr: totalSearchExposure > 0 ? totalSearchClicks / totalSearchExposure : 0,
     best_image_count: Number(best?.best_image_count ?? 0),
+    snapshot_material_rows: Number(row?.snapshot_material_rows ?? 0),
+    raw_snapshot_rows: Number(row?.raw_snapshot_rows ?? 0),
+    merged_snapshot_rows: Number(row?.merged_snapshot_rows ?? 0),
+    statistic_date_count: Number(row?.statistic_date_count ?? 0),
+    earliest_statistic_date: row?.earliest_statistic_date ?? null,
+    latest_statistic_date: row?.latest_statistic_date ?? null,
     latest_import: latest ?? null,
   })
 }
@@ -220,29 +249,18 @@ export async function getMaterialTestSummary(request: Request, env: Env): Promis
 export async function listMaterialTestImages(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'dashboard:read')
   if (actor instanceof Response) return actor
-  const params = new URL(request.url).searchParams
-  const filters: string[] = []
-  const values: string[] = []
-  addEqualFilter(filters, values, 'statistic_type', params.get('statistic_type'))
-  addEqualFilter(filters, values, 'statistic_date', normalizeStatisticDate(params.get('date') || params.get('statistic_date')))
-  addEqualFilter(filters, values, 'image_type', params.get('image_type'))
-  const search = stringValue(params.get('q') || params.get('search'))
-  if (search) {
-    filters.push('(style_code LIKE ? OR item_id LIKE ?)')
-    values.push(`%${search}%`, `%${search}%`)
-  }
-  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : ''
+  const scope = materialMetricFilterScope(new URL(request.url).searchParams)
   const { results } = await env.DB.prepare(
-    `SELECT id, style_code, item_id, item_title, task_id, statistic_type, statistic_date, image_type,
+    `${latestMaterialMetricCte(scope.where)}
+     SELECT id, style_code, item_id, item_title, task_id, statistic_type, statistic_date, image_type,
             material_id, material_ratio, material_share, material_url, search_impressions, search_clicks,
             search_ctr, detail_impressions, detail_clicks, detail_ctr, detail_add_to_cart,
             detail_pay_conversion, detail_pay_conversion_rate, execution_result, remark
-     FROM material_test_image_metrics
-     ${where}
+     FROM latest_metrics
      ORDER BY search_impressions DESC, detail_clicks DESC
      LIMIT 200`,
   )
-    .bind(...values)
+    .bind(...scope.values)
     .all()
   return json({ images: results })
 }
@@ -345,9 +363,21 @@ async function requireMachineOrUser(request: Request, env: Env, permission: Para
   if (hasBearerToken(request)) {
     const machine = await requireActiveMachine(request, env)
     if (machine instanceof Response) return machine
+    if (isLocalManualExportImport(body)) return requireMaterialImportMachineCapability(machine)
     return requireMaterialImportLease(env, machine, body)
   }
   return requirePermission(request, env, permission)
+}
+
+function isLocalManualExportImport(body: Record<string, unknown>): boolean {
+  const source = objectValue(body.source)
+  const mode = stringValue(source.sync_mode ?? source.syncMode ?? body.sync_mode ?? body.syncMode)
+  return mode === LOCAL_MANUAL_EXPORT_SYNC_MODE
+}
+
+function requireMaterialImportMachineCapability(machine: MachineRow): MachineRow | Response {
+  if (!parseArray(machine.capabilities_json).includes('crawl_tmall_material_test_data')) return forbidden('Machine lacks crawl_tmall_material_test_data capability')
+  return machine
 }
 
 async function requireMaterialImportLease(env: Env, machine: MachineRow, body: Record<string, unknown>): Promise<MachineRow | Response> {
@@ -521,7 +551,45 @@ function publicJob(job: DispatchJobRow) {
   }
 }
 
-function addEqualFilter(filters: string[], values: string[], field: string, value: unknown): void {
+function materialMetricFilterScope(params: URLSearchParams): { where: string; values: string[] } {
+  const filters: string[] = []
+  const values: string[] = []
+  addMetricEqualFilter(filters, values, 'statistic_type', params.get('statistic_type'))
+  addMetricEqualFilter(filters, values, 'statistic_date', normalizeStatisticDate(params.get('date') || params.get('statistic_date')))
+  addMetricEqualFilter(filters, values, 'image_type', params.get('image_type'))
+  const search = stringValue(params.get('q') || params.get('search'))
+  if (search) {
+    filters.push('(style_code LIKE ? OR item_id LIKE ? OR item_title LIKE ?)')
+    values.push(`%${search}%`, `%${search}%`, `%${search}%`)
+  }
+  return {
+    where: filters.length ? `WHERE ${filters.join(' AND ')}` : '',
+    values,
+  }
+}
+
+function latestMaterialMetricCte(where: string): string {
+  return `WITH scoped_metrics AS (
+       SELECT *,
+              ROW_NUMBER() OVER (
+                PARTITION BY item_id,
+                             task_id,
+                             statistic_type,
+                             image_type,
+                             COALESCE(NULLIF(material_url, ''), NULLIF(material_id, ''))
+                ORDER BY statistic_date DESC, imported_at DESC, id DESC
+              ) AS snapshot_rank
+       FROM material_test_image_metrics
+       ${where}
+     ),
+     latest_metrics AS (
+       SELECT *
+       FROM scoped_metrics
+       WHERE snapshot_rank = 1
+     )`
+}
+
+function addMetricEqualFilter(filters: string[], values: string[], field: string, value: unknown): void {
   const text = stringValue(value)
   if (!text) return
   filters.push(`${field} = ?`)

@@ -90,6 +90,36 @@ class CloudMachineAgentTests(unittest.TestCase):
             },
         )
 
+    def test_enrollment_is_skipped_when_client_already_has_credentials(self):
+        data_sink.save_cloud_machine_credentials(
+            machine_id="machine-existing",
+            machine_token="csr_machine_existing",
+            machine_name="既有任务机",
+            capabilities=["regenerate_ai_image"],
+        )
+        client = FakeClient([])
+        agent = CloudMachineAgent(client)
+
+        result = agent.enroll(
+            registration_token="new-admin-token",
+            machine_name="重复任务机",
+            capabilities=["regenerate_ai_image"],
+        )
+
+        self.assertEqual(result["machine_id"], "machine-existing")
+        self.assertTrue(result["already_enrolled"])
+        self.assertEqual(client.machine_token, "csr_machine_existing")
+        self.assertEqual(client.calls, [])
+
+    def test_default_machine_id_is_stable_for_the_same_fingerprint(self):
+        with patch.object(CloudMachineAgent, "_default_fingerprint", return_value="host:arm64:Darwin:123"):
+            first = CloudMachineAgent._default_machine_id()
+            second = CloudMachineAgent._default_machine_id()
+
+        self.assertEqual(first, second)
+        self.assertTrue(first.startswith("csr-machine-"))
+        self.assertNotEqual(first, "host:arm64:Darwin:123")
+
     def test_heartbeat_sends_app_health_capabilities_and_current_job_id(self):
         data_sink.save_cloud_machine_credentials(
             machine_id="machine-1",
@@ -128,6 +158,36 @@ class CloudMachineAgentTests(unittest.TestCase):
         self.assertEqual(result["next_poll_after_seconds"], 10.0)
         self.assertEqual(result["idle_sleep_seconds"], 10.0)
         self.assertEqual(client.calls[0]["path"], "/api/machines/jobs/claim")
+
+    def test_claimed_job_updates_local_busy_idle_callback(self):
+        class SucceedingExecutor:
+            def __init__(self, _client):
+                pass
+
+            def execute(self, _job):
+                return {"status": "succeeded", "result": {"ok": True}}
+
+        data_sink.save_cloud_machine_credentials("machine-1", "csr_machine_secret", "任务机", ["regenerate_ai_image"])
+        health_updates = []
+        client = FakeClient([
+            {
+                "job": {
+                    "job_uid": "job-1",
+                    "batch_uid": "batch-1",
+                    "job_type": "regenerate_ai_image",
+                    "lease_id": "lease-1",
+                    "payload": {},
+                },
+                "next_poll_after_seconds": 0,
+            },
+            {"ok": True, "status": "succeeded"},
+        ])
+        agent = CloudMachineAgent(client, job_executor_factory=SucceedingExecutor, heartbeat_callback=health_updates.append)
+
+        result = agent.claim_once()
+
+        self.assertEqual(result["job_result"]["status"], "succeeded")
+        self.assertEqual(health_updates, ["online_busy", "online_idle"])
 
     def test_idle_loop_uses_server_next_poll_after_seconds(self):
         client = FakeClient(

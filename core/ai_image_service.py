@@ -5,6 +5,7 @@ import mimetypes
 import re
 import shutil
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
@@ -54,6 +55,22 @@ def _size_tier(size: str) -> str:
     return "2k"
 
 
+def _normalize_size(size: Any, *, max_edge: int = 2048) -> str:
+    value = _compact(size) or "1024x1024"
+    match = re.match(r"^(\d+)x(\d+)$", value, flags=re.IGNORECASE)
+    if not match:
+        return value
+    width = int(match.group(1))
+    height = int(match.group(2))
+    longest = max(width, height)
+    if longest <= max_edge:
+        return f"{width}x{height}"
+    scale = max_edge / float(longest)
+    normalized_width = max(1, int(round(width * scale)))
+    normalized_height = max(1, int(round(height * scale)))
+    return f"{normalized_width}x{normalized_height}"
+
+
 def _settings_value(settings: Mapping[str, Any], config_id: str, alias: str = "") -> str:
     return _compact(settings.get(config_id) or (settings.get(alias) if alias else ""))
 
@@ -89,6 +106,22 @@ def select_model_key(job_or_params: Mapping[str, Any], settings: Mapping[str, An
     return tier, key
 
 
+def _param_input_assets(params: Mapping[str, Any]) -> list[dict[str, Any]]:
+    assets: list[dict[str, Any]] = []
+    main_path = _compact(params.get("main_image_path"))
+    if main_path:
+        assets.append({"kind": "main", "path": main_path, "sort_order": 0})
+    references = params.get("reference_image_paths")
+    if isinstance(references, str):
+        references = [references]
+    if isinstance(references, list):
+        for index, path in enumerate(references, start=1):
+            value = _compact(path)
+            if value:
+                assets.append({"kind": "reference", "path": value, "sort_order": index})
+    return assets
+
+
 def build_one_xm_payload(
     job: Mapping[str, Any],
     assets: list[Mapping[str, Any]] | None = None,
@@ -102,7 +135,7 @@ def build_one_xm_payload(
     payload: dict[str, Any] = {
         "model": _compact(job.get("model_key") or params.get("model") or "gpt-image-2") or "gpt-image-2",
         "prompt": _compact(job.get("prompt") or params.get("prompt")),
-        "size": _compact(params.get("size") or "1024x1024") or "1024x1024",
+        "size": _normalize_size(params.get("size") or "1024x1024"),
         "quality": quality,
         "output_format": _compact(params.get("output_format") or params.get("response_format") or params.get("format") or "png") or "png",
         "n": int(params.get("n") or 1),
@@ -111,7 +144,8 @@ def build_one_xm_payload(
         if params.get(optional_key):
             payload[optional_key] = params.get(optional_key)
 
-    ordered_assets = sorted(list(assets or []), key=lambda item: (int(item.get("sort_order") or 0), int(item.get("id") or 0)))
+    input_assets = _param_input_assets(params) or list(assets or [])
+    ordered_assets = sorted(input_assets, key=lambda item: (int(item.get("sort_order") or 0), int(item.get("id") or 0)))
     images = []
     for asset in ordered_assets:
         if _compact(asset.get("kind")).lower() != "main":
@@ -131,7 +165,14 @@ def build_one_xm_payload(
 
 
 def _default_downloader(url: str, target: Path) -> None:
-    with urllib.request.urlopen(url, timeout=60) as response:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0 Crawshrimp/AIImageWorkbench",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=60) as response:
         target.write_bytes(response.read())
 
 
@@ -194,9 +235,96 @@ def _safe_summary(result: Mapping[str, Any], output_files: list[str], tier: str)
         "image_urls": [str(url) for url in result.get("image_urls") or []],
         "output_files": output_files,
         "error": _sanitize_error(result.get("error")),
+        "warning": "",
         "create_attempts": int(result.get("create_attempts") or 0),
         "poll_attempts": int(result.get("poll_attempts") or 0),
         "compensation_attempts": int(result.get("compensation_attempts") or 0),
+    }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in [*existing, *additions]:
+        value = str(item or "").strip()
+        if not value or value in seen:
+            continue
+        result.append(value)
+        seen.add(value)
+    return result
+
+
+def _legacy_run_from_summary(job: Mapping[str, Any], summary: Mapping[str, Any]) -> dict | None:
+    output_files = _string_list(summary.get("output_files"))
+    image_urls = _string_list(summary.get("image_urls"))
+    if not output_files and not image_urls:
+        return None
+    params = _params(job)
+    return {
+        "run_uid": "legacy",
+        "created_at": _compact(job.get("updated_at") or job.get("created_at")),
+        "prompt": _compact(job.get("prompt") or params.get("prompt")),
+        "model_key": _compact(job.get("model_key") or params.get("model") or "gpt-image-2"),
+        "model_key_tier": _compact(summary.get("model_key_tier")),
+        "size": _compact(params.get("size")),
+        "ratio": _compact(params.get("ratio")),
+        "status": _compact(job.get("status") or "completed"),
+        "task_id": _compact(summary.get("task_id")),
+        "poll_url": _compact(summary.get("poll_url")),
+        "image_urls": image_urls,
+        "output_files": output_files,
+        "warning": _compact(summary.get("warning")),
+        "error": _compact(summary.get("error")),
+    }
+
+
+def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any], *, status: str) -> dict:
+    previous_summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    previous_runs = [
+        dict(run)
+        for run in previous_summary.get("runs") or []
+        if isinstance(run, Mapping)
+    ]
+    if not previous_runs:
+        legacy_run = _legacy_run_from_summary(job, previous_summary)
+        if legacy_run:
+            previous_runs.append(legacy_run)
+
+    params = _params(job)
+    output_files = _string_list(latest_summary.get("output_files"))
+    image_urls = _string_list(latest_summary.get("image_urls"))
+    run_record = {
+        "run_uid": _compact(latest_summary.get("task_id")) or f"run-{len(previous_runs) + 1}",
+        "created_at": _now_iso(),
+        "prompt": _compact(job.get("prompt") or params.get("prompt")),
+        "model_key": _compact(job.get("model_key") or params.get("model") or "gpt-image-2"),
+        "model_key_tier": _compact(latest_summary.get("model_key_tier")),
+        "size": _compact(params.get("size")),
+        "ratio": _compact(params.get("ratio")),
+        "status": status,
+        "task_id": _compact(latest_summary.get("task_id")),
+        "poll_url": _compact(latest_summary.get("poll_url")),
+        "image_urls": image_urls,
+        "output_files": output_files,
+        "warning": _compact(latest_summary.get("warning")),
+        "error": _compact(latest_summary.get("error")),
+    }
+
+    return {
+        **dict(latest_summary),
+        "image_urls": _append_unique(_string_list(previous_summary.get("image_urls")), image_urls),
+        "output_files": _append_unique(_string_list(previous_summary.get("output_files")), output_files),
+        "runs": [*previous_runs, run_record],
     }
 
 
@@ -240,6 +368,7 @@ def run_job_with_one_xm(
             [],
             tier,
         )
+        summary = _merge_run_summary(job, summary, status="failed")
         data_sink.update_ai_image_job(job_uid, {"status": "failed", "summary": summary})
         return {"ok": False, "job_uid": job_uid, "summary": summary}
 
@@ -253,22 +382,39 @@ def run_job_with_one_xm(
             download_error = _sanitize_error(exc, [api_key])
     summary = _safe_summary(result, output_files, tier)
     if download_error:
+        summary["warning"] = f"结果图已生成，但本地保存失败：{download_error}"
+    if result.get("ok") and not summary["image_urls"]:
         summary["ok"] = False
-        summary["error"] = download_error
+        summary["error"] = "生成任务成功返回，但没有图片地址"
+    status = "completed" if summary.get("ok") else "failed"
+    summary = _merge_run_summary(job, summary, status=status)
     data_sink.update_ai_image_job(job_uid, {
-        "status": ("partial_failed" if output_files else "failed") if download_error else ("completed" if result.get("ok") else "failed"),
+        "status": status,
         "summary": summary,
     })
-    return {"ok": bool(result.get("ok")) and not download_error, "job_uid": job_uid, "summary": summary}
+    return {"ok": bool(summary.get("ok")), "job_uid": job_uid, "summary": summary}
 
 
-def copy_assets_to_directory(assets: list[Mapping[str, Any]], directory: str | Path) -> list[str]:
+def copy_assets_to_directory(
+    assets: list[Mapping[str, Any]],
+    directory: str | Path,
+    *,
+    downloader: Callable[[str, Path], None] = _default_downloader,
+) -> list[str]:
     target_dir = Path(directory).expanduser()
     target_dir.mkdir(parents=True, exist_ok=True)
     copied: list[str] = []
     for asset in assets or []:
-        source = Path(_compact(asset.get("path"))).expanduser()
-        if not source.is_file():
+        source_url = _compact(asset.get("url"))
+        source_path = _compact(asset.get("path"))
+        if source_url.startswith("http://") or source_url.startswith("https://"):
+            suffix = _extension_from_url(source_url)
+            target = _unique_path(target_dir / f"result-{len(copied) + 1:02d}{suffix}")
+            downloader(source_url, target)
+            copied.append(str(target))
+            continue
+        source = Path(source_path).expanduser()
+        if not source_path or not source.is_file():
             continue
         target = _unique_path(target_dir / source.name)
         shutil.copy2(source, target)

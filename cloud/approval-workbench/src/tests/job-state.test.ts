@@ -26,6 +26,18 @@ describe('dispatch job state machine', () => {
     })).toBe(false)
   })
 
+  it('blocks busy machines from claiming another job', () => {
+    expect(canClaimJob({
+      jobStatus: 'queued',
+      assignedMachineId: '',
+      requiredCapabilities: ['regenerate_ai_image'],
+      machineId: 'machine-1',
+      machineAuthStatus: 'active',
+      machineHealth: 'online_busy',
+      machineCapabilities: ['regenerate_ai_image'],
+    })).toBe(false)
+  })
+
   it('requeues leased jobs after lease expiry', () => {
     expect(nextJobStatusAfterLeaseExpiry('leased')).toBe('queued')
     expect(nextJobStatusAfterLeaseExpiry('running')).toBe('retryable_failed')

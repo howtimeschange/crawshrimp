@@ -191,6 +191,9 @@ class FakeD1Statement {
       const machine = this.state.machines.find((row) => row.machine_id === token.machine_id)
       return (machine ? { ...machine, token_hash: token.token_hash } : null) as T | null
     }
+    if (normalized.includes('from task_machines') && normalized.includes('where fingerprint_hash = ?')) {
+      return (this.state.machines.find((row) => row.fingerprint_hash === String(this.params[0])) ?? null) as T | null
+    }
     if (normalized.includes('from task_machines') && normalized.includes('where machine_id = ?')) {
       return (this.state.machines.find((row) => row.machine_id === String(this.params[0])) ?? null) as T | null
     }
@@ -219,6 +222,11 @@ class FakeD1Statement {
       return { results: results as T[] }
     }
     if (normalized.includes('from machine_enrollment_tokens')) return { results: this.state.enrollmentTokens as T[] }
+    if (normalized.includes('select status, count(*) as count from dispatch_jobs')) {
+      const counts = new Map<string, number>()
+      for (const job of this.state.jobs) counts.set(job.status, (counts.get(job.status) || 0) + 1)
+      return { results: Array.from(counts.entries()).map(([status, count]) => ({ status, count })) as T[] }
+    }
     if (normalized.includes('from task_machines')) return { results: this.state.machines as T[] }
     if (normalized.includes('from dispatch_jobs') && normalized.includes('cancel_requested = 1')) {
       const cutoff = String(this.params[0])
@@ -227,6 +235,25 @@ class FakeD1Statement {
           && ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
           && Boolean(job.lease_expires_at)
           && String(job.lease_expires_at) < cutoff)
+        .map((job) => ({
+          job_uid: job.job_uid,
+          status: job.status,
+          assigned_machine_id: job.assigned_machine_id,
+          lease_id: job.lease_id,
+        }))
+      return { results: results as T[] }
+    }
+    if (normalized.includes('from dispatch_jobs')
+      && normalized.includes('lease_expires_at < ?')
+      && normalized.includes('attempt_count < max_attempts')
+      && normalized.includes('cancel_requested != 1')) {
+      const cutoff = String(this.params[0])
+      const results = this.state.jobs
+        .filter((job) => ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
+          && job.cancel_requested !== 1
+          && Boolean(job.lease_expires_at)
+          && String(job.lease_expires_at) < cutoff
+          && job.attempt_count < job.max_attempts)
         .map((job) => ({
           job_uid: job.job_uid,
           status: job.status,
@@ -289,6 +316,9 @@ class FakeD1Statement {
       if (this.state.machines.some((row) => row.machine_id === String(this.params[0]))) {
         throw new Error('D1_ERROR: UNIQUE constraint failed: task_machines.machine_id')
       }
+      if (this.state.machines.some((row) => row.fingerprint_hash === String(this.params[4]))) {
+        throw new Error('D1_ERROR: UNIQUE constraint failed: task_machines.fingerprint_hash')
+      }
       const id = this.state.machines.length + 1
       this.state.machines.push({
         id,
@@ -340,19 +370,15 @@ class FakeD1Statement {
       return result(machine ? 1 : 0)
     }
     if (normalized.startsWith('update task_machines set health')) {
-      const hasCapabilitiesUpdate = normalized.includes('capabilities_json')
-      const machineId = String(this.params[hasCapabilitiesUpdate ? 5 : 4])
+      const machineId = String(this.params[6])
       const machine = this.state.machines.find((row) => row.machine_id === machineId)
       if (!machine) return result(0)
       machine.health = String(this.params[0])
-      machine.last_seen_at = String(this.params[1])
-      machine.app_version = String(this.params[2])
-      if (hasCapabilitiesUpdate) {
-        machine.capabilities_json = String(this.params[3])
-        machine.updated_at = String(this.params[4])
-      } else {
-        machine.updated_at = String(this.params[3])
-      }
+      machine.current_job_id = this.params[1] === null ? null : String(this.params[1])
+      machine.last_seen_at = String(this.params[2])
+      machine.app_version = String(this.params[3])
+      machine.capabilities_json = String(this.params[4])
+      machine.updated_at = String(this.params[5])
       return result(1)
     }
     if (normalized.startsWith('update machine_tokens set last_used_at')) {
@@ -418,7 +444,9 @@ class FakeD1Statement {
         if (this.state.claimRaceMachineCapabilitiesJson) machine.capabilities_json = this.state.claimRaceMachineCapabilitiesJson
       }
       if (normalized.includes('from task_machines')) {
-        if (!machine || machine.auth_status !== 'active' || !['online_idle', 'online_busy'].includes(machine.health)) return result(0)
+        if (!machine || machine.auth_status !== 'active') return result(0)
+        if (normalized.includes("m.health = 'online_busy'") && machine.health !== 'online_busy') return result(0)
+        if (normalized.includes('m.current_job_id = ?') && machine.current_job_id !== String(this.params[8])) return result(0)
         const machineCapabilities = parseStringArray(machine.capabilities_json)
         const machineCapabilitySet = new Set(machineCapabilities)
         const requiredCapabilities = parseStringArray(job.required_capabilities_json)
@@ -433,6 +461,27 @@ class FakeD1Statement {
       return result(1)
     }
     if (normalized.startsWith('update task_machines set current_job_id = null')) {
+      if (normalized.includes('where current_job_id in')) {
+        const jobUids = new Set(this.params.slice(1).map(String))
+        let changes = 0
+        for (const machine of this.state.machines) {
+          if (machine.current_job_id && jobUids.has(machine.current_job_id)) {
+            machine.current_job_id = null
+            machine.health = 'online_idle'
+            machine.updated_at = String(this.params[0])
+            changes += 1
+          }
+        }
+        return result(changes)
+      }
+      if (normalized.includes('and current_job_id = ?')) {
+        const machine = this.state.machines.find((row) => row.machine_id === String(this.params[1]) && row.current_job_id === String(this.params[2]))
+        if (!machine) return result(0)
+        machine.current_job_id = null
+        machine.health = 'online_idle'
+        machine.updated_at = String(this.params[0])
+        return result(1)
+      }
       const machine = this.state.machines.find((row) => row.machine_id === String(this.params[2]))
       if (!machine) return result(0)
       machine.current_job_id = null
@@ -441,11 +490,26 @@ class FakeD1Statement {
       return result(1)
     }
     if (normalized.startsWith('update task_machines set current_job_id')) {
-      const machine = this.state.machines.find((row) => row.machine_id === String(this.params[3]))
+      const hasLastSeen = normalized.includes('last_seen_at')
+      const literalBusy = normalized.includes("health = 'online_busy'")
+      const machineId = String(literalBusy ? this.params[3] : hasLastSeen ? this.params[4] : this.params[3])
+      const machine = this.state.machines.find((row) => row.machine_id === machineId)
       if (!machine) return result(0)
+      if (this.state.claimRaceMachineAuthStatus) machine.auth_status = this.state.claimRaceMachineAuthStatus
+      if (this.state.claimRaceMachineHealth) machine.health = this.state.claimRaceMachineHealth
+      if (this.state.claimRaceMachineCapabilitiesJson) machine.capabilities_json = this.state.claimRaceMachineCapabilitiesJson
+      if (normalized.includes("auth_status = 'active'") && machine.auth_status !== 'active') return result(0)
+      if (normalized.includes("health = 'online_idle'") && machine.health !== 'online_idle') return result(0)
+      if (normalized.includes("current_job_id is null") && machine.current_job_id) return result(0)
+      if (normalized.includes('capabilities_json = ?') && machine.capabilities_json !== String(this.params[4])) return result(0)
       machine.current_job_id = String(this.params[0])
-      machine.health = String(this.params[1])
-      machine.updated_at = String(this.params[2])
+      machine.health = literalBusy ? 'online_busy' : String(this.params[1])
+      if (hasLastSeen) {
+        machine.last_seen_at = String(this.params[2])
+        machine.updated_at = String(this.params[3])
+      } else {
+        machine.updated_at = String(this.params[2])
+      }
       return result(1)
     }
     if (normalized.startsWith('update dispatch_jobs set lease_expires_at')) {
@@ -732,6 +796,37 @@ describe('machine routes', () => {
     expect(state.machines).toHaveLength(1)
   })
 
+  it('rejects duplicate device fingerprints without consuming the enrollment token', async () => {
+    const state = await emptyState()
+    const firstToken = await seedEnrollmentToken(state)
+    await enrollMachine(state, firstToken)
+    const secondToken = await seedEnrollmentToken(state)
+    const secondTokenHash = state.enrollmentTokens.at(-1)?.token_hash
+    const duplicateFingerprint = state.machines[0].fingerprint_hash
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/enroll', {
+        method: 'POST',
+        body: JSON.stringify({
+          enrollment_token: secondToken,
+          machine_id: 'machine-second-id',
+          machine_name: 'Same Physical Mac',
+          fingerprint: 'fingerprint-1',
+          app_version: '1.0.0',
+          capabilities: ['regenerate_ai_image'],
+        }),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { error: string; machine_id: string }
+
+    expect(response.status).toBe(409)
+    expect(body.machine_id).toBe('machine-1')
+    expect(state.enrollmentTokens.find((row) => row.token_hash === secondTokenHash)).toMatchObject({ status: 'issued', used_by_machine_id: null, used_at: null })
+    expect(state.machines).toHaveLength(1)
+    expect(state.machines[0].fingerprint_hash).toBe(duplicateFingerprint)
+  })
+
   it('expired enrollment token fails', async () => {
     const state = await emptyState()
     const token = await seedEnrollmentToken(state, { expires_at: new Date(Date.now() - 60_000).toISOString() })
@@ -825,6 +920,32 @@ describe('machine routes', () => {
     expect(state.jobs[0].attempt_count).toBe(1)
     expect(state.jobs[0].assigned_machine_id).toBe('machine-1')
     expect(state.machines[0].capabilities_json).toBe(JSON.stringify(['regenerate_ai_image']))
+    expect(state.machines[0].health).toBe('online_busy')
+    expect(state.machines[0].current_job_id).toBe('job-1')
+  })
+
+  it('busy machines do not claim another queued job', async () => {
+    const state = await emptyState()
+    const token = await seedEnrollmentToken(state)
+    const machineToken = await enrollMachine(state, token)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-running'
+    state.jobs.push(jobRow({ job_uid: 'job-next' }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(machineToken),
+      }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { job: null }
+
+    expect(response.status).toBe(200)
+    expect(body.job).toBeNull()
+    expect(state.jobs[0].status).toBe('queued')
+    expect(state.machines[0].current_job_id).toBe('job-running')
   })
 
   it.each([
@@ -862,6 +983,42 @@ describe('machine routes', () => {
     expect(body.job.attempt_count).toBe(2)
     expect(state.jobs[0].status).toBe('leased')
     expect(state.jobs[0].assigned_machine_id).toBe('machine-1')
+  })
+
+  it('releases stale busy machine state when an expired lease is recovered', async () => {
+    const state = await emptyState()
+    const oldToken = await seedEnrollmentToken(state)
+    await enrollMachine(state, oldToken)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-expired-stuck'
+    const newToken = await seedEnrollmentToken(state)
+    const newMachineToken = await enrollMachine(state, newToken)
+    state.machines[1].auth_status = 'active'
+    state.machines[1].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: 'job-expired-stuck',
+      status: 'running',
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-old',
+      lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
+      attempt_count: 1,
+      max_attempts: 3,
+    }))
+
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(newMachineToken),
+      }),
+      fakeEnv(state),
+    )
+
+    expect(response.status).toBe(200)
+    expect(state.machines[0].health).toBe('online_idle')
+    expect(state.machines[0].current_job_id).toBeNull()
+    expect(state.jobs[0].status).toBe('leased')
+    expect(state.jobs[0].assigned_machine_id).toBe('machine-2')
   })
 
   it('expires cancel-requested leases as cancelled instead of reclaiming them', async () => {

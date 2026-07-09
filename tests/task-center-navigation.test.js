@@ -103,6 +103,15 @@ test('TaskCenter schedule dialog uses a folder picker and large DingTalk templat
   assert.match(view, /class="full"[\s\S]*钉钉消息模板/)
 })
 
+test('TaskCenter schedule dialog can auto-sync material export results to cloud', () => {
+  const view = fs.readFileSync('app/src/renderer/views/TaskCenter.vue', 'utf8')
+  assert.match(view, /scheduleForm\.sync_to_cloud/)
+  assert.match(view, /自动同步云端/)
+  assert.match(view, /sync_to_cloud:\s*true/)
+  assert.match(view, /params\.sync_to_cloud\s*=\s*\['enabled'\]/)
+  assert.match(view, /schedule\.params\?\.sync_to_cloud/)
+})
+
 test('Preload task center APIs fall back to local HTTP when IPC handlers are missing', () => {
   const preload = fs.readFileSync('app/src/preload.js', 'utf8')
   assert.match(preload, /invokeWithApiFallback/)
@@ -170,14 +179,20 @@ test('Task output drawer is minimized by default and opens after logs arrive', (
 test('Tmall AI image runner step state is derived from batch lifecycle', () => {
   const view = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
   assert.match(view, /const aiChainLifecycle = computed/)
+  assert.match(view, /pending_generation_confirmation/)
+  assert.match(view, /id: 'confirm'/)
+  assert.match(view, /title: '确认提交'/)
+  assert.match(view, /确认提交生图任务/)
   assert.doesNotMatch(view, /approvalBoardUrl\.value \|\| isRunning\.value \? 'done' : 'active'/)
   assert.doesNotMatch(view, /approvalBoardUrl\.value \? \(pending > 0 \? 'active' : 'done'\) : 'pending'/)
 })
 
-test('Tmall approval board lifecycle stages are not hard-coded as completed', () => {
+test('Tmall approval board removes duplicate lower lifecycle tabs', () => {
   const view = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
-  assert.match(view, /generationStageClass/)
-  assert.match(view, /approvalStageClass/)
+  assert.doesNotMatch(view, /class="approval-lifecycle"/)
+  assert.doesNotMatch(view, /\.approval-lifecycle/)
+  assert.doesNotMatch(view, /class="approval-stage/)
+  assert.doesNotMatch(view, /\.approval-stage/)
   assert.doesNotMatch(view, /class="approval-stage done"/)
   assert.doesNotMatch(view, /summary\.pending > 0 \? 'active' : 'done'/)
 })
@@ -208,10 +223,75 @@ test('Tmall AI image runner avoids duplicate step titles under numbered tabs', (
   const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
 
   assert.match(runner, /<header v-if="!isTmallAiImageChainTask" class="runner-header">/)
+  assert.match(runner, /\.ai-chain-tabs\s*\{[^}]*grid-template-columns:\s*repeat\(4,\s*minmax\(0,\s*1fr\)\);/s)
   assert.match(runner, /\.ai-chain-tab\s*\{[^}]*align-items:\s*center;/s)
   assert.match(runner, /\.ai-chain-tab-index\s*\{[^}]*align-self:\s*center;/s)
   assert.doesNotMatch(runner, /v-if="isTmallAiImageChainTask" class="ai-chain-panel-head"/)
   assert.doesNotMatch(runner, /<div class="ai-chain-panel-head">[\s\S]*实际测图任务创建结果/)
+})
+
+test('Tmall generation confirmation board uses compact slots and modal editors', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(drawer, /const MAX_CONFIRMATION_IMAGES = 10/)
+  assert.match(drawer, /class="confirmation-image-slots"/)
+  assert.match(drawer, /class="main-image-slot"/)
+  assert.match(drawer, /class="\['reference-image-slot'/)
+  assert.match(drawer, /openImagePreview/)
+  assert.match(drawer, /class="image-preview-modal"/)
+  assert.match(drawer, /openPromptEditor/)
+  assert.match(drawer, /class="prompt-editor-modal"/)
+  assert.match(drawer, /referenceImageSelected/)
+  assert.match(drawer, /togglePromptReferenceImage/)
+  assert.doesNotMatch(drawer, /class="approval-inspector"/)
+  assert.doesNotMatch(drawer, /\.approval-inspector/)
+  assert.doesNotMatch(drawer, /@click="addGenerationPrompt\(item\)"/)
+})
+
+test('Tmall generation confirmation images use the active local API base', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(drawer, /function tmallApprovalApiBase\(\)/)
+  assert.match(drawer, /window\.cs\?\.getApiBase\?\.\(\)/)
+  assert.match(functionBlock(drawer, 'referenceImageUrl'), /tmallApprovalApiBase\(\)/)
+  assert.doesNotMatch(functionBlock(drawer, 'referenceImageUrl'), /ref\.origin/)
+})
+
+test('Tmall AI image task config can choose a cloud Prompt library', () => {
+  const manifest = fs.readFileSync('adapters/tmall-ops-assistant/manifest.yaml', 'utf8')
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+
+  assert.match(manifest, /id: prompt_source/)
+  assert.match(manifest, /value: local_excel/)
+  assert.match(manifest, /value: cloud_prompt_library/)
+  assert.match(manifest, /id: cloud_prompt_library_id/)
+  assert.match(manifest, /visible_when:[\s\S]*field: prompt_source[\s\S]*equals: cloud_prompt_library/)
+  assert.match(manifest, /id: prompt_file[\s\S]*visible_when:[\s\S]*field: prompt_source[\s\S]*equals: local_excel/)
+
+  assert.match(runner, /isCloudPromptLibraryParam/)
+  assert.match(runner, /cloudPromptLibraryDialog/)
+  assert.match(runner, /openCloudPromptLibraryDialog/)
+  assert.match(runner, /loadCloudPromptLibraries/)
+  assert.match(runner, /window\.cs\.listCloudPromptLibraries/)
+  assert.match(runner, /window\.cs\.resolveCloudPromptTemplates/)
+  assert.match(runner, /cloudPromptLibrarySearch/)
+  assert.match(runner, /cloudPromptLibraryScenario/)
+  assert.match(runner, /选择云端 Prompt 库/)
+})
+
+test('Tmall generation confirmation board can pick prompts from cloud library', () => {
+  const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
+
+  assert.match(drawer, /class="prompt-library-picker-modal"/)
+  assert.match(drawer, /promptLibraryPicker/)
+  assert.match(drawer, /promptLibrarySearch/)
+  assert.match(drawer, /promptLibraryCategory/)
+  assert.match(drawer, /openPromptLibraryPicker\(item, prompt\)/)
+  assert.match(drawer, /selectPromptLibraryTemplate/)
+  assert.match(drawer, /window\.cs\.listCloudPromptLibraries/)
+  assert.match(drawer, /window\.cs\.resolveCloudPromptTemplates/)
+  assert.match(drawer, /从 Prompt 库选择/)
+  assert.match(drawer, /placeholder="搜索 Prompt 名称 \/ 内容"/)
 })
 
 test('Tmall approval submit shows progress while backend creates test tasks', () => {

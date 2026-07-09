@@ -7,6 +7,9 @@ outputs/
 memory-bank/
 .superpowers/
 .worktrees/
+.crawshrimp-runtime/
+.impeccable/
+.wrangler/
 adapters/*/delivery/
 app/.builder-bin/
 app/python-dist/

@@ -574,7 +574,7 @@ class CloudJobExecutorTests(unittest.TestCase):
         result = agent.claim_once()
 
         self.assertEqual(result["job_result"]["status"], "blocked_needs_login")
-        self.assertEqual(heartbeats, ["needs_login"])
+        self.assertEqual(heartbeats, ["online_busy", "needs_login"])
         fail_call = next(call for call in client.calls if call["path"] == "/api/jobs/job-login/fail")
         self.assertEqual(fail_call["body"]["lease_id"], "lease-login")
         self.assertEqual(fail_call["body"]["status"], "blocked_needs_login")
