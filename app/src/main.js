@@ -1308,7 +1308,7 @@ async function cloudApprovalCookieHeader(baseUrl) {
   const cookies = await session.defaultSession.cookies.get({ url: baseUrl })
   const sessionCookie = cookies.find(cookie => cookie.name === 'cs_session' && cookie.value)
   if (!sessionCookie) {
-    throw new Error('请先在云端审批页面登录，再同步提示词库')
+    throw new Error('请先在云端审批页面登录，再管理提示词库')
   }
   return cookies
     .filter(cookie => cookie.name && cookie.value)
@@ -1329,7 +1329,7 @@ function cloudErrorMessage(status, payload) {
   const detail = payload?.error || payload?.message || payload?.detail || 'request rejected'
   if (status === 401) return `云端登录已过期，请重新登录云端审批：${detail}`
   if (status === 403) return `当前云端账号没有 Prompt 管理权限：${detail}`
-  return `云端提示词库同步失败：HTTP ${status}; ${detail}`
+  return `云端提示词库请求失败：HTTP ${status}; ${detail}`
 }
 
 async function cloudApprovalUserApiCall(baseUrl, method, apiPath, body = null) {
@@ -1396,6 +1396,50 @@ async function syncLocalPromptLibraryToCloud(libraryUid) {
   if (index >= 0) state.libraries[index] = next
   writeLocalPromptLibraryState(state)
   return { ok: true, library: next, cloud }
+}
+
+async function cloudApprovalBaseUrlForDesktop() {
+  const status = await apiCall('GET', '/cloud-approval/status')
+  const baseUrl = String(status?.base_url || '').trim()
+  if (!baseUrl) throw new Error('请先在设置里配置云端审批地址')
+  return baseUrl
+}
+
+async function listCloudPromptLibrariesForDesktop() {
+  const baseUrl = await cloudApprovalBaseUrlForDesktop()
+  let userSessionError = null
+  try {
+    return await cloudApprovalUserApiCall(baseUrl, 'GET', '/api/prompt-libraries')
+  } catch (error) {
+    userSessionError = error
+  }
+  try {
+    return await apiCall('GET', '/cloud-approval/prompt-libraries')
+  } catch {
+    throw userSessionError
+  }
+}
+
+async function resolveCloudPromptTemplatesForDesktop(libraryId, query = {}) {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query || {})) {
+    if (value !== undefined && value !== null && String(value).trim() !== '') {
+      params.set(key, String(value))
+    }
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const baseUrl = await cloudApprovalBaseUrlForDesktop()
+  let userSessionError = null
+  try {
+    return await cloudApprovalUserApiCall(baseUrl, 'GET', `/api/prompt-libraries/${encodeURIComponent(String(libraryId || ''))}/resolved${suffix}`)
+  } catch (error) {
+    userSessionError = error
+  }
+  try {
+    return await apiCall('GET', `/cloud-approval/prompt-libraries/${encodeURIComponent(String(libraryId || ''))}/resolved${suffix}`)
+  } catch {
+    throw userSessionError
+  }
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
@@ -2021,16 +2065,9 @@ secureHandle('stop-cloud-machine', async () =>
 secureHandle('sync-cloud-approval-batch', async (_, payload) =>
   apiCall('POST', '/cloud-approval/sync-batch', payload || {}, { timeoutMs: 20 * 60 * 1000 }))
 secureHandle('list-cloud-prompt-libraries', async () =>
-  apiCall('GET', '/cloud-approval/prompt-libraries'))
+  listCloudPromptLibrariesForDesktop())
 secureHandle('resolve-cloud-prompt-templates', async (_, libraryId, query = {}) => {
-  const params = new URLSearchParams()
-  for (const [key, value] of Object.entries(query || {})) {
-    if (value !== undefined && value !== null && String(value).trim() !== '') {
-      params.set(key, String(value))
-    }
-  }
-  const suffix = params.toString() ? `?${params.toString()}` : ''
-  return apiCall('GET', `/cloud-approval/prompt-libraries/${encodeURIComponent(String(libraryId || ''))}/resolved${suffix}`)
+  return resolveCloudPromptTemplatesForDesktop(libraryId, query)
 })
 secureHandle('list-local-prompt-libraries', async () => listLocalPromptLibraries())
 secureHandle('create-local-prompt-library', async (_, payload) => createLocalPromptLibrary(payload || {}))

@@ -207,88 +207,88 @@
           </div>
         </div>
 
-        <section v-if="workspaceMode === 'results'" class="aiw-result-wall">
-          <section
-            v-for="queue in visibleResultQueues"
-            :key="queue.key"
-            class="aiw-result-queue"
-            :class="{ loading: queue.loading }"
-          >
-            <header class="aiw-result-queue-head">
-              <div>
-                <strong>{{ queue.title }}</strong>
-                <span>{{ queueMetaLine(queue) }}</span>
-              </div>
-              <div v-if="queuePromptLine(queue)" class="aiw-result-prompt-row">
-                <button
-                  class="aiw-prompt-preview-button"
-                  type="button"
-                  :title="queuePromptLine(queue)"
-                  aria-label="查看完整 Prompt"
-                  @click="openPromptDialog(queue)"
-                >
-                  <span>{{ queuePromptPreview(queue) }}</span>
-                  <strong><AiwIcon name="eye" />查看完整</strong>
-                </button>
-              </div>
-            </header>
-            <div class="aiw-result-list">
-              <article
-                v-for="item in queue.items"
-                :key="item.key || item.path || item.url"
-                class="aiw-result-card"
-                :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading }"
-                :aria-pressed="selectedResults.has(resultKey(item)) ? 'true' : 'false'"
-                :tabindex="item.loading ? -1 : 0"
-                role="button"
-                @click="toggleResult(item)"
-                @keydown.enter.prevent="toggleResult(item)"
-                @keydown.space.prevent="toggleResult(item)"
-              >
-                <button v-if="!item.loading" class="aiw-select-toggle" type="button" @click.stop="toggleResult(item)">
-                  {{ selectedResults.has(resultKey(item)) ? '已选' : '选择' }}
-                </button>
-                <button v-if="!item.loading" class="aiw-preview-button" type="button" @click.stop="openLightbox(item)">
-                  <img
-                    v-if="resultPreviewSrc(item)"
-                    :src="resultPreviewSrc(item)"
-                    :alt="item.label"
-                    @error="markResultPreviewBroken(item)"
-                  />
-                  <span v-else class="aiw-result-preview">{{ item.label }}</span>
-                </button>
-                <div v-else class="aiw-loading-preview">
-                  <span aria-hidden="true"></span>
-                  <strong>{{ item.label }}</strong>
+        <div class="aiw-workspace-body">
+          <section v-if="workspaceMode === 'results'" class="aiw-result-wall">
+            <section
+              v-for="queue in visibleResultQueues"
+              :key="queue.key"
+              class="aiw-result-queue"
+              :class="{ loading: queue.loading }"
+            >
+              <header class="aiw-result-queue-head">
+                <div>
+                  <strong>{{ queue.title }}</strong>
+                  <span>{{ queueMetaLine(queue) }}</span>
                 </div>
-                <footer v-if="!item.loading">
-                  <div class="aiw-result-card-meta">
+                <div v-if="queuePromptLine(queue)" class="aiw-result-prompt-row">
+                  <button
+                    class="aiw-prompt-preview-button"
+                    type="button"
+                    :title="queuePromptLine(queue)"
+                    aria-label="查看完整 Prompt"
+                    @click="openPromptDialog(queue)"
+                  >
+                    <span>{{ queuePromptPreview(queue) }}</span>
+                    <strong><AiwIcon name="eye" />查看完整</strong>
+                  </button>
+                </div>
+              </header>
+              <div class="aiw-result-list">
+                <article
+                  v-for="item in queue.items"
+                  :key="item.key || item.path || item.url"
+                  class="aiw-result-card"
+                  :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading }"
+                  :aria-pressed="selectedResults.has(resultKey(item)) ? 'true' : 'false'"
+                  :tabindex="item.loading ? -1 : 0"
+                  role="button"
+                  @click="toggleResult(item)"
+                  @keydown.enter.prevent="toggleResult(item)"
+                  @keydown.space.prevent="toggleResult(item)"
+                >
+                  <button v-if="!item.loading" class="aiw-select-toggle" type="button" @click.stop="toggleResult(item)">
+                    {{ selectedResults.has(resultKey(item)) ? '已选' : '选择' }}
+                  </button>
+                  <button v-if="!item.loading" class="aiw-preview-button" type="button" @click.stop="openLightbox(item)">
+                    <img
+                      v-if="resultPreviewSrc(item)"
+                      :src="resultPreviewSrc(item)"
+                      :alt="item.label"
+                      @error="markResultPreviewBroken(item)"
+                    />
+                    <span v-else class="aiw-result-preview">{{ item.label }}</span>
+                  </button>
+                  <div v-else class="aiw-loading-preview">
+                    <span aria-hidden="true"></span>
                     <strong>{{ item.label }}</strong>
-                    <span>{{ item.model || activeModel.label }} · {{ item.size || form.size }}</span>
                   </div>
-                  <div class="aiw-result-card-actions">
-                    <button type="button" @click.stop="setAsMain(item)">
-                      <span class="aiw-icon-button-content"><AiwIcon name="image" />设为主图</span>
-                    </button>
-                    <button type="button" @click.stop="addAsReference(item)">
-                      <span class="aiw-icon-button-content"><AiwIcon name="plus" />设为参考</span>
-                    </button>
-                    <button type="button" @click.stop="saveAs([item])">
-                      <span class="aiw-icon-button-content"><AiwIcon name="download" />下载</span>
-                    </button>
-                  </div>
-                </footer>
-              </article>
+                  <footer v-if="!item.loading">
+                    <div class="aiw-result-card-meta">
+                      <strong>{{ item.label }}</strong>
+                      <span>{{ item.model || activeModel.label }} · {{ item.size || form.size }}</span>
+                    </div>
+                    <div class="aiw-result-card-actions">
+                      <button type="button" @click.stop="setAsMain(item)">
+                        <span class="aiw-icon-button-content"><AiwIcon name="image" />设为主图</span>
+                      </button>
+                      <button type="button" @click.stop="addAsReference(item)">
+                        <span class="aiw-icon-button-content"><AiwIcon name="plus" />设为参考</span>
+                      </button>
+                      <button type="button" @click.stop="saveAs([item])">
+                        <span class="aiw-icon-button-content"><AiwIcon name="download" />下载</span>
+                      </button>
+                    </div>
+                  </footer>
+                </article>
+              </div>
+            </section>
+            <div v-if="!visibleResultCards.length" class="aiw-empty-state">
+              <strong>等待生成结果</strong>
+              <span>选择已有任务或新建任务后，输出图会保留在对应任务里。</span>
             </div>
           </section>
-          <div v-if="!visibleResultCards.length" class="aiw-empty-state">
-            <strong>等待生成结果</strong>
-            <span>选择已有任务或新建任务后，输出图会保留在对应任务里。</span>
-          </div>
-        </section>
 
-        <section v-else-if="workspaceMode === 'tasks'" class="aiw-task-records-workspace">
-          <section class="aiw-task-detail-panel">
+          <section v-else-if="workspaceMode === 'tasks'" class="aiw-task-detail-panel">
             <header>
               <div>
                 <strong>{{ currentJob?.title || '未选择任务' }}</strong>
@@ -363,7 +363,7 @@
               <span>点击新建任务后，可以在这里切换每一次生图记录。</span>
             </div>
           </aside>
-        </section>
+        </div>
       </main>
     </div>
     <div v-if="lightboxItem" class="aiw-lightbox" @click="closeLightbox">
@@ -1857,6 +1857,15 @@ function localFileUrl(path) {
   min-width: 0;
 }
 
+.aiw-workspace-body {
+  min-height: 0;
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 240px);
+  gap: 10px;
+  overflow: hidden;
+}
+
 .aiw-result-wall {
   min-height: 0;
   display: flex;
@@ -2167,15 +2176,6 @@ function localFileUrl(path) {
 
 .aiw-result-card-actions .aiw-icon-button-content {
   gap: 4px;
-}
-
-.aiw-task-records-workspace {
-  min-height: 0;
-  flex: 1;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, 240px);
-  gap: 10px;
-  overflow: hidden;
 }
 
 .aiw-history-sidebar,
@@ -2547,8 +2547,7 @@ button.active,
 
 @media (max-width: 1060px) {
   .aiw-main-grid,
-  .aiw-result-list,
-  .aiw-task-records-workspace {
+  .aiw-result-list {
     grid-template-columns: 1fr;
   }
 
@@ -2556,6 +2555,12 @@ button.active,
   .aiw-workspace-head {
     align-items: flex-start;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 760px) {
+  .aiw-workspace-body {
+    grid-template-columns: 1fr;
   }
 }
 

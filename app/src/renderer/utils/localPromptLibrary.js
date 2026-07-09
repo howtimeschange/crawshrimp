@@ -1,5 +1,6 @@
 export const PROMPT_SCENARIOS = ['裂变图', '创意拍摄']
 export const DEFAULT_PROMPT_LIBRARY_NAME = 'AI 测图提示词库 本地版'
+export const PROMPT_IMPORT_HEADER_ROWS = [4, 3, 5]
 
 const HEADER_ALIASES = {
   field_name: ['字段名'],
@@ -30,14 +31,32 @@ export function parsePromptWorkbookSheets(workbook = {}) {
   })
 }
 
+export function parsePromptWorkbookImportCandidates(candidates = []) {
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    const templates = parsePromptWorkbookSheets(candidate?.workbook || {})
+    if (templates.length) {
+      return {
+        header_row: Number(candidate?.header_row || candidate?.headerRow || 0) || null,
+        workbook: candidate?.workbook || {},
+        templates,
+      }
+    }
+  }
+  return { header_row: null, workbook: null, templates: [] }
+}
+
 export function normalizePromptLibrary(library = {}) {
   const now = new Date().toISOString()
+  const sourceType = normalizeLibrarySourceType(library.source_type || library.library_type)
+  const cloudLibraryId = library.cloud_library_id ?? (sourceType === 'cloud' ? library.id : null)
   return {
-    library_uid: String(library.library_uid || library.id || ''),
+    library_uid: String(library.library_uid || (sourceType === 'cloud' && library.id ? `cloud:${library.id}` : library.id || '')),
+    source_type: sourceType,
+    library_type: sourceType,
     name: String(library.name || DEFAULT_PROMPT_LIBRARY_NAME).trim() || DEFAULT_PROMPT_LIBRARY_NAME,
     scenario: normalizeScenario(library.scenario),
     status: String(library.status || 'draft'),
-    cloud_library_id: library.cloud_library_id ?? null,
+    cloud_library_id: cloudLibraryId,
     cloud_synced_at: String(library.cloud_synced_at || ''),
     import_source_path: String(library.import_source_path || ''),
     created_at: String(library.created_at || now),
@@ -152,6 +171,10 @@ function workbookValue(row, key) {
 function normalizeScenario(value) {
   const scenario = String(value || '').trim()
   return PROMPT_SCENARIOS.includes(scenario) ? scenario : PROMPT_SCENARIOS[0]
+}
+
+function normalizeLibrarySourceType(value) {
+  return String(value || '').trim() === 'cloud' ? 'cloud' : 'local'
 }
 
 function numberOrNull(value) {

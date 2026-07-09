@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import {
   buildCloudPromptLibraryPayload,
   normalizePromptLibrary,
+  parsePromptWorkbookImportCandidates,
   parsePromptWorkbookSheets,
 } from './localPromptLibrary.js'
 
@@ -68,6 +69,77 @@ test('parsePromptWorkbookSheets reads cloud prompt template sheets into local te
   assert.equal(templates[1].group_name, '创意拍摄')
   assert.equal(templates[1].visible, false)
   assert.equal(templates[1].output_format, 'jpeg')
+})
+
+test('parsePromptWorkbookImportCandidates falls back to the first candidate with prompt rows', () => {
+  const result = parsePromptWorkbookImportCandidates([
+    {
+      header_row: 4,
+      workbook: {
+        sheets: {
+          上装: {
+            headers: ['上装 字段描述'],
+            rows: [
+              { '上装 字段描述': 'Sheet ID：hERWDMS ｜ 记录数：233 ｜ AI 描述字段数：13' },
+              { '上装 字段描述': '字段名' },
+            ],
+          },
+        },
+      },
+    },
+    {
+      header_row: 3,
+      workbook: {
+        sheets: {
+          上装: {
+            rows: [
+              {
+                字段名: '正面标准站姿',
+                '字段 ID': 'rX2NWyE',
+                字段顺序: '4',
+                在当前视图: '是',
+                尺寸: '2K',
+                格式: 'jpeg',
+                引用字段: '图片 (ghzXVED)',
+                描述内容: '引用图片，8K 超清，天猫电商童装主图。',
+                字数: '24',
+                字段类型: 'file',
+              },
+            ],
+          },
+        },
+      },
+    },
+  ])
+
+  assert.equal(result.header_row, 3)
+  assert.equal(result.templates.length, 1)
+  assert.equal(result.templates[0].group_name, '上装')
+  assert.equal(result.templates[0].field_name, '正面标准站姿')
+  assert.equal(result.templates[0].prompt_text, '引用图片，8K 超清，天猫电商童装主图。')
+})
+
+test('normalizePromptLibrary keeps local and cloud library source types distinct', () => {
+  const local = normalizePromptLibrary({
+    library_uid: 'local-1',
+    name: '本地库',
+    templates: [{ group_name: '上装', field_name: '正面', prompt_text: '本地 Prompt' }],
+  })
+  const cloud = normalizePromptLibrary({
+    id: 7,
+    source_type: 'cloud',
+    name: '线上库',
+    status: 'published',
+    templates: [{ id: 70, group_name: '上装', field_name: '正面', prompt_text: '线上 Prompt' }],
+  })
+
+  assert.equal(local.source_type, 'local')
+  assert.equal(local.library_type, 'local')
+  assert.equal(local.library_uid, 'local-1')
+  assert.equal(cloud.source_type, 'cloud')
+  assert.equal(cloud.library_type, 'cloud')
+  assert.equal(cloud.library_uid, 'cloud:7')
+  assert.equal(cloud.cloud_library_id, 7)
 })
 
 test('buildCloudPromptLibraryPayload strips local metadata and keeps cloud-compatible template fields', () => {

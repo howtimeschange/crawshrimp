@@ -16,7 +16,7 @@ test('App registers local prompt library menu below AI image and before data fil
   assert.ok(aiImage < promptLibrary, 'prompt library should sit below AI image in the sidebar')
   assert.ok(promptLibrary < files, 'prompt library should sit above data files in the sidebar')
   assert.match(app, /label: '提示词库'/)
-  assert.match(app, /<LocalPromptLibrary\s+v-if="currentView === 'local_prompt_library'"/)
+  assert.match(app, /<LocalPromptLibrary\s+v-if="currentView === 'local_prompt_library'"[\s\S]*@open-cloud-approval="currentView = 'cloud_approval'"/)
 })
 
 test('LocalPromptLibrary view supports import update, manual edit, and cloud sync', () => {
@@ -26,11 +26,32 @@ test('LocalPromptLibrary view supports import update, manual edit, and cloud syn
   assert.match(view, /保存编辑/)
   assert.match(view, /同步到线上/)
   assert.match(view, /browseFile\(\{[\s\S]*excel:\s*true/)
-  assert.match(view, /readExcel\(selected,[\s\S]*header_row:\s*4/)
-  assert.match(view, /parsePromptWorkbookSheets/)
+  assert.match(view, /PROMPT_IMPORT_HEADER_ROWS/)
+  assert.match(view, /readPromptWorkbookTemplates/)
+  assert.match(view, /readExcel\(selected,[\s\S]*header_row:\s*headerRow/)
+  assert.match(view, /parsePromptWorkbookImportCandidates/)
   assert.match(view, /importLocalPromptLibrary/)
   assert.match(view, /saveLocalPromptLibrary/)
   assert.match(view, /syncLocalPromptLibraryToCloud/)
+})
+
+test('LocalPromptLibrary view combines local and cloud prompt libraries with source-aware actions', () => {
+  const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
+
+  assert.match(view, /登录云端审批平台/)
+  assert.match(view, /刷新线上/)
+  assert.match(view, /打开云端 Prompt 管理/)
+  assert.match(view, /保存为本地副本/)
+  assert.match(view, /getCloudApprovalStatus/)
+  assert.match(view, /listCloudPromptLibraries/)
+  assert.match(view, /resolveCloudPromptTemplates/)
+  assert.match(view, /const localLibraries = ref\(\[\]\)/)
+  assert.match(view, /const cloudLibraries = ref\(\[\]\)/)
+  assert.match(view, /const libraries = computed/)
+  assert.match(view, /selectedLocalLibrary/)
+  assert.match(view, /selectedCloudLibrary/)
+  assert.match(view, /librarySourceLabel/)
+  assert.match(view, /source_type/)
 })
 
 test('Electron bridges expose local prompt library persistence and cloud sync IPC', () => {

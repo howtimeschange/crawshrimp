@@ -146,6 +146,13 @@ describe('cloud approval UI contract', () => {
     expect(app).toContain('selectedBatchUid.value = directBatchUid')
   })
 
+  it('opens prompt library from page query links', () => {
+    const app = read('src/app/App.vue')
+    expect(app).toContain("'page'")
+    expect(app).toContain("requestedPage === 'prompts'")
+    expect(app).toContain("activePage.value = 'prompts'")
+  })
+
   it('uses embed-aware top tabs instead of an internal sidebar', () => {
     const app = read('src/app/App.vue')
     expect(app).toContain('URLSearchParams')

@@ -63,12 +63,22 @@ function applyDirectBatchLink(): boolean {
   return true
 }
 
+function applyDirectPageLink(): boolean {
+  const params = new URLSearchParams(window.location.search)
+  const requestedPage = String(params.get('page') || '').trim()
+  if (requestedPage === 'prompts' && visibleNav.value.some((item) => item.key === 'prompts')) {
+    activePage.value = 'prompts'
+    return true
+  }
+  return false
+}
+
 async function loadMe() {
   loadingSession.value = true
   appError.value = ''
   try {
     me.value = await apiGet<CurrentUser>('/api/auth/me')
-    if (!applyDirectBatchLink() && !visibleNav.value.some((item) => item.key === activePage.value)) {
+    if (!applyDirectBatchLink() && !applyDirectPageLink() && !visibleNav.value.some((item) => item.key === activePage.value)) {
       activePage.value = visibleNav.value[0]?.key ?? 'dashboard'
     }
   } catch (error) {

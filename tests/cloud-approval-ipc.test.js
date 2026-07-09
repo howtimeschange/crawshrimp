@@ -43,6 +43,17 @@ test('cloud prompt template IPC includes library-scoped resolved route', () => {
   assert.match(devBridge, /\/cloud-approval\/prompt-libraries\/\$\{encodePathPart\(libraryId\)\}\/resolved/)
 })
 
+test('desktop cloud prompt library IPC uses the logged-in cloud approval session before machine fallback', () => {
+  const main = read('app/src/main.js')
+
+  assert.match(main, /async function listCloudPromptLibrariesForDesktop/)
+  assert.match(main, /cloudApprovalUserApiCall\(baseUrl,\s*'GET',\s*'\/api\/prompt-libraries'\)/)
+  assert.match(main, /async function resolveCloudPromptTemplatesForDesktop/)
+  assert.match(main, /cloudApprovalUserApiCall\(baseUrl,\s*'GET',\s*`\/api\/prompt-libraries\/\$\{encodeURIComponent\(String\(libraryId \|\| ''\)\)\}\/resolved/)
+  assert.match(main, /secureHandle\('list-cloud-prompt-libraries', async \(\) =>\s*listCloudPromptLibrariesForDesktop\(\)\)/)
+  assert.match(main, /secureHandle\('resolve-cloud-prompt-templates'[\s\S]*resolveCloudPromptTemplatesForDesktop\(libraryId, query\)/)
+})
+
 test('preload exposes cloud approval methods on window.cs', () => {
   const source = read('app/src/preload.js')
 

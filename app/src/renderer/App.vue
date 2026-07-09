@@ -109,7 +109,10 @@
         />
       </KeepAlive>
       <!-- 提示词库 -->
-      <LocalPromptLibrary v-if="currentView === 'local_prompt_library'" />
+      <LocalPromptLibrary
+        v-if="currentView === 'local_prompt_library'"
+        @open-cloud-approval="currentView = 'cloud_approval'"
+      />
       <!-- 数据文件 -->
       <DataFiles v-if="currentView === 'files'" />
       <!-- 云端审批 -->

@@ -3,15 +3,20 @@
     <header class="lpl-head">
       <div>
         <h2>提示词库</h2>
-        <p>本地 Prompt 模板，支持同步到云端审批台</p>
+        <p>本地和线上 Prompt 模板，支持同步、预览和云端管理</p>
       </div>
       <div class="lpl-head-actions">
+        <button type="button" class="lpl-secondary" :disabled="busy" @click="openCloudApprovalLogin">登录云端审批平台</button>
+        <button type="button" class="lpl-secondary" :disabled="cloudLoading" @click="loadCloudLibraries">
+          {{ cloudLoading ? '读取线上...' : '刷新线上' }}
+        </button>
+        <button type="button" class="lpl-secondary" :disabled="!cloudPromptManageUrl" @click="openCloudPromptManager">打开云端 Prompt 管理</button>
         <button type="button" class="lpl-secondary" :disabled="busy" @click="createLibrary">新建库</button>
         <button type="button" class="lpl-secondary" :disabled="busy" @click="chooseWorkbookForImport">
           {{ importing ? '导入中...' : '导入更新' }}
         </button>
-        <button type="button" class="lpl-secondary" :disabled="busy || !selectedLibrary" @click="saveLocalEdits">保存编辑</button>
-        <button type="button" class="lpl-primary" :disabled="busy || !selectedLibrary" @click="syncSelectedLibrary">
+        <button type="button" class="lpl-secondary" :disabled="busy || !selectedLocalLibrary" @click="saveLocalEdits">保存编辑</button>
+        <button type="button" class="lpl-primary" :disabled="busy || !selectedLocalLibrary" @click="syncSelectedLibrary">
           {{ syncing ? '同步中...' : '同步到线上' }}
         </button>
       </div>
@@ -19,23 +24,24 @@
 
     <p v-if="message" class="lpl-notice">{{ message }}</p>
     <p v-if="error" class="lpl-notice error">{{ error }}</p>
+    <p v-if="cloudError" class="lpl-notice warning">{{ cloudError }}</p>
 
     <section class="lpl-toolbar">
       <label>
         <span>当前库</span>
         <select v-model="selectedLibraryUid">
           <option v-for="library in libraries" :key="library.library_uid" :value="library.library_uid">
-            {{ library.name }}
+            {{ librarySourceLabel(library.source_type) }}｜{{ library.name }}
           </option>
         </select>
       </label>
       <label class="wide">
         <span>库名称</span>
-        <input v-model="libraryDraft.name" :disabled="!selectedLibrary" />
+        <input v-model="libraryDraft.name" :disabled="!selectedLocalLibrary" />
       </label>
       <label>
         <span>场景</span>
-        <select v-model="libraryDraft.scenario" :disabled="!selectedLibrary">
+        <select v-model="libraryDraft.scenario" :disabled="!selectedLocalLibrary">
           <option v-for="scenario in scenarioOptions" :key="scenario">{{ scenario }}</option>
         </select>
       </label>
@@ -46,7 +52,7 @@
     </section>
 
     <section v-if="!selectedLibrary" class="lpl-empty">
-      <strong>暂无本地提示词库</strong>
+      <strong>暂无提示词库</strong>
       <button type="button" class="lpl-primary" @click="createLibrary">新建库</button>
     </section>
 
@@ -71,6 +77,7 @@
           <span>{{ group.enabled }} / {{ group.total }} 启用</span>
         </button>
         <div class="lpl-sync-meta">
+          <span class="lpl-source-badge">{{ librarySourceLabel(selectedLibrary.source_type) }}</span>
           <span>{{ statusLabel(selectedLibrary.status) }}</span>
           <span v-if="selectedLibrary.cloud_library_id">云端 #{{ selectedLibrary.cloud_library_id }}</span>
         </div>
@@ -80,53 +87,55 @@
         <div class="lpl-table-head">
           <div>
             <h3>Prompt 明细</h3>
+            <span class="lpl-source-badge">{{ librarySourceLabel(selectedLibrary.source_type) }}</span>
             <span>{{ displayTemplates.length }} 条</span>
           </div>
-          <button type="button" class="lpl-secondary" @click="addPromptRow">新增 Prompt</button>
+          <button v-if="selectedCloudLibrary" type="button" class="lpl-secondary" @click="copyCloudLibraryToLocal">保存为本地副本</button>
+          <button v-else type="button" class="lpl-secondary" @click="addPromptRow">新增 Prompt</button>
         </div>
 
         <div class="lpl-edit-list">
           <article v-for="(template, index) in displayTemplates" :key="templateKey(template, index)" class="lpl-edit-row">
             <div class="lpl-row-top">
               <label class="lpl-check">
-                <input v-model="template.enabled" type="checkbox" />
+                <input v-model="template.enabled" type="checkbox" :disabled="!selectedLocalLibrary" />
                 <span>启用</span>
               </label>
               <label>
                 <span>分组</span>
-                <input v-model="template.group_name" />
+                <input v-model="template.group_name" :disabled="!selectedLocalLibrary" />
               </label>
               <label>
                 <span>字段名</span>
-                <input v-model="template.field_name" />
+                <input v-model="template.field_name" :disabled="!selectedLocalLibrary" />
               </label>
               <label class="small">
                 <span>女优先</span>
-                <input v-model.number="template.female_priority" type="number" />
+                <input v-model.number="template.female_priority" type="number" :disabled="!selectedLocalLibrary" />
               </label>
               <label class="small">
                 <span>男/中</span>
-                <input v-model.number="template.male_neutral_priority" type="number" />
+                <input v-model.number="template.male_neutral_priority" type="number" :disabled="!selectedLocalLibrary" />
               </label>
-              <button type="button" class="lpl-icon danger" aria-label="删除 Prompt" @click="removePromptRow(template)">删除</button>
+              <button type="button" class="lpl-icon danger" :disabled="!selectedLocalLibrary" aria-label="删除 Prompt" @click="removePromptRow(template)">删除</button>
             </div>
             <div class="lpl-row-grid">
               <label>
                 <span>尺寸</span>
-                <input v-model="template.size_label" />
+                <input v-model="template.size_label" :disabled="!selectedLocalLibrary" />
               </label>
               <label>
                 <span>格式</span>
-                <input v-model="template.output_format" />
+                <input v-model="template.output_format" :disabled="!selectedLocalLibrary" />
               </label>
               <label class="wide">
                 <span>引用字段</span>
-                <input :value="referenceText(template)" @input="setReferenceText(template, $event.target.value)" />
+                <input :value="referenceText(template)" :disabled="!selectedLocalLibrary" @input="setReferenceText(template, $event.target.value)" />
               </label>
             </div>
             <label class="prompt">
               <span>Prompt</span>
-              <textarea v-model="template.prompt_text" rows="4" placeholder="输入完整生图 Prompt"></textarea>
+              <textarea v-model="template.prompt_text" rows="4" :disabled="!selectedLocalLibrary" placeholder="输入完整生图 Prompt"></textarea>
             </label>
           </article>
           <div v-if="!displayTemplates.length" class="lpl-empty inline">没有匹配的 Prompt</div>
@@ -140,30 +149,41 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import {
   DEFAULT_PROMPT_LIBRARY_NAME,
+  PROMPT_IMPORT_HEADER_ROWS,
   PROMPT_SCENARIOS,
   createLocalPromptUid,
   defaultPromptTemplate,
   normalizePromptLibrary,
   normalizePromptTemplate,
-  parsePromptWorkbookSheets,
+  parsePromptWorkbookImportCandidates,
 } from '../utils/localPromptLibrary'
 
+const emit = defineEmits(['open-cloud-approval'])
 const scenarioOptions = PROMPT_SCENARIOS
-const libraries = ref([])
+const localLibraries = ref([])
+const cloudLibraries = ref([])
 const selectedLibraryUid = ref('')
 const libraryDraft = ref({ name: DEFAULT_PROMPT_LIBRARY_NAME, scenario: PROMPT_SCENARIOS[0] })
 const groupFilter = ref('all')
 const keyword = ref('')
 const loading = ref(false)
+const cloudLoading = ref(false)
 const saving = ref(false)
 const importing = ref(false)
 const syncing = ref(false)
 const message = ref('')
 const error = ref('')
+const cloudError = ref('')
+const cloudStatus = ref(null)
 
 const busy = computed(() => loading.value || saving.value || importing.value || syncing.value)
+const libraries = computed(() => [...localLibraries.value, ...cloudLibraries.value])
 const selectedLibrary = computed(() => libraries.value.find(library => library.library_uid === selectedLibraryUid.value) || libraries.value[0] || null)
+const selectedLocalLibrary = computed(() => selectedLibrary.value?.source_type === 'local' ? selectedLibrary.value : null)
+const selectedCloudLibrary = computed(() => selectedLibrary.value?.source_type === 'cloud' ? selectedLibrary.value : null)
 const templates = computed(() => selectedLibrary.value?.templates || [])
+const cloudBaseUrl = computed(() => String(cloudStatus.value?.base_url || '').trim())
+const cloudPromptManageUrl = computed(() => buildCloudPromptManageUrl(cloudBaseUrl.value))
 const groupSummaries = computed(() => {
   const groups = new Map()
   for (const template of templates.value) {
@@ -194,16 +214,63 @@ async function loadLibraries() {
   loading.value = true
   error.value = ''
   try {
-    const payload = await window.cs.listLocalPromptLibraries()
-    libraries.value = (Array.isArray(payload?.libraries) ? payload.libraries : []).map(normalizePromptLibrary)
-    if (!libraries.value.some(library => library.library_uid === selectedLibraryUid.value)) {
-      selectedLibraryUid.value = libraries.value[0]?.library_uid || ''
-    }
+    await loadLocalLibraries()
+    await refreshCloudApprovalStatus()
+    await loadCloudLibraries({ silent: true })
+    ensureSelectedLibrary()
     syncLibraryDraft()
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
     loading.value = false
+  }
+}
+
+async function loadLocalLibraries() {
+  const payload = await window.cs.listLocalPromptLibraries()
+  localLibraries.value = (Array.isArray(payload?.libraries) ? payload.libraries : [])
+    .map(library => normalizePromptLibrary({ ...library, source_type: 'local' }))
+}
+
+async function refreshCloudApprovalStatus() {
+  try {
+    cloudStatus.value = await window.cs.getCloudApprovalStatus()
+  } catch {
+    cloudStatus.value = null
+  }
+}
+
+async function loadCloudLibraries(options = {}) {
+  cloudLoading.value = true
+  if (!options.silent) {
+    cloudError.value = ''
+    message.value = ''
+  }
+  try {
+    await refreshCloudApprovalStatus()
+    if (!cloudBaseUrl.value) {
+      cloudLibraries.value = []
+      cloudError.value = '尚未配置云端审批地址，可先进入云端审批页面完成配置和登录'
+      return
+    }
+    const payload = await window.cs.listCloudPromptLibraries()
+    cloudLibraries.value = (Array.isArray(payload?.libraries) ? payload.libraries : [])
+      .map(library => normalizePromptLibrary({ ...library, source_type: 'cloud' }))
+    cloudError.value = ''
+    if (!options.silent) message.value = `已读取 ${cloudLibraries.value.length} 个线上提示词库`
+  } catch (err) {
+    cloudLibraries.value = []
+    cloudError.value = err?.message || String(err)
+  } finally {
+    cloudLoading.value = false
+    ensureSelectedLibrary()
+    syncLibraryDraft()
+  }
+}
+
+function ensureSelectedLibrary() {
+  if (!libraries.value.some(library => library.library_uid === selectedLibraryUid.value)) {
+    selectedLibraryUid.value = libraries.value[0]?.library_uid || ''
   }
 }
 
@@ -216,7 +283,7 @@ async function createLibrary() {
       scenario: PROMPT_SCENARIOS[0],
       templates: [{ ...defaultPromptTemplate(PROMPT_SCENARIOS[0]), local_uid: createLocalPromptUid() }],
     })
-    await loadLibraries()
+    await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
     syncLibraryDraft()
     message.value = '本地提示词库已创建'
@@ -235,23 +302,25 @@ async function chooseWorkbookForImport() {
       excel: true,
     })
     if (!selected) return
-    const workbook = await window.cs.readExcel(selected, { header_row: 4 })
-    if (workbook?.error) throw new Error(workbook.error)
-    const parsedTemplates = parsePromptWorkbookSheets(workbook)
+    const importResult = await readPromptWorkbookTemplates(selected)
+    const parsedTemplates = importResult.templates
       .map(template => ({ ...template, local_uid: createLocalPromptUid() }))
-    if (!parsedTemplates.length) throw new Error('没有识别到可导入的 Prompt 行')
+    if (!parsedTemplates.length) {
+      throw new Error(`没有识别到可导入的 Prompt 行（已尝试第 ${PROMPT_IMPORT_HEADER_ROWS.join('、')} 行作为表头）`)
+    }
 
     const response = await window.cs.importLocalPromptLibrary({
-      library_uid: selectedLibrary.value?.library_uid || '',
-      name: libraryDraft.value.name || selectedLibrary.value?.name || DEFAULT_PROMPT_LIBRARY_NAME,
-      scenario: libraryDraft.value.scenario || selectedLibrary.value?.scenario || PROMPT_SCENARIOS[0],
+      library_uid: selectedLocalLibrary.value?.library_uid || '',
+      name: libraryDraft.value.name || selectedLocalLibrary.value?.name || DEFAULT_PROMPT_LIBRARY_NAME,
+      scenario: libraryDraft.value.scenario || selectedLocalLibrary.value?.scenario || PROMPT_SCENARIOS[0],
       import_source_path: selected,
       templates: parsedTemplates,
     })
-    await loadLibraries()
+    await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
     syncLibraryDraft()
-    message.value = `已导入更新 ${parsedTemplates.length} 条 Prompt`
+    const headerText = importResult.header_row ? `（表头第 ${importResult.header_row} 行）` : ''
+    message.value = `已导入更新 ${parsedTemplates.length} 条 Prompt${headerText}`
   } catch (err) {
     error.value = err?.message || String(err)
   } finally {
@@ -259,18 +328,31 @@ async function chooseWorkbookForImport() {
   }
 }
 
+async function readPromptWorkbookTemplates(selected) {
+  const candidates = []
+  for (const headerRow of PROMPT_IMPORT_HEADER_ROWS) {
+    const workbook = await window.cs.readExcel(selected, { header_row: headerRow })
+    if (workbook?.error) throw new Error(workbook.error)
+    candidates.push({ header_row: headerRow, workbook })
+
+    const result = parsePromptWorkbookImportCandidates(candidates)
+    if (result.templates.length) return result
+  }
+  return parsePromptWorkbookImportCandidates(candidates)
+}
+
 async function saveLocalEdits() {
-  if (!selectedLibrary.value) return
+  if (!selectedLocalLibrary.value) return
   saving.value = true
   error.value = ''
   message.value = ''
   try {
-    const response = await window.cs.saveLocalPromptLibrary(selectedLibrary.value.library_uid, {
+    const response = await window.cs.saveLocalPromptLibrary(selectedLocalLibrary.value.library_uid, {
       name: libraryDraft.value.name || DEFAULT_PROMPT_LIBRARY_NAME,
       scenario: libraryDraft.value.scenario || PROMPT_SCENARIOS[0],
       templates: templates.value.map(normalizePromptTemplate),
     })
-    await loadLibraries()
+    await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
     message.value = '本地提示词库已保存'
   } catch (err) {
@@ -281,14 +363,15 @@ async function saveLocalEdits() {
 }
 
 async function syncSelectedLibrary() {
-  if (!selectedLibrary.value) return
+  if (!selectedLocalLibrary.value) return
   syncing.value = true
   error.value = ''
   message.value = ''
   try {
     await saveLocalEdits()
-    const response = await window.cs.syncLocalPromptLibraryToCloud(selectedLibrary.value.library_uid)
-    await loadLibraries()
+    const response = await window.cs.syncLocalPromptLibraryToCloud(selectedLocalLibrary.value.library_uid)
+    await loadLocalLibraries()
+    await loadCloudLibraries({ silent: true })
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
     const cloudId = response?.cloud?.library?.id || response?.library?.cloud_library_id
     message.value = cloudId ? `已同步到云端提示词库 #${cloudId}` : '已同步到云端提示词库'
@@ -311,7 +394,7 @@ function syncLibraryDraft() {
 }
 
 function addPromptRow() {
-  if (!selectedLibrary.value) return
+  if (!selectedLocalLibrary.value) return
   const groupName = groupFilter.value !== 'all'
     ? groupFilter.value
     : templates.value[0]?.group_name || selectedLibrary.value.scenario || PROMPT_SCENARIOS[0]
@@ -324,8 +407,51 @@ function addPromptRow() {
 }
 
 function removePromptRow(template) {
-  if (!selectedLibrary.value) return
-  selectedLibrary.value.templates = selectedLibrary.value.templates.filter(row => row !== template)
+  if (!selectedLocalLibrary.value) return
+  selectedLocalLibrary.value.templates = selectedLocalLibrary.value.templates.filter(row => row !== template)
+}
+
+async function copyCloudLibraryToLocal() {
+  if (!selectedCloudLibrary.value) return
+  error.value = ''
+  message.value = ''
+  try {
+    const cloudLibrary = selectedCloudLibrary.value
+    let cloudTemplates = Array.isArray(cloudLibrary.templates) ? cloudLibrary.templates : []
+    if (!cloudTemplates.length && cloudLibrary.cloud_library_id) {
+      const payload = await window.cs.resolveCloudPromptTemplates(cloudLibrary.cloud_library_id, { limit: 500 })
+      cloudTemplates = Array.isArray(payload?.templates) ? payload.templates : []
+    }
+    if (!cloudTemplates.length) throw new Error('线上库没有可复制的 Prompt 模板')
+    const response = await window.cs.createLocalPromptLibrary({
+      name: `${cloudLibrary.name} 本地副本`,
+      scenario: cloudLibrary.scenario || PROMPT_SCENARIOS[0],
+      templates: cloudTemplates.map(template => ({
+        ...normalizePromptTemplate(template),
+        local_uid: createLocalPromptUid(),
+      })),
+    })
+    await loadLocalLibraries()
+    selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
+    syncLibraryDraft()
+    message.value = `已保存为本地副本：${cloudTemplates.length} 条 Prompt`
+  } catch (err) {
+    error.value = err?.message || String(err)
+  }
+}
+
+function openCloudApprovalLogin() {
+  emit('open-cloud-approval')
+}
+
+async function openCloudPromptManager() {
+  const url = cloudPromptManageUrl.value
+  if (!url) return
+  try {
+    await window.cs.openExternalUrl(url)
+  } catch (err) {
+    error.value = err?.message || String(err)
+  }
 }
 
 function templateKey(template, index) {
@@ -342,8 +468,25 @@ function setReferenceText(template, value) {
 
 function statusLabel(status) {
   if (status === 'synced') return '已同步'
+  if (status === 'published') return '已发布'
   if (status === 'draft') return '本地草稿'
   return status || '本地草稿'
+}
+
+function librarySourceLabel(sourceType) {
+  return sourceType === 'cloud' ? '线上' : '本地'
+}
+
+function buildCloudPromptManageUrl(baseUrl) {
+  const text = String(baseUrl || '').trim()
+  if (!text) return ''
+  try {
+    const url = new URL(text)
+    url.searchParams.set('page', 'prompts')
+    return url.toString()
+  } catch {
+    return ''
+  }
 }
 
 onMounted(loadLibraries)
@@ -402,6 +545,11 @@ onMounted(loadLibraries)
   gap: 8px;
 }
 
+.lpl-head-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .lpl-primary,
 .lpl-secondary,
 .lpl-icon,
@@ -447,6 +595,26 @@ onMounted(loadLibraries)
   color: #fecaca;
 }
 
+.lpl-notice.warning {
+  border-color: rgba(251, 191, 36, .38);
+  background: rgba(251, 191, 36, .08);
+  color: #fde68a;
+}
+
+.lpl-source-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  min-height: 22px;
+  border: 1px solid rgba(148, 163, 184, .32);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .1);
+  color: #cbd5e1;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 750;
+}
+
 .lpl-toolbar {
   display: grid;
   grid-template-columns: minmax(180px, 240px) minmax(240px, 1fr) minmax(120px, 150px) minmax(180px, 240px);
@@ -489,6 +657,15 @@ onMounted(loadLibraries)
 .lpl-edit-row input:focus,
 .lpl-edit-row textarea:focus {
   border-color: var(--orange);
+}
+
+.lpl-toolbar input:disabled,
+.lpl-toolbar select:disabled,
+.lpl-edit-row input:disabled,
+.lpl-edit-row textarea:disabled,
+.lpl-icon:disabled {
+  cursor: not-allowed;
+  opacity: .68;
 }
 
 .lpl-empty {
@@ -566,6 +743,7 @@ onMounted(loadLibraries)
 .lpl-table-head > div {
   display: flex;
   align-items: baseline;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
