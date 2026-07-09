@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUpdated, ref, watch } from 'vue'
 
 import { apiGet, apiPatch, apiPost, type ApiError } from '../api'
 import { exportPromptWorkbook, parsePromptWorkbook, type PromptTemplateExcelRow } from '../promptExcel'
@@ -19,30 +19,42 @@ interface PromptLibrary {
   name: string
   scenario: string
   status: string
+  created_at?: string
+  updated_at?: string
   templates: PromptTemplate[]
 }
 
+type ViewMode = 'list' | 'detail'
+
 const libraries = ref<PromptLibrary[]>([])
 const selectedLibraryId = ref<number | null>(null)
+const viewMode = ref<ViewMode>('list')
 const message = ref('')
 const error = ref('')
 const importing = ref(false)
 const saving = ref(false)
 const savingLibrary = ref(false)
 const publishing = ref(false)
-const editing = ref(false)
 const creatingLibrary = ref(false)
 const groupFilter = ref('all')
+const keyword = ref('')
 const newLibrary = ref({ name: 'AI 测图提示词库 默认版', scenario: '裂变图' })
 const libraryDraft = ref({ name: '', scenario: '裂变图' })
 const fileInput = ref<HTMLInputElement | null>(null)
+const promptTextareas = ref<HTMLTextAreaElement[]>([])
 const props = defineProps<{ permissions?: string[] }>()
 const scenarioOptions = ['裂变图', '创意拍摄']
 
-const selectedLibrary = computed(() => libraries.value.find((library) => library.id === selectedLibraryId.value) ?? libraries.value[0] ?? null)
+const selectedLibrary = computed(() => libraries.value.find((library) => library.id === selectedLibraryId.value) ?? null)
 const editableTemplates = computed(() => selectedLibrary.value?.templates ?? [])
 const canEditPrompts = computed(() => props.permissions?.includes('prompts:write') ?? false)
+const isListView = computed(() => viewMode.value === 'list')
 const enabledTemplateCount = computed(() => editableTemplates.value.filter((template) => template.enabled).length)
+const cloudLibraryRows = computed(() => [...libraries.value].sort((left, right) => {
+  const rightTime = Date.parse(right.created_at || right.updated_at || '') || 0
+  const leftTime = Date.parse(left.created_at || left.updated_at || '') || 0
+  return rightTime - leftTime || String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+}))
 const groupSummaries = computed(() => {
   const groups = new Map<string, { name: string; total: number; enabled: number }>()
   for (const template of editableTemplates.value) {
@@ -55,10 +67,16 @@ const groupSummaries = computed(() => {
   return [...groups.values()].sort((left, right) => left.name.localeCompare(right.name, 'zh-CN'))
 })
 const displayTemplates = computed(() => {
-  if (groupFilter.value === 'all') return editableTemplates.value
-  return editableTemplates.value.filter((template) => (template.group_name || '未分组') === groupFilter.value)
+  const search = keyword.value.trim().toLowerCase()
+  return editableTemplates.value.filter((template) => {
+    if (groupFilter.value !== 'all' && (template.group_name || '未分组') !== groupFilter.value) return false
+    if (!search) return true
+    const haystack = `${template.group_name} ${template.field_name} ${template.prompt_text}`.toLowerCase()
+    return haystack.includes(search)
+  })
 })
 const activeLibraryMeta = computed(() => {
+  if (isListView.value) return `${libraries.value.length} 个线上库，发布后可用于 AI 测图任务`
   if (!selectedLibrary.value) return '导入或创建 Prompt 库后开始维护模板'
   return `${selectedLibrary.value.scenario} · ${statusLabel(selectedLibrary.value.status)} · ${editableTemplates.value.length} 条字段，${enabledTemplateCount.value} 条启用`
 })
@@ -68,6 +86,8 @@ watch(selectedLibraryId, () => {
   syncLibraryDraft()
 })
 
+watch(displayTemplates, resizePromptTextareas, { flush: 'post' })
+
 async function load() {
   try {
     const previousId = selectedLibraryId.value
@@ -76,9 +96,12 @@ async function load() {
       ...library,
       templates: library.templates.map(normalizeTemplate),
     }))
-    selectedLibraryId.value = libraries.value.some((library) => library.id === previousId)
-      ? previousId
-      : libraries.value[0]?.id ?? null
+    if (previousId && libraries.value.some((library) => library.id === previousId)) {
+      selectedLibraryId.value = previousId
+    } else {
+      selectedLibraryId.value = null
+      viewMode.value = 'list'
+    }
     syncLibraryDraft()
   } catch (caught) {
     error.value = (caught as ApiError).message
@@ -111,6 +134,7 @@ async function createLibrary() {
     creatingLibrary.value = false
     await load()
     selectedLibraryId.value = response.library.id
+    viewMode.value = 'detail'
     syncLibraryDraft()
   } catch (caught) {
     error.value = (caught as ApiError).message
@@ -137,6 +161,7 @@ async function importWorkbook(event: Event) {
     creatingLibrary.value = false
     await load()
     selectedLibraryId.value = response.library.id
+    viewMode.value = 'detail'
     syncLibraryDraft()
   } catch (caught) {
     error.value = (caught as ApiError).message || 'Excel 导入失败'
@@ -231,7 +256,6 @@ function addRow() {
     error.value = '当前账号没有 Prompt 编辑权限'
     return
   }
-  editing.value = true
   selectedLibrary.value.templates.unshift(normalizeTemplate({
     group_name: groupFilter.value !== 'all' ? groupFilter.value : selectedLibrary.value.templates[0]?.group_name || '上装',
     field_name: '',
@@ -252,6 +276,16 @@ function addRow() {
     gender_rules: [],
     priority: 100,
   }))
+  resizePromptTextareas()
+}
+
+function deletePromptRow(template: PromptTemplate) {
+  if (!selectedLibrary.value) return
+  if (!canEditPrompts.value) {
+    error.value = '当前账号没有 Prompt 编辑权限'
+    return
+  }
+  selectedLibrary.value.templates = selectedLibrary.value.templates.filter((row) => row !== template)
 }
 
 function syncLibraryDraft() {
@@ -270,19 +304,6 @@ function nextTopFieldOrder(): number {
     .map((template) => template.field_order)
     .filter((order): order is number => Number.isInteger(order)) ?? []
   return orders.length ? Math.min(...orders) - 1 : 0
-}
-
-function enterEditMode() {
-  if (!canEditPrompts.value) {
-    error.value = '当前账号仅可查看 Prompt 库，请联系管理员分配 prompts:write 权限'
-    return
-  }
-  editing.value = true
-}
-
-function leaveEditMode() {
-  editing.value = false
-  void load()
 }
 
 function normalizeTemplate(template: Partial<PromptTemplate>): PromptTemplate {
@@ -330,11 +351,69 @@ function enabledLabel(template: PromptTemplate): string {
   return template.enabled ? '启用' : '停用'
 }
 
-onMounted(load)
+function enterLibraryDetail(library: PromptLibrary) {
+  selectedLibraryId.value = library.id
+  viewMode.value = 'detail'
+  groupFilter.value = 'all'
+  keyword.value = ''
+  syncLibraryDraft()
+  resizePromptTextareas()
+}
+
+function backToLibraryList() {
+  viewMode.value = 'list'
+  keyword.value = ''
+}
+
+function libraryPromptCount(library: PromptLibrary): number {
+  return Array.isArray(library.templates) ? library.templates.length : 0
+}
+
+function librarySourceLabel(): string {
+  return '线上'
+}
+
+function formatDateTime(value: unknown): string {
+  const date = new Date(String(value || ''))
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
+function resizePromptTextarea(eventOrTextarea: Event | HTMLTextAreaElement) {
+  const textarea = eventOrTextarea instanceof HTMLTextAreaElement
+    ? eventOrTextarea
+    : eventOrTextarea.target instanceof HTMLTextAreaElement
+      ? eventOrTextarea.target
+      : null
+  if (!textarea) return
+  textarea.style.height = 'auto'
+  textarea.style.height = `${textarea.scrollHeight}px`
+}
+
+function resizePromptTextareas() {
+  nextTick(() => {
+    for (const textarea of promptTextareas.value.flat()) {
+      resizePromptTextarea(textarea)
+    }
+  })
+}
+
+onMounted(async () => {
+  await load()
+  resizePromptTextareas()
+})
+onUpdated(resizePromptTextareas)
 </script>
 
 <template>
-  <section class="view-stack prompt-library-page" :class="{ editing }">
+  <section class="view-stack prompt-library-page">
     <p v-if="message" class="notice">{{ message }}</p>
     <p v-if="error" class="notice danger">{{ error }}</p>
 
@@ -349,46 +428,10 @@ onMounted(load)
           <button v-if="canEditPrompts" class="ghost-button" type="button" @click="creatingLibrary = !creatingLibrary">
             {{ creatingLibrary ? '收起建库' : '新建库' }}
           </button>
+          <button v-if="!isListView" class="ghost-button" type="button" @click="backToLibraryList">返回列表</button>
         </div>
       </div>
 
-      <div class="library-manager-grid">
-        <label class="field compact">
-          <span>当前库</span>
-          <select v-model.number="selectedLibraryId">
-            <option v-for="library in libraries" :key="library.id" :value="library.id">
-              {{ library.name }}
-            </option>
-          </select>
-        </label>
-        <label class="field library-name-field">
-          <span>库名称</span>
-          <input v-model="libraryDraft.name" :disabled="!canEditPrompts || !selectedLibrary" />
-        </label>
-        <label class="field compact">
-          <span>场景</span>
-          <select v-model="libraryDraft.scenario" :disabled="!canEditPrompts || !selectedLibrary">
-            <option v-for="scenario in scenarioOptions" :key="scenario">{{ scenario }}</option>
-          </select>
-        </label>
-        <div v-if="selectedLibrary" class="library-meta">
-          <span class="badge">{{ statusLabel(selectedLibrary.status) }}</span>
-          <span class="badge">{{ enabledTemplateCount }} 条启用</span>
-          <span v-if="!canEditPrompts" class="permission-badge">只读权限</span>
-        </div>
-        <div class="library-actions">
-          <button class="ghost-button" type="button" :disabled="!selectedLibrary" @click="exportWorkbook">导出 Excel</button>
-          <button v-if="canEditPrompts" class="ghost-button" type="button" :disabled="importing" @click="fileInput?.click()">
-            {{ importing ? '导入中' : '导入 Excel 建库' }}
-          </button>
-          <button v-if="canEditPrompts" class="ghost-button" type="button" :disabled="!selectedLibrary || publishing" @click="publishLibrary">
-            {{ publishing ? '发布中' : '发布新版本' }}
-          </button>
-          <button v-if="canEditPrompts" class="primary-button" type="button" :disabled="savingLibrary || !selectedLibrary" @click="saveLibraryMeta">
-            {{ savingLibrary ? '保存中' : '保存库信息' }}
-          </button>
-        </div>
-      </div>
       <input ref="fileInput" class="hidden-input" type="file" accept=".xlsx,.xls" @change="importWorkbook" />
 
       <div v-if="creatingLibrary && canEditPrompts" class="library-create-panel">
@@ -412,7 +455,44 @@ onMounted(load)
       <p v-if="!canEditPrompts" class="permission-note">当前账号可以查看 Prompt 库，但不能新建、导入、编辑或发布。需要编辑权限时请让管理员分配 prompts:write。</p>
     </section>
 
-    <section v-if="!selectedLibrary" class="panel empty-state">导入或创建 Prompt 库后维护字段</section>
+    <section v-if="isListView" class="prompt-library-list-panel">
+      <div class="prompt-library-list-head">
+        <div>
+          <h3>提示词库列表</h3>
+          <p>{{ cloudLibraryRows.length }} 个线上库</p>
+        </div>
+        <button v-if="canEditPrompts" class="primary-button" type="button" @click="creatingLibrary = true">新建库</button>
+      </div>
+      <div class="prompt-library-table">
+        <div class="prompt-library-header" role="row">
+          <span>提示词库名称</span>
+          <span>当前 Prompt 数量</span>
+          <span>创建时间</span>
+          <span>来源</span>
+          <span>操作</span>
+        </div>
+        <div class="prompt-library-body">
+          <div v-for="library in cloudLibraryRows" :key="library.id" class="prompt-library-row">
+            <div class="prompt-library-name">
+              <strong>{{ library.name }}</strong>
+              <span>{{ library.scenario }} · {{ statusLabel(library.status) }}</span>
+            </div>
+            <div>{{ libraryPromptCount(library) }} 条</div>
+            <div>{{ formatDateTime(library.created_at || library.updated_at) }}</div>
+            <div><span class="source-badge">{{ librarySourceLabel() }}</span></div>
+            <div class="prompt-library-actions">
+              <button class="ghost-button" type="button" @click="enterLibraryDetail(library)">进入编辑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="!cloudLibraryRows.length" class="panel empty-state">导入或创建 Prompt 库后维护字段</div>
+    </section>
+
+    <section v-else-if="!selectedLibrary" class="panel empty-state">
+      <span>未选择提示词库</span>
+      <button class="ghost-button" type="button" @click="backToLibraryList">返回列表</button>
+    </section>
 
     <section v-else class="prompt-workspace">
       <aside class="prompt-group-panel">
@@ -435,79 +515,107 @@ onMounted(load)
           <strong>{{ group.name }}</strong>
           <span>{{ group.enabled }} / {{ group.total }} 启用</span>
         </button>
+        <div class="library-meta stacked">
+          <span class="source-badge">{{ librarySourceLabel() }}</span>
+          <span class="badge">{{ statusLabel(selectedLibrary.status) }}</span>
+          <span class="badge">{{ enabledTemplateCount }} 条启用</span>
+          <span v-if="!canEditPrompts" class="permission-badge">只读权限</span>
+        </div>
       </aside>
 
-      <main v-if="!editing" class="prompt-display-panel">
+      <main class="prompt-editor-panel">
+        <div class="library-manager-grid">
+          <label class="field library-name-field">
+            <span>库名称</span>
+            <input v-model="libraryDraft.name" :disabled="!canEditPrompts || !selectedLibrary" />
+          </label>
+          <label class="field compact">
+            <span>场景</span>
+            <select v-model="libraryDraft.scenario" :disabled="!canEditPrompts || !selectedLibrary">
+              <option v-for="scenario in scenarioOptions" :key="scenario">{{ scenario }}</option>
+            </select>
+          </label>
+          <label class="field search-field">
+            <span>搜索</span>
+            <input v-model.trim="keyword" type="search" placeholder="名称 / Prompt" />
+          </label>
+          <div class="library-actions">
+            <button class="ghost-button" type="button" :disabled="!selectedLibrary" @click="exportWorkbook">导出 Excel</button>
+            <button v-if="canEditPrompts" class="ghost-button" type="button" :disabled="importing" @click="fileInput?.click()">
+              {{ importing ? '导入中' : '导入 Excel 建库' }}
+            </button>
+            <button v-if="canEditPrompts" class="ghost-button" type="button" :disabled="!selectedLibrary || publishing" @click="publishLibrary">
+              {{ publishing ? '发布中' : '发布新版本' }}
+            </button>
+            <button v-if="canEditPrompts" class="primary-button" type="button" :disabled="savingLibrary || !selectedLibrary" @click="saveLibraryMeta">
+              {{ savingLibrary ? '保存中' : '保存库信息' }}
+            </button>
+          </div>
+        </div>
+
         <div class="prompt-display-head">
           <div>
             <h2>Prompt 明细</h2>
-            <p>默认查看业务可用字段，工程字段仅在导入导出中保留，不占用日常维护空间。</p>
+            <p>按线上表格维护业务字段，未展示字段会随导入导出保留。</p>
           </div>
           <div class="prompt-detail-actions">
             <span class="badge">{{ displayTemplates.length }} 条</span>
             <button v-if="canEditPrompts" class="ghost-button" type="button" :disabled="!selectedLibrary" @click="addRow">新增 Prompt</button>
-            <button v-if="canEditPrompts" class="primary-button" type="button" @click="enterEditMode">编辑 Prompt</button>
-          </div>
-        </div>
-        <div class="prompt-card-list">
-          <article v-for="(template, index) in displayTemplates" :key="templateRowKey(template, index)" class="prompt-preview-card" :class="{ disabled: !template.enabled }">
-            <div class="prompt-card-meta">
-              <span class="status-pill" :class="{ approved: template.enabled, rejected: !template.enabled }">{{ enabledLabel(template) }}</span>
-              <span class="badge">{{ template.group_name || '未分组' }}</span>
-              <span class="muted">女 {{ template.female_priority ?? '-' }} · 男/中 {{ template.male_neutral_priority ?? '-' }}</span>
-            </div>
-            <div class="prompt-card-body">
-              <h3>{{ template.field_name || '未命名 Prompt' }}</h3>
-              <p>{{ template.prompt_text || '暂无 Prompt 内容' }}</p>
-            </div>
-          </article>
-        </div>
-      </main>
-
-      <main v-else class="prompt-editor-panel">
-        <div class="prompt-display-head">
-          <div>
-            <h2>Prompt 明细编辑</h2>
-            <p>只维护业务审核需要看到的字段；未展示字段会随原数据保留并继续参与导入导出。</p>
-          </div>
-          <div class="prompt-detail-actions">
-            <span class="badge">{{ displayTemplates.length }} 条</span>
-            <button class="ghost-button" type="button" :disabled="!selectedLibrary" @click="addRow">新增 Prompt</button>
-            <button class="ghost-button" type="button" @click="leaveEditMode">退出编辑</button>
-            <button class="primary-button" type="button" :disabled="saving || !selectedLibrary" @click="saveTable">
+            <button v-if="canEditPrompts" class="primary-button" type="button" :disabled="saving || !selectedLibrary" @click="saveTable">
               {{ saving ? '保存中' : '保存 Prompt' }}
             </button>
           </div>
         </div>
         <div class="prompt-edit-list">
-          <article v-for="(template, index) in displayTemplates" :key="templateRowKey(template, index)" class="prompt-edit-row">
-            <div class="prompt-edit-meta">
-              <label class="check-row">
-                <input v-model="template.enabled" type="checkbox" />
-                <span>启用</span>
-              </label>
-              <label class="field">
-                <span>分组</span>
-                <input v-model="template.group_name" />
-              </label>
-              <label class="field">
-                <span>字段名</span>
-                <input v-model="template.field_name" />
-              </label>
-              <label class="field priority-field">
-                <span>女优先</span>
-                <input v-model.number="template.female_priority" type="number" />
-              </label>
-              <label class="field priority-field">
-                <span>男/中优先</span>
-                <input v-model.number="template.male_neutral_priority" type="number" />
-              </label>
-            </div>
-            <label class="field prompt-text-field">
+          <div class="prompt-template-table">
+            <div class="prompt-template-header" role="row">
+              <span>状态</span>
+              <span>分组</span>
+              <span>字段名</span>
+              <span>女优先</span>
+              <span>男/中</span>
               <span>Prompt</span>
-              <textarea v-model="template.prompt_text" rows="5" placeholder="输入用于 AI 测图的提示词模板"></textarea>
-            </label>
-          </article>
+              <span>操作</span>
+            </div>
+            <div class="prompt-template-body">
+              <div v-for="(template, index) in displayTemplates" :key="templateRowKey(template, index)" class="prompt-template-row" :class="{ disabled: !template.enabled }">
+                <div class="prompt-template-cell status">
+                  <label class="prompt-switch" :class="{ readonly: !canEditPrompts }">
+                    <input v-model="template.enabled" type="checkbox" :disabled="!canEditPrompts" aria-label="启用 Prompt" />
+                    <span class="prompt-switch-track" aria-hidden="true"></span>
+                    <strong>{{ enabledLabel(template) }}</strong>
+                  </label>
+                </div>
+                <div class="prompt-template-cell">
+                  <input v-model="template.group_name" :disabled="!canEditPrompts" aria-label="分组" />
+                </div>
+                <div class="prompt-template-cell">
+                  <input v-model="template.field_name" :disabled="!canEditPrompts" aria-label="字段名" />
+                </div>
+                <div class="prompt-template-cell compact">
+                  <input v-model.number="template.female_priority" type="number" :disabled="!canEditPrompts" aria-label="女优先" />
+                </div>
+                <div class="prompt-template-cell compact">
+                  <input v-model.number="template.male_neutral_priority" type="number" :disabled="!canEditPrompts" aria-label="男/中优先" />
+                </div>
+                <div class="prompt-template-cell prompt">
+                  <textarea
+                    ref="promptTextareas"
+                    v-model="template.prompt_text"
+                    rows="2"
+                    :disabled="!canEditPrompts"
+                    aria-label="Prompt"
+                    placeholder="输入完整生图 Prompt"
+                    @input="resizePromptTextarea"
+                  ></textarea>
+                </div>
+                <div class="prompt-template-cell action">
+                  <button class="ghost-button danger compact-action" type="button" :disabled="!canEditPrompts" @click="deletePromptRow(template)">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+          <div v-if="!displayTemplates.length" class="panel empty-state">没有匹配的 Prompt</div>
         </div>
       </main>
     </section>
@@ -520,6 +628,7 @@ onMounted(load)
 }
 
 .prompt-command-panel,
+.prompt-library-list-panel,
 .prompt-group-panel,
 .prompt-display-panel,
 .prompt-editor-panel {
@@ -535,6 +644,7 @@ onMounted(load)
 }
 
 .prompt-command-head,
+.prompt-library-list-head,
 .library-manager-grid,
 .prompt-edit-toolbar,
 .prompt-primary-actions,
@@ -550,12 +660,15 @@ onMounted(load)
 }
 
 .prompt-command-head,
+.prompt-library-list-head,
 .prompt-display-head {
   justify-content: space-between;
 }
 
 .prompt-command-head h2,
 .prompt-command-head p,
+.prompt-library-list-head h3,
+.prompt-library-list-head p,
 .prompt-display-head h2,
 .prompt-display-head p,
 .prompt-group-head h3,
@@ -572,6 +685,7 @@ onMounted(load)
 }
 
 .prompt-command-head p,
+.prompt-library-list-head p,
 .prompt-display-head p,
 .permission-note {
   color: var(--text2);
@@ -583,9 +697,98 @@ onMounted(load)
   justify-content: flex-end;
 }
 
+.prompt-library-list-panel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.prompt-library-table,
+.prompt-template-table {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.prompt-library-header,
+.prompt-library-row,
+.prompt-template-header,
+.prompt-template-row {
+  display: grid;
+  align-items: stretch;
+}
+
+.prompt-library-header,
+.prompt-template-header {
+  min-height: 36px;
+  background: var(--bg3);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.prompt-library-header,
+.prompt-library-row {
+  grid-template-columns: minmax(260px, 1.4fr) minmax(120px, 0.6fr) minmax(170px, 0.7fr) minmax(92px, 0.45fr) minmax(110px, 0.5fr);
+}
+
+.prompt-library-header span,
+.prompt-library-row > div,
+.prompt-template-header span,
+.prompt-template-cell {
+  min-width: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+}
+
+.prompt-library-row:last-child > div,
+.prompt-template-row:last-child .prompt-template-cell {
+  border-bottom: 0;
+}
+
+.prompt-library-name {
+  display: grid !important;
+  align-content: center;
+  gap: 4px;
+}
+
+.prompt-library-name strong,
+.prompt-library-name span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.prompt-library-name span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.prompt-library-actions {
+  justify-content: flex-end;
+}
+
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  border: 1px solid rgba(74, 222, 128, 0.42);
+  border-radius: 999px;
+  background: rgba(74, 222, 128, 0.11);
+  color: #b7f7cf;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 900;
+}
+
 .library-manager-grid {
   display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(260px, 1fr) minmax(150px, 180px);
+  grid-template-columns: minmax(260px, 1fr) minmax(150px, 180px) minmax(220px, 0.8fr);
+  gap: 10px;
   align-items: end;
 }
 
@@ -658,6 +861,14 @@ onMounted(load)
   padding: 3px 8px;
   font-size: 12px;
   font-weight: 800;
+}
+
+.library-meta.stacked {
+  display: grid;
+  gap: 7px;
+  align-items: start;
+  justify-content: stretch;
+  margin-top: 6px;
 }
 
 .hidden-input {
@@ -736,12 +947,16 @@ onMounted(load)
   overflow: auto;
 }
 
+.prompt-editor-panel > .library-manager-grid {
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
 .prompt-display-head {
   border-bottom: 1px solid var(--border);
   padding: 14px;
 }
 
-.prompt-card-list,
 .prompt-edit-list {
   display: grid;
   gap: 10px;
@@ -841,21 +1056,147 @@ onMounted(load)
   line-height: 1.55;
 }
 
+.prompt-template-header,
+.prompt-template-row {
+  grid-template-columns: 116px minmax(120px, 0.8fr) minmax(150px, 0.9fr) 96px 96px minmax(260px, 1.7fr) 82px;
+}
+
+.prompt-template-row.disabled {
+  opacity: 0.68;
+}
+
+.prompt-template-cell {
+  align-items: stretch;
+}
+
+.prompt-template-cell.status,
+.prompt-template-cell.action {
+  align-items: center;
+}
+
+.prompt-template-cell.action {
+  justify-content: flex-end;
+}
+
+.prompt-template-cell.compact input {
+  text-align: center;
+}
+
+.prompt-template-cell input,
+.prompt-template-cell textarea {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg2);
+  color: var(--text);
+  padding: 8px 9px;
+  font: inherit;
+  outline: none;
+}
+
+.prompt-template-cell input:disabled,
+.prompt-template-cell textarea:disabled {
+  opacity: 0.72;
+  cursor: not-allowed;
+}
+
+.prompt-template-cell input:focus,
+.prompt-template-cell textarea:focus {
+  border-color: var(--orange);
+}
+
+.prompt-template-cell.prompt textarea {
+  min-height: 42px;
+  resize: none;
+  overflow: hidden;
+  line-height: 1.55;
+}
+
+.prompt-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.prompt-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.prompt-switch-track {
+  position: relative;
+  width: 34px;
+  height: 18px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.28);
+  border: 1px solid var(--border);
+  transition: background 0.16s, border-color 0.16s;
+}
+
+.prompt-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--text2);
+  transition: transform 0.16s, background 0.16s;
+}
+
+.prompt-switch input:checked + .prompt-switch-track {
+  border-color: rgba(74, 222, 128, 0.48);
+  background: rgba(74, 222, 128, 0.22);
+}
+
+.prompt-switch input:checked + .prompt-switch-track::after {
+  transform: translateX(16px);
+  background: #b7f7cf;
+}
+
+.prompt-switch.readonly {
+  opacity: 0.72;
+}
+
+.compact-action {
+  padding-inline: 10px;
+}
+
 @media (max-width: 980px) {
   .prompt-workspace,
   .prompt-edit-row,
   .library-manager-grid,
-  .library-create-panel {
+  .library-create-panel,
+  .prompt-library-header,
+  .prompt-library-row,
+  .prompt-template-header,
+  .prompt-template-row {
     grid-template-columns: 1fr;
   }
 
   .prompt-group-panel {
     position: static;
   }
+
+  .prompt-library-header {
+    display: none;
+  }
+
+  .prompt-template-header {
+    display: none;
+  }
 }
 
 @media (max-width: 720px) {
   .prompt-command-head,
+  .prompt-library-list-head,
   .prompt-display-head,
   .prompt-primary-actions,
   .library-actions,

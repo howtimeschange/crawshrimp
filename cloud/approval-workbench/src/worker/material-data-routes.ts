@@ -205,7 +205,7 @@ export async function getMaterialTestSummary(request: Request, env: Env): Promis
        COALESCE(SUM(search_clicks), 0) AS total_search_clicks,
        COUNT(*) AS snapshot_material_rows,
        (SELECT COUNT(*) FROM scoped_metrics) AS raw_snapshot_rows,
-       (SELECT COUNT(*) FROM scoped_metrics WHERE snapshot_rank > 1) AS merged_snapshot_rows,
+       (SELECT COUNT(*) FROM scoped_metrics) - (SELECT COUNT(*) FROM latest_metrics) AS merged_snapshot_rows,
        (SELECT COUNT(DISTINCT statistic_date) FROM scoped_metrics) AS statistic_date_count,
        (SELECT MIN(statistic_date) FROM scoped_metrics) AS earliest_statistic_date,
        (SELECT MAX(statistic_date) FROM scoped_metrics) AS latest_statistic_date
@@ -252,7 +252,7 @@ export async function listMaterialTestImages(request: Request, env: Env): Promis
   const { results } = await env.DB.prepare(
     `${latestMaterialMetricCte(scope.where)}
      SELECT id, style_code, item_id, item_title, task_id, statistic_type, statistic_date, image_type,
-            material_id, material_ratio, material_share, material_url, search_impressions, search_clicks,
+            material_id, material_identity, material_ratio, material_share, material_url, search_impressions, search_clicks,
             search_ctr, detail_impressions, detail_clicks, detail_ctr, detail_add_to_cart,
             detail_pay_conversion, detail_pay_conversion_rate, execution_result, remark
      FROM latest_metrics
@@ -556,24 +556,60 @@ function materialMetricFilterScope(params: URLSearchParams): { where: string; va
 }
 
 function latestMaterialMetricCte(where: string): string {
-  return `WITH scoped_metrics AS (
+  const normalizedUrl = normalizedMaterialUrlSql()
+  const materialId = "TRIM(COALESCE(material_id, ''))"
+  return `WITH normalized_metrics AS (
+       SELECT *,
+              NULLIF(${normalizedUrl}, '') AS normalized_material_url,
+              COALESCE(NULLIF(${materialId}, ''), NULLIF(${normalizedUrl}, '')) AS material_identity,
+              COALESCE(NULLIF(${materialId}, ''), NULLIF(${normalizedUrl}, '')) AS material_snapshot_key
+       FROM material_test_image_metrics
+       ${where}
+     ),
+     scoped_metrics AS (
        SELECT *,
               ROW_NUMBER() OVER (
                 PARTITION BY item_id,
                              task_id,
                              statistic_type,
                              image_type,
-                             COALESCE(NULLIF(material_url, ''), NULLIF(material_id, ''))
+                             material_snapshot_key
+                ORDER BY statistic_date DESC, imported_at DESC, id DESC
+              ) AS material_snapshot_rank
+       FROM normalized_metrics
+     ),
+     material_latest_metrics AS (
+       SELECT *
+       FROM scoped_metrics
+       WHERE material_snapshot_rank = 1
+     ),
+     url_scoped_metrics AS (
+       SELECT *,
+              ROW_NUMBER() OVER (
+                PARTITION BY item_id,
+                             task_id,
+                             statistic_type,
+                             image_type,
+                             COALESCE(normalized_material_url, material_identity)
                 ORDER BY statistic_date DESC, imported_at DESC, id DESC
               ) AS snapshot_rank
-       FROM material_test_image_metrics
-       ${where}
+       FROM material_latest_metrics
      ),
      latest_metrics AS (
        SELECT *
-       FROM scoped_metrics
+       FROM url_scoped_metrics
        WHERE snapshot_rank = 1
      )`
+}
+
+function normalizedMaterialUrlSql(): string {
+  const url = "TRIM(COALESCE(material_url, ''))"
+  return `CASE
+                WHEN ${url} = '' THEN ''
+                WHEN instr(${url}, '?') > 0 AND (instr(${url}, '#') = 0 OR instr(${url}, '?') < instr(${url}, '#')) THEN substr(${url}, 1, instr(${url}, '?') - 1)
+                WHEN instr(${url}, '#') > 0 THEN substr(${url}, 1, instr(${url}, '#') - 1)
+                ELSE ${url}
+              END`
 }
 
 function addMetricEqualFilter(filters: string[], values: string[], field: string, value: unknown): void {

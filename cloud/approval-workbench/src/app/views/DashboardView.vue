@@ -53,6 +53,7 @@ function batchStatusLabel(status: string): string {
   if (status === 'syncing') return '同步中'
   if (status === 'pending_review') return '待审批'
   if (status === 'ready_to_submit') return '待提交'
+  if (status === 'submitting') return '提交中'
   if (status === 'submitted') return '已提交'
   if (status === 'rejected') return '已退回'
   return status || '-'

@@ -45,7 +45,14 @@
           <textarea v-model.trim="form.prompt" placeholder="描述商品、卖点、模特姿态、背景和禁用元素..."></textarea>
         </section>
 
-        <section class="aiw-material-box">
+        <section
+          class="aiw-material-box"
+          :class="{ 'drag-over': dragOverTarget === 'main' }"
+          @dragenter.prevent="dragOverTarget = 'main'"
+          @dragover.prevent="handleResultDragOver"
+          @dragleave="clearDragOver('main')"
+          @drop.prevent="dropResultAsMain"
+        >
           <div class="aiw-panel-head">
             <span>主图</span>
             <button type="button" @click="chooseMainImage">
@@ -80,7 +87,14 @@
           </div>
         </section>
 
-        <section class="aiw-material-box">
+        <section
+          class="aiw-material-box"
+          :class="{ 'drag-over': dragOverTarget === 'reference' }"
+          @dragenter.prevent="dragOverTarget = 'reference'"
+          @dragover.prevent="handleResultDragOver"
+          @dragleave="clearDragOver('reference')"
+          @drop.prevent="dropResultAsReference"
+        >
           <div class="aiw-panel-head">
             <span>参考图</span>
             <button type="button" @click="chooseReferenceImages">
@@ -200,15 +214,20 @@
             <button type="button" :disabled="!selectedResultItems.length" @click="saveAs(selectedResultItems)">
               <span class="aiw-icon-button-content"><AiwIcon name="download" />下载选中</span>
             </button>
-            <div class="aiw-tabs">
-              <button :class="{ active: workspaceMode === 'results' }" type="button" @click="workspaceMode = 'results'">结果</button>
-              <button :class="{ active: workspaceMode === 'tasks' }" type="button" @click="workspaceMode = 'tasks'">任务</button>
-            </div>
+            <button
+              class="aiw-task-sidebar-toggle"
+              type="button"
+              :class="{ active: taskSidebarOpen }"
+              :aria-pressed="taskSidebarOpen ? 'true' : 'false'"
+              @click="toggleTaskSidebar"
+            >
+              <span class="aiw-icon-button-content"><AiwIcon name="sidebar" />任务</span>
+            </button>
           </div>
         </div>
 
-        <div class="aiw-workspace-body">
-          <section v-if="workspaceMode === 'results'" class="aiw-result-wall">
+        <div class="aiw-workspace-body" :class="{ 'history-collapsed': !taskSidebarOpen }">
+          <section class="aiw-result-wall">
             <section
               v-for="queue in visibleResultQueues"
               :key="queue.key"
@@ -241,15 +260,26 @@
                   :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading }"
                   :aria-pressed="selectedResults.has(resultKey(item)) ? 'true' : 'false'"
                   :tabindex="item.loading ? -1 : 0"
+                  :draggable="!item.loading"
                   role="button"
                   @click="toggleResult(item)"
+                  @dragstart.stop="startResultDrag(item, $event)"
+                  @dragend="endResultDrag"
                   @keydown.enter.prevent="toggleResult(item)"
                   @keydown.space.prevent="toggleResult(item)"
                 >
                   <button v-if="!item.loading" class="aiw-select-toggle" type="button" @click.stop="toggleResult(item)">
                     {{ selectedResults.has(resultKey(item)) ? '已选' : '选择' }}
                   </button>
-                  <button v-if="!item.loading" class="aiw-preview-button" type="button" @click.stop="openLightbox(item)">
+                  <button
+                    v-if="!item.loading"
+                    class="aiw-preview-button"
+                    type="button"
+                    :draggable="!item.loading"
+                    @click.stop="openLightbox(item)"
+                    @dragstart.stop="startResultDrag(item, $event)"
+                    @dragend="endResultDrag"
+                  >
                     <img
                       v-if="resultPreviewSrc(item)"
                       :src="resultPreviewSrc(item)"
@@ -274,6 +304,9 @@
                       <button type="button" @click.stop="addAsReference(item)">
                         <span class="aiw-icon-button-content"><AiwIcon name="plus" />设为参考</span>
                       </button>
+                      <button type="button" @click.stop="openLightbox(item, { mode: 'edit' })">
+                        <span class="aiw-icon-button-content"><AiwIcon name="edit" />修改</span>
+                      </button>
                       <button type="button" @click.stop="saveAs([item])">
                         <span class="aiw-icon-button-content"><AiwIcon name="download" />下载</span>
                       </button>
@@ -288,44 +321,7 @@
             </div>
           </section>
 
-          <section v-else-if="workspaceMode === 'tasks'" class="aiw-task-detail-panel">
-            <header>
-              <div>
-                <strong>{{ currentJob?.title || '未选择任务' }}</strong>
-                <span>{{ currentJob ? taskMetaLine(currentJob) : '请选择右侧任务记录' }}</span>
-              </div>
-            </header>
-            <div class="aiw-task-detail-summary">
-              <strong>{{ currentJob ? taskResultLine(currentJob) : '暂无任务' }}</strong>
-              <span>{{ currentJob?.job_uid || '新建或选择任务后，这里会显示任务详情。' }}</span>
-            </div>
-            <div class="aiw-task-detail-prompt">
-              <span>Prompt</span>
-              <p>{{ currentJob?.prompt || form.prompt || '暂无 Prompt' }}</p>
-            </div>
-            <div v-if="taskPreviewItems(currentJob || {}).length" class="aiw-task-detail-thumbs">
-              <button
-                v-for="item in taskPreviewItems(currentJob || {})"
-                :key="resultKey(item)"
-                type="button"
-                @click="openLightbox(item)"
-              >
-                <img
-                  v-if="resultPreviewSrc(item)"
-                  :src="resultPreviewSrc(item)"
-                  :alt="item.label"
-                  @error="markResultPreviewBroken(item)"
-                />
-                <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
-              </button>
-            </div>
-            <div v-else class="aiw-empty-state">
-              <strong>暂无结果图</strong>
-              <span>当前任务生成完成后，会在这里显示最近几张输出预览。</span>
-            </div>
-          </section>
-
-          <aside class="aiw-history-sidebar">
+          <aside v-if="taskSidebarOpen" class="aiw-history-sidebar">
             <div class="aiw-panel-head">
               <span>任务记录</span>
             </div>
@@ -367,22 +363,186 @@
       </main>
     </div>
     <div v-if="lightboxItem" class="aiw-lightbox" @click="closeLightbox">
-      <figure @click.stop>
-        <button class="aiw-lightbox-close" type="button" @click="closeLightbox">
-          <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
-        </button>
-        <img
-          v-if="lightboxSrc"
-          :src="lightboxSrc"
-          :alt="lightboxItem.label"
-          @error="markResultPreviewBroken(lightboxItem)"
-        />
-        <div v-else class="aiw-lightbox-fallback">{{ lightboxItem.label }}</div>
-        <figcaption>
-          <strong>{{ lightboxItem.label }}</strong>
-          <span>{{ lightboxItem.model || activeModel.label }} · {{ lightboxItem.size || form.size }}</span>
-        </figcaption>
-      </figure>
+      <section class="aiw-lightbox-layout" role="dialog" aria-modal="true" aria-label="图片预览和二次修改" @click.stop>
+        <div class="aiw-lightbox-image-pane">
+          <figure>
+            <div class="aiw-lightbox-canvas" :class="{ loading: lightboxActiveItem?.loading }">
+              <img
+                v-if="lightboxActiveSrc"
+                class="aiw-lightbox-main-image"
+                :class="{ blurred: lightboxActiveItem?.loading }"
+                :src="lightboxActiveSrc"
+                :alt="lightboxActiveItem?.label || lightboxItem.label"
+                @error="markResultPreviewBroken(lightboxActiveItem || lightboxItem)"
+              />
+              <TldrawAnnotationLayer
+                v-if="lightboxActiveSrc && !lightboxActiveItem?.loading"
+                class="aiw-lightbox-annotation-layer"
+                :class="{ active: Boolean(lightboxAnnotationTool) }"
+                :image-src="lightboxActiveSrc"
+                :image-label="lightboxActiveItem?.label || lightboxItem.label"
+                :active-tool="lightboxAnnotationTool"
+                :annotation-color="lightboxAnnotationColor"
+                :clear-nonce="lightboxAnnotationClearNonce"
+                :export-nonce="lightboxAnnotationExportNonce"
+                @export-annotation="captureLightboxAnnotation"
+                @error="handleLightboxAnnotationError"
+              />
+              <div v-if="lightboxActiveItem?.loading || lightboxEditSubmitting" class="aiw-edit-loading-overlay">
+                <span class="aiw-edit-spinner" aria-hidden="true"></span>
+                <strong>{{ lightboxEditActionLabel }}</strong>
+              </div>
+              <div
+                v-if="lightboxActiveSrc && !lightboxActiveItem?.loading"
+                class="aiw-lightbox-annotation-toolbar"
+                role="toolbar"
+                aria-label="图片标注工具"
+                @mousedown.stop
+                @pointerdown.stop
+                @click.stop
+              >
+                <div class="aiw-annotation-color-strip" aria-label="标注颜色">
+                  <button
+                    v-for="color in AIW_ANNOTATION_COLORS"
+                    :key="color.id"
+                    class="aiw-annotation-color-button"
+                    type="button"
+                    :class="{ active: lightboxAnnotationColor === color.id }"
+                    :style="{ '--aiw-annotation-color': color.hex }"
+                    :title="color.label"
+                    :aria-label="`标注颜色：${color.label}`"
+                    @click="setLightboxAnnotationColor(color.id)"
+                  ></button>
+                </div>
+                <button
+                  type="button"
+                  :class="{ active: lightboxAnnotationTool === 'draw' }"
+                  title="画笔"
+                  @click="setLightboxAnnotationTool('draw')"
+                >
+                  <span class="aiw-icon-button-content"><AiwIcon name="brush" />画笔</span>
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: lightboxAnnotationTool === 'arrow' }"
+                  title="箭头"
+                  @click="setLightboxAnnotationTool('arrow')"
+                >
+                  <span class="aiw-icon-button-content"><AiwIcon name="arrow" />箭头</span>
+                </button>
+                <button
+                  type="button"
+                  :class="{ active: lightboxAnnotationTool === 'text' }"
+                  title="文字"
+                  @click="setLightboxAnnotationTool('text')"
+                >
+                  <span class="aiw-icon-button-content"><AiwIcon name="text" />文字</span>
+                </button>
+                <button type="button" title="清除标注" @click="clearLightboxAnnotation">
+                  <span class="aiw-icon-button-content"><AiwIcon name="eraser" />清除</span>
+                </button>
+                <button type="button" title="退出标注" @click="exitLightboxAnnotation">
+                  <span class="aiw-icon-button-content"><AiwIcon name="x" />退出标注</span>
+                </button>
+              </div>
+              <div v-if="!lightboxActiveSrc" class="aiw-lightbox-fallback">{{ lightboxActiveItem?.label || lightboxItem.label }}</div>
+            </div>
+            <figcaption>
+              <strong>{{ lightboxActiveItem?.label || lightboxItem.label }}</strong>
+              <span>{{ lightboxActiveItem?.model || activeModel.label }} · {{ lightboxActiveItem?.size || form.size }}</span>
+            </figcaption>
+            <div v-if="lightboxPreviewItems.length" class="aiw-lightbox-preview-strip" aria-label="大图预览切换">
+              <button
+                v-for="(item, index) in lightboxPreviewItems"
+                :key="item.key || item.path || item.url || index"
+                type="button"
+                :class="{ active: index === lightboxActiveIndex, loading: item.loading }"
+                @click="selectLightboxPreview(index)"
+              >
+                <img
+                  v-if="lightboxThumbnailSrc(item)"
+                  :src="lightboxThumbnailSrc(item)"
+                  :alt="item.label"
+                  :class="{ blurred: item.loading }"
+                  @error="markResultPreviewBroken(item)"
+                />
+                <strong v-else>{{ previewInitial(resultPreviewKey(item) || item.label) }}</strong>
+                <span v-if="item.loading" class="aiw-edit-spinner" aria-hidden="true"></span>
+                <small>{{ item.label }}</small>
+              </button>
+            </div>
+          </figure>
+        </div>
+        <aside class="aiw-lightbox-edit-panel">
+          <header>
+            <div>
+              <strong>进行下一步修改</strong>
+              <span>{{ lightboxItem.label }}</span>
+            </div>
+            <button class="aiw-lightbox-close" type="button" @click="closeLightbox">
+              <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
+            </button>
+          </header>
+          <section class="aiw-edit-source-prompt">
+            <span>此次生图 Prompt</span>
+            <p>{{ lightboxSourcePrompt || '暂无 Prompt' }}</p>
+          </section>
+          <label class="aiw-field">
+            <span>新的修改提示词</span>
+            <textarea v-model.trim="lightboxEditPrompt" placeholder="描述要保留、替换、增加或删掉的内容"></textarea>
+          </label>
+          <section class="aiw-edit-reference-box">
+            <div class="aiw-panel-head">
+              <span>参考图</span>
+              <button type="button" @click="chooseLightboxEditReferences">
+                <span class="aiw-icon-button-content"><AiwIcon name="plus" />上传参考图</span>
+              </button>
+            </div>
+            <div v-if="lightboxEditReferencePaths.length" class="aiw-lightbox-reference-grid">
+              <article
+                v-for="(path, index) in lightboxEditReferencePaths"
+                :key="`${path}-${index}`"
+                class="aiw-reference-card"
+              >
+                <div class="aiw-thumb">
+                  <img
+                    v-if="imagePreviewSrc(path)"
+                    :src="imagePreviewSrc(path)"
+                    :alt="pathLabel(path)"
+                    @error="markPreviewBroken(path)"
+                  />
+                  <div v-else class="aiw-preview-fallback">
+                    <strong>{{ previewInitial(path) }}</strong>
+                  </div>
+                </div>
+                <span>{{ pathLabel(path) }}</span>
+                <button type="button" @click="removeLightboxEditReference(index)">
+                  <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
+                </button>
+              </article>
+            </div>
+            <button v-else class="aiw-upload-tile compact" type="button" @click="chooseLightboxEditReferences">
+              <strong>上传参考图</strong>
+              <span>可选</span>
+            </button>
+          </section>
+          <button
+            class="aiw-primary-action"
+            type="button"
+            :class="{ loading: lightboxEditBusy }"
+            :disabled="lightboxEditBusy"
+            :aria-busy="lightboxEditBusy ? 'true' : 'false'"
+            aria-label="开始二次修改"
+            @click="submitLightboxEdit"
+          >
+            <span class="aiw-icon-button-content">
+              <span v-if="lightboxEditBusy" class="aiw-edit-spinner" aria-hidden="true"></span>
+              <AiwIcon v-else name="wand" />{{ lightboxEditActionLabel }}
+            </span>
+          </button>
+          <small v-if="errorMessage">{{ errorMessage }}</small>
+        </aside>
+      </section>
     </div>
     <div v-if="promptDialogQueue" class="aiw-prompt-dialog" @click="closePromptDialog">
       <section role="dialog" aria-modal="true" aria-label="完整 Prompt" @click.stop>
@@ -418,11 +578,22 @@ import {
   sizeForRatio,
   sizesForRatio,
 } from '../utils/aiImageModels.js'
+import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 
 const emit = defineEmits(['open-settings'])
 
 const STORAGE_KEY = 'crawshrimp.aiImageWorkbench.state.v2'
 const AUTOSAVE_DELAY_MS = 700
+const AIW_ANNOTATION_PROMPT_GUIDANCE = '标注参考图仅用于定位需要修改的区域；请不要在结果中保留或复刻任何彩色标注线、框、箭头或文字。'
+const AIW_ANNOTATION_COLORS = [
+  { id: 'red', label: '红色', hex: '#ff3737' },
+  { id: 'orange', label: '橙色', hex: '#ff802b' },
+  { id: 'yellow', label: '黄色', hex: '#ffd43b' },
+  { id: 'green', label: '绿色', hex: '#39b178' },
+  { id: 'blue', label: '蓝色', hex: '#4263eb' },
+  { id: 'white', label: '白色', hex: '#ffffff' },
+  { id: 'black', label: '黑色', hex: '#111111' },
+]
 const AIW_ICON_NODES = {
   plus: [{ tag: 'path', attrs: { d: 'M12 5v14M5 12h14' } }],
   folder: [
@@ -439,6 +610,23 @@ const AIW_ICON_NODES = {
   eraser: [
     { tag: 'path', attrs: { d: 'm7 21 10-10a3 3 0 0 0 0-4l-2-2a3 3 0 0 0-4 0L3 13a3 3 0 0 0 0 4l4 4Z' } },
     { tag: 'path', attrs: { d: 'm14 14-5-5M7 21h14' } },
+  ],
+  brush: [
+    { tag: 'path', attrs: { d: 'M9.5 16.5 5 21l-2-2 4.5-4.5' } },
+    { tag: 'path', attrs: { d: 'M14 4.5 19.5 10 11 18.5 5.5 13 14 4.5Z' } },
+    { tag: 'path', attrs: { d: 'm15 6 3 3' } },
+  ],
+  arrow: [
+    { tag: 'path', attrs: { d: 'M7 17 17 7' } },
+    { tag: 'path', attrs: { d: 'M9 7h8v8' } },
+  ],
+  text: [
+    { tag: 'path', attrs: { d: 'M5 5h14M12 5v14M8 19h8' } },
+  ],
+  sidebar: [
+    { tag: 'rect', attrs: { x: '4', y: '5', width: '16', height: '14', rx: '2' } },
+    { tag: 'path', attrs: { d: 'M14 5v14' } },
+    { tag: 'path', attrs: { d: 'M7 9h4M7 13h4' } },
   ],
   image: [
     { tag: 'rect', attrs: { x: '4', y: '5', width: '16', height: '14', rx: '2' } },
@@ -461,6 +649,10 @@ const AIW_ICON_NODES = {
   ],
   download: [
     { tag: 'path', attrs: { d: 'M12 4v10M8 10l4 4 4-4M5 20h14' } },
+  ],
+  edit: [
+    { tag: 'path', attrs: { d: 'M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5.5a2.1 2.1 0 0 0-3 0L4 16v4Z' } },
+    { tag: 'path', attrs: { d: 'm13.5 6.5 4 4' } },
   ],
   eye: [
     { tag: 'path', attrs: { d: 'M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z' } },
@@ -491,7 +683,7 @@ const jobs = ref([])
 const settings = ref({})
 const currentJob = ref(null)
 const selectedResults = reactive(new Set())
-const workspaceMode = ref('results')
+const taskSidebarOpen = ref(true)
 const generating = ref(false)
 const errorMessage = ref('')
 const logs = ref([])
@@ -500,9 +692,25 @@ const previewFailures = reactive(new Set())
 const taskDrafts = reactive({})
 const pendingActiveJobUid = ref('')
 const lightboxItem = ref(null)
+const lightboxEditPrompt = ref('')
+const lightboxEditReferencePaths = ref([])
+const lightboxEditResults = ref([])
+const lightboxEditSubmitting = ref(false)
+const lightboxActiveIndex = ref(0)
+const lightboxMode = ref('preview')
+const lightboxAnnotationDataUrl = ref('')
+const lightboxAnnotationTool = ref('')
+const lightboxAnnotationColor = ref('red')
+const lightboxAnnotationClearNonce = ref(0)
+const lightboxAnnotationExportNonce = ref(0)
 const promptDialogQueue = ref(null)
+const draggingResultKey = ref('')
+const dragOverTarget = ref('')
 let autosaveTimer = null
 let restoringState = false
+let lightboxAnnotationExportResolve = null
+let lightboxAnnotationExportReject = null
+let lightboxAnnotationExportTimer = null
 
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeMissingKey = computed(() => missingKeyForModel(form.modelId, settings.value))
@@ -543,6 +751,22 @@ const sizeOptions = computed(() => sizesForRatio(form.ratio))
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
 const generateLabel = computed(() => activeMissingKey.value ? '配置' : generating.value ? '生成中...' : '开始生成')
 const lightboxSrc = computed(() => lightboxItem.value ? resultPreviewSrc(lightboxItem.value) : '')
+const lightboxEditBusy = computed(() => generating.value || lightboxEditSubmitting.value)
+const lightboxEditActionLabel = computed(() => lightboxEditBusy.value ? '修改图生成中...' : '开始二次修改')
+const lightboxPreviewItems = computed(() => {
+  if (!lightboxItem.value) return []
+  return [lightboxItem.value, ...lightboxEditResults.value]
+})
+const lightboxActiveItem = computed(() => {
+  const items = lightboxPreviewItems.value
+  if (!items.length) return null
+  const index = Math.min(Math.max(lightboxActiveIndex.value, 0), items.length - 1)
+  return items[index] || items[0] || null
+})
+const lightboxActiveSrc = computed(() => lightboxThumbnailSrc(lightboxActiveItem.value))
+const lightboxSourcePrompt = computed(() => String(
+  lightboxActiveItem.value?.prompt || lightboxItem.value?.prompt || currentJob.value?.prompt || form.prompt || '',
+).trim())
 const promptDialogPrompt = computed(() => queuePromptText(promptDialogQueue.value))
 const taskRecords = computed(() => {
   const records = []
@@ -604,7 +828,7 @@ watch(form, () => {
   scheduleTaskAutosave()
 }, { deep: true })
 
-watch([currentJob, workspaceMode], () => {
+watch([currentJob, taskSidebarOpen], () => {
   if (restoringState) return
   persistWorkbenchState()
 })
@@ -696,7 +920,7 @@ function restorePersistedWorkbench() {
       })
     }
     if (saved?.activeJobUid) currentJob.value = { job_uid: saved.activeJobUid, status: 'draft' }
-    if (saved?.workspaceMode === 'tasks' || saved?.workspaceMode === 'results') workspaceMode.value = saved.workspaceMode
+    if (typeof saved?.taskSidebarOpen === 'boolean') taskSidebarOpen.value = saved.taskSidebarOpen
     if (Array.isArray(saved?.logs)) logs.value = saved.logs.slice(-80)
   } catch (error) {
     logs.value.push(`恢复 AI 生图草稿失败：${error.message || error}`)
@@ -711,7 +935,7 @@ function persistWorkbenchState() {
       activeJobUid: activeJobUid.value,
       form: formSnapshot(),
       drafts: taskDrafts,
-      workspaceMode: workspaceMode.value,
+      taskSidebarOpen: taskSidebarOpen.value,
       logs: logs.value.slice(-80),
     }))
   } catch {}
@@ -975,7 +1199,6 @@ async function createNewTask() {
   applyFormSnapshot(next)
   selectedResults.clear()
   errorMessage.value = ''
-  workspaceMode.value = 'results'
   restoringState = false
   try {
     const created = await window.cs.createAiImageJob({ ...buildJobPayload({ silentAdvanced: true }), status: 'draft' })
@@ -1240,6 +1463,11 @@ function resultPreviewSrc(item) {
   return ''
 }
 
+function lightboxThumbnailSrc(item) {
+  if (!item) return ''
+  return item.previewSrc || resultPreviewSrc(item)
+}
+
 function activeResultPreviewKey(item) {
   for (const key of resultPreviewCandidates(item)) {
     if (imagePreviewSrc(key)) return key
@@ -1283,14 +1511,159 @@ function selectAllVisibleResults() {
   allVisibleSelectableItems.value.forEach((item) => selectedResults.add(resultKey(item)))
 }
 
-function openLightbox(item) {
+function startResultDrag(item, event) {
+  if (item?.loading) return
+  const key = resultKey(item)
+  if (!key) return
+  draggingResultKey.value = key
+  if (event?.dataTransfer) {
+    event.dataTransfer.setData('text/plain', key)
+    event.dataTransfer.effectAllowed = 'copy'
+  }
+}
+
+function endResultDrag() {
+  draggingResultKey.value = ''
+  dragOverTarget.value = ''
+}
+
+function handleResultDragOver(event) {
+  if (event?.dataTransfer) event.dataTransfer.dropEffect = 'copy'
+}
+
+function clearDragOver(target) {
+  if (dragOverTarget.value === target) dragOverTarget.value = ''
+}
+
+function resolveDroppedResult(event) {
+  const key = String(event?.dataTransfer?.getData('text/plain') || draggingResultKey.value || '').trim()
+  if (!key) return null
+  return allVisibleSelectableItems.value.find((item) => resultKey(item) === key) || resultCards.value.find((item) => resultKey(item) === key) || null
+}
+
+async function dropResultAsMain(event) {
+  const item = resolveDroppedResult(event)
+  dragOverTarget.value = ''
+  if (!item) return
+  await setAsMain(item)
+}
+
+async function dropResultAsReference(event) {
+  const item = resolveDroppedResult(event)
+  dragOverTarget.value = ''
+  if (!item) return
+  await addAsReference(item)
+}
+
+function resetLightboxEditDraft(item) {
+  lightboxEditPrompt.value = String(item?.prompt || currentJob.value?.prompt || form.prompt || '').trim()
+  lightboxEditReferencePaths.value = []
+  lightboxEditResults.value = []
+  lightboxActiveIndex.value = 0
+  resetLightboxAnnotationState({ clearLayer: true })
+}
+
+function openLightbox(item, options = {}) {
   if (item?.loading || !resultKey(item)) return
   lightboxItem.value = item
+  lightboxMode.value = options.mode === 'edit' ? 'edit' : 'preview'
+  resetLightboxEditDraft(item)
   void refreshImagePreview(resultPreviewKey(item))
 }
 
 function closeLightbox() {
+  clearLightboxAnnotationExport()
   lightboxItem.value = null
+  lightboxMode.value = 'preview'
+  lightboxEditPrompt.value = ''
+  lightboxEditReferencePaths.value = []
+  lightboxEditResults.value = []
+  lightboxActiveIndex.value = 0
+  resetLightboxAnnotationState({ clearLayer: true })
+}
+
+function selectLightboxPreview(index) {
+  const safeIndex = Math.min(Math.max(Number(index) || 0, 0), Math.max(0, lightboxPreviewItems.value.length - 1))
+  lightboxActiveIndex.value = safeIndex
+  resetLightboxAnnotationState({ clearLayer: true })
+}
+
+function resetLightboxAnnotationState(options = {}) {
+  lightboxAnnotationTool.value = ''
+  lightboxAnnotationDataUrl.value = ''
+  if (options.clearLayer) lightboxAnnotationClearNonce.value += 1
+}
+
+function setLightboxAnnotationTool(tool) {
+  lightboxAnnotationTool.value = lightboxAnnotationTool.value === tool ? '' : tool
+}
+
+function setLightboxAnnotationColor(color) {
+  if (!AIW_ANNOTATION_COLORS.some((item) => item.id === color)) return
+  lightboxAnnotationColor.value = color
+}
+
+function clearLightboxAnnotation() {
+  lightboxAnnotationDataUrl.value = ''
+  lightboxAnnotationClearNonce.value += 1
+}
+
+function exitLightboxAnnotation() {
+  lightboxAnnotationTool.value = ''
+}
+
+function clearLightboxAnnotationExport() {
+  if (lightboxAnnotationExportTimer) clearTimeout(lightboxAnnotationExportTimer)
+  lightboxAnnotationExportTimer = null
+  lightboxAnnotationExportResolve = null
+  lightboxAnnotationExportReject = null
+}
+
+function captureLightboxAnnotation(dataUrl) {
+  lightboxAnnotationDataUrl.value = String(dataUrl || '')
+  if (lightboxAnnotationExportResolve) {
+    lightboxAnnotationExportResolve(lightboxAnnotationDataUrl.value)
+    clearLightboxAnnotationExport()
+  }
+}
+
+function handleLightboxAnnotationError(message) {
+  const error = new Error(String(message || '标注导出失败'))
+  if (lightboxAnnotationExportReject) {
+    lightboxAnnotationExportReject(error)
+    clearLightboxAnnotationExport()
+    return
+  }
+  errorMessage.value = error.message
+}
+
+function requestLightboxAnnotationExport() {
+  if (!lightboxActiveSrc.value || lightboxActiveItem.value?.loading) return Promise.resolve('')
+  return new Promise((resolve, reject) => {
+    clearLightboxAnnotationExport()
+    lightboxAnnotationExportResolve = resolve
+    lightboxAnnotationExportReject = reject
+    lightboxAnnotationExportTimer = setTimeout(() => {
+      if (lightboxAnnotationExportReject) lightboxAnnotationExportReject(new Error('标注截图导出超时，请稍后再试'))
+      clearLightboxAnnotationExport()
+    }, 8000)
+    lightboxAnnotationExportNonce.value += 1
+  })
+}
+
+async function materializeLightboxAnnotation(jobUid, dataUrl) {
+  const source = String(dataUrl || '').trim()
+  if (!source) return ''
+  if (typeof window?.cs?.materializeAiImageResult !== 'function') {
+    throw new Error('本地 AI 生图服务未就绪，无法保存标注截图')
+  }
+  const result = await window.cs.materializeAiImageResult(jobUid, {
+    data_url: source,
+    filename: 'annotation-edit.png',
+  })
+  const path = result?.path || ''
+  if (path) await refreshImagePreview(path, { force: true })
+  return path
 }
 
 function openPromptDialog(queue) {
@@ -1359,6 +1732,196 @@ async function addAsReference(item) {
     void refreshImagePreview(key, { force: true })
   } catch (error) {
     errorMessage.value = error.message || String(error)
+  }
+}
+
+async function chooseLightboxEditReferences() {
+  const paths = await choosePath({
+    title: '选择二次修改参考图',
+    images: true,
+    multi: true,
+  })
+  const nextPaths = (Array.isArray(paths) ? paths : [paths])
+    .map((path) => String(path || '').trim())
+    .filter(Boolean)
+  for (const path of nextPaths) {
+    if (!lightboxEditReferencePaths.value.includes(path)) lightboxEditReferencePaths.value.push(path)
+    await refreshImagePreview(path, { force: true })
+  }
+}
+
+function removeLightboxEditReference(index) {
+  const [removed] = lightboxEditReferencePaths.value.splice(index, 1)
+  if (removed && !form.referenceImagePaths.includes(removed)) forgetImagePreview(removed)
+}
+
+function buildAnnotationEditPrompt(prompt, hasAnnotation) {
+  const value = String(prompt || '').trim()
+  if (!hasAnnotation || value.includes(AIW_ANNOTATION_PROMPT_GUIDANCE)) return value
+  return `${value}\n\n${AIW_ANNOTATION_PROMPT_GUIDANCE}`
+}
+
+async function submitLightboxEdit() {
+  if (!lightboxActiveItem.value || lightboxEditBusy.value) return
+  const nextPrompt = String(lightboxEditPrompt.value || lightboxSourcePrompt.value || '').trim()
+  if (!nextPrompt) {
+    errorMessage.value = '请输入新的修改提示词'
+    return
+  }
+  if (activeMissingKey.value) {
+    openSettings()
+    return
+  }
+  let placeholder = null
+  try {
+    lightboxEditSubmitting.value = true
+    errorMessage.value = ''
+    const sourceItem = lightboxActiveItem.value
+    placeholder = appendLightboxEditPlaceholder(sourceItem, nextPrompt, { activate: false })
+    const mainPath = await materializeResultForInput(sourceItem)
+    if (!mainPath) throw new Error('当前图片无法作为二次修改主图')
+    await refreshImagePreview(mainPath, { force: true })
+    const annotationDataUrl = await requestLightboxAnnotationExport()
+    logs.value.push(`基于 ${sourceItem.label || pathLabel(mainPath)} 发起二次修改`)
+    await runLightboxEditGeneration({
+      sourceItem,
+      mainPath,
+      prompt: nextPrompt,
+      referencePaths: [...lightboxEditReferencePaths.value],
+      annotationDataUrl,
+      placeholder,
+    })
+    placeholder = null
+  } catch (error) {
+    if (placeholder) removeLightboxEditPlaceholder(placeholder)
+    errorMessage.value = error.message || String(error)
+  } finally {
+    lightboxEditSubmitting.value = false
+  }
+}
+
+function appendUniquePaths(paths) {
+  const seen = new Set()
+  return paths
+    .map((path) => String(path || '').trim())
+    .filter((path) => {
+      if (!path || seen.has(path)) return false
+      seen.add(path)
+      return true
+    })
+}
+
+function activateLightboxEditPlaceholder(placeholder) {
+  const index = lightboxEditResults.value.indexOf(placeholder)
+  if (index >= 0) lightboxActiveIndex.value = index + 1
+}
+
+function removeLightboxEditPlaceholder(placeholder) {
+  lightboxEditResults.value = lightboxEditResults.value.filter((item) => item !== placeholder)
+  lightboxActiveIndex.value = Math.min(lightboxActiveIndex.value, Math.max(0, lightboxPreviewItems.value.length - 1))
+}
+
+function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
+  const placeholder = {
+    key: `edit-pending-${Date.now()}`,
+    label: `修改中 ${lightboxEditResults.value.length + 1}`,
+    loading: true,
+    previewSrc: lightboxThumbnailSrc(sourceItem),
+    prompt,
+    model: sourceItem?.model || activeModel.value.label,
+    size: sourceItem?.size || form.size,
+  }
+  lightboxEditResults.value.push(placeholder)
+  if (options.activate !== false) activateLightboxEditPlaceholder(placeholder)
+  return placeholder
+}
+
+function applyLightboxEditResult(placeholder, latestJob) {
+  const latestQueue = collectResultQueues(latestJob)[0]
+  const result = latestQueue?.items?.[0] || null
+  if (!result) {
+    Object.assign(placeholder, {
+      loading: false,
+      label: '修改结果',
+      previewSrc: lightboxThumbnailSrc(placeholder),
+    })
+    return
+  }
+  Object.assign(placeholder, {
+    ...result,
+    key: `edit-${Date.now()}-${resultKey(result)}`,
+    label: result.label || '修改结果',
+    loading: false,
+    previewSrc: '',
+  })
+  void refreshImagePreview(resultPreviewKey(placeholder), { force: true })
+  const index = lightboxEditResults.value.indexOf(placeholder)
+  if (index >= 0) lightboxActiveIndex.value = index + 1
+}
+
+async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referencePaths = [], annotationDataUrl = '', placeholder: existingPlaceholder = null }) {
+  if (activeMissingKey.value) {
+    openSettings()
+    return
+  }
+  const snapshot = formSnapshot()
+  const placeholder = existingPlaceholder || appendLightboxEditPlaceholder(sourceItem, prompt)
+  activateLightboxEditPlaceholder(placeholder)
+  generating.value = true
+  selectedResults.clear()
+  try {
+    const activeTask = await ensureCurrentTask()
+    const jobUid = activeTask?.job_uid
+    if (!jobUid) throw new Error('后端未返回 job_uid')
+    const annotationPath = await materializeLightboxAnnotation(jobUid, annotationDataUrl)
+    const effectivePrompt = buildAnnotationEditPrompt(prompt, Boolean(annotationPath))
+    restoringState = true
+    form.prompt = effectivePrompt
+    form.mainImagePath = mainPath
+    form.referenceImagePaths = appendUniquePaths([
+      ...snapshot.referenceImagePaths,
+      ...referencePaths,
+      annotationPath,
+    ])
+    form.count = 1
+    const basePayload = buildJobPayload({ silentAdvanced: true })
+    const payload = {
+      ...basePayload,
+      prompt: effectivePrompt,
+      params: {
+        ...basePayload.params,
+        n: 1,
+        main_image_path: mainPath,
+        reference_image_paths: [...form.referenceImagePaths],
+      },
+    }
+    const updated = await window.cs.updateAiImageJob(jobUid, { ...payload, status: 'running' })
+    restoringState = false
+    currentJob.value = {
+      ...(updated || activeTask),
+      summary: currentJob.value?.summary || activeTask.summary || {},
+      status: 'running',
+    }
+    upsertJob(currentJob.value)
+    const runResult = await window.cs.runAiImageJob(jobUid)
+    const latest = await window.cs.getAiImageJob(jobUid)
+    currentJob.value = latest || currentJob.value
+    upsertJob(currentJob.value)
+    if (runResult && runResult.ok === false) {
+      throw new Error(runResult.summary?.error || '生成任务失败，请查看日志')
+    }
+    applyLightboxEditResult(placeholder, currentJob.value)
+    refreshResultPreviewCandidates(resultCards.value, { force: true })
+    await loadJobs()
+  } catch (error) {
+    removeLightboxEditPlaceholder(placeholder)
+    throw error
+  } finally {
+    restoringState = true
+    applyFormSnapshot(snapshot)
+    restoringState = false
+    generating.value = false
+    persistWorkbenchState()
   }
 }
 
@@ -1434,14 +1997,16 @@ async function restoreJob(job, options = {}) {
     ...resultCards.value.flatMap((item) => resultPreviewCandidates(item).map((key) => refreshImagePreview(key, { force: true }))),
   ])
   selectedResults.clear()
-  workspaceMode.value = options.stayInTasks ? 'tasks' : 'results'
   persistWorkbenchState()
   return detail
 }
 
 async function selectTaskRecord(job) {
-  workspaceMode.value = 'results'
   await restoreJob(job)
+}
+
+function toggleTaskSidebar() {
+  taskSidebarOpen.value = !taskSidebarOpen.value
 }
 
 async function openOutputFolder() {
@@ -1598,7 +2163,6 @@ function localFileUrl(path) {
 }
 
 .aiw-top-actions,
-.aiw-tabs,
 .aiw-results-actions {
   display: flex;
   align-items: center;
@@ -1628,10 +2192,7 @@ function localFileUrl(path) {
 .aiw-results-actions > span,
 .aiw-empty-state span,
 .aiw-history-item small,
-.aiw-history-empty span,
-.aiw-task-detail-panel header span,
-.aiw-task-detail-summary span,
-.aiw-task-detail-prompt span {
+.aiw-history-empty span {
   color: var(--text2);
   font-size: 12px;
 }
@@ -1639,6 +2200,7 @@ function localFileUrl(path) {
 .aiw-field select,
 .aiw-field input,
 .aiw-prompt-panel textarea,
+.aiw-lightbox-edit-panel textarea,
 .aiw-path-button {
   width: 100%;
   min-width: 0;
@@ -1721,6 +2283,12 @@ function localFileUrl(path) {
 .aiw-material-box {
   padding-top: 10px;
   border-top: 1px solid #2e2e3a;
+}
+
+.aiw-material-box.drag-over {
+  border-color: rgba(255, 107, 43, 0.62);
+  background: rgba(255, 107, 43, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, 0.26);
 }
 
 .aiw-title-box {
@@ -1857,6 +2425,12 @@ function localFileUrl(path) {
   min-width: 0;
 }
 
+.aiw-task-sidebar-toggle.active {
+  border-color: rgba(255, 107, 43, 0.55);
+  background: rgba(255, 107, 43, 0.12);
+  color: #ff6b2b;
+}
+
 .aiw-workspace-body {
   min-height: 0;
   flex: 1;
@@ -1864,6 +2438,10 @@ function localFileUrl(path) {
   grid-template-columns: minmax(0, 1fr) minmax(220px, 240px);
   gap: 10px;
   overflow: hidden;
+}
+
+.aiw-workspace-body.history-collapsed {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .aiw-result-wall {
@@ -1944,7 +2522,7 @@ function localFileUrl(path) {
 
 .aiw-result-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(238px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   align-content: start;
   gap: 12px;
 }
@@ -2160,7 +2738,7 @@ function localFileUrl(path) {
 
 .aiw-result-card-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 6px;
 }
 
@@ -2169,8 +2747,8 @@ function localFileUrl(path) {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 7px 6px;
-  font-size: 12px;
+  padding: 7px 4px;
+  font-size: 11px;
   white-space: nowrap;
 }
 
@@ -2178,8 +2756,7 @@ function localFileUrl(path) {
   gap: 4px;
 }
 
-.aiw-history-sidebar,
-.aiw-task-detail-panel {
+.aiw-history-sidebar {
   min-height: 0;
   display: flex;
   flex-direction: column;
@@ -2259,62 +2836,6 @@ function localFileUrl(path) {
   background: #17181d;
 }
 
-.aiw-task-detail-panel header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  padding-bottom: 10px;
-  border-bottom: 1px solid #2e2e3a;
-}
-
-.aiw-task-detail-panel header div {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.aiw-task-detail-summary,
-.aiw-task-detail-prompt {
-  display: grid;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid #2e2e3a;
-  border-radius: 8px;
-  background: #1c1c22;
-}
-
-.aiw-task-detail-summary span,
-.aiw-task-detail-prompt p {
-  margin: 0;
-  line-height: 1.6;
-  overflow-wrap: anywhere;
-}
-
-.aiw-task-detail-thumbs {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
-  gap: 10px;
-}
-
-.aiw-task-detail-thumbs button {
-  min-width: 0;
-  aspect-ratio: 1;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  padding: 0;
-  background: #f4f2ee;
-  color: #6d6a62;
-}
-
-.aiw-task-detail-thumbs img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
 .aiw-lightbox {
   position: fixed;
   inset: 0;
@@ -2326,30 +2847,78 @@ function localFileUrl(path) {
   backdrop-filter: blur(10px);
 }
 
-.aiw-lightbox figure {
-  position: relative;
-  width: min(92vw, 1120px);
+.aiw-lightbox-layout {
+  width: min(94vw, 1360px);
   max-height: 92vh;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: 14px;
+}
+
+.aiw-lightbox-image-pane,
+.aiw-lightbox-edit-panel {
+  min-height: 0;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #141418;
+}
+
+.aiw-lightbox-image-pane {
+  display: flex;
+  padding: 12px;
+  overflow: hidden;
+}
+
+.aiw-lightbox figure {
+  width: 100%;
+  min-height: 0;
   display: flex;
   flex-direction: column;
   gap: 10px;
   margin: 0;
 }
 
-.aiw-lightbox img,
+.aiw-lightbox-canvas,
 .aiw-lightbox-fallback {
-  max-height: calc(92vh - 76px);
+  min-height: 0;
+  max-height: calc(92vh - 74px);
   width: 100%;
-  object-fit: contain;
-  border: 1px solid #2e2e3a;
+  flex: 1;
   border-radius: 8px;
-  background: #f4f2ee;
+}
+
+.aiw-lightbox-canvas {
+  position: relative;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 520px;
+  border: 1px solid #2e2e3a;
+  background: #0f1016;
+}
+
+.aiw-lightbox-main-image {
+  width: 100%;
+  height: 100%;
+  max-height: calc(92vh - 74px);
+  flex: 1;
+  object-fit: contain;
+  border-radius: 8px;
+}
+
+.aiw-lightbox-main-image.blurred,
+.aiw-lightbox-preview-strip img.blurred {
+  filter: blur(6px) saturate(0.82);
+  transform: scale(1.02);
 }
 
 .aiw-lightbox-fallback {
   min-height: 520px;
   display: grid;
   place-items: center;
+  background: #f4f2ee;
   color: #6d6a62;
   font-size: 28px;
   font-weight: 800;
@@ -2368,13 +2937,238 @@ function localFileUrl(path) {
   font-size: 12px;
 }
 
-.aiw-lightbox-close {
+.aiw-lightbox-preview-strip {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: 76px;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 1px 4px;
+}
+
+.aiw-lightbox-preview-strip button {
+  position: relative;
+  min-width: 0;
+  aspect-ratio: 1;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  padding: 0;
+  border-color: #2e2e3a;
+  background: #242430;
+  color: #fff;
+}
+
+.aiw-lightbox-preview-strip button.active {
+  border-color: rgba(255, 107, 43, 0.78);
+  box-shadow: 0 0 0 2px rgba(255, 107, 43, 0.18);
+}
+
+.aiw-lightbox-preview-strip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.aiw-lightbox-preview-strip small {
   position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 1;
-  background: rgba(20, 20, 24, 0.78);
-  backdrop-filter: blur(10px);
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 4px;
+  overflow: hidden;
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.72));
+  color: #fff;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiw-edit-loading-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  display: grid;
+  place-content: center;
+  gap: 10px;
+  background: rgba(20, 20, 24, 0.26);
+  color: #fff;
+  pointer-events: auto;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.36);
+}
+
+.aiw-edit-spinner {
+  width: 26px;
+  height: 26px;
+  display: inline-block;
+  border: 2px solid rgba(255, 255, 255, 0.28);
+  border-top-color: #ff6b2b;
+  border-radius: 999px;
+  animation: aiw-edit-spin 820ms linear infinite;
+}
+
+.aiw-lightbox-preview-strip .aiw-edit-spinner {
+  position: absolute;
+  width: 24px;
+  height: 24px;
+}
+
+.aiw-lightbox-annotation-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  pointer-events: none;
+}
+
+.aiw-lightbox-annotation-layer.active {
+  pointer-events: auto;
+}
+
+.aiw-lightbox-annotation-layer :deep(.aiw-tldraw-host),
+.aiw-lightbox-annotation-layer :deep(.aiw-tldraw-root),
+.aiw-lightbox-annotation-layer :deep(.tl-container),
+.aiw-lightbox-annotation-layer :deep(.tl-canvas) {
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  background: transparent !important;
+  overscroll-behavior: contain;
+  touch-action: none;
+}
+
+.aiw-lightbox-annotation-layer :deep(.tl-container) {
+  --tl-color-background: transparent;
+}
+
+.aiw-lightbox-annotation-layer :deep(.tl-background),
+.aiw-lightbox-annotation-layer :deep(.tl-background__wrapper) {
+  background: transparent !important;
+}
+
+.aiw-lightbox-annotation-toolbar {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  z-index: 6;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  background: rgba(20, 20, 24, 0.86);
+  backdrop-filter: blur(12px);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.36);
+}
+
+.aiw-annotation-color-strip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 5px 0 1px;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.aiw-annotation-color-button {
+  width: 22px;
+  height: 22px;
+  min-height: 0;
+  display: block;
+  padding: 0;
+  border-color: rgba(255, 255, 255, 0.2);
+  border-radius: 999px;
+  background: var(--aiw-annotation-color);
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.aiw-annotation-color-button.active {
+  border-color: #fff;
+  box-shadow: 0 0 0 2px rgba(255, 107, 43, 0.55), inset 0 0 0 1px rgba(0, 0, 0, 0.28);
+}
+
+.aiw-lightbox-annotation-toolbar > button {
+  min-height: 28px;
+  padding: 6px 9px;
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  font-size: 12px;
+}
+
+.aiw-lightbox-annotation-toolbar > button.active {
+  border-color: rgba(255, 107, 43, 0.6);
+  background: #ff6b2b;
+  color: #fff;
+}
+
+@keyframes aiw-edit-spin {
+  to { transform: rotate(360deg); }
+}
+
+.aiw-lightbox-edit-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  overflow: auto;
+}
+
+.aiw-lightbox-edit-panel header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #2e2e3a;
+}
+
+.aiw-lightbox-edit-panel header div,
+.aiw-edit-source-prompt,
+.aiw-edit-reference-box {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.aiw-lightbox-edit-panel header span,
+.aiw-edit-source-prompt span,
+.aiw-lightbox-edit-panel small {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.aiw-edit-source-prompt {
+  padding: 10px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #1c1c22;
+}
+
+.aiw-edit-source-prompt p {
+  max-height: 132px;
+  margin: 0;
+  overflow: auto;
+  color: var(--text);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.aiw-lightbox-edit-panel textarea {
+  min-height: 116px;
+  resize: vertical;
+  padding: 10px;
+  line-height: 1.6;
+}
+
+.aiw-lightbox-reference-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aiw-lightbox-close {
+  flex: 0 0 auto;
 }
 
 .aiw-prompt-dialog {
@@ -2537,6 +3331,17 @@ button.active,
   color: #fff;
 }
 
+.aiw-primary-action.loading {
+  cursor: wait;
+  opacity: 0.86;
+}
+
+.aiw-primary-action .aiw-edit-spinner {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
 .aiw-top-primary {
   width: auto;
 }
@@ -2549,6 +3354,11 @@ button.active,
   .aiw-main-grid,
   .aiw-result-list {
     grid-template-columns: 1fr;
+  }
+
+  .aiw-lightbox-layout {
+    grid-template-columns: 1fr;
+    overflow: auto;
   }
 
   .aiw-topbar,

@@ -306,6 +306,65 @@ describe('material test data import', () => {
     expect(dateBody.images[0]).toMatchObject({ statistic_date: '20260702', search_impressions: 45 })
   })
 
+  it('uses a stable material identity so signed image URLs only keep the latest cumulative date', async () => {
+    const state = await baseState()
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+    state.detailRows.push(
+      materialMetric({ id: 1, material_id: '', material_url: 'https://img.test/origin.jpg?day=20260701&token=old', statistic_date: '20260701', search_impressions: 1 }),
+      materialMetric({ id: 2, material_id: '', material_url: 'https://img.test/origin.jpg?day=20260702&token=mid', statistic_date: '20260702', search_impressions: 4 }),
+      materialMetric({ id: 3, material_id: '', material_url: 'https://img.test/origin.jpg?day=20260707&token=new', statistic_date: '20260707', search_impressions: 74 }),
+      materialMetric({ id: 4, material_id: 'AI-1', material_url: 'https://img.test/ai-1.jpg?token=a', image_type: '测图', statistic_date: '20260707', search_impressions: 20 }),
+    )
+
+    const summary = await getMaterialTestSummary(new Request('https://example.test/api/material-test/summary', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const summaryBody = await summary.json() as Record<string, unknown>
+
+    expect(summaryBody).toMatchObject({
+      total_materials: 2,
+      total_search_exposure: 94,
+      raw_snapshot_rows: 4,
+      merged_snapshot_rows: 2,
+      latest_statistic_date: '20260707',
+    })
+
+    const images = await listMaterialTestImages(new Request('https://example.test/api/material-test/images', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const imageBody = await images.json() as { images: Array<Record<string, unknown>> }
+    expect(imageBody.images.map((image) => image.material_identity)).toEqual([
+      'https://img.test/origin.jpg',
+      'AI-1',
+    ])
+    expect(imageBody.images.map((image) => image.statistic_date)).toEqual(['20260707', '20260707'])
+    expect(imageBody.images.map((image) => image.search_impressions)).toEqual([74, 20])
+  })
+
+  it('keeps only the latest cumulative date for the same material id even when image URLs change', async () => {
+    const state = await baseState()
+    const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
+    state.detailRows.push(
+      materialMetric({ id: 1, material_id: '324936920', material_url: 'https://img.test/origin-20260701.jpg', statistic_date: '20260701', search_impressions: 1 }),
+      materialMetric({ id: 2, material_id: '324936920', material_url: 'https://img.test/origin-20260706.jpg', statistic_date: '20260706', search_impressions: 58, search_clicks: 2 }),
+      materialMetric({ id: 3, material_id: '324936920', material_url: 'https://img.test/origin-20260707.jpg', statistic_date: '20260707', search_impressions: 74, search_clicks: 2 }),
+      materialMetric({ id: 4, material_id: '325350962', material_url: 'https://img.test/ai-20260707.jpg', image_type: '测图', statistic_date: '20260707', search_impressions: 20, search_clicks: 1 }),
+    )
+
+    const summary = await getMaterialTestSummary(new Request('https://example.test/api/material-test/summary', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const summaryBody = await summary.json() as Record<string, unknown>
+
+    expect(summaryBody).toMatchObject({
+      total_materials: 2,
+      total_search_exposure: 94,
+      raw_snapshot_rows: 4,
+      merged_snapshot_rows: 2,
+      latest_statistic_date: '20260707',
+    })
+
+    const images = await listMaterialTestImages(new Request('https://example.test/api/material-test/images', { headers: { cookie: 'cs_session=sess_material' } }), env)
+    const imageBody = await images.json() as { images: Array<Record<string, unknown>> }
+    expect(imageBody.images.map((image) => image.material_id)).toEqual(['324936920', '325350962'])
+    expect(imageBody.images.map((image) => image.statistic_date)).toEqual(['20260707', '20260707'])
+    expect(imageBody.images.map((image) => image.search_impressions)).toEqual([74, 20])
+  })
+
   it('dedupes same-day material snapshots by image URL before dashboard totals', async () => {
     const state = await baseState()
     const env = { DB: new FakeD1Database(state) as unknown as D1Database, ASSETS: {} as R2Bucket, SESSION_TTL_SECONDS: '604800' }
@@ -569,6 +628,11 @@ function filteredMetricRows(rows: Record<string, unknown>[], sql: string, params
 }
 
 function latestMetricRows(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  const materialLatest = latestRowsBySnapshotKey(rows, materialSnapshotKey)
+  return latestRowsBySnapshotKey(materialLatest, urlSnapshotKey)
+}
+
+function latestRowsBySnapshotKey(rows: Record<string, unknown>[], snapshotKeyFor: (row: Record<string, unknown>) => string): Record<string, unknown>[] {
   const latest = new Map<string, Record<string, unknown>>()
   for (const row of rows) {
     const identity = [
@@ -576,12 +640,29 @@ function latestMetricRows(rows: Record<string, unknown>[]): Record<string, unkno
       row.task_id,
       row.statistic_type,
       row.image_type,
-      row.material_url || row.material_id,
+      snapshotKeyFor(row),
     ].join('|')
     const current = latest.get(identity)
-    if (!current || compareMetricSnapshot(row, current) > 0) latest.set(identity, row)
+    const normalizedRow = { ...row, material_identity: materialIdentity(row) }
+    if (!current || compareMetricSnapshot(normalizedRow, current) > 0) latest.set(identity, normalizedRow)
   }
   return [...latest.values()]
+}
+
+function materialSnapshotKey(row: Record<string, unknown>): string {
+  return String(row.material_id || '').trim() || normalizeMaterialUrl(row.material_url)
+}
+
+function urlSnapshotKey(row: Record<string, unknown>): string {
+  return normalizeMaterialUrl(row.material_url) || materialIdentity(row)
+}
+
+function materialIdentity(row: Record<string, unknown>): string {
+  return String(row.material_id || '').trim() || normalizeMaterialUrl(row.material_url)
+}
+
+function normalizeMaterialUrl(value: unknown): string {
+  return String(value || '').trim().split(/[?#]/)[0]
 }
 
 function compareMetricSnapshot(left: Record<string, unknown>, right: Record<string, unknown>): number {

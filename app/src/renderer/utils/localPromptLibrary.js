@@ -107,6 +107,14 @@ export function defaultPromptTemplate(groupName = '裂变图') {
   })
 }
 
+export function buildPromptLibraryPickerLibraries({ localLibraries = [], cloudLibraries = [] } = {}) {
+  const localItems = (Array.isArray(localLibraries) ? localLibraries : [])
+    .map((library, index) => buildPromptLibraryPickerLibrary(library, 'local', index))
+  const cloudItems = (Array.isArray(cloudLibraries) ? cloudLibraries : [])
+    .map((library, index) => buildPromptLibraryPickerLibrary(library, 'cloud', index))
+  return [...localItems, ...cloudItems]
+}
+
 export function buildCloudPromptLibraryPayload(library = {}) {
   const normalized = normalizePromptLibrary(library)
   return {
@@ -171,6 +179,41 @@ function workbookValue(row, key) {
 function normalizeScenario(value) {
   const scenario = String(value || '').trim()
   return PROMPT_SCENARIOS.includes(scenario) ? scenario : PROMPT_SCENARIOS[0]
+}
+
+function buildPromptLibraryPickerLibrary(library = {}, sourceType = 'local', index = 0) {
+  const normalized = normalizePromptLibrary({ ...library, source_type: sourceType })
+  const cloudId = normalized.cloud_library_id ?? library.cloud_library_id ?? library.id ?? stripCloudLibraryPrefix(normalized.library_uid)
+  const localId = normalized.library_uid || library.id
+  const identity = String((sourceType === 'cloud' ? cloudId : localId) || `${sourceType}-${index + 1}`).trim()
+  const pickerKey = `${sourceType}:${identity}`
+  return {
+    ...normalized,
+    id: pickerKey,
+    picker_key: pickerKey,
+    source_label: sourceType === 'cloud' ? '线上' : '本地',
+    templates: sourceType === 'local'
+      ? normalized.templates
+        .map((template, templateIndex) => normalizePromptPickerTemplate(template, pickerKey, sourceType, templateIndex))
+        .filter(Boolean)
+      : [],
+  }
+}
+
+function normalizePromptPickerTemplate(template = {}, libraryPickerKey = '', sourceType = 'local', index = 0) {
+  const normalized = normalizePromptTemplate(template)
+  if (!normalized.prompt_text || normalized.enabled === false) return null
+  const templateIdentity = String(template.template_id || normalized.id || normalized.local_uid || index + 1).trim()
+  return {
+    ...normalized,
+    template_id: `${libraryPickerKey}:${templateIdentity}`,
+    source_type: sourceType,
+    library_picker_key: libraryPickerKey,
+  }
+}
+
+function stripCloudLibraryPrefix(value) {
+  return String(value || '').replace(/^cloud:/, '')
 }
 
 function normalizeLibrarySourceType(value) {

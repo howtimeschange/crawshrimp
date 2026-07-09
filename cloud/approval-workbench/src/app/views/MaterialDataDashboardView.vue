@@ -29,6 +29,7 @@ interface ImageMetric {
   statistic_date: string
   image_type: string
   material_id: string
+  material_identity: string
   material_url: string
   search_impressions: number
   search_clicks: number
@@ -214,6 +215,14 @@ function formatStatisticDate(value?: string | null): string {
   return match ? `${match[1]}-${match[2]}-${match[3]}` : value
 }
 
+function materialIdentity(image: ImageMetric): string {
+  return image.material_id || image.material_identity || normalizeMaterialUrl(image.material_url) || '-'
+}
+
+function normalizeMaterialUrl(value?: string | null): string {
+  return (value || '').trim().split(/[?#]/)[0]
+}
+
 function formatDateTime(value?: string | null): string {
   if (!value) return '-'
   const date = new Date(value)
@@ -233,7 +242,7 @@ onMounted(refresh)
 
 <template>
   <section class="material-dashboard">
-    <div class="toolbar-row">
+    <div class="toolbar-row material-filter-row">
       <div class="filter-grid">
         <label>
           <span>统计口径</span>
@@ -262,43 +271,37 @@ onMounted(refresh)
     <p v-if="error" class="notice danger">{{ error }}</p>
     <p v-if="actionMessage" class="notice">{{ actionMessage }}</p>
 
-    <section class="snapshot-callout">
-      <div>
-        <h2>{{ snapshotModeLabel }}</h2>
-        <p>天猫导出的累计口径会按统计日期保留多份快照。看板会先合并同一天同一图片的重复记录，再把同一素材的跨日期累计记录合并，只展示最新统计日期；选择日期后展示该日期的累计快照。</p>
+    <section class="snapshot-compact-board">
+      <div class="snapshot-compact-head">
+        <div>
+          <h2>{{ snapshotModeLabel }}</h2>
+          <div class="snapshot-summary-line">
+            <span>统计日期 {{ formatStatisticDate(summary?.latest_statistic_date) }}</span>
+            <span>原始 {{ formatNumber(summary?.raw_snapshot_rows ?? 0) }}</span>
+            <span>已合并 {{ formatNumber(summary?.merged_snapshot_rows ?? 0) }}</span>
+            <span v-if="summary?.latest_import">最近导入 {{ formatDateTime(summary.latest_import.imported_at) }}</span>
+          </div>
+        </div>
+        <div class="snapshot-action-row">
+          <label class="file-action compact-file-action">
+            <input type="file" accept=".xlsx,.xls" @change="importWorkbook">
+            <span>导入测图数据</span>
+          </label>
+          <input v-model="crawlMachineId" class="machine-input" placeholder="任务机 ID（可选）">
+          <button class="secondary-button" type="button" @click="triggerCrawl">下发立即抓取</button>
+          <input v-model="scheduleTime" class="time-input" type="time">
+          <button class="secondary-button" type="button" @click="createSchedule">保存定时</button>
+        </div>
       </div>
-      <div class="snapshot-badges">
-        <span>统计日期 {{ formatStatisticDate(summary?.latest_statistic_date) }}</span>
-        <span>原始快照 {{ formatNumber(summary?.raw_snapshot_rows ?? 0) }}</span>
-        <span>已合并重复/跨日期快照 {{ formatNumber(summary?.merged_snapshot_rows ?? 0) }}</span>
+      <div class="snapshot-kpi-strip">
+        <div><span>商品</span><strong>{{ formatNumber(summary?.total_items ?? 0) }}</strong></div>
+        <div><span>素材</span><strong>{{ formatNumber(summary?.total_materials ?? 0) }}</strong></div>
+        <div><span>曝光</span><strong>{{ formatNumber(summary?.total_search_exposure ?? 0) }}</strong></div>
+        <div><span>点击</span><strong>{{ formatNumber(summary?.total_search_clicks ?? 0) }}</strong></div>
+        <div><span>CTR</span><strong>{{ formatPercent(summary?.weighted_search_ctr ?? 0) }}</strong></div>
+        <div><span>最优</span><strong>{{ formatNumber(summary?.best_image_count ?? 0) }}</strong></div>
       </div>
     </section>
-
-    <div class="kpi-grid">
-      <div class="metric-card"><span>商品数</span><strong>{{ formatNumber(summary?.total_items ?? 0) }}</strong></div>
-      <div class="metric-card"><span>素材数（已合并）</span><strong>{{ formatNumber(summary?.total_materials ?? 0) }}</strong></div>
-      <div class="metric-card"><span>搜索曝光（快照）</span><strong>{{ formatNumber(summary?.total_search_exposure ?? 0) }}</strong></div>
-      <div class="metric-card"><span>搜索点击（快照）</span><strong>{{ formatNumber(summary?.total_search_clicks ?? 0) }}</strong></div>
-      <div class="metric-card"><span>加权搜索 CTR</span><strong>{{ formatPercent(summary?.weighted_search_ctr ?? 0) }}</strong></div>
-      <div class="metric-card"><span>最优素材</span><strong>{{ formatNumber(summary?.best_image_count ?? 0) }}</strong></div>
-    </div>
-
-    <div v-if="summary?.latest_import" class="action-strip compact-context">
-      <strong>最近导入</strong>
-      <span>{{ summary.latest_import.source_filename }}</span>
-      <span>{{ formatDateTime(summary.latest_import.imported_at) }}</span>
-    </div>
-
-    <div class="action-strip">
-      <label class="file-action">
-        <input type="file" accept=".xlsx,.xls" @change="importWorkbook">
-        <span>导入测图数据</span>
-      </label>
-      <input v-model="crawlMachineId" class="machine-input" placeholder="任务机 ID（可选，不填则自动分配）">
-      <button class="secondary-button" type="button" @click="triggerCrawl">下发立即抓取</button>
-      <input v-model="scheduleTime" class="time-input" type="time">
-      <button class="secondary-button" type="button" @click="createSchedule">保存定时</button>
-    </div>
 
     <section class="report-grid">
       <article class="report-panel">
@@ -347,6 +350,7 @@ onMounted(refresh)
             <strong>{{ topImage.image_type || '素材' }} · {{ topImage.item_id }}</strong>
             <p>当前筛选下曝光最高，搜索曝光 {{ formatNumber(topImage.search_impressions) }}，点击 {{ formatNumber(topImage.search_clicks) }}，CTR {{ formatPercent(topImage.search_ctr) }}。</p>
             <span>统计日期 {{ formatStatisticDate(topImage.statistic_date) }}</span>
+            <span>素材 ID {{ materialIdentity(topImage) }}</span>
           </div>
         </div>
         <p v-else class="empty-report">导入测图数据后展示素材表现结论。</p>
@@ -365,6 +369,7 @@ onMounted(refresh)
             <th>统计日期</th>
             <th>图片类型</th>
             <th>素材</th>
+            <th>素材 ID</th>
             <th>曝光</th>
             <th>点击</th>
             <th>CTR</th>
@@ -376,7 +381,7 @@ onMounted(refresh)
           </tr>
         </thead>
         <tbody>
-          <tr v-if="loading"><td colspan="12">加载中...</td></tr>
+          <tr v-if="loading"><td colspan="13">加载中...</td></tr>
           <tr v-for="image in images" :key="image.id">
             <td>
               <strong>{{ image.item_id }}</strong>
@@ -389,6 +394,7 @@ onMounted(refresh)
                 <img :src="image.material_url" alt="">
               </a>
             </td>
+            <td class="material-id-cell" :title="materialIdentity(image)">{{ materialIdentity(image) }}</td>
             <td>{{ formatNumber(image.search_impressions) }}</td>
             <td>{{ formatNumber(image.search_clicks) }}</td>
             <td>{{ formatPercent(image.search_ctr) }}</td>
@@ -398,7 +404,7 @@ onMounted(refresh)
             <td>{{ formatNumber(image.detail_add_to_cart) }}</td>
             <td>{{ formatPercent(image.detail_pay_conversion_rate) }}</td>
           </tr>
-          <tr v-if="!loading && images.length === 0"><td colspan="12">暂无数据</td></tr>
+          <tr v-if="!loading && images.length === 0"><td colspan="13">暂无数据</td></tr>
         </tbody>
       </table>
     </div>
@@ -408,26 +414,49 @@ onMounted(refresh)
 <style scoped>
 .material-dashboard {
   display: grid;
-  gap: 16px;
+  gap: 10px;
 }
 
-.snapshot-callout,
+.snapshot-compact-board,
 .report-panel {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg2);
 }
 
-.snapshot-callout {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  padding: 14px;
+.material-filter-row {
+  align-items: end;
+  padding: 8px 10px;
 }
 
-.snapshot-callout h2,
-.snapshot-callout p,
+.material-filter-row .filter-grid {
+  gap: 8px;
+}
+
+.material-filter-row label {
+  gap: 3px;
+}
+
+.material-filter-row input,
+.material-filter-row select {
+  min-height: 34px;
+  padding: 7px 9px;
+}
+
+.snapshot-compact-board {
+  display: grid;
+  gap: 10px;
+  padding: 10px 12px;
+}
+
+.snapshot-compact-head {
+  display: grid;
+  grid-template-columns: minmax(340px, 0.72fr) minmax(520px, 1fr);
+  gap: 12px;
+  align-items: end;
+}
+
+.snapshot-compact-head h2,
 .report-head h2,
 .insight-body p,
 .empty-report,
@@ -435,14 +464,13 @@ onMounted(refresh)
   margin: 0;
 }
 
-.snapshot-callout h2,
+.snapshot-compact-head h2,
 .report-head h2,
 .table-title-row h2 {
   font-size: 16px;
   line-height: 1.3;
 }
 
-.snapshot-callout p,
 .insight-body p,
 .empty-report {
   margin-top: 6px;
@@ -451,15 +479,47 @@ onMounted(refresh)
   line-height: 1.55;
 }
 
-.snapshot-badges {
+.snapshot-summary-line,
+.snapshot-action-row,
+.snapshot-kpi-strip {
   display: flex;
   flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-  min-width: min(520px, 100%);
+  align-items: center;
+  gap: 6px;
 }
 
-.snapshot-badges span,
+.snapshot-summary-line {
+  margin-top: 6px;
+}
+
+.snapshot-action-row {
+  justify-content: flex-end;
+}
+
+.snapshot-action-row input {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg3);
+  color: var(--text);
+  padding: 7px 9px;
+}
+
+.snapshot-action-row .machine-input {
+  flex: 1 1 260px;
+}
+
+.snapshot-action-row .time-input {
+  flex: 0 0 116px;
+}
+
+.snapshot-action-row button,
+.compact-file-action {
+  min-height: 34px;
+  white-space: nowrap;
+}
+
+.snapshot-summary-line span,
 .report-head span,
 .insight-body span {
   display: inline-flex;
@@ -473,16 +533,33 @@ onMounted(refresh)
   font-weight: 800;
 }
 
-.compact-context {
-  justify-content: flex-start;
-  align-items: center;
-  background: var(--bg3);
-  color: var(--text2);
-  font-size: 13px;
+.snapshot-kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(92px, 1fr));
+  gap: 8px;
 }
 
-.compact-context strong {
+.snapshot-kpi-strip div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  padding: 8px 10px;
+}
+
+.snapshot-kpi-strip span {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.snapshot-kpi-strip strong {
   color: var(--text);
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
 }
 
 .report-grid {
@@ -543,6 +620,14 @@ onMounted(refresh)
   font-size: 12px;
 }
 
+.material-id-cell {
+  max-width: 190px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
 .insight-panel {
   display: grid;
 }
@@ -593,18 +678,17 @@ onMounted(refresh)
 }
 
 @media (max-width: 980px) {
-  .snapshot-callout,
+  .snapshot-compact-head,
   .report-grid {
     grid-template-columns: 1fr;
   }
 
-  .snapshot-callout {
-    display: grid;
+  .snapshot-action-row {
+    justify-content: flex-start;
   }
 
-  .snapshot-badges {
-    justify-content: flex-start;
-    min-width: 0;
+  .snapshot-kpi-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

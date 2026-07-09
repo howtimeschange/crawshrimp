@@ -78,6 +78,22 @@ describe('dashboard routes', () => {
     expect(body.image_funnel).toEqual({ generated: 6, approved: 3, rejected: 1, regenerated: 1, submitted: 2 })
   })
 
+  it('derives submitted dashboard totals from the latest successful submit job', async () => {
+    const { state, viewerCookie } = await baseState()
+    state.batches = [{ id: 1, batch_uid: 'batch-submitted', status: 'pending_review' }]
+    state.assets = []
+    state.dispatchJobs = [
+      { id: 1, job_uid: 'job-old', batch_uid: 'batch-submitted', job_type: 'submit_tmall_material_test', status: 'terminal_failed', assigned_machine_id: 'machine-1' },
+      { id: 2, job_uid: 'job-new', batch_uid: 'batch-submitted', job_type: 'submit_tmall_material_test', status: 'succeeded', assigned_machine_id: 'machine-1' },
+    ]
+
+    const response = await fetchWorker(new Request('https://example.test/api/dashboard/summary', { headers: { cookie: viewerCookie } }), fakeEnv(state))
+    const body = await response.json() as { batch_totals_by_status: Record<string, number> }
+
+    expect(response.status).toBe(200)
+    expect(body.batch_totals_by_status).toEqual({ submitted: 1 })
+  })
+
   it('returns prompt template approval rates', async () => {
     const { state, viewerCookie } = await baseState()
     const response = await fetchWorker(new Request('https://example.test/api/dashboard/prompt-performance', { headers: { cookie: viewerCookie } }), fakeEnv(state))

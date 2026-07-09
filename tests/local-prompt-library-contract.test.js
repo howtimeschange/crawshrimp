@@ -54,6 +54,32 @@ test('LocalPromptLibrary view combines local and cloud prompt libraries with sou
   assert.match(view, /source_type/)
 })
 
+test('LocalPromptLibrary opens with a library list before entering prompt detail editing', () => {
+  const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
+
+  assert.match(view, /const viewMode = ref\('list'\)/)
+  assert.match(view, /提示词库列表/)
+  assert.match(view, /提示词库名称/)
+  assert.match(view, /当前 Prompt 数量/)
+  assert.match(view, /创建时间/)
+  assert.match(view, /进入编辑/)
+  assert.match(view, /enterLibraryDetail/)
+  assert.match(view, /backToLibraryList/)
+  assert.doesNotMatch(view, /<select v-model="selectedLibraryUid"/)
+})
+
+test('LocalPromptLibrary active secondary buttons do not look disabled', () => {
+  const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
+  const secondaryRule = view.match(/\.lpl-secondary\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const disabledRule = view.match(/\.lpl-primary:disabled,\n\.lpl-secondary:disabled\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+
+  assert.match(secondaryRule, /color:\s*var\(--text\)/)
+  assert.match(secondaryRule, /background:\s*rgba\(255,\s*255,\s*255,\s*\.08\)/)
+  assert.match(secondaryRule, /border-color:\s*rgba\(255,\s*255,\s*255,\s*\.18\)/)
+  assert.match(secondaryRule, /font-weight:\s*700/)
+  assert.match(disabledRule, /opacity:\s*\.55/)
+})
+
 test('Electron bridges expose local prompt library persistence and cloud sync IPC', () => {
   const preload = read('app/src/preload.js')
   const main = read('app/src/main.js')

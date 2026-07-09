@@ -146,6 +146,43 @@ class AiImageServiceTests(unittest.TestCase):
             "data:image/png;base64,ref-b",
         ])
 
+    def test_materialize_data_url_image_writes_supported_annotation_png(self):
+        job = data_sink.create_ai_image_job({"title": "annotation job"})
+        data_url = "data:image/png;base64," + (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+
+        result = ai_image_service.materialize_data_url_image(
+            job["job_uid"],
+            data_url,
+            filename="annotation-edit.png",
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["job_uid"], job["job_uid"])
+        self.assertEqual(result["mime_type"], "image/png")
+        self.assertTrue(result["path"].endswith(".png"))
+        self.assertTrue(Path(result["path"]).is_file())
+        self.assertIn("annotation-edit", Path(result["path"]).name)
+
+    def test_materialize_data_url_image_rejects_non_image_or_oversized_data(self):
+        job = data_sink.create_ai_image_job({"title": "bad annotation job"})
+
+        with self.assertRaisesRegex(ValueError, "仅支持 PNG、JPG 或 WEBP"):
+            ai_image_service.materialize_data_url_image(
+                job["job_uid"],
+                "data:image/svg+xml;base64,PHN2Zy8+",
+                filename="bad.svg",
+            )
+
+        with self.assertRaisesRegex(ValueError, "图片超过"):
+            ai_image_service.materialize_data_url_image(
+                job["job_uid"],
+                "data:image/png;base64,AAAA",
+                filename="too-large.png",
+                max_bytes=1,
+            )
+
     def test_build_payload_normalizes_oversized_4k_dimensions_to_provider_limit(self):
         payload = ai_image_service.build_one_xm_payload({
             "prompt": "make a product image",

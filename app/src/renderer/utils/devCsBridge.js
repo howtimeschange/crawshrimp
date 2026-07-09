@@ -1,9 +1,11 @@
 const DEFAULT_API_BASE = 'http://127.0.0.1:18765'
+const API_PORT_PROBE_RANGE = Array.from({ length: 11 }, (_, index) => 18765 + index)
 const TOKEN_STORAGE_KEY = 'crawshrimp.apiToken'
 const API_BASE_STORAGE_KEY = 'crawshrimp.apiBase'
 const LOCAL_PROMPT_LIBRARY_STORAGE_KEY = 'crawshrimp.localPromptLibraries.v1'
 const TOKEN_QUERY_KEYS = ['crawshrimp_token', 'api_token', 'token']
 const API_BASE_QUERY_KEYS = ['crawshrimp_api_base', 'api_base']
+let discoveredApiBase = ''
 
 function isLocalRenderer() {
   if (typeof window === 'undefined') return false
@@ -22,17 +24,36 @@ function readQueryValue(keys = []) {
   return ''
 }
 
+function normalizeApiBase(value) {
+  return String(value || '').trim().replace(/\/+$/, '')
+}
+
+function rememberApiBase(value) {
+  const normalized = normalizeApiBase(value)
+  if (!normalized) return ''
+  discoveredApiBase = normalized
+  try { window.localStorage?.setItem(API_BASE_STORAGE_KEY, normalized) } catch {}
+  return normalized
+}
+
+function isCrawshrimpHealthPayload(payload) {
+  return payload?.status === 'ok' && (
+    Boolean(payload?.runtime?.scripts_dir)
+    || typeof payload?.chrome === 'boolean'
+    || Number.isFinite(Number(payload?.adapters))
+  )
+}
+
 function apiBase() {
   const queryBase = readQueryValue(API_BASE_QUERY_KEYS)
   if (queryBase) {
-    try { window.localStorage?.setItem(API_BASE_STORAGE_KEY, queryBase) } catch {}
-    return queryBase.replace(/\/+$/, '')
+    return rememberApiBase(queryBase)
   }
   let storedBase = ''
   try {
     storedBase = String(window.localStorage?.getItem(API_BASE_STORAGE_KEY) || '').trim()
   } catch {}
-  return String(storedBase || import.meta.env.VITE_CRAWSHRIMP_API_BASE || DEFAULT_API_BASE).replace(/\/+$/, '')
+  return normalizeApiBase(storedBase || discoveredApiBase || import.meta.env.VITE_CRAWSHRIMP_API_BASE || DEFAULT_API_BASE)
 }
 
 function apiToken() {
@@ -63,6 +84,43 @@ function buildUrl(path) {
   return `${apiBase()}${String(path || '').startsWith('/') ? '' : '/'}${path}`
 }
 
+function buildUrlWithBase(base, path) {
+  if (/^https?:\/\//i.test(String(path || ''))) return String(path)
+  return `${normalizeApiBase(base)}${String(path || '').startsWith('/') ? '' : '/'}${path}`
+}
+
+function apiBaseCandidates(initialBase = '') {
+  const seen = new Set()
+  return [
+    initialBase,
+    apiBase(),
+    import.meta.env.VITE_CRAWSHRIMP_API_BASE,
+    DEFAULT_API_BASE,
+    ...API_PORT_PROBE_RANGE.map(port => `http://127.0.0.1:${port}`),
+  ]
+    .map(normalizeApiBase)
+    .filter((base) => {
+      if (!base || seen.has(base)) return false
+      seen.add(base)
+      return true
+    })
+}
+
+async function discoverApiBase(initialBase = '') {
+  for (const candidate of apiBaseCandidates(initialBase)) {
+    try {
+      const response = await fetch(buildUrlWithBase(candidate, '/health?probe=1'), {
+        method: 'GET',
+        headers: { Accept: 'application/json' },
+      })
+      if (!response.ok) continue
+      const payload = await parseResponse(response)
+      if (isCrawshrimpHealthPayload(payload)) return rememberApiBase(candidate)
+    } catch {}
+  }
+  return ''
+}
+
 async function apiCall(method, path, body) {
   const headers = {}
   const token = apiToken()
@@ -73,8 +131,23 @@ async function apiCall(method, path, body) {
     options.body = JSON.stringify(body)
   }
 
-  const response = await fetch(buildUrl(path), options)
-  const payload = await parseResponse(response)
+  const initialBase = apiBase()
+  let response
+  try {
+    response = await fetch(buildUrlWithBase(initialBase, path), options)
+  } catch (error) {
+    const fallbackBase = await discoverApiBase(initialBase)
+    if (!fallbackBase || fallbackBase === initialBase) throw error
+    response = await fetch(buildUrlWithBase(fallbackBase, path), options)
+  }
+  let payload = await parseResponse(response)
+  if (!response.ok && response.status === 404) {
+    const fallbackBase = await discoverApiBase(initialBase)
+    if (fallbackBase && fallbackBase !== initialBase) {
+      response = await fetch(buildUrlWithBase(fallbackBase, path), options)
+      payload = await parseResponse(response)
+    }
+  }
   if (!response.ok) {
     const detail = payload?.detail || payload?.error || payload?.message || String(payload || response.statusText)
     if (response.status === 401) {
@@ -196,7 +269,11 @@ export function createDevCsBridge() {
   return {
     getStatus: async () => {
       try {
-        const health = await apiCall('GET', '/health')
+        let health = await apiCall('GET', '/health')
+        if (!isCrawshrimpHealthPayload(health)) {
+          const fallbackBase = await discoverApiBase(apiBase())
+          if (fallbackBase) health = await apiCall('GET', '/health')
+        }
         return {
           api: health?.status === 'ok',
           chrome: Boolean(health?.chrome),
@@ -205,7 +282,8 @@ export function createDevCsBridge() {
           dev: true,
         }
       } catch {
-        return { api: false, chrome: false, apiPort: 18765, cdpPort: 9222, dev: true }
+        const fallbackBase = await discoverApiBase(apiBase())
+        return { api: false, chrome: false, apiPort: Number(new URL(fallbackBase || DEFAULT_API_BASE).port || 18765), cdpPort: 9222, dev: true }
       }
     },
     launchChrome: async () => ({ ok: false, error: '浏览器开发模式不负责启动 Chrome，请使用 Electron 开发壳' }),

@@ -478,6 +478,41 @@ describe('review routes', () => {
     expect(state.batches[0].status).toBe('ready_to_submit')
   })
 
+  it('keeps already submitted AI results out of pending review when recomputing batch state', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'submitted'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-2')!.status = 'rejected'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'submitted'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/mark-ready', { method: 'POST', headers: { cookie: reviewerCookie } }), fakeEnv(state))
+
+    expect(response.status).toBe(200)
+    expect(state.batches[0].status).toBe('submitted')
+    expect(state.styles.map((style) => [style.style_code, style.status])).toEqual([
+      ['style-1', 'submitted'],
+      ['style-2', 'submitted'],
+      ['style-3', 'skipped'],
+    ])
+    expect(state.styles.map((style) => JSON.parse(style.review_summary_json))).toEqual([
+      { approved: 0, submitted: 1, rejected: 1, pending: 0 },
+      { approved: 0, submitted: 1, rejected: 0, pending: 0 },
+      {},
+    ])
+  })
+
+  it('rejects decision changes for submitted AI assets even if the batch status is stale', async () => {
+    const { state, reviewerCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'submitted'
+
+    const response = await fetchWorker(decisionRequest('asset-ai-1', 'rejected', reviewerCookie), fakeEnv(state))
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(409)
+    expect(body.error).toContain('submitted')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('submitted')
+    expect(state.approvalEvents).toHaveLength(0)
+  })
+
   it('rejects manual asset creation for a nonexistent style_id in the route batch', async () => {
     const { state, reviewerCookie } = await baseState()
     const response = await fetchWorker(manualAssetRequest(reviewerCookie, 999, 'manual-missing-style'), fakeEnv(state))

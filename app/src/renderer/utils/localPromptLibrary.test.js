@@ -142,6 +142,49 @@ test('normalizePromptLibrary keeps local and cloud library source types distinct
   assert.equal(cloud.cloud_library_id, 7)
 })
 
+test('buildPromptLibraryPickerLibraries combines local and cloud libraries for AI image confirmation', async () => {
+  const helpers = await import('./localPromptLibrary.js')
+
+  assert.equal(typeof helpers.buildPromptLibraryPickerLibraries, 'function')
+
+  const libraries = helpers.buildPromptLibraryPickerLibraries({
+    localLibraries: [
+      {
+        library_uid: 'local-1',
+        name: '本地库',
+        templates: [
+          { local_uid: 'local-prompt-1', group_name: '上装', field_name: '正面图', prompt_text: '本地 Prompt' },
+          { local_uid: 'local-prompt-off', group_name: '上装', field_name: '停用图', prompt_text: '停用 Prompt', enabled: false },
+        ],
+      },
+    ],
+    cloudLibraries: [
+      { id: 7, name: '线上库', status: 'published' },
+    ],
+  })
+
+  assert.deepEqual(libraries.map(library => ({
+    id: library.id,
+    picker_key: library.picker_key,
+    name: library.name,
+    source_type: library.source_type,
+    source_label: library.source_label,
+  })), [
+    { id: 'local:local-1', picker_key: 'local:local-1', name: '本地库', source_type: 'local', source_label: '本地' },
+    { id: 'cloud:7', picker_key: 'cloud:7', name: '线上库', source_type: 'cloud', source_label: '线上' },
+  ])
+  assert.deepEqual(libraries[0].templates.map(template => ({
+    template_id: template.template_id,
+    field_name: template.field_name,
+    prompt_text: template.prompt_text,
+    source_type: template.source_type,
+  })), [
+    { template_id: 'local:local-1:local-prompt-1', field_name: '正面图', prompt_text: '本地 Prompt', source_type: 'local' },
+  ])
+  assert.equal(libraries[1].cloud_library_id, 7)
+  assert.equal(libraries[1].templates.length, 0)
+})
+
 test('buildCloudPromptLibraryPayload strips local metadata and keeps cloud-compatible template fields', () => {
   const library = normalizePromptLibrary({
     library_uid: 'local-1',

@@ -340,8 +340,8 @@
           <div class="prompt-library-picker-filters">
             <select v-model="promptLibraryPicker.selectedLibraryId" class="prompt-library-select" @change="loadPromptLibraryTemplates(promptLibraryPicker.selectedLibraryId)">
               <option value="">选择 Prompt 库</option>
-              <option v-for="library in promptLibraryPicker.libraries" :key="library.id" :value="String(library.id)">
-                {{ library.name || `Prompt 库 ${library.id}` }}
+              <option v-for="library in promptLibraryPicker.libraries" :key="library.picker_key || library.id" :value="String(library.picker_key || library.id)">
+                {{ library.name || `Prompt 库 ${library.id}` }}（{{ library.source_label }}）
               </option>
             </select>
             <input v-model="promptLibrarySearch" class="prompt-library-search" placeholder="搜索 Prompt 名称 / 内容" />
@@ -395,6 +395,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { buildPromptLibraryPickerLibraries } from '../utils/localPromptLibrary'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -1285,12 +1286,23 @@ async function loadPromptLibraries() {
   promptLibraryPicker.value.loading = true
   promptLibraryPicker.value.error = ''
   try {
-    const payload = await window.cs.listCloudPromptLibraries()
-    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
-    const libraries = Array.isArray(payload?.libraries) ? payload.libraries : []
+    const [localResult, cloudResult] = await Promise.allSettled([
+      window.cs.listLocalPromptLibraries(),
+      window.cs.listCloudPromptLibraries(),
+    ])
+    const localPayload = promptLibrarySettledPayload(localResult, '本地 Prompt 库')
+    const cloudPayload = promptLibrarySettledPayload(cloudResult, '线上 Prompt 库')
+    const libraries = buildPromptLibraryPickerLibraries({
+      localLibraries: Array.isArray(localPayload.payload?.libraries) ? localPayload.payload.libraries : [],
+      cloudLibraries: Array.isArray(cloudPayload.payload?.libraries) ? cloudPayload.payload.libraries : [],
+    })
     promptLibraryPicker.value.libraries = libraries
-    const nextLibraryId = String(promptLibraryPicker.value.selectedLibraryId || libraries[0]?.id || '').trim()
+    const currentId = String(promptLibraryPicker.value.selectedLibraryId || '').trim()
+    const currentExists = libraries.some(library => String(library.picker_key || library.id || '') === currentId)
+    const nextLibraryId = currentExists ? currentId : String(libraries[0]?.picker_key || libraries[0]?.id || '').trim()
     promptLibraryPicker.value.selectedLibraryId = nextLibraryId
+    const errors = [localPayload.error, cloudPayload.error].filter(Boolean)
+    if (!libraries.length && errors.length) throw new Error(errors.join('；'))
     if (nextLibraryId) await loadPromptLibraryTemplates(nextLibraryId)
   } catch (err) {
     promptLibraryPicker.value.error = err?.message || String(err)
@@ -1305,12 +1317,22 @@ async function loadPromptLibraryTemplates(libraryId) {
     promptLibraryPicker.value.templates = []
     return
   }
+  const selectedLibrary = (promptLibraryPicker.value.libraries || [])
+    .find(library => String(library.picker_key || library.id || '') === id)
+  if (selectedLibrary && selectedLibrary.source_type === 'local') {
+    promptLibraryPicker.value.templates = (selectedLibrary.templates || [])
+      .map(template => ({ ...template, source_label: selectedLibrary.source_label || '本地' }))
+    promptLibraryCategory.value = ''
+    return
+  }
   promptLibraryPicker.value.templatesLoading = true
   promptLibraryPicker.value.error = ''
   try {
-    const payload = await window.cs.resolveCloudPromptTemplates(id, { limit: 500 })
+    const cloudLibraryId = selectedLibrary?.cloud_library_id ?? id.replace(/^cloud:/, '')
+    const payload = await window.cs.resolveCloudPromptTemplates(cloudLibraryId, { limit: 500 })
     if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
-    promptLibraryPicker.value.templates = Array.isArray(payload?.templates) ? payload.templates : []
+    promptLibraryPicker.value.templates = (Array.isArray(payload?.templates) ? payload.templates : [])
+      .map(template => ({ ...template, source_type: 'cloud', source_label: selectedLibrary?.source_label || '线上' }))
     promptLibraryCategory.value = ''
   } catch (err) {
     promptLibraryPicker.value.error = err?.message || String(err)
@@ -1318,6 +1340,16 @@ async function loadPromptLibraryTemplates(libraryId) {
   } finally {
     promptLibraryPicker.value.templatesLoading = false
   }
+}
+
+function promptLibrarySettledPayload(result, label) {
+  if (result.status === 'rejected') {
+    return { payload: {}, error: `${label}读取失败：${result.reason?.message || result.reason}` }
+  }
+  const payload = result.value || {}
+  const error = payload?.detail || payload?.error
+  if (error) return { payload: {}, error: `${label}读取失败：${error}` }
+  return { payload, error: '' }
 }
 
 function selectPromptLibraryTemplate(template) {

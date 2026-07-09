@@ -11,14 +11,19 @@
           {{ cloudLoading ? '读取线上...' : '刷新线上' }}
         </button>
         <button type="button" class="lpl-secondary" :disabled="!cloudPromptManageUrl" @click="openCloudPromptManager">打开云端 Prompt 管理</button>
-        <button type="button" class="lpl-secondary" :disabled="busy" @click="createLibrary">新建库</button>
-        <button type="button" class="lpl-secondary" :disabled="busy" @click="chooseWorkbookForImport">
-          {{ importing ? '导入中...' : '导入更新' }}
-        </button>
-        <button type="button" class="lpl-secondary" :disabled="busy || !selectedLocalLibrary" @click="saveLocalEdits">保存编辑</button>
-        <button type="button" class="lpl-primary" :disabled="busy || !selectedLocalLibrary" @click="syncSelectedLibrary">
-          {{ syncing ? '同步中...' : '同步到线上' }}
-        </button>
+        <template v-if="isListView">
+          <button type="button" class="lpl-primary" :disabled="busy" @click="createLibrary">新建库</button>
+        </template>
+        <template v-else>
+          <button type="button" class="lpl-secondary" @click="backToLibraryList">返回列表</button>
+          <button type="button" class="lpl-secondary" :disabled="busy || !selectedLocalLibrary" @click="chooseWorkbookForImport">
+            {{ importing ? '导入中...' : '导入更新' }}
+          </button>
+          <button type="button" class="lpl-secondary" :disabled="busy || !selectedLocalLibrary" @click="saveLocalEdits">保存编辑</button>
+          <button type="button" class="lpl-primary" :disabled="busy || !selectedLocalLibrary" @click="syncSelectedLibrary">
+            {{ syncing ? '同步中...' : '同步到线上' }}
+          </button>
+        </template>
       </div>
     </header>
 
@@ -26,37 +31,67 @@
     <p v-if="error" class="lpl-notice error">{{ error }}</p>
     <p v-if="cloudError" class="lpl-notice warning">{{ cloudError }}</p>
 
-    <section class="lpl-toolbar">
-      <label>
-        <span>当前库</span>
-        <select v-model="selectedLibraryUid">
-          <option v-for="library in libraries" :key="library.library_uid" :value="library.library_uid">
-            {{ librarySourceLabel(library.source_type) }}｜{{ library.name }}
-          </option>
-        </select>
-      </label>
-      <label class="wide">
-        <span>库名称</span>
-        <input v-model="libraryDraft.name" :disabled="!selectedLocalLibrary" />
-      </label>
-      <label>
-        <span>场景</span>
-        <select v-model="libraryDraft.scenario" :disabled="!selectedLocalLibrary">
-          <option v-for="scenario in scenarioOptions" :key="scenario">{{ scenario }}</option>
-        </select>
-      </label>
-      <label>
-        <span>搜索</span>
-        <input v-model.trim="keyword" type="search" placeholder="名称 / Prompt" />
-      </label>
+    <section v-if="isListView" class="lpl-library-list">
+      <div class="lpl-library-list-head">
+        <div>
+          <h3>提示词库列表</h3>
+          <p>{{ libraries.length }} 个库，本地 {{ localLibraries.length }} 个，线上 {{ cloudLibraries.length }} 个</p>
+        </div>
+        <button type="button" class="lpl-primary" :disabled="busy" @click="createLibrary">新建库</button>
+      </div>
+      <div class="lpl-library-table">
+        <div class="lpl-library-header" role="row">
+          <span>提示词库名称</span>
+          <span>当前 Prompt 数量</span>
+          <span>创建时间</span>
+          <span>来源</span>
+          <span>操作</span>
+        </div>
+        <div class="lpl-library-body">
+          <div v-for="library in libraryRows" :key="library.library_uid" class="lpl-library-row">
+            <div class="lpl-library-name">
+              <strong>{{ library.name }}</strong>
+              <span>{{ library.scenario }} · {{ statusLabel(library.status) }}</span>
+            </div>
+            <div>{{ templateCount(library) }} 条</div>
+            <div>{{ formatDateTime(library.created_at || library.updated_at) }}</div>
+            <div><span class="lpl-source-badge">{{ librarySourceLabel(library.source_type) }}</span></div>
+            <div class="lpl-library-actions">
+              <button type="button" class="lpl-secondary" @click="enterLibraryDetail(library)">进入编辑</button>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div v-if="!libraries.length" class="lpl-empty inline">
+        <strong>暂无提示词库</strong>
+        <button type="button" class="lpl-primary" @click="createLibrary">新建库</button>
+      </div>
     </section>
 
-    <section v-if="!selectedLibrary" class="lpl-empty">
-      <strong>暂无提示词库</strong>
-      <button type="button" class="lpl-primary" @click="createLibrary">新建库</button>
+    <section v-else-if="!selectedLibrary" class="lpl-empty">
+      <strong>未选择提示词库</strong>
+      <button type="button" class="lpl-secondary" @click="backToLibraryList">返回列表</button>
     </section>
 
-    <section v-else class="lpl-workspace">
+    <section v-else class="lpl-detail">
+      <section class="lpl-toolbar">
+        <label class="wide">
+          <span>库名称</span>
+          <input v-model="libraryDraft.name" :disabled="!selectedLocalLibrary" />
+        </label>
+        <label>
+          <span>场景</span>
+          <select v-model="libraryDraft.scenario" :disabled="!selectedLocalLibrary">
+            <option v-for="scenario in scenarioOptions" :key="scenario">{{ scenario }}</option>
+          </select>
+        </label>
+        <label>
+          <span>搜索</span>
+          <input v-model.trim="keyword" type="search" placeholder="名称 / Prompt" />
+        </label>
+      </section>
+
+      <section class="lpl-workspace">
       <aside class="lpl-groups">
         <div class="lpl-groups-head">
           <strong>分组</strong>
@@ -95,58 +130,64 @@
         </div>
 
         <div class="lpl-edit-list">
-          <article v-for="(template, index) in displayTemplates" :key="templateKey(template, index)" class="lpl-edit-row">
-            <div class="lpl-row-top">
-              <label class="lpl-check">
-                <input v-model="template.enabled" type="checkbox" :disabled="!selectedLocalLibrary" />
-                <span>启用</span>
-              </label>
-              <label>
-                <span>分组</span>
-                <input v-model="template.group_name" :disabled="!selectedLocalLibrary" />
-              </label>
-              <label>
-                <span>字段名</span>
-                <input v-model="template.field_name" :disabled="!selectedLocalLibrary" />
-              </label>
-              <label class="small">
-                <span>女优先</span>
-                <input v-model.number="template.female_priority" type="number" :disabled="!selectedLocalLibrary" />
-              </label>
-              <label class="small">
-                <span>男/中</span>
-                <input v-model.number="template.male_neutral_priority" type="number" :disabled="!selectedLocalLibrary" />
-              </label>
-              <button type="button" class="lpl-icon danger" :disabled="!selectedLocalLibrary" aria-label="删除 Prompt" @click="removePromptRow(template)">删除</button>
-            </div>
-            <div class="lpl-row-grid">
-              <label>
-                <span>尺寸</span>
-                <input v-model="template.size_label" :disabled="!selectedLocalLibrary" />
-              </label>
-              <label>
-                <span>格式</span>
-                <input v-model="template.output_format" :disabled="!selectedLocalLibrary" />
-              </label>
-              <label class="wide">
-                <span>引用字段</span>
-                <input :value="referenceText(template)" :disabled="!selectedLocalLibrary" @input="setReferenceText(template, $event.target.value)" />
-              </label>
-            </div>
-            <label class="prompt">
+          <div class="lpl-template-table">
+            <div class="lpl-template-header" role="row">
+              <span>状态</span>
+              <span>分组</span>
+              <span>字段名</span>
+              <span>女优先</span>
+              <span>男/中</span>
               <span>Prompt</span>
-              <textarea v-model="template.prompt_text" rows="4" :disabled="!selectedLocalLibrary" placeholder="输入完整生图 Prompt"></textarea>
-            </label>
-          </article>
+              <span>操作</span>
+            </div>
+            <div class="lpl-template-body">
+              <div v-for="(template, index) in displayTemplates" :key="templateKey(template, index)" class="lpl-template-row" :class="{ disabled: !template.enabled }">
+                <div class="lpl-template-cell status">
+                  <label class="lpl-switch" :class="{ readonly: !selectedLocalLibrary }">
+                    <input v-model="template.enabled" type="checkbox" :disabled="!selectedLocalLibrary" aria-label="启用 Prompt" />
+                    <span class="lpl-switch-track" aria-hidden="true"></span>
+                    <strong>{{ template.enabled ? '启用' : '停用' }}</strong>
+                  </label>
+                </div>
+                <div class="lpl-template-cell">
+                  <input v-model="template.group_name" :disabled="!selectedLocalLibrary" aria-label="分组" />
+                </div>
+                <div class="lpl-template-cell">
+                  <input v-model="template.field_name" :disabled="!selectedLocalLibrary" aria-label="字段名" />
+                </div>
+                <div class="lpl-template-cell compact">
+                  <input v-model.number="template.female_priority" type="number" :disabled="!selectedLocalLibrary" aria-label="女优先" />
+                </div>
+                <div class="lpl-template-cell compact">
+                  <input v-model.number="template.male_neutral_priority" type="number" :disabled="!selectedLocalLibrary" aria-label="男/中优先" />
+                </div>
+                <div class="lpl-template-cell prompt">
+                  <textarea
+                    ref="promptTextareas"
+                    v-model="template.prompt_text"
+                    rows="2"
+                    :disabled="!selectedLocalLibrary"
+                    aria-label="Prompt"
+                    placeholder="输入完整生图 Prompt"
+                    @input="resizePromptTextarea"
+                  ></textarea>
+                </div>
+                <div class="lpl-template-cell action">
+                  <button type="button" class="lpl-icon danger" :disabled="!selectedLocalLibrary" aria-label="删除 Prompt" @click="removePromptRow(template)">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
           <div v-if="!displayTemplates.length" class="lpl-empty inline">没有匹配的 Prompt</div>
         </div>
       </main>
+      </section>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUpdated, ref, watch } from 'vue'
 import {
   DEFAULT_PROMPT_LIBRARY_NAME,
   PROMPT_IMPORT_HEADER_ROWS,
@@ -163,6 +204,7 @@ const scenarioOptions = PROMPT_SCENARIOS
 const localLibraries = ref([])
 const cloudLibraries = ref([])
 const selectedLibraryUid = ref('')
+const viewMode = ref('list')
 const libraryDraft = ref({ name: DEFAULT_PROMPT_LIBRARY_NAME, scenario: PROMPT_SCENARIOS[0] })
 const groupFilter = ref('all')
 const keyword = ref('')
@@ -175,10 +217,17 @@ const message = ref('')
 const error = ref('')
 const cloudError = ref('')
 const cloudStatus = ref(null)
+const promptTextareas = ref([])
 
 const busy = computed(() => loading.value || saving.value || importing.value || syncing.value)
 const libraries = computed(() => [...localLibraries.value, ...cloudLibraries.value])
-const selectedLibrary = computed(() => libraries.value.find(library => library.library_uid === selectedLibraryUid.value) || libraries.value[0] || null)
+const libraryRows = computed(() => [...libraries.value].sort((left, right) => {
+  const rightTime = Date.parse(right.created_at || right.updated_at || '') || 0
+  const leftTime = Date.parse(left.created_at || left.updated_at || '') || 0
+  return rightTime - leftTime || String(left.name || '').localeCompare(String(right.name || ''), 'zh-CN')
+}))
+const isListView = computed(() => viewMode.value === 'list')
+const selectedLibrary = computed(() => selectedLibraryUid.value ? libraries.value.find(library => library.library_uid === selectedLibraryUid.value) || null : null)
 const selectedLocalLibrary = computed(() => selectedLibrary.value?.source_type === 'local' ? selectedLibrary.value : null)
 const selectedCloudLibrary = computed(() => selectedLibrary.value?.source_type === 'cloud' ? selectedLibrary.value : null)
 const templates = computed(() => selectedLibrary.value?.templates || [])
@@ -209,6 +258,8 @@ watch(selectedLibraryUid, () => {
   groupFilter.value = 'all'
   syncLibraryDraft()
 })
+
+watch(displayTemplates, resizePromptTextareas, { flush: 'post' })
 
 async function loadLibraries() {
   loading.value = true
@@ -269,8 +320,9 @@ async function loadCloudLibraries(options = {}) {
 }
 
 function ensureSelectedLibrary() {
-  if (!libraries.value.some(library => library.library_uid === selectedLibraryUid.value)) {
-    selectedLibraryUid.value = libraries.value[0]?.library_uid || ''
+  if (selectedLibraryUid.value && !libraries.value.some(library => library.library_uid === selectedLibraryUid.value)) {
+    selectedLibraryUid.value = ''
+    viewMode.value = 'list'
   }
 }
 
@@ -285,6 +337,7 @@ async function createLibrary() {
     })
     await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
+    viewMode.value = 'detail'
     syncLibraryDraft()
     message.value = '本地提示词库已创建'
   } catch (err) {
@@ -318,6 +371,7 @@ async function chooseWorkbookForImport() {
     })
     await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
+    viewMode.value = 'detail'
     syncLibraryDraft()
     const headerText = importResult.header_row ? `（表头第 ${importResult.header_row} 行）` : ''
     message.value = `已导入更新 ${parsedTemplates.length} 条 Prompt${headerText}`
@@ -354,6 +408,7 @@ async function saveLocalEdits() {
     })
     await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
+    viewMode.value = 'detail'
     message.value = '本地提示词库已保存'
   } catch (err) {
     error.value = err?.message || String(err)
@@ -373,6 +428,7 @@ async function syncSelectedLibrary() {
     await loadLocalLibraries()
     await loadCloudLibraries({ silent: true })
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
+    viewMode.value = 'detail'
     const cloudId = response?.cloud?.library?.id || response?.library?.cloud_library_id
     message.value = cloudId ? `已同步到云端提示词库 #${cloudId}` : '已同步到云端提示词库'
   } catch (err) {
@@ -433,6 +489,7 @@ async function copyCloudLibraryToLocal() {
     })
     await loadLocalLibraries()
     selectedLibraryUid.value = response?.library?.library_uid || selectedLibraryUid.value
+    viewMode.value = 'detail'
     syncLibraryDraft()
     message.value = `已保存为本地副本：${cloudTemplates.length} 条 Prompt`
   } catch (err) {
@@ -442,6 +499,19 @@ async function copyCloudLibraryToLocal() {
 
 function openCloudApprovalLogin() {
   emit('open-cloud-approval')
+}
+
+function enterLibraryDetail(library) {
+  selectedLibraryUid.value = library?.library_uid || ''
+  viewMode.value = 'detail'
+  groupFilter.value = 'all'
+  syncLibraryDraft()
+  resizePromptTextareas()
+}
+
+function backToLibraryList() {
+  viewMode.value = 'list'
+  keyword.value = ''
 }
 
 async function openCloudPromptManager() {
@@ -458,12 +528,36 @@ function templateKey(template, index) {
   return template.local_uid || `${template.group_name}-${template.field_name}-${index}`
 }
 
-function referenceText(template) {
-  return Array.isArray(template.reference_fields) ? template.reference_fields.join('，') : String(template.reference_fields || '')
+function templateCount(library) {
+  return Array.isArray(library?.templates) ? library.templates.length : 0
 }
 
-function setReferenceText(template, value) {
-  template.reference_fields = String(value || '').split(/[,\n，、；;]/).map(item => item.trim()).filter(Boolean)
+function formatDateTime(value) {
+  const date = new Date(value || '')
+  if (Number.isNaN(date.getTime())) return '-'
+  return new Intl.DateTimeFormat('zh-CN', {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(date)
+}
+
+function resizePromptTextarea(eventOrTextarea) {
+  const textarea = eventOrTextarea?.target || eventOrTextarea
+  if (!textarea?.style) return
+  textarea.style.height = 'auto'
+  textarea.style.height = `${textarea.scrollHeight}px`
+}
+
+function resizePromptTextareas() {
+  nextTick(() => {
+    for (const textarea of promptTextareas.value.flat()) {
+      resizePromptTextarea(textarea)
+    }
+  })
 }
 
 function statusLabel(status) {
@@ -489,7 +583,12 @@ function buildCloudPromptManageUrl(baseUrl) {
   }
 }
 
-onMounted(loadLibraries)
+onMounted(async () => {
+  await loadLibraries()
+  resizePromptTextareas()
+})
+
+onUpdated(resizePromptTextareas)
 </script>
 
 <style scoped>
@@ -503,7 +602,8 @@ onMounted(loadLibraries)
 
 .lpl-head,
 .lpl-toolbar,
-.lpl-table-head {
+.lpl-table-head,
+.lpl-library-list-head {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -519,7 +619,9 @@ onMounted(loadLibraries)
 .lpl-head h2,
 .lpl-head p,
 .lpl-table-head h3,
-.lpl-table-head span {
+.lpl-table-head span,
+.lpl-library-list-head h3,
+.lpl-library-list-head p {
   margin: 0;
 }
 
@@ -537,9 +639,7 @@ onMounted(loadLibraries)
   font-size: 12px;
 }
 
-.lpl-head-actions,
-.lpl-row-top,
-.lpl-row-grid {
+.lpl-head-actions {
   display: flex;
   align-items: end;
   gap: 8px;
@@ -561,6 +661,7 @@ onMounted(loadLibraries)
   padding: 8px 12px;
   font-size: 12px;
   white-space: nowrap;
+  cursor: pointer;
 }
 
 .lpl-primary {
@@ -570,10 +671,22 @@ onMounted(loadLibraries)
   font-weight: 700;
 }
 
+.lpl-secondary {
+  border-color: rgba(255, 255, 255, .18);
+  background: rgba(255, 255, 255, .08);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.lpl-secondary:hover {
+  border-color: rgba(255, 107, 43, .48);
+  background: rgba(255, 107, 43, .12);
+}
+
 .lpl-primary:disabled,
 .lpl-secondary:disabled {
   cursor: not-allowed;
-  opacity: .6;
+  opacity: .55;
 }
 
 .lpl-icon.danger {
@@ -617,52 +730,49 @@ onMounted(loadLibraries)
 
 .lpl-toolbar {
   display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(240px, 1fr) minmax(120px, 150px) minmax(180px, 240px);
+  grid-template-columns: minmax(240px, 1fr) minmax(120px, 150px) minmax(180px, 240px);
   padding: 12px 24px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
 }
 
-.lpl-toolbar label,
-.lpl-edit-row label {
+.lpl-toolbar label {
   display: grid;
   gap: 6px;
   min-width: 0;
 }
 
-.lpl-toolbar span,
-.lpl-edit-row label span,
-.lpl-check span {
+.lpl-toolbar span {
   color: var(--text2);
   font-size: 12px;
 }
 
 .lpl-toolbar input,
 .lpl-toolbar select,
-.lpl-edit-row input,
-.lpl-edit-row textarea {
+.lpl-template-cell input,
+.lpl-template-cell textarea {
   width: 100%;
   min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
   color: var(--text);
-  padding: 8px 10px;
+  padding: 7px 9px;
   font-size: 13px;
   outline: none;
 }
 
 .lpl-toolbar input:focus,
 .lpl-toolbar select:focus,
-.lpl-edit-row input:focus,
-.lpl-edit-row textarea:focus {
+.lpl-template-cell input:focus,
+.lpl-template-cell textarea:focus {
   border-color: var(--orange);
 }
 
 .lpl-toolbar input:disabled,
 .lpl-toolbar select:disabled,
-.lpl-edit-row input:disabled,
-.lpl-edit-row textarea:disabled,
+.lpl-template-cell input:disabled,
+.lpl-template-cell textarea:disabled,
 .lpl-icon:disabled {
   cursor: not-allowed;
   opacity: .68;
@@ -677,6 +787,111 @@ onMounted(loadLibraries)
 
 .lpl-empty.inline {
   min-height: 90px;
+}
+
+.lpl-library-list,
+.lpl-detail {
+  flex: 1 1 0;
+  min-height: 0;
+}
+
+.lpl-library-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 24px 20px;
+}
+
+.lpl-library-list-head {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  padding: 13px 14px;
+}
+
+.lpl-library-list-head h3 {
+  font-size: 15px;
+}
+
+.lpl-library-list-head p,
+.lpl-library-name span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.lpl-library-table {
+  min-height: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+
+.lpl-library-header,
+.lpl-library-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) 150px 190px 110px 110px;
+  align-items: center;
+}
+
+.lpl-library-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg2) 88%, #000 12%);
+}
+
+.lpl-library-header span,
+.lpl-library-row > div {
+  padding: 10px 12px;
+}
+
+.lpl-library-header span {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.lpl-library-row {
+  min-height: 60px;
+  border-bottom: 1px solid var(--border);
+}
+
+.lpl-library-row:last-child {
+  border-bottom: none;
+}
+
+.lpl-library-row:hover {
+  background: rgba(255, 255, 255, .018);
+}
+
+.lpl-library-row > div {
+  min-width: 0;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.lpl-library-name {
+  display: grid;
+  gap: 4px;
+}
+
+.lpl-library-name strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lpl-library-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.lpl-detail {
+  display: flex;
+  flex-direction: column;
 }
 
 .lpl-workspace {
@@ -751,47 +966,146 @@ onMounted(loadLibraries)
   height: calc(100% - 55px);
   min-height: 0;
   overflow: auto;
-  display: grid;
-  align-content: start;
-  gap: 10px;
   padding: 14px;
 }
 
-.lpl-edit-row {
-  display: grid;
-  gap: 10px;
+.lpl-template-table {
+  min-width: 1120px;
   border: 1px solid var(--border);
   border-radius: 8px;
+  overflow: hidden;
   background: var(--bg);
-  padding: 12px;
 }
 
-.lpl-row-top {
+.lpl-template-header,
+.lpl-template-row {
   display: grid;
-  grid-template-columns: 72px minmax(110px, 150px) minmax(160px, 1fr) 88px 88px auto;
+  grid-template-columns: 92px minmax(120px, 150px) minmax(190px, 240px) 76px 76px minmax(420px, 1fr) 76px;
+  align-items: stretch;
 }
 
-.lpl-row-grid {
-  display: grid;
-  grid-template-columns: minmax(90px, 130px) minmax(90px, 130px) minmax(0, 1fr);
+.lpl-template-header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: color-mix(in srgb, var(--bg2) 88%, #000 12%);
+  border-bottom: 1px solid var(--border);
 }
 
-.lpl-check {
-  display: flex !important;
+.lpl-template-header span {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+  padding: 9px 10px;
+  white-space: nowrap;
+}
+
+.lpl-template-row {
+  border-bottom: 1px solid var(--border);
+  transition: background .14s ease, opacity .14s ease;
+}
+
+.lpl-template-row:last-child {
+  border-bottom: none;
+}
+
+.lpl-template-row:hover {
+  background: rgba(255, 255, 255, .018);
+}
+
+.lpl-template-row.disabled {
+  opacity: .64;
+}
+
+.lpl-template-cell {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border-right: 1px solid var(--border);
+  padding: 7px 8px;
+}
+
+.lpl-template-cell:last-child {
+  border-right: none;
+}
+
+.lpl-template-cell.compact input {
+  text-align: center;
+}
+
+.lpl-template-cell.prompt {
+  align-items: stretch;
+}
+
+.lpl-template-cell.prompt textarea {
+  min-height: 54px;
+  overflow: hidden;
+  resize: none;
+  line-height: 1.45;
+}
+
+.lpl-template-cell.action {
+  justify-content: center;
+}
+
+.lpl-switch {
+  display: inline-grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
   gap: 7px;
-  min-height: 36px;
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
 }
 
-.lpl-check input {
-  width: 14px;
-  accent-color: var(--orange);
+.lpl-switch.readonly {
+  cursor: not-allowed;
 }
 
-.prompt textarea {
-  resize: vertical;
-  min-height: 88px;
-  line-height: 1.5;
+.lpl-switch input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.lpl-switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border: 1px solid rgba(148, 163, 184, .4);
+  border-radius: 999px;
+  background: rgba(148, 163, 184, .18);
+  transition: background .16s ease, border-color .16s ease;
+}
+
+.lpl-switch-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  transition: transform .16s ease, background .16s ease;
+}
+
+.lpl-switch input:checked + .lpl-switch-track {
+  border-color: rgba(255, 107, 43, .72);
+  background: rgba(255, 107, 43, .3);
+}
+
+.lpl-switch input:checked + .lpl-switch-track::after {
+  transform: translateX(14px);
+  background: #fff;
+}
+
+.lpl-switch strong {
+  overflow: hidden;
+  color: var(--text);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 1080px) {
@@ -803,10 +1117,46 @@ onMounted(loadLibraries)
     position: static;
   }
 
-  .lpl-row-top,
-  .lpl-row-grid,
   .lpl-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .lpl-library-list-head {
+    align-items: flex-start;
+  }
+
+  .lpl-library-header {
+    display: none;
+  }
+
+  .lpl-library-row {
+    grid-template-columns: 1fr;
+    align-items: start;
+  }
+
+  .lpl-library-actions {
+    justify-content: flex-start;
+  }
+
+  .lpl-template-table {
+    min-width: 0;
+  }
+
+  .lpl-template-header {
+    display: none;
+  }
+
+  .lpl-template-row {
+    grid-template-columns: 1fr;
+  }
+
+  .lpl-template-cell {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .lpl-template-cell:last-child {
+    border-bottom: none;
   }
 }
 </style>

@@ -29,7 +29,11 @@ interface DispatchJob {
   job_uid: string
   job_type: string
   status: string
+  assigned_machine_id?: string | null
   payload?: Record<string, unknown>
+  result?: unknown
+  created_at?: string
+  updated_at?: string
 }
 
 interface StyleRow {
@@ -62,28 +66,23 @@ interface MachineRow {
   capabilities_json: string
 }
 
-interface PromptLibrary {
-  id: number
-  name: string
-  scenario: string
-  status: string
-}
-
-interface PromptTemplate {
-  id: number
-  template_id?: number
-  version_id?: number
-  group_name?: string
-  field_name?: string
-  prompt_text: string
-}
-
 interface ReviewStats {
   total: number
   approved: number
+  submitted: number
   rejected: number
   pending: number
 }
+
+interface TaskResultSummary {
+  submitted: string
+  attempted: string
+  succeeded: string
+  failed: string
+  error: string
+}
+
+const ACTIVE_SUBMIT_STATUSES = new Set(['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'])
 
 const props = defineProps<{ initialBatchUid?: string }>()
 
@@ -92,20 +91,9 @@ const batch = ref<BatchDetail | null>(null)
 const machines = ref<MachineRow[]>([])
 const selectedStyleId = ref<number | null>(null)
 const selectedAssetUid = ref('')
-const selectedAssetUids = ref<string[]>([])
-const selectedResourceUids = ref<string[]>([])
 const selectedMachineId = ref('')
 const message = ref('')
 const error = ref('')
-const promptOverrides = ref<Record<string, string>>({})
-const promptLibraries = ref<PromptLibrary[]>([])
-const promptTemplates = ref<PromptTemplate[]>([])
-const selectedPromptLibraryId = ref<number | null>(null)
-const selectedPromptTemplateKey = ref('')
-const bulkPromptText = ref('')
-const manualKind = ref<'source' | 'reference' | 'ai'>('reference')
-const manualFile = ref<File | null>(null)
-const manualUploading = ref(false)
 
 const styles = computed(() => batch.value?.styles ?? [])
 const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? styles.value[0] ?? null)
@@ -113,11 +101,6 @@ const aiAssets = computed(() => selectedStyle.value?.assets.filter((asset) => as
 const sourceAssets = computed(() => selectedStyle.value?.assets.filter((asset) => ['source', 'reference'].includes(asset.kind)) ?? [])
 const imageResources = computed(() => selectedStyle.value?.image_resources ?? [])
 const sourceImageResources = computed(() => imageResources.value.filter((resource) => resource.kind !== 'ai'))
-const rejectedAssets = computed(() => batch.value?.styles.flatMap((style) => style.assets).filter((asset) => asset.kind === 'ai' && asset.status === 'rejected') ?? [])
-const selectedAiAssets = computed(() => selectedAssetUids.value
-  .map((assetUid) => aiAssets.value.find((asset) => asset.asset_uid === assetUid))
-  .filter((asset): asset is AssetRow => Boolean(asset)))
-const selectedRejectedAssets = computed(() => selectedAiAssets.value.filter((asset) => asset.status === 'rejected'))
 const selectedAsset = computed(() => {
   const assets = selectedStyle.value?.assets ?? []
   return assets.find((asset) => asset.asset_uid === selectedAssetUid.value)
@@ -126,13 +109,24 @@ const selectedAsset = computed(() => {
     ?? null
 })
 const selectedAssetJobs = computed(() => selectedAsset.value ? jobsForAsset(selectedAsset.value) : [])
+const submitJobs = computed(() => (batch.value?.jobs ?? []).filter((job) => job.job_type === 'submit_tmall_material_test'))
+const latestSubmitJob = computed(() => submitJobs.value[0] ?? null)
+const activeSubmitJob = computed(() => submitJobs.value.find((job) => ACTIVE_SUBMIT_STATUSES.has(job.status)) ?? null)
 const batchStats = computed(() => {
   const allAiAssets = styles.value.flatMap((style) => style.assets).filter((asset) => asset.kind === 'ai')
   return reviewStats(allAiAssets)
 })
+const hasSubmittedResults = computed(() => styles.value.some((style) => style.assets.some((asset) => asset.kind === 'ai' && asset.status === 'submitted')) || latestSubmitJob.value?.status === 'succeeded')
+const displayBatchStatus = computed(() => {
+  if (batch.value?.status === 'submitted' || hasSubmittedResults.value) return 'submitted'
+  if (activeSubmitJob.value) return 'submitting'
+  return batch.value?.status || ''
+})
 const submitMachines = computed(() => machines.value.filter((machine) => machine.auth_status === 'active' && machine.health && ['online_idle', 'online_busy'].includes(machine.health) && isFresh(machine.last_seen_at) && machine.capabilities_json.includes('submit_tmall_material_test')))
 const submitValidationMessage = computed(() => {
   if (!batch.value) return '请先从审批批次进入审图详情'
+  if (batch.value.status === 'submitted' || hasSubmittedResults.value) return '批次已提交，可查看任务回传结果'
+  if (activeSubmitJob.value) return `提交任务${jobStatusLabel(activeSubmitJob.value.status)}，等待任务机回传结果`
   const missingStyles = styles.value.filter((style) => style.status !== 'skipped' && statsForStyle(style).approved === 0)
   if (missingStyles.length > 0) {
     return `每个款式至少确认 1 张 AI 图后才能提交：${missingStyles.map((style) => style.style_code || style.item_id || `款式 ${style.id}`).join('、')}`
@@ -140,7 +134,7 @@ const submitValidationMessage = computed(() => {
   if (!selectedMachineId.value) return '请选择具备上传天猫测图能力的任务机'
   return ''
 })
-const canSubmitBatch = computed(() => Boolean(batch.value && !submitValidationMessage.value))
+const canSubmitBatch = computed(() => Boolean(batch.value && !submitValidationMessage.value && !activeSubmitJob.value && batch.value.status !== 'submitted' && !hasSubmittedResults.value))
 
 watch(() => props.initialBatchUid, (value) => {
   if (value) {
@@ -150,17 +144,10 @@ watch(() => props.initialBatchUid, (value) => {
 })
 
 watch(selectedStyleId, () => {
-  selectedResourceUids.value = []
-  selectedAssetUids.value = []
   const style = selectedStyle.value
   if (!style?.assets.some((asset) => asset.asset_uid === selectedAssetUid.value)) {
     selectedAssetUid.value = defaultAssetUid(style)
   }
-  void loadPromptTemplates()
-})
-
-watch(selectedPromptLibraryId, () => {
-  void loadPromptTemplates()
 })
 
 async function loadBatch(preferred: { styleId?: number | null; assetUid?: string } = {}) {
@@ -177,9 +164,6 @@ async function loadBatch(preferred: { styleId?: number | null; assetUid?: string
     selectedAssetUid.value = preferred.assetUid && nextStyle?.assets.some((asset) => asset.asset_uid === preferred.assetUid)
       ? preferred.assetUid
       : defaultAssetUid(nextStyle)
-    selectedAssetUids.value = []
-    selectedResourceUids.value = []
-    promptOverrides.value = Object.fromEntries(data.batch.styles.flatMap((style) => style.assets.filter((asset) => asset.kind === 'ai').map((asset) => [asset.asset_uid, asset.prompt_text || ''])))
   } catch (caught) {
     error.value = (caught as ApiError).message
   }
@@ -189,35 +173,11 @@ async function loadMachines() {
   try {
     const data = await apiGet<{ machines: MachineRow[] }>('/api/admin/machines')
     machines.value = data.machines
-    selectedMachineId.value = submitMachines.value[0]?.machine_id ?? ''
+    if (!submitMachines.value.some((machine) => machine.machine_id === selectedMachineId.value)) {
+      selectedMachineId.value = submitMachines.value[0]?.machine_id ?? ''
+    }
   } catch {
     machines.value = []
-  }
-}
-
-async function loadPromptLibraries() {
-  try {
-    const data = await apiGet<{ libraries: PromptLibrary[] }>('/api/prompt-libraries')
-    promptLibraries.value = data.libraries.filter((library) => library.status === 'published')
-    selectedPromptLibraryId.value = promptLibraries.value[0]?.id ?? null
-  } catch {
-    promptLibraries.value = []
-    promptTemplates.value = []
-  }
-}
-
-async function loadPromptTemplates() {
-  selectedPromptTemplateKey.value = ''
-  promptTemplates.value = []
-  if (!selectedPromptLibraryId.value) return
-  try {
-    const params = new URLSearchParams()
-    params.set('style_code', selectedStyle.value?.style_code || '')
-    params.set('item_id', selectedStyle.value?.item_id || '')
-    const data = await apiGet<{ templates: PromptTemplate[] }>(`/api/prompt-libraries/${selectedPromptLibraryId.value}/resolved?${params.toString()}`)
-    promptTemplates.value = data.templates
-  } catch {
-    promptTemplates.value = []
   }
 }
 
@@ -236,9 +196,12 @@ function defaultAssetUid(style: StyleRow | null): string {
 
 function reviewStats(assets: AssetRow[]): ReviewStats {
   const aiRows = assets.filter((asset) => asset.kind === 'ai')
+  const approved = aiRows.filter((asset) => asset.status === 'approved').length
+  const submitted = aiRows.filter((asset) => asset.status === 'submitted').length
   return {
     total: aiRows.length,
-    approved: aiRows.filter((asset) => asset.status === 'approved').length,
+    approved: approved + submitted,
+    submitted,
     rejected: aiRows.filter((asset) => asset.status === 'rejected').length,
     pending: aiRows.filter((asset) => !['approved', 'rejected', 'submitted'].includes(asset.status)).length,
   }
@@ -252,80 +215,21 @@ function styleStateClass(style: StyleRow): string {
   const stats = statsForStyle(style)
   if (stats.total === 0) return 'empty'
   if (stats.pending > 0) return 'pending'
+  if (stats.submitted > 0) return 'submitted'
   if (stats.approved > 0) return 'approved'
   return 'rejected'
 }
 
-function toggleAsset(asset: AssetRow) {
-  selectAsset(asset)
-  if (selectedAssetUids.value.includes(asset.asset_uid)) {
-    selectedAssetUids.value = selectedAssetUids.value.filter((assetUid) => assetUid !== asset.asset_uid)
-  } else {
-    selectedAssetUids.value = [...selectedAssetUids.value, asset.asset_uid]
-  }
-}
-
-function toggleResource(resource: ImageResourceRow) {
-  if (selectedResourceUids.value.includes(resource.resource_uid)) {
-    selectedResourceUids.value = selectedResourceUids.value.filter((resourceUid) => resourceUid !== resource.resource_uid)
-  } else {
-    selectedResourceUids.value = [...selectedResourceUids.value, resource.resource_uid]
-  }
-}
-
 async function decide(asset: AssetRow, decision: 'approved' | 'rejected' | 'pending') {
   if (!batch.value) return
+  if (asset.status === 'submitted') {
+    error.value = '已提交图片不能重新审批'
+    return
+  }
   try {
     await apiPatch(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/assets/${encodeURIComponent(asset.asset_uid)}/decision`, { decision })
     message.value = `${asset.filename} 已标记为 ${decisionLabel(decision)}`
     await loadBatch({ styleId: selectedStyleId.value, assetUid: asset.asset_uid })
-  } catch (caught) {
-    error.value = (caught as ApiError).message
-  }
-}
-
-async function regenerateSelected() {
-  if (!batch.value || selectedRejectedAssets.value.length === 0) return
-  try {
-    const overrides = promptOverridesFor(selectedRejectedAssets.value)
-    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate`, {
-      asset_uids: selectedRejectedAssets.value.map((asset) => asset.asset_uid),
-      prompt_overrides: overrides,
-      request_nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    })
-    message.value = `已创建 ${selectedRejectedAssets.value.length} 个选中舍弃图重跑任务`
-    await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
-  } catch (caught) {
-    error.value = (caught as ApiError).message
-  }
-}
-
-async function regenerateRejected() {
-  if (!batch.value || rejectedAssets.value.length === 0) return
-  try {
-    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/regenerate-rejected`, {
-      prompt_overrides: promptOverridesFor(rejectedAssets.value),
-      request_nonce: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
-    })
-    message.value = `已创建 ${rejectedAssets.value.length} 个舍弃图重跑任务`
-    await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
-  } catch (caught) {
-    error.value = (caught as ApiError).message
-  }
-}
-
-async function regenerateOne(asset: AssetRow) {
-  if (asset.status !== 'rejected') return
-  selectedAssetUids.value = [asset.asset_uid]
-  await regenerateSelected()
-}
-
-async function markReady() {
-  if (!batch.value) return
-  try {
-    await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/mark-ready`)
-    message.value = '已重新计算批次可提交状态'
-    await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
   } catch (caught) {
     error.value = (caught as ApiError).message
   }
@@ -338,6 +242,7 @@ async function submitJob() {
     return
   }
   try {
+    error.value = ''
     await apiPost(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/submit`, { machine_id: selectedMachineId.value })
     message.value = '提交创建测图任务已派发'
     await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
@@ -358,85 +263,15 @@ function isPreviewable(asset: Pick<AssetRow | ImageResourceRow, 'filename'>): bo
   return /\.(jpe?g|png|webp|gif)$/i.test(asset.filename)
 }
 
-function onManualFile(event: Event) {
-  const target = event.target as HTMLInputElement
-  manualFile.value = target.files?.[0] ?? null
-}
-
-async function uploadManualAsset() {
-  if (!batch.value || !selectedStyle.value || !manualFile.value) return
-  manualUploading.value = true
-  error.value = ''
-  try {
-    const file = manualFile.value
-    const assetUid = `manual-${manualKind.value}-${Date.now().toString(36)}`
-    const plan = await apiPost<{ upload_url: string }>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/manual-assets`, {
-      style_id: selectedStyle.value.id,
-      asset_uid: assetUid,
-      kind: manualKind.value,
-      filename: file.name,
-      prompt_text: manualKind.value === 'ai' ? '' : undefined,
-      meta: { source: 'manual_upload' },
-    })
-    const response = await fetch(plan.upload_url, {
-      method: 'PUT',
-      credentials: 'include',
-      headers: { 'content-type': file.type || 'application/octet-stream' },
-      body: file,
-    })
-    if (!response.ok) throw { status: response.status, message: response.statusText || '上传失败' } satisfies ApiError
-    message.value = `${file.name} 已上传`
-    manualFile.value = null
-    await loadBatch({ styleId: selectedStyleId.value, assetUid })
-  } catch (caught) {
-    error.value = (caught as ApiError).message
-  } finally {
-    manualUploading.value = false
-  }
-}
-
 function isFresh(lastSeenAt: string | null): boolean {
   if (!lastSeenAt) return false
   const timestamp = Date.parse(lastSeenAt)
   return Number.isFinite(timestamp) && Date.now() - timestamp <= 2 * 60 * 1000
 }
 
-function promptOverridesFor(assets: AssetRow[]): Record<string, string> {
-  return Object.fromEntries(assets
-    .map((asset) => [asset.asset_uid, (promptOverrides.value[asset.asset_uid] || bulkPromptText.value || asset.prompt_text || '').trim()])
-    .filter(([, prompt]) => prompt))
-}
-
-function templateKey(template: PromptTemplate): string {
-  return String(template.version_id ?? template.id)
-}
-
-function templateLabel(template: PromptTemplate): string {
-  const group = template.group_name ? `${template.group_name} / ` : ''
-  return `${group}${template.field_name || `模板 ${templateKey(template)}`}`
-}
-
-function selectedPromptTemplate(): PromptTemplate | null {
-  return promptTemplates.value.find((template) => templateKey(template) === selectedPromptTemplateKey.value) ?? null
-}
-
-function applySelectedPromptTemplate() {
-  const template = selectedPromptTemplate()
-  if (!template?.prompt_text) return
-  bulkPromptText.value = template.prompt_text
-  const targetUids = selectedAssetUids.value.length > 0
-    ? selectedAssetUids.value
-    : selectedAsset.value?.kind === 'ai'
-      ? [selectedAsset.value.asset_uid]
-      : []
-  promptOverrides.value = {
-    ...promptOverrides.value,
-    ...Object.fromEntries(targetUids.map((assetUid) => [assetUid, template.prompt_text])),
-  }
-}
-
 function assetStatusClass(status: string): string {
   if (status === 'approved') return 'approved'
+  if (status === 'submitted') return 'submitted'
   if (status === 'rejected') return 'rejected'
   return 'pending-review'
 }
@@ -444,6 +279,7 @@ function assetStatusClass(status: string): string {
 function batchStatusLabel(status: string): string {
   if (status === 'syncing') return '同步中'
   if (status === 'pending_review') return '待审批'
+  if (status === 'submitting') return '提交中'
   if (status === 'ready_to_submit') return '可提交'
   if (status === 'submitted') return '已提交'
   if (status === 'rejected') return '已退回'
@@ -453,8 +289,55 @@ function batchStatusLabel(status: string): string {
 function jobsForAsset(asset: AssetRow): DispatchJob[] {
   return (batch.value?.jobs ?? []).filter((job) => {
     const payload = job.payload ?? {}
-    return payload.asset_uid === asset.asset_uid || payload.source_asset_uid === asset.asset_uid || payload.rejected_asset_uid === asset.asset_uid
+    const submitPlan = isRecord(payload.submit_plan) ? payload.submit_plan : {}
+    const plannedAssets = Array.isArray(submitPlan.assets) ? submitPlan.assets : []
+    return payload.asset_uid === asset.asset_uid
+      || payload.source_asset_uid === asset.asset_uid
+      || payload.rejected_asset_uid === asset.asset_uid
+      || plannedAssets.some((planned) => isRecord(planned) && planned.asset_uid === asset.asset_uid)
   })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value))
+}
+
+function jobStatusLabel(status: string): string {
+  if (status === 'queued') return '已排队'
+  if (status === 'leased') return '已领取'
+  if (status === 'running') return '执行中'
+  if (status === 'uploading_results') return '回传中'
+  if (status === 'succeeded') return '已成功'
+  if (status === 'terminal_failed') return '失败'
+  if (status === 'cancel_requested') return '取消中'
+  if (status === 'cancelled') return '已取消'
+  return status || '-'
+}
+
+function machineName(machineId: string | null | undefined): string {
+  if (!machineId) return '-'
+  return machines.value.find((machine) => machine.machine_id === machineId)?.machine_name || machineId
+}
+
+function taskResultSummary(job: DispatchJob | null): TaskResultSummary {
+  const result = isRecord(job?.result) ? job.result : {}
+  return {
+    submitted: taskResultValue(result.submitted),
+    attempted: taskResultValue(result.attempted),
+    succeeded: taskResultValue(result.succeeded),
+    failed: taskResultValue(result.failed),
+    error: stringValue(result.error),
+  }
+}
+
+function taskResultValue(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-'
+  const number = Number(value)
+  return Number.isFinite(number) ? String(number) : String(value)
+}
+
+function stringValue(value: unknown): string {
+  return value === null || value === undefined ? '' : String(value).trim()
 }
 
 function decisionLabel(status: string): string {
@@ -482,7 +365,6 @@ function kindLabel(kind: string): string {
 onMounted(() => {
   void loadBatch()
   void loadMachines()
-  void loadPromptLibraries()
 })
 </script>
 
@@ -492,16 +374,18 @@ onMounted(() => {
     <p v-if="error" class="notice danger">{{ error }}</p>
 
     <section v-if="batch" class="panel review-batch-summary">
-      <div class="summary-copy">
-        <p class="review-kicker">AI 测图审图</p>
-        <h2>{{ batch.title }}</h2>
-        <span>批次 {{ batch.batch_uid }} · 共 {{ styles.length }} 款、{{ batchStats.total }} 张 AI 图</span>
-      </div>
-      <div class="summary-stats">
-        <div><span>状态</span><strong>{{ batchStatusLabel(batch.status) }}</strong></div>
-        <div><span>已确认</span><strong>{{ batchStats.approved }}</strong></div>
-        <div><span>已舍弃</span><strong>{{ batchStats.rejected }}</strong></div>
-        <div><span>待审批</span><strong>{{ batchStats.pending }}</strong></div>
+      <div class="review-titlebar">
+        <div class="summary-copy">
+          <p class="review-kicker">AI 测图审图</p>
+          <h2>{{ batch.title }}</h2>
+          <span>批次 {{ batch.batch_uid }} · 共 {{ styles.length }} 款、{{ batchStats.total }} 张 AI 图</span>
+        </div>
+        <div class="summary-stats">
+          <div><span>状态</span><strong>{{ batchStatusLabel(displayBatchStatus) }}</strong></div>
+          <div><span>已确认</span><strong>{{ batchStats.approved }}</strong></div>
+          <div><span>已舍弃</span><strong>{{ batchStats.rejected }}</strong></div>
+          <div><span>待审批</span><strong>{{ batchStats.pending }}</strong></div>
+        </div>
       </div>
       <section class="batch-submit-panel">
         <label class="field">
@@ -516,6 +400,20 @@ onMounted(() => {
           <button class="ghost-button" type="button" @click="loadMachines">更新任务机</button>
           <button class="primary-button" type="button" :disabled="!canSubmitBatch" @click="submitJob">提交创建测图任务</button>
         </div>
+        <section v-if="latestSubmitJob" class="submit-result-panel">
+          <div class="submit-result-head">
+            <span>任务结果</span>
+            <strong>{{ jobStatusLabel(latestSubmitJob.status) }}</strong>
+          </div>
+          <small>任务机 {{ machineName(latestSubmitJob.assigned_machine_id) }}</small>
+          <div class="task-result-summary">
+            <span>提交 {{ taskResultSummary(latestSubmitJob).submitted }}</span>
+            <span>尝试 {{ taskResultSummary(latestSubmitJob).attempted }}</span>
+            <span>成功 {{ taskResultSummary(latestSubmitJob).succeeded }}</span>
+            <span>失败 {{ taskResultSummary(latestSubmitJob).failed }}</span>
+          </div>
+          <p v-if="taskResultSummary(latestSubmitJob).error" class="task-result-error">{{ taskResultSummary(latestSubmitJob).error }}</p>
+        </section>
       </section>
     </section>
 
@@ -554,10 +452,6 @@ onMounted(() => {
             <h2>{{ selectedStyle?.style_code || '选择款式' }}</h2>
             <span>{{ selectedStyle?.item_id || '-' }} / {{ selectedStyle?.category || '-' }} / {{ selectedStyle?.gender || '-' }}</span>
           </div>
-          <div class="selected-style-actions">
-            <button class="danger-button" type="button" :disabled="selectedRejectedAssets.length === 0" @click="regenerateSelected">重跑已选舍弃图</button>
-            <button class="danger-button" type="button" :disabled="rejectedAssets.length === 0" @click="regenerateRejected">重跑本批全部舍弃图</button>
-          </div>
         </header>
 
         <section class="source-zone">
@@ -566,19 +460,16 @@ onMounted(() => {
             <span>{{ sourceImageResources.length + sourceAssets.length }} 个素材</span>
           </div>
           <div class="source-strip">
-            <button
+            <article
               v-for="resource in sourceImageResources"
               :key="resource.resource_uid"
               class="source-tile"
-              :class="{ selected: selectedResourceUids.includes(resource.resource_uid) }"
-              type="button"
-              @click="toggleResource(resource)"
             >
               <img v-if="isPreviewable(resource)" :src="resourceDownloadUrl(resource)" :alt="resource.filename" />
               <span v-else class="file-placeholder">{{ kindLabel(resource.kind) }}</span>
               <strong>{{ resource.source_label || kindLabel(resource.kind) }}</strong>
               <small>{{ resource.filename }}</small>
-            </button>
+            </article>
             <button
               v-for="asset in sourceAssets"
               :key="asset.asset_uid"
@@ -601,30 +492,29 @@ onMounted(() => {
             <span v-if="selectedStyle">确认 {{ statsForStyle(selectedStyle).approved }} / 舍弃 {{ statsForStyle(selectedStyle).rejected }} / 待定 {{ statsForStyle(selectedStyle).pending }}</span>
           </div>
           <div v-if="aiAssets.length === 0" class="gallery-empty">
-            当前款式还没有 AI 图，可在右侧补充素材中上传一张 AI 图。
+            当前款式还没有本地任务机回传的 AI 图。
           </div>
           <div v-else class="review-gallery">
             <article
               v-for="asset in aiAssets"
               :key="asset.asset_uid"
               class="review-card"
-              :class="[asset.status, { active: selectedAsset?.asset_uid === asset.asset_uid, selected: selectedAssetUids.includes(asset.asset_uid) }]"
+              :class="[asset.status, { active: selectedAsset?.asset_uid === asset.asset_uid }]"
             >
               <button class="review-image-button" type="button" @click="selectAsset(asset)">
                 <img v-if="isPreviewable(asset)" :src="assetDownloadUrl(asset)" :alt="asset.filename" />
                 <span v-else class="file-placeholder">AI 图</span>
               </button>
               <div class="review-card-meta">
-                <label class="check-row">
-                  <input type="checkbox" :checked="selectedAssetUids.includes(asset.asset_uid)" @change="toggleAsset(asset)" />
+                <div class="check-row">
                   <span>{{ asset.filename }}</span>
-                </label>
+                </div>
                 <span class="review-status-ribbon" :class="assetStatusClass(asset.status)">{{ decisionLabel(asset.status) }}</span>
               </div>
               <div class="review-card-actions">
-                <button class="small-button approve-action" type="button" @click="decide(asset, 'approved')">确认通过</button>
-                <button class="danger-button small-action" type="button" @click="decide(asset, 'rejected')">标记舍弃</button>
-                <button class="ghost-button small-action" type="button" @click="decide(asset, 'pending')">待审批</button>
+                <button class="small-button approve-action" type="button" :disabled="asset.status === 'submitted'" @click="decide(asset, 'approved')">确认通过</button>
+                <button class="danger-button small-action" type="button" :disabled="asset.status === 'submitted'" @click="decide(asset, 'rejected')">标记舍弃</button>
+                <button class="ghost-button small-action" type="button" :disabled="asset.status === 'submitted'" @click="decide(asset, 'pending')">待审批</button>
               </div>
             </article>
           </div>
@@ -651,71 +541,20 @@ onMounted(() => {
             </div>
           </section>
 
-          <details class="inspector-fold prompt-control-panel" :open="selectedAsset.kind === 'ai' && selectedAsset.status === 'rejected'">
-            <summary>
-              <span>Prompt 重跑</span>
-              <small>从词库选择或微调当前图 Prompt</small>
-            </summary>
-            <label class="field">
-              <span>词库</span>
-              <select v-model="selectedPromptLibraryId">
-                <option :value="null">选择 Prompt 库</option>
-                <option v-for="library in promptLibraries" :key="library.id" :value="library.id">{{ library.name }}</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>模板</span>
-              <select v-model="selectedPromptTemplateKey">
-                <option value="">选择模板</option>
-                <option v-for="template in promptTemplates" :key="templateKey(template)" :value="templateKey(template)">{{ templateLabel(template) }}</option>
-              </select>
-            </label>
-            <div class="prompt-control-actions">
-              <button class="ghost-button" type="button" :disabled="!selectedPromptTemplateKey" @click="applySelectedPromptTemplate">应用到重跑</button>
-            </div>
-            <label class="field">
-              <span>重跑 Prompt</span>
-              <textarea v-model="bulkPromptText" placeholder="可从词库带入，也可手动补充；执行重跑时会应用到选中的舍弃图"></textarea>
-            </label>
-          </details>
-
-          <label v-if="selectedAsset.kind === 'ai'" class="field inspector-prompt">
+          <label v-if="selectedAsset.kind === 'ai'" class="field inspector-prompt prompt-evidence">
             <span>当前图 Prompt</span>
-            <textarea v-model="promptOverrides[selectedAsset.asset_uid]" placeholder="可从 Prompt 库带入，或仅对当前图片手动调整"></textarea>
+            <textarea :value="selectedAsset.prompt_text || '无 Prompt 记录'" readonly></textarea>
           </label>
 
           <section v-if="selectedAsset.kind === 'ai'" class="inspector-actions">
-            <button class="small-button approve-action" type="button" @click="decide(selectedAsset, 'approved')">确认通过</button>
-            <button class="danger-button" type="button" @click="decide(selectedAsset, 'rejected')">标记舍弃</button>
-            <button class="ghost-button" type="button" @click="decide(selectedAsset, 'pending')">待审批</button>
-            <button class="primary-button" type="button" :disabled="selectedAsset.status !== 'rejected'" @click="regenerateOne(selectedAsset)">重跑当前舍弃图</button>
+            <button class="small-button approve-action" type="button" :disabled="selectedAsset.status === 'submitted'" @click="decide(selectedAsset, 'approved')">确认通过</button>
+            <button class="danger-button" type="button" :disabled="selectedAsset.status === 'submitted'" @click="decide(selectedAsset, 'rejected')">标记舍弃</button>
+            <button class="ghost-button" type="button" :disabled="selectedAsset.status === 'submitted'" @click="decide(selectedAsset, 'pending')">待审批</button>
           </section>
 
           <a class="ghost-button download-link" :href="assetDownloadUrl(selectedAsset)" target="_blank" rel="noopener">下载当前图</a>
         </template>
-        <div v-else class="inspector-empty">选择一张图片后查看 Prompt 和审批动作。</div>
-
-        <details class="inspector-fold manual-upload-panel">
-          <summary>
-            <span>补充素材</span>
-            <small>追加素材，不替换当前主图</small>
-          </summary>
-          <form class="fold-form" @submit.prevent="uploadManualAsset">
-            <label class="field">
-              <span>类型</span>
-              <select v-model="manualKind">
-                <option value="source">主图（新增，不替换）</option>
-                <option value="reference">参考图（追加）</option>
-                <option value="ai">AI 图（人工补图）</option>
-              </select>
-            </label>
-            <label class="field">
-              <span>文件</span>
-              <input type="file" accept="image/*" @change="onManualFile" />
-            </label>
-            <button class="ghost-button full" type="submit" :disabled="manualUploading || !manualFile">上传到当前款式</button>
-          </form>
-        </details>
+        <div v-else class="inspector-empty">选择一张图片后查看审批动作和任务结果。</div>
       </aside>
     </section>
 
@@ -730,7 +569,13 @@ onMounted(() => {
 
 .review-batch-summary {
   display: grid;
-  grid-template-columns: minmax(280px, 1fr) minmax(360px, 520px) minmax(320px, 440px);
+  gap: 10px;
+  padding: 12px 14px;
+}
+
+.review-titlebar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 14px;
   align-items: center;
 }
@@ -742,13 +587,12 @@ onMounted(() => {
 .summary-copy h2,
 .summary-copy span,
 .style-panel-head p,
-.style-panel-head strong,
-.prompt-control-panel h3 {
+.style-panel-head strong {
   margin: 0;
 }
 
 .summary-copy h2 {
-  font-size: 18px;
+  font-size: 17px;
   line-height: 1.25;
 }
 
@@ -758,16 +602,18 @@ onMounted(() => {
 }
 
 .summary-stats {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
 }
 
 .summary-stats div {
+  min-width: 76px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg3);
-  padding: 8px;
+  padding: 6px 8px;
 }
 
 .summary-stats span,
@@ -781,21 +627,23 @@ onMounted(() => {
 }
 
 .summary-stats strong {
-  margin-top: 4px;
+  margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 15px;
+  font-size: 14px;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .batch-submit-panel {
   display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(220px, 1fr) auto;
   gap: 8px;
+  align-items: end;
   border: 1px solid rgba(255, 107, 43, 0.28);
   border-radius: 8px;
   background: rgba(255, 107, 43, 0.07);
-  padding: 10px;
+  padding: 8px;
 }
 
 .submit-actions {
@@ -809,17 +657,53 @@ onMounted(() => {
   color: #ffd2d2;
   font-size: 12px;
   line-height: 1.45;
+  align-self: center;
 }
 
 .submit-validation.ready {
   color: #b7f7cf;
 }
 
+.submit-result-panel {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  border-top: 1px solid rgba(255, 107, 43, 0.22);
+  padding-top: 8px;
+}
+
+.submit-result-head,
+.task-result-summary {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.task-result-summary {
+  flex-wrap: wrap;
+}
+
+.submit-result-panel span,
+.submit-result-panel small,
+.task-result-error {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.submit-result-panel strong {
+  color: #b7f7cf;
+  font-size: 13px;
+}
+
+.task-result-error {
+  margin: 0;
+  color: #ffd2d2;
+}
+
 .inspector-prompt > span,
-.manual-upload-panel .field > span,
-.batch-submit-panel .field > span,
-.prompt-control-panel .field > span,
-.reference-checks > span {
+.batch-submit-panel .field > span {
   color: var(--text2);
   font-size: 12px;
   font-weight: 800;
@@ -829,7 +713,7 @@ onMounted(() => {
   display: grid;
   grid-template-columns: minmax(220px, 260px) minmax(420px, 1fr) minmax(300px, 360px);
   gap: 12px;
-  min-height: calc(100dvh - 254px);
+  min-height: calc(100dvh - 178px);
 }
 
 .style-nav-panel,
@@ -844,7 +728,7 @@ onMounted(() => {
 .style-nav-panel,
 .review-inspector {
   align-self: start;
-  max-height: calc(100dvh - 254px);
+  max-height: calc(100dvh - 178px);
   overflow: auto;
 }
 
@@ -878,8 +762,7 @@ onMounted(() => {
 .zone-title h3,
 .zone-title span,
 .inspector-title h3,
-.inspector-title span,
-.manual-upload-panel h3 {
+.inspector-title span {
   margin: 0;
 }
 
@@ -967,6 +850,11 @@ onMounted(() => {
   border-color: rgba(74, 222, 128, 0.34);
 }
 
+.style-nav-card.submitted {
+  border-color: rgba(74, 222, 128, 0.52);
+  background: rgba(74, 222, 128, 0.08);
+}
+
 .style-nav-card.rejected {
   border-color: rgba(248, 113, 113, 0.34);
 }
@@ -1038,13 +926,6 @@ onMounted(() => {
   padding: 12px 14px;
 }
 
-.selected-style-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 8px;
-}
-
 .source-zone,
 .ai-review-zone {
   min-width: 0;
@@ -1076,7 +957,6 @@ onMounted(() => {
   text-align: left;
 }
 
-.source-tile.selected,
 .source-tile.active,
 .source-tile:hover {
   border-color: var(--orange);
@@ -1133,12 +1013,12 @@ onMounted(() => {
 }
 
 .review-card.active,
-.review-card.selected,
 .review-card:hover {
   border-color: var(--orange);
 }
 
-.review-card.approved {
+.review-card.approved,
+.review-card.submitted {
   border-color: rgba(74, 222, 128, 0.68);
   background: linear-gradient(180deg, rgba(74, 222, 128, 0.11), var(--bg3) 38%);
 }
@@ -1215,7 +1095,9 @@ onMounted(() => {
 }
 
 .review-status-ribbon.approved,
-.status-pill.approved {
+.review-status-ribbon.submitted,
+.status-pill.approved,
+.status-pill.submitted {
   border-color: rgba(74, 222, 128, 0.58);
   background: rgba(74, 222, 128, 0.13);
   color: #b7f7cf;
@@ -1287,57 +1169,13 @@ onMounted(() => {
 }
 
 .inspector-section,
-.manual-upload-panel,
-.prompt-control-panel {
+.prompt-evidence {
   display: grid;
   gap: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg3);
   padding: 10px;
-}
-
-.inspector-fold {
-  align-content: start;
-}
-
-.inspector-fold summary {
-  display: grid;
-  gap: 3px;
-  list-style: none;
-  cursor: pointer;
-}
-
-.inspector-fold summary::-webkit-details-marker {
-  display: none;
-}
-
-.inspector-fold summary span {
-  color: var(--text);
-  font-size: 14px;
-  font-weight: 900;
-}
-
-.inspector-fold summary small {
-  color: var(--text2);
-  font-size: 12px;
-  line-height: 1.45;
-}
-
-.inspector-fold[open] summary {
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 10px;
-}
-
-.fold-form {
-  display: grid;
-  gap: 10px;
-  margin-top: 10px;
-}
-
-.inspector-fold > .field,
-.inspector-fold > .prompt-control-actions {
-  margin-top: 10px;
 }
 
 .inspector-title {
@@ -1347,9 +1185,7 @@ onMounted(() => {
   gap: 10px;
 }
 
-.inspector-title h3,
-.manual-upload-panel h3,
-.prompt-control-panel h3 {
+.inspector-title h3 {
   font-size: 14px;
 }
 
@@ -1363,8 +1199,7 @@ onMounted(() => {
   gap: 6px;
 }
 
-.inspector-prompt textarea,
-.prompt-control-panel textarea {
+.inspector-prompt textarea {
   min-height: 180px;
 }
 
@@ -1402,30 +1237,6 @@ onMounted(() => {
   color: #ffd8c7;
 }
 
-.prompt-control-actions {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-}
-
-.reference-checks {
-  display: grid;
-  gap: 6px;
-}
-
-.reference-checks label {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 7px;
-  align-items: center;
-  color: var(--text);
-  font-size: 12px;
-}
-
-.compact-number {
-  max-width: 128px;
-}
-
 .gallery-empty,
 .inspector-empty {
   border: 1px dashed var(--border);
@@ -1436,8 +1247,13 @@ onMounted(() => {
 }
 
 @media (max-width: 1180px) {
-  .review-batch-summary {
+  .review-titlebar,
+  .batch-submit-panel {
     grid-template-columns: 1fr;
+  }
+
+  .summary-stats {
+    justify-content: flex-start;
   }
 
   .review-workbench {
@@ -1453,6 +1269,7 @@ onMounted(() => {
 
 @media (max-width: 860px) {
   .submit-actions,
+  .batch-submit-panel,
   .selected-style-head,
   .zone-title {
     align-items: stretch;

@@ -282,7 +282,7 @@ test('Tmall AI image task config can choose a cloud Prompt library', () => {
   assert.match(runner, /选择云端 Prompt 库/)
 })
 
-test('Tmall generation confirmation board can pick prompts from cloud library', () => {
+test('Tmall generation confirmation board can pick prompts from local and cloud libraries', () => {
   const drawer = fs.readFileSync('app/src/renderer/views/TmallAiApprovalDrawer.vue', 'utf8')
 
   assert.match(drawer, /class="prompt-library-picker-modal"/)
@@ -291,8 +291,12 @@ test('Tmall generation confirmation board can pick prompts from cloud library', 
   assert.match(drawer, /promptLibraryCategory/)
   assert.match(drawer, /openPromptLibraryPicker\(item, prompt\)/)
   assert.match(drawer, /selectPromptLibraryTemplate/)
+  assert.match(drawer, /buildPromptLibraryPickerLibraries/)
+  assert.match(drawer, /window\.cs\.listLocalPromptLibraries\(\)/)
   assert.match(drawer, /window\.cs\.listCloudPromptLibraries/)
   assert.match(drawer, /window\.cs\.resolveCloudPromptTemplates/)
+  assert.match(drawer, /library\.source_label/)
+  assert.match(functionBlock(drawer, 'loadPromptLibraryTemplates'), /selectedLibrary\.source_type === 'local'/)
   assert.match(drawer, /从 Prompt 库选择/)
   assert.match(drawer, /placeholder="搜索 Prompt 名称 \/ 内容"/)
 })

@@ -14,7 +14,11 @@
     "test": "node --test src/*.test.js src/renderer/utils/*.test.js scripts/*.test.js"
   },
   "dependencies": {
-    "portfinder": "^1.0.32"
+    "@tldraw/assets": "^5.2.3",
+    "portfinder": "^1.0.32",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "tldraw": "^5.2.3"
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^5.0.4",

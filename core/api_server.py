@@ -5250,6 +5250,8 @@ class AiImageSaveAsRequest(BaseModel):
 class AiImageMaterializeRequest(BaseModel):
     file: str = ""
     url: str = ""
+    data_url: str = ""
+    filename: str = ""
 
 
 class LocalImagePreviewRequest(BaseModel):
@@ -5373,6 +5375,20 @@ def save_as_ai_image_job(job_uid: str, req: AiImageSaveAsRequest):
 
 @app.post("/ai-image/jobs/{job_uid}/materialize")
 def materialize_ai_image_job(job_uid: str, req: AiImageMaterializeRequest):
+    data_url = str(req.data_url or "").strip()
+    if data_url:
+        job = data_sink.get_ai_image_job(job_uid)
+        try:
+            if not job:
+                return ai_image_service.materialize_data_url_image(
+                    job_uid,
+                    data_url,
+                    filename=req.filename,
+                    allow_unlisted=True,
+                )
+            return ai_image_service.materialize_data_url_image(job_uid, data_url, filename=req.filename)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
     source = str(req.url or req.file or "").strip()
     if not source:
         raise HTTPException(400, "图片地址不能为空")

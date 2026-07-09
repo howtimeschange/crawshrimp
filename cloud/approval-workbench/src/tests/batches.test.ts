@@ -104,6 +104,27 @@ interface AssetRow {
   updated_at: string
 }
 
+interface DispatchJobRow {
+  id: number
+  job_uid: string
+  batch_uid: string
+  job_type: string
+  status: string
+  requested_by: number | null
+  assigned_machine_id: string | null
+  required_capabilities_json: string
+  priority: number
+  attempt_count: number
+  max_attempts: number
+  idempotency_key: string
+  lease_id: string | null
+  lease_expires_at: string | null
+  payload_json: string
+  result_json: string
+  created_at: string
+  updated_at: string
+}
+
 interface FakeState {
   users: UserRow[]
   roles: RoleRow[]
@@ -114,6 +135,7 @@ interface FakeState {
   batches: BatchRow[]
   styles: StyleRow[]
   assets: AssetRow[]
+  dispatchJobs: DispatchJobRow[]
   audits: unknown[]
   assetSelectSqls: string[]
 }
@@ -179,6 +201,13 @@ class FakeD1Statement {
     if (normalized.includes('from ai_image_assets')) {
       this.state.assetSelectSqls.push(normalized)
       const batchUid = this.params[0]
+      if (normalized.includes("status = 'submitted'") && normalized.includes("kind = 'ai'")) {
+        const batchUids = new Set(this.params.map(String))
+        const submittedBatchUids = [...new Set(this.state.assets
+          .filter((row) => batchUids.has(row.batch_uid) && row.kind === 'ai' && row.status === 'submitted')
+          .map((row) => row.batch_uid))]
+        return { results: submittedBatchUids.map((uid) => ({ batch_uid: uid })) as T[] }
+      }
       if (normalized.includes('ranked_previews')) {
         const batchUids = new Set(this.params.map(String))
         const imageRows = this.state.assets.filter((row) => batchUids.has(row.batch_uid) && ['source', 'reference', 'ai'].includes(row.kind) && /\.(jpe?g|png|webp|gif)$/i.test(row.filename))
@@ -206,6 +235,10 @@ class FakeD1Statement {
         }
       }
       return { results: this.state.assets.filter((row) => !batchUid || row.batch_uid === String(batchUid)) as T[] }
+    }
+    if (normalized.includes('from dispatch_jobs')) {
+      const batchUids = new Set(this.params.map(String))
+      return { results: this.state.dispatchJobs.filter((row) => batchUids.has(row.batch_uid)) as T[] }
     }
     if (normalized.includes('from ai_image_batches')) {
       return { results: this.state.batches as T[] }
@@ -411,6 +444,7 @@ async function baseState(): Promise<{ state: FakeState; machineToken: string; re
     batches: [],
     styles: [],
     assets: [],
+    dispatchJobs: [],
     audits: [],
     assetSelectSqls: [],
   }
@@ -917,6 +951,35 @@ describe('batch sync routes', () => {
     ])
   })
 
+  it('derives submitted status in the batch list from successful submit jobs', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.batches[0].status = 'pending_review'
+    state.dispatchJobs.push(dispatchJobRow({
+      id: 1,
+      batch_uid: 'batch-20260707',
+      job_type: 'submit_tmall_material_test',
+      status: 'succeeded',
+    }))
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batches: BatchRow[] }
+
+    expect(response.status).toBe(200)
+    expect(body.batches[0]).toMatchObject({
+      batch_uid: 'batch-20260707',
+      status: 'submitted',
+    })
+    expect(state.batches[0].status).toBe('pending_review')
+  })
+
   it('caps batch list previews per batch and omits heavyweight asset fields', async () => {
     const { state, machineToken, reviewerCookie } = await baseState()
     const env = fakeEnv(state)
@@ -956,6 +1019,30 @@ describe('batch sync routes', () => {
 
 function normalizeSql(sql: string): string {
   return sql.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+function dispatchJobRow(overrides: Partial<DispatchJobRow> = {}): DispatchJobRow {
+  return {
+    id: 1,
+    job_uid: 'job-submit',
+    batch_uid: 'batch-20260707',
+    job_type: 'submit_tmall_material_test',
+    status: 'queued',
+    requested_by: 1,
+    assigned_machine_id: 'machine-1',
+    required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    priority: 40,
+    attempt_count: 0,
+    max_attempts: 1,
+    idempotency_key: 'submit-key',
+    lease_id: null,
+    lease_expires_at: null,
+    payload_json: '{}',
+    result_json: '{}',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }
 }
 
 function result(changes: number, lastRowId = 0): D1Result {

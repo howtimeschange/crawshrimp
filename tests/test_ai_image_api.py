@@ -219,6 +219,27 @@ class AiImageApiTests(unittest.TestCase):
         self.assertEqual(result["path"], str(self.root / "cache" / "stale.png"))
         materialize.assert_called_once_with("stale-local-job", "https://cdn.example/stale.png", allow_unlisted=True)
 
+    def test_materialize_api_accepts_annotation_data_url(self):
+        job = data_sink.create_ai_image_job({"title": "annotation api job"})
+        data_url = "data:image/png;base64,iVBORw0KGgo="
+
+        with patch("core.api_server.ai_image_service.materialize_data_url_image", return_value={
+            "ok": True,
+            "job_uid": job["job_uid"],
+            "path": str(self.root / "cache" / "annotation-edit.png"),
+            "mime_type": "image/png",
+        }) as materialize:
+            result = api_server.materialize_ai_image_job(
+                job["job_uid"],
+                api_server.AiImageMaterializeRequest(
+                    data_url=data_url,
+                    filename="annotation-edit.png",
+                ),
+            )
+
+        self.assertEqual(result["path"], str(self.root / "cache" / "annotation-edit.png"))
+        materialize.assert_called_once_with(job["job_uid"], data_url, filename="annotation-edit.png")
+
     def test_materialize_api_rejects_unknown_or_empty_remote_result(self):
         job = data_sink.create_ai_image_job({"title": "materialize api guard"})
 

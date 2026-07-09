@@ -34,12 +34,16 @@ interface DispatchJobRow {
   assigned_machine_id: string | null
 }
 
+const activeSubmitJobStatuses = new Set(['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'])
+
 export async function getDashboardSummary(request: Request, env: Env): Promise<Response> {
   const actor = await requirePermission(request, env, 'dashboard:read')
   if (actor instanceof Response) return actor
   const { results: batches } = await env.DB.prepare('SELECT * FROM ai_image_batches').all<BatchRow>()
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets').all<AssetRow>()
-  const batchTotalsByStatus = countBy(batches, (batch) => batch.status)
+  const { results: jobs } = await env.DB.prepare("SELECT * FROM dispatch_jobs WHERE job_type = 'submit_tmall_material_test'").all<DispatchJobRow>()
+  const latestSubmitStatusByBatch = latestJobStatusByBatch(jobs)
+  const batchTotalsByStatus = countBy(batches, (batch) => derivedDashboardBatchStatus(batch, latestSubmitStatusByBatch.get(batch.batch_uid)))
   const aiAssets = assets.filter((asset) => asset.kind === 'ai')
   return json({
     batch_totals_by_status: batchTotalsByStatus,
@@ -96,4 +100,21 @@ function countBy<T>(rows: T[], keyFor: (row: T) => string): Record<string, numbe
   const counts: Record<string, number> = {}
   for (const row of rows) counts[keyFor(row)] = (counts[keyFor(row)] ?? 0) + 1
   return counts
+}
+
+function latestJobStatusByBatch(jobs: DispatchJobRow[]): Map<string, string> {
+  const latest = new Map<string, DispatchJobRow>()
+  for (const job of jobs) {
+    if (job.job_type !== 'submit_tmall_material_test') continue
+    const current = latest.get(job.batch_uid)
+    if (!current || job.id > current.id) latest.set(job.batch_uid, job)
+  }
+  return new Map(Array.from(latest, ([batchUid, job]) => [batchUid, job.status]))
+}
+
+function derivedDashboardBatchStatus(batch: BatchRow, latestSubmitStatus?: string): string {
+  if (batch.status === 'submitted') return 'submitted'
+  if (latestSubmitStatus === 'succeeded') return 'submitted'
+  if (latestSubmitStatus && activeSubmitJobStatuses.has(latestSubmitStatus)) return 'submitting'
+  return batch.status
 }

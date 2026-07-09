@@ -102,6 +102,11 @@ interface DispatchJobRow {
   updated_at: string
 }
 
+interface BatchSubmitSignal {
+  latestSubmitStatus?: string
+  hasSubmittedAsset: boolean
+}
+
 interface GenerationRequestRow {
   id: number
   request_uid: string
@@ -278,10 +283,12 @@ export async function listBatches(request: Request, env: Env): Promise<Response>
   if (actor instanceof Response) return actor
   const { results } = await env.DB.prepare('SELECT * FROM ai_image_batches ORDER BY created_at DESC LIMIT 100').all<BatchRow>()
   const batchUids = results.map((batch) => batch.batch_uid)
+  const submitSignals = await loadBatchSubmitSignals(env, batchUids)
   const previews = await loadBatchPreviews(env, batchUids)
   return json({
     batches: results.map((batch) => ({
       ...batch,
+      status: derivedBatchListStatus(batch, submitSignals.get(batch.batch_uid)),
       prompt_version_set: parseArray(batch.prompt_version_set_json),
       previews: previewsForBatch(previews, batch.batch_uid),
     })),
@@ -303,6 +310,7 @@ export async function saveAssetDecision(request: Request, env: Env): Promise<Res
   if (submittedGuard) return submittedGuard
   const asset = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE asset_uid = ? LIMIT 1').bind(assetUid).first<AssetRow>()
   if (!asset || asset.batch_uid !== batchUid || asset.kind !== 'ai') return json({ error: 'Not found' }, { status: 404 })
+  if (asset.status === 'submitted') return json({ error: 'submitted AI assets cannot be reviewed again' }, { status: 409 })
   if (await hasActiveSubmitJob(env, batchUid)) return json({ error: 'review decisions are locked while a submit job is active' }, { status: 409 })
   const now = nowIso()
   await env.DB.prepare("UPDATE ai_image_assets SET status = ?, updated_at = ? WHERE asset_uid = ? AND batch_uid = ? AND kind = 'ai'")
@@ -1101,6 +1109,49 @@ async function loadBatchPreviews(env: Env, batchUids: string[]): Promise<AssetPr
   return results
 }
 
+async function loadBatchSubmitSignals(env: Env, batchUids: string[]): Promise<Map<string, BatchSubmitSignal>> {
+  const signals = new Map<string, BatchSubmitSignal>(
+    batchUids.map((batchUid) => [batchUid, { hasSubmittedAsset: false }]),
+  )
+  if (batchUids.length === 0) return signals
+  const placeholders = batchUids.map(() => '?').join(', ')
+  const { results: submittedAssets } = await env.DB.prepare(
+    `SELECT batch_uid
+     FROM ai_image_assets
+     WHERE batch_uid IN (${placeholders})
+       AND kind = 'ai'
+       AND status = 'submitted'
+     GROUP BY batch_uid`,
+  )
+    .bind(...batchUids)
+    .all<{ batch_uid: string }>()
+  for (const row of submittedAssets) {
+    const signal = signals.get(row.batch_uid)
+    if (signal) signal.hasSubmittedAsset = true
+  }
+  const { results: jobs } = await env.DB.prepare(
+    `SELECT batch_uid, status
+     FROM dispatch_jobs
+     WHERE batch_uid IN (${placeholders})
+       AND job_type = 'submit_tmall_material_test'
+     ORDER BY batch_uid ASC, id DESC`,
+  )
+    .bind(...batchUids)
+    .all<{ batch_uid: string; status: string }>()
+  for (const job of jobs) {
+    const signal = signals.get(job.batch_uid)
+    if (signal && !signal.latestSubmitStatus) signal.latestSubmitStatus = job.status
+  }
+  return signals
+}
+
+function derivedBatchListStatus(batch: BatchRow, signal?: BatchSubmitSignal): string {
+  if (batch.status === 'submitted') return 'submitted'
+  if (signal?.hasSubmittedAsset || signal?.latestSubmitStatus === 'succeeded') return 'submitted'
+  if (signal?.latestSubmitStatus && activeDispatchStatuses.has(signal.latestSubmitStatus)) return 'submitting'
+  return batch.status
+}
+
 function previewsForBatch(assets: AssetPreviewRow[], batchUid: string): AssetPreviewRow[] {
   const rows = assets.filter((asset) => asset.batch_uid === batchUid && isPreviewImage(asset.filename))
   const source = rows.find((asset) => asset.kind === 'source') ?? rows.find((asset) => asset.kind === 'reference')
@@ -1130,23 +1181,28 @@ async function recomputeReviewState(env: Env, batchUid: string): Promise<{ ready
   const { results: assets } = await env.DB.prepare('SELECT * FROM ai_image_assets WHERE batch_uid = ? ORDER BY id ASC').bind(batchUid).all<AssetRow>()
   const now = nowIso()
   let ready = true
+  let allSubmitted = true
+  let hasReviewableStyle = false
   for (const style of styles) {
     if (style.status === 'skipped') continue
+    hasReviewableStyle = true
     const styleAiAssets = assets.filter((asset) => asset.style_id === style.id && asset.kind === 'ai')
     const approved = styleAiAssets.filter((asset) => asset.status === 'approved').length
+    const submitted = styleAiAssets.filter((asset) => asset.status === 'submitted').length
     const rejected = styleAiAssets.filter((asset) => asset.status === 'rejected').length
-    const pending = styleAiAssets.filter((asset) => !['approved', 'rejected'].includes(asset.status)).length
-    const status = approved > 0 ? 'approved' : rejected > 0 && pending === 0 ? 'rejected' : 'pending_review'
-    if (approved === 0) ready = false
+    const pending = styleAiAssets.filter((asset) => !['approved', 'rejected', 'submitted'].includes(asset.status)).length
+    const status = submitted > 0 ? 'submitted' : approved > 0 ? 'approved' : rejected > 0 && pending === 0 ? 'rejected' : 'pending_review'
+    if (approved + submitted === 0) ready = false
+    if (submitted === 0) allSubmitted = false
     await env.DB.prepare('UPDATE ai_image_styles SET status = ?, review_summary_json = ? WHERE id = ? AND batch_uid = ?')
-      .bind(status, toJson({ approved, rejected, pending }), style.id, batchUid)
+      .bind(status, toJson({ approved, submitted, rejected, pending }), style.id, batchUid)
       .run()
   }
-  const batchStatus = ready && styles.some((style) => style.status !== 'skipped') ? 'ready_to_submit' : 'pending_review'
+  const batchStatus = ready && hasReviewableStyle ? allSubmitted ? 'submitted' : 'ready_to_submit' : 'pending_review'
   await env.DB.prepare('UPDATE ai_image_batches SET status = ?, updated_at = ? WHERE batch_uid = ?')
     .bind(batchStatus, now, batchUid)
     .run()
-  return { ready: batchStatus === 'ready_to_submit', batchStatus }
+  return { ready: batchStatus === 'ready_to_submit' || batchStatus === 'submitted', batchStatus }
 }
 
 async function buildSubmitPlan(env: Env, batchUid: string): Promise<{ batch_uid: string; styles: StyleRow[]; assets: Array<AssetRow & { meta: unknown }> }> {

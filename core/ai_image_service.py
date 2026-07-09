@@ -1,6 +1,8 @@
 """Local AI image workbench service helpers."""
 from __future__ import annotations
 
+import base64
+import binascii
 import mimetypes
 import re
 import shutil
@@ -19,6 +21,7 @@ GPT_2K_CONFIG_ID = "ai.1xm.gpt_image_2k_key"
 GPT_4K_CONFIG_ID = "ai.1xm.gpt_image_4k_key"
 GEMINI_FLASH_CONFIG_ID = "ai.1xm.gemini_3_1_flash_image_preview_key"
 GEMINI_PRO_CONFIG_ID = "ai.1xm.gemini_3_pro_image_preview_key"
+MAX_MATERIALIZED_DATA_URL_BYTES = 25 * 1024 * 1024
 
 
 class MissingModelKeyError(ValueError):
@@ -471,6 +474,69 @@ def materialize_remote_image(
             target.unlink()
         raise
     return {"ok": True, "job_uid": job_uid, "url": source_url, "path": str(target)}
+
+
+def _extension_from_mime(mime_type: str) -> str:
+    normalized = _compact(mime_type).lower()
+    if normalized == "image/png":
+        return ".png"
+    if normalized in {"image/jpg", "image/jpeg"}:
+        return ".jpg"
+    if normalized == "image/webp":
+        return ".webp"
+    return ".png"
+
+
+def _safe_stem(filename: str, fallback: str = "annotation-edit") -> str:
+    stem = Path(_compact(filename)).stem or fallback
+    value = re.sub(r"[^a-zA-Z0-9._-]+", "-", stem).strip(".-_")
+    return value[:80] or fallback
+
+
+def materialize_data_url_image(
+    job_uid: str,
+    data_url: str,
+    *,
+    filename: str = "",
+    allow_unlisted: bool = False,
+    max_bytes: int = MAX_MATERIALIZED_DATA_URL_BYTES,
+) -> dict:
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        if not allow_unlisted:
+            raise ValueError(f"AI image job not found: {job_uid}")
+        job = {"job_uid": job_uid}
+    source = _compact(data_url)
+    if not source:
+        raise ValueError("图片 data URL 不能为空")
+    match = re.match(r"^data:(image/(?:png|jpe?g|webp));base64,(.+)$", source, flags=re.IGNORECASE | re.DOTALL)
+    if not match:
+        raise ValueError("仅支持 PNG、JPG 或 WEBP 图片 data URL")
+    mime_type = match.group(1).lower()
+    if mime_type == "image/jpg":
+        mime_type = "image/jpeg"
+    encoded = re.sub(r"\s+", "", match.group(2))
+    if len(encoded) * 3 // 4 > max_bytes:
+        raise ValueError(f"图片超过 {max_bytes // (1024 * 1024)}MB，无法保存")
+    try:
+        payload = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ValueError("图片 data URL 编码无效") from exc
+    if len(payload) > max_bytes:
+        raise ValueError(f"图片超过 {max_bytes // (1024 * 1024)}MB，无法保存")
+
+    cache_dir = runtime_paths.child_dir("ai-image-cache")
+    suffix = _extension_from_mime(mime_type)
+    stem = _safe_stem(filename)
+    target = _unique_path(cache_dir / f"{stem}-{_compact(job_uid)[:8] or 'job'}-{uuid4().hex[:8]}{suffix}")
+    try:
+        target.write_bytes(payload)
+        _validate_downloaded_image(target)
+    except Exception:
+        if target.exists():
+            target.unlink()
+        raise
+    return {"ok": True, "job_uid": job_uid, "mime_type": mime_type, "path": str(target)}
 
 
 def copy_assets_to_directory(

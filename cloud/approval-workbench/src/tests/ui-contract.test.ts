@@ -33,13 +33,13 @@ describe('cloud approval UI contract', () => {
     expect(machines).not.toContain('AI 生图')
   })
 
-  it('batch review has approve reject regenerate and submit actions', () => {
+  it('batch review only exposes approval and task-machine submit actions', () => {
     const review = read('src/app/views/BatchReviewView.vue')
-    for (const text of ['确认通过', '标记舍弃', '重跑本批全部舍弃图', '提交创建测图任务']) {
+    for (const text of ['确认通过', '标记舍弃', '待审批', '提交创建测图任务', '任务结果']) {
       expect(review).toContain(text)
     }
-    for (const vagueText of ['所选重生图', '一键重生图', '换 Prompt 重跑']) {
-      expect(review).not.toContain(vagueText)
+    for (const removedText of ['重跑已选舍弃图', '重跑本批全部舍弃图', '重跑当前舍弃图', 'Prompt 重跑', '补充素材', 'AI 图（人工补图）']) {
+      expect(review).not.toContain(removedText)
     }
   })
 
@@ -71,44 +71,100 @@ describe('cloud approval UI contract', () => {
     expect(review).not.toContain('class="submit-panel"')
   })
 
+  it('batch review uses a compact title header and does not render raw task result JSON', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    expect(review).toContain('review-titlebar')
+    expect(review).toContain('taskResultSummary')
+    expect(review).toContain('提交 {{ taskResultSummary(latestSubmitJob).submitted }}')
+    expect(review).not.toContain('<pre v-if="hasJobResult(latestSubmitJob)">{{ jobResultText(latestSubmitJob) }}</pre>')
+    expect(review).not.toContain('JSON.stringify(job?.result, null, 2)')
+    expect(review).not.toContain('grid-template-columns: minmax(280px, 1fr) minmax(360px, 520px) minmax(320px, 440px);')
+    expect(review).not.toContain('min-height: calc(100dvh - 254px)')
+  })
+
   it('batch submit does not require the reviewer-only mark-ready endpoint first', () => {
     const review = read('src/app/views/BatchReviewView.vue')
     const submitJobBody = review.match(/async function submitJob\(\) \{[\s\S]*?\n\}/)?.[0] ?? ''
     expect(submitJobBody).toContain('/submit')
     expect(submitJobBody).not.toContain('/mark-ready')
-    expect(review).toContain('async function markReady()')
+    expect(review).not.toContain('async function markReady()')
   })
 
-  it('batch review supports prompt-library selection for rerun without exposing style-level generation', () => {
+  it('batch review omits prompt rerun, manual upload, and style-level generation controls', () => {
     const review = read('src/app/views/BatchReviewView.vue')
-    for (const marker of ['promptLibraries', 'promptTemplates', 'selectedPromptTemplateKey', 'applySelectedPromptTemplate']) {
-      expect(review).toContain(marker)
+    for (const marker of [
+      'promptLibraries',
+      'promptTemplates',
+      'selectedPromptTemplateKey',
+      'applySelectedPromptTemplate',
+      'promptOverrides',
+      'manual-upload-panel',
+      'uploadManualAsset',
+      '/manual-assets',
+      '/regenerate',
+      '/regenerate-rejected',
+    ]) {
+      expect(review).not.toContain(marker)
     }
-    expect(review).toContain('Prompt 重跑')
-    expect(review).toContain('重跑已选舍弃图')
+    expect(review).toContain('prompt-evidence')
     expect(review).not.toContain('给当前款式新增 AI 图')
     expect(review).not.toContain('style-generation-panel')
     expect(review).not.toContain('createStyleGenerationJobs')
     expect(review).not.toContain("applySelectedPromptTemplate('generate')")
   })
 
-  it('batch review reloads resolved prompt templates when the selected style changes', () => {
+  it('batch review keeps the original prompt as read-only evidence', () => {
     const review = read('src/app/views/BatchReviewView.vue')
     const styleWatcher = review.match(/watch\(selectedStyleId,[\s\S]*?\n\}\)/)?.[0] ?? ''
-    expect(styleWatcher).toContain('loadPromptTemplates')
-    expect(review).toContain("params.set('style_code'")
-    expect(review).toContain("params.set('item_id'")
+    expect(styleWatcher).not.toContain('loadPromptTemplates')
+    expect(review).toContain('selectedAsset.prompt_text')
+    expect(review).toContain('readonly')
+    expect(review).not.toContain('/resolved?')
   })
 
-  it('prompt library defaults to display mode and gates editing by prompts write permission', () => {
+  it('prompt library detail gates table editing by prompts write permission', () => {
     const prompts = read('src/app/views/PromptLibraryView.vue')
     expect(prompts).toContain('canEditPrompts')
     expect(prompts).toContain('prompts:write')
     expect(prompts).toContain('Prompt 明细')
-    expect(prompts).toContain('编辑 Prompt')
+    expect(prompts).toContain('保存 Prompt')
     expect(prompts).toContain('只读权限')
     for (const hiddenHeader of ['<th>字段 ID</th>', '<th>顺序</th>', '<th>视图</th>', '<th>尺寸</th>', '<th>格式</th>', '<th>引用字段</th>', '<th>字数</th>', '<th>类型</th>']) {
       expect(prompts).not.toContain(hiddenHeader)
+    }
+  })
+
+  it('prompt library opens with a library list before entering prompt detail editing', () => {
+    const prompts = read('src/app/views/PromptLibraryView.vue')
+    expect(prompts).toContain('viewMode')
+    expect(prompts).toContain('isListView')
+    expect(prompts).toContain('提示词库列表')
+    expect(prompts).toContain('提示词库名称')
+    expect(prompts).toContain('当前 Prompt 数量')
+    expect(prompts).toContain('创建时间')
+    expect(prompts).toContain('来源')
+    expect(prompts).toContain('线上')
+    expect(prompts).toContain('进入编辑')
+    expect(prompts).toContain('返回列表')
+    expect(prompts).toContain('enterLibraryDetail')
+    expect(prompts).toContain('backToLibraryList')
+    expect(prompts).toContain('cloudLibraryRows')
+  })
+
+  it('prompt library detail uses compact table rows with switch status and delete action', () => {
+    const prompts = read('src/app/views/PromptLibraryView.vue')
+    expect(prompts).toContain('prompt-template-table')
+    expect(prompts).toContain('prompt-template-header')
+    expect(prompts).toContain('状态')
+    expect(prompts).toContain('分组')
+    expect(prompts).toContain('字段名')
+    expect(prompts).toContain('Prompt')
+    expect(prompts).toContain('操作')
+    expect(prompts).toContain('prompt-switch')
+    expect(prompts).toContain('resizePromptTextarea')
+    expect(prompts).toContain('deletePromptRow')
+    for (const hiddenText of ['尺寸', '格式', '引用字段']) {
+      expect(prompts).not.toContain(`<span>${hiddenText}</span>`)
     }
   })
 
@@ -126,7 +182,7 @@ describe('cloud approval UI contract', () => {
       expect(prompts).toContain(marker)
     }
     expect(prompts).toContain("apiPatch(`/api/prompt-libraries/${selectedLibrary.value.id}`")
-    expect(prompts).toContain('编辑 Prompt')
+    expect(prompts).toContain('保存 Prompt')
     expect(prompts).not.toContain('编辑 Prompt 库')
   })
 
@@ -169,14 +225,19 @@ describe('cloud approval UI contract', () => {
     expect(app).not.toContain("activePage === 'generate'")
   })
 
-  it('material data dashboard explains cumulative snapshots and exposes an integrated report view', () => {
+  it('material data dashboard uses a compact insight header with only necessary actions', () => {
     const materialData = read('src/app/views/MaterialDataDashboardView.vue')
-    for (const text of ['最新累计快照', '已合并重复/跨日期快照', '统计日期', '按款式汇总', '素材表现明细']) {
+    for (const text of ['snapshot-compact-board', 'snapshot-kpi-strip', 'snapshot-action-row', '最新累计快照', '统计日期', '按款式汇总', '素材表现明细', '素材 ID', '导入测图数据', '下发立即抓取', '保存定时']) {
       expect(materialData).toContain(text)
     }
     expect(materialData).toContain('styleReports')
+    expect(materialData).toContain('materialIdentity')
     expect(materialData).toContain('formatStatisticDate')
     expect(materialData).toContain('summary?.latest_statistic_date')
+    expect(materialData).not.toContain('天猫导出的累计口径会按统计日期保留多份快照')
+    expect(materialData).not.toContain('snapshot-callout')
+    expect(materialData).not.toContain('kpi-grid')
+    expect(materialData).not.toContain('metric-card')
     expect(materialData).not.toContain('<th>款号</th>\\n            <th>商品ID</th>')
   })
 

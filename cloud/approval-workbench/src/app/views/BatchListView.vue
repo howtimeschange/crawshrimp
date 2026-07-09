@@ -28,7 +28,7 @@ const statusFilter = ref('all')
 const search = ref('')
 const error = ref('')
 
-const statuses = ['all', 'syncing', 'pending_review', 'ready_to_submit', 'submitted']
+const statuses = ['all', 'syncing', 'pending_review', 'ready_to_submit', 'submitting', 'submitted']
 const filteredBatches = computed(() => {
   const query = search.value.trim().toLowerCase()
   return batches.value.filter((batch) => {
@@ -77,6 +77,7 @@ function batchStatusLabel(status: string): string {
   if (status === 'syncing') return '同步中'
   if (status === 'pending_review') return '待审批'
   if (status === 'ready_to_submit') return '可提交'
+  if (status === 'submitting') return '提交中'
   if (status === 'submitted') return '已提交'
   if (status === 'rejected') return '已退回'
   return status || '-'
