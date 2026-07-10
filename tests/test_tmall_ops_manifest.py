@@ -3,12 +3,24 @@ import unittest
 
 import yaml
 
+from core.models import AdapterManifest
+
 
 MANIFEST_PATH = Path("adapters/tmall-ops-assistant/manifest.yaml")
 TEMPLATE_PATH = Path("adapters/tmall-ops-assistant/templates/tmall-packaging-upload-template.csv")
 
 
 class TmallOpsManifestTests(unittest.TestCase):
+    def test_manifest_parses_through_backend_schema(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        parsed = AdapterManifest(**manifest)
+
+        self.assertEqual(parsed.id, "tmall-ops-assistant")
+        task = next(item for item in parsed.tasks if item.id == "tmall_ai_image_test_chain")
+        params = {item.id: item for item in task.params}
+        ratio_labels = [item.label for item in params["ratio"].options or []]
+        self.assertEqual(ratio_labels, ["1:1", "3:4", "4:3", "4:5", "3:2", "2:3", "16:9", "9:16"])
+
     def test_manifest_declares_packaging_upload_task_under_tmall_ops(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         task = next(item for item in manifest["tasks"] if item["id"] == "tmall_packaging_upload")

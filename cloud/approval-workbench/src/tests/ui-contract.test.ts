@@ -259,6 +259,32 @@ describe('cloud approval UI contract', () => {
     expect(materialData).not.toContain('<th>款号</th>\\n            <th>商品ID</th>')
   })
 
+  it('material data image and material id clicks open an in-page detail modal instead of external links', () => {
+    const materialData = read('src/app/views/MaterialDataDashboardView.vue')
+    for (const marker of [
+      'selectedMaterialImage',
+      'openMaterialDetail',
+      'closeMaterialDetail',
+      'material-detail-modal',
+      'material-detail-card',
+      'material-detail-image',
+      'material-detail-info',
+      'material-id-button',
+      '素材详细数据',
+      '搜索曝光',
+      '支付转化率',
+      '素材地址',
+    ]) {
+      expect(materialData).toContain(marker)
+    }
+    expect(materialData).toContain('@click="openMaterialDetail(image)"')
+    expect(materialData).toContain('@click="openMaterialDetail(topImage)"')
+    expect(materialData).toContain('class="material-id-button"')
+    expect(materialData).not.toContain('<a class="thumb-link"')
+    expect(materialData).not.toContain('<a class="large-thumb"')
+    expect(materialData).not.toContain('target="_blank" rel="noreferrer"')
+  })
+
   it('admin user role saves require loaded role data instead of defaulting existing users to viewer', () => {
     const adminUsers = read('src/app/views/AdminUsersView.vue')
     expect(adminUsers).toContain('function loadedRoleKey')

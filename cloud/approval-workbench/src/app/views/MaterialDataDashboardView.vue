@@ -62,6 +62,7 @@ const error = ref('')
 const filters = ref({ statistic_type: '', date: '', image_type: '', q: '' })
 const crawlMachineId = ref('')
 const scheduleTime = ref('09:30')
+const selectedMaterialImage = ref<ImageMetric | null>(null)
 const DETAIL_IMPORT_CHUNK_SIZE = 800
 
 const queryString = computed(() => {
@@ -104,6 +105,14 @@ const styleReports = computed<StyleReport[]>(() => {
     .sort((left, right) => right.search_impressions - left.search_impressions || right.search_ctr - left.search_ctr)
 })
 const topImage = computed(() => images.value[0] ?? null)
+
+function openMaterialDetail(image: ImageMetric) {
+  selectedMaterialImage.value = image
+}
+
+function closeMaterialDetail() {
+  selectedMaterialImage.value = null
+}
 
 async function refresh() {
   loading.value = true
@@ -343,9 +352,9 @@ onMounted(refresh)
           <span>{{ snapshotModeLabel }}</span>
         </div>
         <div v-if="topImage" class="insight-body">
-          <a class="large-thumb" :href="topImage.material_url" target="_blank" rel="noreferrer">
+          <button class="large-thumb material-thumb-button" type="button" @click="openMaterialDetail(topImage)">
             <img :src="topImage.material_url" alt="">
-          </a>
+          </button>
           <div>
             <strong>{{ topImage.image_type || '素材' }} · {{ topImage.item_id }}</strong>
             <p>当前筛选下曝光最高，搜索曝光 {{ formatNumber(topImage.search_impressions) }}，点击 {{ formatNumber(topImage.search_clicks) }}，CTR {{ formatPercent(topImage.search_ctr) }}。</p>
@@ -390,11 +399,15 @@ onMounted(refresh)
             <td>{{ formatStatisticDate(image.statistic_date) }}</td>
             <td>{{ image.image_type }}</td>
             <td>
-              <a class="thumb-link" :href="image.material_url" target="_blank" rel="noreferrer">
+              <button class="thumb-link material-thumb-button" type="button" @click="openMaterialDetail(image)">
                 <img :src="image.material_url" alt="">
-              </a>
+              </button>
             </td>
-            <td class="material-id-cell" :title="materialIdentity(image)">{{ materialIdentity(image) }}</td>
+            <td class="material-id-cell">
+              <button class="material-id-button" type="button" :title="materialIdentity(image)" @click="openMaterialDetail(image)">
+                {{ materialIdentity(image) }}
+              </button>
+            </td>
             <td>{{ formatNumber(image.search_impressions) }}</td>
             <td>{{ formatNumber(image.search_clicks) }}</td>
             <td>{{ formatPercent(image.search_ctr) }}</td>
@@ -407,6 +420,64 @@ onMounted(refresh)
           <tr v-if="!loading && images.length === 0"><td colspan="13">暂无数据</td></tr>
         </tbody>
       </table>
+    </div>
+
+    <div v-if="selectedMaterialImage" class="material-detail-modal" role="dialog" aria-modal="true" aria-label="素材详细数据" tabindex="-1" @click.self="closeMaterialDetail" @keydown.esc="closeMaterialDetail">
+      <section class="material-detail-card">
+        <div class="material-detail-image">
+          <img :src="selectedMaterialImage.material_url" :alt="`${selectedMaterialImage.image_type || '素材'} ${selectedMaterialImage.item_id}`">
+        </div>
+        <aside class="material-detail-info">
+          <header>
+            <div>
+              <span>{{ selectedMaterialImage.image_type || '素材' }}</span>
+              <h2>{{ selectedMaterialImage.item_id }}</h2>
+              <p>{{ selectedMaterialImage.style_code || '-' }} · {{ selectedMaterialImage.item_title || '无商品标题' }}</p>
+            </div>
+            <button class="ghost-button" type="button" @click="closeMaterialDetail">关闭</button>
+          </header>
+          <div class="material-detail-kpis">
+            <div><span>搜索曝光</span><strong>{{ formatNumber(selectedMaterialImage.search_impressions) }}</strong></div>
+            <div><span>搜索点击</span><strong>{{ formatNumber(selectedMaterialImage.search_clicks) }}</strong></div>
+            <div><span>搜索 CTR</span><strong>{{ formatPercent(selectedMaterialImage.search_ctr) }}</strong></div>
+            <div><span>详情 CTR</span><strong>{{ formatPercent(selectedMaterialImage.detail_ctr) }}</strong></div>
+          </div>
+          <dl class="material-detail-list">
+            <div>
+              <dt>统计日期</dt>
+              <dd>{{ formatStatisticDate(selectedMaterialImage.statistic_date) }}</dd>
+            </div>
+            <div>
+              <dt>统计口径</dt>
+              <dd>{{ selectedMaterialImage.statistic_type || '-' }}</dd>
+            </div>
+            <div>
+              <dt>素材 ID</dt>
+              <dd>{{ materialIdentity(selectedMaterialImage) }}</dd>
+            </div>
+            <div>
+              <dt>详情曝光</dt>
+              <dd>{{ formatNumber(selectedMaterialImage.detail_impressions) }}</dd>
+            </div>
+            <div>
+              <dt>详情点击</dt>
+              <dd>{{ formatNumber(selectedMaterialImage.detail_clicks) }}</dd>
+            </div>
+            <div>
+              <dt>加购</dt>
+              <dd>{{ formatNumber(selectedMaterialImage.detail_add_to_cart) }}</dd>
+            </div>
+            <div>
+              <dt>支付转化率</dt>
+              <dd>{{ formatPercent(selectedMaterialImage.detail_pay_conversion_rate) }}</dd>
+            </div>
+            <div class="full-row">
+              <dt>素材地址</dt>
+              <dd>{{ selectedMaterialImage.material_url || '-' }}</dd>
+            </div>
+          </dl>
+        </aside>
+      </section>
     </div>
   </section>
 </template>
@@ -622,10 +693,23 @@ onMounted(refresh)
 
 .material-id-cell {
   max-width: 190px;
+}
+
+.material-id-button {
+  width: 100%;
+  border: 0;
+  background: transparent;
   color: var(--text2);
+  cursor: zoom-in;
+  padding: 0;
   font-size: 12px;
   line-height: 1.4;
+  text-align: left;
   word-break: break-all;
+}
+
+.material-id-button:hover {
+  color: #ffd8c7;
 }
 
 .insight-panel {
@@ -649,6 +733,15 @@ onMounted(refresh)
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
+}
+
+.material-thumb-button {
+  cursor: zoom-in;
+  padding: 0;
+}
+
+.material-thumb-button:hover {
+  border-color: var(--orange);
 }
 
 .large-thumb {
@@ -677,10 +770,166 @@ onMounted(refresh)
   padding: 14px;
 }
 
+.material-detail-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(8, 9, 13, 0.78);
+  backdrop-filter: blur(10px);
+}
+
+.material-detail-card {
+  width: min(1120px, 94vw);
+  max-height: min(760px, 88vh);
+  display: grid;
+  grid-template-columns: minmax(360px, 0.95fr) minmax(360px, 0.85fr);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+}
+
+.material-detail-image {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  background: var(--bg);
+  padding: 18px;
+}
+
+.material-detail-image img {
+  max-width: 100%;
+  max-height: calc(88vh - 36px);
+  border-radius: 8px;
+  object-fit: contain;
+}
+
+.material-detail-info {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 14px;
+  overflow: auto;
+  border-left: 1px solid var(--border);
+  padding: 18px;
+}
+
+.material-detail-info header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.material-detail-info header div {
+  min-width: 0;
+}
+
+.material-detail-info header span {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid rgba(255, 107, 43, 0.45);
+  border-radius: 8px;
+  background: rgba(255, 107, 43, 0.1);
+  color: #ffd8c7;
+  padding: 4px 8px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.material-detail-info h2,
+.material-detail-info p,
+.material-detail-list {
+  margin: 0;
+}
+
+.material-detail-info h2 {
+  margin-top: 10px;
+  font-size: 22px;
+  line-height: 1.25;
+}
+
+.material-detail-info p {
+  margin-top: 6px;
+  color: var(--text2);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.material-detail-kpis {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.material-detail-kpis div,
+.material-detail-list div {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  padding: 9px 10px;
+}
+
+.material-detail-kpis span,
+.material-detail-list dt {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.material-detail-kpis strong {
+  display: block;
+  margin-top: 5px;
+  font-size: 20px;
+  font-variant-numeric: tabular-nums;
+}
+
+.material-detail-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.material-detail-list div {
+  min-width: 0;
+}
+
+.material-detail-list dt,
+.material-detail-list dd {
+  margin: 0;
+}
+
+.material-detail-list dd {
+  margin-top: 5px;
+  overflow-wrap: anywhere;
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.material-detail-list .full-row {
+  grid-column: 1 / -1;
+}
+
 @media (max-width: 980px) {
   .snapshot-compact-head,
-  .report-grid {
+  .report-grid,
+  .material-detail-card {
     grid-template-columns: 1fr;
+  }
+
+  .material-detail-card {
+    overflow: auto;
+  }
+
+  .material-detail-info {
+    border-left: 0;
+    border-top: 1px solid var(--border);
   }
 
   .snapshot-action-row {
