@@ -877,6 +877,8 @@ test('AI image workbench keeps result card actions and metadata compact', () => 
   assert.match(cardActionsBody, /<AiwIcon name="download"/)
   assert.doesNotMatch(workbench, />加入参考图</)
   assert.doesNotMatch(workbench, />另存为<\/button>/)
+  assert.match(workbench, /\.aiw-result-list\s*\{[\s\S]*grid-template-columns: repeat\(auto-fill, minmax\(300px, 350px\)\)/)
+  assert.doesNotMatch(workbench, /\.aiw-result-list\s*\{[\s\S]*grid-template-columns: repeat\(auto-fill, minmax\(300px, 1fr\)\)/)
   assert.match(workbench, /\.aiw-result-card-actions\s*\{[\s\S]*grid-template-columns: repeat\(4, minmax\(0, 1fr\)\)/)
   assert.match(workbench, /\.aiw-result-card-meta\s*\{[\s\S]*flex-direction: row/)
   assert.match(workbench, /const AiwIcon =/)
