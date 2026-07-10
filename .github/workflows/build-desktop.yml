@@ -158,11 +158,34 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID_SECRET: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_SECRET: ${{ secrets.APPLE_API_ISSUER }}
+          MAC_CSC_LINK_SECRET: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD_SECRET: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${APPLE_API_KEY_BASE64:-}" ] || [ -z "${APPLE_API_KEY_ID_SECRET:-}" ] || [ -z "${APPLE_API_ISSUER_SECRET:-}" ]; then
-            echo "::notice::Apple notarization secrets are not configured; macOS build will skip notarization."
-            exit 0
+          missing=0
+          if [ -z "${APPLE_API_KEY_BASE64:-}" ]; then
+            echo "::error::Missing APPLE_API_KEY_BASE64 for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${APPLE_API_KEY_ID_SECRET:-}" ]; then
+            echo "::error::Missing APPLE_API_KEY_ID for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${APPLE_API_ISSUER_SECRET:-}" ]; then
+            echo "::error::Missing APPLE_API_ISSUER for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${MAC_CSC_LINK_SECRET:-}" ]; then
+            echo "::error::Missing MAC_CSC_LINK for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${MAC_CSC_KEY_PASSWORD_SECRET:-}" ]; then
+            echo "::error::Missing MAC_CSC_KEY_PASSWORD for formal macOS tag build"
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            echo "::error::Missing Apple notarization or CSC signing credentials for formal macOS tag build"
+            exit 1
           fi
 
           key_path="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY_ID_SECRET}.p8"
@@ -173,6 +196,7 @@ jobs:
             echo "APPLE_NOTARY_KEY=${key_path}"
             echo "APPLE_NOTARY_KEY_ID=${APPLE_API_KEY_ID_SECRET}"
             echo "APPLE_NOTARY_ISSUER=${APPLE_API_ISSUER_SECRET}"
+            echo "CRAWSHRIMP_NOTARIZE_APP=1"
           } >> "${GITHUB_ENV}"
 
       - name: Build desktop package
@@ -233,6 +257,49 @@ jobs:
           APPLE_NOTARY_TIMEOUT: 2h
           APPLE_NOTARY_POLL_INTERVAL: 60
         run: bash scripts/notarize-macos-dmgs.sh
+
+      - name: Validate notarized macOS ZIP apps
+        if: matrix.artifact_suffix == 'mac' && startsWith(github.ref, 'refs/tags/v')
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(dist/crawshrimp-v*-mac-arm64.zip dist/crawshrimp-v*-mac-x64.zip)
+          if [ "${#zips[@]}" -ne 2 ]; then
+            echo "::error::Expected exactly two macOS ZIP artifacts, found ${#zips[@]}"
+            printf '%s\n' "${zips[@]}"
+            exit 1
+          fi
+
+          extract_dirs=()
+          cleanup_extracts() {
+            for dir in "${extract_dirs[@]}"; do
+              rm -rf "${dir}"
+            done
+          }
+          trap cleanup_extracts EXIT
+
+          for zip_file in "${zips[@]}"; do
+            extract_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/zip-app.XXXXXX")"
+            extract_dirs+=("${extract_dir}")
+            unzip -q "${zip_file}" -d "${extract_dir}"
+            app_path="$(find "${extract_dir}" -maxdepth 2 -type d -name '*.app' -print -quit)"
+            if [ -z "${app_path}" ]; then
+              echo "::error::No app bundle found in ${zip_file}"
+              exit 1
+            fi
+
+            echo "Validating notarized app extracted from ${zip_file}: ${app_path}"
+            codesign --verify --deep --strict --verbose=2 "${app_path}"
+            codesign -dv --verbose=4 "${app_path}" 2>&1 | tee "${extract_dir}/codesign-details.log"
+            if ! grep -q 'TeamIdentifier=62AR7GLNK3' "${extract_dir}/codesign-details.log"; then
+              echo "::error::Expected TeamIdentifier=62AR7GLNK3 in ${zip_file}"
+              exit 1
+            fi
+            spctl --assess --type execute --verbose=2 "${app_path}"
+            xcrun stapler validate "${app_path}"
+          done
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4

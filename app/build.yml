@@ -78,6 +78,7 @@ extraResources:
 
 # afterPack: copies per-arch Python bundle into Resources/python/
 afterPack: scripts/after-pack.js
+afterSign: scripts/notarize-macos-app.js
 
 asarUnpack:
   - "**/*.node"
