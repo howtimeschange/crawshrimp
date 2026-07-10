@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "@tldraw/assets": "^5.2.3",
+    "electron-updater": "6.8.9",
     "portfinder": "^1.0.32",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
