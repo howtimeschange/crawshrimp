@@ -283,6 +283,23 @@ jobs:
           for zip_file in "${zips[@]}"; do
             extract_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/zip-app.XXXXXX")"
             extract_dirs+=("${extract_dir}")
+            zip_listing="${extract_dir}/zip-entries.txt"
+            unzip -Z1 "${zip_file}" > "${zip_listing}"
+            while IFS= read -r zip_entry; do
+              case "${zip_entry}" in
+                ""|/*|[A-Za-z]:*|*\\*)
+                  echo "::error::Unsafe ZIP entry in ${zip_file}: ${zip_entry}"
+                  exit 1
+                  ;;
+              esac
+              IFS='/' read -r -a zip_parts <<< "${zip_entry}"
+              for zip_part in "${zip_parts[@]}"; do
+                if [ "${zip_part}" = ".." ]; then
+                  echo "::error::Unsafe ZIP entry in ${zip_file}: ${zip_entry}"
+                  exit 1
+                fi
+              done
+            done < "${zip_listing}"
             unzip -q "${zip_file}" -d "${extract_dir}"
             app_path="$(find "${extract_dir}" -maxdepth 2 -type d -name '*.app' -print -quit)"
             if [ -z "${app_path}" ]; then

@@ -52,6 +52,12 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.match(workflow, /APPLE_NOTARY_POLL_INTERVAL: 60/)
   assert.match(workflow, /bash scripts\/notarize-macos-dmgs\.sh/)
   assert.match(workflow, /Validate notarized macOS ZIP apps/)
+  assert.match(workflow, /unzip -Z1 "\$\{zip_file\}" > "\$\{zip_listing\}"/)
+  assert.match(workflow, /Unsafe ZIP entry/)
+  assert.match(workflow, /case "\$\{zip_entry\}" in/)
+  assert.match(workflow, /\[A-Za-z\]:\*/)
+  assert.match(workflow, /\*\\\\\*/)
+  assert.match(workflow, /if \[ "\$\{zip_part\}" = "\.\." \]/)
   assert.match(workflow, /unzip -q "\$\{zip_file\}" -d "\$\{extract_dir\}"/)
   assert.match(workflow, /codesign --verify --deep --strict --verbose=2 "\$\{app_path\}"/)
   assert.match(workflow, /codesign -dv --verbose=4 "\$\{app_path\}"/)
@@ -67,6 +73,9 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
 
   assert.match(appNotarizeScript, /if \[ "\$#" -ne 1 \]/)
   assert.match(appNotarizeScript, /codesign --verify --deep --strict --verbose=2 "\$\{app_path\}"/)
+  assert.match(appNotarizeScript, /codesign -dv --verbose=4 "\$\{app_path\}"/)
+  assert.match(appNotarizeScript, /TeamIdentifier=62AR7GLNK3/)
+  assert.match(appNotarizeScript, /Authority=Developer ID Application: yicheng xing \(62AR7GLNK3\)/)
   assert.match(appNotarizeScript, /ditto -c -k --keepParent "\$\{app_path\}"/)
   assert.match(appNotarizeScript, /xcrun notarytool submit "\$\{zip_path\}"/)
   assert.doesNotMatch(appNotarizeScript, /--wait/)
@@ -86,6 +95,29 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.match(notarizeScript, /APPLE_NOTARY_POLL_INTERVAL/)
   assert.match(notarizeScript, /xcrun stapler staple/)
   assert.match(notarizeScript, /xcrun stapler validate/)
+})
+
+test('app identity proof and safe ZIP listing happen before upload and extraction', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const appNotarizeScript = readRepoFile('app/scripts/notarize-macos-app.sh')
+
+  const appDetailsIndex = appNotarizeScript.indexOf('codesign -dv --verbose=4 "${app_path}"')
+  const appTeamIndex = appNotarizeScript.indexOf('TeamIdentifier=62AR7GLNK3')
+  const appAuthorityIndex = appNotarizeScript.indexOf('Authority=Developer ID Application: yicheng xing (62AR7GLNK3)')
+  const appZipIndex = appNotarizeScript.indexOf('ditto -c -k --keepParent "${app_path}"')
+  const appSubmitIndex = appNotarizeScript.indexOf('xcrun notarytool submit "${zip_path}"')
+
+  assert.ok(appDetailsIndex !== -1, 'app signing details are inspected')
+  assert.ok(appTeamIndex > appDetailsIndex && appTeamIndex < appZipIndex, 'TeamIdentifier is checked before zipping')
+  assert.ok(appAuthorityIndex > appDetailsIndex && appAuthorityIndex < appZipIndex, 'Developer ID Application authority is checked before zipping')
+  assert.ok(appZipIndex < appSubmitIndex, 'app is zipped before notarization submit')
+
+  const zipListIndex = workflow.indexOf('unzip -Z1 "${zip_file}" > "${zip_listing}"')
+  const unsafeIndex = workflow.indexOf('Unsafe ZIP entry')
+  const zipExtractIndex = workflow.indexOf('unzip -q "${zip_file}" -d "${extract_dir}"')
+
+  assert.ok(zipListIndex !== -1, 'ZIP entries are listed before extraction')
+  assert.ok(unsafeIndex > zipListIndex && unsafeIndex < zipExtractIndex, 'unsafe ZIP entries are rejected before extraction')
 })
 
 test('desktop Python bundle install does not use user site packages', () => {

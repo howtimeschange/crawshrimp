@@ -78,6 +78,16 @@ print_notary_log() {
 
 echo "Verifying Developer ID signature for ${app_path}"
 codesign --verify --deep --strict --verbose=2 "${app_path}"
+codesign_details="${temp_dir}/codesign-details.log"
+codesign -dv --verbose=4 "${app_path}" > "${codesign_details}" 2>&1
+if ! grep -q '^TeamIdentifier=62AR7GLNK3$' "${codesign_details}"; then
+  echo "::error::Expected TeamIdentifier=62AR7GLNK3 before notarization upload"
+  exit 1
+fi
+if ! grep -q '^Authority=Developer ID Application: yicheng xing (62AR7GLNK3)$' "${codesign_details}"; then
+  echo "::error::Expected Developer ID Application identity before notarization upload"
+  exit 1
+fi
 
 echo "Creating notarization ZIP for ${app_path}"
 ditto -c -k --keepParent "${app_path}" "${zip_path}"
