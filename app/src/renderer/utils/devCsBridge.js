@@ -314,6 +314,8 @@ export function createDevCsBridge() {
     createAiImageJob: (payload) => apiCall('POST', '/ai-image/jobs', payload || {}),
     getAiImageJob: (uid) => apiCall('GET', `/ai-image/jobs/${encodePathPart(uid)}`),
     updateAiImageJob: (uid, payload) => apiCall('PATCH', `/ai-image/jobs/${encodePathPart(uid)}`, payload || {}),
+    setAiImageJobPinned: (uid, pinned) => apiCall('PATCH', `/ai-image/jobs/${encodePathPart(uid)}/pin`, { pinned: Boolean(pinned) }),
+    deleteAiImageJob: (uid) => apiCall('DELETE', `/ai-image/jobs/${encodePathPart(uid)}`),
     runAiImageJob: (uid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {}),
     batchRunAiImageJob: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/batch-run`, payload || {}),
     retryAiImageRun: (uid, runUid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/runs/${encodePathPart(runUid)}/retry`, {}),

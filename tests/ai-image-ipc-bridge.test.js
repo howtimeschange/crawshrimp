@@ -14,6 +14,8 @@ test('main process registers ai image IPC handlers backed by local API routes', 
     ['create-ai-image-job', "apiCall('POST', '/ai-image/jobs'"],
     ['get-ai-image-job', "/ai-image/jobs/${encodeURIComponent"],
     ['update-ai-image-job', "apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent"],
+    ['set-ai-image-job-pinned', '/pin`'],
+    ['delete-ai-image-job', "apiCall('DELETE', `/ai-image/jobs/${encodeURIComponent"],
     ['run-ai-image-job', "apiCall('POST', `/ai-image/jobs/${encodeURIComponent"],
     ['batch-run-ai-image-job', '/batch-run`'],
     ['retry-ai-image-run', '/runs/${encodeURIComponent(String(runUid || \'\'))}/retry`'],
@@ -35,6 +37,8 @@ test('preload exposes ai image methods with IPC fallback to HTTP', () => {
     'createAiImageJob',
     'getAiImageJob',
     'updateAiImageJob',
+    'setAiImageJobPinned',
+    'deleteAiImageJob',
     'runAiImageJob',
     'batchRunAiImageJob',
     'retryAiImageRun',
@@ -48,6 +52,10 @@ test('preload exposes ai image methods with IPC fallback to HTTP', () => {
     assert.match(preload, new RegExp(`${method}:`))
   }
   assert.match(preload, /invokeWithApiFallback\('list-ai-image-jobs'/)
+  assert.match(preload, /setAiImageJobPinned: \(uid, pinned\) => invokeWithApiFallback\('set-ai-image-job-pinned'/)
+  assert.match(preload, /deleteAiImageJob: \(uid\) => invokeWithApiFallback\('delete-ai-image-job'/)
+  assert.match(preload, /apiCall\('PATCH', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/pin`, \{ pinned: Boolean\(pinned\) \}\)/)
+  assert.match(preload, /apiCall\('DELETE', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}`\)/)
   assert.match(preload, /apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/run`/)
   assert.match(preload, /batchRunAiImageJob: \(uid, payload\) => invokeWithApiFallback\('batch-run-ai-image-job'/)
   assert.match(preload, /apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/batch-run`, payload \|\| \{\}\)/)
@@ -63,6 +71,8 @@ test('dev bridge maps ai image methods directly to local HTTP API', () => {
   assert.match(devBridge, /listAiImageJobs: \(\) => apiCall\('GET', '\/ai-image\/jobs'\)/)
   assert.match(devBridge, /createAiImageJob: \(payload\) => apiCall\('POST', '\/ai-image\/jobs', payload \|\| \{\}\)/)
   assert.match(devBridge, /getAiImageJob: \(uid\) => apiCall\('GET', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}`\)/)
+  assert.match(devBridge, /setAiImageJobPinned: \(uid, pinned\) => apiCall\('PATCH', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/pin`, \{ pinned: Boolean\(pinned\) \}\)/)
+  assert.match(devBridge, /deleteAiImageJob: \(uid\) => apiCall\('DELETE', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}`\)/)
   assert.match(devBridge, /runAiImageJob: \(uid\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/run`, \{\}\)/)
   assert.match(devBridge, /batchRunAiImageJob: \(uid, payload\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/batch-run`, payload \|\| \{\}\)/)
   assert.match(devBridge, /retryAiImageRun: \(uid, runUid\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/runs\/\$\{encodePathPart\(runUid\)\}\/retry`, \{\}\)/)

@@ -1901,6 +1901,10 @@ secureHandle('get-ai-image-job', async (_, jobUid) =>
   apiCall('GET', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`))
 secureHandle('update-ai-image-job', async (_, jobUid, payload) =>
   apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`, payload || {}))
+secureHandle('set-ai-image-job-pinned', async (_, jobUid, pinned) =>
+  apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/pin`, { pinned: Boolean(pinned) }))
+secureHandle('delete-ai-image-job', async (_, jobUid) =>
+  apiCall('DELETE', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`))
 secureHandle('run-ai-image-job', async (_, jobUid) =>
   apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/run`, {}, { timeoutMs: 20 * 60 * 1000 }))
 secureHandle('batch-run-ai-image-job', async (_, jobUid, payload) =>
