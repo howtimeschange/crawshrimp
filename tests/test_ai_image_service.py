@@ -669,6 +669,60 @@ class AiImageServiceTests(unittest.TestCase):
                 downloader=lambda *_args: self.fail("unknown URLs must not be downloaded"),
             )
 
+    def test_delete_workbench_job_removes_only_task_cache(self):
+        job = data_sink.create_ai_image_job({"title": "cache delete"})
+        cache_dir = ai_image_service.runtime_paths.child_dir("ai-image-cache")
+        cached = cache_dir / f"result-{job['job_uid'][:8]}-test.png"
+        cached.write_bytes(PNG_1X1)
+        downloaded = self.root / "downloads" / "saved.png"
+        downloaded.parent.mkdir()
+        downloaded.write_bytes(PNG_1X1)
+        data_sink.update_ai_image_job(job["job_uid"], {
+            "summary": {
+                "result_cache": {"https://cdn.example/result.png": str(cached)},
+                "output_files": [str(downloaded)],
+            },
+        })
+
+        result = ai_image_service.delete_workbench_job(job["job_uid"])
+
+        self.assertEqual(result["deleted_cache_files"], 1)
+        self.assertFalse(cached.exists())
+        self.assertTrue(downloaded.exists())
+        self.assertIsNone(data_sink.get_ai_image_job(job["job_uid"]))
+
+    def test_delete_workbench_job_rejects_active_runs_and_keeps_cache(self):
+        job = data_sink.create_ai_image_job({
+            "title": "running task",
+            "status": "running",
+            "summary": {"runs": [{"run_uid": "run-active", "status": "running"}]},
+        })
+        cache_dir = ai_image_service.runtime_paths.child_dir("ai-image-cache")
+        cached = cache_dir / f"result-{job['job_uid'][:8]}-active.png"
+        cached.write_bytes(PNG_1X1)
+
+        with self.assertRaisesRegex(ai_image_service.ActiveAiImageJobError, "完成或失败后可删除"):
+            ai_image_service.delete_workbench_job(job["job_uid"])
+
+        self.assertTrue(cached.exists())
+        self.assertIsNotNone(data_sink.get_ai_image_job(job["job_uid"]))
+
+    def test_delete_workbench_job_keeps_record_when_cache_cleanup_fails(self):
+        job = data_sink.create_ai_image_job({"title": "locked cache"})
+        cache_dir = ai_image_service.runtime_paths.child_dir("ai-image-cache")
+        cached = cache_dir / f"result-{job['job_uid'][:8]}-locked.png"
+        cached.write_bytes(PNG_1X1)
+        data_sink.update_ai_image_job(job["job_uid"], {
+            "summary": {"result_cache": {"https://cdn.example/locked.png": str(cached)}},
+        })
+
+        with patch("core.ai_image_service._workbench_job_cache_files", return_value=[cached]), \
+                patch.object(Path, "unlink", side_effect=PermissionError("locked")):
+            with self.assertRaisesRegex(RuntimeError, "缓存清理失败"):
+                ai_image_service.delete_workbench_job(job["job_uid"])
+
+        self.assertIsNotNone(data_sink.get_ai_image_job(job["job_uid"]))
+
     def test_download_outputs_uses_unique_names_without_overwriting_existing_files(self):
         output_dir = self.root / "downloads"
         output_dir.mkdir()

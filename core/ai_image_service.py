@@ -60,6 +60,10 @@ class DownloadOutputsError(RuntimeError):
         self.output_files = output_files
 
 
+class ActiveAiImageJobError(RuntimeError):
+    """Raised when a queued or running workbench task cannot be deleted safely."""
+
+
 def _compact(value: Any) -> str:
     return str(value or "").strip()
 
@@ -529,6 +533,91 @@ def _workbench_job_lock(job_uid: str) -> threading.RLock:
             lock = threading.RLock()
             _WORKBENCH_JOB_LOCKS[uid] = lock
         return lock
+
+
+def _workbench_job_is_active(job: Mapping[str, Any]) -> bool:
+    active_statuses = {"queued", "running"}
+    if _compact(job.get("status")).lower() in active_statuses:
+        return True
+    summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    return any(
+        _compact(run.get("status")).lower() in active_statuses
+        for run in summary.get("runs") or []
+        if isinstance(run, Mapping)
+    )
+
+
+def _nested_string_values(value: Any):
+    if isinstance(value, str):
+        yield value
+        return
+    if isinstance(value, Mapping):
+        for item in value.values():
+            yield from _nested_string_values(item)
+        return
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            yield from _nested_string_values(item)
+
+
+def _workbench_job_cache_files(job: Mapping[str, Any]) -> list[Path]:
+    uid = _compact(job.get("job_uid"))
+    cache_root = runtime_paths.child_dir("ai-image-cache").resolve(strict=False)
+    payload = {
+        "job": dict(job),
+        "assets": data_sink.list_ai_image_assets(uid),
+        "canvases": data_sink.list_ai_image_canvases(uid),
+    }
+    candidates: set[Path] = set()
+    for raw_value in _nested_string_values(payload):
+        value = _compact(raw_value)
+        if not value or value.startswith(("http://", "https://", "data:")):
+            continue
+        candidate = Path(value).expanduser().resolve(strict=False)
+        if candidate.is_relative_to(cache_root) and (candidate.is_file() or candidate.is_symlink()):
+            candidates.add(candidate)
+
+    uid_prefix = uid[:8]
+    marker = f"-{uid_prefix}-" if uid_prefix else ""
+    if marker:
+        for candidate in cache_root.iterdir():
+            resolved = candidate.resolve(strict=False)
+            if marker in candidate.name and resolved.is_relative_to(cache_root) and (candidate.is_file() or candidate.is_symlink()):
+                candidates.add(resolved)
+    return sorted(candidates, key=lambda path: str(path))
+
+
+def delete_workbench_job(job_uid: str) -> dict:
+    uid = _compact(job_uid)
+    if not uid:
+        raise ValueError("AI image job not found")
+    with _workbench_job_lock(uid):
+        job = data_sink.get_ai_image_job(uid)
+        if not job:
+            raise ValueError(f"AI image job not found: {uid}")
+        if _workbench_job_is_active(job):
+            raise ActiveAiImageJobError("任务生成中，完成或失败后可删除")
+
+        cache_files = _workbench_job_cache_files(job)
+        failed: list[str] = []
+        deleted = 0
+        for path in cache_files:
+            existed = path.exists() or path.is_symlink()
+            try:
+                path.unlink(missing_ok=True)
+                if existed:
+                    deleted += 1
+            except OSError as exc:
+                failed.append(f"{path.name}: {exc}")
+        if failed:
+            raise RuntimeError("本地图片缓存清理失败，请稍后重试")
+        if not data_sink.delete_ai_image_job(uid):
+            raise ValueError(f"AI image job not found: {uid}")
+        return {
+            "ok": True,
+            "job_uid": uid,
+            "deleted_cache_files": deleted,
+        }
 
 
 def _provider_error(task: Mapping[str, Any], fallback: str) -> str:

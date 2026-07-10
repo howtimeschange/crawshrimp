@@ -34,6 +34,8 @@ class AiImageApiTests(unittest.TestCase):
             ("POST", "/ai-image/jobs"),
             ("GET", "/ai-image/jobs/{job_uid}"),
             ("PATCH", "/ai-image/jobs/{job_uid}"),
+            ("PATCH", "/ai-image/jobs/{job_uid}/pin"),
+            ("DELETE", "/ai-image/jobs/{job_uid}"),
             ("POST", "/ai-image/jobs/{job_uid}/run"),
             ("POST", "/ai-image/jobs/{job_uid}/batch-run"),
             ("POST", "/ai-image/jobs/{job_uid}/save-as"),
@@ -76,6 +78,52 @@ class AiImageApiTests(unittest.TestCase):
         listed = api_server.list_ai_image_jobs()
         self.assertEqual(listed[0]["job_uid"], created["job_uid"])
         self.assertEqual(listed[0]["output_dir"], str(self.root / "api-exports-2"))
+
+    def test_pin_job_api_uses_server_timestamp_and_supports_unpin(self):
+        job = data_sink.create_ai_image_job({"title": "pin job"})
+
+        with patch("core.data_sink._utc_now_iso", return_value="2026-07-10T10:00:00+00:00"):
+            pinned = api_server.pin_ai_image_job(
+                job["job_uid"],
+                api_server.AiImagePinRequest(pinned=True),
+            )
+        unpinned = api_server.pin_ai_image_job(
+            job["job_uid"],
+            api_server.AiImagePinRequest(pinned=False),
+        )
+
+        self.assertEqual(pinned["pinned_at"], "2026-07-10T10:00:00+00:00")
+        self.assertEqual(unpinned["pinned_at"], "")
+
+    def test_delete_job_api_maps_active_and_missing_errors(self):
+        job = data_sink.create_ai_image_job({"title": "delete api job"})
+
+        with patch(
+            "core.api_server.ai_image_service.delete_workbench_job",
+            side_effect=ai_image_service.ActiveAiImageJobError("任务生成中，完成或失败后可删除"),
+        ):
+            with self.assertRaises(HTTPException) as active_ctx:
+                api_server.delete_ai_image_job(job["job_uid"])
+
+        with patch(
+            "core.api_server.ai_image_service.delete_workbench_job",
+            side_effect=ValueError("AI image job not found: missing"),
+        ):
+            with self.assertRaises(HTTPException) as missing_ctx:
+                api_server.delete_ai_image_job("missing")
+
+        self.assertEqual(active_ctx.exception.status_code, 409)
+        self.assertEqual(missing_ctx.exception.status_code, 404)
+
+    def test_delete_job_api_returns_service_summary(self):
+        job = data_sink.create_ai_image_job({"title": "delete api success"})
+        expected = {"ok": True, "job_uid": job["job_uid"], "deleted_cache_files": 2}
+
+        with patch("core.api_server.ai_image_service.delete_workbench_job", return_value=expected) as delete:
+            result = api_server.delete_ai_image_job(job["job_uid"])
+
+        self.assertEqual(result, expected)
+        delete.assert_called_once_with(job["job_uid"])
 
     def test_job_create_and_patch_ignore_client_controlled_summary(self):
         unsafe_summary = {

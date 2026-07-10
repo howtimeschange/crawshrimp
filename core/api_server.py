@@ -5313,6 +5313,10 @@ class AiImageJobPatchRequest(BaseModel):
     summary: Optional[dict] = None
 
 
+class AiImagePinRequest(BaseModel):
+    pinned: bool
+
+
 class AiImageBatchPromptRequest(BaseModel):
     title: str = ""
     prompt: str = ""
@@ -5436,6 +5440,24 @@ def update_ai_image_job(job_uid: str, req: AiImageJobPatchRequest):
     if not job:
         raise HTTPException(404, f"AI image job not found: {job_uid}")
     return job
+
+
+@app.patch("/ai-image/jobs/{job_uid}/pin")
+def pin_ai_image_job(job_uid: str, req: AiImagePinRequest):
+    job = data_sink.set_ai_image_job_pinned(job_uid, req.pinned)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    return job
+
+
+@app.delete("/ai-image/jobs/{job_uid}")
+def delete_ai_image_job(job_uid: str):
+    try:
+        return ai_image_service.delete_workbench_job(job_uid)
+    except ai_image_service.ActiveAiImageJobError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @app.post("/ai-image/jobs/{job_uid}/run")
