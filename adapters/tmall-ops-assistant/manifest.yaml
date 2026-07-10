@@ -88,12 +88,12 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前页面（推荐）
           - value: new
-            label: 全新页面
+            label: 全新页面（默认）
+          - value: current
+            label: 当前页面
         hint: 任务会先进入森马云盘下载图包；只有选择“完整发布并同步手机端详情”时才跳转天猫商品编辑页并提交发布。
       - id: execute_mode
         type: radio
@@ -192,12 +192,12 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前页面（推荐）
           - value: new
-            label: 全新页面
+            label: 全新页面（默认）
+          - value: current
+            label: 当前页面
         hint: 可在天猫素材页或森马云盘页运行；任务会复用已登录的 9222 浏览器会话。
       - id: execute_mode
         type: radio
@@ -267,24 +267,81 @@ tasks:
         type: checkbox
         label: 允许全盘兜底找图
         default: false
+        hidden: true
         ui_span: third
         hint: 默认关闭，避免从其他季节/其他目录误选同款号素材；开启后才会在指定路径找不到必需素材时搜索全部挂载目录。
-      - id: image_size
+      - id: model_id
         type: select
-        label: 出图尺寸
-        default: 960x1280
+        label: 生图模型
+        default: gpt-image-4k
         ui_span: third
         options:
+          - value: gpt-image-2k
+            label: GPT Image 2K
+          - value: gpt-image-4k
+            label: GPT Image 4K
+          - value: gemini-3.1-flash-image-preview
+            label: Gemini 3.1 Flash Image Preview
+          - value: gemini-3-pro-image-preview
+            label: Gemini 3 Pro Image Preview
+      - id: ratio
+        type: select
+        label: 比例
+        default: "3:4"
+        ui_span: third
+        options:
+          - value: "1:1"
+            label: 1:1
+          - value: "3:4"
+            label: 3:4
+          - value: "4:3"
+            label: 4:3
+          - value: "4:5"
+            label: 4:5
+          - value: "3:2"
+            label: 3:2
+          - value: "2:3"
+            label: 2:3
+          - value: "16:9"
+            label: 16:9
+          - value: "9:16"
+            label: 9:16
+        hint: 先选比例，再从该比例支持的尺寸中选择；3:4 支持 960x1280 和 1536x2048。
+      - id: image_size
+        type: select
+        label: 尺寸
+        default: 1536x2048
+        ui_span: third
+        hint: 尺寸会按出图比例动态过滤，并与 AI 生图工作台共用同一套比例/尺寸映射。
+        options:
+          - value: 1024x1024
+            label: 1024x1024（1:1）
+          - value: 2048x2048
+            label: 2048x2048（1:1）
           - value: 960x1280
             label: 960x1280（3:4）
-          - value: 1024x1024
-            label: 1024x1024
-          - value: 2048x2048
-            label: 2048x2048
-          - value: 3840x2160
-            label: 3840x2160
-          - value: 2160x3840
-            label: 2160x3840
+          - value: 1536x2048
+            label: 1536x2048（3:4）
+          - value: 1280x960
+            label: 1280x960（4:3）
+          - value: 2048x1536
+            label: 2048x1536（4:3）
+          - value: 1024x1280
+            label: 1024x1280（4:5）
+          - value: 1536x1920
+            label: 1536x1920（4:5）
+          - value: 1536x1024
+            label: 1536x1024（3:2）
+          - value: 1024x1536
+            label: 1024x1536（2:3）
+          - value: 1536x864
+            label: 1536x864（16:9）
+          - value: 1920x1080
+            label: 1920x1080（16:9）
+          - value: 864x1536
+            label: 864x1536（9:16）
+          - value: 1080x1920
+            label: 1080x1920（9:16）
       - id: output_format
         type: select
         label: 图片格式
@@ -335,6 +392,7 @@ tasks:
         type: number
         label: 1XM并发任务数
         default: 100
+        hidden: true
         min: 1
         max: 100
         step: 1
@@ -342,8 +400,9 @@ tasks:
         hint: 1XM 最大支持 100 张图并发；脚本会并发提交并分别轮询，失败自动按补偿次数重试。
       - id: one_xm_key_tier
         type: select
-        label: 1XM Key 档位
-        default: auto
+        label: 内部生图 Key 档位
+        default: 4k
+        hidden: true
         ui_span: third
         options:
           - value: auto
@@ -352,10 +411,12 @@ tasks:
             label: 强制使用 2K Key
           - value: 4k
             label: 强制使用 4K Key
+        hint: 需要明确使用 4K Key 时选择“强制使用 4K Key”；比例和尺寸只决定出图画幅。
       - id: retry_attempts
         type: number
         label: 请求重试次数
         default: 3
+        hidden: true
         min: 1
         max: 8
         step: 1
@@ -364,6 +425,7 @@ tasks:
         type: number
         label: 失败补偿次数
         default: 2
+        hidden: true
         min: 1
         max: 6
         step: 1
@@ -372,6 +434,7 @@ tasks:
         type: number
         label: 单图轮询超时（分钟）
         default: 12
+        hidden: true
         min: 1
         max: 60
         step: 1

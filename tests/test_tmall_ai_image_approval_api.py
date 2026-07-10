@@ -102,6 +102,52 @@ class TmallAiImageApprovalApiTests(unittest.TestCase):
         self.assertEqual(artifacts[0]["label"], "result.xlsx")
         self.assertEqual(artifacts[0]["path"], "/tmp/result.xlsx")
 
+    def test_submit_generation_route_accepts_background_generation(self):
+        updates = []
+        scheduled = []
+        prepared_batch = {
+            "batch_id": "batch-generate",
+            "status": "generating",
+            "items": [{"id": "item-1", "assets": [{"id": "ai-loading", "kind": "ai", "status": "generating", "placeholder": True}]}],
+            "submit_progress": {"status": "running", "total": 1, "image_total": 2},
+        }
+        module = SimpleNamespace(
+            update_generation_confirmation=lambda batch, items: {**batch, "items": items},
+            prepare_generation_confirmation_placeholders=lambda batch: prepared_batch,
+        )
+
+        def capture_update(instance_uid, **kwargs):
+            updates.append({"instance_uid": instance_uid, **kwargs})
+            return {}
+
+        def capture_task(coro):
+            scheduled.append(coro)
+            coro.close()
+            return None
+
+        with patch.object(api_server, "_load_tmall_approval_batch", return_value={"batch_id": "batch-generate", "token": "t"}), \
+            patch.object(api_server, "_validate_tmall_approval_token", return_value=None), \
+            patch.object(api_server, "_load_tmall_ai_image_chain_module", return_value=module), \
+            patch.object(api_server, "_safe_tmall_generation_confirmation_items", return_value=[{"id": "item-1"}]), \
+            patch.object(api_server.asyncio, "create_task", side_effect=capture_task), \
+            patch.object(api_server.data_sink, "find_task_instance_by_approval_batch_id", return_value={
+                "instance_uid": "instance-generate",
+                "summary_json": "{}",
+            }), \
+            patch.object(api_server.data_sink, "update_task_instance", side_effect=capture_update):
+            result = asyncio.run(api_server.submit_tmall_ai_image_generation_confirmation(
+                "batch-generate",
+                api_server.TmallApprovalGenerationConfirmRequest(items=[{"id": "item-1"}]),
+                token="t",
+            ))
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(result["status"], "generating")
+        self.assertEqual(result["batch"]["items"][0]["assets"][0]["status"], "generating")
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(updates[0]["status"], "running")
+        self.assertEqual(updates[0]["current_step"], "approval")
+
 
 if __name__ == "__main__":
     unittest.main()

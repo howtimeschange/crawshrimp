@@ -412,6 +412,7 @@ export async function upsertAsset(env: Env, asset: {
   parentAssetUid: string | null
   generationJobId: string | null
   meta: Record<string, unknown>
+  statusPolicy?: 'replace' | 'preserve-existing'
   now: string
 }): Promise<void> {
   const existing = await env.DB.prepare(
@@ -430,6 +431,7 @@ export async function upsertAsset(env: Env, asset: {
   )) {
     throw new AssetUidConflictError()
   }
+  const nextStatus = existing && asset.statusPolicy === 'preserve-existing' ? existing.status : asset.status
   const result = await env.DB.prepare(
     `INSERT INTO ai_image_assets
        (asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash,
@@ -459,7 +461,7 @@ export async function upsertAsset(env: Env, asset: {
       asset.batchUid,
       asset.styleId,
       asset.kind,
-      asset.status,
+      nextStatus,
       asset.objectKey,
       asset.filename,
       asset.contentHash,

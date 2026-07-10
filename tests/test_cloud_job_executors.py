@@ -187,6 +187,7 @@ class CloudJobExecutorTests(unittest.TestCase):
                 "prompt_text": "fresh prompt",
                 "model": "gemini-3-pro-image-preview",
                 "size": "2048x2048",
+                "ratio": "1:1",
                 "quality": "high",
                 "output_format": "webp",
                 "count": 2,
@@ -204,6 +205,7 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual([Path(path).name for path in captured["reference_paths"]], ["ref-1.jpg", "ref-2.jpg"])
         self.assertEqual(captured["batch"]["run_params"]["model"], "gemini-3-pro-image-preview")
         self.assertEqual(captured["batch"]["run_params"]["image_size"], "2048x2048")
+        self.assertEqual(captured["batch"]["run_params"]["ratio"], "1:1")
         self.assertEqual(captured["batch"]["run_params"]["quality"], "high")
         self.assertEqual(captured["batch"]["run_params"]["output_format"], "webp")
         self.assertEqual(captured["batch"]["run_params"]["generation_image_count"], 2)

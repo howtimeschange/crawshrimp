@@ -106,7 +106,7 @@ async function requireMachine(request: Request, env: Env): Promise<MachineRow | 
   )
     .bind(tokenHash)
     .first<MachineRow>()
-  if (!machine) return unauthorized('Invalid machine token')
+  if (!machine) return unauthorized('Invalid machine token', 'machine_token_invalid')
   await env.DB.prepare('UPDATE machine_tokens SET last_used_at = ? WHERE token_hash = ?').bind(nowIso(), tokenHash).run()
   return machine
 }
@@ -539,6 +539,82 @@ async function recoverClaimableJobs(env: Env): Promise<void> {
     .bind(now, now)
     .run()
   await releaseMachinesForJobs(env, expiredJobs.map((job) => job.job_uid), now)
+  const { results: exhaustedJobs } = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND cancel_requested != 1
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?
+       AND attempt_count >= max_attempts`,
+  )
+    .bind(now)
+    .all<DispatchJobRow>()
+  if (exhaustedJobs.length > 0) {
+    const exhaustedResult = toJson({ reason: 'lease_expired_attempts_exhausted' })
+    await env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'terminal_failed',
+           assigned_machine_id = NULL,
+           lease_id = NULL,
+           lease_expires_at = NULL,
+           result_json = ?,
+           updated_at = ?
+       WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+         AND cancel_requested != 1
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at < ?
+         AND attempt_count >= max_attempts`,
+    )
+      .bind(exhaustedResult, now, now)
+      .run()
+    await releaseMachinesForJobs(env, exhaustedJobs.map((job) => job.job_uid), now)
+    await Promise.all(exhaustedJobs.map(async (job) => {
+      if (job.job_type === 'generate_ai_image') await updateGenerationRequestStatus(env, job.job_uid, 'terminal_failed')
+      await recordJobEvent(env, job.job_uid, job.assigned_machine_id || '', job.lease_id || '', 'lease_expired_terminal', '', {
+        previous_status: job.status,
+        reason: 'lease_expired_attempts_exhausted',
+        attempt_count: job.attempt_count,
+        max_attempts: job.max_attempts,
+      })
+    }))
+  }
+  const { results: exhaustedFailures } = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE status = 'retryable_failed'
+       AND attempt_count >= max_attempts`,
+  ).all<DispatchJobRow>()
+  if (exhaustedFailures.length > 0) {
+    const exhaustedResult = toJson({ reason: 'attempts_exhausted' })
+    await env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'terminal_failed',
+           assigned_machine_id = NULL,
+           lease_id = NULL,
+           lease_expires_at = NULL,
+           result_json = ?,
+           updated_at = ?
+       WHERE status = 'retryable_failed'
+         AND attempt_count >= max_attempts`,
+    )
+      .bind(exhaustedResult, now)
+      .run()
+    await releaseMachinesForJobs(env, exhaustedFailures.map((job) => job.job_uid), now)
+    await Promise.all(exhaustedFailures.map(async (job) => {
+      if (job.job_type === 'generate_ai_image') await updateGenerationRequestStatus(env, job.job_uid, 'terminal_failed')
+      await recordJobEvent(env, job.job_uid, job.assigned_machine_id || '', job.lease_id || '', 'attempts_exhausted_terminal', '', {
+        previous_status: job.status,
+        reason: 'attempts_exhausted',
+        attempt_count: job.attempt_count,
+        max_attempts: job.max_attempts,
+      })
+    }))
+  }
   await env.DB.prepare(
     `UPDATE dispatch_jobs
      SET status = 'queued',

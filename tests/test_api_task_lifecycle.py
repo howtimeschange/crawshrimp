@@ -98,6 +98,24 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(payload["ratio"], "3:4")
         self.assertEqual(payload["n"], 3)
 
+    async def test_tmall_ai_chain_model_id_maps_to_execution_model_and_key_tier(self):
+        self.assertEqual(
+            api_server._tmall_ai_model_params({"model_id": "gpt-image-4k"}),
+            ("gpt-image-4k", "gpt-image-2", "4k"),
+        )
+        self.assertEqual(
+            api_server._tmall_ai_model_params({"model_id": "gpt-image-2k"}),
+            ("gpt-image-2k", "gpt-image-2", "2k"),
+        )
+        self.assertEqual(
+            api_server._tmall_ai_model_params({"model_id": "gemini-3-pro-image-preview"}),
+            ("gemini-3-pro-image-preview", "gemini-3-pro-image-preview", "auto"),
+        )
+        self.assertEqual(
+            api_server._tmall_ai_model_params({"model": "gpt-image-2", "one_xm_key_tier": "4k"}),
+            ("gpt-image-4k", "gpt-image-2", "4k"),
+        )
+
     async def test_build_live_progress_exposes_shein_detail_stage_fields(self):
         progress = api_server._build_live_progress(
             {

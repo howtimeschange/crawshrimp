@@ -344,15 +344,19 @@ def build_approval_item(
             extra={"source_label": "原图/主图", "slot": "main", "use_for_generation": True},
         ))
     if compact(detail_reference_path):
-        assets.append(_image_asset(
-            detail_reference_path,
-            style_code=workflow.style_code,
-            kind="detail_reference",
-            label="款色参考图",
-            index=1,
-            status="reference",
-            extra={"source_label": "款色参考图", "slot": "reference", "use_for_generation": False},
-        ))
+        detail_paths = parse_list((semir_data or {}).get("detailReferencePaths"))
+        if detail_reference_path not in detail_paths:
+            detail_paths.insert(0, detail_reference_path)
+        for detail_index, path in enumerate([item for item in detail_paths if compact(item)], start=1):
+            assets.append(_image_asset(
+                path,
+                style_code=workflow.style_code,
+                kind="detail_reference",
+                label="款色参考图" if detail_index == 1 else f"款色参考图 {detail_index}",
+                index=detail_index,
+                status="reference",
+                extra={"source_label": "款色参考图", "slot": "reference", "use_for_generation": False},
+            ))
 
     selected_paths = [compact(path) for path in (generated_paths or []) if compact(path)]
     selected_path_set = set(selected_paths)
@@ -921,6 +925,39 @@ def _upsert_reference_asset(item: dict[str, Any], *, kind: str, label: str, path
         assets.insert(0 if kind == "origin" else min(1, len(assets)), asset)
 
 
+def _sync_confirmation_reference_assets(item: dict[str, Any], reference_assets: Iterable[Mapping[str, Any]]) -> None:
+    next_assets = [
+        asset
+        for asset in item.get("assets") or []
+        if isinstance(asset, Mapping) and (asset.get("kind") == "origin" or asset.get("kind") == "ai" or asset.get("slot") == "main")
+    ]
+    reference_paths: list[str] = []
+    style_code = compact(item.get("style_code"))
+    for index, asset in enumerate(reference_assets or [], start=1):
+        if not isinstance(asset, Mapping):
+            continue
+        path = compact(asset.get("path"))
+        if not path or path in reference_paths:
+            continue
+        reference_paths.append(path)
+        next_assets.append(_image_asset(
+            path,
+            style_code=style_code,
+            kind=compact(asset.get("kind")) or "detail_reference",
+            label=compact(asset.get("label")) or ("款色参考图" if index == 1 else f"款色参考图 {index}"),
+            index=index,
+            status="reference",
+            extra={
+                "source_label": compact(asset.get("source_label")) or "款色参考图",
+                "slot": "reference",
+                "use_for_generation": bool(asset.get("use_for_generation")),
+            },
+        ))
+    item["assets"] = next_assets
+    if reference_paths:
+        item["detail_reference_path"] = reference_paths[0]
+
+
 def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     for patch in items or []:
         if not isinstance(patch, Mapping):
@@ -934,6 +971,8 @@ def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mappin
         if "detail_reference_path" in patch:
             item["detail_reference_path"] = compact(patch.get("detail_reference_path"))
             _upsert_reference_asset(item, kind="detail_reference", label="款色参考图", path=item["detail_reference_path"])
+        if "reference_assets" in patch and isinstance(patch.get("reference_assets"), list):
+            _sync_confirmation_reference_assets(item, patch.get("reference_assets") or [])
         if "generation_prompts" in patch and isinstance(patch.get("generation_prompts"), list):
             prompts = []
             for index, prompt in enumerate(patch.get("generation_prompts") or [], start=1):
@@ -1019,12 +1058,12 @@ def generation_confirmation_prompt_to_row(
         "__1xm_reference_paths": reference_paths,
         "__task_run_uid": approval_batch_run_uid(batch),
     })
-    row["尺寸"] = compact(row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280"
+    row["尺寸"] = compact(row.get("尺寸")) or compact(run_params.get("image_size")) or "1536x2048"
     row["格式"] = compact(row.get("格式")) or compact(run_params.get("output_format")) or "jpeg"
     row["质量"] = compact(row.get("质量")) or compact(run_params.get("quality")) or "auto"
     row["模型"] = compact(row.get("模型")) or compact(run_params.get("model")) or "gpt-image-2"
     row["比例"] = compact(row.get("比例")) or compact(payload.get("ratio")) or compact(run_params.get("ratio")) or image_ratio_label(row["尺寸"])
-    row["__1xm_key_tier"] = compact(row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto"
+    row["__1xm_key_tier"] = compact(row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "4k"
     row["__1xm_payload"] = {
         **dict(payload),
         "model": row["模型"],
@@ -1039,16 +1078,95 @@ def generation_confirmation_prompt_to_row(
     return row
 
 
+def prepare_generation_confirmation_placeholders(batch: dict[str, Any]) -> dict[str, Any]:
+    if compact(batch.get("status")) not in {GENERATION_CONFIRMATION_STATUS, "generating"}:
+        raise ValueError("当前批次不在确认提交生图状态")
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    prompt_total = 0
+    requested_images = 0
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item["assets"] = [asset for asset in item.get("assets") or [] if asset.get("kind") != "ai"]
+        prompts = item.get("generation_prompts") if isinstance(item.get("generation_prompts"), list) else []
+        item_rows = []
+        for index, prompt in enumerate(prompts, start=1):
+            if not isinstance(prompt, dict):
+                continue
+            status = compact(prompt.get("status")).lower()
+            if status in {"removed", "deleted", "disabled", "skip", "skipped"}:
+                continue
+            row = generation_confirmation_prompt_to_row(batch, item, prompt, index=index)
+            item_rows.append(row)
+            prompt["status"] = "generating"
+            prompt["generation_row"] = json_safe(row)
+            prompt_total += 1
+            image_count = generation_count_from_row(row, 1)
+            requested_images += image_count
+            for image_offset in range(1, image_count + 1):
+                display_index = index if image_count == 1 else f"{index}-{image_offset}"
+                item.setdefault("assets", []).append(_image_asset(
+                    "",
+                    style_code=compact(item.get("style_code")),
+                    kind="ai",
+                    label=f"AI 图 {display_index}",
+                    index=display_index,
+                    status="generating",
+                    extra={
+                        "prompt_index": index,
+                        "prompt_name": compact(prompt.get("prompt_name")),
+                        "prompt_group": compact(prompt.get("prompt_group")),
+                        "prompt": compact(row.get("完整Prompt") or row.get("最终提示词")),
+                        "generation_row": json_safe(row),
+                        "reference_paths": parse_list(row.get("参考图文件")),
+                        "reference_labels": [Path(ref).name for ref in parse_list(row.get("参考图文件"))],
+                        "task_run_uid": compact(row.get("__task_run_uid")) or approval_batch_run_uid(batch),
+                        "custom_prompt": "",
+                        "review_note": "",
+                        "placeholder": True,
+                        "created_at": now,
+                    },
+                ))
+        item["generation_rows"] = json_safe(item_rows)
+    batch["status"] = "generating"
+    batch["generation_summary"] = {
+        "requested": requested_images,
+        "requested_prompts": prompt_total,
+        "generated": 0,
+        "failed": 0,
+    }
+    batch["submit_progress"] = {
+        "status": "running",
+        "total": prompt_total,
+        "completed": 0,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "image_total": requested_images,
+        "current_style": "",
+        "message": f"后台生图中：{prompt_total} 条 Prompt / {requested_images} 张 AI 图",
+    }
+    batch["updated_at"] = now
+    batch["approval_message"] = render_approval_message_template(
+        str(run_params.get("approval_message_template") or ""),
+        batch,
+    )
+    save_approval_batch(batch)
+    maybe_sync_approval_batch_to_cloud(batch, log=lambda *_args, **_kwargs: None)
+    return batch
+
+
 def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) -> dict[str, Any]:
-    if compact(batch.get("status")) != GENERATION_CONFIRMATION_STATUS:
+    if compact(batch.get("status")) not in {GENERATION_CONFIRMATION_STATUS, "generating"}:
         raise ValueError("当前批次不在确认提交生图状态")
     run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
     settings = resolve_one_xm_settings()
     require_one_xm_key_for_generation(
         settings,
         model=compact(run_params.get("model")) or "gpt-image-2",
-        image_size=compact(run_params.get("image_size")) or "960x1280",
-        key_tier=compact(run_params.get("one_xm_key_tier")) or "auto",
+        image_size=compact(run_params.get("image_size")) or "1536x2048",
+        key_tier=compact(run_params.get("one_xm_key_tier")) or "4k",
     )
     artifact_dir = Path(compact(batch.get("artifact_dir")) or compact(Path(compact(batch.get("json_path"))).parent) or ".")
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -1073,7 +1191,7 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
 
     concurrency = max(1, min(100, int(run_params.get("generation_concurrency") or 100)))
     options = {
-        "one_xm_key_tier": compact(run_params.get("one_xm_key_tier")) or "auto",
+        "one_xm_key_tier": compact(run_params.get("one_xm_key_tier")) or "4k",
         "retry_attempts": int(run_params.get("retry_attempts") or 3),
         "compensate_attempts": int(run_params.get("compensate_attempts") or 2),
         "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
@@ -1132,6 +1250,17 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
 
     batch["status"] = "pending_approval" if generated else "generation_failed"
     batch["generation_summary"] = {"requested": requested_images, "requested_prompts": len(jobs), "generated": generated, "failed": failures}
+    batch["submit_progress"] = {
+        "status": "completed" if generated else "failed",
+        "total": len(jobs),
+        "completed": len(jobs),
+        "attempted": len(jobs),
+        "succeeded": max(0, len(jobs) - failures),
+        "failed": failures,
+        "image_total": requested_images,
+        "current_style": "",
+        "message": f"生图完成：{generated} 张" if generated else "生图失败，请检查失败原因",
+    }
     batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     batch["approval_message"] = render_approval_message_template(
         str(run_params.get("approval_message_template") or ""),
@@ -1597,7 +1726,7 @@ def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, An
         or run_params.get("n"),
         1,
     )
-    image_size = compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280"
+    image_size = compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "1536x2048"
     ratio = (
         compact(source_row.get("比例"))
         or compact(source_payload.get("ratio"))
@@ -1613,7 +1742,7 @@ def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, An
         "quality": normalize_quality(source_row.get("质量") or existing_row.get("质量") or run_params.get("quality") or "auto"),
         "output_format": normalize_output_format(source_row.get("格式") or existing_row.get("格式") or run_params.get("output_format"), "jpeg"),
         "count": count,
-        "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto",
+        "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "4k",
         "retry_attempts": to_int(run_params.get("retry_attempts"), 3),
         "compensate_attempts": to_int(run_params.get("compensate_attempts"), 2),
         "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
@@ -2109,6 +2238,7 @@ def make_generation_row(
     output_format: str,
     key_tier: str,
     model: str = "gpt-image-2",
+    ratio: str = "",
     prompt_index: int = 1,
     image_count: int = 1,
     run_nonce: str = "",
@@ -2116,7 +2246,7 @@ def make_generation_row(
     final_prompt = build_prompt_text(prompt, workflow)
     normalized_quality = normalize_quality(quality)
     normalized_image_count = normalize_generation_image_count(image_count, 1)
-    ratio = image_ratio_label(image_size)
+    ratio = compact(ratio) or image_ratio_label(image_size)
     references = [compact(item) for item in (reference_paths if isinstance(reference_paths, (list, tuple)) else [reference_paths]) if compact(item)]
     key_parts = [
         "tmall_ai_chain",
@@ -2738,7 +2868,7 @@ SEMIR_FIND_JS = r"""
     const chosenDetail = detailRanked[0] || null;
     const candidates = ranked.slice(0, Number(__payload.limit || 8));
     const infoTargets = [];
-    for (const candidate of [chosenMain, chosenDetail, ...candidates.slice(0, 4)]) {
+    for (const candidate of [chosenMain, ...detailRanked, ...candidates.slice(0, 4)]) {
       if (!candidate) continue;
       const key = compact(candidate.fullpath || candidate.filename);
       if (!key || infoTargets.some((item) => compact(item.fullpath || item.filename) === key)) continue;
@@ -2752,7 +2882,7 @@ SEMIR_FIND_JS = r"""
         candidate.infoError = String(error?.message || error);
       }
     }
-    return { success: true, data: [{ styleCode, skcCode, searches, scanErrors: scanErrors.slice(0, 10), candidates, mainCandidates: mainRanked.slice(0, 5), detailCandidates: detailRanked.slice(0, 5), chosen: chosenMain, chosenMain, chosenDetail }], meta: { has_more: false } };
+    return { success: true, data: [{ styleCode, skcCode, searches, scanErrors: scanErrors.slice(0, 10), candidates, mainCandidates: mainRanked.slice(0, 5), detailCandidates: detailRanked, chosen: chosenMain, chosenMain, chosenDetail }], meta: { has_more: false } };
   } catch (error) {
     return { success: false, error: String(error?.message || error) };
   }
@@ -3675,7 +3805,27 @@ async def find_semir_references(
     main = data.get("chosenMain") or data.get("chosen") or {}
     detail = data.get("chosenDetail") or {}
     main_path = await download_semir_candidate(runner, workflow, main, artifact_dir, role="main-origin") if main else ""
-    detail_path = await download_semir_candidate(runner, workflow, detail, artifact_dir, role="detail-flat") if detail and download_detail else ""
+    detail_path = ""
+    detail_paths: list[str] = []
+    if download_detail:
+        raw_detail_candidates = data.get("detailCandidates") if isinstance(data.get("detailCandidates"), list) else []
+        detail_candidates = [candidate for candidate in raw_detail_candidates if isinstance(candidate, Mapping)]
+        if detail and not any(compact(candidate.get("fullpath") or candidate.get("filename")) == compact(detail.get("fullpath") or detail.get("filename")) for candidate in detail_candidates):
+            detail_candidates.insert(0, detail)
+        hydrated_candidates = []
+        for index, candidate in enumerate(detail_candidates, start=1):
+            path = await download_semir_candidate(runner, workflow, candidate, artifact_dir, role=f"detail-flat-{index}")
+            next_candidate = dict(candidate)
+            if path:
+                next_candidate["localPath"] = path
+                detail_paths.append(path)
+                if not detail_path:
+                    detail_path = path
+            hydrated_candidates.append(next_candidate)
+        if hydrated_candidates:
+            data["detailCandidates"] = hydrated_candidates
+        if detail_paths:
+            data["detailReferencePaths"] = detail_paths
     if not main_path:
         data["downloadError"] = "未下载到橱窗1/yz(1)主图原图"
     if download_detail and not detail_path:
@@ -4253,6 +4403,12 @@ def result_rows_for_workflow(
         for item in ((semir_data or {}).get("mainCandidates") or [])
         if isinstance(item, Mapping) and compact(item.get("fullpath") or item.get("filename"))
     )
+    detail_candidate_paths = "\n".join(
+        compact(item.get("fullpath") or item.get("filename"))
+        for item in ((semir_data or {}).get("detailCandidates") or [])
+        if isinstance(item, Mapping) and compact(item.get("fullpath") or item.get("filename"))
+    )
+    detail_reference_files = parse_list((semir_data or {}).get("detailReferencePaths")) or parse_list(detail_reference_path)
     resolved_skc_code = workflow.skc_code or compact(detail.get("skcCode"))
     requires_detail = compact(reference_mode) == "main_and_detail"
     reference_ok = bool(main_origin_path and (detail_reference_path or not requires_detail))
@@ -4274,13 +4430,14 @@ def result_rows_for_workflow(
         "云盘路径": compact(chosen.get("fullpath")),
         "文件名": compact(chosen.get("filename")),
         "主图候选Top5": main_candidate_paths,
+        "款色图候选": detail_candidate_paths,
         "素材URL": compact(chosen.get("materialUrl")),
         "主图原图文件": main_origin_path,
         "平铺参考图路径": compact(detail.get("fullpath")),
         "平铺参考图文件名": compact(detail.get("filename")),
         "平铺参考图URL": compact(detail.get("materialUrl")),
-        "细节参考图文件": detail_reference_path,
-        "本地文件": "\n".join(item for item in [main_origin_path, detail_reference_path] if item),
+        "细节参考图文件": "\n".join(detail_reference_files),
+        "本地文件": "\n".join(item for item in [main_origin_path, *detail_reference_files] if item),
         "执行结果": reference_result,
         "备注": error or "；".join(item for item in [
             compact((semir_data or {}).get("downloadError")),
@@ -4383,7 +4540,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tmall-create-delay-seconds", type=float, default=5.0, help="Delay after task.create before batch.add.")
     parser.add_argument("--tmall-batch-delay-seconds", type=float, default=12.0, help="Delay between Tmall batch.add calls.")
     parser.add_argument("--tmall-readback-delay-seconds", type=float, default=5.0, help="Delay after task.online before readback.")
-    parser.add_argument("--image-size", default="960x1280")
+    parser.add_argument("--ratio", default="")
+    parser.add_argument("--image-size", default="1536x2048")
     parser.add_argument("--model", default="gpt-image-2")
     parser.add_argument("--ai-image-count", type=int, default=4)
     parser.add_argument("--generation-concurrency", type=int, default=100)
@@ -4391,7 +4549,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--allow-global-semir-fallback", action="store_true", help="Allow searching all Semir mounts when the configured cloud path misses required images.")
     parser.add_argument("--quality", default="auto", choices=["auto", "low", "medium", "high"])
     parser.add_argument("--output-format", default="jpeg")
-    parser.add_argument("--one-xm-key-tier", default="auto", choices=["2k", "4k", "auto"])
+    parser.add_argument("--one-xm-key-tier", default="4k", choices=["2k", "4k", "auto"])
     parser.add_argument("--retry-attempts", type=int, default=3)
     parser.add_argument("--compensate-attempts", type=int, default=2)
     parser.add_argument("--poll-timeout-minutes", type=float, default=12)
@@ -4586,6 +4744,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 output_format=args.output_format,
                 key_tier=args.one_xm_key_tier,
                 model=getattr(args, "model", "gpt-image-2"),
+                ratio=getattr(args, "ratio", ""),
                 prompt_index=prompt_index,
                 run_nonce=args.task_run_uid,
             )

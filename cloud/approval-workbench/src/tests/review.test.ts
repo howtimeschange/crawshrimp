@@ -144,6 +144,10 @@ class FakeD1Statement {
     if (sql.includes('from ai_generation_requests') && sql.includes('request_uid = ?')) return (this.state.generationRequests.find((row) => row.request_uid === String(this.params[0])) ?? null) as T | null
     if (sql.includes('from dispatch_jobs') && sql.includes("job_type = 'submit_tmall_material_test'")) {
       const batchUid = String(this.params[0])
+      if (sql.includes("status = 'succeeded'")) {
+        const succeeded = this.state.dispatchJobs.find((row) => row.batch_uid === batchUid && row.job_type === 'submit_tmall_material_test' && row.status === 'succeeded')
+        return (succeeded ? { id: succeeded.id } : null) as T | null
+      }
       const active = this.state.dispatchJobs.find((row) => row.batch_uid === batchUid && row.job_type === 'submit_tmall_material_test' && ['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(row.status))
       return (active ? { id: active.id } : null) as T | null
     }
@@ -298,9 +302,17 @@ class FakeD1Statement {
       })
       return result(1, id)
     }
+    if (sql.startsWith("update ai_generation_requests set status = 'finalizing'")) {
+      const request = this.state.generationRequests.find((row) => row.request_uid === String(this.params[1]))
+      if (!request || !['queued', 'running'].includes(request.status)) return result(0)
+      request.status = 'finalizing'
+      request.updated_at = String(this.params[0])
+      return result(1)
+    }
     if (sql.startsWith('update ai_generation_requests set status =') && sql.includes('request_uid = ?')) {
       const request = this.state.generationRequests.find((row) => row.request_uid === String(this.params[5]))
       if (!request) return result(0)
+      if (sql.includes("status != 'completed'") && request.status === 'completed') return result(0)
       request.status = String(this.params[0])
       request.upstream_task_json = String(this.params[1])
       request.result_asset_uids_json = String(this.params[2])
@@ -1157,6 +1169,63 @@ describe('review routes', () => {
     }
   })
 
+  it('finalizes one direct generation request only once under concurrent polling', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const requestUid = 'gen-race'
+    state.generationRequests.push({
+      id: 1,
+      request_uid: requestUid,
+      batch_uid: 'batch-1',
+      style_id: 1,
+      source_asset_uid: 'asset-source-1',
+      reference_asset_uids_json: '[]',
+      prompt_template_version_id: 31,
+      prompt_text: 'race prompt',
+      status: 'running',
+      dispatch_job_uid: '',
+      request_meta_json: JSON.stringify({ model: 'gpt-image-2', size: '1024x1024', quality: 'high', output_format: 'png', count: 1 }),
+      upstream_task_json: JSON.stringify({ id: 'task-race', status: 'running' }),
+      result_asset_uids_json: '[]',
+      error_message: '',
+      created_by: 2,
+      created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z',
+    })
+    const originalFetch = globalThis.fetch
+    let pollCalls = 0
+    let releaseBoth!: () => void
+    const bothStarted = new Promise<void>((resolve) => { releaseBoth = resolve })
+    globalThis.fetch = async () => {
+      pollCalls += 1
+      if (pollCalls === 2) releaseBoth()
+      await bothStarted
+      return new Response(JSON.stringify({
+        id: 'task-race',
+        status: 'succeeded',
+        data: [{ b64_json: 'cmFjZS1pbWFnZQ==' }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    const pollRequest = () => new Request(`https://example.test/api/ai-image-batches/batch-1/generation-requests/${requestUid}/poll`, {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+    })
+
+    try {
+      const env = fakeEnv(state)
+      const responses = await Promise.all([
+        fetchWorker(pollRequest(), env),
+        fetchWorker(pollRequest(), env),
+      ])
+
+      expect(responses.map((response) => response.status).sort()).toEqual([201, 202])
+      expect(state.generationRequests[0].status).toBe('completed')
+      expect(JSON.parse(state.generationRequests[0].result_asset_uids_json || '[]')).toEqual([`cloud-gen-${requestUid}-1`])
+      expect(state.assets.filter((asset) => asset.generation_job_id === requestUid).map((asset) => asset.asset_uid)).toEqual([`cloud-gen-${requestUid}-1`])
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   it('does not let viewers create generation or rerun jobs', async () => {
     const { state, viewerCookie } = await baseState()
     const generate = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-1/generate', {
@@ -1196,6 +1265,46 @@ describe('review routes', () => {
     expect(JSON.parse(state.dispatchJobs[0].payload_json).submit_plan.assets.map((asset: AssetRow) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-source-2', 'asset-ai-1', 'asset-ai-3'])
   })
 
+  it('reuses one logical submit job when the same batch is submitted to another machine', async () => {
+    const { state, operatorCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+    state.machines.push({ ...state.machines[0], id: 2, machine_id: 'machine-2', machine_name: 'Machine 2' })
+
+    const first = await fetchWorker(submitRequest(operatorCookie, 'machine-1'), fakeEnv(state))
+    const second = await fetchWorker(submitRequest(operatorCookie, 'machine-2'), fakeEnv(state))
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(200)
+    expect(state.dispatchJobs).toHaveLength(1)
+    expect(state.dispatchJobs[0]).toMatchObject({
+      idempotency_key: 'submit_tmall_material_test:batch-1',
+      assigned_machine_id: 'machine-1',
+    })
+  })
+
+  it('blocks a canonical submit while a legacy machine-scoped submit job is active', async () => {
+    const { state, operatorCookie } = await baseState()
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-3')!.status = 'approved'
+    state.machines.push({ ...state.machines[0], id: 2, machine_id: 'machine-2', machine_name: 'Machine 2' })
+    state.dispatchJobs.push(dispatchJob({
+      job_uid: 'job-legacy-submit',
+      job_type: 'submit_tmall_material_test',
+      status: 'running',
+      assigned_machine_id: 'machine-1',
+      required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+      idempotency_key: 'submit_tmall_material_test:batch-1:machine-1',
+    }))
+
+    const response = await fetchWorker(submitRequest(operatorCookie, 'machine-2'), fakeEnv(state))
+    const body = await response.json() as { code?: string }
+
+    expect(response.status).toBe(409)
+    expect(body.code).toBe('batch_submit_active')
+    expect(state.dispatchJobs).toHaveLength(1)
+  })
+
   it('requeues terminal submit jobs with a fresh submit plan instead of returning the old job unchanged', async () => {
     const { state, operatorCookie } = await baseState()
     state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
@@ -1209,7 +1318,7 @@ describe('review routes', () => {
       priority: 40,
       attempt_count: 1,
       max_attempts: 1,
-      idempotency_key: 'submit_tmall_material_test:batch-1:machine-1',
+      idempotency_key: 'submit_tmall_material_test:batch-1',
       payload_json: JSON.stringify({
         submit_plan: {
           batch_uid: 'batch-1',

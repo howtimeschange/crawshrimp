@@ -667,6 +667,9 @@ def _generation_run_params(payload: Mapping[str, Any]) -> dict[str, Any]:
     size = _text(payload.get("size") or payload.get("image_size"))
     if size:
         run_params["image_size"] = size
+    ratio = _text(payload.get("ratio"))
+    if ratio:
+        run_params["ratio"] = ratio
     quality = _text(payload.get("quality")).lower()
     if quality:
         run_params["quality"] = quality

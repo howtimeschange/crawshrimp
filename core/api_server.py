@@ -3017,6 +3017,28 @@ def _task_bool_param(run_params: dict, key: str, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "y", "on", "是", "启用", "开启"}
 
 
+def _tmall_ai_model_params(run_params: dict) -> tuple[str, str, str]:
+    model_id = str((run_params or {}).get("model_id") or "").strip()
+    model = str((run_params or {}).get("model") or "").strip()
+    tier = str((run_params or {}).get("one_xm_key_tier") or "").strip().lower()
+
+    model_map = {
+        "gpt-image-2k": ("gpt-image-2", "2k"),
+        "gpt-image-4k": ("gpt-image-2", "4k"),
+        "gemini-3.1-flash-image-preview": ("gemini-3.1-flash-image-preview", "auto"),
+        "gemini-3-pro-image-preview": ("gemini-3-pro-image-preview", "auto"),
+    }
+    if model_id in model_map:
+        mapped_model, mapped_tier = model_map[model_id]
+        return model_id, mapped_model, mapped_tier
+
+    if model in {"gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview"}:
+        return model, model, "auto"
+    if model == "gpt-image-2" and tier in {"2k", "4k"}:
+        return f"gpt-image-{tier}", model, tier
+    return "gpt-image-4k", "gpt-image-2", "4k"
+
+
 def _extract_first_approval_board_url(data_rows: list) -> str:
     for row in data_rows or []:
         if not isinstance(row, dict):
@@ -3110,6 +3132,7 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     execute_mode = str((run_params or {}).get("execute_mode") or "approval_then_create").strip().lower()
     execution = module.normalize_chain_execution_mode(execute_mode)
     prompt_source = _normalize_prompt_source((run_params or {}).get("prompt_source") or "local_excel")
+    model_id, model, one_xm_key_tier = _tmall_ai_model_params(run_params or {})
 
     workflow_file = _task_file_param_path(run_params, "workflow_file", getattr(module, "DEFAULT_WORKFLOW_FILE", ""))
     prompt_file = _task_file_param_path(run_params, "prompt_file", getattr(module, "DEFAULT_PROMPT_FILE", ""))
@@ -3141,15 +3164,17 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
         live_upload=bool(execution["live_upload"]),
         live_create=bool(execution["live_create"]),
         live_online=bool(execution["live_online"]),
-        model=str((run_params or {}).get("model") or "gpt-image-2").strip() or "gpt-image-2",
-        image_size=str((run_params or {}).get("image_size") or "960x1280").strip(),
+        model_id=model_id,
+        model=model,
+        ratio=str((run_params or {}).get("ratio") or "").strip(),
+        image_size=str((run_params or {}).get("image_size") or "1536x2048").strip(),
         ai_image_count=_task_int_param(run_params, "ai_image_count", 4, min_value=1, max_value=20),
         generation_concurrency=_task_int_param(run_params, "generation_concurrency", 100, min_value=1, max_value=100),
         reference_mode=str((run_params or {}).get("reference_mode") or "main_only").strip().lower(),
         allow_global_semir_fallback=_task_bool_param(run_params, "allow_global_semir_fallback", False),
         quality=str((run_params or {}).get("quality") or "auto").strip().lower(),
         output_format=str((run_params or {}).get("output_format") or "jpeg").strip().lower(),
-        one_xm_key_tier=str((run_params or {}).get("one_xm_key_tier") or "auto").strip().lower(),
+        one_xm_key_tier=one_xm_key_tier,
         retry_attempts=_task_int_param(run_params, "retry_attempts", 3, min_value=1, max_value=8),
         compensate_attempts=_task_int_param(run_params, "compensate_attempts", 2, min_value=1, max_value=6),
         poll_timeout_minutes=_task_float_param(run_params, "poll_timeout_minutes", 12.0, min_value=1.0, max_value=60.0),
@@ -5588,6 +5613,59 @@ class TmallApprovalGenerationConfirmRequest(BaseModel):
     items: List[dict] = []
 
 
+def _update_tmall_generation_task_instance(batch_id: str, result: dict) -> None:
+    instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
+    if not instance:
+        return
+    summary = _parse_json_object(instance.get("summary_json"))
+    summary.update({
+        "approval_batch_id": batch_id,
+        "generation_status": result.get("status"),
+        "generated": int(result.get("generated") or 0),
+        "generation_failed": int(result.get("failed") or 0),
+    })
+    status = "waiting_approval" if result.get("status") == "pending_approval" else (
+        "running" if result.get("status") == "generating" else "generation_failed"
+    )
+    current_step = "approval" if result.get("status") in {"pending_approval", "generating"} else "confirm"
+    data_sink.update_task_instance(
+        instance["instance_uid"],
+        status=status,
+        current_step=current_step,
+        summary=summary,
+    )
+
+
+async def _run_tmall_generation_confirmation_job(batch_id: str, batch: dict) -> None:
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        result = await asyncio.to_thread(module.submit_generation_confirmation_batch, batch, log=logger.info)
+        _update_tmall_generation_task_instance(batch_id, result)
+    except Exception as exc:
+        logger.exception("Tmall AI image generation confirmation job failed: %s", batch_id)
+        try:
+            failed_batch = _load_tmall_approval_batch(batch_id)
+            failed_batch["status"] = "generation_failed"
+            failed_batch["submit_progress"] = {
+                **dict(failed_batch.get("submit_progress") or {}),
+                "status": "failed",
+                "message": str(exc),
+            }
+            failed_batch["generation_summary"] = {
+                **dict(failed_batch.get("generation_summary") or {}),
+                "failed": int((failed_batch.get("generation_summary") or {}).get("requested_prompts") or 1),
+            }
+            failed_batch["updated_at"] = datetime.now().isoformat()
+            module.save_approval_batch(failed_batch)
+        except Exception:
+            logger.debug("Failed to persist Tmall AI generation failure state", exc_info=True)
+        _update_tmall_generation_task_instance(batch_id, {
+            "status": "generation_failed",
+            "generated": 0,
+            "failed": 1,
+        })
+
+
 def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) -> list[dict]:
     safe_items: list[dict] = []
     for item in items or []:
@@ -5599,6 +5677,19 @@ def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) ->
                 continue
             value = str(safe_item.get(key) or "").strip()
             safe_item[key] = (_safe_tmall_approval_paths(batch, [value], field_label=label) or [""])[0] if value else ""
+        safe_reference_assets = []
+        for asset in safe_item.get("reference_assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            safe_asset = dict(asset)
+            value = str(safe_asset.get("path") or "").strip()
+            safe_path = (_safe_tmall_approval_paths(batch, [value], field_label="参考图") or [""])[0] if value else ""
+            if not safe_path:
+                continue
+            safe_asset["path"] = safe_path
+            safe_reference_assets.append(safe_asset)
+        if "reference_assets" in safe_item:
+            safe_item["reference_assets"] = safe_reference_assets
         safe_prompts = []
         for prompt in safe_item.get("generation_prompts") or []:
             if not isinstance(prompt, dict):
@@ -5777,23 +5868,21 @@ async def submit_tmall_ai_image_generation_confirmation(batch_id: str, req: Tmal
         safe_items = _safe_tmall_generation_confirmation_items(batch, list(req.items or []))
         if safe_items:
             batch = module.update_generation_confirmation(batch, safe_items)
-        result = await asyncio.to_thread(module.submit_generation_confirmation_batch, batch, log=logger.info)
-        instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
-        if instance:
-            summary = _parse_json_object(instance.get("summary_json"))
-            summary.update({
-                "approval_batch_id": batch_id,
-                "generation_status": result.get("status"),
-                "generated": int(result.get("generated") or 0),
-                "generation_failed": int(result.get("failed") or 0),
-            })
-            data_sink.update_task_instance(
-                instance["instance_uid"],
-                status="waiting_approval" if result.get("status") == "pending_approval" else "generation_failed",
-                current_step="approval" if result.get("status") == "pending_approval" else "confirm",
-                summary=summary,
-            )
-        return result
+        batch = module.prepare_generation_confirmation_placeholders(batch)
+        _update_tmall_generation_task_instance(batch_id, {
+            "status": "generating",
+            "generated": 0,
+            "failed": 0,
+        })
+        asyncio.create_task(_run_tmall_generation_confirmation_job(batch_id, batch))
+        return {
+            "ok": True,
+            "accepted": True,
+            "status": "generating",
+            "generated": 0,
+            "failed": 0,
+            "batch": batch,
+        }
     except HTTPException:
         raise
     except Exception as exc:

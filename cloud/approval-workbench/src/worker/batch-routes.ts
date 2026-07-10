@@ -171,6 +171,10 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
   if (actor.machine && existing?.source_machine_id && existing.source_machine_id !== actor.machine.machine_id) {
     return forbidden('Only the source machine can sync this batch')
   }
+  if (existing) {
+    const submittedGuard = submittedBatchGuard(existing)
+    if (submittedGuard) return submittedGuard
+  }
   const now = nowIso()
   await env.DB.prepare(
     `INSERT INTO ai_image_batches
@@ -218,6 +222,7 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
   }
 
   await recordAudit(env, auditActor(actor), 'batches.sync', 'ai_image_batch', batchUid, { style_count: styles.length }, request)
+  if (existing) await recomputeReviewState(env, batchUid)
   const batch = await env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
   return json({ batch, styles: syncedStyles }, { status: existing ? 200 : 201 })
 }
@@ -713,6 +718,9 @@ export async function pollDirectGeneration(request: Request, env: Env): Promise<
       assets: await directGenerationResultAssets(env, generationRequest),
     })
   }
+  if (generationRequest.status === 'finalizing') {
+    return json({ status: 'finalizing', request_uid: requestUid, next_poll_after_ms: 500 }, { status: 202 })
+  }
   if (!['queued', 'running'].includes(generationRequest.status)) {
     return json({ error: `generation request is ${generationRequest.status}` }, { status: 409 })
   }
@@ -736,6 +744,14 @@ export async function pollDirectGeneration(request: Request, env: Env): Promise<
       return json({ status: 'running', request_uid: requestUid, next_poll_after_ms: result.nextPollAfterMs }, { status: 202 })
     }
 
+    const claimedFinalization = await claimDirectGenerationFinalization(env, requestUid)
+    if (!claimedFinalization) {
+      const current = await loadDirectGenerationRequest(env, requestUid)
+      if (current?.status === 'completed') {
+        return json({ status: 'completed', request_uid: requestUid, assets: await directGenerationResultAssets(env, current) })
+      }
+      return json({ status: current?.status || 'finalizing', request_uid: requestUid, next_poll_after_ms: 500 }, { status: 202 })
+    }
     const storedAssets = await completeDirectGenerationRequest(env, {
       requestUid,
       batchUid,
@@ -757,7 +773,7 @@ export async function pollDirectGeneration(request: Request, env: Env): Promise<
   } catch (error) {
     const status = error && typeof error === 'object' && typeof (error as { status?: unknown }).status === 'number' ? (error as { status: number }).status : 502
     const message = String(error instanceof Error ? error.message : 'Cloud generation poll failed')
-    await updateDirectGenerationRequest(env, requestUid, 'failed', upstreamTask, [], message)
+    await failDirectGenerationRequest(env, requestUid, upstreamTask, message)
     await recordAudit(env, { userId: actor.user.id }, 'jobs.generate_ai_image.direct_poll_failed', 'ai_generation_request', requestUid, { batch_uid: batchUid, style_id: generationRequest.style_id, error: message }, request)
     return json({ error: message, request_uid: requestUid }, { status })
   }
@@ -835,9 +851,14 @@ export async function createSubmitJob(request: Request, env: Env): Promise<Respo
   if (!batchUid || !machineId) return badRequest('batch_uid and machine_id are required')
   const batch = await loadBatch(env, batchUid)
   if (!batch) return json({ error: 'Not found' }, { status: 404 })
-  const idempotencyKey = `submit_tmall_material_test:${batchUid}:${machineId}`
+  const idempotencyKey = `submit_tmall_material_test:${batchUid}`
   const existing = await findDispatchJob(env, 'submit_tmall_material_test', idempotencyKey)
-  if (batch.status === 'submitted' || existing?.status === 'succeeded') return json({ error: 'batch has already been submitted' }, { status: 409 })
+  if (batch.status === 'submitted' || existing?.status === 'succeeded' || await hasSucceededSubmitJob(env, batchUid)) {
+    return json({ error: 'batch has already been submitted' }, { status: 409 })
+  }
+  if (!existing && await hasActiveSubmitJob(env, batchUid)) {
+    return json({ error: 'batch already has an active submit job', code: 'batch_submit_active' }, { status: 409 })
+  }
   const reviewState = await recomputeReviewState(env, batchUid)
   if (!reviewState.ready) {
     return json({ error: 'every non-skipped style must have at least one approved AI asset before submit' }, { status: 409 })
@@ -901,7 +922,6 @@ async function upsertStyle(env: Env, batchUid: string, style: Record<string, unk
        skc_code = excluded.skc_code,
        category = excluded.category,
        gender = excluded.gender,
-       status = excluded.status,
        missing_prompt_reason = excluded.missing_prompt_reason,
        source_summary_json = excluded.source_summary_json`,
   )
@@ -965,6 +985,7 @@ async function upsertSyncedAsset(env: Env, batchUid: string, styleId: number, as
     parentAssetUid: nullableString(asset.parent_asset_uid),
     generationJobId: nullableString(asset.generation_job_id),
     meta: sanitizedMeta(asset),
+    statusPolicy: 'preserve-existing',
     now,
   })
 }
@@ -1361,6 +1382,35 @@ async function updateDirectGenerationRequest(env: Env, requestUid: string, statu
     .run()
 }
 
+async function claimDirectGenerationFinalization(env: Env, requestUid: string): Promise<boolean> {
+  const result = await env.DB.prepare(
+    `UPDATE ai_generation_requests
+     SET status = 'finalizing', updated_at = ?
+     WHERE request_uid = ?
+       AND status IN ('queued', 'running')`,
+  )
+    .bind(nowIso(), requestUid)
+    .run()
+  return Number(result.meta.changes ?? 0) === 1
+}
+
+function loadDirectGenerationRequest(env: Env, requestUid: string): Promise<GenerationRequestRow | null> {
+  return env.DB.prepare('SELECT * FROM ai_generation_requests WHERE request_uid = ? LIMIT 1')
+    .bind(requestUid)
+    .first<GenerationRequestRow>()
+}
+
+async function failDirectGenerationRequest(env: Env, requestUid: string, upstreamTask: unknown, errorMessage: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE ai_generation_requests
+     SET status = ?, upstream_task_json = ?, result_asset_uids_json = ?, error_message = ?, updated_at = ?
+     WHERE request_uid = ?
+       AND status != 'completed'`,
+  )
+    .bind('failed', toJson(upstreamTask || {}), toJson([]), errorMessage, nowIso(), requestUid)
+    .run()
+}
+
 async function directGenerationResultAssets(env: Env, generationRequest: GenerationRequestRow): Promise<Array<{ asset_uid: string; object_key: string; filename: string; status: string }>> {
   const assetUids = parseArray(generationRequest.result_asset_uids_json || '[]')
     .filter((value): value is string => typeof value === 'string' && value.length > 0)
@@ -1460,7 +1510,7 @@ async function storeDirectGenerationAssets(env: Env, details: {
     const dataUrl = details.dataUrls[index]
     const mime = mimeFromDataUrl(dataUrl)
     const extension = extensionForMime(mime, details.outputFormat)
-    const assetUid = `cloud-gen-${randomToken('gen').replace(/^gen_/, '')}-${index + 1}`
+    const assetUid = `cloud-gen-${details.requestUid}-${index + 1}`
     const filename = `${assetUid}.${extension}`
     const objectKey = batchObjectKey(details.batchUid, 'ai', filename)
     const bytes = dataUrlToBytes(dataUrl)
@@ -1579,6 +1629,19 @@ async function hasActiveSubmitJob(env: Env, batchUid: string): Promise<boolean> 
      WHERE batch_uid = ?
        AND job_type = 'submit_tmall_material_test'
        AND status IN ('queued', 'leased', 'running', 'uploading_results', 'cancel_requested')
+     LIMIT 1`,
+  )
+    .bind(batchUid)
+    .first<{ id: number }>()
+  return Boolean(row)
+}
+
+async function hasSucceededSubmitJob(env: Env, batchUid: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT id FROM dispatch_jobs
+     WHERE batch_uid = ?
+       AND job_type = 'submit_tmall_material_test'
+       AND status = 'succeeded'
      LIMIT 1`,
   )
     .bind(batchUid)

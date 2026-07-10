@@ -12,8 +12,8 @@ export function badRequest(message: string): Response {
   return json({ error: message }, { status: 400 })
 }
 
-export function unauthorized(message = 'Unauthorized'): Response {
-  return json({ error: message }, { status: 401 })
+export function unauthorized(message = 'Unauthorized', code = ''): Response {
+  return json(code ? { error: message, code } : { error: message }, { status: 401 })
 }
 
 export function forbidden(message = 'Forbidden'): Response {

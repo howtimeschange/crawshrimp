@@ -6,6 +6,8 @@
 
 **Scope:** `codex/cloud-approval-workbench`, covering the Cloudflare approval workbench, the desktop cloud-machine agent, Prompt library integration, and workbook import/export.
 
+**Scope update (2026-07-10):** The user explicitly deferred Section 8 workbook dependency replacement and input-limit work because its parser-compatibility surface is larger than the state-machine fixes. `xlsx@0.18.5` remains temporarily, and its known audit findings must be reported as accepted outstanding risk rather than fixed.
+
 ## Context
 
 The cloud approval branch already passes its existing unit tests and builds, but review found ten correctness and security gaps. The highest-risk failures are duplicate irreversible Tmall submissions, cloud approval state being overwritten by replayed local sync, leases that can expire without reaching a terminal state, and desktop completion results that are persisted but never retried.
@@ -299,4 +301,4 @@ git status --short --branch
 
 ## Success Criteria
 
-The work is complete when all ten regression cases pass, the full validation gates pass, Cloud production dependency audit reports no high or critical vulnerabilities, `git diff --check` is clean, and none of the pre-existing unrelated worktree changes are overwritten or included in this hardening checkpoint.
+The current hardening phase is complete when the nine non-workbook regression areas pass, the applicable validation gates pass, the deferred `xlsx` audit findings are reported explicitly, `git diff --check` is clean, and none of the pre-existing unrelated worktree changes are overwritten or included in this hardening checkpoint.

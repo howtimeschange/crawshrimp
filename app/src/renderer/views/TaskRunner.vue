@@ -166,6 +166,45 @@
             </template>
 
             <!-- 下拉选择 -->
+            <template v-else-if="isTmallAiImageModelParam(param)">
+              <select
+                :value="values[param.id]"
+                class="select"
+                @change="event => updateTmallAiImageModel(event.target.value)"
+              >
+                <option v-for="model in AI_IMAGE_MODELS" :key="model.id" :value="model.id">
+                  {{ model.label }}
+                </option>
+              </select>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
+            <template v-else-if="isTmallAiImageRatioParam(param)">
+              <select
+                :value="values[param.id]"
+                class="select"
+                @change="event => updateTmallAiImageRatio(event.target.value)"
+              >
+                <option v-for="ratio in AI_IMAGE_RATIOS" :key="ratio" :value="ratio">
+                  {{ ratio }}
+                </option>
+              </select>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
+            <template v-else-if="isTmallAiImageSizeParam(param)">
+              <select
+                :value="values[param.id]"
+                class="select"
+                @change="event => updateTmallAiImageSize(event.target.value)"
+              >
+                <option v-for="opt in tmallAiImageSizeOptions" :key="opt.value" :value="opt.value">
+                  {{ opt.label }}
+                </option>
+              </select>
+              <p v-if="param.hint" class="hint">{{ param.hint }}</p>
+            </template>
+
             <template v-else-if="param.type === 'select'">
               <select v-model="values[param.id]" class="select">
                 <option v-for="opt in param.options" :key="opt.value" :value="opt.value">
@@ -981,6 +1020,15 @@ import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../ut
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
 import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
 import { buildEmbeddedCloudApprovalUrl, isTrustedCloudApprovalBoardUrl } from '../utils/cloudApprovalUrl'
+import {
+  AI_IMAGE_MODELS,
+  AI_IMAGE_RATIOS,
+  defaultSizeForRatio,
+  getAiImageModel,
+  ratioForSize,
+  sizeForRatio,
+  sizesForRatio,
+} from '../utils/aiImageModels.js'
 
 const props = defineProps({
   adapterId: String,
@@ -1343,6 +1391,9 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   applyingInitialTaskValues = true
   values.value = buildDefaultValues(task.params || [])
   applyInitialParamsToValues(props.initialParams)
+  syncTmallAiImageParamDefaults({
+    deriveRatioFromSize: hasOwnParamValue(props.initialParams, 'image_size') && !hasOwnParamValue(props.initialParams, 'ratio'),
+  })
   nextTick(() => { applyingInitialTaskValues = false })
   if (pdfCropSavedTemplatesLoaded.value) applyDefaultPdfCropTemplatesToValues()
   templateFeedback.value = {}
@@ -1386,6 +1437,9 @@ watch(() => props.initialParams, (next) => {
   if (!props.task) return
   applyingInitialTaskValues = true
   applyInitialParamsToValues(next)
+  syncTmallAiImageParamDefaults({
+    deriveRatioFromSize: hasOwnParamValue(next, 'image_size') && !hasOwnParamValue(next, 'ratio'),
+  })
   nextTick(() => { applyingInitialTaskValues = false })
 }, { deep: true })
 
@@ -1433,7 +1487,13 @@ const isTaskOdpsSyncable = computed(() =>
   isOdpsSyncableTask(props.adapterId, props.task?.task_id)
 )
 const isTmallAiImageChainTask = computed(() =>
-  props.adapterId === 'tmall-ops-assistant' && props.task?.task_id === 'tmall_ai_image_test_chain'
+  isCurrentTmallAiImageChainTask()
+)
+const tmallAiImageSizeOptions = computed(() =>
+  sizesForRatio(tmallAiImageRatioValue()).map(size => ({
+    value: size,
+    label: size,
+  }))
 )
 const cloudPromptLibraryScenarios = computed(() => {
   const seen = new Set()
@@ -1655,6 +1715,113 @@ function setAiChainActiveStep(stepId) {
   const next = String(stepId || '').trim()
   if (!['config', 'confirm', 'approval', 'create'].includes(next)) return
   aiChainActiveStep.value = next
+}
+
+function isCurrentTmallAiImageChainTask() {
+  return props.adapterId === 'tmall-ops-assistant' && props.task?.task_id === 'tmall_ai_image_test_chain'
+}
+
+function hasOwnParamValue(source, key) {
+  return !!source && typeof source === 'object' && Object.prototype.hasOwnProperty.call(source, key)
+}
+
+function normalizedTmallAiImageRatio(value) {
+  const ratio = String(value || '').trim()
+  return AI_IMAGE_RATIOS.includes(ratio) ? ratio : '3:4'
+}
+
+function tmallAiImageRatioValue(source = values.value) {
+  return normalizedTmallAiImageRatio(source?.ratio)
+}
+
+function tmallAiImageModelValue(source = values.value) {
+  const modelId = String(source?.model_id || source?.modelId || '').trim()
+  if (AI_IMAGE_MODELS.some(model => model.id === modelId)) return modelId
+
+  const modelKey = String(source?.model || source?.model_key || '').trim()
+  const tier = String(source?.one_xm_key_tier || source?.model_key_tier || '').trim().toLowerCase()
+  if (modelKey === 'gpt-image-2' && tier === '2k') return 'gpt-image-2k'
+  if (modelKey === 'gpt-image-2' && tier === '4k') return 'gpt-image-4k'
+  const directModel = AI_IMAGE_MODELS.find(model => model.key === modelKey && model.key !== 'gpt-image-2')
+  return directModel?.id || 'gpt-image-4k'
+}
+
+function tmallAiImageModel(source = values.value) {
+  return getAiImageModel(tmallAiImageModelValue(source))
+}
+
+function tmallAiImageRunKeyTier(model) {
+  const tier = String(model?.keyTier || '').trim().toLowerCase()
+  return tier === '4k' || tier === '2k' ? tier : 'auto'
+}
+
+function tmallAiImageSizeTierForModel(model) {
+  return String(model?.keyTier || '').trim().toLowerCase() === '4k' ? '4k' : '2k'
+}
+
+function tmallAiImageKeyTierValue(source = values.value) {
+  return tmallAiImageSizeTierForModel(tmallAiImageModel(source))
+}
+
+function syncTmallAiImageParamDefaults(options = {}) {
+  if (!isCurrentTmallAiImageChainTask()) return
+  const next = { ...values.value }
+  const model = tmallAiImageModel(next)
+  if (options.deriveRatioFromSize && String(next.image_size || '').trim()) {
+    next.ratio = ratioForSize(next.image_size, next.ratio || '3:4')
+  }
+  const ratio = normalizedTmallAiImageRatio(next.ratio)
+  const keyTier = tmallAiImageRunKeyTier(model)
+  const sizeTier = tmallAiImageSizeTierForModel(model)
+  const size = sizeForRatio(ratio, String(next.image_size || '').trim(), sizeTier)
+  if (
+    next.model_id === model.id
+    && next.model === model.key
+    && next.one_xm_key_tier === keyTier
+    && next.ratio === ratio
+    && next.image_size === size
+  ) return
+  next.model_id = model.id
+  next.model = model.key
+  next.one_xm_key_tier = keyTier
+  next.ratio = ratio
+  next.image_size = size
+  values.value = next
+}
+
+function updateTmallAiImageModel(value) {
+  if (!isCurrentTmallAiImageChainTask()) return
+  const model = getAiImageModel(value)
+  values.value.model_id = model.id
+  values.value.model = model.key
+  values.value.one_xm_key_tier = tmallAiImageRunKeyTier(model)
+  values.value.image_size = defaultSizeForRatio(tmallAiImageRatioValue(), tmallAiImageSizeTierForModel(model))
+}
+
+function updateTmallAiImageRatio(value) {
+  if (!isCurrentTmallAiImageChainTask()) return
+  values.value.ratio = normalizedTmallAiImageRatio(value)
+  syncTmallAiImageParamDefaults()
+}
+
+function updateTmallAiImageSize(value) {
+  if (!isCurrentTmallAiImageChainTask()) return
+  const size = String(value || '').trim()
+  const ratio = ratioForSize(size, tmallAiImageRatioValue())
+  values.value.image_size = sizeForRatio(ratio, size, tmallAiImageKeyTierValue())
+  values.value.ratio = normalizedTmallAiImageRatio(ratio)
+}
+
+function isTmallAiImageModelParam(param) {
+  return isCurrentTmallAiImageChainTask() && param?.type === 'select' && param?.id === 'model_id'
+}
+
+function isTmallAiImageRatioParam(param) {
+  return isCurrentTmallAiImageChainTask() && param?.type === 'select' && param?.id === 'ratio'
+}
+
+function isTmallAiImageSizeParam(param) {
+  return isCurrentTmallAiImageChainTask() && param?.type === 'select' && param?.id === 'image_size'
 }
 
 function isCloudPromptLibraryParam(param) {
@@ -2154,6 +2321,7 @@ function forceReset() {
 watch(taskParams, (params) => {
   if (!props.task) return
   reconcileValuesWithParams(params || [])
+  syncTmallAiImageParamDefaults()
 }, { deep: true })
 
 watch(() => `${props.adapterId || ''}::${props.task?.task_id || ''}::${values.value.mode || ''}`, () => {
@@ -2284,6 +2452,15 @@ function buildRunParams(overrides = {}) {
     }
 
     params[p.id] = values.value[p.id]
+  }
+  if (isTmallAiImageChainTask.value) {
+    const model = tmallAiImageModel(values.value)
+    const ratio = tmallAiImageRatioValue(values.value)
+    params.model_id = model.id
+    params.model = model.key
+    params.one_xm_key_tier = tmallAiImageRunKeyTier(model)
+    params.ratio = ratio
+    params.image_size = sizeForRatio(ratio, String(values.value.image_size || '').trim(), tmallAiImageSizeTierForModel(model))
   }
   if (isTmallAiImageChainTask.value && params.prompt_source === 'cloud_prompt_library') {
     params.cloud_prompt_library_name = String(values.value.cloud_prompt_library_name || '').trim()
@@ -3034,6 +3211,7 @@ async function ensureDirectoryListingsForRun() {
 }
 
 async function prepareRunParams(overrides = {}) {
+  syncTmallAiImageParamDefaults()
   await ensureDirectoryListingsForRun()
   return buildRunParams(overrides)
 }

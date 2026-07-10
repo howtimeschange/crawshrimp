@@ -457,6 +457,13 @@ export async function resolvePrompts(request: Request, env: Env): Promise<Respon
   const category = url.searchParams.get('category') || ''
   const gender = url.searchParams.get('gender') || ''
   const limit = limitFromSearch(url)
+  const library = await env.DB.prepare('SELECT id, name, scenario, status, created_at, updated_at FROM prompt_libraries WHERE id = ? LIMIT 1')
+    .bind(libraryId)
+    .first<PromptLibraryRow>()
+  if (!library) return json({ error: 'Not found' }, { status: 404 })
+  if (library.status !== 'published') {
+    return json({ error: 'prompt library must be published before it can be resolved', code: 'prompt_library_not_published' }, { status: 409 })
+  }
 
   const { results: templates } = await env.DB.prepare(
     `SELECT ${TEMPLATE_COLUMNS}
@@ -469,6 +476,9 @@ export async function resolvePrompts(request: Request, env: Env): Promise<Respon
 
   const enabledTemplates = templates.filter((template) => Boolean(template.enabled))
   const latestVersions = await latestVersionsByTemplate(env, enabledTemplates.map((template) => template.id))
+  if (enabledTemplates.some((template) => !latestVersions.has(template.id))) {
+    return json({ error: 'published prompt library has enabled templates without a version', code: 'prompt_library_version_incomplete' }, { status: 409 })
+  }
   const resolved = enabledTemplates
     .flatMap((template) => resolvedTemplateFor(template, latestVersions.get(template.id)))
     .filter((template) => matchesRules(template.category_rules, category) && matchesRules(template.gender_rules, gender))
@@ -697,28 +707,7 @@ function resolvedTemplateFor(template: PromptTemplateRow, version?: PromptTempla
       priority: integerOrDefault(snapshot.priority, priorityFor(template.priority_json)),
     }]
   }
-  if (!template.enabled) return []
-  return [{
-    template_id: template.id,
-    version_id: null,
-    group_name: template.group_name,
-    field_name: template.field_name,
-    source_field_id: stringFrom(template.source_field_id, ''),
-    field_order: numberOrNull(template.field_order),
-    visible: template.visible !== 0,
-    prompt_text: template.prompt_text,
-    size_label: template.size_label,
-    output_format: template.output_format,
-    quality: template.quality,
-    reference_fields: parseStringArray(template.reference_fields_json),
-    word_count: numberOrNull(template.word_count),
-    field_type: stringFrom(template.field_type, ''),
-    female_priority: priorityValue(template.excel_meta_json, 'female_priority'),
-    male_neutral_priority: priorityValue(template.excel_meta_json, 'male_neutral_priority'),
-    category_rules: parseStringArray(template.category_rules_json),
-    gender_rules: parseStringArray(template.gender_rules_json),
-    priority: priorityFor(template.priority_json),
-  }]
+  return []
 }
 
 function matchesRules(rules: string[], value: string): boolean {

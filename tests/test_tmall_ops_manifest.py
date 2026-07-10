@@ -84,6 +84,10 @@ class TmallOpsManifestTests(unittest.TestCase):
         self.assertEqual(data_export_params["sync_to_cloud"]["default"], [])
         self.assertEqual(data_export_params["sync_to_cloud"]["options"][0]["value"], "enabled")
         self.assertIn("云端测图数据看板", data_export_params["sync_to_cloud"]["hint"])
+        self.assertEqual(params["mode"]["default"], "new")
+        mode_options = {item["value"]: item["label"] for item in params["mode"]["options"]}
+        self.assertEqual(list(mode_options), ["new", "current"])
+        self.assertIn("全新页面", mode_options["new"])
         self.assertEqual(execute_mode["default"], "approval_then_create")
         self.assertEqual(list(options), ["approval_then_create", "direct_create"])
         self.assertIn("审批", options["approval_then_create"])
@@ -103,9 +107,38 @@ class TmallOpsManifestTests(unittest.TestCase):
         self.assertEqual(params["cloud_prompt_library_id"]["type"], "text")
         self.assertTrue(params["cloud_prompt_library_id"]["required"])
         self.assertEqual(params["cloud_prompt_library_id"]["visible_when"], {"field": "prompt_source", "equals": "cloud_prompt_library"})
+        self.assertEqual(params["model_id"]["label"], "生图模型")
+        self.assertEqual(params["model_id"]["default"], "gpt-image-4k")
+        model_options = {item["value"]: item["label"] for item in params["model_id"]["options"]}
+        self.assertEqual(
+            list(model_options),
+            [
+                "gpt-image-2k",
+                "gpt-image-4k",
+                "gemini-3.1-flash-image-preview",
+                "gemini-3-pro-image-preview",
+            ],
+        )
+        self.assertEqual(model_options["gpt-image-4k"], "GPT Image 4K")
+        self.assertEqual(params["ratio"]["label"], "比例")
+        self.assertEqual(params["ratio"]["default"], "3:4")
+        self.assertIn("9:16", [item["value"] for item in params["ratio"]["options"]])
+        self.assertEqual(params["image_size"]["label"], "尺寸")
+        self.assertEqual(params["image_size"]["default"], "1536x2048")
+        self.assertIn("1536x2048", [item["value"] for item in params["image_size"]["options"]])
         self.assertEqual(params["ai_image_count"]["label"], "每款挑选 Prompt 条数")
         self.assertIn("每款选择多少条不同提示词", params["ai_image_count"]["hint"])
         self.assertIn("单 prompt 生图张数在确认提交页选择", params["ai_image_count"]["hint"])
+        for hidden_param in [
+            "allow_global_semir_fallback",
+            "generation_concurrency",
+            "one_xm_key_tier",
+            "retry_attempts",
+            "compensate_attempts",
+            "poll_timeout_minutes",
+        ]:
+            self.assertTrue(params[hidden_param]["hidden"], hidden_param)
+        self.assertEqual(params["one_xm_key_tier"]["default"], "4k")
         self.assertIn("钉钉", params["approval_message_template"]["label"])
         self.assertIn("审批看板", output_columns)
         self.assertIn("审批批次ID", output_columns)

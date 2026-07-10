@@ -632,6 +632,13 @@ describe('prompt routes', () => {
   it('lets reviewer read resolved prompts but not publish versions', async () => {
     const state = await stateWithPrompts()
     const libraryId = await createLibraryWithTemplates(state)
+    await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/publish-version`, {
+        method: 'POST',
+        headers: managerHeaders(),
+      }),
+      fakeEnv(state),
+    )
 
     const readResponse = await fetchWorker(
       new Request(`https://example.test/api/prompt-libraries/${libraryId}/resolved?category=童装&gender=女童`, {
@@ -651,12 +658,48 @@ describe('prompt routes', () => {
       fakeEnv(state),
     )
     expect(publishResponse.status).toBe(403)
-    expect(state.versions).toHaveLength(0)
+    expect(state.versions).toHaveLength(3)
+  })
+
+  it('rejects resolving a draft prompt library', async () => {
+    const state = await stateWithPrompts()
+    const libraryId = await createLibraryWithTemplates(state)
+
+    const response = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/resolved`, { headers: reviewerHeaders() }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { code?: string }
+
+    expect(response.status).toBe(409)
+    expect(body.code).toBe('prompt_library_not_published')
+  })
+
+  it('rejects a published library whose enabled templates have no immutable version', async () => {
+    const state = await stateWithPrompts()
+    const libraryId = await createLibraryWithTemplates(state)
+    state.libraries[0].status = 'published'
+
+    const response = await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/resolved`, { headers: reviewerHeaders() }),
+      fakeEnv(state),
+    )
+    const body = await response.json() as { code?: string }
+
+    expect(response.status).toBe(409)
+    expect(body.code).toBe('prompt_library_version_incomplete')
   })
 
   it('lets active task machines read prompt libraries with a machine bearer token', async () => {
     const state = await stateWithPrompts()
     const libraryId = await createLibraryWithTemplates(state)
+    await fetchWorker(
+      new Request(`https://example.test/api/prompt-libraries/${libraryId}/publish-version`, {
+        method: 'POST',
+        headers: managerHeaders(),
+      }),
+      fakeEnv(state),
+    )
     await addMachine(state, 'machine-token', ['generate_ai_image'])
 
     const listResponse = await fetchWorker(

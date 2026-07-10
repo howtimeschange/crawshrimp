@@ -136,16 +136,22 @@
               >
                 <button
                   type="button"
-                  class="asset-tile"
+                  :class="['asset-tile', { loading: isGeneratingAsset(asset) }]"
+                  :disabled="isGeneratingAsset(asset)"
                   @click="openImagePreview(asset, item)"
                 >
-                  <img :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
+                  <div v-if="isGeneratingAsset(asset)" class="asset-loading-preview">
+                    <span class="asset-loading-spinner" aria-hidden="true"></span>
+                    <strong>生成中</strong>
+                    <small>{{ asset.prompt_name || asset.label || 'AI 图' }}</small>
+                  </div>
+                  <img v-else :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
                   <span class="asset-label">{{ asset.label || asset.filename }}</span>
-                  <span class="asset-file">{{ asset.filename || asset.path }}</span>
+                  <span class="asset-file">{{ asset.filename || asset.path || (isGeneratingAsset(asset) ? '等待 1XM 返回图片' : '') }}</span>
                   <span class="asset-status">{{ statusLabel(asset) }}</span>
                   <span v-if="asset.kind === 'ai' && assetAlreadySubmitted(item, asset)" class="asset-submit-mark">已提交过</span>
                 </button>
-                <div v-if="asset.kind === 'ai'" class="asset-card-actions">
+                <div v-if="asset.kind === 'ai' && !isGeneratingAsset(asset)" class="asset-card-actions">
                   <button type="button" class="asset-action ok" @click.stop="setAssetStatus(item, asset, 'approved')">确认</button>
                   <button type="button" class="asset-action danger" @click.stop="setAssetStatus(item, asset, 'rejected')">舍弃</button>
                 </div>
@@ -482,6 +488,7 @@ const submitProgress = computed(() => batch.value?.submit_progress || {})
 const hasSubmitResult = computed(() => createRows.value.length > 0)
 const effectiveStatus = computed(() => {
   const status = String(batch.value?.status || '').trim()
+  if (status === 'generating') return 'generating'
   if (String(submitProgress.value?.status || '').trim() === 'running') return 'submitting'
   if (status === 'submitted' && createRows.value.some(row => String(row?.执行结果 || '').includes('失败'))) {
     return 'partial_failed'
@@ -594,6 +601,7 @@ const submitProgressText = computed(() => {
   const message = String(submitProgress.value?.message || '').trim()
   if (message) return message
   if (generationSubmitting.value) return '正在批量生图'
+  if (effectiveStatus.value === 'generating') return '后台生图中，可先在看板查看生成中图片'
   if (submitting.value || effectiveStatus.value === 'submitting') return '正在提交已确认图片并创建测图任务'
   if (effectiveStatus.value === 'created') return '全部测图任务已提交'
   if (['partial_failed', 'create_failed'].includes(effectiveStatus.value)) return '提交完成，存在失败款'
@@ -642,6 +650,7 @@ const createStageLabel = computed(() => {
   return '确认后触发'
 })
 const batchStatusLabel = computed(() => {
+  if (effectiveStatus.value === 'generating') return '生图中'
   if (effectiveStatus.value === 'submitting') return '提交中'
   if (effectiveStatus.value === 'created') return '创建成功'
   if (effectiveStatus.value === 'partial_failed') return '部分失败'
@@ -678,7 +687,8 @@ function stopSubmitProgressPolling() {
 function startSubmitProgressPolling() {
   stopSubmitProgressPolling()
   submitPollTimer = window.setInterval(() => {
-    if (!submitting.value && !generationSubmitting.value) {
+    const progressStatus = String(submitProgress.value?.status || '').trim()
+    if (!submitting.value && !generationSubmitting.value && effectiveStatus.value !== 'generating' && progressStatus !== 'running') {
       stopSubmitProgressPolling()
       return
     }
@@ -837,6 +847,10 @@ function statusLabel(asset) {
   if (status === 'generating') return '生成中'
   if (status === 'generated') return '已重试'
   return '待审批'
+}
+
+function isGeneratingAsset(asset) {
+  return asset?.kind === 'ai' && (String(asset?.status || '').trim() === 'generating' || asset?.placeholder)
 }
 
 function itemMainAsset(item) {
@@ -1124,14 +1138,15 @@ async function submitGenerationConfirmation() {
     } else {
       await reload()
     }
-    showToast(`生图完成：${result?.generated || summary.value.aiTotal || 0} 张`)
+    emit('generation-started', batch.value)
+    showToast(result?.accepted ? '已提交后台生图任务，可在看板中查看生成中图片' : `生图完成：${result?.generated || summary.value.aiTotal || 0} 张`)
   } catch (err) {
     batch.value = previousBatch
     emit('batch-updated', previousBatch)
     showToast(err?.message || String(err), true)
   } finally {
     generationSubmitting.value = false
-    stopSubmitProgressPolling()
+    if (String(batch.value?.status || '').trim() !== 'generating') stopSubmitProgressPolling()
   }
 }
 
@@ -2035,12 +2050,56 @@ function showToast(message, isError = false) {
   padding: 0;
   cursor: pointer;
 }
+.asset-tile.loading {
+  cursor: default;
+}
 .asset-tile img {
   width: 100%;
   aspect-ratio: 3 / 4;
   object-fit: cover;
   display: block;
   background: rgba(255, 255, 255, .04);
+}
+.asset-loading-preview {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 16px;
+  background:
+    linear-gradient(135deg, rgba(249, 115, 22, .16), rgba(34, 197, 94, .08)),
+    rgba(255, 255, 255, .04);
+  color: var(--text);
+}
+.asset-loading-preview strong,
+.asset-loading-preview small {
+  display: block;
+  max-width: 100%;
+  text-align: center;
+}
+.asset-loading-preview strong {
+  font-size: 13px;
+  font-weight: 900;
+}
+.asset-loading-preview small {
+  color: var(--text3);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.asset-loading-spinner {
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: 3px solid rgba(255, 255, 255, .18);
+  border-top-color: var(--orange);
+  animation: approval-spin .8s linear infinite;
+}
+@keyframes approval-spin {
+  to { transform: rotate(360deg); }
 }
 .asset-label,
 .asset-file,

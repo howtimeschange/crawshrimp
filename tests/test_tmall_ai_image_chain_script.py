@@ -50,6 +50,19 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             module.normalize_chain_execution_mode("generate")
 
+    def test_generation_defaults_use_large_three_four_gpt_4k(self):
+        module = load_script()
+
+        args = module.build_parser().parse_args([])
+        defaults = module.approval_generation_defaults({"run_params": {}}, {"assets": []})
+
+        self.assertEqual(args.image_size, "1536x2048")
+        self.assertEqual(args.one_xm_key_tier, "4k")
+        self.assertEqual(defaults["image_size"], "1536x2048")
+        self.assertEqual(defaults["ratio"], "3:4")
+        self.assertEqual(defaults["model"], "gpt-image-2")
+        self.assertEqual(defaults["one_xm_key_tier"], "4k")
+
     def test_approval_item_preserves_reference_and_ai_display_order(self):
         module = load_script()
         workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
@@ -125,6 +138,75 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(item["generation_prompts"][1]["reference_paths"], ["/tmp/main.jpg"])
         self.assertEqual(item["generation_prompts"][1]["image_count"], 1)
         self.assertEqual(item["generation_prompts"][1]["status"], "pending")
+
+    def test_generation_confirmation_item_exposes_all_style_color_reference_images(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性")
+
+        item = module.build_generation_confirmation_item(
+            workflow,
+            {
+                "chosenMain": {"filename": "橱窗1.jpg"},
+                "chosenDetail": {"filename": "208326100202-20841.jpg"},
+                "detailReferencePaths": [
+                    "/tmp/208326100202-20841.jpg",
+                    "/tmp/208326100202-30424.jpg",
+                    "/tmp/208326100202-60354.jpg",
+                ],
+            },
+            "/tmp/main.jpg",
+            "/tmp/208326100202-20841.jpg",
+            [{"提示词序号": 1, "提示词字段名": "正面", "完整Prompt": "prompt", "参考图文件": "/tmp/main.jpg"}],
+            reference_mode="main_only",
+        )
+
+        detail_assets = [asset for asset in item["assets"] if asset["kind"] == "detail_reference"]
+        self.assertEqual(
+            [asset["path"] for asset in detail_assets],
+            [
+                "/tmp/208326100202-20841.jpg",
+                "/tmp/208326100202-30424.jpg",
+                "/tmp/208326100202-60354.jpg",
+            ],
+        )
+        self.assertEqual(detail_assets[0]["label"], "款色参考图")
+        self.assertEqual(detail_assets[1]["label"], "款色参考图 2")
+
+    def test_prepare_generation_confirmation_placeholders_returns_generating_ai_cards(self):
+        module = load_script()
+        batch = {
+            "batch_id": "batch-placeholder",
+            "status": module.GENERATION_CONFIRMATION_STATUS,
+            "run_params": {"image_size": "1536x2048", "one_xm_key_tier": "4k"},
+            "items": [{
+                "id": "item-1",
+                "style_code": "208326100202",
+                "item_id": "1002178235142",
+                "origin_path": "/tmp/main.jpg",
+                "assets": [{"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg", "slot": "main"}],
+                "generation_prompts": [{
+                    "id": "prompt-1",
+                    "prompt_index": 1,
+                    "prompt_name": "正面",
+                    "prompt": "prompt",
+                    "custom_prompt": "prompt",
+                    "image_count": 2,
+                    "reference_paths": ["/tmp/main.jpg"],
+                    "status": "pending",
+                }],
+            }],
+        }
+
+        with patch.object(module, "save_approval_batch"), \
+            patch.object(module, "maybe_sync_approval_batch_to_cloud"):
+            prepared = module.prepare_generation_confirmation_placeholders(batch)
+
+        ai_assets = [asset for asset in prepared["items"][0]["assets"] if asset["kind"] == "ai"]
+        self.assertEqual(prepared["status"], "generating")
+        self.assertEqual(prepared["submit_progress"]["status"], "running")
+        self.assertEqual(prepared["submit_progress"]["image_total"], 2)
+        self.assertEqual(len(ai_assets), 2)
+        self.assertTrue(all(asset["status"] == "generating" and asset["placeholder"] for asset in ai_assets))
 
     def test_generation_confirmation_prompt_image_count_updates_1xm_payload(self):
         module = load_script()
@@ -1014,7 +1096,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
                     "assets": [{"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg"}],
                 }],
             }
-            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": "unit-key-4k"}), \
                 patch.object(module, "run_one_xm_generation_row", fake_generate), \
                 patch.object(module, "download_generated_images", fake_download), \
                 patch.object(module, "save_approval_batch"):
@@ -1079,7 +1161,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
                     }],
                 }],
             }
-            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": "unit-key-4k"}), \
                 patch.object(module, "run_one_xm_generation_row", fake_generate), \
                 patch.object(module, "download_generated_images", fake_download), \
                 patch.object(module, "save_approval_batch"):
@@ -1141,7 +1223,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
                     ],
                 }],
             }
-            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+            with patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": "unit-key-4k"}), \
                 patch.object(module, "run_one_xm_generation_row", fake_generate), \
                 patch.object(module, "download_generated_images", fake_download), \
                 patch.object(module, "save_approval_batch"):
@@ -1857,6 +1939,17 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             key_tier="2k",
             run_nonce="run-B",
         )
+        large_three_four_row = module.make_generation_row(
+            workflow,
+            prompt,
+            "/tmp/origin.jpg",
+            image_size="1536x2048",
+            ratio="3:4",
+            quality="high",
+            output_format="jpeg",
+            key_tier="4k",
+            run_nonce="run-C",
+        )
 
         self.assertEqual(row["尺寸"], "960x1280")
         self.assertEqual(row["格式"], "jpeg")
@@ -1872,6 +1965,12 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(row["__task_run_uid"], "run-A")
         self.assertTrue(row["__1xm_idempotency_key"].isascii())
         self.assertNotEqual(row["__1xm_idempotency_key"], next_run_row["__1xm_idempotency_key"])
+        self.assertEqual(large_three_four_row["尺寸"], "1536x2048")
+        self.assertEqual(large_three_four_row["比例"], "3:4")
+        self.assertEqual(large_three_four_row["质量"], "high")
+        self.assertEqual(large_three_four_row["__1xm_key_tier"], "4k")
+        self.assertEqual(large_three_four_row["__1xm_payload"]["size"], "1536x2048")
+        self.assertEqual(large_three_four_row["__1xm_payload"]["ratio"], "3:4")
 
     def test_select_prompts_returns_four_prompts_by_priority(self):
         module = load_script()
@@ -1973,7 +2072,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
                 patch.object(module, "CDPBridge", Bridge), \
                 patch.object(module, "get_runner", fake_get_runner), \
                 patch.object(module, "wait_for_semir_api_ready", fake_wait_for_semir_ready), \
-                patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": ""}), \
+                patch.object(module, "resolve_one_xm_settings", return_value={"2k": "unit-key", "4k": "unit-key-4k"}), \
                 patch.object(module, "find_semir_references", fake_find_semir), \
                 patch.object(module, "run_one_xm_generation_row", fake_generate), \
                 patch.object(module, "download_generated_images", fake_download):
@@ -2275,6 +2374,57 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             "208326100202-80224.jpg",
         ])
         self.assertNotIn("20832610020230424-婴幼童-男-AI参考.jpg", payload["detailCandidates"])
+
+    def test_find_semir_references_downloads_all_style_color_candidates(self):
+        module = load_script()
+        workflow = module.WorkflowItem(2, "208326100202", "1002178235142", "长袖T恤", "中性", skc_code="208326100202-00211")
+
+        class Runner:
+            async def evaluate_with_reconnect(self, script, **_kwargs):
+                if "SEMIR_FETCH_FILE_JS" in script or "缺少下载 URL" in script:
+                    return SimpleNamespace(success=True, data=[{"base64": "dGVzdA=="}], error="")
+                return SimpleNamespace(
+                    success=True,
+                    data=[{
+                        "chosenMain": {"filename": "橱窗1.jpg", "materialUrl": "https://example.com/main.jpg"},
+                        "chosenDetail": {"filename": "208326100202-20841.jpg", "materialUrl": "https://example.com/20841.jpg"},
+                        "detailCandidates": [
+                            {"filename": "208326100202-20841.jpg", "materialUrl": "https://example.com/20841.jpg"},
+                            {"filename": "208326100202-30424.jpg", "materialUrl": "https://example.com/30424.jpg"},
+                            {"filename": "208326100202-60354.jpg", "materialUrl": "https://example.com/60354.jpg"},
+                        ],
+                    }],
+                    error="",
+                )
+
+        with tempfile.TemporaryDirectory() as tmpdir, \
+            patch.object(module, "optimize_reference_image", side_effect=lambda path: path):
+            data, main_path, detail_path = asyncio.run(module.find_semir_references(
+                Runner(),
+                workflow,
+                "巴拉运营BU/模拍原图/已选",
+                Path(tmpdir),
+                download_detail=True,
+            ))
+
+        self.assertTrue(main_path.endswith("208326100202-main-origin.jpg"))
+        self.assertTrue(detail_path.endswith("208326100202-detail-flat-1.jpg"))
+        self.assertEqual(
+            [Path(path).name for path in data["detailReferencePaths"]],
+            [
+                "208326100202-detail-flat-1.jpg",
+                "208326100202-detail-flat-2.jpg",
+                "208326100202-detail-flat-3.jpg",
+            ],
+        )
+        self.assertEqual(
+            [Path(item["localPath"]).name for item in data["detailCandidates"]],
+            [
+                "208326100202-detail-flat-1.jpg",
+                "208326100202-detail-flat-2.jpg",
+                "208326100202-detail-flat-3.jpg",
+            ],
+        )
 
     def test_tmall_upload_image_is_normalized_to_three_four_portrait(self):
         module = load_script()

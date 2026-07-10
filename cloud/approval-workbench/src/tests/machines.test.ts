@@ -124,6 +124,15 @@ interface GenerationRequestRow {
   status: string
   updated_at: string
 }
+interface DispatchJobEventRow {
+  job_uid: string
+  machine_id: string
+  lease_id: string
+  event_type: string
+  message: string
+  payload_json: string
+  created_at: string
+}
 
 interface FakeState {
   users: UserRow[]
@@ -138,7 +147,7 @@ interface FakeState {
   styles: StyleRow[]
   assets: AssetRow[]
   generationRequests: GenerationRequestRow[]
-  events: unknown[]
+  events: DispatchJobEventRow[]
   audits: unknown[]
   claimRaceRequiredCapabilitiesJson?: string
   claimRaceMachineAuthStatus?: string
@@ -261,6 +270,25 @@ class FakeD1Statement {
           lease_id: job.lease_id,
         }))
       return { results: results as T[] }
+    }
+    if (normalized.includes('from dispatch_jobs')
+      && normalized.includes('lease_expires_at < ?')
+      && normalized.includes('attempt_count >= max_attempts')) {
+      const cutoff = String(this.params[0])
+      return {
+        results: this.state.jobs.filter((job) => ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
+          && job.cancel_requested !== 1
+          && Boolean(job.lease_expires_at)
+          && String(job.lease_expires_at) < cutoff
+          && job.attempt_count >= job.max_attempts).map((job) => ({ ...job })) as T[],
+      }
+    }
+    if (normalized.includes('from dispatch_jobs')
+      && normalized.includes("status = 'retryable_failed'")
+      && normalized.includes('attempt_count >= max_attempts')) {
+      return {
+        results: this.state.jobs.filter((job) => job.status === 'retryable_failed' && job.attempt_count >= job.max_attempts).map((job) => ({ ...job })) as T[],
+      }
     }
     if (normalized.includes('from dispatch_jobs')) {
       const machineId = String(this.params[0])
@@ -425,6 +453,31 @@ class FakeD1Statement {
           job.updated_at = now
           changes += 1
         }
+      }
+      return result(changes)
+    }
+    if (normalized.startsWith("update dispatch_jobs set status = 'terminal_failed'")) {
+      const resultJson = String(this.params[0])
+      const now = String(this.params[1])
+      const terminalizesRetryableFailures = normalized.includes("where status = 'retryable_failed'")
+      const cutoff = terminalizesRetryableFailures ? '' : String(this.params[2])
+      let changes = 0
+      for (const job of this.state.jobs) {
+        const exhausted = terminalizesRetryableFailures
+          ? job.status === 'retryable_failed' && job.attempt_count >= job.max_attempts
+          : ['leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)
+            && job.cancel_requested !== 1
+            && Boolean(job.lease_expires_at)
+            && String(job.lease_expires_at) < cutoff
+            && job.attempt_count >= job.max_attempts
+        if (!exhausted) continue
+        job.status = 'terminal_failed'
+        job.assigned_machine_id = null
+        job.lease_id = null
+        job.lease_expires_at = null
+        job.result_json = resultJson
+        job.updated_at = now
+        changes += 1
       }
       return result(changes)
     }
@@ -725,6 +778,22 @@ function bearer(token: string): { authorization: string } {
 }
 
 describe('machine routes', () => {
+  it('returns a stable error code for invalid machine credentials', async () => {
+    const response = await fetchWorker(
+      new Request('https://example.test/api/machines/heartbeat', {
+        method: 'POST',
+        headers: bearer('invalid-machine-token'),
+        body: JSON.stringify({ health: 'online_idle', capabilities: [] }),
+      }),
+      fakeEnv(await emptyState()),
+    )
+    const body = await response.json() as { error: string; code?: string }
+
+    expect(response.status).toBe(401)
+    expect(body.error).toBe('Invalid machine token')
+    expect(body.code).toBe('machine_token_invalid')
+  })
+
   it('admin can create an enrollment token and receives the plain token once', async () => {
     const state = await emptyState()
     const cookie = await addSession(state, 1, 'admin-token')
@@ -1021,6 +1090,48 @@ describe('machine routes', () => {
     expect(state.jobs[0].assigned_machine_id).toBe('machine-2')
   })
 
+  it('terminalizes an exhausted expired lease and releases its machine exactly once', async () => {
+    const state = await emptyState()
+    const oldToken = await seedEnrollmentToken(state)
+    await enrollMachine(state, oldToken)
+    state.machines[0].auth_status = 'active'
+    state.machines[0].health = 'online_busy'
+    state.machines[0].current_job_id = 'job-expired-final'
+    const newToken = await seedEnrollmentToken(state)
+    const newMachineToken = await enrollMachine(state, newToken)
+    state.machines[1].auth_status = 'active'
+    state.machines[1].health = 'online_idle'
+    state.jobs.push(jobRow({
+      job_uid: 'job-expired-final',
+      status: 'running',
+      assigned_machine_id: 'machine-1',
+      lease_id: 'lease-final',
+      lease_expires_at: new Date(Date.now() - 60_000).toISOString(),
+      attempt_count: 1,
+      max_attempts: 1,
+    }))
+    const claim = () => fetchWorker(
+      new Request('https://example.test/api/machines/jobs/claim', {
+        method: 'POST',
+        headers: bearer(newMachineToken),
+      }),
+      fakeEnv(state),
+    )
+
+    await claim()
+    await claim()
+
+    expect(state.jobs[0]).toMatchObject({
+      status: 'terminal_failed',
+      assigned_machine_id: null,
+      lease_id: null,
+      lease_expires_at: null,
+    })
+    expect(JSON.parse(state.jobs[0].result_json)).toMatchObject({ reason: 'lease_expired_attempts_exhausted' })
+    expect(state.machines[0]).toMatchObject({ health: 'online_idle', current_job_id: null })
+    expect(state.events.filter((event) => event.job_uid === 'job-expired-final' && event.event_type === 'lease_expired_terminal')).toHaveLength(1)
+  })
+
   it('expires cancel-requested leases as cancelled instead of reclaiming them', async () => {
     const state = await emptyState()
     const token = await seedEnrollmentToken(state)
@@ -1084,9 +1195,9 @@ describe('machine routes', () => {
   })
 
   it.each([
-    { label: 'expired leased', status: 'leased', lease_expires_at: new Date(Date.now() - 60_000).toISOString() },
-    { label: 'retryable failed', status: 'retryable_failed', lease_expires_at: null },
-  ])('does not recover $label jobs after attempts are exhausted', async ({ status, lease_expires_at }) => {
+    { label: 'expired leased', status: 'leased', lease_expires_at: new Date(Date.now() - 60_000).toISOString(), reason: 'lease_expired_attempts_exhausted' },
+    { label: 'retryable failed', status: 'retryable_failed', lease_expires_at: null, reason: 'attempts_exhausted' },
+  ])('terminalizes $label jobs after attempts are exhausted', async ({ status, lease_expires_at, reason }) => {
     const state = await emptyState()
     const token = await seedEnrollmentToken(state)
     const machineToken = await enrollMachine(state, token)
@@ -1113,8 +1224,9 @@ describe('machine routes', () => {
 
     expect(response.status).toBe(200)
     expect(body.job).toBeNull()
-    expect(state.jobs[0].status).toBe(status)
-    expect(state.jobs[0].assigned_machine_id).toBe('machine-old')
+    expect(state.jobs[0].status).toBe('terminal_failed')
+    expect(state.jobs[0].assigned_machine_id).toBeNull()
+    expect(JSON.parse(state.jobs[0].result_json)).toMatchObject({ reason })
   })
 
   it('does not recover terminal submit failures during claim', async () => {

@@ -175,6 +175,9 @@ class FakeD1Statement {
     if (normalized.includes('from ai_image_styles') && normalized.includes('where batch_uid = ?') && normalized.includes('style_code = ?')) {
       return (this.state.styles.find((row) => row.batch_uid === String(this.params[0]) && row.style_code === String(this.params[1]) && row.item_id === String(this.params[2])) ?? null) as T | null
     }
+    if (normalized.includes('from ai_image_assets') && normalized.includes('where asset_uid = ?')) {
+      return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
+    }
     if (normalized.includes('select count(*) as count from ai_image_styles')) {
       return { count: this.state.styles.filter((row) => row.batch_uid === String(this.params[0])).length } as T
     }
@@ -293,7 +296,7 @@ class FakeD1Statement {
         existing.skc_code = String(this.params[3])
         existing.category = String(this.params[4])
         existing.gender = String(this.params[5])
-        existing.status = String(this.params[6])
+        if (normalized.includes('status = excluded.status')) existing.status = String(this.params[6])
         existing.missing_prompt_reason = String(this.params[7])
         existing.source_summary_json = String(this.params[8])
         return result(1, existing.id)
@@ -513,6 +516,49 @@ describe('batch sync routes', () => {
     expect(state.batches[0]).toMatchObject({ batch_uid: 'batch-20260707', status: 'syncing', source_machine_id: 'machine-1' })
     expect(state.styles[0]).toMatchObject({ style_code: '208326140201', item_id: '1065477260163' })
     expect(state.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
+  })
+
+  it('preserves cloud review decisions when the source machine replays batch sync', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const syncRequest = () => new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    })
+    await fetchWorker(syncRequest(), env)
+    state.batches[0].status = 'pending_review'
+    state.styles[0].status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-source-1')!.status = 'uploaded'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+
+    const replay = await fetchWorker(syncRequest(), env)
+
+    expect(replay.status).toBe(200)
+    expect(state.styles[0].status).toBe('approved')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-source-1')?.status).toBe('uploaded')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('approved')
+  })
+
+  it('rejects replay sync after a batch has been submitted', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const request = () => new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    })
+    await fetchWorker(request(), env)
+    state.batches[0].status = 'submitted'
+    state.styles[0].status = 'submitted'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'submitted'
+
+    const replay = await fetchWorker(request(), env)
+
+    expect(replay.status).toBe(409)
+    expect(state.batches[0].status).toBe('submitted')
+    expect(state.styles[0].status).toBe('submitted')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('submitted')
   })
 
   it('returns safe synced style ids for desktop upload matching', async () => {
