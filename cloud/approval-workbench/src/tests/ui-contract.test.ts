@@ -35,7 +35,7 @@ describe('cloud approval UI contract', () => {
 
   it('batch review only exposes approval and task-machine submit actions', () => {
     const review = read('src/app/views/BatchReviewView.vue')
-    for (const text of ['确认通过', '标记舍弃', '待审批', '提交创建测图任务', '任务结果']) {
+    for (const text of ['确认通过', '标记舍弃', '待审批', '批量审核通过', '批量舍弃', '提交创建测图任务', '任务结果']) {
       expect(review).toContain(text)
     }
     for (const removedText of ['重跑已选舍弃图', '重跑本批全部舍弃图', '重跑当前舍弃图', 'Prompt 重跑', '补充素材', 'AI 图（人工补图）']) {
@@ -52,6 +52,24 @@ describe('cloud approval UI contract', () => {
     expect(review).not.toContain('review-loadbar')
     expect(review).not.toContain('批次 UID')
     expect(review).not.toContain('加载批次')
+  })
+
+  it('batch review dedupes source materials and supports bulk AI decisions', () => {
+    const review = read('src/app/views/BatchReviewView.vue')
+    for (const marker of [
+      'sourceMaterials',
+      'buildSourceMaterials',
+      'sourceMaterialDownloadUrl',
+      'selectedAiAssetUids',
+      'toggleAllReviewableAiAssets',
+      'selectedReviewableAiAssets',
+      'bulkDecide',
+    ]) {
+      expect(review).toContain(marker)
+    }
+    expect(review).toContain('已选 {{ selectedReviewableAiAssets.length }} / 可审 {{ reviewableAiAssets.length }}')
+    expect(review).not.toContain('sourceImageResources.length + sourceAssets.length')
+    expect(review).not.toContain('v-for="resource in sourceImageResources"')
   })
 
   it('batch list exposes Beijing time and image previews before entering review', () => {

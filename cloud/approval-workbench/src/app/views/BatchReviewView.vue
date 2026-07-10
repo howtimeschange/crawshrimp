@@ -25,6 +25,15 @@ interface ImageResourceRow {
   source_label: string
 }
 
+interface SourceMaterialItem {
+  key: string
+  kind: string
+  filename: string
+  label: string
+  asset?: AssetRow
+  resource?: ImageResourceRow
+}
+
 interface DispatchJob {
   job_uid: string
   job_type: string
@@ -91,6 +100,7 @@ const batch = ref<BatchDetail | null>(null)
 const machines = ref<MachineRow[]>([])
 const selectedStyleId = ref<number | null>(null)
 const selectedAssetUid = ref('')
+const selectedAiAssetUids = ref<string[]>([])
 const selectedMachineId = ref('')
 const message = ref('')
 const error = ref('')
@@ -101,6 +111,13 @@ const aiAssets = computed(() => selectedStyle.value?.assets.filter((asset) => as
 const sourceAssets = computed(() => selectedStyle.value?.assets.filter((asset) => ['source', 'reference'].includes(asset.kind)) ?? [])
 const imageResources = computed(() => selectedStyle.value?.image_resources ?? [])
 const sourceImageResources = computed(() => imageResources.value.filter((resource) => resource.kind !== 'ai'))
+const sourceMaterials = computed(() => buildSourceMaterials(sourceImageResources.value, sourceAssets.value))
+const reviewableAiAssets = computed(() => aiAssets.value.filter((asset) => canReviewAsset(asset)))
+const selectedAiAssets = computed(() => selectedAiAssetUids.value
+  .map((assetUid) => aiAssets.value.find((asset) => asset.asset_uid === assetUid))
+  .filter((asset): asset is AssetRow => Boolean(asset)))
+const selectedReviewableAiAssets = computed(() => selectedAiAssets.value.filter((asset) => canReviewAsset(asset)))
+const allReviewableSelected = computed(() => reviewableAiAssets.value.length > 0 && reviewableAiAssets.value.every((asset) => selectedAiAssetUids.value.includes(asset.asset_uid)))
 const selectedAsset = computed(() => {
   const assets = selectedStyle.value?.assets ?? []
   return assets.find((asset) => asset.asset_uid === selectedAssetUid.value)
@@ -144,6 +161,7 @@ watch(() => props.initialBatchUid, (value) => {
 })
 
 watch(selectedStyleId, () => {
+  selectedAiAssetUids.value = []
   const style = selectedStyle.value
   if (!style?.assets.some((asset) => asset.asset_uid === selectedAssetUid.value)) {
     selectedAssetUid.value = defaultAssetUid(style)
@@ -164,6 +182,7 @@ async function loadBatch(preferred: { styleId?: number | null; assetUid?: string
     selectedAssetUid.value = preferred.assetUid && nextStyle?.assets.some((asset) => asset.asset_uid === preferred.assetUid)
       ? preferred.assetUid
       : defaultAssetUid(nextStyle)
+    selectedAiAssetUids.value = selectedAiAssetUids.value.filter((assetUid) => nextStyle?.assets.some((asset) => asset.kind === 'ai' && asset.asset_uid === assetUid && canReviewAsset(asset)))
   } catch (caught) {
     error.value = (caught as ApiError).message
   }
@@ -220,10 +239,41 @@ function styleStateClass(style: StyleRow): string {
   return 'rejected'
 }
 
+function canReviewAsset(asset: AssetRow): boolean {
+  return asset.kind === 'ai' && asset.status !== 'submitted' && batch.value?.status !== 'submitted' && !activeSubmitJob.value
+}
+
+function reviewLockMessage(asset: AssetRow): string {
+  if (asset.status === 'submitted' || batch.value?.status === 'submitted') return '已提交图片不能重新审批'
+  if (activeSubmitJob.value) return '提交任务执行中，暂时不能修改审批结果'
+  return '当前图片不能审批'
+}
+
+function toggleAiAsset(asset: AssetRow) {
+  if (!canReviewAsset(asset)) return
+  selectAsset(asset)
+  if (selectedAiAssetUids.value.includes(asset.asset_uid)) {
+    selectedAiAssetUids.value = selectedAiAssetUids.value.filter((assetUid) => assetUid !== asset.asset_uid)
+  } else {
+    selectedAiAssetUids.value = [...selectedAiAssetUids.value, asset.asset_uid]
+  }
+}
+
+function toggleAllReviewableAiAssets() {
+  if (allReviewableSelected.value) {
+    selectedAiAssetUids.value = selectedAiAssetUids.value.filter((assetUid) => !reviewableAiAssets.value.some((asset) => asset.asset_uid === assetUid))
+  } else {
+    selectedAiAssetUids.value = Array.from(new Set([
+      ...selectedAiAssetUids.value,
+      ...reviewableAiAssets.value.map((asset) => asset.asset_uid),
+    ]))
+  }
+}
+
 async function decide(asset: AssetRow, decision: 'approved' | 'rejected' | 'pending') {
   if (!batch.value) return
-  if (asset.status === 'submitted') {
-    error.value = '已提交图片不能重新审批'
+  if (!canReviewAsset(asset)) {
+    error.value = reviewLockMessage(asset)
     return
   }
   try {
@@ -232,6 +282,30 @@ async function decide(asset: AssetRow, decision: 'approved' | 'rejected' | 'pend
     await loadBatch({ styleId: selectedStyleId.value, assetUid: asset.asset_uid })
   } catch (caught) {
     error.value = (caught as ApiError).message
+  }
+}
+
+async function bulkDecide(decision: 'approved' | 'rejected') {
+  if (!batch.value) return
+  const assets = [...selectedReviewableAiAssets.value]
+  if (assets.length === 0) {
+    error.value = '请先勾选要批量审核的 AI 图'
+    return
+  }
+  error.value = ''
+  let completed = 0
+  try {
+    for (const asset of assets) {
+      await apiPatch(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/assets/${encodeURIComponent(asset.asset_uid)}/decision`, { decision })
+      completed += 1
+    }
+    message.value = `已批量标记 ${assets.length} 张 AI 图为 ${decisionLabel(decision)}`
+    selectedAiAssetUids.value = []
+    await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
+  } catch (caught) {
+    const detail = (caught as ApiError).message || String(caught)
+    error.value = completed > 0 ? `已处理 ${completed}/${assets.length} 张，剩余失败：${detail}` : detail
+    await loadBatch({ styleId: selectedStyleId.value, assetUid: selectedAssetUid.value })
   }
 }
 
@@ -257,6 +331,10 @@ function assetDownloadUrl(asset: AssetRow): string {
 
 function resourceDownloadUrl(resource: ImageResourceRow): string {
   return `/api/assets/${encodeURIComponent(resource.asset_uid)}/download`
+}
+
+function sourceMaterialDownloadUrl(item: SourceMaterialItem): string {
+  return item.asset ? assetDownloadUrl(item.asset) : item.resource ? resourceDownloadUrl(item.resource) : ''
 }
 
 function isPreviewable(asset: Pick<AssetRow | ImageResourceRow, 'filename'>): boolean {
@@ -338,6 +416,71 @@ function taskResultValue(value: unknown): string {
 
 function stringValue(value: unknown): string {
   return value === null || value === undefined ? '' : String(value).trim()
+}
+
+function buildSourceMaterials(resources: ImageResourceRow[], assets: AssetRow[]): SourceMaterialItem[] {
+  const items: SourceMaterialItem[] = []
+  const index = new Map<string, SourceMaterialItem>()
+
+  for (const resource of resources) {
+    mergeSourceMaterial(items, index, sourceResourceKeys(resource), {
+      kind: resource.kind,
+      filename: resource.filename,
+      label: resource.source_label || kindLabel(resource.kind),
+      resource,
+    })
+  }
+  for (const asset of assets) {
+    mergeSourceMaterial(items, index, sourceAssetKeys(asset), {
+      kind: asset.kind,
+      filename: asset.filename,
+      label: kindLabel(asset.kind),
+      asset,
+    })
+  }
+
+  return items
+}
+
+function mergeSourceMaterial(
+  items: SourceMaterialItem[],
+  index: Map<string, SourceMaterialItem>,
+  keys: string[],
+  patch: Omit<SourceMaterialItem, 'key'>,
+) {
+  const usableKeys = keys.filter(Boolean)
+  let item = usableKeys.map((key) => index.get(key)).find((value): value is SourceMaterialItem => Boolean(value))
+  if (!item) {
+    item = { key: usableKeys[0] || `${patch.kind}:${patch.filename}`, ...patch }
+    items.push(item)
+  }
+  item.kind = patch.kind || item.kind
+  item.filename = patch.resource?.filename || item.filename || patch.filename
+  item.label = patch.resource?.source_label || item.label || patch.label
+  item.resource = item.resource ?? patch.resource
+  item.asset = item.asset ?? patch.asset
+  for (const key of usableKeys) index.set(key, item)
+}
+
+function sourceResourceKeys(resource: ImageResourceRow): string[] {
+  return sourceIdentityKeys(resource.kind, resource.asset_uid, resource.filename, resource.object_key)
+}
+
+function sourceAssetKeys(asset: AssetRow): string[] {
+  return sourceIdentityKeys(asset.kind, asset.asset_uid, asset.filename)
+}
+
+function sourceIdentityKeys(kind: string, assetUid: string, filename: string, objectKey = ''): string[] {
+  const prefix = kind || 'source'
+  return [
+    assetUid ? `${prefix}:asset:${assetUid}` : '',
+    normalizeSourceIdentity(filename) ? `${prefix}:file:${normalizeSourceIdentity(filename)}` : '',
+    normalizeSourceIdentity(objectKey) ? `${prefix}:object:${normalizeSourceIdentity(objectKey)}` : '',
+  ]
+}
+
+function normalizeSourceIdentity(value: string): string {
+  return value.trim().toLowerCase()
 }
 
 function decisionLabel(status: string): string {
@@ -457,39 +600,44 @@ onMounted(() => {
         <section class="source-zone">
           <div class="zone-title">
             <h3>主图 / 参考图</h3>
-            <span>{{ sourceImageResources.length + sourceAssets.length }} 个素材</span>
+            <span>{{ sourceMaterials.length }} 个素材</span>
           </div>
           <div class="source-strip">
-            <article
-              v-for="resource in sourceImageResources"
-              :key="resource.resource_uid"
-              class="source-tile"
-            >
-              <img v-if="isPreviewable(resource)" :src="resourceDownloadUrl(resource)" :alt="resource.filename" />
-              <span v-else class="file-placeholder">{{ kindLabel(resource.kind) }}</span>
-              <strong>{{ resource.source_label || kindLabel(resource.kind) }}</strong>
-              <small>{{ resource.filename }}</small>
-            </article>
             <button
-              v-for="asset in sourceAssets"
-              :key="asset.asset_uid"
+              v-for="item in sourceMaterials"
+              :key="item.key"
               class="source-tile"
-              :class="{ active: selectedAsset?.asset_uid === asset.asset_uid }"
+              :class="{ active: item.asset?.asset_uid === selectedAsset?.asset_uid, inactive: !item.asset }"
               type="button"
-              @click="selectAsset(asset)"
+              @click="item.asset && selectAsset(item.asset)"
             >
-              <img v-if="isPreviewable(asset)" :src="assetDownloadUrl(asset)" :alt="asset.filename" />
-              <span v-else class="file-placeholder">{{ kindLabel(asset.kind) }}</span>
-              <strong>{{ kindLabel(asset.kind) }}</strong>
-              <small>{{ asset.filename }}</small>
+              <img v-if="isPreviewable(item)" :src="sourceMaterialDownloadUrl(item)" :alt="item.filename" />
+              <span v-else class="file-placeholder">{{ kindLabel(item.kind) }}</span>
+              <strong>{{ item.label || kindLabel(item.kind) }}</strong>
+              <small>{{ item.filename }}</small>
             </button>
           </div>
         </section>
 
         <section class="ai-review-zone">
           <div class="zone-title">
-            <h3>AI 图审批</h3>
-            <span v-if="selectedStyle">确认 {{ statsForStyle(selectedStyle).approved }} / 舍弃 {{ statsForStyle(selectedStyle).rejected }} / 待定 {{ statsForStyle(selectedStyle).pending }}</span>
+            <div>
+              <h3>AI 图审批</h3>
+              <span v-if="selectedStyle">确认 {{ statsForStyle(selectedStyle).approved }} / 舍弃 {{ statsForStyle(selectedStyle).rejected }} / 待定 {{ statsForStyle(selectedStyle).pending }}</span>
+            </div>
+            <div v-if="aiAssets.length" class="bulk-review-actions">
+              <label class="bulk-select-row">
+                <input
+                  type="checkbox"
+                  :checked="allReviewableSelected"
+                  :disabled="reviewableAiAssets.length === 0"
+                  @change="toggleAllReviewableAiAssets"
+                />
+                <span>已选 {{ selectedReviewableAiAssets.length }} / 可审 {{ reviewableAiAssets.length }}</span>
+              </label>
+              <button class="small-button approve-action" type="button" :disabled="selectedReviewableAiAssets.length === 0" @click="bulkDecide('approved')">批量审核通过</button>
+              <button class="danger-button small-action" type="button" :disabled="selectedReviewableAiAssets.length === 0" @click="bulkDecide('rejected')">批量舍弃</button>
+            </div>
           </div>
           <div v-if="aiAssets.length === 0" class="gallery-empty">
             当前款式还没有本地任务机回传的 AI 图。
@@ -499,22 +647,28 @@ onMounted(() => {
               v-for="asset in aiAssets"
               :key="asset.asset_uid"
               class="review-card"
-              :class="[asset.status, { active: selectedAsset?.asset_uid === asset.asset_uid }]"
+              :class="[asset.status, { active: selectedAsset?.asset_uid === asset.asset_uid, selected: selectedAiAssetUids.includes(asset.asset_uid) }]"
             >
               <button class="review-image-button" type="button" @click="selectAsset(asset)">
                 <img v-if="isPreviewable(asset)" :src="assetDownloadUrl(asset)" :alt="asset.filename" />
                 <span v-else class="file-placeholder">AI 图</span>
               </button>
               <div class="review-card-meta">
-                <div class="check-row">
+                <label class="check-row" @click.stop>
+                  <input
+                    type="checkbox"
+                    :checked="selectedAiAssetUids.includes(asset.asset_uid)"
+                    :disabled="!canReviewAsset(asset)"
+                    @change="toggleAiAsset(asset)"
+                  />
                   <span>{{ asset.filename }}</span>
-                </div>
+                </label>
                 <span class="review-status-ribbon" :class="assetStatusClass(asset.status)">{{ decisionLabel(asset.status) }}</span>
               </div>
               <div class="review-card-actions">
-                <button class="small-button approve-action" type="button" :disabled="asset.status === 'submitted'" @click="decide(asset, 'approved')">确认通过</button>
-                <button class="danger-button small-action" type="button" :disabled="asset.status === 'submitted'" @click="decide(asset, 'rejected')">标记舍弃</button>
-                <button class="ghost-button small-action" type="button" :disabled="asset.status === 'submitted'" @click="decide(asset, 'pending')">待审批</button>
+                <button class="small-button approve-action" type="button" :disabled="!canReviewAsset(asset)" @click="decide(asset, 'approved')">确认通过</button>
+                <button class="danger-button small-action" type="button" :disabled="!canReviewAsset(asset)" @click="decide(asset, 'rejected')">标记舍弃</button>
+                <button class="ghost-button small-action" type="button" :disabled="!canReviewAsset(asset)" @click="decide(asset, 'pending')">待审批</button>
               </div>
             </article>
           </div>
@@ -547,9 +701,9 @@ onMounted(() => {
           </label>
 
           <section v-if="selectedAsset.kind === 'ai'" class="inspector-actions">
-            <button class="small-button approve-action" type="button" :disabled="selectedAsset.status === 'submitted'" @click="decide(selectedAsset, 'approved')">确认通过</button>
-            <button class="danger-button" type="button" :disabled="selectedAsset.status === 'submitted'" @click="decide(selectedAsset, 'rejected')">标记舍弃</button>
-            <button class="ghost-button" type="button" :disabled="selectedAsset.status === 'submitted'" @click="decide(selectedAsset, 'pending')">待审批</button>
+            <button class="small-button approve-action" type="button" :disabled="!canReviewAsset(selectedAsset)" @click="decide(selectedAsset, 'approved')">确认通过</button>
+            <button class="danger-button" type="button" :disabled="!canReviewAsset(selectedAsset)" @click="decide(selectedAsset, 'rejected')">标记舍弃</button>
+            <button class="ghost-button" type="button" :disabled="!canReviewAsset(selectedAsset)" @click="decide(selectedAsset, 'pending')">待审批</button>
           </section>
 
           <a class="ghost-button download-link" :href="assetDownloadUrl(selectedAsset)" target="_blank" rel="noopener">下载当前图</a>
@@ -962,6 +1116,15 @@ onMounted(() => {
   border-color: var(--orange);
 }
 
+.source-tile.inactive {
+  cursor: default;
+}
+
+.source-tile.inactive:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
 .source-tile img {
   width: 100%;
   aspect-ratio: 1 / 1;
@@ -993,6 +1156,37 @@ onMounted(() => {
   overflow: auto;
 }
 
+.ai-review-zone .zone-title {
+  align-items: center;
+}
+
+.ai-review-zone .zone-title > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.bulk-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.bulk-select-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  padding: 5px 8px;
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .review-gallery {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(174px, 1fr));
@@ -1013,8 +1207,13 @@ onMounted(() => {
 }
 
 .review-card.active,
+.review-card.selected,
 .review-card:hover {
   border-color: var(--orange);
+}
+
+.review-card.selected {
+  box-shadow: 0 0 0 2px rgba(255, 107, 43, 0.22);
 }
 
 .review-card.approved,
