@@ -10,6 +10,8 @@ class AiSettingsConfigTests(unittest.TestCase):
 
         self.assertEqual(one_xm["gpt_image_2k_key"], "")
         self.assertEqual(one_xm["gpt_image_4k_key"], "")
+        self.assertEqual(one_xm["gemini_3_1_flash_image_preview_key"], "")
+        self.assertEqual(one_xm["gemini_3_pro_image_preview_key"], "")
         self.assertEqual(one_xm["base_url"], "https://api.1xm.ai/v1")
         self.assertEqual(DEFAULT_CONFIG["notify"]["dingtalk_secret"], "")
 
@@ -23,12 +25,16 @@ class AiSettingsConfigTests(unittest.TestCase):
                 config_path.return_value = path
                 save_config({
                     "ai.1xm.gpt_image_2k_key": "unit-2k",
+                    "ai.1xm.gemini_3_1_flash_image_preview_key": "unit-flash",
+                    "ai.1xm.gemini_3_pro_image_preview_key": "unit-pro",
                     "notify.dingtalk_webhook": "https://example.test/hook",
                     "notify.dingtalk_secret": "unit-secret",
                 })
                 loaded = load_config()
 
         self.assertEqual(loaded["ai"]["1xm"]["gpt_image_2k_key"], "unit-2k")
+        self.assertEqual(loaded["ai"]["1xm"]["gemini_3_1_flash_image_preview_key"], "unit-flash")
+        self.assertEqual(loaded["ai"]["1xm"]["gemini_3_pro_image_preview_key"], "unit-pro")
         self.assertEqual(loaded["notify"]["dingtalk_webhook"], "https://example.test/hook")
         self.assertEqual(loaded["notify"]["dingtalk_secret"], "unit-secret")
 

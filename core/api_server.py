@@ -10,6 +10,7 @@ Bundling notes (for electron-builder / python-build-standalone):
 """
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -19,13 +20,14 @@ import re
 import secrets
 import shutil
 import tempfile
+import threading
 import time
 import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import urlencode, parse_qs, urlparse
+from urllib.parse import urlencode, parse_qs, urlparse, unquote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,7 +36,15 @@ from pydantic import BaseModel
 
 from core import runtime_paths
 from core.config import load_config, patch_config, save_config
+from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
+from core.cloud_approval_url import (
+    invalidate_cloud_approval_url_cache,
+    resolve_cloud_approval_url,
+)
+from core.cloud_batch_sync import sync_local_approval_batch
+from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
+from core import ai_image_service
 from core import data_sink
 from core import notifier
 from core import odps_sync
@@ -140,6 +150,17 @@ def _allowed_cors_origins() -> list[str]:
         "http://127.0.0.1:5173",
         "http://localhost:5173",
     ]
+
+
+def _add_local_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
+    origin = str(request.headers.get("origin") or "").strip()
+    allowed = _allowed_cors_origins()
+    if origin and ("*" in allowed or origin in allowed):
+        response.headers["Access-Control-Allow-Origin"] = "*" if "*" in allowed else origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Crawshrimp-Token"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    return response
 
 
 def _external_call_timeout_seconds(default: float = 20.0) -> float:
@@ -1974,7 +1995,7 @@ def _truthy_param(value: object) -> bool:
     if isinstance(value, (list, tuple, set)):
         return any(_truthy_param(item) for item in value)
     normalized = str(value or "").strip().lower()
-    return normalized in {"1", "true", "yes", "y", "on", "zip", "auto_zip", "auto_zip_package", "是", "压缩"}
+    return normalized in {"1", "true", "yes", "y", "on", "enabled", "zip", "auto_zip", "auto_zip_package", "是", "压缩"}
 
 
 def _shenhui_auto_zip_enabled(run_params: Optional[dict]) -> bool:
@@ -2728,6 +2749,24 @@ def _resolve_one_xm_settings() -> dict:
             or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
             or os.environ.get("ONE_XM_API_KEY", "").strip()
         ),
+        "ai.1xm.gpt_image_2k_key": (
+            os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            or os.environ.get("ONE_XM_API_KEY", "").strip()
+        ),
+        "ai.1xm.gpt_image_4k_key": (
+            os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            or os.environ.get("ONE_XM_API_KEY", "").strip()
+        ),
+        "ai.1xm.gemini_3_1_flash_image_preview_key": (
+            os.environ.get("ONE_XM_GEMINI_3_1_FLASH_IMAGE_PREVIEW_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gemini_3_1_flash_image_preview_key")
+        ),
+        "ai.1xm.gemini_3_pro_image_preview_key": (
+            os.environ.get("ONE_XM_GEMINI_3_PRO_IMAGE_PREVIEW_KEY", "").strip()
+            or _nested_config_value(cfg, "ai.1xm.gemini_3_pro_image_preview_key")
+        ),
     }
 
 
@@ -2766,16 +2805,23 @@ def _prepare_one_xm_payload(row: dict) -> dict:
         raw_payload = {}
 
     quality = str(raw_payload.get("quality") or row.get("质量") or "auto").strip().lower()
-    if quality not in {"auto", "low", "medium", "high"}:
+    if quality not in {"auto", "standard", "low", "medium", "high"}:
         quality = "auto"
+    try:
+        requested_count = int(raw_payload.get("n") or row.get("生成数量") or 1)
+    except Exception:
+        requested_count = 1
     payload = {
-        "model": "gpt-image-2",
+        "model": str(raw_payload.get("model") or row.get("模型") or "gpt-image-2").strip() or "gpt-image-2",
         "prompt": str(raw_payload.get("prompt") or row.get("最终提示词") or "").strip(),
         "size": str(raw_payload.get("size") or row.get("尺寸") or "1024x1024").strip(),
         "quality": quality,
         "output_format": str(raw_payload.get("output_format") or row.get("格式") or "png").strip(),
-        "n": int(raw_payload.get("n") or row.get("生成数量") or 1),
+        "n": max(1, min(8, requested_count)),
     }
+    ratio = str(raw_payload.get("ratio") or row.get("比例") or row.get("ratio") or "").strip()
+    if ratio:
+        payload["ratio"] = ratio
     for optional_key in ("webhook_url", "webhook_secret", "mask"):
         if raw_payload.get(optional_key):
             payload[optional_key] = raw_payload.get(optional_key)
@@ -2799,13 +2845,18 @@ def _prepare_one_xm_payload(row: dict) -> dict:
 def _run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dict) -> dict:
     patched = dict(row)
     tier = _normalize_one_xm_key_tier(patched, run_params)
-    api_key = str(one_xm_settings.get(tier) or "").strip()
-    if not api_key:
+    payload = _prepare_one_xm_payload(patched)
+    try:
+        selected_key_id, api_key = ai_image_service.select_model_key({
+            "model_key": payload.get("model"),
+            "size": payload.get("size"),
+            "model_key_tier": tier,
+        }, one_xm_settings)
+    except ai_image_service.MissingModelKeyError as exc:
         patched["执行结果"] = "配置缺失"
-        patched["备注"] = f"设置菜单未配置 1XM GPT Image {tier.upper()} Key"
+        patched["备注"] = str(exc)
         return patched
 
-    payload = _prepare_one_xm_payload(patched)
     if not payload.get("prompt"):
         patched["执行结果"] = "参数缺失"
         patched["备注"] = "缺少最终提示词"
@@ -2830,6 +2881,7 @@ def _run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dic
         patched["生成图URL"] = "\n".join(urls)
         patched["生成图数量"] = len(urls)
         patched["执行结果"] = "已生成"
+        patched["__1xm_key_tier"] = selected_key_id
         retry_note = []
         if int(result.get("compensation_attempts") or 0) > 0:
             retry_note.append(f"补偿 {result.get('compensation_attempts')} 次")
@@ -2930,6 +2982,11 @@ def _task_file_param_path(run_params: dict, key: str, default: str = "") -> str:
     return candidate or default
 
 
+def _normalize_prompt_source(value: object) -> str:
+    text = str(value or "").strip().lower()
+    return "cloud_prompt_library" if text == "cloud_prompt_library" else "local_excel"
+
+
 def _task_int_param(run_params: dict, key: str, default: int, *, min_value: int | None = None, max_value: int | None = None) -> int:
     try:
         value = int(float(str((run_params or {}).get(key, default)).strip()))
@@ -2964,14 +3021,71 @@ def _task_bool_param(run_params: dict, key: str, default: bool = False) -> bool:
     return text in {"1", "true", "yes", "y", "on", "是", "启用", "开启"}
 
 
+def _tmall_ai_model_params(run_params: dict) -> tuple[str, str, str]:
+    model_id = str((run_params or {}).get("model_id") or "").strip()
+    model = str((run_params or {}).get("model") or "").strip()
+    tier = str((run_params or {}).get("one_xm_key_tier") or "").strip().lower()
+
+    model_map = {
+        "gpt-image-2k": ("gpt-image-2", "2k"),
+        "gpt-image-4k": ("gpt-image-2", "4k"),
+        "gemini-3.1-flash-image-preview": ("gemini-3.1-flash-image-preview", "auto"),
+        "gemini-3-pro-image-preview": ("gemini-3-pro-image-preview", "auto"),
+    }
+    if model_id in model_map:
+        mapped_model, mapped_tier = model_map[model_id]
+        return model_id, mapped_model, mapped_tier
+
+    if model in {"gemini-3.1-flash-image-preview", "gemini-3-pro-image-preview"}:
+        return model, model, "auto"
+    if model == "gpt-image-2" and tier in {"2k", "4k"}:
+        return f"gpt-image-{tier}", model, tier
+    return "gpt-image-4k", "gpt-image-2", "4k"
+
+
 def _extract_first_approval_board_url(data_rows: list) -> str:
+    return _extract_tmall_approval_board_urls(data_rows).get("approval_board_url", "")
+
+
+def _extract_tmall_approval_board_urls(data_rows: list) -> dict:
+    urls = {"approval_board_url": "", "cloud_board_url": "", "local_board_url": ""}
     for row in data_rows or []:
         if not isinstance(row, dict):
             continue
-        url = str(row.get("审批看板") or "").strip()
-        if url.startswith("http://") or url.startswith("https://"):
-            return url
-    return ""
+        cloud_url = str(row.get("云端审批看板") or "").strip()
+        local_url = str(row.get("本地审批看板") or "").strip()
+        board_url = str(row.get("审批看板") or "").strip()
+        if cloud_url.startswith(("http://", "https://")) and not urls["cloud_board_url"]:
+            urls["cloud_board_url"] = cloud_url
+        if local_url.startswith(("http://", "https://")) and not urls["local_board_url"]:
+            urls["local_board_url"] = local_url
+        if board_url.startswith(("http://", "https://")):
+            if "/tmall-ai-image-approval/" in board_url and not urls["local_board_url"]:
+                urls["local_board_url"] = board_url
+            elif "batch_uid=" in board_url and not urls["cloud_board_url"]:
+                urls["cloud_board_url"] = board_url
+            if not urls["approval_board_url"]:
+                urls["approval_board_url"] = board_url
+    urls["approval_board_url"] = urls["cloud_board_url"] or urls["approval_board_url"] or urls["local_board_url"]
+    return urls
+
+
+def _is_tmall_ai_generation_confirmation_result(adapter_id: str, task_id: str, data_rows: list) -> bool:
+    if (adapter_id, task_id) != ("tmall-ops-assistant", "tmall_ai_image_test_chain"):
+        return False
+    rows = [row for row in (data_rows or []) if isinstance(row, dict)]
+    if not rows:
+        return False
+    return any(
+        str(row.get("阶段") or "").strip() == "确认提交生图"
+        or str(row.get("审批状态") or "").strip() == "pending_generation_confirmation"
+        for row in rows
+    )
+
+
+def _is_table_output_file_ref(value: object) -> bool:
+    text = str(value or "").strip().split("?", 1)[0].lower()
+    return text.endswith((".xlsx", ".xlsm", ".xls", ".csv"))
 
 
 def _parse_tmall_approval_board_url(url: str) -> dict:
@@ -3032,40 +3146,69 @@ def _load_tmall_ai_image_chain_module():
     return module
 
 
+def _tmall_ai_image_prompt_library_params(run_params: dict) -> tuple[str, str]:
+    cloud_prompt_library_id = str((run_params or {}).get("cloud_prompt_library_id") or "").strip()
+    if not cloud_prompt_library_id:
+        raise RuntimeError("缺少云端 Prompt 库")
+    embedded_templates_json = str((run_params or {}).get("cloud_prompt_templates_json") or "").strip()
+    if embedded_templates_json:
+        return cloud_prompt_library_id, embedded_templates_json
+    source_type = str((run_params or {}).get("cloud_prompt_library_source") or "").strip().lower()
+    if source_type == "local" or cloud_prompt_library_id.startswith("local:"):
+        raise RuntimeError("本地 Prompt 库未返回可用模板，请重新选择")
+    if cloud_prompt_library_id.startswith("cloud:"):
+        cloud_prompt_library_id = cloud_prompt_library_id.removeprefix("cloud:")
+    templates_payload = _cloud_prompt_library_export(cloud_prompt_library_id)
+    return cloud_prompt_library_id, json.dumps(templates_payload, ensure_ascii=False)
+
+
 async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_dir: str, wait_for_control, log) -> list:
     import argparse
 
     module = _load_tmall_ai_image_chain_module()
     execute_mode = str((run_params or {}).get("execute_mode") or "approval_then_create").strip().lower()
     execution = module.normalize_chain_execution_mode(execute_mode)
+    prompt_source = _normalize_prompt_source((run_params or {}).get("prompt_source") or "local_excel")
+    model_id, model, one_xm_key_tier = _tmall_ai_model_params(run_params or {})
 
     workflow_file = _task_file_param_path(run_params, "workflow_file", getattr(module, "DEFAULT_WORKFLOW_FILE", ""))
     prompt_file = _task_file_param_path(run_params, "prompt_file", getattr(module, "DEFAULT_PROMPT_FILE", ""))
+    cloud_prompt_library_id = str((run_params or {}).get("cloud_prompt_library_id") or "").strip()
+    cloud_prompt_templates_json = ""
     if not workflow_file:
         raise RuntimeError("缺少测图任务导入模板文件")
-    if not prompt_file:
+    if prompt_source == "local_excel" and not prompt_file:
         raise RuntimeError("缺少 AI 测图提示词库文件")
+    if prompt_source == "cloud_prompt_library":
+        cloud_prompt_library_id, cloud_prompt_templates_json = _tmall_ai_image_prompt_library_params(run_params or {})
 
     args = argparse.Namespace(
         execute_mode=execution["mode"],
         workflow_file=workflow_file,
+        prompt_source=prompt_source,
         prompt_file=prompt_file,
+        cloud_prompt_library_id=cloud_prompt_library_id,
+        cloud_prompt_templates_json=cloud_prompt_templates_json,
         limit=0,
         cloud_path=str((run_params or {}).get("cloud_path") or getattr(module, "DEFAULT_CLOUD_PATH", "")).strip(),
         cdp_url=str((run_params or {}).get("cdp_url") or "http://127.0.0.1:9222").strip(),
+        confirm_generation=bool(execution["confirm_generation"]),
         generate=bool(execution["generate"]),
         approval_required=bool(execution["approval_required"]),
         live_upload=bool(execution["live_upload"]),
         live_create=bool(execution["live_create"]),
         live_online=bool(execution["live_online"]),
-        image_size=str((run_params or {}).get("image_size") or "960x1280").strip(),
+        model_id=model_id,
+        model=model,
+        ratio=str((run_params or {}).get("ratio") or "").strip(),
+        image_size=str((run_params or {}).get("image_size") or "1536x2048").strip(),
         ai_image_count=_task_int_param(run_params, "ai_image_count", 4, min_value=1, max_value=20),
         generation_concurrency=_task_int_param(run_params, "generation_concurrency", 100, min_value=1, max_value=100),
         reference_mode=str((run_params or {}).get("reference_mode") or "main_only").strip().lower(),
         allow_global_semir_fallback=_task_bool_param(run_params, "allow_global_semir_fallback", False),
         quality=str((run_params or {}).get("quality") or "auto").strip().lower(),
         output_format=str((run_params or {}).get("output_format") or "jpeg").strip().lower(),
-        one_xm_key_tier=str((run_params or {}).get("one_xm_key_tier") or "auto").strip().lower(),
+        one_xm_key_tier=one_xm_key_tier,
         retry_attempts=_task_int_param(run_params, "retry_attempts", 3, min_value=1, max_value=8),
         compensate_attempts=_task_int_param(run_params, "compensate_attempts", 2, min_value=1, max_value=6),
         poll_timeout_minutes=_task_float_param(run_params, "poll_timeout_minutes", 12.0, min_value=1.0, max_value=60.0),
@@ -3088,7 +3231,7 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
 
     log(
         "[tmall-ai-chain] 后端编排执行："
-        f"mode={args.execute_mode}, generate={args.generate}, "
+        f"mode={args.execute_mode}, confirm_generation={args.confirm_generation}, generate={args.generate}, "
         f"approval={args.approval_required}, upload={args.live_upload}, create={args.live_create}, online={args.live_online}, "
         f"ai_image_count={args.ai_image_count}, quality={args.quality}"
     )
@@ -3316,7 +3459,96 @@ def _finalize_tmall_material_test_data_export_outputs(
     table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
     if log:
         log(f"巴拉-AI测图数据抓取导出本地导出：表格 {len(table_refs)} 个，目录 {target_root}")
-    return table_refs or fallback_refs
+    final_refs = table_refs or fallback_refs
+    if _truthy_param((run_params or {}).get("sync_to_cloud")):
+        workbook_path = _first_excel_output_path(final_refs)
+        if workbook_path is None:
+            if log:
+                log("[warn] 云端测图数据看板同步跳过：未找到可同步的 Excel 文件")
+        else:
+            try:
+                sync_result = sync_tmall_material_test_workbook_to_cloud(workbook_path)
+                if log:
+                    log(
+                        "云端测图数据看板同步完成："
+                        f"概览 {sync_result.get('overview_rows', 0)} 条，"
+                        f"明细 {sync_result.get('detail_rows', 0)} 条，"
+                        f"写入/更新 {sync_result.get('inserted_or_updated', 0)} 条"
+                    )
+            except Exception as exc:
+                if log:
+                    log(f"[warn] 云端测图数据看板同步失败：{exc}")
+    return final_refs
+
+
+def _first_excel_output_path(paths: list) -> Path | None:
+    for item in paths or []:
+        path = Path(str(item or "")).expanduser()
+        if path.suffix.lower() in {".xlsx", ".xlsm", ".xls"} and path.is_file():
+            return path
+    return None
+
+
+def sync_tmall_material_test_workbook_to_cloud(workbook_path: Path, *, client: CloudApprovalClient | None = None) -> dict:
+    from core.cloud_job_executors import MATERIAL_IMPORT_DETAIL_CHUNK_SIZE, parse_tmall_material_test_workbook
+
+    path = Path(workbook_path).expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"material test workbook not found: {path}")
+    cloud_client = client or _build_cloud_client()
+    parsed = parse_tmall_material_test_workbook(path)
+    asset_uid = _local_material_test_workbook_asset_uid(path)
+    content_type = mimetypes.guess_type(path.name)[0] or "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    presign = cloud_client.request_json("POST", "/api/assets/presign", {
+        "batch_uid": "material-test",
+        "style_id": 1,
+        "asset_uid": asset_uid,
+        "kind": "result",
+        "filename": path.name,
+        "content_type": content_type,
+        "meta": {
+            "job_type": "tmall_material_test_data_export",
+            "sync_mode": "local_manual_export",
+        },
+    })
+    upload_url = str(presign.get("upload_url") or "")
+    if not upload_url:
+        raise CloudApprovalError("cloud presign response missing upload_url for material test workbook")
+    cloud_client.upload_asset(upload_url, path, content_type)
+    source = {
+        "source_uid": asset_uid,
+        "filename": path.name,
+        "object_key": str(presign.get("object_key") or ""),
+        "sync_mode": "local_manual_export",
+    }
+    totals = {"overview_rows": 0, "detail_rows": 0, "inserted_or_updated": 0}
+    detail_rows = parsed.get("detail_rows") or []
+    chunks = [detail_rows[index:index + MATERIAL_IMPORT_DETAIL_CHUNK_SIZE] for index in range(0, len(detail_rows), MATERIAL_IMPORT_DETAIL_CHUNK_SIZE)] or [[]]
+    for index, detail_chunk in enumerate(chunks):
+        response = cloud_client.request_json("POST", "/api/material-test/import", {
+            "source": source,
+            "overview_rows": parsed.get("overview_rows") or [] if index == 0 else [],
+            "detail_rows": detail_chunk,
+        })
+        totals["overview_rows"] += int(response.get("overview_rows") or 0)
+        totals["detail_rows"] += int(response.get("detail_rows") or 0)
+        totals["inserted_or_updated"] += int(response.get("inserted_or_updated") or 0)
+    return {
+        **totals,
+        "workbook_asset_uid": asset_uid,
+        "workbook_filename": path.name,
+        "workbook_object_key": str(presign.get("object_key") or ""),
+    }
+
+
+def _local_material_test_workbook_asset_uid(path: Path) -> str:
+    try:
+        stat = path.stat()
+        seed = f"{path.name}:{stat.st_size}:{stat.st_mtime_ns}"
+    except OSError:
+        seed = str(path)
+    digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:24]
+    return f"local-material-test-{digest}"
 
 
 def _tmall_packaging_style_folder(row: dict) -> str:
@@ -4673,9 +4905,19 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             log(f"Final export guard removed {raw_count - deduped_count} duplicate rows before export")
 
         runtime_files = list(getattr(runner, 'runtime_output_files', []) or [])
-        exported_files = await export_outputs(data)
-        output_files = await finalize_output_files(data, runtime_files, exported_files)
-        approval_board_url = _extract_first_approval_board_url(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else ""
+        skip_table_export = _is_tmall_ai_generation_confirmation_result(adapter_id, task_id, data)
+        if skip_table_export:
+            log("确认提交生图阶段不导出表格文件，等待最终创建结果后再输出")
+            exported_files = []
+            output_files = merge_output_file_refs([
+                ref for ref in runtime_files
+                if not _is_table_output_file_ref(ref)
+            ])
+        else:
+            exported_files = await export_outputs(data)
+            output_files = await finalize_output_files(data, runtime_files, exported_files)
+        approval_board_urls = _extract_tmall_approval_board_urls(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else {}
+        approval_board_url = approval_board_urls.get("approval_board_url", "") if approval_board_urls else ""
         if approval_board_url:
             output_files = merge_output_file_refs([approval_board_url], output_files)
         data_sink.finish_run(run_id, len(data), output_files)
@@ -4696,19 +4938,28 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             done_status['approval_board_url'] = approval_board_url
         _set_live_status(live_jids, done_status)
         if instance_uid:
-            approval_summary = _parse_tmall_approval_board_url(approval_board_url)
+            approval_summary = _parse_tmall_approval_board_url(
+                approval_board_urls.get("local_board_url", "") or approval_board_url
+            )
+            generation_confirmation_pending = any(
+                isinstance(row, dict) and str(row.get("阶段") or "").strip() == "确认提交生图"
+                for row in data or []
+            )
             instance_summary = {
                 "records": len(data),
                 "output_files": output_files,
                 "approval_board_url": approval_board_url,
+                "cloud_board_url": approval_board_urls.get("cloud_board_url", ""),
+                "local_board_url": approval_board_urls.get("local_board_url", ""),
+                "approval_stage": "confirm_generation" if generation_confirmation_pending else "approval",
                 "run_id": run_id,
                 **approval_summary,
             }
             if approval_board_url:
                 data_sink.update_task_instance(
                     instance_uid,
-                    status="waiting_approval",
-                    current_step="approval",
+                    status="waiting_generation_confirmation" if generation_confirmation_pending else "waiting_approval",
+                    current_step="confirm" if generation_confirmation_pending else "approval",
                     summary=instance_summary,
                 )
             else:
@@ -4951,6 +5202,10 @@ async def lifespan(app: FastAPI):
             sched_module.start()
         except Exception:
             logger.exception("scheduler startup failed; continuing without scheduled jobs")
+        try:
+            _start_cloud_machine_if_enabled()
+        except Exception:
+            logger.exception("cloud approval machine auto-start failed; continuing without cloud machine loop")
     logger.info("crawshrimp core started")
     try:
         yield
@@ -4981,15 +5236,21 @@ async def require_local_api_token(request: Request, call_next):
     expected = _get_api_token()
     if not expected:
         if _api_auth_required():
-            return JSONResponse(
-                {"detail": "CRAWSHRIMP_API_TOKEN is required before using crawshrimp API"},
-                status_code=503,
+            return _add_local_cors_headers(
+                request,
+                JSONResponse(
+                    {"detail": "CRAWSHRIMP_API_TOKEN is required before using crawshrimp API"},
+                    status_code=503,
+                ),
             )
         return await call_next(request)
 
     supplied = str(request.headers.get(API_TOKEN_HEADER) or "").strip()
     if not supplied or not hmac.compare_digest(supplied, expected):
-        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return _add_local_cors_headers(
+            request,
+            JSONResponse({"detail": "Unauthorized"}, status_code=401),
+        )
 
     return await call_next(request)
 
@@ -5030,6 +5291,288 @@ def get_adapter_asset(adapter_id: str, asset_path: str):
         raise HTTPException(400, str(exc))
 
     return FileResponse(path, headers=_adapter_asset_headers())
+
+
+class AiImageJobRequest(BaseModel):
+    title: str = ""
+    prompt: str = ""
+    model_key: str = "gpt-image-2"
+    status: str = "draft"
+    output_dir: str = ""
+    params: dict = {}
+    summary: dict = {}
+
+
+class AiImageJobPatchRequest(BaseModel):
+    title: Optional[str] = None
+    prompt: Optional[str] = None
+    model_key: Optional[str] = None
+    status: Optional[str] = None
+    output_dir: Optional[str] = None
+    params: Optional[dict] = None
+    summary: Optional[dict] = None
+
+
+class AiImagePinRequest(BaseModel):
+    pinned: bool
+
+
+class AiImageBatchPromptRequest(BaseModel):
+    title: str = ""
+    prompt: str = ""
+    count: int = 1
+
+
+class AiImageBatchRunRequest(BaseModel):
+    request_uid: str = ""
+    prompts: list[AiImageBatchPromptRequest] = []
+
+
+class AiImageAssetRequest(BaseModel):
+    job_uid: str
+    kind: str = "reference"
+    source_type: str = "local"
+    path: str = ""
+    url: str = ""
+    mime_type: str = ""
+    sort_order: int = 0
+    meta: dict = {}
+
+
+class AiImageCanvasRequest(BaseModel):
+    job_uid: str
+    title: str = ""
+    canvas: dict = {}
+
+
+class AiImageSaveAsRequest(BaseModel):
+    directory: str
+    files: list[str] = []
+
+
+class AiImageMaterializeRequest(BaseModel):
+    file: str = ""
+    url: str = ""
+    data_url: str = ""
+    filename: str = ""
+
+
+class LocalImagePreviewRequest(BaseModel):
+    path: str
+
+
+def _model_payload(model: BaseModel, **kwargs) -> dict:
+    if hasattr(model, "model_dump"):
+        return model.model_dump(**kwargs)
+    return model.dict(**kwargs)
+
+
+def _resolve_local_preview_path(raw_path: str) -> Path:
+    value = str(raw_path or "").strip()
+    if not value:
+        raise HTTPException(400, "图片路径不能为空")
+    if value.lower().startswith("file://"):
+        parsed = urlparse(value)
+        value = unquote(parsed.path or "")
+    path = Path(value).expanduser()
+    return path if path.is_absolute() else path.resolve(strict=False)
+
+
+def _local_image_mime(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".png":
+        return "image/png"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix == ".gif":
+        return "image/gif"
+    guessed = mimetypes.guess_type(str(path))[0] or ""
+    return guessed if guessed in {"image/jpeg", "image/png", "image/webp", "image/gif"} else ""
+
+
+@app.post("/files/local-image-preview")
+def read_local_image_preview(req: LocalImagePreviewRequest):
+    path = _resolve_local_preview_path(req.path)
+    mime = _local_image_mime(path)
+    if not mime:
+        raise HTTPException(400, "请选择 PNG、JPG、WEBP 或 GIF 图片")
+    try:
+        stat = path.stat()
+    except FileNotFoundError as exc:
+        raise HTTPException(404, "图片文件不存在") from exc
+    if not path.is_file():
+        raise HTTPException(400, "图片文件不存在")
+    if stat.st_size > 25 * 1024 * 1024:
+        raise HTTPException(400, "图片超过 25MB，无法预览")
+    data_url = f"data:{mime};base64,{base64.b64encode(path.read_bytes()).decode('ascii')}"
+    return {"ok": True, "path": str(path), "data_url": data_url}
+
+
+@app.get("/ai-image/jobs")
+def list_ai_image_jobs():
+    return data_sink.list_ai_image_jobs()
+
+
+@app.post("/ai-image/jobs")
+def create_ai_image_job(req: AiImageJobRequest):
+    payload = _model_payload(req, exclude_none=True)
+    payload.pop("summary", None)
+    return data_sink.create_ai_image_job(payload)
+
+
+@app.get("/ai-image/jobs/{job_uid}")
+def get_ai_image_job(job_uid: str):
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    job["assets"] = data_sink.list_ai_image_assets(job_uid)
+    job["canvases"] = data_sink.list_ai_image_canvases(job_uid)
+    return job
+
+
+@app.patch("/ai-image/jobs/{job_uid}")
+def update_ai_image_job(job_uid: str, req: AiImageJobPatchRequest):
+    payload = _model_payload(req, exclude_unset=True, exclude_none=True)
+    payload.pop("summary", None)
+    job = data_sink.update_ai_image_job(job_uid, payload)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    return job
+
+
+@app.patch("/ai-image/jobs/{job_uid}/pin")
+def pin_ai_image_job(job_uid: str, req: AiImagePinRequest):
+    job = data_sink.set_ai_image_job_pinned(job_uid, req.pinned)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    return job
+
+
+@app.delete("/ai-image/jobs/{job_uid}")
+def delete_ai_image_job(job_uid: str):
+    try:
+        return ai_image_service.delete_workbench_job(job_uid)
+    except ai_image_service.ActiveAiImageJobError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/run")
+def run_ai_image_job(job_uid: str):
+    if not data_sink.get_ai_image_job(job_uid):
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    try:
+        return ai_image_service.run_job_with_one_xm(job_uid)
+    except ai_image_service.MissingModelKeyError as exc:
+        raise HTTPException(400, {
+            "message": str(exc),
+            "config_id": exc.config_id,
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/batch-run")
+def batch_run_ai_image_job(job_uid: str, req: AiImageBatchRunRequest):
+    if not data_sink.get_ai_image_job(job_uid):
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    prompts = [_model_payload(item) for item in req.prompts]
+    if not 1 <= len(prompts) <= 100:
+        raise HTTPException(400, "批量 Prompt 数量必须为 1–100 条")
+    try:
+        return ai_image_service.submit_workbench_batch(
+            job_uid,
+            prompts,
+            request_uid=req.request_uid,
+        )
+    except ai_image_service.MissingModelKeyError as exc:
+        raise HTTPException(400, {
+            "message": str(exc),
+            "config_id": exc.config_id,
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/runs/{run_uid}/retry")
+def retry_ai_image_run(job_uid: str, run_uid: str):
+    if not data_sink.get_ai_image_job(job_uid):
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    try:
+        return ai_image_service.retry_workbench_run(job_uid, run_uid)
+    except ai_image_service.MissingModelKeyError as exc:
+        raise HTTPException(400, {
+            "message": str(exc),
+            "config_id": exc.config_id,
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/save-as")
+def save_as_ai_image_job(job_uid: str, req: AiImageSaveAsRequest):
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    summary = job.get("summary") if isinstance(job.get("summary"), dict) else {}
+    output_assets = [{"path": str(path)} for path in summary.get("output_files") or []]
+    output_assets.extend({"url": str(url)} for url in summary.get("image_urls") or [])
+    output_assets.extend(data_sink.list_ai_image_assets(job_uid))
+    requested_files = {str(path or "").strip() for path in (req.files or []) if str(path or "").strip()}
+    if requested_files:
+        output_assets = [
+            asset for asset in output_assets
+            if str(asset.get("path") or asset.get("url") or "").strip() in requested_files
+        ]
+    files = ai_image_service.copy_assets_to_directory(output_assets, req.directory)
+    return {"ok": True, "job_uid": job_uid, "files": files}
+
+
+@app.post("/ai-image/jobs/{job_uid}/materialize")
+def materialize_ai_image_job(job_uid: str, req: AiImageMaterializeRequest):
+    data_url = str(req.data_url or "").strip()
+    if data_url:
+        job = data_sink.get_ai_image_job(job_uid)
+        try:
+            if not job:
+                return ai_image_service.materialize_data_url_image(
+                    job_uid,
+                    data_url,
+                    filename=req.filename,
+                    allow_unlisted=True,
+                )
+            return ai_image_service.materialize_data_url_image(job_uid, data_url, filename=req.filename)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+    source = str(req.url or req.file or "").strip()
+    if not source:
+        raise HTTPException(400, "图片地址不能为空")
+    job = data_sink.get_ai_image_job(job_uid)
+    try:
+        if not job:
+            return ai_image_service.materialize_remote_image(job_uid, source, allow_unlisted=True)
+        return ai_image_service.materialize_remote_image(job_uid, source)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/assets")
+def create_ai_image_asset(req: AiImageAssetRequest):
+    if not data_sink.get_ai_image_job(req.job_uid):
+        raise HTTPException(404, f"AI image job not found: {req.job_uid}")
+    return data_sink.create_ai_image_asset(_model_payload(req, exclude_none=True))
+
+
+@app.post("/ai-image/canvases")
+def create_ai_image_canvas(req: AiImageCanvasRequest):
+    if not data_sink.get_ai_image_job(req.job_uid):
+        raise HTTPException(404, f"AI image job not found: {req.job_uid}")
+    return data_sink.create_ai_image_canvas(_model_payload(req, exclude_none=True))
 
 
 def _normalize_tmall_approval_batch_id(batch_id: str) -> str:
@@ -5175,6 +5718,108 @@ class TmallApprovalGenerateRequest(BaseModel):
     prompt: str = ""
     main_image_path: str = ""
     reference_paths: Optional[List[str]] = None
+
+
+class TmallApprovalGenerationConfirmRequest(BaseModel):
+    items: List[dict] = []
+
+
+def _update_tmall_generation_task_instance(batch_id: str, result: dict) -> None:
+    instance = data_sink.find_task_instance_by_approval_batch_id(batch_id)
+    if not instance:
+        return
+    summary = _parse_json_object(instance.get("summary_json"))
+    summary.update({
+        "approval_batch_id": batch_id,
+        "generation_status": result.get("status"),
+        "generated": int(result.get("generated") or 0),
+        "generation_failed": int(result.get("failed") or 0),
+    })
+    status = "waiting_approval" if result.get("status") == "pending_approval" else (
+        "running" if result.get("status") == "generating" else "generation_failed"
+    )
+    current_step = "approval" if result.get("status") in {"pending_approval", "generating"} else "confirm"
+    data_sink.update_task_instance(
+        instance["instance_uid"],
+        status=status,
+        current_step=current_step,
+        summary=summary,
+    )
+
+
+async def _run_tmall_generation_confirmation_job(batch_id: str, batch: dict) -> None:
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        result = await asyncio.to_thread(module.submit_generation_confirmation_batch, batch, log=logger.info)
+        _update_tmall_generation_task_instance(batch_id, result)
+    except Exception as exc:
+        logger.exception("Tmall AI image generation confirmation job failed: %s", batch_id)
+        try:
+            failed_batch = _load_tmall_approval_batch(batch_id)
+            failed_batch["status"] = "generation_failed"
+            failed_batch["submit_progress"] = {
+                **dict(failed_batch.get("submit_progress") or {}),
+                "status": "failed",
+                "message": str(exc),
+            }
+            failed_batch["generation_summary"] = {
+                **dict(failed_batch.get("generation_summary") or {}),
+                "failed": int((failed_batch.get("generation_summary") or {}).get("requested_prompts") or 1),
+            }
+            failed_batch["updated_at"] = datetime.now().isoformat()
+            module.save_approval_batch(failed_batch)
+        except Exception:
+            logger.debug("Failed to persist Tmall AI generation failure state", exc_info=True)
+        _update_tmall_generation_task_instance(batch_id, {
+            "status": "generation_failed",
+            "generated": 0,
+            "failed": 1,
+        })
+
+
+def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) -> list[dict]:
+    safe_items: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        safe_item = dict(item)
+        for key, label in [("origin_path", "主图"), ("detail_reference_path", "参考图")]:
+            if key not in safe_item:
+                continue
+            value = str(safe_item.get(key) or "").strip()
+            safe_item[key] = (_safe_tmall_approval_paths(batch, [value], field_label=label) or [""])[0] if value else ""
+        safe_reference_assets = []
+        for asset in safe_item.get("reference_assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            safe_asset = dict(asset)
+            value = str(safe_asset.get("path") or "").strip()
+            safe_path = (_safe_tmall_approval_paths(batch, [value], field_label="参考图") or [""])[0] if value else ""
+            if not safe_path:
+                continue
+            safe_asset["path"] = safe_path
+            safe_reference_assets.append(safe_asset)
+        if "reference_assets" in safe_item:
+            safe_item["reference_assets"] = safe_reference_assets
+        safe_prompts = []
+        for prompt in safe_item.get("generation_prompts") or []:
+            if not isinstance(prompt, dict):
+                continue
+            safe_prompt = dict(prompt)
+            try:
+                image_count = int(safe_prompt.get("image_count") or safe_prompt.get("generation_image_count") or safe_prompt.get("count") or 1)
+            except Exception:
+                image_count = 1
+            safe_prompt["image_count"] = max(1, min(8, image_count))
+            safe_prompt["reference_paths"] = _safe_tmall_approval_paths(
+                batch,
+                [str(path or "").strip() for path in (safe_prompt.get("reference_paths") or []) if str(path or "").strip()],
+                field_label="参考图",
+            )
+            safe_prompts.append(safe_prompt)
+        safe_item["generation_prompts"] = safe_prompts
+        safe_items.append(safe_item)
+    return safe_items
 
 
 @app.get("/tmall-ai-image-approval/api/{batch_id}")
@@ -5325,6 +5970,36 @@ async def generate_tmall_ai_image_approval_asset(batch_id: str, req: TmallApprov
         raise HTTPException(400, str(exc)) from exc
 
 
+@app.post("/tmall-ai-image-approval/api/{batch_id}/submit-generation")
+async def submit_tmall_ai_image_generation_confirmation(batch_id: str, req: TmallApprovalGenerationConfirmRequest, token: str = ""):
+    batch = _load_tmall_approval_batch(batch_id)
+    _validate_tmall_approval_token(batch, token)
+    module = _load_tmall_ai_image_chain_module()
+    try:
+        safe_items = _safe_tmall_generation_confirmation_items(batch, list(req.items or []))
+        if safe_items:
+            batch = module.update_generation_confirmation(batch, safe_items)
+        batch = module.prepare_generation_confirmation_placeholders(batch)
+        _update_tmall_generation_task_instance(batch_id, {
+            "status": "generating",
+            "generated": 0,
+            "failed": 0,
+        })
+        asyncio.create_task(_run_tmall_generation_confirmation_job(batch_id, batch))
+        return {
+            "ok": True,
+            "accepted": True,
+            "status": "generating",
+            "generated": 0,
+            "failed": 0,
+            "batch": batch,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
 @app.post("/tmall-ai-image-approval/api/{batch_id}/submit")
 async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
     batch = _load_tmall_approval_batch(batch_id)
@@ -5339,7 +6014,12 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
         failed = int(result.get("failed") or 0)
         attempted = int(result.get("attempted") or 0)
         status = "completed" if attempted > 0 and failed == 0 else "partial_failed"
+        result_path = str(result.get("excel_path") or result.get("result_path") or "").strip()
+        audit_path = str(result.get("audit_path") or "").strip()
         summary = _parse_json_object(instance.get("summary_json"))
+        summary_files = list(summary.get("output_files") or [])
+        if result_path and result_path not in summary_files:
+            summary_files.append(result_path)
         summary.update({
             "approval_batch_id": batch_id,
             "submit_status": result.get("status"),
@@ -5347,7 +6027,10 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
             "succeeded": int(result.get("succeeded") or 0),
             "failed": failed,
             "submitted": int(result.get("submitted") or 0),
-            "result_path": result.get("result_path") or "",
+            "result_path": result_path,
+            "result_excel_path": result_path,
+            "audit_result_path": audit_path,
+            "output_files": summary_files,
         })
         data_sink.update_task_instance(
             instance["instance_uid"],
@@ -5355,12 +6038,12 @@ async def submit_tmall_ai_image_approval_batch(batch_id: str, token: str = ""):
             current_step="create",
             summary=summary,
         )
-        if result.get("result_path"):
+        if result_path:
             data_sink.add_task_instance_artifact(
                 instance["instance_uid"],
-                kind="file",
-                label=Path(str(result.get("result_path"))).name,
-                path=str(result.get("result_path")),
+                kind=_task_instance_artifact_kind(result_path),
+                label=Path(result_path).name,
+                path=result_path,
                 meta={"approval_batch_id": batch_id},
             )
     return result
@@ -5600,6 +6283,7 @@ class TaskScheduleCreateRequest(BaseModel):
     time_of_day: str
     weekday: Optional[int] = None
     params: Optional[dict] = None
+    sync_to_cloud: bool = True
     notify_channel: str = "dingtalk"
     notify_template: str = DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE
     enabled: bool = True
@@ -5671,6 +6355,12 @@ def _normalize_task_schedule_create(req: TaskScheduleCreateRequest) -> dict:
     task_id = str(req.task_id or TMALL_MATERIAL_EXPORT_TASK_ID).strip()
     frequency, weekday = _validate_schedule_frequency(req.frequency, req.weekday)
     time_of_day = _validate_schedule_time(req.time_of_day)
+    params = dict(req.params or {})
+    if adapter_id == TMALL_OPS_ADAPTER_ID and task_id == TMALL_MATERIAL_EXPORT_TASK_ID:
+        if req.sync_to_cloud:
+            params["sync_to_cloud"] = ["enabled"]
+        else:
+            params.pop("sync_to_cloud", None)
     return {
         "adapter_id": adapter_id,
         "task_id": task_id,
@@ -5678,7 +6368,7 @@ def _normalize_task_schedule_create(req: TaskScheduleCreateRequest) -> dict:
         "frequency": frequency,
         "time_of_day": time_of_day,
         "weekday": weekday,
-        "params": _normalize_schedule_params(adapter_id, task_id, req.params),
+        "params": _normalize_schedule_params(adapter_id, task_id, params),
         "notify_channel": str(req.notify_channel or "dingtalk").strip() or "dingtalk",
         "notify_template": str(req.notify_template or DEFAULT_TASK_SCHEDULE_NOTIFY_TEMPLATE),
         "enabled": bool(req.enabled),
@@ -6520,6 +7210,319 @@ def sync_data_files_to_odps(req: SyncDataFilesRequest):
 
 
 # ─── Settings ───
+
+DEFAULT_CLOUD_APPROVAL_CAPABILITIES = ["generate_ai_image", "regenerate_ai_image", "submit_tmall_material_test", "crawl_tmall_material_test_data", "read_prompt_library"]
+
+
+class CloudApprovalConfigRequest(BaseModel):
+    base_url: str = ""
+    registration_token: str = ""
+    machine_name: str = ""
+    machine_enabled: bool = False
+    capabilities: list[str] = []
+
+
+class CloudApprovalEnrollRequest(BaseModel):
+    registration_token: str = ""
+    machine_name: str = ""
+    capabilities: list[str] = []
+
+
+class CloudApprovalSyncBatchRequest(BaseModel):
+    batch_id: str
+    token: str
+
+
+class CloudMachineLoopController:
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._stop_event: threading.Event | None = None
+        self.last_health = "stopped"
+        self.last_error = ""
+
+    def is_running(self) -> bool:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return True
+            self._thread = None
+            self._stop_event = None
+            if self.last_health == "running":
+                self.last_health = "stopped"
+            return False
+
+    def start(self, agent: CloudMachineAgent) -> bool:
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return False
+            stop_event = threading.Event()
+            self._stop_event = stop_event
+            self.last_health = "running"
+            self.last_error = ""
+
+            def run_loop():
+                try:
+                    agent.run_forever(stop_event)
+                except Exception as exc:
+                    logger.exception("cloud approval machine loop stopped with error")
+                    self.last_health = "error"
+                    self.last_error = str(exc)
+                finally:
+                    if stop_event.is_set() and self.last_health != "error":
+                        self.last_health = "stopped"
+
+            self._thread = threading.Thread(target=run_loop, name="cloud-approval-machine", daemon=True)
+            self._thread.start()
+            return True
+
+    def stop(self) -> bool:
+        with self._lock:
+            thread = self._thread
+            stop_event = self._stop_event
+            if not thread or not thread.is_alive() or not stop_event:
+                self._thread = None
+                self._stop_event = None
+                self.last_health = "stopped"
+                return False
+            stop_event.set()
+        thread.join(timeout=2.0)
+        with self._lock:
+            if not thread.is_alive():
+                self._thread = None
+                self._stop_event = None
+                self.last_health = "stopped"
+        return True
+
+
+cloud_machine_controller = CloudMachineLoopController()
+
+
+def _cloud_approval_config() -> dict:
+    cfg = load_config()
+    cloud = cfg.get("cloud_approval") if isinstance(cfg.get("cloud_approval"), dict) else {}
+    return cloud if isinstance(cloud, dict) else {}
+
+
+def _cloud_approval_resolution(*, refresh: bool = False):
+    cloud = _cloud_approval_config()
+    return resolve_cloud_approval_url(
+        str(cloud.get("base_url") or ""),
+        refresh=refresh,
+    )
+
+
+def _cloud_capabilities(*sources) -> list[str]:
+    for source in sources:
+        raw = source.get("capabilities") if isinstance(source, dict) else source
+        if not isinstance(raw, list):
+            continue
+        capabilities: list[str] = []
+        for item in raw:
+            text = str(item or "").strip()
+            if text and text not in capabilities:
+                capabilities.append(text)
+        if capabilities:
+            return capabilities
+    return list(DEFAULT_CLOUD_APPROVAL_CAPABILITIES)
+
+
+def _build_cloud_client() -> CloudApprovalClient:
+    resolution = _cloud_approval_resolution()
+    saved = data_sink.get_cloud_machine_credentials() or {}
+    return CloudApprovalClient(
+        base_url=resolution.base_url,
+        machine_token=str(saved.get("machine_token") or ""),
+        on_transport_error=invalidate_cloud_approval_url_cache,
+    )
+
+
+def _cloud_prompt_libraries(client: CloudApprovalClient | None = None) -> dict:
+    active_client = client or _build_cloud_client()
+    return active_client.request_json("GET", "/api/prompt-libraries", token_type="machine")
+
+
+def _cloud_prompt_templates(
+    library_id: str | int,
+    *,
+    category: str = "",
+    gender: str = "",
+    limit: int = 200,
+    client: CloudApprovalClient | None = None,
+) -> dict:
+    active_client = client or _build_cloud_client()
+    query = {
+        "limit": max(1, min(int(limit or 200), 500)),
+    }
+    if str(category or "").strip():
+        query["category"] = str(category or "").strip()
+    if str(gender or "").strip():
+        query["gender"] = str(gender or "").strip()
+    path = f"/api/prompt-libraries/{library_id}/resolved?{urlencode(query)}"
+    return active_client.request_json("GET", path, token_type="machine")
+
+
+def _cloud_prompt_library_export(library_id: str | int, *, client: CloudApprovalClient | None = None) -> dict:
+    active_client = client or _build_cloud_client()
+    return active_client.request_json("GET", f"/api/prompt-libraries/{library_id}/export", token_type="machine")
+
+
+def _cloud_machine_agent(client: CloudApprovalClient) -> CloudMachineAgent:
+    return CloudMachineAgent(
+        client,
+        app_version=API_VERSION,
+        heartbeat_callback=lambda health: setattr(cloud_machine_controller, "last_health", str(health or "")),
+    )
+
+
+def _safe_cloud_enrollment_response(response: dict) -> dict:
+    safe = dict(response or {})
+    safe.pop("machine_token", None)
+    return safe
+
+
+def _cloud_approval_status(*, refresh: bool = False) -> dict:
+    cloud = _cloud_approval_config()
+    resolution = _cloud_approval_resolution(refresh=refresh)
+    saved = data_sink.get_cloud_machine_credentials() or {}
+    machine_name = str(cloud.get("machine_name") or saved.get("machine_name") or "").strip()
+    machine_id = str(saved.get("machine_id") or "").strip()
+    token_present = bool(str(saved.get("machine_token") or "").strip())
+    running = cloud_machine_controller.is_running()
+    health = "running" if running and cloud_machine_controller.last_health == "stopped" else cloud_machine_controller.last_health
+    return {
+        **resolution.status_fields(),
+        "running": running,
+        "auth": "enrolled" if token_present else "missing_token",
+        "health": health or ("running" if running else "stopped"),
+        "machine_name": machine_name,
+        "machine_id": machine_id,
+        "token_present": token_present,
+        "machine_enabled": bool(cloud.get("machine_enabled")),
+        "capabilities": _cloud_capabilities(saved, cloud),
+        "last_error": cloud_machine_controller.last_error,
+    }
+
+
+@app.get("/cloud-approval/status")
+def get_cloud_approval_status(refresh: bool = False):
+    return _cloud_approval_status(refresh=refresh)
+
+
+@app.post("/cloud-approval/config")
+def configure_cloud_approval(req: CloudApprovalConfigRequest):
+    patch_config({
+        "cloud_approval": {
+            **_cloud_approval_config(),
+            "registration_token": str(req.registration_token or "").strip(),
+            "machine_name": str(req.machine_name or "").strip(),
+            "machine_enabled": bool(req.machine_enabled),
+            "capabilities": _cloud_capabilities(req.capabilities),
+        },
+    })
+    return {"ok": True, "status": _cloud_approval_status()}
+
+
+@app.post("/cloud-approval/enroll-machine")
+def enroll_cloud_machine(req: CloudApprovalEnrollRequest):
+    cloud = _cloud_approval_config()
+    resolution = _cloud_approval_resolution(refresh=True)
+    if not resolution.configured:
+        raise HTTPException(400, f"cloud approval address is invalid: {resolution.service_error}")
+    if not resolution.service_reachable:
+        raise HTTPException(502, f"cloud approval service is unavailable: {resolution.service_error}")
+    registration_token = str(req.registration_token or cloud.get("registration_token") or "").strip()
+    if not registration_token:
+        raise HTTPException(400, "registration token is required")
+    machine_name = str(req.machine_name or cloud.get("machine_name") or "").strip()
+    if not machine_name:
+        raise HTTPException(400, "machine name is required")
+    capabilities = _cloud_capabilities(req.capabilities, cloud)
+    client = CloudApprovalClient(
+        base_url=resolution.base_url,
+        on_transport_error=invalidate_cloud_approval_url_cache,
+    )
+    try:
+        response = _cloud_machine_agent(client).enroll(registration_token, machine_name, capabilities)
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+    patch_config({
+        "cloud_approval": {
+            **cloud,
+            "registration_token": "",
+            "machine_name": machine_name,
+            "capabilities": capabilities,
+        },
+    })
+    return {**_safe_cloud_enrollment_response(response), "status": _cloud_approval_status()}
+
+
+@app.post("/cloud-approval/sync-batch")
+def sync_cloud_approval_batch(req: CloudApprovalSyncBatchRequest):
+    batch = _load_tmall_approval_batch(req.batch_id)
+    _validate_tmall_approval_token(batch, req.token)
+    try:
+        result = sync_local_approval_batch(batch, _build_cloud_client())
+    except (CloudApprovalError, ValueError) as exc:
+        raise HTTPException(502, str(exc)) from exc
+    return {"ok": True, "result": result}
+
+
+@app.get("/cloud-approval/prompt-libraries")
+def get_cloud_prompt_libraries():
+    try:
+        return _cloud_prompt_libraries()
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/cloud-approval/prompt-libraries/{library_id}/resolved")
+def get_cloud_prompt_templates(library_id: str, category: str = "", gender: str = "", limit: int = 200):
+    try:
+        return _cloud_prompt_templates(library_id, category=category, gender=gender, limit=limit)
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.get("/cloud-approval/prompt-libraries/{library_id}/export")
+def get_cloud_prompt_library_export(library_id: str):
+    try:
+        return _cloud_prompt_library_export(library_id)
+    except CloudApprovalError as exc:
+        raise HTTPException(502, str(exc)) from exc
+
+
+@app.post("/cloud-approval/machine/start")
+def start_cloud_machine():
+    status = _cloud_approval_status()
+    if not status["configured"]:
+        raise HTTPException(400, "cloud approval base_url is required")
+    if not status["service_reachable"]:
+        raise HTTPException(502, f"cloud approval service is unavailable: {status['service_error']}")
+    if not status["token_present"]:
+        raise HTTPException(400, "machine enrollment is required before start")
+    client = _build_cloud_client()
+    cloud_machine_controller.start(_cloud_machine_agent(client))
+    patch_config({"cloud_approval": {**_cloud_approval_config(), "machine_enabled": True}})
+    return {"ok": True, "status": _cloud_approval_status()}
+
+
+def _start_cloud_machine_if_enabled() -> bool:
+    cloud = _cloud_approval_config()
+    if not bool(cloud.get("machine_enabled")):
+        return False
+    status = _cloud_approval_status()
+    if not status["configured"] or not status["service_reachable"] or not status["token_present"]:
+        logger.warning("Cloud approval machine is enabled but not configured or enrolled; skip auto-start")
+        return False
+    return cloud_machine_controller.start(_cloud_machine_agent(_build_cloud_client()))
+
+
+@app.post("/cloud-approval/machine/stop")
+def stop_cloud_machine():
+    cloud_machine_controller.stop()
+    patch_config({"cloud_approval": {**_cloud_approval_config(), "machine_enabled": False}})
+    return {"ok": True, "status": _cloud_approval_status()}
+
 
 @app.get("/settings")
 def get_settings():

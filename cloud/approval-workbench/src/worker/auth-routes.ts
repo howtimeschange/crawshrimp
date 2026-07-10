@@ -1,0 +1,364 @@
+import { recordAudit } from './audit'
+import { nowIso } from './db'
+import type { Env } from './env'
+import { sessionTtlSeconds } from './env'
+import { badRequest, forbidden, json, readJsonObject, unauthorized } from './http'
+import { hashPassword, verifyPassword } from './security/password'
+import { type Permission, permissionsForRoles } from './security/rbac'
+import { randomToken, sha256Hex } from './security/tokens'
+
+const SESSION_COOKIE = 'cs_session'
+
+interface UserRow {
+  id: number
+  email: string
+  name: string
+  status: string
+  password_hash?: string
+  created_at?: string
+  updated_at?: string
+}
+
+interface RoleRow {
+  id?: number
+  role_key: string
+  name: string
+}
+
+type RoleIdByKey = Map<string, number>
+
+export interface CurrentUser {
+  user: UserRow
+  roles: RoleRow[]
+  permissions: Permission[]
+  token: string
+  sessionHash: string
+}
+
+function publicUser(user: UserRow): Omit<UserRow, 'password_hash'> {
+  const { password_hash: _passwordHash, ...safeUser } = user
+  return safeUser
+}
+
+function cookieValue(request: Request, name: string): string | null {
+  const cookie = request.headers.get('cookie') || ''
+  for (const part of cookie.split(';')) {
+    const [rawKey, ...rawValue] = part.trim().split('=')
+    if (rawKey === name) return rawValue.join('=')
+  }
+  return null
+}
+
+function cookieAttributes(request: Request, ttlSeconds: number): string {
+  const url = new URL(request.url)
+  const secureContext = url.protocol === 'https:'
+  const sameSite = secureContext ? 'None' : 'Lax'
+  const secure = secureContext ? '; Secure' : ''
+  return `Path=/; HttpOnly${secure}; SameSite=${sameSite}; Max-Age=${ttlSeconds}`
+}
+
+function sessionCookie(request: Request, token: string, ttlSeconds: number): string {
+  return `${SESSION_COOKIE}=${token}; ${cookieAttributes(request, ttlSeconds)}`
+}
+
+function expiredSessionCookie(request: Request): string {
+  return `${SESSION_COOKIE}=; ${cookieAttributes(request, 0)}`
+}
+
+function responseFor(user: UserRow, roles: RoleRow[]): Record<string, unknown> {
+  const roleKeys = roles.map((role) => role.role_key)
+  return {
+    user: publicUser(user),
+    roles,
+    permissions: Array.from(permissionsForRoles(roleKeys)),
+  }
+}
+
+async function rolesForUser(env: Env, userId: number): Promise<RoleRow[]> {
+  const { results } = await env.DB.prepare(
+    `SELECT r.id, r.role_key, r.name
+     FROM roles r
+     JOIN user_roles ur ON ur.role_id = r.id
+     WHERE ur.user_id = ?
+     ORDER BY r.role_key`,
+  )
+    .bind(userId)
+    .all<RoleRow>()
+  return results
+}
+
+async function currentUser(request: Request, env: Env): Promise<CurrentUser | null> {
+  const token = cookieValue(request, SESSION_COOKIE)
+  if (!token) return null
+  const sessionHash = await sha256Hex(token)
+  const user = await env.DB.prepare(
+    `SELECT u.id, u.email, u.name, u.status, u.created_at, u.updated_at
+     FROM sessions s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.session_hash = ?
+       AND s.revoked_at IS NULL
+       AND s.expires_at > ?
+       AND u.status = 'active'
+     LIMIT 1`,
+  )
+    .bind(sessionHash, nowIso())
+    .first<UserRow>()
+  if (!user) return null
+  const roles = await rolesForUser(env, user.id)
+  const permissions = Array.from(permissionsForRoles(roles.map((role) => role.role_key)))
+  return { user, roles, permissions, token, sessionHash }
+}
+
+export async function requirePermission(request: Request, env: Env, permission: Permission): Promise<CurrentUser | Response> {
+  const actor = await currentUser(request, env)
+  if (!actor) return unauthorized()
+  if (!actor.permissions.includes(permission)) return forbidden()
+  return actor
+}
+
+export async function requireAnyPermission(request: Request, env: Env, permissions: Permission[]): Promise<CurrentUser | Response> {
+  const actor = await currentUser(request, env)
+  if (!actor) return unauthorized()
+  if (!permissions.some((permission) => actor.permissions.includes(permission))) return forbidden()
+  return actor
+}
+
+export async function login(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonObject(request)
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+  if (!email || !password) return badRequest('email and password are required')
+
+  const user = await env.DB.prepare(
+    `SELECT id, email, name, status, password_hash, created_at, updated_at
+     FROM users
+     WHERE lower(email) = lower(?)
+     LIMIT 1`,
+  )
+    .bind(email)
+    .first<UserRow>()
+
+  if (!user || user.status !== 'active' || !user.password_hash || !(await verifyPassword(password, user.password_hash))) {
+    return unauthorized('Invalid email or password')
+  }
+
+  const token = randomToken('sess')
+  const sessionHash = await sha256Hex(token)
+  const ttlSeconds = sessionTtlSeconds(env)
+  const expiresAt = new Date(Date.now() + ttlSeconds * 1000).toISOString()
+  await env.DB.prepare('INSERT INTO sessions (user_id, session_hash, expires_at, created_at) VALUES (?, ?, ?, ?)')
+    .bind(user.id, sessionHash, expiresAt, nowIso())
+    .run()
+  await env.DB.prepare('UPDATE users SET last_login_at = ?, updated_at = ? WHERE id = ?').bind(nowIso(), nowIso(), user.id).run()
+  const roles = await rolesForUser(env, user.id)
+  await recordAudit(env, { userId: user.id }, 'auth.login', 'user', String(user.id), { email: user.email }, request)
+
+  return json(responseFor(user, roles), {
+    headers: { 'set-cookie': sessionCookie(request, token, ttlSeconds) },
+  })
+}
+
+export async function logout(request: Request, env: Env): Promise<Response> {
+  const actor = await currentUser(request, env)
+  if (actor) {
+    await env.DB.prepare('UPDATE sessions SET revoked_at = ? WHERE session_hash = ?').bind(nowIso(), actor.sessionHash).run()
+    await recordAudit(env, { userId: actor.user.id }, 'auth.logout', 'user', String(actor.user.id), {}, request)
+  }
+  return json({ ok: true }, { headers: { 'set-cookie': expiredSessionCookie(request) } })
+}
+
+export async function me(request: Request, env: Env): Promise<Response> {
+  const actor = await currentUser(request, env)
+  if (!actor) return unauthorized()
+  return json(responseFor(actor.user, actor.roles))
+}
+
+export async function listUsers(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'users:write')
+  if (actor instanceof Response) return actor
+  const { results } = await env.DB.prepare('SELECT id, email, name, status, created_at, updated_at FROM users ORDER BY id DESC').all<UserRow>()
+  const users = await Promise.all(
+    results.map(async (user) => {
+      const roles = await rolesForUser(env, user.id)
+      return {
+        ...publicUser(user),
+        roles,
+        roleKeys: roles.map((role) => role.role_key),
+      }
+    }),
+  )
+  return json({ users })
+}
+
+export async function createUser(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'users:write')
+  if (actor instanceof Response) return actor
+  const body = await readJsonObject(request)
+  const email = typeof body.email === 'string' ? body.email.trim().toLowerCase() : ''
+  const name = typeof body.name === 'string' ? body.name.trim() : ''
+  const password = typeof body.password === 'string' ? body.password : ''
+  const status = typeof body.status === 'string' ? body.status : 'active'
+  const roleKeys = Array.isArray(body.roleKeys) ? body.roleKeys.filter((roleKey): roleKey is string => typeof roleKey === 'string') : []
+  if (!email || !name || password.length < 8) return badRequest('email, name, and password of at least 8 characters are required')
+  const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
+  if (roleIdByKey instanceof Response) return roleIdByKey
+  const roleGuard = requireAssignableRoleKeys(actor, roleKeys)
+  if (roleGuard) return roleGuard
+
+  const now = nowIso()
+  const passwordHash = await hashPassword(password)
+  const result = await env.DB.prepare(
+    'INSERT INTO users (email, name, status, password_hash, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  )
+    .bind(email, name, status, passwordHash, actor.user.id, now, now)
+    .run()
+  const userId = Number(result.meta.last_row_id)
+  if (roleKeys.length > 0) {
+    await assignUserRoles(env, userId, roleKeys, actor.user.id, roleIdByKey)
+  }
+  await recordAudit(env, { userId: actor.user.id }, 'users.create', 'user', String(userId), { email, roleKeys }, request)
+  return json({ user: { id: userId, email, name, status } }, { status: 201 })
+}
+
+export async function updateUser(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'users:write')
+  if (actor instanceof Response) return actor
+  const userId = Number(new URL(request.url).pathname.split('/').at(-1))
+  if (!Number.isInteger(userId) || userId <= 0) return badRequest('valid user id is required')
+  const body = await readJsonObject(request)
+  const name = typeof body.name === 'string' ? body.name.trim() : null
+  const status = typeof body.status === 'string' ? body.status : null
+  if (!name && !status) return badRequest('name or status is required')
+  const target = await userById(env, userId)
+  if (!target) return json({ error: 'Not found' }, { status: 404 })
+  const targetRoles = await rolesForUser(env, userId)
+  const superAdminGuard = await requireCanModifySuperAdminTarget(env, actor, target, targetRoles, {
+    removeSuperAdminRole: false,
+    deactivateSuperAdmin: Boolean(status && status !== 'active'),
+  })
+  if (superAdminGuard) return superAdminGuard
+  await env.DB.prepare(
+    `UPDATE users
+     SET name = COALESCE(?, name),
+         status = COALESCE(?, status),
+         updated_at = ?
+     WHERE id = ?`,
+  )
+    .bind(name, status, nowIso(), userId)
+    .run()
+  await recordAudit(env, { userId: actor.user.id }, 'users.update', 'user', String(userId), { name, status }, request)
+  return json({ ok: true })
+}
+
+export async function listRoles(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'roles:read')
+  if (actor instanceof Response) return actor
+  const { results } = await env.DB.prepare('SELECT id, role_key, name FROM roles ORDER BY role_key').all()
+  return json({ roles: results })
+}
+
+export async function updateUserRoles(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'users:write')
+  if (actor instanceof Response) return actor
+  const userId = Number(new URL(request.url).pathname.match(/^\/api\/admin\/users\/(\d+)\/roles$/)?.[1])
+  if (!Number.isInteger(userId) || userId <= 0) return badRequest('valid user id is required')
+  const body = await readJsonObject(request)
+  const roleKeys = Array.isArray(body.roleKeys) ? body.roleKeys.filter((roleKey): roleKey is string => typeof roleKey === 'string') : []
+  const target = await userById(env, userId)
+  if (!target) return json({ error: 'Not found' }, { status: 404 })
+  const targetRoles = await rolesForUser(env, userId)
+  const roleIdByKey = await roleIdMapForValidatedKeys(env, roleKeys)
+  if (roleIdByKey instanceof Response) return roleIdByKey
+  const roleGuard = requireAssignableRoleKeys(actor, roleKeys)
+  if (roleGuard) return roleGuard
+  const superAdminGuard = await requireCanModifySuperAdminTarget(env, actor, target, targetRoles, {
+    removeSuperAdminRole: hasRole(targetRoles, 'super_admin') && !roleKeys.includes('super_admin'),
+    deactivateSuperAdmin: false,
+  })
+  if (superAdminGuard) return superAdminGuard
+  await env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(userId).run()
+  await assignUserRoles(env, userId, roleKeys, actor.user.id, roleIdByKey)
+  await recordAudit(env, { userId: actor.user.id }, 'users.roles.update', 'user', String(userId), { roleKeys }, request)
+  return json({ ok: true })
+}
+
+async function userById(env: Env, userId: number): Promise<UserRow | null> {
+  return env.DB.prepare('SELECT id, email, name, status, created_at, updated_at FROM users WHERE id = ? LIMIT 1')
+    .bind(userId)
+    .first<UserRow>()
+}
+
+export async function listAuditLogs(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'audit:read')
+  if (actor instanceof Response) return actor
+  const { results } = await env.DB.prepare(
+    `SELECT id, actor_user_id, actor_machine_id, action, resource_type, resource_id, payload_json, ip_address, user_agent, created_at
+     FROM audit_logs
+     ORDER BY id DESC
+     LIMIT 100`,
+  ).all()
+  return json({ auditLogs: results })
+}
+
+async function roleIdMapForValidatedKeys(env: Env, roleKeys: string[]): Promise<RoleIdByKey | Response> {
+  if (roleKeys.length === 0) return new Map()
+  const { results } = await env.DB.prepare('SELECT id, role_key, name FROM roles ORDER BY role_key').all<RoleRow>()
+  const roleIdByKey = new Map(results.flatMap((role) => (role.id ? [[role.role_key, role.id] as const] : [])))
+  const missingRoleKeys = [...new Set(roleKeys)].filter((roleKey) => !roleIdByKey.has(roleKey))
+  if (missingRoleKeys.length > 0) {
+    return badRequest(`unknown roleKeys: ${missingRoleKeys.join(', ')}`)
+  }
+  return roleIdByKey
+}
+
+function requireAssignableRoleKeys(actor: CurrentUser, roleKeys: string[]): Response | null {
+  if (roleKeys.includes('super_admin') && !actor.roles.some((role) => role.role_key === 'super_admin')) {
+    return forbidden('Only super_admin can assign super_admin')
+  }
+  return null
+}
+
+async function requireCanModifySuperAdminTarget(
+  env: Env,
+  actor: CurrentUser,
+  target: UserRow,
+  targetRoles: RoleRow[],
+  options: { removeSuperAdminRole: boolean; deactivateSuperAdmin: boolean },
+): Promise<Response | null> {
+  if (!hasRole(targetRoles, 'super_admin')) return null
+  if (!hasRole(actor.roles, 'super_admin')) return forbidden('Only super_admin can modify super_admin users')
+  if (target.status === 'active' && options.removeSuperAdminRole && await activeSuperAdminCount(env) <= 1) {
+    return json({ error: 'Cannot remove the last active super_admin' }, { status: 409 })
+  }
+  if (target.status === 'active' && options.deactivateSuperAdmin && await activeSuperAdminCount(env) <= 1) {
+    return json({ error: 'Cannot deactivate the last active super_admin' }, { status: 409 })
+  }
+  return null
+}
+
+async function activeSuperAdminCount(env: Env): Promise<number> {
+  const row = await env.DB.prepare(
+    `SELECT COUNT(*) AS count
+     FROM users u
+     JOIN user_roles ur ON ur.user_id = u.id
+     JOIN roles r ON r.id = ur.role_id
+     WHERE u.status = 'active'
+       AND r.role_key = 'super_admin'`,
+  ).first<{ count: number }>()
+  return Number(row?.count ?? 0)
+}
+
+function hasRole(roles: RoleRow[], roleKey: string): boolean {
+  return roles.some((role) => role.role_key === roleKey)
+}
+
+async function assignUserRoles(env: Env, userId: number, roleKeys: string[], assignedBy: number, roleIdByKey: RoleIdByKey): Promise<void> {
+  if (roleKeys.length === 0) return
+  for (const roleKey of roleKeys) {
+    const roleId = roleIdByKey.get(roleKey)
+    if (!roleId) throw new Error(`validated role key missing from role map: ${roleKey}`)
+    await env.DB.prepare('INSERT OR IGNORE INTO user_roles (user_id, role_id, assigned_by, assigned_at) VALUES (?, ?, ?, ?)')
+      .bind(userId, roleId, assignedBy, nowIso())
+      .run()
+  }
+}

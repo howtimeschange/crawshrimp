@@ -24,11 +24,13 @@ class TaskSchedulesApiTests(unittest.IsolatedAsyncioTestCase):
                 title="每日数据抓取",
                 frequency="daily",
                 time_of_day="09:30",
+                sync_to_cloud=True,
             ))
 
         self.assertEqual(created["adapter_id"], "tmall-ops-assistant")
         self.assertEqual(created["task_id"], "tmall_material_test_data_export")
         self.assertEqual(created["params"]["mode"], "new")
+        self.assertEqual(created["params"]["sync_to_cloud"], ["enabled"])
         self.assertIn("抓虾导出", created["params"]["output_dir"])
         register.assert_called_once()
 
@@ -52,6 +54,17 @@ class TaskSchedulesApiTests(unittest.IsolatedAsyncioTestCase):
         unregister.assert_called_once_with(created["schedule_uid"])
         self.assertEqual(api_server.list_task_schedules_endpoint()["items"], [])
 
+    def test_create_schedule_can_disable_cloud_sync(self):
+        created = api_server.create_task_schedule_endpoint(api_server.TaskScheduleCreateRequest(
+            title="只本地导出",
+            frequency="daily",
+            time_of_day="09:30",
+            params={"sync_to_cloud": ["enabled"]},
+            sync_to_cloud=False,
+        ))
+
+        self.assertNotIn("sync_to_cloud", created["params"])
+
     async def test_run_now_creates_instance_and_starts_saved_task(self):
         created = data_sink.create_task_schedule(
             adapter_id="tmall-ops-assistant",
@@ -60,7 +73,7 @@ class TaskSchedulesApiTests(unittest.IsolatedAsyncioTestCase):
             frequency="daily",
             time_of_day="09:30",
             weekday=None,
-            params={"mode": "new", "output_dir": "/tmp/export"},
+            params={"mode": "new", "output_dir": "/tmp/export", "sync_to_cloud": ["enabled"]},
             notify_template="完成 {{records}}",
         )
 
@@ -74,6 +87,7 @@ class TaskSchedulesApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["task_id"], "tmall_material_test_data_export")
         self.assertEqual(detail["params"]["__task_schedule_uid"], created["schedule_uid"])
         self.assertEqual(detail["params"]["__task_instance_uid"], result["instance_uid"])
+        self.assertEqual(detail["params"]["sync_to_cloud"], ["enabled"])
 
     async def test_run_now_rejects_active_task_before_creating_instance(self):
         created = data_sink.create_task_schedule(

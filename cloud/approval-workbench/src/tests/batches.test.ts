@@ -1,0 +1,1148 @@
+import { describe, expect, it } from 'vitest'
+import worker from '../worker/index'
+import { sha256Hex } from '../worker/security/tokens'
+
+interface UserRow {
+  id: number
+  email: string
+  name: string
+  status: string
+}
+
+interface RoleRow {
+  id: number
+  role_key: string
+  name: string
+}
+
+interface UserRoleRow {
+  user_id: number
+  role_id: number
+}
+
+interface SessionRow {
+  user_id: number
+  session_hash: string
+  expires_at: string
+  revoked_at: string | null
+}
+
+interface MachineRow {
+  id: number
+  machine_id: string
+  machine_name: string
+  owner_user_id: number | null
+  app_version: string
+  fingerprint_hash: string
+  capabilities_json: string
+  auth_status: string
+  health: string
+  current_job_id: string | null
+  last_seen_at: string | null
+  registered_at: string
+  updated_at: string
+}
+
+interface MachineTokenRow {
+  id: number
+  machine_id: string
+  token_hash: string
+  token_version: number
+  status: string
+  issued_by: number | null
+  issued_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+
+interface BatchRow {
+  id: number
+  batch_uid: string
+  local_instance_uid: string
+  local_run_id: string
+  title: string
+  status: string
+  prompt_library_id: number | null
+  prompt_version_set_json: string
+  source_machine_id: string | null
+  created_by: number | null
+  created_at: string
+  updated_at: string
+}
+
+interface StyleRow {
+  id: number
+  batch_uid: string
+  style_code: string
+  item_id: string
+  skc_code: string
+  category: string
+  gender: string
+  status: string
+  missing_prompt_reason: string
+  source_summary_json: string
+  review_summary_json: string
+  submit_summary_json: string
+}
+
+interface AssetRow {
+  id: number
+  asset_uid: string
+  batch_uid: string
+  style_id: number
+  kind: string
+  status: string
+  object_key: string
+  filename: string
+  content_hash: string
+  prompt_template_version_id: number | null
+  prompt_text: string
+  parent_asset_uid: string | null
+  generation_job_id: string | null
+  meta_json: string
+  created_at: string
+  updated_at: string
+}
+
+interface DispatchJobRow {
+  id: number
+  job_uid: string
+  batch_uid: string
+  job_type: string
+  status: string
+  requested_by: number | null
+  assigned_machine_id: string | null
+  required_capabilities_json: string
+  priority: number
+  attempt_count: number
+  max_attempts: number
+  idempotency_key: string
+  lease_id: string | null
+  lease_expires_at: string | null
+  payload_json: string
+  result_json: string
+  created_at: string
+  updated_at: string
+}
+
+interface FakeState {
+  users: UserRow[]
+  roles: RoleRow[]
+  userRoles: UserRoleRow[]
+  sessions: SessionRow[]
+  machines: MachineRow[]
+  machineTokens: MachineTokenRow[]
+  batches: BatchRow[]
+  styles: StyleRow[]
+  assets: AssetRow[]
+  dispatchJobs: DispatchJobRow[]
+  audits: unknown[]
+  assetSelectSqls: string[]
+}
+
+class FakeD1Statement {
+  private params: unknown[] = []
+
+  constructor(
+    private readonly state: FakeState,
+    private readonly sql: string,
+  ) {}
+
+  bind(...params: unknown[]): FakeD1Statement {
+    this.params = params
+    return this
+  }
+
+  async first<T>(): Promise<T | null> {
+    const normalized = normalizeSql(this.sql)
+    if (normalized.includes('from sessions') && normalized.includes('join users')) {
+      const sessionHash = String(this.params[0])
+      const now = String(this.params[1])
+      const session = this.state.sessions.find((row) => row.session_hash === sessionHash && !row.revoked_at && row.expires_at > now)
+      if (!session) return null
+      return (this.state.users.find((user) => user.id === session.user_id && user.status === 'active') ?? null) as T | null
+    }
+    if (normalized.includes('from machine_tokens') && normalized.includes('join task_machines')) {
+      const tokenHash = String(this.params[0])
+      const token = this.state.machineTokens.find((row) => row.token_hash === tokenHash && row.status === 'active' && !row.revoked_at)
+      if (!token) return null
+      const machine = this.state.machines.find((row) => row.machine_id === token.machine_id)
+      return (machine ? { ...machine, token_hash: token.token_hash } : null) as T | null
+    }
+    if (normalized.includes('from ai_image_batches') && normalized.includes('where batch_uid = ?')) {
+      return (this.state.batches.find((row) => row.batch_uid === String(this.params[0])) ?? null) as T | null
+    }
+    if (normalized.includes('from ai_image_styles') && normalized.includes('where batch_uid = ?') && normalized.includes('style_code = ?')) {
+      return (this.state.styles.find((row) => row.batch_uid === String(this.params[0]) && row.style_code === String(this.params[1]) && row.item_id === String(this.params[2])) ?? null) as T | null
+    }
+    if (normalized.includes('from ai_image_assets') && normalized.includes('where asset_uid = ?')) {
+      return (this.state.assets.find((row) => row.asset_uid === String(this.params[0])) ?? null) as T | null
+    }
+    if (normalized.includes('select count(*) as count from ai_image_styles')) {
+      return { count: this.state.styles.filter((row) => row.batch_uid === String(this.params[0])).length } as T
+    }
+    if (normalized.includes('select count(*) as count from ai_image_assets')) {
+      return { count: this.state.assets.filter((row) => row.batch_uid === String(this.params[0]) && row.kind === 'ai' && (!normalized.includes("status = 'uploaded'") || row.status === 'uploaded')).length } as T
+    }
+    return null
+  }
+
+  async all<T>(): Promise<{ results: T[] }> {
+    const normalized = normalizeSql(this.sql)
+    if (normalized.includes('from roles') && normalized.includes('join user_roles')) {
+      const userId = Number(this.params[0])
+      return {
+        results: this.state.userRoles
+          .filter((userRole) => userRole.user_id === userId)
+          .map((userRole) => this.state.roles.find((role) => role.id === userRole.role_id))
+          .filter((role): role is RoleRow => Boolean(role)) as T[],
+      }
+    }
+    if (normalized.includes('from ai_image_styles') && !normalized.includes('join')) {
+      return { results: this.state.styles.filter((row) => row.batch_uid === String(this.params[0])) as T[] }
+    }
+    if (normalized.includes('from ai_image_assets')) {
+      this.state.assetSelectSqls.push(normalized)
+      const batchUid = this.params[0]
+      if (normalized.includes("status = 'submitted'") && normalized.includes("kind = 'ai'")) {
+        const batchUids = new Set(this.params.map(String))
+        const submittedBatchUids = [...new Set(this.state.assets
+          .filter((row) => batchUids.has(row.batch_uid) && row.kind === 'ai' && row.status === 'submitted')
+          .map((row) => row.batch_uid))]
+        return { results: submittedBatchUids.map((uid) => ({ batch_uid: uid })) as T[] }
+      }
+      if (normalized.includes('ranked_previews')) {
+        const batchUids = new Set(this.params.map(String))
+        const imageRows = this.state.assets.filter((row) => batchUids.has(row.batch_uid) && ['source', 'reference', 'ai'].includes(row.kind) && /\.(jpe?g|png|webp|gif)$/i.test(row.filename))
+        const previews = this.state.batches.flatMap((batch) => {
+          const rows = imageRows.filter((row) => row.batch_uid === batch.batch_uid)
+          const source = rows.find((row) => row.kind === 'source') ?? rows.find((row) => row.kind === 'reference')
+          const aiRows = rows.filter((row) => row.kind === 'ai').slice(0, 4)
+          return [...(source ? [source] : []), ...aiRows]
+        })
+        return {
+          results: previews.map((row) => ({
+            id: row.id,
+            asset_uid: row.asset_uid,
+            batch_uid: row.batch_uid,
+            style_id: row.style_id,
+            kind: row.kind,
+            status: row.status,
+            object_key: row.object_key,
+            filename: row.filename,
+            content_hash: row.content_hash,
+            parent_asset_uid: row.parent_asset_uid,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+          })) as T[],
+        }
+      }
+      return { results: this.state.assets.filter((row) => (!batchUid || row.batch_uid === String(batchUid)) && (!normalized.includes("status = 'planned'") || row.status === 'planned')) as T[] }
+    }
+    if (normalized.includes('from dispatch_jobs')) {
+      const batchUids = new Set(this.params.map(String))
+      return { results: this.state.dispatchJobs.filter((row) => batchUids.has(row.batch_uid)) as T[] }
+    }
+    if (normalized.includes('from ai_image_batches')) {
+      return { results: this.state.batches as T[] }
+    }
+    return { results: [] }
+  }
+
+  async run(): Promise<D1Result> {
+    const normalized = normalizeSql(this.sql)
+    if (normalized.startsWith('update machine_tokens set last_used_at')) {
+      const token = this.state.machineTokens.find((row) => row.token_hash === String(this.params[1]))
+      if (token) token.last_used_at = String(this.params[0])
+      return result(token ? 1 : 0)
+    }
+    if (normalized.startsWith('insert into ai_image_batches')) {
+      const batchUid = String(this.params[0])
+      const existing = this.state.batches.find((row) => row.batch_uid === batchUid)
+      if (existing) {
+        existing.local_instance_uid = String(this.params[1])
+        existing.local_run_id = String(this.params[2])
+        existing.title = String(this.params[3])
+        existing.prompt_library_id = numberOrNull(this.params[5])
+        existing.prompt_version_set_json = String(this.params[6])
+        existing.source_machine_id = stringOrNull(this.params[7])
+        existing.created_by = numberOrNull(this.params[8])
+        existing.updated_at = String(this.params[10])
+        return result(1, existing.id)
+      }
+      const id = this.state.batches.length + 1
+      this.state.batches.push({
+        id,
+        batch_uid: batchUid,
+        local_instance_uid: String(this.params[1]),
+        local_run_id: String(this.params[2]),
+        title: String(this.params[3]),
+        status: String(this.params[4]),
+        prompt_library_id: numberOrNull(this.params[5]),
+        prompt_version_set_json: String(this.params[6]),
+        source_machine_id: stringOrNull(this.params[7]),
+        created_by: numberOrNull(this.params[8]),
+        created_at: String(this.params[9]),
+        updated_at: String(this.params[10]),
+      })
+      return result(1, id)
+    }
+    if (normalized.startsWith('insert into ai_image_styles')) {
+      const batchUid = String(this.params[0])
+      const styleCode = String(this.params[1])
+      const itemId = String(this.params[2])
+      const existing = this.state.styles.find((row) => row.batch_uid === batchUid && row.style_code === styleCode && row.item_id === itemId)
+      if (existing) {
+        existing.skc_code = String(this.params[3])
+        existing.category = String(this.params[4])
+        existing.gender = String(this.params[5])
+        if (normalized.includes('status = excluded.status')) existing.status = String(this.params[6])
+        existing.missing_prompt_reason = String(this.params[7])
+        existing.source_summary_json = String(this.params[8])
+        return result(1, existing.id)
+      }
+      const id = this.state.styles.length + 1
+      this.state.styles.push({
+        id,
+        batch_uid: batchUid,
+        style_code: styleCode,
+        item_id: itemId,
+        skc_code: String(this.params[3]),
+        category: String(this.params[4]),
+        gender: String(this.params[5]),
+        status: String(this.params[6]),
+        missing_prompt_reason: String(this.params[7]),
+        source_summary_json: String(this.params[8]),
+        review_summary_json: '{}',
+        submit_summary_json: '{}',
+      })
+      return result(1, id)
+    }
+    if (normalized.startsWith('insert into ai_image_assets')) {
+      const assetUid = String(this.params[0])
+      const existing = this.state.assets.find((row) => row.asset_uid === assetUid)
+      if (existing) {
+        existing.batch_uid = String(this.params[1])
+        existing.style_id = Number(this.params[2])
+        existing.kind = String(this.params[3])
+        existing.status = String(this.params[4])
+        existing.object_key = String(this.params[5])
+        existing.filename = String(this.params[6])
+        existing.content_hash = String(this.params[7])
+        existing.prompt_template_version_id = numberOrNull(this.params[8])
+        existing.prompt_text = String(this.params[9])
+        existing.parent_asset_uid = stringOrNull(this.params[10])
+        existing.generation_job_id = stringOrNull(this.params[11])
+        existing.meta_json = String(this.params[12])
+        existing.updated_at = String(this.params[14])
+        return result(1, existing.id)
+      }
+      const id = this.state.assets.length + 1
+      this.state.assets.push({
+        id,
+        asset_uid: assetUid,
+        batch_uid: String(this.params[1]),
+        style_id: Number(this.params[2]),
+        kind: String(this.params[3]),
+        status: String(this.params[4]),
+        object_key: String(this.params[5]),
+        filename: String(this.params[6]),
+        content_hash: String(this.params[7]),
+        prompt_template_version_id: numberOrNull(this.params[8]),
+        prompt_text: String(this.params[9]),
+        parent_asset_uid: stringOrNull(this.params[10]),
+        generation_job_id: stringOrNull(this.params[11]),
+        meta_json: String(this.params[12]),
+        created_at: String(this.params[13]),
+        updated_at: String(this.params[14]),
+      })
+      return result(1, id)
+    }
+    if (normalized.startsWith('delete from ai_image_assets')) {
+      const batchUid = String(this.params[0])
+      const assetUid = String(this.params[1])
+      const before = this.state.assets.length
+      this.state.assets = this.state.assets.filter((row) => !(row.batch_uid === batchUid && row.asset_uid === assetUid && row.status === 'planned'))
+      return result(before - this.state.assets.length)
+    }
+    if (normalized.startsWith('update ai_image_batches set status')) {
+      const batch = this.state.batches.find((row) => row.batch_uid === String(this.params[1]))
+      if (!batch) return result(0)
+      batch.status = 'pending_review'
+      batch.updated_at = String(this.params[0])
+      return result(1)
+    }
+    if (normalized.startsWith('insert into audit_logs')) {
+      this.state.audits.push({ action: String(this.params[2]), resource_type: String(this.params[3]), resource_id: String(this.params[4]) })
+      return result(1)
+    }
+    return result(1)
+  }
+}
+
+class FakeD1Database {
+  constructor(private readonly state: FakeState) {}
+
+  prepare(sql: string): FakeD1Statement {
+    return new FakeD1Statement(this.state, sql)
+  }
+}
+
+function fakeEnv(state: FakeState) {
+  return {
+    DB: new FakeD1Database(state) as unknown as D1Database,
+    ASSETS: {} as R2Bucket,
+    SESSION_TTL_SECONDS: '604800',
+  }
+}
+
+function fetchWorker(request: Request, env: ReturnType<typeof fakeEnv>): Promise<Response> {
+  return (worker.fetch as unknown as (request: Request, env: ReturnType<typeof fakeEnv>) => Promise<Response>)(request, env)
+}
+
+async function baseState(): Promise<{ state: FakeState; machineToken: string; reviewerCookie: string; adminCookie: string }> {
+  const machineToken = 'csr_machine_test'
+  const reviewerSession = 'sess_reviewer'
+  const adminSession = 'sess_admin'
+  const state: FakeState = {
+    users: [
+      { id: 1, email: 'admin@example.com', name: 'Admin', status: 'active' },
+      { id: 2, email: 'reviewer@example.com', name: 'Reviewer', status: 'active' },
+    ],
+    roles: [
+      { id: 1, role_key: 'admin', name: 'Admin' },
+      { id: 2, role_key: 'reviewer', name: 'Reviewer' },
+    ],
+    userRoles: [
+      { user_id: 1, role_id: 1 },
+      { user_id: 2, role_id: 2 },
+    ],
+    sessions: [
+      { user_id: 1, session_hash: await sha256Hex(adminSession), expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
+      { user_id: 2, session_hash: await sha256Hex(reviewerSession), expires_at: '2999-01-01T00:00:00.000Z', revoked_at: null },
+    ],
+    machines: [
+      {
+        id: 1,
+        machine_id: 'machine-1',
+        machine_name: 'Machine 1',
+        owner_user_id: null,
+        app_version: '1.0.0',
+        fingerprint_hash: 'fp',
+        capabilities_json: '["ai-image-sync"]',
+        auth_status: 'active',
+        health: 'online_idle',
+        current_job_id: null,
+        last_seen_at: null,
+        registered_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    machineTokens: [
+      {
+        id: 1,
+        machine_id: 'machine-1',
+        token_hash: await sha256Hex(machineToken),
+        token_version: 1,
+        status: 'active',
+        issued_by: null,
+        issued_at: '2026-01-01T00:00:00.000Z',
+        last_used_at: null,
+        revoked_at: null,
+      },
+    ],
+    batches: [],
+    styles: [],
+    assets: [],
+    dispatchJobs: [],
+    audits: [],
+    assetSelectSqls: [],
+  }
+  return {
+    state,
+    machineToken,
+    reviewerCookie: `cs_session=${reviewerSession}`,
+    adminCookie: `cs_session=${adminSession}`,
+  }
+}
+
+function batchPayload(title = 'July sync') {
+  return {
+    batch_uid: 'batch-20260707',
+    local_instance_uid: 'local-instance-1',
+    local_run_id: 'run-1',
+    title,
+    prompt_library_id: 10,
+    prompt_version_set: [{ template_id: 20, version_id: 30 }],
+    styles: [
+      {
+        style_code: '208326140201',
+        item_id: '1065477260163',
+        skc_code: 'SKC-1',
+        category: 'kidswear',
+        gender: 'girl',
+        source_summary: { source_count: 2 },
+        assets: [
+          {
+            asset_uid: 'asset-source-1',
+            kind: 'source',
+            filename: 'source.jpg',
+            object_key: 'batches/batch-20260707/source/asset-source-1-source.jpg',
+            status: 'uploaded',
+            meta: { source_path_label: 'source.jpg' },
+          },
+          {
+            asset_uid: 'asset-ai-1',
+            kind: 'ai',
+            filename: 'ai.jpg',
+            object_key: 'batches/batch-20260707/ai/asset-ai-1-ai.jpg',
+            status: 'uploaded',
+            prompt_template_version_id: 30,
+            prompt_text: 'Generate a clean catalog image',
+            parent_asset_uid: 'asset-source-1',
+            generation_job_id: 'job-1',
+            meta: { model: '1xm' },
+          },
+        ],
+      },
+    ],
+  }
+}
+
+describe('batch sync routes', () => {
+  it('allows a machine token to create a batch with styles and assets', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+
+    expect(response.status).toBe(201)
+    expect(state.batches[0]).toMatchObject({ batch_uid: 'batch-20260707', status: 'syncing', source_machine_id: 'machine-1' })
+    expect(state.styles[0]).toMatchObject({ style_code: '208326140201', item_id: '1065477260163' })
+    expect(state.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
+  })
+
+  it('preserves cloud review decisions when the source machine replays batch sync', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const syncRequest = () => new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    })
+    await fetchWorker(syncRequest(), env)
+    state.batches[0].status = 'pending_review'
+    state.styles[0].status = 'approved'
+    state.assets.find((asset) => asset.asset_uid === 'asset-source-1')!.status = 'uploaded'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'approved'
+
+    const replay = await fetchWorker(syncRequest(), env)
+
+    expect(replay.status).toBe(200)
+    expect(state.styles[0].status).toBe('approved')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-source-1')?.status).toBe('planned')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('approved')
+  })
+
+  it('rejects replay sync after a batch has been submitted', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const request = () => new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    })
+    await fetchWorker(request(), env)
+    state.batches[0].status = 'submitted'
+    state.styles[0].status = 'submitted'
+    state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')!.status = 'submitted'
+
+    const replay = await fetchWorker(request(), env)
+
+    expect(replay.status).toBe(409)
+    expect(state.batches[0].status).toBe('submitted')
+    expect(state.styles[0].status).toBe('submitted')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('submitted')
+  })
+
+  it('returns safe synced style ids for desktop upload matching', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const syncedStyle = payload.styles[0] as Record<string, unknown>
+    syncedStyle.style_uid = 'local-style-1'
+    syncedStyle.source_path = '/Users/xingyicheng/Desktop/raw/source.jpg'
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+    const body = await response.json() as { styles: Array<Record<string, unknown>> }
+
+    expect(response.status).toBe(201)
+    expect(body.styles).toEqual([
+      {
+        id: state.styles[0].id,
+        style_id: state.styles[0].id,
+        style_uid: 'local-style-1',
+        style_code: '208326140201',
+        item_id: '1065477260163',
+      },
+    ])
+    expect(JSON.stringify(body.styles)).not.toContain('assets')
+    expect(JSON.stringify(body.styles)).not.toContain('/Users/')
+  })
+
+  it('scrubs local absolute paths from synced asset metadata recursively', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const sourceAsset = payload.styles[0].assets[0] as Record<string, unknown>
+    sourceAsset.source_path_label = '/Users/xingyicheng/Desktop/raw/source.jpg'
+    sourceAsset.meta = {
+      model: 'source-camera',
+      safe_label: 'Desktop reference',
+      original_path: '/Users/xingyicheng/Desktop/raw/source.jpg',
+      windows_path: 'C:\\Users\\xingyicheng\\Desktop\\raw\\source.jpg',
+      nested: {
+        local_path: '/private/tmp/raw/source.jpg',
+        labels: ['front', '/Users/xingyicheng/Desktop/raw/front.jpg'],
+        object: { absolute_path: 'D:\\raw\\back.jpg', color: 'blue' },
+      },
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    const meta = JSON.parse(state.assets[0].meta_json)
+    expect(meta).toEqual({
+      model: 'source-camera',
+      safe_label: 'Desktop reference',
+      nested: {
+        labels: ['front'],
+        object: { color: 'blue' },
+      },
+      source_path_label: 'source.jpg',
+    })
+    expect(state.assets[0].meta_json).not.toContain('/Users/')
+    expect(state.assets[0].meta_json).not.toContain('/private/tmp')
+    expect(state.assets[0].meta_json).not.toContain('C:\\')
+    expect(state.assets[0].meta_json).not.toContain('D:\\')
+  })
+
+  it('scrubs generic POSIX paths from synced metadata while preserving safe URLs', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.source_path_label = '/mnt/share/source.jpg'
+    aiAsset.meta = {
+      preview_url: 'https://cdn.example.test/source.jpg',
+      nested: {
+        raw_path: '/opt/crawshrimp/raw/source.jpg',
+        labels: ['front', '/mnt/share/front.jpg'],
+      },
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    const meta = JSON.parse(state.assets[1].meta_json)
+    expect(meta).toEqual({
+      preview_url: 'https://cdn.example.test/source.jpg',
+      nested: {
+        labels: ['front'],
+      },
+      source_path_label: 'source.jpg',
+    })
+    expect(state.assets[1].meta_json).not.toContain('/opt/')
+    expect(state.assets[1].meta_json).not.toContain('/mnt/')
+  })
+
+  it('drops caller-supplied object key metadata while persisting the canonical object_key column', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.meta = {
+      model: '1xm',
+      object_key: 'batches/other-batch/source/other-source.jpg',
+      objectKey: 'batches/other-batch/ai/other-ai.jpg',
+      r2_object_key: 'batches/batch-20260707/reference/asset-ai-1-ai.jpg',
+      storage_key: 'batches/batch-20260707/log/asset-ai-1.txt',
+      nested: {
+        object_key: 'batches/other-batch/ai/nested.jpg',
+        safe_label: 'front image',
+      },
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai.jpg')
+    expect(JSON.parse(state.assets[1].meta_json)).toEqual({
+      model: '1xm',
+      nested: {
+        safe_label: 'front image',
+      },
+    })
+    expect(state.assets[1].meta_json).not.toContain('other-batch')
+    expect(state.assets[1].meta_json).not.toContain('r2_object_key')
+    expect(state.assets[1].meta_json).not.toContain('storage_key')
+  })
+
+  it('persists canonical object keys for synced assets instead of caller-provided malformed keys', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.object_key = 'batches/batch-20260707/ai/not-the-asset-id-ai.jpg'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai.jpg')
+  })
+
+  it('stores a safe basename filename and canonical object key for macOS absolute synced filenames', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.filename = '/Users/xingyicheng/Desktop/raw/ai hero.jpg'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].filename).toBe('ai-hero.jpg')
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai-hero.jpg')
+  })
+
+  it('stores a safe basename filename and canonical object key for Windows absolute synced filenames', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.filename = 'C:\\Users\\xingyicheng\\Desktop\\raw\\ai final.png'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].filename).toBe('ai-final.png')
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai-final.png')
+  })
+
+  it('does not persist caller object keys whose kind segment mismatches the asset kind', async () => {
+    const { state, machineToken } = await baseState()
+    const payload = batchPayload()
+    const aiAsset = payload.styles[0].assets[1] as Record<string, unknown>
+    aiAsset.object_key = 'batches/batch-20260707/source/asset-ai-1-ai.jpg'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(payload),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets[1].kind).toBe('ai')
+    expect(state.assets[1].object_key).toBe('batches/batch-20260707/ai/asset-ai-1-ai.jpg')
+  })
+
+  it('prevents a non-admin user session from creating a machine-origin batch', async () => {
+    const { state, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { cookie: reviewerCookie },
+      body: JSON.stringify({ ...batchPayload(), source_machine_id: 'machine-1' }),
+    }), env)
+
+    expect(response.status).toBe(403)
+    expect(state.batches).toHaveLength(0)
+  })
+
+  it('allows an admin user session to create an explicitly machine-origin batch', async () => {
+    const { state, adminCookie } = await baseState()
+    const env = fakeEnv(state)
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { cookie: adminCookie },
+      body: JSON.stringify({ ...batchPayload(), source_machine_id: 'machine-override' }),
+    }), env)
+
+    expect(response.status).toBe(201)
+    expect(state.batches[0]).toMatchObject({ created_by: 1, source_machine_id: 'machine-override' })
+  })
+
+  it('rejects machine sync attempts against a batch owned by another machine', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const first = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload('Machine 1 batch')),
+    }), env)
+    const secondMachineToken = 'csr_machine_test_2'
+    state.machines.push({
+      ...state.machines[0],
+      id: 2,
+      machine_id: 'machine-2',
+      machine_name: 'Machine 2',
+    })
+    state.machineTokens.push({
+      ...state.machineTokens[0],
+      id: 2,
+      machine_id: 'machine-2',
+      token_hash: await sha256Hex(secondMachineToken),
+    })
+
+    const second = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secondMachineToken}` },
+      body: JSON.stringify(batchPayload('Hijack attempt')),
+    }), env)
+    const body = await second.json() as { error: string }
+
+    expect(first.status).toBe(201)
+    expect(second.status).toBe(403)
+    expect(body.error).toContain('source machine')
+    expect(state.batches).toHaveLength(1)
+    expect(state.batches[0]).toMatchObject({ title: 'Machine 1 batch', source_machine_id: 'machine-1' })
+    expect(state.assets).toHaveLength(2)
+  })
+
+  it('changes a valid syncing batch to pending_review on sync-complete', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.assets.forEach((asset) => { asset.status = 'uploaded' })
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), env)
+
+    expect(response.status).toBe(200)
+    expect(state.batches[0].status).toBe('pending_review')
+  })
+
+  it('rejects sync-complete from a machine that does not own the synced batch', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.assets.forEach((asset) => { asset.status = 'uploaded' })
+    const secondMachineToken = 'csr_machine_test_2'
+    state.machines.push({
+      ...state.machines[0],
+      id: 2,
+      machine_id: 'machine-2',
+      machine_name: 'Machine 2',
+    })
+    state.machineTokens.push({
+      ...state.machineTokens[0],
+      id: 2,
+      machine_id: 'machine-2',
+      token_hash: await sha256Hex(secondMachineToken),
+    })
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${secondMachineToken}` },
+    }), env)
+    const body = await response.json() as { error: string }
+
+    expect(response.status).toBe(403)
+    expect(body.error).toContain('source machine')
+    expect(state.batches[0].status).toBe('syncing')
+  })
+
+  it('keeps synced asset rows planned until upload succeeds', async () => {
+    const { state, machineToken } = await baseState()
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), fakeEnv(state))
+
+    expect(response.status).toBe(201)
+    expect(state.assets).toHaveLength(2)
+    expect(state.assets.map((asset) => asset.status)).toEqual(['planned', 'planned'])
+  })
+
+  it('makes machine batch sync idempotent without clearing review decisions', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.assets[0].status = 'uploaded'
+    state.assets[1].status = 'approved'
+    state.assets.push({
+      ...state.assets[1],
+      id: 99,
+      asset_uid: 'stale-placeholder-ai',
+      kind: 'ai',
+      status: 'planned',
+      object_key: 'batches/batch-20260707/ai/stale-placeholder-ai.jpg',
+      filename: 'stale-placeholder-ai.jpg',
+    })
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+
+    expect(response.status).toBe(200)
+    expect(state.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
+    expect(state.assets.map((asset) => asset.status)).toEqual(['planned', 'approved'])
+  })
+
+  it('keeps pending_review sync-complete idempotent', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.assets.forEach((asset) => { asset.status = 'uploaded' })
+    state.batches[0].status = 'pending_review'
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+    }), env)
+
+    expect(response.status).toBe(200)
+    expect(state.batches[0].status).toBe('pending_review')
+  })
+
+  it('rejects sync-complete for non-syncing reviewed batches without changing status', async () => {
+    for (const status of ['ready_to_submit', 'submitted', 'rejected']) {
+      const { state, machineToken } = await baseState()
+      const env = fakeEnv(state)
+      await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${machineToken}` },
+        body: JSON.stringify(batchPayload()),
+      }), env)
+      state.assets.forEach((asset) => { asset.status = 'uploaded' })
+      state.batches[0].status = status
+
+      const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707/sync-complete', {
+        method: 'POST',
+        headers: { authorization: `Bearer ${machineToken}` },
+      }), env)
+      const body = await response.json() as { error: string }
+
+      expect(response.status).toBe(409)
+      expect(body.error).toContain('status syncing')
+      expect(state.batches[0].status).toBe(status)
+    }
+  })
+
+  it('updates duplicate batch_uid metadata idempotently', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const request = (title: string) => new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload(title)),
+    })
+
+    expect((await fetchWorker(request('First title'), env)).status).toBe(201)
+    expect((await fetchWorker(request('Updated title'), env)).status).toBe(200)
+
+    expect(state.batches).toHaveLength(1)
+    expect(state.batches[0].title).toBe('Updated title')
+    expect(state.styles).toHaveLength(1)
+    expect(state.assets).toHaveLength(2)
+  })
+
+  it('returns styles grouped with assets and prompt metadata', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/batch-20260707', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batch: BatchRow & { styles: Array<StyleRow & { assets: AssetRow[] }> } }
+
+    expect(response.status).toBe(200)
+    expect(body.batch.styles).toHaveLength(1)
+    expect(body.batch.styles[0].assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
+    expect(body.batch.styles[0].assets[1]).toMatchObject({
+      prompt_template_version_id: 30,
+      prompt_text: 'Generate a clean catalog image',
+    })
+  })
+
+  it('returns lightweight source and AI previews in the batch list', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batches: Array<BatchRow & { previews: AssetRow[] }> }
+
+    expect(response.status).toBe(200)
+    expect(body.batches[0].previews.map((asset) => ({ kind: asset.kind, asset_uid: asset.asset_uid }))).toEqual([
+      { kind: 'source', asset_uid: 'asset-source-1' },
+      { kind: 'ai', asset_uid: 'asset-ai-1' },
+    ])
+  })
+
+  it('derives submitted status in the batch list from successful submit jobs', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.batches[0].status = 'pending_review'
+    state.dispatchJobs.push(dispatchJobRow({
+      id: 1,
+      batch_uid: 'batch-20260707',
+      job_type: 'submit_tmall_material_test',
+      status: 'succeeded',
+    }))
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batches: BatchRow[] }
+
+    expect(response.status).toBe(200)
+    expect(body.batches[0]).toMatchObject({
+      batch_uid: 'batch-20260707',
+      status: 'submitted',
+    })
+    expect(state.batches[0].status).toBe('pending_review')
+  })
+
+  it('caps batch list previews per batch and omits heavyweight asset fields', async () => {
+    const { state, machineToken, reviewerCookie } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    for (let index = 2; index <= 10; index += 1) {
+      state.assets.push({
+        ...state.assets[1],
+        id: index + 10,
+        asset_uid: `asset-ai-${index}`,
+        kind: 'ai',
+        filename: `ai-${index}.jpg`,
+        prompt_text: `large prompt ${index}`.repeat(100),
+        meta_json: JSON.stringify({ large: 'metadata'.repeat(100) }),
+      })
+    }
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches', {
+      headers: { cookie: reviewerCookie },
+    }), env)
+    const body = await response.json() as { batches: Array<BatchRow & { previews: Array<Record<string, unknown>> }> }
+    const previewSql = state.assetSelectSqls.at(-1) || ''
+
+    expect(response.status).toBe(200)
+    expect(body.batches[0].previews).toHaveLength(5)
+    expect(body.batches[0].previews.filter((asset) => asset.kind === 'source')).toHaveLength(1)
+    expect(body.batches[0].previews.filter((asset) => asset.kind === 'ai')).toHaveLength(4)
+    expect(body.batches[0].previews[0]).not.toHaveProperty('prompt_text')
+    expect(body.batches[0].previews[0]).not.toHaveProperty('meta_json')
+    expect(previewSql).not.toContain('select *')
+    expect(previewSql).toContain('row_number()')
+  })
+})
+
+function normalizeSql(sql: string): string {
+  return sql.toLowerCase().replace(/\s+/g, ' ').trim()
+}
+
+function dispatchJobRow(overrides: Partial<DispatchJobRow> = {}): DispatchJobRow {
+  return {
+    id: 1,
+    job_uid: 'job-submit',
+    batch_uid: 'batch-20260707',
+    job_type: 'submit_tmall_material_test',
+    status: 'queued',
+    requested_by: 1,
+    assigned_machine_id: 'machine-1',
+    required_capabilities_json: JSON.stringify(['submit_tmall_material_test']),
+    priority: 40,
+    attempt_count: 0,
+    max_attempts: 1,
+    idempotency_key: 'submit-key',
+    lease_id: null,
+    lease_expires_at: null,
+    payload_json: '{}',
+    result_json: '{}',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  }
+}
+
+function result(changes: number, lastRowId = 0): D1Result {
+  return {
+    success: true,
+    meta: { changes, last_row_id: lastRowId } as D1Meta & Record<string, unknown>,
+    results: [],
+  }
+}
+
+function numberOrNull(value: unknown): number | null {
+  if (value === null || value === undefined) return null
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) ? numberValue : null
+}
+
+function stringOrNull(value: unknown): string | null {
+  return value === null || value === undefined ? null : String(value)
+}

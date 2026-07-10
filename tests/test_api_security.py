@@ -32,6 +32,21 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.status_code, 401)
         self.assertEqual(allowed.status_code, 200)
 
+    async def test_unauthorized_local_browser_response_keeps_cors_headers(self):
+        async def call_next(_request):
+            return PlainTextResponse("ok")
+
+        request = FakeRequest(
+            "/tasks",
+            headers={"origin": "http://127.0.0.1:5173"},
+        )
+        with patch.dict(os.environ, {"CRAWSHRIMP_API_TOKEN": "unit-token"}, clear=False):
+            blocked = await api_server.require_local_api_token(request, call_next)
+
+        self.assertEqual(blocked.status_code, 401)
+        self.assertEqual(blocked.headers.get("access-control-allow-origin"), "http://127.0.0.1:5173")
+        self.assertIn("X-Crawshrimp-Token", blocked.headers.get("access-control-allow-headers"))
+
     async def test_health_route_is_public(self):
         async def call_next(_request):
             return PlainTextResponse("ok")

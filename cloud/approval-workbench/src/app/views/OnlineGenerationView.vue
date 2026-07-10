@@ -1,0 +1,912 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+
+import { apiGet, apiPost, type ApiError } from '../api'
+
+interface BatchRow { batch_uid: string; title: string; status: string }
+interface AssetRow { asset_uid: string; style_id: number; kind: string; status: string; filename: string; prompt_text: string; parent_asset_uid?: string | null }
+interface ImageResourceRow {
+  resource_uid: string
+  batch_uid: string
+  style_code: string
+  item_id: string
+  kind: string
+  asset_uid: string
+  object_key: string
+  filename: string
+  source_label: string
+}
+interface StyleRow { id: number; style_code: string; item_id: string; category: string; gender: string; assets: AssetRow[]; image_resources?: ImageResourceRow[] }
+interface GenerationRequest {
+  request_uid: string
+  status: string
+  style_id: number
+  prompt_text: string
+  dispatch_job_uid?: string
+  request_meta?: Record<string, unknown>
+  result_asset_uids?: string[]
+  error_message?: string
+}
+interface DirectGenerationResponse {
+  status: string
+  request_uid: string
+  assets?: Array<{ asset_uid: string }>
+  next_poll_after_ms?: number
+}
+interface BatchDetail { batch_uid: string; title: string; status: string; styles: StyleRow[]; generation_requests?: GenerationRequest[] }
+interface PromptLibrary { id: number; name: string; status: string }
+interface PromptTemplate { id: number; template_id?: number; version_id?: number; prompt_text: string; field_name?: string; group_name?: string }
+interface SelectableResource {
+  resource_uid: string
+  kind: string
+  asset_uid: string
+  filename: string
+  source_label: string
+}
+
+const modelOptions = [
+  { value: 'gpt-image-2', label: 'GPT Image 2' },
+  { value: 'gemini-3.1-flash-image-preview', label: 'Gemini 3.1 Flash Image' },
+  { value: 'gemini-3-pro-image-preview', label: 'Gemini 3 Pro Image' },
+]
+const sizeOptions = ['1:1', '3:4', '4:3', '16:9', '9:16', '1024x1024', '1536x1024', '1024x1536', '2048x2048', '4096x4096']
+const qualityOptions = ['auto', 'low', 'medium', 'high', 'standard', '1K', '2K', '4K']
+const formatOptions = ['png', 'jpg', 'webp']
+
+const batches = ref<BatchRow[]>([])
+const batchUid = ref('')
+const batch = ref<BatchDetail | null>(null)
+const selectedStyleId = ref<number | null>(null)
+const sourceAssetUid = ref('')
+const referenceAssetUids = ref<string[]>([])
+const promptLibraries = ref<PromptLibrary[]>([])
+const selectedLibraryId = ref<number | null>(null)
+const promptTemplates = ref<PromptTemplate[]>([])
+const selectedTemplateKey = ref('')
+const promptText = ref('')
+const model = ref('gpt-image-2')
+const size = ref('1024x1024')
+const quality = ref('auto')
+const outputFormat = ref('png')
+const count = ref(1)
+const message = ref('')
+const error = ref('')
+const submitting = ref(false)
+let promptLoadSequence = 0
+const generationPollTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+const styles = computed(() => batch.value?.styles ?? [])
+const selectedStyle = computed(() => styles.value.find((style) => style.id === selectedStyleId.value) ?? styles.value[0] ?? null)
+const aiAssets = computed(() => selectedStyle.value?.assets.filter((asset) => asset.kind === 'ai') ?? [])
+const sourceAssets = computed(() => selectedStyle.value?.assets.filter((asset) => ['source', 'reference'].includes(asset.kind) && asset.status === 'uploaded') ?? [])
+const sourceResources = computed(() => selectedStyle.value?.image_resources?.filter((resource) => ['source', 'reference'].includes(resource.kind)) ?? [])
+const selectableResources = computed<SelectableResource[]>(() => {
+  if (sourceResources.value.length > 0) {
+    return sourceResources.value.map((resource) => ({
+      resource_uid: resource.resource_uid,
+      kind: resource.kind,
+      asset_uid: resource.asset_uid,
+      filename: resource.filename,
+      source_label: resource.source_label,
+    }))
+  }
+  return sourceAssets.value.map((asset) => ({
+    resource_uid: asset.asset_uid,
+    kind: asset.kind,
+    asset_uid: asset.asset_uid,
+    filename: asset.filename,
+    source_label: '',
+  }))
+})
+const generationRequests = computed(() => batch.value?.generation_requests ?? [])
+const selectedStyleRequests = computed(() => generationRequests.value.filter((item) => String(item.style_id) === String(selectedStyle.value?.id ?? '') && item.status !== 'completed'))
+const canSubmit = computed(() => Boolean(batch.value && selectedStyle.value && sourceAssetUid.value && promptText.value.trim() && !submitting.value))
+const selectedTemplateVersionId = computed(() => {
+  const template = promptTemplates.value.find((item) => templateKey(item) === selectedTemplateKey.value)
+  return Number(template?.version_id ?? template?.id) || null
+})
+
+watch(batchUid, () => {
+  void loadBatch()
+})
+
+watch(selectedStyleId, () => {
+  resetMaterialSelection()
+  void loadResolvedPrompts()
+})
+
+watch(selectedLibraryId, () => {
+  void loadResolvedPrompts()
+})
+
+watch(selectedTemplateKey, () => {
+  const template = promptTemplates.value.find((item) => templateKey(item) === selectedTemplateKey.value)
+  promptText.value = template?.prompt_text ?? ''
+})
+
+async function loadBatches() {
+  try {
+    const data = await apiGet<{ batches: BatchRow[] }>('/api/ai-image-batches')
+    batches.value = data.batches
+    batchUid.value ||= data.batches[0]?.batch_uid ?? ''
+    if (batchUid.value) await loadBatch()
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+  }
+}
+
+async function loadBatch() {
+  if (!batchUid.value) return
+  error.value = ''
+  try {
+    const previousStyleId = selectedStyleId.value
+    const data = await apiGet<{ batch: BatchDetail }>(`/api/ai-image-batches/${encodeURIComponent(batchUid.value)}`)
+    batch.value = data.batch
+    selectedStyleId.value = data.batch.styles.some((style) => style.id === previousStyleId) ? previousStyleId : data.batch.styles[0]?.id ?? null
+    resetMaterialSelection()
+    schedulePendingGenerationPolls()
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+  }
+}
+
+async function loadPromptLibraries() {
+  try {
+    const data = await apiGet<{ libraries: PromptLibrary[] }>('/api/prompt-libraries')
+    promptLibraries.value = data.libraries.filter((library) => library.status === 'published')
+    selectedLibraryId.value = promptLibraries.value[0]?.id ?? null
+  } catch {
+    promptLibraries.value = []
+  }
+}
+
+async function loadResolvedPrompts() {
+  const requestSequence = ++promptLoadSequence
+  const requestSignature = currentPromptRequestSignature()
+  const libraryId = selectedLibraryId.value
+  const style = selectedStyle.value
+  if (!requestSignature || !libraryId || !style) {
+    promptTemplates.value = []
+    selectedTemplateKey.value = ''
+    promptText.value = ''
+    return
+  }
+  const params = new URLSearchParams()
+  if (style.category) params.set('category', style.category)
+  if (style.gender) params.set('gender', style.gender)
+  if (style.style_code) params.set('style_code', style.style_code)
+  if (style.item_id) params.set('item_id', style.item_id)
+  try {
+    const data = await apiGet<{ templates: PromptTemplate[] }>(`/api/prompt-libraries/${libraryId}/resolved?${params.toString()}`)
+    if (!isCurrentPromptRequest(requestSequence, requestSignature)) return
+    promptTemplates.value = data.templates
+    selectedTemplateKey.value = templateKey(data.templates[0])
+    promptText.value = data.templates[0]?.prompt_text ?? ''
+  } catch {
+    if (!isCurrentPromptRequest(requestSequence, requestSignature)) return
+    promptTemplates.value = []
+    selectedTemplateKey.value = ''
+    promptText.value = ''
+  }
+}
+
+function currentPromptRequestSignature(): string {
+  const style = selectedStyle.value
+  if (!selectedLibraryId.value || !style) return ''
+  return [
+    selectedLibraryId.value,
+    style.id,
+    style.style_code,
+    style.item_id,
+    style.category,
+    style.gender,
+  ].join('|')
+}
+
+function isCurrentPromptRequest(sequence: number, signature: string): boolean {
+  return sequence === promptLoadSequence && signature === currentPromptRequestSignature()
+}
+
+function templateKey(template?: PromptTemplate): string {
+  if (!template) return ''
+  return String(template.version_id ?? template.id ?? template.template_id ?? '')
+}
+
+function templateLabel(template: PromptTemplate): string {
+  const group = template.group_name ? `${template.group_name} / ` : ''
+  return `${group}${template.field_name || `模板 ${templateKey(template)}`}`
+}
+
+function resetMaterialSelection() {
+  const source = selectableResources.value.find((resource) => resource.kind === 'source') ?? selectableResources.value[0]
+  sourceAssetUid.value = source?.asset_uid ?? ''
+  referenceAssetUids.value = selectableResources.value
+    .filter((resource) => resource.asset_uid !== sourceAssetUid.value)
+    .slice(0, 3)
+    .map((resource) => resource.asset_uid)
+}
+
+function selectSource(assetUid: string) {
+  sourceAssetUid.value = assetUid
+  referenceAssetUids.value = referenceAssetUids.value.filter((uid) => uid !== assetUid)
+}
+
+function toggleReference(assetUid: string) {
+  if (assetUid === sourceAssetUid.value) return
+  referenceAssetUids.value = referenceAssetUids.value.includes(assetUid)
+    ? referenceAssetUids.value.filter((uid) => uid !== assetUid)
+    : [...referenceAssetUids.value, assetUid]
+}
+
+function assetDownloadUrl(asset: AssetRow | SelectableResource): string {
+  return `/api/assets/${encodeURIComponent(asset.asset_uid)}/download`
+}
+
+function isPreviewable(item: Pick<AssetRow | SelectableResource, 'filename'>): boolean {
+  return /\.(jpe?g|png|webp|gif)$/i.test(item.filename)
+}
+
+function kindLabel(kind: string): string {
+  if (kind === 'source') return '主图'
+  if (kind === 'reference') return '参考图'
+  if (kind === 'ai') return 'AI 图'
+  return kind || '-'
+}
+
+function statusLabel(status: string): string {
+  if (status === 'queued') return '排队中'
+  if (status === 'leased') return '已领取'
+  if (status === 'running') return '生成中'
+  if (status === 'uploading_results') return '上传结果'
+  if (status === 'succeeded') return '已完成'
+  if (status === 'completed') return '已完成'
+  if (status === 'failed' || status === 'terminal_failed') return '失败'
+  return status || '-'
+}
+
+function generationRequestSummary(item: GenerationRequest): string {
+  const meta = item.request_meta ?? {}
+  const parts = [
+    meta.model,
+    meta.size,
+    meta.quality,
+    meta.output_format,
+    meta.count ? `${meta.count} 张` : '',
+  ].filter(Boolean)
+  return parts.join(' / ') || '使用当前参数'
+}
+
+async function submitGeneration() {
+  if (!batch.value || !selectedStyle.value || !sourceAssetUid.value || !promptText.value.trim()) return
+  error.value = ''
+  message.value = ''
+  submitting.value = true
+  try {
+    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generate-direct`, {
+      style_id: selectedStyle.value.id,
+      source_asset_uid: sourceAssetUid.value,
+      reference_asset_uids: referenceAssetUids.value,
+      prompt_template_version_id: selectedTemplateVersionId.value,
+      prompt_text: promptText.value.trim(),
+      model: model.value,
+      size: size.value,
+      quality: quality.value,
+      output_format: outputFormat.value,
+      count: Math.max(1, Math.min(8, Number(count.value) || 1)),
+    })
+    message.value = result.status === 'completed'
+      ? `云端直接生成完成，新增 ${result.assets?.length ?? 0} 张 AI 图`
+      : '云端正在生成，完成后会自动追加到当前款式'
+    await loadBatch()
+    if (result.status !== 'completed') scheduleGenerationPoll(result.request_uid, result.next_poll_after_ms)
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+  } finally {
+    submitting.value = false
+  }
+}
+
+function schedulePendingGenerationPolls() {
+  for (const item of generationRequests.value) {
+    if (isPollableGenerationRequest(item)) scheduleGenerationPoll(item.request_uid)
+  }
+}
+
+function isPollableGenerationRequest(item: GenerationRequest): boolean {
+  return ['queued', 'running'].includes(item.status) && !item.dispatch_job_uid
+}
+
+function scheduleGenerationPoll(requestUid: string, delayMs?: number) {
+  if (!requestUid || generationPollTimers.has(requestUid)) return
+  const delay = normalizePollDelay(delayMs)
+  const timer = setTimeout(() => {
+    generationPollTimers.delete(requestUid)
+    void pollGenerationRequest(requestUid)
+  }, delay)
+  generationPollTimers.set(requestUid, timer)
+}
+
+function normalizePollDelay(value: unknown): number {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number < 0) return 3000
+  return Math.max(500, Math.min(30000, number))
+}
+
+async function pollGenerationRequest(requestUid: string) {
+  if (!batch.value) return
+  try {
+    const result = await apiPost<DirectGenerationResponse>(`/api/ai-image-batches/${encodeURIComponent(batch.value.batch_uid)}/generation-requests/${encodeURIComponent(requestUid)}/poll`)
+    if (result.status === 'completed') {
+      message.value = `云端直接生成完成，新增 ${result.assets?.length ?? 0} 张 AI 图`
+      await loadBatch()
+      return
+    }
+    await loadBatch()
+    scheduleGenerationPoll(requestUid, result.next_poll_after_ms)
+  } catch (caught) {
+    error.value = (caught as ApiError).message
+    await loadBatch()
+  }
+}
+
+function clearGenerationPollTimers() {
+  for (const timer of generationPollTimers.values()) clearTimeout(timer)
+  generationPollTimers.clear()
+}
+
+onMounted(() => {
+  void loadBatches()
+  void loadPromptLibraries()
+})
+
+onUnmounted(() => {
+  clearGenerationPollTimers()
+})
+</script>
+
+<template>
+  <section class="cloud-aiw-shell">
+    <header class="cloud-aiw-header">
+      <div>
+        <p class="section-kicker">在线 AI 生图</p>
+        <h2>AI 生图工作台</h2>
+        <p>支持主图、参考图、Prompt、自定义尺寸和多模型生成，结果自动追加到当前款式</p>
+      </div>
+      <button class="ghost-button" type="button" @click="loadBatch">刷新</button>
+    </header>
+
+    <p v-if="message" class="notice">{{ message }}</p>
+    <p v-if="error" class="notice danger">{{ error }}</p>
+
+    <section class="cloud-aiw-flow-panel" aria-label="生成参数">
+      <div class="cloud-aiw-step-block primary-step">
+        <span class="step-index">1</span>
+        <div class="step-fields">
+          <label class="field">
+            <span>批次</span>
+            <select v-model="batchUid">
+              <option v-for="item in batches" :key="item.batch_uid" :value="item.batch_uid">{{ item.title }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>款式</span>
+            <select v-model.number="selectedStyleId">
+              <option v-for="style in styles" :key="style.id" :value="style.id">{{ style.style_code || `款式 ${style.id}` }} / {{ style.item_id || '-' }}</option>
+            </select>
+          </label>
+        </div>
+      </div>
+
+      <details class="cloud-aiw-step-block advanced-step">
+        <summary>
+          <span class="step-index">2</span>
+          <div>
+            <strong>高级生成参数</strong>
+            <small>{{ model }} · {{ size }} · {{ quality }} · {{ outputFormat }} · {{ Math.max(1, Math.min(8, Number(count) || 1)) }} 张</small>
+          </div>
+        </summary>
+        <div class="advanced-fields">
+          <label class="field">
+            <span>模型</span>
+            <select v-model="model">
+              <option v-for="item in modelOptions" :key="item.value" :value="item.value">{{ item.label }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>尺寸</span>
+            <select v-model="size">
+              <option v-for="item in sizeOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>质量</span>
+            <select v-model="quality">
+              <option v-for="item in qualityOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="field">
+            <span>格式</span>
+            <select v-model="outputFormat">
+              <option v-for="item in formatOptions" :key="item" :value="item">{{ item }}</option>
+            </select>
+          </label>
+          <label class="field count-field">
+            <span>张数</span>
+            <input v-model.number="count" type="number" min="1" max="8" />
+          </label>
+        </div>
+      </details>
+    </section>
+
+    <section v-if="batch" class="cloud-aiw-workspace">
+      <aside class="cloud-aiw-prompt-panel">
+        <div class="cloud-aiw-panel-head">
+          <h3>Prompt 与素材</h3>
+          <span class="badge">{{ selectedStyle?.category || '-' }} / {{ selectedStyle?.gender || '-' }}</span>
+        </div>
+
+        <label class="field">
+          <span>Prompt 库</span>
+          <select v-model="selectedLibraryId">
+            <option v-for="library in promptLibraries" :key="library.id" :value="library.id">{{ library.name }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Prompt 模板</span>
+          <select v-model="selectedTemplateKey">
+            <option v-for="template in promptTemplates" :key="templateKey(template)" :value="templateKey(template)">{{ templateLabel(template) }}</option>
+          </select>
+        </label>
+        <label class="field">
+          <span>Prompt</span>
+          <textarea v-model="promptText" rows="9" placeholder="选择 Prompt 模板后可继续编辑"></textarea>
+        </label>
+
+        <div class="cloud-aiw-materials">
+          <div class="cloud-aiw-panel-head">
+            <h3>主图 / 参考图</h3>
+            <span class="muted">{{ selectableResources.length }} 个资源</span>
+          </div>
+          <p v-if="selectableResources.length === 0" class="cloud-aiw-empty">当前款式还没有可用于生图的来源资源。</p>
+          <article
+            v-for="resource in selectableResources"
+            :key="resource.resource_uid"
+            class="cloud-aiw-resource-card"
+            :class="{ source: sourceAssetUid === resource.asset_uid, reference: referenceAssetUids.includes(resource.asset_uid) }"
+          >
+            <button class="cloud-aiw-thumb-button" type="button" @click="selectSource(resource.asset_uid)">
+              <img v-if="isPreviewable(resource)" :src="assetDownloadUrl(resource)" :alt="resource.filename" />
+              <span v-else>{{ kindLabel(resource.kind) }}</span>
+            </button>
+            <div>
+              <strong>{{ resource.source_label || kindLabel(resource.kind) }}</strong>
+              <span>{{ resource.filename }}</span>
+              <div class="cloud-aiw-resource-actions">
+                <button class="small-button" type="button" @click="selectSource(resource.asset_uid)">设为主图</button>
+                <button
+                  class="small-button"
+                  type="button"
+                  :disabled="sourceAssetUid === resource.asset_uid"
+                  @click="toggleReference(resource.asset_uid)"
+                >
+                  {{ referenceAssetUids.includes(resource.asset_uid) ? '取消参考' : '设为参考' }}
+                </button>
+                <a class="small-button" :href="assetDownloadUrl(resource)" target="_blank" rel="noopener">下载</a>
+              </div>
+            </div>
+          </article>
+        </div>
+      </aside>
+
+      <main class="cloud-aiw-results-grid">
+        <div class="cloud-aiw-panel-head">
+          <div>
+            <h3>{{ selectedStyle?.style_code || '当前款式' }} 结果</h3>
+            <p class="muted">{{ selectedStyle?.item_id || '未选择款式' }}</p>
+          </div>
+          <span class="badge">{{ aiAssets.length }} 张 AI 图</span>
+        </div>
+
+        <div class="cloud-aiw-result-list">
+          <article v-for="asset in aiAssets" :key="asset.asset_uid" class="cloud-aiw-result-card">
+            <a class="cloud-aiw-result-image" :href="assetDownloadUrl(asset)" target="_blank" rel="noopener">
+              <img v-if="isPreviewable(asset)" :src="assetDownloadUrl(asset)" :alt="asset.filename" />
+              <span v-else>{{ asset.filename }}</span>
+            </a>
+            <div class="cloud-aiw-result-meta">
+              <strong>{{ asset.filename }}</strong>
+              <span class="badge">{{ statusLabel(asset.status) }}</span>
+            </div>
+            <p v-if="asset.prompt_text">{{ asset.prompt_text }}</p>
+          </article>
+
+          <article v-for="item in selectedStyleRequests" :key="item.request_uid" class="cloud-aiw-result-card queued">
+            <div class="cloud-aiw-job-placeholder">
+              <span class="badge">{{ statusLabel(item.status) }}</span>
+              <strong>{{ generationRequestSummary(item) }}</strong>
+              <small>{{ item.result_asset_uids?.length ? `已生成 ${item.result_asset_uids.length} 张结果` : item.request_uid }}</small>
+            </div>
+          </article>
+
+          <p v-if="aiAssets.length === 0 && selectedStyleRequests.length === 0" class="cloud-aiw-empty">选择左侧素材与 Prompt 后云端直接生成，结果会在这里按款式聚合。</p>
+        </div>
+      </main>
+
+      <aside class="cloud-aiw-history-drawer">
+        <div class="cloud-aiw-panel-head">
+          <h3>生成历史</h3>
+          <span class="badge">{{ generationRequests.length }}</span>
+        </div>
+        <article v-for="item in generationRequests" :key="item.request_uid" class="cloud-aiw-history-item">
+          <div>
+            <strong>{{ statusLabel(item.status) }}</strong>
+            <span>{{ generationRequestSummary(item) }}</span>
+          </div>
+          <small>{{ item.request_uid }}</small>
+          <p>款式 {{ item.style_id || '-' }} · {{ item.result_asset_uids?.length ? `已生成 ${item.result_asset_uids.length} 张` : item.error_message || '云端直接生成' }}</p>
+        </article>
+        <p v-if="generationRequests.length === 0" class="cloud-aiw-empty">暂无云端生成记录。</p>
+      </aside>
+    </section>
+
+    <section v-else class="cloud-aiw-empty cloud-aiw-loading">正在加载在线生图批次...</section>
+
+    <footer class="cloud-aiw-generate-footer">
+      <div>
+        <strong>{{ selectedStyle?.style_code || '未选择款式' }}</strong>
+        <span>{{ model }} · {{ size }} · {{ quality }} · {{ outputFormat }} · {{ Math.max(1, Math.min(8, Number(count) || 1)) }} 张</span>
+      </div>
+      <button class="primary-button" type="button" :disabled="!canSubmit" @click="submitGeneration">
+        {{ submitting ? '生成中...' : '云端直接生成' }}
+      </button>
+    </footer>
+  </section>
+</template>
+
+<style scoped>
+.cloud-aiw-shell {
+  display: grid;
+  gap: 12px;
+  padding-bottom: 12px;
+}
+
+.cloud-aiw-header,
+.cloud-aiw-flow-panel,
+.cloud-aiw-prompt-panel,
+.cloud-aiw-results-grid,
+.cloud-aiw-history-drawer,
+.cloud-aiw-generate-footer {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg2);
+}
+
+.cloud-aiw-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+}
+
+.cloud-aiw-header h2,
+.cloud-aiw-panel-head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.cloud-aiw-header p {
+  margin: 4px 0 0;
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.cloud-aiw-flow-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.8fr);
+  gap: 12px;
+  padding: 12px;
+}
+
+.cloud-aiw-step-block {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
+}
+
+.primary-step {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+}
+
+.step-index {
+  display: grid;
+  width: 26px;
+  height: 26px;
+  place-items: center;
+  border: 1px solid rgba(255, 107, 43, 0.48);
+  border-radius: 8px;
+  background: rgba(255, 107, 43, 0.1);
+  color: #ffd8c7;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.step-fields,
+.advanced-fields {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.25fr) minmax(180px, 1fr) minmax(180px, 1fr);
+  gap: 10px;
+}
+
+.advanced-step summary {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  list-style: none;
+  cursor: pointer;
+}
+
+.advanced-step summary::-webkit-details-marker {
+  display: none;
+}
+
+.advanced-step summary strong,
+.advanced-step summary small {
+  display: block;
+}
+
+.advanced-step summary strong {
+  font-size: 13px;
+}
+
+.advanced-step summary small {
+  margin-top: 4px;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.advanced-step[open] summary {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+}
+
+.advanced-fields {
+  grid-template-columns: repeat(5, minmax(92px, 1fr));
+}
+
+.cloud-aiw-flow-panel .field,
+.cloud-aiw-prompt-panel .field {
+  gap: 5px;
+}
+
+.cloud-aiw-flow-panel .field > span,
+.cloud-aiw-prompt-panel .field > span {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.count-field input {
+  min-width: 76px;
+}
+
+.cloud-aiw-workspace {
+  display: grid;
+  grid-template-columns: minmax(280px, 0.9fr) minmax(360px, 1.5fr) minmax(260px, 0.8fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.cloud-aiw-prompt-panel,
+.cloud-aiw-results-grid,
+.cloud-aiw-history-drawer {
+  display: grid;
+  gap: 12px;
+  min-height: 560px;
+  padding: 12px;
+}
+
+.cloud-aiw-panel-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.cloud-aiw-panel-head p,
+.cloud-aiw-result-card p {
+  margin: 4px 0 0;
+}
+
+.cloud-aiw-materials,
+.cloud-aiw-result-list,
+.cloud-aiw-history-drawer {
+  align-content: start;
+}
+
+.cloud-aiw-resource-card,
+.cloud-aiw-result-card,
+.cloud-aiw-history-item {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.cloud-aiw-resource-card {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 8px;
+}
+
+.cloud-aiw-resource-card.source {
+  border-color: rgba(255, 107, 43, 0.8);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, 0.28);
+}
+
+.cloud-aiw-resource-card.reference {
+  background: rgba(255, 107, 43, 0.08);
+}
+
+.cloud-aiw-thumb-button,
+.cloud-aiw-result-image,
+.cloud-aiw-job-placeholder {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #101015;
+  color: var(--text2);
+}
+
+.cloud-aiw-thumb-button {
+  width: 76px;
+  height: 86px;
+  padding: 0;
+}
+
+.cloud-aiw-thumb-button img,
+.cloud-aiw-result-image img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.cloud-aiw-resource-card strong,
+.cloud-aiw-result-card strong,
+.cloud-aiw-history-item strong {
+  display: block;
+  font-size: 13px;
+}
+
+.cloud-aiw-resource-card span,
+.cloud-aiw-result-card p,
+.cloud-aiw-history-item span,
+.cloud-aiw-history-item p,
+.cloud-aiw-history-item small,
+.cloud-aiw-job-placeholder small {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.cloud-aiw-resource-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.cloud-aiw-result-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.cloud-aiw-result-card {
+  display: grid;
+  gap: 8px;
+  padding: 8px;
+}
+
+.cloud-aiw-result-image,
+.cloud-aiw-job-placeholder {
+  min-height: 180px;
+  text-decoration: none;
+}
+
+.cloud-aiw-job-placeholder {
+  gap: 8px;
+  padding: 16px;
+  border-style: dashed;
+  text-align: center;
+}
+
+.cloud-aiw-result-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.cloud-aiw-history-drawer {
+  max-height: 680px;
+  overflow: auto;
+}
+
+.cloud-aiw-history-item {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.cloud-aiw-history-item + .cloud-aiw-history-item {
+  margin-top: 8px;
+}
+
+.cloud-aiw-empty {
+  margin: 0;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  color: var(--text2);
+  font-size: 13px;
+}
+
+.cloud-aiw-loading {
+  background: var(--bg2);
+}
+
+.cloud-aiw-generate-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+}
+
+.cloud-aiw-generate-footer div {
+  display: grid;
+  gap: 2px;
+}
+
+.cloud-aiw-generate-footer span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .cloud-aiw-flow-panel,
+  .cloud-aiw-workspace {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .cloud-aiw-results-grid,
+  .cloud-aiw-history-drawer {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  .cloud-aiw-header,
+  .cloud-aiw-generate-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .cloud-aiw-flow-panel,
+  .step-fields,
+  .advanced-fields,
+  .cloud-aiw-workspace {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

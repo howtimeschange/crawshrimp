@@ -307,10 +307,10 @@
           <div class="panel-head">
             <div>
               <p class="panel-kicker">AI 生图</p>
-              <h3>1XM GPT-Image-2</h3>
+              <h3>1XM 图片模型</h3>
             </div>
-            <span :class="['badge', hasAnyFieldConfigured(['ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key']) ? 'on' : 'off']">
-              {{ hasAnyFieldConfigured(['ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key']) ? '已配置' : '未配置' }}
+            <span :class="['badge', hasAnyFieldConfigured(ai1xmKeyFields) ? 'on' : 'off']">
+              {{ hasAnyFieldConfigured(ai1xmKeyFields) ? '已配置' : '未配置' }}
             </span>
           </div>
 
@@ -346,6 +346,28 @@
                   />
                 </div>
               </div>
+              <div class="split-fields">
+                <div class="field">
+                  <label>Gemini 3.1 Flash Image Preview Key</label>
+                  <input
+                    v-model="cfg['ai.1xm.gemini_3_1_flash_image_preview_key']"
+                    placeholder="sk-..."
+                    class="input"
+                    type="password"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="field">
+                  <label>Gemini 3 Pro Image Preview Key</label>
+                  <input
+                    v-model="cfg['ai.1xm.gemini_3_pro_image_preview_key']"
+                    placeholder="sk-..."
+                    class="input"
+                    type="password"
+                    autocomplete="off"
+                  />
+                </div>
+              </div>
               <PanelActions panel-id="ai-1xm" @save="savePanel('ai-1xm')" />
             </div>
             <div class="side-note">
@@ -353,8 +375,104 @@
               <div class="key-states">
                 <span :class="['key-pill', isFieldConfigured('ai.1xm.gpt_image_2k_key') ? 'on' : 'off']">2K</span>
                 <span :class="['key-pill', isFieldConfigured('ai.1xm.gpt_image_4k_key') ? 'on' : 'off']">4K</span>
+                <span :class="['key-pill', isFieldConfigured('ai.1xm.gemini_3_1_flash_image_preview_key') ? 'on' : 'off']">G31</span>
+                <span :class="['key-pill', isFieldConfigured('ai.1xm.gemini_3_pro_image_preview_key') ? 'on' : 'off']">G3P</span>
               </div>
               <p>密钥只保存在本机抓虾配置中，任务运行时由后端读取。</p>
+            </div>
+          </div>
+        </section>
+
+        <section v-else-if="activePanelId === 'cloud-approval'" key="cloud-approval" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">云端审批</p>
+              <h3>云端审批</h3>
+            </div>
+            <span :class="['badge', cloudStatus?.configured ? 'on' : 'off']">
+              {{ cloudStatus?.configured ? '已配置' : '未配置' }}
+            </span>
+          </div>
+
+          <div class="panel-layout">
+            <div class="form-stack">
+              <div class="field">
+                <label>云端地址</label>
+                <input
+                  v-model="cfg['cloud_approval.base_url']"
+                  class="input"
+                  readonly
+                />
+                <p :class="['cloud-address-hint', cloudAddressHintOk ? 'ok' : 'warn']">
+                  {{ cloudAddressHint }}
+                </p>
+              </div>
+              <div class="field">
+                <label>注册 token</label>
+                <input
+                  v-model="cfg['cloud_approval.registration_token']"
+                  placeholder="用于首次注册任务机"
+                  class="input"
+                  type="password"
+                  autocomplete="off"
+                />
+              </div>
+              <div class="field">
+                <label>任务机名称</label>
+                <input
+                  v-model="cfg['cloud_approval.machine_name']"
+                  placeholder="例如：设计部任务机"
+                  class="input"
+                />
+              </div>
+              <div class="field">
+                <label>任务能力</label>
+                <div class="capability-list">
+                  <label v-for="option in cloudCapabilityOptions" :key="option.value" class="check-row">
+                    <input
+                      v-model="cfg['cloud_approval.capabilities']"
+                      type="checkbox"
+                      :value="option.value"
+                    />
+                    <span>{{ option.label }}</span>
+                  </label>
+                </div>
+              </div>
+              <label class="check-row">
+                <input v-model="cfg['cloud_approval.machine_enabled']" type="checkbox" />
+                <span>启用任务机</span>
+              </label>
+              <div class="action-strip cloud-actions">
+                <button class="btn-orange" :disabled="cloudBusy.config" @click="saveCloudApprovalConfig">
+                  {{ cloudBusy.config ? '保存中...' : '保存配置' }}
+                </button>
+                <button class="btn-ghost" :disabled="cloudBusy.enroll" @click="enrollCloudMachine">
+                  {{ cloudBusy.enroll ? '注册中...' : '注册任务机' }}
+                </button>
+                <button class="btn-ghost" :disabled="cloudBusy.start || cloudStatus?.running" @click="startCloudMachine">
+                  {{ cloudBusy.start ? '启动中...' : '启动' }}
+                </button>
+                <button class="btn-ghost" :disabled="cloudBusy.stop || !cloudStatus?.running" @click="stopCloudMachine">
+                  {{ cloudBusy.stop ? '停止中...' : '停止' }}
+                </button>
+              </div>
+              <p v-if="cloudMsg" :class="['inline-msg', cloudMsgOk ? 'ok' : 'err']">{{ cloudMsg }}</p>
+            </div>
+            <div class="side-note">
+              <strong>任务机状态</strong>
+              <div class="key-states">
+                <span :class="['key-pill', cloudStatus?.running ? 'on' : 'off']">
+                  {{ cloudStatus?.running ? '在线' : '离线' }}
+                </span>
+                <span :class="['key-pill', cloudStatus?.token_present ? 'on' : 'off']">
+                  {{ cloudStatus?.token_present ? '已注册' : '未注册' }}
+                </span>
+                <span class="key-pill neutral">{{ cloudStatus?.health || 'stopped' }}</span>
+              </div>
+              <p>状态只显示是否已注册、运行状态和任务机 ID；长期任务机凭证不会在界面展示。</p>
+              <p v-if="cloudStatus?.machine_id">任务机 ID：{{ cloudStatus.machine_id }}</p>
+              <p v-if="cloudStatus?.base_url">云端地址：{{ cloudStatus.base_url }}</p>
+              <p v-if="cloudStatus?.capabilities?.length">任务能力：{{ cloudStatus.capabilities.join(', ') }}</p>
             </div>
           </div>
         </section>
@@ -365,9 +483,9 @@
 </template>
 
 <script setup>
-import { computed, defineComponent, h, onMounted, reactive, ref } from 'vue'
+import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 
-const props = defineProps(['status'])
+const props = defineProps(['status', 'focusPanelId'])
 const emit = defineEmits(['launch-chrome'])
 
 const cfg = ref({})
@@ -383,6 +501,29 @@ const chromeMsgOk = ref(true)
 const testing = reactive({ dingtalk: false, feishu: false, webhook: false })
 const testMsg = reactive({ dingtalk: '', feishu: '', webhook: '' })
 const testOk = reactive({ dingtalk: true, feishu: true, webhook: true })
+const cloudStatus = ref(null)
+const cloudBusy = reactive({ config: false, enroll: false, start: false, stop: false })
+const cloudMsg = ref('')
+const cloudMsgOk = ref(true)
+const cloudServiceErrorMessages = {
+  invalid_environment_override: '开发环境变量中的云端审批地址无效',
+  unreachable: '云端审批服务暂时无法访问',
+  unexpected_service: '检测到的地址不是抓虾云端审批服务',
+  not_detected: '未检测到本地审批服务，当前显示默认地址',
+}
+const defaultCloudCapabilities = ['generate_ai_image', 'regenerate_ai_image', 'submit_tmall_material_test', 'crawl_tmall_material_test_data']
+const cloudCapabilityOptions = [
+  { value: 'generate_ai_image', label: 'generate_ai_image' },
+  { value: 'regenerate_ai_image', label: 'regenerate_ai_image' },
+  { value: 'submit_tmall_material_test', label: 'submit_tmall_material_test' },
+  { value: 'crawl_tmall_material_test_data', label: 'crawl_tmall_material_test_data' },
+]
+const ai1xmKeyFields = [
+  'ai.1xm.gpt_image_2k_key',
+  'ai.1xm.gpt_image_4k_key',
+  'ai.1xm.gemini_3_1_flash_image_preview_key',
+  'ai.1xm.gemini_3_pro_image_preview_key',
+]
 
 const saveState = reactive({})
 
@@ -425,7 +566,14 @@ const menuGroups = [
     icon: '●',
     label: 'AI 能力',
     desc: '1XM 生图密钥',
-    children: [{ id: 'ai-1xm', label: '1XM GPT-Image-2', statusKey: 'ai.1xm.gpt_image_2k_key' }],
+    children: [{ id: 'ai-1xm', label: '1XM 图片模型', statusKey: 'ai.1xm.gpt_image_2k_key' }],
+  },
+  {
+    id: 'cloud',
+    icon: '●',
+    label: '云端审批',
+    desc: '审批入口 / 任务机',
+    children: [{ id: 'cloud-approval', label: '云端审批', statusKey: 'cloud_approval.base_url' }],
   },
 ]
 
@@ -435,7 +583,8 @@ const panelFields = {
   'notify-custom': ['notify.custom_webhook'],
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
-  'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key'],
+  'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
+  'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
 const notifyPanelByChannel = {
@@ -445,6 +594,16 @@ const notifyPanelByChannel = {
 }
 
 const activeGroup = computed(() => menuGroups.find(group => group.id === activeGroupId.value) || menuGroups[0])
+const cloudAddressHint = computed(() => {
+  const status = cloudStatus.value || {}
+  const errorMessage = cloudServiceErrorMessages[status.service_error] || '未检测到本地审批服务，当前显示默认地址'
+  if (status.environment === 'production') {
+    return status.service_reachable ? '正式环境固定地址' : `正式环境固定地址；${errorMessage}`
+  }
+  if (status.service_reachable) return '已检测到本地审批服务'
+  return errorMessage
+})
+const cloudAddressHintOk = computed(() => Boolean(cloudStatus.value?.service_reachable))
 
 function ensureSaveState(panelId) {
   if (!saveState[panelId]) {
@@ -505,6 +664,8 @@ function flattenSettings(source, prefix = '', target = {}) {
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
+  flat['cloud_approval.machine_enabled'] = Boolean(flat['cloud_approval.machine_enabled'])
+  flat['cloud_approval.capabilities'] = normalizeCloudCapabilities(flat['cloud_approval.capabilities'])
   return flat
 }
 
@@ -512,6 +673,7 @@ async function load() {
   const flat = normalizedSettings(await window.cs.getSettings() || {})
   cfg.value = { ...flat }
   savedCfg.value = { ...flat }
+  await loadCloudStatus()
 }
 
 function selectGroup(groupId) {
@@ -522,6 +684,14 @@ function selectGroup(groupId) {
 
 function selectPanel(groupId, panelId) {
   activeGroupId.value = groupId
+  activePanelId.value = panelId
+}
+
+function focusPanel(panelId) {
+  if (!panelId) return
+  const group = menuGroups.find(item => item.children.some(child => child.id === panelId))
+  if (!group) return
+  activeGroupId.value = group.id
   activePanelId.value = panelId
 }
 
@@ -541,9 +711,26 @@ async function browseDir() {
 function buildPatch(panelId) {
   const keys = panelFields[panelId] || []
   return keys.reduce((patch, key) => {
-    patch[key] = cfg.value[key] ?? ''
+    patch[key] = key === 'cloud_approval.capabilities'
+      ? selectedCloudCapabilities()
+      : cfg.value[key] ?? ''
     return patch
   }, {})
+}
+
+function normalizeCloudCapabilities(value) {
+  const raw = Array.isArray(value) ? value : []
+  const allowed = new Set(defaultCloudCapabilities)
+  const capabilities = raw
+    .map(item => String(item || '').trim())
+    .filter((item, index, list) => item && allowed.has(item) && list.indexOf(item) === index)
+  return capabilities.length ? capabilities : [...defaultCloudCapabilities]
+}
+
+function selectedCloudCapabilities() {
+  const capabilities = normalizeCloudCapabilities(cfg.value['cloud_approval.capabilities'])
+  cfg.value['cloud_approval.capabilities'] = capabilities
+  return capabilities
 }
 
 async function savePanel(panelId, options = {}) {
@@ -573,6 +760,102 @@ async function savePanel(panelId, options = {}) {
     throw e
   } finally {
     state.saving = false
+  }
+}
+
+function cloudConfigPayload() {
+  return {
+    registration_token: cfg.value['cloud_approval.registration_token'] || '',
+    machine_name: cfg.value['cloud_approval.machine_name'] || '',
+    machine_enabled: Boolean(cfg.value['cloud_approval.machine_enabled']),
+    capabilities: selectedCloudCapabilities(),
+  }
+}
+
+function applyCloudStatus(status) {
+  cloudStatus.value = status || null
+  if (status?.base_url !== undefined) cfg.value['cloud_approval.base_url'] = status.base_url || ''
+  if (status?.machine_name !== undefined) cfg.value['cloud_approval.machine_name'] = status.machine_name || cfg.value['cloud_approval.machine_name'] || ''
+  if (status?.machine_enabled !== undefined) cfg.value['cloud_approval.machine_enabled'] = Boolean(status.machine_enabled)
+  if (status?.capabilities !== undefined) cfg.value['cloud_approval.capabilities'] = normalizeCloudCapabilities(status.capabilities)
+}
+
+async function loadCloudStatus() {
+  if (typeof window.cs.getCloudApprovalStatus !== 'function') return
+  try {
+    applyCloudStatus(await window.cs.getCloudApprovalStatus({ refresh: true }))
+  } catch (e) {
+    cloudMsg.value = e?.message || '读取云端审批状态失败'
+    cloudMsgOk.value = false
+  }
+}
+
+async function saveCloudApprovalConfig() {
+  cloudBusy.config = true
+  cloudMsg.value = ''
+  try {
+    const result = await window.cs.saveCloudApprovalConfig(cloudConfigPayload())
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '已保存'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '保存失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.config = false
+  }
+}
+
+async function enrollCloudMachine() {
+  cloudBusy.enroll = true
+  cloudMsg.value = ''
+  try {
+    await window.cs.saveCloudApprovalConfig(cloudConfigPayload())
+    const result = await window.cs.enrollCloudMachine({
+      registration_token: cfg.value['cloud_approval.registration_token'] || '',
+      machine_name: cfg.value['cloud_approval.machine_name'] || '',
+      capabilities: selectedCloudCapabilities(),
+    })
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '任务机已注册'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '注册失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.enroll = false
+  }
+}
+
+async function startCloudMachine() {
+  cloudBusy.start = true
+  cloudMsg.value = ''
+  try {
+    const result = await window.cs.startCloudMachine()
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '任务机已启动'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '启动失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.start = false
+  }
+}
+
+async function stopCloudMachine() {
+  cloudBusy.stop = true
+  cloudMsg.value = ''
+  try {
+    const result = await window.cs.stopCloudMachine()
+    applyCloudStatus(result?.status)
+    cloudMsg.value = '任务机已停止'
+    cloudMsgOk.value = true
+  } catch (e) {
+    cloudMsg.value = e?.message || '停止失败'
+    cloudMsgOk.value = false
+  } finally {
+    cloudBusy.stop = false
   }
 }
 
@@ -612,6 +895,15 @@ async function testNotify(channel) {
 
 onMounted(() => {
   load()
+  focusPanel(props.focusPanelId)
+})
+
+watch(() => props.focusPanelId, panelId => {
+  focusPanel(panelId)
+})
+
+watch(activePanelId, panelId => {
+  if (panelId === 'cloud-approval') loadCloudStatus()
 })
 </script>
 
@@ -1070,6 +1362,20 @@ onMounted(() => {
   background: rgba(248, 113, 113, 0.1);
 }
 
+.cloud-address-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cloud-address-hint.ok {
+  color: #4ade80;
+}
+
+.cloud-address-hint.warn {
+  color: var(--orange);
+}
+
 .guide-block {
   min-width: 0;
   padding: 14px;
@@ -1122,6 +1428,37 @@ onMounted(() => {
 .key-pill.off {
   color: var(--text3);
   background: rgba(255, 255, 255, 0.03);
+}
+
+.key-pill.neutral {
+  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
+.check-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+  width: fit-content;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.check-row input {
+  width: 15px;
+  height: 15px;
+  accent-color: var(--orange);
+}
+
+.capability-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+}
+
+.cloud-actions {
+  flex-wrap: wrap;
 }
 
 .btn-orange,

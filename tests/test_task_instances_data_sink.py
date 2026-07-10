@@ -42,6 +42,31 @@ class TaskInstancesDataSinkTests(unittest.TestCase):
         self.assertEqual(detail["artifacts"][0]["path"], "/tmp/a.xlsx")
         self.assertEqual(detail["last_run_id"], run_id)
 
+    def test_add_task_instance_artifact_reuses_existing_path(self):
+        instance = data_sink.create_task_instance("tmall-ops-assistant", "tmall_ai_image_test_chain", "AI测图任务", {})
+
+        first = data_sink.add_task_instance_artifact(
+            instance["instance_uid"],
+            kind="file",
+            label="审计 JSON",
+            path="/tmp/result.xlsx",
+            meta={"old": True},
+        )
+        second = data_sink.add_task_instance_artifact(
+            instance["instance_uid"],
+            kind="excel",
+            label="任务结果表",
+            path="/tmp/result.xlsx",
+            meta={"approval_batch_id": "batch-x"},
+        )
+
+        detail = data_sink.get_task_instance_detail(instance["instance_uid"])
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(len(detail["artifacts"]), 1)
+        self.assertEqual(detail["artifacts"][0]["kind"], "excel")
+        self.assertEqual(detail["artifacts"][0]["label"], "任务结果表")
+        self.assertEqual(detail["artifacts"][0]["meta"], {"approval_batch_id": "batch-x"})
+
     def test_list_task_instances_status_group(self):
         waiting = data_sink.create_task_instance("tmall-ops-assistant", "tmall_ai_image_test_chain", "待审批", {})
         done = data_sink.create_task_instance("tmall-ops-assistant", "tmall_ai_image_test_chain", "完成", {})

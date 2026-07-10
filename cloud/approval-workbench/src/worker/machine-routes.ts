@@ -1,0 +1,1037 @@
+import { recordAudit } from './audit'
+import { fromJsonObject, nowIso, toJson } from './db'
+import type { Env } from './env'
+import { badRequest, forbidden, json, readJsonObject, unauthorized } from './http'
+import { canClaimJob, type DispatchStatus, type MachineAuthStatus, type MachineHealth } from './job-state'
+import { requireAnyPermission, requirePermission } from './auth-routes'
+import type { Permission } from './security/rbac'
+import { redactSensitiveJson, redactSensitiveText } from './security/redact'
+import { randomToken, sha256Hex } from './security/tokens'
+
+interface EnrollmentTokenRow {
+  id: number
+  token_hash: string
+  label: string
+  owner_user_id: number | null
+  allowed_capabilities_json: string
+  require_approval: number
+  status: string
+  expires_at: string
+  used_by_machine_id: string | null
+  created_by: number
+  created_at: string
+  used_at: string | null
+  revoked_at: string | null
+}
+
+export interface MachineRow {
+  id: number
+  machine_id: string
+  machine_name: string
+  owner_user_id: number | null
+  app_version: string
+  fingerprint_hash: string
+  capabilities_json: string
+  auth_status: MachineAuthStatus
+  health: MachineHealth
+  current_job_id: string | null
+  last_seen_at: string | null
+  registered_at: string
+  updated_at: string
+  token_hash?: string
+}
+
+interface DispatchJobRow {
+  id: number
+  job_uid: string
+  batch_uid: string
+  job_type: string
+  status: DispatchStatus
+  requested_by: number | null
+  assigned_machine_id: string | null
+  required_capabilities_json: string
+  priority: number
+  attempt_count: number
+  max_attempts: number
+  idempotency_key: string
+  lease_id: string | null
+  lease_expires_at: string | null
+  cancel_requested: number
+  payload_json: string
+  result_json: string
+  created_at: string
+  updated_at: string
+}
+
+const CLAIM_POLL_AFTER_SECONDS = 10
+const JOB_LEASE_SECONDS = 300
+const ACTIVE_LEASE_STATUSES: DispatchStatus[] = ['leased', 'running', 'uploading_results', 'cancel_requested']
+
+function parseStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+  if (typeof value !== 'string' || !value) return []
+  try {
+    const parsed = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string' && item.length > 0) : []
+  } catch {
+    return []
+  }
+}
+
+function publicEnrollmentToken(row: EnrollmentTokenRow): Omit<EnrollmentTokenRow, 'token_hash'> {
+  const { token_hash: _tokenHash, ...safeRow } = row
+  return safeRow
+}
+
+function bearerToken(request: Request): string | null {
+  const header = request.headers.get('authorization') || ''
+  const match = /^Bearer\s+(.+)$/i.exec(header)
+  return match ? match[1].trim() : null
+}
+
+async function requireMachine(request: Request, env: Env): Promise<MachineRow | Response> {
+  const token = bearerToken(request)
+  if (!token) return unauthorized('Machine bearer token is required')
+  const tokenHash = await sha256Hex(token)
+  const machine = await env.DB.prepare(
+    `SELECT m.id, m.machine_id, m.machine_name, m.owner_user_id, m.app_version, m.fingerprint_hash,
+            m.capabilities_json, m.auth_status, m.health, m.current_job_id, m.last_seen_at,
+            m.registered_at, m.updated_at, mt.token_hash
+     FROM machine_tokens mt
+     JOIN task_machines m ON m.machine_id = mt.machine_id
+     WHERE mt.token_hash = ?
+       AND mt.status = 'active'
+       AND mt.revoked_at IS NULL
+     LIMIT 1`,
+  )
+    .bind(tokenHash)
+    .first<MachineRow>()
+  if (!machine) return unauthorized('Invalid machine token', 'machine_token_invalid')
+  await env.DB.prepare('UPDATE machine_tokens SET last_used_at = ? WHERE token_hash = ?').bind(nowIso(), tokenHash).run()
+  return machine
+}
+
+export async function requireActiveMachine(request: Request, env: Env): Promise<MachineRow | Response> {
+  const machine = await requireMachine(request, env)
+  if (machine instanceof Response) return machine
+  if (machine.auth_status !== 'active') return forbidden('Machine is not approved')
+  return machine
+}
+
+async function allowedCapabilitiesForMachine(env: Env, machineId: string): Promise<string[] | null> {
+  const tokenRow = await env.DB.prepare(
+    `SELECT id, token_hash, label, owner_user_id, allowed_capabilities_json, require_approval, status,
+            expires_at, used_by_machine_id, created_by, created_at, used_at, revoked_at
+     FROM machine_enrollment_tokens
+     WHERE used_by_machine_id = ?
+     ORDER BY used_at DESC, id DESC
+     LIMIT 1`,
+  )
+    .bind(machineId)
+    .first<EnrollmentTokenRow>()
+  if (!tokenRow) return null
+  return parseStringArray(tokenRow.allowed_capabilities_json)
+}
+
+function secondsFromBody(value: unknown): number {
+  const seconds = Number(value ?? 86_400)
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(seconds, 31_536_000) : 86_400
+}
+
+export async function createEnrollmentToken(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'machines:write')
+  if (actor instanceof Response) return actor
+  const body = await readJsonObject(request)
+  const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim() : 'Machine enrollment token'
+  const allowedCapabilities = parseStringArray(body.allowed_capabilities ?? body.allowedCapabilities)
+  const ownerUserId = typeof body.owner_user_id === 'number' ? body.owner_user_id : null
+  const requireApproval = body.require_approval === false || body.requireApproval === false ? 0 : 1
+  const plainToken = randomToken('csr_enroll')
+  const tokenHash = await sha256Hex(plainToken)
+  const now = nowIso()
+  const expiresAt = new Date(Date.now() + secondsFromBody(body.expires_in_seconds ?? body.expiresInSeconds) * 1000).toISOString()
+  const result = await env.DB.prepare(
+    `INSERT INTO machine_enrollment_tokens
+       (token_hash, label, owner_user_id, allowed_capabilities_json, require_approval, expires_at, created_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(tokenHash, label, ownerUserId, toJson(allowedCapabilities), requireApproval, expiresAt, actor.user.id, now)
+    .run()
+  const enrollmentToken: Omit<EnrollmentTokenRow, 'token_hash'> = {
+    id: Number(result.meta.last_row_id),
+    label,
+    owner_user_id: ownerUserId,
+    allowed_capabilities_json: toJson(allowedCapabilities),
+    require_approval: requireApproval,
+    status: 'issued',
+    expires_at: expiresAt,
+    used_by_machine_id: null,
+    created_by: actor.user.id,
+    created_at: now,
+    used_at: null,
+    revoked_at: null,
+  }
+  await recordAudit(env, { userId: actor.user.id }, 'machines.enrollment_token.create', 'machine_enrollment_token', String(enrollmentToken.id), { label, allowedCapabilities }, request)
+  return json({ token: plainToken, enrollment_token: enrollmentToken }, { status: 201 })
+}
+
+export async function revokeEnrollmentToken(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'machines:write')
+  if (actor instanceof Response) return actor
+  const id = Number(new URL(request.url).pathname.match(/^\/api\/admin\/machine-enrollment-tokens\/(\d+)$/)?.[1])
+  if (!Number.isInteger(id) || id <= 0) return badRequest('valid token id is required')
+  await env.DB.prepare("UPDATE machine_enrollment_tokens SET status = 'revoked', revoked_at = ? WHERE id = ?").bind(nowIso(), id).run()
+  await recordAudit(env, { userId: actor.user.id }, 'machines.enrollment_token.revoke', 'machine_enrollment_token', String(id), {}, request)
+  return json({ ok: true })
+}
+
+export async function listEnrollmentTokens(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'machines:read')
+  if (actor instanceof Response) return actor
+  const { results } = await env.DB.prepare(
+    `SELECT id, token_hash, label, owner_user_id, allowed_capabilities_json, require_approval, status,
+            expires_at, used_by_machine_id, created_by, created_at, used_at, revoked_at
+     FROM machine_enrollment_tokens
+     ORDER BY id DESC
+     LIMIT 100`,
+  ).all<EnrollmentTokenRow>()
+  return json({ enrollment_tokens: results.map(publicEnrollmentToken) })
+}
+
+export async function listMachines(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'machines:read')
+  if (actor instanceof Response) return actor
+  await recoverClaimableJobs(env)
+  const { results } = await env.DB.prepare(
+    `SELECT id, machine_id, machine_name, owner_user_id, app_version, fingerprint_hash, capabilities_json,
+            auth_status, health, current_job_id, last_seen_at, registered_at, updated_at
+     FROM task_machines
+     ORDER BY id DESC
+     LIMIT 100`,
+  ).all<MachineRow>()
+  const queueSummary = await dispatchQueueSummary(env)
+  return json({ machines: results, queue_summary: queueSummary })
+}
+
+export async function approveMachine(request: Request, env: Env): Promise<Response> {
+  return setMachineStatus(request, env, 'active', 'machines.approve')
+}
+
+export async function disableMachine(request: Request, env: Env): Promise<Response> {
+  return setMachineStatus(request, env, 'disabled', 'machines.disable')
+}
+
+export async function revokeMachine(request: Request, env: Env): Promise<Response> {
+  const response = await setMachineStatus(request, env, 'revoked', 'machines.revoke')
+  if (response.status < 300) {
+    const machineId = machineIdFromAdminPath(request)
+    await env.DB.prepare("UPDATE machine_tokens SET status = 'revoked', revoked_at = ? WHERE machine_id = ?").bind(nowIso(), machineId).run()
+  }
+  return response
+}
+
+async function setMachineStatus(request: Request, env: Env, status: MachineAuthStatus, action: string): Promise<Response> {
+  const actor = await requirePermission(request, env, 'machines:write')
+  if (actor instanceof Response) return actor
+  const machineId = machineIdFromAdminPath(request)
+  if (!machineId) return badRequest('valid machine id is required')
+  await env.DB.prepare('UPDATE task_machines SET auth_status = ?, updated_at = ? WHERE machine_id = ?').bind(status, nowIso(), machineId).run()
+  await recordAudit(env, { userId: actor.user.id }, action, 'machine', machineId, { status }, request)
+  return json({ ok: true })
+}
+
+export async function rotateMachineToken(request: Request, env: Env): Promise<Response> {
+  const actor = await requirePermission(request, env, 'machines:write')
+  if (actor instanceof Response) return actor
+  const machineId = machineIdFromAdminPath(request)
+  if (!machineId) return badRequest('valid machine id is required')
+  const plainToken = randomToken('csr_machine')
+  const tokenHash = await sha256Hex(plainToken)
+  await env.DB.prepare("UPDATE machine_tokens SET status = 'revoked', revoked_at = ? WHERE machine_id = ? AND status = 'active'").bind(nowIso(), machineId).run()
+  await env.DB.prepare('INSERT INTO machine_tokens (machine_id, token_hash, issued_by, issued_at) VALUES (?, ?, ?, ?)')
+    .bind(machineId, tokenHash, actor.user.id, nowIso())
+    .run()
+  await recordAudit(env, { userId: actor.user.id }, 'machines.token.rotate', 'machine', machineId, {}, request)
+  return json({ machine_id: machineId, machine_token: plainToken })
+}
+
+export async function enrollMachine(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonObject(request)
+  const enrollmentToken = typeof body.enrollment_token === 'string' ? body.enrollment_token : ''
+  const machineId = typeof body.machine_id === 'string' ? body.machine_id.trim() : ''
+  const machineName = typeof body.machine_name === 'string' && body.machine_name.trim() ? body.machine_name.trim() : machineId
+  const fingerprint = typeof body.fingerprint === 'string' ? body.fingerprint : ''
+  const appVersion = typeof body.app_version === 'string' ? body.app_version : ''
+  const capabilities = parseStringArray(body.capabilities)
+  if (!enrollmentToken || !machineId || !fingerprint) return badRequest('enrollment_token, machine_id, and fingerprint are required')
+
+  const tokenHash = await sha256Hex(enrollmentToken)
+  const fingerprintHash = await sha256Hex(fingerprint)
+  const tokenRow = await env.DB.prepare(
+    `SELECT id, token_hash, label, owner_user_id, allowed_capabilities_json, require_approval, status,
+            expires_at, used_by_machine_id, created_by, created_at, used_at, revoked_at
+     FROM machine_enrollment_tokens
+     WHERE token_hash = ?
+     LIMIT 1`,
+  )
+    .bind(tokenHash)
+    .first<EnrollmentTokenRow>()
+  if (!tokenRow || tokenRow.status !== 'issued' || tokenRow.revoked_at || tokenRow.used_at || tokenRow.expires_at <= nowIso()) {
+    return badRequest('Enrollment token is invalid')
+  }
+  const existingMachine = await env.DB.prepare('SELECT id FROM task_machines WHERE machine_id = ? LIMIT 1')
+    .bind(machineId)
+    .first<{ id: number }>()
+  if (existingMachine) {
+    return json({ error: 'machine_id is already enrolled' }, { status: 409 })
+  }
+  const existingDevice = await env.DB.prepare('SELECT machine_id FROM task_machines WHERE fingerprint_hash = ? LIMIT 1')
+    .bind(fingerprintHash)
+    .first<{ machine_id: string }>()
+  if (existingDevice) {
+    return json({ error: 'device is already enrolled as a task machine', machine_id: existingDevice.machine_id }, { status: 409 })
+  }
+  const allowedCapabilities = parseStringArray(tokenRow.allowed_capabilities_json)
+  const allowed = new Set(allowedCapabilities)
+  const invalidCapabilities = capabilities.filter((capability) => !allowed.has(capability))
+  if (invalidCapabilities.length > 0) return badRequest(`capability not allowed: ${invalidCapabilities.join(', ')}`)
+
+  const now = nowIso()
+  const authStatus: MachineAuthStatus = tokenRow.require_approval ? 'pending_approval' : 'active'
+  const machineToken = randomToken('csr_machine')
+  const machineTokenHash = await sha256Hex(machineToken)
+  const tokenUpdate = await env.DB.prepare(
+    `UPDATE machine_enrollment_tokens
+     SET used_at = ?, used_by_machine_id = ?, status = 'used'
+     WHERE token_hash = ?
+       AND status = 'issued'
+       AND used_at IS NULL`,
+  )
+    .bind(now, machineId, tokenHash)
+    .run()
+  if (Number(tokenUpdate.meta.changes ?? 0) === 0) return badRequest('Enrollment token is invalid')
+  try {
+    await env.DB.prepare(
+      `INSERT INTO task_machines
+         (machine_id, machine_name, owner_user_id, app_version, fingerprint_hash, capabilities_json, auth_status, registered_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(machineId, machineName, tokenRow.owner_user_id, appVersion, fingerprintHash, toJson(capabilities), authStatus, now, now)
+      .run()
+  } catch (error) {
+    await env.DB.prepare(
+      `UPDATE machine_enrollment_tokens
+       SET used_at = NULL, used_by_machine_id = NULL, status = 'issued'
+       WHERE token_hash = ?
+         AND used_by_machine_id = ?
+         AND status = 'used'`,
+    )
+      .bind(tokenHash, machineId)
+      .run()
+    if (isUniqueConstraintFailure(error)) {
+      return json({ error: 'machine_id or device fingerprint is already enrolled' }, { status: 409 })
+    }
+    throw error
+  }
+  await env.DB.prepare('INSERT INTO machine_tokens (machine_id, token_hash, issued_by, issued_at) VALUES (?, ?, ?, ?)')
+    .bind(machineId, machineTokenHash, null, now)
+    .run()
+  await recordAudit(env, { machineId }, 'machines.enroll', 'machine', machineId, { capabilities, authStatus }, request)
+  return json({ machine_id: machineId, auth_status: authStatus, machine_token: machineToken }, { status: 201 })
+}
+
+function isUniqueConstraintFailure(error: unknown): boolean {
+  const message = String(error instanceof Error ? error.message : error || '').toLowerCase()
+  return message.includes('unique') || message.includes('constraint')
+}
+
+export async function heartbeat(request: Request, env: Env): Promise<Response> {
+  const machine = await requireMachine(request, env)
+  if (machine instanceof Response) return machine
+  const body = await readJsonObject(request)
+  const health = typeof body.health === 'string' ? body.health : 'online_idle'
+  if (!['offline', 'online_idle', 'online_busy', 'needs_login', 'config_missing', 'version_blocked'].includes(health)) return badRequest('invalid health')
+  const appVersion = typeof body.app_version === 'string' ? body.app_version : machine.app_version
+  const registeredCapabilities = await allowedCapabilitiesForMachine(env, machine.machine_id)
+  if (!registeredCapabilities) return forbidden('Machine enrollment authorization is unavailable')
+  const heartbeatCapabilities = parseStringArray(body.capabilities)
+  const registeredCapabilitySet = new Set(registeredCapabilities)
+  const unsupportedCapabilities = heartbeatCapabilities.filter((capability) => !registeredCapabilitySet.has(capability))
+  if (unsupportedCapabilities.length > 0) return badRequest(`capability not registered: ${unsupportedCapabilities.join(', ')}`)
+  const now = nowIso()
+  const currentJobId = stringValue(body.current_job_id ?? body.currentJobId)
+  const nextCurrentJobId = health === 'online_busy' ? currentJobId || machine.current_job_id || null : null
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET health = ?, current_job_id = ?, last_seen_at = ?, app_version = ?, capabilities_json = ?, updated_at = ?
+     WHERE machine_id = ?`,
+  )
+    .bind(health, nextCurrentJobId, now, appVersion, toJson(heartbeatCapabilities), now, machine.machine_id)
+    .run()
+  await recordAudit(env, { machineId: machine.machine_id }, 'machines.heartbeat', 'machine', machine.machine_id, { health }, request)
+  return json({ ok: true, machine_id: machine.machine_id, auth_status: machine.auth_status, health })
+}
+
+export async function claimJob(request: Request, env: Env): Promise<Response> {
+  const machine = await requireActiveMachine(request, env)
+  if (machine instanceof Response) return machine
+  if (machine.health !== 'online_idle' || machine.current_job_id) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
+  const machineCapabilities = parseStringArray(machine.capabilities_json)
+  await recoverClaimableJobs(env)
+  const { results } = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id, required_capabilities_json,
+            priority, attempt_count, max_attempts, idempotency_key, lease_id, lease_expires_at, cancel_requested, payload_json,
+            result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE status = 'queued'
+       AND cancel_requested != 1
+       AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)
+     ORDER BY priority ASC, created_at ASC
+    `,
+  )
+    .bind(machine.machine_id)
+    .all<DispatchJobRow>()
+  const selected = results.find((job) => canClaimJob({
+    jobStatus: job.status,
+    assignedMachineId: job.assigned_machine_id || '',
+    requiredCapabilities: parseStringArray(job.required_capabilities_json),
+    machineId: machine.machine_id,
+    machineAuthStatus: machine.auth_status,
+    machineHealth: machine.health,
+    machineCapabilities,
+  }))
+  if (!selected) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
+
+  const leaseId = randomToken('lease')
+  const now = nowIso()
+  const leaseExpiresAt = new Date(Date.now() + JOB_LEASE_SECONDS * 1000).toISOString()
+  const reservation = await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = ?,
+         health = 'online_busy',
+         last_seen_at = ?,
+         updated_at = ?
+     WHERE machine_id = ?
+       AND auth_status = 'active'
+       AND health = 'online_idle'
+       AND (current_job_id IS NULL OR current_job_id = '')
+       AND capabilities_json = ?`,
+  )
+    .bind(selected.job_uid, now, now, machine.machine_id, machine.capabilities_json)
+    .run()
+  if (Number(reservation.meta.changes ?? 0) === 0) return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
+  const update = await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET lease_id = ?,
+         lease_expires_at = ?,
+         status = 'leased',
+         assigned_machine_id = ?,
+         attempt_count = attempt_count + 1,
+         updated_at = ?
+     WHERE job_uid = ?
+       AND status = 'queued'
+       AND cancel_requested != 1
+       AND required_capabilities_json = ?
+       AND (assigned_machine_id IS NULL OR assigned_machine_id = '' OR assigned_machine_id = ?)
+       AND EXISTS (
+         SELECT 1
+         FROM task_machines m
+         WHERE m.machine_id = ?
+           AND m.auth_status = 'active'
+           AND m.health = 'online_busy'
+           AND m.current_job_id = ?
+           AND NOT EXISTS (
+             SELECT 1
+             FROM json_each(dispatch_jobs.required_capabilities_json) req
+             WHERE req.type = 'text'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM json_each(m.capabilities_json) capability
+                 WHERE capability.value = req.value
+               )
+           )
+       )`,
+  )
+    .bind(leaseId, leaseExpiresAt, machine.machine_id, now, selected.job_uid, selected.required_capabilities_json, machine.machine_id, machine.machine_id, selected.job_uid)
+    .run()
+  if (Number(update.meta.changes ?? 0) === 0) {
+    await releaseMachineReservation(env, machine.machine_id, selected.job_uid, now)
+    return json({ job: null, next_poll_after_seconds: CLAIM_POLL_AFTER_SECONDS })
+  }
+  await recordJobEvent(env, selected.job_uid, machine.machine_id, leaseId, 'leased', '', { attempt_count: selected.attempt_count + 1 })
+  return json({
+    job: {
+      job_uid: selected.job_uid,
+      batch_uid: selected.batch_uid,
+      job_type: selected.job_type,
+      lease_id: leaseId,
+      lease_expires_at: leaseExpiresAt,
+      payload: fromJsonObject(selected.payload_json),
+      required_capabilities: parseStringArray(selected.required_capabilities_json),
+      attempt_count: selected.attempt_count + 1,
+    },
+    next_poll_after_seconds: 0,
+  })
+}
+
+async function recoverClaimableJobs(env: Env): Promise<void> {
+  const now = nowIso()
+  const { results: cancelledJobs } = await env.DB.prepare(
+    `SELECT job_uid, status, assigned_machine_id, lease_id
+     FROM dispatch_jobs
+     WHERE cancel_requested = 1
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?`,
+  )
+    .bind(now)
+    .all<Pick<DispatchJobRow, 'job_uid' | 'status' | 'assigned_machine_id' | 'lease_id'>>()
+  if (cancelledJobs.length > 0) {
+    await env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'cancelled',
+           assigned_machine_id = NULL,
+           lease_id = NULL,
+           lease_expires_at = NULL,
+           updated_at = ?
+       WHERE cancel_requested = 1
+         AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at < ?`,
+    )
+      .bind(now, now)
+      .run()
+    await Promise.all(cancelledJobs.map((job) => recordJobEvent(
+      env,
+      job.job_uid,
+      job.assigned_machine_id || '',
+      job.lease_id || '',
+      'cancelled',
+      '',
+      { previous_status: job.status, status: 'cancelled', reason: 'lease_expired_after_cancel_requested' },
+    )))
+    await releaseMachinesForJobs(env, cancelledJobs.map((job) => job.job_uid), now)
+  }
+  const { results: expiredJobs } = await env.DB.prepare(
+    `SELECT job_uid, status, assigned_machine_id, lease_id
+     FROM dispatch_jobs
+     WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND cancel_requested != 1
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?
+       AND attempt_count < max_attempts`,
+  )
+    .bind(now)
+    .all<Pick<DispatchJobRow, 'job_uid' | 'status' | 'assigned_machine_id' | 'lease_id'>>()
+  await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = 'queued',
+         assigned_machine_id = NULL,
+         lease_id = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND cancel_requested != 1
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?
+       AND attempt_count < max_attempts`,
+  )
+    .bind(now, now)
+    .run()
+  await releaseMachinesForJobs(env, expiredJobs.map((job) => job.job_uid), now)
+  const { results: exhaustedJobs } = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND cancel_requested != 1
+       AND lease_expires_at IS NOT NULL
+       AND lease_expires_at < ?
+       AND attempt_count >= max_attempts`,
+  )
+    .bind(now)
+    .all<DispatchJobRow>()
+  if (exhaustedJobs.length > 0) {
+    const exhaustedResult = toJson({ reason: 'lease_expired_attempts_exhausted' })
+    await env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'terminal_failed',
+           assigned_machine_id = NULL,
+           lease_id = NULL,
+           lease_expires_at = NULL,
+           result_json = ?,
+           updated_at = ?
+       WHERE status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+         AND cancel_requested != 1
+         AND lease_expires_at IS NOT NULL
+         AND lease_expires_at < ?
+         AND attempt_count >= max_attempts`,
+    )
+      .bind(exhaustedResult, now, now)
+      .run()
+    await releaseMachinesForJobs(env, exhaustedJobs.map((job) => job.job_uid), now)
+    await Promise.all(exhaustedJobs.map(async (job) => {
+      if (job.job_type === 'generate_ai_image') await updateGenerationRequestStatus(env, job.job_uid, 'terminal_failed')
+      await recordJobEvent(env, job.job_uid, job.assigned_machine_id || '', job.lease_id || '', 'lease_expired_terminal', '', {
+        previous_status: job.status,
+        reason: 'lease_expired_attempts_exhausted',
+        attempt_count: job.attempt_count,
+        max_attempts: job.max_attempts,
+      })
+    }))
+  }
+  const { results: exhaustedFailures } = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE status = 'retryable_failed'
+       AND attempt_count >= max_attempts`,
+  ).all<DispatchJobRow>()
+  if (exhaustedFailures.length > 0) {
+    const exhaustedResult = toJson({ reason: 'attempts_exhausted' })
+    await env.DB.prepare(
+      `UPDATE dispatch_jobs
+       SET status = 'terminal_failed',
+           assigned_machine_id = NULL,
+           lease_id = NULL,
+           lease_expires_at = NULL,
+           result_json = ?,
+           updated_at = ?
+       WHERE status = 'retryable_failed'
+         AND attempt_count >= max_attempts`,
+    )
+      .bind(exhaustedResult, now)
+      .run()
+    await releaseMachinesForJobs(env, exhaustedFailures.map((job) => job.job_uid), now)
+    await Promise.all(exhaustedFailures.map(async (job) => {
+      if (job.job_type === 'generate_ai_image') await updateGenerationRequestStatus(env, job.job_uid, 'terminal_failed')
+      await recordJobEvent(env, job.job_uid, job.assigned_machine_id || '', job.lease_id || '', 'attempts_exhausted_terminal', '', {
+        previous_status: job.status,
+        reason: 'attempts_exhausted',
+        attempt_count: job.attempt_count,
+        max_attempts: job.max_attempts,
+      })
+    }))
+  }
+  await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = 'queued',
+         assigned_machine_id = NULL,
+         lease_id = NULL,
+         lease_expires_at = NULL,
+         updated_at = ?
+     WHERE status = 'retryable_failed'
+       AND attempt_count < max_attempts`,
+  )
+    .bind(now)
+    .run()
+}
+
+export async function renewJob(request: Request, env: Env): Promise<Response> {
+  const machine = await requireActiveMachine(request, env)
+  if (machine instanceof Response) return machine
+  const body = await readJsonObject(request)
+  const jobUid = typeof body.job_uid === 'string' ? body.job_uid : jobUidFromPath(request)
+  const leaseId = typeof body.lease_id === 'string' ? body.lease_id : ''
+  if (!jobUid || !leaseId) return badRequest('job_uid and lease_id are required')
+  const now = nowIso()
+  const leaseExpiresAt = new Date(Date.now() + JOB_LEASE_SECONDS * 1000).toISOString()
+  const update = await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET lease_expires_at = ?, updated_at = ?
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND lease_expires_at > ?`,
+  )
+    .bind(leaseExpiresAt, now, jobUid, leaseId, machine.machine_id, now)
+    .run()
+  if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
+  await touchMachineRuntime(env, machine.machine_id, 'online_busy', jobUid)
+  const job = await jobForLease(env, jobUid, leaseId, machine.machine_id)
+  await recordJobEvent(env, jobUid, machine.machine_id, leaseId, 'lease_renewed', '', { lease_expires_at: leaseExpiresAt })
+  return json({ ok: true, lease_expires_at: leaseExpiresAt, cancel_requested: Boolean(job?.cancel_requested) })
+}
+
+export async function progressJob(request: Request, env: Env): Promise<Response> {
+  return updateJobWithLease(request, env, 'running', 'progress')
+}
+
+export async function completeJob(request: Request, env: Env): Promise<Response> {
+  return updateJobWithLease(request, env, 'succeeded', 'completed')
+}
+
+export async function failJob(request: Request, env: Env): Promise<Response> {
+  const body = await readJsonObject(request)
+  const terminal = body.terminal === true
+  const explicitStatus = explicitStatusFromBody(body)
+  return updateJobWithLease(request, env, explicitStatus === 'cancelled' ? 'cancelled' : terminal ? 'terminal_failed' : failStatusFromBody(body), explicitStatus === 'cancelled' ? 'cancelled' : 'failed', body)
+}
+
+export async function cancelJob(request: Request, env: Env): Promise<Response> {
+  const actor = await requireAnyPermission(request, env, ['jobs:generate', 'jobs:regenerate', 'jobs:submit'])
+  if (actor instanceof Response) return actor
+  const jobUid = jobUidFromCancelPath(request)
+  if (!jobUid) return badRequest('job_uid is required')
+  const job = await env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+     LIMIT 1`,
+  )
+    .bind(jobUid)
+    .first<DispatchJobRow>()
+  if (!job) return json({ error: 'Not found' }, { status: 404 })
+  const requiredPermission = cancelPermissionForJobType(job.job_type)
+  if (!requiredPermission || !actor.permissions.includes(requiredPermission)) {
+    return forbidden('Missing permission to cancel this job type')
+  }
+  if (!['queued', 'leased', 'running', 'uploading_results', 'cancel_requested'].includes(job.status)) {
+    return json({ error: 'job is not cancellable' }, { status: 409 })
+  }
+  const now = nowIso()
+  const nextStatus: DispatchStatus = job.status === 'queued' ? 'cancelled' : 'cancel_requested'
+  const update = await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET cancel_requested = 1, status = ?, updated_at = ?
+     WHERE job_uid = ?
+       AND status = ?
+       AND status IN ('queued', 'leased', 'running', 'uploading_results', 'cancel_requested')`,
+  )
+    .bind(nextStatus, now, jobUid, job.status)
+    .run()
+  if (Number(update.meta.changes ?? 0) === 0) {
+    return json({ error: 'job status changed while cancelling' }, { status: 409 })
+  }
+  if (nextStatus === 'cancelled') {
+    await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE current_job_id = ?')
+      .bind('online_idle', now, jobUid)
+      .run()
+  }
+  await recordAudit(env, { userId: actor.user.id }, 'jobs.cancel.request', 'dispatch_job', jobUid, { status: nextStatus, previous_status: job.status }, request)
+  await recordJobEvent(env, jobUid, job.assigned_machine_id || '', job.lease_id || '', 'cancel_requested', '', { previous_status: job.status, status: nextStatus })
+  return json({ ok: true, job_uid: jobUid, status: nextStatus, cancel_requested: true })
+}
+
+function cancelPermissionForJobType(jobType: string): Permission | null {
+  if (jobType === 'submit_tmall_material_test') return 'jobs:submit'
+  if (jobType === 'generate_ai_image') return 'jobs:generate'
+  if (jobType === 'regenerate_ai_image') return 'jobs:regenerate'
+  if (jobType === 'crawl_tmall_material_test_data') return 'jobs:generate'
+  return null
+}
+
+async function updateJobWithLease(request: Request, env: Env, status: DispatchStatus, eventType: string, existingBody?: Record<string, unknown>): Promise<Response> {
+  const machine = await requireActiveMachine(request, env)
+  if (machine instanceof Response) return machine
+  const body = existingBody ?? await readJsonObject(request)
+  const jobUid = typeof body.job_uid === 'string' ? body.job_uid : jobUidFromPath(request)
+  const leaseId = typeof body.lease_id === 'string' ? body.lease_id : ''
+  if (!jobUid || !leaseId) return badRequest('job_uid and lease_id are required')
+  const rawResult = body.result && typeof body.result === 'object' && !Array.isArray(body.result) ? body.result as Record<string, unknown> : {}
+  const result = redactSensitiveJson(rawResult) as Record<string, unknown>
+  const message = redactSensitiveText(body.message)
+  const activeJob = await activeJobForLease(env, jobUid, leaseId, machine.machine_id)
+  if (activeJob?.cancel_requested && status !== 'cancelled') {
+    return json({ error: 'job cancellation has been requested' }, { status: 409 })
+  }
+  if (status === 'succeeded') {
+    if (activeJob?.job_type === 'submit_tmall_material_test') {
+      return completeSubmitJobWithLease(env, machine, activeJob, leaseId, body, result, eventType)
+    }
+  }
+  const allowedStatuses = status === 'cancelled'
+    ? ['leased', 'running', 'uploading_results', 'cancel_requested']
+    : ['leased', 'running', 'uploading_results']
+  const statusPlaceholders = allowedStatuses.map(() => '?').join(', ')
+  const update = await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = ?, result_json = ?, updated_at = ?
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status IN (${statusPlaceholders})
+       AND lease_expires_at > ?`,
+  )
+    .bind(status, toJson(result), nowIso(), jobUid, leaseId, machine.machine_id, ...allowedStatuses, nowIso())
+    .run()
+  if (Number(update.meta.changes ?? 0) === 0) return forbidden('Stale lease')
+  if (['succeeded', 'retryable_failed', 'terminal_failed', 'blocked_needs_login', 'cancelled'].includes(status)) {
+    const nextHealth = status === 'blocked_needs_login' ? 'needs_login' : 'online_idle'
+    await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE machine_id = ?')
+      .bind(nextHealth, nowIso(), machine.machine_id)
+      .run()
+  } else {
+    await touchMachineRuntime(env, machine.machine_id, 'online_busy', jobUid)
+  }
+  if (activeJob?.job_type === 'generate_ai_image') {
+    await updateGenerationRequestStatus(env, jobUid, status)
+  }
+  await recordJobEvent(env, jobUid, machine.machine_id, leaseId, eventType, message, { status, result })
+  const nextJob = await jobForLease(env, jobUid, leaseId, machine.machine_id)
+  return json({ ok: true, status, cancel_requested: Boolean(nextJob?.cancel_requested) })
+}
+
+async function updateGenerationRequestStatus(env: Env, jobUid: string, status: DispatchStatus): Promise<void> {
+  const terminalRequestStatuses: Partial<Record<DispatchStatus, string>> = {
+    succeeded: 'completed',
+    retryable_failed: 'failed',
+    terminal_failed: 'failed',
+    blocked_needs_login: 'failed',
+    cancelled: 'cancelled',
+  }
+  const requestStatus = terminalRequestStatuses[status]
+  if (!requestStatus) return
+  await env.DB.prepare('UPDATE ai_generation_requests SET status = ?, updated_at = ? WHERE dispatch_job_uid = ?')
+    .bind(requestStatus, nowIso(), jobUid)
+    .run()
+}
+
+async function activeJobForLease(env: Env, jobUid: string, leaseId: string, machineId: string): Promise<DispatchJobRow | null> {
+  return env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status IN ('leased', 'running', 'uploading_results', 'cancel_requested')
+       AND lease_expires_at > ?
+     LIMIT 1`,
+  )
+    .bind(jobUid, leaseId, machineId, nowIso())
+    .first<DispatchJobRow>()
+}
+
+async function jobForLease(env: Env, jobUid: string, leaseId: string, machineId: string): Promise<DispatchJobRow | null> {
+  return env.DB.prepare(
+    `SELECT id, job_uid, batch_uid, job_type, status, requested_by, assigned_machine_id,
+            required_capabilities_json, priority, attempt_count, max_attempts, idempotency_key,
+            lease_id, lease_expires_at, cancel_requested, payload_json, result_json, created_at, updated_at
+     FROM dispatch_jobs
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+     LIMIT 1`,
+  )
+    .bind(jobUid, leaseId, machineId)
+    .first<DispatchJobRow>()
+}
+
+async function completeSubmitJobWithLease(
+  env: Env,
+  machine: MachineRow,
+  job: DispatchJobRow,
+  leaseId: string,
+  body: Record<string, unknown>,
+  result: Record<string, unknown>,
+  eventType: string,
+): Promise<Response> {
+  const stagedAt = nowIso()
+  const staged = await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = ?, result_json = ?, updated_at = ?
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status IN ('leased', 'running', 'uploading_results')
+       AND lease_expires_at > ?`,
+  )
+    .bind('uploading_results', toJson(result), stagedAt, job.job_uid, leaseId, machine.machine_id, stagedAt)
+    .run()
+  if (Number(staged.meta.changes ?? 0) === 0) return forbidden('Stale lease')
+
+  await persistSubmitCompletion(env, { ...job, status: 'uploading_results', result_json: toJson(result), updated_at: stagedAt }, result)
+
+  const finishedStatus: DispatchStatus = 'succeeded'
+  const finishedAt = nowIso()
+  const finished = await env.DB.prepare(
+    `UPDATE dispatch_jobs
+     SET status = ?, result_json = ?, updated_at = ?
+     WHERE job_uid = ?
+       AND lease_id = ?
+       AND assigned_machine_id = ?
+       AND status = 'uploading_results'
+       AND lease_expires_at > ?`,
+  )
+    .bind(finishedStatus, toJson(result), finishedAt, job.job_uid, leaseId, machine.machine_id, finishedAt)
+    .run()
+  if (Number(finished.meta.changes ?? 0) === 0) return forbidden('Stale lease')
+
+  await env.DB.prepare('UPDATE task_machines SET current_job_id = NULL, health = ?, updated_at = ? WHERE machine_id = ?')
+    .bind('online_idle', nowIso(), machine.machine_id)
+    .run()
+  await recordJobEvent(env, job.job_uid, machine.machine_id, leaseId, eventType, redactSensitiveText(body.message), { status: finishedStatus, result })
+  return json({ ok: true, status: finishedStatus })
+}
+
+async function persistSubmitCompletion(env: Env, job: DispatchJobRow, result: Record<string, unknown>): Promise<void> {
+  const payload = objectValue(fromJsonObject(job.payload_json))
+  const submitPlan = objectValue(payload.submit_plan)
+  const planBatchUid = stringValue(submitPlan.batch_uid) || job.batch_uid
+  if (!planBatchUid || planBatchUid !== job.batch_uid) return
+  const planAssets = Array.isArray(submitPlan.assets) ? submitPlan.assets.map(objectValue).filter((asset) => Object.keys(asset).length > 0) : []
+  const submittedAiAssets = planAssets
+    .filter((asset) => stringValue(asset.kind) === 'ai')
+    .map((asset) => ({
+      assetUid: stringValue(asset.asset_uid),
+      styleId: Number(asset.style_id),
+    }))
+    .filter((asset) => asset.assetUid && Number.isFinite(asset.styleId) && asset.styleId > 0)
+  if (submittedAiAssets.length === 0) return
+  const approvedAssets = await currentApprovedAiAssets(env, job.batch_uid)
+  if (!matchesPlannedAiAssets(submittedAiAssets, approvedAssets)) return
+
+  const now = nowIso()
+  await env.DB.prepare("UPDATE ai_image_batches SET status = 'submitted', updated_at = ? WHERE batch_uid = ?")
+    .bind(now, job.batch_uid)
+    .run()
+
+  const assetPlaceholders = approvedAssets.map(() => '?').join(', ')
+  await env.DB.prepare(`UPDATE ai_image_assets SET status = 'submitted', updated_at = ? WHERE batch_uid = ? AND kind = 'ai' AND status = 'approved' AND asset_uid IN (${assetPlaceholders})`)
+    .bind(now, job.batch_uid, ...approvedAssets.map((asset) => asset.assetUid))
+    .run()
+
+  const byStyle = new Map<number, string[]>()
+  for (const asset of approvedAssets) {
+    byStyle.set(asset.styleId, [...(byStyle.get(asset.styleId) || []), asset.assetUid])
+  }
+  for (const [styleId, submittedAssetUids] of byStyle.entries()) {
+    await env.DB.prepare("UPDATE ai_image_styles SET status = 'submitted', submit_summary_json = ? WHERE batch_uid = ? AND id = ?")
+      .bind(toJson({
+        job_uid: job.job_uid,
+        submitted_at: now,
+        submitted_asset_uids: submittedAssetUids,
+        result,
+      }), job.batch_uid, styleId)
+      .run()
+  }
+}
+
+function matchesPlannedAiAssets(planned: Array<{ assetUid: string }>, approved: Array<{ assetUid: string }>): boolean {
+  const plannedSet = new Set(planned.map((asset) => asset.assetUid))
+  const approvedSet = new Set(approved.map((asset) => asset.assetUid))
+  if (plannedSet.size !== planned.length || approvedSet.size !== approved.length) return false
+  if (plannedSet.size !== approvedSet.size) return false
+  for (const assetUid of plannedSet) {
+    if (!approvedSet.has(assetUid)) return false
+  }
+  return true
+}
+
+async function currentApprovedAiAssets(env: Env, batchUid: string): Promise<Array<{ assetUid: string; styleId: number }>> {
+  const { results } = await env.DB.prepare("SELECT asset_uid, style_id FROM ai_image_assets WHERE batch_uid = ? AND kind = 'ai' AND status = 'approved'")
+    .bind(batchUid)
+    .all<{ asset_uid: string; style_id: number }>()
+  return results
+    .map((row) => ({ assetUid: row.asset_uid, styleId: Number(row.style_id) }))
+    .filter((asset) => asset.assetUid && Number.isFinite(asset.styleId) && asset.styleId > 0)
+}
+
+function failStatusFromBody(body: Record<string, unknown>): DispatchStatus {
+  const explicitStatus = explicitStatusFromBody(body)
+  if (explicitStatus === 'cancelled') return 'cancelled'
+  return explicitStatus === 'blocked_needs_login' ? 'blocked_needs_login' : 'retryable_failed'
+}
+
+function explicitStatusFromBody(body: Record<string, unknown>): string {
+  const result = body.result && typeof body.result === 'object' ? body.result as Record<string, unknown> : {}
+  return typeof body.status === 'string' ? body.status : typeof result.status === 'string' ? result.status : ''
+}
+
+function objectValue(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {}
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+async function dispatchQueueSummary(env: Env): Promise<{ queued: number; active: number; terminal: number; by_status: Record<string, number> }> {
+  const { results } = await env.DB.prepare(
+    `SELECT status, COUNT(*) AS count
+     FROM dispatch_jobs
+     GROUP BY status`,
+  ).all<{ status: string; count: number }>()
+  const byStatus: Record<string, number> = {}
+  for (const row of results) {
+    byStatus[row.status] = Number(row.count) || 0
+  }
+  const active = ACTIVE_LEASE_STATUSES.reduce((sum, status) => sum + (byStatus[status] || 0), 0)
+  const terminal = ['succeeded', 'cancelled', 'terminal_failed', 'blocked_needs_login', 'blocked_config_missing'].reduce((sum, status) => sum + (byStatus[status] || 0), 0)
+  return {
+    queued: byStatus.queued || 0,
+    active,
+    terminal,
+    by_status: byStatus,
+  }
+}
+
+async function touchMachineRuntime(env: Env, machineId: string, health: MachineHealth, currentJobId: string | null): Promise<void> {
+  const now = nowIso()
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = ?,
+         health = ?,
+         last_seen_at = ?,
+         updated_at = ?
+     WHERE machine_id = ?`,
+  )
+    .bind(currentJobId, health, now, now, machineId)
+    .run()
+}
+
+async function releaseMachineReservation(env: Env, machineId: string, jobUid: string, now: string): Promise<void> {
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = NULL,
+         health = 'online_idle',
+         updated_at = ?
+     WHERE machine_id = ?
+       AND current_job_id = ?`,
+  )
+    .bind(now, machineId, jobUid)
+    .run()
+}
+
+async function releaseMachinesForJobs(env: Env, jobUids: string[], now: string): Promise<void> {
+  const uniqueJobUids = Array.from(new Set(jobUids.filter(Boolean)))
+  if (uniqueJobUids.length === 0) return
+  const placeholders = uniqueJobUids.map(() => '?').join(', ')
+  await env.DB.prepare(
+    `UPDATE task_machines
+     SET current_job_id = NULL,
+         health = 'online_idle',
+         updated_at = ?
+     WHERE current_job_id IN (${placeholders})`,
+  )
+    .bind(now, ...uniqueJobUids)
+    .run()
+}
+
+async function recordJobEvent(env: Env, jobUid: string, machineId: string, leaseId: string, eventType: string, message: string, payload: unknown): Promise<void> {
+  await env.DB.prepare(
+    `INSERT INTO dispatch_job_events (job_uid, machine_id, lease_id, event_type, message, payload_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(jobUid, machineId, leaseId, eventType, message, toJson(payload), nowIso())
+    .run()
+}
+
+function machineIdFromAdminPath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/admin\/machines\/([^/]+)/)?.[1] || '')
+}
+
+function jobUidFromPath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/jobs\/([^/]+)\//)?.[1] || '')
+}
+
+function jobUidFromCancelPath(request: Request): string {
+  return decodeURIComponent(new URL(request.url).pathname.match(/^\/api\/jobs\/([^/]+)\/cancel$/)?.[1] || '')
+}

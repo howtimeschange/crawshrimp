@@ -83,6 +83,38 @@ class OneXMImageClientTests(unittest.TestCase):
         self.assertNotIn("上装", key)
         key.encode("ascii")
 
+    def test_success_status_extracts_nested_platform_result_urls(self):
+        transport = FakeTransport([
+            (202, {
+                "id": 9288,
+                "task_id": "task_success",
+                "status": "SUCCESS",
+                "result_url": "https://img.1xm.ai/generated/task_success_0.png",
+                "data": {
+                    "data": [
+                        {"url": "https://img.1xm.ai/generated/task_success_0.png"},
+                        {"url": "https://img.1xm.ai/generated/task_success_1.png"},
+                    ],
+                },
+            }),
+        ])
+        client = OneXMImageClient("unit-key", transport=transport)
+
+        result = run_image_task_until_done(
+            client,
+            {"model": "gpt-image-2", "prompt": "测试", "size": "1024x1024", "n": 2},
+            idempotency_key="order_success",
+            poll_timeout_seconds=30,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["task_id"], "task_success")
+        self.assertEqual(result["image_urls"], [
+            "https://img.1xm.ai/generated/task_success_0.png",
+            "https://img.1xm.ai/generated/task_success_1.png",
+        ])
+
     def test_failed_task_is_compensated_with_new_idempotency_key(self):
         transport = FakeTransport([
             (202, {

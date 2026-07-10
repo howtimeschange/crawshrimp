@@ -88,12 +88,12 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前页面（推荐）
           - value: new
-            label: 全新页面
+            label: 全新页面（默认）
+          - value: current
+            label: 当前页面
         hint: 任务会先进入森马云盘下载图包；只有选择“完整发布并同步手机端详情”时才跳转天猫商品编辑页并提交发布。
       - id: execute_mode
         type: radio
@@ -192,12 +192,12 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前页面（推荐）
           - value: new
-            label: 全新页面
+            label: 全新页面（默认）
+          - value: current
+            label: 当前页面
         hint: 可在天猫素材页或森马云盘页运行；任务会复用已登录的 9222 浏览器会话。
       - id: execute_mode
         type: radio
@@ -219,16 +219,38 @@ tasks:
             description: 本期只需要填写“款号、天猫商品ID、品类、性别”四列；脚本按款号找橱窗1/yz(1)主图，并按品类/性别自动匹配提示词。
             version: "2026.07.01.3"
         hint: 必须包含款号；真实上传/上线时必须包含天猫商品ID。SKC编码本期不用填，脚本会在需要时从款号-五位款色码图片名推断平铺参考图。
+      - id: prompt_source
+        type: radio
+        label: Prompt 来源
+        default: local_excel
+        options:
+          - value: local_excel
+            label: 线下表格提示词库
+          - value: cloud_prompt_library
+            label: 线上 Prompt 库
+        hint: 可继续使用线下 Excel；也可以连接云端审批看板里的线上 Prompt 库。
       - id: prompt_file
         type: file_excel
         label: AI 测图提示词库
         required: true
+        visible_when:
+          field: prompt_source
+          equals: local_excel
         templates:
           - file: templates/tmall-ai-prompt-library-template.csv
             label: AI 测图提示词导入模板
             description: 与 AI 测图提示词库一致：字段名、尺寸、格式、描述内容、女性优先度、男性/中性优先度；支持多 sheet 与第 4 行表头。
             version: "2026.07.01.2"
         hint: 支持用户提供的“AI 测图提示词库.xlsx”；后端会按多 sheet 和真实表头格式读取。
+      - id: cloud_prompt_library_id
+        type: text
+        label: 云端 Prompt 库
+        required: true
+        visible_when:
+          field: prompt_source
+          equals: cloud_prompt_library
+        placeholder: 点击选择线上 Prompt 库
+        hint: 从云端审批看板的 Prompt 库选择；运行时会按品类、性别匹配线上模板。
       - id: cloud_path
         type: text
         label: 森马云盘路径
@@ -245,24 +267,81 @@ tasks:
         type: checkbox
         label: 允许全盘兜底找图
         default: false
+        hidden: true
         ui_span: third
         hint: 默认关闭，避免从其他季节/其他目录误选同款号素材；开启后才会在指定路径找不到必需素材时搜索全部挂载目录。
-      - id: image_size
+      - id: model_id
         type: select
-        label: 出图尺寸
-        default: 960x1280
+        label: 生图模型
+        default: gpt-image-4k
         ui_span: third
         options:
+          - value: gpt-image-2k
+            label: GPT Image 2K
+          - value: gpt-image-4k
+            label: GPT Image 4K
+          - value: gemini-3.1-flash-image-preview
+            label: Gemini 3.1 Flash Image Preview
+          - value: gemini-3-pro-image-preview
+            label: Gemini 3 Pro Image Preview
+      - id: ratio
+        type: select
+        label: 比例
+        default: "3:4"
+        ui_span: third
+        options:
+          - value: "1:1"
+            label: "1:1"
+          - value: "3:4"
+            label: "3:4"
+          - value: "4:3"
+            label: "4:3"
+          - value: "4:5"
+            label: "4:5"
+          - value: "3:2"
+            label: "3:2"
+          - value: "2:3"
+            label: "2:3"
+          - value: "16:9"
+            label: "16:9"
+          - value: "9:16"
+            label: "9:16"
+        hint: 先选比例，再从该比例支持的尺寸中选择；3:4 支持 960x1280 和 1536x2048。
+      - id: image_size
+        type: select
+        label: 尺寸
+        default: 1536x2048
+        ui_span: third
+        hint: 尺寸会按出图比例动态过滤，并与 AI 生图工作台共用同一套比例/尺寸映射。
+        options:
+          - value: 1024x1024
+            label: 1024x1024（1:1）
+          - value: 2048x2048
+            label: 2048x2048（1:1）
           - value: 960x1280
             label: 960x1280（3:4）
-          - value: 1024x1024
-            label: 1024x1024
-          - value: 2048x2048
-            label: 2048x2048
-          - value: 3840x2160
-            label: 3840x2160
-          - value: 2160x3840
-            label: 2160x3840
+          - value: 1536x2048
+            label: 1536x2048（3:4）
+          - value: 1280x960
+            label: 1280x960（4:3）
+          - value: 2048x1536
+            label: 2048x1536（4:3）
+          - value: 1024x1280
+            label: 1024x1280（4:5）
+          - value: 1536x1920
+            label: 1536x1920（4:5）
+          - value: 1536x1024
+            label: 1536x1024（3:2）
+          - value: 1024x1536
+            label: 1024x1536（2:3）
+          - value: 1536x864
+            label: 1536x864（16:9）
+          - value: 1920x1080
+            label: 1920x1080（16:9）
+          - value: 864x1536
+            label: 864x1536（9:16）
+          - value: 1080x1920
+            label: 1080x1920（9:16）
       - id: output_format
         type: select
         label: 图片格式
@@ -291,13 +370,13 @@ tasks:
             label: low
       - id: ai_image_count
         type: number
-        label: 每款Prompt生图数
+        label: 每款挑选 Prompt 条数
         default: 4
         min: 1
         max: 8
         step: 1
         ui_span: third
-        hint: 这里表示每款选择多少条不同提示词；每条 prompt 生成 1 张 AI 图，不是同一 prompt 连续生成多张。
+        hint: 这里表示每款选择多少条不同提示词；单 prompt 生图张数在确认提交页选择。
       - id: reference_mode
         type: select
         label: 1XM参考图
@@ -313,6 +392,7 @@ tasks:
         type: number
         label: 1XM并发任务数
         default: 100
+        hidden: true
         min: 1
         max: 100
         step: 1
@@ -320,8 +400,9 @@ tasks:
         hint: 1XM 最大支持 100 张图并发；脚本会并发提交并分别轮询，失败自动按补偿次数重试。
       - id: one_xm_key_tier
         type: select
-        label: 1XM Key 档位
-        default: auto
+        label: 内部生图 Key 档位
+        default: 4k
+        hidden: true
         ui_span: third
         options:
           - value: auto
@@ -330,10 +411,12 @@ tasks:
             label: 强制使用 2K Key
           - value: 4k
             label: 强制使用 4K Key
+        hint: 需要明确使用 4K Key 时选择“强制使用 4K Key”；比例和尺寸只决定出图画幅。
       - id: retry_attempts
         type: number
         label: 请求重试次数
         default: 3
+        hidden: true
         min: 1
         max: 8
         step: 1
@@ -342,6 +425,7 @@ tasks:
         type: number
         label: 失败补偿次数
         default: 2
+        hidden: true
         min: 1
         max: 6
         step: 1
@@ -350,6 +434,7 @@ tasks:
         type: number
         label: 单图轮询超时（分钟）
         default: 12
+        hidden: true
         min: 1
         max: 60
         step: 1
@@ -477,6 +562,15 @@ tasks:
         placeholder: "点击选择本地导出目录"
         hint: 可选。完成后会把数据表格复制到这里的“数据表格”目录；留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/巴拉-AI测图数据抓取导出”（Windows 示例：%USERPROFILE%\Downloads\抓虾导出\天猫运营助手\巴拉-AI测图数据抓取导出）。
         ui_span: third
+      - id: sync_to_cloud
+        type: checkbox
+        label: 云端同步
+        default: []
+        ui_span: third
+        options:
+          - value: enabled
+            label: 完成后同步到云端测图数据看板
+        hint: 需要先在设置里完成云端审批任务机注册；开启后会上传原始 Excel，并把解析后的测图数据写入云端测图数据看板。
       - id: test_status
         type: select
         label: 测试状态

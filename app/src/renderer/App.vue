@@ -1,5 +1,5 @@
 <template>
-  <div class="layout">
+  <div class="layout" :class="{ 'layout-ai-image': currentView === 'ai_image' }">
     <!-- 标题栏 -->
     <div class="titlebar">
       <span class="logo">🦐 抓虾</span>
@@ -18,8 +18,10 @@
       <!-- 一级菜单 -->
       <nav v-if="!activeScript">
         <button
-          v-for="item in navItems" :key="item.id"
+          v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
+          :aria-label="item.label"
+          :title="item.label"
           @click="selectNav(item)"
         >
           <span class="icon">{{ item.icon }}</span>
@@ -101,10 +103,29 @@
         :instance-uid="activeInstanceUid"
         @back="activeInstanceUid = ''"
       />
+      <!-- AI 生图 -->
+      <KeepAlive>
+        <AiImageWorkbench
+          v-if="currentView === 'ai_image'"
+          @open-settings="openSettingsPanel('ai-1xm')"
+        />
+      </KeepAlive>
+      <!-- 提示词库 -->
+      <LocalPromptLibrary
+        v-if="currentView === 'local_prompt_library'"
+        @open-cloud-approval="currentView = 'cloud_approval'"
+      />
       <!-- 数据文件 -->
-      <DataFiles v-else-if="currentView === 'files'" />
+      <DataFiles v-if="currentView === 'files'" />
+      <!-- 云端审批 -->
+      <CloudApprovalFrame v-if="currentView === 'cloud_approval'" />
       <!-- 设置 -->
-      <SettingsPage v-else-if="currentView === 'settings'" :status="status" @launch-chrome="launchChrome" />
+      <SettingsPage
+        v-if="currentView === 'settings'"
+        :status="status"
+        :focus-panel-id="focusSettingsPanelId"
+        @launch-chrome="launchChrome"
+      />
     </main>
   </div>
 </template>
@@ -115,8 +136,11 @@ import ScriptList  from './views/ScriptList.vue'
 import TaskRunner  from './views/TaskRunner.vue'
 import TaskCenter  from './views/TaskCenter.vue'
 import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
+import AiImageWorkbench from './views/AiImageWorkbench.vue'
+import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
+import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 
@@ -126,17 +150,57 @@ const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const activeInstanceUid = ref('')
 const scriptGroups = ref([])
+const cloudApprovalStatus = ref(null)
+const focusSettingsPanelId = ref('')
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
   { id: 'task_center', icon: '📋', label: '任务中心' },
+  { id: 'ai_image', icon: '🎨', label: 'AI 生图' },
+  { id: 'local_prompt_library', icon: '💬', label: '提示词库' },
   { id: 'files',    icon: '📁', label: '数据文件' },
+  { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
   { id: 'settings', icon: '⚙️', label: '设置' },
 ]
+
+const cloudApprovalConfigured = computed(() => {
+  const cloudStatus = cloudApprovalStatus.value || {}
+  return Boolean(cloudStatus.configured || String(cloudStatus.base_url || '').trim())
+})
+
+const filteredNavItems = computed(() =>
+  navItems.filter(item => item.id !== 'cloud_approval' || cloudApprovalConfigured.value)
+)
 
 function selectNav(item) {
   currentView.value = item.id
   activeInstanceUid.value = ''
+  if (item.id !== 'settings') focusSettingsPanelId.value = ''
+}
+
+function openSettingsPanel(panelId) {
+  focusSettingsPanelId.value = panelId
+  currentView.value = 'settings'
+  activeScript.value = null
+  activeTaskId.value = null
+  activeInstanceUid.value = ''
+}
+
+async function refreshCloudApprovalStatus() {
+  if (typeof window.cs.getCloudApprovalStatus !== 'function') {
+    cloudApprovalStatus.value = null
+    if (currentView.value === 'cloud_approval') currentView.value = 'settings'
+    return
+  }
+  try {
+    cloudApprovalStatus.value = await window.cs.getCloudApprovalStatus()
+  } catch (error) {
+    console.error('Failed to get cloud approval status', error)
+    cloudApprovalStatus.value = null
+  }
+  if (!cloudApprovalConfigured.value && currentView.value === 'cloud_approval') {
+    currentView.value = 'settings'
+  }
 }
 
 async function loadScriptGroups(options = {}) {
@@ -219,6 +283,7 @@ onMounted(async () => {
   } catch (error) {
     console.error('Failed to load initial script groups', error)
   }
+  await refreshCloudApprovalStatus()
 
   pollTimer = setInterval(async () => {
     const s = await window.cs.getStatus()
@@ -227,6 +292,7 @@ onMounted(async () => {
     status.value.chrome = s.chrome
     status.value.apiPort = s.apiPort || status.value.apiPort
     status.value.cdpPort = s.cdpPort || status.value.cdpPort
+    await refreshCloudApprovalStatus()
   }, 5000)
 })
 onUnmounted(() => {
@@ -257,8 +323,20 @@ provide('loadScriptGroups', loadScriptGroups)
   --radius: 10px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 body { background: var(--bg); color: var(--text); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px; }
-#app { width: 100vw; height: 100vh; }
+#app {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 button { cursor: pointer; }
 input, select, textarea { font-family: inherit; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -417,4 +495,58 @@ nav {
 
 /* 主内容 */
 .content { overflow: hidden; background: var(--bg); height: 100%; min-height: 0; }
+
+@media (max-width: 760px) {
+  .layout.layout-ai-image {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 40px minmax(0, 1fr) 56px;
+  }
+
+  .layout-ai-image .titlebar {
+    grid-column: 1;
+    grid-row: 1;
+    padding-right: 12px;
+  }
+
+  .layout-ai-image .content {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .layout-ai-image .sidebar {
+    grid-column: 1;
+    grid-row: 3;
+    flex-direction: row;
+    padding: 4px 0 max(4px, env(safe-area-inset-bottom));
+    overflow-x: auto;
+    border-top: 1px solid var(--border);
+    border-right: 0;
+  }
+
+  .layout-ai-image nav {
+    width: 100%;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 4px;
+    padding: 0 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .layout-ai-image .nav-btn {
+    min-width: 48px;
+    flex: 1 0 48px;
+    justify-content: center;
+    padding: 8px;
+  }
+
+  .layout-ai-image .nav-btn > span:not(.icon) {
+    display: none;
+  }
+
+  .layout-ai-image .nav-btn .icon {
+    width: auto;
+    font-size: 18px;
+  }
+}
 </style>

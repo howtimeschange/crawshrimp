@@ -1,0 +1,29 @@
+name = "crawshrimp-cloud-approval-workbench"
+main = "src/worker/index.ts"
+compatibility_date = "2026-07-07"
+
+[triggers]
+crons = ["*/5 * * * *"]
+
+[assets]
+directory = "./dist/client"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/health"]
+
+[[d1_databases]]
+binding = "DB"
+database_name = "crawshrimp_cloud_approval"
+database_id = "e7acab75-f0f8-4a02-a8e0-7ed7506617b6"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "crawshrimp-cloud-approval-assets"
+
+[vars]
+SESSION_TTL_SECONDS = "604800"
+ONE_XM_BASE_URL = "https://api.1xm.ai/v1"
+ONE_XM_IMAGE_TIMEOUT_MS = "30000"
+ONE_XM_IMAGE_FETCH_TIMEOUT_MS = "30000"
+ONE_XM_IMAGE_POLL_INTERVAL_MS = "3000"
+ONE_XM_IMAGE_MAX_POLLS = "0"

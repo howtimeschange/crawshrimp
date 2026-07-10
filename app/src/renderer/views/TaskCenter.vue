@@ -63,7 +63,9 @@
             <b>{{ itemTypeLabel(item) }}</b>
             <em>{{ item.adapter_id }} / {{ item.task_id }}</em>
           </span>
-          <span v-if="item.rowType === 'schedule'">{{ scheduleFrequencyLabel(item) }} · {{ item.params?.output_dir || '默认导出目录' }}</span>
+          <span v-if="item.rowType === 'schedule'">
+            {{ scheduleFrequencyLabel(item) }} · {{ item.params?.output_dir || '默认导出目录' }} · {{ scheduleCloudSyncLabel(item) }}
+          </span>
           <span v-else>{{ item.current_step || 'config' }}</span>
           <div v-if="aiPreviewImagesForTask(item).length" class="tc-ai-preview" aria-label="AI 图预览">
             <figure v-for="preview in aiPreviewImagesForTask(item)" :key="preview.id">
@@ -177,6 +179,10 @@
             <input v-model="scheduleForm.enabled" type="checkbox" />
             <span>启用定时任务</span>
           </label>
+          <label class="tc-check">
+            <input v-model="scheduleForm.sync_to_cloud" type="checkbox" />
+            <span>自动同步云端</span>
+          </label>
           <div v-if="scheduleError" class="tc-inline-error tc-form-message">{{ scheduleError }}</div>
           <div class="tc-form-actions">
             <button type="button" class="tc-secondary" @click="cancelScheduleEdit">取消</button>
@@ -255,6 +261,7 @@ function defaultScheduleForm() {
     output_dir: '',
     notify_template: defaultNotifyTemplate,
     enabled: true,
+    sync_to_cloud: true,
   }
 }
 
@@ -347,6 +354,7 @@ function editSchedule(schedule) {
     output_dir: schedule.params?.output_dir || '',
     notify_template: schedule.notify_template || defaultNotifyTemplate,
     enabled: Boolean(schedule.enabled),
+    sync_to_cloud: scheduleCloudSyncEnabled(schedule),
   }
   scheduleError.value = ''
   showScheduleDialog.value = true
@@ -379,6 +387,7 @@ function clearScheduleOutputDir() {
 function schedulePayload() {
   const params = {}
   if (scheduleForm.value.output_dir) params.output_dir = scheduleForm.value.output_dir
+  if (scheduleForm.value.sync_to_cloud) params.sync_to_cloud = ['enabled']
   return {
     adapter_id: 'tmall-ops-assistant',
     task_id: 'tmall_material_test_data_export',
@@ -601,6 +610,16 @@ async function loadAiPreviewsForItems(rows) {
 function scheduleFrequencyLabel(schedule) {
   if (schedule.frequency === 'weekly') return `每周${weekdayLabel(schedule.weekday)} ${schedule.time_of_day}`
   return `每天 ${schedule.time_of_day}`
+}
+
+function scheduleCloudSyncEnabled(schedule) {
+  const value = schedule.params?.sync_to_cloud
+  if (Array.isArray(value)) return value.includes('enabled')
+  return Boolean(value)
+}
+
+function scheduleCloudSyncLabel(schedule) {
+  return scheduleCloudSyncEnabled(schedule) ? '自动同步云端' : '仅本地导出'
 }
 
 function weekdayLabel(value) {

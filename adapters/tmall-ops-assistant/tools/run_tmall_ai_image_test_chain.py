@@ -11,6 +11,7 @@ import asyncio
 import base64
 import html
 import json
+import math
 import os
 import re
 import secrets
@@ -19,6 +20,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -51,10 +53,92 @@ CHAIN_EXECUTION_MODES = ("approval_then_create", "direct_create")
 APPROVAL_BATCH_FILENAME_PREFIX = "tmall-ai-image-approval-batch"
 APPROVAL_BOARD_FILENAME_PREFIX = "tmall-ai-image-approval-board"
 APPROVED_ASSET_STATUSES = {"approved", "selected", "confirmed", "通过", "已确认", "确认"}
+GENERATION_CONFIRMATION_STATUS = "pending_generation_confirmation"
+TMALL_LOGIN_READY_TIMEOUT_MS = 300_000
+TMALL_READY_POLL_INTERVAL_SECONDS = 3.0
+TMALL_AI_IMAGE_RESULT_COLUMN_ORDER = [
+    "表格行号",
+    "款号",
+    "商品ID",
+    "阶段",
+    "参考图模式",
+    "品类",
+    "性别",
+    "SKC编码",
+    "云盘路径",
+    "文件名",
+    "主图原图文件",
+    "平铺参考图路径",
+    "平铺参考图文件名",
+    "平铺参考图URL",
+    "主参考图文件",
+    "细节参考图文件",
+    "提示词分组",
+    "提示词字段名",
+    "提示词序号",
+    "尺寸",
+    "格式",
+    "质量",
+    "参考图文件",
+    "完整Prompt",
+    "最终提示词",
+    "1XM任务ID",
+    "1XM轮询URL",
+    "生成图URL",
+    "生成图数量",
+    "审批批次ID",
+    "审批状态",
+    "审批看板",
+    "云端审批看板",
+    "本地审批看板",
+    "任务ID",
+    "测图详情URL",
+    "上传图数量",
+    "提交图片数量",
+    "提交图片文件",
+    "提交模式",
+    "上线结果",
+    "页面回读",
+    "素材URL",
+    "本地文件",
+    "执行结果",
+    "备注",
+]
 
 
 def compact(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def normalize_generation_image_count(value: object, fallback: int = 1) -> int:
+    count = to_int(value, fallback)
+    return max(1, min(8, count))
+
+
+def image_ratio_label(value: object) -> str:
+    text = compact(value)
+    if not text:
+        return ""
+    explicit = re.search(r"(\d+)\s*[:：]\s*(\d+)", text)
+    if explicit:
+        left = int(explicit.group(1))
+        right = int(explicit.group(2))
+        if left > 0 and right > 0:
+            divisor = math.gcd(left, right)
+            return f"{left // divisor}:{right // divisor}"
+    size_match = re.search(r"(\d+)\s*[xX×*]\s*(\d+)", text)
+    if size_match:
+        width = int(size_match.group(1))
+        height = int(size_match.group(2))
+        if width > 0 and height > 0:
+            divisor = math.gcd(width, height)
+            return f"{width // divisor}:{height // divisor}"
+    return ""
+
+
+def generation_count_from_row(row: Mapping[str, Any], fallback: int = 1) -> int:
+    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), Mapping) else {}
+    return normalize_generation_image_count(row.get("生成数量") or payload.get("n"), fallback)
 
 
 def tmall_material_test_detail_url(item_id: object) -> str:
@@ -75,9 +159,11 @@ def normalize_chain_execution_mode(value: object) -> dict[str, bool | str]:
     if mode not in CHAIN_EXECUTION_MODES:
         raise ValueError(f"天猫AI测图全链路只支持执行模式：{', '.join(CHAIN_EXECUTION_MODES)}")
     approval_required = mode == "approval_then_create"
+    confirm_generation = approval_required
     return {
         "mode": mode,
-        "generate": True,
+        "confirm_generation": confirm_generation,
+        "generate": not confirm_generation,
         "approval_required": approval_required,
         "live_upload": not approval_required,
         "live_create": not approval_required,
@@ -88,6 +174,7 @@ def normalize_chain_execution_mode(value: object) -> dict[str, bool | str]:
 def apply_chain_execution_mode(args: argparse.Namespace) -> argparse.Namespace:
     normalized = normalize_chain_execution_mode(getattr(args, "execute_mode", "approval_then_create"))
     args.execute_mode = str(normalized["mode"])
+    args.confirm_generation = bool(normalized["confirm_generation"])
     args.generate = bool(normalized["generate"])
     args.approval_required = bool(normalized["approval_required"])
     args.live_upload = bool(normalized["live_upload"])
@@ -256,16 +343,22 @@ def build_approval_item(
             label="原图/主图",
             index=1,
             status="reference",
+            extra={"source_label": "原图/主图", "slot": "main", "use_for_generation": True},
         ))
     if compact(detail_reference_path):
-        assets.append(_image_asset(
-            detail_reference_path,
-            style_code=workflow.style_code,
-            kind="detail_reference",
-            label="款色参考图",
-            index=1,
-            status="reference",
-        ))
+        detail_paths = parse_list((semir_data or {}).get("detailReferencePaths"))
+        if detail_reference_path not in detail_paths:
+            detail_paths.insert(0, detail_reference_path)
+        for detail_index, path in enumerate([item for item in detail_paths if compact(item)], start=1):
+            assets.append(_image_asset(
+                path,
+                style_code=workflow.style_code,
+                kind="detail_reference",
+                label="款色参考图" if detail_index == 1 else f"款色参考图 {detail_index}",
+                index=detail_index,
+                status="reference",
+                extra={"source_label": "款色参考图", "slot": "reference", "use_for_generation": False},
+            ))
 
     selected_paths = [compact(path) for path in (generated_paths or []) if compact(path)]
     selected_path_set = set(selected_paths)
@@ -296,6 +389,7 @@ def build_approval_item(
                     "prompt": compact(generation_row.get("完整Prompt") or generation_row.get("最终提示词")),
                     "generation_row": json_safe(generation_row),
                     "reference_paths": parse_list(generation_row.get("参考图文件")),
+                    "reference_labels": [Path(path).name for path in parse_list(generation_row.get("参考图文件"))],
                     "task_run_uid": compact(generation_row.get("__task_run_uid")),
                     "custom_prompt": "",
                     "review_note": "",
@@ -318,6 +412,127 @@ def build_approval_item(
         "task_run_uid": item_task_run_uid,
         "assets": assets,
     }
+
+
+def _generation_prompt_id(style_code: str, index: object, prompt: object) -> str:
+    return "-".join([
+        safe_token(style_code, "style"),
+        "prompt",
+        safe_token(index, "1"),
+        stable_hash(prompt)[:8],
+    ])
+
+
+def generation_prompt_from_row(
+    workflow: WorkflowItem,
+    generation_row: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any]:
+    prompt_text = compact(generation_row.get("完整Prompt") or generation_row.get("最终提示词"))
+    reference_paths = parse_list(generation_row.get("参考图文件") or generation_row.get("__1xm_reference_paths"))
+    image_count = generation_count_from_row(generation_row, 1)
+    return {
+        "id": _generation_prompt_id(workflow.style_code, generation_row.get("提示词序号") or index, prompt_text),
+        "prompt_index": int(generation_row.get("提示词序号") or index),
+        "prompt_name": compact(generation_row.get("提示词字段名")) or f"Prompt {index}",
+        "prompt_group": compact(generation_row.get("提示词分组")),
+        "prompt": prompt_text,
+        "custom_prompt": "",
+        "image_count": image_count,
+        "reference_paths": reference_paths,
+        "reference_labels": [Path(path).name for path in reference_paths],
+        "status": "pending",
+        "generation_row": json_safe(generation_row),
+    }
+
+
+def build_generation_confirmation_item(
+    workflow: WorkflowItem,
+    semir_data: Mapping[str, Any],
+    main_origin_path: str,
+    detail_reference_path: str,
+    generation_rows: list[Mapping[str, Any]],
+    *,
+    reference_mode: str = "main_only",
+) -> dict[str, Any]:
+    item = build_approval_item(
+        workflow,
+        semir_data,
+        main_origin_path,
+        detail_reference_path,
+        generation_rows,
+        [],
+        reference_mode=reference_mode,
+    )
+    item["status"] = GENERATION_CONFIRMATION_STATUS
+    item["generation_rows"] = json_safe(list(generation_rows or []))
+    item["generation_prompts"] = [
+        generation_prompt_from_row(workflow, row, index=index)
+        for index, row in enumerate(generation_rows or [], start=1)
+    ]
+    return item
+
+
+def generation_confirmation_prompt_total(items: Iterable[Mapping[str, Any]]) -> int:
+    total = 0
+    for item in items or []:
+        total += len([
+            prompt
+            for prompt in item.get("generation_prompts") or []
+            if compact(prompt.get("status")).lower() not in {"removed", "deleted", "disabled", "skip", "skipped"}
+        ])
+    return total
+
+
+def write_generation_confirmation_batch(
+    artifact_dir: Path,
+    items: list[Mapping[str, Any]],
+    *,
+    run_params: Mapping[str, Any] | None = None,
+    base_url: str = "",
+    batch_id: str = "",
+    token: str = "",
+    created_at: str = "",
+) -> dict[str, Any]:
+    batch = write_approval_batch(
+        artifact_dir,
+        items,
+        run_params=run_params,
+        base_url=base_url,
+        batch_id=batch_id,
+        token=token,
+        created_at=created_at,
+    )
+    batch["status"] = GENERATION_CONFIRMATION_STATUS
+    batch["generation_prompt_total"] = generation_confirmation_prompt_total(batch.get("items") or [])
+    batch["approval_message"] = (
+        f"天猫AI测图待确认提交生图批次 {batch.get('batch_id')} 已准备完成，"
+        f"共 {len(batch.get('items') or [])} 款、{batch.get('generation_prompt_total') or 0} 条 Prompt。"
+        f"\n请打开确认提交看板检查素材和 Prompt：{batch.get('board_url')}"
+    )
+    save_approval_batch(batch)
+    return batch
+
+
+def generation_confirmation_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
+    rows = []
+    for item in batch.get("items") or []:
+        prompt_total = len(item.get("generation_prompts") or [])
+        rows.append({
+            "表格行号": item.get("row_no", ""),
+            "款号": item.get("style_code", ""),
+            "商品ID": item.get("item_id", ""),
+            "阶段": "确认提交生图",
+            "审批批次ID": batch.get("batch_id", ""),
+            "审批状态": batch.get("status", ""),
+            "审批看板": batch.get("board_url", ""),
+            "云端审批看板": batch.get("cloud_board_url", ""),
+            "本地审批看板": batch.get("local_board_url", ""),
+            "执行结果": "等待确认提交生图任务",
+            "备注": f"Prompt={prompt_total}；{batch.get('approval_message', '')}",
+        })
+    return rows
 
 
 def render_approval_message_template(template: str, batch: Mapping[str, Any]) -> str:
@@ -352,9 +567,23 @@ def approval_base_url(value: object = "") -> str:
     return f"http://127.0.0.1:{port}"
 
 
+def cloud_approval_board_url(base_url: object, batch_id: object) -> str:
+    query = urllib.parse.urlencode({"batch_uid": compact(batch_id)})
+    return f"{approval_base_url(base_url)}/?{query}"
+
+
 def render_approval_board_html(batch: Mapping[str, Any]) -> str:
-    payload = json.dumps(json_safe(batch), ensure_ascii=False).replace("</", "<\\/")
-    title = "天猫AI测图审批看板"
+    payload = (
+        json.dumps(json_safe(batch), ensure_ascii=False)
+        .replace("&", "\\u0026")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("\u2028", "\\u2028")
+        .replace("\u2029", "\\u2029")
+    )
+    is_generation_confirmation = compact(batch.get("status")) == GENERATION_CONFIRMATION_STATUS
+    title = "天猫AI测图确认提交看板" if is_generation_confirmation else "天猫AI测图审批看板"
+    submit_label = "确认提交生图任务" if is_generation_confirmation else "提交已确认图片并创建测图任务"
     return f"""<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -381,6 +610,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     .grid {{ display:grid; grid-template-columns:repeat(auto-fill,minmax(190px,1fr)); gap:12px; padding:14px; }}
     .tile {{ border:1px solid var(--line); border-radius:8px; background:#fff; overflow:hidden; min-width:0; }}
     .tile.reference {{ background:#f8fbfb; }}
+    .tile.prompt-card {{ background:#fffaf7; }}
     .thumb {{ width:100%; aspect-ratio:3/4; object-fit:cover; background:#eef3f6; display:block; }}
     .tile-body {{ padding:10px; }}
     .label {{ font-size:13px; font-weight:650; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }}
@@ -392,6 +622,8 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     textarea,input {{ width:100%; border:1px solid var(--line); border-radius:7px; padding:8px; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }}
     textarea {{ min-height:86px; resize:vertical; margin-top:8px; }}
     .refs {{ margin-top:8px; display:grid; gap:6px; }}
+    .count-field {{ display:grid; gap:5px; margin-top:8px; color:var(--muted); font-size:12px; }}
+    .count-field input {{ max-width:110px; }}
     dialog {{ border:0; border-radius:8px; max-width:min(900px,92vw); width:900px; padding:0; box-shadow:0 24px 90px rgba(20,28,35,.25); }}
     dialog::backdrop {{ background:rgba(15,23,42,.35); }}
     .modal-head {{ padding:14px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; }}
@@ -412,7 +644,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
   </header>
   <main>
     <div class="toolbar">
-      <button class="primary" id="submit">提交已确认图片并创建测图任务</button>
+      <button class="primary" id="submit">{submit_label}</button>
       <button id="save">保存审批状态</button>
       <span id="message" class="meta"></span>
     </div>
@@ -424,6 +656,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
   </dialog>
   <script>
     const batch = {payload};
+    const isGenerationConfirmation = batch.status === '{GENERATION_CONFIRMATION_STATUS}';
     const token = new URLSearchParams(location.search).get('token') || batch.token || '';
     const api = (suffix) => `/tmall-ai-image-approval/api/${{encodeURIComponent(batch.batch_id)}}${{suffix}}?token=${{encodeURIComponent(token)}}`;
     const imageUrl = (asset) => `/tmall-ai-image-approval/api/${{encodeURIComponent(batch.batch_id)}}/image/${{encodeURIComponent(asset.id)}}?token=${{encodeURIComponent(token)}}`;
@@ -435,6 +668,17 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     }}
     function allAssets() {{
       return batch.items.flatMap((item) => (item.assets || []).map((asset) => [item, asset]));
+    }}
+    function escapeHtml(value) {{
+      return String(value || '').replace(/[&<>"']/g, (char) => ({{ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }}[char]));
+    }}
+    function normalizeImageCount(value) {{
+      const count = Number.parseInt(String(value || '1'), 10);
+      if (!Number.isFinite(count)) return 1;
+      return Math.min(8, Math.max(1, count));
+    }}
+    function safeClassName(value) {{
+      return String(value || '').replace(/[^a-zA-Z0-9_-]+/g, '-');
     }}
     function updateAsset(asset, patch) {{
       Object.assign(asset, patch);
@@ -453,23 +697,25 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
       for (const item of batch.items || []) {{
         const section = document.createElement('article');
         section.className = 'item';
-        section.innerHTML = `<div class="item-head"><div><div class="item-title">${{item.style_code || ''}}</div><div class="item-sub">商品ID ${{item.item_id || '-'}} · ${{item.category || '-'}} · SKC ${{item.skc_code || '-'}}</div></div><div class="item-sub">参考图模式 ${{item.reference_mode || ''}}</div></div><div class="grid"></div>`;
+        section.innerHTML = `<div class="item-head"><div><div class="item-title">${{escapeHtml(item.style_code || '')}}</div><div class="item-sub">商品ID ${{escapeHtml(item.item_id || '-')}} · ${{escapeHtml(item.category || '-')}} · SKC ${{escapeHtml(item.skc_code || '-')}}</div></div><div class="item-sub">参考图模式 ${{escapeHtml(item.reference_mode || '')}}</div></div><div class="grid"></div>`;
         const grid = section.querySelector('.grid');
         for (const asset of item.assets || []) {{
           const tile = document.createElement('div');
           tile.className = 'tile ' + (asset.kind === 'ai' ? '' : 'reference');
           const canApprove = asset.kind === 'ai';
+          const refsValue = escapeHtml((asset.reference_paths || []).join('\\n'));
+          const statusText = asset.status || 'pending';
           tile.innerHTML = `
-            <img class="thumb" src="${{imageUrl(asset)}}" alt="${{asset.label || ''}}" />
+            <img class="thumb" src="${{imageUrl(asset)}}" alt="${{escapeHtml(asset.label || '')}}" />
             <div class="tile-body">
-              <div class="label" title="${{asset.label || ''}}">${{asset.label || ''}}</div>
-              <div class="path" title="${{asset.path || ''}}">${{asset.filename || asset.path || ''}}</div>
+              <div class="label" title="${{escapeHtml(asset.label || '')}}">${{escapeHtml(asset.label || '')}}</div>
+              <div class="path" title="${{escapeHtml(asset.path || '')}}">${{escapeHtml(asset.filename || asset.path || '')}}</div>
               <div class="actions">
                 <button data-act="detail">Prompt</button>
                 ${{canApprove ? '<button data-act="approve">确认</button><button class="danger" data-act="reject">舍弃</button><button data-act="retry">重试/改图</button>' : ''}}
               </div>
-              ${{canApprove ? `<textarea data-field="prompt" placeholder="修改生图 prompt 后点击重试">${{asset.custom_prompt || asset.prompt || ''}}</textarea><div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{(asset.reference_paths || []).join('\\n').replaceAll('"','&quot;')}}" /></div>` : ''}}
-              <div class="status ${{asset.status || ''}}">状态：${{asset.status || 'pending'}}</div>
+              ${{canApprove ? `<textarea data-field="prompt" placeholder="修改生图 prompt 后点击重试">${{escapeHtml(asset.custom_prompt || asset.prompt || '')}}</textarea><div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{refsValue}}" /></div>` : ''}}
+              <div class="status ${{safeClassName(statusText)}}">状态：${{escapeHtml(statusText)}}</div>
             </div>`;
           tile.querySelector('[data-act="detail"]').onclick = () => openDetail(asset);
           const promptInput = tile.querySelector('[data-field="prompt"]');
@@ -492,6 +738,43 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
           }};
           grid.appendChild(tile);
         }}
+        if (isGenerationConfirmation) {{
+          for (const prompt of item.generation_prompts || []) {{
+            const tile = document.createElement('div');
+            tile.className = 'tile prompt-card';
+            const refsValue = escapeHtml((prompt.reference_paths || []).join('\\n'));
+            tile.innerHTML = `
+              <div class="tile-body">
+                <div class="label" title="${{escapeHtml(prompt.prompt_name || '')}}">${{escapeHtml(prompt.prompt_name || 'Prompt')}}</div>
+                <div class="path">待提交生图 · 序号 ${{escapeHtml(prompt.prompt_index || '')}}</div>
+                <textarea data-field="prompt" placeholder="确认或修改本条生图 Prompt">${{escapeHtml(prompt.custom_prompt || prompt.prompt || '')}}</textarea>
+                <label class="count-field">生图张数<input data-field="image-count" type="number" min="1" max="8" step="1" value="${{escapeHtml(normalizeImageCount(prompt.image_count || 1))}}" /></label>
+                <div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{refsValue}}" /></div>
+                <div class="actions"><button class="danger" data-act="remove">删除本条 Prompt</button></div>
+                <div class="status ${{safeClassName(prompt.status || 'pending')}}">状态：${{escapeHtml(prompt.status || 'pending')}}</div>
+              </div>`;
+            const promptInput = tile.querySelector('[data-field="prompt"]');
+            if (promptInput) promptInput.oninput = () => {{ prompt.custom_prompt = promptInput.value; }};
+            const imageCountInput = tile.querySelector('[data-field="image-count"]');
+            if (imageCountInput) imageCountInput.oninput = () => {{ prompt.image_count = normalizeImageCount(imageCountInput.value); imageCountInput.value = String(prompt.image_count); }};
+            const refsInput = tile.querySelector('[data-field="refs"]');
+            if (refsInput) refsInput.oninput = () => {{ prompt.reference_paths = refsInput.value.split(/[\\n,，、；;]+/).map((v) => v.trim()).filter(Boolean); }};
+            const remove = tile.querySelector('[data-act="remove"]');
+            if (remove) remove.onclick = () => {{ prompt.status = 'removed'; render(); }};
+            if (prompt.status !== 'removed') grid.appendChild(tile);
+          }}
+          const add = document.createElement('button');
+          add.type = 'button';
+          add.className = 'tile prompt-card';
+          add.innerHTML = '<div class="tile-body"><div class="label">+ 新增 Prompt</div><div class="path">增加一张待生成 AI 图</div></div>';
+          add.onclick = () => {{
+            item.generation_prompts = item.generation_prompts || [];
+            const nextIndex = item.generation_prompts.length + 1;
+            item.generation_prompts.push({{ id: `${{item.style_code || 'style'}}-manual-${{Date.now()}}`, prompt_index: nextIndex, prompt_name: `新增 Prompt ${{nextIndex}}`, prompt: '', custom_prompt: '', image_count: 1, reference_paths: (item.assets || []).filter((asset) => asset.kind !== 'ai' && asset.path).map((asset) => asset.path), status: 'pending' }});
+            render();
+          }};
+          grid.appendChild(add);
+        }}
         root.appendChild(section);
       }}
     }}
@@ -504,6 +787,19 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     }}
     document.getElementById('save').onclick = saveDecisions;
     document.getElementById('submit').onclick = async () => {{
+      if (isGenerationConfirmation) {{
+        if (!confirm('确认提交当前主图、参考图和 Prompt，开始批量生图？')) return;
+        setMessage('正在提交批量生图任务...');
+        const items = (batch.items || []).map((item) => ({{ id: item.id, style_code: item.style_code, origin_path: item.origin_path, detail_reference_path: item.detail_reference_path, generation_prompts: item.generation_prompts || [] }}));
+        const res = await fetch(api('/submit-generation'), {{ method:'POST', headers:{{'Content-Type':'application/json'}}, body:JSON.stringify({{ items }}) }});
+        const payload = await res.json();
+        if (!res.ok || payload.error) return setMessage(payload.error || '提交生图失败', true);
+        Object.assign(batch, payload.batch || {{}});
+        document.getElementById('batch-status').textContent = batch.status || payload.status || 'pending_approval';
+        setMessage(`生图完成：${{payload.generated || 0}} 张`);
+        render();
+        return;
+      }}
       await saveDecisions();
       if (!confirm('确认只上传已确认的 AI 图并创建天猫测图任务？')) return;
       setMessage('正在上传并创建测图任务...');
@@ -593,6 +889,488 @@ def update_approval_decisions(batch: dict[str, Any], decisions: Mapping[str, Any
     return batch
 
 
+def _find_confirmation_item(batch: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any] | None:
+    patch_id = compact(patch.get("id"))
+    patch_style = compact(patch.get("style_code"))
+    patch_item_id = compact(patch.get("item_id"))
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        if patch_id and patch_id == compact(item.get("id")):
+            return item
+        if patch_style and patch_style == compact(item.get("style_code")):
+            return item
+        if patch_item_id and patch_item_id == compact(item.get("item_id")):
+            return item
+    return None
+
+
+def _upsert_reference_asset(item: dict[str, Any], *, kind: str, label: str, path: str) -> None:
+    clean_path = compact(path)
+    assets = item.setdefault("assets", [])
+    existing = next((asset for asset in assets if asset.get("kind") == kind), None)
+    if not clean_path:
+        item_key = "origin_path" if kind == "origin" else "detail_reference_path"
+        item[item_key] = ""
+        item["assets"] = [asset for asset in assets if asset.get("kind") != kind]
+        return
+    asset = _image_asset(
+        clean_path,
+        style_code=compact(item.get("style_code")),
+        kind=kind,
+        label=label,
+        index=1,
+        status="reference",
+        extra={"source_label": label},
+    )
+    if existing:
+        existing.update(asset)
+    else:
+        assets.insert(0 if kind == "origin" else min(1, len(assets)), asset)
+
+
+def _sync_confirmation_reference_assets(item: dict[str, Any], reference_assets: Iterable[Mapping[str, Any]]) -> None:
+    next_assets = [
+        asset
+        for asset in item.get("assets") or []
+        if isinstance(asset, Mapping) and (asset.get("kind") == "origin" or asset.get("kind") == "ai" or asset.get("slot") == "main")
+    ]
+    reference_paths: list[str] = []
+    style_code = compact(item.get("style_code"))
+    for index, asset in enumerate(reference_assets or [], start=1):
+        if not isinstance(asset, Mapping):
+            continue
+        path = compact(asset.get("path"))
+        if not path or path in reference_paths:
+            continue
+        reference_paths.append(path)
+        next_assets.append(_image_asset(
+            path,
+            style_code=style_code,
+            kind=compact(asset.get("kind")) or "detail_reference",
+            label=compact(asset.get("label")) or ("款色参考图" if index == 1 else f"款色参考图 {index}"),
+            index=index,
+            status="reference",
+            extra={
+                "source_label": compact(asset.get("source_label")) or "款色参考图",
+                "slot": "reference",
+                "use_for_generation": bool(asset.get("use_for_generation")),
+            },
+        ))
+    item["assets"] = next_assets
+    if reference_paths:
+        item["detail_reference_path"] = reference_paths[0]
+
+
+def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+    for patch in items or []:
+        if not isinstance(patch, Mapping):
+            continue
+        item = _find_confirmation_item(batch, patch)
+        if not item:
+            continue
+        if "origin_path" in patch:
+            item["origin_path"] = compact(patch.get("origin_path"))
+            _upsert_reference_asset(item, kind="origin", label="原图/主图", path=item["origin_path"])
+        if "detail_reference_path" in patch:
+            item["detail_reference_path"] = compact(patch.get("detail_reference_path"))
+            _upsert_reference_asset(item, kind="detail_reference", label="款色参考图", path=item["detail_reference_path"])
+        if "reference_assets" in patch and isinstance(patch.get("reference_assets"), list):
+            _sync_confirmation_reference_assets(item, patch.get("reference_assets") or [])
+        if "generation_prompts" in patch and isinstance(patch.get("generation_prompts"), list):
+            prompts = []
+            for index, prompt in enumerate(patch.get("generation_prompts") or [], start=1):
+                if not isinstance(prompt, Mapping):
+                    continue
+                status = compact(prompt.get("status")) or "pending"
+                if status.lower() in {"removed", "deleted", "disabled", "skip", "skipped"}:
+                    continue
+                prompt_text = compact(prompt.get("custom_prompt") or prompt.get("prompt"))
+                if not prompt_text:
+                    continue
+                prompt_index = int(prompt.get("prompt_index") or index)
+                image_count = normalize_generation_image_count(
+                    prompt.get("image_count") or prompt.get("generation_image_count") or prompt.get("count"),
+                    1,
+                )
+                prompts.append({
+                    **json_safe(dict(prompt)),
+                    "id": compact(prompt.get("id")) or _generation_prompt_id(compact(item.get("style_code")), prompt_index, prompt_text),
+                    "prompt_index": prompt_index,
+                    "prompt_name": compact(prompt.get("prompt_name")) or f"新增 Prompt {prompt_index}",
+                    "prompt": prompt_text,
+                    "custom_prompt": compact(prompt.get("custom_prompt")),
+                    "image_count": image_count,
+                    "reference_paths": parse_list(prompt.get("reference_paths")),
+                    "status": status,
+                })
+            item["generation_prompts"] = prompts
+            item["generation_rows"] = [
+                generation_confirmation_prompt_to_row(batch, item, prompt, index=index)
+                for index, prompt in enumerate(prompts, start=1)
+            ]
+    batch["generation_prompt_total"] = generation_confirmation_prompt_total(batch.get("items") or [])
+    batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    save_approval_batch(batch)
+    return batch
+
+
+def generation_confirmation_prompt_to_row(
+    batch: Mapping[str, Any],
+    item: Mapping[str, Any],
+    prompt: Mapping[str, Any],
+    *,
+    index: int,
+) -> dict[str, Any]:
+    template = prompt.get("generation_row") if isinstance(prompt.get("generation_row"), Mapping) else {}
+    if not template:
+        rows = item.get("generation_rows") if isinstance(item.get("generation_rows"), list) else []
+        template = next((row for row in rows if isinstance(row, Mapping)), {})
+    row = dict(template or {})
+    workflow = workflow_to_dict(item.get("workflow") or item)
+    prompt_index = int(prompt.get("prompt_index") or index)
+    prompt_text = compact(prompt.get("custom_prompt") or prompt.get("prompt"))
+    reference_paths = parse_list(prompt.get("reference_paths"))
+    if not reference_paths:
+        reference_paths = [compact(item.get("origin_path"))]
+        reference_paths = [path for path in reference_paths if path]
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), Mapping) else {}
+    image_count = normalize_generation_image_count(
+        prompt.get("image_count")
+        or prompt.get("generation_image_count")
+        or prompt.get("count")
+        or row.get("生成数量")
+        or payload.get("n"),
+        1,
+    )
+    row.update({
+        "表格行号": workflow.get("row_no", ""),
+        "款号": workflow.get("style_code", ""),
+        "商品ID": workflow.get("item_id", ""),
+        "品类": workflow.get("category", ""),
+        "性别": workflow.get("gender", ""),
+        "SKC编码": workflow.get("skc_code", ""),
+        "提示词分组": compact(prompt.get("prompt_group")) or compact(row.get("提示词分组")) or category_to_prompt_sheet(workflow.get("category", "")),
+        "提示词字段名": compact(prompt.get("prompt_name")) or f"新增 Prompt {prompt_index}",
+        "提示词序号": prompt_index,
+        "最终提示词": prompt_text,
+        "完整Prompt": prompt_text,
+        "生成数量": image_count,
+        "参考图文件": "\n".join(reference_paths),
+        "__1xm_generate": True,
+        "__1xm_reference_paths": reference_paths,
+        "__task_run_uid": approval_batch_run_uid(batch),
+    })
+    row["尺寸"] = compact(row.get("尺寸")) or compact(run_params.get("image_size")) or "1536x2048"
+    row["格式"] = compact(row.get("格式")) or compact(run_params.get("output_format")) or "jpeg"
+    row["质量"] = compact(row.get("质量")) or compact(run_params.get("quality")) or "auto"
+    row["模型"] = compact(row.get("模型")) or compact(run_params.get("model")) or "gpt-image-2"
+    row["比例"] = compact(row.get("比例")) or compact(payload.get("ratio")) or compact(run_params.get("ratio")) or image_ratio_label(row["尺寸"])
+    row["__1xm_key_tier"] = compact(row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "4k"
+    row["__1xm_payload"] = {
+        **dict(payload),
+        "model": row["模型"],
+        "prompt": prompt_text,
+        "size": row["尺寸"],
+        "ratio": row["比例"],
+        "quality": row["质量"],
+        "output_format": row["格式"],
+        "n": image_count,
+    }
+    apply_fresh_approval_generation_key(row, batch, "confirm")
+    return row
+
+
+def prepare_generation_confirmation_placeholders(batch: dict[str, Any]) -> dict[str, Any]:
+    if compact(batch.get("status")) not in {GENERATION_CONFIRMATION_STATUS, "generating"}:
+        raise ValueError("当前批次不在确认提交生图状态")
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    prompt_total = 0
+    requested_images = 0
+    now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        item["assets"] = [asset for asset in item.get("assets") or [] if asset.get("kind") != "ai"]
+        main_asset = next(
+            (
+                asset for asset in item.get("assets") or []
+                if isinstance(asset, Mapping)
+                and (compact(asset.get("kind")) == "origin" or compact(asset.get("slot")) == "main")
+                and compact(asset.get("path"))
+            ),
+            {},
+        )
+        placeholder_preview_path = compact(main_asset.get("path")) or compact(item.get("origin_path"))
+        prompts = item.get("generation_prompts") if isinstance(item.get("generation_prompts"), list) else []
+        item_rows = []
+        for index, prompt in enumerate(prompts, start=1):
+            if not isinstance(prompt, dict):
+                continue
+            status = compact(prompt.get("status")).lower()
+            if status in {"removed", "deleted", "disabled", "skip", "skipped"}:
+                continue
+            row = generation_confirmation_prompt_to_row(batch, item, prompt, index=index)
+            item_rows.append(row)
+            prompt["status"] = "generating"
+            prompt["generation_row"] = json_safe(row)
+            prompt_total += 1
+            image_count = generation_count_from_row(row, 1)
+            requested_images += image_count
+            for image_offset in range(1, image_count + 1):
+                display_index = index if image_count == 1 else f"{index}-{image_offset}"
+                item.setdefault("assets", []).append(_image_asset(
+                    "",
+                    style_code=compact(item.get("style_code")),
+                    kind="ai",
+                    label=f"AI 图 {display_index}",
+                    index=display_index,
+                    status="generating",
+                    extra={
+                        "prompt_index": index,
+                        "prompt_name": compact(prompt.get("prompt_name")),
+                        "prompt_group": compact(prompt.get("prompt_group")),
+                        "prompt": compact(row.get("完整Prompt") or row.get("最终提示词")),
+                        "generation_row": json_safe(row),
+                        "reference_paths": parse_list(row.get("参考图文件")),
+                        "reference_labels": [Path(ref).name for ref in parse_list(row.get("参考图文件"))],
+                        "task_run_uid": compact(row.get("__task_run_uid")) or approval_batch_run_uid(batch),
+                        "custom_prompt": "",
+                        "review_note": "",
+                        "placeholder": True,
+                        "placeholder_preview_path": placeholder_preview_path,
+                        "created_at": now,
+                    },
+                ))
+        item["generation_rows"] = json_safe(item_rows)
+    batch["status"] = "generating"
+    batch["generation_summary"] = {
+        "requested": requested_images,
+        "requested_prompts": prompt_total,
+        "generated": 0,
+        "failed": 0,
+    }
+    batch["submit_progress"] = {
+        "status": "running",
+        "total": prompt_total,
+        "completed": 0,
+        "attempted": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "image_total": requested_images,
+        "current_style": "",
+        "message": f"后台生图中：{prompt_total} 条 Prompt / {requested_images} 张 AI 图",
+    }
+    batch["updated_at"] = now
+    batch["approval_message"] = render_approval_message_template(
+        str(run_params.get("approval_message_template") or ""),
+        batch,
+    )
+    save_approval_batch(batch)
+    return batch
+
+
+def _same_generation_prompt_asset(asset: Mapping[str, Any], prompt_index: int) -> bool:
+    if compact(asset.get("kind")) != "ai":
+        return False
+    return compact(asset.get("prompt_index")) == compact(prompt_index)
+
+
+def _prune_generation_ai_assets(item: dict[str, Any], *, keep_placeholders: bool) -> None:
+    next_assets = []
+    for asset in item.get("assets") or []:
+        if not isinstance(asset, Mapping):
+            continue
+        if compact(asset.get("kind")) != "ai":
+            next_assets.append(asset)
+            continue
+        if keep_placeholders and (asset.get("placeholder") or compact(asset.get("status")) == "generating"):
+            next_assets.append(asset)
+    item["assets"] = next_assets
+
+
+def _replace_generation_prompt_assets(item: dict[str, Any], prompt_index: int, assets: list[dict[str, Any]]) -> None:
+    next_assets: list[Mapping[str, Any]] = []
+    inserted = False
+    for asset in item.get("assets") or []:
+        if isinstance(asset, Mapping) and _same_generation_prompt_asset(asset, prompt_index):
+            if not inserted:
+                next_assets.extend(assets)
+                inserted = True
+            continue
+        if isinstance(asset, Mapping):
+            next_assets.append(asset)
+    if not inserted:
+        next_assets.extend(assets)
+    item["assets"] = list(next_assets)
+
+
+def _remove_generation_prompt_placeholders(item: dict[str, Any], prompt_index: int) -> None:
+    item["assets"] = [
+        asset for asset in item.get("assets") or []
+        if not (
+            isinstance(asset, Mapping)
+            and asset.get("placeholder")
+            and _same_generation_prompt_asset(asset, prompt_index)
+        )
+    ]
+
+
+def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) -> dict[str, Any]:
+    if compact(batch.get("status")) not in {GENERATION_CONFIRMATION_STATUS, "generating"}:
+        raise ValueError("当前批次不在确认提交生图状态")
+    run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    settings = resolve_one_xm_settings()
+    require_one_xm_key_for_generation(
+        settings,
+        model=compact(run_params.get("model")) or "gpt-image-2",
+        image_size=compact(run_params.get("image_size")) or "1536x2048",
+        key_tier=compact(run_params.get("one_xm_key_tier")) or "4k",
+    )
+    artifact_dir = Path(compact(batch.get("artifact_dir")) or compact(Path(compact(batch.get("json_path"))).parent) or ".")
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    jobs: list[tuple[dict[str, Any], dict[str, Any], int, dict[str, Any]]] = []
+    keep_placeholders = compact(batch.get("status")) == "generating"
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        _prune_generation_ai_assets(item, keep_placeholders=keep_placeholders)
+        prompts = item.get("generation_prompts") if isinstance(item.get("generation_prompts"), list) else []
+        item_rows = []
+        for index, prompt in enumerate(prompts, start=1):
+            if not isinstance(prompt, dict):
+                continue
+            status = compact(prompt.get("status")).lower()
+            if status in {"removed", "deleted", "disabled", "skip", "skipped"}:
+                continue
+            row = generation_confirmation_prompt_to_row(batch, item, prompt, index=index)
+            item_rows.append(row)
+            jobs.append((item, prompt, index, row))
+        item["generation_rows"] = json_safe(item_rows)
+
+    concurrency = max(1, min(100, int(run_params.get("generation_concurrency") or 100)))
+    options = {
+        "one_xm_key_tier": compact(run_params.get("one_xm_key_tier")) or "4k",
+        "retry_attempts": int(run_params.get("retry_attempts") or 3),
+        "compensate_attempts": int(run_params.get("compensate_attempts") or 2),
+        "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
+    }
+
+    def generate(job: tuple[dict[str, Any], dict[str, Any], int, dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], int, dict[str, Any], list[str]]:
+        item, prompt, index, row = job
+        patched = run_one_xm_generation_row(row, options, settings)
+        paths = download_generated_images(patched, artifact_dir)
+        patched["本地生成图文件"] = "\n".join(paths)
+        return item, prompt, index, patched, paths
+
+    generated = 0
+    failures = 0
+    succeeded_prompts = 0
+    requested_images = sum(generation_count_from_row(row, 1) for _item, _prompt, _index, row in jobs)
+    if jobs:
+        log(f"[approval] 确认提交生图任务 {len(jobs)} 条 Prompt / {requested_images} 张，并发 {concurrency}")
+
+    def persist_generation_progress(*, status: str = "running", current_style: str = "", message: str = "") -> None:
+        completed = succeeded_prompts + failures
+        now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        batch["status"] = "generating" if status == "running" else ("pending_approval" if generated else "generation_failed")
+        batch["generation_summary"] = {
+            "requested": requested_images,
+            "requested_prompts": len(jobs),
+            "generated": generated,
+            "failed": failures,
+        }
+        batch["submit_progress"] = {
+            "status": status,
+            "total": len(jobs),
+            "completed": completed if status == "running" else len(jobs),
+            "attempted": completed if status == "running" else len(jobs),
+            "succeeded": succeeded_prompts,
+            "failed": failures,
+            "image_total": requested_images,
+            "current_style": current_style,
+            "message": message or (
+                f"生图进行中：已生成 {generated}/{requested_images} 张，完成 {completed}/{len(jobs)} 条 Prompt"
+                if status == "running"
+                else (f"生图完成：{generated} 张" if generated else "生图失败，请检查失败原因")
+            ),
+        }
+        batch["updated_at"] = now
+        batch["approval_message"] = render_approval_message_template(
+            str(run_params.get("approval_message_template") or ""),
+            batch,
+        )
+        save_approval_batch(batch)
+
+    with ThreadPoolExecutor(max_workers=concurrency) as executor:
+        future_map = {executor.submit(generate, job): job for job in jobs}
+        for future in as_completed(future_map):
+            item, prompt, index, row = future_map[future]
+            try:
+                _item, _prompt, prompt_index, patched, paths = future.result()
+            except Exception as exc:
+                failures += 1
+                prompt["status"] = "failed"
+                prompt["error"] = str(exc)
+                _remove_generation_prompt_placeholders(item, index)
+                persist_generation_progress(
+                    current_style=compact(item.get("style_code")),
+                    message=f"{compact(item.get('style_code')) or '当前款'} / Prompt {index} 生图失败：{exc}",
+                )
+                continue
+            if not paths:
+                failures += 1
+                prompt["status"] = "failed"
+                prompt["generation_row"] = json_safe(patched)
+                prompt["error"] = compact(patched.get("备注")) or "未下载到生成图片"
+                _remove_generation_prompt_placeholders(item, prompt_index)
+                persist_generation_progress(
+                    current_style=compact(item.get("style_code")),
+                    message=f"{compact(item.get('style_code')) or '当前款'} / Prompt {prompt_index} 未下载到生成图片",
+                )
+                continue
+            prompt["status"] = "generated"
+            prompt["generation_row"] = json_safe(patched)
+            generated += len(paths)
+            succeeded_prompts += 1
+            prompt_assets: list[dict[str, Any]] = []
+            for image_offset, path in enumerate(paths, start=1):
+                display_index = prompt_index if len(paths) == 1 else f"{prompt_index}-{image_offset}"
+                asset = _image_asset(
+                    path,
+                    style_code=compact(item.get("style_code")),
+                    kind="ai",
+                    label=f"AI 图 {display_index}",
+                    index=display_index,
+                    status="pending",
+                    extra={
+                        "prompt_index": prompt_index,
+                        "prompt_name": compact(prompt.get("prompt_name")),
+                        "prompt_group": compact(prompt.get("prompt_group")),
+                        "prompt": compact(patched.get("完整Prompt") or patched.get("最终提示词")),
+                        "generation_row": json_safe(patched),
+                        "reference_paths": parse_list(patched.get("参考图文件")),
+                        "reference_labels": [Path(ref).name for ref in parse_list(patched.get("参考图文件"))],
+                        "task_run_uid": compact(patched.get("__task_run_uid")) or approval_batch_run_uid(batch),
+                        "custom_prompt": "",
+                        "review_note": "",
+                        "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                    },
+                )
+                prompt_assets.append(asset)
+            _replace_generation_prompt_assets(item, prompt_index, prompt_assets)
+            persist_generation_progress(current_style=compact(item.get("style_code")))
+
+    persist_generation_progress(status="completed" if generated else "failed")
+    notify_channel = compact(run_params.get("approval_notify_channel") or "dingtalk").lower()
+    if generated and notify_channel and notify_channel != "none":
+        notify_approval_batch(batch, channel=notify_channel, log=log)
+    maybe_sync_approval_batch_to_cloud(batch, log=log)
+    return {"ok": generated > 0, "generated": generated, "failed": failures, "status": batch.get("status"), "batch": batch}
+
+
 def approval_asset_matches_batch_run(batch: Mapping[str, Any], asset: Mapping[str, Any]) -> bool:
     batch_run_uid = compact(batch.get("task_run_uid"))
     if not batch_run_uid:
@@ -643,15 +1421,67 @@ def successful_submit_rows_by_style(batch: Mapping[str, Any]) -> dict[str, Mappi
     }
 
 
+def submit_image_path_key(path: object) -> str:
+    return compact(path).replace("\\", "/")
+
+
+def successful_submit_ai_paths_by_style(batch: Mapping[str, Any]) -> dict[str, set[str]]:
+    submitted: dict[str, set[str]] = {}
+    pending_generation_paths: dict[str, list[str]] = {}
+    for row in batch.get("submit_result_rows") or []:
+        if not isinstance(row, Mapping):
+            continue
+        style_code = compact(row.get("款号"))
+        if not style_code:
+            continue
+        stage = compact(row.get("阶段"))
+        if stage == "1XM生图":
+            paths = [submit_image_path_key(path) for path in parse_list(row.get("本地生成图文件") or row.get("本地文件"))]
+            paths = [path for path in paths if path]
+            if paths:
+                pending_generation_paths.setdefault(style_code, []).extend(paths)
+            continue
+        if stage != "天猫上传/创建测图任务":
+            continue
+        if not tmall_submit_row_is_online_success(row):
+            pending_generation_paths[style_code] = []
+            continue
+        paths = [submit_image_path_key(path) for path in parse_list(row.get("提交图片文件"))]
+        if not paths:
+            paths = list(pending_generation_paths.get(style_code) or [])
+        paths = [path for path in paths if path]
+        if paths:
+            submitted.setdefault(style_code, set()).update(paths)
+        pending_generation_paths[style_code] = []
+    return submitted
+
+
+def make_selected_upload_plan(
+    item: Mapping[str, Any],
+    workflow_data: Mapping[str, Any],
+    generated_paths: list[str],
+    submit_mode: str,
+) -> dict[str, Any]:
+    return {
+        "workflow": workflow_data,
+        "origin_path": compact(item.get("origin_path")),
+        "detail_reference_path": compact(item.get("detail_reference_path")),
+        "generated_paths": generated_paths,
+        "item": item,
+        "submit_mode": submit_mode,
+    }
+
+
 def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
     plans: list[dict[str, Any]] = []
+    rerun_plans: list[dict[str, Any]] = []
     run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
     force_resubmit_success = is_truthy(run_params.get("approval_resubmit_successful"))
     successful_styles = set(successful_submit_rows_by_style(batch)) if not force_resubmit_success else set()
+    submitted_paths_by_style = successful_submit_ai_paths_by_style(batch) if not force_resubmit_success else {}
     for item in batch.get("items") or []:
         workflow_data = workflow_to_dict(item.get("workflow") or item)
-        if workflow_data.get("style_code") in successful_styles:
-            continue
+        style_code = compact(workflow_data.get("style_code"))
         approved_paths = [
             compact(asset.get("path"))
             for asset in item.get("assets") or []
@@ -662,14 +1492,21 @@ def selected_upload_plan_from_approval_batch(batch: Mapping[str, Any]) -> list[d
         ]
         if not approved_paths:
             continue
-        plans.append({
-            "workflow": workflow_data,
-            "origin_path": compact(item.get("origin_path")),
-            "detail_reference_path": compact(item.get("detail_reference_path")),
-            "generated_paths": approved_paths,
-            "item": item,
-        })
-    return plans
+        submitted_paths = submitted_paths_by_style.get(style_code) or set()
+        unsubmitted_paths = [
+            path for path in approved_paths
+            if submit_image_path_key(path) not in submitted_paths
+        ] if submitted_paths else approved_paths
+        if unsubmitted_paths:
+            mode = (
+                "append_unsubmitted" if submitted_paths else
+                "rerun_confirmed" if style_code in successful_styles else
+                "submit_confirmed"
+            )
+            plans.append(make_selected_upload_plan(item, workflow_data, unsubmitted_paths, mode))
+            continue
+        rerun_plans.append(make_selected_upload_plan(item, workflow_data, approved_paths, "rerun_confirmed"))
+    return plans or rerun_plans
 
 
 def approval_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
@@ -684,10 +1521,115 @@ def approval_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
             "审批批次ID": batch.get("batch_id", ""),
             "审批状态": batch.get("status", ""),
             "审批看板": batch.get("board_url", ""),
+            "云端审批看板": batch.get("cloud_board_url", ""),
+            "本地审批看板": batch.get("local_board_url", ""),
             "执行结果": "等待审批",
             "备注": f"AI图={ai_total}；{batch.get('approval_message', '')}",
         })
     return rows
+
+
+def cloud_approval_sync_warning_row(batch: Mapping[str, Any], message: str) -> dict[str, Any]:
+    return {
+        "表格行号": "",
+        "款号": "",
+        "商品ID": "",
+        "阶段": "云端审批同步",
+        "审批批次ID": batch.get("batch_id", ""),
+        "审批状态": batch.get("status", ""),
+        "审批看板": batch.get("board_url", ""),
+        "云端审批看板": batch.get("cloud_board_url", ""),
+        "本地审批看板": batch.get("local_board_url", ""),
+        "执行结果": "警告",
+        "备注": compact(message),
+    }
+
+
+def maybe_sync_approval_batch_to_cloud(batch: dict[str, Any], *, log=print) -> dict[str, Any] | None:
+    from core.cloud_approval_client import CloudApprovalClient
+    from core.cloud_batch_sync import sync_local_approval_batch
+    from core.config import load_config
+
+    cloud_config = (load_config().get("cloud_approval") or {})
+    job_uid = approval_batch_run_uid(batch) or compact(batch.get("batch_id")) or "approval-batch"
+    base_url = compact(cloud_config.get("base_url"))
+    if not cloud_config.get("machine_enabled"):
+        return record_cloud_approval_sync_warning(batch, job_uid, base_url, "云端审批同步跳过：未启用云端审批任务机", log=log)
+    if not base_url:
+        return record_cloud_approval_sync_warning(batch, job_uid, base_url, "云端审批同步跳过：未配置云端审批地址", log=log)
+    credentials = data_sink.get_cloud_machine_credentials() or {}
+    machine_token = compact(credentials.get("machine_token"))
+    if not machine_token:
+        return record_cloud_approval_sync_warning(batch, job_uid, base_url, "云端审批同步跳过：未注册任务机或机器 token 缺失", log=log)
+    client = CloudApprovalClient(
+        base_url,
+        machine_token=machine_token,
+        timeout=float(cloud_config.get("poll_timeout_seconds") or 30),
+    )
+    try:
+        result = sync_local_approval_batch(batch, client)
+        local_board_url = compact(batch.get("local_board_url") or batch.get("board_url"))
+        cloud_board_url = cloud_approval_board_url(base_url, batch.get("batch_id"))
+        batch["local_board_url"] = local_board_url
+        batch["cloud_board_url"] = cloud_board_url
+        batch["board_url"] = cloud_board_url
+        run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+        batch["approval_message"] = render_approval_message_template(
+            str(run_params.get("approval_message_template") or ""),
+            batch,
+        )
+        batch["cloud_sync"] = {
+            "status": "synced",
+            "base_url": base_url,
+            "board_url": cloud_board_url,
+            "result": json_safe(result),
+            "synced_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        }
+        data_sink.record_cloud_job_event(
+            job_uid,
+            "approval_batch_sync_complete",
+            "local approval batch synced to cloud",
+            {"batch_id": batch.get("batch_id"), "asset_count": len(result.get("assets") or []) if isinstance(result, Mapping) else 0},
+        )
+        save_approval_batch(batch)
+        return result
+    except Exception as exc:
+        warning = f"云端审批同步失败：{exc}"
+        batch["cloud_sync"] = {
+            "status": "warning",
+            "base_url": base_url,
+            "warning": compact(warning),
+            "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        }
+        data_sink.record_cloud_job_event(
+            job_uid,
+            "approval_batch_sync_warning",
+            "local approval batch cloud sync failed",
+            {"batch_id": batch.get("batch_id"), "error": compact(str(exc))},
+        )
+        save_approval_batch(batch)
+        if log:
+            log(f"[warn] {warning}")
+        return None
+
+
+def record_cloud_approval_sync_warning(batch: dict[str, Any], job_uid: str, base_url: str, warning: str, *, log=print) -> None:
+    batch["cloud_sync"] = {
+        "status": "warning",
+        "base_url": compact(base_url),
+        "warning": compact(warning),
+        "updated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    data_sink.record_cloud_job_event(
+        job_uid,
+        "approval_batch_sync_warning",
+        "local approval batch cloud sync skipped",
+        {"batch_id": batch.get("batch_id"), "warning": compact(warning)},
+    )
+    save_approval_batch(batch)
+    if log:
+        log(f"[warn] {warning}")
+    return None
 
 
 def notify_approval_batch(batch: Mapping[str, Any], *, channel: str = "dingtalk", log=None) -> None:
@@ -874,11 +1816,35 @@ def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, An
     source_row = generation_row if isinstance(generation_row, Mapping) else {}
     existing_ai = next((asset for asset in item.get("assets") or [] if isinstance(asset, Mapping) and asset.get("kind") == "ai"), {})
     existing_row = existing_ai.get("generation_row") if isinstance(existing_ai.get("generation_row"), Mapping) else {}
+    source_payload = source_row.get("__1xm_payload") if isinstance(source_row.get("__1xm_payload"), Mapping) else {}
+    existing_payload = existing_row.get("__1xm_payload") if isinstance(existing_row.get("__1xm_payload"), Mapping) else {}
+    count = normalize_generation_image_count(
+        source_row.get("生成数量")
+        or source_payload.get("n")
+        or existing_row.get("生成数量")
+        or existing_payload.get("n")
+        or run_params.get("generation_image_count")
+        or run_params.get("count")
+        or run_params.get("n"),
+        1,
+    )
+    image_size = compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "1536x2048"
+    ratio = (
+        compact(source_row.get("比例"))
+        or compact(source_payload.get("ratio"))
+        or compact(existing_row.get("比例"))
+        or compact(existing_payload.get("ratio"))
+        or compact(run_params.get("ratio"))
+        or image_ratio_label(image_size)
+    )
     return {
-        "image_size": compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280",
+        "model": compact(source_row.get("模型") or existing_row.get("模型") or run_params.get("model")) or "gpt-image-2",
+        "image_size": image_size,
+        "ratio": ratio,
         "quality": normalize_quality(source_row.get("质量") or existing_row.get("质量") or run_params.get("quality") or "auto"),
-        "output_format": compact(source_row.get("格式")) or compact(existing_row.get("格式")) or compact(run_params.get("output_format")) or "jpeg",
-        "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto",
+        "output_format": normalize_output_format(source_row.get("格式") or existing_row.get("格式") or run_params.get("output_format"), "jpeg"),
+        "count": count,
+        "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "4k",
         "retry_attempts": to_int(run_params.get("retry_attempts"), 3),
         "compensate_attempts": to_int(run_params.get("compensate_attempts"), 2),
         "poll_timeout_minutes": float(run_params.get("poll_timeout_minutes") or 12),
@@ -908,23 +1874,32 @@ def regenerate_approval_asset(
     generation_row["主参考图文件"] = refs[0] if refs else ""
     generation_row["细节参考图文件"] = "\n".join(refs[1:])
     generation_row["__1xm_reference_paths"] = refs
+    defaults = approval_generation_defaults(batch, item, generation_row)
+    generation_row["比例"] = compact(generation_row.get("比例")) or defaults["ratio"]
+    generation_row["生成数量"] = normalize_generation_image_count(generation_row.get("生成数量") or defaults["count"], 1)
     if isinstance(generation_row.get("__1xm_payload"), dict):
         generation_row["__1xm_payload"]["prompt"] = final_prompt
+        generation_row["__1xm_payload"]["ratio"] = compact(generation_row["__1xm_payload"].get("ratio")) or generation_row["比例"]
+        generation_row["__1xm_payload"]["n"] = normalize_generation_image_count(generation_row["__1xm_payload"].get("n") or generation_row["生成数量"], 1)
     else:
-        defaults = approval_generation_defaults(batch, item, generation_row)
         generation_row["__1xm_payload"] = {
-            "model": "gpt-image-2",
+            "model": defaults["model"],
             "prompt": final_prompt,
             "size": defaults["image_size"],
+            "ratio": defaults["ratio"],
             "quality": defaults["quality"],
             "output_format": defaults["output_format"],
-            "n": 1,
+            "n": defaults["count"],
         }
     nonce = apply_fresh_approval_generation_key(generation_row, batch, "retry")
     settings = resolve_one_xm_settings()
-    if not (settings.get("2k") or settings.get("4k")):
-        raise RuntimeError("未配置 1XM Key，无法重新生图")
     defaults = approval_generation_defaults(batch, item, generation_row)
+    require_one_xm_key_for_generation(
+        settings,
+        model=defaults["model"],
+        image_size=defaults["image_size"],
+        key_tier=defaults["one_xm_key_tier"],
+    )
     patched = run_one_xm_generation_row(generation_row, {
         "one_xm_key_tier": defaults["one_xm_key_tier"],
         "retry_attempts": defaults["retry_attempts"],
@@ -987,8 +1962,10 @@ def generate_approval_asset_for_item(
         "提示词字段名": f"审批新增 {prompt_index}",
         "提示词序号": prompt_index,
         "尺寸": defaults["image_size"],
+        "比例": defaults["ratio"],
         "格式": defaults["output_format"],
         "质量": defaults["quality"],
+        "生成数量": defaults["count"],
         "参考图文件": "\n".join(refs),
         "主参考图文件": refs[0],
         "细节参考图文件": "\n".join(refs[1:]),
@@ -1005,18 +1982,23 @@ def generate_approval_asset_for_item(
         "__task_run_uid": approval_batch_run_uid(batch),
         "__1xm_reference_paths": refs,
         "__1xm_payload": {
-            "model": "gpt-image-2",
+            "model": defaults["model"],
             "prompt": final_prompt,
             "size": defaults["image_size"],
+            "ratio": defaults["ratio"],
             "quality": defaults["quality"],
             "output_format": defaults["output_format"],
-            "n": 1,
+            "n": defaults["count"],
         },
     }
     nonce = apply_fresh_approval_generation_key(generation_row, batch, "manual")
     settings = resolve_one_xm_settings()
-    if not (settings.get("2k") or settings.get("4k")):
-        raise RuntimeError("未配置 1XM Key，无法新增生图")
+    require_one_xm_key_for_generation(
+        settings,
+        model=defaults["model"],
+        image_size=defaults["image_size"],
+        key_tier=defaults["one_xm_key_tier"],
+    )
     patched = run_one_xm_generation_row(generation_row, {
         "one_xm_key_tier": defaults["one_xm_key_tier"],
         "retry_attempts": defaults["retry_attempts"],
@@ -1059,7 +2041,7 @@ def generate_approval_asset_for_item(
 
 def normalize_quality(value: object) -> str:
     text = compact(value).lower()
-    return text if text in {"auto", "low", "medium", "high"} else "auto"
+    return text if text in {"auto", "standard", "low", "medium", "high"} else "auto"
 
 
 def read_workbook_table(path: str, sheet: str | None = None, header_row: int = 1) -> dict[str, Any]:
@@ -1075,6 +2057,20 @@ def resolve_one_xm_settings() -> dict:
     from core.api_server import _resolve_one_xm_settings
 
     return _resolve_one_xm_settings()
+
+
+def require_one_xm_key_for_generation(settings: Mapping[str, Any], *, model: str, image_size: str, key_tier: str = "auto") -> str:
+    from core import ai_image_service
+
+    try:
+        config_id, _api_key = ai_image_service.select_model_key({
+            "model_key": compact(model) or "gpt-image-2",
+            "size": compact(image_size),
+            "model_key_tier": compact(key_tier).lower() or "auto",
+        }, settings)
+    except ai_image_service.MissingModelKeyError as exc:
+        raise RuntimeError(f"未配置 1XM Key：{exc}") from exc
+    return config_id
 
 
 def run_one_xm_generation_row(row: dict, run_params: dict, one_xm_settings: dict) -> dict:
@@ -1214,6 +2210,52 @@ def read_prompt_library(path: str) -> list[PromptItem]:
     return prompts
 
 
+def prompt_items_from_cloud_templates(templates: object) -> list[PromptItem]:
+    source = templates
+    if isinstance(source, Mapping):
+        source = source.get("templates") or []
+    if not isinstance(source, list):
+        return []
+
+    prompts: list[PromptItem] = []
+    for index, item in enumerate(source, start=1):
+        if not isinstance(item, Mapping):
+            continue
+        field_name = compact(item.get("field_name") or item.get("prompt_name") or item.get("name"))
+        prompt_text = compact(item.get("prompt_text") or item.get("prompt") or item.get("content"))
+        if not field_name or not prompt_text:
+            continue
+        priority = to_int(item.get("priority"), index)
+        prompts.append(PromptItem(
+            sheet_name=compact(item.get("group_name") or item.get("sheet_name") or item.get("category")) or "上装",
+            field_name=field_name,
+            field_order=to_int(item.get("field_order"), index),
+            size_label=compact(item.get("size_label") or item.get("size") or ""),
+            output_format=normalize_output_format(item.get("output_format") or item.get("format"), "jpeg"),
+            prompt=prompt_text,
+            female_priority=to_int(item.get("female_priority"), priority),
+            neutral_priority=to_int(item.get("male_neutral_priority") or item.get("neutral_priority"), priority),
+        ))
+    return prompts
+
+
+def load_prompt_library_for_args(args: argparse.Namespace) -> list[PromptItem]:
+    source = compact(getattr(args, "prompt_source", "local_excel")).lower() or "local_excel"
+    if source == "cloud_prompt_library":
+        payload_text = compact(getattr(args, "cloud_prompt_templates_json", ""))
+        if not payload_text:
+            raise RuntimeError("云端 Prompt 库未返回可用模板")
+        try:
+            payload = json.loads(payload_text)
+        except Exception as exc:
+            raise RuntimeError("云端 Prompt 库模板 JSON 解析失败") from exc
+        prompts = prompt_items_from_cloud_templates(payload)
+        if not prompts:
+            raise RuntimeError("云端 Prompt 库未解析到可用提示词")
+        return prompts
+    return read_prompt_library(getattr(args, "prompt_file", ""))
+
+
 def category_to_prompt_sheet(category: str) -> str:
     text = compact(category)
     if text in PROMPT_SHEETS:
@@ -1297,11 +2339,16 @@ def make_generation_row(
     quality: str,
     output_format: str,
     key_tier: str,
+    model: str = "gpt-image-2",
+    ratio: str = "",
     prompt_index: int = 1,
+    image_count: int = 1,
     run_nonce: str = "",
 ) -> dict[str, Any]:
     final_prompt = build_prompt_text(prompt, workflow)
     normalized_quality = normalize_quality(quality)
+    normalized_image_count = normalize_generation_image_count(image_count, 1)
+    ratio = compact(ratio) or image_ratio_label(image_size)
     references = [compact(item) for item in (reference_paths if isinstance(reference_paths, (list, tuple)) else [reference_paths]) if compact(item)]
     key_parts = [
         "tmall_ai_chain",
@@ -1325,8 +2372,10 @@ def make_generation_row(
         "提示词字段名": prompt.field_name,
         "提示词序号": prompt_index,
         "尺寸": image_size,
+        "比例": ratio,
         "格式": output_format,
         "质量": normalized_quality,
+        "生成数量": normalized_image_count,
         "参考图文件": "\n".join(references),
         "主参考图文件": references[0] if references else "",
         "细节参考图文件": "\n".join(references[1:]),
@@ -1344,12 +2393,13 @@ def make_generation_row(
         "__task_run_uid": compact(run_nonce),
         "__1xm_reference_paths": references,
         "__1xm_payload": {
-            "model": "gpt-image-2",
+            "model": compact(model) or "gpt-image-2",
             "prompt": final_prompt,
             "size": image_size,
+            "ratio": ratio,
             "quality": normalized_quality,
             "output_format": output_format,
-            "n": 1,
+            "n": normalized_image_count,
         },
     }
 
@@ -1387,6 +2437,102 @@ async def wait_for_semir_api_ready(runner: JSRunner, *, log=None, timeout_ms: in
     if log:
         meta = (result.data[0] if isinstance(result.data, list) and result.data else {}) or {}
         log(f"[chain] 森马云盘 API 已就绪：挂载点 {meta.get('mountCount') or 0} 个")
+
+
+async def wait_for_tmall_api_ready(
+    runner: JSRunner,
+    *,
+    log=None,
+    timeout_ms: int = TMALL_LOGIN_READY_TIMEOUT_MS,
+    poll_interval_seconds: float = TMALL_READY_POLL_INTERVAL_SECONDS,
+) -> None:
+    timeout_seconds = max(0.0, float(timeout_ms or 0) / 1000.0)
+    deadline = time.monotonic() + timeout_seconds
+    original_timeout = getattr(runner, "timeout", None)
+    last_status: Mapping[str, Any] = {}
+    last_error = ""
+    attempt = 0
+    navigated_after_login = False
+    probe_timeout = 20
+    try:
+        if original_timeout is not None:
+            try:
+                probe_timeout = min(max(int(float(original_timeout)), 10), 30)
+            except Exception:
+                probe_timeout = 20
+        while True:
+            attempt += 1
+            if original_timeout is not None:
+                try:
+                    runner.timeout = probe_timeout
+                except Exception:
+                    pass
+            result = await runner.evaluate_with_reconnect(
+                js_call(TMALL_READY_PROBE_JS, {}),
+                allow_navigation_retry=True,
+            )
+            if result.success:
+                status = (result.data[0] if isinstance(result.data, list) and result.data else {}) or {}
+                if isinstance(status, Mapping):
+                    last_status = status
+                if bool(status.get("ready")):
+                    if log:
+                        title = compact(status.get("title"))
+                        href = compact(status.get("href"))
+                        log(f"[chain] 天猫测图页面已就绪：{title or href or 'material-test'}")
+                    return
+
+                if (
+                    not navigated_after_login
+                    and bool(status.get("hasMtop"))
+                    and not bool(status.get("isLoginUrl"))
+                    and not bool(status.get("isMaterialUrl"))
+                    and hasattr(runner, "navigate")
+                ):
+                    navigated_after_login = True
+                    nav = await runner.navigate(TMALL_URL, wait_seconds=4)
+                    if not nav.success:
+                        last_error = compact(nav.error) or "切换到天猫测图页面失败"
+                    elif log:
+                        log("[chain] 天猫已登录，正在切换到测图页面")
+
+                if log and (attempt == 1 or attempt % 10 == 0):
+                    href = compact(status.get("href"))
+                    title = compact(status.get("title"))
+                    if bool(status.get("isLoginUrl")):
+                        log(f"[chain] 等待天猫登录（最多 {int(timeout_seconds)} 秒）：当前页面 {title or href or '登录页'}")
+                    elif not bool(status.get("hasMtop")):
+                        log(f"[chain] 等待天猫测图页面加载 mtop：当前页面 {title or href or '未知页面'}")
+                    else:
+                        log(f"[chain] 等待天猫测图页面就绪：当前页面 {title or href or '未知页面'}")
+            else:
+                last_error = compact(result.error) or "天猫页面探针执行失败"
+                if log and (attempt == 1 or attempt % 10 == 0):
+                    log(f"[chain] 等待天猫测图页面就绪：{last_error}")
+
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                href = compact(last_status.get("href")) if isinstance(last_status, Mapping) else ""
+                title = compact(last_status.get("title")) if isinstance(last_status, Mapping) else ""
+                if isinstance(last_status, Mapping) and bool(last_status.get("isLoginUrl")):
+                    state = "当前仍停留在天猫登录页"
+                elif isinstance(last_status, Mapping) and not bool(last_status.get("hasMtop")):
+                    state = "当前页面还未加载天猫 mtop API"
+                else:
+                    state = "当前天猫测图页面还未就绪"
+                detail = title or href or last_error or "未获取到页面状态"
+                raise RuntimeError(
+                    f"等待天猫登录超时（{int(timeout_seconds)} 秒）：{state}。"
+                    f"当前页面：{detail}。请在 Chrome 9222 的天猫页面完成登录后重试。"
+                )
+            sleep_seconds = min(max(0.0, float(poll_interval_seconds or 0)), remaining)
+            await asyncio.sleep(sleep_seconds)
+    finally:
+        if original_timeout is not None:
+            try:
+                runner.timeout = original_timeout
+            except Exception:
+                pass
 
 
 def js_call(body: str, payload: Mapping[str, Any]) -> str:
@@ -1584,6 +2730,11 @@ SEMIR_FIND_JS = r"""
     segments.pop();
     return segments.join('/');
   }
+  function sameParentFullpath(left, right) {
+    const leftParent = parentFullpath(left?.fullpath || left?.path || '');
+    const rightParent = parentFullpath(right?.fullpath || right?.path || '');
+    return Boolean(leftParent && rightParent && leftParent === rightParent);
+  }
   function folderPathsFromSearchItem(item, styleCode) {
     const style = compact(styleCode);
     if (!style) return [];
@@ -1668,9 +2819,27 @@ SEMIR_FIND_JS = r"""
     const name = basenameOf(filename);
     return /颜色\s*ai|ai\s*[-_ ]?\d|[-_&]ai(?:$|[-_ .])|效果图|创意图|生图|生成图|生成款|改色|换色|变色|智能图/i.test(name);
   }
+  function isDerivedReferenceName(filename) {
+    const name = basenameOf(filename);
+    return /AI\s*参考|颜色\s*ai|ai\s*[-_ ]?\d|[-_&]ai(?:$|[-_ .])|效果图|创意图|生图|生成图|生成款|改色|换色|变色|智能图/i.test(name);
+  }
   function isMainReferenceCandidate(filename) {
     const name = basenameOf(filename);
     return !isDerivedMainReferenceName(name) && (isShowcaseOneName(name) || isYzOneName(name));
+  }
+  function isSelectedModelOriginalPath(fullpath) {
+    const full = compact(fullpath);
+    return /模拍原图/.test(full) && /已选/.test(full);
+  }
+  function folderPathScanRank(fullpath) {
+    const full = compact(fullpath);
+    return (isSelectedModelOriginalPath(full) ? 100 : 0) + (/已选/.test(full) ? 20 : 0) + (/模拍原图/.test(full) ? 10 : 0);
+  }
+  function isStyleColorReferenceName(filename, styleCode) {
+    const style = compact(styleCode);
+    if (!style) return false;
+    const escaped = style.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^${escaped}[-_][0-9]{4,6}(?:[-_][0-9]{1,4})?(?:\\.[^.]+)?$`, 'i').test(basenameOf(filename));
   }
   function skcCodeFromStyleName(filename, styleCode) {
     const style = compact(styleCode);
@@ -1691,6 +2860,7 @@ SEMIR_FIND_JS = r"""
     if (!isImage({ ...item, filename })) return null;
     if (/尺码表|尺寸表|规格表|吊牌|制单|pdf|psd|源文件|视觉推荐|视频|模特卡/i.test(full)) return null;
     const baseName = basenameOf(filename || fullpath);
+    const derivedReference = isDerivedReferenceName(baseName);
     const stylePathOk = !compact(styleCode) || full.includes(compact(styleCode));
     const flags = {
       showcase1: isShowcaseOneName(baseName),
@@ -1698,15 +2868,19 @@ SEMIR_FIND_JS = r"""
       yz1Bare: isYzOneBareName(baseName),
       yz1: isYzOneName(baseName),
       flat: isSkcFlatCandidate(baseName, skcCode, styleCode),
+      skcExact: compact(skcCode) ? startsWithCodeToken(baseName, skcCode) : false,
+      styleColor: isStyleColorReferenceName(baseName, styleCode),
       flatPath: /平拍|平铺|白底|静物|正面|front/i.test(full),
       selectedPath: /已选/.test(full),
-      modelPath: /模拍|已选/.test(full),
+      modelPath: /模拍/.test(full),
+      selectedModelOriginalPath: isSelectedModelOriginalPath(full),
       front: /正面|前面|front/i.test(baseName),
       back: /背面|后面|back/i.test(baseName),
     };
+    flags.selectedModelStyleColor = flags.selectedModelOriginalPath && flags.styleColor && stylePathOk;
     const derivedMain = isDerivedMainReferenceName(baseName);
     const isMain = (flags.showcase1 || flags.yz1) && stylePathOk && !derivedMain;
-    const isDetail = flags.flat;
+    const isDetail = (flags.selectedModelStyleColor || flags.flat) && !derivedReference;
     if (!isMain && !isDetail) return null;
     const mainRank = (
       flags.showcase1 ? 30
@@ -1714,14 +2888,22 @@ SEMIR_FIND_JS = r"""
           : flags.yz1Bare ? 10
             : 0
     ) + (flags.selectedPath ? 2 : 0) + (flags.modelPath ? 1 : 0);
-    const detailRank = (flags.flatPath ? 6 : 0) + (flags.front ? 2 : flags.back ? 0 : 1) - (flags.modelPath ? 2 : 0);
+    const detailRank = (
+      (flags.selectedModelStyleColor ? 100 : 0)
+      + (flags.skcExact ? 30 : 0)
+      + (flags.styleColor ? 40 : 0)
+      + (flags.selectedModelOriginalPath ? 20 : 0)
+      + (flags.flatPath ? 8 : 0)
+      + (flags.front ? 2 : flags.back ? 0 : 1)
+    );
     const role = flags.showcase1 ? 'origin_showcase1'
       : flags.yz1Bracket ? 'origin_yz1_bracket'
       : flags.yz1Bare ? 'origin_yz1_bare'
+      : flags.selectedModelStyleColor ? 'detail_selected_model_style_color'
       : 'detail_skc_flat';
     const score = isMain ? 300 + mainRank * 20 : 200 + detailRank * 10;
     const resolvedSkcCode = flags.flat ? (compact(skcCode) || skcCodeFromStyleName(baseName, styleCode)) : '';
-    return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags: { ...flags, derivedMain }, skcCode: resolvedSkcCode };
+    return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags: { ...flags, derivedMain, derivedReference }, skcCode: resolvedSkcCode };
   }
   try {
     const styleCode = compact(__payload.style_code);
@@ -1764,6 +2946,7 @@ SEMIR_FIND_JS = r"""
             if (folderPath && !folderPaths.includes(folderPath)) folderPaths.push(folderPath);
           }
         }
+        folderPaths.sort((a, b) => folderPathScanRank(b) === folderPathScanRank(a) ? naturalCompare(a, b) : folderPathScanRank(b) - folderPathScanRank(a));
         for (const folderPath of folderPaths.slice(0, 8)) {
           const descendants = await collectDescendantImages(mount.mountId, folderPath, Number(__payload.folder_scan_depth || 3));
           scanErrors.push(...descendants.errors);
@@ -1786,13 +2969,13 @@ SEMIR_FIND_JS = r"""
       .sort((a, b) => b.mainRank === a.mainRank ? naturalCompare(a.fullpath || a.filename, b.fullpath || b.filename) : b.mainRank - a.mainRank);
     const chosenMain = mainRanked[0] || null;
     const detailRanked = ranked
-      .filter((item) => item.flags.flat)
+      .filter((item) => chosenMain && item.flags.styleColor && sameParentFullpath(item, chosenMain))
       .filter((item) => !chosenMain || compact(item.fullpath || item.filename) !== compact(chosenMain.fullpath || chosenMain.filename))
       .sort((a, b) => b.detailRank === a.detailRank ? naturalCompare(a.fullpath || a.filename, b.fullpath || b.filename) : b.detailRank - a.detailRank);
     const chosenDetail = detailRanked[0] || null;
     const candidates = ranked.slice(0, Number(__payload.limit || 8));
     const infoTargets = [];
-    for (const candidate of [chosenMain, chosenDetail, ...candidates.slice(0, 4)]) {
+    for (const candidate of [chosenMain, ...detailRanked, ...candidates.slice(0, 4)]) {
       if (!candidate) continue;
       const key = compact(candidate.fullpath || candidate.filename);
       if (!key || infoTargets.some((item) => compact(item.fullpath || item.filename) === key)) continue;
@@ -1806,7 +2989,7 @@ SEMIR_FIND_JS = r"""
         candidate.infoError = String(error?.message || error);
       }
     }
-    return { success: true, data: [{ styleCode, skcCode, searches, scanErrors: scanErrors.slice(0, 10), candidates, mainCandidates: mainRanked.slice(0, 5), detailCandidates: detailRanked.slice(0, 5), chosen: chosenMain, chosenMain, chosenDetail }], meta: { has_more: false } };
+    return { success: true, data: [{ styleCode, skcCode, searches, scanErrors: scanErrors.slice(0, 10), candidates, mainCandidates: mainRanked.slice(0, 5), detailCandidates: detailRanked, chosen: chosenMain, chosenMain, chosenDetail }], meta: { has_more: false } };
   } catch (error) {
     return { success: false, error: String(error?.message || error) };
   }
@@ -1841,6 +3024,41 @@ SEMIR_READY_JS = r"""
   return {
     success: false,
     error: `森马云盘 API 未就绪：${errors.slice(-3).join('；')}`,
+  };
+"""
+
+
+TMALL_READY_PROBE_JS = r"""
+  const compact = (value) => String(value || '').replace(/\s+/g, ' ').trim();
+  const href = compact(location.href);
+  const host = compact(location.hostname).toLowerCase();
+  const title = compact(document.title);
+  const bodyText = compact(document.body?.innerText || '').slice(0, 500);
+  const hasMtop = !!(window.lib && window.lib.mtop && typeof window.lib.mtop.request === 'function');
+  const isLoginUrl = (
+    host === 'login.taobao.com'
+    || host === 'loginmyseller.taobao.com'
+    || host.endsWith('.login.taobao.com')
+    || href.includes('login.taobao.com')
+    || href.includes('loginmyseller.taobao.com')
+  );
+  const isMaterialUrl = (
+    host === 'myseller.taobao.com'
+    && href.includes('/material-center/material-test')
+  );
+  const hasLoginText = /登录|扫码登录|密码登录|验证码|安全验证/.test(bodyText);
+  return {
+    success: true,
+    data: [{
+      ready: Boolean(hasMtop && isMaterialUrl && !isLoginUrl),
+      hasMtop,
+      isLoginUrl: Boolean(isLoginUrl || (hasLoginText && !hasMtop)),
+      isMaterialUrl,
+      href,
+      title,
+      bodySample: bodyText,
+    }],
+    meta: { has_more: false },
   };
 """
 
@@ -2694,7 +3912,27 @@ async def find_semir_references(
     main = data.get("chosenMain") or data.get("chosen") or {}
     detail = data.get("chosenDetail") or {}
     main_path = await download_semir_candidate(runner, workflow, main, artifact_dir, role="main-origin") if main else ""
-    detail_path = await download_semir_candidate(runner, workflow, detail, artifact_dir, role="detail-flat") if detail and download_detail else ""
+    detail_path = ""
+    detail_paths: list[str] = []
+    if download_detail:
+        raw_detail_candidates = data.get("detailCandidates") if isinstance(data.get("detailCandidates"), list) else []
+        detail_candidates = [candidate for candidate in raw_detail_candidates if isinstance(candidate, Mapping)]
+        if detail and not any(compact(candidate.get("fullpath") or candidate.get("filename")) == compact(detail.get("fullpath") or detail.get("filename")) for candidate in detail_candidates):
+            detail_candidates.insert(0, detail)
+        hydrated_candidates = []
+        for index, candidate in enumerate(detail_candidates, start=1):
+            path = await download_semir_candidate(runner, workflow, candidate, artifact_dir, role=f"detail-flat-{index}")
+            next_candidate = dict(candidate)
+            if path:
+                next_candidate["localPath"] = path
+                detail_paths.append(path)
+                if not detail_path:
+                    detail_path = path
+            hydrated_candidates.append(next_candidate)
+        if hydrated_candidates:
+            data["detailCandidates"] = hydrated_candidates
+        if detail_paths:
+            data["detailReferencePaths"] = detail_paths
     if not main_path:
         data["downloadError"] = "未下载到橱窗1/yz(1)主图原图"
     if download_detail and not detail_path:
@@ -2945,6 +4183,55 @@ def tmall_submission_success(tmall_result: Mapping[str, Any] | None) -> tuple[bo
     return True, task_id, ""
 
 
+def write_submit_result_artifacts(
+    batch: dict[str, Any],
+    result_rows: list[dict[str, Any]],
+    *,
+    status: str,
+    attempted: int,
+    succeeded: int,
+    failed: int,
+    artifact_dir: Path,
+) -> tuple[str, str]:
+    excel_path = data_sink.export_excel(
+        result_rows,
+        ADAPTER_ID,
+        TASK_ID,
+        "天猫AI测图全链路执行证据_{timestamp}.xlsx",
+        column_order=TMALL_AI_IMAGE_RESULT_COLUMN_ORDER,
+    )
+    audit_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
+    audit_path.write_text(json.dumps({
+        "status": status,
+        "attempted": attempted,
+        "succeeded": succeeded,
+        "failed": failed,
+        "submitted": succeeded,
+        "rows": result_rows,
+        "excel_path": excel_path,
+    }, ensure_ascii=False, indent=2), encoding="utf-8")
+    batch["submit_result_path"] = str(audit_path)
+    batch["submit_result_excel_path"] = str(excel_path)
+    return str(audit_path), str(excel_path)
+
+
+def submit_mode_label(mode: object) -> str:
+    text = compact(mode)
+    if text == "append_unsubmitted":
+        return "追加未提交图片"
+    if text == "rerun_confirmed":
+        return "重新提交已确认图片"
+    return "提交已确认图片"
+
+
+def submit_progress_message_for_plan(plan: Mapping[str, Any], workflow: WorkflowItem) -> str:
+    image_count = len(plan.get("generated_paths") or [])
+    label = submit_mode_label(plan.get("submit_mode"))
+    if image_count > 0:
+        return f"{label}：{workflow.style_code}（AI图 {image_count} 张）"
+    return f"{label}：{workflow.style_code}"
+
+
 async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[str, Any]:
     log = log or (lambda _message: None)
     previous_latest_rows = latest_submit_rows_by_style(batch)
@@ -2987,16 +4274,15 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         status = "created"
         batch["status"] = status
         batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-        result_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
-        result_path.write_text(json.dumps({
-            "status": status,
-            "attempted": attempted,
-            "succeeded": succeeded,
-            "failed": failed,
-            "submitted": succeeded,
-            "rows": result_rows,
-        }, ensure_ascii=False, indent=2), encoding="utf-8")
-        batch["submit_result_path"] = str(result_path)
+        audit_path, excel_path = write_submit_result_artifacts(
+            batch,
+            result_rows,
+            status=status,
+            attempted=attempted,
+            succeeded=succeeded,
+            failed=failed,
+            artifact_dir=artifact_dir,
+        )
         persist_submit_progress("completed", message="全部测图任务已通过历史回读确认")
         save_approval_batch(batch)
         notify_tmall_submission_result(
@@ -3017,7 +4303,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
             "failed": failed,
             "submitted": succeeded,
             "rows": result_rows,
-            "result_path": str(result_path),
+            "result_path": excel_path,
+            "excel_path": excel_path,
+            "audit_path": audit_path,
         }
 
     cdp_url = compact(run_params.get("cdp_url")) or "http://127.0.0.1:9222"
@@ -3034,11 +4322,13 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         runner.timeout = max(int(getattr(runner, "timeout", 60) or 60), 120)
     except Exception:
         pass
+    await wait_for_tmall_api_ready(runner, log=log, timeout_ms=TMALL_LOGIN_READY_TIMEOUT_MS)
     batch["status"] = "submitting"
     persist_submit_progress("running", message="准备提交已确认图片")
     for plan in plans:
         workflow = workflow_from_dict(plan.get("workflow") or {})
         existing_row = previous_latest_rows.get(workflow.style_code)
+        plan_message = submit_progress_message_for_plan(plan, workflow)
         if not workflow.item_id:
             attempted += 1
             failed += 1
@@ -3049,6 +4339,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
                 "阶段": "审批后上传/创建测图任务",
                 "执行结果": "跳过",
                 "备注": "缺少商品 ID",
+                "提交模式": submit_mode_label(plan.get("submit_mode")),
+                "提交图片文件": "\n".join(plan.get("generated_paths") or []),
+                "提交图片数量": len(plan.get("generated_paths") or []),
             })
             persist_submit_progress("running", current_style=workflow.style_code, message="缺少商品 ID，已跳过")
             continue
@@ -3078,10 +4371,11 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
                     list(plan.get("generated_paths") or []),
                     recovered_result,
                     reference_mode=compact((plan.get("item") or {}).get("reference_mode")) or "main_only",
+                    submit_mode=plan.get("submit_mode"),
                 ))
                 persist_submit_progress("running", current_style=workflow.style_code, message="后台回读确认已上线，跳过重复提交")
                 continue
-        persist_submit_progress("running", current_style=workflow.style_code, message=f"正在提交 {workflow.style_code}")
+        persist_submit_progress("running", current_style=workflow.style_code, message=plan_message)
         log(f"[approval] {workflow.style_code} 上传 {len(plan.get('generated_paths') or [])} 张已确认 AI 图并创建测图任务")
         try:
             tmall_result = await upload_and_create_tmall_task(
@@ -3133,6 +4427,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
             list(plan.get("generated_paths") or []),
             tmall_result,
             reference_mode=compact((plan.get("item") or {}).get("reference_mode")) or "main_only",
+            submit_mode=plan.get("submit_mode"),
         ))
         persist_submit_progress("running", current_style=workflow.style_code, message="已完成本款提交" if success else submit_error)
 
@@ -3145,16 +4440,15 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     batch["status"] = status
     batch["submitted_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     batch["submit_result_rows"] = json_safe(result_rows)
-    result_path = artifact_dir / f"tmall-ai-image-approval-submit-{batch.get('batch_id', 'batch')}.json"
-    result_path.write_text(json.dumps({
-        "status": status,
-        "attempted": attempted,
-        "succeeded": succeeded,
-        "failed": failed,
-        "submitted": succeeded,
-        "rows": result_rows,
-    }, ensure_ascii=False, indent=2), encoding="utf-8")
-    batch["submit_result_path"] = str(result_path)
+    audit_path, excel_path = write_submit_result_artifacts(
+        batch,
+        result_rows,
+        status=status,
+        attempted=attempted,
+        succeeded=succeeded,
+        failed=failed,
+        artifact_dir=artifact_dir,
+    )
     batch["submit_summary"] = {
         "attempted": attempted,
         "succeeded": succeeded,
@@ -3162,7 +4456,7 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
     }
     batch["submit_progress"] = {
         "status": "completed" if failed == 0 and attempted > 0 else status,
-        "total": len(plans),
+        "total": submit_total,
         "completed": attempted,
         "attempted": attempted,
         "succeeded": succeeded,
@@ -3191,7 +4485,9 @@ async def upload_approved_tmall_batch(batch: dict[str, Any], log=None) -> dict[s
         "failed": failed,
         "submitted": succeeded,
         "rows": result_rows,
-        "result_path": str(result_path),
+        "result_path": excel_path,
+        "excel_path": excel_path,
+        "audit_path": audit_path,
     }
 
 
@@ -3205,6 +4501,7 @@ def result_rows_for_workflow(
     tmall_result: Mapping[str, Any] | None,
     error: str = "",
     reference_mode: str = "main_only",
+    submit_mode: object = "",
 ) -> list[dict[str, Any]]:
     chosen = (semir_data or {}).get("chosenMain") or (semir_data or {}).get("chosen") or {}
     detail = (semir_data or {}).get("chosenDetail") or {}
@@ -3213,6 +4510,12 @@ def result_rows_for_workflow(
         for item in ((semir_data or {}).get("mainCandidates") or [])
         if isinstance(item, Mapping) and compact(item.get("fullpath") or item.get("filename"))
     )
+    detail_candidate_paths = "\n".join(
+        compact(item.get("fullpath") or item.get("filename"))
+        for item in ((semir_data or {}).get("detailCandidates") or [])
+        if isinstance(item, Mapping) and compact(item.get("fullpath") or item.get("filename"))
+    )
+    detail_reference_files = parse_list((semir_data or {}).get("detailReferencePaths")) or parse_list(detail_reference_path)
     resolved_skc_code = workflow.skc_code or compact(detail.get("skcCode"))
     requires_detail = compact(reference_mode) == "main_and_detail"
     reference_ok = bool(main_origin_path and (detail_reference_path or not requires_detail))
@@ -3234,13 +4537,14 @@ def result_rows_for_workflow(
         "云盘路径": compact(chosen.get("fullpath")),
         "文件名": compact(chosen.get("filename")),
         "主图候选Top5": main_candidate_paths,
+        "款色图候选": detail_candidate_paths,
         "素材URL": compact(chosen.get("materialUrl")),
         "主图原图文件": main_origin_path,
         "平铺参考图路径": compact(detail.get("fullpath")),
         "平铺参考图文件名": compact(detail.get("filename")),
         "平铺参考图URL": compact(detail.get("materialUrl")),
-        "细节参考图文件": detail_reference_path,
-        "本地文件": "\n".join(item for item in [main_origin_path, detail_reference_path] if item),
+        "细节参考图文件": "\n".join(detail_reference_files),
+        "本地文件": "\n".join(item for item in [main_origin_path, *detail_reference_files] if item),
         "执行结果": reference_result,
         "备注": error or "；".join(item for item in [
             compact((semir_data or {}).get("downloadError")),
@@ -3311,6 +4615,9 @@ def result_rows_for_workflow(
             "完整Prompt": "\n\n---\n\n".join(compact(row.get("完整Prompt") or row.get("最终提示词")) for row in generation_rows if compact(row.get("完整Prompt") or row.get("最终提示词"))),
             "任务ID": task_id,
             "上传图数量": len([item for item in uploaded if item.get("url")]),
+            "提交图片数量": len(generated_paths),
+            "提交图片文件": "\n".join(generated_paths),
+            "提交模式": submit_mode_label(submit_mode),
             "上线结果": "已上线" if online_ok else "未上线",
             "页面回读": readback_note,
             "素材URL": "\n".join(item.get("picUrl", "") for item in materials),
@@ -3329,7 +4636,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run Tmall AI image-test chain through CDP page APIs.")
     parser.add_argument("--execute-mode", default="approval_then_create", choices=CHAIN_EXECUTION_MODES)
     parser.add_argument("--workflow-file", default=DEFAULT_WORKFLOW_FILE)
+    parser.add_argument("--prompt-source", default="local_excel", choices=["local_excel", "cloud_prompt_library"])
     parser.add_argument("--prompt-file", default=DEFAULT_PROMPT_FILE)
+    parser.add_argument("--cloud-prompt-library-id", default="")
+    parser.add_argument("--cloud-prompt-templates-json", default="")
     parser.add_argument("--limit", type=int, default=0, help=argparse.SUPPRESS)
     parser.add_argument("--cloud-path", default=DEFAULT_CLOUD_PATH)
     parser.add_argument("--cdp-url", default="http://127.0.0.1:9222")
@@ -3337,14 +4647,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--tmall-create-delay-seconds", type=float, default=5.0, help="Delay after task.create before batch.add.")
     parser.add_argument("--tmall-batch-delay-seconds", type=float, default=12.0, help="Delay between Tmall batch.add calls.")
     parser.add_argument("--tmall-readback-delay-seconds", type=float, default=5.0, help="Delay after task.online before readback.")
-    parser.add_argument("--image-size", default="960x1280")
+    parser.add_argument("--ratio", default="")
+    parser.add_argument("--image-size", default="1536x2048")
+    parser.add_argument("--model", default="gpt-image-2")
     parser.add_argument("--ai-image-count", type=int, default=4)
     parser.add_argument("--generation-concurrency", type=int, default=100)
     parser.add_argument("--reference-mode", default="main_only", choices=["main_only", "main_and_detail"])
     parser.add_argument("--allow-global-semir-fallback", action="store_true", help="Allow searching all Semir mounts when the configured cloud path misses required images.")
     parser.add_argument("--quality", default="auto", choices=["auto", "low", "medium", "high"])
     parser.add_argument("--output-format", default="jpeg")
-    parser.add_argument("--one-xm-key-tier", default="auto", choices=["2k", "4k", "auto"])
+    parser.add_argument("--one-xm-key-tier", default="4k", choices=["2k", "4k", "auto"])
     parser.add_argument("--retry-attempts", type=int, default=3)
     parser.add_argument("--compensate-attempts", type=int, default=2)
     parser.add_argument("--poll-timeout-minutes", type=float, default=12)
@@ -3368,7 +4680,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
 
     workflow_table = read_workbook_table(args.workflow_file)
     workflow_rows, invalid_rows = normalize_workflow_rows(workflow_table, int(getattr(args, "limit", 0) or 0))
-    prompts = read_prompt_library(args.prompt_file)
+    prompts = load_prompt_library_for_args(args)
     if not workflow_rows:
         raise RuntimeError("工作流表未解析到款号")
     if not prompts:
@@ -3382,12 +4694,18 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
     tmall_runner: JSRunner | None = None
 
     settings = resolve_one_xm_settings()
-    if args.generate and not (settings.get("2k") or settings.get("4k")):
-        raise RuntimeError("未配置 1XM Key。请在抓虾设置菜单填写，或设置 ONE_XM_GPT_IMAGE_2K_KEY/ONE_XM_GPT_IMAGE_4K_KEY 环境变量")
+    if args.generate:
+        require_one_xm_key_for_generation(
+            settings,
+            model=getattr(args, "model", "gpt-image-2"),
+            image_size=args.image_size,
+            key_tier=args.one_xm_key_tier,
+        )
 
     total = len(workflow_rows)
     reference_mode = compact(getattr(args, "reference_mode", "main_only")) or "main_only"
     requires_detail_reference = reference_mode == "main_and_detail"
+    should_download_detail_reference = requires_detail_reference or bool(getattr(args, "confirm_generation", False))
     for completed, workflow in enumerate(workflow_rows, start=1):
         if wait_for_control:
             await wait_for_control({
@@ -3414,7 +4732,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 args.cloud_path,
                 artifact_dir,
                 allow_global_fallback=bool(getattr(args, "allow_global_semir_fallback", False)),
-                download_detail=requires_detail_reference,
+                download_detail=should_download_detail_reference,
             )
         except Exception as exc:
             workflow_results.append({"kind": "rows", "rows": [{
@@ -3521,7 +4839,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 })
             continue
         reference_paths = [main_origin_path]
-        if requires_detail_reference and detail_reference_path:
+        if requires_detail_reference and not getattr(args, "confirm_generation", False) and detail_reference_path:
             reference_paths.append(detail_reference_path)
         generation_rows: list[dict[str, Any]] = [
             make_generation_row(
@@ -3532,6 +4850,8 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                 quality=args.quality,
                 output_format=args.output_format,
                 key_tier=args.one_xm_key_tier,
+                model=getattr(args, "model", "gpt-image-2"),
+                ratio=getattr(args, "ratio", ""),
                 prompt_index=prompt_index,
                 run_nonce=args.task_run_uid,
             )
@@ -3571,6 +4891,32 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
     for plan_index, plan in enumerate(generation_plans):
         for row_index, generation_row in enumerate(plan["generation_rows"]):
             generation_jobs.append((plan_index, row_index, generation_row))
+
+    if getattr(args, "confirm_generation", False) and generation_plans:
+        for entry in workflow_results:
+            if entry.get("kind") == "rows":
+                all_rows.extend(entry.get("rows") or [])
+        confirmation_items = [
+            build_generation_confirmation_item(
+                plan["workflow"],
+                plan["semir_data"],
+                plan["main_origin_path"],
+                plan["detail_reference_path"],
+                plan["generation_rows"],
+                reference_mode=plan.get("reference_mode") or reference_mode,
+            )
+            for plan in generation_plans
+        ]
+        batch = write_generation_confirmation_batch(
+            artifact_dir,
+            confirmation_items,
+            run_params=vars(args),
+            base_url=getattr(args, "approval_base_url", ""),
+        )
+        all_rows.extend(generation_confirmation_result_rows(batch))
+        if invalid_rows:
+            all_rows.extend(invalid_rows)
+        return all_rows
 
     generation_total = len(generation_jobs)
     if args.generate and generation_jobs:
@@ -3747,6 +5093,7 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
                     TMALL_URL,
                     artifact_dir,
                 )
+                await wait_for_tmall_api_ready(tmall_runner, log=log, timeout_ms=TMALL_LOGIN_READY_TIMEOUT_MS)
             if workflow.item_id and wait_for_control:
                 await wait_for_control({
                     "records": len(all_rows),
@@ -3816,10 +5163,13 @@ async def run_chain_rows(args: argparse.Namespace, artifact_dir: Path, log=None,
             run_params=vars(args),
             base_url=getattr(args, "approval_base_url", ""),
         )
+        maybe_sync_approval_batch_to_cloud(batch, log=log)
         notify_channel = compact(getattr(args, "approval_notify_channel", "dingtalk")).lower()
         if notify_channel and notify_channel != "none":
             notify_approval_batch(batch, channel=notify_channel, log=log)
         all_rows.extend(approval_result_rows(batch))
+        if (batch.get("cloud_sync") or {}).get("status") == "warning":
+            all_rows.append(cloud_approval_sync_warning_row(batch, (batch.get("cloud_sync") or {}).get("warning", "")))
 
     return all_rows
 
@@ -3845,49 +5195,7 @@ async def run_chain(args: argparse.Namespace) -> dict[str, Any]:
             ADAPTER_ID,
             TASK_ID,
             "天猫AI测图全链路执行证据_{timestamp}.xlsx",
-            column_order=[
-                "表格行号",
-                "款号",
-                "商品ID",
-                "阶段",
-                "参考图模式",
-                "品类",
-                "性别",
-                "SKC编码",
-                "云盘路径",
-                "文件名",
-                "主图原图文件",
-                "平铺参考图路径",
-                "平铺参考图文件名",
-                "平铺参考图URL",
-                "主参考图文件",
-                "细节参考图文件",
-                "提示词分组",
-                "提示词字段名",
-                "提示词序号",
-                "尺寸",
-                "格式",
-                "质量",
-                "参考图文件",
-                "完整Prompt",
-                "最终提示词",
-                "1XM任务ID",
-                "1XM轮询URL",
-                "生成图URL",
-                "生成图数量",
-                "审批批次ID",
-                "审批状态",
-                "审批看板",
-                "任务ID",
-                "测图详情URL",
-                "上传图数量",
-                "上线结果",
-                "页面回读",
-                "素材URL",
-                "本地文件",
-                "执行结果",
-                "备注",
-            ],
+            column_order=TMALL_AI_IMAGE_RESULT_COLUMN_ORDER,
         )
         output_files.extend([excel_path, json_path])
         data_sink.finish_run(run_id, len(all_rows), output_files)
