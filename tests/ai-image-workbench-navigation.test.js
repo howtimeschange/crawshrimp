@@ -155,18 +155,20 @@ test('AI image workbench clears submitted prompt and input images after generati
   assert.match(helperBody, /mainImagePath: ''/)
   assert.match(helperBody, /referenceImagePaths: \[\]/)
   assert.match(helperBody, /submittedInputsCleared: true/)
-  assert.match(generateBody, /clearSubmittedTaskInputs\(submittedSnapshot\)/)
+  assert.match(generateBody, /clearSubmittedTaskInputs\(submittedSnapshot, jobUid\)/)
   assert.ok(
-    generateBody.indexOf('clearSubmittedTaskInputs(submittedSnapshot)') < generateBody.indexOf('await window.cs.runAiImageJob(jobUid)'),
+    generateBody.indexOf('clearSubmittedTaskInputs(submittedSnapshot, jobUid)') < generateBody.indexOf('await window.cs.runAiImageJob(jobUid)'),
     'the submitted form inputs should clear as soon as the generation task is accepted',
   )
   assert.match(editBody, /let submittedInputsCleared = false/)
   assert.match(editBody, /submittedInputsCleared = true/)
-  assert.match(editBody, /clearSubmittedTaskInputs\(snapshot/)
+  assert.match(editBody, /clearSubmittedTaskInputs\(snapshot, jobUid\)/)
   assert.ok(
-    editBody.indexOf('clearSubmittedTaskInputs(snapshot)') < editBody.indexOf('await window.cs.runAiImageJob(jobUid)'),
+    editBody.indexOf('clearSubmittedTaskInputs(snapshot, jobUid)') < editBody.indexOf('await window.cs.runAiImageJob(jobUid)'),
     'lightbox edit inputs should clear as soon as the edit task is accepted',
   )
+  assert.match(helperBody, /targetJobUid && targetJobUid !== activeJobUid\.value/)
+  assert.match(helperBody, /taskDrafts\[targetJobUid\]/)
   assert.match(restoreBody, /const submittedInputsCleared = Boolean/)
   assert.match(restoreBody, /!submittedInputsCleared[\s\S]*mainAsset/)
   assert.match(restoreBody, /!submittedInputsCleared[\s\S]*asset\.kind === 'reference'/)
@@ -223,7 +225,7 @@ test('AI image workbench offers batch generation with shared prompt library pick
   assert.match(submitBody, /window\.cs\.batchRunAiImageJob\(jobUid,/)
   assert.match(submitBody, /count: normalizeBatchPromptCount\(card\.count, \{ forceSingle: batchNanoBanana\.value \}\)/)
   assert.match(submitBody, /if \(!batchResult\?\.accepted\)/)
-  assert.match(submitBody, /clearSubmittedTaskInputs\(snapshot\)/)
+  assert.match(submitBody, /clearSubmittedTaskInputs\(snapshot, jobUid\)/)
   assert.match(submitBody, /if \(hasActiveRuns\(currentJob\.value\)\) startJobPolling\(jobUid\)/)
 })
 
@@ -472,6 +474,9 @@ test('AI image workbench isolates loading and completion state to the originatin
   const generateStart = workbench.indexOf('async function generate()')
   const generateEnd = workbench.indexOf('function normalizeGenerateError', generateStart)
   const generateBody = workbench.slice(generateStart, generateEnd)
+  const editStart = workbench.indexOf('async function runLightboxEditGeneration')
+  const editEnd = workbench.indexOf('function removeReferencePath', editStart)
+  const editBody = workbench.slice(editStart, editEnd)
   const overlayStart = workbench.indexOf('.aiw-edit-loading-overlay {')
   const overlayEnd = workbench.indexOf('.aiw-edit-spinner {', overlayStart)
   const overlayBody = workbench.slice(overlayStart, overlayEnd)
@@ -487,6 +492,10 @@ test('AI image workbench isolates loading and completion state to the originatin
   assert.match(generateBody, /if \(activeJobUid\.value === jobUid\) currentJob\.value = latest \|\| activeTask/)
   assert.match(generateBody, /generatingJobUid\.value = ''/)
   assert.match(generateBody, /generatingSnapshot\.value = null/)
+  assert.doesNotMatch(editBody, /generating\.value\s*=/)
+  assert.doesNotMatch(editBody, /generatingJobUid\.value\s*=/)
+  assert.doesNotMatch(editBody, /generatingSnapshot\.value\s*=/)
+  assert.match(editBody, /if \(!submittedInputsCleared && activeJobUid\.value === jobUid\)/)
   assert.match(overlayBody, /justify-items: center/)
   assert.match(overlayBody, /text-align: center/)
 })

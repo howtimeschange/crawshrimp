@@ -1386,14 +1386,24 @@ function filterGeneratedAnnotationReferences(paths = []) {
     .filter((path) => path && !isGeneratedAnnotationReferencePath(path))
 }
 
-function clearSubmittedTaskInputs(snapshot = formSnapshot()) {
-  restoringState = true
-  applyFormSnapshot({
+function clearSubmittedTaskInputs(snapshot = formSnapshot(), jobUid = activeJobUid.value) {
+  const targetJobUid = String(jobUid || '').trim()
+  const clearedSnapshot = {
     ...snapshot,
     prompt: '',
     mainImagePath: '',
     referenceImagePaths: [],
-  })
+  }
+  if (targetJobUid && targetJobUid !== activeJobUid.value) {
+    taskDrafts[targetJobUid] = {
+      ...clearedSnapshot,
+      submittedInputsCleared: true,
+    }
+    persistWorkbenchState()
+    return
+  }
+  restoringState = true
+  applyFormSnapshot(clearedSnapshot)
   restoringState = false
   saveDraftForCurrentTask({ submittedInputsCleared: true })
   persistWorkbenchState()
@@ -2083,7 +2093,7 @@ async function submitBatchGeneration() {
     if (activeJobUid.value === jobUid) currentJob.value = acceptedJob
     upsertJob(acceptedJob)
     compactPane.value = 'results'
-    clearSubmittedTaskInputs(snapshot)
+    clearSubmittedTaskInputs(snapshot, jobUid)
     batchGenerationDialog.open = false
     closeBatchPromptLibraryPicker()
     logs.value.push(`批量任务已提交：${promptStats.promptCount} 条 Prompt，预计 ${promptStats.totalImages} 张图`)
@@ -2138,7 +2148,7 @@ async function generate() {
     if (activeJobUid.value === jobUid) currentJob.value = submittingJob
     upsertJob(submittingJob)
     logs.value.push(`提交生成任务：${jobUid}`)
-    clearSubmittedTaskInputs(submittedSnapshot)
+    clearSubmittedTaskInputs(submittedSnapshot, jobUid)
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
     const completedJob = latest || activeTask
@@ -3136,15 +3146,13 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
   const snapshot = formSnapshot()
   const placeholder = existingPlaceholder || appendLightboxEditPlaceholder(sourceItem, prompt)
   let submittedInputsCleared = false
+  let jobUid = ''
   activateLightboxEditPlaceholder(placeholder)
-  generating.value = true
   selectedResults.clear()
   try {
     const activeTask = await ensureCurrentTask()
-    const jobUid = activeTask?.job_uid
+    jobUid = activeTask?.job_uid || ''
     if (!jobUid) throw new Error('后端未返回 job_uid')
-    generatingJobUid.value = jobUid
-    generatingSnapshot.value = snapshot
     const annotationPath = await materializeLightboxAnnotation(jobUid, annotationDataUrl)
     const effectivePrompt = buildAnnotationEditPrompt(prompt, Boolean(annotationPath))
     const retainedSnapshotReferences = filterGeneratedAnnotationReferences(snapshot.referenceImagePaths)
@@ -3178,7 +3186,7 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     }
     if (activeJobUid.value === jobUid) currentJob.value = submittingJob
     upsertJob(submittingJob)
-    clearSubmittedTaskInputs(snapshot)
+    clearSubmittedTaskInputs(snapshot, jobUid)
     submittedInputsCleared = true
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
@@ -3195,15 +3203,12 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     removeLightboxEditPlaceholder(placeholder)
     throw error
   } finally {
-    if (!submittedInputsCleared) {
+    if (!submittedInputsCleared && activeJobUid.value === jobUid) {
       restoringState = true
       applyFormSnapshot(snapshot)
       restoringState = false
       persistWorkbenchState()
     }
-    generating.value = false
-    generatingJobUid.value = ''
-    generatingSnapshot.value = null
     persistWorkbenchState()
   }
 }
