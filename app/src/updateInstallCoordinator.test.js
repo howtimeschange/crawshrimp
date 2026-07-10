@@ -1,0 +1,372 @@
+const test = require('node:test')
+const assert = require('node:assert/strict')
+
+const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
+
+function createUpdateService(initial = {}) {
+  const subscribers = new Set()
+  const readinessCalls = []
+  let unsubscribeCalls = 0
+  let status = {
+    status: 'idle',
+    downloaded: false,
+    blockers: [],
+    error: '',
+    ...initial,
+  }
+
+  function snapshot() {
+    return {
+      ...status,
+      blockers: status.blockers.map(blocker => ({ ...blocker })),
+    }
+  }
+
+  function publish(patch) {
+    status = { ...status, ...patch }
+    const next = snapshot()
+    for (const subscriber of subscribers) subscriber(next)
+  }
+
+  return {
+    getStatus: snapshot,
+    publish,
+    readinessCalls,
+    get unsubscribeCalls() {
+      return unsubscribeCalls
+    },
+    subscribe(listener) {
+      subscribers.add(listener)
+      listener(snapshot())
+      return () => {
+        unsubscribeCalls += 1
+        subscribers.delete(listener)
+      }
+    },
+    setInstallReadiness(readiness) {
+      readinessCalls.push(readiness)
+      if (readiness.error) {
+        publish({
+          status: 'waiting-for-tasks',
+          blockers: readiness.blockers || [],
+          error: String(readiness.error),
+        })
+        return
+      }
+      publish({
+        status: readiness.ready ? 'ready-to-install' : 'waiting-for-tasks',
+        blockers: readiness.ready ? [] : readiness.blockers || [],
+        error: '',
+      })
+    },
+    setInstalling() {
+      if (status.status !== 'ready-to-install') throw new Error('not ready')
+      publish({ status: 'installing', blockers: [], error: '' })
+    },
+    quitAndInstall() {
+      if (status.status !== 'installing') throw new Error('not installing')
+    },
+  }
+}
+
+function createTimerHarness() {
+  const active = new Set()
+  const timers = []
+  return {
+    timers,
+    active,
+    setIntervalFn(fn, ms) {
+      const timer = { fn, ms }
+      active.add(timer)
+      timers.push(timer)
+      return timer
+    },
+    clearIntervalFn(timer) {
+      active.delete(timer)
+    },
+  }
+}
+
+async function flush() {
+  await Promise.resolve()
+  await Promise.resolve()
+}
+
+test('downloaded state immediately checks readiness', async () => {
+  const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
+  let checks = 0
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      checks += 1
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => ({ drain_token: 'drain-1' }),
+    releaseDrain: async () => {},
+    shutdownForUpdate: async () => {},
+    notifyReady: () => {},
+  })
+
+  coordinator.start()
+  await flush()
+
+  assert.equal(checks, 1)
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
+test('a blocker sets waiting-for-tasks and schedules one five-second retry', async () => {
+  const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
+  const timerHarness = createTimerHarness()
+  let checks = 0
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      checks += 1
+      return {
+        ready: false,
+        blockers: [{ kind: 'task', id: 'export::1', label: 'Export', status: 'running' }],
+      }
+    },
+    acquireDrain: async () => ({ drain_token: 'drain-1' }),
+    releaseDrain: async () => {},
+    shutdownForUpdate: async () => {},
+    notifyReady: () => {},
+    ...timerHarness,
+  })
+
+  coordinator.start()
+  await flush()
+  await coordinator.refreshReadiness()
+
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+  assert.deepEqual(updateService.getStatus().blockers, [
+    { kind: 'task', id: 'export::1', label: 'Export', status: 'running' },
+  ])
+  assert.equal(timerHarness.timers.length, 1)
+  assert.equal(timerHarness.timers[0].ms, 5000)
+  assert.equal(timerHarness.active.size, 1)
+
+  await timerHarness.timers[0].fn()
+
+  assert.equal(checks, 3)
+  assert.equal(timerHarness.timers.length, 1)
+})
+
+test('transition from waiting to ready emits exactly one notification', async () => {
+  const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
+  const timerHarness = createTimerHarness()
+  const readiness = [
+    { ready: false, blockers: [{ kind: 'task', id: 'ai::1' }] },
+    { ready: true, blockers: [] },
+    { ready: true, blockers: [] },
+  ]
+  let notifications = 0
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => readiness.shift() || { ready: true, blockers: [] },
+    acquireDrain: async () => ({ drain_token: 'drain-1' }),
+    releaseDrain: async () => {},
+    shutdownForUpdate: async () => {},
+    notifyReady: () => { notifications += 1 },
+    ...timerHarness,
+  })
+
+  coordinator.start()
+  await flush()
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+
+  await timerHarness.timers[0].fn()
+  await coordinator.refreshReadiness()
+
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+  assert.equal(notifications, 1)
+  assert.equal(timerHarness.active.size, 0)
+})
+
+test('readiness network failure sets an error and never installs', async () => {
+  const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      throw new Error('network down')
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { drain_token: 'drain-1' }
+    },
+    releaseDrain: async () => events.push('release-drain'),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(events, ['get-readiness'])
+  assert.deepEqual(result, { ok: false, deferred: true })
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+  assert.match(updateService.getStatus().error, /network down/)
+})
+
+test('requestInstall fresh-checks readiness then drains, cleans up, marks installing, and quits', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    updateService.publish({ status: 'installing', blockers: [], error: '' })
+  }
+  updateService.quitAndInstall = () => {
+    events.push('quit-and-install')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { drain_token: 'drain-1' }
+    },
+    releaseDrain: async () => events.push('release-drain'),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'set-installing',
+    'quit-and-install',
+  ])
+  assert.deepEqual(result, { ok: true })
+})
+
+test('a 409 drain race returns to waiting without cleanup or install', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const timerHarness = createTimerHarness()
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      const error = new Error('runtime busy')
+      error.status = 409
+      error.blockers = [{ kind: 'task', id: 'race::1' }]
+      throw error
+    },
+    releaseDrain: async () => events.push('release-drain'),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+    ...timerHarness,
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(events, ['get-readiness', 'acquire-drain'])
+  assert.deepEqual(result, { ok: false, deferred: true })
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+  assert.deepEqual(updateService.getStatus().blockers, [{ kind: 'task', id: 'race::1' }])
+  assert.equal(timerHarness.timers.length, 1)
+})
+
+test('cleanup failure releases the acquired drain token and restores retryable readiness', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { drain_token: 'drain-1' }
+    },
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => {
+      events.push('shutdown')
+      throw new Error('cleanup failed')
+    },
+    notifyReady: () => {},
+  })
+
+  await assert.rejects(() => coordinator.requestInstall(), /cleanup failed/)
+
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'release-drain:drain-1',
+  ])
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
+test('install failure releases the acquired drain token and restores retryable readiness', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    throw new Error('install gate failed')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { drain_token: 'drain-1' }
+    },
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+  })
+
+  await assert.rejects(() => coordinator.requestInstall(), /install gate failed/)
+
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'set-installing',
+    'release-drain:drain-1',
+  ])
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
+test('dispose unsubscribes and clears polling', async () => {
+  const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
+  const timerHarness = createTimerHarness()
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => ({
+      ready: false,
+      blockers: [{ kind: 'task', id: 'export::1' }],
+    }),
+    acquireDrain: async () => ({ drain_token: 'drain-1' }),
+    releaseDrain: async () => {},
+    shutdownForUpdate: async () => {},
+    notifyReady: () => {},
+    ...timerHarness,
+  })
+
+  coordinator.start()
+  await flush()
+  coordinator.dispose()
+  updateService.publish({ status: 'downloaded', downloaded: true })
+  await flush()
+
+  assert.equal(updateService.unsubscribeCalls, 1)
+  assert.equal(timerHarness.active.size, 0)
+  assert.equal(timerHarness.timers.length, 1)
+})
