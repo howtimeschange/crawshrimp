@@ -33,4 +33,3 @@ function collectCrawshrimpDataDirCandidates(options = {}) {
 module.exports = {
   collectCrawshrimpDataDirCandidates,
 }
-
