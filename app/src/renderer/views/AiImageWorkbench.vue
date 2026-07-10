@@ -133,7 +133,7 @@
 
         <section class="aiw-material-box">
           <div class="aiw-panel-head">
-            <span>生图参数</span>
+            <span>下次生成参数</span>
           </div>
           <div class="aiw-task-fields" aria-label="生成参数">
             <label class="aiw-field aiw-field-wide">
@@ -206,8 +206,8 @@
       <main class="aiw-results-grid" aria-label="生成结果" :aria-busy="generating ? 'true' : 'false'">
         <div class="aiw-workspace-head">
           <div>
-            <strong>{{ currentJob?.title || '本次生成' }}</strong>
-            <span>{{ summaryLine }}</span>
+            <strong>任务：{{ currentJob?.title || form.title || '本次生成' }}</strong>
+            <span>{{ generatedSummaryLine }}</span>
           </div>
           <div class="aiw-results-actions">
             <span>{{ selectedResultItems.length ? `已选 ${selectedResultItems.length} 张` : '未选择图片' }}</span>
@@ -289,6 +289,9 @@
                       v-if="resultPreviewSrc(item)"
                       :src="resultPreviewSrc(item)"
                       :alt="item.label"
+                      loading="lazy"
+                      decoding="async"
+                      @load="handleResultPreviewLoaded(item)"
                       @error="markResultPreviewBroken(item)"
                     />
                     <span v-else class="aiw-result-preview">{{ item.label }}</span>
@@ -349,6 +352,9 @@
                         v-if="resultPreviewSrc(item)"
                         :src="resultPreviewSrc(item)"
                         :alt="item.label"
+                        loading="lazy"
+                        decoding="async"
+                        @load="handleResultPreviewLoaded(item)"
                         @error="markResultPreviewBroken(item)"
                       />
                       <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
@@ -564,6 +570,8 @@
                 :class="{ blurred: lightboxActiveItem?.loading }"
                 :src="lightboxActiveSrc"
                 :alt="lightboxActiveItem?.label || lightboxItem.label"
+                decoding="async"
+                @load="handleResultPreviewLoaded(lightboxActiveItem || lightboxItem)"
                 @error="markResultPreviewBroken(lightboxActiveItem || lightboxItem)"
               />
               <TldrawAnnotationLayer
@@ -655,6 +663,9 @@
                   :src="lightboxThumbnailSrc(item)"
                   :alt="item.label"
                   :class="{ blurred: item.loading }"
+                  loading="lazy"
+                  decoding="async"
+                  @load="handleResultPreviewLoaded(item)"
                   @error="markResultPreviewBroken(item)"
                 />
                 <strong v-else>{{ previewInitial(resultPreviewKey(item) || item.label) }}</strong>
@@ -774,6 +785,10 @@ import {
   sizeForRatio,
   sizesForRatio,
 } from '../utils/aiImageModels.js'
+import {
+  promptChainFromLineage,
+  resolveResultLineage,
+} from '../aiImageResultLineage.mjs'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
@@ -886,6 +901,8 @@ const errorMessage = ref('')
 const logs = ref([])
 const imagePreviews = reactive({})
 const previewFailures = reactive(new Set())
+const resultCachePaths = reactive({})
+const resultCachePending = reactive(new Set())
 const taskDrafts = reactive({})
 const pendingActiveJobUid = ref('')
 const lightboxItem = ref(null)
@@ -921,6 +938,7 @@ let restoringState = false
 let lightboxAnnotationExportResolve = null
 let lightboxAnnotationExportReject = null
 let lightboxAnnotationExportTimer = null
+let resultCacheQueue = Promise.resolve()
 
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeMissingKey = computed(() => missingKeyForModel(form.modelId, settings.value))
@@ -1003,9 +1021,18 @@ const taskRecords = computed(() => {
   }
   return records
 })
-const summaryLine = computed(() => {
+const nextGenerationSummaryLine = computed(() => {
   const status = currentJob.value?.status || '未开始'
   return `${activeModel.value.label} · ${form.ratio} · ${form.size} · ${normalizeImageCount(form.count)} 张 · ${status}`
+})
+const generatedSummaryLine = computed(() => {
+  const job = currentJob.value
+  if (!job?.job_uid) return nextGenerationSummaryLine.value
+  const params = job.params && typeof job.params === 'object' ? job.params : {}
+  const size = params.size || '未设尺寸'
+  const ratio = params.ratio || ratioForSize(size, '1:1')
+  const modelLabel = getAiImageModel(modelIdForJob(job)).label
+  return `${modelLabel} · ${ratio} · ${size} · ${normalizeImageCount(params.n)} 张 · ${job.status || 'draft'}`
 })
 
 onMounted(async () => {
@@ -1300,10 +1327,21 @@ async function loadSettings() {
   }
 }
 
+function mergeResultCacheFromJob(job) {
+  const cache = job?.summary?.result_cache
+  if (!cache || typeof cache !== 'object' || Array.isArray(cache)) return
+  Object.entries(cache).forEach(([url, path]) => {
+    const remoteUrl = String(url || '').trim()
+    const localPath = String(path || '').trim()
+    if (remoteUrl && localPath) resultCachePaths[remoteUrl] = localPath
+  })
+}
+
 async function loadJobs() {
   try {
     const response = await window.cs.listAiImageJobs()
     jobs.value = Array.isArray(response) ? response : response?.items || []
+    jobs.value.forEach((job) => mergeResultCacheFromJob(job))
   } catch (error) {
     logs.value.push(`读取历史失败：${error.message || error}`)
   }
@@ -1428,6 +1466,7 @@ async function autosaveCurrentTask(options = {}) {
 
 function upsertJob(job) {
   if (!job?.job_uid) return
+  mergeResultCacheFromJob(job)
   const index = jobs.value.findIndex((item) => item.job_uid === job.job_uid)
   if (index >= 0) jobs.value.splice(index, 1, job)
   else jobs.value.unshift(job)
@@ -1788,29 +1827,25 @@ function collectResultQueues(job) {
   const summary = job?.summary && typeof job.summary === 'object' ? job.summary : {}
   const runs = Array.isArray(summary.runs) ? summary.runs : []
   if (runs.length) {
-    let historyItems = []
-    return runs
+    const queues = runs
       .map((run, index) => {
-        const promptChain = buildRunPromptChain(job, runs, index)
-        const items = collectResultCardsFromRun(job, run, index, {
-          historyItems,
-          promptChain,
-        })
-        historyItems = dedupeLightboxItems([
-          ...historyItems,
-          ...items.map((item) => lightboxHistorySnapshot(item)).filter(Boolean),
-        ])
         return {
           key: run.run_uid || run.task_id || `run-${index + 1}`,
           title: `队列 ${index + 1}`,
           createdAt: run.created_at || '',
           prompt: run.prompt || '',
           status: run.status || job?.status || '',
-          items,
+          items: collectResultCardsFromRun(job, run, index),
         }
       })
       .filter((queue) => queue.items.length)
-      .reverse()
+    const flatItems = queues.flatMap((queue) => queue.items)
+    for (const item of flatItems) {
+      const lineage = resolveResultLineage(item, flatItems)
+      item.historyItems = lineage.slice(0, -1)
+      item.promptChain = promptChainFromLineage(lineage)
+    }
+    return queues.reverse()
   }
   const legacySummary = {
     ...summary,
@@ -1818,6 +1853,10 @@ function collectResultQueues(job) {
     output_files: Array.isArray(summary.output_files) ? summary.output_files : [],
   }
   const items = collectResultCardsFromRun(job, legacySummary, 0, { includeOutputAssets: true })
+  for (const item of items) {
+    item.historyItems = []
+    item.promptChain = promptChainFromLineage([item])
+  }
   if (!items.length) return []
   return [{
     key: job?.job_uid || 'legacy-results',
@@ -1835,10 +1874,6 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
   const urls = Array.isArray(run?.image_urls) ? run.image_urls : []
   const outputAssets = options.includeOutputAssets ? assets.filter((asset) => asset.kind === 'output' || asset.kind === 'result') : []
   const resultCount = Math.max(paths.length, urls.length)
-  const basePromptChain = Array.isArray(options.promptChain) && options.promptChain.length
-    ? options.promptChain
-    : buildBasePromptChain(run?.prompt || job?.prompt || '')
-  const historyItems = Array.isArray(options.historyItems) ? options.historyItems : []
   return [
     ...Array.from({ length: resultCount }, (_, index) => ({
       key: `${queueIndex}-${paths[index] || urls[index] || index}`,
@@ -1852,8 +1887,7 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
       jobUid: job?.job_uid || '',
       runUid: run?.run_uid || run?.task_id || '',
       sourceJobUid: job?.job_uid || '',
-      promptChain: basePromptChain,
-      historyItems,
+      editSource: run?.edit_source || null,
     })),
     ...outputAssets.map((asset, index) => ({
       key: `${queueIndex}-${asset.asset_uid || asset.path || asset.url || index}`,
@@ -1867,8 +1901,7 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
       jobUid: job?.job_uid || '',
       runUid: run?.run_uid || run?.task_id || '',
       sourceJobUid: job?.job_uid || '',
-      promptChain: basePromptChain,
-      historyItems,
+      editSource: run?.edit_source || null,
     })),
   ].filter((item, index, list) => resultKey(item) && list.findIndex((candidate) => resultKey(candidate) === resultKey(item)) === index)
 }
@@ -1937,9 +1970,13 @@ function resultPreviewKey(item) {
   return resultPreviewCandidates(item)[0] || ''
 }
 
+function cachedResultPath(url) {
+  return resultCachePaths[String(url || '').trim()] || ''
+}
+
 function resultPreviewCandidates(item) {
   const seen = new Set()
-  return [item?.url, item?.path]
+  return [cachedResultPath(item?.url), item?.path, item?.url]
     .map((value) => String(value || '').trim())
     .filter((value) => {
       if (!value || seen.has(value)) return false
@@ -1952,6 +1989,7 @@ function resultPreviewSrc(item) {
   for (const key of resultPreviewCandidates(item)) {
     const src = imagePreviewSrc(key)
     if (src) return src
+    if (!isRemoteOrDataImage(key) && !previewFailures.has(key)) return ''
   }
   return ''
 }
@@ -1985,6 +2023,65 @@ function refreshResultPreviewCandidates(items, options = {}) {
       void refreshImagePreview(key, options)
     })
   }
+}
+
+function rememberResultCache(jobUid, url, path) {
+  const uid = String(jobUid || '').trim()
+  const remoteUrl = String(url || '').trim()
+  const localPath = String(path || '').trim()
+  if (!remoteUrl || !localPath) return
+  resultCachePaths[remoteUrl] = localPath
+
+  const withCache = (job) => {
+    if (!job || job.job_uid !== uid) return job
+    const summary = job.summary && typeof job.summary === 'object' ? job.summary : {}
+    const resultCache = summary.result_cache && typeof summary.result_cache === 'object'
+      ? summary.result_cache
+      : {}
+    return {
+      ...job,
+      summary: {
+        ...summary,
+        result_cache: { ...resultCache, [remoteUrl]: localPath },
+      },
+    }
+  }
+
+  if (currentJob.value?.job_uid === uid) currentJob.value = withCache(currentJob.value)
+  const index = jobs.value.findIndex((job) => job?.job_uid === uid)
+  if (index >= 0) jobs.value.splice(index, 1, withCache(jobs.value[index]))
+}
+
+function queueResultCache(item) {
+  const url = String(item?.url || '').trim()
+  const jobUid = resultOwnerJobUid(item)
+  const existingPath = cachedResultPath(url)
+  if (!url || !jobUid || typeof window?.cs?.materializeAiImageResult !== 'function') return
+  if (existingPath && !previewFailures.has(existingPath)) return
+  if (resultCachePending.has(url)) return
+
+  resultCachePending.add(url)
+  resultCacheQueue = resultCacheQueue
+    .catch(() => {})
+    .then(async () => {
+      try {
+        const result = await window.cs.materializeAiImageResult(jobUid, { url })
+        const path = String(result?.path || '').trim()
+        if (!path) throw new Error('缓存接口未返回本地路径')
+        rememberResultCache(jobUid, url, path)
+        await refreshImagePreview(path, { force: true })
+      } catch (error) {
+        logs.value.push(`图片缓存失败：${pathLabel(url)} (${error.message || error})`)
+      } finally {
+        resultCachePending.delete(url)
+      }
+    })
+}
+
+function handleResultPreviewLoaded(item) {
+  const url = String(item?.url || '').trim()
+  if (!url || activeResultPreviewKey(item) !== url) return
+  queueResultCache(item)
 }
 
 function toggleResult(item) {
@@ -2184,22 +2281,6 @@ function buildBasePromptChain(prompt) {
   }]
 }
 
-function buildRunPromptChain(job, runs = [], runIndex = 0) {
-  const chain = []
-  const safeRuns = Array.isArray(runs) ? runs : []
-  for (let index = 0; index <= runIndex; index += 1) {
-    const run = safeRuns[index] || {}
-    const prompt = String(run?.prompt || (index === 0 ? job?.prompt : '') || '').trim()
-    if (!prompt && chain.length) continue
-    chain.push({
-      key: `prompt-run-${index}`,
-      label: index === 0 ? '原图 Prompt' : `修改 Prompt ${index}`,
-      prompt,
-    })
-  }
-  return chain.length ? chain : buildBasePromptChain(job?.prompt || '')
-}
-
 function promptChainForItem(item) {
   const chain = Array.isArray(item?.promptChain) ? item.promptChain : []
   const normalized = chain
@@ -2230,6 +2311,14 @@ function resultOwnerJobUid(item) {
   return String(item?.jobUid || item?.job_uid || item?.sourceJobUid || item?.source_job_uid || currentJob.value?.job_uid || '').trim()
 }
 
+function buildEditSource(item) {
+  return {
+    job_uid: resultOwnerJobUid(item),
+    run_uid: String(item?.runUid || item?.run_uid || '').trim(),
+    result_key: resultKey(item),
+  }
+}
+
 function lightboxHistorySnapshot(item) {
   if (!item || !resultKey(item)) return null
   return {
@@ -2245,6 +2334,7 @@ function lightboxHistorySnapshot(item) {
     jobUid: resultOwnerJobUid(item),
     runUid: item.runUid || item.run_uid || '',
     sourceJobUid: item.sourceJobUid || item.source_job_uid || resultOwnerJobUid(item),
+    editSource: item.editSource || item.edit_source || null,
     promptChain: promptChainForItem(item),
     historyItems: lightboxHistoryItems(item),
   }
@@ -2274,6 +2364,7 @@ function preserveLightboxEditMetadata(item) {
   return {
     historyItems: lightboxHistoryItems(item),
     promptChain: promptChainForItem(item),
+    editSource: item?.editSource || item?.edit_source || null,
     sourceJobUid: item?.sourceJobUid || item?.source_job_uid || '',
     sourceResultKey: item?.sourceResultKey || '',
   }
@@ -2453,6 +2544,7 @@ function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
     jobUid: '',
     sourceJobUid: resultOwnerJobUid(sourceItem),
     sourceResultKey: resultKey(sourceItem),
+    editSource: buildEditSource(sourceItem),
     historyItems: buildLightboxEditHistory(sourceItem),
     promptChain: buildLightboxPromptChain(sourceItem, prompt),
   }
@@ -2526,6 +2618,7 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
         n: 1,
         main_image_path: mainPath,
         reference_image_paths: [...form.referenceImagePaths],
+        edit_source: buildEditSource(sourceItem),
       },
     }
     const updated = await window.cs.updateAiImageJob(jobUid, { ...payload, status: 'running' })
@@ -2599,6 +2692,7 @@ async function restoreJob(job, options = {}) {
   const submittedDraft = detail?.job_uid ? taskDrafts[detail.job_uid] : null
   const submittedInputsCleared = Boolean(submittedDraft?.submittedInputsCleared)
   const formDetail = mergeJobWithDraft(detail, { includeGeneratedDrafts: true })
+  mergeResultCacheFromJob(detail)
   restoringState = true
   currentJob.value = detail
   pendingActiveJobUid.value = ''

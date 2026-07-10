@@ -239,7 +239,7 @@ test('AI image workbench maps ratio to compatible size options', () => {
 test('AI image task records keep history order while highlighting the clicked task', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
   const taskRecordsStart = workbench.indexOf('const taskRecords = computed')
-  const taskRecordsEnd = workbench.indexOf('const summaryLine', taskRecordsStart)
+  const taskRecordsEnd = workbench.indexOf('const generatedSummaryLine', taskRecordsStart)
   const taskRecordsBody = workbench.slice(taskRecordsStart, taskRecordsEnd)
   const restoreStart = workbench.indexOf('async function restoreJob(job, options = {})')
   const restoreEnd = workbench.indexOf('function openOutputFolder', restoreStart)
@@ -431,10 +431,12 @@ test('AI image workbench keeps edit generations inside the lightbox with a one-i
   assert.match(editBody, /applyLightboxEditResult/)
 })
 
-test('AI image workbench keeps lightbox edit ownership, prompt chain, and history previews', () => {
+test('AI image workbench scopes lightbox history and prompts to the selected edit branch', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+  const queueStart = workbench.indexOf('function collectResultQueues')
   const resultStart = workbench.indexOf('function collectResultCardsFromRun')
   const resultEnd = workbench.indexOf('function taskMetaLine', resultStart)
+  const queueBody = workbench.slice(queueStart, resultStart)
   const resultBody = workbench.slice(resultStart, resultEnd)
   const previewStart = workbench.indexOf('const lightboxPreviewItems = computed')
   const previewEnd = workbench.indexOf('const lightboxActiveItem = computed', previewStart)
@@ -448,10 +450,19 @@ test('AI image workbench keeps lightbox edit ownership, prompt chain, and histor
   const applyStart = workbench.indexOf('function applyLightboxEditResult')
   const applyEnd = workbench.indexOf('async function runLightboxEditGeneration', applyStart)
   const applyBody = workbench.slice(applyStart, applyEnd)
+  const editStart = workbench.indexOf('async function runLightboxEditGeneration')
+  const editEnd = workbench.indexOf('function removeReferencePath', editStart)
+  const editBody = workbench.slice(editStart, editEnd)
 
+  assert.match(workbench, /from '\.\.\/aiImageResultLineage\.mjs'/)
+  assert.match(workbench, /resolveResultLineage/)
+  assert.match(workbench, /promptChainFromLineage/)
+  assert.doesNotMatch(queueBody, /let historyItems = \[\]/)
+  assert.match(queueBody, /resolveResultLineage\(item, flatItems\)/)
+  assert.match(queueBody, /promptChainFromLineage\(lineage\)/)
   assert.match(resultBody, /jobUid: job\?\.job_uid \|\| ''/)
   assert.match(resultBody, /runUid: run\?\.run_uid \|\| run\?\.task_id \|\| ''/)
-  assert.match(resultBody, /promptChain: basePromptChain/)
+  assert.match(resultBody, /editSource: run\?\.edit_source \|\| null/)
   assert.match(previewBody, /lightboxHistoryItems\(lightboxItem\.value\)/)
   assert.match(previewBody, /dedupeLightboxItems/)
   assert.match(chainBody, /function promptChainForItem\(item\)/)
@@ -460,8 +471,10 @@ test('AI image workbench keeps lightbox edit ownership, prompt chain, and histor
   assert.match(placeholderBody, /historyItems: buildLightboxEditHistory\(sourceItem\)/)
   assert.match(placeholderBody, /promptChain: buildLightboxPromptChain\(sourceItem, prompt\)/)
   assert.match(placeholderBody, /sourceJobUid: resultOwnerJobUid\(sourceItem\)/)
+  assert.match(placeholderBody, /editSource: buildEditSource\(sourceItem\)/)
   assert.match(applyBody, /const editMetadata = preserveLightboxEditMetadata\(placeholder\)/)
   assert.match(applyBody, /\.\.\.editMetadata/)
+  assert.match(editBody, /edit_source: buildEditSource\(sourceItem\)/)
 })
 
 test('AI image workbench embeds a tldraw annotation layer for precise edits', () => {
@@ -546,11 +559,14 @@ test('AI image workbench embeds a tldraw annotation layer for precise edits', ()
   assert.ok(pkg.dependencies?.['react-dom'], 'react-dom should be bundled for the tldraw island')
 })
 
-test('AI image workbench isolates generated prompts from draft edits', () => {
+test('AI image workbench keeps generated task metadata separate from next-run edits', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
   const taskRecordsStart = workbench.indexOf('const taskRecords = computed')
-  const taskRecordsEnd = workbench.indexOf('const summaryLine', taskRecordsStart)
+  const taskRecordsEnd = workbench.indexOf('const generatedSummaryLine', taskRecordsStart)
   const taskRecordsBody = workbench.slice(taskRecordsStart, taskRecordsEnd)
+  const generatedSummaryStart = workbench.indexOf('const generatedSummaryLine = computed')
+  const generatedSummaryEnd = workbench.indexOf('onMounted', generatedSummaryStart)
+  const generatedSummaryBody = workbench.slice(generatedSummaryStart, generatedSummaryEnd)
   const restoreStart = workbench.indexOf('async function restoreJob(job, options = {})')
   const restoreEnd = workbench.indexOf('function openOutputFolder', restoreStart)
   const restoreBody = workbench.slice(restoreStart, restoreEnd)
@@ -561,6 +577,13 @@ test('AI image workbench isolates generated prompts from draft edits', () => {
   assert.match(taskRecordsBody, /mergeJobWithDraft\(currentJob\.value, \{ includeGeneratedDrafts: false \}\)/)
   assert.match(restoreBody, /const formDetail = mergeJobWithDraft\(detail, \{ includeGeneratedDrafts: true \}\)/)
   assert.match(restoreBody, /currentJob\.value = detail/)
+  assert.match(workbench, /任务：\{\{ currentJob\?\.title \|\| form\.title \|\| '本次生成' \}\}/)
+  assert.match(workbench, /\{\{ generatedSummaryLine \}\}/)
+  assert.match(workbench, /<span>下次生成参数<\/span>/)
+  assert.match(generatedSummaryBody, /const job = currentJob\.value/)
+  assert.match(generatedSummaryBody, /getAiImageModel\(modelIdForJob\(job\)\)\.label/)
+  assert.doesNotMatch(generatedSummaryBody, /activeModel\.value/)
+  assert.doesNotMatch(generatedSummaryBody, /form\.(ratio|size|count)/)
 })
 
 test('AI image workbench saves current count before provider request', () => {
@@ -608,16 +631,29 @@ test('AI image workbench exposes a clear clickable full prompt affordance', () =
   assert.match(workbench, /function closePromptDialog\(\)/)
 })
 
-test('AI image workbench falls back from broken local output files to remote result URLs', () => {
+test('AI image workbench prefers persistent local cache and rebuilds it after remote success', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+  const previewStart = workbench.indexOf('function resultPreviewCandidates(item)')
+  const previewEnd = workbench.indexOf('function toggleResult', previewStart)
+  const previewBody = workbench.slice(previewStart, previewEnd)
 
+  assert.match(workbench, /const resultCachePaths = reactive\(\{\}\)/)
+  assert.match(workbench, /const resultCachePending = reactive\(new Set\(\)\)/)
+  assert.match(workbench, /function mergeResultCacheFromJob\(job\)/)
   assert.match(workbench, /function resultPreviewCandidates\(item\)/)
-  assert.match(workbench, /return \[item\?\.url, item\?\.path\]/)
+  assert.match(previewBody, /cachedResultPath\(item\?\.url\)/)
+  assert.match(previewBody, /return \[cachedResultPath\(item\?\.url\), item\?\.path, item\?\.url\]/)
   assert.match(workbench, /function resultPreviewSrc\(item\)/)
   assert.match(workbench, /function markResultPreviewBroken\(item\)/)
+  assert.match(workbench, /function handleResultPreviewLoaded\(item\)/)
+  assert.match(workbench, /function queueResultCache\(item\)/)
+  assert.match(workbench, /window\.cs\.materializeAiImageResult/)
   assert.match(workbench, /resultPreviewCandidates\(item\)\.forEach/)
   assert.match(workbench, /:src="resultPreviewSrc\(item\)"/)
   assert.match(workbench, /@error="markResultPreviewBroken\(item\)"/)
+  assert.match(workbench, /@load="handleResultPreviewLoaded\(item\)"/)
+  assert.match(workbench, /loading="lazy"/)
+  assert.match(workbench, /decoding="async"/)
 })
 
 test('AI image workbench materializes URL results before using them as input images', () => {
