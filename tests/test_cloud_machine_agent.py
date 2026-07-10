@@ -189,7 +189,7 @@ class CloudMachineAgentTests(unittest.TestCase):
         self.assertEqual(result["job_result"]["status"], "succeeded")
         self.assertEqual(health_updates, ["online_busy", "online_idle"])
 
-    def test_complete_failure_after_executor_success_reclaim_does_not_rerun_executor(self):
+    def test_complete_failure_is_flushed_after_restart_before_heartbeat_or_claim(self):
         class CountingExecutor:
             def __init__(self):
                 self.calls = 0
@@ -199,7 +199,7 @@ class CloudMachineAgentTests(unittest.TestCase):
                 return {"status": "succeeded", "result": {"submitted": 1, "status": "created"}}
 
         data_sink.save_cloud_machine_credentials("machine-1", "csr_machine_secret", "任务机", ["submit_tmall_material_test"])
-        client = FakeClient([
+        first_client = FakeClient([
             {
                 "job": {
                     "job_uid": "job-submit-once",
@@ -210,32 +210,92 @@ class CloudMachineAgentTests(unittest.TestCase):
                 },
                 "next_poll_after_seconds": 0,
             },
-            CloudApprovalError("cloud request failed: HTTP 502; gateway timeout"),
-            {
-                "job": {
-                    "job_uid": "job-submit-once",
-                    "batch_uid": "batch-1",
-                    "job_type": "submit_tmall_material_test",
-                    "lease_id": "lease-2",
-                    "payload": {},
-                },
-                "next_poll_after_seconds": 0,
-            },
+            CloudApprovalError(
+                "cloud request failed: HTTP 502; gateway timeout",
+                status=502,
+                payload={"error": "gateway timeout"},
+            ),
+        ])
+        second_client = FakeClient([
             {"ok": True, "status": "succeeded"},
+            {"ok": True, "machine_id": "machine-1", "health": "online_idle"},
+            {"job": None, "next_poll_after_seconds": 10},
         ])
         executor = CountingExecutor()
-        agent = CloudMachineAgent(client, job_executor_factory=lambda _client: executor)
+        first_agent = CloudMachineAgent(first_client, job_executor_factory=lambda _client: executor)
 
-        first = agent.claim_once()
-        second = agent.claim_once()
+        first = first_agent.claim_once()
+        pending = data_sink.list_pending_cloud_job_completions()[0]
+        sleeps = []
+        restarted_agent = CloudMachineAgent(second_client, sleep=sleeps.append)
+        restarted_agent.run_forever(StopAfterSleeps(sleeps, 1))
 
         self.assertEqual(first["job_result"]["status"], "completion_pending")
-        self.assertEqual(second["job_result"]["status"], "succeeded")
+        self.assertEqual(pending["lease_id"], "lease-1")
+        self.assertEqual(pending["result"], {"submitted": 1, "status": "created"})
         self.assertEqual(executor.calls, 1)
-        complete_calls = [call for call in client.calls if call["path"] == "/api/jobs/job-submit-once/complete"]
-        self.assertEqual(len(complete_calls), 2)
-        self.assertEqual([call["body"]["lease_id"] for call in complete_calls], ["lease-1", "lease-2"])
-        self.assertEqual(complete_calls[1]["body"]["result"], {"submitted": 1, "status": "created"})
+        self.assertEqual(
+            [call["path"] for call in second_client.calls],
+            [
+                "/api/jobs/job-submit-once/complete",
+                "/api/machines/heartbeat",
+                "/api/machines/jobs/claim",
+            ],
+        )
+        self.assertEqual(second_client.calls[0]["body"]["lease_id"], "lease-1")
+        self.assertEqual(second_client.calls[0]["body"]["result"], {"submitted": 1, "status": "created"})
+        self.assertEqual(data_sink.list_pending_cloud_job_completions(), [])
+
+    def test_stale_completion_is_cleared_without_rebinding_to_a_new_lease(self):
+        data_sink.save_pending_cloud_job_completion("job-stale", "lease-old", {"ok": True})
+        client = FakeClient([
+            CloudApprovalError(
+                "cloud request failed: HTTP 403; Stale lease",
+                status=403,
+                payload={"error": "Stale lease", "code": "stale_lease"},
+            ),
+        ])
+        agent = CloudMachineAgent(client)
+
+        result = agent.flush_pending_completions()
+
+        self.assertEqual(result["stale"], 1)
+        self.assertEqual(data_sink.list_pending_cloud_job_completions(), [])
+        self.assertEqual(data_sink.list_cloud_job_events("job-stale")[-1]["event_type"], "completion_stale_lease")
+        self.assertEqual(client.calls[0]["body"]["lease_id"], "lease-old")
+
+    def test_legacy_completion_without_lease_is_discarded_without_network_replay(self):
+        data_sink.save_pending_cloud_job_completion("job-legacy", "", {"ok": True})
+        client = FakeClient([])
+        agent = CloudMachineAgent(client)
+
+        result = agent.flush_pending_completions()
+
+        self.assertEqual(result["discarded"], 1)
+        self.assertEqual(client.calls, [])
+        self.assertEqual(data_sink.list_pending_cloud_job_completions(), [])
+        self.assertEqual(data_sink.list_cloud_job_events("job-legacy")[-1]["event_type"], "completion_unreplayable")
+
+    def test_transient_completion_failure_is_rescheduled_with_bounded_backoff(self):
+        data_sink.save_pending_cloud_job_completion("job-retry", "lease-1", {"ok": True})
+        client = FakeClient([
+            CloudApprovalError(
+                "cloud request failed: HTTP 502; gateway timeout",
+                status=502,
+                payload={"error": "gateway timeout"},
+            ),
+        ])
+        agent = CloudMachineAgent(client, now=lambda: 1_800_000_000.0)
+
+        result = agent.flush_pending_completions()
+
+        self.assertEqual(result["rescheduled"], 1)
+        self.assertEqual(data_sink.list_pending_cloud_job_completions(), [])
+        with patch("core.data_sink._utc_now_iso", return_value="2100-01-01T00:00:00+00:00"):
+            pending = data_sink.list_pending_cloud_job_completions()[0]
+        self.assertEqual(pending["attempt_count"], 1)
+        self.assertEqual(pending["last_error"], "cloud request failed: HTTP 502; gateway timeout")
+        self.assertTrue(pending["next_attempt_at"].endswith("+00:00"))
 
     def test_idle_loop_uses_server_next_poll_after_seconds(self):
         client = FakeClient(
@@ -309,6 +369,23 @@ class CloudMachineAgentTests(unittest.TestCase):
             agent.heartbeat("ok")
 
         self.assertIsNone(data_sink.get_cloud_machine_credentials())
+
+    def test_stable_invalid_machine_token_code_clears_saved_and_in_memory_credentials(self):
+        data_sink.save_cloud_machine_credentials("machine-1", "csr_machine_secret", "任务机", ["cap"])
+        client = FakeClient([
+            CloudApprovalError(
+                "cloud request failed: HTTP 401; Invalid machine token",
+                status=401,
+                payload={"error": "Invalid machine token", "code": "machine_token_invalid"},
+            ),
+        ])
+        agent = CloudMachineAgent(client)
+
+        with self.assertRaises(CloudApprovalError):
+            agent.heartbeat("ok")
+
+        self.assertIsNone(data_sink.get_cloud_machine_credentials())
+        self.assertEqual(client.machine_token, "")
 
     def test_claimed_job_cancellation_is_reported_as_cancelled(self):
         from core.cloud_job_executors import CloudJobCancelled

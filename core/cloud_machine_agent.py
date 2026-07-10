@@ -5,6 +5,7 @@ import platform
 import hashlib
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 
 from core import data_sink
@@ -96,7 +97,9 @@ class CloudMachineAgent:
             self.heartbeat_callback(str(response.get("health") or health or ""))
         return response
 
-    def claim_once(self) -> dict:
+    def claim_once(self, *, flush_pending: bool = True) -> dict:
+        if flush_pending:
+            self.flush_pending_completions()
         response = self._request_machine_json("POST", "/api/machines/jobs/claim", {})
         job = response.get("job")
         next_poll = self._coerce_sleep_seconds(response.get("next_poll_after_seconds"), DEFAULT_IDLE_SECONDS)
@@ -120,8 +123,9 @@ class CloudMachineAgent:
         failure_count = 0
         while not stop_event.is_set():
             try:
+                self.flush_pending_completions()
                 self.heartbeat("online_idle")
-                result = self.claim_once()
+                result = self.claim_once(flush_pending=False)
             except CloudApprovalError as exc:
                 self._clear_credentials_if_revoked(exc)
                 sleep_seconds = self._failure_backoff_seconds(failure_count)
@@ -130,6 +134,68 @@ class CloudMachineAgent:
                 continue
             failure_count = 0
             self.sleep(float(result.get("idle_sleep_seconds") or DEFAULT_IDLE_SECONDS))
+
+    def flush_pending_completions(self, limit: int = 20) -> dict:
+        summary = {"completed": 0, "stale": 0, "rescheduled": 0, "discarded": 0}
+        for entry in data_sink.list_pending_cloud_job_completions(limit=limit):
+            job_uid = str(entry.get("job_uid") or "")
+            lease_id = str(entry.get("lease_id") or "")
+            result = entry.get("result") if isinstance(entry.get("result"), Mapping) else {}
+            if not lease_id:
+                data_sink.record_cloud_job_event(
+                    job_uid,
+                    "completion_unreplayable",
+                    "pending completion has no persisted lease",
+                    {"reason": "missing_lease_id"},
+                )
+                data_sink.clear_pending_cloud_job_completion(job_uid)
+                summary["discarded"] += 1
+                continue
+            try:
+                self._request_machine_json("POST", f"/api/jobs/{job_uid}/complete", {
+                    "job_uid": job_uid,
+                    "lease_id": lease_id,
+                    "result": dict(result),
+                })
+            except CloudApprovalError as exc:
+                if self._is_invalid_machine_token_error(exc):
+                    raise
+                if self._is_stale_lease_error(exc):
+                    data_sink.record_cloud_job_event(
+                        job_uid,
+                        "completion_stale_lease",
+                        "pending completion lease is no longer current",
+                        {"lease_id": lease_id},
+                    )
+                    data_sink.clear_pending_cloud_job_completion(job_uid)
+                    summary["stale"] += 1
+                    continue
+                attempt_count = int(entry.get("attempt_count") or 0)
+                delay = FAILURE_BACKOFF_SECONDS[
+                    min(max(attempt_count, 0), len(FAILURE_BACKOFF_SECONDS) - 1)
+                ]
+                next_attempt_at = (
+                    datetime.fromtimestamp(float(self.now()), tz=timezone.utc) + timedelta(seconds=delay)
+                ).isoformat()
+                error = str(exc)
+                data_sink.mark_pending_cloud_job_completion_attempt(job_uid, error, next_attempt_at)
+                data_sink.record_cloud_job_event(
+                    job_uid,
+                    "completion_retry_scheduled",
+                    error,
+                    {"attempt_count": attempt_count + 1, "next_attempt_at": next_attempt_at},
+                )
+                summary["rescheduled"] += 1
+                continue
+            data_sink.record_cloud_job_event(
+                job_uid,
+                "completion_replayed",
+                "pending completion delivered",
+                {"lease_id": lease_id},
+            )
+            data_sink.clear_pending_cloud_job_completion(job_uid)
+            summary["completed"] += 1
+        return summary
 
     def _request_machine_json(self, method: str, path: str, body: Mapping[str, Any]) -> dict:
         self._load_credentials()
@@ -140,18 +206,6 @@ class CloudMachineAgent:
             raise
 
     def _execute_claimed_job(self, job: Mapping[str, Any]) -> dict:
-        pending_result = data_sink.get_pending_cloud_job_completion(self._job_uid(job))
-        if pending_result is not None:
-            try:
-                complete_response = self._complete_job(job, pending_result)
-            except CloudApprovalError as exc:
-                if self._is_stale_lease_error(exc):
-                    return {"status": "stale_lease", "message": str(exc)}
-                return {"status": "completion_pending", "message": str(exc)}
-            data_sink.clear_pending_cloud_job_completion(self._job_uid(job))
-            status = str(complete_response.get("status") or "succeeded") if isinstance(complete_response, Mapping) else "succeeded"
-            return {"status": status, "result": pending_result}
-
         executor = self.job_executor_factory(self.client)
         try:
             result = executor.execute(job)
@@ -178,8 +232,19 @@ class CloudMachineAgent:
             self._complete_job(job, complete_result)
         except CloudApprovalError as exc:
             if self._is_stale_lease_error(exc):
+                data_sink.record_cloud_job_event(
+                    self._job_uid(job),
+                    "completion_stale_lease",
+                    "completion rejected because the lease is stale",
+                    {"lease_id": self._lease_id(job)},
+                )
                 return {"status": "stale_lease", "message": str(exc)}
-            data_sink.save_pending_cloud_job_completion(self._job_uid(job), complete_result)
+            data_sink.save_pending_cloud_job_completion(
+                self._job_uid(job),
+                self._lease_id(job),
+                complete_result,
+                last_error=str(exc),
+            )
             return {"status": "completion_pending", "message": str(exc)}
         data_sink.clear_pending_cloud_job_completion(self._job_uid(job))
         if isinstance(result, Mapping):
@@ -222,15 +287,34 @@ class CloudMachineAgent:
     def _lease_id(job: Mapping[str, Any]) -> str:
         return str(job.get("lease_id") or "")
 
-    @staticmethod
-    def _clear_credentials_if_revoked(exc: CloudApprovalError) -> None:
+    def _clear_credentials_if_revoked(self, exc: CloudApprovalError) -> None:
         text = str(exc).lower()
-        if "http 401" in text and "machine_token_revoked" in text:
+        payload = getattr(exc, "payload", {}) or {}
+        code = str(payload.get("code") or "").lower()
+        status = int(getattr(exc, "status", 0) or 0)
+        coded_invalid = status == 401 and code == "machine_token_invalid"
+        compatible_invalid = "http 401" in text and (
+            "machine_token_revoked" in text or "invalid machine token" in text
+        )
+        if coded_invalid or compatible_invalid:
             data_sink.clear_cloud_machine_credentials()
+            self._set_client_machine_token("")
 
     @staticmethod
     def _is_stale_lease_error(exc: CloudApprovalError) -> bool:
-        return "stale lease" in str(exc).lower()
+        payload = getattr(exc, "payload", {}) or {}
+        code = str(payload.get("code") or "").lower()
+        return code in {"stale_lease", "job_lease_stale"} or "stale lease" in str(exc).lower()
+
+    @staticmethod
+    def _is_invalid_machine_token_error(exc: CloudApprovalError) -> bool:
+        payload = getattr(exc, "payload", {}) or {}
+        code = str(payload.get("code") or "").lower()
+        text = str(exc).lower()
+        return (
+            int(getattr(exc, "status", 0) or 0) == 401
+            and (code == "machine_token_invalid" or "invalid machine token" in text or "machine_token_revoked" in text)
+        )
 
     @staticmethod
     def _failure_backoff_seconds(failure_count: int) -> float:

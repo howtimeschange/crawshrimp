@@ -1,5 +1,8 @@
 import tempfile
 import sys
+import inspect
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -60,6 +63,139 @@ class CloudJobExecutorTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         data_sink.init_db()
+
+    def test_lease_keeper_renews_during_long_generation(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        class RenewAwareClient(FakeCloudClient):
+            def __init__(self):
+                super().__init__(allowed_asset_uids={"result-1"})
+                self.renew_calls = 0
+                self.background_renewed = threading.Event()
+
+            def request_json(self, method, path, body=None, *, token_type="machine"):
+                response = super().request_json(method, path, body, token_type=token_type)
+                if path.endswith("/renew"):
+                    self.renew_calls += 1
+                    if self.renew_calls >= 2:
+                        self.background_renewed.set()
+                return response
+
+        client = RenewAwareClient()
+
+        def generate(batch, **_kwargs):
+            self.assertTrue(client.background_renewed.wait(1), "lease keeper did not renew during generation")
+            output = Path(batch["artifact_dir"]) / "generated.jpg"
+            output.write_bytes(b"generated")
+            return {
+                "path": str(output),
+                "filename": output.name,
+                "prompt": "prompt",
+                "generation_row": {"1XM任务ID": "task-1"},
+            }
+
+        executor = CloudJobExecutor(
+            client,
+            Path(self.tmp.name) / "cloud-jobs",
+            tmall_module=SimpleNamespace(generate_approval_asset_for_item=generate),
+            lease_renew_interval=0.01,
+        )
+        result = executor.execute({
+            "job_uid": "job-long-generate",
+            "batch_uid": "batch-1",
+            "job_type": "generate_ai_image",
+            "lease_id": "lease-1",
+            "payload": {
+                "batch_uid": "batch-1",
+                "style_id": 1,
+                "source_asset_uid": "source-1",
+                "result_asset_uids": ["result-1"],
+                "prompt_text": "prompt",
+                "count": 1,
+            },
+        })
+
+        self.assertEqual(result["status"], "succeeded")
+        self.assertGreaterEqual(client.renew_calls, 2)
+
+    def test_lease_keeper_propagates_renew_failure(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        renew_attempted = threading.Event()
+
+        class FailingRenewClient(FakeCloudClient):
+            def request_json(self, method, path, body=None, *, token_type="machine"):
+                if path.endswith("/renew"):
+                    renew_attempted.set()
+                    raise CloudApprovalError("renewal failed")
+                return super().request_json(method, path, body, token_type=token_type)
+
+        executor = CloudJobExecutor(
+            FailingRenewClient(),
+            Path(self.tmp.name) / "cloud-jobs",
+            lease_renew_interval=0.01,
+        )
+
+        with self.assertRaisesRegex(CloudApprovalError, "renewal failed"):
+            executor._run_with_lease_keeper(
+                {"job_uid": "job-1", "lease_id": "lease-1"},
+                lambda: renew_attempted.wait(1) and {"ok": True},
+            )
+
+    def test_lease_keeper_propagates_cancel_request(self):
+        from core.cloud_job_executors import CloudJobCancelled, CloudJobExecutor
+
+        renew_attempted = threading.Event()
+
+        class CancellingRenewClient(FakeCloudClient):
+            def request_json(self, method, path, body=None, *, token_type="machine"):
+                if path.endswith("/renew"):
+                    renew_attempted.set()
+                    return {"cancel_requested": True}
+                return super().request_json(method, path, body, token_type=token_type)
+
+        executor = CloudJobExecutor(
+            CancellingRenewClient(),
+            Path(self.tmp.name) / "cloud-jobs",
+            lease_renew_interval=0.01,
+        )
+
+        with self.assertRaises(CloudJobCancelled):
+            executor._run_with_lease_keeper(
+                {"job_uid": "job-1", "lease_id": "lease-1"},
+                lambda: renew_attempted.wait(1) and {"ok": True},
+            )
+
+    def test_lease_keeper_stops_after_operation_exception(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        client = FakeCloudClient()
+        executor = CloudJobExecutor(
+            client,
+            Path(self.tmp.name) / "cloud-jobs",
+            lease_renew_interval=0.01,
+        )
+
+        with self.assertRaisesRegex(ValueError, "operation failed"):
+            executor._run_with_lease_keeper(
+                {"job_uid": "job-1", "lease_id": "lease-1"},
+                lambda: (_ for _ in ()).throw(ValueError("operation failed")),
+            )
+        renew_count = len([call for call in client.calls if call["path"].endswith("/renew")])
+        time.sleep(0.03)
+        self.assertEqual(len([call for call in client.calls if call["path"].endswith("/renew")]), renew_count)
+
+    def test_all_long_blocking_operations_use_lease_keeper(self):
+        from core.cloud_job_executors import CloudJobExecutor
+
+        for method in (
+            CloudJobExecutor.execute_regenerate_ai_image,
+            CloudJobExecutor.execute_generate_ai_image,
+            CloudJobExecutor.execute_submit_tmall_material_test,
+            CloudJobExecutor.execute_crawl_tmall_material_test_data,
+        ):
+            with self.subTest(method=method.__name__):
+                self.assertIn("_run_with_lease_keeper", inspect.getsource(method))
 
     def test_load_tmall_module_registers_module_for_dataclass_annotations(self):
         from core.cloud_job_executors import _load_tmall_module

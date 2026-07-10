@@ -10,7 +10,7 @@ import os
 import re
 import sqlite3
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, List, Mapping, Optional
 
@@ -200,10 +200,22 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS cloud_job_completion_results (
                 job_uid TEXT PRIMARY KEY,
+                lease_id TEXT NOT NULL DEFAULT '',
                 result_json TEXT NOT NULL DEFAULT '{}',
+                last_error TEXT NOT NULL DEFAULT '',
+                attempt_count INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             )
+        """)
+        _ensure_column(conn, "cloud_job_completion_results", "lease_id", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "cloud_job_completion_results", "last_error", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "cloud_job_completion_results", "attempt_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(conn, "cloud_job_completion_results", "next_attempt_at", "TEXT NOT NULL DEFAULT ''")
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_cloud_job_completion_results_due
+            ON cloud_job_completion_results (next_attempt_at, created_at)
         """)
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ai_image_jobs (
@@ -277,6 +289,10 @@ def _now_iso() -> str:
     return datetime.now().isoformat()
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
 def _json_dumps(value: Any) -> str:
     return json.dumps(value or {}, ensure_ascii=False)
 
@@ -334,25 +350,42 @@ def clear_cloud_machine_credentials() -> None:
         conn.commit()
 
 
-def save_pending_cloud_job_completion(job_uid: str, result: Any) -> dict:
+def save_pending_cloud_job_completion(
+    job_uid: str,
+    lease_id: str,
+    result: Any,
+    last_error: str = "",
+) -> dict:
     job_uid = str(job_uid or "").strip()
     if not job_uid:
         return {}
-    now = _now_iso()
+    lease_id = str(lease_id or "").strip()
+    now = _utc_now_iso()
     result_json = _json_dumps(result if isinstance(result, Mapping) else {"value": result})
     with _get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO cloud_job_completion_results (job_uid, result_json, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO cloud_job_completion_results (
+                job_uid, lease_id, result_json, last_error, attempt_count,
+                next_attempt_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 0, '', ?, ?)
             ON CONFLICT(job_uid) DO UPDATE SET
+                lease_id = excluded.lease_id,
                 result_json = excluded.result_json,
+                last_error = excluded.last_error,
+                attempt_count = 0,
+                next_attempt_at = '',
                 updated_at = excluded.updated_at
             """,
-            (job_uid, result_json, now, now),
+            (job_uid, lease_id, result_json, str(last_error or ""), now, now),
         )
         conn.commit()
-    return get_pending_cloud_job_completion(job_uid) or {}
+        row = conn.execute(
+            "SELECT * FROM cloud_job_completion_results WHERE job_uid = ?",
+            (job_uid,),
+        ).fetchone()
+    return _cloud_job_completion_from_row(row) or {}
 
 
 def get_pending_cloud_job_completion(job_uid: str) -> dict | None:
@@ -366,6 +399,40 @@ def get_pending_cloud_job_completion(job_uid: str) -> dict | None:
     return _json_loads_object(dict(row).get("result_json"))
 
 
+def list_pending_cloud_job_completions(limit: int = 20) -> list[dict]:
+    now = _utc_now_iso()
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT * FROM cloud_job_completion_results
+            WHERE next_attempt_at = '' OR next_attempt_at <= ?
+            ORDER BY created_at ASC, job_uid ASC
+            LIMIT ?
+            """,
+            (now, max(1, int(limit or 20))),
+        ).fetchall()
+    return [entry for row in rows if (entry := _cloud_job_completion_from_row(row)) is not None]
+
+
+def mark_pending_cloud_job_completion_attempt(job_uid: str, error: str, next_attempt_at: str) -> None:
+    job_uid = str(job_uid or "").strip()
+    if not job_uid:
+        return
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE cloud_job_completion_results
+            SET last_error = ?,
+                attempt_count = attempt_count + 1,
+                next_attempt_at = ?,
+                updated_at = ?
+            WHERE job_uid = ?
+            """,
+            (str(error or ""), str(next_attempt_at or ""), _utc_now_iso(), job_uid),
+        )
+        conn.commit()
+
+
 def clear_pending_cloud_job_completion(job_uid: str) -> None:
     job_uid = str(job_uid or "").strip()
     if not job_uid:
@@ -373,6 +440,15 @@ def clear_pending_cloud_job_completion(job_uid: str) -> None:
     with _get_conn() as conn:
         conn.execute("DELETE FROM cloud_job_completion_results WHERE job_uid = ?", (job_uid,))
         conn.commit()
+
+
+def _cloud_job_completion_from_row(row: Optional[sqlite3.Row]) -> dict | None:
+    if not row:
+        return None
+    data = dict(row)
+    data["result"] = _json_loads_object(data.pop("result_json", "{}"))
+    data["attempt_count"] = int(data.get("attempt_count") or 0)
+    return data
 
 
 def record_cloud_job_event(job_uid: str, event_type: str, message: str = "", payload: Optional[Mapping[str, Any]] = None) -> dict:

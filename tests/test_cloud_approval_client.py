@@ -92,6 +92,26 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertEqual(len(transport.calls), 3)
         self.assertEqual(sleeps, [0.25, 0.5])
 
+    def test_request_json_error_exposes_status_and_parsed_payload(self):
+        transport = FakeTransport([
+            FakeResponse(
+                status=401,
+                body={"error": "Invalid machine token", "code": "machine_token_invalid"},
+            ),
+        ])
+        client = CloudApprovalClient(
+            "https://approval.example.com",
+            machine_token="machine-secret-token",
+            transport=transport,
+        )
+
+        with self.assertRaises(CloudApprovalError) as ctx:
+            client.request_json("POST", "/api/machines/heartbeat", {})
+
+        self.assertEqual(ctx.exception.status, 401)
+        self.assertEqual(ctx.exception.payload["code"], "machine_token_invalid")
+        self.assertEqual(ctx.exception.payload["error"], "Invalid machine token")
+
     def test_upload_asset_calls_upload_url_with_bytes_content_type_and_machine_token(self):
         transport = FakeTransport([FakeResponse(body={"uploaded": True})])
         client = CloudApprovalClient(

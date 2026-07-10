@@ -11,7 +11,16 @@ from typing import Any, Mapping, Optional
 
 
 class CloudApprovalError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int = 0,
+        payload: Mapping[str, Any] | None = None,
+    ):
+        super().__init__(message)
+        self.status = int(status or 0)
+        self.payload = dict(payload or {})
 
 
 DEFAULT_USER_AGENT = "CrawshrimpCloudApproval/1.0"
@@ -129,7 +138,9 @@ class CloudApprovalClient:
                 status = int(exc.code or 0)
                 payload = self._json_from_bytes(exc.read())
             except Exception as exc:
-                raise CloudApprovalError(f"cloud request failed: {type(exc).__name__}: {self._redact(str(exc), token)}") from None
+                raise CloudApprovalError(
+                    f"cloud request failed: {type(exc).__name__}: {self._redact(str(exc), token)}"
+                ) from None
             if status < 400:
                 return payload
             if self._should_retry_status(status):
@@ -139,7 +150,11 @@ class CloudApprovalClient:
             detail = self._error_detail(payload)
             token_hint = self._token_hint(token)
             suffix = f" token={token_hint}" if token_hint else ""
-            raise CloudApprovalError(f"cloud request failed: HTTP {status}{suffix}; {self._redact(detail, token)}")
+            raise CloudApprovalError(
+                f"cloud request failed: HTTP {status}{suffix}; {self._redact(detail, token)}",
+                status=status,
+                payload=payload,
+            )
         raise CloudApprovalError("cloud request failed after retries")
 
     @staticmethod

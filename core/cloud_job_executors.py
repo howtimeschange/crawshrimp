@@ -5,13 +5,15 @@ import asyncio
 import importlib.util
 import mimetypes
 import sys
+import threading
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from core import runtime_paths
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 
 MATERIAL_IMPORT_DETAIL_CHUNK_SIZE = 1000
+LEASE_RENEW_INTERVAL_SECONDS = 60.0
 
 
 class CloudJobBlocked(RuntimeError):
@@ -29,6 +31,45 @@ class CloudJobCancelled(RuntimeError):
     pass
 
 
+class _LeaseKeeper:
+    def __init__(self, renew: Callable[[], Any], interval: float):
+        self._renew = renew
+        self._interval = max(0.001, float(interval or LEASE_RENEW_INTERVAL_SECONDS))
+        self._stop_event = threading.Event()
+        self._lock = threading.Lock()
+        self._error: Exception | None = None
+        self._thread = threading.Thread(target=self._run, name="cloud-job-lease-keeper", daemon=True)
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._thread.join(timeout=max(0.1, min(self._interval, 5.0)))
+        if self._thread.is_alive():
+            self._set_error(CloudApprovalError("lease renewal thread did not stop"))
+
+    def raise_if_failed(self) -> None:
+        with self._lock:
+            error = self._error
+        if error is not None:
+            raise error
+
+    def _run(self) -> None:
+        while not self._stop_event.wait(self._interval):
+            try:
+                self._renew()
+            except Exception as exc:
+                self._set_error(exc)
+                self._stop_event.set()
+                return
+
+    def _set_error(self, error: Exception) -> None:
+        with self._lock:
+            if self._error is None:
+                self._error = error
+
+
 class CloudJobExecutor:
     def __init__(
         self,
@@ -37,11 +78,13 @@ class CloudJobExecutor:
         *,
         tmall_module=None,
         material_test_runner=None,
+        lease_renew_interval: float = LEASE_RENEW_INTERVAL_SECONDS,
     ):
         self.client = client
         self.work_dir = Path(work_dir) if work_dir is not None else runtime_paths.data_root() / "cloud-jobs"
         self.tmall_module = tmall_module
         self.material_test_runner = material_test_runner
+        self.lease_renew_interval = max(0.001, float(lease_renew_interval or LEASE_RENEW_INTERVAL_SECONDS))
 
     def execute(self, job: Mapping[str, Any]) -> dict:
         job_type = str(job.get("job_type") or "")
@@ -72,11 +115,14 @@ class CloudJobExecutor:
         module = self._tmall_module()
         batch = self._regeneration_batch(job, payload, task_dir, reference_paths)
         self._progress(job, "regenerating", "本地重新生图")
-        asset = module.regenerate_approval_asset(
-            batch,
-            rejected_asset_uid or asset_uid,
-            prompt=str(payload.get("prompt_text") or ""),
-            reference_paths=reference_paths,
+        asset = self._run_with_lease_keeper(
+            job,
+            lambda: module.regenerate_approval_asset(
+                batch,
+                rejected_asset_uid or asset_uid,
+                prompt=str(payload.get("prompt_text") or ""),
+                reference_paths=reference_paths,
+            ),
         )
         self._renew(job)
 
@@ -120,13 +166,16 @@ class CloudJobExecutor:
         module = self._tmall_module()
         batch = self._generation_batch(job, payload, task_dir, str(source_path), reference_paths)
         self._progress(job, "generating", "本地执行在线生图")
-        asset = module.generate_approval_asset_for_item(
-            batch,
-            item_id=str(payload.get("item_id") or ""),
-            style_code=str(payload.get("style_code") or ""),
-            prompt=prompt_text,
-            main_image_path=str(source_path),
-            reference_paths=reference_paths,
+        asset = self._run_with_lease_keeper(
+            job,
+            lambda: module.generate_approval_asset_for_item(
+                batch,
+                item_id=str(payload.get("item_id") or ""),
+                style_code=str(payload.get("style_code") or ""),
+                prompt=prompt_text,
+                main_image_path=str(source_path),
+                reference_paths=reference_paths,
+            ),
         )
         self._renew(job)
 
@@ -184,7 +233,12 @@ class CloudJobExecutor:
         module = self._tmall_module()
         self._progress(job, "submitting", "本地提交天猫测图任务")
         try:
-            result = _run_maybe_async(module.upload_approved_tmall_batch(batch))
+            result = self._run_with_lease_keeper(
+                job,
+                lambda: _run_maybe_async(module.upload_approved_tmall_batch(batch)),
+            )
+        except (CloudApprovalError, CloudJobCancelled):
+            raise
         except RuntimeError as exc:
             if _looks_like_login_block(str(exc)):
                 raise CloudJobBlocked("needs_login", str(exc)) from exc
@@ -223,7 +277,12 @@ class CloudJobExecutor:
 
         self._progress(job, "crawling", "本地抓取天猫测图数据")
         try:
-            raw_result = _run_maybe_async(self._material_test_runner()(run_params, task_dir, job))
+            raw_result = self._run_with_lease_keeper(
+                job,
+                lambda: _run_maybe_async(self._material_test_runner()(run_params, task_dir, job)),
+            )
+        except (CloudApprovalError, CloudJobCancelled):
+            raise
         except RuntimeError as exc:
             if _looks_like_login_block(str(exc)):
                 raise CloudJobBlocked("needs_login", str(exc)) from exc
@@ -360,6 +419,16 @@ class CloudJobExecutor:
         })
         _raise_if_cancel_requested(response)
         return response
+
+    def _run_with_lease_keeper(self, job: Mapping[str, Any], operation: Callable[[], Any]) -> Any:
+        keeper = _LeaseKeeper(lambda: self._renew(job), self.lease_renew_interval)
+        keeper.start()
+        try:
+            result = operation()
+        finally:
+            keeper.stop()
+        keeper.raise_if_failed()
+        return result
 
     def _regeneration_batch(self, job: Mapping[str, Any], payload: Mapping[str, Any], task_dir: Path, reference_paths: list[str]) -> dict:
         batch_uid = str(payload.get("batch_uid") or job.get("batch_uid") or "")

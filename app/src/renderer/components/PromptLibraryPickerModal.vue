@@ -49,6 +49,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { buildPromptLibraryPickerLibraries } from '../utils/localPromptLibrary'
+import { createPromptLibraryRequestGuard } from '../utils/promptLibraryRequestGuard'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -66,6 +67,8 @@ const category = ref('')
 const loading = ref(false)
 const templatesLoading = ref(false)
 const error = ref('')
+const promptLibraryRequestGuard = createPromptLibraryRequestGuard()
+const promptLibraryListRequestGuard = createPromptLibraryRequestGuard()
 
 const categories = computed(() => {
   const seen = new Set()
@@ -94,7 +97,10 @@ const filteredTemplates = computed(() => {
 })
 
 watch(() => props.open, (open) => {
-  if (!open) return
+  if (!open) {
+    invalidatePromptLibraryRequests()
+    return
+  }
   search.value = ''
   category.value = ''
   if (!libraries.value.length) void loadPromptLibraries()
@@ -102,10 +108,15 @@ watch(() => props.open, (open) => {
 }, { immediate: true })
 
 function close() {
+  invalidatePromptLibraryRequests()
   emit('close')
 }
 
 async function loadPromptLibraries() {
+  const requestKey = 'libraries'
+  const requestToken = promptLibraryListRequestGuard.begin(requestKey)
+  promptLibraryRequestGuard.invalidate()
+  templatesLoading.value = false
   loading.value = true
   error.value = ''
   try {
@@ -114,6 +125,7 @@ async function loadPromptLibraries() {
       window.cs.listLocalPromptLibraries(),
       window.cs.listCloudPromptLibraries(),
     ])
+    if (!promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) return
     const localPayload = promptLibrarySettledPayload(localResult, '本地 Prompt 库')
     const cloudPayload = promptLibrarySettledPayload(cloudResult, '线上 Prompt 库')
     const nextLibraries = buildPromptLibraryPickerLibraries({
@@ -130,24 +142,29 @@ async function loadPromptLibraries() {
     if (nextLibraryId) await loadPromptLibraryTemplates(nextLibraryId)
     else templates.value = []
   } catch (err) {
+    if (!promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) return
     error.value = err?.message || String(err)
   } finally {
-    loading.value = false
+    if (promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) loading.value = false
   }
 }
 
 async function loadPromptLibraryTemplates(libraryId) {
   const id = String(libraryId || '').trim()
+  const requestToken = promptLibraryRequestGuard.begin(id)
   if (!id) {
     templates.value = []
+    templatesLoading.value = false
     return
   }
   const selectedLibrary = (libraries.value || [])
     .find(library => String(library.picker_key || library.id || '') === id)
   if (selectedLibrary && selectedLibrary.source_type === 'local') {
+    error.value = ''
     templates.value = (selectedLibrary.templates || [])
       .map(template => ({ ...template, source_label: selectedLibrary.source_label || '本地' }))
     category.value = ''
+    templatesLoading.value = false
     return
   }
   templatesLoading.value = true
@@ -155,16 +172,25 @@ async function loadPromptLibraryTemplates(libraryId) {
   try {
     const cloudLibraryId = selectedLibrary?.cloud_library_id ?? id.replace(/^cloud:/, '')
     const payload = await window.cs.resolveCloudPromptTemplates(cloudLibraryId, { limit: 500 })
+    if (!promptLibraryRequestGuard.isCurrent(requestToken, id)) return
     if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
     templates.value = (Array.isArray(payload?.templates) ? payload.templates : [])
       .map(template => ({ ...template, source_type: 'cloud', source_label: selectedLibrary?.source_label || '线上' }))
     category.value = ''
   } catch (err) {
+    if (!promptLibraryRequestGuard.isCurrent(requestToken, id)) return
     error.value = err?.message || String(err)
     templates.value = []
   } finally {
-    templatesLoading.value = false
+    if (promptLibraryRequestGuard.isCurrent(requestToken, id)) templatesLoading.value = false
   }
+}
+
+function invalidatePromptLibraryRequests() {
+  promptLibraryRequestGuard.invalidate()
+  promptLibraryListRequestGuard.invalidate()
+  loading.value = false
+  templatesLoading.value = false
 }
 
 function promptLibrarySettledPayload(result, label) {
