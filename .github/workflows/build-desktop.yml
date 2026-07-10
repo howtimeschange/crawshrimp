@@ -318,6 +318,11 @@ jobs:
             xcrun stapler validate "${app_path}"
           done
 
+      - name: Validate update artifacts
+        working-directory: app
+        shell: bash
+        run: node scripts/validate-update-artifacts.js dist
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -361,7 +366,7 @@ jobs:
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG/ZIP（Apple Silicon / Intel）、Windows 安装包、自动更新元数据\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG（Apple Silicon / Intel）、Windows 安装包\n- 说明：desktop-latest 仅用于手动安装；自动更新元数据发布在版本化 Release\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \
@@ -384,10 +389,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
+          shopt -s nullglob
+          manual_assets=(
+            release-assets/macos/*.dmg
+            release-assets/windows/*.exe
+          )
+          if [ "${#manual_assets[@]}" -eq 0 ]; then
+            echo "::error::No manual installer assets found for desktop-latest"
+            exit 1
+          fi
           gh release create desktop-latest \
             --target "${GITHUB_SHA}" \
-            release-assets/macos/* \
-            release-assets/windows/* \
+            "${manual_assets[@]}" \
             --title "抓虾 Desktop Latest v${APP_VERSION}" \
             --notes-file release-notes.md \
             --latest=false
@@ -418,8 +432,17 @@ jobs:
           name: crawshrimp-win-x64
           path: release-assets/windows
 
+      - name: Validate release update artifacts
+        run: node app/scripts/validate-update-artifacts.js release-assets
+
       - name: Prepare release metadata
+        shell: bash
         run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only exact stable vX.Y.Z tags can publish a GitHub Latest release: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
           APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
@@ -433,7 +456,7 @@ jobs:
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG/ZIP（Apple Silicon / Intel）、Windows 安装包、自动更新元数据\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG/ZIP（Apple Silicon / Intel）、Windows 安装包\n- 自动更新：GitHub 更新元数据已启用\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \
@@ -442,22 +465,45 @@ jobs:
       - name: Publish versioned release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+          mapfile -t release_assets < <(find release-assets -type f | sort)
+          if [ "${#release_assets[@]}" -eq 0 ]; then
+            echo "::error::No release assets found"
+            exit 1
+          fi
+          printf '%s\n' "${release_assets[@]##*/}" | sort > expected-assets.txt
+
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" \
-              release-assets/macos/* \
-              release-assets/windows/* \
-              --clobber
             gh release edit "${GITHUB_REF_NAME}" \
               --title "抓虾 Desktop v${APP_VERSION}" \
               --notes-file release-notes.md \
-              --latest
+              --draft \
+              --latest=false
+            gh release upload "${GITHUB_REF_NAME}" \
+              "${release_assets[@]}" \
+              --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
-              release-assets/macos/* \
-              release-assets/windows/* \
               --title "抓虾 Desktop v${APP_VERSION}" \
               --notes-file release-notes.md \
-              --latest \
+              --draft \
+              --latest=false \
               --verify-tag
+            gh release upload "${GITHUB_REF_NAME}" \
+              "${release_assets[@]}" \
+              --clobber
           fi
+
+          gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | sort > actual-assets.txt
+          if ! diff -u expected-assets.txt actual-assets.txt; then
+            echo "::error::Unexpected release asset set"
+            exit 1
+          fi
+
+          gh release edit "${GITHUB_REF_NAME}" \
+            --title "抓虾 Desktop v${APP_VERSION}" \
+            --notes-file release-notes.md \
+            --draft=false \
+            --latest

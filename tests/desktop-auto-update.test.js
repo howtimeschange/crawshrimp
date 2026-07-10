@@ -127,6 +127,7 @@ test('desktop package config generates GitHub provider update metadata for Windo
 test('desktop build workflow collects generated update metadata artifacts', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const expectedFilesMatch = workflow.match(/expected_files=\(\n([\s\S]*?)\n\s*\)/)
+  const packageJson = JSON.parse(readRepoFile('app/package.json'))
 
   assert.match(workflow, /app\/dist\/\*\.exe/)
   assert.match(workflow, /app\/dist\/\*\.exe\.blockmap/)
@@ -134,8 +135,44 @@ test('desktop build workflow collects generated update metadata artifacts', () =
   assert.match(workflow, /app\/dist\/\*\.zip/)
   assert.match(workflow, /app\/dist\/\*\.zip\.blockmap/)
   assert.match(workflow, /app\/dist\/latest\*\.yml/)
+  assert.equal(packageJson.scripts['test:update-artifacts'], 'node --test scripts/validate-update-artifacts.test.js')
   assert.match(workflow, /mac-arm64\.dmg[\s\S]*mac-x64\.dmg[\s\S]*mac-arm64\.zip[\s\S]*mac-x64\.zip[\s\S]*latest-mac\.yml/)
   assert.ok(expectedFilesMatch, 'mac fallback expected_files block is present')
   assert.match(expectedFilesMatch[1], /"dist\/crawshrimp-v\$\{APP_VERSION\}-mac-arm64\.zip\.blockmap"/)
   assert.match(expectedFilesMatch[1], /"dist\/crawshrimp-v\$\{APP_VERSION\}-mac-x64\.zip\.blockmap"/)
+})
+
+test('desktop workflow validates update metadata before upload and formal publication', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const buildValidateIndex = workflow.indexOf('name: Validate update artifacts')
+  const uploadIndex = workflow.indexOf('name: Upload build artifacts')
+  const releaseValidateIndex = workflow.indexOf('name: Validate release update artifacts')
+  const prepareMetadataIndex = workflow.indexOf('name: Prepare release metadata', workflow.indexOf('publish-version-release:'))
+  const publishVersionIndex = workflow.indexOf('name: Publish versioned release')
+
+  assert.ok(buildValidateIndex !== -1, 'build validation step is present')
+  assert.ok(buildValidateIndex < uploadIndex, 'build validation runs before artifact upload')
+  assert.match(workflow, /node scripts\/validate-update-artifacts\.js dist/)
+  assert.ok(releaseValidateIndex !== -1, 'release validation step is present')
+  assert.ok(releaseValidateIndex < prepareMetadataIndex, 'release validation runs before metadata preparation')
+  assert.ok(prepareMetadataIndex < publishVersionIndex, 'metadata gates publication')
+  assert.match(workflow, /node app\/scripts\/validate-update-artifacts\.js release-assets/)
+})
+
+test('desktop workflow keeps rolling release manual installer only', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const rollingStep = workflow.slice(
+    workflow.indexOf('name: Publish rolling release'),
+    workflow.indexOf('publish-version-release:'),
+  )
+
+  assert.match(rollingStep, /manual_assets=\(/)
+  assert.match(rollingStep, /release-assets\/macos\/\*\.dmg/)
+  assert.match(rollingStep, /release-assets\/windows\/\*\.exe/)
+  assert.match(rollingStep, /gh release create desktop-latest[\s\S]*"\$\{manual_assets\[@\]\}"[\s\S]*--latest=false/)
+  assert.doesNotMatch(rollingStep, /release-assets\/macos\/\*\s*\\/)
+  assert.doesNotMatch(rollingStep, /release-assets\/windows\/\*\s*\\/)
+  assert.doesNotMatch(rollingStep, /latest\*\.yml/)
+  assert.doesNotMatch(rollingStep, /\*\.zip/)
+  assert.doesNotMatch(rollingStep, /\*\.blockmap/)
 })

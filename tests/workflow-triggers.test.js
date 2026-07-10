@@ -43,6 +43,10 @@ test('desktop build workflow marks the validated version release as GitHub lates
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
 
   assert.match(workflow, /TAG_VERSION="\$\{GITHUB_REF_NAME#v\}"[\s\S]*APP_VERSION[\s\S]*TAG_VERSION/)
-  assert.match(workflow, /gh release edit "\$\{GITHUB_REF_NAME\}"[\s\S]*--latest/)
-  assert.match(workflow, /gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--latest[\s\S]*--verify-tag/)
+  assert.match(workflow, /\[\[ "\$\{GITHUB_REF_NAME\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]/)
+  assert.match(workflow, /gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--draft[\s\S]*--latest=false[\s\S]*--verify-tag/)
+  assert.match(workflow, /gh release view "\$\{GITHUB_REF_NAME\}" --json assets/)
+  assert.match(workflow, /Unexpected release asset set/)
+  assert.match(workflow, /gh release edit "\$\{GITHUB_REF_NAME\}"[\s\S]*--draft=false[\s\S]*--latest/)
+  assert.doesNotMatch(workflow, /gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--latest\s*\\[\s\S]*--verify-tag/)
 })
