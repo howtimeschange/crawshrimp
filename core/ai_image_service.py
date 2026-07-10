@@ -89,6 +89,12 @@ def _requested_image_count(source: Mapping[str, Any], *, default: int = 1, max_c
     return max(1, min(int(max_count), count))
 
 
+def _normalized_batch_requested_count(source: Mapping[str, Any], model: str) -> int:
+    if _compact(model) in NANO_BANANA_MODELS:
+        return 1
+    return _requested_image_count({"n": source.get("count")}, default=1, max_count=8)
+
+
 def _size_tier(size: str) -> str:
     match = re.match(r"^(\d+)x(\d+)$", _compact(size), flags=re.IGNORECASE)
     if match and max(int(match.group(1)), int(match.group(2))) > 2048:
@@ -496,7 +502,12 @@ def _provider_error(task: Mapping[str, Any], fallback: str) -> str:
     return _compact(task.get("message") if isinstance(task, Mapping) else "") or fallback
 
 
-def _workbench_run_patch(task: Mapping[str, Any], *, fallback_status: str = "queued") -> dict[str, Any]:
+def _workbench_run_patch(
+    task: Mapping[str, Any],
+    *,
+    fallback_status: str = "queued",
+    requested_count: int = 1,
+) -> dict[str, Any]:
     provider_status = _compact(task.get("status")).lower() or fallback_status
     task_id = _compact(task.get("task_id") or task.get("id"))
     poll_url = _compact(task.get("poll_url")) or (f"/images/tasks/{task_id}" if task_id else "")
@@ -515,7 +526,7 @@ def _workbench_run_patch(task: Mapping[str, Any], *, fallback_status: str = "que
     if provider_status in SUCCESS_STATUSES:
         patch.update({
             "status": "completed",
-            "image_urls": extract_image_urls(task),
+            "image_urls": extract_image_urls(task)[:max(1, int(requested_count or 1))],
             "error": "",
         })
     elif provider_status in FAILED_STATUSES:
@@ -607,7 +618,11 @@ def poll_workbench_run(
         sleep_fn(wait_seconds)
         try:
             current = client.get_task(poll_url)
-            patch = _workbench_run_patch(current, fallback_status=_compact(run.get("provider_status")) or "queued")
+            patch = _workbench_run_patch(
+                current,
+                fallback_status=_compact(run.get("provider_status")) or "queued",
+                requested_count=int(run.get("requested_count") or 1),
+            )
         except Exception as exc:
             patch = {
                 "status": "failed",
@@ -639,7 +654,12 @@ def submit_workbench_batch(
     executor_factory: Callable[..., ThreadPoolExecutor] = ThreadPoolExecutor,
     poll_submitter: Callable[..., Any] | None = None,
 ) -> dict:
-    normalized_prompts: list[dict[str, str]] = []
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise ValueError(f"AI image job not found: {job_uid}")
+    model = _compact(job.get("model_key") or _params(job).get("model") or "gpt-image-2")
+
+    normalized_prompts: list[dict[str, Any]] = []
     for index, item in enumerate(prompts or []):
         source = item if isinstance(item, Mapping) else {"prompt": item}
         prompt = _compact(source.get("prompt"))
@@ -647,15 +667,13 @@ def submit_workbench_batch(
             normalized_prompts.append({
                 "title": _compact(source.get("title")) or f"Prompt {index + 1}",
                 "prompt": prompt,
+                "count": _normalized_batch_requested_count(source, model),
             })
     if not normalized_prompts:
         raise ValueError("请至少提交 1 条 Prompt")
     if len(normalized_prompts) > 100:
         raise ValueError("单次最多提交 100 条 Prompt")
 
-    job = data_sink.get_ai_image_job(job_uid)
-    if not job:
-        raise ValueError(f"AI image job not found: {job_uid}")
     request_key = _compact(request_uid) or uuid4().hex
     existing_runs = [
         dict(run)
@@ -699,6 +717,7 @@ def submit_workbench_batch(
             "request_uid": request_key,
             "title": prompt_item["title"],
             "prompt": prompt_item["prompt"],
+            "requested_count": prompt_item["count"],
             "created_at": created_at,
             "model_key": _compact(job.get("model_key") or base_payload.get("model")),
             "model_key_tier": _compact(params.get("model_key_tier")),
@@ -731,6 +750,10 @@ def submit_workbench_batch(
 
     def create_one(run: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
         payload = {**base_payload, "prompt": run["prompt"]}
+        if model in NANO_BANANA_MODELS:
+            payload.pop("n", None)
+        else:
+            payload["n"] = int(run.get("requested_count") or 1)
         task = client.create_task(
             payload,
             idempotency_key=f"ai_image_{job_uid}_{run['run_uid']}",
@@ -746,7 +769,10 @@ def submit_workbench_batch(
             run_uid = _compact(run.get("run_uid"))
             try:
                 _, task = future.result()
-                patch = _workbench_run_patch(task)
+                patch = _workbench_run_patch(
+                    task,
+                    requested_count=int(run.get("requested_count") or 1),
+                )
             except Exception as exc:
                 patch = {
                     "status": "failed",

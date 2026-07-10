@@ -88,9 +88,9 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         result = ai_image_service.submit_workbench_batch(
             self.job["job_uid"],
             [
-                {"title": "A", "prompt": "one"},
-                {"title": "B", "prompt": "two"},
-                {"title": "C", "prompt": "three"},
+                {"title": "A", "prompt": "one", "count": 3},
+                {"title": "B", "prompt": "two", "count": 2},
+                {"title": "C", "prompt": "three", "count": 1},
             ],
             request_uid="request-1",
             settings=self._settings(),
@@ -101,8 +101,16 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(len(client.created_payloads), 3)
         self.assertEqual(len(poll_submissions), 3)
+        payloads_by_prompt = {
+            payload["prompt"]: payload
+            for payload, _idempotency_key in client.created_payloads
+        }
+        self.assertEqual(payloads_by_prompt["one"]["n"], 3)
+        self.assertEqual(payloads_by_prompt["two"]["n"], 2)
+        self.assertEqual(payloads_by_prompt["three"]["n"], 1)
         self.assertEqual([run["prompt"] for run in result["runs"]], ["one", "two", "three"])
         self.assertEqual([run["batch_index"] for run in result["runs"]], [0, 1, 2])
+        self.assertEqual([run["requested_count"] for run in result["runs"]], [3, 2, 1])
         self.assertTrue(all(run["task_id"] and run["poll_url"] for run in result["runs"]))
         self.assertTrue(all(run["poll_after"] == 5 for run in result["runs"]))
         self.assertTrue(all(run["input_params"] == expected_input_params for run in result["runs"]))
@@ -146,6 +154,51 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
                 poll_submitter=lambda *_args, **_kwargs: None,
             )
 
+    def test_batch_normalizes_gpt_counts_without_expanding_prompt_runs(self):
+        client = FakeWorkbenchClient()
+        result = ai_image_service.submit_workbench_batch(
+            self.job["job_uid"],
+            [
+                {"prompt": "missing"},
+                {"prompt": "zero", "count": 0},
+                {"prompt": "large", "count": 99},
+            ],
+            request_uid="request-count-normalization",
+            settings=self._settings(),
+            client_factory=lambda *_args, **_kwargs: client,
+            poll_submitter=lambda *_args, **_kwargs: None,
+        )
+
+        self.assertEqual([run["requested_count"] for run in result["runs"]], [1, 1, 8])
+        self.assertEqual(len(client.created_payloads), 3)
+
+    def test_nano_batch_forces_one_image_and_omits_n(self):
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "model_key": "gemini-3.1-flash-image-preview",
+            "params": {
+                "ratio": "1:1",
+                "size": "2K",
+                "quality": "2K",
+                "n": 8,
+            },
+        })
+        client = FakeWorkbenchClient()
+        result = ai_image_service.submit_workbench_batch(
+            self.job["job_uid"],
+            [{"prompt": "nano", "count": 8}],
+            request_uid="request-nano-count",
+            settings={
+                "base_url": "https://api.example/v1",
+                ai_image_service.GEMINI_FLASH_CONFIG_ID: "unit-nano-key",
+            },
+            client_factory=lambda *_args, **_kwargs: client,
+            poll_submitter=lambda *_args, **_kwargs: None,
+        )
+
+        payload = client.created_payloads[0][0]
+        self.assertNotIn("n", payload)
+        self.assertEqual(result["runs"][0]["requested_count"], 1)
+
     def test_single_create_failure_does_not_block_sibling_runs(self):
         client = FakeWorkbenchClient(fail_prompts={"two"})
 
@@ -170,6 +223,7 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
                 "runs": [{
                     "run_uid": run_uid,
                     "prompt": "one",
+                    "requested_count": 2,
                     "status": "queued",
                     "provider_status": "queued",
                     "task_id": "task-one",
@@ -185,7 +239,11 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
             {
                 "id": "task-one",
                 "status": "succeeded",
-                "data": [{"url": "https://img.example/task-one.png"}],
+                "data": [
+                    {"url": "https://img.example/task-one-a.png"},
+                    {"url": "https://img.example/task-one-b.png"},
+                    {"url": "https://img.example/task-one-extra.png"},
+                ],
             },
         ])
         sleeps = []
@@ -203,9 +261,15 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         run = refreshed["summary"]["runs"][0]
         self.assertEqual(run["status"], "completed")
         self.assertEqual(run["provider_status"], "succeeded")
-        self.assertEqual(run["image_urls"], ["https://img.example/task-one.png"])
+        self.assertEqual(run["image_urls"], [
+            "https://img.example/task-one-a.png",
+            "https://img.example/task-one-b.png",
+        ])
         self.assertEqual(refreshed["status"], "completed")
-        self.assertEqual(refreshed["summary"]["image_urls"], ["https://img.example/task-one.png"])
+        self.assertEqual(refreshed["summary"]["image_urls"], [
+            "https://img.example/task-one-a.png",
+            "https://img.example/task-one-b.png",
+        ])
 
 
 if __name__ == "__main__":

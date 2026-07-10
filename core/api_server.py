@@ -5281,6 +5281,7 @@ class AiImageJobPatchRequest(BaseModel):
 class AiImageBatchPromptRequest(BaseModel):
     title: str = ""
     prompt: str = ""
+    count: int = 1
 
 
 class AiImageBatchRunRequest(BaseModel):

@@ -4,6 +4,7 @@ import base64
 from pathlib import Path
 from unittest.mock import patch
 from fastapi import HTTPException
+from pydantic import ValidationError
 
 from core import ai_image_service
 from core import api_server
@@ -149,8 +150,8 @@ class AiImageApiTests(unittest.TestCase):
                 api_server.AiImageBatchRunRequest(
                     request_uid="request-api-1",
                     prompts=[
-                        api_server.AiImageBatchPromptRequest(title="A", prompt="one"),
-                        api_server.AiImageBatchPromptRequest(title="B", prompt="two"),
+                        api_server.AiImageBatchPromptRequest(title="A", prompt="one", count=3),
+                        api_server.AiImageBatchPromptRequest(title="B", prompt="two", count=2),
                     ],
                 ),
             )
@@ -158,9 +159,18 @@ class AiImageApiTests(unittest.TestCase):
         self.assertEqual(result, expected)
         submit.assert_called_once_with(
             job["job_uid"],
-            [{"title": "A", "prompt": "one"}, {"title": "B", "prompt": "two"}],
+            [
+                {"title": "A", "prompt": "one", "count": 3},
+                {"title": "B", "prompt": "two", "count": 2},
+            ],
             request_uid="request-api-1",
         )
+
+    def test_batch_prompt_request_defaults_and_rejects_malformed_count(self):
+        self.assertEqual(api_server.AiImageBatchPromptRequest(prompt="one").count, 1)
+        self.assertEqual(api_server.AiImageBatchPromptRequest(prompt="two", count=4).count, 4)
+        with self.assertRaises(ValidationError):
+            api_server.AiImageBatchPromptRequest(prompt="bad", count="not-a-number")
 
     def test_batch_run_api_rejects_more_than_100_prompts(self):
         job = data_sink.create_ai_image_job({"title": "overflow batch api job"})
