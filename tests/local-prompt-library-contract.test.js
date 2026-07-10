@@ -59,9 +59,19 @@ test('Shared Prompt picker reads draft cloud templates from the library list pay
   const picker = read('app/src/renderer/components/PromptLibraryPickerModal.vue')
 
   assert.match(picker, /buildPromptLibraryPickerLibraries/)
+  assert.match(picker, /loadPromptLibraryPickerSources/)
   assert.match(picker, /window\.cs\.listCloudPromptLibraries/)
   assert.doesNotMatch(picker, /window\.cs\.resolveCloudPromptTemplates/)
   assert.match(picker, /selectedLibrary\.templates/)
+})
+
+test('Shared Prompt picker publishes local libraries while cloud refresh remains pending', () => {
+  const picker = read('app/src/renderer/components/PromptLibraryPickerModal.vue')
+
+  assert.match(picker, /loadPromptLibraryPickerSources\(\{[\s\S]*onLocal:/)
+  assert.match(picker, /applyPromptLibrarySources\(localState/)
+  assert.match(picker, /loading && !libraries\.length/)
+  assert.doesNotMatch(picker, /v-else-if="loading \|\| templatesLoading"/)
 })
 
 test('LocalPromptLibrary opens with a library list before entering prompt detail editing', () => {

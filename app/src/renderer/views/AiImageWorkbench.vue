@@ -46,6 +46,9 @@
           <div class="aiw-panel-head">
             <span>Prompt</span>
             <div class="aiw-panel-actions">
+              <button type="button" aria-label="从 Prompt 库选择" title="从 Prompt 库选择" @click="openSinglePromptLibraryPicker">
+                <span class="aiw-icon-button-content"><AiwIcon name="text" />Prompt 库</span>
+              </button>
               <button type="button" @click="openBatchGenerationDialog">
                 <span class="aiw-icon-button-content"><AiwIcon name="wand" />批量生成</span>
               </button>
@@ -716,9 +719,9 @@
     <PromptLibraryPickerModal
       :open="batchPromptLibraryPicker.open"
       title="从 Prompt 库选择"
-      :subtitle="batchPromptLibraryPicker.card?.title || '选中后会回填当前批量 Prompt。'"
+      :subtitle="batchPromptLibraryPicker.target === 'single' ? '选中后会回填当前 Prompt。' : (batchPromptLibraryPicker.card?.title || '选中后会回填当前批量 Prompt。')"
       @close="closeBatchPromptLibraryPicker"
-      @select="selectBatchPromptLibraryTemplate"
+      @select="selectPromptLibraryTemplate"
     />
 
     <div v-if="lightboxItem" class="aiw-lightbox" @click="closeLightbox">
@@ -1141,6 +1144,7 @@ const batchGenerationDialog = reactive({
 })
 const batchPromptLibraryPicker = reactive({
   open: false,
+  target: 'single',
   card: null,
 })
 const deleteTaskDialog = reactive({
@@ -2067,8 +2071,15 @@ function removeBatchReferencePath(index) {
 
 function openBatchPromptLibraryPicker(card) {
   if (batchGenerationDialog.submitting) return
+  batchPromptLibraryPicker.target = 'batch'
   batchPromptLibraryPicker.open = true
   batchPromptLibraryPicker.card = card
+}
+
+function openSinglePromptLibraryPicker() {
+  batchPromptLibraryPicker.target = 'single'
+  batchPromptLibraryPicker.card = null
+  batchPromptLibraryPicker.open = true
 }
 
 function closeBatchPromptLibraryPicker() {
@@ -2076,10 +2087,16 @@ function closeBatchPromptLibraryPicker() {
   batchPromptLibraryPicker.card = null
 }
 
-function selectBatchPromptLibraryTemplate(template) {
-  const card = batchPromptLibraryPicker.card
+function selectPromptLibraryTemplate(template) {
   const promptText = String(template?.prompt_text || template?.prompt || '').trim()
-  if (!card || !promptText) return
+  if (!promptText) return
+  if (batchPromptLibraryPicker.target === 'single') {
+    form.prompt = promptText
+    closeBatchPromptLibraryPicker()
+    return
+  }
+  const card = batchPromptLibraryPicker.card
+  if (!card) return
   card.title = String(template?.field_name || template?.name || card.title || 'Prompt').trim()
   card.prompt = promptText
   closeBatchPromptLibraryPicker()

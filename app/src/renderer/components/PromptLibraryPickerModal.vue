@@ -30,7 +30,7 @@
         <strong>{{ operatorError }}</strong>
         <button type="button" class="prompt-library-error-retry" :disabled="loading" @click="loadPromptLibraries">刷新重试</button>
       </div>
-      <div v-else-if="loading || templatesLoading" class="prompt-library-picker-empty">正在读取 Prompt 库...</div>
+      <div v-else-if="(loading && !libraries.length) || templatesLoading" class="prompt-library-picker-empty">正在读取 Prompt 库...</div>
       <div v-else class="prompt-library-template-list">
         <button
           v-for="template in filteredTemplates"
@@ -51,7 +51,10 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
-import { buildPromptLibraryPickerLibraries } from '../utils/localPromptLibrary'
+import {
+  buildPromptLibraryPickerLibraries,
+  loadPromptLibraryPickerSources,
+} from '../utils/localPromptLibrary'
 import { createPromptLibraryRequestGuard } from '../utils/promptLibraryRequestGuard'
 import { promptLibraryFailureMessage } from '../utils/aiImageOperatorMessages.mjs'
 import { focusFirstInDialog, trapDialogFocus } from '../utils/dialogAccessibility.mjs'
@@ -151,32 +154,39 @@ async function loadPromptLibraries() {
   error.value = ''
   try {
     if (!window?.cs) throw new Error('本地 Prompt 库服务未就绪')
-    const [localResult, cloudResult] = await Promise.allSettled([
-      window.cs.listLocalPromptLibraries(),
-      window.cs.listCloudPromptLibraries(),
-    ])
-    if (!promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) return
-    const localPayload = promptLibrarySettledPayload(localResult, '本地 Prompt 库')
-    const cloudPayload = promptLibrarySettledPayload(cloudResult, '线上 Prompt 库')
-    const nextLibraries = buildPromptLibraryPickerLibraries({
-      localLibraries: Array.isArray(localPayload.payload?.libraries) ? localPayload.payload.libraries : [],
-      cloudLibraries: Array.isArray(cloudPayload.payload?.libraries) ? cloudPayload.payload.libraries : [],
+    const sources = await loadPromptLibraryPickerSources({
+      listLocalLibraries: () => window.cs.listLocalPromptLibraries(),
+      listCloudLibraries: () => window.cs.listCloudPromptLibraries(),
+      onLocal: async (localState) => {
+        if (!promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) return
+        await applyPromptLibrarySources(localState)
+      },
     })
-    libraries.value = nextLibraries
-    const currentId = String(selectedLibraryId.value || '').trim()
-    const currentExists = nextLibraries.some(library => String(library.picker_key || library.id || '') === currentId)
-    const nextLibraryId = currentExists ? currentId : String(nextLibraries[0]?.picker_key || nextLibraries[0]?.id || '').trim()
-    selectedLibraryId.value = nextLibraryId
-    const errors = [localPayload.error, cloudPayload.error].filter(Boolean)
-    if (!nextLibraries.length && errors.length) throw new Error(errors.join('；'))
-    if (nextLibraryId) await loadPromptLibraryTemplates(nextLibraryId)
-    else templates.value = []
+    if (!promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) return
+    await applyPromptLibrarySources(sources)
   } catch (err) {
     if (!promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) return
     error.value = err?.message || String(err)
   } finally {
     if (promptLibraryListRequestGuard.isCurrent(requestToken, requestKey)) loading.value = false
   }
+}
+
+async function applyPromptLibrarySources(sourceState = {}) {
+  const nextLibraries = buildPromptLibraryPickerLibraries({
+    localLibraries: sourceState.localLibraries,
+    cloudLibraries: sourceState.cloudLibraries,
+  })
+  libraries.value = nextLibraries
+  const currentId = String(selectedLibraryId.value || '').trim()
+  const currentExists = nextLibraries.some(library => String(library.picker_key || library.id || '') === currentId)
+  const nextLibraryId = currentExists ? currentId : String(nextLibraries[0]?.picker_key || nextLibraries[0]?.id || '').trim()
+  selectedLibraryId.value = nextLibraryId
+  if (!nextLibraries.length && !sourceState.cloudPending && sourceState.errors?.length) {
+    throw new Error(sourceState.errors.join('；'))
+  }
+  if (nextLibraryId) await loadPromptLibraryTemplates(nextLibraryId)
+  else templates.value = []
 }
 
 async function loadPromptLibraryTemplates(libraryId) {
@@ -208,16 +218,6 @@ function invalidatePromptLibraryRequests() {
   promptLibraryListRequestGuard.invalidate()
   loading.value = false
   templatesLoading.value = false
-}
-
-function promptLibrarySettledPayload(result, label) {
-  if (result.status === 'rejected') {
-    return { payload: {}, error: `${label}读取失败：${result.reason?.message || result.reason}` }
-  }
-  const payload = result.value || {}
-  const payloadError = payload?.detail || payload?.error
-  if (payloadError) return { payload: {}, error: `${label}读取失败：${payloadError}` }
-  return { payload, error: '' }
 }
 
 function selectTemplate(template) {

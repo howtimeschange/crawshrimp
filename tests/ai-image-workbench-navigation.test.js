@@ -229,6 +229,20 @@ test('AI image workbench offers batch generation with shared prompt library pick
   assert.match(submitBody, /if \(hasActiveRuns\(currentJob\.value\)\) startJobPolling\(jobUid\)/)
 })
 
+test('AI image workbench lets single generation reuse the shared Prompt picker', () => {
+  const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+
+  assert.match(workbench, /@click="openSinglePromptLibraryPicker"/)
+  assert.match(workbench, /aria-label="从 Prompt 库选择" title="从 Prompt 库选择"/)
+  assert.match(workbench, /<AiwIcon name="text" \/>Prompt 库/)
+  assert.match(workbench, /function openSinglePromptLibraryPicker\(\)/)
+  assert.match(workbench, /batchPromptLibraryPicker\.target = 'single'/)
+  assert.match(workbench, /batchPromptLibraryPicker\.target = 'batch'/)
+  assert.match(workbench, /function selectPromptLibraryTemplate\(template\)/)
+  assert.match(workbench, /if \(batchPromptLibraryPicker\.target === 'single'\)[\s\S]*form\.prompt = promptText/)
+  assert.match(workbench, /@select="selectPromptLibraryTemplate"/)
+})
+
 test('AI image workbench only sends the current annotation during lightbox edits', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
   const editStart = workbench.indexOf('async function runLightboxEditGeneration')
