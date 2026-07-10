@@ -2,7 +2,7 @@
 
 日期：2026-07-10
 
-状态：待用户书面复核
+状态：用户已确认，待实施
 
 范围：`codex/cloud-approval-workbench` 独立 worktree 内的 AI 生图工作台
 
@@ -18,6 +18,8 @@
 4. 后端把批次中的全部 Prompt 并发提交给 1XM，单批最多 100 条；1XM 自己维护队列和“同时处理 5 条”的执行限制。
 5. 工作台轮询批量状态，逐条把 queued、running、completed、failed 状态更新到对应队列。
 6. 结果 URL 出现后主动缓存；缓存尚未准备好或缓存读取失败时仍可直接尝试远程 URL，避免空白卡片。
+7. AI 生图工作台的 GPT-Image-2 与 Nano Banana 请求参数按 1XM 官方异步接口分别映射。
+8. 新批量队列与 AI 测图脚本隔离；AI 测图继续使用既有阻塞式封装和补偿逻辑。
 
 ## 2. 方案选择
 
@@ -75,6 +77,8 @@
   "status": "queued",
   "task_id": "",
   "poll_url": "",
+  "poll_after": 5,
+  "provider_status": "queued",
   "image_urls": [],
   "output_files": [],
   "warning": "",
@@ -94,11 +98,36 @@ running -> failed
 
 - `run_uid` 在入队时生成，供应商完成后原位更新同一记录，不追加重复记录。
 - `queued` 同时覆盖本地已持久化待提交和 1XM 已接收待处理；保存 `task_id` 后即可区分供应商已接收。
+- `poll_after` 使用 1XM 创建或查询响应值，默认 5 秒；后端不得固定每秒请求 1XM。
 - `batch_uid + batch_index` 用于稳定排序和批次追踪。
 - 旧任务没有这些字段时继续按现有历史记录展示。
 - 任务顶层状态在仍有 queued/running 记录时保持 `running`；全部结束后，有成功记录则为 `completed`，全部失败才为 `failed`。
 
-## 5. API 与并发执行
+## 5. 模型参数映射
+
+AI 生图工作台使用独立的模型参数构建方法，不修改 AI 测图脚本的 `_prepare_one_xm_payload()`。
+
+### 5.1 GPT-Image-2
+
+- `model` 固定为 `gpt-image-2`。
+- `size` 使用合法像素尺寸：最大边不超过 3840，宽高均为 16 的倍数，长宽比不超过 3:1，总像素为 655,360–8,294,400。
+- 4K 档不再强制缩到 2048；16:9 可提交 `3840x2160`，9:16 可提交 `2160x3840`。
+- 删除非法的 `1920x1080` / `1080x1920` 选项，2K 16:9 / 9:16 使用 `2048x1152` / `1152x2048`。
+- `quality` 只允许 `auto`、`high`、`medium`、`low`，不再发送 `standard`。
+- `output_format` 把前端 `jpg` 规范化为官方的 `jpeg`。
+- 请求不发送未在官方异步接口中定义的 `ratio`；比例只用于前端筛选合法尺寸。
+- `n` 保留，按 GPT-Image-2 官方语义控制单任务输出数量。
+
+### 5.2 Nano Banana
+
+- 模型 ID 保持 `gemini-3.1-flash-image-preview` 和 `gemini-3-pro-image-preview`。
+- 前端保留独立比例选择；尺寸控件对 Nano Banana 显示 `1K`、`2K`、`4K` 分辨率档位。
+- 异步请求映射为 `size: <比例>`、`quality: <1K|2K|4K>`。
+- Nano Banana 请求不发送 `n`、`ratio`、`output_format`。
+- 每个 Nano Banana 异步任务只生成一张；需要多张时创建多个使用不同幂等键的任务。
+- 主图和参考图继续由服务端转换为最多 10 张 data URL，写入 `image`。
+
+## 6. API 与并发执行
 
 新增批量入队接口：
 
@@ -131,15 +160,23 @@ POST /ai-image/jobs/{job_uid}/batch-run
 - 当前 AI 生图工作台在前端把单次提交限制为 20 条，不影响后端保留 100 条接收能力。
 - 对批次内全部 Prompt 并发调用 1XM 的异步任务创建接口；不等待前一条生成完成，也不在本地限制为 5 路。
 - 1XM 接收任务后自行排队并最多同时处理 5 条，这个调度不由 Crawshrimp 重复实现。
-- 每条任务创建成功后立即记录各自的 `task_id` 和 `poll_url`；任务创建阶段结束后，本地只负责轮询这些已提交任务。
-- 轮询各任务时按供应商状态更新对应 run，任一任务进入终态后停止轮询该任务。
+- 每条任务创建成功后立即记录各自的 `task_id`、`poll_url`、`poll_after` 和供应商状态；任务创建阶段结束后，本地只负责轮询这些已提交任务。
+- 轮询各任务时遵守各自最新的 `poll_after`，按供应商状态更新对应 run，任一任务进入终态后停止轮询该任务。
 - 完成回写通过同一任务的锁串行合并，避免 SQLite 读改写丢失其他 run。
 - 单条任务创建或轮询失败只更新该 run，不阻断其他任务的提交与轮询。
 - 重复提交由客户端 `request_uid` 与服务端生成的 `batch_uid` 关联去重；相同 `request_uid` 只返回首次创建的批次，不追加 runs。
 
 现有单图 `/run` 接口保持兼容。
 
-## 6. 前端轮询与恢复
+### 6.1 与 AI 测图隔离
+
+- `core.one_xm_image.run_image_task_until_done()` 保持原有创建、轮询、失败补偿与阻塞返回语义。
+- `core.api_server._run_one_xm_generation_row()` 和 AI 测图脚本继续调用上述旧方法，不迁移到工作台队列。
+- AI 生图工作台新增专用的批量提交、单 run 轮询和原位持久化方法。
+- 两条链路只复用 `OneXMImageClient.create_task()` / `get_task()`、认证和错误解析等底层 HTTP 能力。
+- 回归测试必须证明 AI 测图现有调用次数、补偿键和结果字段不变。
+
+## 7. 前端轮询与恢复
 
 - 批量入队响应中的 `job` 立即替换当前任务详情。
 - 工作台每 1 秒读取当前任务详情。
@@ -148,7 +185,7 @@ POST /ai-image/jobs/{job_uid}/batch-run
 - queued/running run 直接转成加载卡片，不依赖前端临时数组，因此刷新页面也不会丢失队列。
 - 单图生成现有加载态保持不变，避免重复插入额外的通用“正在生成”队列。
 
-## 7. 图片预览与本地缓存
+## 8. 图片预览与本地缓存
 
 预览顺序调整为：
 
@@ -164,7 +201,7 @@ POST /ai-image/jobs/{job_uid}/batch-run
 - 远程 URL 加载失败时继续等待后端本地缓存；本地读取失败时仍保留远程重试能力。
 - 同一 URL 的缓存请求去重，继续使用确定性缓存文件名。
 
-## 8. 错误处理
+## 9. 错误处理
 
 - 工作台添加超过 20 条 Prompt：前端阻止继续新增并提示上限。
 - 后端批量请求超过 100 条或没有有效 Prompt：接口返回 400，弹窗保持打开。
@@ -175,17 +212,21 @@ POST /ai-image/jobs/{job_uid}/batch-run
 - 后端进程重启：已持久化 queued/running 状态仍可展示；本次实现不承诺跨进程自动续跑，残留运行态应被明确标记为失败或可重新提交，不能无限加载。
 - 图片远程与本地均不可用：卡片显示预览失败和重试入口，下载能力不受影响。
 
-## 9. 测试与验收
+## 10. 测试与验收
 
 ### 自动化测试
 
 - 后端批量 1 条、3 条、N 条和 100 条可以入队，101 条被拒绝。
 - 前端工作台可以添加并提交 1–20 条；第 20 条时新增入口禁用，删除一条后恢复。
-- 接口会并发提交全部任务并保存各自的 `task_id` / `poll_url`，在供应商生成完成前返回 accepted。
+- GPT-Image-2 的 4K、格式、quality 和合法尺寸按官方字段提交，不发送 `ratio`。
+- Nano Banana 按 `size=<比例>`、`quality=<分辨率档>` 提交，不发送 `n`、`ratio`、`output_format`。
+- 接口会并发提交全部任务并保存各自的 `task_id` / `poll_url` / `poll_after`，在供应商生成完成前返回 accepted。
 - 同一 job 下产生 N 条 runs，不产生 N 个 jobs。
 - N 条 Prompt 不因本地 5 路限制而串行等待；在后端上限内全部提交给 1XM，由 1XM 自己排队和控制 5 条实际处理并发。
 - 并发完成乱序时，runs 仍按 `batch_index` 稳定展示且不丢记录。
 - 单条失败不阻断其余 runs。
+- 后端轮询遵守 1XM 返回的 `poll_after`；前端 1 秒轮询只访问本地后端。
+- AI 测图的 `run_image_task_until_done()` 和 `_run_one_xm_generation_row()` 回归测试保持通过。
 - queued/running runs 渲染为 N 个加载队列。
 - 本地缓存尚未读完时 `resultPreviewSrc` 会回退到远程 URL。
 - 远程 `<img>` 未成功加载时也会主动 materialize。
@@ -201,9 +242,10 @@ POST /ai-image/jobs/{job_uid}/batch-run
 6. 检查 SQLite 中同一 `job_uid` 的 `summary.runs` 数量与 Prompt 数量一致。
 7. 检查 `ai-image-cache` 和 `summary.result_cache`，重新进入页面应优先显示本地缓存。
 
-## 10. 非目标
+## 11. 非目标
 
 - 不改动 1XM 模型与 Key 配置体系。
 - 不改动图片父子修改链规则。
 - 不迁移既有独立 Prompt 任务到同一个历史任务。
+- 不修改 AI 测图脚本的执行、补偿、并发或结果导出语义。
 - 不在本次实现跨进程可恢复的持久化任务执行器；只保证运行状态不会在 UI 中无期限假装执行。
