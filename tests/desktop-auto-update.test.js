@@ -126,6 +126,7 @@ test('desktop package config generates GitHub provider update metadata for Windo
 
 test('desktop build workflow collects generated update metadata artifacts', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const expectedFilesMatch = workflow.match(/expected_files=\(\n([\s\S]*?)\n\s*\)/)
 
   assert.match(workflow, /app\/dist\/\*\.exe/)
   assert.match(workflow, /app\/dist\/\*\.exe\.blockmap/)
@@ -134,4 +135,7 @@ test('desktop build workflow collects generated update metadata artifacts', () =
   assert.match(workflow, /app\/dist\/\*\.zip\.blockmap/)
   assert.match(workflow, /app\/dist\/latest\*\.yml/)
   assert.match(workflow, /mac-arm64\.dmg[\s\S]*mac-x64\.dmg[\s\S]*mac-arm64\.zip[\s\S]*mac-x64\.zip[\s\S]*latest-mac\.yml/)
+  assert.ok(expectedFilesMatch, 'mac fallback expected_files block is present')
+  assert.match(expectedFilesMatch[1], /"dist\/crawshrimp-v\$\{APP_VERSION\}-mac-arm64\.zip\.blockmap"/)
+  assert.match(expectedFilesMatch[1], /"dist\/crawshrimp-v\$\{APP_VERSION\}-mac-x64\.zip\.blockmap"/)
 })
