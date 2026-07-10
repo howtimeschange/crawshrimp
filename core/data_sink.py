@@ -233,6 +233,7 @@ def init_db():
             )
         """)
         _ensure_column(conn, "ai_image_jobs", "output_dir", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(conn, "ai_image_jobs", "pinned_at", "TEXT NOT NULL DEFAULT ''")
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_ai_image_jobs_updated
             ON ai_image_jobs (updated_at)
@@ -562,7 +563,11 @@ def list_ai_image_jobs(limit: int = 100) -> list[dict]:
             """
             SELECT *
             FROM ai_image_jobs
-            ORDER BY updated_at DESC, id DESC
+            ORDER BY
+                CASE WHEN pinned_at <> '' THEN 0 ELSE 1 END,
+                pinned_at DESC,
+                updated_at DESC,
+                id DESC
             LIMIT ?
             """,
             (safe_limit,),
@@ -588,6 +593,38 @@ def update_ai_image_job(job_uid: str, payload: Optional[Mapping[str, Any]] = Non
         conn.execute(f"UPDATE ai_image_jobs SET {assignments} WHERE job_uid=?", [*updates.values(), uid])
         conn.commit()
     return get_ai_image_job(uid) or {}
+
+
+def set_ai_image_job_pinned(job_uid: str, pinned: bool) -> dict:
+    uid = str(job_uid or "").strip()
+    if not uid:
+        return {}
+    pinned_at = _utc_now_iso() if bool(pinned) else ""
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE ai_image_jobs SET pinned_at=? WHERE job_uid=?",
+            (pinned_at, uid),
+        )
+        conn.commit()
+    return get_ai_image_job(uid) or {}
+
+
+def delete_ai_image_job(job_uid: str) -> bool:
+    uid = str(job_uid or "").strip()
+    if not uid:
+        return False
+    with _get_conn() as conn:
+        found = conn.execute(
+            "SELECT 1 FROM ai_image_jobs WHERE job_uid=? LIMIT 1",
+            (uid,),
+        ).fetchone()
+        if not found:
+            return False
+        conn.execute("DELETE FROM ai_image_assets WHERE job_uid=?", (uid,))
+        conn.execute("DELETE FROM ai_image_canvases WHERE job_uid=?", (uid,))
+        conn.execute("DELETE FROM ai_image_jobs WHERE job_uid=?", (uid,))
+        conn.commit()
+    return True
 
 
 def create_ai_image_asset(payload: Optional[Mapping[str, Any]] = None) -> dict:

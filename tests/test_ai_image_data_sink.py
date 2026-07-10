@@ -49,6 +49,53 @@ class AiImageDataSinkTests(unittest.TestCase):
         self.assertEqual([item["job_uid"] for item in listed], [job["job_uid"]])
         self.assertEqual(listed[0]["output_dir"], str(self.root / "exports-2"))
 
+    def test_pinned_jobs_sort_by_latest_pin_without_touching_updated_at(self):
+        first = data_sink.create_ai_image_job({"title": "first"})
+        second = data_sink.create_ai_image_job({"title": "second"})
+        first_updated_at = first["updated_at"]
+        second_updated_at = second["updated_at"]
+
+        with patch("core.data_sink._utc_now_iso", side_effect=[
+            "2026-07-10T10:00:00+00:00",
+            "2026-07-10T10:01:00+00:00",
+        ]):
+            pinned_first = data_sink.set_ai_image_job_pinned(first["job_uid"], True)
+            pinned_second = data_sink.set_ai_image_job_pinned(second["job_uid"], True)
+
+        listed = data_sink.list_ai_image_jobs()
+
+        self.assertEqual([item["job_uid"] for item in listed[:2]], [second["job_uid"], first["job_uid"]])
+        self.assertEqual(pinned_first["pinned_at"], "2026-07-10T10:00:00+00:00")
+        self.assertEqual(pinned_second["pinned_at"], "2026-07-10T10:01:00+00:00")
+        self.assertEqual(pinned_first["updated_at"], first_updated_at)
+        self.assertEqual(pinned_second["updated_at"], second_updated_at)
+
+        unpinned_second = data_sink.set_ai_image_job_pinned(second["job_uid"], False)
+
+        self.assertEqual(unpinned_second["pinned_at"], "")
+        self.assertEqual(data_sink.list_ai_image_jobs()[0]["job_uid"], first["job_uid"])
+
+    def test_delete_job_cascades_assets_and_canvases(self):
+        job = data_sink.create_ai_image_job({"title": "delete me"})
+        data_sink.create_ai_image_asset({
+            "job_uid": job["job_uid"],
+            "kind": "result",
+            "path": "/tmp/result.png",
+        })
+        data_sink.create_ai_image_canvas({
+            "job_uid": job["job_uid"],
+            "title": "delete canvas",
+            "canvas": {"nodes": []},
+        })
+
+        deleted = data_sink.delete_ai_image_job(job["job_uid"])
+
+        self.assertTrue(deleted)
+        self.assertIsNone(data_sink.get_ai_image_job(job["job_uid"]))
+        self.assertEqual(data_sink.list_ai_image_assets(job["job_uid"]), [])
+        self.assertEqual(data_sink.list_ai_image_canvases(job["job_uid"]), [])
+        self.assertFalse(data_sink.delete_ai_image_job(job["job_uid"]))
+
     def test_asset_crud_preserves_order_and_metadata(self):
         job = data_sink.create_ai_image_job({"title": "asset job"})
         first = data_sink.create_ai_image_asset({
