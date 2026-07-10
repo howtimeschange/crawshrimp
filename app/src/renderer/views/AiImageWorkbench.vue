@@ -378,7 +378,7 @@
             </div>
           </section>
 
-          <aside v-if="taskSidebarOpen" class="aiw-history-sidebar">
+          <aside v-show="taskSidebarOpen" class="aiw-history-sidebar">
             <div class="aiw-panel-head">
               <span>任务记录</span>
             </div>
