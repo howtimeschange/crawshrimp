@@ -21,6 +21,18 @@ test('settings page contains cloud approval operational settings group', () => {
   assert.match(source, /submit_tmall_material_test/)
   assert.match(source, /saveCloudApprovalConfig\(cloudConfigPayload\(\)\)/)
   assert.match(source, /enrollCloudMachine\(\{[\s\S]*capabilities: selectedCloudCapabilities\(\)/)
+  assert.match(source, /v-model="cfg\['cloud_approval\.base_url'\]"[\s\S]*readonly/)
+  assert.match(source, /getCloudApprovalStatus\(\{ refresh: true \}\)/)
+  assert.match(source, /cloudAddressHint/)
+  assert.match(source, /正式环境固定地址/)
+  assert.match(source, /已检测到本地审批服务/)
+  assert.match(source, /未检测到本地审批服务，当前显示默认地址/)
+
+  const payloadBody = source.match(/function cloudConfigPayload\(\) \{([\s\S]*?)\n\}/)?.[1] || ''
+  assert.doesNotMatch(payloadBody, /base_url/)
+  const cloudPanelFields = source.match(/'cloud-approval': \[([^\]]*)\]/)?.[1] || ''
+  assert.doesNotMatch(cloudPanelFields, /base_url/)
+  assert.match(source, /cfg\.value\['cloud_approval\.base_url'\] = status\.base_url \|\| ''/)
   for (const method of ['getCloudApprovalStatus', 'saveCloudApprovalConfig', 'enrollCloudMachine', 'startCloudMachine', 'stopCloudMachine']) {
     assert.match(source, new RegExp(method))
   }

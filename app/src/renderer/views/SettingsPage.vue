@@ -400,9 +400,12 @@
                 <label>云端地址</label>
                 <input
                   v-model="cfg['cloud_approval.base_url']"
-                  placeholder="https://approval.example.com"
                   class="input"
+                  readonly
                 />
+                <p :class="['cloud-address-hint', cloudAddressHintOk ? 'ok' : 'warn']">
+                  {{ cloudAddressHint }}
+                </p>
               </div>
               <div class="field">
                 <label>注册 token</label>
@@ -502,6 +505,12 @@ const cloudStatus = ref(null)
 const cloudBusy = reactive({ config: false, enroll: false, start: false, stop: false })
 const cloudMsg = ref('')
 const cloudMsgOk = ref(true)
+const cloudServiceErrorMessages = {
+  invalid_environment_override: '开发环境变量中的云端审批地址无效',
+  unreachable: '云端审批服务暂时无法访问',
+  unexpected_service: '检测到的地址不是抓虾云端审批服务',
+  not_detected: '未检测到本地审批服务，当前显示默认地址',
+}
 const defaultCloudCapabilities = ['generate_ai_image', 'regenerate_ai_image', 'submit_tmall_material_test', 'crawl_tmall_material_test_data']
 const cloudCapabilityOptions = [
   { value: 'generate_ai_image', label: 'generate_ai_image' },
@@ -575,7 +584,7 @@ const panelFields = {
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
   'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
-  'cloud-approval': ['cloud_approval.base_url', 'cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
+  'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
 const notifyPanelByChannel = {
@@ -585,6 +594,16 @@ const notifyPanelByChannel = {
 }
 
 const activeGroup = computed(() => menuGroups.find(group => group.id === activeGroupId.value) || menuGroups[0])
+const cloudAddressHint = computed(() => {
+  const status = cloudStatus.value || {}
+  const errorMessage = cloudServiceErrorMessages[status.service_error] || '未检测到本地审批服务，当前显示默认地址'
+  if (status.environment === 'production') {
+    return status.service_reachable ? '正式环境固定地址' : `正式环境固定地址；${errorMessage}`
+  }
+  if (status.service_reachable) return '已检测到本地审批服务'
+  return errorMessage
+})
+const cloudAddressHintOk = computed(() => Boolean(cloudStatus.value?.service_reachable))
 
 function ensureSaveState(panelId) {
   if (!saveState[panelId]) {
@@ -746,7 +765,6 @@ async function savePanel(panelId, options = {}) {
 
 function cloudConfigPayload() {
   return {
-    base_url: cfg.value['cloud_approval.base_url'] || '',
     registration_token: cfg.value['cloud_approval.registration_token'] || '',
     machine_name: cfg.value['cloud_approval.machine_name'] || '',
     machine_enabled: Boolean(cfg.value['cloud_approval.machine_enabled']),
@@ -756,7 +774,7 @@ function cloudConfigPayload() {
 
 function applyCloudStatus(status) {
   cloudStatus.value = status || null
-  if (status?.base_url !== undefined) cfg.value['cloud_approval.base_url'] = status.base_url || cfg.value['cloud_approval.base_url'] || ''
+  if (status?.base_url !== undefined) cfg.value['cloud_approval.base_url'] = status.base_url || ''
   if (status?.machine_name !== undefined) cfg.value['cloud_approval.machine_name'] = status.machine_name || cfg.value['cloud_approval.machine_name'] || ''
   if (status?.machine_enabled !== undefined) cfg.value['cloud_approval.machine_enabled'] = Boolean(status.machine_enabled)
   if (status?.capabilities !== undefined) cfg.value['cloud_approval.capabilities'] = normalizeCloudCapabilities(status.capabilities)
@@ -765,7 +783,7 @@ function applyCloudStatus(status) {
 async function loadCloudStatus() {
   if (typeof window.cs.getCloudApprovalStatus !== 'function') return
   try {
-    applyCloudStatus(await window.cs.getCloudApprovalStatus())
+    applyCloudStatus(await window.cs.getCloudApprovalStatus({ refresh: true }))
   } catch (e) {
     cloudMsg.value = e?.message || '读取云端审批状态失败'
     cloudMsgOk.value = false
@@ -882,6 +900,10 @@ onMounted(() => {
 
 watch(() => props.focusPanelId, panelId => {
   focusPanel(panelId)
+})
+
+watch(activePanelId, panelId => {
+  if (panelId === 'cloud-approval') loadCloudStatus()
 })
 </script>
 
@@ -1338,6 +1360,20 @@ watch(() => props.focusPanelId, panelId => {
 .inline-msg.err,
 .msg.err {
   background: rgba(248, 113, 113, 0.1);
+}
+
+.cloud-address-hint {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cloud-address-hint.ok {
+  color: #4ade80;
+}
+
+.cloud-address-hint.warn {
+  color: var(--orange);
 }
 
 .guide-block {
