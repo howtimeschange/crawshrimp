@@ -401,6 +401,13 @@ def _normalized_edit_source(params: Mapping[str, Any]) -> dict[str, str]:
     return result if result["result_key"] else {}
 
 
+def _workbench_input_snapshot(params: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "main_image_path": _compact(params.get("main_image_path")),
+        "reference_image_paths": _string_list(params.get("reference_image_paths")),
+    }
+
+
 def _legacy_run_from_summary(job: Mapping[str, Any], summary: Mapping[str, Any]) -> dict | None:
     output_files = _string_list(summary.get("output_files"))
     image_urls = _string_list(summary.get("image_urls"))
@@ -448,6 +455,7 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
         "model_key_tier": _compact(latest_summary.get("model_key_tier")),
         "size": _compact(params.get("size")),
         "ratio": _compact(params.get("ratio")),
+        "input_params": _workbench_input_snapshot(params),
         "status": status,
         "task_id": _compact(latest_summary.get("task_id")),
         "poll_url": _compact(latest_summary.get("poll_url")),
@@ -696,6 +704,7 @@ def submit_workbench_batch(
             "model_key_tier": _compact(params.get("model_key_tier")),
             "size": _compact(params.get("size")),
             "ratio": _compact(params.get("ratio")),
+            "input_params": _workbench_input_snapshot(params),
             "status": "queued",
             "provider_status": "pending_submission",
             "task_id": "",

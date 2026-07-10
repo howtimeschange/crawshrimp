@@ -282,6 +282,10 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertEqual(refreshed["summary"]["output_files"], [])
         self.assertEqual(refreshed["summary"]["runs"][0]["image_urls"], ["https://cdn.example/out.png"])
         self.assertEqual(refreshed["summary"]["runs"][0]["output_files"], [])
+        self.assertEqual(refreshed["summary"]["runs"][0]["input_params"], {
+            "main_image_path": "",
+            "reference_image_paths": [],
+        })
         self.assertNotIn("super-secret", summary_text)
         self.assertNotIn("data:image", summary_text)
         self.assertNotIn("raw upstream", summary_text)

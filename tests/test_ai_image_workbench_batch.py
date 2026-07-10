@@ -67,6 +67,21 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         return {"base_url": "https://api.example/v1", "2k": "unit-key", "4k": "unit-key-4k"}
 
     def test_batch_submits_all_prompts_concurrently_and_persists_task_handles(self):
+        main_path = self.root / "main.png"
+        ref_a_path = self.root / "ref-a.png"
+        ref_b_path = self.root / "ref-b.png"
+        for path in (main_path, ref_a_path, ref_b_path):
+            path.write_bytes(b"test-image")
+        expected_input_params = {
+            "main_image_path": str(main_path),
+            "reference_image_paths": [str(ref_a_path), str(ref_b_path)],
+        }
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "params": {
+                **self.job["params"],
+                **expected_input_params,
+            },
+        })
         client = FakeWorkbenchClient(barrier=threading.Barrier(3))
         poll_submissions = []
 
@@ -90,6 +105,7 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         self.assertEqual([run["batch_index"] for run in result["runs"]], [0, 1, 2])
         self.assertTrue(all(run["task_id"] and run["poll_url"] for run in result["runs"]))
         self.assertTrue(all(run["poll_after"] == 5 for run in result["runs"]))
+        self.assertTrue(all(run["input_params"] == expected_input_params for run in result["runs"]))
 
         refreshed = data_sink.get_ai_image_job(self.job["job_uid"])
         self.assertEqual(refreshed["status"], "running")
