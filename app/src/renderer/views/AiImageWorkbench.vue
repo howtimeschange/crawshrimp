@@ -931,7 +931,7 @@
 </template>
 
 <script setup>
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowReactive, watch } from 'vue'
 import {
   AI_IMAGE_FORMATS,
   AI_IMAGE_MODELS,
@@ -952,6 +952,7 @@ import {
   sizesForRatio,
 } from '../utils/aiImageModels.js'
 import {
+  groupResultQueuesByLineage,
   mergeCurrentJobRecord,
   promptChainFromLineage,
   resolveResultLineage,
@@ -1114,7 +1115,7 @@ const lightboxEditReferencePaths = ref([])
 const lightboxEditResults = ref([])
 const lightboxEditSessionKey = ref('')
 const lightboxEditResultsBySession = reactive(new Map())
-const lightboxEditOperations = reactive(new Map())
+const lightboxEditOperations = shallowReactive(new Map())
 const lightboxEditSubmitting = computed(() => lightboxEditOperations.has(lightboxEditSessionKey.value))
 const lightboxActiveIndex = ref(0)
 const lightboxMode = ref('preview')
@@ -1237,9 +1238,8 @@ const workbenchDialogOpen = computed(() => Boolean(
   || promptDialogQueue.value,
 ))
 const statusAnnouncement = computed(() => {
-  const runs = Array.isArray(currentJob.value?.summary?.runs) ? currentJob.value.summary.runs : []
-  const counts = runs.reduce((summary, run) => {
-    const status = String(run?.status || '').toLowerCase()
+  const counts = visibleResultQueues.value.reduce((summary, queue) => {
+    const status = String(queue?.status || '').toLowerCase()
     if (status in summary) summary[status] += 1
     return summary
   }, { queued: 0, running: 0, completed: 0, failed: 0 })
@@ -2310,6 +2310,7 @@ function workbenchRunPlaceholders(job, run, index) {
       loadingPreviewPath: loadingContext.previewPath,
       loadingMode: loadingContext.mode,
       loadingMessageOffset: index + slotIndex,
+      editSource: run?.edit_source || null,
       loading: true,
     }))
   }
@@ -2332,6 +2333,7 @@ function workbenchRunPlaceholders(job, run, index) {
       quality: run.quality || job?.params?.quality || '',
       responseFormat: run.response_format || job?.params?.response_format || '',
       inputParams: run.input_params && typeof run.input_params === 'object' ? run.input_params : {},
+      editSource: run?.edit_source || null,
       failed: true,
     }]
   }
@@ -2362,7 +2364,7 @@ function collectResultQueues(job) {
       item.historyItems = lineage.slice(0, -1)
       item.promptChain = promptChainFromLineage(lineage)
     }
-    return queues.reverse()
+    return groupResultQueuesByLineage(queues).reverse()
   }
   const legacySummary = {
     ...summary,
@@ -3198,8 +3200,9 @@ function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
 
 function applyLightboxEditResult(placeholder, latestJob, runUid = '') {
   const queues = collectResultQueues(latestJob)
-  const latestQueue = queues.find((queue) => String(queue?.key || '') === String(runUid || '')) || queues[0]
-  const result = latestQueue?.items?.[0] || null
+  const result = queues
+    .flatMap((queue) => queue.items || [])
+    .find((item) => String(item?.runUid || item?.run_uid || '') === String(runUid || '')) || null
   const editMetadata = preserveLightboxEditMetadata(placeholder)
   if (!result) {
     Object.assign(placeholder, {
