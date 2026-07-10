@@ -82,6 +82,7 @@ function createUpdateInstallCoordinator({
         return { ok: false, deferred: true }
       }
       if (!drainReadiness.valid) {
+        await releaseDrainSafely(drainReadiness.drainToken)
         updateService.setInstallReadiness({
           ready: false,
           blockers: drainReadiness.blockers,
@@ -166,10 +167,21 @@ function normalizeReadiness(value, source = 'readiness') {
   const blockers = Array.isArray(value.blockers)
     ? value.blockers.map(blocker => ({ ...blocker }))
     : []
+  const error = String(value.error || '').trim()
+  const safe = value.ready === true && blockers.length === 0 && !error
+  if (safe) {
+    return {
+      ready: true,
+      blockers: [],
+    }
+  }
+  const unsafeError = value.ready === true
+    ? error || `Invalid ${source} response: ready true conflicts with blockers.`
+    : error
   return {
-    ready: value.ready,
+    ready: false,
     blockers,
-    ...(value.error ? { error: value.error } : {}),
+    ...(unsafeError ? { error: unsafeError } : {}),
   }
 }
 
@@ -185,6 +197,7 @@ function normalizeDrainResponse(value) {
   if (!readiness.ready) {
     return {
       valid: false,
+      drainToken,
       blockers: readiness.blockers,
       error: readiness.error || 'Invalid drain response: readiness.ready true is required.',
     }

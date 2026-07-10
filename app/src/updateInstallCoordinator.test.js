@@ -249,6 +249,56 @@ test('malformed readiness responses fail closed before drain acquisition', async
   await assertUnsafeReadinessDefers('missing-explicit-ready', { blockers: [] })
 })
 
+test('ready readiness with blockers fails closed before drain acquisition', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => ({
+      ready: true,
+      blockers: [{ kind: 'task', id: 'contradictory::1' }],
+    }),
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
+    },
+    releaseDrain: async () => events.push('release-drain'),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+  })
+
+  assert.deepEqual(await coordinator.requestInstall(), { ok: false, deferred: true })
+  assert.deepEqual(events, [])
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+  assert.deepEqual(updateService.getStatus().blockers, [{ kind: 'task', id: 'contradictory::1' }])
+  assert.match(updateService.getStatus().error, /readiness/i)
+})
+
+test('ready readiness with error fails closed before drain acquisition', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => ({
+      ready: true,
+      blockers: [],
+      error: 'backend disagrees',
+    }),
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
+    },
+    releaseDrain: async () => events.push('release-drain'),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+  })
+
+  assert.deepEqual(await coordinator.requestInstall(), { ok: false, deferred: true })
+  assert.deepEqual(events, [])
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+  assert.match(updateService.getStatus().error, /backend disagrees/)
+})
+
 test('requestInstall fresh-checks readiness then drains, cleans up, marks installing, and quits', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []
@@ -305,9 +355,13 @@ async function assertUnsafeDrainDefers(label, drainResponse) {
   })
 
   const result = await coordinator.requestInstall()
+  const expectedEvents = [`${label}:get-readiness`, `${label}:acquire-drain`]
+  if (String(drainResponse?.drain_token || drainResponse?.drainToken || '').trim()) {
+    expectedEvents.push(`${label}:release-drain:${drainResponse.drain_token || drainResponse.drainToken}`)
+  }
 
   assert.deepEqual(result, { ok: false, deferred: true })
-  assert.deepEqual(events, [`${label}:get-readiness`, `${label}:acquire-drain`])
+  assert.deepEqual(events, expectedEvents)
   assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
   assert.match(updateService.getStatus().error, /drain/i)
 }
@@ -323,6 +377,48 @@ test('malformed drain responses fail closed before cleanup or install', async ()
   await assertUnsafeDrainDefers('missing-readiness', {
     ok: true,
     drain_token: 'drain-1',
+  })
+})
+
+async function assertContradictoryDrainReadinessDefers(label, readiness) {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push(`${label}:get-readiness`)
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push(`${label}:acquire-drain`)
+      return { ok: true, drain_token: 'drain-1', readiness }
+    },
+    releaseDrain: async token => events.push(`${label}:release-drain:${token}`),
+    shutdownForUpdate: async () => events.push(`${label}:shutdown`),
+    notifyReady: () => {},
+  })
+
+  assert.deepEqual(await coordinator.requestInstall(), { ok: false, deferred: true })
+  assert.deepEqual(events, [
+    `${label}:get-readiness`,
+    `${label}:acquire-drain`,
+    `${label}:release-drain:drain-1`,
+  ])
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+}
+
+test('drain readiness with blockers fails closed and releases the token', async () => {
+  await assertContradictoryDrainReadinessDefers('drain-blockers', {
+    ready: true,
+    blockers: [{ kind: 'task', id: 'contradictory::drain' }],
+  })
+})
+
+test('drain readiness with error fails closed and releases the token', async () => {
+  await assertContradictoryDrainReadinessDefers('drain-error', {
+    ready: true,
+    blockers: [],
+    error: 'drain disagrees',
   })
 })
 
