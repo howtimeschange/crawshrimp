@@ -400,7 +400,7 @@
         <header class="aiw-batch-head">
           <div>
             <strong>批量生成</strong>
-            <span>统一主图、参考图和参数，为每条 Prompt 单独生成 1 张图。</span>
+            <span>统一主图、参考图和模型参数，每条 Prompt 可单独设置生成张数。</span>
           </div>
           <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">
             <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
@@ -498,13 +498,65 @@
                 </article>
               </div>
             </section>
+
+            <section class="aiw-batch-source-box aiw-batch-settings-box">
+              <div class="aiw-panel-head"><span>本次批量生成参数</span></div>
+              <div class="aiw-batch-settings-grid">
+                <label class="aiw-field aiw-field-wide">
+                  <span>模型</span>
+                  <select
+                    v-model="batchGenerationDialog.modelId"
+                    :disabled="batchGenerationDialog.submitting"
+                    @change="syncBatchModelDefaults"
+                  >
+                    <option v-for="model in AI_IMAGE_MODELS" :key="model.id" :value="model.id">{{ model.label }}</option>
+                  </select>
+                </label>
+                <label class="aiw-field">
+                  <span>比例</span>
+                  <select
+                    v-model="batchGenerationDialog.ratio"
+                    :disabled="batchGenerationDialog.submitting"
+                    @change="syncBatchSizeFromRatio"
+                  >
+                    <option v-for="ratio in AI_IMAGE_RATIOS" :key="ratio" :value="ratio">{{ ratio }}</option>
+                  </select>
+                </label>
+                <label class="aiw-field">
+                  <span>{{ batchNanoBanana ? '分辨率' : '尺寸' }}</span>
+                  <select
+                    v-model="batchGenerationDialog.size"
+                    :disabled="batchGenerationDialog.submitting"
+                    @change="syncBatchRatioFromSize"
+                  >
+                    <option v-for="size in batchSizeOptions" :key="size" :value="size">{{ size }}</option>
+                  </select>
+                </label>
+                <label v-if="!batchNanoBanana" class="aiw-field">
+                  <span>质量</span>
+                  <select v-model="batchGenerationDialog.quality" :disabled="batchGenerationDialog.submitting">
+                    <option v-for="quality in batchQualityOptions" :key="quality" :value="quality">{{ quality }}</option>
+                  </select>
+                </label>
+                <label v-if="!batchNanoBanana" class="aiw-field">
+                  <span>格式</span>
+                  <select v-model="batchGenerationDialog.format" :disabled="batchGenerationDialog.submitting">
+                    <option v-for="format in AI_IMAGE_FORMATS" :key="format" :value="format">{{ format.toUpperCase() }}</option>
+                  </select>
+                </label>
+                <div class="aiw-key-status aiw-field-wide" :class="{ missing: Boolean(batchMissingKey) }">
+                  <span>Key 状态</span>
+                  <strong>{{ batchMissingKey ? '未配置' : '可生成' }}</strong>
+                </div>
+              </div>
+            </section>
           </aside>
 
           <main class="aiw-batch-prompt-board">
             <div class="aiw-batch-board-head">
               <div>
                 <strong>Prompt 任务</strong>
-                <span>{{ batchPromptCount }} 条将生成，每条固定 1 张</span>
+                <span>{{ batchPromptStats.promptCount }} 条 Prompt，预计生成 {{ batchPromptStats.totalImages }} 张图</span>
               </div>
               <button type="button" :disabled="batchGenerationDialog.submitting || batchPromptCards.length >= MAX_BATCH_PROMPTS" @click="addBatchPromptCard">
                 <span class="aiw-icon-button-content"><AiwIcon name="plus" />新增 Prompt</span>
@@ -537,6 +589,17 @@
                   placeholder="手动输入 Prompt，或从 Prompt 库选择"
                   :disabled="batchGenerationDialog.submitting"
                 ></textarea>
+                <label class="aiw-batch-count-field">
+                  <span>生成张数</span>
+                  <input
+                    v-model.number="card.count"
+                    type="number"
+                    min="1"
+                    :max="batchNanoBanana ? 1 : 8"
+                    :disabled="batchGenerationDialog.submitting || batchNanoBanana"
+                  />
+                  <small v-if="batchNanoBanana">Nano Banana 每个任务固定生成 1 张</small>
+                </label>
                 <div class="aiw-batch-card-actions">
                   <button type="button" :disabled="batchGenerationDialog.submitting" @click="openBatchPromptLibraryPicker(card)">从 Prompt 库选择</button>
                   <span>状态：{{ card.prompt.trim() ? '待生成' : '待填写' }}</span>
@@ -545,7 +608,7 @@
 
               <button type="button" class="aiw-batch-add-card" :disabled="batchGenerationDialog.submitting || batchPromptCards.length >= MAX_BATCH_PROMPTS" @click="addBatchPromptCard">
                 <strong>+ 新增 Prompt</strong>
-                <span>增加一张待生成 AI 图</span>
+                <span>增加一条待生成 Prompt</span>
               </button>
             </div>
           </main>
@@ -553,7 +616,7 @@
 
         <footer class="aiw-batch-footer">
           <small v-if="batchGenerationDialog.error">{{ batchGenerationDialog.error }}</small>
-          <span v-else>将在当前任务下提交 {{ batchPromptCount }} 条生成记录，最多添加 20 条 Prompt。</span>
+          <span v-else>将在当前任务下提交 {{ batchPromptStats.promptCount }} 条生成记录，预计 {{ batchPromptStats.totalImages }} 张图；最多添加 20 条 Prompt。</span>
           <div>
             <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">取消</button>
             <button
@@ -821,6 +884,12 @@ import {
   loadingMessageFor,
   resolveLoadingPreviewContext,
 } from '../utils/aiImageLoadingState.mjs'
+import {
+  batchSettingsFromForm,
+  loadingSlotIndexes,
+  normalizeBatchPromptCount,
+  summarizeBatchPrompts,
+} from '../utils/aiImageBatchGeneration.mjs'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
@@ -959,6 +1028,11 @@ const batchGenerationDialog = reactive({
   titlePrefix: '',
   mainImagePath: '',
   referenceImagePaths: [],
+  modelId: '',
+  ratio: '1:1',
+  size: '',
+  quality: 'auto',
+  format: 'png',
   prompts: [],
 })
 const batchPromptLibraryPicker = reactive({
@@ -981,6 +1055,11 @@ let loadingMessageTimer = null
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeNanoBanana = computed(() => isNanoBananaModel(form.modelId))
 const activeMissingKey = computed(() => missingKeyForModel(form.modelId, settings.value))
+const batchActiveModel = computed(() => getAiImageModel(batchGenerationDialog.modelId || form.modelId))
+const batchNanoBanana = computed(() => isNanoBananaModel(batchActiveModel.value.id))
+const batchSizeOptions = computed(() => sizeOptionsForModel(batchActiveModel.value.id, batchGenerationDialog.ratio))
+const batchQualityOptions = computed(() => qualityOptionsForModel(batchActiveModel.value.id))
+const batchMissingKey = computed(() => missingKeyForModel(batchActiveModel.value.id, settings.value))
 const activeJobUid = computed(() => currentJob.value?.job_uid || '')
 const persistedCurrentJob = computed(() => mergeCurrentJobRecord(currentJob.value, jobs.value))
 const highlightedJobUid = computed(() => pendingActiveJobUid.value || activeJobUid.value)
@@ -1027,7 +1106,10 @@ const activeQualityOptions = computed(() => qualityOptionsForModel(form.modelId)
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
 const generateLabel = computed(() => activeMissingKey.value ? '配置' : generating.value ? '生成中...' : '开始生成')
 const batchPromptCards = computed(() => batchGenerationDialog.prompts)
-const batchPromptCount = computed(() => batchPromptCards.value.filter((card) => String(card.prompt || '').trim()).length)
+const batchPromptStats = computed(() => summarizeBatchPrompts(batchPromptCards.value, {
+  forceSingle: batchNanoBanana.value,
+}))
+const batchPromptCount = computed(() => batchPromptStats.value.promptCount)
 const lightboxSrc = computed(() => lightboxItem.value ? resultPreviewSrc(lightboxItem.value) : '')
 const lightboxEditBusy = computed(() => generating.value || lightboxEditSubmitting.value)
 const lightboxEditActionLabel = computed(() => lightboxEditBusy.value ? '修改图生成中...' : '开始二次修改')
@@ -1298,6 +1380,32 @@ function syncRatioFromSize() {
   form.ratio = ratioForSize(form.size, form.ratio)
 }
 
+function syncBatchModelDefaults() {
+  const model = batchActiveModel.value
+  batchGenerationDialog.size = sizeForModel(model.id, batchGenerationDialog.ratio, model.size)
+  if (batchNanoBanana.value) {
+    batchGenerationDialog.prompts.forEach((card) => { card.count = 1 })
+    return
+  }
+  if (!batchQualityOptions.value.includes(batchGenerationDialog.quality)) {
+    batchGenerationDialog.quality = batchQualityOptions.value[0] || 'auto'
+  }
+  syncBatchRatioFromSize()
+}
+
+function syncBatchSizeFromRatio() {
+  batchGenerationDialog.size = sizeForModel(
+    batchActiveModel.value.id,
+    batchGenerationDialog.ratio,
+    batchGenerationDialog.size,
+  )
+}
+
+function syncBatchRatioFromSize() {
+  if (batchNanoBanana.value) return
+  batchGenerationDialog.ratio = ratioForSize(batchGenerationDialog.size, batchGenerationDialog.ratio)
+}
+
 function resetForm() {
   const currentTitle = form.title || currentJob.value?.title || 'AI 生图任务'
   Object.assign(form, defaultAiImageForm({ title: currentTitle, output_dir: form.output_dir }))
@@ -1491,10 +1599,8 @@ function buildBatchJobPayload(snapshot = {}, card = {}, index = 0) {
   const model = getAiImageModel(snapshot.modelId || form.modelId)
   const ratio = snapshot.ratio || form.ratio
   const normalizedSize = sizeForModel(model.id, ratio, snapshot.size || form.size)
-  const batchSnapshot = {
-    ...snapshot,
-    count: 1,
-  }
+  const batchSnapshot = { ...snapshot }
+  const requestedCount = normalizeBatchPromptCount(card.count, { forceSingle: isNanoBananaModel(model.id) })
   const promptText = String(card.prompt || '').trim()
   const promptTitle = String(card.title || `Prompt ${index + 1}`).trim()
   const params = {
@@ -1503,12 +1609,12 @@ function buildBatchJobPayload(snapshot = {}, card = {}, index = 0) {
     ratio,
     quality: batchSnapshot.quality || form.quality,
     response_format: batchSnapshot.format || form.format,
-    n: 1,
+    n: requestedCount,
     model_key_tier: model.keyTier,
     main_image_path: batchSnapshot.mainImagePath || '',
     reference_image_paths: [...(Array.isArray(batchSnapshot.referenceImagePaths) ? batchSnapshot.referenceImagePaths : [])],
   }
-  params.n = 1
+  params.n = requestedCount
   params.model_key_tier = model.keyTier
   return {
     title: `${batchSnapshot.titlePrefix || batchSnapshot.title || '批量生图'} · ${promptTitle}`,
@@ -1642,6 +1748,7 @@ function createBatchPromptCard(values = {}) {
     id: `batch-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     title: String(values.title || values.promptName || '').trim(),
     prompt: String(values.prompt || values.promptText || '').trim(),
+    count: normalizeBatchPromptCount(values.count, { forceSingle: batchNanoBanana.value }),
   }
 }
 
@@ -1655,6 +1762,7 @@ function openBatchGenerationDialog() {
   batchGenerationDialog.titlePrefix = snapshot.title || nextTaskTitle()
   batchGenerationDialog.mainImagePath = snapshot.mainImagePath || ''
   batchGenerationDialog.referenceImagePaths = [...snapshot.referenceImagePaths]
+  Object.assign(batchGenerationDialog, batchSettingsFromForm(snapshot))
   batchGenerationDialog.prompts = [
     createBatchPromptCard({ title: initialPrompt ? 'Prompt 1' : '', prompt: initialPrompt }),
     createBatchPromptCard({ title: initialPrompt ? 'Prompt 2' : '', prompt: '' }),
@@ -1688,6 +1796,7 @@ function addBatchPromptCard(values = {}) {
   batchGenerationDialog.prompts.push(createBatchPromptCard({
     title: values.title || `Prompt ${batchGenerationDialog.prompts.length + 1}`,
     prompt: values.prompt || '',
+    count: values.count,
   }))
 }
 
@@ -1750,7 +1859,7 @@ function selectBatchPromptLibraryTemplate(template) {
 
 async function submitBatchGeneration() {
   batchGenerationDialog.error = ''
-  if (activeMissingKey.value) {
+  if (batchMissingKey.value) {
     openSettings()
     return
   }
@@ -1762,6 +1871,7 @@ async function submitBatchGeneration() {
       title: String(card.title || '').trim(),
     }))
     .filter((card) => card.prompt)
+  const promptStats = { ...batchPromptStats.value }
   if (!promptCards.length) {
     batchGenerationDialog.error = '请至少填写一条 Prompt'
     return
@@ -1772,7 +1882,11 @@ async function submitBatchGeneration() {
     titlePrefix: batchGenerationDialog.titlePrefix || snapshot.title || nextTaskTitle(),
     mainImagePath: batchGenerationDialog.mainImagePath,
     referenceImagePaths: [...batchGenerationDialog.referenceImagePaths],
-    count: 1,
+    modelId: batchGenerationDialog.modelId,
+    ratio: batchGenerationDialog.ratio,
+    size: batchGenerationDialog.size,
+    quality: batchGenerationDialog.quality,
+    format: batchGenerationDialog.format,
   }
   batchGenerationDialog.submitting = true
   generating.value = true
@@ -1793,12 +1907,13 @@ async function submitBatchGeneration() {
     upsertJob(currentJob.value)
     const requestUid = globalThis.crypto?.randomUUID?.()
       || `batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
-    logs.value.push(`提交批量生成：${promptCards.length} 条 Prompt`)
+    logs.value.push(`提交批量生成：${promptStats.promptCount} 条 Prompt，预计 ${promptStats.totalImages} 张图`)
     const batchResult = await window.cs.batchRunAiImageJob(jobUid, {
       request_uid: requestUid,
       prompts: promptCards.map((card, index) => ({
         title: card.title || `Prompt ${index + 1}`,
         prompt: card.prompt,
+        count: normalizeBatchPromptCount(card.count, { forceSingle: batchNanoBanana.value }),
       })),
     })
     if (!batchResult?.accepted) throw new Error('后端未接受批量生成任务')
@@ -1807,7 +1922,7 @@ async function submitBatchGeneration() {
     clearSubmittedTaskInputs(snapshot)
     batchGenerationDialog.open = false
     closeBatchPromptLibraryPicker()
-    logs.value.push(`批量任务已提交：${promptCards.length} 条 Prompt`)
+    logs.value.push(`批量任务已提交：${promptStats.promptCount} 条 Prompt，预计 ${promptStats.totalImages} 张图`)
     if (hasActiveRuns(currentJob.value)) startJobPolling(jobUid)
   } catch (error) {
     const message = normalizeGenerateError(error)
@@ -1926,24 +2041,25 @@ function collectResultCards(job) {
   return collectResultQueues(job).flatMap((queue) => queue.items || [])
 }
 
-function workbenchRunPlaceholder(job, run, index) {
+function workbenchRunPlaceholders(job, run, index) {
   const status = String(run?.status || '').toLowerCase()
   if (['queued', 'running'].includes(status)) {
     const loadingContext = resolveLoadingPreviewContext(job, run)
-    return {
-      key: `${run.run_uid || run.task_id || index}-loading`,
-      label: status === 'queued' ? '排队中' : '生成中',
+    return loadingSlotIndexes(run).map((slotIndex) => ({
+      key: `${run.run_uid || run.task_id || index}-loading-${slotIndex + 1}`,
+      label: `${status === 'queued' ? '排队中' : '生成中'} ${slotIndex + 1}`,
       prompt: run.prompt || '',
       jobUid: job?.job_uid || '',
       runUid: run.run_uid || '',
+      requested_count: Number(run.requested_count || 1),
       loadingPreviewPath: loadingContext.previewPath,
       loadingMode: loadingContext.mode,
-      loadingMessageOffset: index,
+      loadingMessageOffset: index + slotIndex,
       loading: true,
-    }
+    }))
   }
   if (status === 'failed') {
-    return {
+    return [{
       key: `${run.run_uid || run.task_id || index}-failed`,
       label: '生成失败',
       prompt: run.prompt || '',
@@ -1951,9 +2067,9 @@ function workbenchRunPlaceholder(job, run, index) {
       jobUid: job?.job_uid || '',
       runUid: run.run_uid || '',
       failed: true,
-    }
+    }]
   }
-  return null
+  return []
 }
 
 function collectResultQueues(job) {
@@ -1963,14 +2079,14 @@ function collectResultQueues(job) {
     const queues = runs
       .map((run, index) => {
         const resultItems = collectResultCardsFromRun(job, run, index)
-        const placeholder = resultItems.length ? null : workbenchRunPlaceholder(job, run, index)
+        const placeholders = resultItems.length ? [] : workbenchRunPlaceholders(job, run, index)
         return {
           key: run.run_uid || run.task_id || `run-${index + 1}`,
           title: `队列 ${index + 1}`,
           createdAt: run.created_at || '',
           prompt: run.prompt || '',
           status: run.status || job?.status || '',
-          items: placeholder ? [placeholder] : resultItems,
+          items: resultItems.length ? resultItems : placeholders,
         }
       })
       .filter((queue) => queue.items.length)
@@ -3381,6 +3497,22 @@ function localFileUrl(path) {
   gap: 8px;
 }
 
+.aiw-batch-settings-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aiw-batch-settings-grid .aiw-field-wide {
+  grid-column: 1 / -1;
+}
+
+.aiw-batch-settings-grid select,
+.aiw-batch-count-field input {
+  width: 100%;
+  min-width: 0;
+}
+
 .aiw-batch-prompt-board {
   min-height: 0;
   display: grid;
@@ -3406,7 +3538,7 @@ function localFileUrl(path) {
 .aiw-batch-prompt-card {
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(130px, 1fr) auto;
+  grid-template-rows: auto minmax(130px, 1fr) auto auto;
   gap: 10px;
   padding: 12px;
   border: 1px solid #2e2e3a;
@@ -3445,6 +3577,24 @@ function localFileUrl(path) {
   resize: none;
   padding: 10px;
   line-height: 1.55;
+}
+
+.aiw-batch-count-field {
+  display: grid;
+  grid-template-columns: auto minmax(64px, 88px);
+  align-items: center;
+  gap: 6px 8px;
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.aiw-batch-count-field input {
+  justify-self: end;
+}
+
+.aiw-batch-count-field small {
+  grid-column: 1 / -1;
+  color: var(--text2);
 }
 
 .aiw-batch-card-actions {
@@ -4634,19 +4784,6 @@ button.active,
     grid-template-columns: 1fr;
   }
 
-  .aiw-batch-board {
-    grid-template-columns: 1fr;
-    overflow: auto;
-  }
-
-  .aiw-batch-source-column {
-    overflow: visible;
-  }
-
-  .aiw-batch-prompt-board {
-    min-height: 340px;
-  }
-
   .aiw-lightbox-layout {
     grid-template-columns: 1fr;
     overflow: auto;
@@ -4662,6 +4799,21 @@ button.active,
 @media (max-width: 760px) {
   .aiw-batch-dialog {
     padding: 14px;
+  }
+
+  .aiw-batch-board {
+    grid-template-columns: 1fr;
+    grid-template-rows: max-content minmax(340px, auto);
+    overflow: auto;
+  }
+
+  .aiw-batch-source-column {
+    min-height: auto;
+    overflow: visible;
+  }
+
+  .aiw-batch-prompt-board {
+    min-height: 340px;
   }
 
   .aiw-batch-panel {

@@ -46,7 +46,7 @@ test('workbench polls only the local job while active runs exist', () => {
 
 test('queued, running, and failed persisted runs remain visible as queue cards', () => {
   const body = functionBody('collectResultQueues', 'collectResultCardsFromRun')
-  assert.match(body, /workbenchRunPlaceholder\(job, run, index\)/)
+  assert.match(body, /workbenchRunPlaceholders\(job, run, index\)/)
   assert.match(workbench, /\['queued', 'running'\]\.includes\(status\)/)
   assert.match(workbench, /if \(status === 'failed'\)/)
   assert.match(workbench, /item\.failed/)
@@ -83,4 +83,48 @@ test('loading cards show contextual artwork and rotating Crawshrimp copy', () =>
   assert.match(workbench, /loadingMessageTimer = setInterval/)
   assert.match(workbench, /clearInterval\(loadingMessageTimer\)/)
   assert.match(workbench, /refreshImagePreview\(item\.loadingPreviewPath\)/)
+})
+
+test('batch dialog owns independent model settings and per-Prompt counts', () => {
+  assert.match(workbench, /本次批量生成参数/)
+  assert.match(workbench, /v-model="batchGenerationDialog\.modelId"/)
+  assert.match(workbench, /v-model="batchGenerationDialog\.ratio"/)
+  assert.match(workbench, /v-model="batchGenerationDialog\.size"/)
+  assert.match(workbench, /v-model="batchGenerationDialog\.quality"/)
+  assert.match(workbench, /v-model="batchGenerationDialog\.format"/)
+  assert.match(workbench, /v-model\.number="card\.count"/)
+  assert.match(workbench, /:max="batchNanoBanana \? 1 : 8"/)
+  assert.match(workbench, /:disabled="batchGenerationDialog\.submitting \|\| batchNanoBanana"/)
+  assert.match(workbench, /batchSettingsFromForm\(snapshot\)/)
+})
+
+test('batch dialog keeps the settings column visible at desktop workbench widths', () => {
+  const mediumStart = workbench.indexOf('@media (max-width: 1060px)')
+  const compactStart = workbench.indexOf('@media (max-width: 760px)', mediumStart)
+  const compactEnd = workbench.indexOf('@media (prefers-reduced-motion: reduce)', compactStart)
+  assert.ok(mediumStart >= 0)
+  assert.ok(compactStart > mediumStart)
+  assert.ok(compactEnd > compactStart)
+
+  const mediumStyles = workbench.slice(mediumStart, compactStart)
+  assert.doesNotMatch(mediumStyles, /\.aiw-batch-board\s*\{[\s\S]*grid-template-columns:\s*1fr/)
+
+  const compactStyles = workbench.slice(compactStart, compactEnd)
+  assert.match(compactStyles, /\.aiw-batch-board\s*\{[\s\S]*grid-template-columns:\s*1fr;[\s\S]*grid-template-rows:\s*max-content minmax\(340px, auto\);[\s\S]*overflow:\s*auto;/)
+  assert.match(compactStyles, /\.aiw-batch-source-column\s*\{[\s\S]*min-height:\s*auto;[\s\S]*overflow:\s*visible;/)
+})
+
+test('batch summary and submission carry per-Prompt image counts', () => {
+  assert.match(workbench, /summarizeBatchPrompts/)
+  assert.match(workbench, /预计生成 \{\{ batchPromptStats\.totalImages \}\} 张图/)
+  const body = functionBody('submitBatchGeneration', 'generate')
+  assert.match(body, /count: normalizeBatchPromptCount\(card\.count/)
+  assert.match(body, /modelId: batchGenerationDialog\.modelId/)
+  assert.doesNotMatch(body, /count: 1,\n\s*}/)
+})
+
+test('persisted batch runs render requested loading slots', () => {
+  assert.match(workbench, /loadingSlotIndexes\(run\)/)
+  assert.match(workbench, /loadingSlotIndexes\(run\)\.map/)
+  assert.match(workbench, /requested_count/)
 })
