@@ -109,3 +109,29 @@ test('settings exposes a read-only application update panel with pinned manual r
   assert.doesNotMatch(settings, /downloadUpdate|installUpdate|onUpdateStatus|getUpdateStatus/)
   assert.doesNotMatch(settings, /currentVersion:\s*['"][0-9]+\.[0-9]+\.[0-9]+/)
 })
+
+test('desktop package config generates GitHub provider update metadata for Windows and macOS', () => {
+  const buildYml = readRepoFile('app/build.yml')
+
+  assert.match(buildYml, /provider: github/)
+  assert.match(buildYml, /owner: howtimeschange/)
+  assert.match(buildYml, /repo: crawshrimp/)
+  assert.match(buildYml, /generateUpdatesFilesForAllChannels: false/)
+  assert.match(buildYml, /target:\s*\n\s*- target: dmg[\s\S]*- target: zip/)
+  assert.match(buildYml, /artifactName: crawshrimp-v\$\{version\}-mac-\$\{arch\}\.\$\{ext\}/)
+  assert.match(buildYml, /artifactName: crawshrimp-v\$\{version\}-win-\$\{arch\}\.\$\{ext\}/)
+  assert.match(buildYml, /oneClick: false/)
+  assert.match(buildYml, /perMachine: false/)
+})
+
+test('desktop build workflow collects generated update metadata artifacts', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+
+  assert.match(workflow, /app\/dist\/\*\.exe/)
+  assert.match(workflow, /app\/dist\/\*\.exe\.blockmap/)
+  assert.match(workflow, /app\/dist\/\*\.dmg/)
+  assert.match(workflow, /app\/dist\/\*\.zip/)
+  assert.match(workflow, /app\/dist\/\*\.zip\.blockmap/)
+  assert.match(workflow, /app\/dist\/latest\*\.yml/)
+  assert.match(workflow, /mac-arm64\.dmg[\s\S]*mac-x64\.dmg[\s\S]*mac-arm64\.zip[\s\S]*mac-x64\.zip[\s\S]*latest-mac\.yml/)
+})

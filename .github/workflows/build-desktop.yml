@@ -81,6 +81,9 @@ jobs:
             build_script: build:mac:ci
             artifact_glob: |
               app/dist/*.dmg
+              app/dist/*.zip
+              app/dist/*.zip.blockmap
+              app/dist/latest*.yml
           - name: Windows x64
             os: windows-2022
             python_target: win-x64
@@ -89,6 +92,7 @@ jobs:
             artifact_glob: |
               app/dist/*.exe
               app/dist/*.exe.blockmap
+              app/dist/latest*.yml
 
     steps:
       - name: Checkout
@@ -198,6 +202,11 @@ jobs:
           expected_files=(
             "dist/crawshrimp-v${APP_VERSION}-mac-arm64.dmg"
             "dist/crawshrimp-v${APP_VERSION}-mac-x64.dmg"
+            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.zip"
+            "dist/crawshrimp-v${APP_VERSION}-mac-x64.zip"
+            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.zip.blockmap"
+            "dist/crawshrimp-v${APP_VERSION}-mac-x64.zip.blockmap"
+            "dist/latest-mac.yml"
           )
 
           missing=0
@@ -209,7 +218,7 @@ jobs:
           done
 
           if grep -Eq 'Command failed: hdiutil detach|hdiutil:.*(Resource busy|No such file or directory|detach failed)' ../mac-build.log && [ "${missing}" -eq 0 ]; then
-            echo "::warning::electron-builder reported an hdiutil detach cleanup failure after producing all macOS artifacts; continuing so artifacts can be uploaded."
+            echo "::warning::electron-builder reported an hdiutil detach cleanup failure after producing all macOS installer and update metadata artifacts; continuing so artifacts can be uploaded."
             hdiutil info || true
             exit 0
           fi
@@ -268,7 +277,7 @@ jobs:
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG（Apple Silicon / Intel）、Windows 安装包\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG/ZIP（Apple Silicon / Intel）、Windows 安装包、自动更新元数据\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \
@@ -340,7 +349,7 @@ jobs:
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 自动更新元数据：已关闭，等待签名 / 公证链路完善后恢复\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG/ZIP（Apple Silicon / Intel）、Windows 安装包、自动更新元数据\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \

@@ -32,3 +32,17 @@ test('desktop build release jobs request write permissions explicitly', () => {
     /publish-version-release:[\s\S]*?permissions:\n      contents: write[\s\S]*?steps:/m,
   )
 })
+
+test('desktop build workflow keeps rolling release out of GitHub latest', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
+
+  assert.match(workflow, /gh release create desktop-latest[\s\S]*--latest=false/)
+})
+
+test('desktop build workflow marks the validated version release as GitHub latest', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
+
+  assert.match(workflow, /TAG_VERSION="\$\{GITHUB_REF_NAME#v\}"[\s\S]*APP_VERSION[\s\S]*TAG_VERSION/)
+  assert.match(workflow, /gh release edit "\$\{GITHUB_REF_NAME\}"[\s\S]*--latest/)
+  assert.match(workflow, /gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--latest[\s\S]*--verify-tag/)
+})
