@@ -148,7 +148,9 @@ function createUpdateService({
   }
 
   function setInstalling() {
-    if (!state.downloaded) throw new Error('尚未准备好安装桌面更新。')
+    if (!state.downloaded || state.status !== 'ready-to-install') {
+      throw new Error('尚未准备好安装桌面更新。')
+    }
     publish({ status: 'installing', error: '', blockers: [] })
   }
 

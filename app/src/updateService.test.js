@@ -166,6 +166,8 @@ test('quitAndInstall rejects until a downloaded update is explicitly installing'
   assert.throws(() => service.quitAndInstall(), /尚未准备好安装/)
   updater.emit('update-downloaded', { version: '2.0.1' })
   assert.throws(() => service.quitAndInstall(), /尚未准备好安装/)
+  assert.throws(() => service.setInstalling(), /尚未准备好安装/)
+  service.setInstallReadiness({ ready: true, blockers: [] })
   service.setInstalling()
   service.quitAndInstall()
   assert.equal(installs, 1)
