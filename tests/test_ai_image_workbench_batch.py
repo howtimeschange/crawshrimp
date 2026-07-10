@@ -417,6 +417,83 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
         self.assertEqual(len(run["retry_history"]), 2)
         self.assertIn("504", run["error"])
 
+    def test_manual_retry_reuses_failed_run_snapshot_and_restarts_auto_retry_budget(self):
+        run_uid = "run-manual-retry"
+        retry_history = [
+            {"retry_index": 1, "task_id": "task-original", "error": "504"},
+            {"retry_index": 2, "task_id": "task-auto-retry-1", "error": "503"},
+        ]
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "params": {
+                "size": "2448x3264",
+                "ratio": "3:4",
+                "quality": "low",
+                "response_format": "webp",
+                "n": 1,
+                "model_key_tier": "4k",
+            },
+            "status": "failed",
+            "summary": {
+                "runs": [{
+                    "run_uid": run_uid,
+                    "prompt": "retry original settings",
+                    "requested_count": 2,
+                    "model_key": "gpt-image-2",
+                    "model_key_tier": "2k",
+                    "size": "1024x1024",
+                    "ratio": "1:1",
+                    "quality": "high",
+                    "response_format": "png",
+                    "input_params": {"main_image_path": "", "reference_image_paths": []},
+                    "status": "failed",
+                    "provider_status": "failed",
+                    "task_id": "task-auto-retry-2",
+                    "poll_url": "https://api.example/images/tasks/task-auto-retry-2",
+                    "poll_after": 5,
+                    "retry_count": 2,
+                    "retry_history": retry_history,
+                    "manual_retry_count": 0,
+                    "image_urls": [],
+                    "output_files": [],
+                    "error": "gateway timeout 504",
+                }],
+            },
+        })
+        client = FakeWorkbenchClient(create_responses=[{
+            "id": "task-manual-retry-1",
+            "status": "queued",
+            "poll_url": "https://api.example/images/tasks/task-manual-retry-1",
+            "poll_after": 3,
+        }])
+        poll_submissions = []
+
+        result = ai_image_service.retry_workbench_run(
+            self.job["job_uid"],
+            run_uid,
+            settings=self._settings(),
+            client_factory=lambda *_args, **_kwargs: client,
+            poll_submitter=lambda fn, *args: poll_submissions.append((fn, args)),
+        )
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(len(client.created_payloads), 1)
+        retry_payload, retry_key = client.created_payloads[0]
+        self.assertEqual(retry_payload["prompt"], "retry original settings")
+        self.assertEqual(retry_payload["size"], "1024x1024")
+        self.assertEqual(retry_payload["quality"], "high")
+        self.assertEqual(retry_payload["output_format"], "png")
+        self.assertEqual(retry_payload["n"], 2)
+        self.assertTrue(retry_key.endswith("_manual_retry_1"))
+        run = result["run"]
+        self.assertEqual(run["status"], "queued")
+        self.assertEqual(run["task_id"], "task-manual-retry-1")
+        self.assertEqual(run["retry_count"], 0)
+        self.assertEqual(run["manual_retry_count"], 1)
+        self.assertEqual(run["retry_history"], retry_history)
+        self.assertEqual(run["error"], "")
+        self.assertEqual(len(poll_submissions), 1)
+        self.assertIs(poll_submissions[0][0], ai_image_service.poll_workbench_run)
+
 
 if __name__ == "__main__":
     unittest.main()

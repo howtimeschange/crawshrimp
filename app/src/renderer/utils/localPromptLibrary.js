@@ -115,6 +115,63 @@ export function buildPromptLibraryPickerLibraries({ localLibraries = [], cloudLi
   return [...localItems, ...cloudItems]
 }
 
+export async function loadPromptLibraryPickerSources({
+  listLocalLibraries,
+  listCloudLibraries,
+  onLocal = null,
+} = {}) {
+  const settle = promise => Promise.resolve(promise).then(
+    value => ({ status: 'fulfilled', value }),
+    reason => ({ status: 'rejected', reason }),
+  )
+  const cloudPromise = settle(Promise.resolve().then(() => listCloudLibraries()))
+  const localResult = await settle(Promise.resolve().then(() => listLocalLibraries()))
+  const localPayload = promptLibrarySourcePayload(localResult, '本地 Prompt 库')
+  const localState = {
+    localLibraries: localPayload.libraries,
+    cloudLibraries: [],
+    errors: localPayload.error ? [localPayload.error] : [],
+    cloudPending: true,
+  }
+  if (typeof onLocal === 'function') await onLocal(localState)
+
+  const cloudResult = await cloudPromise
+  const cloudPayload = promptLibrarySourcePayload(cloudResult, '线上 Prompt 库')
+  return {
+    localLibraries: localPayload.libraries,
+    cloudLibraries: cloudPayload.libraries,
+    errors: [localPayload.error, cloudPayload.error].filter(Boolean),
+    cloudPending: false,
+  }
+}
+
+export function buildPromptLibraryTaskSelection(library = {}) {
+  const normalized = normalizePromptLibrary(library)
+  const sourceType = normalized.source_type
+  const libraryId = sourceType === 'cloud'
+    ? String(normalized.cloud_library_id ?? stripCloudLibraryPrefix(library.picker_key || library.id || normalized.library_uid)).trim()
+    : String(library.picker_key || library.id || `local:${normalized.library_uid}`).trim()
+  const templates = normalized.templates
+    .filter(template => template.enabled !== false && template.field_name && template.prompt_text)
+    .map(template => ({
+      group_name: template.group_name,
+      field_name: template.field_name,
+      field_order: template.field_order,
+      size_label: template.size_label,
+      output_format: template.output_format,
+      prompt_text: template.prompt_text,
+      female_priority: template.female_priority,
+      male_neutral_priority: template.male_neutral_priority,
+      priority: template.priority,
+    }))
+  return {
+    cloud_prompt_library_id: libraryId,
+    cloud_prompt_library_name: normalized.name,
+    cloud_prompt_library_source: sourceType,
+    cloud_prompt_templates_json: sourceType === 'local' ? JSON.stringify({ templates }) : '',
+  }
+}
+
 export function buildCloudPromptLibraryPayload(library = {}) {
   const normalized = normalizePromptLibrary(library)
   return {
@@ -212,6 +269,16 @@ function normalizePromptPickerTemplate(template = {}, libraryPickerKey = '', sou
 
 function stripCloudLibraryPrefix(value) {
   return String(value || '').replace(/^cloud:/, '')
+}
+
+function promptLibrarySourcePayload(result, label) {
+  if (result.status === 'rejected') {
+    return { libraries: [], error: `${label}读取失败：${result.reason?.message || result.reason}` }
+  }
+  const payload = result.value || {}
+  const payloadError = payload?.detail || payload?.error
+  if (payloadError) return { libraries: [], error: `${label}读取失败：${payloadError}` }
+  return { libraries: Array.isArray(payload?.libraries) ? payload.libraries : [], error: '' }
 }
 
 function normalizeLibrarySourceType(value) {

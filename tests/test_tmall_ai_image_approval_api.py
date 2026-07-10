@@ -45,6 +45,20 @@ class TmallAiImageApprovalApiTests(unittest.TestCase):
         self.assertIn('缺少云端 Prompt 库', source)
         self.assertIn('缺少 AI 测图提示词库文件', source)
 
+    def test_ai_image_chain_uses_embedded_local_prompt_templates_without_cloud_export(self):
+        payload = '{"templates":[{"field_name":"正面图","prompt_text":"本地 Prompt"}]}'
+
+        with patch.object(api_server, "_cloud_prompt_library_export") as cloud_export:
+            library_id, templates_json = api_server._tmall_ai_image_prompt_library_params({
+                "cloud_prompt_library_id": "local:local-1",
+                "cloud_prompt_library_source": "local",
+                "cloud_prompt_templates_json": payload,
+            })
+
+        self.assertEqual(library_id, "local:local-1")
+        self.assertEqual(templates_json, payload)
+        cloud_export.assert_not_called()
+
     def test_submit_route_registers_excel_result_as_task_output(self):
         source = API_SERVER_PATH.read_text(encoding="utf-8")
 

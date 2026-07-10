@@ -19,10 +19,10 @@
         <strong>{{ createSummaryText }}</strong>
       </div>
       <button
-        v-if="instance.summary?.approval_board_url"
+        v-if="preferredApprovalBoardUrl"
         type="button"
         class="tir-link"
-        @click="openArtifact(instance.summary.approval_board_url)"
+        @click="openArtifact(preferredApprovalBoardUrl)"
       >
         审批看板
       </button>
@@ -47,6 +47,7 @@
       :task="task"
       :instance-uid="instanceUid"
       :initial-params="instance.params || {}"
+      :initial-step="instance.current_step || ''"
       @status-change="handleStatusChange"
       @instance-updated="handleInstanceUpdated"
     />
@@ -69,6 +70,13 @@ const instance = ref(null)
 const task = ref(null)
 const loading = ref(false)
 const error = ref('')
+const preferredApprovalBoardUrl = computed(() => {
+  const summary = instance.value?.summary || {}
+  const local = String(summary.local_board_url || '').trim()
+  if (local) return local
+  const approval = String(summary.approval_board_url || '').trim()
+  return isLocalTmallApprovalBoardUrl(approval) ? approval : ''
+})
 const createSummaryText = computed(() => {
   const summary = instance.value?.summary || {}
   const attempted = Number(summary.attempted || 0)
@@ -125,6 +133,17 @@ function artifactName(path) {
 async function openArtifact(path) {
   if (!path) return
   await window.cs.openFile(path)
+}
+
+function isLocalTmallApprovalBoardUrl(path) {
+  const target = String(path || '').trim()
+  if (!target) return false
+  try {
+    const parsed = new URL(target)
+    return parsed.pathname.includes('/tmall-ai-image-approval/')
+  } catch {
+    return target.includes('/tmall-ai-image-approval/')
+  }
 }
 
 function statusLabel(status) {

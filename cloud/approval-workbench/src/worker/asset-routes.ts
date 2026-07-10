@@ -412,7 +412,7 @@ export async function upsertAsset(env: Env, asset: {
   parentAssetUid: string | null
   generationJobId: string | null
   meta: Record<string, unknown>
-  statusPolicy?: 'replace' | 'preserve-existing'
+  statusPolicy?: 'replace' | 'preserve-existing' | 'preserve-reviewed'
   now: string
 }): Promise<void> {
   const existing = await env.DB.prepare(
@@ -431,7 +431,7 @@ export async function upsertAsset(env: Env, asset: {
   )) {
     throw new AssetUidConflictError()
   }
-  const nextStatus = existing && asset.statusPolicy === 'preserve-existing' ? existing.status : asset.status
+  const nextStatus = nextAssetStatus(existing?.status, asset.status, asset.statusPolicy)
   const result = await env.DB.prepare(
     `INSERT INTO ai_image_assets
        (asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash,
@@ -475,6 +475,12 @@ export async function upsertAsset(env: Env, asset: {
     )
     .run()
   if (Number(result.meta.changes ?? 0) === 0) throw new AssetUidConflictError()
+}
+
+function nextAssetStatus(existingStatus: string | undefined, requestedStatus: string, statusPolicy: 'replace' | 'preserve-existing' | 'preserve-reviewed' | undefined): string {
+  if (!existingStatus || statusPolicy === 'replace' || !statusPolicy) return requestedStatus
+  if (statusPolicy === 'preserve-existing') return existingStatus
+  return ['approved', 'rejected', 'submitted'].includes(existingStatus) ? existingStatus : requestedStatus
 }
 
 export function assetUidConflictResponse(error: unknown): Response | null {

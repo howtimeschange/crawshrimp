@@ -125,46 +125,79 @@
               </div>
               <div class="style-actions">
                 <span class="style-mode">参考图 {{ item.reference_mode || '-' }}</span>
-                <button v-if="isGenerationConfirmation" type="button" class="ghost-btn" @click="openPromptEditor(item)">新增 Prompt</button>
+                <button v-if="isGenerationConfirmation" type="button" class="ghost-btn" @click="addGenerationPrompt(item)">新增 Prompt</button>
               </div>
             </div>
-            <div v-if="!isGenerationConfirmation" class="asset-rail">
-              <div
-                v-for="asset in item.assets || []"
-                :key="asset.id"
-                :class="['asset-card', asset.kind, asset.status]"
-              >
-                <button
-                  type="button"
-                  :class="['asset-tile', { loading: isGeneratingAsset(asset) }]"
-                  :disabled="isGeneratingAsset(asset)"
-                  @click="openImagePreview(asset, item)"
-                >
-                  <div v-if="isGeneratingAsset(asset)" class="asset-loading-preview">
-                    <span class="asset-loading-spinner" aria-hidden="true"></span>
-                    <strong>生成中</strong>
-                    <small>{{ asset.prompt_name || asset.label || 'AI 图' }}</small>
+            <div v-if="!isGenerationConfirmation" class="asset-board">
+              <section class="ai-assets-panel">
+                <div class="asset-section-head">
+                  <div>
+                    <strong>AI 生成图</strong>
+                    <span>{{ itemAiAssets(item).length }} 张 AI 图，优先确认或舍弃</span>
                   </div>
-                  <img v-else :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
-                  <span class="asset-label">{{ asset.label || asset.filename }}</span>
-                  <span class="asset-file">{{ asset.filename || asset.path || (isGeneratingAsset(asset) ? '等待 1XM 返回图片' : '') }}</span>
-                  <span class="asset-status">{{ statusLabel(asset) }}</span>
-                  <span v-if="asset.kind === 'ai' && assetAlreadySubmitted(item, asset)" class="asset-submit-mark">已提交过</span>
-                </button>
-                <div v-if="asset.kind === 'ai' && !isGeneratingAsset(asset)" class="asset-card-actions">
-                  <button type="button" class="asset-action ok" @click.stop="setAssetStatus(item, asset, 'approved')">确认</button>
-                  <button type="button" class="asset-action danger" @click.stop="setAssetStatus(item, asset, 'rejected')">舍弃</button>
                 </div>
-              </div>
-              <button
-                type="button"
-                class="asset-card add-card"
-                @click="openManualGenerate(item)"
-              >
-                <span class="add-icon">+</span>
-                <strong>新增生图</strong>
-                <small>单独为本款补一张 AI 图</small>
-              </button>
+                <div class="ai-asset-grid">
+                  <div
+                    v-for="asset in itemAiAssets(item)"
+                    :key="asset.id"
+                    :class="['asset-card', 'ai-primary-card', asset.kind, asset.status]"
+                  >
+                    <button
+                      type="button"
+                      :class="['asset-tile', { loading: isGeneratingAsset(asset) }]"
+                      :disabled="isGeneratingAsset(asset)"
+                      @click="openImagePreview(asset, item)"
+                    >
+                      <div v-if="isGeneratingAsset(asset)" class="asset-loading-preview">
+                        <img v-if="assetLoadingPreviewPath(asset, item)" class="asset-loading-source" :src="referenceImageUrl(assetLoadingPreviewPath(asset, item))" alt="" />
+                        <span class="asset-loading-spinner" aria-hidden="true"></span>
+                        <strong>生成中</strong>
+                        <small>{{ asset.prompt_name || asset.label || 'AI 图' }}</small>
+                      </div>
+                      <img v-else :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
+                      <span class="asset-label">{{ asset.label || asset.filename }}</span>
+                      <span class="asset-file">{{ asset.filename || asset.path || (isGeneratingAsset(asset) ? '等待 1XM 返回图片' : '') }}</span>
+                      <span class="asset-status">{{ statusLabel(asset) }}</span>
+                      <span v-if="assetAlreadySubmitted(item, asset)" class="asset-submit-mark">已提交过</span>
+                    </button>
+                    <div v-if="!isGeneratingAsset(asset)" class="asset-card-actions">
+                      <button type="button" class="asset-action ok" @click.stop="setAssetStatus(item, asset, 'approved')">确认</button>
+                      <button type="button" class="asset-action danger" @click.stop="setAssetStatus(item, asset, 'rejected')">舍弃</button>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    class="asset-card add-card ai-add-card"
+                    @click="openManualGenerate(item)"
+                  >
+                    <span class="add-icon">+</span>
+                    <strong>新增生图</strong>
+                    <small>单独为本款补一张 AI 图</small>
+                  </button>
+                </div>
+              </section>
+
+              <section v-if="itemSourceAssets(item).length" class="source-assets-panel">
+                <div class="asset-section-head compact">
+                  <div>
+                    <strong>主图 / 参考图</strong>
+                    <span>{{ itemSourceAssets(item).length }} 张素材缩略图</span>
+                  </div>
+                </div>
+                <div class="source-thumb-row">
+                  <button
+                    v-for="asset in itemSourceAssets(item)"
+                    :key="asset.id"
+                    type="button"
+                    class="source-thumb-card"
+                    @click="openImagePreview(asset, item)"
+                  >
+                    <img :src="imageUrlWithVersion(asset)" :alt="`${item.style_code} ${asset.label || ''}`" />
+                    <span class="source-thumb-kind">{{ assetSourceLabel(asset) }}</span>
+                    <span class="source-thumb-name">{{ asset.label || asset.filename || referenceFileName(asset.path) }}</span>
+                  </button>
+                </div>
+              </section>
             </div>
             <div v-if="isGenerationConfirmation" class="generation-confirm-board">
               <aside class="confirmation-reference-panel">
@@ -237,26 +270,22 @@
                     </label>
                   </header>
                   <textarea v-model="prompt.custom_prompt" placeholder="确认或修改本条生图 Prompt"></textarea>
-                  <div class="prompt-reference-toggle-row">
-                    <span class="prompt-ref-caption">参考图</span>
-                    <label
-                      v-for="asset in itemReferenceAssets(item)"
-                      :key="`${prompt.id}-${asset.id}`"
-                      :class="['prompt-reference-chip', { selected: referenceImageSelected(prompt, asset) }]"
+                  <div class="prompt-reference-toggle-row compact">
+                    <div class="prompt-reference-summary">
+                      <span>已选 {{ promptExtraReferenceCount(item, prompt) }} 张</span>
+                      <small>主图默认参与</small>
+                    </div>
+                    <button
+                      type="button"
+                      class="ghost-btn"
+                      :disabled="!itemReferenceAssets(item).length"
+                      @click="openPromptReferencePicker(item, prompt)"
                     >
-                      <input
-                        type="checkbox"
-                        :checked="referenceImageSelected(prompt, asset)"
-                        :disabled="!referenceImageSelected(prompt, asset) && promptImageCount(prompt) >= MAX_CONFIRMATION_IMAGES"
-                        @change="togglePromptReferenceImage(prompt, asset)"
-                      />
-                      <span>{{ referenceFileName(asset.path) }}</span>
-                    </label>
-                    <span v-if="!itemReferenceAssets(item).length" class="prompt-reference-empty">暂无参考图</span>
+                      选择参考图
+                    </button>
                   </div>
                   <div class="prompt-card-actions">
                     <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">从 Prompt 库选择</button>
-                    <button type="button" class="ghost-btn" @click="openPromptEditor(item, prompt)">弹窗编辑</button>
                     <button type="button" class="ghost-btn danger" @click="removeGenerationPrompt(item, prompt)">删除</button>
                   </div>
                   <div class="prompt-card-status">
@@ -264,7 +293,7 @@
                     <span>状态：{{ prompt.status || 'pending' }}</span>
                   </div>
                 </article>
-                <button type="button" class="add-generation-prompt-card" @click="openPromptEditor(item)">
+                <button type="button" class="add-generation-prompt-card" @click="addGenerationPrompt(item)">
                   <span class="add-icon">+</span>
                   <strong>新增 Prompt</strong>
                   <small>增加一组待生成 AI 图</small>
@@ -338,29 +367,40 @@
         </section>
       </div>
 
-      <div v-if="promptEditor.open" class="prompt-editor-modal" @click.self="closePromptEditor">
-        <section class="prompt-editor-panel">
+      <div v-if="promptReferencePicker.open" class="prompt-reference-picker-modal" @click.self="closePromptReferencePicker">
+        <section class="prompt-reference-picker-panel">
           <header class="manual-modal-head">
             <div>
-              <strong>{{ promptEditor.prompt ? '编辑 Prompt' : '新增 Prompt' }}</strong>
-              <span>{{ promptEditor.item?.style_code || '-' }}，保存后会作为一条生图任务提交。</span>
+              <strong>选择参考图</strong>
+              <span>
+                {{ promptReferencePicker.item?.style_code || '-' }}
+                · 已选 {{ promptExtraReferenceCount(promptReferencePicker.item, promptReferencePicker.prompt) }} 张
+              </span>
             </div>
-            <button type="button" class="icon-btn" aria-label="关闭 Prompt 弹窗" @click="closePromptEditor">×</button>
+            <button type="button" class="icon-btn" aria-label="关闭参考图选择" @click="closePromptReferencePicker">×</button>
           </header>
 
-          <label class="inspector-field">
-            <span>Prompt 名称</span>
-            <input v-model="promptEditor.promptName" class="prompt-editor-input" placeholder="例如 动态定格 · 全身展示" />
-          </label>
-
-          <label class="inspector-field">
-            <span>Prompt 内容</span>
-            <textarea v-model="promptEditor.promptText" placeholder="输入完整生图 Prompt"></textarea>
-          </label>
+          <div v-if="itemReferenceAssets(promptReferencePicker.item).length" class="prompt-reference-picker-grid">
+            <label
+              v-for="asset in itemReferenceAssets(promptReferencePicker.item)"
+              :key="asset.id"
+              :class="['prompt-reference-picker-card', { selected: referenceImageSelected(promptReferencePicker.prompt, asset) }]"
+            >
+              <input
+                type="checkbox"
+                :checked="referenceImageSelected(promptReferencePicker.prompt, asset)"
+                :disabled="!referenceImageSelected(promptReferencePicker.prompt, asset) && promptImageCount(promptReferencePicker.prompt) >= MAX_CONFIRMATION_IMAGES"
+                @change="togglePromptReferenceImage(promptReferencePicker.prompt, asset)"
+              />
+              <img :src="referenceImageUrl(asset.path)" :alt="referenceFileName(asset.path)" />
+              <span>{{ referenceFileName(asset.path) }}</span>
+            </label>
+          </div>
+          <div v-else class="reference-empty">本款暂无可选参考图</div>
 
           <footer class="manual-modal-actions">
-            <button type="button" class="ghost-btn" @click="closePromptEditor">取消</button>
-            <button type="button" class="primary-btn" :disabled="!promptEditor.promptText.trim()" @click="savePromptEditor">保存</button>
+            <span class="prompt-reference-picker-note">每条 Prompt 最多提交 {{ MAX_CONFIRMATION_IMAGES }} 张参考图，主图默认参与。</span>
+            <button type="button" class="primary-btn" @click="closePromptReferencePicker">完成</button>
           </footer>
         </section>
       </div>
@@ -430,14 +470,12 @@ const imagePreview = ref({
   title: '',
   subtitle: '',
 })
-const promptEditor = ref({
+const promptLibraryPicker = ref({
   open: false,
   item: null,
   prompt: null,
-  promptName: '',
-  promptText: '',
 })
-const promptLibraryPicker = ref({
+const promptReferencePicker = ref({
   open: false,
   item: null,
   prompt: null,
@@ -853,10 +891,26 @@ function isGeneratingAsset(asset) {
   return asset?.kind === 'ai' && (String(asset?.status || '').trim() === 'generating' || asset?.placeholder)
 }
 
+function assetLoadingPreviewPath(asset, item) {
+  return String(asset?.placeholder_preview_path || asset?.preview_path || itemMainAsset(item)?.path || item?.origin_path || '').trim()
+}
+
 function itemMainAsset(item) {
   return (item?.assets || []).find(asset =>
     asset?.kind === 'origin' || asset?.slot === 'main'
   ) || null
+}
+
+function itemAiAssets(item) {
+  return (item?.assets || []).filter(asset => asset?.kind === 'ai')
+}
+
+function itemSourceAssets(item) {
+  return (item?.assets || []).filter(asset => asset?.kind !== 'ai' && asset?.path)
+}
+
+function assetSourceLabel(asset) {
+  return asset?.kind === 'origin' || asset?.slot === 'main' ? '主图' : '参考图'
 }
 
 function itemReferenceAssets(item) {
@@ -874,6 +928,19 @@ function itemImageCount(item) {
 
 function promptImageCount(prompt) {
   return plainStringArray(prompt?.reference_paths).length
+}
+
+function promptExtraReferenceCount(item, prompt) {
+  const mainPath = String(itemMainAsset(item)?.path || item?.origin_path || '').trim()
+  return plainStringArray(prompt?.reference_paths).filter(path => path && path !== mainPath).length
+}
+
+function cloneForIpcPayload(value, fallback = {}) {
+  try {
+    return JSON.parse(JSON.stringify(value ?? fallback))
+  } catch {
+    return fallback
+  }
 }
 
 function normalizeGenerationImageCount(value, fallback = 1) {
@@ -1097,8 +1164,80 @@ function generationConfirmationPayload() {
           image_count: normalizeGenerationImageCount(prompt.image_count),
           reference_paths: plainStringArray(prompt.reference_paths).slice(0, MAX_CONFIRMATION_IMAGES),
           status: String(prompt.status || 'pending'),
-          generation_row: prompt.generation_row || {},
+          generation_row: cloneForIpcPayload(prompt.generation_row || {}),
         })),
+      }
+    }),
+  }
+}
+
+function generationPlaceholderLabel(promptIndex, imageIndex, imageCount) {
+  return imageCount > 1 ? `AI 图 ${promptIndex}-${imageIndex}` : `AI 图 ${promptIndex}`
+}
+
+function generationPayloadItemKey(item) {
+  return String(item?.id || item?.style_code || item?.item_id || '').trim()
+}
+
+function localGenerationPlaceholderAssets(item, payloadItem, itemIndex, now) {
+  const prompts = Array.isArray(payloadItem?.generation_prompts) ? payloadItem.generation_prompts : []
+  const mainPath = String(itemMainAsset(item)?.path || payloadItem?.origin_path || item?.origin_path || '').trim()
+  return prompts.flatMap((prompt, promptOffset) => {
+    const promptIndex = Number(prompt.prompt_index || promptOffset + 1)
+    const imageCount = normalizeGenerationImageCount(prompt.image_count)
+    return Array.from({ length: imageCount }, (_, imageOffset) => {
+      const imageIndex = imageOffset + 1
+      return {
+        id: `${generationPayloadItemKey(item) || `item-${itemIndex + 1}`}-loading-${prompt.id || promptIndex}-${imageIndex}`,
+        kind: 'ai',
+        label: generationPlaceholderLabel(promptIndex, imageIndex, imageCount),
+        status: 'generating',
+        placeholder: true,
+        prompt_index: promptIndex,
+        prompt_name: String(prompt.prompt_name || `Prompt ${promptIndex}`),
+        prompt_group: String(prompt.prompt_group || ''),
+        prompt: String(prompt.prompt || prompt.custom_prompt || ''),
+        custom_prompt: String(prompt.custom_prompt || prompt.prompt || ''),
+        reference_paths: plainStringArray(prompt.reference_paths),
+        placeholder_preview_path: mainPath,
+        filename: '等待 1XM 返回图片',
+        path: '',
+        created_at: now,
+      }
+    })
+  })
+}
+
+function optimisticGenerationBatch(sourceBatch, payload, submitProgress) {
+  const now = new Date().toISOString()
+  const payloadItems = Array.isArray(payload?.items) ? payload.items : []
+  const payloadByKey = new Map()
+  for (const item of payloadItems) {
+    for (const key of [item?.id, item?.style_code, item?.item_id].map(value => String(value || '').trim()).filter(Boolean)) {
+      payloadByKey.set(key, item)
+    }
+  }
+  return {
+    ...(sourceBatch || {}),
+    status: 'generating',
+    submit_progress: submitProgress,
+    items: (sourceBatch?.items || []).map((item, itemIndex) => {
+      const payloadItem = payloadByKey.get(String(item?.id || '').trim())
+        || payloadByKey.get(String(item?.style_code || '').trim())
+        || payloadByKey.get(String(item?.item_id || '').trim())
+        || payloadItems[itemIndex]
+      const baseAssets = (item?.assets || []).filter(asset => !(asset?.kind === 'ai' && asset?.placeholder))
+      return {
+        ...item,
+        assets: [
+          ...baseAssets,
+          ...localGenerationPlaceholderAssets(item, payloadItem, itemIndex, now),
+        ],
+        generation_prompts: (item?.generation_prompts || []).map(prompt => (
+          ['removed', 'deleted', 'disabled', 'skip', 'skipped'].includes(String(prompt?.status || '').trim().toLowerCase())
+            ? prompt
+            : { ...prompt, status: 'generating' }
+        )),
       }
     }),
   }
@@ -1107,24 +1246,21 @@ function generationConfirmationPayload() {
 async function submitGenerationConfirmation() {
   const ref = approvalRef.value
   const previousBatch = batch.value
-  const payload = generationConfirmationPayload()
+  const payload = cloneForIpcPayload(generationConfirmationPayload())
+  const submitProgress = {
+    status: 'running',
+    total: generationPromptCount.value,
+    completed: 0,
+    attempted: 0,
+    succeeded: 0,
+    failed: 0,
+    image_total: generationRequestedImageCount.value,
+    current_style: '',
+    message: generationStartMessage.value,
+  }
   generationSubmitting.value = true
   try {
-    batch.value = {
-      ...(batch.value || {}),
-      status: 'generating',
-      submit_progress: {
-        status: 'running',
-        total: generationPromptCount.value,
-        completed: 0,
-        attempted: 0,
-        succeeded: 0,
-        failed: 0,
-        image_total: generationRequestedImageCount.value,
-        current_style: '',
-        message: generationStartMessage.value,
-      },
-    }
+    batch.value = optimisticGenerationBatch(batch.value, payload, submitProgress)
     emit('batch-updated', batch.value)
     emit('generation-started', batch.value)
     showToast(generationStartMessage.value)
@@ -1279,17 +1415,18 @@ function addGenerationPrompt(item, values = {}) {
   const first = prompts[0] || {}
   const nextIndex = prompts.length + 1
   const mainPath = String(itemMainAsset(item)?.path || item.origin_path || '').trim()
+  const hasPromptName = Object.prototype.hasOwnProperty.call(values, 'promptName')
   const prompt = {
     id: `${item.style_code || 'style'}-manual-${Date.now()}`,
     prompt_index: nextIndex,
-    prompt_name: String(values.promptName || `新增 Prompt ${nextIndex}`),
+    prompt_name: hasPromptName ? String(values.promptName || '') : '',
     prompt_group: first.prompt_group || '',
     prompt: String(values.promptText || ''),
     custom_prompt: String(values.promptText || ''),
     image_count: normalizeGenerationImageCount(values.imageCount, 1),
     reference_paths: mainPath ? [mainPath] : [],
     status: 'pending',
-    generation_row: first.generation_row || {},
+    generation_row: cloneForIpcPayload(first.generation_row || {}),
   }
   item.generation_prompts = [...prompts, prompt]
 }
@@ -1334,45 +1471,6 @@ function selectPromptLibraryTemplate(template) {
   closePromptLibraryPicker()
 }
 
-function openPromptEditor(item, prompt = null) {
-  promptEditor.value = {
-    open: true,
-    item,
-    prompt,
-    promptName: String(prompt?.prompt_name || ''),
-    promptText: String(prompt?.custom_prompt || prompt?.prompt || ''),
-  }
-}
-
-function closePromptEditor() {
-  promptEditor.value = {
-    open: false,
-    item: null,
-    prompt: null,
-    promptName: '',
-    promptText: '',
-  }
-}
-
-function savePromptEditor() {
-  const editor = promptEditor.value
-  const item = editor.item
-  const promptText = String(editor.promptText || '').trim()
-  if (!item || !promptText) return
-  if (editor.prompt) {
-    editor.prompt.prompt_name = String(editor.promptName || editor.prompt.prompt_name || 'Prompt')
-    editor.prompt.prompt = promptText
-    editor.prompt.custom_prompt = promptText
-    editor.prompt.image_count = normalizeGenerationImageCount(editor.prompt.image_count, 1)
-  } else {
-    addGenerationPrompt(item, {
-      promptName: String(editor.promptName || '').trim(),
-      promptText,
-    })
-  }
-  closePromptEditor()
-}
-
 function openImagePreview(asset, item = null) {
   if (!asset) return
   imagePreview.value = {
@@ -1395,10 +1493,29 @@ function closeImagePreview() {
 function removeGenerationPrompt(item, prompt) {
   prompt.status = 'removed'
   item.generation_prompts = (item.generation_prompts || []).filter(row => row !== prompt)
+  if (promptReferencePicker.value.prompt === prompt) {
+    closePromptReferencePicker()
+  }
 }
 
 function useItemReferencesForPrompt(item, prompt) {
   prompt.reference_paths = itemReferencePaths(item)
+}
+
+function openPromptReferencePicker(item, prompt) {
+  promptReferencePicker.value = {
+    open: true,
+    item,
+    prompt,
+  }
+}
+
+function closePromptReferencePicker() {
+  promptReferencePicker.value = {
+    open: false,
+    item: null,
+    prompt: null,
+  }
 }
 
 async function pickPromptReferenceFiles(prompt, options = {}) {
@@ -2016,11 +2133,106 @@ function showToast(message, isError = false) {
 .style-actions .style-mode {
   margin: 0;
 }
-.asset-rail {
+.asset-board {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
-  gap: 12px;
+  gap: 14px;
   padding: 14px 16px 16px;
+}
+.ai-assets-panel,
+.source-assets-panel {
+  min-width: 0;
+}
+.asset-section-head {
+  min-height: 28px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.asset-section-head.compact {
+  min-height: 0;
+  margin-bottom: 8px;
+}
+.asset-section-head strong,
+.asset-section-head span {
+  display: block;
+}
+.asset-section-head strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 900;
+}
+.asset-section-head span {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+}
+.ai-asset-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(178px, 1fr));
+  gap: 12px;
+  align-items: stretch;
+}
+.source-assets-panel {
+  border-top: 1px solid rgba(255, 255, 255, .055);
+  padding-top: 12px;
+  opacity: .82;
+}
+.source-thumb-row {
+  min-width: 0;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.source-thumb-card {
+  flex: 0 0 92px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, .022);
+  color: inherit;
+  padding: 0;
+  overflow: hidden;
+  text-align: left;
+  cursor: zoom-in;
+  transition: border-color .16s, transform .16s, background .16s;
+}
+.source-thumb-card:hover {
+  border-color: rgba(255, 106, 41, .62);
+  background: rgba(255, 106, 41, .045);
+  transform: translateY(-1px);
+}
+.source-thumb-card img {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  display: block;
+  background: rgba(255, 255, 255, .04);
+}
+.source-thumb-kind,
+.source-thumb-name {
+  display: block;
+  min-width: 0;
+  padding: 0 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.source-thumb-kind {
+  padding-top: 7px;
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 900;
+}
+.source-thumb-name {
+  padding-top: 3px;
+  padding-bottom: 8px;
+  color: var(--text3);
+  font-size: 10px;
+  font-weight: 700;
 }
 .asset-card {
   min-width: 0;
@@ -2038,6 +2250,9 @@ function showToast(message, isError = false) {
 }
 .asset-card.reference {
   background: rgba(255, 255, 255, .025);
+}
+.ai-primary-card {
+  background: color-mix(in srgb, var(--bg3) 92%, var(--orange) 8%);
 }
 .asset-card.approved { border-color: rgba(74, 222, 128, .42); }
 .asset-card.rejected { opacity: .58; border-color: rgba(248, 113, 113, .35); }
@@ -2061,6 +2276,9 @@ function showToast(message, isError = false) {
   background: rgba(255, 255, 255, .04);
 }
 .asset-loading-preview {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
   width: 100%;
   aspect-ratio: 3 / 4;
   display: grid;
@@ -2073,8 +2291,32 @@ function showToast(message, isError = false) {
     rgba(255, 255, 255, .04);
   color: var(--text);
 }
+.asset-loading-preview::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(circle at 24% 18%, rgba(255, 115, 45, .28), transparent 36%),
+    linear-gradient(180deg, rgba(6, 8, 18, .20), rgba(6, 8, 18, .72));
+}
+.asset-loading-source {
+  position: absolute;
+  inset: -8%;
+  z-index: -2;
+  width: 116%;
+  height: 116%;
+  min-height: 0;
+  aspect-ratio: auto;
+  object-fit: cover;
+  filter: blur(16px) saturate(.72) brightness(.62);
+  transform: scale(1.08);
+  animation: asset-loading-source-breathe 4.8s ease-in-out infinite;
+}
 .asset-loading-preview strong,
 .asset-loading-preview small {
+  position: relative;
+  z-index: 1;
   display: block;
   max-width: 100%;
   text-align: center;
@@ -2091,6 +2333,8 @@ function showToast(message, isError = false) {
   white-space: nowrap;
 }
 .asset-loading-spinner {
+  position: relative;
+  z-index: 1;
   width: 28px;
   height: 28px;
   border-radius: 999px;
@@ -2100,6 +2344,10 @@ function showToast(message, isError = false) {
 }
 @keyframes approval-spin {
   to { transform: rotate(360deg); }
+}
+@keyframes asset-loading-source-breathe {
+  0%, 100% { transform: scale(1.08); opacity: .84; }
+  50% { transform: scale(1.13); opacity: 1; }
 }
 .asset-label,
 .asset-file,
@@ -2187,6 +2435,9 @@ function showToast(message, isError = false) {
 .add-card:hover {
   border-color: var(--orange);
   background: rgba(255, 106, 41, .07);
+}
+.ai-add-card {
+  min-height: 238px;
 }
 .add-icon {
   width: 34px;
@@ -2384,6 +2635,38 @@ function showToast(message, isError = false) {
   gap: 6px;
   margin-top: 8px;
 }
+.prompt-reference-toggle-row.compact {
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+}
+.prompt-reference-summary {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.prompt-reference-summary span,
+.prompt-reference-summary small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-reference-summary span {
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 900;
+}
+.prompt-reference-summary small {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+}
+.prompt-reference-toggle-row.compact .ghost-btn {
+  flex: 0 0 auto;
+  padding: 7px 10px;
+}
 .prompt-ref-caption,
 .prompt-reference-empty {
   color: var(--text3);
@@ -2423,15 +2706,22 @@ function showToast(message, isError = false) {
 }
 .prompt-card-actions {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
+  grid-template-columns: minmax(124px, 1fr) 64px;
+  gap: 8px;
   margin-top: 8px;
 }
 .prompt-card-actions .ghost-btn {
   min-width: 0;
-  padding: 6px 6px;
+  width: 100%;
+  justify-content: center;
+  padding: 7px 8px;
   font-size: 11px;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.prompt-card-actions .ghost-btn.danger {
+  justify-self: end;
 }
 .prompt-card-status {
   display: flex;
@@ -2576,19 +2866,6 @@ function showToast(message, isError = false) {
 .inspector-field textarea:focus {
   border-color: var(--orange);
 }
-.prompt-editor-input {
-  width: 100%;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg3);
-  color: var(--text);
-  padding: 10px 11px;
-  font-size: 13px;
-  outline: none;
-}
-.prompt-editor-input:focus {
-  border-color: var(--orange);
-}
 .manual-modal-backdrop {
   position: absolute;
   inset: 0;
@@ -2608,8 +2885,8 @@ function showToast(message, isError = false) {
   box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
   padding: 18px;
 }
-.prompt-editor-modal,
 .prompt-library-picker-modal,
+.prompt-reference-picker-modal,
 .image-preview-modal {
   position: absolute;
   inset: 0;
@@ -2619,15 +2896,73 @@ function showToast(message, isError = false) {
   place-items: center;
   padding: 24px;
 }
-.prompt-editor-panel {
-  width: min(720px, 100%);
+.prompt-reference-picker-panel {
+  width: min(780px, 100%);
   max-height: calc(100vh - 72px);
-  overflow: auto;
+  overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 12px;
   background: var(--bg);
   box-shadow: 0 24px 80px rgba(0, 0, 0, .42);
   padding: 18px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+}
+.prompt-reference-picker-grid {
+  min-height: 0;
+  overflow: auto;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  gap: 10px;
+  padding-right: 4px;
+}
+.prompt-reference-picker-card {
+  min-width: 0;
+  position: relative;
+  display: grid;
+  grid-template-rows: auto auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg3);
+  overflow: hidden;
+  cursor: pointer;
+}
+.prompt-reference-picker-card.selected {
+  border-color: rgba(31, 184, 156, .72);
+  box-shadow: inset 0 0 0 1px rgba(31, 184, 156, .2);
+}
+.prompt-reference-picker-card input {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1;
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: #1fb89c;
+}
+.prompt-reference-picker-card img {
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  object-fit: cover;
+  display: block;
+  background: rgba(255, 255, 255, .04);
+}
+.prompt-reference-picker-card span {
+  min-width: 0;
+  padding: 8px;
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 800;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-reference-picker-note {
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 700;
 }
 .prompt-library-picker-panel {
   width: min(920px, 100%);

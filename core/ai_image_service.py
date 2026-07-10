@@ -783,6 +783,100 @@ def poll_workbench_run(
             }
 
 
+def retry_workbench_run(
+    job_uid: str,
+    run_uid: str,
+    *,
+    settings: Mapping[str, Any] | None = None,
+    client_factory: Callable[..., OneXMImageClient] = OneXMImageClient,
+    poll_submitter: Callable[..., Any] | None = None,
+) -> dict:
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise ValueError(f"AI image job not found: {job_uid}")
+    run = next((
+        dict(item)
+        for item in (job.get("summary") or {}).get("runs") or []
+        if isinstance(item, Mapping) and _compact(item.get("run_uid")) == run_uid
+    ), None)
+    if not run:
+        raise ValueError(f"AI image run not found: {run_uid}")
+    if _compact(run.get("status")).lower() != "failed":
+        raise ValueError("只有失败的生图队列可以重试")
+
+    resolved_settings = dict(settings or {})
+    if not resolved_settings:
+        from core.api_server import _resolve_one_xm_settings
+
+        resolved_settings = _resolve_one_xm_settings()
+    retry_job = {
+        **dict(job),
+        "model_key": _compact(run.get("model_key") or job.get("model_key")),
+        "params": {
+            **_params(job),
+            "model_key_tier": _compact(run.get("model_key_tier")) or _params(job).get("model_key_tier"),
+        },
+    }
+    _, api_key = select_model_key(retry_job, resolved_settings)
+    client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+    manual_retry_count = max(0, int(run.get("manual_retry_count") or 0)) + 1
+    manual_retry_history = [
+        dict(item)
+        for item in (run.get("manual_retry_history") or [])
+        if isinstance(item, Mapping)
+    ]
+    manual_retry_history.append({
+        "retry_index": manual_retry_count,
+        "task_id": _compact(run.get("task_id")),
+        "error": _compact(run.get("error")),
+        "retried_at": _now_iso(),
+    })
+
+    try:
+        task = client.create_task(
+            _workbench_retry_payload(job, run),
+            idempotency_key=f"ai_image_{job_uid}_{run_uid}_manual_retry_{manual_retry_count}",
+            timeout=30,
+            request_retries=3,
+        )
+        patch = _workbench_run_patch(
+            task,
+            requested_count=int(run.get("requested_count") or 1),
+        )
+        patch.update({
+            "retry_count": 0,
+            "manual_retry_count": manual_retry_count,
+            "manual_retry_history": manual_retry_history,
+            "last_retry_error": _compact(run.get("error")),
+        })
+        if patch.get("status") in {"queued", "running", "completed"}:
+            patch["error"] = ""
+    except Exception as exc:
+        patch = {
+            "manual_retry_count": manual_retry_count,
+            "manual_retry_history": manual_retry_history,
+            "error": f"手动重试提交失败: {_sanitize_error(exc, [api_key])}"[:500],
+        }
+
+    updated = _update_workbench_run(job_uid, run_uid, patch)
+    latest_run = next(
+        (item for item in (updated.get("summary") or {}).get("runs") or [] if item.get("run_uid") == run_uid),
+        {},
+    )
+    accepted = latest_run.get("status") in {"queued", "running", "completed"}
+    if latest_run.get("status") in {"queued", "running"}:
+        poller = poll_submitter or _WORKBENCH_POLL_EXECUTOR.submit
+        poller(poll_workbench_run, job_uid, run_uid, client)
+    return {
+        "ok": accepted,
+        "accepted": accepted,
+        "job_uid": job_uid,
+        "run_uid": run_uid,
+        "run": latest_run,
+        "job": updated,
+    }
+
+
 def submit_workbench_batch(
     job_uid: str,
     prompts: list[Mapping[str, Any] | str],

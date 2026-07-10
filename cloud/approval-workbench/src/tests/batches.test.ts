@@ -237,7 +237,7 @@ class FakeD1Statement {
           })) as T[],
         }
       }
-      return { results: this.state.assets.filter((row) => !batchUid || row.batch_uid === String(batchUid)) as T[] }
+      return { results: this.state.assets.filter((row) => (!batchUid || row.batch_uid === String(batchUid)) && (!normalized.includes("status = 'planned'") || row.status === 'planned')) as T[] }
     }
     if (normalized.includes('from dispatch_jobs')) {
       const batchUids = new Set(this.params.map(String))
@@ -357,6 +357,13 @@ class FakeD1Statement {
         updated_at: String(this.params[14]),
       })
       return result(1, id)
+    }
+    if (normalized.startsWith('delete from ai_image_assets')) {
+      const batchUid = String(this.params[0])
+      const assetUid = String(this.params[1])
+      const before = this.state.assets.length
+      this.state.assets = this.state.assets.filter((row) => !(row.batch_uid === batchUid && row.asset_uid === assetUid && row.status === 'planned'))
+      return result(before - this.state.assets.length)
     }
     if (normalized.startsWith('update ai_image_batches set status')) {
       const batch = this.state.batches.find((row) => row.batch_uid === String(this.params[1]))
@@ -536,7 +543,7 @@ describe('batch sync routes', () => {
 
     expect(replay.status).toBe(200)
     expect(state.styles[0].status).toBe('approved')
-    expect(state.assets.find((asset) => asset.asset_uid === 'asset-source-1')?.status).toBe('uploaded')
+    expect(state.assets.find((asset) => asset.asset_uid === 'asset-source-1')?.status).toBe('planned')
     expect(state.assets.find((asset) => asset.asset_uid === 'asset-ai-1')?.status).toBe('approved')
   })
 
@@ -889,6 +896,37 @@ describe('batch sync routes', () => {
     expect(response.status).toBe(201)
     expect(state.assets).toHaveLength(2)
     expect(state.assets.map((asset) => asset.status)).toEqual(['planned', 'planned'])
+  })
+
+  it('makes machine batch sync idempotent without clearing review decisions', async () => {
+    const { state, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+    state.assets[0].status = 'uploaded'
+    state.assets[1].status = 'approved'
+    state.assets.push({
+      ...state.assets[1],
+      id: 99,
+      asset_uid: 'stale-placeholder-ai',
+      kind: 'ai',
+      status: 'planned',
+      object_key: 'batches/batch-20260707/ai/stale-placeholder-ai.jpg',
+      filename: 'stale-placeholder-ai.jpg',
+    })
+
+    const response = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload()),
+    }), env)
+
+    expect(response.status).toBe(200)
+    expect(state.assets.map((asset) => asset.asset_uid)).toEqual(['asset-source-1', 'asset-ai-1'])
+    expect(state.assets.map((asset) => asset.status)).toEqual(['planned', 'approved'])
   })
 
   it('keeps pending_review sync-complete idempotent', async () => {

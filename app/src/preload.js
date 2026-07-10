@@ -272,6 +272,8 @@ contextBridge.exposeInMainWorld('cs', {
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {})),
   batchRunAiImageJob: (uid, payload) => invokeWithApiFallback('batch-run-ai-image-job', [uid, payload],
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/batch-run`, payload || {})),
+  retryAiImageRun: (uid, runUid) => invokeWithApiFallback('retry-ai-image-run', [uid, runUid],
+    () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/runs/${encodePathPart(runUid)}/retry`, {})),
   saveAsAiImageJob: (uid, payload) => invokeWithApiFallback('save-as-ai-image-job', [uid, payload],
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {})),
   materializeAiImageResult: (uid, payload) => invokeWithApiFallback('materialize-ai-image-result', [uid, payload],

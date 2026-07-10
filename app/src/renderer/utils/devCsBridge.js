@@ -316,6 +316,7 @@ export function createDevCsBridge() {
     updateAiImageJob: (uid, payload) => apiCall('PATCH', `/ai-image/jobs/${encodePathPart(uid)}`, payload || {}),
     runAiImageJob: (uid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {}),
     batchRunAiImageJob: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/batch-run`, payload || {}),
+    retryAiImageRun: (uid, runUid) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/runs/${encodePathPart(runUid)}/retry`, {}),
     saveAsAiImageJob: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {}),
     materializeAiImageResult: (uid, payload) => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/materialize`, payload || {}),
     createAiImageAsset: (payload) => apiCall('POST', '/ai-image/assets', payload || {}),

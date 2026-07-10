@@ -1,5 +1,5 @@
 <template>
-  <div class="layout">
+  <div class="layout" :class="{ 'layout-ai-image': currentView === 'ai_image' }">
     <!-- 标题栏 -->
     <div class="titlebar">
       <span class="logo">🦐 抓虾</span>
@@ -20,6 +20,8 @@
         <button
           v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
+          :aria-label="item.label"
+          :title="item.label"
           @click="selectNav(item)"
         >
           <span class="icon">{{ item.icon }}</span>
@@ -481,4 +483,58 @@ nav {
 
 /* 主内容 */
 .content { overflow: hidden; background: var(--bg); height: 100%; min-height: 0; }
+
+@media (max-width: 760px) {
+  .layout.layout-ai-image {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: 40px minmax(0, 1fr) 56px;
+  }
+
+  .layout-ai-image .titlebar {
+    grid-column: 1;
+    grid-row: 1;
+    padding-right: 12px;
+  }
+
+  .layout-ai-image .content {
+    grid-column: 1;
+    grid-row: 2;
+  }
+
+  .layout-ai-image .sidebar {
+    grid-column: 1;
+    grid-row: 3;
+    flex-direction: row;
+    padding: 4px 0 max(4px, env(safe-area-inset-bottom));
+    overflow-x: auto;
+    border-top: 1px solid var(--border);
+    border-right: 0;
+  }
+
+  .layout-ai-image nav {
+    width: 100%;
+    flex-direction: row;
+    align-items: stretch;
+    gap: 4px;
+    padding: 0 6px;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .layout-ai-image .nav-btn {
+    min-width: 48px;
+    flex: 1 0 48px;
+    justify-content: center;
+    padding: 8px;
+  }
+
+  .layout-ai-image .nav-btn > span:not(.icon) {
+    display: none;
+  }
+
+  .layout-ai-image .nav-btn .icon {
+    width: auto;
+    font-size: 18px;
+  }
+}
 </style>

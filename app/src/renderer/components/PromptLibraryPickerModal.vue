@@ -1,6 +1,6 @@
 <template>
   <div v-if="open" class="prompt-library-picker-modal" @click.self="close">
-    <section class="prompt-library-picker-panel" role="dialog" aria-modal="true" aria-label="从 Prompt 库选择">
+    <section ref="dialogPanel" class="prompt-library-picker-panel" role="dialog" aria-modal="true" aria-label="从 Prompt 库选择" tabindex="-1">
       <header class="prompt-library-picker-head">
         <div>
           <strong>{{ title }}</strong>
@@ -26,7 +26,10 @@
         </button>
       </div>
 
-      <div v-if="error" class="prompt-library-picker-empty error">{{ error }}</div>
+      <div v-if="error" class="prompt-library-picker-empty error" role="alert">
+        <strong>{{ operatorError }}</strong>
+        <button type="button" class="prompt-library-error-retry" :disabled="loading" @click="loadPromptLibraries">刷新重试</button>
+      </div>
       <div v-else-if="loading || templatesLoading" class="prompt-library-picker-empty">正在读取 Prompt 库...</div>
       <div v-else class="prompt-library-template-list">
         <button
@@ -47,9 +50,11 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { buildPromptLibraryPickerLibraries } from '../utils/localPromptLibrary'
 import { createPromptLibraryRequestGuard } from '../utils/promptLibraryRequestGuard'
+import { promptLibraryFailureMessage } from '../utils/aiImageOperatorMessages.mjs'
+import { focusFirstInDialog, trapDialogFocus } from '../utils/dialogAccessibility.mjs'
 
 const props = defineProps({
   open: { type: Boolean, default: false },
@@ -67,6 +72,9 @@ const category = ref('')
 const loading = ref(false)
 const templatesLoading = ref(false)
 const error = ref('')
+const operatorError = computed(() => promptLibraryFailureMessage(error.value))
+const dialogPanel = ref(null)
+let dialogReturnFocus = null
 const promptLibraryRequestGuard = createPromptLibraryRequestGuard()
 const promptLibraryListRequestGuard = createPromptLibraryRequestGuard()
 
@@ -99,13 +107,35 @@ const filteredTemplates = computed(() => {
 watch(() => props.open, (open) => {
   if (!open) {
     invalidatePromptLibraryRequests()
+    const returnTarget = dialogReturnFocus
+    dialogReturnFocus = null
+    if (returnTarget?.focus) void nextTick(() => returnTarget.focus({ preventScroll: true }))
     return
   }
+  if (typeof document !== 'undefined') dialogReturnFocus = document.activeElement
+  void nextTick(() => focusFirstInDialog(dialogPanel.value))
   search.value = ''
   category.value = ''
   if (!libraries.value.length) void loadPromptLibraries()
   else if (selectedLibraryId.value) void loadPromptLibraryTemplates(selectedLibraryId.value)
 }, { immediate: true })
+
+onMounted(() => document.addEventListener('keydown', handleDialogKeydown))
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleDialogKeydown)
+  dialogReturnFocus?.focus?.({ preventScroll: true })
+})
+
+function handleDialogKeydown(event) {
+  if (!props.open) return
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    event.stopImmediatePropagation()
+    close()
+    return
+  }
+  trapDialogFocus(event, dialogPanel.value)
+}
 
 function close() {
   invalidatePromptLibraryRequests()
@@ -366,7 +396,17 @@ function selectTemplate(template) {
 }
 
 .prompt-library-picker-empty.error {
+  align-content: center;
+  gap: 12px;
+  padding: 18px;
   color: #ff8b5f;
+  text-align: center;
+}
+
+.prompt-library-error-retry {
+  justify-self: center;
+  min-height: 38px;
+  padding: 0 14px;
 }
 
 @media (max-width: 840px) {

@@ -1,6 +1,8 @@
 <template>
   <section class="aiw-workbench aiw-option-3">
-    <header class="aiw-topbar">
+    <div class="aiw-sr-only" aria-live="polite" aria-atomic="true">{{ statusAnnouncement }}</div>
+    <div class="aiw-sr-only" aria-live="assertive" aria-atomic="true">{{ errorAnnouncement }}</div>
+    <header class="aiw-topbar" :inert="workbenchDialogOpen || undefined" :aria-hidden="workbenchDialogOpen ? 'true' : undefined">
       <div>
         <p class="aiw-kicker">AI 生图</p>
         <h2>AI 生图工作台</h2>
@@ -19,7 +21,12 @@
       </div>
     </header>
 
-    <div class="aiw-main-grid">
+    <nav class="aiw-compact-tabs" aria-label="AI 生图工作区" :inert="workbenchDialogOpen || undefined" :aria-hidden="workbenchDialogOpen ? 'true' : undefined">
+      <button type="button" :class="{ active: compactPane === 'inputs' }" :aria-pressed="compactPane === 'inputs' ? 'true' : 'false'" @click="compactPane = 'inputs'">输入与参数</button>
+      <button type="button" :class="{ active: compactPane === 'results' }" :aria-pressed="compactPane === 'results' ? 'true' : 'false'" @click="compactPane = 'results'">结果与队列</button>
+    </nav>
+
+    <div class="aiw-main-grid" :class="`compact-${compactPane}`" :inert="workbenchDialogOpen || undefined" :aria-hidden="workbenchDialogOpen ? 'true' : undefined">
       <aside class="aiw-prompt-panel aiw-task-panel">
         <div class="aiw-panel-head">
           <span>当前任务</span>
@@ -190,16 +197,23 @@
           </button>
         </section>
 
-        <section class="aiw-material-box">
+        <section class="aiw-material-box" :class="{ 'has-error': Boolean(advancedJsonError) }">
           <span class="aiw-field-label">高级 JSON</span>
-          <textarea v-model.trim="form.advancedJson" class="aiw-advanced-json" placeholder='{"background":"white"}'></textarea>
+          <textarea
+            v-model.trim="form.advancedJson"
+            class="aiw-advanced-json"
+            placeholder='{"background":"white"}'
+            :aria-invalid="advancedJsonError ? 'true' : 'false'"
+            aria-describedby="aiw-advanced-json-error"
+          ></textarea>
+          <small v-if="advancedJsonError" id="aiw-advanced-json-error" class="aiw-inline-error" role="alert">{{ advancedJsonError }}</small>
         </section>
 
         <section class="aiw-generate-card">
-          <button class="aiw-primary-action" type="button" :disabled="generating" @click="generate">
+          <button class="aiw-primary-action" type="button" :disabled="generating || Boolean(advancedJsonError)" @click="generate">
             <span class="aiw-icon-button-content"><AiwIcon name="wand" />{{ generateLabel }}</span>
           </button>
-          <small v-if="errorMessage">{{ errorMessage }}</small>
+          <small v-if="errorMessage" role="alert">{{ errorMessage }}</small>
         </section>
       </aside>
 
@@ -221,8 +235,8 @@
             <button
               class="aiw-task-sidebar-toggle"
               type="button"
-              :class="{ active: taskSidebarOpen }"
-              :aria-pressed="taskSidebarOpen ? 'true' : 'false'"
+              :class="{ active: taskSidebarToggleActive }"
+              :aria-pressed="taskSidebarToggleActive ? 'true' : 'false'"
               @click="toggleTaskSidebar"
             >
               <span class="aiw-icon-button-content"><AiwIcon name="sidebar" />任务</span>
@@ -262,17 +276,18 @@
                   :key="item.key || item.path || item.url"
                   class="aiw-result-card"
                   :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading, failed: item.failed }"
-                  :aria-pressed="selectedResults.has(resultKey(item)) ? 'true' : 'false'"
-                  :tabindex="item.loading || item.failed ? -1 : 0"
                   :draggable="!item.loading && !item.failed"
-                  role="button"
-                  @click="toggleResult(item)"
                   @dragstart.stop="startResultDrag(item, $event)"
                   @dragend="endResultDrag"
-                  @keydown.enter.prevent="toggleResult(item)"
-                  @keydown.space.prevent="toggleResult(item)"
                 >
-                  <button v-if="!item.loading && !item.failed" class="aiw-select-toggle" type="button" @click.stop="toggleResult(item)">
+                  <button
+                    v-if="!item.loading && !item.failed"
+                    class="aiw-select-toggle"
+                    type="button"
+                    :aria-pressed="selectedResults.has(resultKey(item)) ? 'true' : 'false'"
+                    :aria-label="`${selectedResults.has(resultKey(item)) ? '取消选择' : '选择'}${item.label}`"
+                    @click.stop="toggleResult(item)"
+                  >
                     {{ selectedResults.has(resultKey(item)) ? '已选' : '选择' }}
                   </button>
                   <button
@@ -320,7 +335,19 @@
                   </div>
                   <div v-else class="aiw-failed-preview">
                     <strong>生成失败</strong>
-                    <span>{{ item.error || '1XM 任务执行失败' }}</span>
+                    <span>{{ generationFailureMessage(item.error) }}</span>
+                    <small v-if="retrySummaryText(item)">{{ retrySummaryText(item) }}</small>
+                    <div class="aiw-failed-actions">
+                      <button type="button" :disabled="retryingRunUids.has(item.runUid)" @click.stop="retryFailedRun(item)">
+                        <span class="aiw-icon-button-content"><AiwIcon name="rotate-ccw" />{{ retryingRunUids.has(item.runUid) ? '重试提交中...' : '重试本队列' }}</span>
+                      </button>
+                      <button type="button" @click.stop="copyFailedPrompt(item)">
+                        <span class="aiw-icon-button-content"><AiwIcon name="copy" />复制 Prompt</span>
+                      </button>
+                      <button type="button" @click.stop="restoreFailedRunInputs(item)">
+                        <span class="aiw-icon-button-content"><AiwIcon name="settings" />打开参数</span>
+                      </button>
+                    </div>
                   </div>
                   <footer v-if="!item.loading && !item.failed">
                     <div class="aiw-result-card-meta">
@@ -395,8 +422,9 @@
         </div>
       </main>
     </div>
+    <div v-if="actionNotice" class="aiw-toast" role="status" aria-live="polite" aria-atomic="true">{{ actionNotice }}</div>
     <div v-if="batchGenerationDialog.open" class="aiw-batch-dialog" @click.self="closeBatchGenerationDialog">
-      <section class="aiw-batch-panel" role="dialog" aria-modal="true" aria-label="批量生成">
+      <section ref="batchDialogPanel" class="aiw-batch-panel" role="dialog" aria-modal="true" aria-label="批量生成" tabindex="-1" :inert="batchPromptLibraryPicker.open || undefined">
         <header class="aiw-batch-head">
           <div>
             <strong>批量生成</strong>
@@ -615,7 +643,7 @@
         </div>
 
         <footer class="aiw-batch-footer">
-          <small v-if="batchGenerationDialog.error">{{ batchGenerationDialog.error }}</small>
+          <small v-if="batchGenerationDialog.error" role="alert">{{ batchGenerationDialog.error }}</small>
           <span v-else>将在当前任务下提交 {{ batchPromptStats.promptCount }} 条生成记录，预计 {{ batchPromptStats.totalImages }} 张图；最多添加 20 条 Prompt。</span>
           <div>
             <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">取消</button>
@@ -645,7 +673,7 @@
     />
 
     <div v-if="lightboxItem" class="aiw-lightbox" @click="closeLightbox">
-      <section class="aiw-lightbox-layout" role="dialog" aria-modal="true" aria-label="图片预览和二次修改" @click.stop>
+      <section ref="lightboxDialogPanel" class="aiw-lightbox-layout" role="dialog" aria-modal="true" aria-label="图片预览和二次修改" tabindex="-1" @click.stop>
         <div class="aiw-lightbox-image-pane">
           <figure>
             <div class="aiw-lightbox-canvas" :class="{ loading: lightboxActiveItem?.loading }">
@@ -837,7 +865,7 @@
       </section>
     </div>
     <div v-if="promptDialogQueue" class="aiw-prompt-dialog" @click="closePromptDialog">
-      <section role="dialog" aria-modal="true" aria-label="完整 Prompt" @click.stop>
+      <section ref="promptDialogPanel" role="dialog" aria-modal="true" aria-label="完整 Prompt" tabindex="-1" @click.stop>
         <header>
           <div>
             <strong>完整 Prompt</strong>
@@ -854,7 +882,7 @@
 </template>
 
 <script setup>
-import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import {
   AI_IMAGE_FORMATS,
   AI_IMAGE_MODELS,
@@ -881,6 +909,7 @@ import {
 } from '../aiImageResultLineage.mjs'
 import {
   AI_IMAGE_LOADING_MESSAGES,
+  generationBelongsToJob,
   loadingMessageFor,
   resolveLoadingPreviewContext,
 } from '../utils/aiImageLoadingState.mjs'
@@ -890,6 +919,13 @@ import {
   normalizeBatchPromptCount,
   summarizeBatchPrompts,
 } from '../utils/aiImageBatchGeneration.mjs'
+import { parseAdvancedJsonConfig } from '../utils/aiImageAdvancedJson.mjs'
+import {
+  formatAiImageRunStatus,
+  generationFailureMessage,
+  retrySummaryText,
+} from '../utils/aiImageOperatorMessages.mjs'
+import { focusFirstInDialog, trapDialogFocus } from '../utils/dialogAccessibility.mjs'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
@@ -968,6 +1004,10 @@ const AIW_ICON_NODES = {
     { tag: 'path', attrs: { d: 'M4 20h4l10.5-10.5a2.1 2.1 0 0 0 0-3L17.5 5.5a2.1 2.1 0 0 0-3 0L4 16v4Z' } },
     { tag: 'path', attrs: { d: 'm13.5 6.5 4 4' } },
   ],
+  copy: [
+    { tag: 'rect', attrs: { x: '8', y: '8', width: '11', height: '11', rx: '2' } },
+    { tag: 'path', attrs: { d: 'M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2' } },
+  ],
   eye: [
     { tag: 'path', attrs: { d: 'M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z' } },
     { tag: 'circle', attrs: { cx: '12', cy: '12', r: '2.5' } },
@@ -998,8 +1038,14 @@ const settings = ref({})
 const currentJob = ref(null)
 const selectedResults = reactive(new Set())
 const taskSidebarOpen = ref(true)
+const compactPane = ref('inputs')
+const narrowWorkbench = ref(false)
 const generating = ref(false)
+const generatingJobUid = ref('')
+const generatingSnapshot = ref(null)
 const errorMessage = ref('')
+const actionNotice = ref('')
+const retryingRunUids = reactive(new Set())
 const logs = ref([])
 const loadingMessageTick = ref(0)
 const imagePreviews = reactive({})
@@ -1008,6 +1054,9 @@ const resultCachePaths = reactive({})
 const resultCachePending = reactive(new Set())
 const taskDrafts = reactive({})
 const pendingActiveJobUid = ref('')
+const batchDialogPanel = ref(null)
+const lightboxDialogPanel = ref(null)
+const promptDialogPanel = ref(null)
 const lightboxItem = ref(null)
 const lightboxEditPrompt = ref('')
 const lightboxEditReferencePaths = ref([])
@@ -1051,6 +1100,12 @@ let jobPollingTimer = null
 let jobPollingUid = ''
 let jobPollingInFlight = false
 let loadingMessageTimer = null
+let actionNoticeTimer = null
+const dialogReturnFocus = {
+  batch: null,
+  lightbox: null,
+  prompt: null,
+}
 
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeNanoBanana = computed(() => isNanoBananaModel(form.modelId))
@@ -1061,16 +1116,18 @@ const batchSizeOptions = computed(() => sizeOptionsForModel(batchActiveModel.val
 const batchQualityOptions = computed(() => qualityOptionsForModel(batchActiveModel.value.id))
 const batchMissingKey = computed(() => missingKeyForModel(batchActiveModel.value.id, settings.value))
 const activeJobUid = computed(() => currentJob.value?.job_uid || '')
+const generationBelongsToCurrentJob = computed(() => generationBelongsToJob(generatingJobUid.value, activeJobUid.value))
 const persistedCurrentJob = computed(() => mergeCurrentJobRecord(currentJob.value, jobs.value))
 const highlightedJobUid = computed(() => pendingActiveJobUid.value || activeJobUid.value)
 const resultQueues = computed(() => collectResultQueues(currentJob.value))
 const resultCards = computed(() => resultQueues.value.flatMap((queue) => queue.items || []))
 const loadingResultCards = computed(() => {
-  if (!generating.value) return []
-  const count = normalizeImageCount(form.count)
+  if (!generationBelongsToCurrentJob.value) return []
+  const snapshot = generatingSnapshot.value || {}
+  const count = normalizeImageCount(snapshot.count)
   const context = resolveLoadingPreviewContext(currentJob.value || {}, {}, {
-    mainImagePath: form.mainImagePath,
-    referenceImagePaths: form.referenceImagePaths,
+    mainImagePath: snapshot.mainImagePath,
+    referenceImagePaths: snapshot.referenceImagePaths,
   })
   return Array.from({ length: count }, (_, index) => ({
     key: `loading-${index + 1}`,
@@ -1085,7 +1142,7 @@ const loadingResultQueue = computed(() => ({
   key: 'loading-current-run',
   title: '正在生成',
   createdAt: '',
-  prompt: currentJob.value?.prompt || form.prompt,
+  prompt: generatingSnapshot.value?.prompt || currentJob.value?.prompt || '',
   status: 'running',
   loading: true,
   items: loadingResultCards.value,
@@ -1103,15 +1160,50 @@ const allVisibleSelected = computed(() => (
 ))
 const sizeOptions = computed(() => sizeOptionsForModel(form.modelId, form.ratio))
 const activeQualityOptions = computed(() => qualityOptionsForModel(form.modelId))
+const advancedJsonError = computed(() => {
+  try {
+    parseAdvancedJsonConfig(form.advancedJson)
+    return ''
+  } catch (error) {
+    return error?.message || String(error)
+  }
+})
+const workbenchDialogOpen = computed(() => Boolean(
+  batchGenerationDialog.open
+  || batchPromptLibraryPicker.open
+  || lightboxItem.value
+  || promptDialogQueue.value,
+))
+const statusAnnouncement = computed(() => {
+  const runs = Array.isArray(currentJob.value?.summary?.runs) ? currentJob.value.summary.runs : []
+  const counts = runs.reduce((summary, run) => {
+    const status = String(run?.status || '').toLowerCase()
+    if (status in summary) summary[status] += 1
+    return summary
+  }, { queued: 0, running: 0, completed: 0, failed: 0 })
+  return [
+    counts.queued ? `排队中 ${counts.queued} 个队列` : '',
+    counts.running ? `生成中 ${counts.running} 个队列` : '',
+    counts.completed ? `已完成 ${counts.completed} 个队列` : '',
+    counts.failed ? `失败 ${counts.failed} 个队列` : '',
+  ].filter(Boolean).join('，')
+})
+const errorAnnouncement = computed(() => batchGenerationDialog.error || errorMessage.value || '')
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
-const generateLabel = computed(() => activeMissingKey.value ? '配置' : generating.value ? '生成中...' : '开始生成')
+const generateLabel = computed(() => advancedJsonError.value
+  ? '修正高级 JSON'
+  : activeMissingKey.value
+    ? '配置'
+    : generating.value
+      ? generationBelongsToCurrentJob.value ? '生成中...' : '其他任务生成中'
+      : '开始生成')
 const batchPromptCards = computed(() => batchGenerationDialog.prompts)
 const batchPromptStats = computed(() => summarizeBatchPrompts(batchPromptCards.value, {
   forceSingle: batchNanoBanana.value,
 }))
 const batchPromptCount = computed(() => batchPromptStats.value.promptCount)
 const lightboxSrc = computed(() => lightboxItem.value ? resultPreviewSrc(lightboxItem.value) : '')
-const lightboxEditBusy = computed(() => generating.value || lightboxEditSubmitting.value)
+const lightboxEditBusy = computed(() => lightboxEditSubmitting.value)
 const lightboxEditActionLabel = computed(() => lightboxEditBusy.value ? '修改图生成中...' : '开始二次修改')
 const lightboxPreviewItems = computed(() => {
   if (!lightboxItem.value) return []
@@ -1133,6 +1225,7 @@ const lightboxSourcePrompt = computed(() => String(
 ).trim())
 const lightboxPromptChain = computed(() => promptChainForItem(lightboxActiveItem.value || lightboxItem.value))
 const promptDialogPrompt = computed(() => queuePromptText(promptDialogQueue.value))
+const taskSidebarToggleActive = computed(() => narrowWorkbench.value ? compactPane.value === 'history' : taskSidebarOpen.value)
 const taskRecords = computed(() => {
   const records = []
   const seen = new Set()
@@ -1152,6 +1245,9 @@ const taskRecords = computed(() => {
   return records
 })
 onMounted(async () => {
+  document.addEventListener('keydown', handleWorkbenchDialogKeydown)
+  syncNarrowWorkbench()
+  window.addEventListener('resize', syncNarrowWorkbench)
   restorePersistedWorkbench()
   await Promise.all([loadSettings(), loadJobs()])
   await restoreInitialTask()
@@ -1164,11 +1260,18 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', handleWorkbenchDialogKeydown)
+  window.removeEventListener('resize', syncNarrowWorkbench)
   if (autosaveTimer) clearTimeout(autosaveTimer)
   if (loadingMessageTimer) clearInterval(loadingMessageTimer)
+  if (actionNoticeTimer) clearTimeout(actionNoticeTimer)
   stopJobPolling()
   saveDraftForCurrentTask()
   persistWorkbenchState()
+})
+
+watch(advancedJsonError, (error, previousError) => {
+  if (!error && previousError && errorMessage.value === previousError) errorMessage.value = ''
 })
 
 watch(() => form.mainImagePath, (path) => {
@@ -1207,6 +1310,42 @@ watch([currentJob, taskSidebarOpen], () => {
   if (restoringState) return
   persistWorkbenchState()
 })
+
+watch(() => batchGenerationDialog.open, (open) => syncDialogFocus('batch', open, batchDialogPanel))
+watch(() => Boolean(lightboxItem.value), (open) => syncDialogFocus('lightbox', open, lightboxDialogPanel))
+watch(() => Boolean(promptDialogQueue.value), (open) => syncDialogFocus('prompt', open, promptDialogPanel))
+
+function syncDialogFocus(key, open, panelRef) {
+  if (typeof document === 'undefined') return
+  if (open) {
+    dialogReturnFocus[key] = document.activeElement
+    void nextTick(() => focusFirstInDialog(panelRef.value))
+    return
+  }
+  const returnTarget = dialogReturnFocus[key]
+  dialogReturnFocus[key] = null
+  if (returnTarget?.focus) void nextTick(() => returnTarget.focus({ preventScroll: true }))
+}
+
+function activeWorkbenchDialog() {
+  if (promptDialogQueue.value) return { key: 'prompt', panel: promptDialogPanel.value, close: closePromptDialog, busy: false }
+  if (lightboxItem.value) return { key: 'lightbox', panel: lightboxDialogPanel.value, close: closeLightbox, busy: lightboxEditBusy.value }
+  if (batchGenerationDialog.open) return { key: 'batch', panel: batchDialogPanel.value, close: closeBatchGenerationDialog, busy: batchGenerationDialog.submitting }
+  return null
+}
+
+function handleWorkbenchDialogKeydown(event) {
+  if (batchPromptLibraryPicker.open) return
+  const activeDialog = activeWorkbenchDialog()
+  if (!activeDialog) return
+  if (event.key === 'Escape') {
+    if (activeDialog.busy) return
+    event.preventDefault()
+    activeDialog.close()
+    return
+  }
+  trapDialogFocus(event, activeDialog.panel)
+}
 
 function formSnapshot() {
   return {
@@ -1557,9 +1696,8 @@ async function pollActiveJob() {
 }
 
 function parseAdvancedJsonValue(value, options = {}) {
-  if (!value) return {}
   try {
-    return JSON.parse(value)
+    return parseAdvancedJsonConfig(value)
   } catch (error) {
     if (options.silent) return {}
     throw error
@@ -1568,6 +1706,11 @@ function parseAdvancedJsonValue(value, options = {}) {
 
 function parseAdvancedJson(options = {}) {
   return parseAdvancedJsonValue(form.advancedJson, options)
+}
+
+function assertAdvancedJsonValid() {
+  if (advancedJsonError.value) throw new Error(advancedJsonError.value)
+  return parseAdvancedJson()
 }
 
 function buildJobPayload(options = {}) {
@@ -1652,11 +1795,13 @@ async function autosaveCurrentTask(options = {}) {
     const status = currentJob.value?.status || 'draft'
     const updated = await window.cs.updateAiImageJob(jobUid, { ...payload, status })
     if (updated?.job_uid === jobUid) {
-      currentJob.value = {
-        ...currentJob.value,
-        ...updated,
-        summary: currentJob.value?.summary || updated.summary,
-        assets: currentJob.value?.assets || updated.assets,
+      if (activeJobUid.value === jobUid) {
+        currentJob.value = {
+          ...currentJob.value,
+          ...updated,
+          summary: currentJob.value?.summary || updated.summary,
+          assets: currentJob.value?.assets || updated.assets,
+        }
       }
       upsertJob(updated)
     }
@@ -1756,6 +1901,12 @@ function createBatchPromptCard(values = {}) {
 
 function openBatchGenerationDialog() {
   if (generating.value) return
+  try {
+    assertAdvancedJsonValid()
+  } catch (error) {
+    errorMessage.value = error?.message || String(error)
+    return
+  }
   const snapshot = formSnapshot()
   const initialPrompt = String(snapshot.prompt || '').trim()
   batchGenerationDialog.open = true
@@ -1861,6 +2012,12 @@ function selectBatchPromptLibraryTemplate(template) {
 
 async function submitBatchGeneration() {
   batchGenerationDialog.error = ''
+  try {
+    assertAdvancedJsonValid()
+  } catch (error) {
+    batchGenerationDialog.error = error?.message || String(error)
+    return
+  }
   if (batchMissingKey.value) {
     openSettings()
     return
@@ -1897,6 +2054,8 @@ async function submitBatchGeneration() {
     const activeTask = await ensureCurrentTask()
     const jobUid = activeTask?.job_uid
     if (!jobUid) throw new Error('后端未返回 job_uid')
+    generatingJobUid.value = jobUid
+    generatingSnapshot.value = batchSnapshot
     const firstPayload = buildBatchJobPayload(batchSnapshot, promptCards[0], 0)
     const sharedPayload = {
       ...firstPayload,
@@ -1905,8 +2064,9 @@ async function submitBatchGeneration() {
       status: 'running',
     }
     const updated = await window.cs.updateAiImageJob(jobUid, sharedPayload)
-    currentJob.value = updated || activeTask
-    upsertJob(currentJob.value)
+    const submittedJob = updated || activeTask
+    if (activeJobUid.value === jobUid) currentJob.value = submittedJob
+    upsertJob(submittedJob)
     const requestUid = globalThis.crypto?.randomUUID?.()
       || `batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
     logs.value.push(`提交批量生成：${promptStats.promptCount} 条 Prompt，预计 ${promptStats.totalImages} 张图`)
@@ -1919,8 +2079,10 @@ async function submitBatchGeneration() {
       })),
     })
     if (!batchResult?.accepted) throw new Error('后端未接受批量生成任务')
-    currentJob.value = batchResult.job || currentJob.value
-    upsertJob(currentJob.value)
+    const acceptedJob = batchResult.job || submittedJob
+    if (activeJobUid.value === jobUid) currentJob.value = acceptedJob
+    upsertJob(acceptedJob)
+    compactPane.value = 'results'
     clearSubmittedTaskInputs(snapshot)
     batchGenerationDialog.open = false
     closeBatchPromptLibraryPicker()
@@ -1934,18 +2096,27 @@ async function submitBatchGeneration() {
   } finally {
     batchGenerationDialog.submitting = false
     generating.value = false
+    generatingJobUid.value = ''
+    generatingSnapshot.value = null
     persistWorkbenchState()
   }
 }
 
 async function generate() {
   errorMessage.value = ''
+  try {
+    assertAdvancedJsonValid()
+  } catch (error) {
+    errorMessage.value = error?.message || String(error)
+    return
+  }
   if (activeMissingKey.value) {
     openSettings()
     return
   }
   if (generating.value) return
   generating.value = true
+  compactPane.value = 'results'
   selectedResults.clear()
   logs.value.push('创建 AI 生图任务')
   try {
@@ -1953,28 +2124,33 @@ async function generate() {
     const jobUid = activeTask?.job_uid
     if (!jobUid) throw new Error('后端未返回 job_uid')
     const previousSummary = currentJob.value?.summary || activeTask.summary || {}
-    const payload = buildJobPayload({ silentAdvanced: true })
+    const payload = buildJobPayload()
     const submittedSnapshot = formSnapshot()
-    currentJob.value = {
+    generatingJobUid.value = jobUid
+    generatingSnapshot.value = submittedSnapshot
+    const submittingJob = {
       ...activeTask,
       ...payload,
       job_uid: jobUid,
       status: 'running',
       summary: previousSummary,
     }
+    if (activeJobUid.value === jobUid) currentJob.value = submittingJob
+    upsertJob(submittingJob)
     logs.value.push(`提交生成任务：${jobUid}`)
     clearSubmittedTaskInputs(submittedSnapshot)
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
-    currentJob.value = latest || activeTask
-    upsertJob(latest || activeTask)
+    const completedJob = latest || activeTask
+    if (activeJobUid.value === jobUid) currentJob.value = latest || activeTask
+    upsertJob(completedJob)
     if (runResult && runResult.ok === false) {
       throw new Error(runResult.summary?.error || '生成任务失败，请查看日志')
     }
     const warning = runResult?.summary?.warning || latest?.summary?.warning || ''
     if (warning) logs.value.push(warning)
     selectedResults.clear()
-    refreshResultPreviewCandidates(resultCards.value, { force: true })
+    refreshResultPreviewCandidates(collectResultCards(completedJob), { force: true })
     logs.value.push(`生成完成：${jobUid}`)
     await loadJobs()
   } catch (error) {
@@ -1982,6 +2158,8 @@ async function generate() {
     logs.value.push(`生成失败：${errorMessage.value}`)
   } finally {
     generating.value = false
+    generatingJobUid.value = ''
+    generatingSnapshot.value = null
   }
 }
 
@@ -2063,11 +2241,22 @@ function workbenchRunPlaceholders(job, run, index) {
   if (status === 'failed') {
     return [{
       key: `${run.run_uid || run.task_id || index}-failed`,
-      label: '生成失败',
+      label: run.title || `队列 ${index + 1}`,
       prompt: run.prompt || '',
       error: run.error || '1XM 任务执行失败',
       jobUid: job?.job_uid || '',
       runUid: run.run_uid || '',
+      requested_count: Number(run.requested_count || 1),
+      retry_count: Number(run.retry_count || 0),
+      retry_history: Array.isArray(run.retry_history) ? run.retry_history : [],
+      manual_retry_count: Number(run.manual_retry_count || 0),
+      modelKey: run.model_key || job?.model_key || '',
+      modelKeyTier: run.model_key_tier || job?.params?.model_key_tier || '',
+      size: run.size || job?.params?.size || '',
+      ratio: run.ratio || job?.params?.ratio || '',
+      quality: run.quality || job?.params?.quality || '',
+      responseFormat: run.response_format || job?.params?.response_format || '',
+      inputParams: run.input_params && typeof run.input_params === 'object' ? run.input_params : {},
       failed: true,
     }]
   }
@@ -2084,7 +2273,7 @@ function collectResultQueues(job) {
         const placeholders = resultItems.length ? [] : workbenchRunPlaceholders(job, run, index)
         return {
           key: run.run_uid || run.task_id || `run-${index + 1}`,
-          title: `队列 ${index + 1}`,
+          title: run.title || `队列 ${index + 1}`,
           createdAt: run.created_at || '',
           prompt: run.prompt || '',
           status: run.status || job?.status || '',
@@ -2188,7 +2377,7 @@ function taskResultLine(job = {}) {
   const count = collectResultCards(job).length
   const runCount = Array.isArray(summary.runs) ? summary.runs.length : (count ? 1 : 0)
   if (count) return `已有 ${count} 张结果 · ${runCount} 组生成`
-  if (job.job_uid === activeJobUid.value && generating.value) return '正在生成'
+  if (generationBelongsToJob(generatingJobUid.value, job.job_uid)) return '正在生成'
   return '暂无结果'
 }
 
@@ -2200,7 +2389,7 @@ function queueMetaLine(queue = {}) {
   return [
     queue.createdAt ? `生成时间 ${formatDateTime(queue.createdAt)}` : '',
     queue.items?.length ? `${queue.items.length} 张` : '',
-    queue.status || '',
+    formatAiImageRunStatus(queue.status),
   ].filter(Boolean).join(' · ')
 }
 
@@ -2660,6 +2849,85 @@ function closePromptDialog() {
   promptDialogQueue.value = null
 }
 
+function announceStatus(message) {
+  actionNotice.value = String(message || '').trim()
+  if (actionNoticeTimer) clearTimeout(actionNoticeTimer)
+  if (!actionNotice.value) return
+  actionNoticeTimer = setTimeout(() => {
+    actionNotice.value = ''
+    actionNoticeTimer = null
+  }, 4200)
+}
+
+async function retryFailedRun(item) {
+  const jobUid = resultOwnerJobUid(item)
+  const runUid = String(item?.runUid || '').trim()
+  if (!jobUid || !runUid || retryingRunUids.has(runUid)) return
+  retryingRunUids.add(runUid)
+  errorMessage.value = ''
+  try {
+    if (typeof window?.cs?.retryAiImageRun !== 'function') {
+      throw new Error('当前客户端版本不支持队列重试，请重启抓虾客户端后再试')
+    }
+    const result = await window.cs.retryAiImageRun(jobUid, runUid)
+    if (!result?.accepted) throw new Error(result?.run?.error || '重试任务未被接受')
+    currentJob.value = result.job || currentJob.value
+    upsertJob(currentJob.value)
+    selectedResults.clear()
+    compactPane.value = 'results'
+    startJobPolling(jobUid)
+    announceStatus('失败队列已重新提交，正在等待上游处理')
+  } catch (error) {
+    errorMessage.value = generationFailureMessage(error)
+  } finally {
+    retryingRunUids.delete(runUid)
+  }
+}
+
+async function copyFailedPrompt(item) {
+  const prompt = String(item?.prompt || '').trim()
+  if (!prompt) return
+  try {
+    if (typeof globalThis.navigator?.clipboard?.writeText !== 'function') {
+      throw new Error('当前环境不支持复制到剪贴板')
+    }
+    await globalThis.navigator.clipboard.writeText(prompt)
+    announceStatus('Prompt 已复制')
+  } catch (error) {
+    errorMessage.value = error?.message || String(error)
+  }
+}
+
+function restoreFailedRunInputs(item) {
+  const modelId = modelIdForJob({
+    model_key: item?.modelKey,
+    params: {
+      model_key_tier: item?.modelKeyTier,
+      size: item?.size,
+    },
+  })
+  form.modelId = modelId
+  form.prompt = String(item?.prompt || '')
+  form.ratio = String(item?.ratio || form.ratio)
+  form.size = sizeForModel(modelId, form.ratio, item?.size || form.size)
+  if (!isNanoBananaModel(modelId)) {
+    form.quality = String(item?.quality || form.quality)
+    form.format = String(item?.responseFormat || form.format)
+    form.count = normalizeImageCount(item?.requested_count || 1)
+  } else {
+    form.count = 1
+  }
+  const inputParams = item?.inputParams && typeof item.inputParams === 'object' ? item.inputParams : {}
+  form.mainImagePath = String(inputParams.main_image_path || '')
+  form.referenceImagePaths = appendUniquePaths(Array.isArray(inputParams.reference_image_paths) ? inputParams.reference_image_paths : [])
+  errorMessage.value = ''
+  void refreshImagePreview(form.mainImagePath)
+  form.referenceImagePaths.forEach((path) => void refreshImagePreview(path))
+  scheduleTaskAutosave()
+  compactPane.value = 'inputs'
+  announceStatus('失败队列的 Prompt、素材和参数已恢复到左侧配置栏')
+}
+
 async function materializeResultForInput(item) {
   const key = resultKey(item)
   if (!key) return ''
@@ -2875,6 +3143,8 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     const activeTask = await ensureCurrentTask()
     const jobUid = activeTask?.job_uid
     if (!jobUid) throw new Error('后端未返回 job_uid')
+    generatingJobUid.value = jobUid
+    generatingSnapshot.value = snapshot
     const annotationPath = await materializeLightboxAnnotation(jobUid, annotationDataUrl)
     const effectivePrompt = buildAnnotationEditPrompt(prompt, Boolean(annotationPath))
     const retainedSnapshotReferences = filterGeneratedAnnotationReferences(snapshot.referenceImagePaths)
@@ -2901,23 +3171,25 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     }
     const updated = await window.cs.updateAiImageJob(jobUid, { ...payload, status: 'running' })
     restoringState = false
-    currentJob.value = {
+    const submittingJob = {
       ...(updated || activeTask),
       summary: currentJob.value?.summary || activeTask.summary || {},
       status: 'running',
     }
-    upsertJob(currentJob.value)
+    if (activeJobUid.value === jobUid) currentJob.value = submittingJob
+    upsertJob(submittingJob)
     clearSubmittedTaskInputs(snapshot)
     submittedInputsCleared = true
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
-    currentJob.value = latest || currentJob.value
-    upsertJob(currentJob.value)
+    const completedJob = latest || submittingJob
+    if (activeJobUid.value === jobUid) currentJob.value = completedJob
+    upsertJob(completedJob)
     if (runResult && runResult.ok === false) {
       throw new Error(runResult.summary?.error || '生成任务失败，请查看日志')
     }
-    applyLightboxEditResult(placeholder, currentJob.value)
-    refreshResultPreviewCandidates(resultCards.value, { force: true })
+    applyLightboxEditResult(placeholder, completedJob)
+    refreshResultPreviewCandidates(collectResultCards(completedJob), { force: true })
     await loadJobs()
   } catch (error) {
     removeLightboxEditPlaceholder(placeholder)
@@ -2930,6 +3202,8 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
       persistWorkbenchState()
     }
     generating.value = false
+    generatingJobUid.value = ''
+    generatingSnapshot.value = null
     persistWorkbenchState()
   }
 }
@@ -3023,9 +3297,20 @@ async function restoreJob(job, options = {}) {
 
 async function selectTaskRecord(job) {
   await restoreJob(job)
+  if (narrowWorkbench.value) compactPane.value = 'results'
+}
+
+function syncNarrowWorkbench() {
+  narrowWorkbench.value = typeof window !== 'undefined' && Boolean(window.matchMedia?.('(max-width: 760px)').matches)
 }
 
 function toggleTaskSidebar() {
+  if (narrowWorkbench.value) {
+    const opening = compactPane.value !== 'history'
+    taskSidebarOpen.value = opening
+    compactPane.value = opening ? 'history' : 'results'
+    return
+  }
   taskSidebarOpen.value = !taskSidebarOpen.value
 }
 
@@ -3147,6 +3432,18 @@ function localFileUrl(path) {
   color: var(--text);
 }
 
+.aiw-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .aiw-topbar,
 .aiw-prompt-panel,
 .aiw-results-grid {
@@ -3188,6 +3485,27 @@ function localFileUrl(path) {
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.aiw-compact-tabs {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  padding: 4px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #1c1c22;
+}
+
+.aiw-compact-tabs button {
+  flex: 1 1 0;
+  min-height: 38px;
+}
+
+.aiw-compact-tabs button.active {
+  border-color: rgba(255, 107, 43, 0.44);
+  background: rgba(255, 107, 43, 0.12);
+  color: #ff8b5f;
 }
 
 .aiw-field,
@@ -3796,7 +4114,7 @@ function localFileUrl(path) {
   border-radius: 8px;
   background: #242430;
   overflow: hidden;
-  cursor: pointer;
+  cursor: default;
 }
 
 .aiw-result-card.selected {
@@ -4093,6 +4411,27 @@ function localFileUrl(path) {
   overflow-wrap: anywhere;
 }
 
+.aiw-failed-preview small {
+  color: #ffd1c2;
+  font-size: 11px;
+}
+
+.aiw-failed-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.aiw-failed-actions button {
+  min-height: 34px;
+  border-color: rgba(255, 179, 167, 0.24);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+  font-size: 11px;
+}
+
 @keyframes aiw-wave-flow {
   0% { transform: translateX(-34%); }
   100% { transform: translateX(34%); }
@@ -4123,7 +4462,7 @@ function localFileUrl(path) {
 
 .aiw-result-card.selected .aiw-select-toggle {
   border-color: rgba(255, 107, 43, 0.7);
-  background: #ff6b2b;
+  background: #c94d16;
 }
 
 .aiw-result-card footer {
@@ -4407,10 +4746,12 @@ function localFileUrl(path) {
   z-index: 5;
   display: grid;
   place-content: center;
+  justify-items: center;
   gap: 10px;
   background: rgba(20, 20, 24, 0.26);
   color: #fff;
   pointer-events: auto;
+  text-align: center;
   text-shadow: 0 1px 14px rgba(0, 0, 0, 0.36);
 }
 
@@ -4514,7 +4855,7 @@ function localFileUrl(path) {
 
 .aiw-lightbox-annotation-toolbar > button.active {
   border-color: rgba(255, 107, 43, 0.6);
-  background: #ff6b2b;
+  background: #c94d16;
   color: #fff;
 }
 
@@ -4698,6 +5039,31 @@ function localFileUrl(path) {
   color: #ff8b5f;
 }
 
+.aiw-material-box.has-error .aiw-advanced-json {
+  border-color: #f87171;
+}
+
+.aiw-inline-error {
+  color: #ffb3a7;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.aiw-toast {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 420;
+  max-width: min(420px, calc(100vw - 32px));
+  padding: 11px 14px;
+  border: 1px solid rgba(74, 222, 128, 0.34);
+  border-radius: 8px;
+  background: #173122;
+  color: #e8fff0;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+  line-height: 1.5;
+}
+
 button {
   border: 1px solid #2e2e3a;
   border-radius: 8px;
@@ -4773,7 +5139,7 @@ button.active,
 .aiw-top-primary {
   width: 100%;
   min-height: 42px;
-  background: #ff6b2b;
+  background: #c94d16;
   color: #fff;
 }
 
@@ -4797,7 +5163,32 @@ button.active,
 }
 
 @media (max-width: 1060px) {
-  .aiw-main-grid,
+  .aiw-workbench {
+    grid-template-rows: auto auto minmax(0, 1fr);
+    padding: 14px;
+  }
+
+  .aiw-compact-tabs {
+    display: flex;
+  }
+
+  .aiw-main-grid {
+    display: block;
+    overflow: hidden;
+  }
+
+  .aiw-main-grid.compact-inputs .aiw-results-grid,
+  .aiw-main-grid.compact-results .aiw-prompt-panel,
+  .aiw-main-grid.compact-history .aiw-prompt-panel {
+    display: none;
+  }
+
+  .aiw-prompt-panel,
+  .aiw-results-grid {
+    width: 100%;
+    height: 100%;
+  }
+
   .aiw-result-list {
     grid-template-columns: 1fr;
   }
@@ -4815,8 +5206,37 @@ button.active,
 }
 
 @media (max-width: 760px) {
+  .aiw-workbench {
+    gap: 10px;
+    padding: 10px;
+  }
+
+  .aiw-topbar {
+    gap: 10px;
+    padding: 12px;
+  }
+
+  .aiw-topbar h2 {
+    font-size: 18px;
+  }
+
+  .aiw-subtitle {
+    margin-top: 4px;
+    font-size: 12px;
+  }
+
+  .aiw-top-actions,
+  .aiw-results-actions {
+    width: 100%;
+  }
+
+  .aiw-top-actions button,
+  .aiw-results-actions button {
+    flex: 1 1 auto;
+  }
+
   .aiw-batch-dialog {
-    padding: 14px;
+    padding: 8px;
   }
 
   .aiw-batch-board {
@@ -4834,9 +5254,17 @@ button.active,
     min-height: 340px;
   }
 
+  .aiw-batch-prompt-rail {
+    grid-auto-flow: row;
+    grid-auto-columns: auto;
+    grid-auto-rows: minmax(280px, auto);
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
   .aiw-batch-panel {
     width: 100%;
-    height: calc(100vh - 28px);
+    height: calc(100dvh - 16px);
     padding: 12px;
   }
 
@@ -4856,18 +5284,90 @@ button.active,
   }
 
   .aiw-workspace-body {
-    grid-template-columns: 1fr;
+    position: relative;
+    display: block;
+  }
+
+  .aiw-result-wall {
+    height: 100%;
+  }
+
+  .aiw-history-sidebar {
+    position: absolute;
+    inset: 0;
+    z-index: 6;
+    display: none;
+  }
+
+  .aiw-main-grid.compact-history .aiw-history-sidebar {
+    display: flex;
+  }
+
+  .aiw-main-grid.compact-history .aiw-result-wall {
+    display: none;
+  }
+
+  .aiw-result-card-actions {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .aiw-lightbox,
+  .aiw-prompt-dialog {
+    padding: 8px;
+  }
+
+  .aiw-lightbox-layout {
+    width: 100%;
+    height: calc(100dvh - 16px);
+    max-height: calc(100dvh - 16px);
+    gap: 10px;
+  }
+
+  .aiw-lightbox-image-pane {
+    min-height: 58dvh;
+  }
+
+  .aiw-lightbox-annotation-toolbar {
+    right: 8px;
+    left: 8px;
+    max-width: calc(100% - 16px);
+    transform: none;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+  }
+
+  .aiw-annotation-color-strip {
+    flex: 0 0 auto;
+  }
+
+  .aiw-prompt-dialog section {
+    width: 100%;
+    max-height: calc(100dvh - 16px);
+    padding: 14px;
+  }
+}
+
+@media (pointer: coarse) {
+  .aiw-workbench button,
+  .aiw-workbench select,
+  .aiw-workbench input {
+    min-height: 44px;
+  }
+
+  .aiw-annotation-color-button {
+    width: 44px;
+    height: 44px;
   }
 }
 
   @media (prefers-reduced-motion: reduce) {
-    .aiw-loading-source,
-    .aiw-loading-sheen,
-    .aiw-loading-moon,
-    .aiw-loading-sea,
-    .aiw-loading-shrimp,
-    .aiw-loading-dots i {
-      animation: none;
+    .aiw-workbench *,
+    .aiw-workbench *::before,
+    .aiw-workbench *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
     }
   }
 </style>

@@ -47,7 +47,7 @@
               <div class="cloud-prompt-library-control">
                 <button type="button" class="cloud-prompt-library-trigger" @click="openCloudPromptLibraryDialog">
                   <span>{{ cloudPromptLibrarySelectionLabel }}</span>
-                  <strong>选择云端 Prompt 库</strong>
+                  <strong>选择 Prompt 库</strong>
                 </button>
                 <button
                   v-if="values.cloud_prompt_library_id"
@@ -587,18 +587,10 @@
         v-if="isTmallAiImageChainTask && (aiChainActiveStep === 'confirm' || aiChainActiveStep === 'approval')"
         class="ai-chain-step-panel ai-chain-approval-panel"
       >
-        <div v-if="approvalBoardUrl && isCloudApprovalBoard" class="cloud-approval-embed">
-          <iframe
-            :src="cloudApprovalFrameUrl"
-            title="云端审批看板"
-            sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals"
-            referrerpolicy="no-referrer"
-          />
-        </div>
         <TmallAiApprovalDrawer
-          v-else-if="approvalBoardUrl"
+          v-if="tmallClientApprovalBoardUrl"
           :model-value="true"
-          :board-url="approvalBoardUrl"
+          :board-url="tmallClientApprovalBoardUrl"
           embedded
           :show-submit-results="false"
           @batch-updated="handleApprovalBatchUpdated"
@@ -935,8 +927,8 @@
       <section class="cloud-prompt-library-dialog">
         <header class="cloud-prompt-library-head">
           <div>
-            <strong>选择云端 Prompt 库</strong>
-            <span>连接云端审批看板的线上 Prompt 库，后续会按品类和性别匹配模板。</span>
+            <strong>选择 Prompt 库</strong>
+            <span>本地 Prompt 库无需登录即可使用；登录云端审批后会同时显示线上库。</span>
           </div>
           <button type="button" class="pdf-crop-close" @click="closeCloudPromptLibraryDialog">×</button>
         </header>
@@ -953,17 +945,17 @@
         </div>
 
         <div v-if="cloudPromptLibraryDialog.error" class="cloud-prompt-library-error">{{ cloudPromptLibraryDialog.error }}</div>
-        <div v-else-if="cloudPromptLibraryDialog.loading" class="cloud-prompt-library-empty">正在读取线上 Prompt 库…</div>
+        <div v-else-if="cloudPromptLibraryDialog.loading" class="cloud-prompt-library-empty">正在读取 Prompt 库…</div>
         <div v-else class="cloud-prompt-library-body">
           <div class="cloud-prompt-library-list">
             <button
               v-for="library in filteredCloudPromptLibraries"
               :key="library.id"
               type="button"
-              :class="['cloud-prompt-library-row', { selected: String(library.id) === String(cloudPromptLibraryDialog.previewLibraryId || values.cloud_prompt_library_id || '') }]"
+              :class="['cloud-prompt-library-row', { selected: String(library.id) === String(cloudPromptLibraryDialog.previewLibraryId || '') }]"
               @click="previewCloudPromptLibrary(library)"
             >
-              <strong>{{ library.name || `Prompt 库 ${library.id}` }}</strong>
+              <strong>{{ library.name || `Prompt 库 ${library.id}` }}（{{ library.source_label || '本地' }}）</strong>
               <span>{{ library.scenario || '未分类' }} · {{ library.status || 'unknown' }} · {{ (library.templates || []).length }} 条</span>
             </button>
             <div v-if="!filteredCloudPromptLibraries.length" class="cloud-prompt-library-empty">没有匹配的 Prompt 库</div>
@@ -1021,6 +1013,11 @@ import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../ut
 import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
 import { buildEmbeddedCloudApprovalUrl, isTrustedCloudApprovalBoardUrl } from '../utils/cloudApprovalUrl'
 import {
+  buildPromptLibraryPickerLibraries,
+  buildPromptLibraryTaskSelection,
+  loadPromptLibraryPickerSources,
+} from '../utils/localPromptLibrary'
+import {
   AI_IMAGE_MODELS,
   AI_IMAGE_RATIOS,
   defaultSizeForRatio,
@@ -1035,8 +1032,25 @@ const props = defineProps({
   task: Object,
   instanceUid: { type: String, default: '' },
   initialParams: { type: Object, default: () => ({}) },
+  initialStep: { type: String, default: '' },
 })
 const emit = defineEmits(['status-change', 'instance-updated'])
+
+const AI_CHAIN_STEP_IDS = new Set(['config', 'confirm', 'approval', 'create'])
+
+function normalizeAiChainStep(stepId) {
+  const step = String(stepId || '').trim()
+  return AI_CHAIN_STEP_IDS.has(step) ? step : ''
+}
+
+function isTmallAiImageChainIdentity(adapterId, task) {
+  return adapterId === 'tmall-ops-assistant' && task?.task_id === 'tmall_ai_image_test_chain'
+}
+
+function initialAiChainActiveStep(adapterId = props.adapterId, task = props.task) {
+  if (!isTmallAiImageChainIdentity(adapterId, task)) return 'config'
+  return normalizeAiChainStep(props.initialStep) || 'config'
+}
 
 const values = ref({})
 const logs = ref([])
@@ -1045,6 +1059,7 @@ const lastResult = ref(null)
 const localLiveSnapshot = ref(null)
 const outputFiles = ref([])
 const approvalBoardUrl = ref('')
+const localApprovalBoardUrl = ref('')
 const cloudApprovalBaseUrl = ref('')
 const approvalBatch = ref(null)
 const approvalDrawerOpen = ref(false)
@@ -1094,6 +1109,11 @@ const cloudPromptLibraryDialog = ref({
   previewLibraryId: '',
   previewTemplates: [],
 })
+const AI_CHAIN_PROMPT_LIBRARY_STATE_KEYS = [
+  'cloud_prompt_library_name',
+  'cloud_prompt_library_source',
+  'cloud_prompt_templates_json',
+]
 const pdfCropManifestDefaultValues = {
   wash_crop_boxes: {
     '[{"x":0.0892,"y":0.2084,"width":0.4189,"height":0.7546}]': true,
@@ -1104,9 +1124,12 @@ const pdfCropManifestDefaultValues = {
 }
 const dateInputRefs = new Map()
 let pollTimer = null
+let aiChainBatchPollTimer = null
+let aiChainTerminalInstanceUpdateEmitted = false
 let currentRunId = null   // 当前触发的任务 run_id，用于轮询匹配
 let runAbortToken = 0
 let dynamicParamProbeToken = 0
+let cloudPromptLibraryLoadToken = 0
 let activeTaskIdentityKey = ''
 let applyingInitialTaskValues = false
 let instanceDraftSaveTimer = null
@@ -1179,6 +1202,9 @@ function applyInitialParamsToValues(initialParams = {}) {
     } else {
       next[p.id] = value
     }
+  }
+  for (const key of AI_CHAIN_PROMPT_LIBRARY_STATE_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(initialParams, key)) next[key] = initialParams[key]
   }
   values.value = next
 }
@@ -1400,9 +1426,12 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   // 切换 task 时保留/恢复历史日志，不清空
   outputFiles.value = []
   approvalBoardUrl.value = ''
+  localApprovalBoardUrl.value = ''
   approvalBatch.value = null
+  stopAiChainApprovalBatchPolling()
+  aiChainTerminalInstanceUpdateEmitted = false
   approvalDrawerOpen.value = false
-  aiChainActiveStep.value = 'config'
+  aiChainActiveStep.value = initialAiChainActiveStep(adapterId, task)
   syncingOdps.value = false
   isRunning.value = false
   lastResult.value = null
@@ -1524,12 +1553,12 @@ const filteredCloudPromptLibraries = computed(() => {
 })
 const selectedCloudPromptLibrary = computed(() =>
   (cloudPromptLibraryDialog.value.libraries || []).find(library =>
-    String(library?.id || '') === String(cloudPromptLibraryDialog.value.previewLibraryId || values.value.cloud_prompt_library_id || '')
+    String(library?.id || '') === String(cloudPromptLibraryDialog.value.previewLibraryId || '')
   ) || null
 )
 const cloudPromptLibrarySelectionLabel = computed(() =>
   String(values.value.cloud_prompt_library_name || '').trim()
-    || (values.value.cloud_prompt_library_id ? `已选择库 #${values.value.cloud_prompt_library_id}` : '未选择线上 Prompt 库')
+    || (values.value.cloud_prompt_library_id ? `已选择库 #${values.value.cloud_prompt_library_id}` : '未选择 Prompt 库')
 )
 const previewCloudPromptLibraryTitle = computed(() =>
   selectedCloudPromptLibrary.value?.name || 'Prompt 模板预览'
@@ -1601,10 +1630,15 @@ const aiChainSubmitProgressText = computed(() => {
   return aiChainCreateSummary.value
 })
 const aiChainCreateStartedStatuses = new Set(['submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
+const aiChainCreateTerminalStatuses = new Set(['created', 'partial_failed', 'create_failed'])
 const aiChainGenerationConfirmationStatus = 'pending_generation_confirmation'
 const aiChainWorkflowStatuses = new Set([aiChainGenerationConfirmationStatus, 'pending_approval', 'submitting', 'submitted', 'created', 'partial_failed', 'create_failed'])
 const isCloudApprovalBoard = computed(() => isCloudApprovalBoardUrl(approvalBoardUrl.value))
-const cloudApprovalFrameUrl = computed(() => isCloudApprovalBoard.value ? buildEmbeddedCloudApprovalUrl(approvalBoardUrl.value, cloudApprovalBaseUrl.value) : '')
+const tmallClientApprovalBoardUrl = computed(() => {
+  const local = String(localApprovalBoardUrl.value || '').trim()
+  if (local) return local
+  return isLocalTmallApprovalBoardUrl(approvalBoardUrl.value) ? approvalBoardUrl.value : ''
+})
 const aiChainLifecycle = computed(() => {
   const createStatus = aiChainCreateStatus.value
   const aiTotal = aiChainAiAssets.value.length
@@ -1712,13 +1746,13 @@ const aiChainSteps = computed(() => {
   ]
 })
 function setAiChainActiveStep(stepId) {
-  const next = String(stepId || '').trim()
-  if (!['config', 'confirm', 'approval', 'create'].includes(next)) return
+  const next = normalizeAiChainStep(stepId)
+  if (!next) return
   aiChainActiveStep.value = next
 }
 
 function isCurrentTmallAiImageChainTask() {
-  return props.adapterId === 'tmall-ops-assistant' && props.task?.task_id === 'tmall_ai_image_test_chain'
+  return isTmallAiImageChainIdentity(props.adapterId, props.task)
 }
 
 function hasOwnParamValue(source, key) {
@@ -1835,6 +1869,8 @@ function closeCloudPromptLibraryDialog() {
 function clearCloudPromptLibrary() {
   values.value.cloud_prompt_library_id = ''
   values.value.cloud_prompt_library_name = ''
+  values.value.cloud_prompt_library_source = ''
+  values.value.cloud_prompt_templates_json = ''
 }
 
 async function openCloudPromptLibraryDialog() {
@@ -1846,28 +1882,50 @@ async function openCloudPromptLibraryDialog() {
   if (!(cloudPromptLibraryDialog.value.libraries || []).length) {
     await loadCloudPromptLibraries()
   } else if (values.value.cloud_prompt_library_id) {
-    await previewCloudPromptLibrary({ id: values.value.cloud_prompt_library_id })
+    const selected = cloudPromptLibraryDialog.value.libraries.find(library =>
+      buildPromptLibraryTaskSelection(library).cloud_prompt_library_id === String(values.value.cloud_prompt_library_id)
+    )
+    if (selected) await previewCloudPromptLibrary(selected)
   }
 }
 
 async function loadCloudPromptLibraries() {
+  const requestToken = ++cloudPromptLibraryLoadToken
   cloudPromptLibraryDialog.value.loading = true
   cloudPromptLibraryDialog.value.error = ''
   try {
-    const payload = await window.cs.listCloudPromptLibraries()
-    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
-    const libraries = Array.isArray(payload?.libraries) ? payload.libraries : []
-    cloudPromptLibraryDialog.value.libraries = libraries
-    const currentId = String(values.value.cloud_prompt_library_id || libraries[0]?.id || '').trim()
-    if (currentId) {
-      cloudPromptLibraryDialog.value.previewLibraryId = currentId
-      await loadCloudPromptLibraryTemplates(currentId)
-    }
+    const result = await loadPromptLibraryPickerSources({
+      listLocalLibraries: () => window.cs.listLocalPromptLibraries(),
+      listCloudLibraries: () => window.cs.listCloudPromptLibraries(),
+      onLocal: ({ localLibraries, errors }) => {
+        if (requestToken !== cloudPromptLibraryLoadToken) return
+        const libraries = buildPromptLibraryPickerLibraries({ localLibraries })
+        applyPromptLibraryDialogLibraries(libraries)
+        if (libraries.length) cloudPromptLibraryDialog.value.loading = false
+        if (!libraries.length && errors.length) cloudPromptLibraryDialog.value.error = errors.join('；')
+      },
+    })
+    if (requestToken !== cloudPromptLibraryLoadToken) return
+    const libraries = buildPromptLibraryPickerLibraries(result)
+    applyPromptLibraryDialogLibraries(libraries)
+    cloudPromptLibraryDialog.value.error = !libraries.length && result.errors.length ? result.errors.join('；') : ''
   } catch (error) {
-    cloudPromptLibraryDialog.value.error = error?.message || String(error)
+    if (requestToken === cloudPromptLibraryLoadToken) {
+      cloudPromptLibraryDialog.value.error = error?.message || String(error)
+    }
   } finally {
-    cloudPromptLibraryDialog.value.loading = false
+    if (requestToken === cloudPromptLibraryLoadToken) cloudPromptLibraryDialog.value.loading = false
   }
+}
+
+function applyPromptLibraryDialogLibraries(libraries) {
+  const items = Array.isArray(libraries) ? libraries : []
+  cloudPromptLibraryDialog.value.libraries = items
+  const selected = items.find(library =>
+    buildPromptLibraryTaskSelection(library).cloud_prompt_library_id === String(values.value.cloud_prompt_library_id || '')
+  ) || items[0]
+  cloudPromptLibraryDialog.value.previewLibraryId = String(selected?.id || '')
+  cloudPromptLibraryDialog.value.previewTemplates = Array.isArray(selected?.templates) ? selected.templates : []
 }
 
 async function loadCloudPromptLibraryTemplates(libraryId) {
@@ -1900,8 +1958,7 @@ async function previewCloudPromptLibrary(library) {
 
 function chooseCloudPromptLibrary(library) {
   if (!library?.id) return
-  values.value.cloud_prompt_library_id = String(library.id)
-  values.value.cloud_prompt_library_name = String(library.name || `Prompt 库 ${library.id}`)
+  Object.assign(values.value, buildPromptLibraryTaskSelection(library))
   closeCloudPromptLibraryDialog()
 }
 
@@ -2313,6 +2370,7 @@ function isParamVisibleInForm(param) {
 function forceReset() {
   clearInterval(pollTimer)
   pollTimer = null
+  stopAiChainApprovalBatchPolling()
   runAbortToken += 1
   isRunning.value = false
   currentRunId = null
@@ -2466,6 +2524,8 @@ function buildRunParams(overrides = {}) {
   }
   if (isTmallAiImageChainTask.value && params.prompt_source === 'cloud_prompt_library') {
     params.cloud_prompt_library_name = String(values.value.cloud_prompt_library_name || '').trim()
+    params.cloud_prompt_library_source = String(values.value.cloud_prompt_library_source || '').trim()
+    params.cloud_prompt_templates_json = String(values.value.cloud_prompt_templates_json || '').trim()
   }
   return JSON.parse(JSON.stringify({ ...params, ...overrides }))
 }
@@ -2516,7 +2576,10 @@ function resetRunUi() {
   lastResult.value = null
   outputFiles.value = []
   approvalBoardUrl.value = ''
+  localApprovalBoardUrl.value = ''
   approvalBatch.value = null
+  stopAiChainApprovalBatchPolling()
+  aiChainTerminalInstanceUpdateEmitted = false
   approvalDrawerOpen.value = false
   localLiveSnapshot.value = null
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
@@ -2662,7 +2725,13 @@ async function refreshOutputFiles() {
     if (boardUrl) allFiles.push(boardUrl)
     outputFiles.value = visibleOutputFiles(allFiles)
     approvalBoardUrl.value = findApprovalBoardUrl(allFiles, detail?.summary || null)
-    if (!approvalBoardUrl.value) approvalBatch.value = null
+    localApprovalBoardUrl.value = findLocalApprovalBoardUrl(allFiles, detail?.summary || null)
+    if (!localApprovalBoardUrl.value && isLocalTmallApprovalBoardUrl(approvalBoardUrl.value)) localApprovalBoardUrl.value = approvalBoardUrl.value
+    if (!approvalBoardUrl.value && !localApprovalBoardUrl.value) approvalBatch.value = null
+    const preferCreateStep = shouldPreferCreateStepForInstance(detail)
+    const currentStep = normalizeAiChainStep(detail?.current_step)
+    if (preferCreateStep && currentStep) aiChainActiveStep.value = currentStep
+    if (localApprovalBoardUrl.value) await refreshAiChainApprovalBatch({ preferCreateStep })
     return allFiles
   }
 
@@ -2675,7 +2744,10 @@ async function refreshOutputFiles() {
     const allFiles = Array.isArray(files) ? files : []
     outputFiles.value = visibleOutputFiles(allFiles)
     approvalBoardUrl.value = findApprovalBoardUrl(allFiles)
-    if (!approvalBoardUrl.value) approvalBatch.value = null
+    localApprovalBoardUrl.value = findLocalApprovalBoardUrl(allFiles)
+    if (!localApprovalBoardUrl.value && isLocalTmallApprovalBoardUrl(approvalBoardUrl.value)) localApprovalBoardUrl.value = approvalBoardUrl.value
+    if (!approvalBoardUrl.value && !localApprovalBoardUrl.value) approvalBatch.value = null
+    if (localApprovalBoardUrl.value) await refreshAiChainApprovalBatch({ preferCreateStep: false })
     return allFiles
   } catch {
     return []
@@ -2699,6 +2771,7 @@ async function finishRun(result, options = {}) {
   if (result.status === 'done') {
     const files = await refreshOutputFiles()
     approvalBoardUrl.value = findApprovalBoardUrl(files, result)
+    localApprovalBoardUrl.value = findLocalApprovalBoardUrl(files, result)
     if (isInstanceMode.value) emit('instance-updated')
     if (options.message) {
       lastResult.value = { ok: !!options.ok, msg: options.message }
@@ -2874,13 +2947,15 @@ function fileName(path) {
 
 function openFile(path) {
   if (isApprovalBoardUrl(path)) {
-    approvalBoardUrl.value = String(path || '').trim()
-    if (isTmallAiImageChainTask.value) {
+    const target = String(path || '').trim()
+    approvalBoardUrl.value = target
+    if (isLocalTmallApprovalBoardUrl(target)) localApprovalBoardUrl.value = target
+    if (isTmallAiImageChainTask.value && isLocalTmallApprovalBoardUrl(target)) {
       aiChainActiveStep.value = 'approval'
     } else if (isLocalTmallApprovalBoardUrl(path)) {
       openApprovalDrawer()
     } else {
-      window.cs.openFile(buildEmbeddedCloudApprovalUrl(path, cloudApprovalBaseUrl.value))
+      window.cs.openFile(isTmallAiImageChainTask.value ? target : buildEmbeddedCloudApprovalUrl(target, cloudApprovalBaseUrl.value))
     }
     return
   }
@@ -2920,11 +2995,83 @@ function handleApprovalGenerationStarted(payload) {
 function handleApprovalSubmitStarted(payload) {
   handleApprovalBatchUpdated(payload)
   aiChainActiveStep.value = 'create'
+  startAiChainApprovalBatchPolling()
 }
 
 function handleApprovalCommitted(payload) {
   handleApprovalBatchUpdated(payload)
+  stopAiChainApprovalBatchPolling()
   if (isInstanceMode.value) emit('instance-updated')
+}
+
+function shouldPreferCreateStepForInstance(detail) {
+  if (!isTmallAiImageChainTask.value) return false
+  if (normalizeAiChainStep(detail?.current_step) === 'create') return true
+  const status = String(detail?.status || '').trim()
+  return ['completed', 'partial_failed'].includes(status)
+}
+
+function parseLocalTmallApprovalBoardUrl(url) {
+  try {
+    if (!isLocalTmallApprovalBoardUrl(url)) return null
+    const parsed = new URL(String(url || ''))
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const batchId = parts[parts.length - 1] || ''
+    const token = parsed.searchParams.get('token') || ''
+    if (!batchId || !token) return null
+    return { batchId, token }
+  } catch {
+    return null
+  }
+}
+
+async function refreshAiChainApprovalBatch(options = {}) {
+  if (!isTmallAiImageChainTask.value) return null
+  const ref = parseLocalTmallApprovalBoardUrl(localApprovalBoardUrl.value || approvalBoardUrl.value)
+  if (!ref || typeof window.cs?.getTmallApprovalBatch !== 'function') return null
+  try {
+    const payload = await window.cs.getTmallApprovalBatch(ref.batchId, ref.token)
+    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
+    handleApprovalBatchUpdated(payload)
+    const status = String(payload?.status || '').trim()
+    const hasCreateRows = (payload?.submit_result_rows || []).some(row => row?.阶段 === '天猫上传/创建测图任务')
+    if ((options.preferCreateStep !== false && (aiChainCreateTerminalStatuses.has(status) || hasCreateRows)) || aiChainActiveStep.value === 'create') {
+      aiChainActiveStep.value = 'create'
+    }
+    if (aiChainCreateTerminalStatuses.has(status)) {
+      stopAiChainApprovalBatchPolling()
+      if (options.emitInstanceUpdatedOnTerminal && isInstanceMode.value && !aiChainTerminalInstanceUpdateEmitted) {
+        aiChainTerminalInstanceUpdateEmitted = true
+        emit('instance-updated')
+      }
+    }
+    return payload
+  } catch (error) {
+    console.warn('刷新 AI 测图审批批次失败', error)
+    return null
+  }
+}
+
+function startAiChainApprovalBatchPolling() {
+  if (!isTmallAiImageChainTask.value || aiChainBatchPollTimer) return
+  const ref = parseLocalTmallApprovalBoardUrl(localApprovalBoardUrl.value || approvalBoardUrl.value)
+  if (!ref) return
+  aiChainTerminalInstanceUpdateEmitted = false
+  void refreshAiChainApprovalBatch({ emitInstanceUpdatedOnTerminal: true })
+  aiChainBatchPollTimer = window.setInterval(async () => {
+    const status = aiChainCreateStatus.value
+    if (aiChainActiveStep.value !== 'create' || aiChainCreateTerminalStatuses.has(status)) {
+      stopAiChainApprovalBatchPolling()
+      return
+    }
+    await refreshAiChainApprovalBatch({ emitInstanceUpdatedOnTerminal: true })
+  }, 1600)
+}
+
+function stopAiChainApprovalBatchPolling() {
+  if (!aiChainBatchPollTimer) return
+  window.clearInterval(aiChainBatchPollTimer)
+  aiChainBatchPollTimer = null
 }
 
 function isHttpUrl(path) {
@@ -2948,9 +3095,19 @@ function visibleOutputFiles(files = []) {
 }
 
 function findApprovalBoardUrl(files = [], result = null) {
+  const cloud = String(result?.cloud_board_url || '').trim()
+  if (cloud) return cloud
   const direct = String(result?.approval_board_url || '').trim()
   if (direct) return direct
   return (files || []).map(file => String(file || '').trim()).find(isApprovalBoardUrl) || ''
+}
+
+function findLocalApprovalBoardUrl(files = [], result = null) {
+  const direct = String(result?.local_board_url || '').trim()
+  if (direct) return direct
+  const approval = String(result?.approval_board_url || '').trim()
+  if (isLocalTmallApprovalBoardUrl(approval)) return approval
+  return (files || []).map(file => String(file || '').trim()).find(isLocalTmallApprovalBoardUrl) || ''
 }
 
 function isExcelFile(path) {
@@ -3819,6 +3976,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   clearInterval(pollTimer)
+  stopAiChainApprovalBatchPolling()
   if (instanceDraftSaveTimer) {
     clearTimeout(instanceDraftSaveTimer)
     const targetUid = instanceDraftSaveTargetUid || String(props.instanceUid || '').trim()
@@ -4027,21 +4185,6 @@ onUnmounted(() => {
 }
 .ai-chain-empty-panel strong {
   color: var(--text);
-}
-.cloud-approval-embed {
-  min-height: 640px;
-  height: min(760px, calc(100vh - 300px));
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  overflow: hidden;
-  background: #0f1118;
-}
-.cloud-approval-embed iframe {
-  display: block;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: #0f1118;
 }
 .ai-chain-result-list {
   display: grid;

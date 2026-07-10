@@ -45,3 +45,12 @@ test('loading copy cycles through all Crawshrimp phrases', async () => {
   assert.equal(loadingMessageFor(7, 0), AI_IMAGE_LOADING_MESSAGES[0])
   assert.equal(loadingMessageFor(0, 2), AI_IMAGE_LOADING_MESSAGES[2])
 })
+
+test('in-flight generation belongs only to its originating task', async () => {
+  const { generationBelongsToJob } = await import('../app/src/renderer/utils/aiImageLoadingState.mjs')
+
+  assert.equal(generationBelongsToJob('job-a', 'job-a'), true)
+  assert.equal(generationBelongsToJob('job-a', 'job-b'), false)
+  assert.equal(generationBelongsToJob('', 'job-a'), false)
+  assert.equal(generationBelongsToJob('job-a', ''), false)
+})

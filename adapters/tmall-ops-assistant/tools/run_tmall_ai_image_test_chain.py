@@ -89,6 +89,8 @@ TMALL_AI_IMAGE_RESULT_COLUMN_ORDER = [
     "审批批次ID",
     "审批状态",
     "审批看板",
+    "云端审批看板",
+    "本地审批看板",
     "任务ID",
     "测图详情URL",
     "上传图数量",
@@ -525,6 +527,8 @@ def generation_confirmation_result_rows(batch: Mapping[str, Any]) -> list[dict[s
             "审批批次ID": batch.get("batch_id", ""),
             "审批状态": batch.get("status", ""),
             "审批看板": batch.get("board_url", ""),
+            "云端审批看板": batch.get("cloud_board_url", ""),
+            "本地审批看板": batch.get("local_board_url", ""),
             "执行结果": "等待确认提交生图任务",
             "备注": f"Prompt={prompt_total}；{batch.get('approval_message', '')}",
         })
@@ -1089,6 +1093,16 @@ def prepare_generation_confirmation_placeholders(batch: dict[str, Any]) -> dict[
         if not isinstance(item, dict):
             continue
         item["assets"] = [asset for asset in item.get("assets") or [] if asset.get("kind") != "ai"]
+        main_asset = next(
+            (
+                asset for asset in item.get("assets") or []
+                if isinstance(asset, Mapping)
+                and (compact(asset.get("kind")) == "origin" or compact(asset.get("slot")) == "main")
+                and compact(asset.get("path"))
+            ),
+            {},
+        )
+        placeholder_preview_path = compact(main_asset.get("path")) or compact(item.get("origin_path"))
         prompts = item.get("generation_prompts") if isinstance(item.get("generation_prompts"), list) else []
         item_rows = []
         for index, prompt in enumerate(prompts, start=1):
@@ -1125,6 +1139,7 @@ def prepare_generation_confirmation_placeholders(batch: dict[str, Any]) -> dict[
                         "custom_prompt": "",
                         "review_note": "",
                         "placeholder": True,
+                        "placeholder_preview_path": placeholder_preview_path,
                         "created_at": now,
                     },
                 ))
@@ -1153,8 +1168,53 @@ def prepare_generation_confirmation_placeholders(batch: dict[str, Any]) -> dict[
         batch,
     )
     save_approval_batch(batch)
-    maybe_sync_approval_batch_to_cloud(batch, log=lambda *_args, **_kwargs: None)
     return batch
+
+
+def _same_generation_prompt_asset(asset: Mapping[str, Any], prompt_index: int) -> bool:
+    if compact(asset.get("kind")) != "ai":
+        return False
+    return compact(asset.get("prompt_index")) == compact(prompt_index)
+
+
+def _prune_generation_ai_assets(item: dict[str, Any], *, keep_placeholders: bool) -> None:
+    next_assets = []
+    for asset in item.get("assets") or []:
+        if not isinstance(asset, Mapping):
+            continue
+        if compact(asset.get("kind")) != "ai":
+            next_assets.append(asset)
+            continue
+        if keep_placeholders and (asset.get("placeholder") or compact(asset.get("status")) == "generating"):
+            next_assets.append(asset)
+    item["assets"] = next_assets
+
+
+def _replace_generation_prompt_assets(item: dict[str, Any], prompt_index: int, assets: list[dict[str, Any]]) -> None:
+    next_assets: list[Mapping[str, Any]] = []
+    inserted = False
+    for asset in item.get("assets") or []:
+        if isinstance(asset, Mapping) and _same_generation_prompt_asset(asset, prompt_index):
+            if not inserted:
+                next_assets.extend(assets)
+                inserted = True
+            continue
+        if isinstance(asset, Mapping):
+            next_assets.append(asset)
+    if not inserted:
+        next_assets.extend(assets)
+    item["assets"] = list(next_assets)
+
+
+def _remove_generation_prompt_placeholders(item: dict[str, Any], prompt_index: int) -> None:
+    item["assets"] = [
+        asset for asset in item.get("assets") or []
+        if not (
+            isinstance(asset, Mapping)
+            and asset.get("placeholder")
+            and _same_generation_prompt_asset(asset, prompt_index)
+        )
+    ]
 
 
 def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) -> dict[str, Any]:
@@ -1172,10 +1232,11 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
     jobs: list[tuple[dict[str, Any], dict[str, Any], int, dict[str, Any]]] = []
+    keep_placeholders = compact(batch.get("status")) == "generating"
     for item in batch.get("items") or []:
         if not isinstance(item, dict):
             continue
-        item["assets"] = [asset for asset in item.get("assets") or [] if asset.get("kind") != "ai"]
+        _prune_generation_ai_assets(item, keep_placeholders=keep_placeholders)
         prompts = item.get("generation_prompts") if isinstance(item.get("generation_prompts"), list) else []
         item_rows = []
         for index, prompt in enumerate(prompts, start=1):
@@ -1206,9 +1267,43 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
 
     generated = 0
     failures = 0
+    succeeded_prompts = 0
     requested_images = sum(generation_count_from_row(row, 1) for _item, _prompt, _index, row in jobs)
     if jobs:
         log(f"[approval] 确认提交生图任务 {len(jobs)} 条 Prompt / {requested_images} 张，并发 {concurrency}")
+
+    def persist_generation_progress(*, status: str = "running", current_style: str = "", message: str = "") -> None:
+        completed = succeeded_prompts + failures
+        now = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        batch["status"] = "generating" if status == "running" else ("pending_approval" if generated else "generation_failed")
+        batch["generation_summary"] = {
+            "requested": requested_images,
+            "requested_prompts": len(jobs),
+            "generated": generated,
+            "failed": failures,
+        }
+        batch["submit_progress"] = {
+            "status": status,
+            "total": len(jobs),
+            "completed": completed if status == "running" else len(jobs),
+            "attempted": completed if status == "running" else len(jobs),
+            "succeeded": succeeded_prompts,
+            "failed": failures,
+            "image_total": requested_images,
+            "current_style": current_style,
+            "message": message or (
+                f"生图进行中：已生成 {generated}/{requested_images} 张，完成 {completed}/{len(jobs)} 条 Prompt"
+                if status == "running"
+                else (f"生图完成：{generated} 张" if generated else "生图失败，请检查失败原因")
+            ),
+        }
+        batch["updated_at"] = now
+        batch["approval_message"] = render_approval_message_template(
+            str(run_params.get("approval_message_template") or ""),
+            batch,
+        )
+        save_approval_batch(batch)
+
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         future_map = {executor.submit(generate, job): job for job in jobs}
         for future in as_completed(future_map):
@@ -1219,11 +1314,28 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
                 failures += 1
                 prompt["status"] = "failed"
                 prompt["error"] = str(exc)
+                _remove_generation_prompt_placeholders(item, index)
+                persist_generation_progress(
+                    current_style=compact(item.get("style_code")),
+                    message=f"{compact(item.get('style_code')) or '当前款'} / Prompt {index} 生图失败：{exc}",
+                )
+                continue
+            if not paths:
+                failures += 1
+                prompt["status"] = "failed"
+                prompt["generation_row"] = json_safe(patched)
+                prompt["error"] = compact(patched.get("备注")) or "未下载到生成图片"
+                _remove_generation_prompt_placeholders(item, prompt_index)
+                persist_generation_progress(
+                    current_style=compact(item.get("style_code")),
+                    message=f"{compact(item.get('style_code')) or '当前款'} / Prompt {prompt_index} 未下载到生成图片",
+                )
                 continue
             prompt["status"] = "generated"
             prompt["generation_row"] = json_safe(patched)
-            if paths:
-                generated += len(paths)
+            generated += len(paths)
+            succeeded_prompts += 1
+            prompt_assets: list[dict[str, Any]] = []
             for image_offset, path in enumerate(paths, start=1):
                 display_index = prompt_index if len(paths) == 1 else f"{prompt_index}-{image_offset}"
                 asset = _image_asset(
@@ -1244,29 +1356,14 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
                         "task_run_uid": compact(patched.get("__task_run_uid")) or approval_batch_run_uid(batch),
                         "custom_prompt": "",
                         "review_note": "",
+                        "generated_at": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
                     },
                 )
-                item.setdefault("assets", []).append(asset)
+                prompt_assets.append(asset)
+            _replace_generation_prompt_assets(item, prompt_index, prompt_assets)
+            persist_generation_progress(current_style=compact(item.get("style_code")))
 
-    batch["status"] = "pending_approval" if generated else "generation_failed"
-    batch["generation_summary"] = {"requested": requested_images, "requested_prompts": len(jobs), "generated": generated, "failed": failures}
-    batch["submit_progress"] = {
-        "status": "completed" if generated else "failed",
-        "total": len(jobs),
-        "completed": len(jobs),
-        "attempted": len(jobs),
-        "succeeded": max(0, len(jobs) - failures),
-        "failed": failures,
-        "image_total": requested_images,
-        "current_style": "",
-        "message": f"生图完成：{generated} 张" if generated else "生图失败，请检查失败原因",
-    }
-    batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
-    batch["approval_message"] = render_approval_message_template(
-        str(run_params.get("approval_message_template") or ""),
-        batch,
-    )
-    save_approval_batch(batch)
+    persist_generation_progress(status="completed" if generated else "failed")
     notify_channel = compact(run_params.get("approval_notify_channel") or "dingtalk").lower()
     if generated and notify_channel and notify_channel != "none":
         notify_approval_batch(batch, channel=notify_channel, log=log)
@@ -1424,6 +1521,8 @@ def approval_result_rows(batch: Mapping[str, Any]) -> list[dict[str, Any]]:
             "审批批次ID": batch.get("batch_id", ""),
             "审批状态": batch.get("status", ""),
             "审批看板": batch.get("board_url", ""),
+            "云端审批看板": batch.get("cloud_board_url", ""),
+            "本地审批看板": batch.get("local_board_url", ""),
             "执行结果": "等待审批",
             "备注": f"AI图={ai_total}；{batch.get('approval_message', '')}",
         })
@@ -1438,6 +1537,9 @@ def cloud_approval_sync_warning_row(batch: Mapping[str, Any], message: str) -> d
         "阶段": "云端审批同步",
         "审批批次ID": batch.get("batch_id", ""),
         "审批状态": batch.get("status", ""),
+        "审批看板": batch.get("board_url", ""),
+        "云端审批看板": batch.get("cloud_board_url", ""),
+        "本地审批看板": batch.get("local_board_url", ""),
         "执行结果": "警告",
         "备注": compact(message),
     }
@@ -2628,6 +2730,11 @@ SEMIR_FIND_JS = r"""
     segments.pop();
     return segments.join('/');
   }
+  function sameParentFullpath(left, right) {
+    const leftParent = parentFullpath(left?.fullpath || left?.path || '');
+    const rightParent = parentFullpath(right?.fullpath || right?.path || '');
+    return Boolean(leftParent && rightParent && leftParent === rightParent);
+  }
   function folderPathsFromSearchItem(item, styleCode) {
     const style = compact(styleCode);
     if (!style) return [];
@@ -2862,7 +2969,7 @@ SEMIR_FIND_JS = r"""
       .sort((a, b) => b.mainRank === a.mainRank ? naturalCompare(a.fullpath || a.filename, b.fullpath || b.filename) : b.mainRank - a.mainRank);
     const chosenMain = mainRanked[0] || null;
     const detailRanked = ranked
-      .filter((item) => item.flags.flat || item.flags.selectedModelStyleColor)
+      .filter((item) => chosenMain && item.flags.styleColor && sameParentFullpath(item, chosenMain))
       .filter((item) => !chosenMain || compact(item.fullpath || item.filename) !== compact(chosenMain.fullpath || chosenMain.filename))
       .sort((a, b) => b.detailRank === a.detailRank ? naturalCompare(a.fullpath || a.filename, b.fullpath || b.filename) : b.detailRank - a.detailRank);
     const chosenDetail = detailRanked[0] || null;

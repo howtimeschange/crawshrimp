@@ -208,6 +208,22 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit",
         )
 
+    async def test_tmall_ai_chain_approval_board_urls_prefer_cloud_and_keep_local(self):
+        rows = [
+            {
+                "阶段": "图片审批",
+                "审批看板": "https://approval.crawshrimp.com/?batch_uid=batch-1",
+                "云端审批看板": "https://approval.crawshrimp.com/?batch_uid=batch-1",
+                "本地审批看板": "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit",
+            }
+        ]
+
+        urls = api_server._extract_tmall_approval_board_urls(rows)
+
+        self.assertEqual(urls["approval_board_url"], "https://approval.crawshrimp.com/?batch_uid=batch-1")
+        self.assertEqual(urls["cloud_board_url"], "https://approval.crawshrimp.com/?batch_uid=batch-1")
+        self.assertEqual(urls["local_board_url"], "http://127.0.0.1:18765/tmall-ai-image-approval/batch-1?token=unit")
+
     async def test_tmall_ai_chain_generation_confirmation_skips_excel_export(self):
         rows = [
             {

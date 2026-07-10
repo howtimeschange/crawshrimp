@@ -198,15 +198,108 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         }
 
         with patch.object(module, "save_approval_batch"), \
-            patch.object(module, "maybe_sync_approval_batch_to_cloud"):
+            patch.object(module, "maybe_sync_approval_batch_to_cloud") as sync_to_cloud:
             prepared = module.prepare_generation_confirmation_placeholders(batch)
 
         ai_assets = [asset for asset in prepared["items"][0]["assets"] if asset["kind"] == "ai"]
+        sync_to_cloud.assert_not_called()
         self.assertEqual(prepared["status"], "generating")
         self.assertEqual(prepared["submit_progress"]["status"], "running")
         self.assertEqual(prepared["submit_progress"]["image_total"], 2)
         self.assertEqual(len(ai_assets), 2)
         self.assertTrue(all(asset["status"] == "generating" and asset["placeholder"] for asset in ai_assets))
+        self.assertTrue(all(asset["placeholder_preview_path"] == "/tmp/main.jpg" for asset in ai_assets))
+
+    def test_submit_generation_confirmation_persists_each_prompt_as_it_finishes(self):
+        module = load_script()
+        snapshots = []
+
+        def fake_generate(row, *_args, **_kwargs):
+            patched = dict(row)
+            patched["生成图URL"] = f"https://img.example/{row['提示词序号']}.jpg"
+            patched["执行结果"] = "已生成"
+            return patched
+
+        def fake_download(row, artifact_dir):
+            return [str(Path(artifact_dir) / f"{row['款号']}-ai-{row['提示词序号']}.jpg")]
+
+        def capture_save(next_batch):
+            snapshots.append(json.loads(json.dumps(next_batch, ensure_ascii=False, default=str)))
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            batch = {
+                "batch_id": "batch-incremental",
+                "status": "generating",
+                "task_run_uid": "run-incremental",
+                "artifact_dir": temp_dir,
+                "run_params": {
+                    "generation_concurrency": 1,
+                    "approval_notify_channel": "none",
+                    "image_size": "1536x2048",
+                    "one_xm_key_tier": "4k",
+                },
+                "items": [{
+                    "id": "item-1",
+                    "style_code": "208326100202",
+                    "item_id": "1002178235142",
+                    "origin_path": "/tmp/main.jpg",
+                    "workflow": {
+                        "row_no": 2,
+                        "style_code": "208326100202",
+                        "item_id": "1002178235142",
+                        "category": "长袖T恤",
+                        "gender": "中性",
+                    },
+                    "assets": [
+                        {"id": "origin-1", "kind": "origin", "path": "/tmp/main.jpg", "slot": "main"},
+                        {"id": "loading-1", "kind": "ai", "status": "generating", "placeholder": True, "prompt_index": 1},
+                        {"id": "loading-2", "kind": "ai", "status": "generating", "placeholder": True, "prompt_index": 2},
+                    ],
+                    "generation_prompts": [
+                        {
+                            "id": "prompt-1",
+                            "prompt_index": 1,
+                            "prompt_name": "正面",
+                            "prompt_group": "上装",
+                            "custom_prompt": "prompt 1",
+                            "image_count": 1,
+                            "reference_paths": ["/tmp/main.jpg"],
+                            "status": "generating",
+                        },
+                        {
+                            "id": "prompt-2",
+                            "prompt_index": 2,
+                            "prompt_name": "侧面",
+                            "prompt_group": "上装",
+                            "custom_prompt": "prompt 2",
+                            "image_count": 1,
+                            "reference_paths": ["/tmp/main.jpg"],
+                            "status": "generating",
+                        },
+                    ],
+                }],
+            }
+
+            with patch.object(module, "resolve_one_xm_settings", return_value={"4k": "unit-key-4k"}), \
+                patch.object(module, "run_one_xm_generation_row", fake_generate), \
+                patch.object(module, "download_generated_images", fake_download), \
+                patch.object(module, "save_approval_batch", capture_save), \
+                patch.object(module, "maybe_sync_approval_batch_to_cloud"):
+                result = module.submit_generation_confirmation_batch(batch)
+
+        partial = next(snapshot for snapshot in snapshots if snapshot["submit_progress"]["completed"] == 1)
+        partial_ai_assets = [asset for asset in partial["items"][0]["assets"] if asset["kind"] == "ai"]
+
+        self.assertEqual(partial["status"], "generating")
+        self.assertEqual(partial["generation_summary"]["generated"], 1)
+        self.assertEqual(partial_ai_assets[0]["status"], "pending")
+        self.assertFalse(partial_ai_assets[0].get("placeholder"))
+        self.assertEqual(partial_ai_assets[0]["prompt_index"], 1)
+        self.assertTrue(partial_ai_assets[1]["placeholder"])
+        self.assertEqual(partial_ai_assets[1]["prompt_index"], 2)
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "pending_approval")
+        self.assertEqual(snapshots[-1]["submit_progress"]["completed"], 2)
 
     def test_generation_confirmation_prompt_image_count_updates_1xm_payload(self):
         module = load_script()
@@ -482,6 +575,10 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertEqual(batch["board_url"], cloud_board_url)
             self.assertIn(cloud_board_url, batch["approval_message"])
             self.assertNotIn(local_board_url, batch["approval_message"])
+            rows = module.approval_result_rows(batch)
+            self.assertEqual(rows[0]["审批看板"], cloud_board_url)
+            self.assertEqual(rows[0]["云端审批看板"], cloud_board_url)
+            self.assertEqual(rows[0]["本地审批看板"], local_board_url)
             saved = json.loads(Path(batch["json_path"]).read_text(encoding="utf-8"))
             self.assertEqual(saved["board_url"], cloud_board_url)
 
@@ -2326,6 +2423,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
     }},
   ];
   const selectedItems = [
+    {{ filename: 'yz1.jpg', ext: 'jpg' }},
     {{ filename: '208326100202-20841.jpg', ext: 'jpg' }},
     {{ filename: '208326100202-30424-14.jpg', ext: 'jpg' }},
     {{ filename: '208326100202-60354.jpg', ext: 'jpg' }},
@@ -2373,6 +2471,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             "208326100202-60354.jpg",
             "208326100202-80224.jpg",
         ])
+        self.assertNotIn("208326100202-00482.jpg", payload["detailCandidates"])
         self.assertNotIn("20832610020230424-婴幼童-男-AI参考.jpg", payload["detailCandidates"])
 
     def test_find_semir_references_downloads_all_style_color_candidates(self):

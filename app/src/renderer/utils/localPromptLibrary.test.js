@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 
 import {
   buildCloudPromptLibraryPayload,
+  buildPromptLibraryTaskSelection,
+  loadPromptLibraryPickerSources,
   normalizePromptLibrary,
   parsePromptWorkbookImportCandidates,
   parsePromptWorkbookSheets,
@@ -198,6 +200,63 @@ test('buildPromptLibraryPickerLibraries combines local and cloud libraries for A
   })), [
     { template_id: 'cloud:7:70', field_name: '草稿正面图', prompt_text: '线上草稿 Prompt', source_type: 'cloud' },
   ])
+})
+
+test('buildPromptLibraryTaskSelection embeds local templates without requiring cloud access', async () => {
+  const { buildPromptLibraryPickerLibraries } = await import('./localPromptLibrary.js')
+  const [library] = buildPromptLibraryPickerLibraries({
+    localLibraries: [{
+      library_uid: 'local-1',
+      name: '本地 AI 测图库',
+      templates: [{
+        local_uid: 'prompt-1',
+        group_name: '上装',
+        field_name: '正面图',
+        prompt_text: '保留版型并生成正面主图',
+      }],
+    }],
+  })
+
+  const selection = buildPromptLibraryTaskSelection(library)
+
+  assert.equal(selection.cloud_prompt_library_id, 'local:local-1')
+  assert.equal(selection.cloud_prompt_library_name, '本地 AI 测图库')
+  assert.equal(selection.cloud_prompt_library_source, 'local')
+  assert.deepEqual(JSON.parse(selection.cloud_prompt_templates_json), {
+    templates: [{
+      group_name: '上装',
+      field_name: '正面图',
+      field_order: null,
+      size_label: '2K',
+      output_format: 'jpeg',
+      prompt_text: '保留版型并生成正面主图',
+      female_priority: null,
+      male_neutral_priority: null,
+      priority: 100,
+    }],
+  })
+})
+
+test('loadPromptLibraryPickerSources publishes local libraries before a slow cloud request finishes', async () => {
+  let resolveCloud
+  const updates = []
+  const cloudPending = new Promise(resolve => { resolveCloud = resolve })
+
+  const pending = loadPromptLibraryPickerSources({
+    listLocalLibraries: async () => ({ libraries: [{ library_uid: 'local-1', name: '本地库' }] }),
+    listCloudLibraries: async () => cloudPending,
+    onLocal: payload => updates.push(payload),
+  })
+  await new Promise(resolve => setTimeout(resolve, 0))
+
+  assert.equal(updates.length, 1)
+  assert.equal(updates[0].localLibraries[0].name, '本地库')
+  assert.equal(updates[0].cloudPending, true)
+
+  resolveCloud({ libraries: [{ id: 7, name: '线上库' }] })
+  const result = await pending
+  assert.equal(result.localLibraries[0].name, '本地库')
+  assert.equal(result.cloudLibraries[0].name, '线上库')
 })
 
 test('buildCloudPromptLibraryPayload strips local metadata and keeps cloud-compatible template fields', () => {

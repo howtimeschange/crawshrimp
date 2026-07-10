@@ -206,15 +206,19 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
     .run()
 
   const syncedStyles: Array<Record<string, string | number>> = []
+  const incomingAssetUids = new Set<string>()
   try {
     for (const style of styles) {
       const styleId = await upsertStyle(env, batchUid, style, now)
       syncedStyles.push(syncedStyleResponse(style, styleId))
       const assets = Array.isArray(style.assets) ? style.assets.filter((asset): asset is Record<string, unknown> => asset && typeof asset === 'object' && !Array.isArray(asset)) : []
       for (const asset of assets) {
+        const assetUid = stringValue(asset.asset_uid)
+        if (assetUid) incomingAssetUids.add(assetUid)
         await upsertSyncedAsset(env, batchUid, styleId, asset, now)
       }
     }
+    await deleteStalePlannedSyncedAssets(env, batchUid, incomingAssetUids)
   } catch (error) {
     const response = assetUidConflictResponse(error)
     if (response) return response
@@ -985,9 +989,25 @@ async function upsertSyncedAsset(env: Env, batchUid: string, styleId: number, as
     parentAssetUid: nullableString(asset.parent_asset_uid),
     generationJobId: nullableString(asset.generation_job_id),
     meta: sanitizedMeta(asset),
-    statusPolicy: 'preserve-existing',
+    statusPolicy: 'preserve-reviewed',
     now,
   })
+}
+
+async function deleteStalePlannedSyncedAssets(env: Env, batchUid: string, incomingAssetUids: Set<string>): Promise<void> {
+  const { results } = await env.DB.prepare(
+    `SELECT asset_uid, batch_uid, style_id, kind, status, object_key, filename, content_hash, meta_json
+     FROM ai_image_assets
+     WHERE batch_uid = ? AND status = 'planned'`,
+  )
+    .bind(batchUid)
+    .all<AssetRow>()
+  const stale = (results || []).filter((asset) => !incomingAssetUids.has(asset.asset_uid))
+  for (const asset of stale) {
+    await env.DB.prepare("DELETE FROM ai_image_assets WHERE batch_uid = ? AND asset_uid = ? AND status = 'planned'")
+      .bind(batchUid, asset.asset_uid)
+      .run()
+  }
 }
 
 function auditActor(actor: { machine?: MachineRow; user?: CurrentUser }): { machineId?: string; userId?: number } {

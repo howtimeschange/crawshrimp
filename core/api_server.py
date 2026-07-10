@@ -3044,13 +3044,30 @@ def _tmall_ai_model_params(run_params: dict) -> tuple[str, str, str]:
 
 
 def _extract_first_approval_board_url(data_rows: list) -> str:
+    return _extract_tmall_approval_board_urls(data_rows).get("approval_board_url", "")
+
+
+def _extract_tmall_approval_board_urls(data_rows: list) -> dict:
+    urls = {"approval_board_url": "", "cloud_board_url": "", "local_board_url": ""}
     for row in data_rows or []:
         if not isinstance(row, dict):
             continue
-        url = str(row.get("审批看板") or "").strip()
-        if url.startswith("http://") or url.startswith("https://"):
-            return url
-    return ""
+        cloud_url = str(row.get("云端审批看板") or "").strip()
+        local_url = str(row.get("本地审批看板") or "").strip()
+        board_url = str(row.get("审批看板") or "").strip()
+        if cloud_url.startswith(("http://", "https://")) and not urls["cloud_board_url"]:
+            urls["cloud_board_url"] = cloud_url
+        if local_url.startswith(("http://", "https://")) and not urls["local_board_url"]:
+            urls["local_board_url"] = local_url
+        if board_url.startswith(("http://", "https://")):
+            if "/tmall-ai-image-approval/" in board_url and not urls["local_board_url"]:
+                urls["local_board_url"] = board_url
+            elif "batch_uid=" in board_url and not urls["cloud_board_url"]:
+                urls["cloud_board_url"] = board_url
+            if not urls["approval_board_url"]:
+                urls["approval_board_url"] = board_url
+    urls["approval_board_url"] = urls["cloud_board_url"] or urls["approval_board_url"] or urls["local_board_url"]
+    return urls
 
 
 def _is_tmall_ai_generation_confirmation_result(adapter_id: str, task_id: str, data_rows: list) -> bool:
@@ -3129,6 +3146,22 @@ def _load_tmall_ai_image_chain_module():
     return module
 
 
+def _tmall_ai_image_prompt_library_params(run_params: dict) -> tuple[str, str]:
+    cloud_prompt_library_id = str((run_params or {}).get("cloud_prompt_library_id") or "").strip()
+    if not cloud_prompt_library_id:
+        raise RuntimeError("缺少云端 Prompt 库")
+    embedded_templates_json = str((run_params or {}).get("cloud_prompt_templates_json") or "").strip()
+    if embedded_templates_json:
+        return cloud_prompt_library_id, embedded_templates_json
+    source_type = str((run_params or {}).get("cloud_prompt_library_source") or "").strip().lower()
+    if source_type == "local" or cloud_prompt_library_id.startswith("local:"):
+        raise RuntimeError("本地 Prompt 库未返回可用模板，请重新选择")
+    if cloud_prompt_library_id.startswith("cloud:"):
+        cloud_prompt_library_id = cloud_prompt_library_id.removeprefix("cloud:")
+    templates_payload = _cloud_prompt_library_export(cloud_prompt_library_id)
+    return cloud_prompt_library_id, json.dumps(templates_payload, ensure_ascii=False)
+
+
 async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_dir: str, wait_for_control, log) -> list:
     import argparse
 
@@ -3147,10 +3180,7 @@ async def _apply_tmall_ai_image_test_chain(run_params: dict, runtime_artifact_di
     if prompt_source == "local_excel" and not prompt_file:
         raise RuntimeError("缺少 AI 测图提示词库文件")
     if prompt_source == "cloud_prompt_library":
-        if not cloud_prompt_library_id:
-            raise RuntimeError("缺少云端 Prompt 库")
-        templates_payload = _cloud_prompt_library_export(cloud_prompt_library_id)
-        cloud_prompt_templates_json = json.dumps(templates_payload, ensure_ascii=False)
+        cloud_prompt_library_id, cloud_prompt_templates_json = _tmall_ai_image_prompt_library_params(run_params or {})
 
     args = argparse.Namespace(
         execute_mode=execution["mode"],
@@ -4886,7 +4916,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         else:
             exported_files = await export_outputs(data)
             output_files = await finalize_output_files(data, runtime_files, exported_files)
-        approval_board_url = _extract_first_approval_board_url(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else ""
+        approval_board_urls = _extract_tmall_approval_board_urls(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else {}
+        approval_board_url = approval_board_urls.get("approval_board_url", "") if approval_board_urls else ""
         if approval_board_url:
             output_files = merge_output_file_refs([approval_board_url], output_files)
         data_sink.finish_run(run_id, len(data), output_files)
@@ -4907,7 +4938,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             done_status['approval_board_url'] = approval_board_url
         _set_live_status(live_jids, done_status)
         if instance_uid:
-            approval_summary = _parse_tmall_approval_board_url(approval_board_url)
+            approval_summary = _parse_tmall_approval_board_url(
+                approval_board_urls.get("local_board_url", "") or approval_board_url
+            )
             generation_confirmation_pending = any(
                 isinstance(row, dict) and str(row.get("阶段") or "").strip() == "确认提交生图"
                 for row in data or []
@@ -4916,6 +4949,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 "records": len(data),
                 "output_files": output_files,
                 "approval_board_url": approval_board_url,
+                "cloud_board_url": approval_board_urls.get("cloud_board_url", ""),
+                "local_board_url": approval_board_urls.get("local_board_url", ""),
                 "approval_stage": "confirm_generation" if generation_confirmation_pending else "approval",
                 "run_id": run_id,
                 **approval_summary,
@@ -5431,6 +5466,21 @@ def batch_run_ai_image_job(job_uid: str, req: AiImageBatchRunRequest):
             prompts,
             request_uid=req.request_uid,
         )
+    except ai_image_service.MissingModelKeyError as exc:
+        raise HTTPException(400, {
+            "message": str(exc),
+            "config_id": exc.config_id,
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/runs/{run_uid}/retry")
+def retry_ai_image_run(job_uid: str, run_uid: str):
+    if not data_sink.get_ai_image_job(job_uid):
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    try:
+        return ai_image_service.retry_workbench_run(job_uid, run_uid)
     except ai_image_service.MissingModelKeyError as exc:
         raise HTTPException(400, {
             "message": str(exc),

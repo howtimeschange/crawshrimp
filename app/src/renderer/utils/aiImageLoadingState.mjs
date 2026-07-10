@@ -11,6 +11,12 @@ export const AI_IMAGE_LOADING_MESSAGES = [
 const text = (value) => String(value || '').trim()
 const paths = (value) => (Array.isArray(value) ? value.map(text).filter(Boolean) : [])
 
+export function generationBelongsToJob(generatingJobUid, jobUid) {
+  const ownerUid = text(generatingJobUid)
+  const activeUid = text(jobUid)
+  return Boolean(ownerUid && activeUid && ownerUid === activeUid)
+}
+
 export function resolveLoadingPreviewContext(job = {}, run = {}, fallback = {}) {
   const hasRunSnapshot = Boolean(run.input_params && typeof run.input_params === 'object')
   const runParams = hasRunSnapshot ? run.input_params : {}
