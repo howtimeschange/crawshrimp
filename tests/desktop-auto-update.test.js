@@ -198,3 +198,76 @@ test('desktop workflow gates rolling release mutation on exact stable tag and pa
   assert.match(rollingJob, /if \[ "\$\{APP_VERSION\}" != "\$\{TAG_VERSION\}" \]/)
   assert.match(rollingJob, /Only exact stable vX\.Y\.Z tags can publish desktop-latest/)
 })
+
+test('desktop updater e2e server is loopback-only and rejects unsafe file access', () => {
+  const server = readRepoFile('app/scripts/update-e2e-server.js')
+
+  assert.match(server, /server\.listen\(port, '127\.0\.0\.1'/)
+  assert.match(server, /provider: PROVIDER/)
+  assert.match(server, /crawshrimp-update-e2e/)
+  assert.match(server, /decodeURIComponent/)
+  assert.match(server, /return \{ status: 403 \}/)
+  assert.match(server, /accept-ranges': 'bytes'/)
+  assert.match(server, /content-range/)
+  assert.match(server, /bytes \*\/\$\{size\}/)
+  assert.doesNotMatch(server, /readdirSync\(resolved\.path/)
+})
+
+test('desktop update release checklist captures required acceptance evidence without fabrication', () => {
+  const checklist = readRepoFile('docs/desktop-update-release-checklist.md')
+
+  for (const required of [
+    'Source commit',
+    'Old version under test',
+    'New version under test',
+    'GitHub main build run ID',
+    'GitHub tag build run ID',
+    'Formal release URL',
+    'Rolling `desktop-latest` release URL',
+    'Asset name',
+    'SHA512 from metadata',
+    'codesign --verify --deep --strict --verbose=2',
+    'Team ID readback',
+    'spctl --assess --type execute --verbose=4',
+    'stapler validate',
+    'Installer path before update',
+    'Installer path after update',
+    'User-data sentinel path',
+    'User-data checksum before',
+    'Active-task blocker screenshot/log',
+    '“普通退出未安装” proof',
+    '“任务结束后仅提示重启安装” proof',
+    'New version after restart',
+    'Backend `/health` after restart',
+    'Rollback Or Unpublish',
+  ]) {
+    assert.match(checklist, new RegExp(required.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  }
+  assert.match(checklist, /crawshrimpUpdateTestBuild=true/)
+  assert.match(checklist, /Formal `vX\.Y\.Z` builds must never include/)
+  assert.match(checklist, /Windows x64/)
+  assert.match(checklist, /macOS ARM/)
+  assert.match(checklist, /macOS Intel/)
+  assert.match(checklist, /DMG-only success is bridge\/fallback evidence/)
+  assert.match(checklist, /PENDING/)
+})
+
+test('README documents desktop update install semantics and footer decisions', () => {
+  const readme = readRepoFile('README.md')
+
+  assert.match(readme, /bridge 版本/)
+  assert.match(readme, /不需要卸载旧版/)
+  assert.match(readme, /Windows 使用 NSIS 在原安装路径就地更新/)
+  assert.match(readme, /macOS 的应用内更新使用 ZIP\/ShipIt/)
+  assert.match(readme, /DMG 只用于首次安装、bridge 覆盖或应用内更新失败后的手动 fallback/)
+  assert.match(readme, /运行数据、Chrome profile、任务缓存和配置保存在系统用户数据目录/)
+  assert.match(readme, /普通退出不会偷偷安装/)
+  assert.match(readme, /点击 `重启安装`/)
+  assert.match(readme, /Unknown Publisher/)
+  assert.match(readme, /侧边栏底部默认只显示当前版本/)
+  assert.match(readme, /只有检测到可用更新时才显示 `更新`/)
+  assert.match(readme, /具体脚本视图后，侧边栏保持展开/)
+  assert.match(readme, /desktop-latest` 只用于手动 QA\/bridge 安装包/)
+  assert.match(readme, /应用内稳定更新只读取正式 `vX\.Y\.Z` Release/)
+  assert.doesNotMatch(readme, /应用内自动更新当前保持关闭/)
+})

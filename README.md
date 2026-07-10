@@ -90,7 +90,15 @@ flowchart LR
 - `crawshrimp-v版本号-mac-x64.dmg`
 - `crawshrimp-v版本号-win-x64.exe`
 
-安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。应用内自动更新当前保持关闭，请从 Releases 手动下载安装新版本。
+安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。
+
+从带桌面自动更新的 bridge 版本开始，已安装用户不需要卸载旧版：下载正式 Release 安装包覆盖安装一次即可接入后续应用内更新。Windows 使用 NSIS 在原安装路径就地更新；macOS 的应用内更新使用 ZIP/ShipIt，DMG 只用于首次安装、bridge 覆盖或应用内更新失败后的手动 fallback。
+
+运行数据、Chrome profile、任务缓存和配置保存在系统用户数据目录，不写入程序安装目录；覆盖安装和应用内更新不应删除这些数据。更新下载完成后，如果抓虾还有任务运行，安装会等待任务结束；普通退出不会偷偷安装，必须由用户点击 `重启安装` 才会替换版本。Windows 在正式代码签名前可能出现 Unknown Publisher 提示。
+
+侧边栏底部默认只显示当前版本；只有检测到可用更新时才显示 `更新` 操作。进入具体脚本视图后，侧边栏保持展开，避免任务表单和脚本上下文被折叠打断。
+
+`desktop-latest` 只用于手动 QA/bridge 安装包，不作为应用内稳定更新源；应用内稳定更新只读取正式 `vX.Y.Z` Release 里的 GitHub updater 元数据。
 
 #### macOS
 
@@ -330,6 +338,7 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 - 推送 `main`：运行完整测试并构建 macOS / Windows 桌面产物，用于验证主分支。
 - 推送 `v*` tag：再次测试与构建，执行 macOS 签名/公证（密钥齐全时），发布正式版本并刷新 `desktop-latest`。
 - 正式 Release 包含 macOS arm64、macOS x64、Windows x64 和 Windows blockmap。
+- `desktop-latest` 只上传手动安装用 DMG/EXE，并保持 `latest=false`；正式 `vX.Y.Z` Release 才包含应用内更新所需的 ZIP/YAML/blockmap 元数据。
 
 应用版本以 `app/package.json` 和 `app/package-lock.json` 为准；tag 必须与版本号一致。详细版本说明存放在 `release-notes/vX.Y.Z.md`。
 
@@ -337,6 +346,7 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 
 - [云端审批台 Runbook](docs/cloud-approval-workbench-runbook.md)
 - [云端审批 MVP 测试记录](docs/cloud-approval-workbench-mvp-test-log.md)
+- [桌面更新发布验收清单](docs/desktop-update-release-checklist.md)
 - [Adapter 开发指南](sdk/ADAPTER_GUIDE.md)
 - [历史 Release Notes](release-notes/)
 

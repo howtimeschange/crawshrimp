@@ -24,7 +24,23 @@ function evaluateUpdatePlatform({ platform, isPackaged, execPath, homeDir }) {
 
 function resolveTestFeedUrl({ isTestBuild, env }) {
   if (!isTestBuild) return ''
-  return String(env?.CRAWSHRIMP_UPDATE_E2E_URL || '').trim()
+  const rawUrl = String(env?.CRAWSHRIMP_UPDATE_E2E_URL || '').trim()
+  if (!rawUrl) return ''
+
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return ''
+  }
+
+  const hostname = parsed.hostname.toLowerCase()
+  const isLoopback = hostname === '127.0.0.1' || hostname === 'localhost'
+  if (parsed.protocol !== 'http:' || !isLoopback) return ''
+  if (parsed.username || parsed.password) return ''
+  parsed.hostname = hostname
+  parsed.hash = ''
+  return parsed.toString()
 }
 
 module.exports = { evaluateUpdatePlatform, resolveTestFeedUrl }
