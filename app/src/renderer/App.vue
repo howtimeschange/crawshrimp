@@ -1,8 +1,25 @@
 <template>
-  <div class="layout" :class="{ 'layout-ai-image': currentView === 'ai_image' }">
+  <div
+    class="layout"
+    :class="{
+      'layout-ai-image': currentView === 'ai_image',
+      'sidebar-collapsed': sidebarCollapsed,
+    }"
+  >
     <!-- 标题栏 -->
     <div class="titlebar">
-      <span class="logo">🦐 抓虾</span>
+      <div class="brand">
+        <span class="logo">🦐 抓虾</span>
+        <button
+          class="collapse-btn"
+          type="button"
+          :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          @click="toggleSidebar"
+        >
+          {{ sidebarCollapsed ? '›' : '‹' }}
+        </button>
+      </div>
       <div class="status-bar">
         <span class="dot" :class="status.api ? 'on' : 'off'">
           <i></i>核心
@@ -16,7 +33,7 @@
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <!-- 一级菜单 -->
-      <nav v-if="!activeScript">
+      <nav v-if="!activeScript || sidebarCollapsed" :class="{ 'collapsed-primary-nav': activeScript && sidebarCollapsed }">
         <button
           v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
@@ -76,6 +93,13 @@
           </button>
         </div>
       </div>
+      <SidebarUpdateFooter
+        :update-status="updateStatus"
+        :collapsed="sidebarCollapsed"
+        @download="downloadUpdate"
+        @install="installUpdate"
+        @retry="retryUpdateCheck"
+      />
     </aside>
 
     <!-- 主内容区 -->
@@ -124,7 +148,9 @@
         v-if="currentView === 'settings'"
         :status="status"
         :focus-panel-id="focusSettingsPanelId"
+        :update-status="updateStatus"
         @launch-chrome="launchChrome"
+        @check-update="retryUpdateCheck"
       />
     </main>
   </div>
@@ -141,8 +167,10 @@ import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
+import SidebarUpdateFooter from './components/SidebarUpdateFooter.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
+import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarState.js'
 
 const currentView = ref('scripts')
 const status = ref({ api: false, apiState: 'starting', chrome: false, apiPort: 18765, cdpPort: 9222 })
@@ -152,6 +180,16 @@ const activeInstanceUid = ref('')
 const scriptGroups = ref([])
 const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
+const sidebarCollapsed = ref(readSidebarCollapsed(window.localStorage))
+const updateStatus = ref({
+  status: 'idle',
+  currentVersion: '',
+  latestVersion: '',
+  progress: null,
+  blockers: [],
+  error: '',
+  downloaded: false,
+})
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
@@ -173,6 +211,10 @@ const filteredNavItems = computed(() =>
 )
 
 function selectNav(item) {
+  if (activeScript.value || currentView.value !== item.id) {
+    activeScript.value = null
+    activeTaskId.value = null
+  }
   currentView.value = item.id
   activeInstanceUid.value = ''
   if (item.id !== 'settings') focusSettingsPanelId.value = ''
@@ -264,9 +306,40 @@ async function launchChrome() {
   await window.cs.launchChrome()
 }
 
+function toggleSidebar() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  writeSidebarCollapsed(window.localStorage, sidebarCollapsed.value)
+}
+
+async function downloadUpdate() {
+  updateStatus.value = await window.cs.downloadUpdate()
+}
+
+async function retryUpdateCheck() {
+  updateStatus.value = await window.cs.checkForUpdates()
+}
+
+async function installUpdate() {
+  const result = await window.cs.installUpdate()
+  if (result?.status) updateStatus.value = result
+}
+
 let pollTimer = null
+let updateStatusCleanup = null
 onMounted(async () => {
   window.cs.onStatus(({ key, value }) => { status.value[key] = value })
+  if (typeof window.cs.onUpdateStatus === 'function') {
+    updateStatusCleanup = window.cs.onUpdateStatus(nextStatus => {
+      updateStatus.value = { ...updateStatus.value, ...(nextStatus || {}) }
+    })
+  }
+  try {
+    if (typeof window.cs.getUpdateStatus === 'function') {
+      updateStatus.value = await window.cs.getUpdateStatus()
+    }
+  } catch (error) {
+    console.error('Failed to get update status', error)
+  }
   try {
     const s = await window.cs.getStatus()
     status.value.api = s.api
@@ -297,6 +370,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   clearInterval(pollTimer)
+  if (typeof updateStatusCleanup === 'function') updateStatusCleanup()
   window.cs.offStatus()
 })
 
@@ -352,6 +426,10 @@ input, select, textarea { font-family: inherit; }
   height: 100vh;
 }
 
+.layout.sidebar-collapsed {
+  grid-template-columns: 56px 1fr;
+}
+
 /* 标题栏 */
 .titlebar {
   grid-column: 1 / -1;
@@ -364,7 +442,42 @@ input, select, textarea { font-family: inherit; }
   padding: 0 20px 0 88px;
   gap: 8px;
 }
-.logo { font-size: 18px; font-weight: 800; color: var(--text); }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+.logo { font-size: 18px; font-weight: 800; color: var(--text); white-space: nowrap; }
+.collapse-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text2);
+  font-size: 18px;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+.collapse-btn:hover,
+.collapse-btn:focus-visible {
+  color: var(--text);
+  background: var(--bg3);
+  outline: none;
+}
+.sidebar-collapsed .titlebar {
+  padding-left: 88px;
+}
+.sidebar-collapsed .brand {
+  width: 56px;
+  justify-content: center;
+  margin-left: -32px;
+}
+.sidebar-collapsed .logo {
+  display: none;
+}
 .status-bar { margin-left: auto; display: flex; gap: 16px; -webkit-app-region: no-drag; }
 .dot { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text3); }
 .dot i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text3); }
@@ -396,6 +509,20 @@ nav {
   background: transparent; border: none;
   color: var(--text2); font-size: 13px; text-align: left;
   transition: all 0.15s;
+}
+.sidebar-collapsed nav {
+  padding: 0 6px;
+}
+.sidebar-collapsed .nav-btn {
+  justify-content: center;
+  padding: 10px 0;
+}
+.sidebar-collapsed .nav-btn > span:not(.icon) {
+  display: none;
+}
+.sidebar-collapsed .nav-btn .icon {
+  width: auto;
+  font-size: 17px;
 }
 .nav-btn:hover { background: var(--bg3); color: var(--text); }
 .nav-btn.active { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
@@ -547,6 +674,10 @@ nav {
   .layout-ai-image .nav-btn .icon {
     width: auto;
     font-size: 18px;
+  }
+
+  .layout-ai-image .sidebar-update-footer {
+    display: none;
   }
 }
 </style>

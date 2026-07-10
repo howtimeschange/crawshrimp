@@ -139,6 +139,59 @@
           </div>
         </section>
 
+        <section v-else-if="activePanelId === 'application-update'" key="application-update" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">应用</p>
+              <h3>桌面更新</h3>
+            </div>
+            <span :class="['badge', updateBadgeTone]">
+              {{ updateBadgeLabel }}
+            </span>
+          </div>
+
+          <div class="panel-layout">
+            <div class="form-stack">
+              <div class="readonly-grid">
+                <div class="readonly-row">
+                  <span>当前版本</span>
+                  <strong>{{ updateStatus.currentVersion ? `v${updateStatus.currentVersion}` : '未知' }}</strong>
+                </div>
+                <div class="readonly-row">
+                  <span>最新版本</span>
+                  <strong>{{ updateStatus.latestVersion ? `v${updateStatus.latestVersion}` : '暂无' }}</strong>
+                </div>
+                <div class="readonly-row">
+                  <span>上次检查</span>
+                  <strong>{{ formattedLastCheckedAt }}</strong>
+                </div>
+              </div>
+              <p v-if="updateStatus.error" class="inline-msg err">{{ updateStatus.error }}</p>
+              <div class="action-strip">
+                <button
+                  class="btn-orange"
+                  :disabled="updateStatus.status === 'checking'"
+                  @click="requestUpdateCheck"
+                >
+                  {{ updateStatus.status === 'error' ? '重新检查' : '检查更新' }}
+                </button>
+                <button
+                  v-if="showManualDownload"
+                  class="btn-ghost"
+                  @click="openManualDownload"
+                >
+                  手动下载安装包
+                </button>
+              </div>
+            </div>
+            <div class="side-note">
+              <strong>更新控制</strong>
+              <p>这里仅显示桌面更新状态并触发检查；下载和安装控制保留在侧边栏底部。</p>
+              <p v-if="updateStatus.status === 'disabled'">当前环境不支持自动桌面更新时，可使用官方 Release 页面手动下载。</p>
+            </div>
+          </div>
+        </section>
+
         <section v-else-if="activePanelId === 'notify-feishu'" key="notify-feishu" class="panel">
           <div class="panel-head">
             <div>
@@ -485,8 +538,10 @@
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 
-const props = defineProps(['status', 'focusPanelId'])
-const emit = defineEmits(['launch-chrome'])
+const OFFICIAL_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
+
+const props = defineProps(['status', 'focusPanelId', 'updateStatus'])
+const emit = defineEmits(['launch-chrome', 'check-update'])
 
 const cfg = ref({})
 const savedCfg = ref({})
@@ -548,6 +603,13 @@ const menuGroups = [
     ],
   },
   {
+    id: 'application',
+    icon: '●',
+    label: '应用',
+    desc: '版本 / 桌面更新',
+    children: [{ id: 'application-update', label: '桌面更新' }],
+  },
+  {
     id: 'storage',
     icon: '●',
     label: '存储',
@@ -594,6 +656,37 @@ const notifyPanelByChannel = {
 }
 
 const activeGroup = computed(() => menuGroups.find(group => group.id === activeGroupId.value) || menuGroups[0])
+const updateStatus = computed(() => props.updateStatus || {})
+const updateBadgeLabel = computed(() => {
+  const status = String(updateStatus.value.status || 'idle')
+  if (status === 'available') return '可更新'
+  if (status === 'checking') return '检查中'
+  if (status === 'downloading') return '下载中'
+  if (status === 'ready-to-install') return '待安装'
+  if (status === 'error') return '异常'
+  if (status === 'disabled') return '不可用'
+  return '已配置'
+})
+const updateBadgeTone = computed(() => {
+  const status = String(updateStatus.value.status || 'idle')
+  if (status === 'error' || status === 'disabled') return 'off'
+  if (status === 'available' || status === 'ready-to-install') return 'on'
+  return 'neutral'
+})
+const formattedLastCheckedAt = computed(() => {
+  const raw = updateStatus.value.lastCheckedAt || updateStatus.value.checkedAt || ''
+  if (!raw) return '尚未检查'
+  const date = new Date(raw)
+  if (Number.isNaN(date.getTime())) return String(raw)
+  return date.toLocaleString()
+})
+const showManualDownload = computed(() => {
+  const status = String(updateStatus.value.status || '')
+  const error = String(updateStatus.value.error || '')
+  const hasFallbackStatus = status === 'disabled' || status === 'error'
+  const hasFallbackError = /unsupported|signature|签名|更新/i.test(error)
+  return updateStatus.value.manualDownloadUrl === OFFICIAL_RELEASE_URL && hasFallbackStatus && hasFallbackError
+})
 const cloudAddressHint = computed(() => {
   const status = cloudStatus.value || {}
   const errorMessage = cloudServiceErrorMessages[status.service_error] || '未检测到本地审批服务，当前显示默认地址'
@@ -872,6 +965,16 @@ async function doLaunchChrome() {
     chromeMsgOk.value = false
   } finally {
     launching.value = false
+  }
+}
+
+function requestUpdateCheck() {
+  emit('check-update')
+}
+
+function openManualDownload() {
+  if (updateStatus.value.manualDownloadUrl === OFFICIAL_RELEASE_URL) {
+    window.cs.openExternalUrl(updateStatus.value.manualDownloadUrl)
   }
 }
 
@@ -1177,6 +1280,36 @@ watch(activePanelId, panelId => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.readonly-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.readonly-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  min-height: 42px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+}
+
+.readonly-row span {
+  color: var(--text3);
+  font-size: 12px;
+}
+
+.readonly-row strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .status-card,
