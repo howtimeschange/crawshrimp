@@ -58,6 +58,7 @@ from core.one_xm_image import DEFAULT_BASE_URL as ONE_XM_DEFAULT_BASE_URL
 from core.one_xm_image import OneXMImageClient, file_to_data_url, run_image_task_until_done
 from core.probe_models import ProbeRequest
 from core.probe_service import read_probe_bundle, read_probe_bundle_full, run_probe_request
+from core.runtime_install_guard import InstallRuntimeBusy, RuntimeInstallGuard, UpdateDrainActive
 from core.shenhui_pdf_screenshot import finalize_pdf_batch_screenshot_outputs, convert_pdf_rows_to_yq_output_root
 from core.amazon_label_splitter import (
     copy_amazon_label_outputs_to_export_folder,
@@ -100,6 +101,7 @@ RUNTIME_CLEANUP_TASKS = {
     ("tiktok-ops-assistant", "creator_video_download"),
     ("tmall-ops-assistant", "tmall_packaging_upload"),
 }
+runtime_install_guard = RuntimeInstallGuard()
 
 def _backend_lock_dir() -> Path:
     explicit = str(os.environ.get("CRAWSHRIMP_BACKEND_LOCK_DIR") or "").strip()
@@ -5255,6 +5257,54 @@ async def require_local_api_token(request: Request, call_next):
     return await call_next(request)
 
 
+def _runtime_operation_exempt_path(path: str) -> bool:
+    normalized = str(path or "")
+    return (
+        normalized == "/runtime/install-readiness"
+        or normalized == "/runtime/update-drain"
+        or normalized == "/health"
+        or normalized.startswith("/health/")
+    )
+
+
+def _request_requires_runtime_operation(request: Request) -> bool:
+    method = str(request.method or "").upper()
+    path = str(request.url.path or "")
+    if method == "OPTIONS" or _runtime_operation_exempt_path(path):
+        return False
+    if method in {"POST", "PUT", "PATCH", "DELETE"}:
+        return True
+    return method == "GET" and re.match(r"^/data/[^/]+/[^/]+/export$", path) is not None
+
+
+def _update_pending_response() -> JSONResponse:
+    return JSONResponse(
+        {
+            "detail": {
+                "code": "update_pending",
+                "message": "抓虾正在准备安装更新，请稍后再启动新任务。",
+            }
+        },
+        status_code=409,
+    )
+
+
+@app.middleware("http")
+async def track_runtime_operation(request: Request, call_next):
+    token = ""
+    if not _request_requires_runtime_operation(request):
+        return await call_next(request)
+    operation_id = f"{request.method.upper()} {request.url.path}"
+    try:
+        token = runtime_install_guard.begin_operation("http_request", operation_id, operation_id)
+    except UpdateDrainActive:
+        return _add_local_cors_headers(request, _update_pending_response())
+    try:
+        return await call_next(request)
+    finally:
+        runtime_install_guard.end_operation(token)
+
+
 def _is_public_api_path(path: str) -> bool:
     normalized = str(path or "")
     return normalized in PUBLIC_API_PATHS or any(normalized.startswith(prefix) for prefix in PUBLIC_API_PREFIXES)
@@ -6212,8 +6262,11 @@ def list_tasks():
     return result
 
 
-@app.get("/tasks/active")
-def active_tasks():
+class RuntimeDrainReleaseRequest(BaseModel):
+    drain_token: str
+
+
+def _active_task_items() -> list[dict]:
     tasks = []
     seen_controls = set()
     for jid, live in sorted(
@@ -6251,7 +6304,164 @@ def active_tasks():
             "last_seen_at": live_snapshot.get("last_seen_at"),
             "current_row": int(live_snapshot.get("current_row") or live_snapshot.get("row_no") or 0),
         })
+    return tasks
+
+
+@app.get("/tasks/active")
+def active_tasks():
+    tasks = _active_task_items()
     return {"active": bool(tasks), "tasks": tasks}
+
+
+def _install_blocker(kind: str, blocker_id: str, label: str, status: str = "running", **extra) -> dict:
+    item = {
+        "kind": str(kind or "operation"),
+        "id": str(blocker_id or label or "operation"),
+        "label": str(label or blocker_id or "后台操作"),
+        "status": str(status or "running"),
+    }
+    for key, value in extra.items():
+        if value not in (None, ""):
+            item[key] = value
+    return item
+
+
+def _ai_image_job_is_active(job: dict) -> bool:
+    active_statuses = {"queued", "running"}
+    if str((job or {}).get("status") or "").strip().lower() in active_statuses:
+        return True
+    summary = job.get("summary") if isinstance(job.get("summary"), dict) else {}
+    if str(summary.get("status") or "").strip().lower() in active_statuses:
+        return True
+    return any(
+        str((run or {}).get("status") or "").strip().lower() in active_statuses
+        for run in summary.get("runs") or []
+        if isinstance(run, dict)
+    )
+
+
+def _collect_install_blockers() -> list[dict]:
+    blockers = []
+    for task in _active_task_items():
+        jid = str(task.get("jid") or "")
+        blockers.append(_install_blocker(
+            "task",
+            jid,
+            jid,
+            str(task.get("status") or "running"),
+            instance_uid=task.get("instance_uid") or "",
+        ))
+
+    try:
+        running_instances = data_sink.list_task_instances(status_group="running", limit=500)
+    except Exception:
+        logger.debug("failed to collect running task instances for install readiness", exc_info=True)
+        running_instances = []
+    for instance in running_instances:
+        uid = str(instance.get("instance_uid") or "")
+        if uid:
+            blockers.append(_install_blocker(
+                "task",
+                f"instance::{uid}",
+                str(instance.get("title") or uid),
+                "running",
+                instance_uid=uid,
+            ))
+
+    try:
+        ai_jobs = data_sink.list_ai_image_jobs(limit=500)
+    except Exception:
+        logger.debug("failed to collect ai image jobs for install readiness", exc_info=True)
+        ai_jobs = []
+    for job in ai_jobs:
+        if not _ai_image_job_is_active(job):
+            continue
+        uid = str(job.get("job_uid") or "")
+        if uid:
+            blockers.append(_install_blocker(
+                "ai_image",
+                uid,
+                str(job.get("title") or uid),
+                str(job.get("status") or "running"),
+            ))
+
+    if str(getattr(cloud_machine_controller, "last_health", "") or "") == "online_busy":
+        blockers.append(_install_blocker("cloud_job", "cloud_machine", "云端任务机", "running"))
+
+    seen = set()
+    deduped = []
+    for blocker in blockers:
+        key = (blocker.get("kind"), blocker.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(blocker)
+    return deduped
+
+
+def _install_readiness() -> dict:
+    external_blockers = _collect_install_blockers()
+    guard_readiness = runtime_install_guard.readiness()
+    blockers = []
+    seen = set()
+    for blocker in [*guard_readiness["blockers"], *external_blockers]:
+        key = (blocker.get("kind"), blocker.get("id"))
+        if key in seen:
+            continue
+        seen.add(key)
+        blockers.append(blocker)
+    return {
+        **guard_readiness,
+        "ready": len(blockers) == 0 and not guard_readiness["draining"],
+        "blockers": blockers,
+    }
+
+
+@app.get("/runtime/install-readiness")
+def runtime_install_readiness():
+    return _install_readiness()
+
+
+@app.post("/runtime/update-drain")
+def acquire_runtime_update_drain():
+    blockers = _collect_install_blockers()
+    if blockers:
+        raise HTTPException(409, {
+            "code": "runtime_busy",
+            "message": "仍有任务正在运行。",
+            "blockers": blockers,
+        })
+    try:
+        drain_token = runtime_install_guard.acquire_drain()
+    except InstallRuntimeBusy as exc:
+        raise HTTPException(409, {
+            "code": "runtime_busy",
+            "message": "仍有任务正在运行。",
+            "blockers": exc.blockers,
+        })
+    except UpdateDrainActive:
+        raise HTTPException(409, {
+            "code": "update_pending",
+            "message": "抓虾正在准备安装更新，请稍后再启动新任务。",
+        })
+    return {
+        "ok": True,
+        "drain_token": drain_token,
+        "readiness": _install_readiness(),
+    }
+
+
+@app.delete("/runtime/update-drain")
+def release_runtime_update_drain(req: RuntimeDrainReleaseRequest):
+    if not runtime_install_guard.release_drain(req.drain_token):
+        raise HTTPException(409, {
+            "code": "runtime_drain_token_mismatch",
+            "message": "更新安装令牌不匹配。",
+        })
+    return {
+        "ok": True,
+        "readiness": _install_readiness(),
+    }
 
 
 class RunTaskRequest(BaseModel):
@@ -7366,11 +7576,34 @@ def _cloud_prompt_library_export(library_id: str | int, *, client: CloudApproval
     return active_client.request_json("GET", f"/api/prompt-libraries/{library_id}/export", token_type="machine")
 
 
+def _begin_runtime_operation_or_skip(kind: str, operation_id: str, label: str, status: str = "running") -> str:
+    try:
+        return runtime_install_guard.begin_operation(kind, operation_id, label, status)
+    except UpdateDrainActive:
+        return ""
+
+
+def _end_runtime_operation(token: str) -> None:
+    runtime_install_guard.end_operation(token)
+
+
+def _begin_cloud_job_operation() -> str:
+    return _begin_runtime_operation_or_skip("cloud_job", "cloud_machine_claim", "云端任务机")
+
+
+sched_module.set_runtime_operation_hooks(
+    begin_operation=_begin_runtime_operation_or_skip,
+    end_operation=_end_runtime_operation,
+)
+
+
 def _cloud_machine_agent(client: CloudApprovalClient) -> CloudMachineAgent:
     return CloudMachineAgent(
         client,
         app_version=API_VERSION,
         heartbeat_callback=lambda health: setattr(cloud_machine_controller, "last_health", str(health or "")),
+        begin_job_operation=_begin_cloud_job_operation,
+        end_job_operation=_end_runtime_operation,
     )
 
 
