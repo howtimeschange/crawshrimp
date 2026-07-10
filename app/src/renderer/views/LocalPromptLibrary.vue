@@ -473,11 +473,7 @@ async function copyCloudLibraryToLocal() {
   message.value = ''
   try {
     const cloudLibrary = selectedCloudLibrary.value
-    let cloudTemplates = Array.isArray(cloudLibrary.templates) ? cloudLibrary.templates : []
-    if (!cloudTemplates.length && cloudLibrary.cloud_library_id) {
-      const payload = await window.cs.resolveCloudPromptTemplates(cloudLibrary.cloud_library_id, { limit: 500 })
-      cloudTemplates = Array.isArray(payload?.templates) ? payload.templates : []
-    }
+    const cloudTemplates = Array.isArray(selectedCloudLibrary.value.templates) ? selectedCloudLibrary.value.templates : []
     if (!cloudTemplates.length) throw new Error('线上库没有可复制的 Prompt 模板')
     const response = await window.cs.createLocalPromptLibrary({
       name: `${cloudLibrary.name} 本地副本`,

@@ -1878,9 +1878,11 @@ async function loadCloudPromptLibraryTemplates(libraryId) {
   }
   cloudPromptLibraryTemplatesLoading.value = true
   try {
-    const payload = await window.cs.resolveCloudPromptTemplates(id, { limit: 200 })
-    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
-    cloudPromptLibraryDialog.value.previewTemplates = Array.isArray(payload?.templates) ? payload.templates : []
+    const library = cloudPromptLibraryDialog.value.libraries.find(candidate =>
+      String(candidate?.id || '').trim() === id
+    )
+    cloudPromptLibraryDialog.value.error = ''
+    cloudPromptLibraryDialog.value.previewTemplates = Array.isArray(library?.templates) ? library.templates : []
   } catch (error) {
     cloudPromptLibraryDialog.value.error = error?.message || String(error)
     cloudPromptLibraryDialog.value.previewTemplates = []

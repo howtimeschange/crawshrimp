@@ -159,31 +159,18 @@ async function loadPromptLibraryTemplates(libraryId) {
   }
   const selectedLibrary = (libraries.value || [])
     .find(library => String(library.picker_key || library.id || '') === id)
-  if (selectedLibrary && selectedLibrary.source_type === 'local') {
-    error.value = ''
-    templates.value = (selectedLibrary.templates || [])
-      .map(template => ({ ...template, source_label: selectedLibrary.source_label || '本地' }))
-    category.value = ''
+  if (!promptLibraryRequestGuard.isCurrent(requestToken, id)) return
+  if (!selectedLibrary) {
+    error.value = '未找到所选 Prompt 库'
+    templates.value = []
     templatesLoading.value = false
     return
   }
-  templatesLoading.value = true
   error.value = ''
-  try {
-    const cloudLibraryId = selectedLibrary?.cloud_library_id ?? id.replace(/^cloud:/, '')
-    const payload = await window.cs.resolveCloudPromptTemplates(cloudLibraryId, { limit: 500 })
-    if (!promptLibraryRequestGuard.isCurrent(requestToken, id)) return
-    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
-    templates.value = (Array.isArray(payload?.templates) ? payload.templates : [])
-      .map(template => ({ ...template, source_type: 'cloud', source_label: selectedLibrary?.source_label || '线上' }))
-    category.value = ''
-  } catch (err) {
-    if (!promptLibraryRequestGuard.isCurrent(requestToken, id)) return
-    error.value = err?.message || String(err)
-    templates.value = []
-  } finally {
-    if (promptLibraryRequestGuard.isCurrent(requestToken, id)) templatesLoading.value = false
-  }
+  templates.value = (selectedLibrary.templates || [])
+    .map(template => ({ ...template, source_label: selectedLibrary.source_label || '本地' }))
+  category.value = ''
+  templatesLoading.value = false
 }
 
 function invalidatePromptLibraryRequests() {

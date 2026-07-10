@@ -44,7 +44,8 @@ test('LocalPromptLibrary view combines local and cloud prompt libraries with sou
   assert.match(view, /保存为本地副本/)
   assert.match(view, /getCloudApprovalStatus/)
   assert.match(view, /listCloudPromptLibraries/)
-  assert.match(view, /resolveCloudPromptTemplates/)
+  assert.doesNotMatch(view, /resolveCloudPromptTemplates/)
+  assert.match(view, /selectedCloudLibrary\.value\.templates/)
   assert.match(view, /const localLibraries = ref\(\[\]\)/)
   assert.match(view, /const cloudLibraries = ref\(\[\]\)/)
   assert.match(view, /const libraries = computed/)
@@ -52,6 +53,15 @@ test('LocalPromptLibrary view combines local and cloud prompt libraries with sou
   assert.match(view, /selectedCloudLibrary/)
   assert.match(view, /librarySourceLabel/)
   assert.match(view, /source_type/)
+})
+
+test('Shared Prompt picker reads draft cloud templates from the library list payload', () => {
+  const picker = read('app/src/renderer/components/PromptLibraryPickerModal.vue')
+
+  assert.match(picker, /buildPromptLibraryPickerLibraries/)
+  assert.match(picker, /window\.cs\.listCloudPromptLibraries/)
+  assert.doesNotMatch(picker, /window\.cs\.resolveCloudPromptTemplates/)
+  assert.match(picker, /selectedLibrary\.templates/)
 })
 
 test('LocalPromptLibrary opens with a library list before entering prompt detail editing', () => {

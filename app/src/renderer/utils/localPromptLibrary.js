@@ -192,11 +192,9 @@ function buildPromptLibraryPickerLibrary(library = {}, sourceType = 'local', ind
     id: pickerKey,
     picker_key: pickerKey,
     source_label: sourceType === 'cloud' ? '线上' : '本地',
-    templates: sourceType === 'local'
-      ? normalized.templates
-        .map((template, templateIndex) => normalizePromptPickerTemplate(template, pickerKey, sourceType, templateIndex))
-        .filter(Boolean)
-      : [],
+    templates: normalized.templates
+      .map((template, templateIndex) => normalizePromptPickerTemplate(template, pickerKey, sourceType, templateIndex))
+      .filter(Boolean),
   }
 }
 

@@ -159,7 +159,15 @@ test('buildPromptLibraryPickerLibraries combines local and cloud libraries for A
       },
     ],
     cloudLibraries: [
-      { id: 7, name: '线上库', status: 'published' },
+      {
+        id: 7,
+        name: '线上草稿库',
+        status: 'draft',
+        templates: [
+          { id: 70, group_name: '上装', field_name: '草稿正面图', prompt_text: '线上草稿 Prompt' },
+          { id: 71, group_name: '上装', field_name: '停用草稿图', prompt_text: '停用线上 Prompt', enabled: false },
+        ],
+      },
     ],
   })
 
@@ -171,7 +179,7 @@ test('buildPromptLibraryPickerLibraries combines local and cloud libraries for A
     source_label: library.source_label,
   })), [
     { id: 'local:local-1', picker_key: 'local:local-1', name: '本地库', source_type: 'local', source_label: '本地' },
-    { id: 'cloud:7', picker_key: 'cloud:7', name: '线上库', source_type: 'cloud', source_label: '线上' },
+    { id: 'cloud:7', picker_key: 'cloud:7', name: '线上草稿库', source_type: 'cloud', source_label: '线上' },
   ])
   assert.deepEqual(libraries[0].templates.map(template => ({
     template_id: template.template_id,
@@ -182,7 +190,14 @@ test('buildPromptLibraryPickerLibraries combines local and cloud libraries for A
     { template_id: 'local:local-1:local-prompt-1', field_name: '正面图', prompt_text: '本地 Prompt', source_type: 'local' },
   ])
   assert.equal(libraries[1].cloud_library_id, 7)
-  assert.equal(libraries[1].templates.length, 0)
+  assert.deepEqual(libraries[1].templates.map(template => ({
+    template_id: template.template_id,
+    field_name: template.field_name,
+    prompt_text: template.prompt_text,
+    source_type: template.source_type,
+  })), [
+    { template_id: 'cloud:7:70', field_name: '草稿正面图', prompt_text: '线上草稿 Prompt', source_type: 'cloud' },
+  ])
 })
 
 test('buildCloudPromptLibraryPayload strips local metadata and keeps cloud-compatible template fields', () => {
