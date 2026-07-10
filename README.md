@@ -1,147 +1,199 @@
-# 🦐 抓虾 · crawshrimp
+# 🦐 抓虾 · Crawshrimp
 
-**通用网页自动化底座** — 安装适配包，点击运行，数据自动导出。
+**面向电商运营的本地自动化、AI 素材生产与云端审批协作平台。**
 
 [![GitHub release](https://img.shields.io/github/v/release/howtimeschange/crawshrimp?label=latest)](https://github.com/howtimeschange/crawshrimp/releases)
+[![Build Desktop App](https://github.com/howtimeschange/crawshrimp/actions/workflows/build-desktop.yml/badge.svg)](https://github.com/howtimeschange/crawshrimp/actions/workflows/build-desktop.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
----
+抓虾把三类工作放进同一套产品里：在已登录的 Chrome 中执行电商平台自动化，在桌面端完成 AI 生图与提示词管理，并通过可选的云端审批台让审核人员和任务机协同完成测图、重生图、上传与数据回收。
 
-## 本次更新（2026-07-08 / v1.4.41）
+## v2.0.0 大版本更新（2026-07-10）
 
-- 桌面端版本升级到 `v1.4.41`，正式发布会输出 `crawshrimp-v1.4.41-*` 命名的桌面安装包。
-- 天猫运营助手「天猫包装图片上传」修复旧版详情页 PC 端详情替换：当“电脑端描述”停在“使用旺铺详情编辑器”时，脚本会先切换到“使用文本编辑”，再回写旧版 `tmDescription`。
-- PC 端首次写入和 PC 发布后重新进入编辑页回写都会执行同一套切换逻辑，避免主图已替换但商详 PC 端仍保存旧详情。
-- 文本编辑构造值固定为 `{ text: "使用文本编辑", value: 0 }`，不会继承旧的“使用旺铺详情编辑器”文案。
-- 新增回归测试覆盖旧版 HTML PC 详情替换和重新进页回写两条路径。
+`v2.0.0` 标志着抓虾从“网页自动化底座”升级为“本地执行 + AI 素材工作台 + 云端协作”的完整产品。
 
-## 上次更新（2026-07-08 / v1.4.40）
+- 新增一级入口「AI 生图」：支持单次/批量 Prompt、多模型与比例/尺寸联动、异步任务恢复、本地结果缓存、编辑谱系、画布标注、二次编辑、任务置顶与删除。
+- 新增一级入口「提示词库」：本地优先维护提示词，生图工作台和天猫 AI 测图共用选择器；连接云端后可读取草稿或已发布 Prompt 库。
+- 新增 Cloudflare 云端审批台：基于 Workers、D1、R2，提供管理员分配账号、RBAC、批次审图、批量决策、在线生图、Prompt 导入导出、任务机管理、审计日志和测图数据看板。
+- 打通本地与云端：桌面端可自动解析审批地址、内嵌审批页、注册任务机、同步批次，并通过租约/心跳/幂等任务执行重生图、天猫测图提交与数据抓取。
+- 重构「巴拉-AI测图全链路」：支持本地 Excel 或线上 Prompt 库、每条 Prompt 独立出图数、参考图选择、1XM 异步任务恢复、失败重试、本地缓存、审批后创建或直接创建测图任务。
+- 加固可靠性与安全边界：本地 API token、云端 RBAC、资源作用域、敏感信息脱敏、任务缓存隔离、取消任务恢复、Windows 数据目录恢复和可行动错误提示。
 
-- 桌面端版本升级到 `v1.4.40`，正式发布会输出 `crawshrimp-v1.4.40-*` 命名的桌面安装包。
-- 天猫运营助手「天猫包装图片上传」收紧头图取图规则：1:1 主图固定取“主图”前 2 张 + “微详情”前 2 张，避免主图候选过多挤占微详情槽位。
-- 3:4 主图固定取“主图”前 2 张 + “微详情”前 3 张，商品竖图继续从主图包里选取 1 张 `1440_2160(天猫)`。
-- 这套规则在新详情和旧详情发布链路中共同生效；云盘目录搜索、最新款号图包选择、候选目录 fallback 和淘宝图片中心上传接口保持不变。
-- 新增回归测试覆盖多张同尺寸素材时只取序号靠前的 1:1、3:4 和商品竖图，降低批量发布时头图选错的风险。
+完整变更见 [v2.0.0 Release Notes](release-notes/v2.0.0.md)。旧版本记录保留在 [release-notes](release-notes/) 目录。
 
-## 上上次更新（2026-07-07 / v1.4.39）
+> 本次主版本升级用于标记产品能力边界的变化；现有 Adapter 的 `manifest.yaml` 与 JS 注入执行契约继续兼容。
 
-- 桌面端版本升级到 `v1.4.39`，正式发布会输出 `crawshrimp-v1.4.39-*` 命名的桌面安装包。
-- 天猫运营助手「天猫包装图片上传」完整发布链路继续加固：新版详情保持同组件发布和读回校验，旧版详情走 PC 发布、手机端清空旧模块、导入电脑端详情、保存、完成编辑和最终提交。
-- 包装详情替换规则细化为 OCR/视觉锚点驱动：固定奖项头图、`想要的信息看这里` 停止锚点、洗唛/尺码等保留区会分别参与判断，普通产品图和不应保留的头图会进入替换范围。
-- 批量执行时，读回校验通过且还有下一款商品，会先再次提交退出天猫编辑页，再继续下一款云盘查找，避免天猫“确认是否跳转”弹窗卡住流程。
-- 天猫商品属性更新确认、商品视频提示、输入文件注入、导出目录下载根路径等边界继续加固；微盟商品上新自动化也补充了 EAN/SKU 映射和保存链路测试。
+## 产品架构
 
-## 是什么
+```mermaid
+flowchart LR
+    O["运营人员"] --> D["抓虾桌面端\nElectron + Vue"]
+    D --> B["本地 Python API\n任务、数据、AI 服务"]
+    B --> C["已登录 Chrome\nCDP + JS 注入"]
+    C --> P["电商平台 / 森马云盘"]
+    D --> L["AI 生图与本地 Prompt 库"]
+    B --> X["1XM 图像模型"]
+    B <--> W["云端审批台\nCloudflare Workers"]
+    W --> DB["D1 / R2"]
+    R["审核人员"] --> W
+    W --> M["受控任务机队列"]
+    M --> B
+```
 
-crawshrimp 是一个桌面应用**底座**（Electron + Python）。它不做具体的爬虫逻辑，而是提供：
+默认链路是本地优先：登录态、云盘找图、平台上传和本地文件处理留在任务机器；云端负责共享审批、Prompt 协作、任务调度和数据看板。云端审批是可选模块，不影响普通 Adapter 在单机运行。
 
-- 🔌 **插件化适配包（Adapter）** — 每个平台一个包，安装即可使用
-- 🌐 **CDP 直连浏览器** — 脚本在你已登录的 Chrome 里运行，不需要重新登录
-- 💉 **JS 注入执行** — 适配包只写 JS，底座负责注入、分页、超时重试和页面恢复
-- 📊 **自动导出** — Excel / JSON 全自动存文件，可选定时通知
-- 🖥 **Vue 3 GUI** — 平台管理、任务面板、数据预览、设置，开箱即用
+## 核心能力
 
-### 内置适配包
+### AI 生图工作台
 
-| 适配包 | 平台 | 功能 |
-|--------|------|------|
-| `amazon-ops-assistant` | Amazon 运营本地工具 | 商品 Reviews 全量抓取、商品标签 PDF 批量拆分处理 |
-| `aliexpress-ops-assistant` | 速卖通跨境卖家中心 | 商品发布页第一张主图批量抠图并导出新图片地址 |
-| `cross-border-research` | Renner / Zara 跨境站点 | Renner 儿童鞋服类目调研、Zara 美国/巴西上新与促销调研 |
-| `dasen-ops-assistant` | 森马 AI 工作台 | 案例库批量新建、编辑模板导出、按 Excel 批量编辑已发布案例 |
-| `shopee-plus-v2` | Shopee 卖家后台 | 多门店多券型优惠券批量创建（商店 / 新买家 / 回购买家 / 关注礼） |
-| `lazada-plus-v1` | Lazada Seller Center | 多站点优惠券/促销批量创建（Regular / Flexi Combo / 新买家 / 粉丝券） |
-| `mop-ops-assistant` | 千牛素材中心 / MOP | KOL 素材批量转短视频、搜推图文素材批量发布、商家编码 KOC 素材包匹配、云盘素材批量下载 |
-| `plm-ops-assistant` | Balabala Centric PLM | 尺寸表单尺码表批量下载，支持按款号、阶段、尺码表和修订版区分并导出宽表 / 长表 |
-| `temu` | Temu 卖家后台 | 商城-单款商品评价 / 商品数据 / 活动数据 / 店铺流量 / 商品流量（列表/详情） / 对账中心 / 售后管理 / 商品评价 / 保税仓退货 / 资金限制 / 建议零售价（爬取/填写） / 抽检结果明细 / 商品品质分析 / 站点商品 / 商品实拍图洗唛合规 |
-| `shein-helper` | SHEIN 全球商家中心 / 公网站点 | 商品评价、商品明细、商品品质分析、公网搜索/店铺结果商品导出 |
-| `jd` | 京东商家后台 | 全店价格导出 / 破价巡检 |
-| `semir-cloud-drive` | 森马云盘 / 豆包 / Gemini | 款图批量下载打包、天猫搭配购素材匹配、天猫 AI 生图参考素材准备、按 Excel 批量下载素材并自动生图 |
-| `shenhui-new-arrival` | 森马云盘 / 深绘 DEEPDRAW | 上新图包整理、PDF 吊牌水洗截图、深绘图片包上传 |
-| `shopee-webchat-bulk-reply` | Shopee 聊聊 | 按 Excel 批量搜索买家会话，预演或批量发送消息 |
-| `tiktok-ops-assistant` | TikTok Shop Seller Center / Affiliate Center | 商品管理导出、商品评分抓取、联盟达人视频列表采集、视频下载打包 |
-| `tmall-ops-assistant` | 天猫商品详情页 | 按多个商品链接批量抓取买家评价、追评、图片与规格信息；天猫 AI 生图全链路审批/创建；按表格批量上传包装图并替换 PC 详情草稿 |
-| `vipshop-ops-assistant` | 唯品会供应商后台 | 轻供款商品报表导出与商品字段归一化 |
-| `weimob-ops-assistant` | 微盟商户后台 / 森马 MDM | 商品上新自动化、EAN/SKU 映射预演与渠道上新保存 |
+- GPT Image 与 Gemini 图像模型统一参数面板，比例、尺寸、质量和模型能力联动。
+- 单条 Prompt、批量 Prompt、每条 Prompt 独立出图数量与异步队列状态。
+- 1XM `task_id` / `poll_url` 持久化，应用重启后可继续刷新未完成任务。
+- 生成结果优先落到本地缓存；远端预览异常时可恢复缓存，不只依赖临时 URL。
+- 保留来源图、编辑分支和当前图片的完整谱系，支持 Tldraw 标注与二次编辑。
+- 任务历史支持置顶、删除、共享缓存保护和稳定的结果卡片布局。
 
-> 当前仓库内只保留一条 Shopee 适配线：`shopee-plus-v2`。旧 `shopee` / `shopee-plus` 已移除。
+### 本地与云端 Prompt 库
 
-### 最近更新
+- 本地 Prompt 库开箱即用，按分组和字段维护，可直接被单次生图、批量生图和天猫测图任务复用。
+- 云端 Prompt 库支持 Excel 导入/导出、草稿与发布版本、品类/性别优先级解析。
+- 请求防串线和 stale-response guard 避免切换库或网络延迟时展示旧数据。
+- 云端不可用时仍可使用本地库，保持核心生图链路可运行。
 
-- `v1.4.41`：天猫包装图片上传旧版详情页会先把“电脑端描述”切到“使用文本编辑”，再回写旧版 PC 详情，避免旺铺详情编辑器选中时 PC 详情发布后仍是旧内容。
-- `v1.4.40`：天猫包装图片上传头图取图规则收紧，1:1/3:4 主图固定使用主图前序素材并保留微详情前序素材，商品竖图继续选取 `1440_2160(天猫)`。
-- `v1.4.39`：天猫包装图片上传发布链路加固，细化新版/旧版详情分支、OCR/视觉锚点保留规则、批量下一款交接和属性更新确认弹窗处理。
+### 云端审批与任务机
 
----
+- 独立网页与抓虾内嵌页共用同一套登录、RBAC 和审计记录；不开放公众注册。
+- 批次列表、单款审图、批量通过/舍弃、资源去重、在线重生图和提交计划。
+- 任务机使用一次性注册 token 换取长期 machine token，按 capability 领取任务。
+- 调度任务带租约、心跳、取消、幂等和失败状态，避免重复上传或离线任务机抢占。
+- 测图数据看板支持原始 Excel 导入、定时抓取、同日去重、跨日期累计快照和素材明细钻取。
+
+### 网页自动化底座
+
+- Adapter 插件化：每个平台独立 `manifest.yaml + JavaScript`，可本地目录、链接模式或 ZIP 安装。
+- CDP 直连已登录 Chrome，底座统一负责注入、分页、超时、重试、页面恢复和文件下载。
+- Excel / JSON / SQLite 落盘，支持多 Sheet、模板下载、预检后执行、定时任务与钉钉/飞书/Webhook 通知。
+- 本地 API 默认需要 `X-Crawshrimp-Token`，运行数据目录和桌面进程使用同一套解析规则。
 
 ## 快速开始
 
-### 方式一：下载桌面版（推荐）
+### 下载桌面版
 
-直接前往 GitHub Releases 下载已经打包好的桌面程序：
+前往 GitHub Releases：
 
-- **滚动桌面构建**：[`desktop-latest`](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
-- **所有发布列表**：[`Releases`](https://github.com/howtimeschange/crawshrimp/releases)
+- [正式版本列表](https://github.com/howtimeschange/crawshrimp/releases)
+- [滚动桌面构建 desktop-latest](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
 
-当前 Release 会自动包含：
-
-- macOS 桌面包（dmg）
-- Windows 安装包（exe）与 blockmap
-- 内置 Python 运行时
-
-当前桌面安装包命名规则：
+正式版提供：
 
 - `crawshrimp-v版本号-mac-arm64.dmg`
 - `crawshrimp-v版本号-mac-x64.dmg`
 - `crawshrimp-v版本号-win-x64.exe`
 
-也就是说，**普通用户不需要自己安装 Python / Node.js**，下载后即可使用。
+安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。应用内自动更新当前保持关闭，请从 Releases 手动下载安装新版本。
 
-使用方式：
+#### macOS
 
-1. 下载对应平台安装包
-2. 安装并打开抓虾桌面程序
-3. 在任务页按需下载 Excel / CSV 模板并填写
-4. 在 Chrome 中登录目标平台后运行任务
-
-> `desktop-latest` 是自动刷新的滚动桌面构建，便于人工下载测试；当前应用内自动更新已暂停。
-
-#### macOS 安装说明
-
-1. 下载 `.dmg` 文件后双击打开，将抓虾拖入 Applications 文件夹。
-2. `v1.4.36` 起 macOS 包已接入 Developer ID 签名和 Apple 公证，正常情况下可直接打开。
-3. 如果旧包或下载隔离仍提示无法验证，打开终端执行：
+从 `v1.4.36` 起，正式 tag 构建会在密钥配置完整时执行 Developer ID 签名与 Apple 公证。下载 DMG 后将抓虾拖入 Applications；若旧包或下载隔离仍提示无法验证，可执行：
 
 ```bash
 xattr -cr "/Applications/抓虾.app"
 ```
 
-解除苹果隔离限制后即可启动。抓虾会使用独立 Chrome 配置自动启动带 `--remote-debugging-port=9222` 参数的受管 Chrome；也可以按开发者说明手动启动 Chrome 后再运行任务。
+### 第一次运行
 
-### 方式二：从源码启动（开发者）
+1. 打开抓虾，在「设置」中配置需要使用的 1XM 模型密钥与通知渠道。
+2. 让抓虾启动受管 Chrome，或手动用 `--remote-debugging-port=9222` 启动 Chrome。
+3. 在该 Chrome 中登录目标电商平台或云盘。
+4. 从「我的脚本」运行 Adapter，或从「AI 生图」直接创建素材任务。
+5. 如需多人审批，在「设置 → 云端审批」配置服务地址、注册任务机，并在侧边栏打开「云端审批」。
 
-#### 前置条件
+## 典型 AI 测图链路
 
-- Chrome 浏览器（用 `--remote-debugging-port=9222` 启动，见下）
-- Python 3.10+
-- Node.js 18+
-
-#### 1. 克隆并安装
-
-```bash
-git clone https://github.com/howtimeschange/crawshrimp
-cd crawshrimp
-
-# Python 依赖
-python3 -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
-pip install -r core/requirements.txt
-
-# 前端依赖
-cd app && npm install && cd ..
+```text
+测图工作流 Excel
+  → 按款号从森马云盘选择参考图
+  → 本地/云端 Prompt 库按品类和性别匹配
+  → 1XM 异步生图并缓存到本地
+  → 本地确认或同步云端审批
+  → 审核通过 / 舍弃 / 重生图
+  → 受控任务机上传天猫素材并创建测图任务
+  → 定时抓取测图数据并同步云端看板
 ```
 
-#### 2. 启动带 CDP 的 Chrome
+「巴拉-AI测图全链路」支持两种执行模式：
+
+- **审批后创建**：生成审批批次，人工确认后只上传通过的图片。
+- **直接创建**：生图完成后直接进入天猫素材上传与测图任务创建。
+
+任务可选择本地 Excel 或线上 Prompt 库、参考图范围、Prompt 条数、每 Prompt 出图数、模型、比例、尺寸、质量、通知渠道和导出目录。生成证据工作簿会记录 Prompt、模型任务 ID、轮询地址、本地文件、审批状态、测图任务和页面读回结果。
+
+## 云端审批台（可选）
+
+云端代码位于 [`cloud/approval-workbench`](cloud/approval-workbench/)，技术栈为 Vue 3 + Cloudflare Workers + D1 + R2。
+
+本地启动：
+
+```bash
+cd cloud/approval-workbench
+npm ci
+npm run check
+npm run dev
+```
+
+部署前需要创建/绑定 D1 与 R2、执行 migrations、通过 Wrangler Secret 配置 1XM 密钥，并用管理员种子工具创建首个账号。不要把 Cloudflare token、管理员密码、会话 cookie、1XM key 或 machine token 写入仓库。
+
+完整的部署、首个管理员、Prompt 导入、任务机注册、批次同步、测图提交、数据抓取和 dry-run 步骤见 [Cloud Approval Workbench Runbook](docs/cloud-approval-workbench-runbook.md)。
+
+## 从源码启动
+
+### 环境要求
+
+- macOS 或 Windows
+- Chrome
+- Python 3.10+（CI 使用 3.11）
+- Node.js 20（推荐与 CI 一致）
+
+### 安装依赖
+
+```bash
+git clone https://github.com/howtimeschange/crawshrimp.git
+cd crawshrimp
+
+python3 -m venv venv
+venv/bin/pip install -r core/requirements.txt
+
+npm --prefix app ci
+npm --prefix cloud/approval-workbench ci
+```
+
+### 启动桌面开发环境
+
+终端一：
+
+```bash
+bash dev.sh
+```
+
+终端二：
+
+```bash
+cd app
+npm run dev
+```
+
+默认地址：
+
+- 本地 API：`http://127.0.0.1:18765`
+- API 文档：`http://127.0.0.1:18765/docs`
+- Vite：`http://127.0.0.1:5173`
+- 云端审批本地 Worker：`http://127.0.0.1:8787`
+
+除 `/health` 和 API 文档外，本地 API 默认要求 `X-Crawshrimp-Token`。`dev.sh` 会从运行目录读取或生成 token 并打印使用方法。
+
+### 手动启动 CDP Chrome
+
+抓虾桌面端通常会管理独立 Chrome 配置。如需手动启动：
 
 ```bash
 # macOS
@@ -151,284 +203,143 @@ cd app && npm install && cd ..
 
 # Windows
 chrome.exe --remote-debugging-port=9222 --user-data-dir=%TEMP%\chrome-crawshrimp
-
-# Linux
-google-chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome-crawshrimp
 ```
 
-> 提示：启动后在浏览器里正常登录目标平台，之后才能运行脚本。
-
-#### 3. 启动抓虾
+### 验证
 
 ```bash
-# 方式一：开发模式（推荐）
-bash dev.sh                 # 后端 API
-# 另开终端
-cd app && npm run dev       # Vite + Electron
+# Electron / renderer 单元测试
+npm --prefix app test
 
-# 方式二：仅启动后端
-PYTHONPATH=. venv/bin/python3 core/api_server.py
+# Adapter 与桌面契约测试
+node --test tests/*.test.js
+
+# Python 后端测试
+PYTHONPATH=. venv/bin/python -m unittest discover -s tests -p 'test_*.py' -v
+
+# Cloudflare 审批台：typecheck + test + build
+npm --prefix cloud/approval-workbench run check
 ```
 
-API 服务默认运行在 `http://127.0.0.1:18765`，前端开发服务器默认运行在 `http://127.0.0.1:5173`。可通过环境变量 `CRAWSHRIMP_PORT` 修改后端端口。
+## 内置适配包
 
-除 `/health` 和 API 文档页外，本地 API 默认要求 `X-Crawshrimp-Token` 请求头。`bash dev.sh` 会自动生成并打印 token；CLI harness 会优先读取 `CRAWSHRIMP_API_TOKEN` 或运行时数据目录里的 `api-token`。
+| Adapter | 平台 | 主要能力 |
+|---|---|---|
+| `aliexpress-ops-assistant` | 速卖通 | 成交分析、商品排行、商品主图抠图下载 |
+| `amazon-ops-assistant` | Amazon | Reviews 全量抓取、商品标签 PDF 批量拆分 |
+| `cross-border-research` | Renner / Zara / Macy's | 儿童鞋服品类、价格带、上新与促销调研 |
+| `dasen-ops-assistant` | 森马 AI 工作台 | 案例批量创建、编辑模板导出、已发布案例批量编辑 |
+| `doudian-ops-assistant` | 抖店 | 商城混资报名监控、订单复盘与平台优惠归因 |
+| `jd` | 京东 | 全店价格导出、破价巡检与通知 |
+| `lazada-plus-v1` | Lazada | 生意参谋官方报表、优惠券与 Flexi Combo 批量创建 |
+| `mop-ops-assistant` | 千牛素材中心 / MOP | 云盘下载、搜推图文发布、KOL 素材转短视频 |
+| `plm-ops-assistant` | Centric PLM | 尺寸表单定位、尺码表下载、宽表/长表导出 |
+| `semir-cloud-drive` | 森马云盘 / AI 平台 | 图包下载、搭配购匹配、AI 参考素材准备、自动生图 |
+| `shein-helper` | SHEIN | 商品评价、商品明细、质量数据、公网商品导出 |
+| `shenhui-new-arrival` | 森马云盘 / 深绘 | 上新图包整理、PDF 截图、深绘图片包上传 |
+| `shopee-plus-v2` | Shopee | 商业分析、商店/买家/关注礼优惠券、直播优惠券 |
+| `shopee-webchat-bulk-reply` | Shopee 聊聊 | 按 Excel 搜索会话并预演或批量发信 |
+| `shopify-ops-assistant` | Shopify | Admin 客流数据抓取与数仓同步 |
+| `temu` | Temu | 商品、流量、评价、售后、财务、活动、合规等运营数据与操作 |
+| `tiktok-ops-assistant` | TikTok Shop | 商品数据、商品管理、评分、达人视频采集下载 |
+| `tmall-ops-assistant` | 天猫 | 买家评价、包装图上传、AI 测图全链路、测图数据导出 |
+| `vipshop-ops-assistant` | 唯品会 | 轻供款商品报表与字段归一化 |
+| `weimob-ops-assistant` | 微盟 / 森马 MDM | 商品上新、EAN/SKU 映射预演与保存 |
 
-运行时数据目录会先验证真实可写性，再被后端和脚本共同使用。默认策略是：Windows 优先 `%LOCALAPPDATA%\crawshrimp`，macOS 优先 `~/Library/Application Support/crawshrimp`，其他环境使用 `~/.crawshrimp`；如果默认目录不可写会 fallback 到下一个候选目录。也可以通过 `CRAWSHRIMP_DATA=/absolute/path` 显式指定，此时指定目录不可写会直接报错，避免静默写到意外位置。
+当前仓库只保留 `shopee-plus-v2` 这一条 Shopee 运营 Adapter；旧 `shopee` / `shopee-plus` 已移除。
 
-### 开发态 Harness
+## 运行数据与安全
 
-仓库现在把适配器开发入口统一到 `scripts/crawshrimp_dev_harness.py`。它直接复用现有 `probe`、`browser_session` 和 `js_runner` 原语，推荐闭环是：
+运行目录解析顺序：
 
-1. `snapshot` 看当前页面结构和命中的知识卡片
-2. `knowledge` 查历史 notes / probe 物化出来的经验
-3. `capture` / `eval` 做单点 DOM、请求和运行时实验
-4. `probe` 只在需要结构化 bundle 时再跑
+- Windows：优先 `%LOCALAPPDATA%\crawshrimp`
+- macOS：优先 `~/Library/Application Support/crawshrimp`
+- 其他环境：优先 `~/.crawshrimp`
+- 可通过 `CRAWSHRIMP_DATA=/absolute/path` 显式指定
 
-常用命令：
+默认目录不可写时会选择下一候选目录；显式指定的目录不可写则直接报错，避免静默写入意外位置。桌面端会尝试恢复旧版 Windows 数据目录，但不会把运行数据提交到 Git。
+
+安全边界：
+
+- 本地 API token、平台登录 cookie、云端 session、1XM key、Cloudflare token 和 machine token 都不应提交到仓库。
+- 云端审批不开放注册；管理员创建用户并分配角色。
+- 浏览器登录态操作与本地文件访问留在任务机；云端只下发已授权 capability 范围内的任务。
+- 云端资源上传使用批次/机器作用域，文件名与元数据会清理本地路径和敏感字段。
+
+## Adapter 开发
+
+最小 Adapter：
+
+```text
+my-adapter/
+  manifest.yaml
+  my-task.js
+```
+
+`manifest.yaml` 定义平台入口、参数、触发方式与输出；任务脚本返回 `{ success, data, meta }`。详细规范见 [Adapter 开发文档](sdk/ADAPTER_GUIDE.md) 与 [Manifest Schema](sdk/manifest.schema.json)。
+
+### 安装本地 Adapter
 
 ```bash
-# 当前页面快照 + 命中的知识卡片
-./venv/bin/python scripts/crawshrimp_dev_harness.py snapshot \
-  --adapter temu \
-  --task goods_traffic_detail
-
-# 直接抓当前页的请求线索
-./venv/bin/python scripts/crawshrimp_dev_harness.py capture \
-  --adapter temu \
-  --task goods_traffic_detail \
-  --capture-mode passive
-
-# 在当前业务页执行临时 JS
-./venv/bin/python scripts/crawshrimp_dev_harness.py eval \
-  --adapter temu \
-  --task goods_traffic_detail \
-  --file /absolute/path/to/check.js \
-  --allow-navigation-retry
-
-# 搜索当前 adapter/task 的经验卡片
-./venv/bin/python scripts/crawshrimp_dev_harness.py knowledge \
-  --adapter temu \
-  --task goods_traffic_detail \
-  --query drawer
-
-# 需要结构化 bundle 时再跑 probe
-./venv/bin/python scripts/crawshrimp_dev_harness.py probe \
-  --adapter temu \
-  --task goods_traffic_detail \
-  --goal "识别详情抽屉与导出触发链路"
-
-# notes 更新后可手动重建知识索引
-./venv/bin/python scripts/crawshrimp_dev_harness.py rebuild-knowledge
-```
-
-知识索引会落在运行时数据目录的 `knowledge/`，分组后的 skill 文档会写到 `knowledge/skills/<adapter>/<task>.md`。
-
-`scripts/crawshrimp_dev_harness.py` 是标准开发入口。旧的 `scripts/crawshrimp_probe.py` 只保留给历史脚本和按 `probe_id` 直接查看 bundle 的兼容场景。
-
-`capture` 和 `probe` 默认不保存响应 body；确需排查响应内容时再显式追加 `--response-body`，返回内容会先做 token、cookie、密码等敏感字段脱敏。
-
-云端审批工作台是 `巴拉-AI测图全链路` 的可选协作流程，用于把本地 AI 生图批次同步到 Cloudflare 审批页，并由受控任务机执行退回重生图或天猫测图提交；部署、配置和安全注意事项见 [Cloud Approval Workbench Runbook](docs/cloud-approval-workbench-runbook.md)。
-
-### 桌面构建与发布
-
-仓库已接入 GitHub Actions 桌面构建：
-
-- `main` 分支每次提交都会自动构建 macOS / Windows 桌面包
-- 构建成功后会自动刷新 [`desktop-latest`](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
-- 推送 `v*` tag 会创建正式版本 Release
-- Release 中的桌面包已内置 Python runtime，目标是“下载即可运行”
-- macOS 构建会在 GitHub Secrets 配置齐全时执行 Developer ID 签名和 Apple notarization
-
----
-
-## 目录结构
-
-```
-crawshrimp/
-├── core/                     # Python 底座
-│   ├── api_server.py         # FastAPI 入口，所有 HTTP 端点
-│   ├── cdp_bridge.py         # CDP 连接管理（websockets 直连）
-│   ├── js_runner.py          # JS 注入执行器（分页 / 超时 / 重试）
-│   ├── adapter_loader.py     # 适配包扫描 / 安装 / 校验
-│   ├── scheduler.py          # 任务调度（APScheduler）
-│   ├── data_sink.py          # 数据落盘（Excel / JSON / SQLite）
-│   ├── notifier.py           # 通知推送（钉钉 / Feishu / Webhook）
-│   ├── config.py             # 全局配置读写
-│   └── models.py             # Pydantic 数据模型
-├── app/                      # Electron + Vue 3 前端
-│   ├── src/main.js           # Electron 主进程
-│   ├── src/preload.js        # IPC bridge（window.cs.*）
-│   └── src/renderer/         # Vue 3 视图
-├── adapters/                 # 内置适配包
-│   ├── amazon-ops-assistant/  # Amazon 运营本地工具
-│   ├── aliexpress-ops-assistant/ # 速卖通商品抠图下载
-│   ├── cross-border-research/ # Renner / Zara 跨境调研
-│   ├── dasen-ops-assistant/   # 森马 AI 工作台案例库工具
-│   ├── shopee-plus-v2/       # Shopee 优惠券批量创建
-│   ├── shopee-webchat-bulk-reply/ # Shopee 聊聊批量发信
-│   ├── lazada-plus-v1/       # Lazada 优惠券/促销批量创建
-│   ├── temu/                 # Temu 运营助手
-│   ├── shein-helper/         # SHEIN 商品评价 / 商品明细 / 公网商品导出
-│   ├── jd/                   # 京东价格监控
-│   ├── semir-cloud-drive/    # 森马云盘图片工具
-│   ├── shenhui-new-arrival/  # 深绘上新助手
-│   ├── tiktok-ops-assistant/ # TikTok 运营助手
-│   └── tmall-ops-assistant/  # 天猫运营助手
-└── sdk/                      # 开发工具 & 规范
-    ├── ADAPTER_GUIDE.md      # 开发文档（详细版）
-    └── manifest.schema.json  # manifest.yaml JSON Schema
-```
-
----
-
-## 安装适配包
-
-### 从本地目录安装
-
-```bash
-TOKEN_FILE="$(PYTHONPATH=. ./venv/bin/python - <<'PY'
+TOKEN_FILE="$(PYTHONPATH=. venv/bin/python - <<'PY'
 from core import runtime_paths
-print(runtime_paths.data_root() / "api-token")
+print(runtime_paths.data_root() / 'api-token')
 PY
 )"
 
 curl -X POST http://127.0.0.1:18765/adapters/install \
   -H 'Content-Type: application/json' \
   -H "X-Crawshrimp-Token: $(cat "$TOKEN_FILE")" \
-  -d '{"path": "/path/to/my-adapter"}'
+  -d '{"path":"/absolute/path/to/my-adapter","install_mode":"link"}'
 ```
 
-本地开发如果希望“改完源码立即生效”，推荐直接用 `link` 安装：
+`link` 适合开发时即时生效；交付时使用默认 `copy` 或 ZIP。GUI「我的脚本」也支持选择目录或 ZIP 安装。
+
+### 开发态 Harness
+
+`scripts/crawshrimp_dev_harness.py` 统一提供页面快照、知识检索、网络捕获、临时 JS 执行和结构化 probe：
 
 ```bash
-curl -X POST http://127.0.0.1:18765/adapters/install \
-  -H 'Content-Type: application/json' \
-  -H "X-Crawshrimp-Token: $(cat "$TOKEN_FILE")" \
-  -d '{"path": "/path/to/my-adapter", "install_mode": "link"}'
+venv/bin/python scripts/crawshrimp_dev_harness.py snapshot --adapter temu --task goods_traffic_detail
+venv/bin/python scripts/crawshrimp_dev_harness.py knowledge --adapter temu --task goods_traffic_detail --query drawer
+venv/bin/python scripts/crawshrimp_dev_harness.py capture --adapter temu --task goods_traffic_detail --capture-mode passive
+venv/bin/python scripts/crawshrimp_dev_harness.py eval --adapter temu --task goods_traffic_detail --file /absolute/path/to/check.js
 ```
 
-`link` 只支持目录安装，不支持 ZIP。运行时会直接指向源码目录，适合本地开发、harness 调试和反复修改 phase/shared 逻辑。发包或模拟用户安装时，再切回默认 `copy` 或 ZIP。
+`capture` 和 `probe` 默认不保存响应 body；显式使用 `--response-body` 时会先脱敏 token、cookie 与密码字段。
 
-### 从 ZIP 包安装
+## 目录结构
 
-```bash
-curl -X POST http://127.0.0.1:18765/adapters/install \
-  -H 'Content-Type: application/json' \
-  -H "X-Crawshrimp-Token: $(cat "$TOKEN_FILE")" \
-  -d '{"path": "/path/to/adapter.zip"}'
+```text
+crawshrimp/
+├── app/                         # Electron + Vue 3 桌面端
+├── core/                        # Python API、AI、任务、数据与云端客户端
+├── adapters/                    # 内置业务 Adapter
+├── cloud/approval-workbench/    # Cloudflare 审批台（Worker + Vue + D1 + R2）
+├── scripts/                     # 开发 Harness、dry-run 与运维脚本
+├── tests/                       # Node / Python 集成与契约测试
+├── docs/                        # Runbook、设计与验证记录
+├── release-notes/               # 版本发布说明
+└── sdk/                         # Adapter 开发规范与 Schema
 ```
 
-也可以在 GUI 的「我的脚本」页面点击安装按钮，选择文件夹或 ZIP 文件。
+## 构建与发布
 
----
+GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.yml)：
 
-## 写一个适配包
+- 推送 `main`：运行完整测试并构建 macOS / Windows 桌面产物，用于验证主分支。
+- 推送 `v*` tag：再次测试与构建，执行 macOS 签名/公证（密钥齐全时），发布正式版本并刷新 `desktop-latest`。
+- 正式 Release 包含 macOS arm64、macOS x64、Windows x64 和 Windows blockmap。
 
-最小结构：
+应用版本以 `app/package.json` 和 `app/package-lock.json` 为准；tag 必须与版本号一致。详细版本说明存放在 `release-notes/vX.Y.Z.md`。
 
-```
-my-adapter/
-  manifest.yaml
-  my-task.js
-```
+## 相关文档
 
-**manifest.yaml（最简版）**
-
-```yaml
-id: my-adapter
-name: 我的适配包
-version: 1.0.0
-entry_url: https://example.com
-
-tasks:
-  - id: scrape_data
-    name: 抓取数据
-    script: my-task.js
-    trigger:
-      type: manual
-    output:
-      - type: excel
-        filename: "数据_{date}.xlsx"
-```
-
-**my-task.js（最简版）**
-
-```js
-;(async () => {
-  const data = []
-  document.querySelectorAll('table tr').forEach(row => {
-    const cells = [...row.querySelectorAll('td')].map(td => td.textContent.trim())
-    if (cells.length) data.push({ col1: cells[0], col2: cells[1] })
-  })
-  return { success: true, data, meta: { has_more: false } }
-})()
-```
-
-详细开发文档见 → **[sdk/ADAPTER_GUIDE.md](sdk/ADAPTER_GUIDE.md)**
-
-### `file_excel` 模板能力
-
-`file_excel` 现在支持直接在任务页下载适配包自带模板：
-
-- 可配置多个模板入口，比如 Excel 主模板 + 字段说明 CSV
-- 运行时会自动解析模板真实路径，兼容开发环境、内置资源和运行时数据目录下的 `adapters/`
-- `.xlsx/.xls/.xlsm` 会额外注入 `file.sheets`
-- 任务可通过 `execution_ui_mode: precheck_before_live` 声明“先预检再 live”的执行交互
-- 可配合 `validation_only_label` / `auto_precheck_note` 自定义“仅校验”按钮文案和执行提示
-- Excel 导出侧也支持通过 `sheet_key + sheets` 声明多 sheet 工作簿，并为每个 sheet 单独配置列顺序和分组表头
-
-以 Lazada 为例，一个模板工作簿可以同时包含：
-
-- `Vouchers` 主表
-- `FlexiTiers` 阶梯表
-- `Instructions` 概览页
-- `填写说明` 逐列说明页
-
-如果任务声明了：
-
-```yaml
-tasks:
-  - id: voucher_batch_create
-    execution_ui_mode: precheck_before_live
-    validation_only_label: 仅校验 Excel
-    auto_precheck_note: 执行前会自动做 Excel 预检
-```
-
-桌面端会把原本的 `execute_mode` 单选收起，改成：
-
-- 主按钮：先跑 `plan` 预检，通过后再自动进入 `live`
-- 次按钮：只跑一次预检，不执行 live
-
-脚本侧的参数契约不变，仍建议保留 `execute_mode=plan/live` 供后端和脚本识别。
-
-### `file_images` 多图参数
-
-任务参数现在也支持 `file_images`：
-
-- GUI 侧可一次选择多张 `png/jpg/jpeg`
-- 脚本收到的是 `paths` 数组，适合传给上传控件
-- 底座内置了浏览器侧 `File + DataTransfer` 注入流程，适合图片类批量上传任务
-
-示例：
-
-```yaml
-- id: label_images
-  type: file_images
-  label: 标签图
-  required: true
-  hint: 可多选，脚本里会收到本地文件路径数组
-```
-
----
-
-## 相关项目
-
-- [jd-price-monitor](https://github.com/howtimeschange/jd-price-monitor) — 京东价格监控（独立版，crawshrimp JD 适配包的前身）
-- [temu-assistant](https://github.com/howtimeschange/temu-assistant) — Temu 运营助手（独立版，crawshrimp Temu 适配包的前身）
-
----
+- [云端审批台 Runbook](docs/cloud-approval-workbench-runbook.md)
+- [云端审批 MVP 测试记录](docs/cloud-approval-workbench-mvp-test-log.md)
+- [Adapter 开发指南](sdk/ADAPTER_GUIDE.md)
+- [历史 Release Notes](release-notes/)
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -1,7 +1,7 @@
 {
   "name": "crawshrimp",
-  "version": "1.4.41",
-  "description": "Universal web automation desktop app",
+  "version": "2.0.0",
+  "description": "Ecommerce automation, AI image, and cloud approval desktop app",
   "author": "howtimeschange",
   "main": "src/main.js",
   "scripts": {
