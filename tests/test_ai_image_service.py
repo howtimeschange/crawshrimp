@@ -374,6 +374,45 @@ class AiImageServiceTests(unittest.TestCase):
             "https://cdn.example/out-2.png",
         ])
 
+    def test_run_job_persists_edit_source_on_the_new_run(self):
+        job = data_sink.create_ai_image_job({
+            "prompt": "edit prompt",
+            "summary": {
+                "result_cache": {
+                    "https://cdn.example/already-cached.png": "/cache/already-cached.png",
+                },
+            },
+            "params": {
+                "size": "1024x1024",
+                "n": 1,
+                "edit_source": {
+                    "job_uid": "parent-job",
+                    "run_uid": "parent-run",
+                    "result_key": "https://cdn.example/parent.png",
+                },
+            },
+        })
+
+        ai_image_service.run_job_with_one_xm(
+            job["job_uid"],
+            settings={"2k": "key-2k", "4k": ""},
+            runner=lambda *_args, **_kwargs: {
+                "ok": True,
+                "image_urls": ["https://cdn.example/child.png"],
+            },
+        )
+
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+        run = refreshed["summary"]["runs"][0]
+        self.assertEqual(run["edit_source"], {
+            "job_uid": "parent-job",
+            "run_uid": "parent-run",
+            "result_key": "https://cdn.example/parent.png",
+        })
+        self.assertEqual(refreshed["summary"]["result_cache"], {
+            "https://cdn.example/already-cached.png": "/cache/already-cached.png",
+        })
+
     def test_run_job_keeps_run_keys_unique_when_provider_task_id_repeats(self):
         job = data_sink.create_ai_image_job({
             "title": "same task provider cache guard",
@@ -472,24 +511,68 @@ class AiImageServiceTests(unittest.TestCase):
 
     def test_materialize_remote_image_downloads_known_job_url_to_cache(self):
         job = data_sink.create_ai_image_job({"title": "materialize job"})
+        downloads = []
         data_sink.update_ai_image_job(job["job_uid"], {
             "summary": {
                 "image_urls": ["https://cdn.example/generated.png"],
-                "runs": [{"image_urls": ["https://cdn.example/from-run.webp"]}],
+                "runs": [{
+                    "run_uid": "run-existing",
+                    "image_urls": ["https://cdn.example/from-run.webp"],
+                }],
             },
         })
 
-        result = ai_image_service.materialize_remote_image(
+        def downloader(_url, target):
+            downloads.append(str(target))
+            Path(target).write_bytes(PNG_1X1)
+
+        first = ai_image_service.materialize_remote_image(
             job["job_uid"],
             "https://cdn.example/generated.png",
-            downloader=lambda _url, target: Path(target).write_bytes(PNG_1X1),
+            downloader=downloader,
+        )
+        second = ai_image_service.materialize_remote_image(
+            job["job_uid"],
+            "https://cdn.example/generated.png",
+            downloader=downloader,
+        )
+        refreshed = data_sink.get_ai_image_job(job["job_uid"])
+
+        self.assertTrue(first["ok"])
+        self.assertEqual(first["url"], "https://cdn.example/generated.png")
+        self.assertEqual(first["path"], second["path"])
+        self.assertEqual(len(downloads), 1)
+        self.assertTrue(Path(first["path"]).is_file())
+        self.assertIn("ai-image-cache", first["path"])
+        self.assertEqual(Path(first["path"]).suffix, ".png")
+        self.assertEqual(refreshed["summary"]["runs"], [{
+            "run_uid": "run-existing",
+            "image_urls": ["https://cdn.example/from-run.webp"],
+        }])
+        self.assertEqual(
+            refreshed["summary"]["result_cache"]["https://cdn.example/generated.png"],
+            first["path"],
         )
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["url"], "https://cdn.example/generated.png")
-        self.assertTrue(Path(result["path"]).is_file())
-        self.assertIn("ai-image-cache", result["path"])
-        self.assertEqual(Path(result["path"]).suffix, ".png")
+    def test_materialize_remote_image_rebuilds_a_corrupt_deterministic_cache(self):
+        url = "https://cdn.example/generated.png"
+        job = data_sink.create_ai_image_job({
+            "title": "materialize corrupt cache",
+            "summary": {"image_urls": [url]},
+        })
+        downloads = []
+
+        def downloader(_url, target):
+            downloads.append(str(target))
+            Path(target).write_bytes(PNG_1X1)
+
+        first = ai_image_service.materialize_remote_image(job["job_uid"], url, downloader=downloader)
+        Path(first["path"]).write_bytes(b"not-an-image")
+        second = ai_image_service.materialize_remote_image(job["job_uid"], url, downloader=downloader)
+
+        self.assertEqual(first["path"], second["path"])
+        self.assertEqual(len(downloads), 2)
+        self.assertEqual(Path(second["path"]).read_bytes(), PNG_1X1)
 
     def test_materialize_remote_image_can_cache_stale_persisted_result_url(self):
         result = ai_image_service.materialize_remote_image(

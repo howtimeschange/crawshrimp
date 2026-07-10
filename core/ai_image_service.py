@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import hashlib
 import mimetypes
 import re
 import shutil
@@ -303,6 +304,18 @@ def _append_unique(existing: list[str], additions: list[str]) -> list[str]:
     return result
 
 
+def _normalized_edit_source(params: Mapping[str, Any]) -> dict[str, str]:
+    source = params.get("edit_source")
+    if not isinstance(source, Mapping):
+        return {}
+    result = {
+        "job_uid": _compact(source.get("job_uid")),
+        "run_uid": _compact(source.get("run_uid")),
+        "result_key": _compact(source.get("result_key")),
+    }
+    return result if result["result_key"] else {}
+
+
 def _legacy_run_from_summary(job: Mapping[str, Any], summary: Mapping[str, Any]) -> dict | None:
     output_files = _string_list(summary.get("output_files"))
     image_urls = _string_list(summary.get("image_urls"))
@@ -358,13 +371,19 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
         "warning": _compact(latest_summary.get("warning")),
         "error": _compact(latest_summary.get("error")),
     }
+    edit_source = _normalized_edit_source(params)
+    if edit_source:
+        run_record["edit_source"] = edit_source
 
-    return {
+    merged = {
         **dict(latest_summary),
         "image_urls": _append_unique(_string_list(previous_summary.get("image_urls")), image_urls),
         "output_files": _append_unique(_string_list(previous_summary.get("output_files")), output_files),
         "runs": [*previous_runs, run_record],
     }
+    if isinstance(previous_summary.get("result_cache"), Mapping):
+        merged["result_cache"] = dict(previous_summary["result_cache"])
+    return merged
 
 
 def run_job_with_one_xm(
@@ -468,14 +487,31 @@ def materialize_remote_image(
 
     cache_dir = runtime_paths.child_dir("ai-image-cache")
     suffix = _extension_from_url(source_url)
-    target = _unique_path(cache_dir / f"result-{_compact(job_uid)[:8] or 'job'}-{uuid4().hex[:8]}{suffix}")
-    try:
-        downloader(source_url, target)
-        _validate_downloaded_image(target)
-    except Exception:
-        if target.exists():
-            target.unlink()
-        raise
+    cache_key = hashlib.sha256(source_url.encode("utf-8")).hexdigest()[:16]
+    target = cache_dir / f"result-{_compact(job_uid)[:8] or 'job'}-{cache_key}{suffix}"
+    if target.exists():
+        try:
+            _validate_downloaded_image(target)
+        except Exception:
+            target.unlink(missing_ok=True)
+    if not target.exists():
+        temporary = cache_dir / f".{target.name}-{uuid4().hex[:8]}.tmp"
+        try:
+            downloader(source_url, temporary)
+            _validate_downloaded_image(temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    latest_job = data_sink.get_ai_image_job(job_uid)
+    if latest_job:
+        latest_summary = dict(latest_job.get("summary") or {})
+        result_cache = dict(latest_summary.get("result_cache") or {})
+        if result_cache.get(source_url) != str(target):
+            result_cache[source_url] = str(target)
+            data_sink.update_ai_image_job(job_uid, {
+                "summary": {**latest_summary, "result_cache": result_cache},
+            })
     return {"ok": True, "job_uid": job_uid, "url": source_url, "path": str(target)}
 
 
