@@ -149,18 +149,18 @@
               </select>
             </label>
             <label class="aiw-field">
-              <span>尺寸</span>
+              <span>{{ activeNanoBanana ? '分辨率' : '尺寸' }}</span>
               <select v-model="form.size" @change="syncRatioFromSize">
                 <option v-for="size in sizeOptions" :key="size" :value="size">{{ size }}</option>
               </select>
             </label>
-            <label class="aiw-field">
+            <label v-if="!activeNanoBanana" class="aiw-field">
               <span>质量</span>
               <select v-model="form.quality">
-                <option v-for="quality in AI_IMAGE_QUALITIES" :key="quality" :value="quality">{{ quality }}</option>
+                <option v-for="quality in activeQualityOptions" :key="quality" :value="quality">{{ quality }}</option>
               </select>
             </label>
-            <label class="aiw-field">
+            <label v-if="!activeNanoBanana" class="aiw-field">
               <span>格式</span>
               <select v-model="form.format">
                 <option v-for="format in AI_IMAGE_FORMATS" :key="format" :value="format">{{ format.toUpperCase() }}</option>
@@ -168,7 +168,7 @@
             </label>
             <label class="aiw-field">
               <span>张数</span>
-              <input v-model.number="form.count" type="number" min="1" max="8" />
+              <input v-model.number="form.count" type="number" min="1" :max="activeNanoBanana ? 1 : 8" :disabled="activeNanoBanana" />
             </label>
             <div class="aiw-key-status" :class="{ missing: Boolean(activeMissingKey) }">
               <span>Key 状态</span>
@@ -262,10 +262,10 @@
                   v-for="item in queue.items"
                   :key="item.key || item.path || item.url"
                   class="aiw-result-card"
-                  :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading }"
+                  :class="{ selected: selectedResults.has(resultKey(item)), loading: item.loading, failed: item.failed }"
                   :aria-pressed="selectedResults.has(resultKey(item)) ? 'true' : 'false'"
-                  :tabindex="item.loading ? -1 : 0"
-                  :draggable="!item.loading"
+                  :tabindex="item.loading || item.failed ? -1 : 0"
+                  :draggable="!item.loading && !item.failed"
                   role="button"
                   @click="toggleResult(item)"
                   @dragstart.stop="startResultDrag(item, $event)"
@@ -273,11 +273,11 @@
                   @keydown.enter.prevent="toggleResult(item)"
                   @keydown.space.prevent="toggleResult(item)"
                 >
-                  <button v-if="!item.loading" class="aiw-select-toggle" type="button" @click.stop="toggleResult(item)">
+                  <button v-if="!item.loading && !item.failed" class="aiw-select-toggle" type="button" @click.stop="toggleResult(item)">
                     {{ selectedResults.has(resultKey(item)) ? '已选' : '选择' }}
                   </button>
                   <button
-                    v-if="!item.loading"
+                    v-if="!item.loading && !item.failed"
                     class="aiw-preview-button"
                     type="button"
                     :draggable="!item.loading"
@@ -296,11 +296,15 @@
                     />
                     <span v-else class="aiw-result-preview">{{ item.label }}</span>
                   </button>
-                  <div v-else class="aiw-loading-preview">
+                  <div v-else-if="item.loading" class="aiw-loading-preview">
                     <span aria-hidden="true"></span>
                     <strong>{{ item.label }}</strong>
                   </div>
-                  <footer v-if="!item.loading">
+                  <div v-else class="aiw-failed-preview">
+                    <strong>生成失败</strong>
+                    <span>{{ item.error || '1XM 任务执行失败' }}</span>
+                  </div>
+                  <footer v-if="!item.loading && !item.failed">
                     <div class="aiw-result-card-meta">
                       <strong>{{ item.label }}</strong>
                       <span>{{ item.model || activeModel.label }} · {{ item.size || form.size }}</span>
@@ -345,7 +349,7 @@
                   <div v-if="taskPreviewItems(job).length" class="aiw-history-thumbs">
                     <span
                       v-for="item in taskPreviewItems(job)"
-                      :key="resultKey(item)"
+                      :key="item.key || resultKey(item)"
                       class="aiw-history-thumb"
                     >
                       <img
@@ -388,11 +392,11 @@
         <div class="aiw-batch-board">
           <aside class="aiw-batch-source-column">
             <label class="aiw-field">
-              <span>任务名前缀</span>
+              <span>当前任务名称</span>
               <input
                 v-model.trim="batchGenerationDialog.titlePrefix"
                 type="text"
-                placeholder="例如 批量生图"
+                placeholder="当前任务名称"
                 :disabled="batchGenerationDialog.submitting"
               />
             </label>
@@ -484,7 +488,7 @@
                 <strong>Prompt 任务</strong>
                 <span>{{ batchPromptCount }} 条将生成，每条固定 1 张</span>
               </div>
-              <button type="button" :disabled="batchGenerationDialog.submitting" @click="addBatchPromptCard">
+              <button type="button" :disabled="batchGenerationDialog.submitting || batchPromptCards.length >= MAX_BATCH_PROMPTS" @click="addBatchPromptCard">
                 <span class="aiw-icon-button-content"><AiwIcon name="plus" />新增 Prompt</span>
               </button>
             </div>
@@ -521,7 +525,7 @@
                 </div>
               </article>
 
-              <button type="button" class="aiw-batch-add-card" :disabled="batchGenerationDialog.submitting" @click="addBatchPromptCard">
+              <button type="button" class="aiw-batch-add-card" :disabled="batchGenerationDialog.submitting || batchPromptCards.length >= MAX_BATCH_PROMPTS" @click="addBatchPromptCard">
                 <strong>+ 新增 Prompt</strong>
                 <span>增加一张待生成 AI 图</span>
               </button>
@@ -531,7 +535,7 @@
 
         <footer class="aiw-batch-footer">
           <small v-if="batchGenerationDialog.error">{{ batchGenerationDialog.error }}</small>
-          <span v-else>将创建 {{ batchPromptCount }} 个单图任务，模型、比例、尺寸和输出目录沿用当前配置。</span>
+          <span v-else>将在当前任务下提交 {{ batchPromptCount }} 条生成记录，最多添加 20 条 Prompt。</span>
           <div>
             <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">取消</button>
             <button
@@ -543,7 +547,7 @@
             >
               <span class="aiw-icon-button-content">
                 <span v-if="batchGenerationDialog.submitting" class="aiw-edit-spinner" aria-hidden="true"></span>
-                <AiwIcon v-else name="wand" />{{ batchGenerationDialog.submitting ? '批量生成中...' : '开始批量生成' }}
+                <AiwIcon v-else name="wand" />{{ batchGenerationDialog.submitting ? '提交批量任务...' : '开始批量生成' }}
               </span>
             </button>
           </div>
@@ -778,11 +782,15 @@ import {
   defaultAiImageForm,
   defaultSizeForRatio,
   getAiImageModel,
+  isNanoBananaModel,
   missingKeyForModel,
   modelIdForJob,
   outputDirHint,
+  qualityOptionsForModel,
   ratioForSize,
+  sizeForModel,
   sizeForRatio,
+  sizeOptionsForModel,
   sizesForRatio,
 } from '../utils/aiImageModels.js'
 import {
@@ -797,6 +805,7 @@ const emit = defineEmits(['open-settings'])
 
 const STORAGE_KEY = 'crawshrimp.aiImageWorkbench.state.v2'
 const AUTOSAVE_DELAY_MS = 700
+const MAX_BATCH_PROMPTS = 20
 const AIW_ANNOTATION_PROMPT_GUIDANCE = '标注参考图仅用于定位需要修改的区域；请不要在结果中保留或复刻任何彩色标注线、框、箭头或文字。'
 const AIW_ANNOTATION_COLORS = [
   { id: 'red', label: '红色', hex: '#ff3737' },
@@ -940,8 +949,12 @@ let lightboxAnnotationExportResolve = null
 let lightboxAnnotationExportReject = null
 let lightboxAnnotationExportTimer = null
 let resultCacheQueue = Promise.resolve()
+let jobPollingTimer = null
+let jobPollingUid = ''
+let jobPollingInFlight = false
 
 const activeModel = computed(() => getAiImageModel(form.modelId))
+const activeNanoBanana = computed(() => isNanoBananaModel(form.modelId))
 const activeMissingKey = computed(() => missingKeyForModel(form.modelId, settings.value))
 const activeJobUid = computed(() => currentJob.value?.job_uid || '')
 const persistedCurrentJob = computed(() => mergeCurrentJobRecord(currentJob.value, jobs.value))
@@ -977,7 +990,8 @@ const allVisibleSelected = computed(() => (
   allVisibleSelectableItems.value.length > 0
   && allVisibleSelectableItems.value.every((item) => selectedResults.has(resultKey(item)))
 ))
-const sizeOptions = computed(() => sizesForRatio(form.ratio))
+const sizeOptions = computed(() => sizeOptionsForModel(form.modelId, form.ratio))
+const activeQualityOptions = computed(() => qualityOptionsForModel(form.modelId))
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
 const generateLabel = computed(() => activeMissingKey.value ? '配置' : generating.value ? '生成中...' : '开始生成')
 const batchPromptCards = computed(() => batchGenerationDialog.prompts)
@@ -1041,10 +1055,12 @@ onMounted(async () => {
   restorePersistedWorkbench()
   await Promise.all([loadSettings(), loadJobs()])
   await restoreInitialTask()
+  if (hasActiveRuns(currentJob.value)) startJobPolling(currentJob.value?.job_uid)
 })
 
 onBeforeUnmount(() => {
   if (autosaveTimer) clearTimeout(autosaveTimer)
+  stopJobPolling()
   saveDraftForCurrentTask()
   persistWorkbenchState()
 })
@@ -1233,15 +1249,21 @@ function syncModelDefaults() {
   const model = activeModel.value
   form.model_key = model.key
   form.model_key_tier = model.keyTier
-  form.size = defaultSizeForRatio(form.ratio, model.keyTier)
+  form.size = sizeForModel(model.id, form.ratio, model.size)
+  if (activeNanoBanana.value) {
+    form.count = 1
+    return
+  }
+  if (!activeQualityOptions.value.includes(form.quality)) form.quality = activeQualityOptions.value[0] || 'auto'
   syncRatioFromSize()
 }
 
 function syncSizeFromRatio() {
-  form.size = sizeForRatio(form.ratio, form.size, activeModel.value.keyTier)
+  form.size = sizeForModel(form.modelId, form.ratio, form.size)
 }
 
 function syncRatioFromSize() {
+  if (activeNanoBanana.value) return
   form.ratio = ratioForSize(form.size, form.ratio)
 }
 
@@ -1349,6 +1371,50 @@ async function loadJobs() {
   }
 }
 
+function hasActiveRuns(job) {
+  const runs = Array.isArray(job?.summary?.runs) ? job.summary.runs : []
+  return runs.some((run) => ['queued', 'running'].includes(String(run?.status || '').toLowerCase()))
+}
+
+function stopJobPolling() {
+  if (jobPollingTimer) clearTimeout(jobPollingTimer)
+  jobPollingTimer = null
+  jobPollingUid = ''
+  jobPollingInFlight = false
+}
+
+function startJobPolling(jobUid) {
+  const uid = String(jobUid || '').trim()
+  stopJobPolling()
+  if (!uid) return
+  jobPollingUid = uid
+  jobPollingTimer = setTimeout(pollActiveJob, 1000)
+}
+
+async function pollActiveJob() {
+  const uid = jobPollingUid
+  jobPollingTimer = null
+  if (!uid || jobPollingInFlight) return
+  jobPollingInFlight = true
+  try {
+    const latest = await window.cs.getAiImageJob(uid)
+    if (uid !== jobPollingUid) return
+    mergeResultCacheFromJob(latest)
+    currentJob.value = latest
+    upsertJob(latest)
+    refreshResultPreviewCandidates(collectResultCards(latest))
+    if (!hasActiveRuns(latest)) {
+      stopJobPolling()
+      return
+    }
+  } catch (error) {
+    logs.value.push(`刷新批量任务状态失败：${error.message || error}`)
+  } finally {
+    jobPollingInFlight = false
+  }
+  if (uid === jobPollingUid) jobPollingTimer = setTimeout(pollActiveJob, 1000)
+}
+
 function parseAdvancedJsonValue(value, options = {}) {
   if (!value) return {}
   try {
@@ -1364,9 +1430,9 @@ function parseAdvancedJson(options = {}) {
 }
 
 function buildJobPayload(options = {}) {
-  const normalizedSize = sizeForRatio(form.ratio, form.size, activeModel.value.keyTier)
+  const normalizedSize = sizeForModel(form.modelId, form.ratio, form.size)
   if (normalizedSize !== form.size) form.size = normalizedSize
-  const requestedCount = normalizeImageCount(form.count)
+  const requestedCount = activeNanoBanana.value ? 1 : normalizeImageCount(form.count)
   const params = {
     ...parseAdvancedJson({ silent: options.silentAdvanced }),
     size: normalizedSize,
@@ -1378,7 +1444,7 @@ function buildJobPayload(options = {}) {
     main_image_path: form.mainImagePath,
     reference_image_paths: [...form.referenceImagePaths],
   }
-  params.size = sizeForRatio(form.ratio, params.size, activeModel.value.keyTier)
+  params.size = sizeForModel(form.modelId, form.ratio, params.size)
   params.n = requestedCount
   params.model_key_tier = activeModel.value.keyTier
   return {
@@ -1393,7 +1459,7 @@ function buildJobPayload(options = {}) {
 function buildBatchJobPayload(snapshot = {}, card = {}, index = 0) {
   const model = getAiImageModel(snapshot.modelId || form.modelId)
   const ratio = snapshot.ratio || form.ratio
-  const normalizedSize = sizeForRatio(ratio, snapshot.size || form.size, model.keyTier)
+  const normalizedSize = sizeForModel(model.id, ratio, snapshot.size || form.size)
   const batchSnapshot = {
     ...snapshot,
     count: 1,
@@ -1583,6 +1649,11 @@ function closeBatchGenerationDialog() {
 
 function addBatchPromptCard(values = {}) {
   if (batchGenerationDialog.submitting) return
+  if (batchPromptCards.value.length >= MAX_BATCH_PROMPTS) {
+    batchGenerationDialog.error = '最多添加 20 条 Prompt'
+    return
+  }
+  batchGenerationDialog.error = ''
   batchGenerationDialog.prompts.push(createBatchPromptCard({
     title: values.title || `Prompt ${batchGenerationDialog.prompts.length + 1}`,
     prompt: values.prompt || '',
@@ -1675,39 +1746,38 @@ async function submitBatchGeneration() {
   batchGenerationDialog.submitting = true
   generating.value = true
   selectedResults.clear()
-  let submittedInputsCleared = false
   try {
-    logs.value.push(`开始批量生成：${promptCards.length} 条 Prompt`)
-    for (const [index, card] of promptCards.entries()) {
-      const payload = buildBatchJobPayload(batchSnapshot, card, index)
-      const created = await window.cs.createAiImageJob({ ...payload, status: 'running' })
-      const jobUid = created?.job_uid
-      if (!jobUid) throw new Error('后端未返回 job_uid')
-      currentJob.value = {
-        ...created,
-        ...payload,
-        job_uid: jobUid,
-        status: 'running',
-      }
-      upsertJob(currentJob.value)
-      if (!submittedInputsCleared) {
-        clearSubmittedTaskInputs(snapshot)
-        submittedInputsCleared = true
-      }
-      logs.value.push(`批量生成 ${index + 1}/${promptCards.length}：${jobUid}`)
-      const runResult = await window.cs.runAiImageJob(jobUid)
-      const latest = await window.cs.getAiImageJob(jobUid)
-      currentJob.value = latest || currentJob.value
-      upsertJob(currentJob.value)
-      if (runResult && runResult.ok === false) {
-        throw new Error(runResult.summary?.error || `第 ${index + 1} 条 Prompt 生成失败`)
-      }
-      refreshResultPreviewCandidates(collectResultCards(currentJob.value), { force: true })
+    const activeTask = await ensureCurrentTask()
+    const jobUid = activeTask?.job_uid
+    if (!jobUid) throw new Error('后端未返回 job_uid')
+    const firstPayload = buildBatchJobPayload(batchSnapshot, promptCards[0], 0)
+    const sharedPayload = {
+      ...firstPayload,
+      title: batchSnapshot.titlePrefix || activeTask.title || form.title || 'AI 生图任务',
+      prompt: activeTask.prompt || snapshot.prompt || '',
+      status: 'running',
     }
-    logs.value.push(`批量生成完成：${promptCards.length} 条 Prompt`)
-    await loadJobs()
+    const updated = await window.cs.updateAiImageJob(jobUid, sharedPayload)
+    currentJob.value = updated || activeTask
+    upsertJob(currentJob.value)
+    const requestUid = globalThis.crypto?.randomUUID?.()
+      || `batch-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+    logs.value.push(`提交批量生成：${promptCards.length} 条 Prompt`)
+    const batchResult = await window.cs.batchRunAiImageJob(jobUid, {
+      request_uid: requestUid,
+      prompts: promptCards.map((card, index) => ({
+        title: card.title || `Prompt ${index + 1}`,
+        prompt: card.prompt,
+      })),
+    })
+    if (!batchResult?.accepted) throw new Error('后端未接受批量生成任务')
+    currentJob.value = batchResult.job || currentJob.value
+    upsertJob(currentJob.value)
+    clearSubmittedTaskInputs(snapshot)
     batchGenerationDialog.open = false
     closeBatchPromptLibraryPicker()
+    logs.value.push(`批量任务已提交：${promptCards.length} 条 Prompt`)
+    if (hasActiveRuns(currentJob.value)) startJobPolling(jobUid)
   } catch (error) {
     const message = normalizeGenerateError(error)
     batchGenerationDialog.error = message
@@ -1825,19 +1895,47 @@ function collectResultCards(job) {
   return collectResultQueues(job).flatMap((queue) => queue.items || [])
 }
 
+function workbenchRunPlaceholder(job, run, index) {
+  const status = String(run?.status || '').toLowerCase()
+  if (['queued', 'running'].includes(status)) {
+    return {
+      key: `${run.run_uid || run.task_id || index}-loading`,
+      label: status === 'queued' ? '排队中' : '生成中',
+      prompt: run.prompt || '',
+      jobUid: job?.job_uid || '',
+      runUid: run.run_uid || '',
+      loading: true,
+    }
+  }
+  if (status === 'failed') {
+    return {
+      key: `${run.run_uid || run.task_id || index}-failed`,
+      label: '生成失败',
+      prompt: run.prompt || '',
+      error: run.error || '1XM 任务执行失败',
+      jobUid: job?.job_uid || '',
+      runUid: run.run_uid || '',
+      failed: true,
+    }
+  }
+  return null
+}
+
 function collectResultQueues(job) {
   const summary = job?.summary && typeof job.summary === 'object' ? job.summary : {}
   const runs = Array.isArray(summary.runs) ? summary.runs : []
   if (runs.length) {
     const queues = runs
       .map((run, index) => {
+        const resultItems = collectResultCardsFromRun(job, run, index)
+        const placeholder = resultItems.length ? null : workbenchRunPlaceholder(job, run, index)
         return {
           key: run.run_uid || run.task_id || `run-${index + 1}`,
           title: `队列 ${index + 1}`,
           createdAt: run.created_at || '',
           prompt: run.prompt || '',
           status: run.status || job?.status || '',
-          items: collectResultCardsFromRun(job, run, index),
+          items: placeholder ? [placeholder] : resultItems,
         }
       })
       .filter((queue) => queue.items.length)
@@ -2087,7 +2185,7 @@ function handleResultPreviewLoaded(item) {
 }
 
 function toggleResult(item) {
-  if (item?.loading) return
+  if (item?.loading || item?.failed) return
   const key = resultKey(item)
   if (!key) return
   if (selectedResults.has(key)) selectedResults.delete(key)
@@ -2708,10 +2806,10 @@ async function restoreJob(job, options = {}) {
     const nextSize = formDetail.params.size || form.size
     const nextRatio = formDetail.params.ratio || ratioForSize(nextSize, form.ratio)
     form.ratio = nextRatio
-    form.size = sizeForRatio(nextRatio, nextSize, activeModel.value.keyTier)
+    form.size = sizeForModel(form.modelId, nextRatio, nextSize)
     form.quality = formDetail.params.quality || form.quality
     form.format = formDetail.params.response_format || form.format
-    form.count = normalizeImageCount(formDetail.params.n || form.count)
+    form.count = activeNanoBanana.value ? 1 : normalizeImageCount(formDetail.params.n || form.count)
     if (Object.prototype.hasOwnProperty.call(formDetail.params, 'main_image_path')) {
       form.mainImagePath = formDetail.params.main_image_path || ''
     }
@@ -2739,6 +2837,8 @@ async function restoreJob(job, options = {}) {
     ...resultCards.value.flatMap((item) => resultPreviewCandidates(item).map((key) => refreshImagePreview(key, { force: true }))),
   ])
   selectedResults.clear()
+  if (hasActiveRuns(detail)) startJobPolling(detail.job_uid)
+  else if (jobPollingUid === detail.job_uid) stopJobPolling()
   persistWorkbenchState()
   return detail
 }
@@ -3624,6 +3724,24 @@ function localFileUrl(path) {
   z-index: 2;
   font-size: 13px;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.36);
+}
+
+.aiw-failed-preview {
+  min-height: 214px;
+  display: grid;
+  place-content: center;
+  gap: 8px;
+  padding: 18px;
+  background: rgba(166, 48, 48, 0.12);
+  color: #ffb3a7;
+  text-align: center;
+}
+
+.aiw-failed-preview span {
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 @keyframes aiw-wave-flow {
