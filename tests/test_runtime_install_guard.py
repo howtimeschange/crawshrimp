@@ -43,6 +43,16 @@ class RuntimeInstallGuardTests(unittest.TestCase):
         self.assertTrue(guard.end_operation(token))
         self.assertTrue(guard.readiness()["ready"])
 
+    def test_readiness_blockers_are_isolated_snapshots(self):
+        guard = RuntimeInstallGuard()
+        token = guard.begin_operation("task", "tmall::export", "天猫导出")
+
+        readiness = guard.readiness()
+        readiness["blockers"][0]["label"] = "mutated"
+
+        self.assertEqual(guard.readiness()["blockers"][0]["label"], "天猫导出")
+        self.assertTrue(guard.end_operation(token))
+
     def test_begin_operation_returns_duplicate_safe_tokens_for_same_operation(self):
         guard = RuntimeInstallGuard()
 

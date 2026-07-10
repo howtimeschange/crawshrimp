@@ -746,7 +746,12 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
                         response = await self._api_request("POST", "/runtime/update-drain")
                         self.assertEqual(response.status_code, 200)
-                        drain_token = response.json()["drain_token"]
+                        drain_response = response.json()
+                        drain_token = drain_response["drain_token"]
+                        self.assertTrue(drain_response["readiness"]["install_ready"])
+                        self.assertTrue(drain_response["readiness"]["draining"])
+                        self.assertTrue(drain_response["readiness"]["ready"])
+                        self.assertEqual(drain_response["readiness"]["blockers"], [])
 
                         blocked = await self._api_request("POST", "/tasks/example/task/run", {"params": {}})
                         self.assertEqual(blocked.status_code, 409)

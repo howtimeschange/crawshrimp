@@ -32,6 +32,23 @@ function writeMetadata(root, relativePath, assets) {
   fs.writeFileSync(metadataPath, `${lines.join('\n')}\n`)
 }
 
+function writeFormalReleaseManifest(root, version = '2.0.0') {
+  const macAssets = [
+    writeAsset(root, `release-assets/macos/crawshrimp-v${version}-mac-arm64.dmg`, Buffer.from('mac-arm64-dmg')),
+    writeAsset(root, `release-assets/macos/crawshrimp-v${version}-mac-x64.dmg`, Buffer.from('mac-x64-dmg')),
+    writeAsset(root, `release-assets/macos/crawshrimp-v${version}-mac-arm64.zip`, Buffer.from('mac-arm64-zip')),
+    writeAsset(root, `release-assets/macos/crawshrimp-v${version}-mac-x64.zip`, Buffer.from('mac-x64-zip')),
+    writeAsset(root, `release-assets/macos/crawshrimp-v${version}-mac-arm64.zip.blockmap`, Buffer.from('mac-arm64-blockmap')),
+    writeAsset(root, `release-assets/macos/crawshrimp-v${version}-mac-x64.zip.blockmap`, Buffer.from('mac-x64-blockmap')),
+  ]
+  const winAssets = [
+    writeAsset(root, `release-assets/windows/crawshrimp-v${version}-win-x64.exe`, Buffer.from('win-exe')),
+    writeAsset(root, `release-assets/windows/crawshrimp-v${version}-win-x64.exe.blockmap`, Buffer.from('win-blockmap')),
+  ]
+  writeMetadata(root, 'release-assets/macos/latest-mac.yml', macAssets.filter(asset => asset.name.endsWith('.zip')))
+  writeMetadata(root, 'release-assets/windows/latest.yml', winAssets.filter(asset => asset.name.endsWith('.exe')))
+}
+
 test('validates Windows metadata that references an existing EXE with matching sha512', () => {
   const root = fixtureDir()
   const exe = writeAsset(root, 'latest/win/crawshrimp-v2.0.0-win-x64.exe', Buffer.from('windows-installer'))
@@ -183,4 +200,24 @@ test('deduplicates repeated metadata references to the same file and hash', () =
 
   assert.deepEqual(result.errors, [])
   assert.equal(result.assetCount, 1)
+})
+
+test('formal release validation requires the exact complete versioned asset manifest', () => {
+  const root = fixtureDir()
+  writeFormalReleaseManifest(root, '2.0.0')
+
+  const valid = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.deepEqual(valid.errors, [])
+
+  fs.unlinkSync(path.join(root, 'release-assets/macos/crawshrimp-v2.0.0-mac-x64.zip.blockmap'))
+  const missing = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.equal(missing.ok, false)
+  assert.match(missing.errors.join('\n'), /missing required release asset/)
+  assert.match(missing.errors.join('\n'), /crawshrimp-v2\.0\.0-mac-x64\.zip\.blockmap/)
+
+  writeAsset(root, 'release-assets/windows/crawshrimp-v2.0.0-win-arm64.exe', Buffer.from('extra-win'))
+  const extra = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.equal(extra.ok, false)
+  assert.match(extra.errors.join('\n'), /unexpected release asset/)
+  assert.match(extra.errors.join('\n'), /crawshrimp-v2\.0\.0-win-arm64\.exe/)
 })

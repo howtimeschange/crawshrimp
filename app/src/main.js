@@ -1959,7 +1959,8 @@ secureHandle('get-status', async () => ({
 secureHandle('update:get-status', async () => updateService.getStatus())
 secureHandle('update:check', async () => {
   if (updateService.getStatus().downloaded) {
-    return updateCoordinator.refreshReadiness()
+    await updateCoordinator.refreshReadiness()
+    return updateService.getStatus()
   }
   return updateService.checkForUpdates({ manual: true })
 })

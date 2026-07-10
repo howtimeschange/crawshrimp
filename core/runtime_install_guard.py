@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import copy
 import threading
 import uuid
 
@@ -96,4 +97,4 @@ class RuntimeInstallGuard:
     def _blockers(self, extra_blockers):
         blockers = list(self._active_operations.values())
         blockers.extend(_normalize_extra_blocker(blocker) for blocker in extra_blockers)
-        return blockers
+        return copy.deepcopy(blockers)

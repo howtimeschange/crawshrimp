@@ -372,6 +372,9 @@ jobs:
           fi
           echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
 
+      - name: Validate release update artifacts
+        run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${APP_VERSION}"
+
       - name: Prepare release metadata
         run: |
           NOTES_FILE="release-notes/v${APP_VERSION}.md"
@@ -463,7 +466,7 @@ jobs:
           echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
 
       - name: Validate release update artifacts
-        run: node app/scripts/validate-update-artifacts.js release-assets
+        run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${APP_VERSION}"
 
       - name: Prepare release metadata
         shell: bash

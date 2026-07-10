@@ -336,6 +336,52 @@ test('requestInstall fresh-checks readiness then drains, cleans up, marks instal
   assert.deepEqual(result, { ok: true })
 })
 
+test('requestInstall accepts real successful API drain response and quits only after cleanup', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    updateService.publish({ status: 'installing', blockers: [], error: '' })
+  }
+  updateService.quitAndInstall = () => {
+    events.push('quit-and-install')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [], draining: false }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return {
+        ok: true,
+        drain_token: 'drain-1',
+        readiness: {
+          ready: true,
+          draining: true,
+          blockers: [],
+          install_ready: true,
+        },
+      }
+    },
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => events.push('shutdown'),
+    notifyReady: () => {},
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'set-installing',
+    'quit-and-install',
+  ])
+  assert.deepEqual(result, { ok: true })
+})
+
 async function assertUnsafeDrainDefers(label, drainResponse) {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []

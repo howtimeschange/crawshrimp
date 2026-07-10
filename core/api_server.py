@@ -6340,7 +6340,7 @@ def _ai_image_job_is_active(job: dict) -> bool:
     )
 
 
-def _collect_install_blockers() -> list[dict]:
+def _collect_external_install_blockers() -> list[dict]:
     blockers = []
     for task in _active_task_items():
         jid = str(task.get("jid") or "")
@@ -6400,7 +6400,7 @@ def _collect_install_blockers() -> list[dict]:
 
 
 def _install_readiness() -> dict:
-    external_blockers = _collect_install_blockers()
+    external_blockers = _collect_external_install_blockers()
     guard_readiness = runtime_install_guard.readiness()
     blockers = []
     seen = set()
@@ -6424,7 +6424,7 @@ def runtime_install_readiness():
 
 @app.post("/runtime/update-drain")
 def acquire_runtime_update_drain():
-    blockers = _collect_install_blockers()
+    blockers = _collect_external_install_blockers()
     if blockers:
         raise HTTPException(409, {
             "code": "runtime_busy",
@@ -6447,7 +6447,12 @@ def acquire_runtime_update_drain():
     return {
         "ok": True,
         "drain_token": drain_token,
-        "readiness": _install_readiness(),
+        "readiness": {
+            **runtime_install_guard.readiness(),
+            "ready": True,
+            "install_ready": True,
+            "blockers": [],
+        },
     }
 
 

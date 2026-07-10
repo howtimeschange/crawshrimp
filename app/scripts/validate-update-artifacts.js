@@ -9,6 +9,23 @@ const METADATA_BY_PLATFORM = new Map([
   ['windows', 'latest.yml'],
 ])
 
+const RELEASE_ASSET_EXTENSIONS = new Set(['.dmg', '.zip', '.blockmap', '.yml', '.exe'])
+
+function expectedFormalReleaseAssets(version) {
+  return [
+    `macos/crawshrimp-v${version}-mac-arm64.dmg`,
+    `macos/crawshrimp-v${version}-mac-x64.dmg`,
+    `macos/crawshrimp-v${version}-mac-arm64.zip`,
+    `macos/crawshrimp-v${version}-mac-x64.zip`,
+    `macos/crawshrimp-v${version}-mac-arm64.zip.blockmap`,
+    `macos/crawshrimp-v${version}-mac-x64.zip.blockmap`,
+    'macos/latest-mac.yml',
+    `windows/crawshrimp-v${version}-win-x64.exe`,
+    `windows/crawshrimp-v${version}-win-x64.exe.blockmap`,
+    'windows/latest.yml',
+  ]
+}
+
 function walkFiles(root) {
   const files = []
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -107,7 +124,46 @@ function findPlatformDirs(root) {
   return dirs
 }
 
-export function validateUpdateArtifacts(root) {
+function releaseAssetRelativePath(root, filePath) {
+  return path.relative(root, filePath).replace(/\\/g, '/')
+}
+
+function isReleaseAsset(filePath) {
+  const basename = path.basename(filePath)
+  if (basename === 'latest.yml' || basename === 'latest-mac.yml') return true
+  return RELEASE_ASSET_EXTENSIONS.has(path.extname(basename))
+}
+
+function validateFormalReleaseManifest(artifactRoot, version, errors) {
+  const normalizedVersion = String(version || '').trim().replace(/^v/, '')
+  if (!/^\d+\.\d+\.\d+$/.test(normalizedVersion)) {
+    errors.push(`formal release validation requires exact version X.Y.Z, got ${version || 'missing'}`)
+    return
+  }
+
+  const releaseRoot = fs.existsSync(path.join(artifactRoot, 'release-assets'))
+    ? path.join(artifactRoot, 'release-assets')
+    : artifactRoot
+  const expected = new Set(expectedFormalReleaseAssets(normalizedVersion))
+  const actual = new Set(
+    walkFiles(releaseRoot)
+      .filter(isReleaseAsset)
+      .map(filePath => releaseAssetRelativePath(releaseRoot, filePath)),
+  )
+
+  for (const expectedPath of expected) {
+    if (!actual.has(expectedPath)) {
+      errors.push(`${expectedPath}: missing required release asset`)
+    }
+  }
+  for (const actualPath of actual) {
+    if (!expected.has(actualPath)) {
+      errors.push(`${actualPath}: unexpected release asset`)
+    }
+  }
+}
+
+export function validateUpdateArtifacts(root, options = {}) {
   const artifactRoot = path.resolve(root)
   const errors = []
   const validatedAssets = new Set()
@@ -176,6 +232,10 @@ export function validateUpdateArtifacts(root) {
     }
   }
 
+  if (options.formalRelease) {
+    validateFormalReleaseManifest(artifactRoot, options.version, errors)
+  }
+
   return { ok: errors.length === 0, assetCount, errors }
 }
 
@@ -183,10 +243,13 @@ const isCli = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath
 if (isCli) {
   const root = process.argv[2]
   if (!root) {
-    console.error('usage: node scripts/validate-update-artifacts.js <root>')
+    console.error('usage: node scripts/validate-update-artifacts.js <root> [--formal-release --version X.Y.Z]')
     process.exit(2)
   }
-  const result = validateUpdateArtifacts(root)
+  const formalRelease = process.argv.includes('--formal-release')
+  const versionIndex = process.argv.indexOf('--version')
+  const version = versionIndex === -1 ? '' : process.argv[versionIndex + 1]
+  const result = validateUpdateArtifacts(root, { formalRelease, version })
   for (const error of result.errors) {
     console.error(error)
   }

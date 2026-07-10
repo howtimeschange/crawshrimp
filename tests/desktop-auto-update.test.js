@@ -44,6 +44,19 @@ test('desktop updater dependency and state service are restored', () => {
   assert.doesNotMatch(preload, /setFeedURL/)
 })
 
+test('manual update check after download refreshes readiness but returns updater status shape', () => {
+  const main = readRepoFile('app/src/main.js')
+  const checkHandler = main.slice(
+    main.indexOf("secureHandle('update:check'"),
+    main.indexOf("secureHandle('update:download'"),
+  )
+
+  assert.match(checkHandler, /updateService\.getStatus\(\)\.downloaded/)
+  assert.match(checkHandler, /await updateCoordinator\.refreshReadiness\(\)/)
+  assert.match(checkHandler, /return updateService\.getStatus\(\)/)
+  assert.doesNotMatch(checkHandler, /return updateCoordinator\.refreshReadiness\(\)/)
+})
+
 test('renderer shell wires the collapsible update footer without remounting content', () => {
   const app = readRepoFile('app/src/renderer/App.vue')
 
@@ -156,7 +169,7 @@ test('desktop workflow validates update metadata before upload and formal public
   assert.ok(releaseValidateIndex !== -1, 'release validation step is present')
   assert.ok(releaseValidateIndex < prepareMetadataIndex, 'release validation runs before metadata preparation')
   assert.ok(prepareMetadataIndex < publishVersionIndex, 'metadata gates publication')
-  assert.match(workflow, /node app\/scripts\/validate-update-artifacts\.js release-assets/)
+  assert.match(workflow, /node app\/scripts\/validate-update-artifacts\.js release-assets --formal-release --version "\$\{APP_VERSION\}"/)
 })
 
 test('desktop workflow keeps rolling release manual installer only', () => {
