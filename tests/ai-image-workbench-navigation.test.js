@@ -979,6 +979,9 @@ test('AI image task cards expose persistent pinning and guarded deletion control
   const deleteStart = workbench.indexOf('async function confirmDeleteTask()')
   const deleteEnd = workbench.indexOf('function syncNarrowWorkbench', deleteStart)
   const deleteBody = workbench.slice(deleteStart, deleteEnd)
+  const taskActionStyleStart = workbench.indexOf('.aiw-history-pin,')
+  const taskActionStyleEnd = workbench.indexOf('.aiw-history-thumbs', taskActionStyleStart)
+  const taskActionStyles = workbench.slice(taskActionStyleStart, taskActionStyleEnd)
 
   assert.match(sidebarBody, /<article[\s\S]*class="aiw-history-item"/)
   assert.match(sidebarBody, /class="aiw-history-select"/)
@@ -997,6 +1000,9 @@ test('AI image task cards expose persistent pinning and guarded deletion control
   assert.match(deleteBody, /deleted_cache_files/)
   assert.match(workbench, /\.aiw-history-pin\s*\{[\s\S]*top:/)
   assert.match(workbench, /\.aiw-history-delete\s*\{[\s\S]*bottom:/)
+  assert.match(taskActionStyles, /color: var\(--text2\)/)
+  assert.match(taskActionStyles, /\.aiw-history-pin:not\(:disabled\):hover,\s*\.aiw-history-delete:not\(:disabled\):hover\s*\{[\s\S]*transform: translateY\(-1px\)/)
+  assert.doesNotMatch(taskActionStyles, /color: #ff6b5f/)
 })
 
 test('AI image workbench tells the model that annotation marks are placement-only references', () => {

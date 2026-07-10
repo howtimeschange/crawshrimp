@@ -4803,8 +4803,13 @@ function localFileUrl(path) {
   padding: 4px 6px;
   border: 0;
   background: transparent;
-  color: #ff6b5f;
+  color: var(--text2);
   font-size: 11px;
+}
+
+.aiw-history-pin:not(:disabled),
+.aiw-history-delete:not(:disabled) {
+  transition: color 180ms ease, background-color 180ms ease, transform 180ms ease;
 }
 
 .aiw-history-pin {
@@ -4813,6 +4818,14 @@ function localFileUrl(path) {
 
 .aiw-history-delete {
   bottom: 7px;
+}
+
+.aiw-history-pin:not(:disabled):hover,
+.aiw-history-delete:not(:disabled):hover {
+  border-color: transparent;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text);
+  transform: translateY(-1px);
 }
 
 .aiw-history-select:not(:disabled):hover {
