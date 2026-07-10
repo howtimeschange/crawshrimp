@@ -61,3 +61,16 @@ test('Nano Banana controls use resolution tiers and hide unsupported fields', ()
   assert.match(workbench, /v-if="!activeNanoBanana"[\s\S]*>格式</)
   assert.match(workbench, /:disabled="activeNanoBanana"/)
 })
+
+test('preview falls back to remote URL while local cache data is loading', () => {
+  const body = functionBody('resultPreviewSrc', 'lightboxThumbnailSrc')
+  assert.match(body, /for \(const key of resultPreviewCandidates\(item\)\)/)
+  assert.doesNotMatch(body, /!isRemoteOrDataImage\(key\)[^\n]+return ''/)
+  assert.match(body, /continue/)
+})
+
+test('new remote result URLs are cached without waiting for image load', () => {
+  assert.match(workbench, /watch\(resultCards, \(cards\) => \{[\s\S]*cards\.forEach\(\(card\) => queueResultCache\(card\)\)/)
+  assert.match(workbench, /function queueResultCache\(item\)/)
+  assert.match(workbench, /resultCachePending\.has\(url\)/)
+})

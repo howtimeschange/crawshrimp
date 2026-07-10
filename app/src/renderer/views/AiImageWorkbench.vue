@@ -1075,6 +1075,7 @@ watch(() => [...form.referenceImagePaths], (paths) => {
 
 watch(resultCards, (cards) => {
   refreshResultPreviewCandidates(cards)
+  cards.forEach((card) => queueResultCache(card))
 })
 
 watch(taskRecords, (records) => {
@@ -2089,7 +2090,7 @@ function resultPreviewSrc(item) {
   for (const key of resultPreviewCandidates(item)) {
     const src = imagePreviewSrc(key)
     if (src) return src
-    if (!isRemoteOrDataImage(key) && !previewFailures.has(key)) return ''
+    if (!isRemoteOrDataImage(key) && !previewFailures.has(key)) continue
   }
   return ''
 }
