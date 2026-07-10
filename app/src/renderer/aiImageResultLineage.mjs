@@ -4,6 +4,15 @@ export function resultIdentityCandidates(item = {}) {
     .filter((value, index, values) => value && values.indexOf(value) === index)
 }
 
+export function mergeCurrentJobRecord(currentJob, jobs = []) {
+  if (!currentJob || typeof currentJob !== 'object') return currentJob || null
+  const jobUid = String(currentJob.job_uid || '').trim()
+  if (!jobUid) return currentJob
+  const persistedJob = (Array.isArray(jobs) ? jobs : [])
+    .find((job) => String(job?.job_uid || '').trim() === jobUid)
+  return persistedJob ? { ...persistedJob, ...currentJob } : currentJob
+}
+
 export function buildResultIndex(items = []) {
   const index = new Map()
   for (const item of Array.isArray(items) ? items : []) {

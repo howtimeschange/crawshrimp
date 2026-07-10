@@ -577,13 +577,43 @@ test('AI image workbench keeps generated task metadata separate from next-run ed
   assert.match(taskRecordsBody, /mergeJobWithDraft\(currentJob\.value, \{ includeGeneratedDrafts: false \}\)/)
   assert.match(restoreBody, /const formDetail = mergeJobWithDraft\(detail, \{ includeGeneratedDrafts: true \}\)/)
   assert.match(restoreBody, /currentJob\.value = detail/)
-  assert.match(workbench, /任务：\{\{ currentJob\?\.title \|\| form\.title \|\| '本次生成' \}\}/)
+  assert.match(workbench, /任务：\{\{ persistedCurrentJob\?\.title \|\| form\.title \|\| '本次生成' \}\}/)
   assert.match(workbench, /\{\{ generatedSummaryLine \}\}/)
   assert.match(workbench, /<span>下次生成参数<\/span>/)
-  assert.match(generatedSummaryBody, /const job = currentJob\.value/)
+  assert.match(generatedSummaryBody, /const job = persistedCurrentJob\.value/)
   assert.match(generatedSummaryBody, /getAiImageModel\(modelIdForJob\(job\)\)\.label/)
   assert.doesNotMatch(generatedSummaryBody, /activeModel\.value/)
   assert.doesNotMatch(generatedSummaryBody, /form\.(ratio|size|count)/)
+})
+
+test('AI image workbench hydrates a restored task placeholder from persisted job metadata', async () => {
+  const resultState = await import('../app/src/renderer/aiImageResultLineage.mjs')
+  assert.equal(typeof resultState.mergeCurrentJobRecord, 'function')
+
+  const persistedJob = {
+    job_uid: 'task-6',
+    title: 'AI 生图任务 6',
+    model_key: 'gpt-image-2',
+    status: 'completed',
+    params: { ratio: '3:4', size: '1536x2048', n: 1 },
+    summary: {
+      runs: [{ image_urls: ['https://img.example/result.png'] }],
+    },
+  }
+  const restoredPlaceholder = { job_uid: 'task-6', status: 'draft' }
+
+  assert.deepEqual(
+    resultState.mergeCurrentJobRecord(restoredPlaceholder, [persistedJob]),
+    {
+      ...persistedJob,
+      status: 'draft',
+    },
+  )
+
+  const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+  assert.match(workbench, /const persistedCurrentJob = computed/)
+  assert.match(workbench, /mergeCurrentJobRecord\(currentJob\.value, jobs\.value\)/)
+  assert.match(workbench, /hasGeneratedResults\(persistedCurrentJob\.value\)/)
 })
 
 test('AI image workbench saves current count before provider request', () => {
@@ -606,7 +636,7 @@ test('AI image workbench saves current count before provider request', () => {
   )
   assert.match(buildPayloadBody, /params\.n = requestedCount/)
   assert.match(autosaveBody, /if \(!options\.allowDuringGeneration && generating\.value\) return null/)
-  assert.match(autosaveBody, /if \(!options\.force && hasGeneratedResults\(currentJob\.value\)\) return null/)
+  assert.match(autosaveBody, /if \(!options\.force && hasGeneratedResults\(persistedCurrentJob\.value\)\) return null/)
   assert.match(ensureBody, /autosaveCurrentTask\(\{ force: true, allowDuringGeneration: true \}\)/)
 })
 

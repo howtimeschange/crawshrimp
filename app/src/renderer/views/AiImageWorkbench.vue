@@ -206,7 +206,7 @@
       <main class="aiw-results-grid" aria-label="生成结果" :aria-busy="generating ? 'true' : 'false'">
         <div class="aiw-workspace-head">
           <div>
-            <strong>任务：{{ currentJob?.title || form.title || '本次生成' }}</strong>
+            <strong>任务：{{ persistedCurrentJob?.title || form.title || '本次生成' }}</strong>
             <span>{{ generatedSummaryLine }}</span>
           </div>
           <div class="aiw-results-actions">
@@ -786,6 +786,7 @@ import {
   sizesForRatio,
 } from '../utils/aiImageModels.js'
 import {
+  mergeCurrentJobRecord,
   promptChainFromLineage,
   resolveResultLineage,
 } from '../aiImageResultLineage.mjs'
@@ -943,6 +944,7 @@ let resultCacheQueue = Promise.resolve()
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeMissingKey = computed(() => missingKeyForModel(form.modelId, settings.value))
 const activeJobUid = computed(() => currentJob.value?.job_uid || '')
+const persistedCurrentJob = computed(() => mergeCurrentJobRecord(currentJob.value, jobs.value))
 const highlightedJobUid = computed(() => pendingActiveJobUid.value || activeJobUid.value)
 const resultQueues = computed(() => collectResultQueues(currentJob.value))
 const resultCards = computed(() => resultQueues.value.flatMap((queue) => queue.items || []))
@@ -1026,7 +1028,7 @@ const nextGenerationSummaryLine = computed(() => {
   return `${activeModel.value.label} · ${form.ratio} · ${form.size} · ${normalizeImageCount(form.count)} 张 · ${status}`
 })
 const generatedSummaryLine = computed(() => {
-  const job = currentJob.value
+  const job = persistedCurrentJob.value
   if (!job?.job_uid) return nextGenerationSummaryLine.value
   const params = job.params && typeof job.params === 'object' ? job.params : {}
   const size = params.size || '未设尺寸'
@@ -1439,7 +1441,7 @@ async function autosaveCurrentTask(options = {}) {
   const jobUid = activeJobUid.value
   if (!jobUid || typeof window?.cs?.updateAiImageJob !== 'function') return null
   if (!options.allowDuringGeneration && generating.value) return null
-  if (!options.force && hasGeneratedResults(currentJob.value)) return null
+  if (!options.force && hasGeneratedResults(persistedCurrentJob.value)) return null
   try {
     const payload = buildJobPayload({ silentAdvanced: true })
     const status = currentJob.value?.status || 'draft'
