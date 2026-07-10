@@ -114,8 +114,31 @@ class RuntimeInstallGuardTests(unittest.TestCase):
         self.assertFalse(guard.end_operation("missing"))
 
     def test_drain_acquisition_is_atomic_against_operation_start(self):
+        for first, expected_kinds in [
+            ("operation", {"operation", "busy"}),
+            ("drain", {"drain", "operation_rejected"}),
+        ]:
+            with self.subTest(first=first):
+                guard, results = self._run_operation_drain_interleaving(first)
+                kinds = {kind for kind, _ in results}
+                readiness = guard.readiness()
+
+                self.assertEqual(kinds, expected_kinds)
+                if first == "operation":
+                    self.assertFalse(readiness["ready"])
+                    self.assertFalse(readiness["draining"])
+                    self.assertEqual(len(readiness["blockers"]), 1)
+                    busy_blockers = next(value for kind, value in results if kind == "busy")
+                    self.assertEqual(busy_blockers, readiness["blockers"])
+                else:
+                    self.assertFalse(readiness["ready"])
+                    self.assertTrue(readiness["draining"])
+                    self.assertEqual(readiness["blockers"], [])
+
+    def _run_operation_drain_interleaving(self, first):
         guard = RuntimeInstallGuard()
-        barrier = threading.Barrier(2)
+        operation_started = threading.Event()
+        drain_acquired = threading.Event()
         results = []
         lock = threading.Lock()
 
@@ -124,18 +147,22 @@ class RuntimeInstallGuardTests(unittest.TestCase):
                 results.append(result)
 
         def begin_operation():
-            barrier.wait()
+            if first == "drain":
+                drain_acquired.wait(timeout=1)
             try:
                 token = guard.begin_operation("task", "race", "竞态任务")
                 record(("operation", token))
+                operation_started.set()
             except UpdateDrainActive:
                 record(("operation_rejected", None))
 
         def acquire_drain():
-            barrier.wait()
+            if first == "operation":
+                operation_started.wait(timeout=1)
             try:
                 token = guard.acquire_drain()
                 record(("drain", token))
+                drain_acquired.set()
             except InstallRuntimeBusy as exc:
                 record(("busy", exc.blockers))
 
@@ -144,8 +171,4 @@ class RuntimeInstallGuardTests(unittest.TestCase):
             thread.start()
         for thread in threads:
             thread.join()
-
-        kinds = {kind for kind, _ in results}
-        self.assertIn(kinds, [{"operation", "busy"}, {"operation_rejected", "drain"}])
-        readiness = guard.readiness()
-        self.assertNotEqual(readiness["ready"], readiness["draining"])
+        return guard, results
