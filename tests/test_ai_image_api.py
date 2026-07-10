@@ -112,8 +112,17 @@ class AiImageApiTests(unittest.TestCase):
             with self.assertRaises(HTTPException) as missing_ctx:
                 api_server.delete_ai_image_job("missing")
 
+        with patch(
+            "core.api_server.ai_image_service.delete_workbench_job",
+            side_effect=RuntimeError("本地图片缓存清理失败，请稍后重试"),
+        ):
+            with self.assertRaises(HTTPException) as cache_ctx:
+                api_server.delete_ai_image_job(job["job_uid"])
+
         self.assertEqual(active_ctx.exception.status_code, 409)
         self.assertEqual(missing_ctx.exception.status_code, 404)
+        self.assertEqual(cache_ctx.exception.status_code, 500)
+        self.assertEqual(cache_ctx.exception.detail, "本地图片缓存清理失败，请稍后重试")
 
     def test_delete_job_api_returns_service_summary(self):
         job = data_sink.create_ai_image_job({"title": "delete api success"})

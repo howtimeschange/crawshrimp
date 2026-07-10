@@ -691,6 +691,29 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertTrue(downloaded.exists())
         self.assertIsNone(data_sink.get_ai_image_job(job["job_uid"]))
 
+    def test_delete_workbench_job_keeps_cache_referenced_from_other_job(self):
+        source_job = data_sink.create_ai_image_job({"title": "source cache"})
+        deleting_job = data_sink.create_ai_image_job({"title": "delete cache"})
+        cache_dir = ai_image_service.runtime_paths.child_dir("ai-image-cache")
+        shared = cache_dir / f"result-{source_job['job_uid'][:8]}-shared.png"
+        owned = cache_dir / f"result-{deleting_job['job_uid'][:8]}-owned.png"
+        shared.write_bytes(PNG_1X1)
+        owned.write_bytes(PNG_1X1)
+        data_sink.update_ai_image_job(deleting_job["job_uid"], {
+            "params": {
+                "main_image_path": str(shared),
+                "reference_image_paths": [str(shared)],
+            },
+            "summary": {"result_cache": {"https://cdn.example/owned.png": str(owned)}},
+        })
+
+        result = ai_image_service.delete_workbench_job(deleting_job["job_uid"])
+
+        self.assertEqual(result["deleted_cache_files"], 1)
+        self.assertFalse(owned.exists())
+        self.assertTrue(shared.exists())
+        self.assertIsNone(data_sink.get_ai_image_job(deleting_job["job_uid"]))
+
     def test_delete_workbench_job_rejects_active_runs_and_keeps_cache(self):
         job = data_sink.create_ai_image_job({
             "title": "running task",

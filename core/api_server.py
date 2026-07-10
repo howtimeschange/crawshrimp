@@ -5458,6 +5458,8 @@ def delete_ai_image_job(job_uid: str):
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(404, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
 
 
 @app.post("/ai-image/jobs/{job_uid}/run")

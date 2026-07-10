@@ -563,6 +563,8 @@ def _nested_string_values(value: Any):
 def _workbench_job_cache_files(job: Mapping[str, Any]) -> list[Path]:
     uid = _compact(job.get("job_uid"))
     cache_root = runtime_paths.child_dir("ai-image-cache").resolve(strict=False)
+    uid_prefix = uid[:8]
+    marker = f"-{uid_prefix}-" if uid_prefix else ""
     payload = {
         "job": dict(job),
         "assets": data_sink.list_ai_image_assets(uid),
@@ -574,11 +576,9 @@ def _workbench_job_cache_files(job: Mapping[str, Any]) -> list[Path]:
         if not value or value.startswith(("http://", "https://", "data:")):
             continue
         candidate = Path(value).expanduser().resolve(strict=False)
-        if candidate.is_relative_to(cache_root) and (candidate.is_file() or candidate.is_symlink()):
+        if marker and marker in candidate.name and candidate.is_relative_to(cache_root) and (candidate.is_file() or candidate.is_symlink()):
             candidates.add(candidate)
 
-    uid_prefix = uid[:8]
-    marker = f"-{uid_prefix}-" if uid_prefix else ""
     if marker:
         for candidate in cache_root.iterdir():
             resolved = candidate.resolve(strict=False)
