@@ -125,3 +125,62 @@ test('fails when metadata path traversal would escape the artifact tree', () => 
   assert.equal(result.ok, false)
   assert.match(result.errors.join('\n'), /unsafe referenced asset path/)
 })
+
+test('fails when metadata references an absolute asset path', () => {
+  const root = fixtureDir()
+  const hash = crypto.createHash('sha512').update('absolute').digest('base64')
+  writeMetadata(root, 'windows/latest.yml', [{ name: '/tmp/outside.exe', sha512: hash }])
+
+  const result = validateUpdateArtifacts(root)
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /unsafe referenced asset path/)
+})
+
+test('fails when metadata references a Windows-style backslash path', () => {
+  const root = fixtureDir()
+  const hash = crypto.createHash('sha512').update('windows-path').digest('base64')
+  writeMetadata(root, 'windows/latest.yml', [{ name: 'nested\\app.exe', sha512: hash }])
+
+  const result = validateUpdateArtifacts(root)
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /unsafe referenced asset path/)
+})
+
+test('fails when basename-only metadata matches duplicate candidate files', () => {
+  const root = fixtureDir()
+  const first = writeAsset(root, 'windows/a/crawshrimp-v2.0.0-win-x64.exe', Buffer.from('first'))
+  writeAsset(root, 'windows/b/crawshrimp-v2.0.0-win-x64.exe', Buffer.from('second'))
+  writeMetadata(root, 'windows/latest.yml', [first])
+
+  const result = validateUpdateArtifacts(root)
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /ambiguous referenced asset/)
+})
+
+test('fails explicitly for unsupported inline YAML asset shape', () => {
+  const root = fixtureDir()
+  const exe = writeAsset(root, 'windows/crawshrimp-v2.0.0-win-x64.exe', Buffer.from('inline'))
+  fs.writeFileSync(
+    path.join(root, 'windows/latest.yml'),
+    `version: 2.0.0\nfiles: [{ url: ${exe.name}, sha512: ${exe.sha512} }]\n`,
+  )
+
+  const result = validateUpdateArtifacts(root)
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /zero referenced assets/)
+})
+
+test('deduplicates repeated metadata references to the same file and hash', () => {
+  const root = fixtureDir()
+  const exe = writeAsset(root, 'windows/crawshrimp-v2.0.0-win-x64.exe', Buffer.from('same-file'))
+  writeMetadata(root, 'windows/latest.yml', [exe, exe])
+
+  const result = validateUpdateArtifacts(root)
+
+  assert.deepEqual(result.errors, [])
+  assert.equal(result.assetCount, 1)
+})

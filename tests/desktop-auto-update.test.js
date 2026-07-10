@@ -176,3 +176,25 @@ test('desktop workflow keeps rolling release manual installer only', () => {
   assert.doesNotMatch(rollingStep, /\*\.zip/)
   assert.doesNotMatch(rollingStep, /\*\.blockmap/)
 })
+
+test('desktop workflow gates rolling release mutation on exact stable tag and package version', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const rollingJob = workflow.slice(
+    workflow.indexOf('publish-release:'),
+    workflow.indexOf('publish-version-release:'),
+  )
+  const gateIndex = rollingJob.indexOf('name: Validate release tag and package version')
+  const deleteIndex = rollingJob.indexOf('name: Delete previous rolling release')
+  const recreateIndex = rollingJob.indexOf('name: Recreate rolling release tag')
+  const publishIndex = rollingJob.indexOf('name: Publish rolling release')
+
+  assert.ok(gateIndex !== -1, 'rolling release gate step is present')
+  assert.ok(gateIndex < deleteIndex, 'stable/package gate runs before deleting desktop-latest')
+  assert.ok(gateIndex < recreateIndex, 'stable/package gate runs before recreating desktop-latest tag')
+  assert.ok(gateIndex < publishIndex, 'stable/package gate runs before publishing desktop-latest')
+  assert.match(rollingJob, /\[\[ "\$\{GITHUB_REF_NAME\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]/)
+  assert.match(rollingJob, /APP_VERSION=\$\(python3 -c "import json; print\(json\.load\(open\('app\/package\.json'\)\)\['version'\]\)"\)/)
+  assert.match(rollingJob, /TAG_VERSION="\$\{GITHUB_REF_NAME#v\}"/)
+  assert.match(rollingJob, /if \[ "\$\{APP_VERSION\}" != "\$\{TAG_VERSION\}" \]/)
+  assert.match(rollingJob, /Only exact stable vX\.Y\.Z tags can publish desktop-latest/)
+})

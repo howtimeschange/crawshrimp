@@ -356,10 +356,24 @@ jobs:
           name: crawshrimp-win-x64
           path: release-assets/windows
 
+      - name: Validate release tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only exact stable vX.Y.Z tags can publish desktop-latest: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app/package.json version ${APP_VERSION}"
+            exit 1
+          fi
+          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
+
       - name: Prepare release metadata
         run: |
-          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
-          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
           NOTES_FILE="release-notes/v${APP_VERSION}.md"
           if [ -f "${NOTES_FILE}" ]; then
             cp "${NOTES_FILE}" release-notes.md
@@ -432,6 +446,22 @@ jobs:
           name: crawshrimp-win-x64
           path: release-assets/windows
 
+      - name: Validate release tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only exact stable vX.Y.Z tags can publish desktop releases: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app/package.json version ${APP_VERSION}"
+            exit 1
+          fi
+          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
+
       - name: Validate release update artifacts
         run: node app/scripts/validate-update-artifacts.js release-assets
 
@@ -439,17 +469,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::Only exact stable vX.Y.Z tags can publish a GitHub Latest release: ${GITHUB_REF_NAME}"
-            exit 1
-          fi
-          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
-          TAG_VERSION="${GITHUB_REF_NAME#v}"
-          if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match app/package.json version ${APP_VERSION}" >&2
-            exit 1
-          fi
-          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
           NOTES_FILE="release-notes/v${APP_VERSION}.md"
           if [ -f "${NOTES_FILE}" ]; then
             cp "${NOTES_FILE}" release-notes.md

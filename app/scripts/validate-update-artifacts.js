@@ -110,6 +110,7 @@ function findPlatformDirs(root) {
 export function validateUpdateArtifacts(root) {
   const artifactRoot = path.resolve(root)
   const errors = []
+  const validatedAssets = new Set()
   let assetCount = 0
 
   if (!fs.existsSync(artifactRoot) || !fs.statSync(artifactRoot).isDirectory()) {
@@ -142,7 +143,6 @@ export function validateUpdateArtifacts(root) {
     }
 
     for (const asset of assets) {
-      assetCount += 1
       if (!asset.sha512) {
         errors.push(`${relativeMetadata}:${asset.line}: missing sha512 for ${asset.reference}`)
         continue
@@ -165,6 +165,13 @@ export function validateUpdateArtifacts(root) {
       const actual = crypto.createHash('sha512').update(fs.readFileSync(resolved.path)).digest('base64')
       if (actual !== asset.sha512) {
         errors.push(`${relativeMetadata}:${asset.line}: sha512 mismatch for ${path.relative(metadataDir, resolved.path)}`)
+        continue
+      }
+
+      const assetKey = `${resolved.path}\0${asset.sha512}`
+      if (!validatedAssets.has(assetKey)) {
+        validatedAssets.add(assetKey)
+        assetCount += 1
       }
     }
   }
