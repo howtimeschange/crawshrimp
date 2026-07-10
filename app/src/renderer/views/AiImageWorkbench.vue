@@ -384,34 +384,49 @@
             </div>
             <ol>
               <li v-for="job in taskRecords" :key="job.job_uid">
-                <button
+                <article
                   class="aiw-history-item"
                   :class="{ active: highlightedJobUid === job.job_uid }"
-                  type="button"
-                  @click="selectTaskRecord(job)"
                 >
-                  <strong>{{ job.title || job.job_uid }}</strong>
-                  <div v-if="taskPreviewItems(job).length" class="aiw-history-thumbs">
-                    <span
-                      v-for="item in taskPreviewItems(job)"
-                      :key="item.key || resultKey(item)"
-                      class="aiw-history-thumb"
-                    >
-                      <img
-                        v-if="resultPreviewSrc(item)"
-                        :src="resultPreviewSrc(item)"
-                        :alt="item.label"
-                        loading="lazy"
-                        decoding="async"
-                        @load="handleResultPreviewLoaded(item)"
-                        @error="markResultPreviewBroken(item)"
-                      />
-                      <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
-                    </span>
-                  </div>
-                  <span>{{ taskMetaLine(job) }}</span>
-                  <small>{{ taskResultLine(job) }}</small>
-                </button>
+                  <button class="aiw-history-select" type="button" @click="selectTaskRecord(job)">
+                    <strong>{{ job.title || job.job_uid }}</strong>
+                    <div v-if="taskPreviewItems(job).length" class="aiw-history-thumbs">
+                      <span
+                        v-for="item in taskPreviewItems(job)"
+                        :key="item.key || resultKey(item)"
+                        class="aiw-history-thumb"
+                      >
+                        <img
+                          v-if="resultPreviewSrc(item)"
+                          :src="resultPreviewSrc(item)"
+                          :alt="item.label"
+                          loading="lazy"
+                          decoding="async"
+                          @load="handleResultPreviewLoaded(item)"
+                          @error="markResultPreviewBroken(item)"
+                        />
+                        <strong v-else>{{ previewInitial(resultPreviewKey(item)) }}</strong>
+                      </span>
+                    </div>
+                    <span>{{ taskMetaLine(job) }}</span>
+                    <small>{{ taskResultLine(job) }}</small>
+                  </button>
+                  <button
+                    class="aiw-history-pin"
+                    type="button"
+                    :disabled="pinningJobUids.has(job.job_uid)"
+                    :aria-label="`${job.pinned_at ? '取消置顶' : '置顶'}任务：${job.title || job.job_uid}`"
+                    @click.stop="toggleTaskPinned(job)"
+                  >{{ job.pinned_at ? '取消置顶' : '置顶' }}</button>
+                  <button
+                    class="aiw-history-delete"
+                    type="button"
+                    :disabled="hasActiveRuns(job)"
+                    :title="hasActiveRuns(job) ? '任务生成中，完成或失败后可删除' : '删除任务'"
+                    :aria-label="hasActiveRuns(job) ? `任务生成中，无法删除：${job.title || job.job_uid}` : `删除任务：${job.title || job.job_uid}`"
+                    @click.stop="openDeleteTaskDialog(job, $event)"
+                  >删除</button>
+                </article>
               </li>
             </ol>
             <div v-if="!taskRecords.length" class="aiw-history-empty">
@@ -423,6 +438,40 @@
       </main>
     </div>
     <div v-if="actionNotice" class="aiw-toast" role="status" aria-live="polite" aria-atomic="true">{{ actionNotice }}</div>
+    <div v-if="deleteTaskDialog.open" class="aiw-delete-dialog" @click.self="closeDeleteTaskDialog">
+      <section
+        ref="deleteTaskDialogPanel"
+        role="dialog"
+        aria-modal="true"
+        aria-label="确认删除 AI 生图任务"
+        tabindex="-1"
+      >
+        <header>
+          <div>
+            <strong>确认删除任务</strong>
+            <span>此操作无法撤销</span>
+          </div>
+          <button type="button" :disabled="deleteTaskDialog.submitting" @click="closeDeleteTaskDialog">
+            <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
+          </button>
+        </header>
+        <div class="aiw-delete-dialog-copy">
+          <p>删除任务“{{ deleteTaskDialog.job?.title || deleteTaskDialog.job?.job_uid }}”？</p>
+          <p>删除后将清除任务记录和未下载的本地图片缓存。已下载或另存到本地文件夹的图片不受影响。</p>
+        </div>
+        <small v-if="deleteTaskDialog.error" class="aiw-inline-error" role="alert">{{ deleteTaskDialog.error }}</small>
+        <footer>
+          <button type="button" :disabled="deleteTaskDialog.submitting" @click="closeDeleteTaskDialog">取消</button>
+          <button
+            class="aiw-delete-confirm"
+            type="button"
+            :disabled="deleteTaskDialog.submitting"
+            :aria-busy="deleteTaskDialog.submitting ? 'true' : 'false'"
+            @click="confirmDeleteTask"
+          >{{ deleteTaskDialog.submitting ? '删除中…' : '确认删除' }}</button>
+        </footer>
+      </section>
+    </div>
     <div v-if="batchGenerationDialog.open" class="aiw-batch-dialog" @click.self="closeBatchGenerationDialog">
       <section ref="batchDialogPanel" class="aiw-batch-panel" role="dialog" aria-modal="true" aria-label="批量生成" tabindex="-1" :inert="batchPromptLibraryPicker.open || undefined">
         <header class="aiw-batch-head">
@@ -700,7 +749,7 @@
                 @export-annotation="captureLightboxAnnotation"
                 @error="handleLightboxAnnotationError"
               />
-              <div v-if="lightboxActiveItem?.loading || lightboxEditSubmitting" class="aiw-edit-loading-overlay">
+              <div v-if="lightboxActiveItem?.loading" class="aiw-edit-loading-overlay">
                 <span class="aiw-edit-spinner" aria-hidden="true"></span>
                 <strong>{{ lightboxEditActionLabel }}</strong>
               </div>
@@ -1046,6 +1095,7 @@ const generatingSnapshot = ref(null)
 const errorMessage = ref('')
 const actionNotice = ref('')
 const retryingRunUids = reactive(new Set())
+const pinningJobUids = reactive(new Set())
 const logs = ref([])
 const loadingMessageTick = ref(0)
 const imagePreviews = reactive({})
@@ -1057,11 +1107,15 @@ const pendingActiveJobUid = ref('')
 const batchDialogPanel = ref(null)
 const lightboxDialogPanel = ref(null)
 const promptDialogPanel = ref(null)
+const deleteTaskDialogPanel = ref(null)
 const lightboxItem = ref(null)
 const lightboxEditPrompt = ref('')
 const lightboxEditReferencePaths = ref([])
 const lightboxEditResults = ref([])
-const lightboxEditSubmitting = ref(false)
+const lightboxEditSessionKey = ref('')
+const lightboxEditResultsBySession = reactive(new Map())
+const lightboxEditOperations = reactive(new Map())
+const lightboxEditSubmitting = computed(() => lightboxEditOperations.has(lightboxEditSessionKey.value))
 const lightboxActiveIndex = ref(0)
 const lightboxMode = ref('preview')
 const lightboxAnnotationDataUrl = ref('')
@@ -1088,6 +1142,12 @@ const batchPromptLibraryPicker = reactive({
   open: false,
   card: null,
 })
+const deleteTaskDialog = reactive({
+  open: false,
+  job: null,
+  submitting: false,
+  error: '',
+})
 const draggingResultKey = ref('')
 const dragOverTarget = ref('')
 let autosaveTimer = null
@@ -1105,6 +1165,7 @@ const dialogReturnFocus = {
   batch: null,
   lightbox: null,
   prompt: null,
+  deleteTask: null,
 }
 
 const activeModel = computed(() => getAiImageModel(form.modelId))
@@ -1171,6 +1232,7 @@ const advancedJsonError = computed(() => {
 const workbenchDialogOpen = computed(() => Boolean(
   batchGenerationDialog.open
   || batchPromptLibraryPicker.open
+  || deleteTaskDialog.open
   || lightboxItem.value
   || promptDialogQueue.value,
 ))
@@ -1188,7 +1250,7 @@ const statusAnnouncement = computed(() => {
     counts.failed ? `失败 ${counts.failed} 个队列` : '',
   ].filter(Boolean).join('，')
 })
-const errorAnnouncement = computed(() => batchGenerationDialog.error || errorMessage.value || '')
+const errorAnnouncement = computed(() => deleteTaskDialog.error || batchGenerationDialog.error || errorMessage.value || '')
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
 const generateLabel = computed(() => advancedJsonError.value
   ? '修正高级 JSON'
@@ -1314,6 +1376,7 @@ watch([currentJob, taskSidebarOpen], () => {
 watch(() => batchGenerationDialog.open, (open) => syncDialogFocus('batch', open, batchDialogPanel))
 watch(() => Boolean(lightboxItem.value), (open) => syncDialogFocus('lightbox', open, lightboxDialogPanel))
 watch(() => Boolean(promptDialogQueue.value), (open) => syncDialogFocus('prompt', open, promptDialogPanel))
+watch(() => deleteTaskDialog.open, (open) => syncDialogFocus('deleteTask', open, deleteTaskDialogPanel))
 
 function syncDialogFocus(key, open, panelRef) {
   if (typeof document === 'undefined') return
@@ -1328,6 +1391,7 @@ function syncDialogFocus(key, open, panelRef) {
 }
 
 function activeWorkbenchDialog() {
+  if (deleteTaskDialog.open) return { key: 'deleteTask', panel: deleteTaskDialogPanel.value, close: closeDeleteTaskDialog, busy: deleteTaskDialog.submitting }
   if (promptDialogQueue.value) return { key: 'prompt', panel: promptDialogPanel.value, close: closePromptDialog, busy: false }
   if (lightboxItem.value) return { key: 'lightbox', panel: lightboxDialogPanel.value, close: closeLightbox, busy: lightboxEditBusy.value }
   if (batchGenerationDialog.open) return { key: 'batch', panel: batchDialogPanel.value, close: closeBatchGenerationDialog, busy: batchGenerationDialog.submitting }
@@ -1660,6 +1724,7 @@ async function loadJobs() {
 }
 
 function hasActiveRuns(job) {
+  if (['queued', 'running'].includes(String(job?.status || '').toLowerCase())) return true
   const runs = Array.isArray(job?.summary?.runs) ? job.summary.runs : []
   return runs.some((run) => ['queued', 'running'].includes(String(run?.status || '').toLowerCase()))
 }
@@ -2625,8 +2690,12 @@ async function dropResultAsReference(event) {
 function resetLightboxEditDraft(item) {
   lightboxEditPrompt.value = latestPromptForItem(item)
   lightboxEditReferencePaths.value = []
-  lightboxEditResults.value = []
+  const sessionKey = lightboxEditSessionKeyFor(item)
+  lightboxEditSessionKey.value = sessionKey
+  lightboxEditResults.value = lightboxEditResultsForSession(sessionKey)
   lightboxActiveIndex.value = lightboxHistoryItems(item).length
+  const lastResult = lightboxEditResults.value[lightboxEditResults.value.length - 1]
+  if (lastResult) activateLightboxEditPlaceholder(lastResult)
   resetLightboxAnnotationState({ clearLayer: true })
 }
 
@@ -2645,6 +2714,7 @@ function closeLightbox() {
   lightboxEditPrompt.value = ''
   lightboxEditReferencePaths.value = []
   lightboxEditResults.value = []
+  lightboxEditSessionKey.value = ''
   lightboxActiveIndex.value = 0
   resetLightboxAnnotationState({ clearLayer: true })
 }
@@ -3034,8 +3104,10 @@ async function submitLightboxEdit() {
     return
   }
   let placeholder = null
+  const sessionKey = lightboxEditSessionKey.value
+  const operation = { startedAt: Date.now() }
   try {
-    lightboxEditSubmitting.value = true
+    lightboxEditOperations.set(sessionKey, operation)
     errorMessage.value = ''
     const sourceItem = lightboxActiveItem.value
     placeholder = appendLightboxEditPlaceholder(sourceItem, nextPrompt, { activate: false })
@@ -3058,7 +3130,7 @@ async function submitLightboxEdit() {
     if (placeholder) removeLightboxEditPlaceholder(placeholder)
     errorMessage.value = error.message || String(error)
   } finally {
-    lightboxEditSubmitting.value = false
+    if (lightboxEditOperations.get(sessionKey) === operation) lightboxEditOperations.delete(sessionKey)
   }
 }
 
@@ -3073,19 +3145,33 @@ function appendUniquePaths(paths) {
     })
 }
 
-function lightboxEditResultOffset() {
-  if (!lightboxItem.value) return 0
-  return lightboxHistoryItems(lightboxItem.value).length + 1
+function lightboxEditSessionKeyFor(item) {
+  return [resultOwnerJobUid(item), lightboxItemIdentity(item)].filter(Boolean).join(':')
+}
+
+function lightboxEditResultsForSession(sessionKey) {
+  const key = String(sessionKey || '').trim()
+  if (!key) return []
+  if (!lightboxEditResultsBySession.has(key)) lightboxEditResultsBySession.set(key, [])
+  return lightboxEditResultsBySession.get(key)
 }
 
 function activateLightboxEditPlaceholder(placeholder) {
-  const index = lightboxEditResults.value.indexOf(placeholder)
-  if (index >= 0) lightboxActiveIndex.value = lightboxEditResultOffset() + index
+  const identity = lightboxItemIdentity(placeholder)
+  const index = lightboxPreviewItems.value.findIndex((item) => (
+    item === placeholder || (identity && lightboxItemIdentity(item) === identity)
+  ))
+  if (index >= 0) lightboxActiveIndex.value = index
 }
 
 function removeLightboxEditPlaceholder(placeholder) {
-  lightboxEditResults.value = lightboxEditResults.value.filter((item) => item !== placeholder)
-  lightboxActiveIndex.value = Math.min(lightboxActiveIndex.value, Math.max(0, lightboxPreviewItems.value.length - 1))
+  const sessionKey = placeholder?.sessionKey || lightboxEditSessionKey.value
+  const sessionResults = lightboxEditResultsForSession(sessionKey)
+  const index = sessionResults.indexOf(placeholder)
+  if (index >= 0) sessionResults.splice(index, 1)
+  if (lightboxEditSessionKey.value === sessionKey) {
+    lightboxActiveIndex.value = Math.min(lightboxActiveIndex.value, Math.max(0, lightboxPreviewItems.value.length - 1))
+  }
 }
 
 function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
@@ -3100,17 +3186,19 @@ function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
     jobUid: '',
     sourceJobUid: resultOwnerJobUid(sourceItem),
     sourceResultKey: resultKey(sourceItem),
+    sessionKey: lightboxEditSessionKey.value,
     editSource: buildEditSource(sourceItem),
     historyItems: buildLightboxEditHistory(sourceItem),
     promptChain: buildLightboxPromptChain(sourceItem, prompt),
   }
   lightboxEditResults.value.push(placeholder)
   if (options.activate !== false) activateLightboxEditPlaceholder(placeholder)
-  return placeholder
+  return lightboxEditResults.value[lightboxEditResults.value.length - 1]
 }
 
-function applyLightboxEditResult(placeholder, latestJob) {
-  const latestQueue = collectResultQueues(latestJob)[0]
+function applyLightboxEditResult(placeholder, latestJob, runUid = '') {
+  const queues = collectResultQueues(latestJob)
+  const latestQueue = queues.find((queue) => String(queue?.key || '') === String(runUid || '')) || queues[0]
   const result = latestQueue?.items?.[0] || null
   const editMetadata = preserveLightboxEditMetadata(placeholder)
   if (!result) {
@@ -3121,6 +3209,7 @@ function applyLightboxEditResult(placeholder, latestJob) {
       previewSrc: lightboxThumbnailSrc(placeholder),
       jobUid: latestJob?.job_uid || placeholder.jobUid || '',
     })
+    if (lightboxEditSessionKey.value === placeholder.sessionKey) activateLightboxEditPlaceholder(placeholder)
     return
   }
   Object.assign(placeholder, {
@@ -3134,8 +3223,7 @@ function applyLightboxEditResult(placeholder, latestJob) {
     previewSrc: '',
   })
   void refreshImagePreview(resultPreviewKey(placeholder), { force: true })
-  const index = lightboxEditResults.value.indexOf(placeholder)
-  if (index >= 0) lightboxActiveIndex.value = index + 1
+  if (lightboxEditSessionKey.value === placeholder.sessionKey) activateLightboxEditPlaceholder(placeholder)
 }
 
 async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referencePaths = [], annotationDataUrl = '', placeholder: existingPlaceholder = null }) {
@@ -3196,7 +3284,7 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     if (runResult && runResult.ok === false) {
       throw new Error(runResult.summary?.error || '生成任务失败，请查看日志')
     }
-    applyLightboxEditResult(placeholder, completedJob)
+    applyLightboxEditResult(placeholder, completedJob, runResult?.summary?.run_uid || '')
     refreshResultPreviewCandidates(collectResultCards(completedJob), { force: true })
     await loadJobs()
   } catch (error) {
@@ -3298,6 +3386,141 @@ async function restoreJob(job, options = {}) {
   else if (jobPollingUid === detail.job_uid) stopJobPolling()
   persistWorkbenchState()
   return detail
+}
+
+function taskActionErrorMessage(error, fallback) {
+  const detail = error?.detail?.message || error?.detail || error?.message || error
+  if (detail && typeof detail === 'object') {
+    return String(detail.message || detail.error || fallback)
+  }
+  return String(detail || fallback)
+}
+
+async function toggleTaskPinned(job) {
+  const uid = String(job?.job_uid || '').trim()
+  if (!uid || pinningJobUids.has(uid)) return
+  pinningJobUids.add(uid)
+  errorMessage.value = ''
+  try {
+    const updated = await window.cs.setAiImageJobPinned(job.job_uid, !job.pinned_at)
+    if (!updated?.job_uid) throw new Error('置顶状态更新失败')
+    if (activeJobUid.value === uid) currentJob.value = { ...currentJob.value, ...updated }
+    upsertJob(updated)
+    await loadJobs()
+    announceStatus(updated.pinned_at ? '任务已置顶' : '已取消置顶')
+  } catch (error) {
+    errorMessage.value = taskActionErrorMessage(error, '置顶状态更新失败，请稍后重试')
+  } finally {
+    pinningJobUids.delete(uid)
+  }
+}
+
+function openDeleteTaskDialog(job, event) {
+  if (!job?.job_uid) return
+  if (hasActiveRuns(job)) {
+    announceStatus('任务生成中，完成或失败后可删除')
+    return
+  }
+  if (event?.currentTarget) dialogReturnFocus.deleteTask = event.currentTarget
+  deleteTaskDialog.job = job
+  deleteTaskDialog.error = ''
+  deleteTaskDialog.submitting = false
+  deleteTaskDialog.open = true
+}
+
+function closeDeleteTaskDialog() {
+  if (deleteTaskDialog.submitting) return
+  deleteTaskDialog.open = false
+  deleteTaskDialog.job = null
+  deleteTaskDialog.error = ''
+}
+
+function forgetDeletedTaskPreviewState(job) {
+  const cache = job?.summary?.result_cache
+  if (cache && typeof cache === 'object' && !Array.isArray(cache)) {
+    Object.entries(cache).forEach(([url, path]) => {
+      delete resultCachePaths[String(url || '').trim()]
+      resultCachePending.delete(String(url || '').trim())
+      forgetImagePreview(url)
+      forgetImagePreview(path)
+    })
+  }
+  collectResultCards(job).forEach((item) => {
+    resultPreviewCandidates(item).forEach((path) => forgetImagePreview(path))
+    resultCachePending.delete(String(item?.url || '').trim())
+    if (item?.url) delete resultCachePaths[String(item.url).trim()]
+  })
+}
+
+function clearDeletedTaskEditSessions(jobUid) {
+  const prefix = `${String(jobUid || '').trim()}:`
+  if (!prefix) return
+  for (const key of [...lightboxEditResultsBySession.keys()]) {
+    if (String(key).startsWith(prefix)) lightboxEditResultsBySession.delete(key)
+  }
+  for (const key of [...lightboxEditOperations.keys()]) {
+    if (String(key).startsWith(prefix)) lightboxEditOperations.delete(key)
+  }
+}
+
+function resetToEmptyTaskAfterDeletion() {
+  const previous = formSnapshot()
+  const next = defaultAiImageForm({
+    title: nextTaskTitle(),
+    modelId: previous.modelId,
+    ratio: previous.ratio,
+    size: previous.size,
+    quality: previous.quality,
+    format: previous.format,
+    count: previous.count,
+    output_dir: previous.output_dir,
+  })
+  restoringState = true
+  currentJob.value = null
+  pendingActiveJobUid.value = ''
+  applyFormSnapshot(next)
+  selectedResults.clear()
+  errorMessage.value = ''
+  restoringState = false
+}
+
+async function removeDeletedTaskState(job) {
+  const uid = String(job?.job_uid || '').trim()
+  if (!uid) return
+  const deletedCurrentTask = activeJobUid.value === uid
+  if (jobPollingUid === uid) stopJobPolling()
+  if (autosaveTimer && deletedCurrentTask) clearTimeout(autosaveTimer)
+  if (deletedCurrentTask) autosaveTimer = null
+  forgetDeletedTaskPreviewState(job)
+  clearDeletedTaskEditSessions(uid)
+  delete taskDrafts[uid]
+  jobs.value = jobs.value.filter((item) => item?.job_uid !== uid)
+  if (pendingActiveJobUid.value === uid) pendingActiveJobUid.value = ''
+  if (deletedCurrentTask) resetToEmptyTaskAfterDeletion()
+  await loadJobs()
+  if (deletedCurrentTask && jobs.value[0]) {
+    await restoreJob(jobs.value[0], { preserveCurrentDraft: false })
+  }
+  persistWorkbenchState()
+}
+
+async function confirmDeleteTask() {
+  const job = deleteTaskDialog.job
+  if (!job?.job_uid || deleteTaskDialog.submitting || hasActiveRuns(job)) return
+  deleteTaskDialog.submitting = true
+  deleteTaskDialog.error = ''
+  try {
+    const result = await window.cs.deleteAiImageJob(job.job_uid)
+    await removeDeletedTaskState(job)
+    const deletedCacheFiles = Number(result?.deleted_cache_files || 0)
+    deleteTaskDialog.submitting = false
+    closeDeleteTaskDialog()
+    announceStatus(`任务已删除，已清理 ${deletedCacheFiles} 个缓存文件`)
+  } catch (error) {
+    deleteTaskDialog.error = taskActionErrorMessage(error, '任务删除失败，请稍后重试')
+  } finally {
+    deleteTaskDialog.submitting = false
+  }
 }
 
 async function selectTaskRecord(job) {
@@ -4537,15 +4760,26 @@ function localFileUrl(path) {
 }
 
 .aiw-history-item {
+  position: relative;
+  width: 100%;
+  min-height: 126px;
+  overflow: hidden;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #242430;
+}
+
+.aiw-history-select {
   width: 100%;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   gap: 5px;
-  padding: 11px;
-  border: 1px solid #2e2e3a;
-  border-radius: 8px;
-  background: #242430;
+  min-height: 124px;
+  padding: 11px 60px 34px 11px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
   text-align: left;
   cursor: pointer;
 }
@@ -4558,6 +4792,32 @@ function localFileUrl(path) {
 
 .aiw-history-item small {
   line-height: 1.4;
+}
+
+.aiw-history-pin,
+.aiw-history-delete {
+  position: absolute;
+  right: 8px;
+  z-index: 2;
+  min-height: 0;
+  padding: 4px 6px;
+  border: 0;
+  background: transparent;
+  color: #ff6b5f;
+  font-size: 11px;
+}
+
+.aiw-history-pin {
+  top: 7px;
+}
+
+.aiw-history-delete {
+  bottom: 7px;
+}
+
+.aiw-history-select:not(:disabled):hover {
+  border-color: transparent;
+  background: transparent;
 }
 
 .aiw-history-thumbs {
@@ -4972,6 +5232,74 @@ function localFileUrl(path) {
   padding: 28px;
   background: rgba(10, 10, 14, 0.82);
   backdrop-filter: blur(10px);
+}
+
+.aiw-delete-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 96;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(10, 10, 14, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.aiw-delete-dialog > section {
+  width: min(480px, 92vw);
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+  border-radius: 10px;
+  background: #1c1c22;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.42);
+}
+
+.aiw-delete-dialog header,
+.aiw-delete-dialog footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aiw-delete-dialog header > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.aiw-delete-dialog header span,
+.aiw-delete-dialog-copy p:last-child {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.aiw-delete-dialog-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px;
+  border: 1px solid rgba(248, 113, 113, 0.18);
+  border-radius: 8px;
+  background: rgba(248, 113, 113, 0.06);
+}
+
+.aiw-delete-dialog-copy p {
+  margin: 0;
+  line-height: 1.6;
+}
+
+.aiw-delete-dialog footer {
+  justify-content: flex-end;
+}
+
+.aiw-delete-confirm {
+  border-color: rgba(248, 113, 113, 0.56);
+  background: #b4232f;
+  color: #fff;
 }
 
 .aiw-prompt-dialog section {
