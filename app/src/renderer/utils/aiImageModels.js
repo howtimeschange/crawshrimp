@@ -6,61 +6,66 @@ export const AI_IMAGE_MODELS = [
     configId: 'ai.1xm.gpt_image_2k_key',
     size: '1024x1024',
     keyTier: '2k',
+    providerFamily: 'gpt-image',
   },
   {
     id: 'gpt-image-4k',
     key: 'gpt-image-2',
     label: 'GPT Image 4K',
     configId: 'ai.1xm.gpt_image_4k_key',
-    size: '2048x2048',
+    size: '2880x2880',
     keyTier: '4k',
+    providerFamily: 'gpt-image',
   },
   {
     id: 'gemini-3.1-flash-image-preview',
     key: 'gemini-3.1-flash-image-preview',
     label: 'Gemini 3.1 Flash Image Preview',
     configId: 'ai.1xm.gemini_3_1_flash_image_preview_key',
-    size: '1024x1024',
+    size: '1K',
     keyTier: 'ai.1xm.gemini_3_1_flash_image_preview_key',
+    providerFamily: 'nano-banana',
   },
   {
     id: 'gemini-3-pro-image-preview',
     key: 'gemini-3-pro-image-preview',
     label: 'Gemini 3 Pro Image Preview',
     configId: 'ai.1xm.gemini_3_pro_image_preview_key',
-    size: '1024x1024',
+    size: '2K',
     keyTier: 'ai.1xm.gemini_3_pro_image_preview_key',
+    providerFamily: 'nano-banana',
   },
 ]
 
 export const AI_IMAGE_SIZE_OPTIONS = [
   { size: '1024x1024', ratio: '1:1', tier: '2k' },
   { size: '2048x2048', ratio: '1:1', tier: '2k' },
-  { size: '2048x2048', ratio: '1:1', tier: '4k' },
+  { size: '2880x2880', ratio: '1:1', tier: '4k' },
   { size: '960x1280', ratio: '3:4', tier: '2k' },
   { size: '1536x2048', ratio: '3:4', tier: '2k' },
-  { size: '1536x2048', ratio: '3:4', tier: '4k' },
+  { size: '2448x3264', ratio: '3:4', tier: '4k' },
   { size: '1280x960', ratio: '4:3', tier: '2k' },
   { size: '2048x1536', ratio: '4:3', tier: '2k' },
-  { size: '2048x1536', ratio: '4:3', tier: '4k' },
+  { size: '3264x2448', ratio: '4:3', tier: '4k' },
   { size: '1024x1280', ratio: '4:5', tier: '2k' },
   { size: '1536x1920', ratio: '4:5', tier: '2k' },
-  { size: '1536x1920', ratio: '4:5', tier: '4k' },
+  { size: '2560x3200', ratio: '4:5', tier: '4k' },
   { size: '1536x1024', ratio: '3:2', tier: '2k' },
-  { size: '1536x1024', ratio: '3:2', tier: '4k' },
+  { size: '3504x2336', ratio: '3:2', tier: '4k' },
   { size: '1024x1536', ratio: '2:3', tier: '2k' },
-  { size: '1024x1536', ratio: '2:3', tier: '4k' },
+  { size: '2336x3504', ratio: '2:3', tier: '4k' },
   { size: '1536x864', ratio: '16:9', tier: '2k' },
-  { size: '1920x1080', ratio: '16:9', tier: '2k' },
-  { size: '1920x1080', ratio: '16:9', tier: '4k' },
+  { size: '2048x1152', ratio: '16:9', tier: '2k' },
+  { size: '3840x2160', ratio: '16:9', tier: '4k' },
   { size: '864x1536', ratio: '9:16', tier: '2k' },
-  { size: '1080x1920', ratio: '9:16', tier: '2k' },
-  { size: '1080x1920', ratio: '9:16', tier: '4k' },
+  { size: '1152x2048', ratio: '9:16', tier: '2k' },
+  { size: '2160x3840', ratio: '9:16', tier: '4k' },
 ]
 export const AI_IMAGE_RATIOS = ['1:1', '3:4', '4:3', '4:5', '3:2', '2:3', '16:9', '9:16']
 export const AI_IMAGE_SIZES = [...new Set(AI_IMAGE_SIZE_OPTIONS.map((option) => option.size))]
-export const AI_IMAGE_QUALITIES = ['standard', 'high']
-export const AI_IMAGE_FORMATS = ['png', 'jpg', 'webp']
+export const AI_IMAGE_QUALITIES = ['auto', 'high', 'medium', 'low']
+export const AI_IMAGE_FORMATS = ['png', 'jpeg', 'webp']
+export const NANO_BANANA_RESOLUTIONS = ['1K', '2K', '4K']
 
 export function outputDirHint(platform = '') {
   const isWindows = String(platform || '').toLowerCase().startsWith('win')
@@ -70,6 +75,31 @@ export function outputDirHint(platform = '') {
 
 export function getAiImageModel(modelId) {
   return AI_IMAGE_MODELS.find((model) => model.id === modelId) || AI_IMAGE_MODELS[0]
+}
+
+export function isNanoBananaModel(modelIdOrKey) {
+  const value = String(modelIdOrKey || '').trim()
+  const model = AI_IMAGE_MODELS.find((item) => item.id === value || item.key === value)
+  return model?.providerFamily === 'nano-banana'
+}
+
+export function sizeOptionsForModel(modelId, ratio) {
+  const model = getAiImageModel(modelId)
+  if (isNanoBananaModel(model.id)) return [...NANO_BANANA_RESOLUTIONS]
+  const normalizedRatio = AI_IMAGE_RATIOS.includes(ratio) ? ratio : '1:1'
+  return AI_IMAGE_SIZE_OPTIONS
+    .filter((option) => option.ratio === normalizedRatio && option.tier === model.keyTier)
+    .map((option) => option.size)
+}
+
+export function qualityOptionsForModel(modelId) {
+  return isNanoBananaModel(modelId) ? [] : [...AI_IMAGE_QUALITIES]
+}
+
+export function sizeForModel(modelId, ratio, currentSize = '') {
+  const model = getAiImageModel(modelId)
+  const options = sizeOptionsForModel(model.id, ratio)
+  return options.includes(currentSize) ? currentSize : (options.includes(model.size) ? model.size : options[0] || model.size)
 }
 
 function gcd(left, right) {
@@ -144,7 +174,7 @@ export function defaultAiImageForm(overrides = {}) {
   const model = getAiImageModel(overrides.modelId)
   const baseSize = overrides.size || model.size
   const ratio = overrides.ratio || ratioForSize(baseSize)
-  const size = sizeForRatio(ratio, baseSize, model.keyTier)
+  const size = sizeForModel(model.id, ratio, baseSize)
   return {
     title: 'AI 生图任务',
     modelId: model.id,

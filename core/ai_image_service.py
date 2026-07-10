@@ -23,6 +23,12 @@ GPT_4K_CONFIG_ID = "ai.1xm.gpt_image_4k_key"
 GEMINI_FLASH_CONFIG_ID = "ai.1xm.gemini_3_1_flash_image_preview_key"
 GEMINI_PRO_CONFIG_ID = "ai.1xm.gemini_3_pro_image_preview_key"
 MAX_MATERIALIZED_DATA_URL_BYTES = 25 * 1024 * 1024
+NANO_BANANA_MODELS = {
+    "gemini-3.1-flash-image-preview",
+    "gemini-3-pro-image-preview",
+}
+GPT_IMAGE_QUALITIES = {"auto", "low", "medium", "high"}
+NANO_BANANA_RESOLUTIONS = {"1K", "2K", "4K"}
 
 
 class MissingModelKeyError(ValueError):
@@ -76,20 +82,52 @@ def _size_tier(size: str) -> str:
     return "2k"
 
 
-def _normalize_size(size: Any, *, max_edge: int = 2048) -> str:
-    value = _compact(size) or "1024x1024"
+def _parse_pixel_size(size: Any) -> tuple[int, int] | None:
+    value = _compact(size)
     match = re.match(r"^(\d+)x(\d+)$", value, flags=re.IGNORECASE)
     if not match:
-        return value
-    width = int(match.group(1))
-    height = int(match.group(2))
-    longest = max(width, height)
-    if longest <= max_edge:
-        return f"{width}x{height}"
-    scale = max_edge / float(longest)
-    normalized_width = max(1, int(round(width * scale)))
-    normalized_height = max(1, int(round(height * scale)))
-    return f"{normalized_width}x{normalized_height}"
+        return None
+    return int(match.group(1)), int(match.group(2))
+
+
+def _validated_gpt_image_size(size: Any) -> str:
+    value = _compact(size) or "1024x1024"
+    if value.lower() == "auto":
+        return "auto"
+    dimensions = _parse_pixel_size(value)
+    if not dimensions:
+        raise ValueError(f"GPT-Image-2 尺寸格式无效: {value}")
+    width, height = dimensions
+    pixels = width * height
+    ratio = max(width, height) / float(min(width, height) or 1)
+    if (
+        max(width, height) > 3840
+        or width % 16 != 0
+        or height % 16 != 0
+        or ratio > 3
+        or pixels < 655_360
+        or pixels > 8_294_400
+    ):
+        raise ValueError(
+            "GPT-Image-2 尺寸必须满足：最大边不超过 3840、宽高为 16 的倍数、"
+            "长宽比不超过 3:1、总像素为 655360–8294400"
+        )
+    return f"{width}x{height}"
+
+
+def _nano_resolution(params: Mapping[str, Any]) -> str:
+    for raw in (params.get("resolution"), params.get("size"), params.get("quality")):
+        value = _compact(raw).upper()
+        if value in NANO_BANANA_RESOLUTIONS:
+            return value
+    dimensions = _parse_pixel_size(params.get("size"))
+    if dimensions:
+        longest = max(dimensions)
+        if longest > 2048:
+            return "4K"
+        if longest > 1024:
+            return "2K"
+    return "1K"
 
 
 def _settings_value(settings: Mapping[str, Any], config_id: str, alias: str = "") -> str:
@@ -143,27 +181,46 @@ def _param_input_assets(params: Mapping[str, Any]) -> list[dict[str, Any]]:
     return assets
 
 
-def build_one_xm_payload(
+def build_workbench_one_xm_payload(
     job: Mapping[str, Any],
     assets: list[Mapping[str, Any]] | None = None,
     *,
     file_to_data_url_fn: Callable[[str], str] = file_to_data_url,
 ) -> dict:
     params = _params(job)
-    quality = _compact(params.get("quality") or "auto").lower()
-    if quality not in {"auto", "standard", "low", "medium", "high"}:
-        quality = "auto"
-    payload: dict[str, Any] = {
-        "model": _compact(job.get("model_key") or params.get("model") or "gpt-image-2") or "gpt-image-2",
-        "prompt": _compact(job.get("prompt") or params.get("prompt")),
-        "size": _normalize_size(params.get("size") or "1024x1024"),
-        "quality": quality,
-        "output_format": _compact(params.get("output_format") or params.get("response_format") or params.get("format") or "png") or "png",
-        "n": _requested_image_count(job),
-    }
-    ratio = _compact(params.get("ratio"))
-    if ratio:
-        payload["ratio"] = ratio
+    model = _compact(job.get("model_key") or params.get("model") or "gpt-image-2") or "gpt-image-2"
+    prompt = _compact(job.get("prompt") or params.get("prompt"))
+    if model in NANO_BANANA_MODELS:
+        payload: dict[str, Any] = {
+            "model": model,
+            "prompt": prompt,
+            "size": _compact(params.get("ratio")) or "1:1",
+            "quality": _nano_resolution(params),
+        }
+    else:
+        quality = _compact(params.get("quality") or "auto").lower()
+        if quality == "standard":
+            quality = "medium"
+        if quality not in GPT_IMAGE_QUALITIES:
+            quality = "auto"
+        output_format = _compact(
+            params.get("output_format")
+            or params.get("response_format")
+            or params.get("format")
+            or "png"
+        ).lower() or "png"
+        if output_format == "jpg":
+            output_format = "jpeg"
+        if output_format not in {"png", "jpeg", "webp"}:
+            output_format = "png"
+        payload = {
+            "model": model,
+            "prompt": prompt,
+            "size": _validated_gpt_image_size(params.get("size") or "1024x1024"),
+            "quality": quality,
+            "output_format": output_format,
+            "n": _requested_image_count(job),
+        }
     for optional_key in ("webhook_url", "webhook_secret", "mask"):
         if params.get(optional_key):
             payload[optional_key] = params.get(optional_key)
@@ -186,6 +243,20 @@ def build_one_xm_payload(
     if images:
         payload["image"] = images[:10]
     return payload
+
+
+def build_one_xm_payload(
+    job: Mapping[str, Any],
+    assets: list[Mapping[str, Any]] | None = None,
+    *,
+    file_to_data_url_fn: Callable[[str], str] = file_to_data_url,
+) -> dict:
+    """Compatibility wrapper for the AI image workbench payload builder."""
+    return build_workbench_one_xm_payload(
+        job,
+        assets,
+        file_to_data_url_fn=file_to_data_url_fn,
+    )
 
 
 def _default_downloader(url: str, target: Path) -> None:

@@ -100,7 +100,7 @@ class AiImageServiceTests(unittest.TestCase):
 
         self.assertEqual(payload["prompt"], "make a hero image")
         self.assertEqual(payload["size"], "2048x2048")
-        self.assertEqual(payload["ratio"], "1:1")
+        self.assertNotIn("ratio", payload)
         self.assertEqual(payload["quality"], "high")
         self.assertEqual(payload["n"], 2)
         self.assertEqual(payload["image"], [
@@ -184,29 +184,64 @@ class AiImageServiceTests(unittest.TestCase):
                 max_bytes=1,
             )
 
-    def test_build_payload_normalizes_oversized_4k_dimensions_to_provider_limit(self):
-        payload = ai_image_service.build_one_xm_payload({
-            "prompt": "make a product image",
-            "params": {"size": "4096x4096"},
-        })
-        self.assertEqual(payload["size"], "2048x2048")
-
-        wide_payload = ai_image_service.build_one_xm_payload({
+    def test_gpt_workbench_payload_keeps_official_4k_and_normalizes_fields(self):
+        payload = ai_image_service.build_workbench_one_xm_payload({
+            "model_key": "gpt-image-2",
             "prompt": "make a product banner",
-            "params": {"size": "4096x2304"},
+            "params": {
+                "size": "3840x2160",
+                "ratio": "16:9",
+                "quality": "standard",
+                "response_format": "jpg",
+                "n": 2,
+            },
         })
-        self.assertEqual(wide_payload["size"], "2048x1152")
 
-    def test_build_payload_accepts_ui_response_format_and_standard_quality(self):
+        self.assertEqual(payload["size"], "3840x2160")
+        self.assertEqual(payload["quality"], "medium")
+        self.assertEqual(payload["output_format"], "jpeg")
+        self.assertEqual(payload["n"], 2)
+        self.assertNotIn("ratio", payload)
+
+    def test_gpt_workbench_payload_rejects_dimensions_outside_official_rules(self):
+        for size in ("4096x4096", "1920x1080", "640x640"):
+            with self.subTest(size=size), self.assertRaisesRegex(ValueError, "GPT-Image-2"):
+                ai_image_service.build_workbench_one_xm_payload({
+                    "model_key": "gpt-image-2",
+                    "prompt": "make a product image",
+                    "params": {"size": size},
+                })
+
+    def test_nano_workbench_payload_uses_ratio_and_resolution_without_openai_fields(self):
+        payload = ai_image_service.build_workbench_one_xm_payload({
+            "model_key": "gemini-3-pro-image-preview",
+            "prompt": "make a product image",
+            "params": {
+                "size": "4K",
+                "ratio": "16:9",
+                "quality": "high",
+                "response_format": "png",
+                "n": 4,
+            },
+        })
+
+        self.assertEqual(payload, {
+            "model": "gemini-3-pro-image-preview",
+            "prompt": "make a product image",
+            "size": "16:9",
+            "quality": "4K",
+        })
+
+    def test_build_payload_normalizes_legacy_ui_format_and_quality(self):
         job = {
             "prompt": "make a product image",
-            "params": {"quality": "standard", "response_format": "webp"},
+            "params": {"quality": "standard", "response_format": "jpg"},
         }
 
         payload = ai_image_service.build_one_xm_payload(job)
 
-        self.assertEqual(payload["quality"], "standard")
-        self.assertEqual(payload["output_format"], "webp")
+        self.assertEqual(payload["quality"], "medium")
+        self.assertEqual(payload["output_format"], "jpeg")
 
     def test_run_job_saves_remote_urls_without_blocking_on_local_downloads(self):
         job = data_sink.create_ai_image_job({
