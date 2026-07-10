@@ -645,7 +645,7 @@ def _text_list(value: Any) -> list[str]:
 
 
 def _generation_count(payload: Mapping[str, Any]) -> int:
-    for key in ("count", "ai_image_count", "n"):
+    for key in ("generation_image_count", "count", "n"):
         count = _positive_int(payload.get(key))
         if count:
             return min(count, 8)
@@ -673,7 +673,7 @@ def _generation_run_params(payload: Mapping[str, Any]) -> dict[str, Any]:
     output_format = _text(payload.get("output_format") or payload.get("response_format") or payload.get("format")).lower()
     if output_format:
         run_params["output_format"] = output_format
-    run_params["ai_image_count"] = _generation_count(payload)
+    run_params["generation_image_count"] = _generation_count(payload)
     return run_params
 
 

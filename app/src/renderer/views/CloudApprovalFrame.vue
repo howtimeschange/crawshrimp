@@ -25,20 +25,78 @@
     </section>
 
     <section v-else class="frame-shell">
-      <iframe :src="embeddedUrl" title="云端审批" sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals" referrerpolicy="no-referrer" />
+      <section v-if="frameError" class="empty-state frame-error">
+        <h3>云端审批页面加载失败</h3>
+        <p>{{ frameError }}</p>
+        <button type="button" class="open-button" @click="openCloudWorkbench">在浏览器打开</button>
+      </section>
+      <template v-else>
+        <div v-if="!frameLoaded" class="frame-loading">
+          <span class="spinner"></span>
+          <span>正在加载云端审批工作台</span>
+        </div>
+        <iframe
+          :src="embeddedUrl"
+          title="云端审批"
+          sandbox="allow-same-origin allow-scripts allow-forms allow-popups allow-downloads allow-modals"
+          referrerpolicy="no-referrer"
+          @load="onFrameLoad"
+          @error="onFrameError"
+        />
+      </template>
     </section>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { buildEmbeddedCloudApprovalUrl } from '../utils/cloudApprovalUrl.js'
 
 const status = ref(null)
 const error = ref('')
+const frameLoaded = ref(false)
+const frameError = ref('')
+let frameLoadTimer = null
 const cloudUrl = computed(() => String(status.value?.base_url || '').trim())
 const embeddedUrl = computed(() => buildEmbeddedCloudApprovalUrl(cloudUrl.value))
 const showMachineStatus = computed(() => Boolean(status.value && (!status.value.running || !status.value.token_present || ['needs_login', 'config_missing', 'version_blocked'].includes(status.value.health))))
+
+function clearFrameLoadTimer() {
+  if (frameLoadTimer) {
+    clearTimeout(frameLoadTimer)
+    frameLoadTimer = null
+  }
+}
+
+function resetFrameState(url) {
+  clearFrameLoadTimer()
+  frameLoaded.value = false
+  frameError.value = ''
+  if (!url) return
+  frameLoadTimer = setTimeout(() => {
+    if (!frameLoaded.value) {
+      frameError.value = '云端审批工作台加载超时，可能被本机服务、网络策略或浏览器嵌入策略拦截。'
+    }
+  }, 12000)
+}
+
+function onFrameLoad() {
+  frameLoaded.value = true
+  frameError.value = ''
+  clearFrameLoadTimer()
+}
+
+function onFrameError() {
+  frameLoaded.value = false
+  frameError.value = '云端审批工作台无法嵌入当前窗口。'
+  clearFrameLoadTimer()
+}
+
+async function openCloudWorkbench() {
+  const url = embeddedUrl.value || cloudUrl.value
+  if (!url || typeof window.cs?.openExternalUrl !== 'function') return
+  await window.cs.openExternalUrl(url)
+}
 
 async function refresh() {
   try {
@@ -49,7 +107,9 @@ async function refresh() {
   }
 }
 
+watch(embeddedUrl, resetFrameState, { immediate: true })
 onMounted(refresh)
+onUnmounted(clearFrameLoadTimer)
 </script>
 
 <style scoped>
@@ -124,11 +184,49 @@ onMounted(refresh)
 }
 
 .frame-shell {
+  position: relative;
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   padding: 0;
+}
+
+.frame-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--text2);
+  background: var(--bg);
+  font-size: 13px;
+}
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.16);
+  border-top-color: var(--orange);
+  animation: spin 0.8s linear infinite;
+}
+
+.frame-error {
+  max-width: 560px;
+}
+
+.open-button {
+  margin-top: 14px;
+  min-height: 32px;
+  padding: 0 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 107, 43, 0.5);
+  background: var(--orange-bg);
+  color: var(--orange);
+  font-weight: 700;
 }
 
 iframe {
@@ -137,5 +235,9 @@ iframe {
   width: 100%;
   border: 0;
   background: white;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 </style>

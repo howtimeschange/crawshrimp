@@ -99,12 +99,12 @@ function AnnotationReactApp({
     callbackRef.current.onReady?.()
   }, [])
 
-  function stopCameraGesture(event) {
+  const stopCameraGesture = useCallback((event) => {
     event.preventDefault()
     event.stopPropagation()
     event.stopImmediatePropagation?.()
     resetCamera(editorRef.current)
-  }
+  }, [])
 
   useEffect(() => {
     const target = gestureTargetRef.current

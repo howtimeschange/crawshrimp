@@ -38,9 +38,14 @@
         <section class="aiw-material-box aiw-prompt-box">
           <div class="aiw-panel-head">
             <span>Prompt</span>
-            <button type="button" @click="form.prompt = ''">
-              <span class="aiw-icon-button-content"><AiwIcon name="eraser" />清空</span>
-            </button>
+            <div class="aiw-panel-actions">
+              <button type="button" @click="openBatchGenerationDialog">
+                <span class="aiw-icon-button-content"><AiwIcon name="wand" />批量生成</span>
+              </button>
+              <button type="button" @click="form.prompt = ''">
+                <span class="aiw-icon-button-content"><AiwIcon name="eraser" />清空</span>
+              </button>
+            </div>
           </div>
           <textarea v-model.trim="form.prompt" placeholder="描述商品、卖点、模特姿态、背景和禁用元素..."></textarea>
         </section>
@@ -362,6 +367,192 @@
         </div>
       </main>
     </div>
+    <div v-if="batchGenerationDialog.open" class="aiw-batch-dialog" @click.self="closeBatchGenerationDialog">
+      <section class="aiw-batch-panel" role="dialog" aria-modal="true" aria-label="批量生成">
+        <header class="aiw-batch-head">
+          <div>
+            <strong>批量生成</strong>
+            <span>统一主图、参考图和参数，为每条 Prompt 单独生成 1 张图。</span>
+          </div>
+          <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">
+            <span class="aiw-icon-button-content"><AiwIcon name="x" />关闭</span>
+          </button>
+        </header>
+
+        <div class="aiw-batch-board">
+          <aside class="aiw-batch-source-column">
+            <label class="aiw-field">
+              <span>任务名前缀</span>
+              <input
+                v-model.trim="batchGenerationDialog.titlePrefix"
+                type="text"
+                placeholder="例如 批量生图"
+                :disabled="batchGenerationDialog.submitting"
+              />
+            </label>
+
+            <section class="aiw-batch-source-box">
+              <div class="aiw-panel-head">
+                <span>主图</span>
+                <button type="button" :disabled="batchGenerationDialog.submitting" @click="chooseBatchMainImage">
+                  <span class="aiw-icon-button-content"><AiwIcon name="image" />{{ batchGenerationDialog.mainImagePath ? '替换' : '选择' }}</span>
+                </button>
+              </div>
+              <button
+                v-if="!batchGenerationDialog.mainImagePath"
+                type="button"
+                class="aiw-upload-tile compact"
+                :disabled="batchGenerationDialog.submitting"
+                @click="chooseBatchMainImage"
+              >
+                <strong>选择批量主图</strong>
+                <span>所有 Prompt 默认共用这一张主图</span>
+              </button>
+              <div v-else class="aiw-picked-asset compact">
+                <div class="aiw-thumb">
+                  <img
+                    v-if="imagePreviewSrc(batchGenerationDialog.mainImagePath)"
+                    :src="imagePreviewSrc(batchGenerationDialog.mainImagePath)"
+                    :alt="pathLabel(batchGenerationDialog.mainImagePath)"
+                    @error="markPreviewBroken(batchGenerationDialog.mainImagePath)"
+                  />
+                  <div v-else class="aiw-preview-fallback">
+                    <strong>{{ previewInitial(batchGenerationDialog.mainImagePath) }}</strong>
+                  </div>
+                </div>
+                <div>
+                  <strong>{{ pathLabel(batchGenerationDialog.mainImagePath) }}</strong>
+                  <span>{{ batchGenerationDialog.mainImagePath }}</span>
+                </div>
+                <button type="button" :disabled="batchGenerationDialog.submitting" @click="batchGenerationDialog.mainImagePath = ''">
+                  <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
+                </button>
+              </div>
+            </section>
+
+            <section class="aiw-batch-source-box">
+              <div class="aiw-panel-head">
+                <span>参考图</span>
+                <button type="button" :disabled="batchGenerationDialog.submitting" @click="chooseBatchReferenceImages">
+                  <span class="aiw-icon-button-content"><AiwIcon name="plus" />添加</span>
+                </button>
+              </div>
+              <button
+                class="aiw-upload-tile compact"
+                type="button"
+                :disabled="batchGenerationDialog.submitting"
+                @click="chooseBatchReferenceImages"
+              >
+                <strong>添加批量参考图</strong>
+                <span>会随每条 Prompt 一起提交</span>
+              </button>
+              <div v-if="batchGenerationDialog.referenceImagePaths.length" class="aiw-batch-reference-list">
+                <article
+                  v-for="(path, index) in batchGenerationDialog.referenceImagePaths"
+                  :key="`${path}-${index}`"
+                  class="aiw-reference-card"
+                >
+                  <div class="aiw-thumb">
+                    <img
+                      v-if="imagePreviewSrc(path)"
+                      :src="imagePreviewSrc(path)"
+                      :alt="pathLabel(path)"
+                      @error="markPreviewBroken(path)"
+                    />
+                    <div v-else class="aiw-preview-fallback">
+                      <strong>{{ previewInitial(path) }}</strong>
+                    </div>
+                  </div>
+                  <span>{{ pathLabel(path) }}</span>
+                  <button type="button" :disabled="batchGenerationDialog.submitting" @click="removeBatchReferencePath(index)">
+                    <span class="aiw-icon-button-content"><AiwIcon name="trash" />移除</span>
+                  </button>
+                </article>
+              </div>
+            </section>
+          </aside>
+
+          <main class="aiw-batch-prompt-board">
+            <div class="aiw-batch-board-head">
+              <div>
+                <strong>Prompt 任务</strong>
+                <span>{{ batchPromptCount }} 条将生成，每条固定 1 张</span>
+              </div>
+              <button type="button" :disabled="batchGenerationDialog.submitting" @click="addBatchPromptCard">
+                <span class="aiw-icon-button-content"><AiwIcon name="plus" />新增 Prompt</span>
+              </button>
+            </div>
+
+            <div class="aiw-batch-prompt-rail">
+              <article
+                v-for="(card, index) in batchPromptCards"
+                :key="card.id"
+                class="aiw-batch-prompt-card"
+              >
+                <header>
+                  <input
+                    v-model.trim="card.title"
+                    type="text"
+                    :placeholder="`Prompt ${index + 1}`"
+                    :disabled="batchGenerationDialog.submitting"
+                  />
+                  <button
+                    type="button"
+                    :disabled="batchGenerationDialog.submitting || batchPromptCards.length <= 1"
+                    @click="removeBatchPromptCard(card)"
+                  >
+                    <span class="aiw-icon-button-content"><AiwIcon name="trash" />删除</span>
+                  </button>
+                </header>
+                <textarea
+                  v-model.trim="card.prompt"
+                  placeholder="手动输入 Prompt，或从 Prompt 库选择"
+                  :disabled="batchGenerationDialog.submitting"
+                ></textarea>
+                <div class="aiw-batch-card-actions">
+                  <button type="button" :disabled="batchGenerationDialog.submitting" @click="openBatchPromptLibraryPicker(card)">从 Prompt 库选择</button>
+                  <span>状态：{{ card.prompt.trim() ? '待生成' : '待填写' }}</span>
+                </div>
+              </article>
+
+              <button type="button" class="aiw-batch-add-card" :disabled="batchGenerationDialog.submitting" @click="addBatchPromptCard">
+                <strong>+ 新增 Prompt</strong>
+                <span>增加一张待生成 AI 图</span>
+              </button>
+            </div>
+          </main>
+        </div>
+
+        <footer class="aiw-batch-footer">
+          <small v-if="batchGenerationDialog.error">{{ batchGenerationDialog.error }}</small>
+          <span v-else>将创建 {{ batchPromptCount }} 个单图任务，模型、比例、尺寸和输出目录沿用当前配置。</span>
+          <div>
+            <button type="button" :disabled="batchGenerationDialog.submitting" @click="closeBatchGenerationDialog">取消</button>
+            <button
+              type="button"
+              class="aiw-primary-action"
+              :class="{ loading: batchGenerationDialog.submitting }"
+              :disabled="batchGenerationDialog.submitting || !batchPromptCount"
+              @click="submitBatchGeneration"
+            >
+              <span class="aiw-icon-button-content">
+                <span v-if="batchGenerationDialog.submitting" class="aiw-edit-spinner" aria-hidden="true"></span>
+                <AiwIcon v-else name="wand" />{{ batchGenerationDialog.submitting ? '批量生成中...' : '开始批量生成' }}
+              </span>
+            </button>
+          </div>
+        </footer>
+      </section>
+    </div>
+
+    <PromptLibraryPickerModal
+      :open="batchPromptLibraryPicker.open"
+      title="从 Prompt 库选择"
+      :subtitle="batchPromptLibraryPicker.card?.title || '选中后会回填当前批量 Prompt。'"
+      @close="closeBatchPromptLibraryPicker"
+      @select="selectBatchPromptLibraryTemplate"
+    />
+
     <div v-if="lightboxItem" class="aiw-lightbox" @click="closeLightbox">
       <section class="aiw-lightbox-layout" role="dialog" aria-modal="true" aria-label="图片预览和二次修改" @click.stop>
         <div class="aiw-lightbox-image-pane">
@@ -484,8 +675,13 @@
             </button>
           </header>
           <section class="aiw-edit-source-prompt">
-            <span>此次生图 Prompt</span>
-            <p>{{ lightboxSourcePrompt || '暂无 Prompt' }}</p>
+            <span>Prompt 修改链</span>
+            <ol class="aiw-edit-prompt-chain">
+              <li v-for="entry in lightboxPromptChain" :key="entry.key || `${entry.label}-${entry.prompt}`">
+                <strong>{{ entry.label }}</strong>
+                <p>{{ entry.prompt || '暂无 Prompt' }}</p>
+              </li>
+            </ol>
           </section>
           <label class="aiw-field">
             <span>新的修改提示词</span>
@@ -579,6 +775,7 @@ import {
   sizesForRatio,
 } from '../utils/aiImageModels.js'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
+import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
 const emit = defineEmits(['open-settings'])
 
@@ -699,11 +896,24 @@ const lightboxEditSubmitting = ref(false)
 const lightboxActiveIndex = ref(0)
 const lightboxMode = ref('preview')
 const lightboxAnnotationDataUrl = ref('')
-const lightboxAnnotationTool = ref('')
+const lightboxAnnotationTool = ref('draw')
 const lightboxAnnotationColor = ref('red')
 const lightboxAnnotationClearNonce = ref(0)
 const lightboxAnnotationExportNonce = ref(0)
 const promptDialogQueue = ref(null)
+const batchGenerationDialog = reactive({
+  open: false,
+  submitting: false,
+  error: '',
+  titlePrefix: '',
+  mainImagePath: '',
+  referenceImagePaths: [],
+  prompts: [],
+})
+const batchPromptLibraryPicker = reactive({
+  open: false,
+  card: null,
+})
 const draggingResultKey = ref('')
 const dragOverTarget = ref('')
 let autosaveTimer = null
@@ -731,7 +941,7 @@ const loadingResultQueue = computed(() => ({
   key: 'loading-current-run',
   title: '正在生成',
   createdAt: '',
-  prompt: form.prompt,
+  prompt: currentJob.value?.prompt || form.prompt,
   status: 'running',
   loading: true,
   items: loadingResultCards.value,
@@ -750,12 +960,18 @@ const allVisibleSelected = computed(() => (
 const sizeOptions = computed(() => sizesForRatio(form.ratio))
 const selectedResultItems = computed(() => resultCards.value.filter((item) => selectedResults.has(resultKey(item))))
 const generateLabel = computed(() => activeMissingKey.value ? '配置' : generating.value ? '生成中...' : '开始生成')
+const batchPromptCards = computed(() => batchGenerationDialog.prompts)
+const batchPromptCount = computed(() => batchPromptCards.value.filter((card) => String(card.prompt || '').trim()).length)
 const lightboxSrc = computed(() => lightboxItem.value ? resultPreviewSrc(lightboxItem.value) : '')
 const lightboxEditBusy = computed(() => generating.value || lightboxEditSubmitting.value)
 const lightboxEditActionLabel = computed(() => lightboxEditBusy.value ? '修改图生成中...' : '开始二次修改')
 const lightboxPreviewItems = computed(() => {
   if (!lightboxItem.value) return []
-  return [lightboxItem.value, ...lightboxEditResults.value]
+  return dedupeLightboxItems([
+    ...lightboxHistoryItems(lightboxItem.value),
+    lightboxItem.value,
+    ...lightboxEditResults.value,
+  ])
 })
 const lightboxActiveItem = computed(() => {
   const items = lightboxPreviewItems.value
@@ -765,8 +981,9 @@ const lightboxActiveItem = computed(() => {
 })
 const lightboxActiveSrc = computed(() => lightboxThumbnailSrc(lightboxActiveItem.value))
 const lightboxSourcePrompt = computed(() => String(
-  lightboxActiveItem.value?.prompt || lightboxItem.value?.prompt || currentJob.value?.prompt || form.prompt || '',
+  latestPromptForItem(lightboxActiveItem.value || lightboxItem.value) || currentJob.value?.prompt || form.prompt || '',
 ).trim())
+const lightboxPromptChain = computed(() => promptChainForItem(lightboxActiveItem.value || lightboxItem.value))
 const promptDialogPrompt = computed(() => queuePromptText(promptDialogQueue.value))
 const taskRecords = computed(() => {
   const records = []
@@ -856,14 +1073,43 @@ function applyFormSnapshot(snapshot = {}) {
   const next = {
     ...defaultAiImageForm({ modelId: snapshot.modelId }),
     ...snapshot,
-    referenceImagePaths: Array.isArray(snapshot.referenceImagePaths) ? snapshot.referenceImagePaths : [],
+    referenceImagePaths: filterGeneratedAnnotationReferences(snapshot.referenceImagePaths),
   }
   Object.assign(form, next)
 }
 
-function saveDraftForCurrentTask() {
+function isGeneratedAnnotationReferencePath(path) {
+  const filename = String(path || '').split(/[\\/]/).pop().toLowerCase()
+  return /^annotation(?:-|_)/.test(filename)
+}
+
+function filterGeneratedAnnotationReferences(paths = []) {
+  return (Array.isArray(paths) ? paths : [])
+    .map((path) => String(path || '').trim())
+    .filter((path) => path && !isGeneratedAnnotationReferencePath(path))
+}
+
+function clearSubmittedTaskInputs(snapshot = formSnapshot()) {
+  restoringState = true
+  applyFormSnapshot({
+    ...snapshot,
+    prompt: '',
+    mainImagePath: '',
+    referenceImagePaths: [],
+  })
+  restoringState = false
+  saveDraftForCurrentTask({ submittedInputsCleared: true })
+  persistWorkbenchState()
+}
+
+function saveDraftForCurrentTask(extra = {}) {
   const key = activeJobUid.value || 'latest'
-  taskDrafts[key] = formSnapshot()
+  const existing = taskDrafts[key] || {}
+  taskDrafts[key] = {
+    ...formSnapshot(),
+    ...(existing.submittedInputsCleared ? { submittedInputsCleared: true } : {}),
+    ...extra,
+  }
 }
 
 function mergeJobWithDraft(job = {}, options = {}) {
@@ -887,7 +1133,9 @@ function mergeJobWithDraft(job = {}, options = {}) {
     output_dir: draft.output_dir || job.output_dir,
     params: {
       ...params,
-      ...Object.fromEntries(Object.entries(draftParams).filter(([, value]) => value !== undefined && value !== '')),
+      ...Object.fromEntries(Object.entries(draftParams).filter(([key, value]) => (
+        value !== undefined && (key === 'main_image_path' || value !== '')
+      ))),
     },
   }
 }
@@ -1061,14 +1309,18 @@ async function loadJobs() {
   }
 }
 
-function parseAdvancedJson(options = {}) {
-  if (!form.advancedJson) return {}
+function parseAdvancedJsonValue(value, options = {}) {
+  if (!value) return {}
   try {
-    return JSON.parse(form.advancedJson)
+    return JSON.parse(value)
   } catch (error) {
     if (options.silent) return {}
     throw error
   }
+}
+
+function parseAdvancedJson(options = {}) {
+  return parseAdvancedJsonValue(form.advancedJson, options)
 }
 
 function buildJobPayload(options = {}) {
@@ -1094,6 +1346,38 @@ function buildJobPayload(options = {}) {
     prompt: form.prompt,
     model_key: activeModel.value.key,
     output_dir: form.output_dir,
+    params,
+  }
+}
+
+function buildBatchJobPayload(snapshot = {}, card = {}, index = 0) {
+  const model = getAiImageModel(snapshot.modelId || form.modelId)
+  const ratio = snapshot.ratio || form.ratio
+  const normalizedSize = sizeForRatio(ratio, snapshot.size || form.size, model.keyTier)
+  const batchSnapshot = {
+    ...snapshot,
+    count: 1,
+  }
+  const promptText = String(card.prompt || '').trim()
+  const promptTitle = String(card.title || `Prompt ${index + 1}`).trim()
+  const params = {
+    ...parseAdvancedJsonValue(batchSnapshot.advancedJson, { silent: true }),
+    size: normalizedSize,
+    ratio,
+    quality: batchSnapshot.quality || form.quality,
+    response_format: batchSnapshot.format || form.format,
+    n: 1,
+    model_key_tier: model.keyTier,
+    main_image_path: batchSnapshot.mainImagePath || '',
+    reference_image_paths: [...(Array.isArray(batchSnapshot.referenceImagePaths) ? batchSnapshot.referenceImagePaths : [])],
+  }
+  params.n = 1
+  params.model_key_tier = model.keyTier
+  return {
+    title: `${batchSnapshot.titlePrefix || batchSnapshot.title || '批量生图'} · ${promptTitle}`,
+    prompt: promptText,
+    model_key: model.key,
+    output_dir: batchSnapshot.output_dir || '',
     params,
   }
 }
@@ -1215,6 +1499,186 @@ async function createNewTask() {
   }
 }
 
+function createBatchPromptCard(values = {}) {
+  return {
+    id: `batch-prompt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    title: String(values.title || values.promptName || '').trim(),
+    prompt: String(values.prompt || values.promptText || '').trim(),
+  }
+}
+
+function openBatchGenerationDialog() {
+  if (generating.value) return
+  const snapshot = formSnapshot()
+  const initialPrompt = String(snapshot.prompt || '').trim()
+  batchGenerationDialog.open = true
+  batchGenerationDialog.submitting = false
+  batchGenerationDialog.error = ''
+  batchGenerationDialog.titlePrefix = snapshot.title || nextTaskTitle()
+  batchGenerationDialog.mainImagePath = snapshot.mainImagePath || ''
+  batchGenerationDialog.referenceImagePaths = [...snapshot.referenceImagePaths]
+  batchGenerationDialog.prompts = [
+    createBatchPromptCard({ title: initialPrompt ? 'Prompt 1' : '', prompt: initialPrompt }),
+    createBatchPromptCard({ title: initialPrompt ? 'Prompt 2' : '', prompt: '' }),
+    createBatchPromptCard({ title: initialPrompt ? 'Prompt 3' : '', prompt: '' }),
+  ]
+  if (!initialPrompt) {
+    batchGenerationDialog.prompts = [
+      createBatchPromptCard({ title: 'Prompt 1' }),
+      createBatchPromptCard({ title: 'Prompt 2' }),
+      createBatchPromptCard({ title: 'Prompt 3' }),
+    ]
+  }
+  void refreshImagePreview(batchGenerationDialog.mainImagePath)
+  batchGenerationDialog.referenceImagePaths.forEach((path) => void refreshImagePreview(path))
+}
+
+function closeBatchGenerationDialog() {
+  if (batchGenerationDialog.submitting) return
+  batchGenerationDialog.open = false
+  batchGenerationDialog.error = ''
+  closeBatchPromptLibraryPicker()
+}
+
+function addBatchPromptCard(values = {}) {
+  if (batchGenerationDialog.submitting) return
+  batchGenerationDialog.prompts.push(createBatchPromptCard({
+    title: values.title || `Prompt ${batchGenerationDialog.prompts.length + 1}`,
+    prompt: values.prompt || '',
+  }))
+}
+
+function removeBatchPromptCard(card) {
+  if (batchGenerationDialog.submitting || batchGenerationDialog.prompts.length <= 1) return
+  batchGenerationDialog.prompts = batchGenerationDialog.prompts.filter((item) => item !== card)
+}
+
+async function chooseBatchMainImage() {
+  if (batchGenerationDialog.submitting) return
+  const path = await choosePath({ title: '选择批量生成主图', images: true })
+  if (!path) return
+  batchGenerationDialog.mainImagePath = path
+  await refreshImagePreview(path, { force: true })
+}
+
+async function chooseBatchReferenceImages() {
+  if (batchGenerationDialog.submitting) return
+  const paths = await choosePath({
+    title: '选择批量生成参考图',
+    images: true,
+    multi: true,
+  })
+  const nextPaths = (Array.isArray(paths) ? paths : [paths])
+    .map((path) => String(path || '').trim())
+    .filter(Boolean)
+  batchGenerationDialog.referenceImagePaths = appendUniquePaths([
+    ...batchGenerationDialog.referenceImagePaths,
+    ...nextPaths,
+  ])
+  for (const path of nextPaths) {
+    await refreshImagePreview(path, { force: true })
+  }
+}
+
+function removeBatchReferencePath(index) {
+  if (batchGenerationDialog.submitting) return
+  batchGenerationDialog.referenceImagePaths.splice(index, 1)
+}
+
+function openBatchPromptLibraryPicker(card) {
+  if (batchGenerationDialog.submitting) return
+  batchPromptLibraryPicker.open = true
+  batchPromptLibraryPicker.card = card
+}
+
+function closeBatchPromptLibraryPicker() {
+  batchPromptLibraryPicker.open = false
+  batchPromptLibraryPicker.card = null
+}
+
+function selectBatchPromptLibraryTemplate(template) {
+  const card = batchPromptLibraryPicker.card
+  const promptText = String(template?.prompt_text || template?.prompt || '').trim()
+  if (!card || !promptText) return
+  card.title = String(template?.field_name || template?.name || card.title || 'Prompt').trim()
+  card.prompt = promptText
+  closeBatchPromptLibraryPicker()
+}
+
+async function submitBatchGeneration() {
+  batchGenerationDialog.error = ''
+  if (activeMissingKey.value) {
+    openSettings()
+    return
+  }
+  if (generating.value || batchGenerationDialog.submitting) return
+  const promptCards = batchPromptCards.value
+    .map((card) => ({
+      ...card,
+      prompt: String(card.prompt || '').trim(),
+      title: String(card.title || '').trim(),
+    }))
+    .filter((card) => card.prompt)
+  if (!promptCards.length) {
+    batchGenerationDialog.error = '请至少填写一条 Prompt'
+    return
+  }
+  const snapshot = formSnapshot()
+  const batchSnapshot = {
+    ...snapshot,
+    titlePrefix: batchGenerationDialog.titlePrefix || snapshot.title || nextTaskTitle(),
+    mainImagePath: batchGenerationDialog.mainImagePath,
+    referenceImagePaths: [...batchGenerationDialog.referenceImagePaths],
+    count: 1,
+  }
+  batchGenerationDialog.submitting = true
+  generating.value = true
+  selectedResults.clear()
+  let submittedInputsCleared = false
+  try {
+    logs.value.push(`开始批量生成：${promptCards.length} 条 Prompt`)
+    for (const [index, card] of promptCards.entries()) {
+      const payload = buildBatchJobPayload(batchSnapshot, card, index)
+      const created = await window.cs.createAiImageJob({ ...payload, status: 'running' })
+      const jobUid = created?.job_uid
+      if (!jobUid) throw new Error('后端未返回 job_uid')
+      currentJob.value = {
+        ...created,
+        ...payload,
+        job_uid: jobUid,
+        status: 'running',
+      }
+      upsertJob(currentJob.value)
+      if (!submittedInputsCleared) {
+        clearSubmittedTaskInputs(snapshot)
+        submittedInputsCleared = true
+      }
+      logs.value.push(`批量生成 ${index + 1}/${promptCards.length}：${jobUid}`)
+      const runResult = await window.cs.runAiImageJob(jobUid)
+      const latest = await window.cs.getAiImageJob(jobUid)
+      currentJob.value = latest || currentJob.value
+      upsertJob(currentJob.value)
+      if (runResult && runResult.ok === false) {
+        throw new Error(runResult.summary?.error || `第 ${index + 1} 条 Prompt 生成失败`)
+      }
+      refreshResultPreviewCandidates(collectResultCards(currentJob.value), { force: true })
+    }
+    logs.value.push(`批量生成完成：${promptCards.length} 条 Prompt`)
+    await loadJobs()
+    batchGenerationDialog.open = false
+    closeBatchPromptLibraryPicker()
+  } catch (error) {
+    const message = normalizeGenerateError(error)
+    batchGenerationDialog.error = message
+    errorMessage.value = message
+    logs.value.push(`批量生成失败：${message}`)
+  } finally {
+    batchGenerationDialog.submitting = false
+    generating.value = false
+    persistWorkbenchState()
+  }
+}
+
 async function generate() {
   errorMessage.value = ''
   if (activeMissingKey.value) {
@@ -1230,14 +1694,17 @@ async function generate() {
     const jobUid = activeTask?.job_uid
     if (!jobUid) throw new Error('后端未返回 job_uid')
     const previousSummary = currentJob.value?.summary || activeTask.summary || {}
+    const payload = buildJobPayload({ silentAdvanced: true })
+    const submittedSnapshot = formSnapshot()
     currentJob.value = {
       ...activeTask,
-      ...buildJobPayload({ silentAdvanced: true }),
+      ...payload,
       job_uid: jobUid,
       status: 'running',
       summary: previousSummary,
     }
     logs.value.push(`提交生成任务：${jobUid}`)
+    clearSubmittedTaskInputs(submittedSnapshot)
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
     currentJob.value = latest || activeTask
@@ -1321,15 +1788,27 @@ function collectResultQueues(job) {
   const summary = job?.summary && typeof job.summary === 'object' ? job.summary : {}
   const runs = Array.isArray(summary.runs) ? summary.runs : []
   if (runs.length) {
+    let historyItems = []
     return runs
-      .map((run, index) => ({
-        key: run.run_uid || run.task_id || `run-${index + 1}`,
-        title: `队列 ${index + 1}`,
-        createdAt: run.created_at || '',
-        prompt: run.prompt || '',
-        status: run.status || job?.status || '',
-        items: collectResultCardsFromRun(job, run, index),
-      }))
+      .map((run, index) => {
+        const promptChain = buildRunPromptChain(job, runs, index)
+        const items = collectResultCardsFromRun(job, run, index, {
+          historyItems,
+          promptChain,
+        })
+        historyItems = dedupeLightboxItems([
+          ...historyItems,
+          ...items.map((item) => lightboxHistorySnapshot(item)).filter(Boolean),
+        ])
+        return {
+          key: run.run_uid || run.task_id || `run-${index + 1}`,
+          title: `队列 ${index + 1}`,
+          createdAt: run.created_at || '',
+          prompt: run.prompt || '',
+          status: run.status || job?.status || '',
+          items,
+        }
+      })
       .filter((queue) => queue.items.length)
       .reverse()
   }
@@ -1356,6 +1835,10 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
   const urls = Array.isArray(run?.image_urls) ? run.image_urls : []
   const outputAssets = options.includeOutputAssets ? assets.filter((asset) => asset.kind === 'output' || asset.kind === 'result') : []
   const resultCount = Math.max(paths.length, urls.length)
+  const basePromptChain = Array.isArray(options.promptChain) && options.promptChain.length
+    ? options.promptChain
+    : buildBasePromptChain(run?.prompt || job?.prompt || '')
+  const historyItems = Array.isArray(options.historyItems) ? options.historyItems : []
   return [
     ...Array.from({ length: resultCount }, (_, index) => ({
       key: `${queueIndex}-${paths[index] || urls[index] || index}`,
@@ -1366,6 +1849,11 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
       size: run?.size || job?.params?.size,
       prompt: run?.prompt || job?.prompt || '',
       createdAt: run?.created_at || '',
+      jobUid: job?.job_uid || '',
+      runUid: run?.run_uid || run?.task_id || '',
+      sourceJobUid: job?.job_uid || '',
+      promptChain: basePromptChain,
+      historyItems,
     })),
     ...outputAssets.map((asset, index) => ({
       key: `${queueIndex}-${asset.asset_uid || asset.path || asset.url || index}`,
@@ -1376,6 +1864,11 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
       size: job?.params?.size,
       prompt: run?.prompt || job?.prompt || '',
       createdAt: run?.created_at || '',
+      jobUid: job?.job_uid || '',
+      runUid: run?.run_uid || run?.task_id || '',
+      sourceJobUid: job?.job_uid || '',
+      promptChain: basePromptChain,
+      historyItems,
     })),
   ].filter((item, index, list) => resultKey(item) && list.findIndex((candidate) => resultKey(candidate) === resultKey(item)) === index)
 }
@@ -1556,10 +2049,10 @@ async function dropResultAsReference(event) {
 }
 
 function resetLightboxEditDraft(item) {
-  lightboxEditPrompt.value = String(item?.prompt || currentJob.value?.prompt || form.prompt || '').trim()
+  lightboxEditPrompt.value = latestPromptForItem(item)
   lightboxEditReferencePaths.value = []
   lightboxEditResults.value = []
-  lightboxActiveIndex.value = 0
+  lightboxActiveIndex.value = lightboxHistoryItems(item).length
   resetLightboxAnnotationState({ clearLayer: true })
 }
 
@@ -1589,13 +2082,13 @@ function selectLightboxPreview(index) {
 }
 
 function resetLightboxAnnotationState(options = {}) {
-  lightboxAnnotationTool.value = ''
+  lightboxAnnotationTool.value = 'draw'
   lightboxAnnotationDataUrl.value = ''
   if (options.clearLayer) lightboxAnnotationClearNonce.value += 1
 }
 
 function setLightboxAnnotationTool(tool) {
-  lightboxAnnotationTool.value = lightboxAnnotationTool.value === tool ? '' : tool
+  lightboxAnnotationTool.value = tool
 }
 
 function setLightboxAnnotationColor(color) {
@@ -1666,6 +2159,126 @@ async function materializeLightboxAnnotation(jobUid, dataUrl) {
   return path
 }
 
+function lightboxItemIdentity(item) {
+  return resultKey(item) || item?.key || ''
+}
+
+function dedupeLightboxItems(items = []) {
+  const seen = new Set()
+  return (Array.isArray(items) ? items : [])
+    .filter(Boolean)
+    .filter((item) => {
+      const identity = lightboxItemIdentity(item)
+      if (!identity || seen.has(identity)) return false
+      seen.add(identity)
+      return true
+    })
+}
+
+function buildBasePromptChain(prompt) {
+  const value = String(prompt || '').trim()
+  return [{
+    key: 'prompt-original',
+    label: '原图 Prompt',
+    prompt: value,
+  }]
+}
+
+function buildRunPromptChain(job, runs = [], runIndex = 0) {
+  const chain = []
+  const safeRuns = Array.isArray(runs) ? runs : []
+  for (let index = 0; index <= runIndex; index += 1) {
+    const run = safeRuns[index] || {}
+    const prompt = String(run?.prompt || (index === 0 ? job?.prompt : '') || '').trim()
+    if (!prompt && chain.length) continue
+    chain.push({
+      key: `prompt-run-${index}`,
+      label: index === 0 ? '原图 Prompt' : `修改 Prompt ${index}`,
+      prompt,
+    })
+  }
+  return chain.length ? chain : buildBasePromptChain(job?.prompt || '')
+}
+
+function promptChainForItem(item) {
+  const chain = Array.isArray(item?.promptChain) ? item.promptChain : []
+  const normalized = chain
+    .map((entry, index) => ({
+      key: entry?.key || `prompt-${index}`,
+      label: String(entry?.label || (index === 0 ? '原图 Prompt' : `修改 Prompt ${index}`)).trim(),
+      prompt: String(entry?.prompt || '').trim(),
+    }))
+    .filter((entry, index) => entry.prompt || index === 0)
+  if (normalized.length) return normalized
+  return buildBasePromptChain(item?.prompt || currentJob.value?.prompt || form.prompt || '')
+}
+
+function latestPromptForItem(item) {
+  const chain = promptChainForItem(item)
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const prompt = String(chain[index]?.prompt || '').trim()
+    if (prompt) return prompt
+  }
+  return String(item?.prompt || '').trim()
+}
+
+function lightboxHistoryItems(item) {
+  return dedupeLightboxItems(Array.isArray(item?.historyItems) ? item.historyItems : [])
+}
+
+function resultOwnerJobUid(item) {
+  return String(item?.jobUid || item?.job_uid || item?.sourceJobUid || item?.source_job_uid || currentJob.value?.job_uid || '').trim()
+}
+
+function lightboxHistorySnapshot(item) {
+  if (!item || !resultKey(item)) return null
+  return {
+    key: item.key || resultKey(item),
+    path: item.path || '',
+    url: item.url || '',
+    label: item.label || '历史图片',
+    model: item.model || activeModel.value.label,
+    size: item.size || form.size,
+    prompt: latestPromptForItem(item),
+    createdAt: item.createdAt || '',
+    previewSrc: lightboxThumbnailSrc(item),
+    jobUid: resultOwnerJobUid(item),
+    runUid: item.runUid || item.run_uid || '',
+    sourceJobUid: item.sourceJobUid || item.source_job_uid || resultOwnerJobUid(item),
+    promptChain: promptChainForItem(item),
+    historyItems: lightboxHistoryItems(item),
+  }
+}
+
+function buildLightboxEditHistory(sourceItem) {
+  return dedupeLightboxItems([
+    ...lightboxHistoryItems(sourceItem),
+    lightboxHistorySnapshot(sourceItem),
+  ])
+}
+
+function buildLightboxPromptChain(sourceItem, prompt) {
+  const chain = promptChainForItem(sourceItem)
+  const editCount = chain.filter((entry) => String(entry?.label || '').includes('修改 Prompt')).length + 1
+  return [
+    ...chain,
+    {
+      key: `prompt-edit-${editCount}`,
+      label: `修改 Prompt ${editCount}`,
+      prompt: String(prompt || '').trim(),
+    },
+  ]
+}
+
+function preserveLightboxEditMetadata(item) {
+  return {
+    historyItems: lightboxHistoryItems(item),
+    promptChain: promptChainForItem(item),
+    sourceJobUid: item?.sourceJobUid || item?.source_job_uid || '',
+    sourceResultKey: item?.sourceResultKey || '',
+  }
+}
+
 function openPromptDialog(queue) {
   if (!queuePromptText(queue)) return
   promptDialogQueue.value = {
@@ -1684,7 +2297,8 @@ async function materializeResultForInput(item) {
   const remoteUrl = String(item?.url || '').trim()
   const localPath = String(item?.path || '').trim()
   if (!/^https?:\/\//i.test(remoteUrl)) return localPath || key
-  if (!currentJob.value?.job_uid) {
+  const ownerJobUid = resultOwnerJobUid(item)
+  if (!ownerJobUid) {
     if (localPath) return localPath
     throw new Error('当前任务不存在，无法把远程结果加入输入图')
   }
@@ -1692,7 +2306,7 @@ async function materializeResultForInput(item) {
     if (localPath) return localPath
     throw new Error('本地 AI 生图服务未就绪，无法缓存远程结果')
   }
-  const result = await window.cs.materializeAiImageResult(currentJob.value.job_uid, {
+  const result = await window.cs.materializeAiImageResult(ownerJobUid, {
     file: resultKey(item),
     url: remoteUrl,
   })
@@ -1778,10 +2392,11 @@ async function submitLightboxEdit() {
     errorMessage.value = ''
     const sourceItem = lightboxActiveItem.value
     placeholder = appendLightboxEditPlaceholder(sourceItem, nextPrompt, { activate: false })
+    const annotationDataUrl = await requestLightboxAnnotationExport()
+    activateLightboxEditPlaceholder(placeholder)
     const mainPath = await materializeResultForInput(sourceItem)
     if (!mainPath) throw new Error('当前图片无法作为二次修改主图')
     await refreshImagePreview(mainPath, { force: true })
-    const annotationDataUrl = await requestLightboxAnnotationExport()
     logs.value.push(`基于 ${sourceItem.label || pathLabel(mainPath)} 发起二次修改`)
     await runLightboxEditGeneration({
       sourceItem,
@@ -1811,9 +2426,14 @@ function appendUniquePaths(paths) {
     })
 }
 
+function lightboxEditResultOffset() {
+  if (!lightboxItem.value) return 0
+  return lightboxHistoryItems(lightboxItem.value).length + 1
+}
+
 function activateLightboxEditPlaceholder(placeholder) {
   const index = lightboxEditResults.value.indexOf(placeholder)
-  if (index >= 0) lightboxActiveIndex.value = index + 1
+  if (index >= 0) lightboxActiveIndex.value = lightboxEditResultOffset() + index
 }
 
 function removeLightboxEditPlaceholder(placeholder) {
@@ -1830,6 +2450,11 @@ function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
     prompt,
     model: sourceItem?.model || activeModel.value.label,
     size: sourceItem?.size || form.size,
+    jobUid: '',
+    sourceJobUid: resultOwnerJobUid(sourceItem),
+    sourceResultKey: resultKey(sourceItem),
+    historyItems: buildLightboxEditHistory(sourceItem),
+    promptChain: buildLightboxPromptChain(sourceItem, prompt),
   }
   lightboxEditResults.value.push(placeholder)
   if (options.activate !== false) activateLightboxEditPlaceholder(placeholder)
@@ -1839,18 +2464,24 @@ function appendLightboxEditPlaceholder(sourceItem, prompt, options = {}) {
 function applyLightboxEditResult(placeholder, latestJob) {
   const latestQueue = collectResultQueues(latestJob)[0]
   const result = latestQueue?.items?.[0] || null
+  const editMetadata = preserveLightboxEditMetadata(placeholder)
   if (!result) {
     Object.assign(placeholder, {
+      ...editMetadata,
       loading: false,
       label: '修改结果',
       previewSrc: lightboxThumbnailSrc(placeholder),
+      jobUid: latestJob?.job_uid || placeholder.jobUid || '',
     })
     return
   }
   Object.assign(placeholder, {
     ...result,
+    ...editMetadata,
     key: `edit-${Date.now()}-${resultKey(result)}`,
     label: result.label || '修改结果',
+    prompt: placeholder.prompt || result.prompt || '',
+    jobUid: latestJob?.job_uid || result.jobUid || '',
     loading: false,
     previewSrc: '',
   })
@@ -1866,6 +2497,7 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
   }
   const snapshot = formSnapshot()
   const placeholder = existingPlaceholder || appendLightboxEditPlaceholder(sourceItem, prompt)
+  let submittedInputsCleared = false
   activateLightboxEditPlaceholder(placeholder)
   generating.value = true
   selectedResults.clear()
@@ -1875,11 +2507,12 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     if (!jobUid) throw new Error('后端未返回 job_uid')
     const annotationPath = await materializeLightboxAnnotation(jobUid, annotationDataUrl)
     const effectivePrompt = buildAnnotationEditPrompt(prompt, Boolean(annotationPath))
+    const retainedSnapshotReferences = filterGeneratedAnnotationReferences(snapshot.referenceImagePaths)
     restoringState = true
     form.prompt = effectivePrompt
     form.mainImagePath = mainPath
     form.referenceImagePaths = appendUniquePaths([
-      ...snapshot.referenceImagePaths,
+      ...retainedSnapshotReferences,
       ...referencePaths,
       annotationPath,
     ])
@@ -1903,6 +2536,8 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
       status: 'running',
     }
     upsertJob(currentJob.value)
+    clearSubmittedTaskInputs(snapshot)
+    submittedInputsCleared = true
     const runResult = await window.cs.runAiImageJob(jobUid)
     const latest = await window.cs.getAiImageJob(jobUid)
     currentJob.value = latest || currentJob.value
@@ -1917,9 +2552,12 @@ async function runLightboxEditGeneration({ sourceItem, mainPath, prompt, referen
     removeLightboxEditPlaceholder(placeholder)
     throw error
   } finally {
-    restoringState = true
-    applyFormSnapshot(snapshot)
-    restoringState = false
+    if (!submittedInputsCleared) {
+      restoringState = true
+      applyFormSnapshot(snapshot)
+      restoringState = false
+      persistWorkbenchState()
+    }
     generating.value = false
     persistWorkbenchState()
   }
@@ -1958,6 +2596,8 @@ async function restoreJob(job, options = {}) {
       logs.value.push(`读取任务详情失败：${error.message || error}`)
     }
   }
+  const submittedDraft = detail?.job_uid ? taskDrafts[detail.job_uid] : null
+  const submittedInputsCleared = Boolean(submittedDraft?.submittedInputsCleared)
   const formDetail = mergeJobWithDraft(detail, { includeGeneratedDrafts: true })
   restoringState = true
   currentJob.value = detail
@@ -1976,20 +2616,26 @@ async function restoreJob(job, options = {}) {
     form.quality = formDetail.params.quality || form.quality
     form.format = formDetail.params.response_format || form.format
     form.count = normalizeImageCount(formDetail.params.n || form.count)
-    form.mainImagePath = formDetail.params.main_image_path || form.mainImagePath
-    form.referenceImagePaths = Array.isArray(formDetail.params.reference_image_paths)
-      ? formDetail.params.reference_image_paths
-      : form.referenceImagePaths
+    if (Object.prototype.hasOwnProperty.call(formDetail.params, 'main_image_path')) {
+      form.mainImagePath = formDetail.params.main_image_path || ''
+    }
+    if (Array.isArray(formDetail.params.reference_image_paths)) {
+      form.referenceImagePaths = filterGeneratedAnnotationReferences(formDetail.params.reference_image_paths)
+    }
   }
   const assets = Array.isArray(detail.assets) ? detail.assets : []
   const mainAsset = assets.find((asset) => asset.kind === 'main' && asset.path)
-  if (!form.mainImagePath) form.mainImagePath = mainAsset?.path || ''
-  if (!form.referenceImagePaths.length) {
+  if (!submittedInputsCleared && !form.mainImagePath) form.mainImagePath = mainAsset?.path || ''
+  if (!submittedInputsCleared && !form.referenceImagePaths.length) {
     form.referenceImagePaths = assets
       .filter((asset) => asset.kind === 'reference' && asset.path)
       .map((asset) => asset.path)
+      .filter((path) => !isGeneratedAnnotationReferencePath(path))
   }
-  taskDrafts[detail.job_uid] = formSnapshot()
+  taskDrafts[detail.job_uid] = {
+    ...formSnapshot(),
+    ...(submittedInputsCleared ? { submittedInputsCleared: true } : {}),
+  }
   restoringState = false
   await Promise.all([
     refreshImagePreview(form.mainImagePath),
@@ -2262,6 +2908,12 @@ function localFileUrl(path) {
   gap: 10px;
 }
 
+.aiw-panel-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .aiw-task-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2392,6 +3044,206 @@ function localFileUrl(path) {
   border: 1px solid #2e2e3a;
   border-radius: 8px;
   background: #141418;
+}
+
+.aiw-batch-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 88;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: rgba(10, 10, 14, 0.82);
+  backdrop-filter: blur(10px);
+}
+
+.aiw-batch-panel {
+  width: min(1480px, 94vw);
+  height: min(760px, calc(100vh - 56px));
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #1c1c22;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.44);
+}
+
+.aiw-batch-head,
+.aiw-batch-board-head,
+.aiw-batch-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.aiw-batch-head {
+  padding-bottom: 12px;
+  border-bottom: 1px solid #2e2e3a;
+}
+
+.aiw-batch-head div,
+.aiw-batch-board-head div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.aiw-batch-head span,
+.aiw-batch-board-head span,
+.aiw-batch-footer,
+.aiw-batch-card-actions span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.aiw-batch-board {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 14px;
+}
+
+.aiw-batch-source-column,
+.aiw-batch-prompt-board,
+.aiw-batch-source-box,
+.aiw-batch-prompt-card {
+  min-width: 0;
+}
+
+.aiw-batch-source-column {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #17181d;
+}
+
+.aiw-batch-source-box {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid #2e2e3a;
+}
+
+.aiw-batch-reference-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aiw-batch-prompt-board {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 12px;
+  overflow: hidden;
+  padding: 12px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #141418;
+}
+
+.aiw-batch-prompt-rail {
+  min-height: 0;
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(230px, 270px);
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.aiw-batch-prompt-card {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto minmax(130px, 1fr) auto;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #202028;
+}
+
+.aiw-batch-prompt-card header,
+.aiw-batch-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiw-batch-prompt-card input,
+.aiw-batch-prompt-card textarea,
+.aiw-batch-panel .aiw-field input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #2e2e3a;
+  border-radius: 8px;
+  background: #141418;
+  color: var(--text);
+  font: inherit;
+}
+
+.aiw-batch-prompt-card input,
+.aiw-batch-panel .aiw-field input {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.aiw-batch-prompt-card textarea {
+  min-height: 0;
+  resize: none;
+  padding: 10px;
+  line-height: 1.55;
+}
+
+.aiw-batch-card-actions {
+  align-items: flex-end;
+}
+
+.aiw-batch-add-card {
+  min-height: 0;
+  display: grid;
+  place-content: center;
+  gap: 6px;
+  border-style: dashed;
+  background: #17181d;
+  color: var(--text);
+}
+
+.aiw-batch-add-card span {
+  color: var(--text2);
+  font-size: 12px;
+}
+
+.aiw-batch-footer {
+  padding-top: 12px;
+  border-top: 1px solid #2e2e3a;
+}
+
+.aiw-batch-footer small {
+  color: #ff8b5f;
+}
+
+.aiw-batch-footer > div {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aiw-batch-footer .aiw-primary-action {
+  width: auto;
+  min-width: 154px;
 }
 
 .aiw-advanced-json {
@@ -2849,11 +3701,13 @@ function localFileUrl(path) {
 
 .aiw-lightbox-layout {
   width: min(94vw, 1360px);
-  max-height: 92vh;
+  height: calc(100vh - 56px);
+  max-height: calc(100vh - 56px);
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
   gap: 14px;
+  overflow: hidden;
 }
 
 .aiw-lightbox-image-pane,
@@ -2865,6 +3719,8 @@ function localFileUrl(path) {
 }
 
 .aiw-lightbox-image-pane {
+  min-width: 0;
+  height: 100%;
   display: flex;
   padding: 12px;
   overflow: hidden;
@@ -2872,19 +3728,20 @@ function localFileUrl(path) {
 
 .aiw-lightbox figure {
   width: 100%;
+  height: 100%;
   min-height: 0;
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto auto;
   gap: 10px;
   margin: 0;
+  overflow: hidden;
 }
 
 .aiw-lightbox-canvas,
 .aiw-lightbox-fallback {
   min-height: 0;
-  max-height: calc(92vh - 74px);
+  height: 100%;
   width: 100%;
-  flex: 1;
   border-radius: 8px;
 }
 
@@ -2894,7 +3751,6 @@ function localFileUrl(path) {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 520px;
   border: 1px solid #2e2e3a;
   background: #0f1016;
 }
@@ -2902,8 +3758,7 @@ function localFileUrl(path) {
 .aiw-lightbox-main-image {
   width: 100%;
   height: 100%;
-  max-height: calc(92vh - 74px);
-  flex: 1;
+  max-height: 100%;
   object-fit: contain;
   border-radius: 8px;
 }
@@ -2915,7 +3770,6 @@ function localFileUrl(path) {
 }
 
 .aiw-lightbox-fallback {
-  min-height: 520px;
   display: grid;
   place-items: center;
   background: #f4f2ee;
@@ -3145,7 +3999,36 @@ function localFileUrl(path) {
   background: #1c1c22;
 }
 
-.aiw-edit-source-prompt p {
+.aiw-edit-prompt-chain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 178px;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+
+.aiw-edit-prompt-chain li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.aiw-edit-prompt-chain li:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.aiw-edit-prompt-chain strong {
+  color: #ff8b5f;
+  font-size: 12px;
+}
+
+.aiw-edit-prompt-chain p {
   max-height: 132px;
   margin: 0;
   overflow: auto;
@@ -3356,6 +4239,19 @@ button.active,
     grid-template-columns: 1fr;
   }
 
+  .aiw-batch-board {
+    grid-template-columns: 1fr;
+    overflow: auto;
+  }
+
+  .aiw-batch-source-column {
+    overflow: visible;
+  }
+
+  .aiw-batch-prompt-board {
+    min-height: 340px;
+  }
+
   .aiw-lightbox-layout {
     grid-template-columns: 1fr;
     overflow: auto;
@@ -3369,6 +4265,31 @@ button.active,
 }
 
 @media (max-width: 760px) {
+  .aiw-batch-dialog {
+    padding: 14px;
+  }
+
+  .aiw-batch-panel {
+    width: 100%;
+    height: calc(100vh - 28px);
+    padding: 12px;
+  }
+
+  .aiw-batch-head,
+  .aiw-batch-board-head,
+  .aiw-batch-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .aiw-batch-footer > div {
+    width: 100%;
+  }
+
+  .aiw-batch-footer button {
+    flex: 1 1 0;
+  }
+
   .aiw-workspace-body {
     grid-template-columns: 1fr;
   }

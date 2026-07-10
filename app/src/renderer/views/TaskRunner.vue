@@ -563,6 +563,7 @@
           embedded
           :show-submit-results="false"
           @batch-updated="handleApprovalBatchUpdated"
+          @generation-started="handleApprovalGenerationStarted"
           @submit-started="handleApprovalSubmitStarted"
           @committed="handleApprovalCommitted"
         />
@@ -964,6 +965,7 @@
       v-model="approvalDrawerOpen"
       :board-url="approvalBoardUrl"
       @batch-updated="handleApprovalBatchUpdated"
+      @generation-started="handleApprovalGenerationStarted"
       @submit-started="handleApprovalSubmitStarted"
       @committed="handleApprovalCommitted"
     />
@@ -2726,6 +2728,13 @@ function handleApprovalBatchUpdated(payload) {
   }
   if (isTmallAiImageChainTask.value && status === aiChainGenerationConfirmationStatus && aiChainActiveStep.value === 'config') {
     aiChainActiveStep.value = 'confirm'
+  }
+}
+
+function handleApprovalGenerationStarted(payload) {
+  handleApprovalBatchUpdated(payload)
+  if (isTmallAiImageChainTask.value) {
+    aiChainActiveStep.value = 'approval'
   }
 }
 

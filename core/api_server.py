@@ -148,6 +148,17 @@ def _allowed_cors_origins() -> list[str]:
     ]
 
 
+def _add_local_cors_headers(request: Request, response: JSONResponse) -> JSONResponse:
+    origin = str(request.headers.get("origin") or "").strip()
+    allowed = _allowed_cors_origins()
+    if origin and ("*" in allowed or origin in allowed):
+        response.headers["Access-Control-Allow-Origin"] = "*" if "*" in allowed else origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Crawshrimp-Token"
+        response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
+    return response
+
+
 def _external_call_timeout_seconds(default: float = 20.0) -> float:
     raw = str(os.environ.get("CRAWSHRIMP_EXTERNAL_CALL_TIMEOUT_SECONDS") or "").strip()
     if not raw:
@@ -2792,14 +2803,21 @@ def _prepare_one_xm_payload(row: dict) -> dict:
     quality = str(raw_payload.get("quality") or row.get("质量") or "auto").strip().lower()
     if quality not in {"auto", "standard", "low", "medium", "high"}:
         quality = "auto"
+    try:
+        requested_count = int(raw_payload.get("n") or row.get("生成数量") or 1)
+    except Exception:
+        requested_count = 1
     payload = {
         "model": str(raw_payload.get("model") or row.get("模型") or "gpt-image-2").strip() or "gpt-image-2",
         "prompt": str(raw_payload.get("prompt") or row.get("最终提示词") or "").strip(),
         "size": str(raw_payload.get("size") or row.get("尺寸") or "1024x1024").strip(),
         "quality": quality,
         "output_format": str(raw_payload.get("output_format") or row.get("格式") or "png").strip(),
-        "n": int(raw_payload.get("n") or row.get("生成数量") or 1),
+        "n": max(1, min(8, requested_count)),
     }
+    ratio = str(raw_payload.get("ratio") or row.get("比例") or row.get("ratio") or "").strip()
+    if ratio:
+        payload["ratio"] = ratio
     for optional_key in ("webhook_url", "webhook_secret", "mask"):
         if raw_payload.get(optional_key):
             payload[optional_key] = raw_payload.get(optional_key)
@@ -5154,15 +5172,21 @@ async def require_local_api_token(request: Request, call_next):
     expected = _get_api_token()
     if not expected:
         if _api_auth_required():
-            return JSONResponse(
-                {"detail": "CRAWSHRIMP_API_TOKEN is required before using crawshrimp API"},
-                status_code=503,
+            return _add_local_cors_headers(
+                request,
+                JSONResponse(
+                    {"detail": "CRAWSHRIMP_API_TOKEN is required before using crawshrimp API"},
+                    status_code=503,
+                ),
             )
         return await call_next(request)
 
     supplied = str(request.headers.get(API_TOKEN_HEADER) or "").strip()
     if not supplied or not hmac.compare_digest(supplied, expected):
-        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+        return _add_local_cors_headers(
+            request,
+            JSONResponse({"detail": "Unauthorized"}, status_code=401),
+        )
 
     return await call_next(request)
 
@@ -5580,6 +5604,11 @@ def _safe_tmall_generation_confirmation_items(batch: dict, items: list[dict]) ->
             if not isinstance(prompt, dict):
                 continue
             safe_prompt = dict(prompt)
+            try:
+                image_count = int(safe_prompt.get("image_count") or safe_prompt.get("generation_image_count") or safe_prompt.get("count") or 1)
+            except Exception:
+                image_count = 1
+            safe_prompt["image_count"] = max(1, min(8, image_count))
             safe_prompt["reference_paths"] = _safe_tmall_approval_paths(
                 batch,
                 [str(path or "").strip() for path in (safe_prompt.get("reference_paths") or []) if str(path or "").strip()],

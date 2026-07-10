@@ -121,8 +121,75 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(detail_asset["slot"], "reference")
         self.assertEqual([prompt["prompt_name"] for prompt in item["generation_prompts"]], ["正面", "侧身"])
         self.assertEqual(item["generation_prompts"][0]["prompt"], "prompt 1")
+        self.assertEqual(item["generation_prompts"][0]["image_count"], 1)
         self.assertEqual(item["generation_prompts"][1]["reference_paths"], ["/tmp/main.jpg"])
+        self.assertEqual(item["generation_prompts"][1]["image_count"], 1)
         self.assertEqual(item["generation_prompts"][1]["status"], "pending")
+
+    def test_generation_confirmation_prompt_image_count_updates_1xm_payload(self):
+        module = load_script()
+        batch = {
+            "batch_id": "batch-count",
+            "task_run_uid": "run-count",
+            "run_params": {"ai_image_count": 4, "image_size": "960x1280", "quality": "auto", "output_format": "jpeg"},
+        }
+        item = {
+            "id": "item-1",
+            "style_code": "208326100202",
+            "item_id": "1002178235142",
+            "origin_path": "/tmp/main.jpg",
+            "workflow": {
+                "row_no": 2,
+                "style_code": "208326100202",
+                "item_id": "1002178235142",
+                "category": "长袖T恤",
+                "gender": "中性",
+                "skc_code": "208326100202-00211",
+            },
+            "generation_rows": [{
+                "提示词分组": "上装",
+                "提示词字段名": "正面",
+                "提示词序号": 1,
+                "尺寸": "960x1280",
+                "格式": "jpeg",
+                "质量": "auto",
+                "生成数量": 1,
+                "__1xm_payload": {"n": 1, "size": "960x1280", "ratio": "3:4"},
+            }],
+        }
+        prompt = {
+            "prompt_index": 1,
+            "prompt_name": "动态展示",
+            "prompt_group": "上装",
+            "prompt": "prompt text",
+            "custom_prompt": "prompt text",
+            "reference_paths": ["/tmp/main.jpg"],
+            "image_count": 3,
+            "generation_row": item["generation_rows"][0],
+        }
+
+        row = module.generation_confirmation_prompt_to_row(batch, item, prompt, index=1)
+
+        self.assertEqual(row["生成数量"], 3)
+        self.assertEqual(row["比例"], "3:4")
+        self.assertEqual(row["__1xm_payload"]["n"], 3)
+        self.assertEqual(row["__1xm_payload"]["ratio"], "3:4")
+
+    def test_approval_generation_defaults_do_not_treat_prompt_count_as_image_count(self):
+        module = load_script()
+        item = {"assets": []}
+
+        prompt_count_only = module.approval_generation_defaults(
+            {"run_params": {"ai_image_count": 4}},
+            item,
+        )
+        explicit_generation_count = module.approval_generation_defaults(
+            {"run_params": {"ai_image_count": 4, "generation_image_count": 3}},
+            item,
+        )
+
+        self.assertEqual(prompt_count_only["count"], 1)
+        self.assertEqual(explicit_generation_count["count"], 3)
 
     def test_cloud_prompt_templates_normalize_to_prompt_items(self):
         module = load_script()
@@ -1794,8 +1861,10 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(row["尺寸"], "960x1280")
         self.assertEqual(row["格式"], "jpeg")
         self.assertEqual(row["质量"], "low")
+        self.assertEqual(row["比例"], "3:4")
         self.assertEqual(row["完整Prompt"], row["最终提示词"])
         self.assertEqual(row["__1xm_payload"]["n"], 1)
+        self.assertEqual(row["__1xm_payload"]["ratio"], "3:4")
         self.assertEqual(row["主参考图文件"], "/tmp/origin.jpg")
         self.assertEqual(row["细节参考图文件"], "/tmp/detail-flat.jpg")
         self.assertEqual(row["__1xm_reference_paths"], ["/tmp/origin.jpg", "/tmp/detail-flat.jpg"])
@@ -2126,6 +2195,86 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 
         self.assertEqual(payload["chosen"], "yz(1)-2026-5-18bala6206.jpg")
         self.assertEqual(payload["mainCandidates"], ["yz(1)-2026-5-18bala6206.jpg", "yz1.jpg"])
+
+    def test_semir_detail_reference_prefers_selected_model_original_style_color_images(self):
+        module = load_script()
+        code = module.js_call(module.SEMIR_FIND_JS, {
+            "style_code": "208326100202",
+            "skc_code": "208326100202-00211",
+            "cloud_path": "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/",
+            "limit": 8,
+        })
+        node_script = f"""
+;(async () => {{
+  const code = {json.dumps(code, ensure_ascii=False)};
+  const selectedFolder = '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/模拍原图/期货/1P/婴童/208326100202-已回齐6.2已选';
+  const searchItems = [
+    {{
+      filename: '208326100202-已回齐6.2已选',
+      fullpath: selectedFolder,
+      dir: 1,
+      type: 'folder',
+    }},
+    {{
+      filename: '208326100202-00482.jpg',
+      fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/平拍原图/208326100202/208326100202-00482.jpg',
+      ext: 'jpg',
+    }},
+    {{
+      filename: '20832610020230424-婴幼童-男-AI参考.jpg',
+      fullpath: `${{selectedFolder}}/20832610020230424-婴幼童-男-AI参考.jpg`,
+      ext: 'jpg',
+    }},
+  ];
+  const selectedItems = [
+    {{ filename: '208326100202-20841.jpg', ext: 'jpg' }},
+    {{ filename: '208326100202-30424-14.jpg', ext: 'jpg' }},
+    {{ filename: '208326100202-60354.jpg', ext: 'jpg' }},
+    {{ filename: '208326100202-80224.jpg', ext: 'jpg' }},
+    {{ filename: '20832610020230424-婴幼童-男-AI参考.jpg', ext: 'jpg' }},
+  ];
+  const response = (payload) => ({{
+    ok: true,
+    async text() {{ return JSON.stringify(payload); }},
+  }});
+  global.fetch = async (url) => {{
+    const path = new URL(String(url), 'https://fmp.semirapp.com').pathname;
+    if (path === '/fengcloud/1/account/mount') {{
+      return response({{ list: [{{ mount_id: 'm1', name: '巴拉营运BU-商品' }}] }});
+    }}
+    if (path === '/fengcloud/2/file/search') {{
+      return response({{ list: searchItems, total: searchItems.length }});
+    }}
+    if (path.includes('/file/list') || path.includes('/file/ls')) {{
+      return response({{ list: selectedItems, total: selectedItems.length }});
+    }}
+    if (path.startsWith('/fengcloud/2/file/info')) {{
+      return response({{ url: 'https://example.com/source.jpg' }});
+    }}
+    return response({{ list: [], total: 0 }});
+  }};
+  const result = await eval(code);
+  if (!result.success) throw new Error(result.error || 'mocked semir find failed');
+  process.stdout.write(JSON.stringify({{
+    chosenDetail: result.data[0].chosenDetail && result.data[0].chosenDetail.filename,
+    detailCandidates: result.data[0].detailCandidates.map((item) => item.filename),
+  }}));
+}})().catch((error) => {{
+  console.error(error && error.stack || error);
+  process.exit(1);
+}});
+"""
+        completed = subprocess.run(["node"], input=node_script, text=True, capture_output=True, check=True)
+        payload = json.loads(completed.stdout)
+
+        self.assertEqual(payload["chosenDetail"], "208326100202-20841.jpg")
+        self.assertEqual(payload["detailCandidates"][:4], [
+            "208326100202-20841.jpg",
+            "208326100202-30424-14.jpg",
+            "208326100202-60354.jpg",
+            "208326100202-80224.jpg",
+        ])
+        self.assertNotIn("20832610020230424-婴幼童-男-AI参考.jpg", payload["detailCandidates"])
 
     def test_tmall_upload_image_is_normalized_to_three_four_portrait(self):
         module = load_script()

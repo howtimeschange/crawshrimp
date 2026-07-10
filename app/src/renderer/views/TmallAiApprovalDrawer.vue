@@ -160,78 +160,110 @@
                 <small>单独为本款补一张 AI 图</small>
               </button>
             </div>
-            <div v-if="isGenerationConfirmation" class="generation-confirm-list">
-              <article
-                v-for="prompt in activeGenerationPrompts(item)"
-                :key="prompt.id"
-                class="generation-prompt-card"
-              >
-                <header class="generation-prompt-head">
-                  <input v-model="prompt.prompt_name" class="prompt-name-input" placeholder="Prompt 名称" />
-                  <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">从 Prompt 库选择</button>
-                  <button type="button" class="ghost-btn" @click="openPromptEditor(item, prompt)">弹窗编辑</button>
-                  <button type="button" class="ghost-btn danger" @click="removeGenerationPrompt(item, prompt)">删除</button>
-                </header>
-                <textarea v-model="prompt.custom_prompt" placeholder="确认或修改本条生图 Prompt"></textarea>
-
-                <div class="confirmation-image-slots">
-                  <section class="main-image-slot">
-                    <div class="slot-head">
-                      <div>
-                        <strong>主图位</strong>
-                        <span>默认参与生图</span>
-                      </div>
+            <div v-if="isGenerationConfirmation" class="generation-confirm-board">
+              <aside class="confirmation-reference-panel">
+                <section class="main-image-slot">
+                  <div class="slot-head">
+                    <div>
+                      <strong>主图位</strong>
+                      <span>默认参与所有 Prompt 生图</span>
                     </div>
-                    <figure v-if="itemMainAsset(item)" class="slot-card selected">
-                      <button type="button" class="slot-image-button" @click="openImagePreview(itemMainAsset(item), item)">
-                        <img :src="referenceImageUrl(itemMainAsset(item).path)" :alt="referenceFileName(itemMainAsset(item).path)" />
+                  </div>
+                  <figure v-if="itemMainAsset(item)" class="slot-card selected">
+                    <button type="button" class="slot-image-button" @click="openImagePreview(itemMainAsset(item), item)">
+                      <img :src="referenceImageUrl(itemMainAsset(item).path)" :alt="referenceFileName(itemMainAsset(item).path)" />
+                    </button>
+                    <figcaption>{{ referenceFileName(itemMainAsset(item).path) }}</figcaption>
+                    <div class="slot-actions">
+                      <button type="button" class="ghost-btn" @click="replaceItemMainImage(item)">替换</button>
+                      <button type="button" class="ghost-btn danger" @click="clearItemMainImage(item)">删除</button>
+                    </div>
+                  </figure>
+                  <button v-else type="button" class="empty-slot" @click="replaceItemMainImage(item)">选择主图</button>
+                </section>
+
+                <section class="reference-image-slots">
+                  <div class="slot-head">
+                    <div>
+                      <strong>参考图位</strong>
+                      <span>只展示一次，按 Prompt 勾选参与</span>
+                    </div>
+                    <button type="button" class="ghost-btn" :disabled="itemImageCount(item) >= MAX_CONFIRMATION_IMAGES" @click="addItemReferenceImage(item)">新增参考图</button>
+                  </div>
+                  <div v-if="itemReferenceAssets(item).length" class="reference-slot-grid">
+                    <figure
+                      v-for="asset in itemReferenceAssets(item)"
+                      :key="asset.id"
+                      :class="['reference-image-slot', { selected: itemReferenceSelected(item, asset) }]"
+                    >
+                      <button type="button" class="slot-image-button" @click="openImagePreview(asset, item)">
+                        <img :src="referenceImageUrl(asset.path)" :alt="referenceFileName(asset.path)" />
                       </button>
-                      <figcaption>{{ referenceFileName(itemMainAsset(item).path) }}</figcaption>
+                      <figcaption>{{ referenceFileName(asset.path) }}</figcaption>
                       <div class="slot-actions">
-                        <button type="button" class="ghost-btn" @click="replaceItemMainImage(item)">替换</button>
-                        <button type="button" class="ghost-btn danger" @click="clearItemMainImage(item)">删除</button>
+                        <button type="button" class="ghost-btn" @click="replaceItemReference(item, asset)">替换</button>
+                        <button type="button" class="ghost-btn danger" @click="clearItemReference(item, asset)">删除</button>
                       </div>
                     </figure>
-                    <button v-else type="button" class="empty-slot" @click="replaceItemMainImage(item)">选择主图</button>
-                  </section>
+                  </div>
+                  <button v-else type="button" class="empty-slot" @click="addItemReferenceImage(item)">新增参考图</button>
+                </section>
+              </aside>
 
-                  <section class="reference-image-slots">
-                    <div class="slot-head">
-                      <div>
-                        <strong>参考图位</strong>
-                        <span>默认不参与生图，可按 Prompt 勾选</span>
-                      </div>
-                      <button type="button" class="ghost-btn" :disabled="itemImageCount(item) >= MAX_CONFIRMATION_IMAGES" @click="addItemReferenceImage(item)">新增参考图</button>
-                    </div>
-                    <div v-if="itemReferenceAssets(item).length" class="reference-slot-grid">
-                      <figure
-                        v-for="asset in itemReferenceAssets(item)"
-                        :key="asset.id"
-                        :class="['reference-image-slot', { selected: referenceImageSelected(prompt, asset) }]"
-                      >
-                        <label class="slot-check">
-                          <input
-                            type="checkbox"
-                            :checked="referenceImageSelected(prompt, asset)"
-                            :disabled="!referenceImageSelected(prompt, asset) && promptImageCount(prompt) >= MAX_CONFIRMATION_IMAGES"
-                            @change="togglePromptReferenceImage(prompt, asset)"
-                          />
-                          <span>参与</span>
-                        </label>
-                        <button type="button" class="slot-image-button" @click="openImagePreview(asset, item)">
-                          <img :src="referenceImageUrl(asset.path)" :alt="referenceFileName(asset.path)" />
-                        </button>
-                        <figcaption>{{ referenceFileName(asset.path) }}</figcaption>
-                        <div class="slot-actions">
-                          <button type="button" class="ghost-btn" @click="replaceItemReference(item, asset)">替换</button>
-                          <button type="button" class="ghost-btn danger" @click="clearItemReference(item, asset)">删除</button>
-                        </div>
-                      </figure>
-                    </div>
-                    <button v-else type="button" class="empty-slot" @click="addItemReferenceImage(item)">新增参考图</button>
-                  </section>
-                </div>
-              </article>
+              <section class="generation-prompt-grid">
+                <article
+                  v-for="prompt in activeGenerationPrompts(item)"
+                  :key="prompt.id"
+                  class="generation-prompt-card"
+                >
+                  <header class="generation-prompt-head">
+                    <input v-model="prompt.prompt_name" class="prompt-name-input" placeholder="Prompt 名称" />
+                    <label class="prompt-count-field">
+                      <span>生图张数</span>
+                      <input
+                        v-model.number="prompt.image_count"
+                        type="number"
+                        min="1"
+                        max="8"
+                        step="1"
+                        @change="prompt.image_count = normalizeGenerationImageCount(prompt.image_count)"
+                      />
+                    </label>
+                  </header>
+                  <textarea v-model="prompt.custom_prompt" placeholder="确认或修改本条生图 Prompt"></textarea>
+                  <div class="prompt-reference-toggle-row">
+                    <span class="prompt-ref-caption">参考图</span>
+                    <label
+                      v-for="asset in itemReferenceAssets(item)"
+                      :key="`${prompt.id}-${asset.id}`"
+                      :class="['prompt-reference-chip', { selected: referenceImageSelected(prompt, asset) }]"
+                    >
+                      <input
+                        type="checkbox"
+                        :checked="referenceImageSelected(prompt, asset)"
+                        :disabled="!referenceImageSelected(prompt, asset) && promptImageCount(prompt) >= MAX_CONFIRMATION_IMAGES"
+                        @change="togglePromptReferenceImage(prompt, asset)"
+                      />
+                      <span>{{ referenceFileName(asset.path) }}</span>
+                    </label>
+                    <span v-if="!itemReferenceAssets(item).length" class="prompt-reference-empty">暂无参考图</span>
+                  </div>
+                  <div class="prompt-card-actions">
+                    <button type="button" class="ghost-btn" @click="openPromptLibraryPicker(item, prompt)">从 Prompt 库选择</button>
+                    <button type="button" class="ghost-btn" @click="openPromptEditor(item, prompt)">弹窗编辑</button>
+                    <button type="button" class="ghost-btn danger" @click="removeGenerationPrompt(item, prompt)">删除</button>
+                  </div>
+                  <div class="prompt-card-status">
+                    <span>主图默认参与</span>
+                    <span>状态：{{ prompt.status || 'pending' }}</span>
+                  </div>
+                </article>
+                <button type="button" class="add-generation-prompt-card" @click="openPromptEditor(item)">
+                  <span class="add-icon">+</span>
+                  <strong>新增 Prompt</strong>
+                  <small>增加一组待生成 AI 图</small>
+                </button>
+              </section>
             </div>
           </article>
         </main>
@@ -327,51 +359,13 @@
         </section>
       </div>
 
-      <div v-if="promptLibraryPicker.open" class="prompt-library-picker-modal" @click.self="closePromptLibraryPicker">
-        <section class="prompt-library-picker-panel">
-          <header class="manual-modal-head">
-            <div>
-              <strong>从 Prompt 库选择</strong>
-              <span>{{ promptLibraryPicker.item?.style_code || '-' }}，选中后会回填当前 Prompt。</span>
-            </div>
-            <button type="button" class="icon-btn" aria-label="关闭 Prompt 库选择" @click="closePromptLibraryPicker">×</button>
-          </header>
-
-          <div class="prompt-library-picker-filters">
-            <select v-model="promptLibraryPicker.selectedLibraryId" class="prompt-library-select" @change="loadPromptLibraryTemplates(promptLibraryPicker.selectedLibraryId)">
-              <option value="">选择 Prompt 库</option>
-              <option v-for="library in promptLibraryPicker.libraries" :key="library.picker_key || library.id" :value="String(library.picker_key || library.id)">
-                {{ library.name || `Prompt 库 ${library.id}` }}（{{ library.source_label }}）
-              </option>
-            </select>
-            <input v-model="promptLibrarySearch" class="prompt-library-search" placeholder="搜索 Prompt 名称 / 内容" />
-            <select v-model="promptLibraryCategory" class="prompt-library-category">
-              <option value="">全部分类</option>
-              <option v-for="category in promptLibraryCategories" :key="category" :value="category">{{ category }}</option>
-            </select>
-            <button type="button" class="ghost-btn" :disabled="promptLibraryPicker.loading" @click="loadPromptLibraries">
-              {{ promptLibraryPicker.loading ? '刷新中' : '刷新' }}
-            </button>
-          </div>
-
-          <div v-if="promptLibraryPicker.error" class="prompt-library-picker-empty error">{{ promptLibraryPicker.error }}</div>
-          <div v-else-if="promptLibraryPicker.loading || promptLibraryPicker.templatesLoading" class="prompt-library-picker-empty">正在读取 Prompt 库…</div>
-          <div v-else class="prompt-library-template-list">
-            <button
-              v-for="template in filteredPromptLibraryTemplates"
-              :key="template.template_id || template.id || `${template.group_name}-${template.field_name}`"
-              type="button"
-              class="prompt-library-template-row"
-              @click="selectPromptLibraryTemplate(template)"
-            >
-              <span>{{ template.group_name || '未分类' }}</span>
-              <strong>{{ template.field_name || '未命名 Prompt' }}</strong>
-              <p>{{ template.prompt_text || template.prompt || '' }}</p>
-            </button>
-            <div v-if="!filteredPromptLibraryTemplates.length" class="prompt-library-picker-empty">没有匹配的 Prompt</div>
-          </div>
-        </section>
-      </div>
+      <PromptLibraryPickerModal
+        :open="promptLibraryPicker.open"
+        title="从 Prompt 库选择"
+        :subtitle="`${promptLibraryPicker.item?.style_code || '-'}，选中后会回填当前 Prompt。`"
+        @close="closePromptLibraryPicker"
+        @select="selectPromptLibraryTemplate"
+      />
 
       <div v-if="imagePreview.open" class="image-preview-modal" @click.self="closeImagePreview">
         <section class="image-preview-panel">
@@ -395,7 +389,7 @@
 
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
-import { buildPromptLibraryPickerLibraries } from '../utils/localPromptLibrary'
+import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
 const props = defineProps({
   modelValue: Boolean,
@@ -406,7 +400,7 @@ const props = defineProps({
     default: true,
   },
 })
-const emit = defineEmits(['update:modelValue', 'batch-updated', 'submit-started', 'committed'])
+const emit = defineEmits(['update:modelValue', 'batch-updated', 'generation-started', 'submit-started', 'committed'])
 
 const MAX_CONFIRMATION_IMAGES = 10
 
@@ -437,18 +431,10 @@ const promptEditor = ref({
   promptName: '',
   promptText: '',
 })
-const promptLibrarySearch = ref('')
-const promptLibraryCategory = ref('')
 const promptLibraryPicker = ref({
   open: false,
   item: null,
   prompt: null,
-  loading: false,
-  templatesLoading: false,
-  error: '',
-  libraries: [],
-  selectedLibraryId: '',
-  templates: [],
 })
 const manualGenerate = ref({
   open: false,
@@ -565,7 +551,18 @@ const submitStartMessage = computed(() => {
 const generationPromptCount = computed(() =>
   (batch.value?.items || []).reduce((total, item) => total + activeGenerationPrompts(item).length, 0)
 )
+const generationRequestedImageCount = computed(() =>
+  (batch.value?.items || []).reduce((total, item) =>
+    total + activeGenerationPrompts(item).reduce((promptTotal, prompt) =>
+      promptTotal + normalizeGenerationImageCount(prompt.image_count),
+    0),
+  0)
+)
+const generationStartMessage = computed(() =>
+  `正在提交 ${generationPromptCount.value} 条 Prompt，预计生成 ${generationRequestedImageCount.value} 张 AI 图`
+)
 const submitProgressTotal = computed(() => {
+  if (generationSubmitting.value) return generationPromptCount.value
   const total = Number(submitProgress.value?.total || 0)
   if (Number.isFinite(total) && total > 0) return total
   return createSummary.value.attempted || approvedSubmitStyleCount.value || createRows.value.length
@@ -578,6 +575,7 @@ const submitProgressCompleted = computed(() => {
 const submitProgressImageCount = computed(() => {
   const explicit = Number(submitProgress.value?.image_total || submitProgress.value?.current_images || 0)
   if (Number.isFinite(explicit) && explicit > 0) return explicit
+  if (generationSubmitting.value) return generationRequestedImageCount.value
   if (submitting.value) return pendingSubmitImageCount.value || approvedSubmitImageCount.value || summary.value.approved
   const lastRow = createRows.value[createRows.value.length - 1] || {}
   const lastCount = Number(lastRow?.提交图片数量 || 0)
@@ -595,6 +593,7 @@ const showSubmitProgress = computed(() =>
 const submitProgressText = computed(() => {
   const message = String(submitProgress.value?.message || '').trim()
   if (message) return message
+  if (generationSubmitting.value) return '正在批量生图'
   if (submitting.value || effectiveStatus.value === 'submitting') return '正在提交已确认图片并创建测图任务'
   if (effectiveStatus.value === 'created') return '全部测图任务已提交'
   if (['partial_failed', 'create_failed'].includes(effectiveStatus.value)) return '提交完成，存在失败款'
@@ -661,31 +660,6 @@ const canSubmitManualGenerate = computed(() =>
   Boolean(String(manualGenerate.value.prompt || '').trim()
   && String(manualGenerate.value.mainImagePath || '').trim())
 )
-const promptLibraryCategories = computed(() => {
-  const seen = new Set()
-  for (const template of promptLibraryPicker.value.templates || []) {
-    const group = String(template?.group_name || '').trim()
-    if (group) seen.add(group)
-  }
-  return Array.from(seen)
-})
-const filteredPromptLibraryTemplates = computed(() => {
-  const search = promptLibrarySearch.value.trim().toLowerCase()
-  const category = promptLibraryCategory.value.trim()
-  return (promptLibraryPicker.value.templates || []).filter(template => {
-    if (category && String(template?.group_name || '').trim() !== category) return false
-    if (!search) return true
-    const haystack = [
-      template?.group_name,
-      template?.field_name,
-      template?.prompt_text,
-      template?.prompt,
-      template?.size_label,
-    ].join(' ').toLowerCase()
-    return haystack.includes(search)
-  })
-})
-
 watch(() => [props.modelValue, props.boardUrl], ([open]) => {
   if (open) reload()
 }, { immediate: true })
@@ -704,7 +678,7 @@ function stopSubmitProgressPolling() {
 function startSubmitProgressPolling() {
   stopSubmitProgressPolling()
   submitPollTimer = window.setInterval(() => {
-    if (!submitting.value) {
+    if (!submitting.value && !generationSubmitting.value) {
       stopSubmitProgressPolling()
       return
     }
@@ -841,6 +815,12 @@ function prepareEditableBatch(payload) {
       if (!String(prompt.custom_prompt || '').trim()) {
         prompt.custom_prompt = String(prompt.prompt || prompt.generation_row?.完整Prompt || prompt.generation_row?.最终提示词 || '')
       }
+      prompt.image_count = normalizeGenerationImageCount(
+        prompt.image_count
+          ?? prompt.generation_row?.['生成数量']
+          ?? prompt.generation_row?.__1xm_payload?.n
+          ?? 1,
+      )
       prompt.reference_paths = plainStringArray(prompt.reference_paths?.length ? prompt.reference_paths : prompt.generation_row?.参考图文件)
       if (confirmation) {
         prompt.reference_paths = normalizePromptReferencePaths(item, prompt)
@@ -880,6 +860,12 @@ function itemImageCount(item) {
 
 function promptImageCount(prompt) {
   return plainStringArray(prompt?.reference_paths).length
+}
+
+function normalizeGenerationImageCount(value, fallback = 1) {
+  const count = Number.parseInt(String(value ?? fallback), 10)
+  if (!Number.isFinite(count)) return fallback
+  return Math.min(8, Math.max(1, count))
 }
 
 function normalizePromptReferencePaths(item, prompt) {
@@ -947,6 +933,10 @@ function assetAlreadySubmitted(item, asset) {
 function referenceImageSelected(prompt, asset) {
   const path = String(asset?.path || '').trim()
   return Boolean(path && plainStringArray(prompt?.reference_paths).includes(path))
+}
+
+function itemReferenceSelected(item, asset) {
+  return activeGenerationPrompts(item).some(prompt => referenceImageSelected(prompt, asset))
 }
 
 function togglePromptReferenceImage(prompt, asset) {
@@ -1090,6 +1080,7 @@ function generationConfirmationPayload() {
           prompt_group: String(prompt.prompt_group || ''),
           prompt: String(prompt.custom_prompt || prompt.prompt || ''),
           custom_prompt: String(prompt.custom_prompt || ''),
+          image_count: normalizeGenerationImageCount(prompt.image_count),
           reference_paths: plainStringArray(prompt.reference_paths).slice(0, MAX_CONFIRMATION_IMAGES),
           status: String(prompt.status || 'pending'),
           generation_row: prompt.generation_row || {},
@@ -1101,9 +1092,30 @@ function generationConfirmationPayload() {
 
 async function submitGenerationConfirmation() {
   const ref = approvalRef.value
+  const previousBatch = batch.value
+  const payload = generationConfirmationPayload()
   generationSubmitting.value = true
   try {
-    const result = await window.cs.submitTmallApprovalGeneration(ref.batchId, ref.token, generationConfirmationPayload())
+    batch.value = {
+      ...(batch.value || {}),
+      status: 'generating',
+      submit_progress: {
+        status: 'running',
+        total: generationPromptCount.value,
+        completed: 0,
+        attempted: 0,
+        succeeded: 0,
+        failed: 0,
+        image_total: generationRequestedImageCount.value,
+        current_style: '',
+        message: generationStartMessage.value,
+      },
+    }
+    emit('batch-updated', batch.value)
+    emit('generation-started', batch.value)
+    showToast(generationStartMessage.value)
+    startSubmitProgressPolling()
+    const result = await window.cs.submitTmallApprovalGeneration(ref.batchId, ref.token, payload)
     if (result?.detail || result?.error) throw new Error(result.detail || result.error)
     if (result?.batch) {
       prepareEditableBatch(result.batch)
@@ -1114,9 +1126,12 @@ async function submitGenerationConfirmation() {
     }
     showToast(`生图完成：${result?.generated || summary.value.aiTotal || 0} 张`)
   } catch (err) {
+    batch.value = previousBatch
+    emit('batch-updated', previousBatch)
     showToast(err?.message || String(err), true)
   } finally {
     generationSubmitting.value = false
+    stopSubmitProgressPolling()
   }
 }
 
@@ -1256,6 +1271,7 @@ function addGenerationPrompt(item, values = {}) {
     prompt_group: first.prompt_group || '',
     prompt: String(values.promptText || ''),
     custom_prompt: String(values.promptText || ''),
+    image_count: normalizeGenerationImageCount(values.imageCount, 1),
     reference_paths: mainPath ? [mainPath] : [],
     status: 'pending',
     generation_row: first.generation_row || {},
@@ -1263,7 +1279,7 @@ function addGenerationPrompt(item, values = {}) {
   item.generation_prompts = [...prompts, prompt]
 }
 
-async function openPromptLibraryPicker(item, prompt) {
+function openPromptLibraryPicker(item, prompt) {
   promptLibraryPicker.value = {
     ...promptLibraryPicker.value,
     open: true,
@@ -1271,85 +1287,10 @@ async function openPromptLibraryPicker(item, prompt) {
     prompt,
     error: '',
   }
-  if (!(promptLibraryPicker.value.libraries || []).length) {
-    await loadPromptLibraries()
-  } else if (promptLibraryPicker.value.selectedLibraryId) {
-    await loadPromptLibraryTemplates(promptLibraryPicker.value.selectedLibraryId)
-  }
 }
 
 function closePromptLibraryPicker() {
   promptLibraryPicker.value.open = false
-}
-
-async function loadPromptLibraries() {
-  promptLibraryPicker.value.loading = true
-  promptLibraryPicker.value.error = ''
-  try {
-    const [localResult, cloudResult] = await Promise.allSettled([
-      window.cs.listLocalPromptLibraries(),
-      window.cs.listCloudPromptLibraries(),
-    ])
-    const localPayload = promptLibrarySettledPayload(localResult, '本地 Prompt 库')
-    const cloudPayload = promptLibrarySettledPayload(cloudResult, '线上 Prompt 库')
-    const libraries = buildPromptLibraryPickerLibraries({
-      localLibraries: Array.isArray(localPayload.payload?.libraries) ? localPayload.payload.libraries : [],
-      cloudLibraries: Array.isArray(cloudPayload.payload?.libraries) ? cloudPayload.payload.libraries : [],
-    })
-    promptLibraryPicker.value.libraries = libraries
-    const currentId = String(promptLibraryPicker.value.selectedLibraryId || '').trim()
-    const currentExists = libraries.some(library => String(library.picker_key || library.id || '') === currentId)
-    const nextLibraryId = currentExists ? currentId : String(libraries[0]?.picker_key || libraries[0]?.id || '').trim()
-    promptLibraryPicker.value.selectedLibraryId = nextLibraryId
-    const errors = [localPayload.error, cloudPayload.error].filter(Boolean)
-    if (!libraries.length && errors.length) throw new Error(errors.join('；'))
-    if (nextLibraryId) await loadPromptLibraryTemplates(nextLibraryId)
-  } catch (err) {
-    promptLibraryPicker.value.error = err?.message || String(err)
-  } finally {
-    promptLibraryPicker.value.loading = false
-  }
-}
-
-async function loadPromptLibraryTemplates(libraryId) {
-  const id = String(libraryId || '').trim()
-  if (!id) {
-    promptLibraryPicker.value.templates = []
-    return
-  }
-  const selectedLibrary = (promptLibraryPicker.value.libraries || [])
-    .find(library => String(library.picker_key || library.id || '') === id)
-  if (selectedLibrary && selectedLibrary.source_type === 'local') {
-    promptLibraryPicker.value.templates = (selectedLibrary.templates || [])
-      .map(template => ({ ...template, source_label: selectedLibrary.source_label || '本地' }))
-    promptLibraryCategory.value = ''
-    return
-  }
-  promptLibraryPicker.value.templatesLoading = true
-  promptLibraryPicker.value.error = ''
-  try {
-    const cloudLibraryId = selectedLibrary?.cloud_library_id ?? id.replace(/^cloud:/, '')
-    const payload = await window.cs.resolveCloudPromptTemplates(cloudLibraryId, { limit: 500 })
-    if (payload?.detail || payload?.error) throw new Error(payload.detail || payload.error)
-    promptLibraryPicker.value.templates = (Array.isArray(payload?.templates) ? payload.templates : [])
-      .map(template => ({ ...template, source_type: 'cloud', source_label: selectedLibrary?.source_label || '线上' }))
-    promptLibraryCategory.value = ''
-  } catch (err) {
-    promptLibraryPicker.value.error = err?.message || String(err)
-    promptLibraryPicker.value.templates = []
-  } finally {
-    promptLibraryPicker.value.templatesLoading = false
-  }
-}
-
-function promptLibrarySettledPayload(result, label) {
-  if (result.status === 'rejected') {
-    return { payload: {}, error: `${label}读取失败：${result.reason?.message || result.reason}` }
-  }
-  const payload = result.value || {}
-  const error = payload?.detail || payload?.error
-  if (error) return { payload: {}, error: `${label}读取失败：${error}` }
-  return { payload, error: '' }
 }
 
 function selectPromptLibraryTemplate(template) {
@@ -1368,6 +1309,7 @@ function selectPromptLibraryTemplate(template) {
     prompt.prompt_group = String(template?.group_name || prompt.prompt_group || '')
     prompt.prompt = promptText
     prompt.custom_prompt = promptText
+    prompt.image_count = normalizeGenerationImageCount(prompt.image_count, 1)
   } else {
     addGenerationPrompt(item, {
       promptName,
@@ -1406,6 +1348,7 @@ function savePromptEditor() {
     editor.prompt.prompt_name = String(editor.promptName || editor.prompt.prompt_name || 'Prompt')
     editor.prompt.prompt = promptText
     editor.prompt.custom_prompt = promptText
+    editor.prompt.image_count = normalizeGenerationImageCount(editor.prompt.image_count, 1)
   } else {
     addGenerationPrompt(item, {
       promptName: String(editor.promptName || '').trim(),
@@ -2217,27 +2160,63 @@ function showToast(message, isError = false) {
 .reference-tools.inline {
   margin-top: 10px;
 }
-.generation-confirm-list {
+.generation-confirm-board {
   display: grid;
+  grid-template-columns: minmax(230px, 280px) minmax(0, 1fr);
   gap: 12px;
-  padding: 0 16px 16px;
+  padding: 12px 16px 16px;
+  border-top: 1px solid var(--border);
+}
+.confirmation-reference-panel {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+.generation-prompt-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+  align-items: stretch;
 }
 .generation-prompt-card {
+  min-width: 0;
+  min-height: 288px;
+  display: flex;
+  flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 10px;
-  background: rgba(255, 255, 255, 0.03);
-  padding: 12px;
+  background: rgba(255, 255, 255, 0.024);
+  padding: 10px;
 }
 .generation-prompt-head {
-  display: flex;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 86px;
+  gap: 8px;
+  align-items: end;
+  margin-bottom: 8px;
 }
 .prompt-name-input {
   min-width: 0;
-  flex: 1;
-  padding: 8px 10px;
+  width: 100%;
+  padding: 8px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text);
+}
+.prompt-count-field {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 700;
+}
+.prompt-count-field input {
+  width: 100%;
+  padding: 7px 8px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg2);
@@ -2245,20 +2224,15 @@ function showToast(message, isError = false) {
 }
 .generation-prompt-card textarea {
   width: 100%;
-  min-height: 76px;
+  min-height: 104px;
+  flex: 1;
   resize: vertical;
-  padding: 10px;
+  padding: 9px;
   border-radius: 8px;
   border: 1px solid var(--border);
   background: var(--bg2);
   color: var(--text);
-}
-.confirmation-image-slots {
-  margin-top: 12px;
-  display: grid;
-  grid-template-columns: minmax(132px, 168px) minmax(0, 1fr);
-  gap: 12px;
-  align-items: stretch;
+  line-height: 1.45;
 }
 .main-image-slot,
 .reference-image-slots {
@@ -2340,29 +2314,104 @@ function showToast(message, isError = false) {
 }
 .reference-slot-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(94px, 1fr));
+  gap: 8px;
 }
-.slot-check {
-  position: absolute;
-  z-index: 2;
-  top: 6px;
-  left: 6px;
+.prompt-reference-toggle-row {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+.prompt-ref-caption,
+.prompt-reference-empty {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+.prompt-reference-chip {
+  min-width: 0;
+  max-width: 100%;
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  border-radius: 999px;
-  background: rgba(0, 0, 0, .62);
-  color: #fff;
+  gap: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .026);
+  color: var(--text2);
   padding: 4px 7px;
   font-size: 11px;
   font-weight: 800;
 }
-.slot-check input {
+.prompt-reference-chip.selected {
+  border-color: rgba(31, 184, 156, .56);
+  background: rgba(31, 184, 156, .12);
+  color: #a7f3d0;
+}
+.prompt-reference-chip input {
   width: 13px;
   height: 13px;
   margin: 0;
   accent-color: #1fb89c;
+}
+.prompt-reference-chip span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.prompt-card-actions {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+.prompt-card-actions .ghost-btn {
+  min-width: 0;
+  padding: 6px 6px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+.prompt-card-status {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 8px;
+  color: var(--text3);
+  font-size: 11px;
+}
+.add-generation-prompt-card {
+  min-height: 288px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .018);
+  color: var(--text2);
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 8px;
+  padding: 14px;
+  cursor: pointer;
+}
+.add-generation-prompt-card:hover {
+  border-color: var(--orange);
+  background: rgba(255, 106, 41, .07);
+  color: var(--text);
+}
+.add-generation-prompt-card strong,
+.add-generation-prompt-card small {
+  display: block;
+  text-align: center;
+}
+.add-generation-prompt-card strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.add-generation-prompt-card small {
+  color: var(--text3);
+  font-size: 11px;
 }
 .empty-slot {
   width: 100%;
@@ -2747,7 +2796,7 @@ function showToast(message, isError = false) {
   .approval-list { height: auto; max-height: none; }
   .style-head { flex-direction: column; }
   .style-actions { justify-content: flex-start; }
-  .confirmation-image-slots { grid-template-columns: 1fr; }
+  .generation-confirm-board { grid-template-columns: 1fr; }
   .manual-image-columns { grid-template-columns: 1fr; }
   .submit-result-row { grid-template-columns: 1fr; }
 }

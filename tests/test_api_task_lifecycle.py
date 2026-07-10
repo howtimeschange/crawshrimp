@@ -83,6 +83,21 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(run_params["__crawshrimp_api_base_url"], "http://127.0.0.1:18768")
 
+    async def test_one_xm_payload_preserves_ratio_value(self):
+        payload = api_server._prepare_one_xm_payload({
+            "最终提示词": "prompt",
+            "尺寸": "960x1280",
+            "比例": "3:4",
+            "格式": "jpeg",
+            "质量": "auto",
+            "生成数量": 3,
+            "__1xm_payload": {"size": "960x1280", "ratio": "3:4", "n": 3},
+        })
+
+        self.assertEqual(payload["size"], "960x1280")
+        self.assertEqual(payload["ratio"], "3:4")
+        self.assertEqual(payload["n"], 3)
+
     async def test_build_live_progress_exposes_shein_detail_stage_fields(self):
         progress = api_server._build_live_progress(
             {

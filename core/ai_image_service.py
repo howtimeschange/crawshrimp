@@ -160,6 +160,9 @@ def build_one_xm_payload(
         "output_format": _compact(params.get("output_format") or params.get("response_format") or params.get("format") or "png") or "png",
         "n": _requested_image_count(job),
     }
+    ratio = _compact(params.get("ratio"))
+    if ratio:
+        payload["ratio"] = ratio
     for optional_key in ("webhook_url", "webhook_secret", "mask"):
         if params.get(optional_key):
             payload[optional_key] = params.get(optional_key)

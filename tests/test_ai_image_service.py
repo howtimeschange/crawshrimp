@@ -83,7 +83,7 @@ class AiImageServiceTests(unittest.TestCase):
     def test_build_payload_orders_reference_images_and_uses_file_to_data_url(self):
         job = {
             "prompt": "make a hero image",
-            "params": {"size": "2048x2048", "quality": "high", "n": 2},
+            "params": {"size": "2048x2048", "ratio": "1:1", "quality": "high", "n": 2},
         }
         assets = [
             {"kind": "reference", "path": "/tmp/back.png", "sort_order": 20},
@@ -100,6 +100,7 @@ class AiImageServiceTests(unittest.TestCase):
 
         self.assertEqual(payload["prompt"], "make a hero image")
         self.assertEqual(payload["size"], "2048x2048")
+        self.assertEqual(payload["ratio"], "1:1")
         self.assertEqual(payload["quality"], "high")
         self.assertEqual(payload["n"], 2)
         self.assertEqual(payload["image"], [

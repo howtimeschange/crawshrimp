@@ -11,6 +11,7 @@ import asyncio
 import base64
 import html
 import json
+import math
 import os
 import re
 import secrets
@@ -105,6 +106,37 @@ TMALL_AI_IMAGE_RESULT_COLUMN_ORDER = [
 
 def compact(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def normalize_generation_image_count(value: object, fallback: int = 1) -> int:
+    count = to_int(value, fallback)
+    return max(1, min(8, count))
+
+
+def image_ratio_label(value: object) -> str:
+    text = compact(value)
+    if not text:
+        return ""
+    explicit = re.search(r"(\d+)\s*[:：]\s*(\d+)", text)
+    if explicit:
+        left = int(explicit.group(1))
+        right = int(explicit.group(2))
+        if left > 0 and right > 0:
+            divisor = math.gcd(left, right)
+            return f"{left // divisor}:{right // divisor}"
+    size_match = re.search(r"(\d+)\s*[xX×*]\s*(\d+)", text)
+    if size_match:
+        width = int(size_match.group(1))
+        height = int(size_match.group(2))
+        if width > 0 and height > 0:
+            divisor = math.gcd(width, height)
+            return f"{width // divisor}:{height // divisor}"
+    return ""
+
+
+def generation_count_from_row(row: Mapping[str, Any], fallback: int = 1) -> int:
+    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), Mapping) else {}
+    return normalize_generation_image_count(row.get("生成数量") or payload.get("n"), fallback)
 
 
 def tmall_material_test_detail_url(item_id: object) -> str:
@@ -393,6 +425,7 @@ def generation_prompt_from_row(
 ) -> dict[str, Any]:
     prompt_text = compact(generation_row.get("完整Prompt") or generation_row.get("最终提示词"))
     reference_paths = parse_list(generation_row.get("参考图文件") or generation_row.get("__1xm_reference_paths"))
+    image_count = generation_count_from_row(generation_row, 1)
     return {
         "id": _generation_prompt_id(workflow.style_code, generation_row.get("提示词序号") or index, prompt_text),
         "prompt_index": int(generation_row.get("提示词序号") or index),
@@ -400,6 +433,7 @@ def generation_prompt_from_row(
         "prompt_group": compact(generation_row.get("提示词分组")),
         "prompt": prompt_text,
         "custom_prompt": "",
+        "image_count": image_count,
         "reference_paths": reference_paths,
         "reference_labels": [Path(path).name for path in reference_paths],
         "status": "pending",
@@ -580,6 +614,8 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     textarea,input {{ width:100%; border:1px solid var(--line); border-radius:7px; padding:8px; font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,monospace; }}
     textarea {{ min-height:86px; resize:vertical; margin-top:8px; }}
     .refs {{ margin-top:8px; display:grid; gap:6px; }}
+    .count-field {{ display:grid; gap:5px; margin-top:8px; color:var(--muted); font-size:12px; }}
+    .count-field input {{ max-width:110px; }}
     dialog {{ border:0; border-radius:8px; max-width:min(900px,92vw); width:900px; padding:0; box-shadow:0 24px 90px rgba(20,28,35,.25); }}
     dialog::backdrop {{ background:rgba(15,23,42,.35); }}
     .modal-head {{ padding:14px 16px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; gap:12px; }}
@@ -627,6 +663,11 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
     }}
     function escapeHtml(value) {{
       return String(value || '').replace(/[&<>"']/g, (char) => ({{ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }}[char]));
+    }}
+    function normalizeImageCount(value) {{
+      const count = Number.parseInt(String(value || '1'), 10);
+      if (!Number.isFinite(count)) return 1;
+      return Math.min(8, Math.max(1, count));
     }}
     function safeClassName(value) {{
       return String(value || '').replace(/[^a-zA-Z0-9_-]+/g, '-');
@@ -699,12 +740,15 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
                 <div class="label" title="${{escapeHtml(prompt.prompt_name || '')}}">${{escapeHtml(prompt.prompt_name || 'Prompt')}}</div>
                 <div class="path">待提交生图 · 序号 ${{escapeHtml(prompt.prompt_index || '')}}</div>
                 <textarea data-field="prompt" placeholder="确认或修改本条生图 Prompt">${{escapeHtml(prompt.custom_prompt || prompt.prompt || '')}}</textarea>
+                <label class="count-field">生图张数<input data-field="image-count" type="number" min="1" max="8" step="1" value="${{escapeHtml(normalizeImageCount(prompt.image_count || 1))}}" /></label>
                 <div class="refs"><input data-field="refs" placeholder="参考图路径，可多条用逗号/换行分隔" value="${{refsValue}}" /></div>
                 <div class="actions"><button class="danger" data-act="remove">删除本条 Prompt</button></div>
                 <div class="status ${{safeClassName(prompt.status || 'pending')}}">状态：${{escapeHtml(prompt.status || 'pending')}}</div>
               </div>`;
             const promptInput = tile.querySelector('[data-field="prompt"]');
             if (promptInput) promptInput.oninput = () => {{ prompt.custom_prompt = promptInput.value; }};
+            const imageCountInput = tile.querySelector('[data-field="image-count"]');
+            if (imageCountInput) imageCountInput.oninput = () => {{ prompt.image_count = normalizeImageCount(imageCountInput.value); imageCountInput.value = String(prompt.image_count); }};
             const refsInput = tile.querySelector('[data-field="refs"]');
             if (refsInput) refsInput.oninput = () => {{ prompt.reference_paths = refsInput.value.split(/[\\n,，、；;]+/).map((v) => v.trim()).filter(Boolean); }};
             const remove = tile.querySelector('[data-act="remove"]');
@@ -718,7 +762,7 @@ def render_approval_board_html(batch: Mapping[str, Any]) -> str:
           add.onclick = () => {{
             item.generation_prompts = item.generation_prompts || [];
             const nextIndex = item.generation_prompts.length + 1;
-            item.generation_prompts.push({{ id: `${{item.style_code || 'style'}}-manual-${{Date.now()}}`, prompt_index: nextIndex, prompt_name: `新增 Prompt ${{nextIndex}}`, prompt: '', custom_prompt: '', reference_paths: (item.assets || []).filter((asset) => asset.kind !== 'ai' && asset.path).map((asset) => asset.path), status: 'pending' }});
+            item.generation_prompts.push({{ id: `${{item.style_code || 'style'}}-manual-${{Date.now()}}`, prompt_index: nextIndex, prompt_name: `新增 Prompt ${{nextIndex}}`, prompt: '', custom_prompt: '', image_count: 1, reference_paths: (item.assets || []).filter((asset) => asset.kind !== 'ai' && asset.path).map((asset) => asset.path), status: 'pending' }});
             render();
           }};
           grid.appendChild(add);
@@ -902,6 +946,10 @@ def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mappin
                 if not prompt_text:
                     continue
                 prompt_index = int(prompt.get("prompt_index") or index)
+                image_count = normalize_generation_image_count(
+                    prompt.get("image_count") or prompt.get("generation_image_count") or prompt.get("count"),
+                    1,
+                )
                 prompts.append({
                     **json_safe(dict(prompt)),
                     "id": compact(prompt.get("id")) or _generation_prompt_id(compact(item.get("style_code")), prompt_index, prompt_text),
@@ -909,6 +957,7 @@ def update_generation_confirmation(batch: dict[str, Any], items: Iterable[Mappin
                     "prompt_name": compact(prompt.get("prompt_name")) or f"新增 Prompt {prompt_index}",
                     "prompt": prompt_text,
                     "custom_prompt": compact(prompt.get("custom_prompt")),
+                    "image_count": image_count,
                     "reference_paths": parse_list(prompt.get("reference_paths")),
                     "status": status,
                 })
@@ -943,6 +992,15 @@ def generation_confirmation_prompt_to_row(
         reference_paths = [compact(item.get("origin_path"))]
         reference_paths = [path for path in reference_paths if path]
     run_params = batch.get("run_params") if isinstance(batch.get("run_params"), Mapping) else {}
+    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), Mapping) else {}
+    image_count = normalize_generation_image_count(
+        prompt.get("image_count")
+        or prompt.get("generation_image_count")
+        or prompt.get("count")
+        or row.get("生成数量")
+        or payload.get("n"),
+        1,
+    )
     row.update({
         "表格行号": workflow.get("row_no", ""),
         "款号": workflow.get("style_code", ""),
@@ -955,6 +1013,7 @@ def generation_confirmation_prompt_to_row(
         "提示词序号": prompt_index,
         "最终提示词": prompt_text,
         "完整Prompt": prompt_text,
+        "生成数量": image_count,
         "参考图文件": "\n".join(reference_paths),
         "__1xm_generate": True,
         "__1xm_reference_paths": reference_paths,
@@ -964,16 +1023,17 @@ def generation_confirmation_prompt_to_row(
     row["格式"] = compact(row.get("格式")) or compact(run_params.get("output_format")) or "jpeg"
     row["质量"] = compact(row.get("质量")) or compact(run_params.get("quality")) or "auto"
     row["模型"] = compact(row.get("模型")) or compact(run_params.get("model")) or "gpt-image-2"
+    row["比例"] = compact(row.get("比例")) or compact(payload.get("ratio")) or compact(run_params.get("ratio")) or image_ratio_label(row["尺寸"])
     row["__1xm_key_tier"] = compact(row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto"
-    payload = row.get("__1xm_payload") if isinstance(row.get("__1xm_payload"), Mapping) else {}
     row["__1xm_payload"] = {
         **dict(payload),
         "model": row["模型"],
         "prompt": prompt_text,
         "size": row["尺寸"],
+        "ratio": row["比例"],
         "quality": row["质量"],
         "output_format": row["格式"],
-        "n": 1,
+        "n": image_count,
     }
     apply_fresh_approval_generation_key(row, batch, "confirm")
     return row
@@ -1028,8 +1088,9 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
 
     generated = 0
     failures = 0
+    requested_images = sum(generation_count_from_row(row, 1) for _item, _prompt, _index, row in jobs)
     if jobs:
-        log(f"[approval] 确认提交生图任务 {len(jobs)} 张，并发 {concurrency}")
+        log(f"[approval] 确认提交生图任务 {len(jobs)} 条 Prompt / {requested_images} 张，并发 {concurrency}")
     with ThreadPoolExecutor(max_workers=concurrency) as executor:
         future_map = {executor.submit(generate, job): job for job in jobs}
         for future in as_completed(future_map):
@@ -1070,7 +1131,7 @@ def submit_generation_confirmation_batch(batch: dict[str, Any], *, log=print) ->
                 item.setdefault("assets", []).append(asset)
 
     batch["status"] = "pending_approval" if generated else "generation_failed"
-    batch["generation_summary"] = {"requested": len(jobs), "generated": generated, "failed": failures}
+    batch["generation_summary"] = {"requested": requested_images, "requested_prompts": len(jobs), "generated": generated, "failed": failures}
     batch["updated_at"] = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     batch["approval_message"] = render_approval_message_template(
         str(run_params.get("approval_message_template") or ""),
@@ -1524,13 +1585,34 @@ def approval_generation_defaults(batch: Mapping[str, Any], item: Mapping[str, An
     source_row = generation_row if isinstance(generation_row, Mapping) else {}
     existing_ai = next((asset for asset in item.get("assets") or [] if isinstance(asset, Mapping) and asset.get("kind") == "ai"), {})
     existing_row = existing_ai.get("generation_row") if isinstance(existing_ai.get("generation_row"), Mapping) else {}
-    count = to_int(source_row.get("生成数量") or existing_row.get("生成数量") or run_params.get("ai_image_count") or run_params.get("count"), 1)
+    source_payload = source_row.get("__1xm_payload") if isinstance(source_row.get("__1xm_payload"), Mapping) else {}
+    existing_payload = existing_row.get("__1xm_payload") if isinstance(existing_row.get("__1xm_payload"), Mapping) else {}
+    count = normalize_generation_image_count(
+        source_row.get("生成数量")
+        or source_payload.get("n")
+        or existing_row.get("生成数量")
+        or existing_payload.get("n")
+        or run_params.get("generation_image_count")
+        or run_params.get("count")
+        or run_params.get("n"),
+        1,
+    )
+    image_size = compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280"
+    ratio = (
+        compact(source_row.get("比例"))
+        or compact(source_payload.get("ratio"))
+        or compact(existing_row.get("比例"))
+        or compact(existing_payload.get("ratio"))
+        or compact(run_params.get("ratio"))
+        or image_ratio_label(image_size)
+    )
     return {
         "model": compact(source_row.get("模型") or existing_row.get("模型") or run_params.get("model")) or "gpt-image-2",
-        "image_size": compact(source_row.get("尺寸")) or compact(existing_row.get("尺寸")) or compact(run_params.get("image_size")) or "960x1280",
+        "image_size": image_size,
+        "ratio": ratio,
         "quality": normalize_quality(source_row.get("质量") or existing_row.get("质量") or run_params.get("quality") or "auto"),
         "output_format": normalize_output_format(source_row.get("格式") or existing_row.get("格式") or run_params.get("output_format"), "jpeg"),
-        "count": max(1, min(8, count)),
+        "count": count,
         "one_xm_key_tier": compact(source_row.get("__1xm_key_tier")) or compact(existing_row.get("__1xm_key_tier")) or compact(run_params.get("one_xm_key_tier")) or "auto",
         "retry_attempts": to_int(run_params.get("retry_attempts"), 3),
         "compensate_attempts": to_int(run_params.get("compensate_attempts"), 2),
@@ -1561,14 +1643,19 @@ def regenerate_approval_asset(
     generation_row["主参考图文件"] = refs[0] if refs else ""
     generation_row["细节参考图文件"] = "\n".join(refs[1:])
     generation_row["__1xm_reference_paths"] = refs
+    defaults = approval_generation_defaults(batch, item, generation_row)
+    generation_row["比例"] = compact(generation_row.get("比例")) or defaults["ratio"]
+    generation_row["生成数量"] = normalize_generation_image_count(generation_row.get("生成数量") or defaults["count"], 1)
     if isinstance(generation_row.get("__1xm_payload"), dict):
         generation_row["__1xm_payload"]["prompt"] = final_prompt
+        generation_row["__1xm_payload"]["ratio"] = compact(generation_row["__1xm_payload"].get("ratio")) or generation_row["比例"]
+        generation_row["__1xm_payload"]["n"] = normalize_generation_image_count(generation_row["__1xm_payload"].get("n") or generation_row["生成数量"], 1)
     else:
-        defaults = approval_generation_defaults(batch, item, generation_row)
         generation_row["__1xm_payload"] = {
             "model": defaults["model"],
             "prompt": final_prompt,
             "size": defaults["image_size"],
+            "ratio": defaults["ratio"],
             "quality": defaults["quality"],
             "output_format": defaults["output_format"],
             "n": defaults["count"],
@@ -1644,6 +1731,7 @@ def generate_approval_asset_for_item(
         "提示词字段名": f"审批新增 {prompt_index}",
         "提示词序号": prompt_index,
         "尺寸": defaults["image_size"],
+        "比例": defaults["ratio"],
         "格式": defaults["output_format"],
         "质量": defaults["quality"],
         "生成数量": defaults["count"],
@@ -1666,6 +1754,7 @@ def generate_approval_asset_for_item(
             "model": defaults["model"],
             "prompt": final_prompt,
             "size": defaults["image_size"],
+            "ratio": defaults["ratio"],
             "quality": defaults["quality"],
             "output_format": defaults["output_format"],
             "n": defaults["count"],
@@ -2021,10 +2110,13 @@ def make_generation_row(
     key_tier: str,
     model: str = "gpt-image-2",
     prompt_index: int = 1,
+    image_count: int = 1,
     run_nonce: str = "",
 ) -> dict[str, Any]:
     final_prompt = build_prompt_text(prompt, workflow)
     normalized_quality = normalize_quality(quality)
+    normalized_image_count = normalize_generation_image_count(image_count, 1)
+    ratio = image_ratio_label(image_size)
     references = [compact(item) for item in (reference_paths if isinstance(reference_paths, (list, tuple)) else [reference_paths]) if compact(item)]
     key_parts = [
         "tmall_ai_chain",
@@ -2048,8 +2140,10 @@ def make_generation_row(
         "提示词字段名": prompt.field_name,
         "提示词序号": prompt_index,
         "尺寸": image_size,
+        "比例": ratio,
         "格式": output_format,
         "质量": normalized_quality,
+        "生成数量": normalized_image_count,
         "参考图文件": "\n".join(references),
         "主参考图文件": references[0] if references else "",
         "细节参考图文件": "\n".join(references[1:]),
@@ -2070,9 +2164,10 @@ def make_generation_row(
             "model": compact(model) or "gpt-image-2",
             "prompt": final_prompt,
             "size": image_size,
+            "ratio": ratio,
             "quality": normalized_quality,
             "output_format": output_format,
-            "n": 1,
+            "n": normalized_image_count,
         },
     }
 
@@ -2487,9 +2582,27 @@ SEMIR_FIND_JS = r"""
     const name = basenameOf(filename);
     return /颜色\s*ai|ai\s*[-_ ]?\d|[-_&]ai(?:$|[-_ .])|效果图|创意图|生图|生成图|生成款|改色|换色|变色|智能图/i.test(name);
   }
+  function isDerivedReferenceName(filename) {
+    const name = basenameOf(filename);
+    return /AI\s*参考|颜色\s*ai|ai\s*[-_ ]?\d|[-_&]ai(?:$|[-_ .])|效果图|创意图|生图|生成图|生成款|改色|换色|变色|智能图/i.test(name);
+  }
   function isMainReferenceCandidate(filename) {
     const name = basenameOf(filename);
     return !isDerivedMainReferenceName(name) && (isShowcaseOneName(name) || isYzOneName(name));
+  }
+  function isSelectedModelOriginalPath(fullpath) {
+    const full = compact(fullpath);
+    return /模拍原图/.test(full) && /已选/.test(full);
+  }
+  function folderPathScanRank(fullpath) {
+    const full = compact(fullpath);
+    return (isSelectedModelOriginalPath(full) ? 100 : 0) + (/已选/.test(full) ? 20 : 0) + (/模拍原图/.test(full) ? 10 : 0);
+  }
+  function isStyleColorReferenceName(filename, styleCode) {
+    const style = compact(styleCode);
+    if (!style) return false;
+    const escaped = style.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`^${escaped}[-_][0-9]{4,6}(?:[-_][0-9]{1,4})?(?:\\.[^.]+)?$`, 'i').test(basenameOf(filename));
   }
   function skcCodeFromStyleName(filename, styleCode) {
     const style = compact(styleCode);
@@ -2510,6 +2623,7 @@ SEMIR_FIND_JS = r"""
     if (!isImage({ ...item, filename })) return null;
     if (/尺码表|尺寸表|规格表|吊牌|制单|pdf|psd|源文件|视觉推荐|视频|模特卡/i.test(full)) return null;
     const baseName = basenameOf(filename || fullpath);
+    const derivedReference = isDerivedReferenceName(baseName);
     const stylePathOk = !compact(styleCode) || full.includes(compact(styleCode));
     const flags = {
       showcase1: isShowcaseOneName(baseName),
@@ -2517,15 +2631,19 @@ SEMIR_FIND_JS = r"""
       yz1Bare: isYzOneBareName(baseName),
       yz1: isYzOneName(baseName),
       flat: isSkcFlatCandidate(baseName, skcCode, styleCode),
+      skcExact: compact(skcCode) ? startsWithCodeToken(baseName, skcCode) : false,
+      styleColor: isStyleColorReferenceName(baseName, styleCode),
       flatPath: /平拍|平铺|白底|静物|正面|front/i.test(full),
       selectedPath: /已选/.test(full),
-      modelPath: /模拍|已选/.test(full),
+      modelPath: /模拍/.test(full),
+      selectedModelOriginalPath: isSelectedModelOriginalPath(full),
       front: /正面|前面|front/i.test(baseName),
       back: /背面|后面|back/i.test(baseName),
     };
+    flags.selectedModelStyleColor = flags.selectedModelOriginalPath && flags.styleColor && stylePathOk;
     const derivedMain = isDerivedMainReferenceName(baseName);
     const isMain = (flags.showcase1 || flags.yz1) && stylePathOk && !derivedMain;
-    const isDetail = flags.flat;
+    const isDetail = (flags.selectedModelStyleColor || flags.flat) && !derivedReference;
     if (!isMain && !isDetail) return null;
     const mainRank = (
       flags.showcase1 ? 30
@@ -2533,14 +2651,22 @@ SEMIR_FIND_JS = r"""
           : flags.yz1Bare ? 10
             : 0
     ) + (flags.selectedPath ? 2 : 0) + (flags.modelPath ? 1 : 0);
-    const detailRank = (flags.flatPath ? 6 : 0) + (flags.front ? 2 : flags.back ? 0 : 1) - (flags.modelPath ? 2 : 0);
+    const detailRank = (
+      (flags.selectedModelStyleColor ? 100 : 0)
+      + (flags.skcExact ? 30 : 0)
+      + (flags.styleColor ? 40 : 0)
+      + (flags.selectedModelOriginalPath ? 20 : 0)
+      + (flags.flatPath ? 8 : 0)
+      + (flags.front ? 2 : flags.back ? 0 : 1)
+    );
     const role = flags.showcase1 ? 'origin_showcase1'
       : flags.yz1Bracket ? 'origin_yz1_bracket'
       : flags.yz1Bare ? 'origin_yz1_bare'
+      : flags.selectedModelStyleColor ? 'detail_selected_model_style_color'
       : 'detail_skc_flat';
     const score = isMain ? 300 + mainRank * 20 : 200 + detailRank * 10;
     const resolvedSkcCode = flags.flat ? (compact(skcCode) || skcCodeFromStyleName(baseName, styleCode)) : '';
-    return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags: { ...flags, derivedMain }, skcCode: resolvedSkcCode };
+    return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags: { ...flags, derivedMain, derivedReference }, skcCode: resolvedSkcCode };
   }
   try {
     const styleCode = compact(__payload.style_code);
@@ -2583,6 +2709,7 @@ SEMIR_FIND_JS = r"""
             if (folderPath && !folderPaths.includes(folderPath)) folderPaths.push(folderPath);
           }
         }
+        folderPaths.sort((a, b) => folderPathScanRank(b) === folderPathScanRank(a) ? naturalCompare(a, b) : folderPathScanRank(b) - folderPathScanRank(a));
         for (const folderPath of folderPaths.slice(0, 8)) {
           const descendants = await collectDescendantImages(mount.mountId, folderPath, Number(__payload.folder_scan_depth || 3));
           scanErrors.push(...descendants.errors);
@@ -2605,7 +2732,7 @@ SEMIR_FIND_JS = r"""
       .sort((a, b) => b.mainRank === a.mainRank ? naturalCompare(a.fullpath || a.filename, b.fullpath || b.filename) : b.mainRank - a.mainRank);
     const chosenMain = mainRanked[0] || null;
     const detailRanked = ranked
-      .filter((item) => item.flags.flat)
+      .filter((item) => item.flags.flat || item.flags.selectedModelStyleColor)
       .filter((item) => !chosenMain || compact(item.fullpath || item.filename) !== compact(chosenMain.fullpath || chosenMain.filename))
       .sort((a, b) => b.detailRank === a.detailRank ? naturalCompare(a.fullpath || a.filename, b.fullpath || b.filename) : b.detailRank - a.detailRank);
     const chosenDetail = detailRanked[0] || null;

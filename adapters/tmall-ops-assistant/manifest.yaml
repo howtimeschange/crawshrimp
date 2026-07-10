@@ -313,13 +313,13 @@ tasks:
             label: low
       - id: ai_image_count
         type: number
-        label: 每款Prompt生图数
+        label: 每款挑选 Prompt 条数
         default: 4
         min: 1
         max: 8
         step: 1
         ui_span: third
-        hint: 这里表示每款选择多少条不同提示词；每条 prompt 生成 1 张 AI 图，不是同一 prompt 连续生成多张。
+        hint: 这里表示每款选择多少条不同提示词；单 prompt 生图张数在确认提交页选择。
       - id: reference_mode
         type: select
         label: 1XM参考图

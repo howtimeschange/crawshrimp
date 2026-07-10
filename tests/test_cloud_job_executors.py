@@ -206,7 +206,8 @@ class CloudJobExecutorTests(unittest.TestCase):
         self.assertEqual(captured["batch"]["run_params"]["image_size"], "2048x2048")
         self.assertEqual(captured["batch"]["run_params"]["quality"], "high")
         self.assertEqual(captured["batch"]["run_params"]["output_format"], "webp")
-        self.assertEqual(captured["batch"]["run_params"]["ai_image_count"], 2)
+        self.assertEqual(captured["batch"]["run_params"]["generation_image_count"], 2)
+        self.assertNotIn("ai_image_count", captured["batch"]["run_params"])
         presign_calls = [call for call in client.calls if call["path"] == "/api/assets/presign"]
         self.assertEqual([call["body"]["asset_uid"] for call in presign_calls], ["cloud-result-1", "cloud-result-2"])
         presign_call = presign_calls[0]
