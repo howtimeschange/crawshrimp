@@ -228,6 +228,15 @@ function createLocalPromptFallbackLibrary(payload = {}) {
 
 contextBridge.exposeInMainWorld('cs', {
   getStatus:       () => ipcRenderer.invoke('get-status').then(rememberApiConnectionFromStatus),
+  getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
+  checkForUpdates: () => ipcRenderer.invoke('update:check'),
+  downloadUpdate: () => ipcRenderer.invoke('update:download'),
+  installUpdate:  () => ipcRenderer.invoke('update:install'),
+  onUpdateStatus: (cb) => {
+    const listener = (_, data) => cb(data)
+    ipcRenderer.on('update-status', listener)
+    return () => ipcRenderer.removeListener('update-status', listener)
+  },
   launchChrome:    (path) => ipcRenderer.invoke('launch-chrome', path),
   checkChrome:     () => ipcRenderer.invoke('check-chrome'),
   getCurrentChromeTab: () => ipcRenderer.invoke('get-current-chrome-tab'),

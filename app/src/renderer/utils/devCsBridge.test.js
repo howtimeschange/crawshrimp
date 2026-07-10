@@ -31,3 +31,15 @@ test('dev browser bridge discovers a shifted local API port', () => {
   assert.match(source, /await discoverApiBase\(initialBase\)/)
   assert.match(source, /return \{ api: false, chrome: false, apiPort: Number\(new URL\(fallbackBase \|\| DEFAULT_API_BASE\)\.port \|\| 18765\)/)
 })
+
+test('dev browser bridge exposes disabled no-op desktop updater methods', () => {
+  assert.match(source, /function disabledUpdateStatus/)
+  assert.match(source, /status: 'disabled'/)
+  assert.match(source, /currentVersion: 'dev'/)
+  assert.match(source, /error: '浏览器开发模式不会检查桌面更新。'/)
+  assert.match(source, /getUpdateStatus: async \(\) => disabledUpdateStatus\(\)/)
+  assert.match(source, /checkForUpdates: async \(\) => disabledUpdateStatus\(\)/)
+  assert.match(source, /downloadUpdate: async \(\) => disabledUpdateStatus\(\)/)
+  assert.match(source, /installUpdate: async \(\) => \(\{ ok: false, error: '浏览器开发模式不能安装桌面更新。' \}\)/)
+  assert.match(source, /onUpdateStatus: \(\) => \(\) => \{\}/)
+})

@@ -4,6 +4,8 @@
 delete process.env.ELECTRON_RUN_AS_NODE
 
 const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session } = require('electron')
+const { Notification } = require('electron')
+const { autoUpdater } = require('electron-updater')
 const path   = require('path')
 const fs     = require('fs')
 const http   = require('http')
@@ -17,6 +19,10 @@ const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChro
 const { startDesktopServices } = require('./startupServices')
 const { requestBackendApi } = require('./backendApi')
 const { collectCrawshrimpDataDirCandidates } = require('./dataDirRecovery')
+const { createUpdateService } = require('./updateService')
+const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
+const { evaluateUpdatePlatform, resolveTestFeedUrl } = require('./updatePlatform')
+const APP_METADATA = require('../package.json')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 let apiPort = DEFAULT_API_PORT
@@ -1094,6 +1100,37 @@ function apiCall(method, urlPath, body = null, options = {}) {
   })
 }
 
+function normalizeUpdaterApiError(error) {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0) || undefined
+  const responseData = error?.response?.data || error?.response || null
+  const detail = error?.detail || responseData?.detail || responseData?.error || responseData?.message || ''
+  const message = typeof detail === 'string' && detail
+    ? detail
+    : (detail?.message || detail?.error || error?.message || String(error || '更新服务请求失败。'))
+  const wrapped = new Error(message)
+  if (status) {
+    wrapped.status = status
+    wrapped.statusCode = status
+  }
+  wrapped.detail = detail || responseData || null
+  const blockers = error?.blockers || detail?.blockers || responseData?.blockers || []
+  if (Array.isArray(blockers)) wrapped.blockers = blockers.map(blocker => ({ ...blocker }))
+  wrapped.response = {
+    status,
+    data: responseData,
+  }
+  wrapped.cause = error
+  return wrapped
+}
+
+async function withUpdaterApiError(run) {
+  try {
+    return await run()
+  } catch (error) {
+    throw normalizeUpdaterApiError(error)
+  }
+}
+
 // ── Local prompt library store ───────────────────────────────────────────────
 
 const LOCAL_PROMPT_LIBRARY_STORE_NAME = 'local-prompt-libraries.json'
@@ -1799,6 +1836,79 @@ const lifecycleController = createLifecycleController({
   log,
 })
 
+const updatePlatformSupport = evaluateUpdatePlatform({
+  platform: process.platform,
+  isPackaged: app.isPackaged,
+  execPath: process.execPath,
+  homeDir: app.getPath('home'),
+})
+
+const testFeedUrl = resolveTestFeedUrl({
+  isTestBuild: APP_METADATA.crawshrimpUpdateTestBuild === true,
+  env: process.env,
+})
+
+function sendUpdateStatus(snapshot) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('update-status', snapshot)
+}
+
+function notifyUpdateReady() {
+  if (!Notification?.isSupported?.()) return
+  const notification = new Notification({
+    title: '抓虾更新已下载',
+    body: '当前任务已结束，可以重启安装新版本。',
+  })
+  notification.show()
+}
+
+const updateService = createUpdateService({
+  app,
+  autoUpdater,
+  platformSupport: updatePlatformSupport,
+  testFeedUrl,
+  getAvailableBytes: () => {
+    const stats = fs.statfsSync(app.getPath('userData'))
+    return Number(stats.bavail) * Number(stats.bsize)
+  },
+  emit: sendUpdateStatus,
+  log: console,
+})
+
+const updateCoordinator = createUpdateInstallCoordinator({
+  updateService,
+  getReadiness: () => withUpdaterApiError(() => apiCall('GET', '/runtime/install-readiness', null, {
+    ensureReady: false,
+    timeoutMs: 1500,
+  })),
+  acquireDrain: () => withUpdaterApiError(() => apiCall('POST', '/runtime/update-drain', {}, {
+    ensureReady: false,
+    timeoutMs: 1500,
+  })),
+  releaseDrain: drainToken => withUpdaterApiError(() => apiCall('DELETE', '/runtime/update-drain', {
+    drain_token: drainToken,
+  }, {
+    ensureReady: false,
+    timeoutMs: 1500,
+  })),
+  shutdownForUpdate: () => lifecycleController.prepareForUpdateInstall(),
+  notifyReady: notifyUpdateReady,
+  log,
+})
+
+let scheduledUpdateCheck = null
+
+function scheduleInitialUpdateCheck() {
+  if (!updatePlatformSupport.supported || scheduledUpdateCheck) return
+  updateCoordinator.start()
+  scheduledUpdateCheck = setTimeout(() => {
+    scheduledUpdateCheck = null
+    updateService.checkForUpdates({ manual: false }).catch(error => {
+      log(`[update] automatic check failed: ${error.message}`)
+    })
+  }, 15000)
+}
+
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
@@ -1810,6 +1920,7 @@ app.whenReady().then(async () => {
   })
 
   await ensureDesktopServicesStarted()
+  scheduleInitialUpdateCheck()
 })
 
 app.on('window-all-closed', () => {
@@ -1820,6 +1931,15 @@ app.on('before-quit', (event) => {
   lifecycleController.handleBeforeQuit(event).catch(error => {
     log(`[lifecycle] before-quit failed: ${error.message}`)
   })
+})
+
+app.on('will-quit', () => {
+  if (scheduledUpdateCheck) {
+    clearTimeout(scheduledUpdateCheck)
+    scheduledUpdateCheck = null
+  }
+  updateCoordinator.dispose()
+  updateService.dispose()
 })
 
 // ── IPC handlers ──────────────────────────────────────────────────────────────
@@ -1835,6 +1955,16 @@ secureHandle('get-status', async () => ({
   pythonBin: getPythonBin(),
   dev: IS_DEV,
 }))
+
+secureHandle('update:get-status', async () => updateService.getStatus())
+secureHandle('update:check', async () => {
+  if (updateService.getStatus().downloaded) {
+    return updateCoordinator.refreshReadiness()
+  }
+  return updateService.checkForUpdates({ manual: true })
+})
+secureHandle('update:download', async () => updateService.downloadUpdate())
+secureHandle('update:install', async () => updateCoordinator.requestInstall())
 
 secureHandle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
 secureHandle('check-chrome', async () => ({ ok: (await probeChromeCdp()).ok }))

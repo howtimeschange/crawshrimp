@@ -266,6 +266,18 @@ function upsertDevPromptLibrary(payload = {}) {
 }
 
 export function createDevCsBridge() {
+  function disabledUpdateStatus() {
+    return {
+      status: 'disabled',
+      currentVersion: 'dev',
+      latestVersion: '',
+      progress: null,
+      blockers: [],
+      error: '浏览器开发模式不会检查桌面更新。',
+      downloaded: false,
+    }
+  }
+
   return {
     getStatus: async () => {
       try {
@@ -286,6 +298,11 @@ export function createDevCsBridge() {
         return { api: false, chrome: false, apiPort: Number(new URL(fallbackBase || DEFAULT_API_BASE).port || 18765), cdpPort: 9222, dev: true }
       }
     },
+    getUpdateStatus: async () => disabledUpdateStatus(),
+    checkForUpdates: async () => disabledUpdateStatus(),
+    downloadUpdate: async () => disabledUpdateStatus(),
+    installUpdate: async () => ({ ok: false, error: '浏览器开发模式不能安装桌面更新。' }),
+    onUpdateStatus: () => () => {},
     launchChrome: async () => ({ ok: false, error: '浏览器开发模式不负责启动 Chrome，请使用 Electron 开发壳' }),
     checkChrome: async () => ({ ok: Boolean((await apiCall('GET', '/health'))?.chrome) }),
     getCurrentChromeTab: async () => {

@@ -59,9 +59,26 @@ function createLifecycleController(options = {}) {
     }
   }
 
+  async function prepareForUpdateInstall() {
+    if (confirmedQuit) return true
+    if (shutdownInProgress) return false
+
+    shutdownInProgress = true
+    try {
+      await stopBackend()
+      await stopManagedChrome()
+      confirmedQuit = true
+      return true
+    } catch (error) {
+      shutdownInProgress = false
+      throw error
+    }
+  }
+
   return {
     handleBeforeQuit,
     handleWindowAllClosed,
+    prepareForUpdateInstall,
   }
 }
 

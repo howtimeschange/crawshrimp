@@ -158,3 +158,62 @@ test('before-quit waits for quit-cancel recovery hooks to settle', async () => {
 
   assert.deepEqual(events, ['prevented', 'recovery-started', 'recovery-finished'])
 })
+
+test('updater cleanup never asks to stop active tasks', async () => {
+  const events = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => { events.push('get-active'); return { active: true, tasks: [{}] } },
+    confirmQuitWithActiveTasks: async () => events.push('confirm'),
+    requestStopActiveTasks: async () => events.push('stop-tasks'),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+  })
+
+  await controller.prepareForUpdateInstall()
+
+  assert.deepEqual(events, ['stop-backend', 'stop-chrome'])
+})
+
+test('updater cleanup lets the next before-quit pass without duplicate cleanup', async () => {
+  const events = []
+  const prevented = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => { events.push('get-active'); return { active: true, tasks: [{}] } },
+    confirmQuitWithActiveTasks: async () => events.push('confirm'),
+    requestStopActiveTasks: async () => events.push('stop-tasks'),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  const prepared = await controller.prepareForUpdateInstall()
+  const beforeQuit = await controller.handleBeforeQuit({
+    preventDefault: () => prevented.push('prevented'),
+  })
+
+  assert.equal(prepared, true)
+  assert.equal(beforeQuit, true)
+  assert.deepEqual(prevented, [])
+  assert.deepEqual(events, ['stop-backend', 'stop-chrome'])
+})
+
+test('updater cleanup failure resets shutdown state for a later normal quit', async () => {
+  const events = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => { events.push('get-active'); return { active: false, tasks: [] } },
+    stopBackend: async () => {
+      events.push('stop-backend')
+      if (events.length === 1) throw new Error('backend stop failed')
+    },
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  await assert.rejects(
+    () => controller.prepareForUpdateInstall(),
+    /backend stop failed/
+  )
+  await controller.handleBeforeQuit()
+
+  assert.deepEqual(events, ['stop-backend', 'get-active', 'stop-backend', 'stop-chrome', 'quit'])
+})
