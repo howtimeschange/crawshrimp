@@ -85,6 +85,18 @@ test('local update e2e server supports single byte ranges', async t => {
   assert.equal(partial.response.headers.get('content-range'), 'bytes 4-7/16')
   assert.equal(partial.response.headers.get('content-length'), '4')
   assert.equal(partial.text, '4567')
+
+  const suffix = await request(server, '/asset.bin', { headers: { range: 'bytes=-4' } })
+  assert.equal(suffix.response.status, 206)
+  assert.equal(suffix.response.headers.get('content-range'), 'bytes 12-15/16')
+  assert.equal(suffix.response.headers.get('content-length'), '4')
+  assert.equal(suffix.text, 'cdef')
+
+  const head = await request(server, '/asset.bin', { method: 'HEAD', headers: { range: 'bytes=2-5' } })
+  assert.equal(head.response.status, 206)
+  assert.equal(head.response.headers.get('content-range'), 'bytes 2-5/16')
+  assert.equal(head.response.headers.get('content-length'), '4')
+  assert.equal(head.bytes.length, 0)
 })
 
 test('local update e2e server rejects malformed and unsatisfiable ranges', async t => {
@@ -97,6 +109,10 @@ test('local update e2e server rejects malformed and unsatisfiable ranges', async
   const unsatisfiable = await request(server, '/asset.bin', { headers: { range: 'bytes=999-1000' } })
   assert.equal(unsatisfiable.response.status, 416)
   assert.equal(unsatisfiable.response.headers.get('content-range'), 'bytes */16')
+
+  const multiple = await request(server, '/asset.bin', { headers: { range: 'bytes=0-1,3-4' } })
+  assert.equal(multiple.response.status, 416)
+  assert.equal(multiple.response.headers.get('content-range'), 'bytes */16')
 })
 
 test('local update e2e server rejects encoded traversal and missing files', async t => {
@@ -106,9 +122,35 @@ test('local update e2e server rejects encoded traversal and missing files', asyn
   assert.equal(traversal.response.status, 403)
   const plainTraversal = await request(server, '/../package.json')
   assert.equal(plainTraversal.response.status, 403)
+  const doubleEncodedTraversal = await request(server, '/%252e%252e/package.json')
+  assert.equal(doubleEncodedTraversal.response.status, 403)
+  const encodedNul = await request(server, '/asset.bin%00.txt')
+  assert.equal(encodedNul.response.status, 400)
 
   const missing = await request(server, '/missing.yml')
   assert.equal(missing.response.status, 404)
+})
+
+test('local update e2e server rejects symlink escapes without serving external bytes', async t => {
+  const server = await withServer(t)
+  const outside = path.join(path.dirname(server.root), 'outside-secret.bin')
+  const linkPath = path.join(server.root, 'linked-secret.bin')
+  fs.writeFileSync(outside, 'external-secret', 'utf8')
+  t.after(() => fs.rmSync(outside, { force: true }))
+
+  try {
+    fs.symlinkSync(outside, linkPath)
+  } catch (error) {
+    if (['EACCES', 'EPERM', 'ENOTSUP'].includes(error?.code)) {
+      t.skip(`symlink creation unavailable: ${error.code}`)
+      return
+    }
+    throw error
+  }
+
+  const result = await request(server, '/linked-secret.bin')
+  assert.equal(result.response.status, 403)
+  assert.notEqual(result.text, 'external-secret')
 })
 
 test('local update e2e server CLI starts and closes cleanly', async t => {

@@ -4,7 +4,6 @@
 const fs = require('node:fs')
 const http = require('node:http')
 const path = require('node:path')
-const { URL } = require('node:url')
 
 const PROVIDER = 'crawshrimp-update-e2e'
 
@@ -50,33 +49,36 @@ function sendEmpty(response, statusCode, headers = {}) {
   response.end()
 }
 
+function decodePathUntilStable(rawPath) {
+  let current = String(rawPath || '')
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (current.includes('\0')) return { status: 400 }
+    if (!/%[0-9a-fA-F]{2}/.test(current)) {
+      if (/%/.test(current)) return { status: 400 }
+      return { value: current }
+    }
+    if (/%(?![0-9a-fA-F]{2})/.test(current)) return { status: 400 }
+    let decoded
+    try {
+      decoded = decodeURIComponent(current)
+    } catch {
+      return { status: 400 }
+    }
+    if (decoded.includes('\0')) return { status: 400 }
+    if (decoded === current) return { value: decoded }
+    current = decoded
+  }
+  return { status: 400 }
+}
+
 function resolveRequestPath(root, rawUrl) {
   const rawPath = String(rawUrl || '').split(/[?#]/, 1)[0]
-  if (/%2e/i.test(rawPath)) return { status: 403 }
-  try {
-    const decodedRawPath = decodeURIComponent(rawPath)
-    const rawSegments = decodedRawPath.split('/').filter(Boolean)
-    if (rawSegments.some(segment => segment === '..')) return { status: 403 }
-  } catch {
-    return { status: 400 }
-  }
 
-  let pathname
-  try {
-    pathname = new URL(rawUrl, 'http://127.0.0.1').pathname
-  } catch {
-    return { status: 400 }
-  }
+  const decoded = decodePathUntilStable(rawPath)
+  if (decoded.status) return decoded
 
-  let decoded
-  try {
-    decoded = decodeURIComponent(pathname)
-  } catch {
-    return { status: 400 }
-  }
-
-  const segments = decoded.split('/').filter(Boolean)
-  if (segments.some(segment => segment === '..')) return { status: 403 }
+  const segments = decoded.value.split('/').filter(Boolean)
+  if (segments.some(segment => segment === '..' || segment.includes('\\'))) return { status: 403 }
   const target = path.resolve(root, ...segments)
   if (!isInside(root, target)) return { status: 403 }
   return { path: target }
