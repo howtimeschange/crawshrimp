@@ -593,6 +593,7 @@ onUpdated(resizePromptTextareas)
   min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: var(--bg);
 }
 
@@ -895,14 +896,19 @@ onUpdated(resizePromptTextareas)
   min-height: 0;
   display: grid;
   grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
+  overflow: hidden;
   padding: 14px 24px 20px;
 }
 
 .lpl-groups {
-  align-self: start;
+  align-self: stretch;
+  min-height: 0;
   display: grid;
   gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg2);
@@ -940,6 +946,8 @@ onUpdated(resizePromptTextareas)
 .lpl-table-panel {
   min-width: 0;
   min-height: 0;
+  display: flex;
+  flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -959,9 +967,11 @@ onUpdated(resizePromptTextareas)
 }
 
 .lpl-edit-list {
-  height: calc(100% - 55px);
+  flex: 1 1 0;
+  height: auto;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 14px;
 }
 
@@ -1107,10 +1117,12 @@ onUpdated(resizePromptTextareas)
 @media (max-width: 1080px) {
   .lpl-workspace {
     grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
   }
 
   .lpl-groups {
     position: static;
+    max-height: min(180px, 30vh);
   }
 
   .lpl-toolbar {

@@ -323,8 +323,20 @@ provide('loadScriptGroups', loadScriptGroups)
   --radius: 10px;
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
+html,
+body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 body { background: var(--bg); color: var(--text); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px; }
-#app { width: 100vw; height: 100vh; }
+#app {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+}
 button { cursor: pointer; }
 input, select, textarea { font-family: inherit; }
 ::-webkit-scrollbar { width: 5px; height: 5px; }

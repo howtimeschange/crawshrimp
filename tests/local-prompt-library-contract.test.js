@@ -90,6 +90,33 @@ test('LocalPromptLibrary active secondary buttons do not look disabled', () => {
   assert.match(disabledRule, /opacity:\s*\.55/)
 })
 
+test('LocalPromptLibrary confines long Prompt scrolling to the workspace', () => {
+  const app = read('app/src/renderer/App.vue')
+  const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
+  const viewportRule = app.match(/html,\s*body\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const appRootRule = app.match(/#app\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const rootRule = view.match(/\.local-prompt-library\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const workspaceRule = view.match(/\.lpl-workspace\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const groupsRule = view.match(/\.lpl-groups\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const panelRule = view.match(/\.lpl-table-panel\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+  const listRule = view.match(/\.lpl-edit-list\s*\{([\s\S]*?)\n\}/)?.[1] || ''
+
+  assert.match(viewportRule, /overflow:\s*hidden/)
+  assert.match(appRootRule, /position:\s*fixed/)
+  assert.match(appRootRule, /inset:\s*0/)
+  assert.match(appRootRule, /overflow:\s*hidden/)
+  assert.match(rootRule, /overflow:\s*hidden/)
+  assert.match(workspaceRule, /grid-template-rows:\s*minmax\(0,\s*1fr\)/)
+  assert.match(workspaceRule, /overflow:\s*hidden/)
+  assert.match(groupsRule, /min-height:\s*0/)
+  assert.match(groupsRule, /overflow-y:\s*auto/)
+  assert.match(panelRule, /display:\s*flex/)
+  assert.match(panelRule, /flex-direction:\s*column/)
+  assert.match(listRule, /flex:\s*1\s+1\s+0/)
+  assert.match(listRule, /height:\s*auto/)
+  assert.match(listRule, /overscroll-behavior:\s*contain/)
+})
+
 test('Electron bridges expose local prompt library persistence and cloud sync IPC', () => {
   const preload = read('app/src/preload.js')
   const main = read('app/src/main.js')
