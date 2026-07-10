@@ -11,9 +11,9 @@
       :aria-label="ariaLabel"
       @click="onAction"
     >
-      <span class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
+      <span v-if="presentation.label" class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
       <span class="version-label">{{ presentation.versionLabel }}</span>
-      <span v-if="!collapsed" class="update-copy">
+      <span v-if="!collapsed && presentation.label" class="update-copy">
         <span class="update-title">{{ presentation.label }}</span>
         <span class="update-detail">{{ presentation.title }}</span>
       </span>
@@ -24,9 +24,9 @@
       :title="tooltipText"
       :aria-label="ariaLabel"
     >
-      <span class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
+      <span v-if="presentation.label" class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
       <span class="version-label">{{ presentation.versionLabel }}</span>
-      <span v-if="!collapsed" class="update-copy">
+      <span v-if="!collapsed && presentation.label" class="update-copy">
         <span class="update-title">{{ presentation.label }}</span>
         <span class="update-detail">{{ presentation.title }}</span>
       </span>

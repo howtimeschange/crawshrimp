@@ -3,7 +3,7 @@
     class="layout"
     :class="{
       'layout-ai-image': currentView === 'ai_image',
-      'sidebar-collapsed': sidebarCollapsed,
+      'sidebar-collapsed': effectiveSidebarCollapsed,
     }"
   >
     <!-- 标题栏 -->
@@ -11,6 +11,7 @@
       <div class="brand">
         <span class="logo">🦐 抓虾</span>
         <button
+          v-if="!activeScript"
           class="collapse-btn"
           type="button"
           :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
@@ -33,7 +34,7 @@
     <!-- 侧边栏 -->
     <aside class="sidebar">
       <!-- 一级菜单 -->
-      <nav v-if="!activeScript || sidebarCollapsed" :class="{ 'collapsed-primary-nav': activeScript && sidebarCollapsed }">
+      <nav v-if="!activeScript">
         <button
           v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
@@ -95,7 +96,7 @@
       </div>
       <SidebarUpdateFooter
         :update-status="updateStatus"
-        :collapsed="sidebarCollapsed"
+        :collapsed="effectiveSidebarCollapsed"
         @download="downloadUpdate"
         @install="installUpdate"
         @retry="retryUpdateCheck"
@@ -181,6 +182,7 @@ const scriptGroups = ref([])
 const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
 const sidebarCollapsed = ref(readSidebarCollapsed(window.localStorage))
+const effectiveSidebarCollapsed = computed(() => !activeScript.value && sidebarCollapsed.value)
 const updateStatus = ref({
   status: 'idle',
   currentVersion: '',
@@ -311,6 +313,7 @@ async function launchChrome() {
 }
 
 function toggleSidebar() {
+  if (activeScript.value) return
   sidebarCollapsed.value = !sidebarCollapsed.value
   writeSidebarCollapsed(window.localStorage, sidebarCollapsed.value)
 }

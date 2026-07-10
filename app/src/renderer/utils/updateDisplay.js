@@ -19,15 +19,6 @@ export function buildSidebarUpdatePresentation(updateStatus = {}, collapsed = fa
     percent: null,
   }
 
-  if (status === 'checking') {
-    return {
-      ...base,
-      label: '检查更新中',
-      title: '正在检查桌面更新',
-      tone: 'checking',
-    }
-  }
-
   if (status === 'available') {
     return {
       ...base,
@@ -95,19 +86,9 @@ export function buildSidebarUpdatePresentation(updateStatus = {}, collapsed = fa
     }
   }
 
-  if (status === 'disabled') {
-    return {
-      ...base,
-      label: '桌面更新不可用',
-      title: String(updateStatus.error || '当前环境不支持桌面更新。'),
-      tone: 'disabled',
-    }
-  }
-
   return {
     ...base,
-    label: '已是最新',
-    title: `当前已是最新版本 ${formatFullVersion(currentVersion)}`,
+    title: `当前版本 ${formatFullVersion(currentVersion)}`,
   }
 }
 

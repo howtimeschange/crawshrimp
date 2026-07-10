@@ -20,38 +20,22 @@ test('available update maps to download copy and action', () => {
   )
 })
 
-test('up-to-date status shows only the current version', () => {
-  assert.deepEqual(
-    buildSidebarUpdatePresentation({
-      status: 'idle',
+test('default no-update statuses show version-only copy without unavailable language', () => {
+  for (const status of ['idle', 'checking', 'up-to-date', 'no-new-version', 'disabled']) {
+    const presentation = buildSidebarUpdatePresentation({
+      status,
       currentVersion: '2.0.0',
-    }, false),
-    {
-      action: null,
-      label: '已是最新',
-      versionLabel: 'v2.0.0',
-      title: '当前已是最新版本 v2.0.0',
-      tone: 'up-to-date',
-      percent: null,
-    },
-  )
-})
+      error: '开发模式不会检查桌面更新。',
+    }, false)
 
-test('checking status keeps the current version and has no action', () => {
-  assert.deepEqual(
-    buildSidebarUpdatePresentation({
-      status: 'checking',
-      currentVersion: '2.0.0',
-    }, false),
-    {
-      action: null,
-      label: '检查更新中',
-      versionLabel: 'v2.0.0',
-      title: '正在检查桌面更新',
-      tone: 'checking',
-      percent: null,
-    },
-  )
+    assert.equal(presentation.action, null)
+    assert.equal(presentation.label, '')
+    assert.equal(presentation.versionLabel, 'v2.0.0')
+    assert.equal(presentation.title, '当前版本 v2.0.0')
+    assert.equal(presentation.tone, 'up-to-date')
+    assert.equal(presentation.percent, null)
+    assert.doesNotMatch(`${presentation.label} ${presentation.title}`, /不可用|开发模式|不会检查|错误|失败/)
+  }
 })
 
 test('downloading status rounds and clamps progress without an action', () => {
@@ -184,10 +168,10 @@ test('disabled status shows version only and no action', () => {
     }, false),
     {
       action: null,
-      label: '桌面更新不可用',
+      label: '',
       versionLabel: 'v2.0.0',
-      title: '开发模式不会检查桌面更新。',
-      tone: 'disabled',
+      title: '当前版本 v2.0.0',
+      tone: 'up-to-date',
       percent: null,
     },
   )
