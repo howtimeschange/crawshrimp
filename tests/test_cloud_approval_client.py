@@ -294,6 +294,54 @@ class CloudApprovalClientTests(unittest.TestCase):
         self.assertNotIn(token, formatted)
         self.assertIn("RuntimeError", str(ctx.exception))
 
+    def test_transport_failure_notifies_cache_invalidator(self):
+        notifications = []
+
+        def broken_transport(_request, timeout):
+            self.assertEqual(timeout, 30.0)
+            raise OSError("connection refused")
+
+        client = CloudApprovalClient(
+            "http://127.0.0.1:8787",
+            transport=broken_transport,
+            on_transport_error=lambda: notifications.append("invalidated"),
+        )
+
+        with self.assertRaisesRegex(CloudApprovalError, "cloud request failed: OSError"):
+            client.request_json("GET", "/api/prompt-libraries")
+
+        self.assertEqual(notifications, ["invalidated"])
+
+    def test_upload_transport_failure_notifies_cache_invalidator(self):
+        notifications = []
+        client = CloudApprovalClient(
+            "http://127.0.0.1:8787",
+            transport=lambda _request, timeout: (_ for _ in ()).throw(OSError(f"failed after {timeout}")),
+            on_transport_error=lambda: notifications.append("invalidated"),
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "asset.jpg"
+            path.write_bytes(b"image-bytes")
+            with self.assertRaisesRegex(CloudApprovalError, "cloud upload failed: OSError"):
+                client.upload_asset("/api/assets/upload", path, "image/jpeg")
+
+        self.assertEqual(notifications, ["invalidated"])
+
+    def test_download_transport_failure_notifies_cache_invalidator(self):
+        notifications = []
+        client = CloudApprovalClient(
+            "http://127.0.0.1:8787",
+            transport=lambda _request, timeout: (_ for _ in ()).throw(OSError(f"failed after {timeout}")),
+            on_transport_error=lambda: notifications.append("invalidated"),
+        )
+
+        with TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(CloudApprovalError, "cloud asset download failed: OSError"):
+                client.download_asset("asset-1", Path(temp_dir) / "asset.jpg")
+
+        self.assertEqual(notifications, ["invalidated"])
+
 
 if __name__ == "__main__":
     unittest.main()

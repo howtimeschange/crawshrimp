@@ -36,6 +36,7 @@ class CloudApprovalClient:
         transport=None,
         sleep=None,
         user_agent: str = DEFAULT_USER_AGENT,
+        on_transport_error=None,
     ):
         self.base_url = str(base_url or "").rstrip("/")
         self.user_token = str(user_token or "")
@@ -44,6 +45,7 @@ class CloudApprovalClient:
         self.transport = transport
         self._sleep = sleep or time.sleep
         self.user_agent = str(user_agent or DEFAULT_USER_AGENT)
+        self._on_transport_error = on_transport_error
 
     def request_json(self, method: str, path: str, body: Optional[Mapping[str, Any]] = None, *, token_type: str = "machine") -> dict:
         """Send JSON to the cloud API, retry 429/5xx, and return a JSON object."""
@@ -79,6 +81,7 @@ class CloudApprovalClient:
                     continue
                 raise CloudApprovalError(f"cloud upload failed: HTTP {status}") from None
             except Exception as exc:
+                self._notify_transport_error()
                 raise CloudApprovalError(f"cloud upload failed: {type(exc).__name__}") from None
             if status < 400:
                 return payload
@@ -120,6 +123,7 @@ class CloudApprovalClient:
                     continue
                 raise CloudApprovalError(f"cloud asset download failed: HTTP {status}") from None
             except Exception as exc:
+                self._notify_transport_error()
                 raise CloudApprovalError(f"cloud asset download failed: {type(exc).__name__}") from None
             if self._should_retry_status(status) and attempt < max_attempts - 1:
                 self._sleep(self._retry_delay(attempt))
@@ -138,6 +142,7 @@ class CloudApprovalClient:
                 status = int(exc.code or 0)
                 payload = self._json_from_bytes(exc.read())
             except Exception as exc:
+                self._notify_transport_error()
                 raise CloudApprovalError(
                     f"cloud request failed: {type(exc).__name__}: {self._redact(str(exc), token)}"
                 ) from None
@@ -168,6 +173,14 @@ class CloudApprovalClient:
     def _open(self, request):
         opener = self.transport or urllib.request.urlopen
         return opener(request, timeout=self.timeout)
+
+    def _notify_transport_error(self) -> None:
+        if not callable(self._on_transport_error):
+            return
+        try:
+            self._on_transport_error()
+        except Exception:
+            return
 
     def _url_for(self, path: str) -> str:
         text = str(path or "")
