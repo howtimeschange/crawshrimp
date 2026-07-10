@@ -7,8 +7,10 @@ import hashlib
 import mimetypes
 import re
 import shutil
+import ssl
 import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -34,6 +36,7 @@ GPT_4K_CONFIG_ID = "ai.1xm.gpt_image_4k_key"
 GEMINI_FLASH_CONFIG_ID = "ai.1xm.gemini_3_1_flash_image_preview_key"
 GEMINI_PRO_CONFIG_ID = "ai.1xm.gemini_3_pro_image_preview_key"
 MAX_MATERIALIZED_DATA_URL_BYTES = 25 * 1024 * 1024
+WORKBENCH_TRANSIENT_RETRY_LIMIT = 2
 NANO_BANANA_MODELS = {
     "gemini-3.1-flash-image-preview",
     "gemini-3-pro-image-preview",
@@ -291,6 +294,39 @@ def _default_downloader(url: str, target: Path) -> None:
         target.write_bytes(response.read())
 
 
+def _is_transient_download_error(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return int(exc.code or 0) in {408, 425, 429, 500, 502, 503, 504}
+    if isinstance(exc, (TimeoutError, ConnectionError, ssl.SSLError)):
+        return True
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, (TimeoutError, ConnectionError, OSError, ssl.SSLError)):
+            return True
+    return bool(re.search(
+        r"unexpected_eof|eof occurred|connection (?:reset|aborted)|"
+        r"timed out|timeout|temporary failure|(?:status code|http)\s*(?:502|503|504)\b",
+        _compact(exc).lower(),
+    ))
+
+
+def _download_cache_image(
+    url: str,
+    target: Path,
+    downloader: Callable[[str, Path], None],
+) -> None:
+    retry_delays = (0.25, 0.75)
+    for attempt in range(len(retry_delays) + 1):
+        try:
+            downloader(url, target)
+            return
+        except Exception as exc:
+            target.unlink(missing_ok=True)
+            if attempt >= len(retry_delays) or not _is_transient_download_error(exc):
+                raise
+            time.sleep(retry_delays[attempt])
+
+
 def _extension_from_url(url: str, fallback: str = ".png") -> str:
     suffix = Path(urlparse(url).path).suffix.lower()
     if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -540,6 +576,107 @@ def _workbench_run_patch(
     return patch
 
 
+def _is_transient_workbench_failure(error: Any) -> bool:
+    value = _compact(error).lower()
+    return bool(re.search(
+        r"(?:status code|http)\s*(?:502|503|504)\b|"
+        r"bad gateway|service unavailable|gateway timeout|upstream timeout|timed out|timeout",
+        value,
+    ))
+
+
+def _workbench_retry_payload(job: Mapping[str, Any], run: Mapping[str, Any]) -> dict[str, Any]:
+    current_params = _params(job)
+    input_params = run.get("input_params") if isinstance(run.get("input_params"), Mapping) else {}
+    params = {
+        **current_params,
+        "size": _compact(run.get("size")) or current_params.get("size"),
+        "ratio": _compact(run.get("ratio")) or current_params.get("ratio"),
+        "quality": _compact(run.get("quality")) or current_params.get("quality"),
+        "response_format": _compact(run.get("response_format")) or current_params.get("response_format"),
+        "n": int(run.get("requested_count") or 1),
+        "model_key_tier": _compact(run.get("model_key_tier")) or current_params.get("model_key_tier"),
+        "main_image_path": _compact(input_params.get("main_image_path")),
+        "reference_image_paths": _string_list(input_params.get("reference_image_paths")),
+    }
+    model = _compact(run.get("model_key") or job.get("model_key") or params.get("model") or "gpt-image-2")
+    payload = build_workbench_one_xm_payload(
+        {
+            **dict(job),
+            "model_key": model,
+            "prompt": _compact(run.get("prompt")),
+            "params": params,
+        },
+        data_sink.list_ai_image_assets(_compact(job.get("job_uid"))),
+    )
+    if model in NANO_BANANA_MODELS:
+        payload.pop("n", None)
+    else:
+        payload["n"] = int(run.get("requested_count") or 1)
+    return payload
+
+
+def _workbench_transient_retry_patch(
+    job: Mapping[str, Any],
+    run: Mapping[str, Any],
+    failure_patch: Mapping[str, Any],
+    client: OneXMImageClient,
+) -> dict[str, Any]:
+    error = _compact(failure_patch.get("error"))
+    try:
+        retry_count = max(0, int(run.get("retry_count") or 0))
+    except (TypeError, ValueError):
+        retry_count = 0
+    if not _is_transient_workbench_failure(error) or retry_count >= WORKBENCH_TRANSIENT_RETRY_LIMIT:
+        return dict(failure_patch)
+
+    next_retry_count = retry_count + 1
+    history = [
+        dict(item)
+        for item in (run.get("retry_history") or [])
+        if isinstance(item, Mapping)
+    ]
+    history.append({
+        "retry_index": next_retry_count,
+        "task_id": _compact(failure_patch.get("task_id") or run.get("task_id")),
+        "poll_url": _compact(failure_patch.get("poll_url") or run.get("poll_url")),
+        "provider_status": _compact(failure_patch.get("provider_status") or run.get("provider_status")),
+        "error": error,
+        "failed_at": _now_iso(),
+    })
+    try:
+        task = client.create_task(
+            _workbench_retry_payload(job, run),
+            idempotency_key=(
+                f"ai_image_{_compact(job.get('job_uid'))}_{_compact(run.get('run_uid'))}"
+                f"_retry_{next_retry_count}"
+            ),
+            timeout=30,
+            request_retries=3,
+        )
+        patch = _workbench_run_patch(
+            task,
+            requested_count=int(run.get("requested_count") or 1),
+        )
+        patch.update({
+            "retry_count": next_retry_count,
+            "retry_history": history,
+            "last_retry_error": error,
+        })
+        if patch.get("status") in {"queued", "running", "completed"}:
+            patch["error"] = ""
+        return patch
+    except Exception as exc:
+        retry_error = _sanitize_error(exc, [client.api_key])
+        return {
+            **dict(failure_patch),
+            "retry_count": next_retry_count,
+            "retry_history": history,
+            "last_retry_error": error,
+            "error": f"{error}; 自动重试提交失败: {retry_error}"[:500],
+        }
+
+
 def _rebuild_workbench_summary(summary: Mapping[str, Any], runs: list[dict[str, Any]]) -> tuple[dict, str]:
     image_urls: list[str] = []
     output_files: list[str] = []
@@ -623,6 +760,8 @@ def poll_workbench_run(
                 fallback_status=_compact(run.get("provider_status")) or "queued",
                 requested_count=int(run.get("requested_count") or 1),
             )
+            if patch.get("status") == "failed":
+                patch = _workbench_transient_retry_patch(job, run, patch, client)
         except Exception as exc:
             patch = {
                 "status": "failed",
@@ -723,12 +862,16 @@ def submit_workbench_batch(
             "model_key_tier": _compact(params.get("model_key_tier")),
             "size": _compact(params.get("size")),
             "ratio": _compact(params.get("ratio")),
+            "quality": _compact(params.get("quality")),
+            "response_format": _compact(params.get("response_format") or params.get("output_format")),
             "input_params": _workbench_input_snapshot(params),
             "status": "queued",
             "provider_status": "pending_submission",
             "task_id": "",
             "poll_url": "",
             "poll_after": 5,
+            "retry_count": 0,
+            "retry_history": [],
             "image_urls": [],
             "output_files": [],
             "warning": "",
@@ -915,7 +1058,7 @@ def materialize_remote_image(
     if not target.exists():
         temporary = cache_dir / f".{target.name}-{uuid4().hex[:8]}.tmp"
         try:
-            downloader(source_url, temporary)
+            _download_cache_image(source_url, temporary, downloader)
             _validate_downloaded_image(temporary)
             temporary.replace(target)
         finally:

@@ -174,7 +174,7 @@ test('AI image workbench offers batch generation with shared prompt library pick
   assert.match(workbench, /openBatchPromptLibraryPicker\(card\)/)
   assert.match(workbench, /:disabled="batchGenerationDialog\.submitting" @click="chooseBatchMainImage"/)
   assert.match(workbench, /:disabled="batchGenerationDialog\.submitting" @click="chooseBatchReferenceImages"/)
-  assert.match(workbench, /:disabled="batchGenerationDialog\.submitting" @click="addBatchPromptCard"/)
+  assert.match(workbench, /:disabled="batchGenerationDialog\.submitting \|\| batchPromptCards\.length >= MAX_BATCH_PROMPTS" @click="addBatchPromptCard"/)
   assert.match(workbench, /:disabled="batchGenerationDialog\.submitting \|\| batchPromptCards\.length <= 1"/)
   assert.match(workbench, /@media \(max-width: 1060px\)[\s\S]*\.aiw-batch-board/)
   assert.match(workbench, /<PromptLibraryPickerModal/)
@@ -182,7 +182,7 @@ test('AI image workbench offers batch generation with shared prompt library pick
   assert.match(promptPicker, /buildPromptLibraryPickerLibraries/)
   assert.match(promptPicker, /window\.cs\.listLocalPromptLibraries/)
   assert.match(promptPicker, /window\.cs\.listCloudPromptLibraries/)
-  assert.match(promptPicker, /window\.cs\.resolveCloudPromptTemplates/)
+  assert.match(promptPicker, /templates\.value = \(selectedLibrary\.templates \|\| \[\]\)/)
   assert.match(promptPicker, /createPromptLibraryRequestGuard/)
   assert.match(promptPicker, /promptLibraryRequestGuard\.begin\(id\)/)
   assert.match(promptPicker, /promptLibraryRequestGuard\.isCurrent\(requestToken, id\)/)
@@ -191,15 +191,17 @@ test('AI image workbench offers batch generation with shared prompt library pick
   assert.match(workbench, /const batchGenerationDialog = reactive/)
   assert.match(workbench, /const batchPromptCards = computed/)
   assert.match(openStart === -1 ? '' : workbench.slice(openStart, submitStart), /createBatchPromptCard/)
-  assert.match(payloadBody, /count: 1/)
-  assert.match(payloadBody, /n: 1/)
+  assert.match(payloadBody, /const requestedCount = normalizeBatchPromptCount\(card\.count, \{ forceSingle: isNanoBananaModel\(model\.id\) \}\)/)
+  assert.match(payloadBody, /n: requestedCount/)
+  assert.match(payloadBody, /params\.n = requestedCount/)
   assert.match(submitBody, /const promptCards = batchPromptCards\.value/)
-  assert.match(submitBody, /for \(const \[index, card\] of promptCards\.entries\(\)\)/)
-  assert.match(submitBody, /window\.cs\.createAiImageJob\(\{ \.\.\.payload, status: 'running' \}\)/)
-  assert.match(submitBody, /window\.cs\.runAiImageJob\(jobUid\)/)
-  assert.match(submitBody, /window\.cs\.getAiImageJob\(jobUid\)/)
+  assert.match(submitBody, /const activeTask = await ensureCurrentTask\(\)/)
+  assert.match(submitBody, /window\.cs\.updateAiImageJob\(jobUid, sharedPayload\)/)
+  assert.match(submitBody, /window\.cs\.batchRunAiImageJob\(jobUid,/)
+  assert.match(submitBody, /count: normalizeBatchPromptCount\(card\.count, \{ forceSingle: batchNanoBanana\.value \}\)/)
+  assert.match(submitBody, /if \(!batchResult\?\.accepted\)/)
   assert.match(submitBody, /clearSubmittedTaskInputs\(snapshot\)/)
-  assert.match(submitBody, /await loadJobs\(\)/)
+  assert.match(submitBody, /if \(hasActiveRuns\(currentJob\.value\)\) startJobPolling\(jobUid\)/)
 })
 
 test('AI image workbench only sends the current annotation during lightbox edits', () => {
@@ -233,10 +235,10 @@ test('AI image workbench only sends the current annotation during lightbox edits
 test('AI image workbench maps ratio to compatible size options', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
 
-  assert.match(workbench, /const sizeOptions = computed\(\(\) => sizesForRatio\(form\.ratio\)\)/)
+  assert.match(workbench, /const sizeOptions = computed\(\(\) => sizeOptionsForModel\(form\.modelId, form\.ratio\)\)/)
   assert.match(workbench, /<select v-model="form\.ratio" @change="syncSizeFromRatio">/)
   assert.match(workbench, /<select v-model="form\.size" @change="syncRatioFromSize">/)
-  assert.match(workbench, /form\.size = sizeForRatio\(form\.ratio, form\.size, activeModel\.value\.keyTier\)/)
+  assert.match(workbench, /form\.size = sizeForModel\(form\.modelId, form\.ratio, form\.size\)/)
   assert.match(workbench, /form\.ratio = ratioForSize\(form\.size, form\.ratio\)/)
 })
 
@@ -627,7 +629,7 @@ test('AI image workbench saves current count before provider request', () => {
   const autosaveBody = workbench.slice(autosaveStart, autosaveEnd)
 
   assert.match(workbench, /function normalizeImageCount\(value\)/)
-  assert.match(buildPayloadBody, /const requestedCount = normalizeImageCount\(form\.count\)/)
+  assert.match(buildPayloadBody, /const requestedCount = activeNanoBanana\.value \? 1 : normalizeImageCount\(form\.count\)/)
   assert.ok(
     buildPayloadBody.indexOf('...parseAdvancedJson') < buildPayloadBody.indexOf('n: requestedCount'),
     'advanced JSON must not override the count control',
@@ -727,7 +729,7 @@ test('AI image workbench supports dragging generated results into main and refer
   const dropReferenceBody = workbench.slice(dropReferenceStart, workbench.indexOf('function removeReferencePath', dropReferenceStart))
 
   assert.match(workbench, /const draggingResultKey = ref\(''\)/)
-  assert.match(resultCardBody, /:draggable="!item\.loading"/)
+  assert.match(resultCardBody, /:draggable="!item\.loading && !item\.failed"/)
   assert.match(resultCardBody, /@dragstart\.stop="startResultDrag\(item, \$event\)"/)
   assert.match(resultCardBody, /@dragend="endResultDrag"/)
   assert.match(previewButtonBody, /:draggable="!item\.loading"/)

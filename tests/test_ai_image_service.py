@@ -1,7 +1,9 @@
 import json
+import ssl
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.error import URLError
 from unittest.mock import patch
 
 from core import data_sink
@@ -612,6 +614,32 @@ class AiImageServiceTests(unittest.TestCase):
         self.assertEqual(first["path"], second["path"])
         self.assertEqual(len(downloads), 2)
         self.assertEqual(Path(second["path"]).read_bytes(), PNG_1X1)
+
+    def test_materialize_remote_image_retries_transient_tls_download_failure(self):
+        url = "https://cdn.example/transient.png"
+        job = data_sink.create_ai_image_job({
+            "title": "materialize transient download",
+            "summary": {"image_urls": [url]},
+        })
+        attempts = []
+
+        def downloader(_url, target):
+            attempts.append(str(target))
+            if len(attempts) == 1:
+                raise URLError(ssl.SSLEOFError(8, "UNEXPECTED_EOF_WHILE_READING"))
+            Path(target).write_bytes(PNG_1X1)
+
+        with patch("core.ai_image_service.time.sleep") as sleep:
+            result = ai_image_service.materialize_remote_image(
+                job["job_uid"],
+                url,
+                downloader=downloader,
+            )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(len(attempts), 2)
+        self.assertEqual(Path(result["path"]).read_bytes(), PNG_1X1)
+        sleep.assert_called_once_with(0.25)
 
     def test_materialize_remote_image_can_cache_stale_persisted_result_url(self):
         result = ai_image_service.materialize_remote_image(

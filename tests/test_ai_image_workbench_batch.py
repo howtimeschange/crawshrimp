@@ -8,9 +8,10 @@ from core import ai_image_service, data_sink
 
 
 class FakeWorkbenchClient:
-    def __init__(self, *, barrier=None, fail_prompts=None, poll_responses=None):
+    def __init__(self, *, barrier=None, fail_prompts=None, create_responses=None, poll_responses=None):
         self.barrier = barrier
         self.fail_prompts = set(fail_prompts or [])
+        self.create_responses = list(create_responses or [])
         self.poll_responses = list(poll_responses or [])
         self.created_payloads = []
         self.create_lock = threading.Lock()
@@ -24,6 +25,8 @@ class FakeWorkbenchClient:
             self.barrier.wait(timeout=2)
         if prompt in self.fail_prompts:
             raise RuntimeError(f"create failed for {prompt}")
+        if self.create_responses:
+            return self.create_responses.pop(0)
         suffix = prompt.replace(" ", "-") or "empty"
         return {
             "id": f"task-{suffix}",
@@ -270,6 +273,149 @@ class AiImageWorkbenchBatchTests(unittest.TestCase):
             "https://img.example/task-one-a.png",
             "https://img.example/task-one-b.png",
         ])
+
+    def test_poll_workbench_run_retries_transient_504_with_fresh_task(self):
+        run_uid = "run-retry-504"
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "status": "running",
+            "summary": {
+                "runs": [{
+                    "run_uid": run_uid,
+                    "prompt": "retry product",
+                    "requested_count": 2,
+                    "model_key": "gpt-image-2",
+                    "model_key_tier": "2k",
+                    "size": "1024x1024",
+                    "ratio": "1:1",
+                    "quality": "high",
+                    "response_format": "png",
+                    "input_params": {"main_image_path": "", "reference_image_paths": []},
+                    "status": "running",
+                    "provider_status": "running",
+                    "task_id": "task-original",
+                    "poll_url": "https://api.example/images/tasks/task-original",
+                    "poll_after": 5,
+                    "retry_count": 0,
+                    "retry_history": [],
+                    "image_urls": [],
+                    "output_files": [],
+                }],
+            },
+        })
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "params": {
+                "size": "2448x3264",
+                "ratio": "3:4",
+                "quality": "low",
+                "response_format": "webp",
+                "n": 1,
+                "model_key_tier": "4k",
+            },
+        })
+        client = FakeWorkbenchClient(
+            create_responses=[{
+                "id": "task-retry-1",
+                "status": "queued",
+                "poll_url": "https://api.example/images/tasks/task-retry-1",
+                "poll_after": 3,
+            }],
+            poll_responses=[
+                {"id": "task-original", "status": "failed", "message": "bad response status code 504"},
+                {
+                    "id": "task-retry-1",
+                    "status": "succeeded",
+                    "data": [
+                        {"url": "https://img.example/retry-a.png"},
+                        {"url": "https://img.example/retry-b.png"},
+                    ],
+                },
+            ],
+        )
+        sleeps = []
+
+        result = ai_image_service.poll_workbench_run(
+            self.job["job_uid"],
+            run_uid,
+            client,
+            sleep_fn=sleeps.append,
+        )
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(sleeps, [5, 3])
+        self.assertEqual(len(client.created_payloads), 1)
+        retry_payload, retry_key = client.created_payloads[0]
+        self.assertEqual(retry_payload["prompt"], "retry product")
+        self.assertEqual(retry_payload["size"], "1024x1024")
+        self.assertEqual(retry_payload["quality"], "high")
+        self.assertEqual(retry_payload["output_format"], "png")
+        self.assertEqual(retry_payload["n"], 2)
+        self.assertTrue(retry_key.endswith("_retry_1"))
+        run = data_sink.get_ai_image_job(self.job["job_uid"])["summary"]["runs"][0]
+        self.assertEqual(run["status"], "completed")
+        self.assertEqual(run["task_id"], "task-retry-1")
+        self.assertEqual(run["retry_count"], 1)
+        self.assertEqual(len(run["retry_history"]), 1)
+        self.assertEqual(run["retry_history"][0]["task_id"], "task-original")
+        self.assertIn("504", run["retry_history"][0]["error"])
+        self.assertEqual(run["image_urls"], [
+            "https://img.example/retry-a.png",
+            "https://img.example/retry-b.png",
+        ])
+
+    def test_poll_workbench_run_stops_after_two_transient_retries(self):
+        run_uid = "run-retry-limit"
+        data_sink.update_ai_image_job(self.job["job_uid"], {
+            "status": "running",
+            "summary": {
+                "runs": [{
+                    "run_uid": run_uid,
+                    "prompt": "retry limit",
+                    "requested_count": 1,
+                    "model_key": "gpt-image-2",
+                    "model_key_tier": "2k",
+                    "size": "1024x1024",
+                    "ratio": "1:1",
+                    "quality": "high",
+                    "response_format": "png",
+                    "input_params": {"main_image_path": "", "reference_image_paths": []},
+                    "status": "running",
+                    "provider_status": "running",
+                    "task_id": "task-original",
+                    "poll_url": "https://api.example/images/tasks/task-original",
+                    "poll_after": 5,
+                    "retry_count": 0,
+                    "retry_history": [],
+                    "image_urls": [],
+                    "output_files": [],
+                }],
+            },
+        })
+        client = FakeWorkbenchClient(
+            create_responses=[
+                {"id": "task-retry-1", "status": "queued", "poll_after": 5},
+                {"id": "task-retry-2", "status": "queued", "poll_after": 5},
+            ],
+            poll_responses=[
+                {"id": "task-original", "status": "failed", "message": "bad response status code 504"},
+                {"id": "task-retry-1", "status": "failed", "message": "upstream timeout 503"},
+                {"id": "task-retry-2", "status": "failed", "message": "gateway timeout 504"},
+            ],
+        )
+
+        result = ai_image_service.poll_workbench_run(
+            self.job["job_uid"],
+            run_uid,
+            client,
+            sleep_fn=lambda _seconds: None,
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(len(client.created_payloads), 2)
+        run = data_sink.get_ai_image_job(self.job["job_uid"])["summary"]["runs"][0]
+        self.assertEqual(run["status"], "failed")
+        self.assertEqual(run["retry_count"], 2)
+        self.assertEqual(len(run["retry_history"]), 2)
+        self.assertIn("504", run["error"])
 
 
 if __name__ == "__main__":

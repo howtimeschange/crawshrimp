@@ -1539,9 +1539,11 @@ async function pollActiveJob() {
     const latest = await window.cs.getAiImageJob(uid)
     if (uid !== jobPollingUid) return
     mergeResultCacheFromJob(latest)
-    currentJob.value = latest
     upsertJob(latest)
-    refreshResultPreviewCandidates(collectResultCards(latest))
+    if (currentJob.value?.job_uid === uid) {
+      currentJob.value = latest
+      refreshResultPreviewCandidates(collectResultCards(latest))
+    }
     if (!hasActiveRuns(latest)) {
       stopJobPolling()
       return

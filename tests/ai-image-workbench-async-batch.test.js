@@ -44,6 +44,13 @@ test('workbench polls only the local job while active runs exist', () => {
   assert.match(workbench, /onBeforeUnmount\([\s\S]*stopJobPolling\(\)/)
 })
 
+test('stale batch polling updates history without replacing a newly selected task', () => {
+  const body = functionBody('pollActiveJob', 'parseAdvancedJsonValue')
+  assert.match(body, /upsertJob\(latest\)/)
+  assert.match(body, /if \(currentJob\.value\?\.job_uid === uid\) \{[\s\S]*currentJob\.value = latest[\s\S]*refreshResultPreviewCandidates/)
+  assert.doesNotMatch(body, /mergeResultCacheFromJob\(latest\)\s*currentJob\.value = latest/)
+})
+
 test('queued, running, and failed persisted runs remain visible as queue cards', () => {
   const body = functionBody('collectResultQueues', 'collectResultCardsFromRun')
   assert.match(body, /workbenchRunPlaceholders\(job, run, index\)/)
