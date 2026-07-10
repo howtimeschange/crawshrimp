@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from core import data_sink
 from core import api_server
+from core.cloud_approval_url import CloudApprovalUrlResolution
 from core.config import DEFAULT_CONFIG, save_config
 
 
@@ -38,6 +39,17 @@ class FakeCloudMachineAgent:
 
 
 class CloudApiServerTests(unittest.TestCase):
+    def resolution(self, **overrides):
+        values = {
+            "environment": "development",
+            "base_url": "http://127.0.0.1:8789",
+            "base_url_source": "detected_local",
+            "service_reachable": True,
+            "service_error": "",
+        }
+        values.update(overrides)
+        return CloudApprovalUrlResolution(**values)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -51,6 +63,16 @@ class CloudApiServerTests(unittest.TestCase):
         self.addCleanup(api_server.cloud_machine_controller.stop)
         FakeCloudMachineAgent.enroll_calls = []
         FakeCloudMachineAgent.run_calls = []
+        self.default_resolution = self.resolution(
+            base_url="https://approval.example.test",
+            base_url_source="environment_override",
+        )
+        resolution_patcher = patch(
+            "core.api_server.resolve_cloud_approval_url",
+            return_value=self.default_resolution,
+        )
+        resolution_patcher.start()
+        self.addCleanup(resolution_patcher.stop)
 
     def assertRouteRegistered(self, path, method):
         routes = [
@@ -101,6 +123,33 @@ class CloudApiServerTests(unittest.TestCase):
         self.assertNotIn("machine_token", payload)
         self.assertNotIn("csr_machine_secret", str(payload))
 
+    def test_status_uses_resolver_contract_and_forwards_refresh(self):
+        with patch("core.api_server.resolve_cloud_approval_url", return_value=self.resolution()) as resolve:
+            payload = api_server.get_cloud_approval_status(refresh=True)
+
+        resolve.assert_called_once_with("", refresh=True)
+        self.assertEqual(payload["base_url"], "http://127.0.0.1:8789")
+        self.assertEqual(payload["base_url_source"], "detected_local")
+        self.assertTrue(payload["service_reachable"])
+        self.assertEqual(payload["service_error"], "")
+        self.assertEqual(payload["environment"], "development")
+
+    def test_build_cloud_client_uses_effective_url_and_invalidation_callback(self):
+        data_sink.save_cloud_machine_credentials(
+            "machine-1",
+            "machine-secret",
+            "任务机",
+            ["read_prompt_library"],
+        )
+        with patch("core.api_server.resolve_cloud_approval_url", return_value=self.resolution()), \
+                patch("core.api_server.invalidate_cloud_approval_url_cache") as invalidate:
+            client = api_server._build_cloud_client()
+            client._notify_transport_error()
+
+        self.assertEqual(client.base_url, "http://127.0.0.1:8789")
+        self.assertEqual(client.machine_token, "machine-secret")
+        invalidate.assert_called_once_with()
+
     def test_status_defaults_to_generation_and_submit_capabilities_without_saved_list(self):
         payload = api_server.get_cloud_approval_status()
 
@@ -121,6 +170,26 @@ class CloudApiServerTests(unittest.TestCase):
         self.assertEqual(result["status"]["machine_name"], "设计部任务机")
         self.assertEqual(result["status"]["capabilities"], ["regenerate_ai_image", "submit_tmall_material_test"])
         self.assertNotIn("machine_token", result["status"])
+        self.assertEqual(api_server._cloud_approval_config().get("base_url"), "")
+
+    def test_config_keeps_historical_base_url_but_does_not_use_request_value(self):
+        save_config({
+            **DEFAULT_CONFIG,
+            "cloud_approval": {
+                **DEFAULT_CONFIG["cloud_approval"],
+                "base_url": "http://127.0.0.1:8788",
+            },
+        })
+        with patch("core.api_server.resolve_cloud_approval_url", return_value=self.resolution()) as resolve:
+            result = api_server.configure_cloud_approval(api_server.CloudApprovalConfigRequest(
+                base_url="https://business-user.example.test",
+                machine_name="设计部任务机",
+                capabilities=["regenerate_ai_image"],
+            ))
+
+        self.assertEqual(api_server._cloud_approval_config()["base_url"], "http://127.0.0.1:8788")
+        self.assertEqual(result["status"]["base_url"], "http://127.0.0.1:8789")
+        self.assertEqual(resolve.call_args.args[0], "http://127.0.0.1:8788")
 
     def test_enroll_machine_uses_registration_token_and_hides_machine_token(self):
         save_config({
@@ -190,6 +259,27 @@ class CloudApiServerTests(unittest.TestCase):
         self.assertTrue(first["status"]["running"])
         self.assertTrue(second["status"]["running"])
         self.assertEqual(len(FakeCloudMachineAgent.run_calls), 1)
+
+    def test_machine_start_rejects_unreachable_resolved_service(self):
+        data_sink.save_cloud_machine_credentials(
+            "machine-1",
+            "machine-secret",
+            "任务机",
+            ["read_prompt_library"],
+        )
+        unreachable = self.resolution(
+            base_url="http://127.0.0.1:8787",
+            base_url_source="development_fallback",
+            service_reachable=False,
+            service_error="not_detected",
+        )
+
+        with patch("core.api_server.resolve_cloud_approval_url", return_value=unreachable):
+            with self.assertRaises(api_server.HTTPException) as raised:
+                api_server.start_cloud_machine()
+
+        self.assertEqual(raised.exception.status_code, 502)
+        self.assertIn("not_detected", str(raised.exception.detail))
 
     def test_enabled_machine_auto_start_uses_saved_enrollment(self):
         data_sink.save_cloud_machine_credentials("machine-cloud-1", "csr_machine_secret", "任务机", ["cap"])

@@ -37,6 +37,10 @@ from pydantic import BaseModel
 from core import runtime_paths
 from core.config import load_config, patch_config, save_config
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
+from core.cloud_approval_url import (
+    invalidate_cloud_approval_url_cache,
+    resolve_cloud_approval_url,
+)
 from core.cloud_batch_sync import sync_local_approval_batch
 from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
@@ -7224,8 +7228,12 @@ def _cloud_approval_config() -> dict:
     return cloud if isinstance(cloud, dict) else {}
 
 
-def _normalize_cloud_base_url(base_url: str) -> str:
-    return str(base_url or "").strip().rstrip("/")
+def _cloud_approval_resolution(*, refresh: bool = False):
+    cloud = _cloud_approval_config()
+    return resolve_cloud_approval_url(
+        str(cloud.get("base_url") or ""),
+        refresh=refresh,
+    )
 
 
 def _cloud_capabilities(*sources) -> list[str]:
@@ -7244,11 +7252,12 @@ def _cloud_capabilities(*sources) -> list[str]:
 
 
 def _build_cloud_client() -> CloudApprovalClient:
-    cloud = _cloud_approval_config()
+    resolution = _cloud_approval_resolution()
     saved = data_sink.get_cloud_machine_credentials() or {}
     return CloudApprovalClient(
-        base_url=_normalize_cloud_base_url(cloud.get("base_url") or ""),
+        base_url=resolution.base_url,
         machine_token=str(saved.get("machine_token") or ""),
+        on_transport_error=invalidate_cloud_approval_url_cache,
     )
 
 
@@ -7296,21 +7305,20 @@ def _safe_cloud_enrollment_response(response: dict) -> dict:
     return safe
 
 
-def _cloud_approval_status() -> dict:
+def _cloud_approval_status(*, refresh: bool = False) -> dict:
     cloud = _cloud_approval_config()
+    resolution = _cloud_approval_resolution(refresh=refresh)
     saved = data_sink.get_cloud_machine_credentials() or {}
-    base_url = _normalize_cloud_base_url(cloud.get("base_url") or "")
     machine_name = str(cloud.get("machine_name") or saved.get("machine_name") or "").strip()
     machine_id = str(saved.get("machine_id") or "").strip()
     token_present = bool(str(saved.get("machine_token") or "").strip())
     running = cloud_machine_controller.is_running()
     health = "running" if running and cloud_machine_controller.last_health == "stopped" else cloud_machine_controller.last_health
     return {
-        "configured": bool(base_url),
+        **resolution.status_fields(),
         "running": running,
         "auth": "enrolled" if token_present else "missing_token",
         "health": health or ("running" if running else "stopped"),
-        "base_url": base_url,
         "machine_name": machine_name,
         "machine_id": machine_id,
         "token_present": token_present,
@@ -7321,8 +7329,8 @@ def _cloud_approval_status() -> dict:
 
 
 @app.get("/cloud-approval/status")
-def get_cloud_approval_status():
-    return _cloud_approval_status()
+def get_cloud_approval_status(refresh: bool = False):
+    return _cloud_approval_status(refresh=refresh)
 
 
 @app.post("/cloud-approval/config")
@@ -7330,7 +7338,6 @@ def configure_cloud_approval(req: CloudApprovalConfigRequest):
     patch_config({
         "cloud_approval": {
             **_cloud_approval_config(),
-            "base_url": _normalize_cloud_base_url(req.base_url),
             "registration_token": str(req.registration_token or "").strip(),
             "machine_name": str(req.machine_name or "").strip(),
             "machine_enabled": bool(req.machine_enabled),
@@ -7343,9 +7350,11 @@ def configure_cloud_approval(req: CloudApprovalConfigRequest):
 @app.post("/cloud-approval/enroll-machine")
 def enroll_cloud_machine(req: CloudApprovalEnrollRequest):
     cloud = _cloud_approval_config()
-    base_url = _normalize_cloud_base_url(cloud.get("base_url") or "")
-    if not base_url:
-        raise HTTPException(400, "cloud approval base_url is required")
+    resolution = _cloud_approval_resolution(refresh=True)
+    if not resolution.configured:
+        raise HTTPException(400, f"cloud approval address is invalid: {resolution.service_error}")
+    if not resolution.service_reachable:
+        raise HTTPException(502, f"cloud approval service is unavailable: {resolution.service_error}")
     registration_token = str(req.registration_token or cloud.get("registration_token") or "").strip()
     if not registration_token:
         raise HTTPException(400, "registration token is required")
@@ -7353,7 +7362,10 @@ def enroll_cloud_machine(req: CloudApprovalEnrollRequest):
     if not machine_name:
         raise HTTPException(400, "machine name is required")
     capabilities = _cloud_capabilities(req.capabilities, cloud)
-    client = CloudApprovalClient(base_url=base_url)
+    client = CloudApprovalClient(
+        base_url=resolution.base_url,
+        on_transport_error=invalidate_cloud_approval_url_cache,
+    )
     try:
         response = _cloud_machine_agent(client).enroll(registration_token, machine_name, capabilities)
     except CloudApprovalError as exc:
@@ -7361,7 +7373,6 @@ def enroll_cloud_machine(req: CloudApprovalEnrollRequest):
     patch_config({
         "cloud_approval": {
             **cloud,
-            "base_url": base_url,
             "registration_token": "",
             "machine_name": machine_name,
             "capabilities": capabilities,
@@ -7410,6 +7421,8 @@ def start_cloud_machine():
     status = _cloud_approval_status()
     if not status["configured"]:
         raise HTTPException(400, "cloud approval base_url is required")
+    if not status["service_reachable"]:
+        raise HTTPException(502, f"cloud approval service is unavailable: {status['service_error']}")
     if not status["token_present"]:
         raise HTTPException(400, "machine enrollment is required before start")
     client = _build_cloud_client()
@@ -7423,7 +7436,7 @@ def _start_cloud_machine_if_enabled() -> bool:
     if not bool(cloud.get("machine_enabled")):
         return False
     status = _cloud_approval_status()
-    if not status["configured"] or not status["token_present"]:
+    if not status["configured"] or not status["service_reachable"] or not status["token_present"]:
         logger.warning("Cloud approval machine is enabled but not configured or enrolled; skip auto-start")
         return False
     return cloud_machine_controller.start(_cloud_machine_agent(_build_cloud_client()))
