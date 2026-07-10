@@ -297,8 +297,27 @@
                     <span v-else class="aiw-result-preview">{{ item.label }}</span>
                   </button>
                   <div v-else-if="item.loading" class="aiw-loading-preview">
-                    <span aria-hidden="true"></span>
-                    <strong>{{ item.label }}</strong>
+                    <img
+                      v-if="loadingPreviewSrc(item)"
+                      class="aiw-loading-source"
+                      :src="loadingPreviewSrc(item)"
+                      alt=""
+                      aria-hidden="true"
+                      @error="markPreviewBroken(item.loadingPreviewPath)"
+                    />
+                    <div v-else class="aiw-loading-default-art" aria-hidden="true">
+                      <span class="aiw-loading-moon"></span>
+                      <span class="aiw-loading-sea sea-back"></span>
+                      <span class="aiw-loading-sea sea-front"></span>
+                      <span class="aiw-loading-shrimp">🦐</span>
+                      <small>CRAWSHRIMP STUDIO</small>
+                    </div>
+                    <span class="aiw-loading-sheen" aria-hidden="true"></span>
+                    <div class="aiw-loading-copy">
+                      <span class="aiw-loading-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+                      <strong>{{ loadingMessage(item) }}</strong>
+                      <small>{{ item.label }}</small>
+                    </div>
                   </div>
                   <div v-else class="aiw-failed-preview">
                     <strong>生成失败</strong>
@@ -798,6 +817,11 @@ import {
   promptChainFromLineage,
   resolveResultLineage,
 } from '../aiImageResultLineage.mjs'
+import {
+  AI_IMAGE_LOADING_MESSAGES,
+  loadingMessageFor,
+  resolveLoadingPreviewContext,
+} from '../utils/aiImageLoadingState.mjs'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
@@ -909,6 +933,7 @@ const taskSidebarOpen = ref(true)
 const generating = ref(false)
 const errorMessage = ref('')
 const logs = ref([])
+const loadingMessageTick = ref(0)
 const imagePreviews = reactive({})
 const previewFailures = reactive(new Set())
 const resultCachePaths = reactive({})
@@ -952,6 +977,7 @@ let resultCacheQueue = Promise.resolve()
 let jobPollingTimer = null
 let jobPollingUid = ''
 let jobPollingInFlight = false
+let loadingMessageTimer = null
 
 const activeModel = computed(() => getAiImageModel(form.modelId))
 const activeNanoBanana = computed(() => isNanoBananaModel(form.modelId))
@@ -964,9 +990,16 @@ const resultCards = computed(() => resultQueues.value.flatMap((queue) => queue.i
 const loadingResultCards = computed(() => {
   if (!generating.value) return []
   const count = normalizeImageCount(form.count)
+  const context = resolveLoadingPreviewContext(currentJob.value || {}, {}, {
+    mainImagePath: form.mainImagePath,
+    referenceImagePaths: form.referenceImagePaths,
+  })
   return Array.from({ length: count }, (_, index) => ({
     key: `loading-${index + 1}`,
     label: `生成中 ${index + 1}`,
+    loadingPreviewPath: context.previewPath,
+    loadingMode: context.mode,
+    loadingMessageOffset: index,
     loading: true,
   }))
 })
@@ -1056,10 +1089,16 @@ onMounted(async () => {
   await Promise.all([loadSettings(), loadJobs()])
   await restoreInitialTask()
   if (hasActiveRuns(currentJob.value)) startJobPolling(currentJob.value?.job_uid)
+  loadingMessageTimer = setInterval(() => {
+    if (visibleResultCards.value.some((item) => item.loading)) {
+      loadingMessageTick.value = (loadingMessageTick.value + 1) % AI_IMAGE_LOADING_MESSAGES.length
+    }
+  }, 2400)
 })
 
 onBeforeUnmount(() => {
   if (autosaveTimer) clearTimeout(autosaveTimer)
+  if (loadingMessageTimer) clearInterval(loadingMessageTimer)
   stopJobPolling()
   saveDraftForCurrentTask()
   persistWorkbenchState()
@@ -1076,6 +1115,12 @@ watch(() => [...form.referenceImagePaths], (paths) => {
 watch(resultCards, (cards) => {
   refreshResultPreviewCandidates(cards)
   cards.forEach((card) => queueResultCache(card))
+})
+
+watch(visibleResultCards, (cards) => {
+  cards.forEach((item) => {
+    if (item.loading && item.loadingPreviewPath) void refreshImagePreview(item.loadingPreviewPath)
+  })
 })
 
 watch(taskRecords, (records) => {
@@ -1899,12 +1944,16 @@ function collectResultCards(job) {
 function workbenchRunPlaceholder(job, run, index) {
   const status = String(run?.status || '').toLowerCase()
   if (['queued', 'running'].includes(status)) {
+    const loadingContext = resolveLoadingPreviewContext(job, run)
     return {
       key: `${run.run_uid || run.task_id || index}-loading`,
       label: status === 'queued' ? '排队中' : '生成中',
       prompt: run.prompt || '',
       jobUid: job?.job_uid || '',
       runUid: run.run_uid || '',
+      loadingPreviewPath: loadingContext.previewPath,
+      loadingMode: loadingContext.mode,
+      loadingMessageOffset: index,
       loading: true,
     }
   }
@@ -2061,6 +2110,15 @@ function formatDateTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   })
+}
+
+function loadingMessage(item) {
+  return loadingMessageFor(loadingMessageTick.value, item?.loadingMessageOffset || 0)
+}
+
+function loadingPreviewSrc(item) {
+  const path = String(item?.loadingPreviewPath || '').trim()
+  return path ? imagePreviewSrc(path) : ''
 }
 
 function resultKey(item) {
@@ -3658,27 +3716,33 @@ function localFileUrl(path) {
   position: relative;
   isolation: isolate;
   overflow: hidden;
-  background:
-    radial-gradient(circle at 28% 22%, rgba(255, 107, 43, 0.10), transparent 30%),
-    radial-gradient(circle at 72% 76%, rgba(112, 122, 180, 0.12), transparent 34%),
-    linear-gradient(135deg, #202029 0%, #282832 48%, #1d1d25 100%);
-  color: #d9d9e6;
+  background: #10131d;
+  color: #fff;
   font-size: 14px;
+}
+
+.aiw-loading-source {
+  position: absolute;
+  inset: -7%;
+  z-index: -2;
+  width: 114%;
+  height: 114%;
+  min-height: 0;
+  aspect-ratio: auto;
+  object-fit: cover;
+  filter: blur(18px) saturate(0.72) brightness(0.66);
+  transform: scale(1.08);
+  animation: aiw-loading-source-breathe 4.8s ease-in-out infinite;
 }
 
 .aiw-loading-preview::before {
   content: "";
   position: absolute;
-  inset: -28px;
+  inset: 0;
   z-index: -1;
   background:
-    radial-gradient(circle at 24% 28%, rgba(255, 107, 43, 0.22), transparent 34%),
-    radial-gradient(circle at 72% 68%, rgba(115, 126, 190, 0.16), transparent 38%),
-    linear-gradient(135deg, #22222c 0%, #2d2d38 54%, #1f1f28 100%);
-  filter: blur(18px);
-  opacity: 0.95;
-  transform: scale(1.05);
-  animation: aiw-loading-breathe 3s ease-in-out infinite;
+    radial-gradient(circle at 24% 22%, rgba(255, 113, 51, 0.26), transparent 34%),
+    linear-gradient(180deg, rgba(10, 13, 23, 0.18), rgba(10, 12, 20, 0.70));
 }
 
 .aiw-loading-preview::after {
@@ -3687,44 +3751,175 @@ function localFileUrl(path) {
   inset: 0;
   z-index: 1;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 24%, transparent 70%, rgba(0, 0, 0, 0.14)),
-    radial-gradient(circle at 50% 50%, transparent 0 54%, rgba(255, 255, 255, 0.03) 55%, transparent 70%);
+    linear-gradient(180deg, rgba(255, 255, 255, 0.06), transparent 26%, transparent 64%, rgba(4, 6, 13, 0.54)),
+    radial-gradient(circle at 50% 48%, transparent 0 52%, rgba(255, 255, 255, 0.035) 53%, transparent 70%);
   pointer-events: none;
 }
 
-.aiw-loading-preview span {
+.aiw-loading-default-art {
   position: absolute;
-  inset: -18% -48%;
-  z-index: 0;
-  border: 0;
-  border-radius: 0;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
   background:
-    linear-gradient(
-      90deg,
-      transparent 0%,
-      rgba(255, 255, 255, 0.08) 22%,
-      rgba(255, 107, 43, 0.18) 42%,
-      rgba(150, 158, 214, 0.14) 58%,
-      transparent 78%
-    );
-  filter: blur(18px);
-  opacity: 0.95;
-  -webkit-mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 220' preserveAspectRatio='none'%3E%3Cpath d='M0 126 C80 58 150 182 230 126 C310 66 380 174 460 120 C520 80 562 88 600 124 L600 220 L0 220 Z' fill='black'/%3E%3C/svg%3E");
-  mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 220' preserveAspectRatio='none'%3E%3Cpath d='M0 126 C80 58 150 182 230 126 C310 66 380 174 460 120 C520 80 562 88 600 124 L600 220 L0 220 Z' fill='black'/%3E%3C/svg%3E");
-  -webkit-mask-repeat: repeat-x;
-  mask-repeat: repeat-x;
-  -webkit-mask-size: 46% 100%;
-  mask-size: 46% 100%;
-  animation: aiw-wave-flow 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+    radial-gradient(circle at 72% 26%, rgba(255, 138, 79, 0.26), transparent 28%),
+    linear-gradient(155deg, #171a2a 0%, #111827 48%, #07131d 100%);
 }
 
-.aiw-loading-preview strong {
+.aiw-loading-default-art::before {
+  content: "";
   position: absolute;
-  bottom: 18px;
-  left: 18px;
+  inset: 0;
+  opacity: 0.34;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.72) 0.8px, transparent 0.8px);
+  background-size: 22px 22px;
+  mask-image: linear-gradient(180deg, #000, transparent 72%);
+}
+
+.aiw-loading-moon {
+  position: absolute;
+  top: 17%;
+  right: 16%;
+  width: 24%;
+  aspect-ratio: 1;
+  border-radius: 50%;
+  background: linear-gradient(145deg, #ff9a64, #ff6633);
+  box-shadow: 0 0 42px rgba(255, 104, 51, 0.34);
+  animation: aiw-loading-moon-drift 5.4s ease-in-out infinite;
+}
+
+.aiw-loading-sea {
+  position: absolute;
+  left: -18%;
+  width: 136%;
+  height: 38%;
+  border-radius: 48% 56% 0 0;
+  transform: rotate(-4deg);
+}
+
+.aiw-loading-sea.sea-back {
+  bottom: 8%;
+  background: rgba(57, 76, 119, 0.72);
+  animation: aiw-loading-sea-drift 5.8s ease-in-out infinite alternate;
+}
+
+.aiw-loading-sea.sea-front {
+  bottom: -8%;
+  background: rgba(10, 29, 47, 0.96);
+  animation: aiw-loading-sea-drift 4.6s ease-in-out -1.2s infinite alternate-reverse;
+}
+
+.aiw-loading-shrimp {
+  position: absolute;
+  top: 40%;
+  left: 50%;
+  z-index: 1;
+  font-size: clamp(38px, 5vw, 64px);
+  filter: drop-shadow(0 12px 20px rgba(0, 0, 0, 0.34));
+  transform: translate(-50%, -50%) rotate(-8deg);
+  animation: aiw-loading-shrimp-float 3.6s ease-in-out infinite;
+}
+
+.aiw-loading-default-art > small {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  z-index: 1;
+  color: rgba(255, 255, 255, 0.46);
+  font-size: 9px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.aiw-loading-sheen {
+  position: absolute;
+  inset: -28% -70%;
   z-index: 2;
+  background: linear-gradient(100deg, transparent 34%, rgba(255, 255, 255, 0.16) 49%, transparent 64%);
+  filter: blur(12px);
+  transform: translateX(-32%);
+  animation: aiw-loading-sheen 2.8s ease-in-out infinite;
+}
+
+.aiw-loading-copy {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  left: 14px;
+  z-index: 3;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  background: rgba(10, 12, 20, 0.62);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
+  backdrop-filter: blur(14px);
+}
+
+.aiw-loading-copy strong {
+  overflow: hidden;
+  color: #fff;
   font-size: 13px;
+  text-overflow: ellipsis;
   text-shadow: 0 1px 12px rgba(0, 0, 0, 0.36);
+  white-space: nowrap;
+}
+
+.aiw-loading-copy small {
+  color: rgba(255, 255, 255, 0.58);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.aiw-loading-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.aiw-loading-dots i {
+  width: 4px;
+  height: 4px;
+  display: block;
+  border-radius: 50%;
+  background: #ff6b2b;
+  animation: aiw-loading-dot 1.2s ease-in-out infinite;
+}
+
+.aiw-loading-dots i:nth-child(2) { animation-delay: 160ms; }
+.aiw-loading-dots i:nth-child(3) { animation-delay: 320ms; }
+
+@keyframes aiw-loading-source-breathe {
+  0%, 100% { transform: scale(1.08); }
+  50% { transform: scale(1.14); }
+}
+
+@keyframes aiw-loading-sheen {
+  0% { transform: translateX(-34%); opacity: 0; }
+  30%, 65% { opacity: 0.9; }
+  100% { transform: translateX(34%); opacity: 0; }
+}
+
+@keyframes aiw-loading-sea-drift {
+  from { transform: translateX(-2%) rotate(-4deg); }
+  to { transform: translateX(3%) rotate(2deg); }
+}
+
+@keyframes aiw-loading-moon-drift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(8px); }
+}
+
+@keyframes aiw-loading-shrimp-float {
+  0%, 100% { transform: translate(-50%, -50%) rotate(-8deg); }
+  50% { transform: translate(-50%, calc(-50% - 8px)) rotate(3deg); }
+}
+
+@keyframes aiw-loading-dot {
+  0%, 70%, 100% { opacity: 0.34; transform: translateY(0); }
+  35% { opacity: 1; transform: translateY(-3px); }
 }
 
 .aiw-failed-preview {
@@ -4510,11 +4705,14 @@ button.active,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .aiw-loading-preview::before,
-  .aiw-loading-preview span {
-    animation: none;
-    transform: none;
+  @media (prefers-reduced-motion: reduce) {
+    .aiw-loading-source,
+    .aiw-loading-sheen,
+    .aiw-loading-moon,
+    .aiw-loading-sea,
+    .aiw-loading-shrimp,
+    .aiw-loading-dots i {
+      animation: none;
+    }
   }
-}
 </style>
