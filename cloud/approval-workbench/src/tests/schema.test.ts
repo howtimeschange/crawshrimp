@@ -5,6 +5,7 @@ const schema = fs.readFileSync('migrations/0001_init.sql', 'utf8')
 const generationSchema = fs.readFileSync('migrations/0003_generation_jobs.sql', 'utf8')
 const imageResourceSchema = fs.readFileSync('migrations/0004_image_resources.sql', 'utf8')
 const machineUniquenessMigration = fs.readFileSync('migrations/0008_task_machine_uniqueness_and_runtime.sql', 'utf8')
+const wranglerConfig = fs.readFileSync('wrangler.toml', 'utf8')
 
 describe('initial D1 schema', () => {
   it('contains auth rbac machine job prompt batch and audit tables', () => {
@@ -59,5 +60,10 @@ describe('initial D1 schema', () => {
     expect(normalizationIndex).toBeGreaterThanOrEqual(0)
     expect(uniqueIndex).toBeGreaterThan(normalizationIndex)
     expect(machineUniquenessMigration).toContain("':legacy-duplicate:'")
+  })
+
+  it('keeps the production workbench on the approval.crawshrimp.com custom domain', () => {
+    expect(wranglerConfig).toContain('pattern = "approval.crawshrimp.com"')
+    expect(wranglerConfig).toContain('custom_domain = true')
   })
 })

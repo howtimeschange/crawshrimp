@@ -2,6 +2,10 @@ name = "crawshrimp-cloud-approval-workbench"
 main = "src/worker/index.ts"
 compatibility_date = "2026-07-07"
 
+[[routes]]
+pattern = "approval.crawshrimp.com"
+custom_domain = true
+
 [triggers]
 crons = ["*/5 * * * *"]
 
