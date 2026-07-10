@@ -32,7 +32,7 @@ function createUpdateInstallCoordinator({
   }
 
   async function refreshReadiness() {
-    if (disposed) return normalizeReadiness(updateService.getStatus?.())
+    if (disposed) return invalidReadiness('Coordinator is disposed')
     if (refreshing) return refreshing
     refreshing = doRefreshReadiness()
     try {
@@ -45,16 +45,20 @@ function createUpdateInstallCoordinator({
   async function doRefreshReadiness() {
     const previous = updateService.getStatus?.() || {}
     try {
-      const readiness = normalizeReadiness(await getReadiness())
+      const readiness = normalizeReadiness(await getReadiness(), 'readiness')
+      if (disposed) return invalidReadiness('Coordinator is disposed')
       updateService.setInstallReadiness(readiness)
       if (readiness.ready) {
         stopPolling()
         if (previous.status === 'waiting-for-tasks') notifyReady?.()
+      } else if (readiness.error) {
+        stopPolling()
       } else {
         startPolling()
       }
       return readiness
     } catch (error) {
+      if (disposed) return invalidReadiness('Coordinator is disposed')
       stopPolling()
       updateService.setInstallReadiness({
         ready: false,
@@ -72,14 +76,22 @@ function createUpdateInstallCoordinator({
     let drainToken = ''
     try {
       const drain = await acquireDrain()
-      const drainReadiness = normalizeReadiness(drain?.readiness || { ready: drain?.ok !== false, blockers: [] })
-      if (!drainReadiness.ready) {
-        updateService.setInstallReadiness(drainReadiness)
-        startPolling()
+      const drainReadiness = normalizeDrainResponse(drain)
+      if (disposed) {
+        if (drainReadiness.valid) await releaseDrainSafely(drainReadiness.drainToken)
         return { ok: false, deferred: true }
       }
-      drainToken = drain?.drain_token || drain?.drainToken || ''
+      if (!drainReadiness.valid) {
+        updateService.setInstallReadiness({
+          ready: false,
+          blockers: drainReadiness.blockers,
+          error: drainReadiness.error,
+        })
+        return { ok: false, deferred: true }
+      }
+      drainToken = drainReadiness.drainToken
     } catch (error) {
+      if (disposed) return { ok: false, deferred: true }
       if (isConflict(error)) {
         updateService.setInstallReadiness({
           ready: false,
@@ -94,6 +106,10 @@ function createUpdateInstallCoordinator({
 
     try {
       await shutdownForUpdate()
+      if (disposed) {
+        await releaseDrainSafely(drainToken)
+        return { ok: false, deferred: true }
+      }
       updateService.setInstalling()
       updateService.quitAndInstall()
       return { ok: true }
@@ -143,15 +159,60 @@ function createUpdateInstallCoordinator({
   }
 }
 
-function normalizeReadiness(value = {}) {
+function normalizeReadiness(value, source = 'readiness') {
+  if (!isPlainObject(value) || typeof value.ready !== 'boolean') {
+    return invalidReadiness(`Invalid ${source} response: explicit ready boolean is required.`)
+  }
   const blockers = Array.isArray(value.blockers)
     ? value.blockers.map(blocker => ({ ...blocker }))
     : []
   return {
-    ready: value.ready === undefined ? blockers.length === 0 : Boolean(value.ready),
+    ready: value.ready,
     blockers,
     ...(value.error ? { error: value.error } : {}),
   }
+}
+
+function normalizeDrainResponse(value) {
+  if (!isPlainObject(value) || value.ok !== true) {
+    return invalidDrain('Invalid drain response: ok true is required.')
+  }
+  const drainToken = String(value.drain_token || value.drainToken || '').trim()
+  if (!drainToken) {
+    return invalidDrain('Invalid drain response: non-empty drain token is required.')
+  }
+  const readiness = normalizeReadiness(value.readiness, 'drain readiness')
+  if (!readiness.ready) {
+    return {
+      valid: false,
+      blockers: readiness.blockers,
+      error: readiness.error || 'Invalid drain response: readiness.ready true is required.',
+    }
+  }
+  return {
+    valid: true,
+    drainToken,
+  }
+}
+
+function invalidReadiness(error) {
+  return {
+    ready: false,
+    blockers: [],
+    error,
+  }
+}
+
+function invalidDrain(error) {
+  return {
+    valid: false,
+    blockers: [],
+    error,
+  }
+}
+
+function isPlainObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
 
 function isConflict(error) {
