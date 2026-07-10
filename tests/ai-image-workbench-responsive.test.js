@@ -6,7 +6,10 @@ const app = fs.readFileSync('app/src/renderer/App.vue', 'utf8')
 const workbench = fs.readFileSync('app/src/renderer/views/AiImageWorkbench.vue', 'utf8')
 
 test('AI image app shell moves global navigation to a compact bottom bar on narrow windows', () => {
-  assert.match(app, /:class="\{ 'layout-ai-image': currentView === 'ai_image' \}"/)
+  const rootClassBinding = app.match(/<div\s+class="layout"\s+:class="(\{[\s\S]*?\})"\s*>/)?.[1]
+  assert.ok(rootClassBinding, 'root layout should bind a class object')
+  assert.match(rootClassBinding, /'layout-ai-image'\s*:\s*currentView\s*===\s*'ai_image'/)
+  assert.match(rootClassBinding, /'sidebar-collapsed'\s*:\s*effectiveSidebarCollapsed/)
   assert.match(app, /:aria-label="item\.label"/)
   assert.match(app, /:title="item\.label"/)
   assert.match(app, /@media \(max-width: 760px\)[\s\S]*\.layout\.layout-ai-image[\s\S]*grid-template-rows:\s*40px minmax\(0, 1fr\) 56px;/)
