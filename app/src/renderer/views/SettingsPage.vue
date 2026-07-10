@@ -683,9 +683,9 @@ const formattedLastCheckedAt = computed(() => {
 const showManualDownload = computed(() => {
   const status = String(updateStatus.value.status || '')
   const error = String(updateStatus.value.error || '')
-  const hasFallbackStatus = status === 'disabled' || status === 'error'
+  const hasFallbackStatus = status === 'disabled' || status === 'error' || status === 'unsupported'
   const hasFallbackError = /unsupported|signature|签名|更新/i.test(error)
-  return updateStatus.value.manualDownloadUrl === OFFICIAL_RELEASE_URL && hasFallbackStatus && hasFallbackError
+  return updateStatus.value.manualDownloadUrl === OFFICIAL_RELEASE_URL && hasFallbackStatus && (status === 'unsupported' || hasFallbackError)
 })
 const cloudAddressHint = computed(() => {
   const status = cloudStatus.value || {}

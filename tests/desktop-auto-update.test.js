@@ -51,6 +51,10 @@ test('renderer shell wires the collapsible update footer without remounting cont
   assert.match(app, /updateStatusCleanup = window\.cs\.onUpdateStatus\(/)
   assert.match(app, /if \(typeof updateStatusCleanup === 'function'\) updateStatusCleanup\(\)/)
   assert.match(app, /<SidebarUpdateFooter[\s\S]*:update-status="updateStatus"[\s\S]*@download="downloadUpdate"[\s\S]*@install="installUpdate"[\s\S]*@retry="retryUpdateCheck"/)
+  assert.doesNotMatch(app, /\.sidebar-update-footer\s*\{[^}]*display:\s*none/)
+  assert.match(app, /function shouldClearActiveScriptForNav\(item\)/)
+  assert.match(app, /return Boolean\(activeScript\.value\) && item\.id !== currentView\.value/)
+  assert.match(app, /if \(shouldClearActiveScriptForNav\(item\)\) \{[\s\S]*?activeScript\.value = null[\s\S]*?activeTaskId\.value = null[\s\S]*?\}/)
 
   const sidebarStart = app.indexOf('<aside class="sidebar">')
   const navBranchStart = app.indexOf('v-if="!activeScript"', sidebarStart)
@@ -78,6 +82,7 @@ test('settings exposes a read-only application update panel with pinned manual r
   assert.match(settings, /检查更新|重新检查/)
   assert.match(settings, /emit\('check-update'\)/)
   assert.match(settings, /manualDownloadUrl === OFFICIAL_RELEASE_URL/)
+  assert.match(settings, /status === 'unsupported'/)
   assert.match(settings, /openExternalUrl\(updateStatus\.value\.manualDownloadUrl\)/)
   assert.doesNotMatch(settings, /downloadUpdate|installUpdate|onUpdateStatus|getUpdateStatus/)
   assert.doesNotMatch(settings, /currentVersion:\s*['"][0-9]+\.[0-9]+\.[0-9]+/)

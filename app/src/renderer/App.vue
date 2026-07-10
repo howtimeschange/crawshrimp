@@ -211,13 +211,17 @@ const filteredNavItems = computed(() =>
 )
 
 function selectNav(item) {
-  if (activeScript.value || currentView.value !== item.id) {
+  if (shouldClearActiveScriptForNav(item)) {
     activeScript.value = null
     activeTaskId.value = null
   }
   currentView.value = item.id
   activeInstanceUid.value = ''
   if (item.id !== 'settings') focusSettingsPanelId.value = ''
+}
+
+function shouldClearActiveScriptForNav(item) {
+  return Boolean(activeScript.value) && item.id !== currentView.value
 }
 
 function openSettingsPanel(panelId) {
@@ -651,7 +655,9 @@ nav {
   }
 
   .layout-ai-image nav {
-    width: 100%;
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
     flex-direction: row;
     align-items: stretch;
     gap: 4px;
@@ -677,6 +683,20 @@ nav {
   }
 
   .layout-ai-image .sidebar-update-footer {
+    flex: 0 0 52px;
+    margin-top: 0;
+    padding: 4px 4px max(4px, env(safe-area-inset-bottom));
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  .layout-ai-image .sidebar-update-footer :deep(.update-control) {
+    min-height: 44px;
+    padding: 4px;
+  }
+
+  .layout-ai-image .sidebar-update-footer :deep(.version-label),
+  .layout-ai-image .sidebar-update-footer :deep(.update-copy) {
     display: none;
   }
 }
