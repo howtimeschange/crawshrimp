@@ -11,6 +11,12 @@ function readRepoFile(relativePath) {
   return fs.readFileSync(path.join(repoRoot, relativePath), 'utf8')
 }
 
+function cssRule(source, selector) {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`))
+  return match?.[1] || ''
+}
+
 test('desktop updater dependency and state service are restored', () => {
   const packageJson = JSON.parse(readRepoFile('app/package.json'))
   const updateServicePath = path.join(repoRoot, 'app/src/updateService.js')
@@ -52,6 +58,13 @@ test('renderer shell wires the collapsible update footer without remounting cont
   assert.match(app, /if \(typeof updateStatusCleanup === 'function'\) updateStatusCleanup\(\)/)
   assert.match(app, /<SidebarUpdateFooter[\s\S]*:update-status="updateStatus"[\s\S]*@download="downloadUpdate"[\s\S]*@install="installUpdate"[\s\S]*@retry="retryUpdateCheck"/)
   assert.doesNotMatch(app, /\.sidebar-update-footer\s*\{[^}]*display:\s*none/)
+  assert.match(app, /grid-template-rows:\s*40px minmax\(0,\s*1fr\) 56px/)
+  assert.match(cssRule(app, '.layout-ai-image .sidebar'), /padding:\s*0\b/)
+  assert.doesNotMatch(cssRule(app, '.layout-ai-image .sidebar'), /env\(safe-area-inset-bottom\)/)
+  assert.match(cssRule(app, '.layout-ai-image .sidebar-update-footer'), /height:\s*56px/)
+  assert.match(cssRule(app, '.layout-ai-image .sidebar-update-footer'), /padding:\s*0 4px/)
+  assert.match(cssRule(app, '.layout-ai-image .sidebar-update-footer :deep(.update-control)'), /min-height:\s*44px/)
+  assert.match(cssRule(app, '.layout-ai-image .sidebar-update-footer :deep(.update-control:focus-visible)'), /box-shadow:\s*inset 0 0 0 2px var\(--orange\)/)
   assert.match(app, /function shouldClearActiveScriptForNav\(item\)/)
   assert.match(app, /return Boolean\(activeScript\.value\) && item\.id !== currentView\.value/)
   assert.match(app, /if \(shouldClearActiveScriptForNav\(item\)\) \{[\s\S]*?activeScript\.value = null[\s\S]*?activeTaskId\.value = null[\s\S]*?\}/)
@@ -83,6 +96,8 @@ test('settings exposes a read-only application update panel with pinned manual r
   assert.match(settings, /emit\('check-update'\)/)
   assert.match(settings, /manualDownloadUrl === OFFICIAL_RELEASE_URL/)
   assert.match(settings, /status === 'unsupported'/)
+  assert.match(settings, /if \(status === 'unsupported'\) return '不可用'/)
+  assert.match(settings, /status === 'error' \|\| status === 'disabled' \|\| status === 'unsupported'/)
   assert.match(settings, /openExternalUrl\(updateStatus\.value\.manualDownloadUrl\)/)
   assert.doesNotMatch(settings, /downloadUpdate|installUpdate|onUpdateStatus|getUpdateStatus/)
   assert.doesNotMatch(settings, /currentVersion:\s*['"][0-9]+\.[0-9]+\.[0-9]+/)

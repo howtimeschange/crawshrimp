@@ -648,7 +648,7 @@ nav {
     grid-column: 1;
     grid-row: 3;
     flex-direction: row;
-    padding: 4px 0 max(4px, env(safe-area-inset-bottom));
+    padding: 0;
     overflow-x: auto;
     border-top: 1px solid var(--border);
     border-right: 0;
@@ -684,8 +684,11 @@ nav {
 
   .layout-ai-image .sidebar-update-footer {
     flex: 0 0 52px;
+    height: 56px;
+    display: flex;
+    align-items: center;
     margin-top: 0;
-    padding: 4px 4px max(4px, env(safe-area-inset-bottom));
+    padding: 0 4px;
     border-top: 0;
     border-left: 1px solid var(--border);
   }
@@ -693,6 +696,11 @@ nav {
   .layout-ai-image .sidebar-update-footer :deep(.update-control) {
     min-height: 44px;
     padding: 4px;
+  }
+
+  .layout-ai-image .sidebar-update-footer :deep(.update-control:focus-visible) {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--orange);
   }
 
   .layout-ai-image .sidebar-update-footer :deep(.version-label),

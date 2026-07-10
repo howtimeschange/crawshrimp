@@ -664,12 +664,13 @@ const updateBadgeLabel = computed(() => {
   if (status === 'downloading') return '下载中'
   if (status === 'ready-to-install') return '待安装'
   if (status === 'error') return '异常'
+  if (status === 'unsupported') return '不可用'
   if (status === 'disabled') return '不可用'
   return '已配置'
 })
 const updateBadgeTone = computed(() => {
   const status = String(updateStatus.value.status || 'idle')
-  if (status === 'error' || status === 'disabled') return 'off'
+  if (status === 'error' || status === 'disabled' || status === 'unsupported') return 'off'
   if (status === 'available' || status === 'ready-to-install') return 'on'
   return 'neutral'
 })
