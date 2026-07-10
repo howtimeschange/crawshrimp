@@ -584,7 +584,11 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 
     def test_cloud_sync_records_visible_warning_when_config_is_incomplete(self):
         module = load_script()
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory() as temp_dir, patch(
+            "core.runtime_paths.data_root",
+            return_value=Path(temp_dir),
+        ):
+            module.data_sink.init_db()
             batch = {
                 "batch_id": "batch-cloud-missing",
                 "status": "pending_approval",
@@ -610,6 +614,8 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
             self.assertTrue(any("云端审批同步跳过" in line for line in logs))
             saved = json.loads(Path(batch["json_path"]).read_text(encoding="utf-8"))
             self.assertEqual(saved["cloud_sync"]["status"], "warning")
+            events = module.data_sink.list_cloud_job_events("batch-cloud-missing")
+            self.assertEqual(events[-1]["event_type"], "approval_batch_sync_warning")
 
     def test_selected_upload_plan_from_approval_batch_only_keeps_confirmed_ai_images(self):
         module = load_script()
