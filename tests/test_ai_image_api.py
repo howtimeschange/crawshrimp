@@ -34,6 +34,7 @@ class AiImageApiTests(unittest.TestCase):
             ("GET", "/ai-image/jobs/{job_uid}"),
             ("PATCH", "/ai-image/jobs/{job_uid}"),
             ("POST", "/ai-image/jobs/{job_uid}/run"),
+            ("POST", "/ai-image/jobs/{job_uid}/batch-run"),
             ("POST", "/ai-image/jobs/{job_uid}/save-as"),
             ("POST", "/ai-image/jobs/{job_uid}/materialize"),
             ("POST", "/ai-image/assets"),
@@ -137,6 +138,42 @@ class AiImageApiTests(unittest.TestCase):
 
         self.assertEqual(ctx.exception.status_code, 400)
         self.assertEqual(ctx.exception.detail["config_id"], "ai.1xm.gemini_3_pro_image_preview_key")
+
+    def test_batch_run_api_submits_prompts_under_existing_job(self):
+        job = data_sink.create_ai_image_job({"title": "batch api job"})
+        expected = {"ok": True, "accepted": True, "job_uid": job["job_uid"], "runs": []}
+
+        with patch("core.api_server.ai_image_service.submit_workbench_batch", return_value=expected) as submit:
+            result = api_server.batch_run_ai_image_job(
+                job["job_uid"],
+                api_server.AiImageBatchRunRequest(
+                    request_uid="request-api-1",
+                    prompts=[
+                        api_server.AiImageBatchPromptRequest(title="A", prompt="one"),
+                        api_server.AiImageBatchPromptRequest(title="B", prompt="two"),
+                    ],
+                ),
+            )
+
+        self.assertEqual(result, expected)
+        submit.assert_called_once_with(
+            job["job_uid"],
+            [{"title": "A", "prompt": "one"}, {"title": "B", "prompt": "two"}],
+            request_uid="request-api-1",
+        )
+
+    def test_batch_run_api_rejects_more_than_100_prompts(self):
+        job = data_sink.create_ai_image_job({"title": "overflow batch api job"})
+        req = api_server.AiImageBatchRunRequest(
+            request_uid="request-api-101",
+            prompts=[api_server.AiImageBatchPromptRequest(prompt=f"prompt-{index}") for index in range(101)],
+        )
+
+        with self.assertRaises(HTTPException) as ctx:
+            api_server.batch_run_ai_image_job(job["job_uid"], req)
+
+        self.assertEqual(ctx.exception.status_code, 400)
+        self.assertIn("100", str(ctx.exception.detail))
 
     def test_save_as_api_uses_service_copy(self):
         job = data_sink.create_ai_image_job({"title": "save job"})

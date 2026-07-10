@@ -15,6 +15,7 @@ test('main process registers ai image IPC handlers backed by local API routes', 
     ['get-ai-image-job', "/ai-image/jobs/${encodeURIComponent"],
     ['update-ai-image-job', "apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent"],
     ['run-ai-image-job', "apiCall('POST', `/ai-image/jobs/${encodeURIComponent"],
+    ['batch-run-ai-image-job', '/batch-run`'],
     ['save-as-ai-image-job', "/save-as`"],
     ['materialize-ai-image-result', "/materialize`"],
     ['create-ai-image-asset', "apiCall('POST', '/ai-image/assets'"],
@@ -34,6 +35,7 @@ test('preload exposes ai image methods with IPC fallback to HTTP', () => {
     'getAiImageJob',
     'updateAiImageJob',
     'runAiImageJob',
+    'batchRunAiImageJob',
     'saveAsAiImageJob',
     'materializeAiImageResult',
     'createAiImageAsset',
@@ -45,6 +47,8 @@ test('preload exposes ai image methods with IPC fallback to HTTP', () => {
   }
   assert.match(preload, /invokeWithApiFallback\('list-ai-image-jobs'/)
   assert.match(preload, /apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/run`/)
+  assert.match(preload, /batchRunAiImageJob: \(uid, payload\) => invokeWithApiFallback\('batch-run-ai-image-job'/)
+  assert.match(preload, /apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/batch-run`, payload \|\| \{\}\)/)
   assert.match(preload, /materializeAiImageResult: \(uid, payload\) => invokeWithApiFallback\('materialize-ai-image-result'/)
   assert.match(preload, /apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/materialize`, payload \|\| \{\}\)/)
   assert.match(preload, /readLocalImagePreview: \(path\) => invokeWithApiFallback\('read-local-image-preview'/)
@@ -56,6 +60,7 @@ test('dev bridge maps ai image methods directly to local HTTP API', () => {
   assert.match(devBridge, /createAiImageJob: \(payload\) => apiCall\('POST', '\/ai-image\/jobs', payload \|\| \{\}\)/)
   assert.match(devBridge, /getAiImageJob: \(uid\) => apiCall\('GET', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}`\)/)
   assert.match(devBridge, /runAiImageJob: \(uid\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/run`, \{\}\)/)
+  assert.match(devBridge, /batchRunAiImageJob: \(uid, payload\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/batch-run`, payload \|\| \{\}\)/)
   assert.match(devBridge, /materializeAiImageResult: \(uid, payload\) => apiCall\('POST', `\/ai-image\/jobs\/\$\{encodePathPart\(uid\)\}\/materialize`, payload \|\| \{\}\)/)
   assert.match(devBridge, /createAiImageAsset: \(payload\) => apiCall\('POST', '\/ai-image\/assets', payload \|\| \{\}\)/)
   assert.match(devBridge, /createAiImageCanvas: \(payload\) => apiCall\('POST', '\/ai-image\/canvases', payload \|\| \{\}\)/)

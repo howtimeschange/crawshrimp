@@ -1901,6 +1901,8 @@ secureHandle('update-ai-image-job', async (_, jobUid, payload) =>
   apiCall('PATCH', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}`, payload || {}))
 secureHandle('run-ai-image-job', async (_, jobUid) =>
   apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/run`, {}, { timeoutMs: 20 * 60 * 1000 }))
+secureHandle('batch-run-ai-image-job', async (_, jobUid, payload) =>
+  apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/batch-run`, payload || {}))
 secureHandle('save-as-ai-image-job', async (_, jobUid, payload) =>
   apiCall('POST', `/ai-image/jobs/${encodeURIComponent(String(jobUid || ''))}/save-as`, payload || {}))
 secureHandle('materialize-ai-image-result', async (_, jobUid, payload) =>

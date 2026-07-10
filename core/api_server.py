@@ -5274,6 +5274,16 @@ class AiImageJobPatchRequest(BaseModel):
     summary: Optional[dict] = None
 
 
+class AiImageBatchPromptRequest(BaseModel):
+    title: str = ""
+    prompt: str = ""
+
+
+class AiImageBatchRunRequest(BaseModel):
+    request_uid: str = ""
+    prompts: list[AiImageBatchPromptRequest] = []
+
+
 class AiImageAssetRequest(BaseModel):
     job_uid: str
     kind: str = "reference"
@@ -5394,6 +5404,28 @@ def run_ai_image_job(job_uid: str):
         raise HTTPException(404, f"AI image job not found: {job_uid}")
     try:
         return ai_image_service.run_job_with_one_xm(job_uid)
+    except ai_image_service.MissingModelKeyError as exc:
+        raise HTTPException(400, {
+            "message": str(exc),
+            "config_id": exc.config_id,
+        }) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@app.post("/ai-image/jobs/{job_uid}/batch-run")
+def batch_run_ai_image_job(job_uid: str, req: AiImageBatchRunRequest):
+    if not data_sink.get_ai_image_job(job_uid):
+        raise HTTPException(404, f"AI image job not found: {job_uid}")
+    prompts = [_model_payload(item) for item in req.prompts]
+    if not 1 <= len(prompts) <= 100:
+        raise HTTPException(400, "批量 Prompt 数量必须为 1–100 条")
+    try:
+        return ai_image_service.submit_workbench_batch(
+            job_uid,
+            prompts,
+            request_uid=req.request_uid,
+        )
     except ai_image_service.MissingModelKeyError as exc:
         raise HTTPException(400, {
             "message": str(exc),

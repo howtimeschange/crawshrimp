@@ -270,6 +270,8 @@ contextBridge.exposeInMainWorld('cs', {
     () => apiCall('PATCH', `/ai-image/jobs/${encodePathPart(uid)}`, payload || {})),
   runAiImageJob: (uid) => invokeWithApiFallback('run-ai-image-job', [uid],
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/run`, {})),
+  batchRunAiImageJob: (uid, payload) => invokeWithApiFallback('batch-run-ai-image-job', [uid, payload],
+    () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/batch-run`, payload || {})),
   saveAsAiImageJob: (uid, payload) => invokeWithApiFallback('save-as-ai-image-job', [uid, payload],
     () => apiCall('POST', `/ai-image/jobs/${encodePathPart(uid)}/save-as`, payload || {})),
   materializeAiImageResult: (uid, payload) => invokeWithApiFallback('materialize-ai-image-result', [uid, payload],
