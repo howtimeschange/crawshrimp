@@ -1,3 +1,11 @@
+UPDATE task_machines
+SET fingerprint_hash = fingerprint_hash || ':legacy-duplicate:' || id
+WHERE id NOT IN (
+  SELECT MAX(id)
+  FROM task_machines
+  GROUP BY fingerprint_hash
+);
+
 CREATE UNIQUE INDEX IF NOT EXISTS idx_task_machines_fingerprint_hash
 ON task_machines (fingerprint_hash);
 

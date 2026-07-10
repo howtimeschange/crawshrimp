@@ -4,6 +4,7 @@ import fs from 'node:fs'
 const schema = fs.readFileSync('migrations/0001_init.sql', 'utf8')
 const generationSchema = fs.readFileSync('migrations/0003_generation_jobs.sql', 'utf8')
 const imageResourceSchema = fs.readFileSync('migrations/0004_image_resources.sql', 'utf8')
+const machineUniquenessMigration = fs.readFileSync('migrations/0008_task_machine_uniqueness_and_runtime.sql', 'utf8')
 
 describe('initial D1 schema', () => {
   it('contains auth rbac machine job prompt batch and audit tables', () => {
@@ -49,5 +50,14 @@ describe('initial D1 schema', () => {
     expect(imageResourceSchema).toContain('resource_uid TEXT NOT NULL UNIQUE')
     expect(imageResourceSchema).toContain('asset_uid TEXT NOT NULL')
     expect(imageResourceSchema).toContain('idx_image_resources_batch_style_item')
+  })
+
+  it('normalizes historical duplicate machine fingerprints before adding the unique index', () => {
+    const normalizationIndex = machineUniquenessMigration.indexOf('UPDATE task_machines')
+    const uniqueIndex = machineUniquenessMigration.indexOf('CREATE UNIQUE INDEX')
+
+    expect(normalizationIndex).toBeGreaterThanOrEqual(0)
+    expect(uniqueIndex).toBeGreaterThan(normalizationIndex)
+    expect(machineUniquenessMigration).toContain("':legacy-duplicate:'")
   })
 })
