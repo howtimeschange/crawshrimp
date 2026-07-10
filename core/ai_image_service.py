@@ -7,7 +7,10 @@ import hashlib
 import mimetypes
 import re
 import shutil
+import threading
+import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -15,7 +18,15 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 from core import data_sink, runtime_paths
-from core.one_xm_image import DEFAULT_BASE_URL, OneXMImageClient, file_to_data_url, run_image_task_until_done
+from core.one_xm_image import (
+    DEFAULT_BASE_URL,
+    FAILED_STATUSES,
+    SUCCESS_STATUSES,
+    OneXMImageClient,
+    extract_image_urls,
+    file_to_data_url,
+    run_image_task_until_done,
+)
 
 
 GPT_2K_CONFIG_ID = "ai.1xm.gpt_image_2k_key"
@@ -29,6 +40,9 @@ NANO_BANANA_MODELS = {
 }
 GPT_IMAGE_QUALITIES = {"auto", "low", "medium", "high"}
 NANO_BANANA_RESOLUTIONS = {"1K", "2K", "4K"}
+_WORKBENCH_JOB_LOCKS: dict[str, threading.RLock] = {}
+_WORKBENCH_JOB_LOCKS_GUARD = threading.Lock()
+_WORKBENCH_POLL_EXECUTOR = ThreadPoolExecutor(max_workers=100, thread_name_prefix="ai-image-poll")
 
 
 class MissingModelKeyError(ValueError):
@@ -455,6 +469,304 @@ def _merge_run_summary(job: Mapping[str, Any], latest_summary: Mapping[str, Any]
     if isinstance(previous_summary.get("result_cache"), Mapping):
         merged["result_cache"] = dict(previous_summary["result_cache"])
     return merged
+
+
+def _workbench_job_lock(job_uid: str) -> threading.RLock:
+    uid = _compact(job_uid)
+    with _WORKBENCH_JOB_LOCKS_GUARD:
+        lock = _WORKBENCH_JOB_LOCKS.get(uid)
+        if lock is None:
+            lock = threading.RLock()
+            _WORKBENCH_JOB_LOCKS[uid] = lock
+        return lock
+
+
+def _provider_error(task: Mapping[str, Any], fallback: str) -> str:
+    error = task.get("error") if isinstance(task, Mapping) else None
+    if isinstance(error, Mapping):
+        return _compact(error.get("message") or error.get("code")) or fallback
+    return _compact(task.get("message") if isinstance(task, Mapping) else "") or fallback
+
+
+def _workbench_run_patch(task: Mapping[str, Any], *, fallback_status: str = "queued") -> dict[str, Any]:
+    provider_status = _compact(task.get("status")).lower() or fallback_status
+    task_id = _compact(task.get("task_id") or task.get("id"))
+    poll_url = _compact(task.get("poll_url")) or (f"/images/tasks/{task_id}" if task_id else "")
+    try:
+        poll_after = float(task.get("poll_after") or 5)
+    except (TypeError, ValueError):
+        poll_after = 5.0
+    patch: dict[str, Any] = {
+        "provider_status": provider_status,
+        "poll_after": max(0.0, poll_after),
+    }
+    if task_id:
+        patch["task_id"] = task_id
+    if poll_url:
+        patch["poll_url"] = poll_url
+    if provider_status in SUCCESS_STATUSES:
+        patch.update({
+            "status": "completed",
+            "image_urls": extract_image_urls(task),
+            "error": "",
+        })
+    elif provider_status in FAILED_STATUSES:
+        patch.update({
+            "status": "failed",
+            "image_urls": [],
+            "error": _provider_error(task, f"1XM task {provider_status}"),
+        })
+    else:
+        patch["status"] = "running" if provider_status == "running" else "queued"
+    return patch
+
+
+def _rebuild_workbench_summary(summary: Mapping[str, Any], runs: list[dict[str, Any]]) -> tuple[dict, str]:
+    image_urls: list[str] = []
+    output_files: list[str] = []
+    for run in runs:
+        image_urls = _append_unique(image_urls, _string_list(run.get("image_urls")))
+        output_files = _append_unique(output_files, _string_list(run.get("output_files")))
+    statuses = {_compact(run.get("status")).lower() for run in runs}
+    if statuses & {"queued", "running"}:
+        job_status = "running"
+    elif "completed" in statuses:
+        job_status = "completed"
+    elif runs:
+        job_status = "failed"
+    else:
+        job_status = "draft"
+    latest_handle = next((run for run in reversed(runs) if run.get("task_id") or run.get("poll_url")), {})
+    rebuilt = {
+        **dict(summary),
+        "ok": "completed" in statuses,
+        "runs": runs,
+        "image_urls": image_urls,
+        "output_files": output_files,
+        "task_id": _compact(latest_handle.get("task_id")),
+        "poll_url": _compact(latest_handle.get("poll_url")),
+    }
+    return rebuilt, job_status
+
+
+def _update_workbench_run(job_uid: str, run_uid: str, patch: Mapping[str, Any]) -> dict:
+    with _workbench_job_lock(job_uid):
+        job = data_sink.get_ai_image_job(job_uid)
+        if not job:
+            raise ValueError(f"AI image job not found: {job_uid}")
+        summary = dict(job.get("summary") or {})
+        runs = [dict(run) for run in summary.get("runs") or [] if isinstance(run, Mapping)]
+        run_index = next((index for index, run in enumerate(runs) if _compact(run.get("run_uid")) == run_uid), -1)
+        if run_index < 0:
+            raise ValueError(f"AI image run not found: {run_uid}")
+        runs[run_index] = {**runs[run_index], **dict(patch)}
+        rebuilt, job_status = _rebuild_workbench_summary(summary, runs)
+        return data_sink.update_ai_image_job(job_uid, {"status": job_status, "summary": rebuilt})
+
+
+def poll_workbench_run(
+    job_uid: str,
+    run_uid: str,
+    client: OneXMImageClient,
+    *,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> dict:
+    while True:
+        job = data_sink.get_ai_image_job(job_uid)
+        if not job:
+            return {"ok": False, "job_uid": job_uid, "run_uid": run_uid, "error": "AI image job not found"}
+        run = next((
+            dict(item)
+            for item in (job.get("summary") or {}).get("runs") or []
+            if isinstance(item, Mapping) and _compact(item.get("run_uid")) == run_uid
+        ), None)
+        if not run:
+            return {"ok": False, "job_uid": job_uid, "run_uid": run_uid, "error": "AI image run not found"}
+        if _compact(run.get("status")).lower() in {"completed", "failed"}:
+            return {"ok": run.get("status") == "completed", "job_uid": job_uid, "run_uid": run_uid, "run": run}
+        poll_url = _compact(run.get("poll_url") or run.get("task_id"))
+        if not poll_url:
+            updated = _update_workbench_run(job_uid, run_uid, {
+                "status": "failed",
+                "provider_status": "failed",
+                "error": "1XM task did not return poll_url",
+            })
+            return {"ok": False, "job_uid": job_uid, "run_uid": run_uid, "job": updated}
+        try:
+            wait_seconds = max(0.0, float(run.get("poll_after") or 5))
+        except (TypeError, ValueError):
+            wait_seconds = 5.0
+        sleep_fn(wait_seconds)
+        try:
+            current = client.get_task(poll_url)
+            patch = _workbench_run_patch(current, fallback_status=_compact(run.get("provider_status")) or "queued")
+        except Exception as exc:
+            patch = {
+                "status": "failed",
+                "provider_status": "failed",
+                "error": _sanitize_error(exc, [client.api_key]),
+            }
+        updated = _update_workbench_run(job_uid, run_uid, patch)
+        latest_run = next(
+            (item for item in (updated.get("summary") or {}).get("runs") or [] if item.get("run_uid") == run_uid),
+            {},
+        )
+        if latest_run.get("status") in {"completed", "failed"}:
+            return {
+                "ok": latest_run.get("status") == "completed",
+                "job_uid": job_uid,
+                "run_uid": run_uid,
+                "run": latest_run,
+                "job": updated,
+            }
+
+
+def submit_workbench_batch(
+    job_uid: str,
+    prompts: list[Mapping[str, Any] | str],
+    *,
+    request_uid: str = "",
+    settings: Mapping[str, Any] | None = None,
+    client_factory: Callable[..., OneXMImageClient] = OneXMImageClient,
+    executor_factory: Callable[..., ThreadPoolExecutor] = ThreadPoolExecutor,
+    poll_submitter: Callable[..., Any] | None = None,
+) -> dict:
+    normalized_prompts: list[dict[str, str]] = []
+    for index, item in enumerate(prompts or []):
+        source = item if isinstance(item, Mapping) else {"prompt": item}
+        prompt = _compact(source.get("prompt"))
+        if prompt:
+            normalized_prompts.append({
+                "title": _compact(source.get("title")) or f"Prompt {index + 1}",
+                "prompt": prompt,
+            })
+    if not normalized_prompts:
+        raise ValueError("请至少提交 1 条 Prompt")
+    if len(normalized_prompts) > 100:
+        raise ValueError("单次最多提交 100 条 Prompt")
+
+    job = data_sink.get_ai_image_job(job_uid)
+    if not job:
+        raise ValueError(f"AI image job not found: {job_uid}")
+    request_key = _compact(request_uid) or uuid4().hex
+    existing_runs = [
+        dict(run)
+        for run in (job.get("summary") or {}).get("runs") or []
+        if isinstance(run, Mapping)
+    ]
+    duplicate_runs = [run for run in existing_runs if _compact(run.get("request_uid")) == request_key]
+    if duplicate_runs:
+        batch_uid = _compact(duplicate_runs[0].get("batch_uid"))
+        return {
+            "ok": True,
+            "accepted": True,
+            "deduplicated": True,
+            "job_uid": job_uid,
+            "batch_uid": batch_uid,
+            "runs": sorted(duplicate_runs, key=lambda run: int(run.get("batch_index") or 0)),
+            "job": job,
+        }
+
+    resolved_settings = dict(settings or {})
+    if not resolved_settings:
+        from core.api_server import _resolve_one_xm_settings
+
+        resolved_settings = _resolve_one_xm_settings()
+    _, api_key = select_model_key(job, resolved_settings)
+    client = client_factory(api_key, base_url=_compact(resolved_settings.get("base_url")) or DEFAULT_BASE_URL)
+    assets = data_sink.list_ai_image_assets(job_uid)
+    params = {**_params(job), "n": 1}
+    base_payload = build_workbench_one_xm_payload(
+        {**job, "prompt": normalized_prompts[0]["prompt"], "params": params},
+        assets,
+    )
+    batch_uid = uuid4().hex
+    created_at = _now_iso()
+    batch_runs = []
+    for index, prompt_item in enumerate(normalized_prompts):
+        batch_runs.append({
+            "run_uid": uuid4().hex,
+            "batch_uid": batch_uid,
+            "batch_index": index,
+            "request_uid": request_key,
+            "title": prompt_item["title"],
+            "prompt": prompt_item["prompt"],
+            "created_at": created_at,
+            "model_key": _compact(job.get("model_key") or base_payload.get("model")),
+            "model_key_tier": _compact(params.get("model_key_tier")),
+            "size": _compact(params.get("size")),
+            "ratio": _compact(params.get("ratio")),
+            "status": "queued",
+            "provider_status": "pending_submission",
+            "task_id": "",
+            "poll_url": "",
+            "poll_after": 5,
+            "image_urls": [],
+            "output_files": [],
+            "warning": "",
+            "error": "",
+        })
+
+    with _workbench_job_lock(job_uid):
+        latest_job = data_sink.get_ai_image_job(job_uid)
+        latest_summary = dict((latest_job or {}).get("summary") or {})
+        previous_runs = [dict(run) for run in latest_summary.get("runs") or [] if isinstance(run, Mapping)]
+        if not previous_runs:
+            legacy_run = _legacy_run_from_summary(latest_job or job, latest_summary)
+            if legacy_run:
+                previous_runs.append(legacy_run)
+        rebuilt, _ = _rebuild_workbench_summary(latest_summary, [*previous_runs, *batch_runs])
+        data_sink.update_ai_image_job(job_uid, {"status": "running", "summary": rebuilt})
+
+    poller = poll_submitter or _WORKBENCH_POLL_EXECUTOR.submit
+
+    def create_one(run: Mapping[str, Any]) -> tuple[str, dict[str, Any]]:
+        payload = {**base_payload, "prompt": run["prompt"]}
+        task = client.create_task(
+            payload,
+            idempotency_key=f"ai_image_{job_uid}_{run['run_uid']}",
+            timeout=30,
+            request_retries=3,
+        )
+        return _compact(run.get("run_uid")), dict(task or {})
+
+    with executor_factory(max_workers=min(len(batch_runs), 100)) as executor:
+        future_to_run = {executor.submit(create_one, run): run for run in batch_runs}
+        for future in as_completed(future_to_run):
+            run = future_to_run[future]
+            run_uid = _compact(run.get("run_uid"))
+            try:
+                _, task = future.result()
+                patch = _workbench_run_patch(task)
+            except Exception as exc:
+                patch = {
+                    "status": "failed",
+                    "provider_status": "failed",
+                    "error": _sanitize_error(exc, [api_key]),
+                }
+            updated = _update_workbench_run(job_uid, run_uid, patch)
+            latest_run = next(
+                (item for item in (updated.get("summary") or {}).get("runs") or [] if item.get("run_uid") == run_uid),
+                {},
+            )
+            if latest_run.get("status") in {"queued", "running"}:
+                poller(poll_workbench_run, job_uid, run_uid, client)
+
+    final_job = data_sink.get_ai_image_job(job_uid) or job
+    final_runs = [
+        dict(run)
+        for run in (final_job.get("summary") or {}).get("runs") or []
+        if isinstance(run, Mapping) and _compact(run.get("batch_uid")) == batch_uid
+    ]
+    return {
+        "ok": any(run.get("status") != "failed" for run in final_runs),
+        "accepted": True,
+        "deduplicated": False,
+        "job_uid": job_uid,
+        "batch_uid": batch_uid,
+        "runs": sorted(final_runs, key=lambda run: int(run.get("batch_index") or 0)),
+        "job": final_job,
+    }
 
 
 def run_job_with_one_xm(
