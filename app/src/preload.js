@@ -303,7 +303,7 @@ contextBridge.exposeInMainWorld('cs', {
   generateTmallApprovalAsset: (batchId, token, payload) => ipcRenderer.invoke('generate-tmall-approval-asset', batchId, token, payload),
   submitTmallApprovalGeneration: (batchId, token, payload) => ipcRenderer.invoke('submit-tmall-approval-generation', batchId, token, payload),
   submitTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('submit-tmall-approval-batch', batchId, token),
-  getCloudApprovalStatus: () => ipcRenderer.invoke('get-cloud-approval-status'),
+  getCloudApprovalStatus: (options = {}) => ipcRenderer.invoke('get-cloud-approval-status', options || {}),
   saveCloudApprovalConfig: (payload) => ipcRenderer.invoke('save-cloud-approval-config', payload),
   enrollCloudMachine: (payload) => ipcRenderer.invoke('enroll-cloud-machine', payload),
   startCloudMachine: () => ipcRenderer.invoke('start-cloud-machine'),

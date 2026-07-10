@@ -22,6 +22,13 @@ test('desktop backend starts as a module from python-scripts root', () => {
   assert.doesNotMatch(main, /spawn\(pythonBin, \[serverScript\]/)
 })
 
+test('desktop tells the Python backend whether it is packaged', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const CLOUD_APPROVAL_APP_ENV = IS_DEV \? 'development' : 'production'/)
+  assert.match(main, /CRAWSHRIMP_APP_ENV: CLOUD_APPROVAL_APP_ENV/)
+})
+
 test('desktop backend switches away from an occupied non-compatible API port before launch', () => {
   const main = readRepoFile('app/src/main.js')
 

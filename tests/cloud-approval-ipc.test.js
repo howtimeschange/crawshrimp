@@ -135,6 +135,17 @@ test('browser dev bridge exposes cloud approval methods with API fallback routes
 
   for (const [method, _channel, verb, route] of METHODS) {
     assert.match(source, new RegExp(`${method}:`))
+    if (method === 'getCloudApprovalStatus') continue
     assert.match(source, new RegExp(`apiCall\\('${verb}', '${route.replaceAll('/', '\\/')}`))
   }
+})
+
+test('cloud approval status refresh is forwarded by desktop and browser bridges', () => {
+  const main = read('app/src/main.js')
+  const preload = read('app/src/preload.js')
+  const devBridge = read('app/src/renderer/utils/devCsBridge.js')
+
+  assert.match(main, /options\?\.refresh \? '\/cloud-approval\/status\?refresh=true' : '\/cloud-approval\/status'/)
+  assert.match(preload, /getCloudApprovalStatus: \(options = \{\}\) => ipcRenderer\.invoke\('get-cloud-approval-status', options \|\| \{\}\)/)
+  assert.match(devBridge, /getCloudApprovalStatus: \(options = \{\}\) => apiCall\([\s\S]*options\?\.refresh \? '\/cloud-approval\/status\?refresh=true' : '\/cloud-approval\/status'/)
 })

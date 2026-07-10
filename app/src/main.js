@@ -24,6 +24,7 @@ const DEV_RENDERER_URL = process.env.CRAWSHRIMP_RENDERER_URL || 'http://127.0.0.
 const API_TOKEN_HEADER = 'X-Crawshrimp-Token'
 const CDP_PORT = 9222
 const IS_DEV   = !app.isPackaged
+const CLOUD_APPROVAL_APP_ENV = IS_DEV ? 'development' : 'production'
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
 const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 1
 const BACKEND_INSTANCE_ID = crypto.randomUUID()
@@ -787,6 +788,7 @@ function spawnBackendProcess() {
       CRAWSHRIMP_ALLOW_DATA_FALLBACK: '1',
       CRAWSHRIMP_API_TOKEN: apiToken,
       CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID,
+      CRAWSHRIMP_APP_ENV: CLOUD_APPROVAL_APP_ENV,
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: scriptsDir,
     },
@@ -2055,7 +2057,10 @@ secureHandle('submit-tmall-approval-batch', async (_, batchId, token) => {
   )
 })
 
-secureHandle('get-cloud-approval-status', async () => apiCall('GET', '/cloud-approval/status'))
+secureHandle('get-cloud-approval-status', async (_, options = {}) => apiCall(
+  'GET',
+  options?.refresh ? '/cloud-approval/status?refresh=true' : '/cloud-approval/status',
+))
 secureHandle('save-cloud-approval-config', async (_, payload) =>
   apiCall('POST', '/cloud-approval/config', payload || {}))
 secureHandle('enroll-cloud-machine', async (_, payload) =>

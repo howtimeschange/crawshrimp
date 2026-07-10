@@ -388,7 +388,10 @@ export function createDevCsBridge() {
     generateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/generate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalGeneration: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit-generation?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalBatch: (batchId, token) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit?token=${encodeURIComponent(String(token || ''))}`, {}),
-    getCloudApprovalStatus: () => apiCall('GET', '/cloud-approval/status'),
+    getCloudApprovalStatus: (options = {}) => apiCall(
+      'GET',
+      options?.refresh ? '/cloud-approval/status?refresh=true' : '/cloud-approval/status',
+    ),
     saveCloudApprovalConfig: (payload) => apiCall('POST', '/cloud-approval/config', payload || {}),
     enrollCloudMachine: (payload) => apiCall('POST', '/cloud-approval/enroll-machine', payload || {}),
     startCloudMachine: () => apiCall('POST', '/cloud-approval/machine/start', {}),
