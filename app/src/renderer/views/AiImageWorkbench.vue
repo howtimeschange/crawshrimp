@@ -2159,12 +2159,28 @@ function collectResultCardsFromRun(job, run, queueIndex = 0, options = {}) {
   ].filter((item, index, list) => resultKey(item) && list.findIndex((candidate) => resultKey(candidate) === resultKey(item)) === index)
 }
 
+function latestTaskGenerationAt(job = {}) {
+  const summary = job.summary && typeof job.summary === 'object' ? job.summary : {}
+  const runs = Array.isArray(summary.runs) ? summary.runs : []
+  const timestamps = runs
+    .map((run) => run?.completed_at || run?.updated_at || run?.created_at || '')
+    .filter(Boolean)
+  if (timestamps.length) {
+    return timestamps.reduce((latest, current) => {
+      const latestTime = new Date(latest).getTime()
+      const currentTime = new Date(current).getTime()
+      if (Number.isNaN(latestTime)) return current
+      if (Number.isNaN(currentTime)) return latest
+      return currentTime >= latestTime ? current : latest
+    })
+  }
+  if (collectResultCards(job).length) return job.updated_at || job.created_at || ''
+  return ''
+}
+
 function taskMetaLine(job = {}) {
-  const params = job.params && typeof job.params === 'object' ? job.params : {}
-  const size = params.size || '未设尺寸'
-  const ratio = params.ratio || ratioForSize(size, '1:1')
-  const count = Number(params.n || params.count || 1)
-  return `${job.model_key || 'gpt-image-2'} · ${ratio} · ${size} · ${count} 张 · ${job.status || 'draft'}`
+  const generatedAt = latestTaskGenerationAt(job)
+  return generatedAt ? `最近生成 ${formatDateTime(generatedAt)}` : '尚未生成'
 }
 
 function taskResultLine(job = {}) {

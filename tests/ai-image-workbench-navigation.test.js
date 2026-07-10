@@ -112,6 +112,29 @@ test('AI image workbench uses picker interactions and hides canvas entry for now
   assert.doesNotMatch(workbench, /createCanvasDocument/)
 })
 
+test('AI image task records show latest generation time without mixed settings metadata', () => {
+  const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+  const sidebarStart = workbench.indexOf('class="aiw-history-sidebar"')
+  const sidebarEnd = workbench.indexOf('</aside>', sidebarStart)
+  const sidebarBody = workbench.slice(sidebarStart, sidebarEnd)
+  const latestStart = workbench.indexOf('function latestTaskGenerationAt')
+  const metaStart = workbench.indexOf('function taskMetaLine')
+  const metaEnd = workbench.indexOf('function taskResultLine', metaStart)
+  const latestBody = workbench.slice(latestStart, metaStart)
+  const metaBody = workbench.slice(metaStart, metaEnd)
+
+  assert.match(sidebarBody, /<span>\{\{ taskMetaLine\(job\) \}\}<\/span>/)
+  assert.match(sidebarBody, /<small>\{\{ taskResultLine\(job\) \}\}<\/small>/)
+  assert.notEqual(latestStart, -1, 'latestTaskGenerationAt should exist')
+  assert.match(latestBody, /summary\.runs/)
+  assert.match(latestBody, /created_at/)
+  assert.match(latestBody, /collectResultCards\(job\)\.length/)
+  assert.match(metaBody, /latestTaskGenerationAt\(job\)/)
+  assert.match(metaBody, /最近生成/)
+  assert.match(metaBody, /尚未生成/)
+  assert.doesNotMatch(metaBody, /model_key|params\.size|params\.ratio|params\.n|job\.status|张/)
+})
+
 test('AI image workbench clears submitted prompt and input images after generation starts', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
   const generateStart = workbench.indexOf('async function generate()')
