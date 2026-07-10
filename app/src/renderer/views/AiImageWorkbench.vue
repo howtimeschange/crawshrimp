@@ -207,7 +207,6 @@
         <div class="aiw-workspace-head">
           <div>
             <strong>任务：{{ persistedCurrentJob?.title || form.title || '本次生成' }}</strong>
-            <span>{{ generatedSummaryLine }}</span>
           </div>
           <div class="aiw-results-actions">
             <span>{{ selectedResultItems.length ? `已选 ${selectedResultItems.length} 张` : '未选择图片' }}</span>
@@ -1070,20 +1069,6 @@ const taskRecords = computed(() => {
   }
   return records
 })
-const nextGenerationSummaryLine = computed(() => {
-  const status = currentJob.value?.status || '未开始'
-  return `${activeModel.value.label} · ${form.ratio} · ${form.size} · ${normalizeImageCount(form.count)} 张 · ${status}`
-})
-const generatedSummaryLine = computed(() => {
-  const job = persistedCurrentJob.value
-  if (!job?.job_uid) return nextGenerationSummaryLine.value
-  const params = job.params && typeof job.params === 'object' ? job.params : {}
-  const size = params.size || '未设尺寸'
-  const ratio = params.ratio || ratioForSize(size, '1:1')
-  const modelLabel = getAiImageModel(modelIdForJob(job)).label
-  return `${modelLabel} · ${ratio} · ${size} · ${normalizeImageCount(params.n)} 张 · ${job.status || 'draft'}`
-})
-
 onMounted(async () => {
   restorePersistedWorkbench()
   await Promise.all([loadSettings(), loadJobs()])
