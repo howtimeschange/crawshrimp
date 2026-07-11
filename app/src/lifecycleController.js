@@ -32,17 +32,45 @@ function createLifecycleController(options = {}) {
     shutdownInProgress = true
 
     try {
-      const active = await getActiveTasks()
+      let active
+      try {
+        active = await getActiveTasks()
+      } catch (error) {
+        active = {
+          active: 'unknown',
+          unknown: true,
+          reason: 'query-failed',
+          error: error?.message || String(error),
+          tasks: [],
+        }
+      }
+
       const tasks = Array.isArray(active?.tasks) ? active.tasks : []
-      if (active?.active && tasks.length > 0) {
-        const shouldQuit = await confirmQuitWithActiveTasks(tasks)
+      if (isUnknownActiveState(active)) {
+        const shouldQuit = await confirmQuitWithActiveTasks(tasks, active)
+        if (!shouldQuit) {
+          shutdownInProgress = false
+          await onQuitCanceled()
+          return false
+        }
+      } else if (active?.active && tasks.length > 0) {
+        const shouldQuit = await confirmQuitWithActiveTasks(tasks, { reason: 'active' })
         if (!shouldQuit) {
           shutdownInProgress = false
           await onQuitCanceled()
           return false
         }
         await requestStopActiveTasks(tasks)
-        await waitForNoActiveTasks()
+        const drained = await waitForNoActiveTasks()
+        if (isUnknownActiveState(drained) || drained === false) {
+          const drainState = normalizeDrainFailure(drained)
+          const shouldForceQuit = await confirmQuitWithActiveTasks(tasks, drainState)
+          if (!shouldForceQuit) {
+            shutdownInProgress = false
+            await onQuitCanceled()
+            return false
+          }
+        }
       }
 
       await stopBackend()
@@ -90,6 +118,21 @@ function createLifecycleController(options = {}) {
     handleWindowAllClosed,
     prepareForUpdateInstall,
     recoverFromUpdateInstallFailure,
+  }
+}
+
+function isUnknownActiveState(active) {
+  if (!active || typeof active !== 'object') return false
+  return active.unknown === true || active.active === 'unknown'
+}
+
+function normalizeDrainFailure(result) {
+  if (isUnknownActiveState(result)) return result
+  return {
+    active: 'unknown',
+    unknown: true,
+    reason: 'drain-unknown',
+    tasks: [],
   }
 }
 

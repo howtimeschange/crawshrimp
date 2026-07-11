@@ -795,6 +795,33 @@ describe('batch sync routes', () => {
     expect(state.batches[0]).toMatchObject({ created_by: 1, source_machine_id: 'machine-override' })
   })
 
+  it('rejects machine sync attempts against an admin batch without an assigned source machine', async () => {
+    const { state, adminCookie, machineToken } = await baseState()
+    const env = fakeEnv(state)
+    const adminResponse = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { cookie: adminCookie },
+      body: JSON.stringify(batchPayload('Admin batch')),
+    }), env)
+
+    const machineResponse = await fetchWorker(new Request('https://example.test/api/ai-image-batches/sync', {
+      method: 'POST',
+      headers: { authorization: `Bearer ${machineToken}` },
+      body: JSON.stringify(batchPayload('Machine takeover')),
+    }), env)
+    const body = await machineResponse.json() as { error: string }
+
+    expect(adminResponse.status).toBe(201)
+    expect(machineResponse.status).toBe(403)
+    expect(body.error).toContain('source machine')
+    expect(state.batches).toHaveLength(1)
+    expect(state.batches[0]).toMatchObject({
+      title: 'Admin batch',
+      source_machine_id: null,
+      created_by: 1,
+    })
+  })
+
   it('rejects machine sync attempts against a batch owned by another machine', async () => {
     const { state, machineToken } = await baseState()
     const env = fakeEnv(state)

@@ -168,7 +168,7 @@ export async function syncBatch(request: Request, env: Env): Promise<Response> {
   if (!isSafeIdentifier(batchUid)) return badRequest('batch_uid must be a safe identifier')
   const styles = Array.isArray(body.styles) ? body.styles.filter((style): style is Record<string, unknown> => style && typeof style === 'object' && !Array.isArray(style)) : []
   const existing = await env.DB.prepare('SELECT * FROM ai_image_batches WHERE batch_uid = ? LIMIT 1').bind(batchUid).first<BatchRow>()
-  if (actor.machine && existing?.source_machine_id && existing.source_machine_id !== actor.machine.machine_id) {
+  if (actor.machine && existing && existing.source_machine_id !== actor.machine.machine_id) {
     return forbidden('Only the source machine can sync this batch')
   }
   if (existing) {

@@ -1,7 +1,7 @@
 appId: com.crawshrimp.app
 productName: 抓虾
 copyright: "Copyright © 2025"
-electronVersion: "29.4.6"
+electronVersion: "43.1.0"
 
 directories:
   output: dist

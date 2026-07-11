@@ -578,11 +578,14 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         original_status = dict(api_server._run_status)
         original_logs = dict(api_server._run_logs)
         original_controls = dict(api_server._run_controls)
+        original_guard = api_server.runtime_install_guard
 
         run_control = api_server._build_run_control()
         run_control["task"] = asyncio.current_task()
 
         try:
+            api_server.runtime_install_guard = api_server.RuntimeInstallGuard()
+            runtime_token = api_server.runtime_install_guard.begin_operation("task", jid, jid)
             api_server._run_status[jid] = {"status": "running", "run_id": None, "records": 0}
             api_server._run_logs[jid] = []
             api_server._run_controls[jid] = run_control
@@ -597,6 +600,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                     {},
                     {},
                     run_control,
+                    runtime_token,
                 )
 
             self.assertEqual(api_server._run_status[jid]["status"], "error")
@@ -605,11 +609,100 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("boom before begin_run", api_server._run_status[jid]["error"])
             self.assertNotIn(jid, api_server._run_controls)
             self.assertTrue(any("FATAL" in line for line in api_server._run_logs[jid]))
+            self.assertEqual(api_server.runtime_install_guard.readiness()["blockers"], [])
         finally:
+            api_server.runtime_install_guard = original_guard
             api_server._run_status.clear()
             api_server._run_status.update(original_status)
             api_server._run_logs.clear()
             api_server._run_logs.update(original_logs)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+
+    async def test_start_task_run_releases_runtime_token_when_create_task_fails(self):
+        class FakeTask:
+            id = "slow_export"
+
+        class FakeAdapter:
+            id = "demo"
+            tasks = [FakeTask()]
+
+        original_status = dict(api_server._run_status)
+        original_controls = dict(api_server._run_controls)
+        original_guard = api_server.runtime_install_guard
+
+        try:
+            api_server._run_status.clear()
+            api_server._run_controls.clear()
+            api_server.runtime_install_guard = api_server.RuntimeInstallGuard()
+
+            with patch("core.api_server.adapter_loader.scan_all", return_value=None):
+                with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                    with patch("core.api_server.asyncio.create_task", side_effect=RuntimeError("create task failed")):
+                        with self.assertRaisesRegex(RuntimeError, "create task failed"):
+                            await api_server._start_task_run("demo", "slow_export", {}, {})
+
+            self.assertEqual(api_server.runtime_install_guard.readiness()["blockers"], [])
+            self.assertEqual(api_server._run_controls, {})
+        finally:
+            api_server.runtime_install_guard = original_guard
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+
+    async def test_runtime_update_drain_blocks_immediately_after_manual_run_starts(self):
+        class FakeTask:
+            id = "slow_export"
+
+        class FakeAdapter:
+            id = "demo"
+            tasks = [FakeTask()]
+
+        original_status = dict(api_server._run_status)
+        original_controls = dict(api_server._run_controls)
+        original_guard = api_server.runtime_install_guard
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def wait_until_released(*args, **kwargs):
+            entered.set()
+            await release.wait()
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with patch("core.runtime_paths.data_root", return_value=Path(tmpdir)):
+                    data_sink.init_db()
+                    api_server._run_status.clear()
+                    api_server._run_controls.clear()
+                    api_server.runtime_install_guard = api_server.RuntimeInstallGuard()
+
+                    with patch("core.api_server._execute_task", new=AsyncMock(side_effect=wait_until_released)):
+                        with patch("core.api_server.adapter_loader.scan_all", return_value=None):
+                            with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                                started = await api_server._start_task_run("demo", "slow_export", {}, {})
+                        self.assertTrue(started["ok"])
+                        self.assertEqual(api_server._run_status, {})
+
+                        with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+                            blocked = await self._api_request("POST", "/runtime/update-drain")
+
+            self.assertEqual(blocked.status_code, 409)
+            self.assertEqual(blocked.json()["detail"]["code"], "runtime_busy")
+            self.assertIn(("task", "demo::slow_export"), {
+                (item["kind"], item["id"]) for item in blocked.json()["detail"]["blockers"]
+            })
+        finally:
+            release.set()
+            for control in list(api_server._run_controls.values()):
+                task = control.get("task") if isinstance(control, dict) else None
+                if task and not task.done():
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+            api_server.runtime_install_guard = original_guard
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
 
@@ -788,6 +881,57 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_controls.update(original_controls)
             api_server.cloud_machine_controller.last_health = original_health
 
+    async def test_runtime_install_readiness_finds_active_ai_jobs_beyond_ui_limit(self):
+        original_status = dict(api_server._run_status)
+        original_controls = dict(api_server._run_controls)
+        original_health = api_server.cloud_machine_controller.last_health
+        original_guard = api_server.runtime_install_guard
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with patch("core.runtime_paths.data_root", return_value=Path(tmpdir)):
+                    data_sink.init_db()
+                    api_server._run_status.clear()
+                    api_server._run_controls.clear()
+                    api_server.cloud_machine_controller.last_health = "stopped"
+                    api_server.runtime_install_guard = api_server.RuntimeInstallGuard()
+
+                    data_sink.create_ai_image_job({
+                        "job_uid": "old-ai-queued",
+                        "title": "Old Queued",
+                        "status": "queued",
+                    })
+                    data_sink.create_ai_image_job({
+                        "job_uid": "old-ai-summary-running",
+                        "title": "Old Summary Running",
+                        "status": "draft",
+                        "summary": {"runs": [{"run_uid": "run-1", "status": "running"}]},
+                    })
+                    for index in range(501):
+                        data_sink.create_ai_image_job({
+                            "job_uid": f"new-completed-{index}",
+                            "title": f"Completed {index}",
+                            "status": "completed",
+                        })
+
+                    with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+                        readiness = (await self._api_request("GET", "/runtime/install-readiness")).json()
+                        drain = await self._api_request("POST", "/runtime/update-drain")
+
+                    blocker_keys = {(item["kind"], item["id"]) for item in readiness["blockers"]}
+                    self.assertFalse(readiness["ready"])
+                    self.assertIn(("ai_image", "old-ai-queued"), blocker_keys)
+                    self.assertIn(("ai_image", "old-ai-summary-running"), blocker_keys)
+                    self.assertEqual(drain.status_code, 409)
+                    self.assertEqual(drain.json()["detail"]["code"], "runtime_busy")
+        finally:
+            api_server.runtime_install_guard = original_guard
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+            api_server.cloud_machine_controller.last_health = original_health
+
     async def test_runtime_install_readiness_fails_closed_when_task_instance_collection_fails(self):
         with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
             with patch.object(data_sink, "list_task_instances", side_effect=RuntimeError("task db unavailable")):
@@ -807,7 +951,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_runtime_update_drain_fails_closed_when_ai_image_job_collection_fails(self):
         with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
-            with patch.object(data_sink, "list_ai_image_jobs", side_effect=RuntimeError("ai db unavailable")):
+            with patch.object(data_sink, "list_active_ai_image_jobs", side_effect=RuntimeError("ai db unavailable")):
                 drain = await self._api_request("POST", "/runtime/update-drain")
                 self.assertEqual(drain.status_code, 409)
                 detail = drain.json()["detail"]
@@ -978,6 +1122,10 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
         original_logs = dict(api_server._run_logs)
         original_controls = dict(api_server._run_controls)
 
+        async def fake_background_run(*args):
+            if len(args) >= 6:
+                api_server.runtime_install_guard.end_operation(args[5])
+
         try:
             with tempfile.TemporaryDirectory() as tmpdir:
                 adapter_dir = Path(tmpdir) / "adapters" / "dasen-ops-assistant"
@@ -1008,7 +1156,7 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
                 adapter_loader._install_meta.clear()
 
                 with patch.dict("os.environ", {"CRAWSHRIMP_DATA": tmpdir}, clear=False):
-                    with patch("core.api_server._run_task_background", new=AsyncMock()) as background_run:
+                    with patch("core.api_server._run_task_background", new=AsyncMock(side_effect=fake_background_run)) as background_run:
                         result = await api_server.run_task(
                             "dasen-ops-assistant",
                             "batch_create_showcase",

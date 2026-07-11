@@ -6266,9 +6266,32 @@ class RuntimeDrainReleaseRequest(BaseModel):
     drain_token: str
 
 
+def _active_task_item_from_live(jid: str, live: dict) -> dict:
+    live_snapshot = dict(live or {})
+    adapter_id = str(live_snapshot.get("adapter_id") or "")
+    task_id = str(live_snapshot.get("task_id") or "")
+    if not adapter_id and "::" in jid:
+        adapter_id, task_id = jid.split("::", 1)
+    elif not adapter_id:
+        adapter_id = jid
+    return {
+        "jid": jid,
+        "adapter_id": adapter_id,
+        "task_id": task_id,
+        "instance_uid": live_snapshot.get("instance_uid") or "",
+        "status": live_snapshot.get("status") or "running",
+        "run_id": live_snapshot.get("run_id"),
+        "records": int(live_snapshot.get("records") or 0),
+        "phase": live_snapshot.get("phase"),
+        "last_seen_at": live_snapshot.get("last_seen_at"),
+        "current_row": int(live_snapshot.get("current_row") or live_snapshot.get("row_no") or 0),
+    }
+
+
 def _active_task_items() -> list[dict]:
     tasks = []
     seen_controls = set()
+    seen_jids = set()
     for jid, live in sorted(
         _run_status.items(),
         key=lambda item: (str(item[0]).startswith("instance::"), str(item[0])),
@@ -6286,24 +6309,25 @@ def _active_task_items() -> list[dict]:
             if control_key in seen_controls:
                 continue
             seen_controls.add(control_key)
-        adapter_id = str(live_snapshot.get("adapter_id") or "")
-        task_id = str(live_snapshot.get("task_id") or "")
-        if not adapter_id and "::" in jid:
-            adapter_id, task_id = jid.split("::", 1)
-        elif not adapter_id:
-            adapter_id = jid
-        tasks.append({
-            "jid": jid,
-            "adapter_id": adapter_id,
-            "task_id": task_id,
-            "instance_uid": live_snapshot.get("instance_uid") or "",
-            "status": live_snapshot.get("status"),
-            "run_id": live_snapshot.get("run_id"),
-            "records": int(live_snapshot.get("records") or 0),
-            "phase": live_snapshot.get("phase"),
-            "last_seen_at": live_snapshot.get("last_seen_at"),
-            "current_row": int(live_snapshot.get("current_row") or live_snapshot.get("row_no") or 0),
-        })
+        tasks.append(_active_task_item_from_live(jid, live_snapshot))
+        seen_jids.add(jid)
+
+    for jid, control in sorted(_run_controls.items()):
+        if jid in seen_jids:
+            continue
+        task = control.get("task") if isinstance(control, dict) else None
+        if not task or task.done():
+            continue
+        control_key = id(control)
+        if control_key in seen_controls:
+            continue
+        seen_controls.add(control_key)
+        tasks.append(_active_task_item_from_live(jid, {
+            "status": "running",
+            "adapter_id": str(control.get("adapter_id") or ""),
+            "task_id": str(control.get("task_id") or ""),
+            "instance_uid": str(control.get("instance_uid") or ""),
+        }))
     return tasks
 
 
@@ -6371,7 +6395,7 @@ def _collect_external_install_state() -> dict:
             ))
 
     try:
-        ai_jobs = data_sink.list_ai_image_jobs(limit=500)
+        ai_jobs = data_sink.list_active_ai_image_jobs()
     except Exception:
         logger.debug("failed to collect ai image jobs for install readiness", exc_info=True)
         failed_sources.append("ai_image_jobs")
@@ -7081,7 +7105,14 @@ async def _run_task_schedule(schedule_uid: str):
             logger.exception("Task schedule %s failed: %s", schedule_uid, exc)
 
 
-async def _run_task_background(adapter_id: str, task_id: str, params: dict, runtime_options: dict, run_control: Optional[dict]):
+async def _run_task_background(
+    adapter_id: str,
+    task_id: str,
+    params: dict,
+    runtime_options: dict,
+    run_control: Optional[dict],
+    runtime_operation_token: str = "",
+):
     instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
     jid = _run_jid(adapter_id, task_id, instance_uid)
     control_jids = _run_jids(adapter_id, task_id, instance_uid)
@@ -7110,6 +7141,8 @@ async def _run_task_background(adapter_id: str, task_id: str, params: dict, runt
         for control_jid in control_jids:
             if _run_controls.get(control_jid) is run_control:
                 _run_controls.pop(control_jid, None)
+        if runtime_operation_token:
+            runtime_install_guard.end_operation(runtime_operation_token)
 
 
 async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] = None, runtime_options: Optional[dict] = None):
@@ -7127,15 +7160,30 @@ async def _start_task_run(adapter_id: str, task_id: str, params: Optional[dict] 
         raise HTTPException(409, "任务正在运行中，请先暂停/继续/停止当前任务")
 
     run_control = _build_run_control()
-    task_handle = asyncio.create_task(
-        _run_task_background(
-            adapter_id,
-            task_id,
-            run_params,
-            runtime_options or {},
-            run_control,
-        )
+    run_control["adapter_id"] = adapter_id
+    run_control["task_id"] = task_id
+    run_control["instance_uid"] = instance_uid
+    primary_jid = _run_jid(adapter_id, task_id, instance_uid)
+    runtime_operation_token = runtime_install_guard.begin_operation(
+        "task",
+        primary_jid,
+        primary_jid,
+        "running",
     )
+    background_coro = _run_task_background(
+        adapter_id,
+        task_id,
+        run_params,
+        runtime_options or {},
+        run_control,
+        runtime_operation_token,
+    )
+    try:
+        task_handle = asyncio.create_task(background_coro)
+    except BaseException:
+        background_coro.close()
+        runtime_install_guard.end_operation(runtime_operation_token)
+        raise
     run_control['task'] = task_handle
     for control_jid in control_jids:
         _run_controls[control_jid] = run_control

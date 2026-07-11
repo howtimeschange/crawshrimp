@@ -575,6 +575,23 @@ def list_ai_image_jobs(limit: int = 100) -> list[dict]:
     return [item for row in rows if (item := _ai_image_job_from_row(row))]
 
 
+def list_active_ai_image_jobs() -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM ai_image_jobs
+            WHERE lower(status) IN ('queued', 'running')
+               OR summary_json LIKE '%"status": "queued"%'
+               OR summary_json LIKE '%"status": "running"%'
+               OR summary_json LIKE '%"status":"queued"%'
+               OR summary_json LIKE '%"status":"running"%'
+            ORDER BY updated_at DESC, id DESC
+            """
+        ).fetchall()
+    return [item for row in rows if (item := _ai_image_job_from_row(row))]
+
+
 def update_ai_image_job(job_uid: str, payload: Optional[Mapping[str, Any]] = None) -> dict:
     source = dict(payload or {})
     allowed = {"title", "prompt", "model_key", "status", "output_dir"}

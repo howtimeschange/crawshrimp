@@ -1727,7 +1727,13 @@ async function getActiveTasksForQuit() {
     })
   } catch (error) {
     log(`[warn] failed to query active tasks before quit: ${error.message}`)
-    return { active: false, tasks: [] }
+    return {
+      active: 'unknown',
+      unknown: true,
+      reason: 'query-failed',
+      error: error.message,
+      tasks: [],
+    }
   }
 }
 
@@ -1752,28 +1758,54 @@ async function requestStopActiveTasks(tasks = []) {
 
 async function waitForNoActiveTasks(timeoutMs = 30000) {
   const deadline = Date.now() + timeoutMs
+  let lastActive = null
   while (Date.now() < deadline) {
     const active = await getActiveTasksForQuit()
+    lastActive = active
+    if (active?.unknown || active?.active === 'unknown') {
+      log('[warn] active task drain could not be verified before quit')
+      return {
+        active: 'unknown',
+        unknown: true,
+        reason: 'drain-unknown',
+        error: active.error,
+        tasks: Array.isArray(active.tasks) ? active.tasks : [],
+      }
+    }
     if (!active?.active || !Array.isArray(active.tasks) || active.tasks.length === 0) return true
     await new Promise(resolve => setTimeout(resolve, 500))
   }
   log('[warn] timed out waiting for active tasks to stop before quit')
-  return false
+  return {
+    active: 'unknown',
+    unknown: true,
+    reason: 'drain-timeout',
+    tasks: Array.isArray(lastActive?.tasks) ? lastActive.tasks : [],
+  }
 }
 
-async function confirmQuitWithActiveTasks(tasks = []) {
+async function confirmQuitWithActiveTasks(tasks = [], state = {}) {
   const count = Array.isArray(tasks) ? tasks.length : 0
   const detail = count > 0
     ? tasks.slice(0, 5).map(item => `- ${item.adapter_id}/${item.task_id} (${item.status || 'running'})`).join('\n')
     : ''
+  const unknown = state?.unknown === true || state?.active === 'unknown'
+  const buttons = unknown ? ['继续运行', '强制退出'] : ['继续运行', '停止任务并退出']
+  const title = unknown ? '无法确认任务状态' : '任务仍在运行'
+  const message = unknown
+    ? '无法确认是否还有任务正在运行。强制退出可能导致任务中断或数据丢失。'
+    : `还有 ${count} 个任务正在运行。`
+  const detailText = unknown
+    ? [state?.error ? `错误：${state.error}` : '', detail].filter(Boolean).join('\n')
+    : `${detail}${count > 5 ? `\n- 另有 ${count - 5} 个任务...` : ''}\n\n退出会请求任务停止并等待导出收尾完成。`
   const result = await dialog.showMessageBox(mainWindow, {
     type: 'warning',
-    buttons: ['继续运行', '停止任务并退出'],
+    buttons,
     defaultId: 0,
     cancelId: 0,
-    title: '任务仍在运行',
-    message: `还有 ${count} 个任务正在运行。`,
-    detail: `${detail}${count > 5 ? `\n- 另有 ${count - 5} 个任务...` : ''}\n\n退出会请求任务停止并等待导出收尾完成。`,
+    title,
+    message,
+    detail: detailText || '建议继续运行，等待任务状态恢复后再退出。',
     noLink: true,
   })
   return result.response === 1

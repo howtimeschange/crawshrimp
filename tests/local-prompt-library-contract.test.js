@@ -2,6 +2,8 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 
+import { loadLocalPromptLibraryViewSources } from '../app/src/renderer/utils/localPromptLibraryViewState.js'
+
 function read(path) {
   return fs.readFileSync(path, 'utf8')
 }
@@ -129,22 +131,47 @@ test('LocalPromptLibrary confines long Prompt scrolling to the workspace', () =>
   assert.match(listRule, /overscroll-behavior:\s*contain/)
 })
 
-test('LocalPromptLibrary releases local actions before silent cloud refresh finishes', () => {
-  const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
-  const loadLibraries = view.slice(
-    view.indexOf('async function loadLibraries()'),
-    view.indexOf('async function loadLocalLibraries()'),
-  )
+test('LocalPromptLibrary publishes local libraries while silent cloud refresh is still pending', async () => {
+  let resolveCloud
+  const events = []
+  const cloudPending = new Promise(resolve => { resolveCloud = resolve })
 
-  assert.match(loadLibraries, /await loadLocalLibraries\(\)/)
-  assert.match(loadLibraries, /ensureSelectedLibrary\(\)[\s\S]*syncLibraryDraft\(\)[\s\S]*loading\.value = false/)
-  assert.match(loadLibraries, /void loadCloudLibraries\(\{ silent: true \}\)/)
-  assert.doesNotMatch(loadLibraries, /await loadCloudLibraries\(\{ silent: true \}\)/)
-  assert.doesNotMatch(loadLibraries, /await refreshCloudApprovalStatus\(\)[\s\S]*loading\.value = false/)
-  assert.match(view, /onUnmounted/)
-  assert.match(view, /const componentMounted = ref\(false\)/)
-  assert.match(view, /if \(!componentMounted\.value\) return[\s\S]*window\.cs\.listCloudPromptLibraries/)
-  assert.match(view, /finally \{[\s\S]*if \(componentMounted\.value\) \{[\s\S]*cloudLoading\.value = false/)
+  const state = await loadLocalPromptLibraryViewSources({
+    listLocalPromptLibraries: async () => ({ libraries: [{ library_uid: 'local-1', name: '本地库' }] }),
+    loadCloudLibraries: async options => {
+      events.push(['cloud-start', options])
+      return cloudPending
+    },
+    onLocalReady: libraries => events.push(['local-ready', libraries.map(library => library.name)]),
+  })
+
+  assert.deepEqual(events, [
+    ['local-ready', ['本地库']],
+    ['cloud-start', { silent: true }],
+  ])
+  assert.equal(state.localLibraries[0].source_type, 'local')
+
+  resolveCloud({ libraries: [{ id: 7, name: '线上库' }] })
+  await state.cloudRefresh
+})
+
+test('LocalPromptLibrary keeps local libraries usable when silent cloud refresh fails', async () => {
+  const events = []
+
+  const state = await loadLocalPromptLibraryViewSources({
+    listLocalPromptLibraries: async () => ({ libraries: [{ library_uid: 'local-1', name: '本地库' }] }),
+    loadCloudLibraries: async () => {
+      events.push('cloud-start')
+      throw new Error('cloud offline')
+    },
+    onLocalReady: libraries => events.push(`local:${libraries[0].name}`),
+  })
+
+  assert.deepEqual(events, ['local:本地库', 'cloud-start'])
+  assert.equal(state.localLibraries[0].name, '本地库')
+  const cloudResult = await state.cloudRefresh
+  assert.equal(cloudResult.ok, false)
+  assert.match(cloudResult.error.message, /cloud offline/)
 })
 
 test('Electron bridges expose local prompt library persistence and cloud sync IPC', () => {

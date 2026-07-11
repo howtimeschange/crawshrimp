@@ -199,6 +199,7 @@ import {
   normalizePromptTemplate,
   parsePromptWorkbookImportCandidates,
 } from '../utils/localPromptLibrary'
+import { loadLocalPromptLibraryViewSources } from '../utils/localPromptLibraryViewState'
 
 const emit = defineEmits(['open-cloud-approval'])
 const scenarioOptions = PROMPT_SCENARIOS
@@ -267,15 +268,19 @@ async function loadLibraries() {
   loading.value = true
   error.value = ''
   try {
-    await loadLocalLibraries()
-    ensureSelectedLibrary()
-    syncLibraryDraft()
-    loading.value = false
-    void loadCloudLibraries({ silent: true })
+    const state = await loadLocalPromptLibraryViewSources({
+      listLocalPromptLibraries: () => window.cs.listLocalPromptLibraries(),
+      loadCloudLibraries,
+      onLocalReady: libraries => {
+        localLibraries.value = libraries
+        ensureSelectedLibrary()
+        syncLibraryDraft()
+        loading.value = false
+      },
+    })
+    void state.cloudRefresh
   } catch (err) {
     error.value = err?.message || String(err)
-    loading.value = false
-  } finally {
     loading.value = false
   }
 }

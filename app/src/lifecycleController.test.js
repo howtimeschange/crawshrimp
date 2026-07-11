@@ -52,6 +52,55 @@ test('before-quit cancels quit when active tasks exist and user chooses to conti
   assert.deepEqual(events, ['restore-window'])
 })
 
+test('before-quit keeps running when active task query fails and user does not force quit', async () => {
+  const events = []
+  const prevented = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => {
+      events.push('get-active')
+      throw new Error('backend unavailable')
+    },
+    confirmQuitWithActiveTasks: async (tasks, state) => {
+      events.push(`confirm:${tasks.length}:${state?.reason || 'known'}`)
+      return false
+    },
+    onQuitCanceled: async () => events.push('restore-window'),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  const result = await controller.handleBeforeQuit({
+    preventDefault: () => prevented.push(true),
+  })
+
+  assert.equal(result, false)
+  assert.deepEqual(prevented, [true])
+  assert.deepEqual(events, ['get-active', 'confirm:0:query-failed', 'restore-window'])
+})
+
+test('before-quit treats unknown active task state as requiring explicit force quit', async () => {
+  const events = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => {
+      events.push('get-active')
+      return { active: 'unknown', tasks: [], reason: 'backend-not-ready' }
+    },
+    confirmQuitWithActiveTasks: async (tasks, state) => {
+      events.push(`confirm:${tasks.length}:${state.reason}`)
+      return true
+    },
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  const result = await controller.handleBeforeQuit()
+
+  assert.equal(result, true)
+  assert.deepEqual(events, ['get-active', 'confirm:0:backend-not-ready', 'stop-backend', 'stop-chrome', 'quit'])
+})
+
 test('before-quit waits for graceful shutdown when user confirms active task stop', async () => {
   const events = []
   const prevented = []
@@ -83,6 +132,40 @@ test('before-quit waits for graceful shutdown when user confirms active task sto
     'stop-backend',
     'stop-chrome',
     'quit',
+  ])
+})
+
+test('before-quit keeps running when confirmed active task drain cannot be verified', async () => {
+  const events = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => ({
+      active: true,
+      tasks: [{ jid: 'demo::task', status: 'running', records: 3 }],
+    }),
+    confirmQuitWithActiveTasks: async (tasks, state) => {
+      events.push(`confirm:${tasks.length}:${state?.reason || 'active'}`)
+      return state?.reason !== 'drain-unknown'
+    },
+    requestStopActiveTasks: async (tasks) => events.push(`request-stop:${tasks.length}`),
+    waitForNoActiveTasks: async () => {
+      events.push('wait-no-active')
+      return { active: 'unknown', tasks: [], reason: 'drain-unknown' }
+    },
+    onQuitCanceled: async () => events.push('restore-window'),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  const result = await controller.handleBeforeQuit()
+
+  assert.equal(result, false)
+  assert.deepEqual(events, [
+    'confirm:1:active',
+    'request-stop:1',
+    'wait-no-active',
+    'confirm:1:drain-unknown',
+    'restore-window',
   ])
 })
 

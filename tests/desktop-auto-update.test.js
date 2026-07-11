@@ -44,6 +44,27 @@ test('desktop updater dependency and state service are restored', () => {
   assert.doesNotMatch(preload, /setFeedURL/)
 })
 
+test('desktop packages the supported Electron 43.1.0 runtime', () => {
+  const packageJson = JSON.parse(readRepoFile('app/package.json'))
+
+  assert.equal(packageJson.devDependencies.electron, '43.1.0')
+})
+
+test('desktop builder packages the Electron version declared by the app', () => {
+  const packageJson = JSON.parse(readRepoFile('app/package.json'))
+  const buildConfig = readRepoFile('app/build.yml')
+  const escapedVersion = packageJson.devDependencies.electron.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+  assert.match(buildConfig, new RegExp(`electronVersion:\\s*["']?${escapedVersion}["']?`))
+})
+
+test('desktop CI uses the Node floor required by Electron 43', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const nodeSetupVersions = workflow.match(/node-version:\s*["']?22\.12\.0["']?/g) || []
+
+  assert.equal(nodeSetupVersions.length, 2)
+})
+
 test('manual update check after download refreshes readiness but returns updater status shape', () => {
   const main = readRepoFile('app/src/main.js')
   const checkHandler = main.slice(

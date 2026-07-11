@@ -8,20 +8,20 @@
 
 抓虾把三类工作放进同一套产品里：在已登录的 Chrome 中执行电商平台自动化，在桌面端完成 AI 生图与提示词管理，并通过可选的云端审批台让审核人员和任务机协同完成测图、重生图、上传与数据回收。
 
-## v2.0.0 大版本更新（2026-07-10）
+## v2.1.0 自动更新与安全加固（2026-07-11）
 
-`v2.0.0` 标志着抓虾从“网页自动化底座”升级为“本地执行 + AI 素材工作台 + 云端协作”的完整产品。
+`v2.1.0` 为抓虾补齐正式桌面自动更新链路，并对任务退出、云端批次归属、数据库迁移和桌面运行时做了一轮发布级加固。
 
-- 新增一级入口「AI 生图」：支持单次/批量 Prompt、多模型与比例/尺寸联动、异步任务恢复、本地结果缓存、编辑谱系、画布标注、二次编辑、任务置顶与删除。
-- 新增一级入口「提示词库」：本地优先维护提示词，生图工作台和天猫 AI 测图共用选择器；连接云端后可读取草稿或已发布 Prompt 库。
-- 新增 Cloudflare 云端审批台：基于 Workers、D1、R2，提供管理员分配账号、RBAC、批次审图、批量决策、在线生图、Prompt 导入导出、任务机管理、审计日志和测图数据看板。
-- 打通本地与云端：桌面端可自动解析审批地址、内嵌审批页、注册任务机、同步批次，并通过租约/心跳/幂等任务执行重生图、天猫测图提交与数据抓取。
-- 重构「巴拉-AI测图全链路」：支持本地 Excel 或线上 Prompt 库、每条 Prompt 独立出图数、参考图选择、1XM 异步任务恢复、失败重试、本地缓存、审批后创建或直接创建测图任务。
-- 加固可靠性与安全边界：本地 API token、云端 RBAC、资源作用域、敏感信息脱敏、任务缓存隔离、取消任务恢复、Windows 数据目录恢复和可行动错误提示。
+- 上线应用内更新：侧边栏展示版本和更新状态，用户可显式检查、下载并在任务结束后点击「重启安装」；普通退出不会偷偷安装更新。
+- 加固任务安全：退出或安装前会检查普通任务、任务实例、AI 生图任务和云端任务机；状态查询或 drain 无法确认时默认阻止继续，只有用户显式选择才会强制退出。
+- 完整发布链路：正式 `vX.Y.Z` tag 构建 macOS/Windows 更新资产，校验版本、哈希和资产集合，并执行 macOS Developer ID 签名、公证与读回；`desktop-latest` 只保留同一 commit 的手动安装包。
+- 提升本地 Prompt 库可用性：先立即展示本地库，再静默刷新云端库；云端未配置、登录失效或网络异常不会阻断本地生图和测图选择。
+- 加固云端审批数据边界：任务机不能接管未明确分配给自己的管理员批次；D1 migration 增加真实 Miniflare 重放测试，覆盖任务机指纹去重、唯一索引和重复执行。
+- 更新安全基线：桌面运行时升级到 Electron `43.1.0`，构建链升级到 electron-builder `26.15.3` / Vite `8.1.4`，Cloud Excel 解析升级到 SheetJS `0.20.3`，App 与 Cloud npm audit 均清零。
 
-完整变更见 [v2.0.0 Release Notes](release-notes/v2.0.0.md)。旧版本记录保留在 [release-notes](release-notes/) 目录。
+完整变更见 [v2.1.0 Release Notes](release-notes/v2.1.0.md)。上一主版本能力说明见 [v2.0.0 Release Notes](release-notes/v2.0.0.md)，更早记录保留在 [release-notes](release-notes/) 目录。
 
-> 本次主版本升级用于标记产品能力边界的变化；现有 Adapter 的 `manifest.yaml` 与 JS 注入执行契约继续兼容。
+> 现有 Adapter 的 `manifest.yaml` 与 JS 注入执行契约继续兼容；从不带自动更新的旧版本升级时，需要先手动覆盖安装一次 `v2.1.0`。
 
 ## 产品架构
 
@@ -84,11 +84,13 @@ flowchart LR
 - [正式版本列表](https://github.com/howtimeschange/crawshrimp/releases)
 - [滚动桌面构建 desktop-latest](https://github.com/howtimeschange/crawshrimp/releases/tag/desktop-latest)
 
-正式版提供：
+正式版提供以下手动安装包：
 
 - `crawshrimp-v版本号-mac-arm64.dmg`
 - `crawshrimp-v版本号-mac-x64.dmg`
 - `crawshrimp-v版本号-win-x64.exe`
+
+正式 `vX.Y.Z` Release 同时包含应用内更新资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows EXE blockmap 与 `latest.yml`。`desktop-latest` 不包含这些更新元数据。
 
 安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。
 
@@ -160,7 +162,7 @@ npm run dev
 - macOS 或 Windows
 - Chrome
 - Python 3.10+（CI 使用 3.11）
-- Node.js 20（推荐与 CI 一致）
+- Node.js 22.12.0+（推荐与 CI 一致）
 
 ### 安装依赖
 
