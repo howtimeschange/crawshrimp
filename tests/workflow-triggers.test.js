@@ -13,6 +13,14 @@ test('desktop build workflow runs on pull requests before merge', () => {
   assert.match(workflow, /^  pull_request:/m)
 })
 
+test('desktop build passes publish mode as one npm argument on every runner', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
+  const publishNeverArgs = workflow.match(/--publish=never/g) || []
+
+  assert.equal(publishNeverArgs.length, 2)
+  assert.doesNotMatch(workflow, /--publish\s+never/)
+})
+
 test('desktop build workflow keeps default token permissions read-only', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
 
