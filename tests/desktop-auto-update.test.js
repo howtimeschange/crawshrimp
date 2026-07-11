@@ -286,22 +286,40 @@ test('desktop workflow validates manual installer assets before rolling release 
   assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-win-x64\.exe/)
 })
 
-test('desktop workflow updates desktop-latest in place without delete-first release or tag mutation', () => {
+test('desktop workflow updates desktop-latest in place and verifies its moved tag without delete-first mutation', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingJob = workflow.slice(
     workflow.indexOf('publish-release:'),
     workflow.indexOf('publish-version-release:'),
   )
+  const versionReleaseDependencyIndex = rollingJob.indexOf('needs: publish-version-release')
+  const manualValidationIndex = rollingJob.indexOf('name: Validate manual installer assets')
+  const publishIndex = rollingJob.indexOf('name: Publish rolling release')
+  const existingReleaseUploadIndex = rollingJob.indexOf('gh release upload desktop-latest')
+  const newReleaseCreateIndex = rollingJob.indexOf('gh release create desktop-latest')
+  const finalAssetValidationIndex = rollingJob.indexOf('Unexpected desktop-latest manual asset set')
+  const tagMovementIndex = rollingJob.indexOf('git push --force origin "${GITHUB_SHA}:refs/tags/desktop-latest"')
+  const tagReadbackIndex = rollingJob.indexOf('git ls-remote --refs origin refs/tags/desktop-latest')
 
   assert.match(rollingJob, /gh release view desktop-latest/)
   assert.match(rollingJob, /gh release upload desktop-latest[\s\S]*--clobber/)
   assert.match(rollingJob, /gh release create desktop-latest[\s\S]*--target "\$\{GITHUB_SHA\}"[\s\S]*--latest=false/)
   assert.match(rollingJob, /gh release view desktop-latest --json assets/)
   assert.match(rollingJob, /Unexpected desktop-latest manual asset set/)
-  assert.doesNotMatch(rollingJob, /gh release delete desktop-latest/)
-  assert.doesNotMatch(rollingJob, /git push origin :refs\/tags\/desktop-latest/)
+  assert.ok(versionReleaseDependencyIndex !== -1, 'rolling publication waits for version release success')
+  assert.ok(versionReleaseDependencyIndex < manualValidationIndex, 'version release succeeds before manual asset preflight')
+  assert.ok(manualValidationIndex < publishIndex, 'manual assets are prevalidated before rolling mutation')
+  assert.ok(existingReleaseUploadIndex < finalAssetValidationIndex, 'existing release updates converge on final asset verification')
+  assert.ok(newReleaseCreateIndex < finalAssetValidationIndex, 'new release creation converges on final asset verification')
+  assert.ok(finalAssetValidationIndex < tagMovementIndex, 'rolling assets are verified before moving the tag')
+  assert.ok(tagMovementIndex < tagReadbackIndex, 'remote tag is read back after movement')
+  assert.match(rollingJob, /REMOTE_DESKTOP_LATEST_SHA=.*git ls-remote --refs origin refs\/tags\/desktop-latest/)
+  assert.match(rollingJob, /if \[ "\$\{REMOTE_DESKTOP_LATEST_SHA\}" != "\$\{GITHUB_SHA\}" \]/)
+  assert.match(rollingJob, /Remote desktop-latest tag did not resolve to \$\{GITHUB_SHA\}/)
+  assert.doesNotMatch(rollingJob, /gh release delete(?!-asset)[^\n]*desktop-latest/)
+  assert.doesNotMatch(rollingJob, /git push[^\n]*(?:\s|"):refs\/tags\/desktop-latest/)
+  assert.doesNotMatch(rollingJob, /git push[^\n]*--delete[^\n]*desktop-latest/)
   assert.doesNotMatch(rollingJob, /git tag -d desktop-latest/)
-  assert.doesNotMatch(rollingJob, /git tag desktop-latest/)
 })
 
 test('desktop workflow gates rolling release mutation on exact stable tag and package version', () => {

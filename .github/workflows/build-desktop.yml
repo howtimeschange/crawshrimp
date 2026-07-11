@@ -453,6 +453,13 @@ jobs:
             exit 1
           fi
 
+          git push --force origin "${GITHUB_SHA}:refs/tags/desktop-latest"
+          REMOTE_DESKTOP_LATEST_SHA=$(git ls-remote --refs origin refs/tags/desktop-latest | awk 'NR == 1 { print $1 }')
+          if [ "${REMOTE_DESKTOP_LATEST_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Remote desktop-latest tag did not resolve to ${GITHUB_SHA}; got ${REMOTE_DESKTOP_LATEST_SHA:-missing}"
+            exit 1
+          fi
+
   publish-version-release:
     name: Publish Versioned GitHub Release
     runs-on: ubuntu-latest
