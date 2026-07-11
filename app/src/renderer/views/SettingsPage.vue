@@ -178,6 +178,7 @@
                 <button
                   v-if="showManualDownload"
                   class="btn-ghost"
+                  :disabled="updateActionBusy"
                   @click="openManualDownload"
                 >
                   手动下载安装包
@@ -975,6 +976,7 @@ function requestUpdateCheck() {
 }
 
 function openManualDownload() {
+  if (updateActionBusy.value) return
   if (updateStatus.value.manualDownloadUrl === OFFICIAL_RELEASE_URL) {
     window.cs.openExternalUrl(updateStatus.value.manualDownloadUrl)
   }
