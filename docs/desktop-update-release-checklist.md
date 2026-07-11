@@ -4,6 +4,9 @@ This checklist is the required evidence record before claiming desktop updater r
 
 ## Release Identity
 
+- Release scope (`PATCH` / `MINOR` / `MAJOR`): `PENDING`
+- Version selection rationale: `PENDING`
+- Target version selected under the [release versioning policy](release-versioning.md): `PENDING`
 - Source commit: `PENDING`
 - Old version under test: `PENDING`
 - New version under test: `PENDING`

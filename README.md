@@ -342,7 +342,7 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 - 正式 Release 包含 macOS arm64、macOS x64、Windows x64 和 Windows blockmap。
 - `desktop-latest` 只上传手动安装用 DMG/EXE，并保持 `latest=false`；正式 `vX.Y.Z` Release 才包含应用内更新所需的 ZIP/YAML/blockmap 元数据。
 
-应用版本以 `app/package.json` 和 `app/package-lock.json` 为准；tag 必须与版本号一致。详细版本说明存放在 `release-notes/vX.Y.Z.md`。
+应用版本以 `app/package.json` 和 `app/package-lock.json` 为准；tag 必须与版本号一致。每次发布先按[发布版本号规则](docs/release-versioning.md)确定 PATCH、MINOR 或 MAJOR 等级。详细版本说明存放在 `release-notes/vX.Y.Z.md`。
 
 ## 相关文档
 
