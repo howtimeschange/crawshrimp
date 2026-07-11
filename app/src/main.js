@@ -21,6 +21,7 @@ const { requestBackendApi } = require('./backendApi')
 const { collectCrawshrimpDataDirCandidates } = require('./dataDirRecovery')
 const { createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth } = require('./serviceRecovery')
 const { probeChromeCdp: probeChromeCdpHealth, prepareChromeRecovery } = require('./chromeCdp')
+const { requestBackendHealth } = require('./backendHealth')
 const { configureSingleInstance } = require('./singleInstance')
 const { createUpdateService } = require('./updateService')
 const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
@@ -1484,33 +1485,8 @@ async function resolveCloudPromptTemplatesForDesktop(libraryId, query = {}) {
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-function probeApiReady(timeoutMs = 800) {
-  return new Promise((resolve) => {
-    let done = false
-    const finish = (result) => {
-      if (done) return
-      done = true
-      resolve(result)
-    }
-
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: apiPort,
-      path: '/health?probe=1',
-      method: 'GET',
-      timeout: timeoutMs,
-    }, (res) => {
-      res.resume()
-      res.on('end', () => finish(res.statusCode === 200))
-    })
-
-    req.on('error', () => finish(false))
-    req.on('timeout', () => {
-      req.destroy(new Error('timeout'))
-      finish(false)
-    })
-    req.end()
-  })
+async function probeApiReady(timeoutMs = 800) {
+  return (await getBackendHealth(timeoutMs)).ok
 }
 
 function log(msg) {
@@ -1618,45 +1594,8 @@ function findAvailableApiPort(startPort = DEFAULT_API_PORT + 1) {
   })
 }
 
-async function getBackendHealth(timeoutMs = 800) {
-  return new Promise((resolve) => {
-    let done = false
-    const finish = (result) => {
-      if (done) return
-      done = true
-      resolve(result)
-    }
-
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: apiPort,
-      path: '/health?probe=1',
-      method: 'GET',
-      timeout: timeoutMs,
-    }, (res) => {
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          finish({ ok: false, statusCode: res.statusCode || 0 })
-          return
-        }
-        try {
-          const parsed = JSON.parse(data || '{}')
-          finish({ ok: true, data: parsed })
-        } catch (error) {
-          finish({ ok: false, error: error.message })
-        }
-      })
-    })
-
-    req.on('error', (error) => finish({ ok: false, error: error.message }))
-    req.on('timeout', () => {
-      req.destroy(new Error('timeout'))
-      finish({ ok: false, error: 'timeout' })
-    })
-    req.end()
-  })
+function getBackendHealth(timeoutMs = 800) {
+  return requestBackendHealth({ http, port: apiPort, timeoutMs })
 }
 
 async function validateApiRuntime() {

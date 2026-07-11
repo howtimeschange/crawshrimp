@@ -40,11 +40,12 @@ test('desktop backend switches away from an occupied non-compatible API port bef
 
 test('desktop backend compatibility requires the current Electron launch identity', () => {
   const main = readRepoFile('app/src/main.js')
+  const backendHealth = readRepoFile('app/src/backendHealth.js')
   const apiServer = readRepoFile('core/api_server.py')
 
   assert.match(main, /const BACKEND_INSTANCE_ID = crypto\.randomUUID\(\)/)
   assert.match(main, /CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID/)
-  assert.match(main, /path: '\/health\?probe=1'/)
+  assert.match(backendHealth, /path: '\/health\?probe=1'/)
   assert.match(main, /isOwnedBackendRuntime\(runtime, \{\s*instanceId: BACKEND_INSTANCE_ID,/)
   assert.match(main, /scriptsDir: expectedBackendScriptsDir\(\)/)
   assert.match(main, /samePath: sameRuntimePath/)
@@ -53,10 +54,13 @@ test('desktop backend compatibility requires the current Electron launch identit
 
 test('desktop backend readiness uses lightweight health probe', () => {
   const main = readRepoFile('app/src/main.js')
+  const backendHealth = readRepoFile('app/src/backendHealth.js')
   const apiServer = readRepoFile('core/api_server.py')
 
-  assert.match(main, /function probeApiReady\(timeoutMs = 800\)[\s\S]*path: '\/health\?probe=1'/)
-  assert.match(main, /async function getBackendHealth\(timeoutMs = 800\)[\s\S]*path: '\/health\?probe=1'/)
+  assert.match(main, /const \{ requestBackendHealth \} = require\('\.\/backendHealth'\)/)
+  assert.match(main, /function getBackendHealth\(timeoutMs = 800\) \{\s*return requestBackendHealth\(\{ http, port: apiPort, timeoutMs \}\)\s*\}/)
+  assert.match(main, /async function probeApiReady\(timeoutMs = 800\) \{\s*return \(await getBackendHealth\(timeoutMs\)\)\.ok\s*\}/)
+  assert.match(backendHealth, /path: '\/health\?probe=1'/)
   assert.match(apiServer, /def health\(probe: bool = False\):\s*if probe:/)
 })
 
