@@ -107,6 +107,7 @@ function createUpdateInstallCoordinator({
     }
 
     let postCleanupInstallFailureHandled = false
+    let cleanupCompleted = false
     try {
       const shutdownReady = await shutdownForUpdate()
       if (shutdownReady !== true) {
@@ -114,15 +115,15 @@ function createUpdateInstallCoordinator({
         updateService.setInstallReadiness({ ready: true, blockers: [] })
         return { ok: false, deferred: true }
       }
+      cleanupCompleted = true
       if (disposed) {
-        await releaseDrainSafely(drainToken)
         return { ok: false, deferred: true }
       }
       try {
         updateService.setInstalling()
         updateService.quitAndInstall()
       } catch (installError) {
-        await recoverAfterPostCleanupInstallFailure(drainToken)
+        await recoverAfterPostCleanupInstallFailure()
         drainToken = ''
         postCleanupInstallFailureHandled = true
         throw installError
@@ -130,8 +131,10 @@ function createUpdateInstallCoordinator({
       return { ok: true }
     } catch (error) {
       if (!postCleanupInstallFailureHandled) {
-        await releaseDrainSafely(drainToken)
-        updateService.setInstallReadiness({ ready: true, blockers: [] })
+        if (!cleanupCompleted) {
+          await releaseDrainSafely(drainToken)
+          updateService.setInstallReadiness({ ready: true, blockers: [] })
+        }
       }
       throw error
     }
@@ -168,14 +171,18 @@ function createUpdateInstallCoordinator({
     }
   }
 
-  async function recoverAfterPostCleanupInstallFailure(token) {
-    await releaseDrainSafely(token)
+  async function recoverAfterPostCleanupInstallFailure() {
     try {
       await recoverAfterCleanupFailure()
+      updateService.setInstallReadiness({ ready: true, blockers: [] })
     } catch (recoveryError) {
       log?.warn?.('Failed to recover desktop services after update install failure', recoveryError)
+      updateService.setInstallReadiness({
+        ready: false,
+        blockers: [],
+        error: readableError(recoveryError),
+      })
     }
-    updateService.setInstallReadiness({ ready: true, blockers: [] })
   }
 
   return {

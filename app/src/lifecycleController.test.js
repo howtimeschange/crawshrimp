@@ -171,7 +171,7 @@ test('updater cleanup never asks to stop active tasks', async () => {
 
   await controller.prepareForUpdateInstall()
 
-  assert.deepEqual(events, ['stop-backend', 'stop-chrome'])
+  assert.deepEqual(events, ['stop-chrome', 'stop-backend'])
 })
 
 test('updater cleanup lets the next before-quit pass without duplicate cleanup', async () => {
@@ -194,7 +194,7 @@ test('updater cleanup lets the next before-quit pass without duplicate cleanup',
   assert.equal(prepared, true)
   assert.equal(beforeQuit, true)
   assert.deepEqual(prevented, [])
-  assert.deepEqual(events, ['stop-backend', 'stop-chrome'])
+  assert.deepEqual(events, ['stop-chrome', 'stop-backend'])
 })
 
 for (const reason of ['kill-failed', 'exit-timeout']) {
@@ -217,7 +217,6 @@ for (const reason of ['kill-failed', 'exit-timeout']) {
 
     assert.equal(beforeQuit, true)
     assert.deepEqual(events, [
-      'stop-backend',
       `stop-chrome:${reason}`,
       'stop-backend',
       `stop-chrome:${reason}`,
@@ -243,17 +242,19 @@ for (const reason of ['already-exited', 'pid-identity-mismatch']) {
 
     assert.equal(prepared, true)
     assert.equal(beforeQuit, true)
-    assert.deepEqual(events, ['stop-backend', `stop-chrome:${reason}`])
+    assert.deepEqual(events, [`stop-chrome:${reason}`, 'stop-backend'])
   })
 }
 
 test('updater cleanup failure resets shutdown state for a later normal quit', async () => {
   const events = []
+  let backendStops = 0
   const controller = createLifecycleController({
     getActiveTasks: async () => { events.push('get-active'); return { active: false, tasks: [] } },
     stopBackend: async () => {
+      backendStops += 1
       events.push('stop-backend')
-      if (events.length === 1) throw new Error('backend stop failed')
+      if (backendStops === 1) throw new Error('backend stop failed')
     },
     stopManagedChrome: async () => events.push('stop-chrome'),
     quitApp: () => events.push('quit'),
@@ -265,7 +266,7 @@ test('updater cleanup failure resets shutdown state for a later normal quit', as
   )
   await controller.handleBeforeQuit()
 
-  assert.deepEqual(events, ['stop-backend', 'get-active', 'stop-backend', 'stop-chrome', 'quit'])
+  assert.deepEqual(events, ['stop-chrome', 'stop-backend', 'get-active', 'stop-backend', 'stop-chrome', 'quit'])
 })
 
 test('update-install recovery reset does not reopen a normal confirmed quit', async () => {

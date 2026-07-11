@@ -66,8 +66,8 @@ function createLifecycleController(options = {}) {
 
     shutdownInProgress = true
     try {
-      await stopBackend()
       validateManagedChromeStopped(await stopManagedChrome())
+      await stopBackend()
       confirmedQuit = true
       updateInstallShutdownPrepared = true
       return true

@@ -576,7 +576,7 @@ test('cleanup false result releases the drain token and skips install side effec
   assert.equal(updateService.getStatus().status, 'ready-to-install')
 })
 
-test('install failure releases the acquired drain token and restores retryable readiness', async () => {
+test('post-cleanup install failure skips backend drain release and restores readiness after recovery', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []
   updateService.setInstalling = () => {
@@ -595,6 +595,7 @@ test('install failure releases the acquired drain token and restores retryable r
     },
     releaseDrain: async token => events.push(`release-drain:${token}`),
     shutdownForUpdate: async () => { events.push('shutdown'); return true },
+    recoverAfterCleanupFailure: async () => events.push('recover'),
     notifyReady: () => {},
   })
 
@@ -605,12 +606,12 @@ test('install failure releases the acquired drain token and restores retryable r
     'acquire-drain',
     'shutdown',
     'set-installing',
-    'release-drain:drain-1',
+    'recover',
   ])
   assert.equal(updateService.getStatus().status, 'ready-to-install')
 })
 
-test('post-cleanup setInstalling failure releases drain, awaits recovery, then restores retryable readiness', async () => {
+test('post-cleanup setInstalling failure skips drain release, awaits recovery, then restores retryable readiness', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []
   const setInstallReadiness = updateService.setInstallReadiness
@@ -652,7 +653,6 @@ test('post-cleanup setInstalling failure releases drain, awaits recovery, then r
     'acquire-drain',
     'shutdown',
     'set-installing',
-    'release-drain:drain-1',
     'recover-start:installing',
     'recover-end:installing',
     'set-readiness:true:installing',
@@ -660,7 +660,7 @@ test('post-cleanup setInstalling failure releases drain, awaits recovery, then r
   assert.equal(updateService.getStatus().status, 'ready-to-install')
 })
 
-test('post-cleanup quitAndInstall failure releases drain, awaits recovery, then preserves original error', async () => {
+test('post-cleanup quitAndInstall failure skips drain release, awaits recovery, then preserves original error', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []
   const setInstallReadiness = updateService.setInstallReadiness
@@ -706,7 +706,6 @@ test('post-cleanup quitAndInstall failure releases drain, awaits recovery, then 
     'shutdown',
     'set-installing',
     'quit-and-install',
-    'release-drain:drain-1',
     'recover-start:installing',
     'recover-end:downloaded',
     'set-readiness:true:downloaded',
@@ -714,7 +713,7 @@ test('post-cleanup quitAndInstall failure releases drain, awaits recovery, then 
   assert.equal(updateService.getStatus().status, 'ready-to-install')
 })
 
-test('post-cleanup recovery failure is logged without hiding the install error or leaking drain', async () => {
+test('post-cleanup recovery failure logs, preserves install error, and never becomes ready', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []
   const warnings = []
@@ -747,12 +746,12 @@ test('post-cleanup recovery failure is logged without hiding the install error o
   assert.deepEqual(events, [
     'set-installing',
     'quit-and-install',
-    'release-drain:drain-1',
     'recover',
   ])
   assert.equal(warnings.length, 1)
   assert.match(warnings[0], /restart failed/)
-  assert.equal(updateService.getStatus().status, 'ready-to-install')
+  assert.equal(updateService.getStatus().status, 'waiting-for-tasks')
+  assert.match(updateService.getStatus().error, /restart failed/)
 })
 
 test('dispose before readiness resolution prevents post-await side effects', async () => {
