@@ -318,6 +318,31 @@ test('ensureReady includes backend startup output when process exits before read
   )
 })
 
+test('records a diagnostic when a ready backend exits unexpectedly', async () => {
+  let probeReady = false
+  const proc = new EventEmitter()
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => probeReady,
+    startProcess: () => {
+      probeReady = true
+      return proc
+    },
+    intervalMs: 1,
+    attempts: 2,
+  })
+
+  await controller.ensureReady()
+  proc.emit('exit', 17)
+
+  assert.deepEqual(controller.getDiagnostics(), {
+    state: 'degraded',
+    lastError: 'Backend process exited after ready (code=17)',
+    launchAttempt: 1,
+  })
+})
+
 test('ensureReady retries a backend launch that exits before ready', async () => {
   let startCount = 0
   const controller = createBackendController({

@@ -131,8 +131,12 @@ test('desktop get-status reports backend state machine state', () => {
 test('desktop exposes structured backend diagnostics and one-click recovery', () => {
   const main = readRepoFile('app/src/main.js')
   const preload = readRepoFile('app/src/preload.js')
+  const restartBlock = main.slice(
+    main.indexOf('const restartBackend ='),
+    main.indexOf('async function startBackend'),
+  )
 
-  assert.match(main, /const \{ createSingleFlightRecovery, isOwnedBackendRuntime \} = require\('\.\/serviceRecovery'\)/)
+  assert.match(main, /const \{ createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth \} = require\('\.\/serviceRecovery'\)/)
   assert.match(main, /const restartBackend = createSingleFlightRecovery\(async \(\) => \{/)
   assert.match(main, /backendController\.stop\(\)/)
   assert.match(main, /await prepareBackendEndpoint\(\)/)
@@ -141,6 +145,8 @@ test('desktop exposes structured backend diagnostics and one-click recovery', ()
   assert.match(main, /secureHandle\('open-diagnostic-log'/)
   assert.match(main, /apiDiagnostic: backendController\.getDiagnostics\(\)/)
   assert.match(main, /dataDirRecovery: \{ \.\.\.dataDirRecoveryInfo \}/)
+  assert.match(restartBlock, /apiBase: `http:\/\/127\.0\.0\.1:\$\{apiPort\}`/)
+  assert.match(restartBlock, /apiToken: getApiToken\(\)/)
   assert.match(preload, /restartBackend:\s*\(\) => ipcRenderer\.invoke\('restart-backend'\)/)
   assert.match(preload, /openDiagnosticLog:\s*\(\) => ipcRenderer\.invoke\('open-diagnostic-log'\)/)
 })
@@ -194,10 +200,21 @@ test('desktop acquires a single-instance lock before starting services', () => {
   const main = readRepoFile('app/src/main.js')
 
   assert.match(main, /const \{ configureSingleInstance \} = require\('\.\/singleInstance'\)/)
-  assert.match(main, /const isPrimaryInstance = configureSingleInstance\(\{/)
+  assert.match(main, /configureSingleInstance\(\{/)
   assert.match(main, /getWindow: \(\) => mainWindow/)
   assert.match(main, /createWindow/)
-  assert.match(main, /if \(isPrimaryInstance\) \{\s*app\.whenReady\(\)\.then/)
+  assert.match(main, /onPrimary: \(\) => \{\s*app\.whenReady\(\)\.then/)
+  assert.match(main, /onPrimary:[\s\S]*app\.on\('window-all-closed'/)
+  assert.match(main, /onPrimary:[\s\S]*app\.on\('before-quit'/)
+})
+
+test('desktop status requires a compatible owned backend, not only an HTTP responder', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const backendHealth = await getBackendHealth\(\)/)
+  assert.match(main, /const backendAvailability = classifyBackendHealth\(backendHealth, isCompatibleBackendRuntime\)/)
+  assert.match(main, /api:\s+backendAvailability\.compatible/)
+  assert.match(main, /apiReachable:\s+backendAvailability\.reachable/)
 })
 
 test('desktop backend receives a resolved writable CRAWSHRIMP_DATA directory', () => {

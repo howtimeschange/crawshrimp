@@ -3,7 +3,7 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
 
-const { createSingleFlightRecovery, isOwnedBackendRuntime } = require('./serviceRecovery')
+const { createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth } = require('./serviceRecovery')
 
 test('single-flight recovery shares one run across concurrent callers', async () => {
   let runs = 0
@@ -65,4 +65,23 @@ test('foreign backend identity can never be adopted', () => {
     owns_backend_instance: false,
     scripts_dir: 'scripts',
   }, { instanceId: 'ours', scriptsDir: 'scripts', samePath }), false)
+})
+
+test('backend health is ready only when the reachable runtime is compatible', () => {
+  const ownedRuntime = { backend_instance_id: 'ours' }
+  const foreignRuntime = { backend_instance_id: 'foreign' }
+  const isCompatible = runtime => runtime === ownedRuntime
+
+  assert.deepEqual(classifyBackendHealth({ ok: false }, isCompatible), {
+    reachable: false,
+    compatible: false,
+  })
+  assert.deepEqual(classifyBackendHealth({ ok: true, data: { runtime: foreignRuntime } }, isCompatible), {
+    reachable: true,
+    compatible: false,
+  })
+  assert.deepEqual(classifyBackendHealth({ ok: true, data: { runtime: ownedRuntime } }, isCompatible), {
+    reachable: true,
+    compatible: true,
+  })
 })

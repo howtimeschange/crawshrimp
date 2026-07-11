@@ -9,8 +9,9 @@ function describeError(error) {
   return error.message || String(error)
 }
 
-function describeProcessExit(proc, code) {
-  const base = `Backend process exited before ready (code=${code})`
+function describeProcessExit(proc, code, wasReady = false) {
+  const phase = wasReady ? 'after ready' : 'before ready'
+  const base = `Backend process exited ${phase} (code=${code})`
   if (!proc || typeof proc.getStartupOutput !== 'function') return base
   const output = String(proc.getStartupOutput() || '').trim()
   if (!output) return base
@@ -87,12 +88,11 @@ function createBackendController(options) {
 
     proc.once('exit', (code) => {
       if (backendProcess !== proc) return
-      if (!ready) {
-        rememberFailure(new Error(describeProcessExit(proc, code)))
-      }
+      const wasReady = ready && currentProcessWasReady
+      rememberFailure(new Error(describeProcessExit(proc, code, wasReady)))
       backendProcess = null
       currentProcessWasReady = false
-      markNotReady(ready ? 'degraded' : 'failed')
+      markNotReady(wasReady ? 'degraded' : 'failed')
     })
   }
 

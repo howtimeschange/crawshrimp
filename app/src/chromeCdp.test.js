@@ -85,6 +85,35 @@ test('CDP probe classifies endpoints that do not answer as timeout', async () =>
   })
 })
 
+test('CDP probe enforces a total deadline when a responder trickles bytes forever', async () => {
+  const timers = []
+  await withServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    timers.push(setInterval(() => res.write(' '), 5))
+  }, async port => {
+    const result = await Promise.race([
+      probeChromeCdp({ http, port, timeoutMs: 20 }),
+      new Promise(resolve => setTimeout(() => resolve(null), 120)),
+    ])
+    timers.forEach(clearInterval)
+    assert.ok(result, 'probe must resolve on its total deadline')
+    assert.equal(result.kind, 'timeout')
+  })
+})
+
+test('CDP probe rejects oversized endpoint bodies', async () => {
+  const oversized = JSON.stringify({ value: 'x'.repeat(1024 * 1024 + 32) })
+  await withServer((_req, res) => {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(oversized)
+  }, async port => {
+    const result = await probeChromeCdp({ http, port, timeoutMs: 500 })
+    assert.equal(result.kind, 'invalid-cdp')
+    assert.equal(result.version.errorCode, 'ERR_RESPONSE_TOO_LARGE')
+    assert.equal(result.tabs.errorCode, 'ERR_RESPONSE_TOO_LARGE')
+  })
+})
+
 test('Chrome recovery never stops or launches into a non-CDP occupied port', async () => {
   let stops = 0
   let reprobes = 0

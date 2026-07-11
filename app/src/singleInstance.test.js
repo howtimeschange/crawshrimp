@@ -19,6 +19,29 @@ test('second desktop instance quits before registering service focus handling', 
   assert.equal(app.listenerCount('second-instance'), 0)
 })
 
+test('primary setup is never registered by the secondary instance', () => {
+  const secondary = new EventEmitter()
+  secondary.requestSingleInstanceLock = () => false
+  secondary.quit = () => {}
+  let secondarySetups = 0
+
+  configureSingleInstance({
+    app: secondary,
+    onPrimary: () => { secondarySetups += 1 },
+  })
+
+  const primary = new EventEmitter()
+  primary.requestSingleInstanceLock = () => true
+  let primarySetups = 0
+  configureSingleInstance({
+    app: primary,
+    onPrimary: () => { primarySetups += 1 },
+  })
+
+  assert.equal(secondarySetups, 0)
+  assert.equal(primarySetups, 1)
+})
+
 test('primary desktop instance restores and focuses its window on a second launch', () => {
   const app = new EventEmitter()
   app.requestSingleInstanceLock = () => true

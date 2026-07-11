@@ -1,28 +1,50 @@
 'use strict'
 
-function requestJsonEndpoint({ http, port, path, timeoutMs }) {
+const DEFAULT_MAX_BODY_BYTES = 1024 * 1024
+
+function requestJsonEndpoint({ http, port, path, timeoutMs, maxBodyBytes = DEFAULT_MAX_BODY_BYTES }) {
   return new Promise(resolve => {
     let settled = false
+    let deadlineTimer = null
+    let req = null
     const finish = result => {
-      if (settled) return
+      if (settled) return false
       settled = true
+      if (deadlineTimer) clearTimeout(deadlineTimer)
       resolve({ path, ...result })
+      return true
     }
-    const req = http.request({
+    const deadlineMs = Math.max(1, Number(timeoutMs || 800))
+    const bodyLimit = Math.max(1, Number(maxBodyBytes || DEFAULT_MAX_BODY_BYTES))
+    req = http.request({
       hostname: '127.0.0.1',
       port,
       path,
       method: 'GET',
-      timeout: timeoutMs,
+      timeout: deadlineMs,
     }, res => {
       let body = ''
-      res.on('data', chunk => { body += chunk })
-      res.on('end', () => {
-        const statusCode = Number(res.statusCode || 0)
-        if (statusCode !== 200) {
-          finish({ ok: false, statusCode, error: `HTTP ${statusCode || 'error'}` })
+      let bodyBytes = 0
+      const statusCode = Number(res.statusCode || 0)
+      if (statusCode !== 200) {
+        finish({ ok: false, statusCode, error: `HTTP ${statusCode || 'error'}` })
+        res.destroy()
+        return
+      }
+      res.on('data', chunk => {
+        bodyBytes += Buffer.byteLength(chunk)
+        if (bodyBytes > bodyLimit) {
+          if (finish({
+            ok: false,
+            statusCode,
+            error: `response exceeds ${bodyLimit} bytes`,
+            errorCode: 'ERR_RESPONSE_TOO_LARGE',
+          })) res.destroy()
           return
         }
+        body += chunk
+      })
+      res.on('end', () => {
         try {
           finish({ ok: true, statusCode, data: JSON.parse(body || '{}') })
         } catch (error) {
@@ -37,9 +59,11 @@ function requestJsonEndpoint({ http, port, path, timeoutMs }) {
       errorCode: error.code || '',
     }))
     req.on('timeout', () => {
-      finish({ ok: false, statusCode: 0, error: 'timeout', errorCode: 'ETIMEDOUT' })
-      req.destroy()
+      if (finish({ ok: false, statusCode: 0, error: 'timeout', errorCode: 'ETIMEDOUT' })) req.destroy()
     })
+    deadlineTimer = setTimeout(() => {
+      if (finish({ ok: false, statusCode: 0, error: 'timeout', errorCode: 'ETIMEDOUT' })) req.destroy()
+    }, deadlineMs)
     req.end()
   })
 }

@@ -24,4 +24,12 @@ function isOwnedBackendRuntime(runtime = {}, options = {}) {
   return samePath(String(runtime.scripts_dir || ''), String(options.scriptsDir || ''))
 }
 
-module.exports = { createSingleFlightRecovery, isOwnedBackendRuntime }
+function classifyBackendHealth(health = {}, isCompatible = () => false) {
+  const reachable = health?.ok === true
+  const compatible = reachable && typeof isCompatible === 'function'
+    ? Boolean(isCompatible(health.data?.runtime))
+    : false
+  return { reachable, compatible }
+}
+
+module.exports = { createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth }

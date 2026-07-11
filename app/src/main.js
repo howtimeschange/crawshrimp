@@ -19,7 +19,7 @@ const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChro
 const { startDesktopServices } = require('./startupServices')
 const { requestBackendApi } = require('./backendApi')
 const { collectCrawshrimpDataDirCandidates } = require('./dataDirRecovery')
-const { createSingleFlightRecovery, isOwnedBackendRuntime } = require('./serviceRecovery')
+const { createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth } = require('./serviceRecovery')
 const { probeChromeCdp: probeChromeCdpHealth, prepareChromeRecovery } = require('./chromeCdp')
 const { configureSingleInstance } = require('./singleInstance')
 const { createUpdateService } = require('./updateService')
@@ -1742,6 +1742,8 @@ const restartBackend = createSingleFlightRecovery(async () => {
     api: true,
     apiState: backendController.getState(),
     apiPort,
+    apiBase: `http://127.0.0.1:${apiPort}`,
+    apiToken: getApiToken(),
     dataDir: getCrawshrimpDataDir(),
     apiDiagnostic: backendController.getDiagnostics(),
     dataDirRecovery: { ...dataDirRecoveryInfo },
@@ -2004,62 +2006,69 @@ function scheduleInitialUpdateCheck() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
-const isPrimaryInstance = configureSingleInstance({
+configureSingleInstance({
   app,
   getWindow: () => mainWindow,
   createWindow,
-})
+  onPrimary: () => {
+    app.whenReady().then(async () => {
+      hideNativeAppMenu()
+      createWindow()
+      app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow()
+        ensureDesktopServicesStarted()
+      })
 
-if (isPrimaryInstance) {
-  app.whenReady().then(async () => {
-    hideNativeAppMenu()
-    createWindow()
-    app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow()
-      ensureDesktopServicesStarted()
+      await ensureDesktopServicesStarted()
+      scheduleInitialUpdateCheck()
     })
 
-    await ensureDesktopServicesStarted()
-    scheduleInitialUpdateCheck()
-  })
-}
+    app.on('window-all-closed', () => {
+      lifecycleController.handleWindowAllClosed()
+    })
 
-app.on('window-all-closed', () => {
-  lifecycleController.handleWindowAllClosed()
-})
+    app.on('before-quit', (event) => {
+      lifecycleController.handleBeforeQuit(event).catch(error => {
+        log(`[lifecycle] before-quit failed: ${error.message}`)
+      })
+    })
 
-app.on('before-quit', (event) => {
-  lifecycleController.handleBeforeQuit(event).catch(error => {
-    log(`[lifecycle] before-quit failed: ${error.message}`)
-  })
-})
-
-app.on('will-quit', () => {
-  if (scheduledUpdateCheck) {
-    clearTimeout(scheduledUpdateCheck)
-    scheduledUpdateCheck = null
-  }
-  updateCoordinator.dispose()
-  updateService.dispose()
+    app.on('will-quit', () => {
+      if (scheduledUpdateCheck) {
+        clearTimeout(scheduledUpdateCheck)
+        scheduledUpdateCheck = null
+      }
+      updateCoordinator.dispose()
+      updateService.dispose()
+    })
+  },
 })
 
 // ── IPC handlers ──────────────────────────────────────────────────────────────
 
-secureHandle('get-status', async () => ({
-  api:     await probeApiReady(),
-  apiState: backendController.getState(),
-  apiDiagnostic: backendController.getDiagnostics(),
-  chrome:  (await probeChromeCdp()).ok,
-  chromeDiagnostic: { ...lastChromeDiagnostic },
-  apiPort,
-  apiBase: `http://127.0.0.1:${apiPort}`,
-  apiToken: getApiToken(),
-  cdpPort: CDP_PORT,
-  pythonBin: getPythonBin(),
-  dataDir: getCrawshrimpDataDir(),
-  dataDirRecovery: { ...dataDirRecoveryInfo },
-  dev: IS_DEV,
-}))
+async function getDesktopStatus() {
+  const backendHealth = await getBackendHealth()
+  const backendAvailability = classifyBackendHealth(backendHealth, isCompatibleBackendRuntime)
+  const chromeAvailable = (await probeChromeCdp()).ok
+  return {
+    api: backendAvailability.compatible,
+    apiReachable: backendAvailability.reachable,
+    apiState: backendController.getState(),
+    apiDiagnostic: backendController.getDiagnostics(),
+    chrome: chromeAvailable,
+    chromeDiagnostic: { ...lastChromeDiagnostic },
+    apiPort,
+    apiBase: `http://127.0.0.1:${apiPort}`,
+    apiToken: getApiToken(),
+    cdpPort: CDP_PORT,
+    pythonBin: getPythonBin(),
+    dataDir: getCrawshrimpDataDir(),
+    dataDirRecovery: { ...dataDirRecoveryInfo },
+    dev: IS_DEV,
+  }
+}
+
+secureHandle('get-status', async () => getDesktopStatus())
 
 secureHandle('restart-backend', async () => restartBackend())
 secureHandle('open-diagnostic-log', async () => {

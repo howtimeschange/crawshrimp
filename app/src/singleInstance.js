@@ -1,6 +1,6 @@
 'use strict'
 
-function configureSingleInstance({ app, getWindow, createWindow }) {
+function configureSingleInstance({ app, getWindow, createWindow, onPrimary }) {
   if (!app || typeof app.requestSingleInstanceLock !== 'function') {
     throw new TypeError('Electron app with requestSingleInstanceLock is required')
   }
@@ -19,6 +19,7 @@ function configureSingleInstance({ app, getWindow, createWindow }) {
     win.show?.()
     win.focus?.()
   })
+  onPrimary?.()
   return true
 }
 
