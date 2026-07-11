@@ -98,6 +98,7 @@
       <SidebarUpdateFooter
         :update-status="updateStatus"
         :collapsed="effectiveSidebarCollapsed"
+        :busy="updateActionBusy"
         @download="downloadUpdate"
         @install="installUpdate"
         @retry="retryUpdateCheck"
@@ -151,6 +152,7 @@
         :status="status"
         :focus-panel-id="focusSettingsPanelId"
         :update-status="updateStatus"
+        :update-action-busy="updateActionBusy"
         @launch-chrome="launchChrome"
         @check-update="retryUpdateCheck"
       />
@@ -173,6 +175,7 @@ import SidebarUpdateFooter from './components/SidebarUpdateFooter.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarState.js'
+import { createUpdateActionRunner } from './utils/updateActions.js'
 
 const currentView = ref('scripts')
 const status = ref({ api: false, apiState: 'starting', chrome: false, apiPort: 18765, cdpPort: 9222 })
@@ -192,6 +195,25 @@ const updateStatus = ref({
   blockers: [],
   error: '',
   downloaded: false,
+})
+const updateActionBusy = ref(false)
+const updateActionRunner = createUpdateActionRunner({
+  setBusy: busy => {
+    updateActionBusy.value = busy
+  },
+  getLatestStatus: async () => {
+    if (typeof window.cs.getUpdateStatus !== 'function') return null
+    return window.cs.getUpdateStatus()
+  },
+  handleError: (error, latestStatus) => {
+    const message = formatUpdateActionError(error)
+    updateStatus.value = {
+      ...updateStatus.value,
+      ...(latestStatus || {}),
+      status: 'error',
+      error: message,
+    }
+  },
 })
 
 const navItems = [
@@ -319,16 +341,23 @@ function toggleSidebar() {
   writeSidebarCollapsed(window.localStorage, sidebarCollapsed.value)
 }
 
+function formatUpdateActionError(error) {
+  const message = String(error?.message || error || '').trim()
+  return message ? `桌面更新失败：${message}` : '桌面更新失败，请稍后重试。'
+}
+
 async function downloadUpdate() {
-  updateStatus.value = await window.cs.downloadUpdate()
+  const result = await updateActionRunner.run(() => window.cs.downloadUpdate())
+  if (result?.status) updateStatus.value = result
 }
 
 async function retryUpdateCheck() {
-  updateStatus.value = await window.cs.checkForUpdates()
+  const result = await updateActionRunner.run(() => window.cs.checkForUpdates())
+  if (result?.status) updateStatus.value = result
 }
 
 async function installUpdate() {
-  const result = await window.cs.installUpdate()
+  const result = await updateActionRunner.run(() => window.cs.installUpdate())
   if (result?.status) updateStatus.value = result
 }
 

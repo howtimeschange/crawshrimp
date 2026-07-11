@@ -170,7 +170,7 @@
               <div class="action-strip">
                 <button
                   class="btn-orange"
-                  :disabled="updateStatus.status === 'checking'"
+                  :disabled="updateActionBusy || updateStatus.status === 'checking'"
                   @click="requestUpdateCheck"
                 >
                   {{ updateStatus.status === 'error' ? '重新检查' : '检查更新' }}
@@ -540,7 +540,7 @@ import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'v
 
 const OFFICIAL_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
 
-const props = defineProps(['status', 'focusPanelId', 'updateStatus'])
+const props = defineProps(['status', 'focusPanelId', 'updateStatus', 'updateActionBusy'])
 const emit = defineEmits(['launch-chrome', 'check-update'])
 
 const cfg = ref({})
@@ -657,6 +657,7 @@ const notifyPanelByChannel = {
 
 const activeGroup = computed(() => menuGroups.find(group => group.id === activeGroupId.value) || menuGroups[0])
 const updateStatus = computed(() => props.updateStatus || {})
+const updateActionBusy = computed(() => Boolean(props.updateActionBusy))
 const updateBadgeLabel = computed(() => {
   const status = String(updateStatus.value.status || 'idle')
   if (status === 'available') return '可更新'

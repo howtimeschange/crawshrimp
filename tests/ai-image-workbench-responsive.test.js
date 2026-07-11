@@ -13,6 +13,7 @@ test('AI image app shell moves global navigation to a compact bottom bar on narr
   assert.match(app, /:aria-label="item\.label"/)
   assert.match(app, /:title="effectiveSidebarCollapsed \? undefined : item\.label"/)
   assert.match(app, /:data-tooltip="effectiveSidebarCollapsed \? item\.label : null"/)
+  assert.match(app, /<SidebarUpdateFooter[\s\S]*:busy="updateActionBusy"/)
   assert.match(app, /@media \(max-width: 760px\)[\s\S]*\.layout\.layout-ai-image[\s\S]*grid-template-rows:\s*40px minmax\(0, 1fr\) 56px;/)
   assert.match(app, /\.layout-ai-image \.sidebar[\s\S]*grid-row:\s*3;/)
   assert.match(app, /\.layout-ai-image nav[\s\S]*flex-direction:\s*row;/)

@@ -10,6 +10,8 @@
       :title="tooltipText"
       :data-tooltip="collapsed ? tooltipText : null"
       :aria-label="ariaLabel"
+      :aria-busy="busy ? 'true' : undefined"
+      :disabled="busy"
       @click="onAction"
     >
       <span v-if="presentation.label" class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
@@ -25,6 +27,10 @@
       :title="tooltipText"
       :data-tooltip="collapsed ? tooltipText : null"
       :aria-label="ariaLabel"
+      :aria-busy="busy ? 'true' : undefined"
+      :tabindex="collapsed ? 0 : undefined"
+      :role="collapsed ? 'status' : undefined"
+      aria-live="polite"
     >
       <span v-if="presentation.label" class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
       <span class="version-label">{{ presentation.versionLabel }}</span>
@@ -58,6 +64,10 @@ const props = defineProps({
     default: () => ({}),
   },
   collapsed: {
+    type: Boolean,
+    default: false,
+  },
+  busy: {
     type: Boolean,
     default: false,
   },
@@ -97,6 +107,7 @@ const statusIcon = computed(() => {
 })
 
 function onAction() {
+  if (props.busy) return
   if (!presentation.value.action) return
   emit(presentation.value.action)
 }
@@ -133,6 +144,11 @@ button.update-control:hover {
   border-color: rgba(255, 107, 43, 0.46);
   background: var(--orange-bg);
   color: var(--text);
+}
+
+button.update-control:disabled {
+  cursor: not-allowed;
+  opacity: 0.56;
 }
 
 button.update-control:focus-visible {
