@@ -106,6 +106,7 @@ test('desktop workflow signs with electron-builder and notarizes apps before DMG
   assert.match(notarizeScript, /APPLE_NOTARY_POLL_INTERVAL/)
   assert.match(notarizeScript, /xcrun stapler staple/)
   assert.match(notarizeScript, /xcrun stapler validate/)
+  assert.match(notarizeScript, /node scripts\/prepare-mac-update-metadata\.js dist\/latest-mac\.yml/)
 })
 
 test('app identity proof and safe ZIP listing happen before upload and extraction', () => {

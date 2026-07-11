@@ -206,3 +206,5 @@ for index in "${!submission_ids[@]}"; do
     exit 1
   fi
 done
+
+node scripts/prepare-mac-update-metadata.js dist/latest-mac.yml
