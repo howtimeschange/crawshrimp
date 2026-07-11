@@ -21,6 +21,8 @@ mac:
   gatekeeperAssess: false
   entitlements: assets/entitlements.mac.plist
   entitlementsInherit: assets/entitlements.mac.inherit.plist
+  signIgnore:
+    - '/Contents/Resources/python/.*\.pyc$'
   target:
     - target: dmg
       arch:

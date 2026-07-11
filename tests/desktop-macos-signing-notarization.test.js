@@ -23,6 +23,17 @@ test('mac desktop packaging is configured for Developer ID notarization', () => 
   assert.equal(fs.existsSync(path.join(repoRoot, 'app/assets/entitlements.mac.inherit.plist')), true)
 })
 
+test('mac desktop signing ignores bundled Python bytecode but not native runtime binaries', () => {
+  const buildYml = readRepoFile('app/build.yml')
+  const signIgnoreMatch = buildYml.match(/^  signIgnore:\n    - '([^']+)'$/m)
+
+  assert.ok(signIgnoreMatch, 'mac signIgnore contains one scoped regex')
+  const signIgnore = new RegExp(signIgnoreMatch[1])
+  assert.match('/抓虾.app/Contents/Resources/python/pkg/__pycache__/module.pyc', signIgnore)
+  assert.doesNotMatch('/抓虾.app/Contents/Resources/python/bin/python3', signIgnore)
+  assert.doesNotMatch('/抓虾.app/Contents/Resources/python/lib/native.so', signIgnore)
+})
+
 test('desktop workflow signs with electron-builder and notarizes apps before DMGs on formal tags', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const notarizeScript = readRepoFile('app/scripts/notarize-macos-dmgs.sh')
