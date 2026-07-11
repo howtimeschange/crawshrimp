@@ -46,6 +46,9 @@ function createBackendController(options) {
   let currentProcessWasReady = false
   let state = 'starting'
   let consecutiveProbeFailures = 0
+  let lastError = ''
+  let launchAttempt = 0
+  let generation = 0
 
   function setState(nextState) {
     const normalized = String(nextState || '').trim() || 'failed'
@@ -60,68 +63,105 @@ function createBackendController(options) {
     setState(nextState)
   }
 
+  function rememberFailure(error) {
+    startupFailure = error
+    lastError = describeError(error)
+  }
+
+  function assertActiveGeneration(expectedGeneration) {
+    if (generation !== expectedGeneration) throw new Error('Backend startup canceled')
+  }
+
   function rememberProcess(proc) {
     backendProcess = proc
     currentProcessWasReady = false
 
     proc.once('error', (error) => {
-      startupFailure = error
+      if (backendProcess !== proc) return
+      rememberFailure(error)
       log(`[api] process error: ${describeError(error)}`)
-      if (backendProcess === proc) backendProcess = null
+      backendProcess = null
       currentProcessWasReady = false
       markNotReady('failed')
     })
 
     proc.once('exit', (code) => {
+      if (backendProcess !== proc) return
       if (!ready) {
-        startupFailure = new Error(describeProcessExit(proc, code))
+        rememberFailure(new Error(describeProcessExit(proc, code)))
       }
-      if (backendProcess === proc) backendProcess = null
+      backendProcess = null
       currentProcessWasReady = false
       markNotReady(ready ? 'degraded' : 'failed')
     })
   }
 
   async function ensureReady() {
-    async function acceptReadyBackend() {
+    const ensureGeneration = generation
+
+    async function acceptReadyBackend(expectedGeneration) {
+      assertActiveGeneration(expectedGeneration)
       ready = true
       if (backendProcess) currentProcessWasReady = true
       startupFailure = null
+      lastError = ''
       consecutiveProbeFailures = 0
       sendStatus('api', true)
       setState('ready')
     }
 
-    if (await probeReady()) {
-      if (await validateReady()) {
-        await acceptReadyBackend()
+    const initiallyReady = await probeReady()
+    assertActiveGeneration(ensureGeneration)
+    if (initiallyReady) {
+      const runtimeValid = await validateReady()
+      assertActiveGeneration(ensureGeneration)
+      if (runtimeValid) {
+        await acceptReadyBackend(ensureGeneration)
         return
       }
       markNotReady('restarting')
       await switchEndpoint()
+      assertActiveGeneration(ensureGeneration)
     }
 
+    assertActiveGeneration(ensureGeneration)
     if (startupPromise) return startupPromise
 
-    startupPromise = (async () => {
-      for (let launchAttempt = 0; launchAttempt <= launchRetries; launchAttempt += 1) {
+    const startupGeneration = generation
+    const activeStartup = (async () => {
+      for (let launchIndex = 0; launchIndex <= launchRetries; launchIndex += 1) {
+        assertActiveGeneration(startupGeneration)
+        const attemptNumber = launchIndex + 1
+        // Expose a one-based attempt count without leaking the loop variable.
+        // This is reset after an explicit stop/recovery.
+        setLaunchAttempt(attemptNumber)
         const hadReadyBackend = currentProcessWasReady && Boolean(backendProcess)
         let endpointSwitched = false
         startupFailure = null
         if (!backendProcess) {
-          setState(launchAttempt > 0 ? 'restarting' : 'starting')
+          setState(launchIndex > 0 ? 'restarting' : 'starting')
           try {
             const proc = await startProcess()
+            if (generation !== startupGeneration) {
+              if (proc) stopProcess(proc)
+              assertActiveGeneration(startupGeneration)
+            }
             if (proc) rememberProcess(proc)
           } catch (error) {
-            startupFailure = error
+            assertActiveGeneration(startupGeneration)
+            rememberFailure(error)
           }
         }
 
         for (let attempt = 0; attempt < attempts; attempt += 1) {
-          if (await probeReady()) {
-            if (await validateReady()) {
-              await acceptReadyBackend()
+          assertActiveGeneration(startupGeneration)
+          const probeIsReady = await probeReady()
+          assertActiveGeneration(startupGeneration)
+          if (probeIsReady) {
+            const runtimeValid = await validateReady()
+            assertActiveGeneration(startupGeneration)
+            if (runtimeValid) {
+              await acceptReadyBackend(startupGeneration)
               return
             }
             markNotReady('restarting')
@@ -132,11 +172,13 @@ function createBackendController(options) {
               stopProcess(proc)
             }
             await switchEndpoint()
+            assertActiveGeneration(startupGeneration)
             endpointSwitched = true
             break
           }
           if (startupFailure) break
           await sleep(intervalMs)
+          assertActiveGeneration(startupGeneration)
         }
 
         if (endpointSwitched) {
@@ -146,7 +188,7 @@ function createBackendController(options) {
 
         if (!startupFailure) {
           const tail = describeProcessStartup(backendProcess)
-          startupFailure = new Error(tail ? `API server startup timeout: ${tail}` : 'API server startup timeout')
+          rememberFailure(new Error(tail ? `API server startup timeout: ${tail}` : 'API server startup timeout'))
         }
 
         if (hadReadyBackend) {
@@ -167,26 +209,33 @@ function createBackendController(options) {
           markNotReady(hadReadyBackend ? 'restarting' : 'failed')
         }
 
-        if (launchAttempt >= launchRetries) {
+        if (launchIndex >= launchRetries) {
           setState('failed')
           throw startupFailure
         }
 
-        log(`[api] startup failed: ${describeError(startupFailure)}; retrying backend launch ${launchAttempt + 1}/${launchRetries}`)
+        log(`[api] startup failed: ${describeError(startupFailure)}; retrying backend launch ${launchIndex + 1}/${launchRetries}`)
         startupFailure = null
         setState('restarting')
         await sleep(retryDelayMs)
       }
 
       setState('failed')
-      throw new Error('API server startup failed')
+      const error = new Error(lastError || 'API server startup failed')
+      rememberFailure(error)
+      throw error
     })()
+    startupPromise = activeStartup
 
     try {
-      await startupPromise
+      await activeStartup
     } finally {
-      startupPromise = null
+      if (startupPromise === activeStartup) startupPromise = null
     }
+  }
+
+  function setLaunchAttempt(value) {
+    launchAttempt = Math.max(0, Number(value || 0))
   }
 
   async function runWhenReady(operation, options = {}) {
@@ -221,17 +270,19 @@ function createBackendController(options) {
   }
 
   function stop() {
-    if (!backendProcess) return
+    generation += 1
     const proc = backendProcess
     backendProcess = null
     startupPromise = null
     startupFailure = null
+    lastError = ''
+    launchAttempt = 0
     ready = false
     currentProcessWasReady = false
     consecutiveProbeFailures = 0
-    stopProcess(proc)
+    if (proc) stopProcess(proc)
     sendStatus('api', false)
-    setState('failed')
+    setState('stopped')
   }
 
   return {
@@ -239,6 +290,7 @@ function createBackendController(options) {
     runWhenReady,
     stop,
     getState: () => state,
+    getDiagnostics: () => ({ state, lastError, launchAttempt }),
   }
 }
 

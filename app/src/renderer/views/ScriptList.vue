@@ -11,7 +11,7 @@
       <div v-if="loading" class="placeholder">加载中…</div>
       <div v-else-if="loadError && !groups.length" class="placeholder placeholder-stack">
         <span>{{ loadError }}</span>
-        <button class="btn-ghost" @click="loadGroups">重试</button>
+        <button class="btn-ghost" @click="repairAndLoad">一键修复核心服务</button>
       </div>
       <div v-else-if="!groups.length" class="placeholder">
         还没有脚本。点击「导入脚本」安装你的第一个适配包。
@@ -162,6 +162,7 @@ import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig 
 const emit = defineEmits(['open-script', 'reload'])
 const scriptGroups = inject('scriptGroups')
 const loadScriptGroups = inject('loadScriptGroups')
+const repairCoreService = inject('repairCoreService')
 
 const loading = ref(false)
 const loadError = ref('')
@@ -227,6 +228,19 @@ async function loadGroups(options = {}) {
     if (!quiet) {
       loading.value = false
     }
+  }
+}
+
+async function repairAndLoad() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    await repairCoreService()
+    await loadScriptGroups()
+  } catch (error) {
+    loadError.value = error?.message || '核心服务修复失败，请打开诊断日志后联系开发者'
+  } finally {
+    loading.value = false
   }
 }
 

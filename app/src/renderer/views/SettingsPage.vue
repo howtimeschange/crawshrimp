@@ -60,7 +60,7 @@
             <article class="status-card">
               <div>
                 <span>核心服务 (端口 {{ props.status?.apiPort || 18765 }})</span>
-                <strong>本地 API</strong>
+                <strong>本地 API · {{ props.status?.apiState || 'unknown' }}</strong>
               </div>
               <span :class="['badge', props.status?.api ? 'on' : 'off']">
                 {{ props.status?.api ? '运行中' : '未启动' }}
@@ -79,16 +79,31 @@
 
           <div class="panel-layout">
             <div class="form-stack">
+              <p v-if="backendMsg" :class="['inline-msg', backendMsgOk ? 'ok' : 'err']">{{ backendMsg }}</p>
               <p v-if="chromeMsg" :class="['inline-msg', chromeMsgOk ? 'ok' : 'err']">{{ chromeMsg }}</p>
+              <p v-if="props.status?.apiDiagnostic?.lastError" class="inline-msg err">
+                核心服务：{{ props.status.apiDiagnostic.lastError }}
+              </p>
+              <p v-if="!props.status?.chrome && props.status?.chromeDiagnostic?.message" class="inline-msg err">
+                Chrome：{{ props.status.chromeDiagnostic.message }}
+              </p>
+              <p v-if="props.status?.dataDirRecovery?.recovered" class="inline-msg ok">
+                数据目录已自动恢复到：{{ props.status.dataDirRecovery.to }}
+              </p>
               <div class="action-strip">
-                <button class="btn-orange" :disabled="launching" @click="doLaunchChrome">
-                  {{ launching ? '启动中...' : props.status?.chrome ? '重新连接 Chrome' : '启动专用 Chrome' }}
+                <button class="btn-orange" :disabled="backendRepairing" @click="doRepairBackend">
+                  {{ backendRepairing ? '修复中...' : '修复核心服务' }}
                 </button>
+                <button class="btn-orange" :disabled="launching" @click="doLaunchChrome">
+                  {{ launching ? '修复中...' : '修复 Chrome 连接' }}
+                </button>
+                <button class="btn-ghost" @click="openDiagnosticLog">打开诊断日志</button>
               </div>
             </div>
             <div class="side-note">
               <strong>连接策略</strong>
-              <p>应用会优先连接专用 Chrome 调试端口；手动重试不会关闭你已经打开的浏览器窗口。</p>
+              <p>核心服务会重新检查数据目录和端口。Chrome 修复只会关闭身份确认属于抓虾的专用实例，不会结束未知进程。</p>
+              <p v-if="props.status?.dataDir">当前数据目录：{{ props.status.dataDir }}</p>
             </div>
           </div>
         </section>
@@ -542,7 +557,7 @@ import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'v
 const OFFICIAL_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
 
 const props = defineProps(['status', 'focusPanelId', 'updateStatus', 'updateActionBusy'])
-const emit = defineEmits(['launch-chrome', 'check-update'])
+const emit = defineEmits(['runtime-refresh', 'check-update'])
 
 const cfg = ref({})
 const savedCfg = ref({})
@@ -553,6 +568,9 @@ const activePanelId = ref('connection-overview')
 const launching = ref(false)
 const chromeMsg = ref('')
 const chromeMsgOk = ref(true)
+const backendRepairing = ref(false)
+const backendMsg = ref('')
+const backendMsgOk = ref(true)
 
 const testing = reactive({ dingtalk: false, feishu: false, webhook: false })
 const testMsg = reactive({ dingtalk: '', feishu: '', webhook: '' })
@@ -962,12 +980,39 @@ async function doLaunchChrome() {
     const res = await window.cs.launchChrome()
     chromeMsg.value = res.msg || (res.ok ? '已启动' : '启动失败')
     chromeMsgOk.value = res.ok
-    emit('launch-chrome')
+    emit('runtime-refresh')
   } catch (e) {
     chromeMsg.value = e.message
     chromeMsgOk.value = false
   } finally {
     launching.value = false
+  }
+}
+
+async function doRepairBackend() {
+  backendRepairing.value = true
+  backendMsg.value = ''
+  try {
+    const result = await window.cs.restartBackend()
+    backendMsg.value = result?.dataDirRecovery?.recovered
+      ? `核心服务已恢复，数据目录已切换到 ${result.dataDir}`
+      : '核心服务已重新启动并通过健康检查'
+    backendMsgOk.value = true
+    emit('runtime-refresh')
+  } catch (error) {
+    backendMsg.value = error?.message || '核心服务修复失败'
+    backendMsgOk.value = false
+  } finally {
+    backendRepairing.value = false
+  }
+}
+
+async function openDiagnosticLog() {
+  try {
+    await window.cs.openDiagnosticLog()
+  } catch (error) {
+    backendMsg.value = error?.message || '无法打开诊断日志'
+    backendMsgOk.value = false
   }
 }
 

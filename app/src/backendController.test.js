@@ -70,6 +70,228 @@ test('ensureReady rejects when the process exits before becoming ready', async (
     controller.ensureReady(),
     /process exited before ready \(code=23\)/
   )
+
+  assert.deepEqual(controller.getDiagnostics(), {
+    state: 'failed',
+    lastError: 'Backend process exited before ready (code=23)',
+    launchAttempt: 1,
+  })
+})
+
+test('stop clears a failed startup even after the child process already exited', async () => {
+  const statuses = []
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: (key, value) => statuses.push([key, value]),
+    probeReady: async () => false,
+    startProcess: () => {
+      const proc = new EventEmitter()
+      setTimeout(() => proc.emit('exit', 9), 0)
+      return proc
+    },
+    intervalMs: 1,
+    attempts: 5,
+  })
+
+  await assert.rejects(controller.ensureReady(), /code=9/)
+  controller.stop()
+
+  assert.deepEqual(controller.getDiagnostics(), {
+    state: 'stopped',
+    lastError: '',
+    launchAttempt: 0,
+  })
+  assert.ok(statuses.some(([key, value]) => key === 'apiState' && value === 'stopped'))
+})
+
+test('stop cancels an in-flight startup without letting the stale attempt become ready', async () => {
+  let probeReady = false
+  let starts = 0
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => probeReady,
+    startProcess: () => {
+      starts += 1
+      return new EventEmitter()
+    },
+    intervalMs: 5,
+    attempts: 10,
+  })
+
+  const startup = controller.ensureReady()
+  await new Promise(resolve => setTimeout(resolve, 1))
+  controller.stop()
+  probeReady = true
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.equal(controller.getState(), 'stopped')
+  assert.equal(starts, 1)
+})
+
+test('stop ignores a delayed exit from the child it no longer owns', async () => {
+  const proc = new EventEmitter()
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => false,
+    startProcess: () => proc,
+    stopProcess: () => {},
+    intervalMs: 5,
+    attempts: 10,
+  })
+
+  const startup = controller.ensureReady()
+  await new Promise(resolve => setTimeout(resolve, 1))
+  controller.stop()
+  proc.emit('exit', 0)
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.deepEqual(controller.getDiagnostics(), {
+    state: 'stopped',
+    lastError: '',
+    launchAttempt: 0,
+  })
+})
+
+test('stop cancels startup while the initial readiness probe is pending', async () => {
+  let releaseProbe
+  let starts = 0
+  const probeStarted = new Promise(resolve => {
+    releaseProbe = () => {
+      resolve()
+      return false
+    }
+  })
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: () => probeStarted,
+    startProcess: () => {
+      starts += 1
+      return new EventEmitter()
+    },
+    intervalMs: 1,
+    attempts: 1,
+  })
+
+  const startup = controller.ensureReady()
+  controller.stop()
+  releaseProbe()
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.equal(starts, 0)
+  assert.equal(controller.getState(), 'stopped')
+})
+
+test('stop cancels startup while runtime validation is pending', async () => {
+  let releaseValidation
+  let signalValidation
+  const validationStarted = new Promise(resolve => { signalValidation = resolve })
+  let starts = 0
+  let switches = 0
+  let probes = 0
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => {
+      probes += 1
+      return probes === 1
+    },
+    validateReady: () => {
+      signalValidation()
+      return new Promise(resolve => { releaseValidation = resolve })
+    },
+    switchEndpoint: async () => { switches += 1 },
+    startProcess: () => {
+      starts += 1
+      return new EventEmitter()
+    },
+    intervalMs: 1,
+    attempts: 1,
+  })
+
+  const startup = controller.ensureReady()
+  await validationStarted
+  controller.stop()
+  releaseValidation(false)
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.equal(starts, 0)
+  assert.equal(switches, 0)
+  assert.equal(controller.getState(), 'stopped')
+})
+
+test('stop cancels startup while endpoint switching is pending', async () => {
+  let releaseSwitch
+  let signalSwitch
+  const switchStarted = new Promise(resolve => { signalSwitch = resolve })
+  let starts = 0
+  let probes = 0
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => {
+      probes += 1
+      return probes === 1
+    },
+    validateReady: async () => false,
+    switchEndpoint: () => {
+      signalSwitch()
+      return new Promise(resolve => { releaseSwitch = resolve })
+    },
+    startProcess: () => {
+      starts += 1
+      return new EventEmitter()
+    },
+    intervalMs: 1,
+    attempts: 1,
+  })
+
+  const startup = controller.ensureReady()
+  await switchStarted
+  controller.stop()
+  releaseSwitch(false)
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.equal(starts, 0)
+  assert.equal(controller.getState(), 'stopped')
+})
+
+test('stop disposes a child whose delayed start resolves after cancellation', async () => {
+  let resolveStart
+  let signalStartCalled
+  const startCalled = new Promise(resolve => { signalStartCalled = resolve })
+  const proc = new EventEmitter()
+  proc.pid = 4321
+  const stopped = []
+  const controller = createBackendController({
+    log: () => {},
+    sendStatus: () => {},
+    probeReady: async () => false,
+    startProcess: () => {
+      signalStartCalled()
+      return new Promise(resolve => { resolveStart = resolve })
+    },
+    stopProcess: child => stopped.push(child.pid),
+    intervalMs: 1,
+    attempts: 1,
+  })
+
+  const startup = controller.ensureReady()
+  await startCalled
+  controller.stop()
+  resolveStart(proc)
+
+  await assert.rejects(startup, /startup canceled/)
+  assert.deepEqual(stopped, [4321])
+  controller.stop()
+  assert.deepEqual(stopped, [4321])
+  assert.deepEqual(controller.getDiagnostics(), {
+    state: 'stopped',
+    lastError: '',
+    launchAttempt: 0,
+  })
 })
 
 test('ensureReady includes backend startup output when process exits before ready', async () => {

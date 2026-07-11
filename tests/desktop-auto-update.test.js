@@ -205,7 +205,7 @@ test('settings exposes a read-only application update panel with pinned manual r
 
   assert.match(settings, /const OFFICIAL_RELEASE_URL = 'https:\/\/github\.com\/howtimeschange\/crawshrimp\/releases\/latest'/)
   assert.match(settings, /defineProps\(\['status', 'focusPanelId', 'updateStatus', 'updateActionBusy'\]\)/)
-  assert.match(settings, /defineEmits\(\['launch-chrome', 'check-update'\]\)/)
+  assert.match(settings, /defineEmits\(\['runtime-refresh', 'check-update'\]\)/)
   assert.match(settings, /id: 'application'/)
   assert.match(settings, /id: 'application-update', label: '桌面更新'/)
   assert.match(settings, /activePanelId === 'application-update'/)

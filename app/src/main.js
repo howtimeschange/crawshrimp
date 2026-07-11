@@ -19,6 +19,9 @@ const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChro
 const { startDesktopServices } = require('./startupServices')
 const { requestBackendApi } = require('./backendApi')
 const { collectCrawshrimpDataDirCandidates } = require('./dataDirRecovery')
+const { createSingleFlightRecovery, isOwnedBackendRuntime } = require('./serviceRecovery')
+const { probeChromeCdp: probeChromeCdpHealth, prepareChromeRecovery } = require('./chromeCdp')
+const { configureSingleInstance } = require('./singleInstance')
 const { createUpdateService } = require('./updateService')
 const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
 const { evaluateUpdatePlatform, resolveTestFeedUrl } = require('./updatePlatform')
@@ -48,6 +51,7 @@ const LEGACY_RUNTIME_MARKERS = [
 let resolvedCrawshrimpDataDir = ''
 let preferredCrawshrimpDataDir = ''
 let desktopServicesStartupPromise = null
+let dataDirRecoveryInfo = { recovered: false, from: '', to: '', errors: [] }
 
 function normalizePathForIdentity(rawPath = '') {
   const resolved = path.resolve(String(rawPath || ''))
@@ -318,6 +322,7 @@ function prepareCrawshrimpDataDir() {
 
   const seen = new Set()
   const errors = []
+  const primary = candidates[0] ? path.resolve(candidates[0]) : ''
   for (const candidate of candidates) {
     const dirPath = path.resolve(candidate)
     const key = dirPath.toLowerCase()
@@ -327,6 +332,12 @@ function prepareCrawshrimpDataDir() {
       const writable = ensureWritableDataDir(dirPath)
       process.env.CRAWSHRIMP_DATA = writable
       writeDesktopConfig({ data_dir: writable })
+      dataDirRecoveryInfo = {
+        recovered: Boolean(errors.length || (primary && !sameRuntimePath(primary, writable))),
+        from: errors.length ? primary : '',
+        to: writable,
+        errors: [...errors],
+      }
       return writable
     } catch (error) {
       errors.push(`${dirPath}: ${error.message}`)
@@ -859,6 +870,7 @@ const CHROME_PATHS_MAC = [
 ]
 
 let managedChromeProcess = null
+let lastChromeDiagnostic = { ok: false, kind: 'unknown', message: '尚未检测 Chrome CDP' }
 
 function getChromeCandidates() {
   if (process.platform === 'win32') return CHROME_PATHS_WIN
@@ -937,49 +949,9 @@ function isManagedChromePid(pid) {
 }
 
 function probeChromeCdp(timeoutMs = 800) {
-  return new Promise((resolve) => {
-    let done = false
-    const finish = (result) => {
-      if (done) return
-      done = true
-      resolve(result)
-    }
-
-    const req = http.request({
-      hostname: '127.0.0.1',
-      port: CDP_PORT,
-      path: '/json/version',
-      method: 'GET',
-      timeout: timeoutMs,
-    }, (res) => {
-      let data = ''
-      res.on('data', (chunk) => { data += chunk })
-      res.on('end', () => {
-        if (res.statusCode !== 200) {
-          finish({ ok: false, statusCode: res.statusCode || 0 })
-          return
-        }
-        try {
-          const parsed = JSON.parse(data || '{}')
-          const browser = String(parsed.Browser || '')
-          finish({
-            ok: Boolean(browser),
-            browser,
-            protocolVersion: String(parsed['Protocol-Version'] || ''),
-            webSocketDebuggerUrl: String(parsed.webSocketDebuggerUrl || ''),
-          })
-        } catch (error) {
-          finish({ ok: false, error: error.message })
-        }
-      })
-    })
-
-    req.on('error', (error) => finish({ ok: false, error: error.message }))
-    req.on('timeout', () => {
-      req.destroy(new Error('timeout'))
-      finish({ ok: false, error: 'timeout' })
-    })
-    req.end()
+  return probeChromeCdpHealth({ http, port: CDP_PORT, timeoutMs }).then(result => {
+    lastChromeDiagnostic = result
+    return result
   })
 }
 
@@ -1000,9 +972,29 @@ function rememberManagedChromeProcess(proc, chromePath, profileDir) {
   })
 }
 
-async function launchChrome(customPath = '') {
+async function performLaunchChrome(customPath = '') {
   const isWin = process.platform === 'win32'
   const candidates = getChromeCandidates()
+
+  let ready = await probeChromeCdp()
+  const recovery = await prepareChromeRecovery({
+    diagnostic: ready,
+    stopManagedChrome: stopManagedChromeForQuit,
+    probeCdp: () => probeChromeCdp(),
+  })
+  ready = recovery.diagnostic
+  if (recovery.action === 'ready') {
+    sendStatus('chrome', true)
+    return { ok: true, code: 'CDP_READY', msg: `Chrome CDP already ready (port ${CDP_PORT})`, diagnostic: ready }
+  }
+  if (recovery.action === 'blocked') {
+    return {
+      ok: false,
+      code: recovery.code,
+      msg: recovery.message,
+      diagnostic: ready,
+    }
+  }
 
   let chromePath = customPath && fs.existsSync(customPath) ? customPath : null
   if (!chromePath) {
@@ -1019,12 +1011,6 @@ async function launchChrome(customPath = '') {
     })
     if (res.canceled || !res.filePaths.length) return { ok: false, msg: 'Chrome path not selected' }
     chromePath = res.filePaths[0]
-  }
-
-  const ready = await probeChromeCdp()
-  if (ready.ok) {
-    sendStatus('chrome', true)
-    return { ok: true, msg: `Chrome CDP already ready (port ${CDP_PORT})` }
   }
 
   const profileDir = getManagedChromeProfileDir()
@@ -1050,10 +1036,19 @@ async function launchChrome(customPath = '') {
     ...args,
   ], {
     detached: true,
-    stdio: 'ignore',
+    stdio: ['ignore', 'ignore', 'pipe'],
     windowsHide: true,
   })
   let spawnError = ''
+  const chromeStderr = []
+  proc.stderr?.on('data', chunk => {
+    const text = String(chunk || '').trim()
+    if (!text) return
+    chromeStderr.push(text)
+    if (chromeStderr.length > 20) chromeStderr.shift()
+    log(`[chrome] Chrome stderr: ${text}`)
+  })
+  proc.stderr?.unref?.()
   proc.once('error', (error) => {
     spawnError = error.message
     log(`[chrome] failed to launch: ${error.message}`)
@@ -1079,9 +1074,15 @@ async function launchChrome(customPath = '') {
   }
   return {
     ok: false,
-    msg: 'Chrome launched but CDP did not become ready. Check whether the dedicated browser window started normally.',
+    code: 'CDP_START_TIMEOUT',
+    msg: chromeStderr.length
+      ? `Chrome 已启动但 CDP 未就绪：${chromeStderr.slice(-3).join(' | ')}`
+      : 'Chrome launched but CDP did not become ready. Check whether the dedicated browser window started normally.',
+    diagnostic: lastChromeDiagnostic,
   }
 }
+
+const launchChrome = createSingleFlightRecovery(performLaunchChrome)
 
 // ── HTTP helper (call FastAPI) ─────────────────────────────────────────────────
 
@@ -1547,14 +1548,45 @@ function expectedBackendDataDir() {
 }
 
 function isCompatibleBackendRuntime(runtime = {}) {
-  if (!runtime || typeof runtime !== 'object') return false
-  const runtimeScriptsDir = String(runtime.scripts_dir || '')
+  if (!isOwnedBackendRuntime(runtime, {
+    instanceId: BACKEND_INSTANCE_ID,
+    scriptsDir: expectedBackendScriptsDir(),
+    samePath: sameRuntimePath,
+  })) return false
   const runtimeDataDir = String(runtime.data_dir || '')
-  const runtimeInstanceId = String(runtime.backend_instance_id || '')
-  if (runtimeInstanceId !== BACKEND_INSTANCE_ID) return false
-  if (runtime.owns_backend_instance !== true) return false
-  if (!sameRuntimePath(runtimeDataDir, expectedBackendDataDir())) return false
-  return sameRuntimePath(runtimeScriptsDir, expectedBackendScriptsDir())
+  return sameRuntimePath(runtimeDataDir, expectedBackendDataDir())
+}
+
+function adoptOwnedBackendDataDir(runtime = {}) {
+  if (!isOwnedBackendRuntime(runtime, {
+    instanceId: BACKEND_INSTANCE_ID,
+    scriptsDir: expectedBackendScriptsDir(),
+    samePath: sameRuntimePath,
+  })) return false
+
+  const runtimeDataDir = String(runtime.data_dir || '').trim()
+  if (!runtimeDataDir || !path.isAbsolute(runtimeDataDir)) return false
+  if (sameRuntimePath(runtimeDataDir, expectedBackendDataDir())) return true
+
+  try {
+    const previous = expectedBackendDataDir()
+    const adopted = ensureWritableDataDir(runtimeDataDir)
+    resolvedCrawshrimpDataDir = adopted
+    preferredCrawshrimpDataDir = adopted
+    process.env.CRAWSHRIMP_DATA = adopted
+    writeDesktopConfig({ data_dir: adopted })
+    dataDirRecoveryInfo = {
+      recovered: true,
+      from: previous,
+      to: adopted,
+      errors: [`Python backend recovered from ${previous}`],
+    }
+    log(`[data] adopted backend fallback data directory ${previous} -> ${adopted}`)
+    return true
+  } catch (error) {
+    log(`[data] refused backend fallback data directory ${runtimeDataDir}: ${error.message}`)
+    return false
+  }
 }
 
 function describeBackendRuntime(runtime = {}) {
@@ -1632,6 +1664,7 @@ async function validateApiRuntime() {
   if (!health.ok) return false
   const runtime = health.data?.runtime
   if (isCompatibleBackendRuntime(runtime)) return true
+  if (adoptOwnedBackendDataDir(runtime)) return true
   await stopForeignBackendRuntime(runtime)
   log(`[api] found another crawshrimp backend on port ${apiPort}; ${describeBackendRuntime(runtime) || 'runtime identity unavailable'}`)
   return false
@@ -1691,6 +1724,30 @@ const backendController = createBackendController({
   attempts: BACKEND_STARTUP_ATTEMPTS,
   launchRetries: BACKEND_LAUNCH_RETRIES,
   retryDelayMs: 1200,
+})
+
+const restartBackend = createSingleFlightRecovery(async () => {
+  log('[api] manual recovery requested')
+  desktopServicesStartupPromise = null
+  backendController.stop()
+  resolvedCrawshrimpDataDir = ''
+  await prepareBackendEndpoint()
+  await backendController.ensureReady()
+  const health = await getBackendHealth(1500)
+  if (!health.ok || !isCompatibleBackendRuntime(health.data?.runtime)) {
+    throw new Error('核心服务已重启，但健康检查未通过。')
+  }
+  const result = {
+    ok: true,
+    api: true,
+    apiState: backendController.getState(),
+    apiPort,
+    dataDir: getCrawshrimpDataDir(),
+    apiDiagnostic: backendController.getDiagnostics(),
+    dataDirRecovery: { ...dataDirRecoveryInfo },
+  }
+  log(`[api] manual recovery complete on port ${apiPort}`)
+  return result
 })
 
 async function startBackend() {
@@ -1947,17 +2004,25 @@ function scheduleInitialUpdateCheck() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
-app.whenReady().then(async () => {
-  hideNativeAppMenu()
-  createWindow()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-    ensureDesktopServicesStarted()
-  })
-
-  await ensureDesktopServicesStarted()
-  scheduleInitialUpdateCheck()
+const isPrimaryInstance = configureSingleInstance({
+  app,
+  getWindow: () => mainWindow,
+  createWindow,
 })
+
+if (isPrimaryInstance) {
+  app.whenReady().then(async () => {
+    hideNativeAppMenu()
+    createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) createWindow()
+      ensureDesktopServicesStarted()
+    })
+
+    await ensureDesktopServicesStarted()
+    scheduleInitialUpdateCheck()
+  })
+}
 
 app.on('window-all-closed', () => {
   lifecycleController.handleWindowAllClosed()
@@ -1983,14 +2048,26 @@ app.on('will-quit', () => {
 secureHandle('get-status', async () => ({
   api:     await probeApiReady(),
   apiState: backendController.getState(),
+  apiDiagnostic: backendController.getDiagnostics(),
   chrome:  (await probeChromeCdp()).ok,
+  chromeDiagnostic: { ...lastChromeDiagnostic },
   apiPort,
   apiBase: `http://127.0.0.1:${apiPort}`,
   apiToken: getApiToken(),
   cdpPort: CDP_PORT,
   pythonBin: getPythonBin(),
+  dataDir: getCrawshrimpDataDir(),
+  dataDirRecovery: { ...dataDirRecoveryInfo },
   dev: IS_DEV,
 }))
+
+secureHandle('restart-backend', async () => restartBackend())
+secureHandle('open-diagnostic-log', async () => {
+  const logPath = getDesktopLogPath()
+  if (fs.existsSync(logPath)) shell.showItemInFolder(logPath)
+  else await shell.openPath(path.dirname(logPath))
+  return { ok: true, path: logPath }
+})
 
 secureHandle('update:get-status', async () => updateService.getStatus())
 secureHandle('update:check', async () => {

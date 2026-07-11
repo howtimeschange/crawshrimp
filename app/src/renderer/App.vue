@@ -153,7 +153,7 @@
         :focus-panel-id="focusSettingsPanelId"
         :update-status="updateStatus"
         :update-action-busy="updateActionBusy"
-        @launch-chrome="launchChrome"
+        @runtime-refresh="refreshRuntimeStatus"
         @check-update="retryUpdateCheck"
       />
     </main>
@@ -178,7 +178,17 @@ import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarStat
 import { createUpdateActionRunner } from './utils/updateActions.js'
 
 const currentView = ref('scripts')
-const status = ref({ api: false, apiState: 'starting', chrome: false, apiPort: 18765, cdpPort: 9222 })
+const status = ref({
+  api: false,
+  apiState: 'starting',
+  apiPort: 18765,
+  apiDiagnostic: { state: 'starting', lastError: '', launchAttempt: 0 },
+  dataDir: '',
+  dataDirRecovery: { recovered: false, from: '', to: '', errors: [] },
+  chrome: false,
+  cdpPort: 9222,
+  chromeDiagnostic: { kind: 'unknown', message: '' },
+})
 const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const activeInstanceUid = ref('')
@@ -331,8 +341,20 @@ function taskProgressSummary(task) {
   return buildTaskOverviewProgress(activeScript.value?.adapter_id, task?.task_id, task?.live || {})
 }
 
-async function launchChrome() {
-  await window.cs.launchChrome()
+function applyRuntimeStatus(next = {}) {
+  status.value = { ...status.value, ...(next || {}) }
+}
+
+async function refreshRuntimeStatus() {
+  const next = await window.cs.getStatus()
+  applyRuntimeStatus(next)
+  return next
+}
+
+async function repairCoreService() {
+  const result = await window.cs.restartBackend()
+  applyRuntimeStatus(result)
+  return result
 }
 
 function toggleSidebar() {
@@ -378,12 +400,7 @@ onMounted(async () => {
     console.error('Failed to get update status', error)
   }
   try {
-    const s = await window.cs.getStatus()
-    status.value.api = s.api
-    status.value.apiState = s.apiState || status.value.apiState
-    status.value.chrome = s.chrome
-    status.value.apiPort = s.apiPort || status.value.apiPort
-    status.value.cdpPort = s.cdpPort || status.value.cdpPort
+    await refreshRuntimeStatus()
   } catch (error) {
     console.error('Failed to get initial status', error)
   }
@@ -396,13 +413,12 @@ onMounted(async () => {
   await refreshCloudApprovalStatus()
 
   pollTimer = setInterval(async () => {
-    const s = await window.cs.getStatus()
-    status.value.api = s.api
-    status.value.apiState = s.apiState || status.value.apiState
-    status.value.chrome = s.chrome
-    status.value.apiPort = s.apiPort || status.value.apiPort
-    status.value.cdpPort = s.cdpPort || status.value.cdpPort
-    await refreshCloudApprovalStatus()
+    try {
+      await refreshRuntimeStatus()
+      await refreshCloudApprovalStatus()
+    } catch (error) {
+      console.error('Failed to poll runtime status', error)
+    }
   }, 5000)
 })
 onUnmounted(() => {
@@ -415,6 +431,7 @@ onUnmounted(() => {
 import { provide } from 'vue'
 provide('scriptGroups', scriptGroups)
 provide('loadScriptGroups', loadScriptGroups)
+provide('repairCoreService', repairCoreService)
 </script>
 
 <style>

@@ -126,6 +126,17 @@ Bridge gates:
 - Sentinel survived bridge overlay: `PENDING`
 - Manual bridge started on new version and backend healthy: `PENDING`
 
+Windows runtime recovery gates:
+
+- Deny writes to `%USERPROFILE%\.crawshrimp`, launch the installed app, and verify the backend adopts `%LOCALAPPDATA%\crawshrimp`: `PENDING`
+- Confirm `desktop-config.json`, Settings, and `/health?probe=1` report the same adopted data directory: `PENDING`
+- Force the owned Python backend to exit, click `修复核心服务`, and verify one replacement process plus a refreshed script list: `PENDING`
+- Serve HTTP 404 on `127.0.0.1:9222`, click `修复 Chrome 连接`, and verify no extra Chrome process is spawned and the UI reports port occupation: `PENDING`
+- Leave a verified managed Chrome process alive with CDP unavailable, click repair, and verify only that managed process is replaced: `PENDING`
+- Double-launch the installed app and verify the existing window is focused with one Electron/backend process tree: `PENDING`
+- Start manual bridge installation while the old app is open, verify the safety prompt, exit normally, click Retry, and complete the overlay: `PENDING`
+- Repeat launch and bridge coverage with a Chinese Windows username and enterprise endpoint protection enabled: `PENDING`
+
 Acceptance notes:
 
 - Windows NSIS acceptance must prove in-place update of the existing install path.

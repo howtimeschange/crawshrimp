@@ -228,6 +228,8 @@ function createLocalPromptFallbackLibrary(payload = {}) {
 
 contextBridge.exposeInMainWorld('cs', {
   getStatus:       () => ipcRenderer.invoke('get-status').then(rememberApiConnectionFromStatus),
+  restartBackend:  () => ipcRenderer.invoke('restart-backend').then(rememberApiConnectionFromStatus),
+  openDiagnosticLog: () => ipcRenderer.invoke('open-diagnostic-log'),
   getUpdateStatus: () => ipcRenderer.invoke('update:get-status'),
   checkForUpdates: () => ipcRenderer.invoke('update:check'),
   downloadUpdate: () => ipcRenderer.invoke('update:download'),

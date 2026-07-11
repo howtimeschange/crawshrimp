@@ -45,9 +45,9 @@ test('desktop backend compatibility requires the current Electron launch identit
   assert.match(main, /const BACKEND_INSTANCE_ID = crypto\.randomUUID\(\)/)
   assert.match(main, /CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID/)
   assert.match(main, /path: '\/health\?probe=1'/)
-  assert.match(main, /const runtimeInstanceId = String\(runtime\.backend_instance_id \|\| ''\)/)
-  assert.match(main, /if \(runtimeInstanceId !== BACKEND_INSTANCE_ID\) return false/)
-  assert.match(main, /if \(runtime\.owns_backend_instance !== true\) return false/)
+  assert.match(main, /isOwnedBackendRuntime\(runtime, \{\s*instanceId: BACKEND_INSTANCE_ID,/)
+  assert.match(main, /scriptsDir: expectedBackendScriptsDir\(\)/)
+  assert.match(main, /samePath: sameRuntimePath/)
   assert.match(apiServer, /"backend_instance_id": str\(os\.environ\.get\("CRAWSHRIMP_BACKEND_INSTANCE_ID"\) or ""\)/)
 })
 
@@ -117,8 +117,8 @@ test('settings page displays the runtime backend port reported by the main proce
 
   assert.match(appShell, /apiPort: 18765/)
   assert.match(appShell, /apiState: 'starting'/)
-  assert.match(appShell, /status\.value\.apiPort = s\.apiPort \|\| status\.value\.apiPort/)
-  assert.match(appShell, /status\.value\.apiState = s\.apiState \|\| status\.value\.apiState/)
+  assert.match(appShell, /function applyRuntimeStatus\(next = \{\}\)/)
+  assert.match(appShell, /status\.value = \{ \.\.\.status\.value, \.\.\.\(next \|\| \{\}\) \}/)
   assert.match(settings, /核心服务 \(端口 \{\{ props\.status\?\.apiPort \|\| 18765 \}\}\)/)
 })
 
@@ -126,6 +126,78 @@ test('desktop get-status reports backend state machine state', () => {
   const main = readRepoFile('app/src/main.js')
 
   assert.match(main, /apiState: backendController\.getState\(\)/)
+})
+
+test('desktop exposes structured backend diagnostics and one-click recovery', () => {
+  const main = readRepoFile('app/src/main.js')
+  const preload = readRepoFile('app/src/preload.js')
+
+  assert.match(main, /const \{ createSingleFlightRecovery, isOwnedBackendRuntime \} = require\('\.\/serviceRecovery'\)/)
+  assert.match(main, /const restartBackend = createSingleFlightRecovery\(async \(\) => \{/)
+  assert.match(main, /backendController\.stop\(\)/)
+  assert.match(main, /await prepareBackendEndpoint\(\)/)
+  assert.match(main, /await backendController\.ensureReady\(\)/)
+  assert.match(main, /secureHandle\('restart-backend', async \(\) => restartBackend\(\)\)/)
+  assert.match(main, /secureHandle\('open-diagnostic-log'/)
+  assert.match(main, /apiDiagnostic: backendController\.getDiagnostics\(\)/)
+  assert.match(main, /dataDirRecovery: \{ \.\.\.dataDirRecoveryInfo \}/)
+  assert.match(preload, /restartBackend:\s*\(\) => ipcRenderer\.invoke\('restart-backend'\)/)
+  assert.match(preload, /openDiagnosticLog:\s*\(\) => ipcRenderer\.invoke\('open-diagnostic-log'\)/)
+})
+
+test('desktop adopts a writable fallback selected by its owned Python backend', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /function adoptOwnedBackendDataDir\(runtime = \{\}\)/)
+  assert.match(main, /isOwnedBackendRuntime\(runtime, \{/)
+  assert.match(main, /const adopted = ensureWritableDataDir\(runtimeDataDir\)/)
+  assert.match(main, /resolvedCrawshrimpDataDir = adopted/)
+  assert.match(main, /process\.env\.CRAWSHRIMP_DATA = adopted/)
+  assert.match(main, /writeDesktopConfig\(\{ data_dir: adopted \}\)/)
+  assert.match(main, /if \(adoptOwnedBackendDataDir\(runtime\)\) return true/)
+})
+
+test('desktop classifies CDP health and refuses to spawn into an unknown occupied port', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const \{ probeChromeCdp: probeChromeCdpHealth, prepareChromeRecovery \} = require\('\.\/chromeCdp'\)/)
+  assert.match(main, /return probeChromeCdpHealth\(\{ http, port: CDP_PORT, timeoutMs \}\)/)
+  assert.match(main, /const launchChrome = createSingleFlightRecovery\(performLaunchChrome\)/)
+  assert.match(main, /const recovery = await prepareChromeRecovery\(\{/)
+  assert.match(main, /stopManagedChrome: stopManagedChromeForQuit/)
+  assert.match(main, /probeCdp: \(\) => probeChromeCdp\(\)/)
+  assert.match(main, /if \(recovery\.action === 'blocked'\)/)
+  assert.match(main, /Chrome stderr:/)
+})
+
+test('desktop renderer exposes backend repair and structured runtime diagnostics', () => {
+  const appShell = readRepoFile('app/src/renderer/App.vue')
+  const settings = readRepoFile('app/src/renderer/views/SettingsPage.vue')
+  const scriptList = readRepoFile('app/src/renderer/views/ScriptList.vue')
+
+  assert.match(appShell, /apiDiagnostic: \{ state: 'starting', lastError: '', launchAttempt: 0 \}/)
+  assert.match(appShell, /chromeDiagnostic: \{ kind: 'unknown', message: '' \}/)
+  assert.match(appShell, /async function repairCoreService\(\)/)
+  assert.match(appShell, /await window\.cs\.restartBackend\(\)/)
+  assert.match(appShell, /provide\('repairCoreService', repairCoreService\)/)
+  assert.match(settings, /修复核心服务/)
+  assert.match(settings, /修复 Chrome 连接/)
+  assert.match(settings, /打开诊断日志/)
+  assert.match(settings, /props\.status\?\.apiDiagnostic\?\.lastError/)
+  assert.match(settings, /props\.status\?\.chromeDiagnostic\?\.message/)
+  assert.match(settings, /props\.status\?\.dataDirRecovery\?\.recovered/)
+  assert.match(scriptList, /const repairCoreService = inject\('repairCoreService'\)/)
+  assert.match(scriptList, /@click="repairAndLoad"/)
+})
+
+test('desktop acquires a single-instance lock before starting services', () => {
+  const main = readRepoFile('app/src/main.js')
+
+  assert.match(main, /const \{ configureSingleInstance \} = require\('\.\/singleInstance'\)/)
+  assert.match(main, /const isPrimaryInstance = configureSingleInstance\(\{/)
+  assert.match(main, /getWindow: \(\) => mainWindow/)
+  assert.match(main, /createWindow/)
+  assert.match(main, /if \(isPrimaryInstance\) \{\s*app\.whenReady\(\)\.then/)
 })
 
 test('desktop backend receives a resolved writable CRAWSHRIMP_DATA directory', () => {
