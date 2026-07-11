@@ -68,7 +68,7 @@ function createUpdateService({
       })
     },
     'update-not-available': () => publish({
-      status: 'idle',
+      status: 'up-to-date',
       error: '',
       progress: null,
       lastCheckedAt: new Date().toISOString(),

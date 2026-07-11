@@ -106,7 +106,12 @@ function createUpdateInstallCoordinator({
     }
 
     try {
-      await shutdownForUpdate()
+      const shutdownReady = await shutdownForUpdate()
+      if (shutdownReady !== true) {
+        await releaseDrainSafely(drainToken)
+        updateService.setInstallReadiness({ ready: true, blockers: [] })
+        return { ok: false, deferred: true }
+      }
       if (disposed) {
         await releaseDrainSafely(drainToken)
         return { ok: false, deferred: true }

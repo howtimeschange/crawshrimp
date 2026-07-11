@@ -76,6 +76,27 @@ function parseMetadataAssets(source) {
   return assets
 }
 
+function parseTopLevelVersion(source) {
+  const versions = []
+  const nestedVersions = []
+  const lines = source.split(/\r?\n/)
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]
+    const topLevel = line.match(/^version:\s*(.*?)\s*$/)
+    if (topLevel) {
+      versions.push({
+        value: topLevel[1].trim().replace(/^['"]|['"]$/g, ''),
+        line: index + 1,
+      })
+      continue
+    }
+    if (/^\s+version:\s*/.test(line)) {
+      nestedVersions.push(index + 1)
+    }
+  }
+  return { versions, nestedVersions }
+}
+
 function isInside(parent, child) {
   const relative = path.relative(parent, child)
   return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))
@@ -163,6 +184,28 @@ function validateFormalReleaseManifest(artifactRoot, version, errors) {
   }
 }
 
+function validateFormalMetadataVersions(artifactRoot, version, errors) {
+  const normalizedVersion = String(version || '').trim().replace(/^v/, '')
+  if (!/^\d+\.\d+\.\d+$/.test(normalizedVersion)) return
+  const releaseRoot = fs.existsSync(path.join(artifactRoot, 'release-assets'))
+    ? path.join(artifactRoot, 'release-assets')
+    : artifactRoot
+  for (const metadataFile of findMetadataFiles(releaseRoot)) {
+    const relativeMetadata = path.relative(releaseRoot, metadataFile).replace(/\\/g, '/')
+    const parsed = parseTopLevelVersion(fs.readFileSync(metadataFile, 'utf8'))
+    if (parsed.versions.length === 0) {
+      errors.push(`${relativeMetadata}: missing top-level version`)
+    } else if (parsed.versions.length > 1) {
+      errors.push(`${relativeMetadata}: duplicate top-level version`)
+    } else if (parsed.versions[0].value !== normalizedVersion) {
+      errors.push(`${relativeMetadata}: version ${parsed.versions[0].value || 'empty'} does not match expected ${normalizedVersion}`)
+    }
+    if (parsed.nestedVersions.length > 0) {
+      errors.push(`${relativeMetadata}: nested version values are not accepted`)
+    }
+  }
+}
+
 export function validateUpdateArtifacts(root, options = {}) {
   const artifactRoot = path.resolve(root)
   const errors = []
@@ -234,6 +277,7 @@ export function validateUpdateArtifacts(root, options = {}) {
 
   if (options.formalRelease) {
     validateFormalReleaseManifest(artifactRoot, options.version, errors)
+    validateFormalMetadataVersions(artifactRoot, options.version, errors)
   }
 
   return { ok: errors.length === 0, assetCount, errors }

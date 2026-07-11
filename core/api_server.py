@@ -6340,8 +6340,9 @@ def _ai_image_job_is_active(job: dict) -> bool:
     )
 
 
-def _collect_external_install_blockers() -> list[dict]:
+def _collect_external_install_state() -> dict:
     blockers = []
+    failed_sources = []
     for task in _active_task_items():
         jid = str(task.get("jid") or "")
         blockers.append(_install_blocker(
@@ -6356,6 +6357,7 @@ def _collect_external_install_blockers() -> list[dict]:
         running_instances = data_sink.list_task_instances(status_group="running", limit=500)
     except Exception:
         logger.debug("failed to collect running task instances for install readiness", exc_info=True)
+        failed_sources.append("task_instances")
         running_instances = []
     for instance in running_instances:
         uid = str(instance.get("instance_uid") or "")
@@ -6372,6 +6374,7 @@ def _collect_external_install_blockers() -> list[dict]:
         ai_jobs = data_sink.list_ai_image_jobs(limit=500)
     except Exception:
         logger.debug("failed to collect ai image jobs for install readiness", exc_info=True)
+        failed_sources.append("ai_image_jobs")
         ai_jobs = []
     for job in ai_jobs:
         if not _ai_image_job_is_active(job):
@@ -6396,11 +6399,20 @@ def _collect_external_install_blockers() -> list[dict]:
             continue
         seen.add(key)
         deduped.append(blocker)
-    return deduped
+    return {
+        "blockers": deduped,
+        "failed_sources": failed_sources,
+    }
+
+
+def _collect_external_install_blockers() -> list[dict]:
+    return _collect_external_install_state()["blockers"]
 
 
 def _install_readiness() -> dict:
-    external_blockers = _collect_external_install_blockers()
+    external_state = _collect_external_install_state()
+    external_blockers = external_state["blockers"]
+    failed_sources = external_state["failed_sources"]
     guard_readiness = runtime_install_guard.readiness()
     blockers = []
     seen = set()
@@ -6412,8 +6424,12 @@ def _install_readiness() -> dict:
         blockers.append(blocker)
     return {
         **guard_readiness,
-        "ready": len(blockers) == 0 and not guard_readiness["draining"],
+        "ready": len(blockers) == 0 and not guard_readiness["draining"] and not failed_sources,
         "blockers": blockers,
+        **({
+            "error": "install_readiness_unavailable",
+            "failed_sources": failed_sources,
+        } if failed_sources else {}),
     }
 
 
@@ -6424,7 +6440,15 @@ def runtime_install_readiness():
 
 @app.post("/runtime/update-drain")
 def acquire_runtime_update_drain():
-    blockers = _collect_external_install_blockers()
+    external_state = _collect_external_install_state()
+    if external_state["failed_sources"]:
+        raise HTTPException(409, {
+            "code": "install_readiness_unavailable",
+            "message": "无法确认是否仍有任务正在运行，已阻止安装更新。",
+            "blockers": external_state["blockers"],
+            "failed_sources": external_state["failed_sources"],
+        })
+    blockers = external_state["blockers"]
     if blockers:
         raise HTTPException(409, {
             "code": "runtime_busy",

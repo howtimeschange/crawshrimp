@@ -50,3 +50,11 @@ test('desktop build workflow marks the validated version release as GitHub lates
   assert.match(workflow, /gh release edit "\$\{GITHUB_REF_NAME\}"[\s\S]*--draft=false[\s\S]*--latest/)
   assert.doesNotMatch(workflow, /gh release create "\$\{GITHUB_REF_NAME\}"[\s\S]*--latest\s*\\[\s\S]*--verify-tag/)
 })
+
+test('rolling desktop-latest publication waits for validated version release completion', () => {
+  const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
+
+  assert.match(workflow, /publish-version-release:[\s\S]*gh release edit "\$\{GITHUB_REF_NAME\}"[\s\S]*--draft=false[\s\S]*--latest/)
+  assert.match(workflow, /publish-release:[\s\S]*needs:\s*publish-version-release/)
+  assert.doesNotMatch(workflow, /publish-version-release:[\s\S]*needs:\s*publish-release/)
+})

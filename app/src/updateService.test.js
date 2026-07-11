@@ -94,7 +94,16 @@ test('subscription cleanup stops status notifications and dispose removes update
   service.dispose()
   assert.equal(updater.listenerCount('checking-for-update'), 0)
   updater.emit('checking-for-update')
-  assert.equal(service.getStatus().status, 'idle')
+  assert.equal(service.getStatus().status, 'up-to-date')
+})
+
+test('no available update publishes the declared up-to-date status', () => {
+  const updater = createUpdater()
+  const service = createService({ autoUpdater: updater })
+
+  updater.emit('update-not-available')
+
+  assert.equal(service.getStatus().status, 'up-to-date')
 })
 
 test('download progress is normalized to a stable percent and byte shape', () => {

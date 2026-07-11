@@ -221,3 +221,45 @@ test('formal release validation requires the exact complete versioned asset mani
   assert.match(extra.errors.join('\n'), /unexpected release asset/)
   assert.match(extra.errors.join('\n'), /crawshrimp-v2\.0\.0-win-arm64\.exe/)
 })
+
+test('formal release validation rejects Windows metadata with a missing or mismatched top-level version', () => {
+  const root = fixtureDir()
+  writeFormalReleaseManifest(root, '2.0.0')
+
+  fs.writeFileSync(
+    path.join(root, 'release-assets/windows/latest.yml'),
+    fs.readFileSync(path.join(root, 'release-assets/windows/latest.yml'), 'utf8').replace(/^version: 2\.0\.0\n/, ''),
+  )
+  const missing = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.equal(missing.ok, false)
+  assert.match(missing.errors.join('\n'), /windows\/latest\.yml: missing top-level version/)
+
+  writeFormalReleaseManifest(root, '2.0.0')
+  fs.writeFileSync(
+    path.join(root, 'release-assets/windows/latest.yml'),
+    fs.readFileSync(path.join(root, 'release-assets/windows/latest.yml'), 'utf8').replace('version: 2.0.0', 'version: 2.0.1'),
+  )
+  const mismatch = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.equal(mismatch.ok, false)
+  assert.match(mismatch.errors.join('\n'), /windows\/latest\.yml: version 2\.0\.1 does not match expected 2\.0\.0/)
+})
+
+test('formal release validation rejects macOS metadata with duplicate or nested top-level version values', () => {
+  const root = fixtureDir()
+  writeFormalReleaseManifest(root, '2.0.0')
+
+  fs.appendFileSync(path.join(root, 'release-assets/macos/latest-mac.yml'), 'version: 2.0.0\n')
+  const duplicate = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.equal(duplicate.ok, false)
+  assert.match(duplicate.errors.join('\n'), /macos\/latest-mac\.yml: duplicate top-level version/)
+
+  writeFormalReleaseManifest(root, '2.0.0')
+  fs.writeFileSync(
+    path.join(root, 'release-assets/macos/latest-mac.yml'),
+    fs.readFileSync(path.join(root, 'release-assets/macos/latest-mac.yml'), 'utf8').replace('version: 2.0.0', 'meta:\n  version: 2.0.0'),
+  )
+  const nested = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+  assert.equal(nested.ok, false)
+  assert.match(nested.errors.join('\n'), /macos\/latest-mac\.yml: missing top-level version/)
+  assert.match(nested.errors.join('\n'), /macos\/latest-mac\.yml: nested version values are not accepted/)
+})

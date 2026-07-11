@@ -788,6 +788,33 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_controls.update(original_controls)
             api_server.cloud_machine_controller.last_health = original_health
 
+    async def test_runtime_install_readiness_fails_closed_when_task_instance_collection_fails(self):
+        with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+            with patch.object(data_sink, "list_task_instances", side_effect=RuntimeError("task db unavailable")):
+                readiness = await self._api_request("GET", "/runtime/install-readiness")
+                self.assertEqual(readiness.status_code, 200)
+                body = readiness.json()
+                self.assertFalse(body["ready"])
+                self.assertEqual(body["error"], "install_readiness_unavailable")
+                self.assertIn("task_instances", body["failed_sources"])
+
+                drain = await self._api_request("POST", "/runtime/update-drain")
+                self.assertEqual(drain.status_code, 409)
+                detail = drain.json()["detail"]
+                self.assertEqual(detail["code"], "install_readiness_unavailable")
+                self.assertIn("task_instances", detail["failed_sources"])
+                self.assertNotIn("drain_token", detail)
+
+    async def test_runtime_update_drain_fails_closed_when_ai_image_job_collection_fails(self):
+        with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+            with patch.object(data_sink, "list_ai_image_jobs", side_effect=RuntimeError("ai db unavailable")):
+                drain = await self._api_request("POST", "/runtime/update-drain")
+                self.assertEqual(drain.status_code, 409)
+                detail = drain.json()["detail"]
+                self.assertEqual(detail["code"], "install_readiness_unavailable")
+                self.assertIn("ai_image_jobs", detail["failed_sources"])
+                self.assertNotIn("drain_token", detail)
+
     async def test_execute_task_reraises_cancelled_error_after_partial_export(self):
         class FakeBridge:
             def get_tabs(self):

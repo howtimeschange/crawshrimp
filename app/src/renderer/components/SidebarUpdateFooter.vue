@@ -8,6 +8,7 @@
       class="update-control"
       type="button"
       :title="tooltipText"
+      :data-tooltip="collapsed ? tooltipText : null"
       :aria-label="ariaLabel"
       @click="onAction"
     >
@@ -22,6 +23,7 @@
       v-else
       class="update-control"
       :title="tooltipText"
+      :data-tooltip="collapsed ? tooltipText : null"
       :aria-label="ariaLabel"
     >
       <span v-if="presentation.label" class="status-icon" aria-hidden="true">{{ statusIcon }}</span>
@@ -108,6 +110,7 @@ function onAction() {
 }
 
 .update-control {
+  position: relative;
   width: 100%;
   min-height: 44px;
   display: flex;
@@ -196,8 +199,9 @@ button.update-control:focus-visible {
   background: var(--orange);
 }
 
-.collapsed {
+.sidebar-update-footer.collapsed {
   padding-inline: 6px;
+  overflow: visible;
 }
 
 .collapsed .update-control {
@@ -219,6 +223,34 @@ button.update-control:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 11px;
+}
+
+.collapsed .update-control::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  left: calc(100% + 8px);
+  bottom: 6px;
+  z-index: 30;
+  max-width: 260px;
+  padding: 6px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(15, 23, 42, 0.96);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.35;
+  white-space: normal;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-4px);
+  transition: opacity 0.12s, transform 0.12s;
+}
+
+.collapsed .update-control:hover::after,
+.collapsed .update-control:focus-visible::after {
+  opacity: 1;
+  transform: translateX(0);
 }
 
 .tone-available .status-icon,

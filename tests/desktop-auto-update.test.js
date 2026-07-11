@@ -57,6 +57,25 @@ test('manual update check after download refreshes readiness but returns updater
   assert.doesNotMatch(checkHandler, /return updateCoordinator\.refreshReadiness\(\)/)
 })
 
+test('updater IPC action handlers always return the stable status snapshot', () => {
+  const main = readRepoFile('app/src/main.js')
+  const checkHandler = main.slice(
+    main.indexOf("secureHandle('update:check'"),
+    main.indexOf("secureHandle('update:download'"),
+  )
+  const downloadHandler = main.slice(
+    main.indexOf("secureHandle('update:download'"),
+    main.indexOf("secureHandle('update:install'"),
+  )
+
+  assert.match(checkHandler, /await updateService\.checkForUpdates\(\{ manual: true \}\)/)
+  assert.match(checkHandler, /return updateService\.getStatus\(\)/)
+  assert.doesNotMatch(checkHandler, /return updateService\.checkForUpdates/)
+  assert.match(downloadHandler, /await updateService\.downloadUpdate\(\)/)
+  assert.match(downloadHandler, /return updateService\.getStatus\(\)/)
+  assert.doesNotMatch(downloadHandler, /async \(\) => updateService\.downloadUpdate\(\)/)
+})
+
 test('renderer shell wires the collapsible update footer without remounting content', () => {
   const app = readRepoFile('app/src/renderer/App.vue')
 
@@ -114,6 +133,16 @@ test('collapsed primary navigation exposes immediate hover and keyboard tooltips
   assert.doesNotMatch(app, /(?:^|\n)\.nav-btn::after\s*\{/)
   assert.match(app, /\.sidebar-collapsed \.nav-btn::after\s*\{[^}]*content:\s*attr\(data-tooltip\)[^}]*position:\s*absolute/s)
   assert.match(app, /\.sidebar-collapsed \.nav-btn:hover::after[\s\S]*\.sidebar-collapsed \.nav-btn:focus-visible::after/)
+})
+
+test('collapsed update footer exposes immediate hover and keyboard tooltip without clipping', () => {
+  const footer = readRepoFile('app/src/renderer/components/SidebarUpdateFooter.vue')
+
+  assert.match(footer, /:data-tooltip="collapsed \? tooltipText : null"/)
+  assert.match(footer, /:aria-label="ariaLabel"/)
+  assert.match(cssRule(footer, '.sidebar-update-footer.collapsed'), /overflow:\s*visible/)
+  assert.match(footer, /\.collapsed \.update-control::after\s*\{[^}]*content:\s*attr\(data-tooltip\)[^}]*position:\s*absolute/s)
+  assert.match(footer, /\.collapsed \.update-control:hover::after[\s\S]*\.collapsed \.update-control:focus-visible::after/)
 })
 
 test('settings exposes a read-only application update panel with pinned manual release fallback', () => {

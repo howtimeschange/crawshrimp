@@ -113,7 +113,7 @@ test('downloaded state immediately checks readiness', async () => {
     },
     acquireDrain: async () => ({ ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }),
     releaseDrain: async () => {},
-    shutdownForUpdate: async () => {},
+    shutdownForUpdate: async () => true,
     notifyReady: () => {},
   })
 
@@ -139,7 +139,7 @@ test('a blocker sets waiting-for-tasks and schedules one five-second retry', asy
     },
     acquireDrain: async () => ({ ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }),
     releaseDrain: async () => {},
-    shutdownForUpdate: async () => {},
+    shutdownForUpdate: async () => true,
     notifyReady: () => {},
     ...timerHarness,
   })
@@ -176,7 +176,7 @@ test('transition from waiting to ready emits exactly one notification', async ()
     getReadiness: async () => readiness.shift() || { ready: true, blockers: [] },
     acquireDrain: async () => ({ ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }),
     releaseDrain: async () => {},
-    shutdownForUpdate: async () => {},
+    shutdownForUpdate: async () => true,
     notifyReady: () => { notifications += 1 },
     ...timerHarness,
   })
@@ -207,7 +207,7 @@ test('readiness network failure sets an error and never installs', async () => {
       return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
     },
     releaseDrain: async () => events.push('release-drain'),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -230,7 +230,10 @@ async function assertUnsafeReadinessDefers(label, readinessResponse) {
       return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
     },
     releaseDrain: async () => events.push(`${label}:release-drain`),
-    shutdownForUpdate: async () => events.push(`${label}:shutdown`),
+    shutdownForUpdate: async () => {
+      events.push(`${label}:shutdown`)
+      return true
+    },
     notifyReady: () => {},
   })
 
@@ -263,7 +266,7 @@ test('ready readiness with blockers fails closed before drain acquisition', asyn
       return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
     },
     releaseDrain: async () => events.push('release-drain'),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -289,7 +292,7 @@ test('ready readiness with error fails closed before drain acquisition', async (
       return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
     },
     releaseDrain: async () => events.push('release-drain'),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -320,7 +323,7 @@ test('requestInstall fresh-checks readiness then drains, cleans up, marks instal
       return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
     },
     releaseDrain: async () => events.push('release-drain'),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -366,7 +369,7 @@ test('requestInstall accepts real successful API drain response and quits only a
       }
     },
     releaseDrain: async token => events.push(`release-drain:${token}`),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -396,7 +399,10 @@ async function assertUnsafeDrainDefers(label, drainResponse) {
       return drainResponse
     },
     releaseDrain: async token => events.push(`${label}:release-drain:${token}`),
-    shutdownForUpdate: async () => events.push(`${label}:shutdown`),
+    shutdownForUpdate: async () => {
+      events.push(`${label}:shutdown`)
+      return true
+    },
     notifyReady: () => {},
   })
 
@@ -440,7 +446,10 @@ async function assertContradictoryDrainReadinessDefers(label, readiness) {
       return { ok: true, drain_token: 'drain-1', readiness }
     },
     releaseDrain: async token => events.push(`${label}:release-drain:${token}`),
-    shutdownForUpdate: async () => events.push(`${label}:shutdown`),
+    shutdownForUpdate: async () => {
+      events.push(`${label}:shutdown`)
+      return true
+    },
     notifyReady: () => {},
   })
 
@@ -486,7 +495,7 @@ test('a 409 drain race returns to waiting without cleanup or install', async () 
       throw error
     },
     releaseDrain: async () => events.push('release-drain'),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
     ...timerHarness,
   })
@@ -532,6 +541,41 @@ test('cleanup failure releases the acquired drain token and restores retryable r
   assert.equal(updateService.getStatus().status, 'ready-to-install')
 })
 
+test('cleanup false result releases the drain token and skips install side effects', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  updateService.setInstalling = () => events.push('set-installing')
+  updateService.quitAndInstall = () => events.push('quit-and-install')
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
+    },
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => {
+      events.push('shutdown')
+      return false
+    },
+    notifyReady: () => {},
+  })
+
+  const result = await coordinator.requestInstall()
+
+  assert.deepEqual(result, { ok: false, deferred: true })
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'release-drain:drain-1',
+  ])
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
 test('install failure releases the acquired drain token and restores retryable readiness', async () => {
   const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
   const events = []
@@ -550,7 +594,7 @@ test('install failure releases the acquired drain token and restores retryable r
       return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
     },
     releaseDrain: async token => events.push(`release-drain:${token}`),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -576,7 +620,7 @@ test('dispose before readiness resolution prevents post-await side effects', asy
     getReadiness: async () => readiness.promise,
     acquireDrain: async () => ({ ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }),
     releaseDrain: async () => {},
-    shutdownForUpdate: async () => {},
+    shutdownForUpdate: async () => true,
     notifyReady: () => { notifications += 1 },
     ...timerHarness,
   })
@@ -608,7 +652,7 @@ test('dispose before drain resolution releases token and skips install side effe
       return drain.promise
     },
     releaseDrain: async token => events.push(`release-drain:${token}`),
-    shutdownForUpdate: async () => events.push('shutdown'),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
     notifyReady: () => {},
   })
 
@@ -632,7 +676,7 @@ test('dispose unsubscribes and clears polling', async () => {
     }),
     acquireDrain: async () => ({ ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }),
     releaseDrain: async () => {},
-    shutdownForUpdate: async () => {},
+    shutdownForUpdate: async () => true,
     notifyReady: () => {},
     ...timerHarness,
   })

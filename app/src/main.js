@@ -1962,9 +1962,13 @@ secureHandle('update:check', async () => {
     await updateCoordinator.refreshReadiness()
     return updateService.getStatus()
   }
-  return updateService.checkForUpdates({ manual: true })
+  await updateService.checkForUpdates({ manual: true })
+  return updateService.getStatus()
 })
-secureHandle('update:download', async () => updateService.downloadUpdate())
+secureHandle('update:download', async () => {
+  await updateService.downloadUpdate()
+  return updateService.getStatus()
+})
 secureHandle('update:install', async () => updateCoordinator.requestInstall())
 
 secureHandle('launch-chrome', async (_, customPath) => launchChrome(customPath || ''))
