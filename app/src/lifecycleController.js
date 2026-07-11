@@ -14,6 +14,7 @@ function createLifecycleController(options = {}) {
 
   let shutdownInProgress = false
   let confirmedQuit = false
+  let updateInstallShutdownPrepared = false
 
   function handleWindowAllClosed() {
     if (platform === 'darwin') return
@@ -59,10 +60,43 @@ function createLifecycleController(options = {}) {
     }
   }
 
+  async function prepareForUpdateInstall() {
+    if (confirmedQuit) return true
+    if (shutdownInProgress) return false
+
+    shutdownInProgress = true
+    try {
+      validateManagedChromeStopped(await stopManagedChrome())
+      await stopBackend()
+      confirmedQuit = true
+      updateInstallShutdownPrepared = true
+      return true
+    } catch (error) {
+      shutdownInProgress = false
+      throw error
+    }
+  }
+
+  function recoverFromUpdateInstallFailure() {
+    if (!updateInstallShutdownPrepared) return false
+    shutdownInProgress = false
+    confirmedQuit = false
+    updateInstallShutdownPrepared = false
+    return true
+  }
+
   return {
     handleBeforeQuit,
     handleWindowAllClosed,
+    prepareForUpdateInstall,
+    recoverFromUpdateInstallFailure,
   }
+}
+
+function validateManagedChromeStopped(result) {
+  if (!result || result.stopped !== false) return
+  if (result.reason !== 'kill-failed' && result.reason !== 'exit-timeout') return
+  throw new Error(`Managed Chrome cleanup failed: ${result.reason}`)
 }
 
 module.exports = {

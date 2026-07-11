@@ -11,10 +11,12 @@
     "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac",
     "build:win": "vite build && node scripts/run-electron-builder.js --win",
     "vite:build": "vite build",
-    "test": "node --test src/*.test.js src/renderer/utils/*.test.js scripts/*.test.js"
+    "test": "node --test src/*.test.js src/renderer/utils/*.test.js scripts/*.test.js",
+    "test:update-artifacts": "node --test scripts/validate-update-artifacts.test.js"
   },
   "dependencies": {
     "@tldraw/assets": "^5.2.3",
+    "electron-updater": "6.8.9",
     "portfinder": "^1.0.32",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",

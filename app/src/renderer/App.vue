@@ -1,8 +1,26 @@
 <template>
-  <div class="layout" :class="{ 'layout-ai-image': currentView === 'ai_image' }">
+  <div
+    class="layout"
+    :class="{
+      'layout-ai-image': currentView === 'ai_image',
+      'sidebar-collapsed': effectiveSidebarCollapsed,
+    }"
+  >
     <!-- 标题栏 -->
     <div class="titlebar">
-      <span class="logo">🦐 抓虾</span>
+      <div class="brand">
+        <span class="logo">🦐 抓虾</span>
+        <button
+          v-if="!activeScript"
+          class="collapse-btn"
+          type="button"
+          :aria-label="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
+          @click="toggleSidebar"
+        >
+          {{ sidebarCollapsed ? '›' : '‹' }}
+        </button>
+      </div>
       <div class="status-bar">
         <span class="dot" :class="status.api ? 'on' : 'off'">
           <i></i>核心
@@ -21,7 +39,8 @@
           v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
           :aria-label="item.label"
-          :title="item.label"
+          :data-tooltip="effectiveSidebarCollapsed ? item.label : null"
+          :title="effectiveSidebarCollapsed ? undefined : item.label"
           @click="selectNav(item)"
         >
           <span class="icon">{{ item.icon }}</span>
@@ -76,6 +95,14 @@
           </button>
         </div>
       </div>
+      <SidebarUpdateFooter
+        :update-status="updateStatus"
+        :collapsed="effectiveSidebarCollapsed"
+        :busy="updateActionBusy"
+        @download="downloadUpdate"
+        @install="installUpdate"
+        @retry="retryUpdateCheck"
+      />
     </aside>
 
     <!-- 主内容区 -->
@@ -124,7 +151,10 @@
         v-if="currentView === 'settings'"
         :status="status"
         :focus-panel-id="focusSettingsPanelId"
+        :update-status="updateStatus"
+        :update-action-busy="updateActionBusy"
         @launch-chrome="launchChrome"
+        @check-update="retryUpdateCheck"
       />
     </main>
   </div>
@@ -141,8 +171,11 @@ import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
 import CloudApprovalFrame from './views/CloudApprovalFrame.vue'
+import SidebarUpdateFooter from './components/SidebarUpdateFooter.vue'
 import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
+import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarState.js'
+import { createUpdateActionRunner } from './utils/updateActions.js'
 
 const currentView = ref('scripts')
 const status = ref({ api: false, apiState: 'starting', chrome: false, apiPort: 18765, cdpPort: 9222 })
@@ -152,6 +185,36 @@ const activeInstanceUid = ref('')
 const scriptGroups = ref([])
 const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
+const sidebarCollapsed = ref(readSidebarCollapsed(window.localStorage))
+const effectiveSidebarCollapsed = computed(() => !activeScript.value && sidebarCollapsed.value)
+const updateStatus = ref({
+  status: 'idle',
+  currentVersion: '',
+  latestVersion: '',
+  progress: null,
+  blockers: [],
+  error: '',
+  downloaded: false,
+})
+const updateActionBusy = ref(false)
+const updateActionRunner = createUpdateActionRunner({
+  setBusy: busy => {
+    updateActionBusy.value = busy
+  },
+  getLatestStatus: async () => {
+    if (typeof window.cs.getUpdateStatus !== 'function') return null
+    return window.cs.getUpdateStatus()
+  },
+  handleError: (error, latestStatus) => {
+    const message = formatUpdateActionError(error)
+    updateStatus.value = {
+      ...updateStatus.value,
+      ...(latestStatus || {}),
+      status: 'error',
+      error: message,
+    }
+  },
+})
 
 const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
@@ -173,9 +236,17 @@ const filteredNavItems = computed(() =>
 )
 
 function selectNav(item) {
+  if (shouldClearActiveScriptForNav(item)) {
+    activeScript.value = null
+    activeTaskId.value = null
+  }
   currentView.value = item.id
   activeInstanceUid.value = ''
   if (item.id !== 'settings') focusSettingsPanelId.value = ''
+}
+
+function shouldClearActiveScriptForNav(item) {
+  return Boolean(activeScript.value) && item.id !== currentView.value
 }
 
 function openSettingsPanel(panelId) {
@@ -264,9 +335,48 @@ async function launchChrome() {
   await window.cs.launchChrome()
 }
 
+function toggleSidebar() {
+  if (activeScript.value) return
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  writeSidebarCollapsed(window.localStorage, sidebarCollapsed.value)
+}
+
+function formatUpdateActionError(error) {
+  const message = String(error?.message || error || '').trim()
+  return message ? `桌面更新失败：${message}` : '桌面更新失败，请稍后重试。'
+}
+
+async function downloadUpdate() {
+  const result = await updateActionRunner.run(() => window.cs.downloadUpdate())
+  if (result?.status) updateStatus.value = result
+}
+
+async function retryUpdateCheck() {
+  const result = await updateActionRunner.run(() => window.cs.checkForUpdates())
+  if (result?.status) updateStatus.value = result
+}
+
+async function installUpdate() {
+  const result = await updateActionRunner.run(() => window.cs.installUpdate())
+  if (result?.status) updateStatus.value = result
+}
+
 let pollTimer = null
+let updateStatusCleanup = null
 onMounted(async () => {
   window.cs.onStatus(({ key, value }) => { status.value[key] = value })
+  if (typeof window.cs.onUpdateStatus === 'function') {
+    updateStatusCleanup = window.cs.onUpdateStatus(nextStatus => {
+      updateStatus.value = { ...updateStatus.value, ...(nextStatus || {}) }
+    })
+  }
+  try {
+    if (typeof window.cs.getUpdateStatus === 'function') {
+      updateStatus.value = await window.cs.getUpdateStatus()
+    }
+  } catch (error) {
+    console.error('Failed to get update status', error)
+  }
   try {
     const s = await window.cs.getStatus()
     status.value.api = s.api
@@ -297,6 +407,7 @@ onMounted(async () => {
 })
 onUnmounted(() => {
   clearInterval(pollTimer)
+  if (typeof updateStatusCleanup === 'function') updateStatusCleanup()
   window.cs.offStatus()
 })
 
@@ -352,6 +463,10 @@ input, select, textarea { font-family: inherit; }
   height: 100vh;
 }
 
+.layout.sidebar-collapsed {
+  grid-template-columns: 56px 1fr;
+}
+
 /* 标题栏 */
 .titlebar {
   grid-column: 1 / -1;
@@ -364,7 +479,42 @@ input, select, textarea { font-family: inherit; }
   padding: 0 20px 0 88px;
   gap: 8px;
 }
-.logo { font-size: 18px; font-weight: 800; color: var(--text); }
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  -webkit-app-region: no-drag;
+}
+.logo { font-size: 18px; font-weight: 800; color: var(--text); white-space: nowrap; }
+.collapse-btn {
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text2);
+  font-size: 18px;
+  line-height: 1;
+  -webkit-app-region: no-drag;
+}
+.collapse-btn:hover,
+.collapse-btn:focus-visible {
+  color: var(--text);
+  background: var(--bg3);
+  outline: none;
+}
+.sidebar-collapsed .titlebar {
+  padding-left: 88px;
+}
+.sidebar-collapsed .brand {
+  width: 56px;
+  justify-content: center;
+  margin-left: -32px;
+}
+.sidebar-collapsed .logo {
+  display: none;
+}
 .status-bar { margin-left: auto; display: flex; gap: 16px; -webkit-app-region: no-drag; }
 .dot { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text3); }
 .dot i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--text3); }
@@ -382,6 +532,11 @@ input, select, textarea { font-family: inherit; }
   min-height: 0;
   overflow: hidden;
 }
+.sidebar-collapsed .sidebar {
+  position: relative;
+  z-index: 20;
+  overflow: visible;
+}
 nav {
   display: flex;
   flex-direction: column;
@@ -391,13 +546,62 @@ nav {
   overflow-y: auto;
 }
 .nav-btn {
+  position: relative;
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 8px;
   background: transparent; border: none;
   color: var(--text2); font-size: 13px; text-align: left;
   transition: all 0.15s;
 }
+.sidebar-collapsed nav {
+  padding: 0 6px;
+  overflow: visible;
+}
+.sidebar-collapsed .nav-btn {
+  justify-content: center;
+  padding: 10px 0;
+}
+.sidebar-collapsed .nav-btn > span:not(.icon) {
+  display: none;
+}
+.sidebar-collapsed .nav-btn .icon {
+  width: auto;
+  font-size: 17px;
+}
 .nav-btn:hover { background: var(--bg3); color: var(--text); }
+.nav-btn:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+.sidebar-collapsed .nav-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  z-index: 1000;
+  min-width: max-content;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: #292932;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-4px, -50%);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+}
+.sidebar-collapsed .nav-btn:hover::after,
+.sidebar-collapsed .nav-btn:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(0, -50%);
+}
 .nav-btn.active { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
 .icon { font-size: 15px; width: 20px; }
 
@@ -517,14 +721,16 @@ nav {
     grid-column: 1;
     grid-row: 3;
     flex-direction: row;
-    padding: 4px 0 max(4px, env(safe-area-inset-bottom));
+    padding: 0;
     overflow-x: auto;
     border-top: 1px solid var(--border);
     border-right: 0;
   }
 
   .layout-ai-image nav {
-    width: 100%;
+    width: auto;
+    flex: 1 1 auto;
+    min-width: 0;
     flex-direction: row;
     align-items: stretch;
     gap: 4px;
@@ -547,6 +753,49 @@ nav {
   .layout-ai-image .nav-btn .icon {
     width: auto;
     font-size: 18px;
+  }
+
+  .layout-ai-image .sidebar-update-footer {
+    flex: 0 0 52px;
+    height: 56px;
+    display: flex;
+    align-items: center;
+    margin-top: 0;
+    padding: 0 4px;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+  }
+
+  .layout-ai-image .sidebar-update-footer :deep(.update-control) {
+    min-height: 44px;
+    padding: 4px;
+  }
+
+  .layout-ai-image .sidebar-update-footer :deep(.update-control:focus-visible) {
+    outline: none;
+    box-shadow: inset 0 0 0 2px var(--orange);
+  }
+
+  .layout-ai-image .sidebar-update-footer :deep(.version-label),
+  .layout-ai-image .sidebar-update-footer :deep(.update-copy) {
+    display: none;
+  }
+
+  .layout-ai-image.sidebar-collapsed .sidebar,
+  .layout-ai-image.sidebar-collapsed nav {
+    overflow: visible;
+  }
+
+  .layout-ai-image.sidebar-collapsed .nav-btn::after {
+    top: auto;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translate(-50%, 4px);
+  }
+
+  .layout-ai-image.sidebar-collapsed .nav-btn:hover::after,
+  .layout-ai-image.sidebar-collapsed .nav-btn:focus-visible::after {
+    transform: translate(-50%, 0);
   }
 }
 </style>

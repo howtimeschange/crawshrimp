@@ -81,6 +81,9 @@ jobs:
             build_script: build:mac:ci
             artifact_glob: |
               app/dist/*.dmg
+              app/dist/*.zip
+              app/dist/*.zip.blockmap
+              app/dist/latest*.yml
           - name: Windows x64
             os: windows-2022
             python_target: win-x64
@@ -89,6 +92,7 @@ jobs:
             artifact_glob: |
               app/dist/*.exe
               app/dist/*.exe.blockmap
+              app/dist/latest*.yml
 
     steps:
       - name: Checkout
@@ -154,11 +158,34 @@ jobs:
           APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY_BASE64 }}
           APPLE_API_KEY_ID_SECRET: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER_SECRET: ${{ secrets.APPLE_API_ISSUER }}
+          MAC_CSC_LINK_SECRET: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD_SECRET: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          if [ -z "${APPLE_API_KEY_BASE64:-}" ] || [ -z "${APPLE_API_KEY_ID_SECRET:-}" ] || [ -z "${APPLE_API_ISSUER_SECRET:-}" ]; then
-            echo "::notice::Apple notarization secrets are not configured; macOS build will skip notarization."
-            exit 0
+          missing=0
+          if [ -z "${APPLE_API_KEY_BASE64:-}" ]; then
+            echo "::error::Missing APPLE_API_KEY_BASE64 for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${APPLE_API_KEY_ID_SECRET:-}" ]; then
+            echo "::error::Missing APPLE_API_KEY_ID for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${APPLE_API_ISSUER_SECRET:-}" ]; then
+            echo "::error::Missing APPLE_API_ISSUER for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${MAC_CSC_LINK_SECRET:-}" ]; then
+            echo "::error::Missing MAC_CSC_LINK for formal macOS tag build"
+            missing=1
+          fi
+          if [ -z "${MAC_CSC_KEY_PASSWORD_SECRET:-}" ]; then
+            echo "::error::Missing MAC_CSC_KEY_PASSWORD for formal macOS tag build"
+            missing=1
+          fi
+          if [ "${missing}" -ne 0 ]; then
+            echo "::error::Missing Apple notarization or CSC signing credentials for formal macOS tag build"
+            exit 1
           fi
 
           key_path="${RUNNER_TEMP}/AuthKey_${APPLE_API_KEY_ID_SECRET}.p8"
@@ -169,6 +196,7 @@ jobs:
             echo "APPLE_NOTARY_KEY=${key_path}"
             echo "APPLE_NOTARY_KEY_ID=${APPLE_API_KEY_ID_SECRET}"
             echo "APPLE_NOTARY_ISSUER=${APPLE_API_ISSUER_SECRET}"
+            echo "CRAWSHRIMP_NOTARIZE_APP=1"
           } >> "${GITHUB_ENV}"
 
       - name: Build desktop package
@@ -198,6 +226,11 @@ jobs:
           expected_files=(
             "dist/crawshrimp-v${APP_VERSION}-mac-arm64.dmg"
             "dist/crawshrimp-v${APP_VERSION}-mac-x64.dmg"
+            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.zip"
+            "dist/crawshrimp-v${APP_VERSION}-mac-x64.zip"
+            "dist/crawshrimp-v${APP_VERSION}-mac-arm64.zip.blockmap"
+            "dist/crawshrimp-v${APP_VERSION}-mac-x64.zip.blockmap"
+            "dist/latest-mac.yml"
           )
 
           missing=0
@@ -209,7 +242,7 @@ jobs:
           done
 
           if grep -Eq 'Command failed: hdiutil detach|hdiutil:.*(Resource busy|No such file or directory|detach failed)' ../mac-build.log && [ "${missing}" -eq 0 ]; then
-            echo "::warning::electron-builder reported an hdiutil detach cleanup failure after producing all macOS artifacts; continuing so artifacts can be uploaded."
+            echo "::warning::electron-builder reported an hdiutil detach cleanup failure after producing all macOS installer and update metadata artifacts; continuing so artifacts can be uploaded."
             hdiutil info || true
             exit 0
           fi
@@ -225,6 +258,71 @@ jobs:
           APPLE_NOTARY_POLL_INTERVAL: 60
         run: bash scripts/notarize-macos-dmgs.sh
 
+      - name: Validate notarized macOS ZIP apps
+        if: matrix.artifact_suffix == 'mac' && startsWith(github.ref, 'refs/tags/v')
+        working-directory: app
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          zips=(dist/crawshrimp-v*-mac-arm64.zip dist/crawshrimp-v*-mac-x64.zip)
+          if [ "${#zips[@]}" -ne 2 ]; then
+            echo "::error::Expected exactly two macOS ZIP artifacts, found ${#zips[@]}"
+            printf '%s\n' "${zips[@]}"
+            exit 1
+          fi
+
+          extract_dirs=()
+          cleanup_extracts() {
+            for dir in "${extract_dirs[@]}"; do
+              rm -rf "${dir}"
+            done
+          }
+          trap cleanup_extracts EXIT
+
+          for zip_file in "${zips[@]}"; do
+            extract_dir="$(mktemp -d "${RUNNER_TEMP:-/tmp}/zip-app.XXXXXX")"
+            extract_dirs+=("${extract_dir}")
+            zip_listing="${extract_dir}/zip-entries.txt"
+            unzip -Z1 "${zip_file}" > "${zip_listing}"
+            while IFS= read -r zip_entry; do
+              case "${zip_entry}" in
+                ""|/*|[A-Za-z]:*|*\\*)
+                  echo "::error::Unsafe ZIP entry in ${zip_file}: ${zip_entry}"
+                  exit 1
+                  ;;
+              esac
+              IFS='/' read -r -a zip_parts <<< "${zip_entry}"
+              for zip_part in "${zip_parts[@]}"; do
+                if [ "${zip_part}" = ".." ]; then
+                  echo "::error::Unsafe ZIP entry in ${zip_file}: ${zip_entry}"
+                  exit 1
+                fi
+              done
+            done < "${zip_listing}"
+            unzip -q "${zip_file}" -d "${extract_dir}"
+            app_path="$(find "${extract_dir}" -maxdepth 2 -type d -name '*.app' -print -quit)"
+            if [ -z "${app_path}" ]; then
+              echo "::error::No app bundle found in ${zip_file}"
+              exit 1
+            fi
+
+            echo "Validating notarized app extracted from ${zip_file}: ${app_path}"
+            codesign --verify --deep --strict --verbose=2 "${app_path}"
+            codesign -dv --verbose=4 "${app_path}" 2>&1 | tee "${extract_dir}/codesign-details.log"
+            if ! grep -q 'TeamIdentifier=62AR7GLNK3' "${extract_dir}/codesign-details.log"; then
+              echo "::error::Expected TeamIdentifier=62AR7GLNK3 in ${zip_file}"
+              exit 1
+            fi
+            spctl --assess --type execute --verbose=2 "${app_path}"
+            xcrun stapler validate "${app_path}"
+          done
+
+      - name: Validate update artifacts
+        working-directory: app
+        shell: bash
+        run: node scripts/validate-update-artifacts.js dist
+
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -235,7 +333,7 @@ jobs:
   publish-release:
     name: Publish GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: publish-version-release
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
@@ -258,46 +356,109 @@ jobs:
           name: crawshrimp-win-x64
           path: release-assets/windows
 
+      - name: Validate release tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only exact stable vX.Y.Z tags can publish desktop-latest: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app/package.json version ${APP_VERSION}"
+            exit 1
+          fi
+          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Validate release update artifacts
+        run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${APP_VERSION}"
+
       - name: Prepare release metadata
         run: |
-          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
-          echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
           NOTES_FILE="release-notes/v${APP_VERSION}.md"
           if [ -f "${NOTES_FILE}" ]; then
             cp "${NOTES_FILE}" release-notes.md
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG（Apple Silicon / Intel）、Windows 安装包\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG（Apple Silicon / Intel）、Windows 安装包\n- 说明：desktop-latest 仅用于手动安装；自动更新元数据发布在版本化 Release\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \
             "${GITHUB_RUN_ID}" >> release-notes.md
 
-      - name: Delete previous rolling release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Validate manual installer assets
+        shell: bash
         run: |
-          gh release delete desktop-latest --cleanup-tag --yes || true
-          git push origin :refs/tags/desktop-latest || true
-
-      - name: Recreate rolling release tag
-        run: |
-          git tag -d desktop-latest || true
-          git tag desktop-latest "${GITHUB_SHA}"
-          git push origin refs/tags/desktop-latest
+          set -euo pipefail
+          shopt -s nullglob
+          manual_assets=(
+            release-assets/macos/*.dmg
+            release-assets/windows/*.exe
+          )
+          printf '%s\n' \
+            "crawshrimp-v${APP_VERSION}-mac-arm64.dmg" \
+            "crawshrimp-v${APP_VERSION}-mac-x64.dmg" \
+            "crawshrimp-v${APP_VERSION}-win-x64.exe" \
+            | sort > expected-manual-assets.txt
+          printf '%s\n' "${manual_assets[@]##*/}" | sort > actual-manual-assets.txt
+          if ! diff -u expected-manual-assets.txt actual-manual-assets.txt; then
+            echo "::error::Unexpected manual installer asset set for desktop-latest"
+            exit 1
+          fi
 
       - name: Publish rolling release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          gh release create desktop-latest \
-            --target "${GITHUB_SHA}" \
-            release-assets/macos/* \
-            release-assets/windows/* \
-            --title "抓虾 Desktop Latest v${APP_VERSION}" \
-            --notes-file release-notes.md \
-            --latest=false
+          set -euo pipefail
+          shopt -s nullglob
+          manual_assets=(
+            release-assets/macos/*.dmg
+            release-assets/windows/*.exe
+          )
+          if [ "${#manual_assets[@]}" -eq 0 ]; then
+            echo "::error::No manual installer assets found for desktop-latest"
+            exit 1
+          fi
+          if gh release view desktop-latest >/dev/null 2>&1; then
+            gh release view desktop-latest --json assets --jq '.assets[].name' | sort > existing-desktop-latest-assets.txt
+            comm -23 existing-desktop-latest-assets.txt expected-manual-assets.txt | while IFS= read -r asset_name; do
+              if [ -n "${asset_name}" ]; then
+                gh release delete-asset desktop-latest "${asset_name}" --yes
+              fi
+            done
+            gh release edit desktop-latest \
+              --title "抓虾 Desktop Latest v${APP_VERSION}" \
+              --notes-file release-notes.md \
+              --latest=false
+            gh release upload desktop-latest \
+              "${manual_assets[@]}" \
+              --clobber
+          else
+            gh release create desktop-latest \
+              --target "${GITHUB_SHA}" \
+              "${manual_assets[@]}" \
+              --title "抓虾 Desktop Latest v${APP_VERSION}" \
+              --notes-file release-notes.md \
+              --latest=false
+          fi
+
+          gh release view desktop-latest --json assets --jq '.assets[].name' | sort > actual-desktop-latest-assets.txt
+          if ! diff -u expected-manual-assets.txt actual-desktop-latest-assets.txt; then
+            echo "::error::Unexpected desktop-latest manual asset set"
+            exit 1
+          fi
+
+          git push --force origin "${GITHUB_SHA}:refs/tags/desktop-latest"
+          REMOTE_DESKTOP_LATEST_SHA=$(git ls-remote --refs origin refs/tags/desktop-latest | awk 'NR == 1 { print $1 }')
+          if [ "${REMOTE_DESKTOP_LATEST_SHA}" != "${GITHUB_SHA}" ]; then
+            echo "::error::Remote desktop-latest tag did not resolve to ${GITHUB_SHA}; got ${REMOTE_DESKTOP_LATEST_SHA:-missing}"
+            exit 1
+          fi
 
   publish-version-release:
     name: Publish Versioned GitHub Release
@@ -325,22 +486,36 @@ jobs:
           name: crawshrimp-win-x64
           path: release-assets/windows
 
-      - name: Prepare release metadata
+      - name: Validate release tag and package version
+        shell: bash
         run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only exact stable vX.Y.Z tags can publish desktop releases: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
           APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
-            echo "Tag ${GITHUB_REF_NAME} does not match app/package.json version ${APP_VERSION}" >&2
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match app/package.json version ${APP_VERSION}"
             exit 1
           fi
           echo "APP_VERSION=${APP_VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Validate release update artifacts
+        run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${APP_VERSION}"
+
+      - name: Prepare release metadata
+        shell: bash
+        run: |
+          set -euo pipefail
           NOTES_FILE="release-notes/v${APP_VERSION}.md"
           if [ -f "${NOTES_FILE}" ]; then
             cp "${NOTES_FILE}" release-notes.md
           else
             printf '## v%s\n\n- 自动桌面构建\n' "${APP_VERSION}" > release-notes.md
           fi
-          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 自动更新元数据：已关闭，等待签名 / 公证链路完善后恢复\n' \
+          printf '\n---\n\n构建信息：\n- Commit: %s\n- Workflow: %s/%s/actions/runs/%s\n- 产物：macOS DMG/ZIP（Apple Silicon / Intel）、Windows 安装包\n- 自动更新：GitHub 更新元数据已启用\n' \
             "${GITHUB_SHA}" \
             "${GITHUB_SERVER_URL}" \
             "${GITHUB_REPOSITORY}" \
@@ -349,22 +524,59 @@ jobs:
       - name: Publish versioned release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
+          set -euo pipefail
+          mapfile -t release_assets < <(find release-assets -type f | sort)
+          if [ "${#release_assets[@]}" -eq 0 ]; then
+            echo "::error::No release assets found"
+            exit 1
+          fi
+          printf '%s\n' "${release_assets[@]##*/}" | sort > expected-assets.txt
+
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release upload "${GITHUB_REF_NAME}" \
-              release-assets/macos/* \
-              release-assets/windows/* \
-              --clobber
+            release_state=$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq '.isDraft')
+            gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | sort > actual-assets.txt
+            if [ "${release_state}" = "false" ]; then
+              if ! diff -u expected-assets.txt actual-assets.txt; then
+                echo "::error::Published version release asset set differs from expected assets"
+                exit 1
+              fi
+              echo "Published version release already has expected assets; leaving it unchanged"
+              exit 0
+            fi
+            comm -23 actual-assets.txt expected-assets.txt | while IFS= read -r asset_name; do
+              if [ -n "${asset_name}" ]; then
+                gh release delete-asset "${GITHUB_REF_NAME}" "${asset_name}" --yes
+              fi
+            done
             gh release edit "${GITHUB_REF_NAME}" \
               --title "抓虾 Desktop v${APP_VERSION}" \
               --notes-file release-notes.md \
-              --latest
+              --latest=false
+            gh release upload "${GITHUB_REF_NAME}" \
+              "${release_assets[@]}" \
+              --clobber
           else
             gh release create "${GITHUB_REF_NAME}" \
-              release-assets/macos/* \
-              release-assets/windows/* \
               --title "抓虾 Desktop v${APP_VERSION}" \
               --notes-file release-notes.md \
-              --latest \
+              --draft \
+              --latest=false \
               --verify-tag
+            gh release upload "${GITHUB_REF_NAME}" \
+              "${release_assets[@]}" \
+              --clobber
           fi
+
+          gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | sort > actual-assets.txt
+          if ! diff -u expected-assets.txt actual-assets.txt; then
+            echo "::error::Unexpected release asset set"
+            exit 1
+          fi
+
+          gh release edit "${GITHUB_REF_NAME}" \
+            --title "抓虾 Desktop v${APP_VERSION}" \
+            --notes-file release-notes.md \
+            --draft=false \
+            --latest

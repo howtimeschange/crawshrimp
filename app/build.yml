@@ -7,6 +7,12 @@ directories:
   output: dist
   buildResources: assets
 
+publish:
+  provider: github
+  owner: howtimeschange
+  repo: crawshrimp
+generateUpdatesFilesForAllChannels: false
+
 mac:
   category: public.app-category.business
   icon: assets/icon.icns
@@ -17,6 +23,10 @@ mac:
   entitlementsInherit: assets/entitlements.mac.inherit.plist
   target:
     - target: dmg
+      arch:
+        - arm64
+        - x64
+    - target: zip
       arch:
         - arm64
         - x64
@@ -68,6 +78,7 @@ extraResources:
 
 # afterPack: copies per-arch Python bundle into Resources/python/
 afterPack: scripts/after-pack.js
+afterSign: scripts/notarize-macos-app.js
 
 asarUnpack:
   - "**/*.node"

@@ -29,6 +29,8 @@ class CloudMachineAgent:
         fingerprint_factory: Callable[[], str] | None = None,
         job_executor_factory: Callable[[CloudApprovalClient], Any] | None = None,
         heartbeat_callback: Callable[[str], None] | None = None,
+        begin_job_operation: Callable[[], str] | None = None,
+        end_job_operation: Callable[[str], None] | None = None,
     ):
         self.client = client
         self.sleep = sleep
@@ -38,6 +40,8 @@ class CloudMachineAgent:
         self.fingerprint_factory = fingerprint_factory or self._default_fingerprint
         self.job_executor_factory = job_executor_factory or (lambda client: CloudJobExecutor(client))
         self.heartbeat_callback = heartbeat_callback
+        self.begin_job_operation = begin_job_operation
+        self.end_job_operation = end_job_operation
 
     def enroll(self, registration_token: str, machine_name: str, capabilities: list[str]) -> dict:
         saved = data_sink.get_cloud_machine_credentials() or {}
@@ -98,26 +102,40 @@ class CloudMachineAgent:
         return response
 
     def claim_once(self, *, flush_pending: bool = True) -> dict:
-        if flush_pending:
-            self.flush_pending_completions()
-        response = self._request_machine_json("POST", "/api/machines/jobs/claim", {})
-        job = response.get("job")
-        next_poll = self._coerce_sleep_seconds(response.get("next_poll_after_seconds"), DEFAULT_IDLE_SECONDS)
-        job_result = None
-        if isinstance(job, Mapping):
-            if self.heartbeat_callback is not None:
-                self.heartbeat_callback("online_busy")
-            job_result = self._execute_claimed_job(job)
-            if self.heartbeat_callback is not None and str((job_result or {}).get("status") or "") != "blocked_needs_login":
-                self.heartbeat_callback("online_idle")
-        idle_sleep = next_poll if job_result else self._idle_sleep_seconds(next_poll)
-        return {
-            **response,
-            "job": job,
-            "job_result": job_result,
-            "next_poll_after_seconds": next_poll,
-            "idle_sleep_seconds": idle_sleep,
-        }
+        operation_token = ""
+        if self.begin_job_operation is not None:
+            operation_token = str(self.begin_job_operation() or "")
+            if not operation_token:
+                return {
+                    "job": None,
+                    "job_result": None,
+                    "next_poll_after_seconds": DEFAULT_IDLE_SECONDS,
+                    "idle_sleep_seconds": DEFAULT_IDLE_SECONDS,
+                }
+        try:
+            if flush_pending:
+                self.flush_pending_completions()
+            response = self._request_machine_json("POST", "/api/machines/jobs/claim", {})
+            job = response.get("job")
+            next_poll = self._coerce_sleep_seconds(response.get("next_poll_after_seconds"), DEFAULT_IDLE_SECONDS)
+            job_result = None
+            if isinstance(job, Mapping):
+                if self.heartbeat_callback is not None:
+                    self.heartbeat_callback("online_busy")
+                job_result = self._execute_claimed_job(job)
+                if self.heartbeat_callback is not None and str((job_result or {}).get("status") or "") != "blocked_needs_login":
+                    self.heartbeat_callback("online_idle")
+            idle_sleep = next_poll if job_result else self._idle_sleep_seconds(next_poll)
+            return {
+                **response,
+                "job": job,
+                "job_result": job_result,
+                "next_poll_after_seconds": next_poll,
+                "idle_sleep_seconds": idle_sleep,
+            }
+        finally:
+            if operation_token and self.end_job_operation is not None:
+                self.end_job_operation(operation_token)
 
     def run_forever(self, stop_event) -> None:
         failure_count = 0

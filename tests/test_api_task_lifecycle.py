@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import sys
 import threading
 import unittest
@@ -8,10 +9,59 @@ import tempfile
 from unittest.mock import AsyncMock, patch
 
 from core import adapter_loader, api_server
+from core import data_sink
 from core.models import OutputType
 
 
+class AsgiResponse:
+    def __init__(self, status_code: int, body: bytes):
+        self.status_code = status_code
+        self._body = body
+
+    def json(self):
+        return json.loads(self._body.decode("utf-8") or "{}")
+
+
 class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def _api_request(self, method: str, path: str, json_body: dict | None = None) -> AsgiResponse:
+        body = json.dumps(json_body or {}).encode("utf-8") if json_body is not None else b""
+        messages = []
+        request_sent = False
+
+        async def receive():
+            nonlocal request_sent
+            if not request_sent:
+                request_sent = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return {"type": "http.disconnect"}
+
+        async def send(message):
+            messages.append(message)
+
+        await api_server.app(
+            {
+                "type": "http",
+                "asgi": {"version": "3.0"},
+                "http_version": "1.1",
+                "method": method,
+                "scheme": "http",
+                "path": path,
+                "raw_path": path.encode("utf-8"),
+                "query_string": b"",
+                "headers": [
+                    (api_server.API_TOKEN_HEADER.encode("latin-1"), b"test-token"),
+                    (b"content-type", b"application/json"),
+                ],
+                "client": ("127.0.0.1", 12345),
+                "server": ("127.0.0.1", 18765),
+            },
+            receive,
+            send,
+        )
+        status_code = next((item["status"] for item in messages if item["type"] == "http.response.start"), 500)
+        response_body = b"".join(item.get("body", b"") for item in messages if item["type"] == "http.response.body")
+        return AsgiResponse(status_code, response_body)
+
     async def test_backend_instance_lock_windows_locks_first_byte(self):
         positions = []
 
@@ -623,6 +673,147 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_status.update(original_status)
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
+
+    async def test_runtime_install_readiness_and_drain_gate_mutations(self):
+        original_status = dict(api_server._run_status)
+        original_controls = dict(api_server._run_controls)
+        original_health = api_server.cloud_machine_controller.last_health
+        active_task = asyncio.create_task(asyncio.sleep(60))
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with patch("core.runtime_paths.data_root", return_value=Path(tmpdir)):
+                    data_sink.init_db()
+                    api_server._run_status.clear()
+                    api_server._run_controls.clear()
+                    api_server.cloud_machine_controller.last_health = "stopped"
+
+                    with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+                        response = await self._api_request("GET", "/runtime/install-readiness")
+                        self.assertEqual(response.status_code, 200)
+                        self.assertTrue(response.json()["ready"])
+
+                        api_server._run_status["demo::regular"] = {
+                            "status": "running",
+                            "run_id": 1001,
+                            "adapter_id": "demo",
+                            "task_id": "regular",
+                        }
+                        api_server._run_controls["demo::regular"] = {"task": active_task}
+                        instance = data_sink.create_task_instance(
+                            "demo",
+                            "task-center",
+                            "Task Center Job",
+                            params={},
+                        )
+                        data_sink.update_task_instance(instance["instance_uid"], status="running")
+                        data_sink.create_ai_image_job({
+                            "job_uid": "ai-job-queued",
+                            "title": "AI Queued",
+                            "status": "queued",
+                        })
+                        data_sink.create_ai_image_job({
+                            "job_uid": "ai-job-summary-running",
+                            "title": "AI Summary Running",
+                            "status": "draft",
+                            "summary": {"runs": [{"run_uid": "run-1", "status": "running"}]},
+                        })
+                        api_server.cloud_machine_controller.last_health = "online_busy"
+
+                        readiness = (await self._api_request("GET", "/runtime/install-readiness")).json()
+                        blockers = readiness["blockers"]
+                        blocker_keys = {(item["kind"], item["id"]) for item in blockers}
+
+                        self.assertFalse(readiness["ready"])
+                        self.assertIn(("task", "demo::regular"), blocker_keys)
+                        self.assertIn(("task", f"instance::{instance['instance_uid']}"), blocker_keys)
+                        self.assertIn(("ai_image", "ai-job-queued"), blocker_keys)
+                        self.assertIn(("ai_image", "ai-job-summary-running"), blocker_keys)
+                        self.assertIn(("cloud_job", "cloud_machine"), blocker_keys)
+                        task_center = next(item for item in blockers if item["id"] == f"instance::{instance['instance_uid']}")
+                        self.assertEqual(task_center["instance_uid"], instance["instance_uid"])
+
+                        busy = await self._api_request("POST", "/runtime/update-drain")
+                        self.assertEqual(busy.status_code, 409)
+                        self.assertEqual(busy.json()["detail"]["code"], "runtime_busy")
+
+                        api_server._run_status.clear()
+                        api_server._run_controls.clear()
+                        data_sink.update_task_instance(instance["instance_uid"], status="draft")
+                        data_sink.update_ai_image_job("ai-job-queued", {"status": "completed"})
+                        data_sink.update_ai_image_job("ai-job-summary-running", {"summary": {"runs": [{"run_uid": "run-1", "status": "completed"}]}})
+                        api_server.cloud_machine_controller.last_health = "online_idle"
+
+                        response = await self._api_request("POST", "/runtime/update-drain")
+                        self.assertEqual(response.status_code, 200)
+                        drain_response = response.json()
+                        drain_token = drain_response["drain_token"]
+                        self.assertTrue(drain_response["readiness"]["install_ready"])
+                        self.assertTrue(drain_response["readiness"]["draining"])
+                        self.assertTrue(drain_response["readiness"]["ready"])
+                        self.assertEqual(drain_response["readiness"]["blockers"], [])
+
+                        blocked = await self._api_request("POST", "/tasks/example/task/run", {"params": {}})
+                        self.assertEqual(blocked.status_code, 409)
+                        self.assertEqual(blocked.json()["detail"]["code"], "update_pending")
+
+                        wrong = await self._api_request(
+                            "DELETE",
+                            "/runtime/update-drain",
+                            {"drain_token": "wrong-token"},
+                        )
+                        self.assertEqual(wrong.status_code, 409)
+                        still_blocked = await self._api_request("POST", "/tasks/example/task/run", {"params": {}})
+                        self.assertEqual(still_blocked.status_code, 409)
+                        self.assertEqual(still_blocked.json()["detail"]["code"], "update_pending")
+
+                        released = await self._api_request(
+                            "DELETE",
+                            "/runtime/update-drain",
+                            {"drain_token": drain_token},
+                        )
+                        self.assertEqual(released.status_code, 200)
+
+                        with patch.object(adapter_loader, "scan_all", return_value=None):
+                            with patch.object(adapter_loader, "get_adapter", return_value=None):
+                                unblocked = await self._api_request("POST", "/tasks/example/task/run", {"params": {}})
+                        self.assertNotEqual(unblocked.status_code, 409)
+        finally:
+            active_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await active_task
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+            api_server.cloud_machine_controller.last_health = original_health
+
+    async def test_runtime_install_readiness_fails_closed_when_task_instance_collection_fails(self):
+        with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+            with patch.object(data_sink, "list_task_instances", side_effect=RuntimeError("task db unavailable")):
+                readiness = await self._api_request("GET", "/runtime/install-readiness")
+                self.assertEqual(readiness.status_code, 200)
+                body = readiness.json()
+                self.assertFalse(body["ready"])
+                self.assertEqual(body["error"], "install_readiness_unavailable")
+                self.assertIn("task_instances", body["failed_sources"])
+
+                drain = await self._api_request("POST", "/runtime/update-drain")
+                self.assertEqual(drain.status_code, 409)
+                detail = drain.json()["detail"]
+                self.assertEqual(detail["code"], "install_readiness_unavailable")
+                self.assertIn("task_instances", detail["failed_sources"])
+                self.assertNotIn("drain_token", detail)
+
+    async def test_runtime_update_drain_fails_closed_when_ai_image_job_collection_fails(self):
+        with patch.dict("os.environ", {"CRAWSHRIMP_API_TOKEN": "test-token"}, clear=False):
+            with patch.object(data_sink, "list_ai_image_jobs", side_effect=RuntimeError("ai db unavailable")):
+                drain = await self._api_request("POST", "/runtime/update-drain")
+                self.assertEqual(drain.status_code, 409)
+                detail = drain.json()["detail"]
+                self.assertEqual(detail["code"], "install_readiness_unavailable")
+                self.assertIn("ai_image_jobs", detail["failed_sources"])
+                self.assertNotIn("drain_token", detail)
 
     async def test_execute_task_reraises_cancelled_error_after_partial_export(self):
         class FakeBridge:

@@ -187,11 +187,12 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUpdated, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, onUpdated, ref, watch } from 'vue'
 import {
   DEFAULT_PROMPT_LIBRARY_NAME,
   PROMPT_IMPORT_HEADER_ROWS,
   PROMPT_SCENARIOS,
+  cloudPromptLibraryNotice,
   createLocalPromptUid,
   defaultPromptTemplate,
   normalizePromptLibrary,
@@ -218,6 +219,7 @@ const error = ref('')
 const cloudError = ref('')
 const cloudStatus = ref(null)
 const promptTextareas = ref([])
+const componentMounted = ref(false)
 
 const busy = computed(() => loading.value || saving.value || importing.value || syncing.value)
 const libraries = computed(() => [...localLibraries.value, ...cloudLibraries.value])
@@ -266,12 +268,13 @@ async function loadLibraries() {
   error.value = ''
   try {
     await loadLocalLibraries()
-    await refreshCloudApprovalStatus()
-    await loadCloudLibraries({ silent: true })
     ensureSelectedLibrary()
     syncLibraryDraft()
+    loading.value = false
+    void loadCloudLibraries({ silent: true })
   } catch (err) {
     error.value = err?.message || String(err)
+    loading.value = false
   } finally {
     loading.value = false
   }
@@ -299,23 +302,28 @@ async function loadCloudLibraries(options = {}) {
   }
   try {
     await refreshCloudApprovalStatus()
+    if (!componentMounted.value) return
     if (!cloudBaseUrl.value) {
       cloudLibraries.value = []
-      cloudError.value = '尚未配置云端审批地址，可先进入云端审批页面完成配置和登录'
+      cloudError.value = options.silent ? '' : cloudPromptLibraryNotice(new Error('尚未配置云端审批地址'))
       return
     }
     const payload = await window.cs.listCloudPromptLibraries()
+    if (!componentMounted.value) return
     cloudLibraries.value = (Array.isArray(payload?.libraries) ? payload.libraries : [])
       .map(library => normalizePromptLibrary({ ...library, source_type: 'cloud' }))
     cloudError.value = ''
     if (!options.silent) message.value = `已读取 ${cloudLibraries.value.length} 个线上提示词库`
   } catch (err) {
+    if (!componentMounted.value) return
     cloudLibraries.value = []
-    cloudError.value = err?.message || String(err)
+    cloudError.value = cloudPromptLibraryNotice(err, options)
   } finally {
-    cloudLoading.value = false
-    ensureSelectedLibrary()
-    syncLibraryDraft()
+    if (componentMounted.value) {
+      cloudLoading.value = false
+      ensureSelectedLibrary()
+      syncLibraryDraft()
+    }
   }
 }
 
@@ -580,8 +588,13 @@ function buildCloudPromptManageUrl(baseUrl) {
 }
 
 onMounted(async () => {
+  componentMounted.value = true
   await loadLibraries()
   resizePromptTextareas()
+})
+
+onUnmounted(() => {
+  componentMounted.value = false
 })
 
 onUpdated(resizePromptTextareas)

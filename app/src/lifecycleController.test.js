@@ -158,3 +158,137 @@ test('before-quit waits for quit-cancel recovery hooks to settle', async () => {
 
   assert.deepEqual(events, ['prevented', 'recovery-started', 'recovery-finished'])
 })
+
+test('updater cleanup never asks to stop active tasks', async () => {
+  const events = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => { events.push('get-active'); return { active: true, tasks: [{}] } },
+    confirmQuitWithActiveTasks: async () => events.push('confirm'),
+    requestStopActiveTasks: async () => events.push('stop-tasks'),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+  })
+
+  await controller.prepareForUpdateInstall()
+
+  assert.deepEqual(events, ['stop-chrome', 'stop-backend'])
+})
+
+test('updater cleanup lets the next before-quit pass without duplicate cleanup', async () => {
+  const events = []
+  const prevented = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => { events.push('get-active'); return { active: true, tasks: [{}] } },
+    confirmQuitWithActiveTasks: async () => events.push('confirm'),
+    requestStopActiveTasks: async () => events.push('stop-tasks'),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  const prepared = await controller.prepareForUpdateInstall()
+  const beforeQuit = await controller.handleBeforeQuit({
+    preventDefault: () => prevented.push('prevented'),
+  })
+
+  assert.equal(prepared, true)
+  assert.equal(beforeQuit, true)
+  assert.deepEqual(prevented, [])
+  assert.deepEqual(events, ['stop-chrome', 'stop-backend'])
+})
+
+for (const reason of ['kill-failed', 'exit-timeout']) {
+  test(`updater cleanup rejects when managed Chrome stop reports ${reason}`, async () => {
+    const events = []
+    const controller = createLifecycleController({
+      stopBackend: async () => events.push('stop-backend'),
+      stopManagedChrome: async () => {
+        events.push(`stop-chrome:${reason}`)
+        return { stopped: false, reason }
+      },
+      quitApp: () => events.push('quit'),
+    })
+
+    await assert.rejects(
+      () => controller.prepareForUpdateInstall(),
+      new RegExp(reason)
+    )
+    const beforeQuit = await controller.handleBeforeQuit()
+
+    assert.equal(beforeQuit, true)
+    assert.deepEqual(events, [
+      `stop-chrome:${reason}`,
+      'stop-backend',
+      `stop-chrome:${reason}`,
+      'quit',
+    ])
+  })
+}
+
+for (const reason of ['already-exited', 'pid-identity-mismatch']) {
+  test(`updater cleanup treats managed Chrome ${reason} as safe`, async () => {
+    const events = []
+    const controller = createLifecycleController({
+      stopBackend: async () => events.push('stop-backend'),
+      stopManagedChrome: async () => {
+        events.push(`stop-chrome:${reason}`)
+        return { stopped: false, reason }
+      },
+      quitApp: () => events.push('quit'),
+    })
+
+    const prepared = await controller.prepareForUpdateInstall()
+    const beforeQuit = await controller.handleBeforeQuit()
+
+    assert.equal(prepared, true)
+    assert.equal(beforeQuit, true)
+    assert.deepEqual(events, [`stop-chrome:${reason}`, 'stop-backend'])
+  })
+}
+
+test('updater cleanup failure resets shutdown state for a later normal quit', async () => {
+  const events = []
+  let backendStops = 0
+  const controller = createLifecycleController({
+    getActiveTasks: async () => { events.push('get-active'); return { active: false, tasks: [] } },
+    stopBackend: async () => {
+      backendStops += 1
+      events.push('stop-backend')
+      if (backendStops === 1) throw new Error('backend stop failed')
+    },
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  await assert.rejects(
+    () => controller.prepareForUpdateInstall(),
+    /backend stop failed/
+  )
+  await controller.handleBeforeQuit()
+
+  assert.deepEqual(events, ['stop-chrome', 'stop-backend', 'get-active', 'stop-backend', 'stop-chrome', 'quit'])
+})
+
+test('update-install recovery reset does not reopen a normal confirmed quit', async () => {
+  const events = []
+  const prevented = []
+  const controller = createLifecycleController({
+    getActiveTasks: async () => ({ active: false, tasks: [] }),
+    stopBackend: async () => events.push('stop-backend'),
+    stopManagedChrome: async () => events.push('stop-chrome'),
+    quitApp: () => events.push('quit'),
+  })
+
+  await controller.handleBeforeQuit({
+    preventDefault: () => prevented.push('first'),
+  })
+  const reset = controller.recoverFromUpdateInstallFailure()
+  const second = await controller.handleBeforeQuit({
+    preventDefault: () => prevented.push('second'),
+  })
+
+  assert.equal(reset, false)
+  assert.equal(second, true)
+  assert.deepEqual(prevented, ['first'])
+  assert.deepEqual(events, ['stop-backend', 'stop-chrome', 'quit'])
+})

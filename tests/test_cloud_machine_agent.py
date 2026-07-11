@@ -159,6 +159,27 @@ class CloudMachineAgentTests(unittest.TestCase):
         self.assertEqual(result["idle_sleep_seconds"], 10.0)
         self.assertEqual(client.calls[0]["path"], "/api/machines/jobs/claim")
 
+    def test_claim_is_skipped_when_runtime_operation_cannot_start(self):
+        client = FakeClient([])
+        agent = CloudMachineAgent(client, begin_job_operation=lambda: "")
+
+        result = agent.claim_once()
+
+        self.assertIsNone(result["job"])
+        self.assertEqual(result["job_result"], None)
+        self.assertFalse(any(call["path"].endswith("/jobs/claim") for call in client.calls))
+
+    def test_claim_default_still_claims_normally(self):
+        data_sink.save_cloud_machine_credentials("machine-1", "csr_machine_secret", "任务机", ["cap"])
+        client = FakeClient([{"job": None, "next_poll_after_seconds": 10}])
+        agent = CloudMachineAgent(client)
+
+        result = agent.claim_once()
+
+        self.assertIsNone(result["job"])
+        self.assertEqual(result["job_result"], None)
+        self.assertEqual(client.calls[0]["path"], "/api/machines/jobs/claim")
+
     def test_claimed_job_updates_local_busy_idle_callback(self):
         class SucceedingExecutor:
             def __init__(self, _client):

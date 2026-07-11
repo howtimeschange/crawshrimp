@@ -53,6 +53,8 @@ test('LocalPromptLibrary view combines local and cloud prompt libraries with sou
   assert.match(view, /selectedCloudLibrary/)
   assert.match(view, /librarySourceLabel/)
   assert.match(view, /source_type/)
+  assert.match(view, /cloudPromptLibraryNotice\(err, options\)/)
+  assert.match(view, /cloudError\.value = options\.silent \? ''/)
 })
 
 test('Shared Prompt picker reads draft cloud templates from the library list payload', () => {
@@ -125,6 +127,24 @@ test('LocalPromptLibrary confines long Prompt scrolling to the workspace', () =>
   assert.match(listRule, /flex:\s*1\s+1\s+0/)
   assert.match(listRule, /height:\s*auto/)
   assert.match(listRule, /overscroll-behavior:\s*contain/)
+})
+
+test('LocalPromptLibrary releases local actions before silent cloud refresh finishes', () => {
+  const view = read('app/src/renderer/views/LocalPromptLibrary.vue')
+  const loadLibraries = view.slice(
+    view.indexOf('async function loadLibraries()'),
+    view.indexOf('async function loadLocalLibraries()'),
+  )
+
+  assert.match(loadLibraries, /await loadLocalLibraries\(\)/)
+  assert.match(loadLibraries, /ensureSelectedLibrary\(\)[\s\S]*syncLibraryDraft\(\)[\s\S]*loading\.value = false/)
+  assert.match(loadLibraries, /void loadCloudLibraries\(\{ silent: true \}\)/)
+  assert.doesNotMatch(loadLibraries, /await loadCloudLibraries\(\{ silent: true \}\)/)
+  assert.doesNotMatch(loadLibraries, /await refreshCloudApprovalStatus\(\)[\s\S]*loading\.value = false/)
+  assert.match(view, /onUnmounted/)
+  assert.match(view, /const componentMounted = ref\(false\)/)
+  assert.match(view, /if \(!componentMounted\.value\) return[\s\S]*window\.cs\.listCloudPromptLibraries/)
+  assert.match(view, /finally \{[\s\S]*if \(componentMounted\.value\) \{[\s\S]*cloudLoading\.value = false/)
 })
 
 test('Electron bridges expose local prompt library persistence and cloud sync IPC', () => {

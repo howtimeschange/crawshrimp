@@ -26,6 +26,8 @@ APP_TIMEZONE = timezone(timedelta(hours=8), "UTC+08:00")
 # job_id format: "{adapter_id}::{task_id}"
 _scheduler: Optional[AsyncIOScheduler] = None
 _task_callbacks: Dict[str, Callable] = {}  # job_id -> async callable
+_begin_runtime_operation: Callable[[str, str, str, str], str] | None = None
+_end_runtime_operation: Callable[[str], None] | None = None
 WEEKDAY_NAMES = {
     1: "mon",
     2: "tue",
@@ -66,6 +68,23 @@ def job_id(adapter_id: str, task_id: str) -> str:
 
 def schedule_job_id(schedule_uid: str) -> str:
     return f"schedule::{str(schedule_uid or '').strip()}"
+
+
+def set_runtime_operation_hooks(begin_operation=None, end_operation=None) -> None:
+    global _begin_runtime_operation, _end_runtime_operation
+    _begin_runtime_operation = begin_operation
+    _end_runtime_operation = end_operation
+
+
+def _begin_scheduled_runtime_operation(kind: str, operation_id: str, label: str) -> str:
+    if _begin_runtime_operation is None:
+        return ""
+    return str(_begin_runtime_operation(kind, operation_id, label, "running") or "")
+
+
+def _end_scheduled_runtime_operation(token: str) -> None:
+    if token and _end_runtime_operation is not None:
+        _end_runtime_operation(token)
 
 
 def _parse_time_of_day(value: str) -> tuple[int, int]:
@@ -132,10 +151,15 @@ def register_adapter(manifest: AdapterManifest, run_callback: Callable) -> int:
 
         # Wrap async callback
         async def _job(a=manifest.id, t=task.id):
+            token = _begin_scheduled_runtime_operation("scheduled_task", job_id(a, t), f"{a}::{t}")
+            if _begin_runtime_operation is not None and not token:
+                return
             try:
                 await run_callback(a, t)
             except Exception as e:
                 logger.error(f"Scheduled job {a}::{t} failed: {e}")
+            finally:
+                _end_scheduled_runtime_operation(token)
 
         if sched.get_job(jid):
             sched.remove_job(jid)
@@ -186,12 +210,17 @@ def register_task_schedule(schedule: dict, run_callback: Callable) -> int:
     trigger = _task_schedule_trigger(schedule)
 
     async def _job(uid=schedule_uid):
+        token = _begin_scheduled_runtime_operation("task_schedule", jid, f"schedule::{uid}")
+        if _begin_runtime_operation is not None and not token:
+            return
         try:
             result = run_callback(uid)
             if inspect.isawaitable(result):
                 await result
         except Exception as e:
             logger.error("Scheduled task schedule %s failed: %s", uid, e)
+        finally:
+            _end_scheduled_runtime_operation(token)
 
     sched.add_job(_job, trigger=trigger, id=jid, replace_existing=True)
     logger.info("Registered task schedule job %s", jid)
