@@ -232,6 +232,41 @@ test('desktop workflow keeps rolling release manual installer only', () => {
   assert.doesNotMatch(rollingStep, /\*\.blockmap/)
 })
 
+test('desktop workflow validates manual installer assets before rolling release mutation', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const rollingJob = workflow.slice(
+    workflow.indexOf('publish-release:'),
+    workflow.indexOf('publish-version-release:'),
+  )
+  const validateIndex = rollingJob.indexOf('name: Validate manual installer assets')
+  const publishIndex = rollingJob.indexOf('name: Publish rolling release')
+
+  assert.ok(validateIndex !== -1, 'manual installer validation step is present')
+  assert.ok(validateIndex < publishIndex, 'manual installers are validated before rolling release mutation')
+  assert.match(rollingJob, /expected-manual-assets\.txt/)
+  assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-mac-arm64\.dmg/)
+  assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-mac-x64\.dmg/)
+  assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-win-x64\.exe/)
+})
+
+test('desktop workflow updates desktop-latest in place without delete-first release or tag mutation', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const rollingJob = workflow.slice(
+    workflow.indexOf('publish-release:'),
+    workflow.indexOf('publish-version-release:'),
+  )
+
+  assert.match(rollingJob, /gh release view desktop-latest/)
+  assert.match(rollingJob, /gh release upload desktop-latest[\s\S]*--clobber/)
+  assert.match(rollingJob, /gh release create desktop-latest[\s\S]*--target "\$\{GITHUB_SHA\}"[\s\S]*--latest=false/)
+  assert.match(rollingJob, /gh release view desktop-latest --json assets/)
+  assert.match(rollingJob, /Unexpected desktop-latest manual asset set/)
+  assert.doesNotMatch(rollingJob, /gh release delete desktop-latest/)
+  assert.doesNotMatch(rollingJob, /git push origin :refs\/tags\/desktop-latest/)
+  assert.doesNotMatch(rollingJob, /git tag -d desktop-latest/)
+  assert.doesNotMatch(rollingJob, /git tag desktop-latest/)
+})
+
 test('desktop workflow gates rolling release mutation on exact stable tag and package version', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingJob = workflow.slice(
@@ -239,13 +274,9 @@ test('desktop workflow gates rolling release mutation on exact stable tag and pa
     workflow.indexOf('publish-version-release:'),
   )
   const gateIndex = rollingJob.indexOf('name: Validate release tag and package version')
-  const deleteIndex = rollingJob.indexOf('name: Delete previous rolling release')
-  const recreateIndex = rollingJob.indexOf('name: Recreate rolling release tag')
   const publishIndex = rollingJob.indexOf('name: Publish rolling release')
 
   assert.ok(gateIndex !== -1, 'rolling release gate step is present')
-  assert.ok(gateIndex < deleteIndex, 'stable/package gate runs before deleting desktop-latest')
-  assert.ok(gateIndex < recreateIndex, 'stable/package gate runs before recreating desktop-latest tag')
   assert.ok(gateIndex < publishIndex, 'stable/package gate runs before publishing desktop-latest')
   assert.match(rollingJob, /\[\[ "\$\{GITHUB_REF_NAME\}" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]/)
   assert.match(rollingJob, /APP_VERSION=\$\(python3 -c "import json; print\(json\.load\(open\('app\/package\.json'\)\)\['version'\]\)"\)/)

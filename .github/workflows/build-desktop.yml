@@ -389,22 +389,30 @@ jobs:
             "${GITHUB_REPOSITORY}" \
             "${GITHUB_RUN_ID}" >> release-notes.md
 
-      - name: Delete previous rolling release
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Validate manual installer assets
+        shell: bash
         run: |
-          gh release delete desktop-latest --cleanup-tag --yes || true
-          git push origin :refs/tags/desktop-latest || true
-
-      - name: Recreate rolling release tag
-        run: |
-          git tag -d desktop-latest || true
-          git tag desktop-latest "${GITHUB_SHA}"
-          git push origin refs/tags/desktop-latest
+          set -euo pipefail
+          shopt -s nullglob
+          manual_assets=(
+            release-assets/macos/*.dmg
+            release-assets/windows/*.exe
+          )
+          printf '%s\n' \
+            "crawshrimp-v${APP_VERSION}-mac-arm64.dmg" \
+            "crawshrimp-v${APP_VERSION}-mac-x64.dmg" \
+            "crawshrimp-v${APP_VERSION}-win-x64.exe" \
+            | sort > expected-manual-assets.txt
+          printf '%s\n' "${manual_assets[@]##*/}" | sort > actual-manual-assets.txt
+          if ! diff -u expected-manual-assets.txt actual-manual-assets.txt; then
+            echo "::error::Unexpected manual installer asset set for desktop-latest"
+            exit 1
+          fi
 
       - name: Publish rolling release
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -416,12 +424,34 @@ jobs:
             echo "::error::No manual installer assets found for desktop-latest"
             exit 1
           fi
-          gh release create desktop-latest \
-            --target "${GITHUB_SHA}" \
-            "${manual_assets[@]}" \
-            --title "抓虾 Desktop Latest v${APP_VERSION}" \
-            --notes-file release-notes.md \
-            --latest=false
+          if gh release view desktop-latest >/dev/null 2>&1; then
+            gh release view desktop-latest --json assets --jq '.assets[].name' | sort > existing-desktop-latest-assets.txt
+            comm -23 existing-desktop-latest-assets.txt expected-manual-assets.txt | while IFS= read -r asset_name; do
+              if [ -n "${asset_name}" ]; then
+                gh release delete-asset desktop-latest "${asset_name}" --yes
+              fi
+            done
+            gh release edit desktop-latest \
+              --title "抓虾 Desktop Latest v${APP_VERSION}" \
+              --notes-file release-notes.md \
+              --latest=false
+            gh release upload desktop-latest \
+              "${manual_assets[@]}" \
+              --clobber
+          else
+            gh release create desktop-latest \
+              --target "${GITHUB_SHA}" \
+              "${manual_assets[@]}" \
+              --title "抓虾 Desktop Latest v${APP_VERSION}" \
+              --notes-file release-notes.md \
+              --latest=false
+          fi
+
+          gh release view desktop-latest --json assets --jq '.assets[].name' | sort > actual-desktop-latest-assets.txt
+          if ! diff -u expected-manual-assets.txt actual-desktop-latest-assets.txt; then
+            echo "::error::Unexpected desktop-latest manual asset set"
+            exit 1
+          fi
 
   publish-version-release:
     name: Publish Versioned GitHub Release
@@ -498,10 +528,24 @@ jobs:
           printf '%s\n' "${release_assets[@]##*/}" | sort > expected-assets.txt
 
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            release_state=$(gh release view "${GITHUB_REF_NAME}" --json isDraft --jq '.isDraft')
+            gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' | sort > actual-assets.txt
+            if [ "${release_state}" = "false" ]; then
+              if ! diff -u expected-assets.txt actual-assets.txt; then
+                echo "::error::Published version release asset set differs from expected assets"
+                exit 1
+              fi
+              echo "Published version release already has expected assets; leaving it unchanged"
+              exit 0
+            fi
+            comm -23 actual-assets.txt expected-assets.txt | while IFS= read -r asset_name; do
+              if [ -n "${asset_name}" ]; then
+                gh release delete-asset "${GITHUB_REF_NAME}" "${asset_name}" --yes
+              fi
+            done
             gh release edit "${GITHUB_REF_NAME}" \
               --title "抓虾 Desktop v${APP_VERSION}" \
               --notes-file release-notes.md \
-              --draft \
               --latest=false
             gh release upload "${GITHUB_REF_NAME}" \
               "${release_assets[@]}" \

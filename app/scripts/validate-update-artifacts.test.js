@@ -222,6 +222,63 @@ test('formal release validation requires the exact complete versioned asset mani
   assert.match(extra.errors.join('\n'), /crawshrimp-v2\.0\.0-win-arm64\.exe/)
 })
 
+test('formal release validation rejects macOS metadata missing required updater ZIP references', () => {
+  const root = fixtureDir()
+  writeFormalReleaseManifest(root, '2.0.0')
+  const arm64 = {
+    name: 'crawshrimp-v2.0.0-mac-arm64.zip',
+    sha512: crypto.createHash('sha512').update(Buffer.from('mac-arm64-zip')).digest('base64'),
+  }
+  writeMetadata(root, 'release-assets/macos/latest-mac.yml', [arm64])
+
+  const result = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /missing updater reference/)
+  assert.match(result.errors.join('\n'), /macos\/latest-mac\.yml/)
+  assert.match(result.errors.join('\n'), /crawshrimp-v2\.0\.0-mac-x64\.zip/)
+})
+
+test('formal release validation rejects macOS metadata that references DMG instead of required updater ZIP', () => {
+  const root = fixtureDir()
+  writeFormalReleaseManifest(root, '2.0.0')
+  const dmg = {
+    name: 'crawshrimp-v2.0.0-mac-arm64.dmg',
+    sha512: crypto.createHash('sha512').update(Buffer.from('mac-arm64-dmg')).digest('base64'),
+  }
+  const x64 = {
+    name: 'crawshrimp-v2.0.0-mac-x64.zip',
+    sha512: crypto.createHash('sha512').update(Buffer.from('mac-x64-zip')).digest('base64'),
+  }
+  writeMetadata(root, 'release-assets/macos/latest-mac.yml', [dmg, x64])
+
+  const result = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /missing updater reference/)
+  assert.match(result.errors.join('\n'), /unexpected updater reference/)
+  assert.match(result.errors.join('\n'), /crawshrimp-v2\.0\.0-mac-arm64\.zip/)
+  assert.match(result.errors.join('\n'), /crawshrimp-v2\.0\.0-mac-arm64\.dmg/)
+})
+
+test('formal release validation rejects Windows metadata that references an unexpected updater asset', () => {
+  const root = fixtureDir()
+  writeFormalReleaseManifest(root, '2.0.0')
+  const exe = {
+    name: 'crawshrimp-v2.0.0-win-x64.exe',
+    sha512: crypto.createHash('sha512').update(Buffer.from('win-exe')).digest('base64'),
+  }
+  const unexpected = writeAsset(root, 'release-assets/windows/crawshrimp-v2.0.0-win-x64.delta', Buffer.from('win-delta'))
+  writeMetadata(root, 'release-assets/windows/latest.yml', [exe, unexpected])
+
+  const result = validateUpdateArtifacts(root, { version: '2.0.0', formalRelease: true })
+
+  assert.equal(result.ok, false)
+  assert.match(result.errors.join('\n'), /unexpected updater reference/)
+  assert.match(result.errors.join('\n'), /windows\/latest\.yml/)
+  assert.match(result.errors.join('\n'), /crawshrimp-v2\.0\.0-win-x64\.delta/)
+})
+
 test('formal release validation rejects Windows metadata with a missing or mismatched top-level version', () => {
   const root = fixtureDir()
   writeFormalReleaseManifest(root, '2.0.0')

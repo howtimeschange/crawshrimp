@@ -26,6 +26,24 @@ function expectedFormalReleaseAssets(version) {
   ]
 }
 
+function expectedFormalMetadataReferences(version) {
+  return new Map([
+    [
+      'macos/latest-mac.yml',
+      new Set([
+        `crawshrimp-v${version}-mac-arm64.zip`,
+        `crawshrimp-v${version}-mac-x64.zip`,
+      ]),
+    ],
+    [
+      'windows/latest.yml',
+      new Set([
+        `crawshrimp-v${version}-win-x64.exe`,
+      ]),
+    ],
+  ])
+}
+
 function walkFiles(root) {
   const files = []
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -206,6 +224,35 @@ function validateFormalMetadataVersions(artifactRoot, version, errors) {
   }
 }
 
+function validateFormalMetadataReferences(artifactRoot, version, errors) {
+  const normalizedVersion = String(version || '').trim().replace(/^v/, '')
+  if (!/^\d+\.\d+\.\d+$/.test(normalizedVersion)) return
+  const releaseRoot = fs.existsSync(path.join(artifactRoot, 'release-assets'))
+    ? path.join(artifactRoot, 'release-assets')
+    : artifactRoot
+  const expectedByMetadata = expectedFormalMetadataReferences(normalizedVersion)
+
+  for (const [relativeMetadata, expected] of expectedByMetadata) {
+    const metadataPath = path.join(releaseRoot, relativeMetadata)
+    if (!fs.existsSync(metadataPath)) continue
+    const actual = new Set(
+      parseMetadataAssets(fs.readFileSync(metadataPath, 'utf8'))
+        .map(asset => path.basename(asset.reference)),
+    )
+
+    for (const expectedReference of expected) {
+      if (!actual.has(expectedReference)) {
+        errors.push(`${relativeMetadata}: missing updater reference ${expectedReference}`)
+      }
+    }
+    for (const actualReference of actual) {
+      if (!expected.has(actualReference)) {
+        errors.push(`${relativeMetadata}: unexpected updater reference ${actualReference}`)
+      }
+    }
+  }
+}
+
 export function validateUpdateArtifacts(root, options = {}) {
   const artifactRoot = path.resolve(root)
   const errors = []
@@ -278,6 +325,7 @@ export function validateUpdateArtifacts(root, options = {}) {
   if (options.formalRelease) {
     validateFormalReleaseManifest(artifactRoot, options.version, errors)
     validateFormalMetadataVersions(artifactRoot, options.version, errors)
+    validateFormalMetadataReferences(artifactRoot, options.version, errors)
   }
 
   return { ok: errors.length === 0, assetCount, errors }
