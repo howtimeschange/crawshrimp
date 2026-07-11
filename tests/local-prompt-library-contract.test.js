@@ -53,6 +53,8 @@ test('LocalPromptLibrary view combines local and cloud prompt libraries with sou
   assert.match(view, /selectedCloudLibrary/)
   assert.match(view, /librarySourceLabel/)
   assert.match(view, /source_type/)
+  assert.match(view, /cloudPromptLibraryNotice\(err, options\)/)
+  assert.match(view, /cloudError\.value = options\.silent \? ''/)
 })
 
 test('Shared Prompt picker reads draft cloud templates from the library list payload', () => {

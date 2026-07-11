@@ -192,6 +192,7 @@ import {
   DEFAULT_PROMPT_LIBRARY_NAME,
   PROMPT_IMPORT_HEADER_ROWS,
   PROMPT_SCENARIOS,
+  cloudPromptLibraryNotice,
   createLocalPromptUid,
   defaultPromptTemplate,
   normalizePromptLibrary,
@@ -301,7 +302,7 @@ async function loadCloudLibraries(options = {}) {
     await refreshCloudApprovalStatus()
     if (!cloudBaseUrl.value) {
       cloudLibraries.value = []
-      cloudError.value = '尚未配置云端审批地址，可先进入云端审批页面完成配置和登录'
+      cloudError.value = options.silent ? '' : cloudPromptLibraryNotice(new Error('尚未配置云端审批地址'))
       return
     }
     const payload = await window.cs.listCloudPromptLibraries()
@@ -311,7 +312,7 @@ async function loadCloudLibraries(options = {}) {
     if (!options.silent) message.value = `已读取 ${cloudLibraries.value.length} 个线上提示词库`
   } catch (err) {
     cloudLibraries.value = []
-    cloudError.value = err?.message || String(err)
+    cloudError.value = cloudPromptLibraryNotice(err, options)
   } finally {
     cloudLoading.value = false
     ensureSelectedLibrary()

@@ -3,12 +3,28 @@ import assert from 'node:assert/strict'
 
 import {
   buildCloudPromptLibraryPayload,
+  cloudPromptLibraryNotice,
   buildPromptLibraryTaskSelection,
   loadPromptLibraryPickerSources,
   normalizePromptLibrary,
   parsePromptWorkbookImportCandidates,
   parsePromptWorkbookSheets,
 } from './localPromptLibrary.js'
+
+test('cloud prompt library login errors stay silent during background refresh', () => {
+  const error = new Error("Error invoking remote method 'list-cloud-prompt-libraries': Error: 请先在云端审批页面登录，再管理提示词库")
+
+  assert.equal(cloudPromptLibraryNotice(error, { silent: true }), '')
+})
+
+test('manual cloud refresh explains that local prompt libraries remain available', () => {
+  const error = new Error("Error invoking remote method 'list-cloud-prompt-libraries': Error: 请先在云端审批页面登录，再管理提示词库")
+
+  assert.equal(
+    cloudPromptLibraryNotice(error),
+    '尚未登录云端；本地提示词库仍可正常管理。登录后可查看和同步线上库。',
+  )
+})
 
 test('parsePromptWorkbookSheets reads cloud prompt template sheets into local templates', () => {
   const templates = parsePromptWorkbookSheets({

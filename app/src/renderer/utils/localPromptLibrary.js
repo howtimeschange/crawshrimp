@@ -2,6 +2,18 @@ export const PROMPT_SCENARIOS = ['裂变图', '创意拍摄']
 export const DEFAULT_PROMPT_LIBRARY_NAME = 'AI 测图提示词库 本地版'
 export const PROMPT_IMPORT_HEADER_ROWS = [4, 3, 5]
 
+export function cloudPromptLibraryNotice(error, options = {}) {
+  if (options.silent) return ''
+  const message = String(error?.message || error || '')
+  if (/请先在云端审批页面登录|云端登录已过期|重新登录云端审批/.test(message)) {
+    return '尚未登录云端；本地提示词库仍可正常管理。登录后可查看和同步线上库。'
+  }
+  if (/请先配置云端审批地址|尚未配置云端审批地址/.test(message)) {
+    return '尚未配置云端审批；本地提示词库仍可正常管理。配置后可查看和同步线上库。'
+  }
+  return '线上提示词库暂不可用；本地提示词库仍可正常管理。'
+}
+
 const HEADER_ALIASES = {
   field_name: ['字段名'],
   source_field_id: ['字段 ID', '字段ID'],

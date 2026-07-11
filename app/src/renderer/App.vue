@@ -39,7 +39,8 @@
           v-for="item in filteredNavItems" :key="item.id"
           :class="['nav-btn', { active: currentView === item.id }]"
           :aria-label="item.label"
-          :title="item.label"
+          :data-tooltip="effectiveSidebarCollapsed ? item.label : null"
+          :title="effectiveSidebarCollapsed ? undefined : item.label"
           @click="selectNav(item)"
         >
           <span class="icon">{{ item.icon }}</span>
@@ -502,6 +503,11 @@ input, select, textarea { font-family: inherit; }
   min-height: 0;
   overflow: hidden;
 }
+.sidebar-collapsed .sidebar {
+  position: relative;
+  z-index: 20;
+  overflow: visible;
+}
 nav {
   display: flex;
   flex-direction: column;
@@ -511,6 +517,7 @@ nav {
   overflow-y: auto;
 }
 .nav-btn {
+  position: relative;
   display: flex; align-items: center; gap: 10px;
   padding: 10px 12px; border-radius: 8px;
   background: transparent; border: none;
@@ -519,6 +526,7 @@ nav {
 }
 .sidebar-collapsed nav {
   padding: 0 6px;
+  overflow: visible;
 }
 .sidebar-collapsed .nav-btn {
   justify-content: center;
@@ -532,6 +540,39 @@ nav {
   font-size: 17px;
 }
 .nav-btn:hover { background: var(--bg3); color: var(--text); }
+.nav-btn:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+.sidebar-collapsed .nav-btn::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  top: 50%;
+  left: calc(100% + 10px);
+  z-index: 1000;
+  min-width: max-content;
+  padding: 7px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: #292932;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translate(-4px, -50%);
+  transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s ease;
+}
+.sidebar-collapsed .nav-btn:hover::after,
+.sidebar-collapsed .nav-btn:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(0, -50%);
+}
 .nav-btn.active { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
 .icon { font-size: 15px; width: 20px; }
 
@@ -709,6 +750,23 @@ nav {
   .layout-ai-image .sidebar-update-footer :deep(.version-label),
   .layout-ai-image .sidebar-update-footer :deep(.update-copy) {
     display: none;
+  }
+
+  .layout-ai-image.sidebar-collapsed .sidebar,
+  .layout-ai-image.sidebar-collapsed nav {
+    overflow: visible;
+  }
+
+  .layout-ai-image.sidebar-collapsed .nav-btn::after {
+    top: auto;
+    bottom: calc(100% + 8px);
+    left: 50%;
+    transform: translate(-50%, 4px);
+  }
+
+  .layout-ai-image.sidebar-collapsed .nav-btn:hover::after,
+  .layout-ai-image.sidebar-collapsed .nav-btn:focus-visible::after {
+    transform: translate(-50%, 0);
   }
 }
 </style>

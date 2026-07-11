@@ -103,6 +103,19 @@ test('renderer shell wires the collapsible update footer without remounting cont
   assert.doesNotMatch(app, /currentVersion:\s*['"][0-9]+\.[0-9]+\.[0-9]+/)
 })
 
+test('collapsed primary navigation exposes immediate hover and keyboard tooltips', () => {
+  const app = readRepoFile('app/src/renderer/App.vue')
+
+  assert.match(app, /:data-tooltip="effectiveSidebarCollapsed \? item\.label : null"/)
+  assert.match(app, /:title="effectiveSidebarCollapsed \? undefined : item\.label"/)
+  assert.match(cssRule(app, '.sidebar-collapsed .sidebar'), /overflow:\s*visible/)
+  assert.match(cssRule(app, '.sidebar-collapsed .sidebar'), /z-index:\s*20/)
+  assert.match(cssRule(app, '.sidebar-collapsed nav'), /overflow:\s*visible/)
+  assert.doesNotMatch(app, /(?:^|\n)\.nav-btn::after\s*\{/)
+  assert.match(app, /\.sidebar-collapsed \.nav-btn::after\s*\{[^}]*content:\s*attr\(data-tooltip\)[^}]*position:\s*absolute/s)
+  assert.match(app, /\.sidebar-collapsed \.nav-btn:hover::after[\s\S]*\.sidebar-collapsed \.nav-btn:focus-visible::after/)
+})
+
 test('settings exposes a read-only application update panel with pinned manual release fallback', () => {
   const settings = readRepoFile('app/src/renderer/views/SettingsPage.vue')
 
