@@ -13,12 +13,13 @@ test('desktop build workflow runs on pull requests before merge', () => {
   assert.match(workflow, /^  pull_request:/m)
 })
 
-test('desktop build passes publish mode as one npm argument on every runner', () => {
+test('desktop package scripts disable implicit publishing before npm parses extra arguments', () => {
   const workflow = fs.readFileSync(path.join(repoRoot, '.github/workflows/build-desktop.yml'), 'utf8')
-  const publishNeverArgs = workflow.match(/--publish=never/g) || []
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'app/package.json'), 'utf8'))
 
-  assert.equal(publishNeverArgs.length, 2)
-  assert.doesNotMatch(workflow, /--publish\s+never/)
+  assert.match(packageJson.scripts['build:mac:ci'], /--publish=never/)
+  assert.match(packageJson.scripts['build:win'], /--publish=never/)
+  assert.doesNotMatch(workflow, /--publish(?:=|\s+)/)
 })
 
 test('desktop build workflow keeps default token permissions read-only', () => {

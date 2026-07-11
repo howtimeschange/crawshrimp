@@ -6,10 +6,10 @@
   "main": "src/main.js",
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://127.0.0.1:5173 && electron .\"",
-    "build": "vite build && node scripts/run-electron-builder.js",
-    "build:mac": "vite build && node scripts/run-electron-builder.js --mac",
-    "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac",
-    "build:win": "vite build && node scripts/run-electron-builder.js --win",
+    "build": "vite build && node scripts/run-electron-builder.js --publish=never",
+    "build:mac": "vite build && node scripts/run-electron-builder.js --mac --publish=never",
+    "build:mac:ci": "vite build && node scripts/run-electron-builder.js --mac --publish=never",
+    "build:win": "vite build && node scripts/run-electron-builder.js --win --publish=never",
     "vite:build": "vite build",
     "test": "node --test src/*.test.js src/renderer/utils/*.test.js scripts/*.test.js",
     "test:update-artifacts": "node --test scripts/validate-update-artifacts.test.js"
