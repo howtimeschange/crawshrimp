@@ -1892,6 +1892,10 @@ const updateCoordinator = createUpdateInstallCoordinator({
     timeoutMs: 1500,
   })),
   shutdownForUpdate: () => lifecycleController.prepareForUpdateInstall(),
+  recoverAfterCleanupFailure: async () => {
+    lifecycleController.recoverFromUpdateInstallFailure()
+    await ensureDesktopServicesStarted()
+  },
   notifyReady: notifyUpdateReady,
   log,
 })

@@ -610,6 +610,151 @@ test('install failure releases the acquired drain token and restores retryable r
   assert.equal(updateService.getStatus().status, 'ready-to-install')
 })
 
+test('post-cleanup setInstalling failure releases drain, awaits recovery, then restores retryable readiness', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const setInstallReadiness = updateService.setInstallReadiness
+  updateService.setInstallReadiness = readiness => {
+    if (events.includes('shutdown')) {
+      events.push(`set-readiness:${readiness.ready}:${updateService.getStatus().status}`)
+    }
+    setInstallReadiness(readiness)
+  }
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    updateService.publish({ status: 'installing', blockers: [], error: '' })
+    throw new Error('install gate failed')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
+    },
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
+    recoverAfterCleanupFailure: async () => {
+      events.push(`recover-start:${updateService.getStatus().status}`)
+      await Promise.resolve()
+      events.push(`recover-end:${updateService.getStatus().status}`)
+    },
+    notifyReady: () => {},
+  })
+
+  await assert.rejects(() => coordinator.requestInstall(), /install gate failed/)
+
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'set-installing',
+    'release-drain:drain-1',
+    'recover-start:installing',
+    'recover-end:installing',
+    'set-readiness:true:installing',
+  ])
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
+test('post-cleanup quitAndInstall failure releases drain, awaits recovery, then preserves original error', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const setInstallReadiness = updateService.setInstallReadiness
+  updateService.setInstallReadiness = readiness => {
+    if (events.includes('shutdown')) {
+      events.push(`set-readiness:${readiness.ready}:${updateService.getStatus().status}`)
+    }
+    setInstallReadiness(readiness)
+  }
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    updateService.publish({ status: 'installing', blockers: [], error: '' })
+  }
+  updateService.quitAndInstall = () => {
+    events.push('quit-and-install')
+    throw new Error('quit install failed')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => {
+      events.push('get-readiness')
+      return { ready: true, blockers: [] }
+    },
+    acquireDrain: async () => {
+      events.push('acquire-drain')
+      return { ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }
+    },
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => { events.push('shutdown'); return true },
+    recoverAfterCleanupFailure: async () => {
+      events.push(`recover-start:${updateService.getStatus().status}`)
+      updateService.publish({ status: 'downloaded', blockers: [], error: '' })
+      events.push(`recover-end:${updateService.getStatus().status}`)
+    },
+    notifyReady: () => {},
+  })
+
+  await assert.rejects(() => coordinator.requestInstall(), /quit install failed/)
+
+  assert.deepEqual(events, [
+    'get-readiness',
+    'acquire-drain',
+    'shutdown',
+    'set-installing',
+    'quit-and-install',
+    'release-drain:drain-1',
+    'recover-start:installing',
+    'recover-end:downloaded',
+    'set-readiness:true:downloaded',
+  ])
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
+test('post-cleanup recovery failure is logged without hiding the install error or leaking drain', async () => {
+  const updateService = createUpdateService({ status: 'ready-to-install', downloaded: true })
+  const events = []
+  const warnings = []
+  updateService.setInstalling = () => {
+    events.push('set-installing')
+    updateService.publish({ status: 'installing', blockers: [], error: '' })
+  }
+  updateService.quitAndInstall = () => {
+    events.push('quit-and-install')
+    throw new Error('quit install failed')
+  }
+  const coordinator = createUpdateInstallCoordinator({
+    updateService,
+    getReadiness: async () => ({ ready: true, blockers: [] }),
+    acquireDrain: async () => ({ ok: true, drain_token: 'drain-1', readiness: { ready: true, blockers: [] } }),
+    releaseDrain: async token => events.push(`release-drain:${token}`),
+    shutdownForUpdate: async () => true,
+    recoverAfterCleanupFailure: async () => {
+      events.push('recover')
+      throw new Error('restart failed')
+    },
+    notifyReady: () => {},
+    log: {
+      warn: (message, error) => warnings.push(`${message}:${error.message}`),
+    },
+  })
+
+  await assert.rejects(() => coordinator.requestInstall(), /quit install failed/)
+
+  assert.deepEqual(events, [
+    'set-installing',
+    'quit-and-install',
+    'release-drain:drain-1',
+    'recover',
+  ])
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /restart failed/)
+  assert.equal(updateService.getStatus().status, 'ready-to-install')
+})
+
 test('dispose before readiness resolution prevents post-await side effects', async () => {
   const updateService = createUpdateService({ status: 'downloaded', downloaded: true })
   const timerHarness = createTimerHarness()

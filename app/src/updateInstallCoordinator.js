@@ -6,6 +6,7 @@ function createUpdateInstallCoordinator({
   acquireDrain,
   releaseDrain,
   shutdownForUpdate,
+  recoverAfterCleanupFailure = async () => {},
   notifyReady,
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
@@ -105,6 +106,7 @@ function createUpdateInstallCoordinator({
       throw error
     }
 
+    let postCleanupInstallFailureHandled = false
     try {
       const shutdownReady = await shutdownForUpdate()
       if (shutdownReady !== true) {
@@ -116,12 +118,21 @@ function createUpdateInstallCoordinator({
         await releaseDrainSafely(drainToken)
         return { ok: false, deferred: true }
       }
-      updateService.setInstalling()
-      updateService.quitAndInstall()
+      try {
+        updateService.setInstalling()
+        updateService.quitAndInstall()
+      } catch (installError) {
+        await recoverAfterPostCleanupInstallFailure(drainToken)
+        drainToken = ''
+        postCleanupInstallFailureHandled = true
+        throw installError
+      }
       return { ok: true }
     } catch (error) {
-      await releaseDrainSafely(drainToken)
-      updateService.setInstallReadiness({ ready: true, blockers: [] })
+      if (!postCleanupInstallFailureHandled) {
+        await releaseDrainSafely(drainToken)
+        updateService.setInstallReadiness({ ready: true, blockers: [] })
+      }
       throw error
     }
   }
@@ -155,6 +166,16 @@ function createUpdateInstallCoordinator({
     } catch (releaseError) {
       log?.warn?.('Failed to release update drain token after install failure', releaseError)
     }
+  }
+
+  async function recoverAfterPostCleanupInstallFailure(token) {
+    await releaseDrainSafely(token)
+    try {
+      await recoverAfterCleanupFailure()
+    } catch (recoveryError) {
+      log?.warn?.('Failed to recover desktop services after update install failure', recoveryError)
+    }
+    updateService.setInstallReadiness({ ready: true, blockers: [] })
   }
 
   return {

@@ -166,6 +166,30 @@ test('insufficient disk space prevents download with a user-facing error', async
   assert.match(service.getStatus().error, /100 B/)
 })
 
+test('disk probe failure publishes an update error and skips download', async () => {
+  const updater = createUpdater()
+  updater.checkForUpdates = async () => {
+    updater.emit('update-available', { version: '2.0.1', files: [{ size: 200 }] })
+  }
+  let downloads = 0
+  updater.downloadUpdate = async () => { downloads += 1 }
+  const service = createUpdateService({
+    app: { isPackaged: true, getVersion: () => '2.0.0' },
+    autoUpdater: updater,
+    platformSupport: { supported: true, reason: '' },
+    getAvailableBytes: () => {
+      throw new Error('statfs failed')
+    },
+  })
+
+  await service.checkForUpdates({ manual: true })
+  await assert.rejects(() => service.downloadUpdate(), /statfs failed/)
+
+  assert.equal(downloads, 0)
+  assert.equal(service.getStatus().status, 'error')
+  assert.match(service.getStatus().error, /statfs failed/)
+})
+
 test('quitAndInstall rejects until a downloaded update is explicitly installing', () => {
   const updater = createUpdater()
   let installs = 0

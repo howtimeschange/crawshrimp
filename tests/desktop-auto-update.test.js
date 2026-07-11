@@ -57,6 +57,26 @@ test('manual update check after download refreshes readiness but returns updater
   assert.doesNotMatch(checkHandler, /return updateCoordinator\.refreshReadiness\(\)/)
 })
 
+test('update install recovery resets lifecycle state before restarting desktop services', () => {
+  const lifecycle = readRepoFile('app/src/lifecycleController.js')
+  const main = readRepoFile('app/src/main.js')
+  const coordinatorOptions = main.slice(
+    main.indexOf('const updateCoordinator = createUpdateInstallCoordinator'),
+    main.indexOf('let scheduledUpdateCheck = null'),
+  )
+
+  assert.match(lifecycle, /recoverFromUpdateInstallFailure/)
+  assert.match(lifecycle, /updateInstallShutdownPrepared/)
+  assert.match(coordinatorOptions, /recoverAfterCleanupFailure:\s*async \(\) => \{/)
+  assert.match(coordinatorOptions, /lifecycleController\.recoverFromUpdateInstallFailure\(\)/)
+  assert.match(coordinatorOptions, /await ensureDesktopServicesStarted\(\)/)
+  assert.ok(
+    coordinatorOptions.indexOf('lifecycleController.recoverFromUpdateInstallFailure()') <
+      coordinatorOptions.indexOf('await ensureDesktopServicesStarted()'),
+    'lifecycle update-install state resets before service restart'
+  )
+})
+
 test('updater IPC action handlers always return the stable status snapshot', () => {
   const main = readRepoFile('app/src/main.js')
   const checkHandler = main.slice(

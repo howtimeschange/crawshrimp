@@ -115,14 +115,12 @@ function createUpdateService({
     if (state.status !== 'available' && !(state.status === 'error' && state.latestVersion)) {
       throw new Error('当前没有可下载的桌面更新。')
     }
-    const freeBytes = typeof getAvailableBytes === 'function' ? await getAvailableBytes() : null
-    if (requiredBytes > 0 && Number.isFinite(Number(freeBytes)) && Number(freeBytes) < requiredBytes) {
-      const message = `磁盘空间不足：更新需要 ${formatBytes(requiredBytes)}，当前可用 ${formatBytes(Number(freeBytes))}。`
-      publish({ status: 'error', error: message, progress: null })
-      throw new Error(message)
-    }
-    publish({ status: 'downloading', error: '', progress: null })
     try {
+      const freeBytes = typeof getAvailableBytes === 'function' ? await getAvailableBytes() : null
+      if (requiredBytes > 0 && Number.isFinite(Number(freeBytes)) && Number(freeBytes) < requiredBytes) {
+        throw new Error(`磁盘空间不足：更新需要 ${formatBytes(requiredBytes)}，当前可用 ${formatBytes(Number(freeBytes))}。`)
+      }
+      publish({ status: 'downloading', error: '', progress: null })
       return await autoUpdater.downloadUpdate()
     } catch (error) {
       publish({ status: 'error', error: readableError(error), progress: null })
