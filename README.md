@@ -8,6 +8,17 @@
 
 抓虾把三类工作放进同一套产品里：在已登录的 Chrome 中执行电商平台自动化，在桌面端完成 AI 生图与提示词管理，并通过可选的云端审批台让审核人员和任务机协同完成测图、重生图、上传与数据回收。
 
+## v2.1.2 Cloudflare 自动更新与 macOS 签名稳定性（2026-07-13）
+
+`v2.1.2` 将应用内更新的国内下载源切换到 `updates.crawshrimp.com`，并补足可靠的后台检查节奏与 macOS Python 运行时签名筛选。
+
+- 正式 tag 先校验并同步 macOS ZIP、Windows EXE、blockmap 到 Cloudflare R2，最后发布 `latest*.yml`；GitHub Release 保留为版本溯源、海外下载和手动 fallback。
+- 启动 15 秒后检查更新；失败 5 分钟重试；成功后每 6 小时复查；应用重新获得焦点或系统恢复后按 5 分钟节流复查。发现新版会发送系统通知，但不会自动下载或安装。
+- `v2.1.0` / `v2.1.1` 升级到本版本时仍从 GitHub 下载；升级为 `v2.1.2` 后，后续检查和用户确认下载均走 Cloudflare R2。
+- macOS 只对 Python 运行时中的 Mach-O 原生代码签名，跳过图片、时区数据和字节码等普通资源，避免 Apple 时间戳签名误处理数据文件。
+
+完整变更见 [v2.1.2 Release Notes](release-notes/v2.1.2.md)。
+
 ## v2.1.1 AI 生图配置与 Windows 布局修复（2026-07-12）
 
 `v2.1.1` 修复了新设备保存 1XM Key 后，AI 生图、AI 测图和设置菜单状态不同步的问题，并纠正 Windows 标题栏误用 macOS 控制区偏移造成的 Logo 与侧栏收起按钮错位。

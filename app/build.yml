@@ -21,6 +21,7 @@ mac:
   gatekeeperAssess: false
   entitlements: assets/entitlements.mac.plist
   entitlementsInherit: assets/entitlements.mac.inherit.plist
+  sign: scripts/sign-macos-app.js
   signIgnore:
     - '/Contents/Resources/python/.*\.pyc$'
   target:
