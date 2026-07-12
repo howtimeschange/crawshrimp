@@ -934,7 +934,7 @@
 </template>
 
 <script setup>
-import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowReactive, watch } from 'vue'
+import { computed, h, nextTick, onActivated, onBeforeUnmount, onMounted, reactive, ref, shallowReactive, watch } from 'vue'
 import {
   AI_IMAGE_FORMATS,
   AI_IMAGE_MODELS,
@@ -1323,6 +1323,10 @@ onMounted(async () => {
       loadingMessageTick.value = (loadingMessageTick.value + 1) % AI_IMAGE_LOADING_MESSAGES.length
     }
   }, 2400)
+})
+
+onActivated(() => {
+  void loadSettings()
 })
 
 onBeforeUnmount(() => {

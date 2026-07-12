@@ -4,6 +4,7 @@
     :class="{
       'layout-ai-image': currentView === 'ai_image',
       'sidebar-collapsed': effectiveSidebarCollapsed,
+      'titlebar-macos': isMacTitlebar,
     }"
   >
     <!-- 标题栏 -->
@@ -197,6 +198,7 @@ const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
 const sidebarCollapsed = ref(readSidebarCollapsed(window.localStorage))
 const effectiveSidebarCollapsed = computed(() => !activeScript.value && sidebarCollapsed.value)
+const isMacTitlebar = /mac/i.test(String(navigator.userAgentData?.platform || navigator.platform || navigator.userAgent))
 const updateStatus = ref({
   status: 'idle',
   currentVersion: '',
@@ -492,8 +494,7 @@ input, select, textarea { font-family: inherit; }
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: center;
-  /* macOS 红绿灯按钮区约 78px，右侧留空给全屏等 */
-  padding: 0 20px 0 88px;
+  padding: 0 20px 0 12px;
   gap: 8px;
 }
 .brand {
@@ -522,15 +523,25 @@ input, select, textarea { font-family: inherit; }
   outline: none;
 }
 .sidebar-collapsed .titlebar {
-  padding-left: 88px;
+  padding-left: 0;
 }
 .sidebar-collapsed .brand {
   width: 56px;
   justify-content: center;
-  margin-left: -32px;
+  margin-left: 0;
 }
 .sidebar-collapsed .logo {
   display: none;
+}
+.titlebar-macos .titlebar {
+  /* macOS 红绿灯按钮区约 78px，右侧留空给全屏等 */
+  padding-left: 88px;
+}
+.titlebar-macos.sidebar-collapsed .titlebar {
+  padding-left: 88px;
+}
+.titlebar-macos.sidebar-collapsed .brand {
+  margin-left: -32px;
 }
 .status-bar { margin-left: auto; display: flex; gap: 16px; -webkit-app-region: no-drag; }
 .dot { display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--text3); }

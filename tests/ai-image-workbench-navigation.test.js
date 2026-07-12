@@ -44,6 +44,14 @@ test('Settings page accepts focus panel id and exposes 1XM image model keys', ()
   assert.match(settings, /Gemini 3 Pro Image Preview Key/)
 })
 
+test('Settings page marks the AI menu configured when any image-model key is present', () => {
+  const settings = read('app/src/renderer/views/SettingsPage.vue')
+
+  assert.match(settings, /statusKeys: ai1xmKeyFields/)
+  assert.match(settings, /isMenuChildConfigured\(child\)/)
+  assert.match(settings, /hasAnyFieldConfigured\(child\.statusKeys\)/)
+})
+
 test('AI image workbench renders option 3 shell regions and settings action', () => {
   const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
 
@@ -67,6 +75,13 @@ test('AI image workbench renders option 3 shell regions and settings action', ()
   assert.doesNotMatch(workbench, /去设置 1XM Key/)
   assert.doesNotMatch(workbench, /提交 1XM 任务/)
   assert.match(workbench, /defineEmits\(\['open-settings'\]\)/)
+})
+
+test('cached AI image workbench reloads model keys after returning from settings', () => {
+  const workbench = read('app/src/renderer/views/AiImageWorkbench.vue')
+
+  assert.match(workbench, /onActivated/)
+  assert.match(workbench, /onActivated\(\(\) => \{\s*void loadSettings\(\)\s*\}\)/)
 })
 
 test('AI image workbench uses picker interactions and hides canvas entry for now', () => {

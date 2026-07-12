@@ -32,10 +32,10 @@
               >
                 <span>{{ child.label }}</span>
                 <span
-                  v-if="child.statusKey"
-                  :class="['mini-state', isFieldConfigured(child.statusKey) ? 'on' : 'off']"
+                  v-if="child.statusKey || child.statusKeys?.length"
+                  :class="['mini-state', isMenuChildConfigured(child) ? 'on' : 'off']"
                 >
-                  {{ isFieldConfigured(child.statusKey) ? '已配' : '未配' }}
+                  {{ isMenuChildConfigured(child) ? '已配' : '未配' }}
                 </span>
               </button>
             </div>
@@ -647,7 +647,7 @@ const menuGroups = [
     icon: '●',
     label: 'AI 能力',
     desc: '1XM 生图密钥',
-    children: [{ id: 'ai-1xm', label: '1XM 图片模型', statusKey: 'ai.1xm.gpt_image_2k_key' }],
+    children: [{ id: 'ai-1xm', label: '1XM 图片模型', statusKeys: ai1xmKeyFields }],
   },
   {
     id: 'cloud',
@@ -815,6 +815,11 @@ function isFieldConfigured(key) {
 
 function hasAnyFieldConfigured(keys) {
   return keys.some(key => isFieldConfigured(key))
+}
+
+function isMenuChildConfigured(child) {
+  if (Array.isArray(child?.statusKeys)) return hasAnyFieldConfigured(child.statusKeys)
+  return isFieldConfigured(child?.statusKey)
 }
 
 async function browseDir() {

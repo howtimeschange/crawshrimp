@@ -171,6 +171,19 @@ test('renderer shell wires the collapsible update footer without remounting cont
   assert.doesNotMatch(app, /currentVersion:\s*['"][0-9]+\.[0-9]+\.[0-9]+/)
 })
 
+test('titlebar reserves the macOS window-control area only on macOS', () => {
+  const app = readRepoFile('app/src/renderer/App.vue')
+
+  assert.match(app, /const isMacTitlebar = \/mac\//)
+  assert.match(app, /'titlebar-macos': isMacTitlebar/)
+  assert.match(cssRule(app, '.titlebar'), /padding:\s*0 20px 0 12px/)
+  assert.match(cssRule(app, '.titlebar-macos .titlebar'), /padding-left:\s*88px/)
+  assert.match(cssRule(app, '.sidebar-collapsed .titlebar'), /padding-left:\s*0/)
+  assert.match(cssRule(app, '.titlebar-macos.sidebar-collapsed .titlebar'), /padding-left:\s*88px/)
+  assert.match(cssRule(app, '.sidebar-collapsed .brand'), /margin-left:\s*0/)
+  assert.match(cssRule(app, '.titlebar-macos.sidebar-collapsed .brand'), /margin-left:\s*-32px/)
+})
+
 test('collapsed primary navigation exposes immediate hover and keyboard tooltips', () => {
   const app = readRepoFile('app/src/renderer/App.vue')
 

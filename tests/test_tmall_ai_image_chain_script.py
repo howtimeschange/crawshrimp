@@ -1,6 +1,7 @@
 import importlib.util
 import asyncio
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -62,6 +63,30 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(defaults["ratio"], "3:4")
         self.assertEqual(defaults["model"], "gpt-image-2")
         self.assertEqual(defaults["one_xm_key_tier"], "4k")
+
+    def test_script_reads_4k_key_saved_by_desktop_settings(self):
+        module = load_script()
+        from core import config
+
+        with tempfile.TemporaryDirectory() as temp_dir, \
+            patch("core.runtime_paths.data_root", return_value=Path(temp_dir)), \
+            patch.dict(os.environ, {
+                "ONE_XM_GPT_IMAGE_2K_KEY": "",
+                "ONE_XM_GPT_IMAGE_4K_KEY": "",
+                "ONE_XM_API_KEY": "",
+            }, clear=False):
+            config.patch_config({"ai.1xm.gpt_image_4k_key": "unit-settings-4k-key"})
+
+            settings = module.resolve_one_xm_settings()
+            selected_key_id = module.require_one_xm_key_for_generation(
+                settings,
+                model="gpt-image-2",
+                image_size="2880x2880",
+                key_tier="4k",
+            )
+
+        self.assertEqual(settings["4k"], "unit-settings-4k-key")
+        self.assertEqual(selected_key_id, "4k")
 
     def test_approval_item_preserves_reference_and_ai_display_order(self):
         module = load_script()
