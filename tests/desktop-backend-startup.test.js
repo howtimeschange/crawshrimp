@@ -93,7 +93,7 @@ test('desktop services restart when macOS reopens the app after all windows clos
 test('desktop hides native application menu on Windows and Linux', () => {
   const main = readRepoFile('app/src/main.js')
 
-  assert.match(main, /const \{ app, BrowserWindow, Menu, ipcMain, shell, dialog, session \} = require\('electron'\)/)
+  assert.match(main, /const \{[^}]*\bMenu\b[^}]*\} = require\('electron'\)/)
   assert.match(main, /function hideNativeAppMenu\(\) \{\s*if \(process\.platform === 'darwin'\) return\s*Menu\.setApplicationMenu\(null\)\s*\}/)
   assert.match(main, /autoHideMenuBar: process\.platform !== 'darwin'/)
   assert.match(main, /if \(process\.platform !== 'darwin'\) \{\s*mainWindow\.setMenuBarVisibility\(false\)\s*\}/)
