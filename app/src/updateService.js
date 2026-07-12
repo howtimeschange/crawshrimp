@@ -6,7 +6,7 @@ function createUpdateService({
   app,
   autoUpdater,
   platformSupport,
-  testFeedUrl = '',
+  updateFeedUrl = '',
   getAvailableBytes,
   log = console,
   emit,
@@ -29,7 +29,7 @@ function createUpdateService({
     manualDownloadUrl: LATEST_RELEASE_URL,
   }
 
-  configureUpdater(autoUpdater, testFeedUrl, log)
+  configureUpdater(autoUpdater, updateFeedUrl, log)
 
   function snapshot() {
     return {
@@ -102,7 +102,7 @@ function createUpdateService({
 
   async function checkForUpdates() {
     ensureSupported()
-    publish({ status: 'checking', error: '', progress: null })
+    publish({ status: 'checking', error: '', progress: null, lastCheckedAt: new Date().toISOString() })
     try {
       return await autoUpdater.checkForUpdates()
     } catch (error) {
@@ -190,18 +190,18 @@ function createUpdateService({
   }
 }
 
-function configureUpdater(autoUpdater, testFeedUrl, log) {
+function configureUpdater(autoUpdater, updateFeedUrl, log) {
   if (!autoUpdater) throw new Error('autoUpdater is required')
   autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = false
   autoUpdater.allowPrerelease = false
   autoUpdater.allowDowngrade = false
-  const feedUrl = String(testFeedUrl || '').trim()
+  const feedUrl = String(updateFeedUrl || '').trim()
   if (feedUrl) {
     try {
       autoUpdater.setFeedURL({ provider: 'generic', url: feedUrl })
     } catch (error) {
-      log?.warn?.('Failed to configure desktop update test feed', error)
+      log?.warn?.('Failed to configure desktop update feed', error)
       throw error
     }
   }

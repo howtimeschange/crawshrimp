@@ -1,6 +1,6 @@
 const test = require('node:test')
 const assert = require('node:assert/strict')
-const { evaluateUpdatePlatform, resolveTestFeedUrl } = require('./updatePlatform')
+const { evaluateUpdatePlatform, resolveTestFeedUrl, resolveUpdateFeedUrl } = require('./updatePlatform')
 
 test('packaged Windows builds support in-place update', () => {
   assert.deepEqual(
@@ -79,5 +79,36 @@ test('production metadata rejects every test feed override even when the URL is 
       isTestBuild: false,
       env: { CRAWSHRIMP_UPDATE_E2E_URL: rawUrl },
     }), '', rawUrl)
+  }
+})
+
+test('production builds use the configured HTTPS update feed', () => {
+  assert.equal(resolveUpdateFeedUrl({
+    isTestBuild: false,
+    env: { CRAWSHRIMP_UPDATE_E2E_URL: 'http://127.0.0.1:40123' },
+    configuredFeedUrl: 'https://updates.crawshrimp.com',
+  }), 'https://updates.crawshrimp.com/')
+})
+
+test('test builds retain the loopback feed override ahead of the configured update feed', () => {
+  assert.equal(resolveUpdateFeedUrl({
+    isTestBuild: true,
+    env: { CRAWSHRIMP_UPDATE_E2E_URL: 'http://localhost:40123/feed' },
+    configuredFeedUrl: 'https://updates.crawshrimp.com',
+  }), 'http://localhost:40123/feed')
+})
+
+test('configured update feeds reject insecure or credential-bearing URLs', () => {
+  for (const configuredFeedUrl of [
+    'http://updates.crawshrimp.com',
+    'https://user:pass@updates.crawshrimp.com',
+    'file:///tmp/feed',
+    'not a url',
+  ]) {
+    assert.equal(resolveUpdateFeedUrl({
+      isTestBuild: false,
+      env: {},
+      configuredFeedUrl,
+    }), '', configuredFeedUrl)
   }
 })

@@ -3,7 +3,7 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor } = require('electron')
 const { Notification } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path   = require('path')
@@ -25,7 +25,8 @@ const { requestBackendHealth } = require('./backendHealth')
 const { configureSingleInstance } = require('./singleInstance')
 const { createUpdateService } = require('./updateService')
 const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
-const { evaluateUpdatePlatform, resolveTestFeedUrl } = require('./updatePlatform')
+const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
+const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
 const APP_METADATA = require('../package.json')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
@@ -1873,9 +1874,10 @@ const updatePlatformSupport = evaluateUpdatePlatform({
   homeDir: app.getPath('home'),
 })
 
-const testFeedUrl = resolveTestFeedUrl({
+const updateFeedUrl = resolveUpdateFeedUrl({
   isTestBuild: APP_METADATA.crawshrimpUpdateTestBuild === true,
   env: process.env,
+  configuredFeedUrl: APP_METADATA.crawshrimpUpdateFeedUrl,
 })
 
 function sendUpdateStatus(snapshot) {
@@ -1892,11 +1894,21 @@ function notifyUpdateReady() {
   notification.show()
 }
 
+function notifyUpdateAvailable(status = {}) {
+  if (!Notification?.isSupported?.()) return
+  const version = String(status.latestVersion || '').trim()
+  const notification = new Notification({
+    title: '抓虾发现新版本',
+    body: version ? `v${version} 已可下载，点击侧边栏“更新”开始下载。` : '发现可用更新，点击侧边栏“更新”开始下载。',
+  })
+  notification.show()
+}
+
 const updateService = createUpdateService({
   app,
   autoUpdater,
   platformSupport: updatePlatformSupport,
-  testFeedUrl,
+  updateFeedUrl,
   getAvailableBytes: () => {
     const stats = fs.statfsSync(app.getPath('userData'))
     return Number(stats.bavail) * Number(stats.bsize)
@@ -1930,17 +1942,17 @@ const updateCoordinator = createUpdateInstallCoordinator({
   log,
 })
 
-let scheduledUpdateCheck = null
+const updateCheckScheduler = createUpdateCheckScheduler({
+  updateService,
+  supported: updatePlatformSupport.supported,
+  notifyAvailable: notifyUpdateAvailable,
+  log,
+})
 
 function scheduleInitialUpdateCheck() {
-  if (!updatePlatformSupport.supported || scheduledUpdateCheck) return
+  if (!updatePlatformSupport.supported) return
   updateCoordinator.start()
-  scheduledUpdateCheck = setTimeout(() => {
-    scheduledUpdateCheck = null
-    updateService.checkForUpdates({ manual: false }).catch(error => {
-      log(`[update] automatic check failed: ${error.message}`)
-    })
-  }, 15000)
+  updateCheckScheduler.start()
 }
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
@@ -1958,8 +1970,16 @@ configureSingleInstance({
         ensureDesktopServicesStarted()
       })
 
-      await ensureDesktopServicesStarted()
       scheduleInitialUpdateCheck()
+      await ensureDesktopServicesStarted()
+    })
+
+    app.on('browser-window-focus', () => {
+      updateCheckScheduler.onAppFocus()
+    })
+
+    powerMonitor.on('resume', () => {
+      updateCheckScheduler.onAppFocus()
     })
 
     app.on('window-all-closed', () => {
@@ -1973,10 +1993,7 @@ configureSingleInstance({
     })
 
     app.on('will-quit', () => {
-      if (scheduledUpdateCheck) {
-        clearTimeout(scheduledUpdateCheck)
-        scheduledUpdateCheck = null
-      }
+      updateCheckScheduler.dispose()
       updateCoordinator.dispose()
       updateService.dispose()
     })

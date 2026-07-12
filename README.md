@@ -102,6 +102,8 @@ flowchart LR
 
 正式 `vX.Y.Z` Release 同时包含应用内更新资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows EXE blockmap 与 `latest.yml`。`desktop-latest` 不包含这些更新元数据。
 
+应用内稳定更新从 [Cloudflare R2 下载源](https://updates.crawshrimp.com/) 读取这些已校验资产；GitHub Release 保留为版本溯源、海外下载和手动 fallback。每次正式 tag 会先将资产同步到 R2，确认可读后才发布 GitHub Release；安装包仍保留原有 macOS 签名/公证和 `latest*.yml` 的 SHA512 校验。
+
 安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。
 
 从带桌面自动更新的 bridge 版本开始，已安装用户不需要卸载旧版：下载正式 Release 安装包覆盖安装一次即可接入后续应用内更新。Windows 使用 NSIS 在原安装路径就地更新；macOS 的应用内更新使用 ZIP/ShipIt，DMG 只用于首次安装、bridge 覆盖或应用内更新失败后的手动 fallback。
@@ -112,7 +114,7 @@ Windows 从旧版手动覆盖安装前，先结束正在运行的任务，再从
 
 侧边栏底部默认只显示当前版本；只有检测到可用更新时才显示 `更新` 操作。进入具体脚本视图后，侧边栏保持展开，避免任务表单和脚本上下文被折叠打断。
 
-`desktop-latest` 只用于手动 QA/bridge 安装包，不作为应用内稳定更新源；应用内稳定更新只读取正式 `vX.Y.Z` Release 里的 GitHub updater 元数据。
+`desktop-latest` 只用于手动 QA/bridge 安装包，不作为应用内稳定更新源；应用内稳定更新读取 `https://updates.crawshrimp.com/` 的 Cloudflare R2 元数据，GitHub 正式 `vX.Y.Z` Release 仍是手动 fallback。
 
 #### macOS
 
@@ -354,6 +356,7 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 - 推送 `main`：运行完整测试并构建 macOS / Windows 桌面产物，用于验证主分支。
 - 推送 `v*` tag：再次测试与构建，执行 macOS 签名/公证（密钥齐全时），发布正式版本并刷新 `desktop-latest`。
 - 正式 Release 包含 macOS arm64、macOS x64、Windows x64 和 Windows blockmap。
+- 正式 tag 会将全部 updater 资产先同步到 Cloudflare R2：版本化安装包与 blockmap 使用长期 immutable 缓存，`latest.yml`/`latest-mac.yml` 使用每次重新校验的缓存策略；R2 同步失败会阻止 GitHub Release 发布。
 - `desktop-latest` 只上传手动安装用 DMG/EXE，并保持 `latest=false`；正式 `vX.Y.Z` Release 才包含应用内更新所需的 ZIP/YAML/blockmap 元数据。
 
 应用版本以 `app/package.json` 和 `app/package-lock.json` 为准；tag 必须与版本号一致。每次发布先按[发布版本号规则](docs/release-versioning.md)确定 PATCH、MINOR 或 MAJOR 等级。详细版本说明存放在 `release-notes/vX.Y.Z.md`。

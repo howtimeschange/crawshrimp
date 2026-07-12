@@ -14,6 +14,7 @@ This checklist is the required evidence record before claiming desktop updater r
 - GitHub tag build run ID: `PENDING`
 - Formal release URL: `PENDING`
 - Rolling `desktop-latest` release URL: `PENDING`
+- Cloudflare R2 update source (`https://updates.crawshrimp.com/`): `PENDING`
 - Formal build marked with `crawshrimpUpdateTestBuild`: `NO`
 
 ## Test Build Feed
@@ -63,6 +64,13 @@ shasum -a 512 /path/to/update-artifacts/<asset>
 | Windows x64 | `latest.yml` | `PENDING` | `PENDING` | `PENDING` | `PENDING` |
 | macOS ARM | `latest-mac.yml` | `PENDING` | `PENDING` | `PENDING` | `PENDING` |
 | macOS Intel | `latest-mac.yml` | `PENDING` | `PENDING` | `PENDING` | `PENDING` |
+
+Cloudflare readback (must match the formal-release metadata byte-for-byte before GitHub publication):
+
+```bash
+curl -fsS https://updates.crawshrimp.com/latest-mac.yml -o /tmp/latest-mac.yml
+curl -fsS https://updates.crawshrimp.com/latest.yml -o /tmp/latest.yml
+```
 
 ## Signing And Notarization Evidence
 

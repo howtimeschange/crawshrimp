@@ -25,13 +25,16 @@ test('desktop updater dependency and state service are restored', () => {
   const preload = readRepoFile('app/src/preload.js')
 
   assert.equal(packageJson.dependencies['electron-updater'], '6.8.9')
+  assert.equal(packageJson.crawshrimpUpdateFeedUrl, 'https://updates.crawshrimp.com/')
   assert.equal(fs.existsSync(updateServicePath), true)
   assert.match(updateService, /autoDownload = false/)
   assert.match(updateService, /autoInstallOnAppQuit = false/)
   assert.match(main, /require\('electron-updater'\)/)
+  assert.match(main, /resolveUpdateFeedUrl/)
+  assert.match(main, /configuredFeedUrl: APP_METADATA\.crawshrimpUpdateFeedUrl/)
   assert.match(main, /createUpdateService/)
   assert.match(main, /createUpdateInstallCoordinator/)
-  assert.match(main, /15000/)
+  assert.match(main, /createUpdateCheckScheduler/)
   assert.match(main, /update:get-status/)
   assert.match(main, /update:check/)
   assert.match(main, /update:download/)
@@ -42,6 +45,22 @@ test('desktop updater dependency and state service are restored', () => {
   assert.match(preload, /installUpdate/)
   assert.match(preload, /onUpdateStatus/)
   assert.doesNotMatch(preload, /setFeedURL/)
+})
+
+test('desktop schedules resilient automatic update checks and visible availability notifications', () => {
+  const main = readRepoFile('app/src/main.js')
+  const startup = main.slice(main.indexOf('app.whenReady().then(async () => {'), main.indexOf("app.on('window-all-closed'"))
+
+  assert.match(main, /createUpdateCheckScheduler/)
+  assert.match(main, /notifyUpdateAvailable/)
+  assert.match(main, /browser-window-focus/)
+  assert.match(main, /powerMonitor\.on\('resume'/)
+  assert.match(main, /updateCheckScheduler\.onAppFocus\(\)/)
+  assert.match(main, /updateCheckScheduler\.dispose\(\)/)
+  assert.ok(
+    startup.indexOf('scheduleInitialUpdateCheck()') < startup.indexOf('await ensureDesktopServicesStarted()'),
+    'automatic update scheduling does not wait for backend startup'
+  )
 })
 
 test('desktop packages the supported Electron 43.1.0 runtime', () => {
@@ -62,7 +81,7 @@ test('desktop CI uses the Node floor required by Electron 43', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const nodeSetupVersions = workflow.match(/node-version:\s*["']?22\.12\.0["']?/g) || []
 
-  assert.equal(nodeSetupVersions.length, 2)
+  assert.equal(nodeSetupVersions.length, 3)
 })
 
 test('manual update check after download refreshes readiness but returns updater status shape', () => {
@@ -83,7 +102,7 @@ test('update install recovery resets lifecycle state before restarting desktop s
   const main = readRepoFile('app/src/main.js')
   const coordinatorOptions = main.slice(
     main.indexOf('const updateCoordinator = createUpdateInstallCoordinator'),
-    main.indexOf('let scheduledUpdateCheck = null'),
+    main.indexOf('const updateCheckScheduler = createUpdateCheckScheduler'),
   )
 
   assert.match(lifecycle, /recoverFromUpdateInstallFailure/)
@@ -285,11 +304,34 @@ test('desktop workflow validates update metadata before upload and formal public
   assert.match(workflow, /node app\/scripts\/validate-update-artifacts\.js release-assets --formal-release --version "\$\{APP_VERSION\}"/)
 })
 
+test('desktop workflow mirrors verified updater artifacts to Cloudflare R2 before GitHub publication', () => {
+  const workflow = readRepoFile('.github/workflows/build-desktop.yml')
+  const r2JobStart = workflow.indexOf('publish-cloudflare-r2:')
+  const versionJobStart = workflow.indexOf('publish-version-release:')
+  const r2Job = workflow.slice(r2JobStart, versionJobStart)
+  const versionJob = workflow.slice(versionJobStart)
+
+  assert.ok(r2JobStart !== -1, 'Cloudflare R2 publication job is present')
+  assert.match(r2Job, /needs: build/)
+  assert.match(r2Job, /CLOUDFLARE_API_TOKEN: \$\{\{ secrets\.CLOUDFLARE_R2_API_TOKEN \}\}/)
+  assert.match(r2Job, /CLOUDFLARE_ACCOUNT_ID: \$\{\{ secrets\.CLOUDFLARE_ACCOUNT_ID \}\}/)
+  assert.match(r2Job, /CLOUDFLARE_R2_BUCKET: crawshrimp-desktop-updates/)
+  assert.match(r2Job, /r2 object put/)
+  assert.match(r2Job, /public, max-age=31536000, immutable/)
+  assert.match(r2Job, /no-cache, max-age=0, must-revalidate/)
+  assert.match(r2Job, /find release-assets\/macos -type f/)
+  assert.match(r2Job, /find release-assets\/windows -type f/)
+  assert.doesNotMatch(r2Job, /find release-assets -type f/)
+  assert.match(r2Job, /latest-mac\.yml/)
+  assert.match(r2Job, /latest\.yml/)
+  assert.match(versionJob, /needs: \[build, publish-cloudflare-r2\]/)
+})
+
 test('desktop workflow keeps rolling release manual installer only', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingStep = workflow.slice(
     workflow.indexOf('name: Publish rolling release'),
-    workflow.indexOf('publish-version-release:'),
+    workflow.indexOf('publish-cloudflare-r2:'),
   )
 
   assert.match(rollingStep, /manual_assets=\(/)
@@ -307,7 +349,7 @@ test('desktop workflow validates manual installer assets before rolling release 
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingJob = workflow.slice(
     workflow.indexOf('publish-release:'),
-    workflow.indexOf('publish-version-release:'),
+    workflow.indexOf('publish-cloudflare-r2:'),
   )
   const validateIndex = rollingJob.indexOf('name: Validate manual installer assets')
   const publishIndex = rollingJob.indexOf('name: Publish rolling release')
@@ -324,7 +366,7 @@ test('desktop workflow updates desktop-latest in place and verifies its moved ta
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingJob = workflow.slice(
     workflow.indexOf('publish-release:'),
-    workflow.indexOf('publish-version-release:'),
+    workflow.indexOf('publish-cloudflare-r2:'),
   )
   const versionReleaseDependencyIndex = rollingJob.indexOf('needs: publish-version-release')
   const manualValidationIndex = rollingJob.indexOf('name: Validate manual installer assets')
@@ -360,7 +402,7 @@ test('desktop workflow gates rolling release mutation on exact stable tag and pa
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingJob = workflow.slice(
     workflow.indexOf('publish-release:'),
-    workflow.indexOf('publish-version-release:'),
+    workflow.indexOf('publish-cloudflare-r2:'),
   )
   const gateIndex = rollingJob.indexOf('name: Validate release tag and package version')
   const publishIndex = rollingJob.indexOf('name: Publish rolling release')
@@ -430,6 +472,8 @@ test('desktop update release checklist captures required acceptance evidence wit
 test('README documents desktop update install semantics and footer decisions', () => {
   const readme = readRepoFile('README.md')
 
+  assert.match(readme, /updates\.crawshrimp\.com/)
+  assert.match(readme, /Cloudflare R2/)
   assert.match(readme, /bridge 版本/)
   assert.match(readme, /不需要卸载旧版/)
   assert.match(readme, /Windows 使用 NSIS 在原安装路径就地更新/)
@@ -443,6 +487,6 @@ test('README documents desktop update install semantics and footer decisions', (
   assert.match(readme, /只有检测到可用更新时才显示 `更新`/)
   assert.match(readme, /具体脚本视图后，侧边栏保持展开/)
   assert.match(readme, /desktop-latest` 只用于手动 QA\/bridge 安装包/)
-  assert.match(readme, /应用内稳定更新只读取正式 `vX\.Y\.Z` Release/)
+  assert.match(readme, /应用内稳定更新读取 `https:\/\/updates\.crawshrimp\.com\/` 的 Cloudflare R2 元数据/)
   assert.doesNotMatch(readme, /应用内自动更新当前保持关闭/)
 })

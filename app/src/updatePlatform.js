@@ -43,4 +43,24 @@ function resolveTestFeedUrl({ isTestBuild, env }) {
   return parsed.toString()
 }
 
-module.exports = { evaluateUpdatePlatform, resolveTestFeedUrl }
+function resolveUpdateFeedUrl({ isTestBuild, env, configuredFeedUrl }) {
+  const testFeedUrl = resolveTestFeedUrl({ isTestBuild, env })
+  if (testFeedUrl) return testFeedUrl
+
+  const rawUrl = String(configuredFeedUrl || '').trim()
+  if (!rawUrl) return ''
+
+  let parsed
+  try {
+    parsed = new URL(rawUrl)
+  } catch {
+    return ''
+  }
+
+  if (parsed.protocol !== 'https:' || parsed.username || parsed.password) return ''
+  parsed.hash = ''
+  parsed.search = ''
+  return parsed.toString()
+}
+
+module.exports = { evaluateUpdatePlatform, resolveTestFeedUrl, resolveUpdateFeedUrl }

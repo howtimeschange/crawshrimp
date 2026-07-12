@@ -42,6 +42,19 @@ test('available update waits for explicit download', async () => {
   assert.equal(downloads, 1)
 })
 
+test('available update records the time of the automatic check', async () => {
+  const updater = createUpdater()
+  updater.checkForUpdates = async () => {
+    updater.emit('update-available', { version: '2.0.1' })
+  }
+  const service = createService({ autoUpdater: updater })
+
+  await service.checkForUpdates({ manual: false })
+
+  assert.equal(service.getStatus().status, 'available')
+  assert.match(service.getStatus().lastCheckedAt, /^\d{4}-\d{2}-\d{2}T/)
+})
+
 test('downloaded update becomes waiting or ready only through readiness input', () => {
   const updater = createUpdater()
   const service = createUpdateService({
@@ -206,14 +219,14 @@ test('quitAndInstall rejects until a downloaded update is explicitly installing'
   assert.equal(installs, 1)
 })
 
-test('test feed URL configures only the injected generic feed', () => {
+test('configured feed URL uses the generic updater provider', () => {
   const updater = createUpdater()
   const feeds = []
   updater.setFeedURL = options => feeds.push(options)
   createService({
     autoUpdater: updater,
-    testFeedUrl: 'http://127.0.0.1:40123',
+    updateFeedUrl: 'https://updates.crawshrimp.com/',
   })
 
-  assert.deepEqual(feeds, [{ provider: 'generic', url: 'http://127.0.0.1:40123' }])
+  assert.deepEqual(feeds, [{ provider: 'generic', url: 'https://updates.crawshrimp.com/' }])
 })

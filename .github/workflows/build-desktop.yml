@@ -460,10 +460,110 @@ jobs:
             exit 1
           fi
 
+  publish-cloudflare-r2:
+    name: Publish Cloudflare R2 Update Mirror
+    runs-on: ubuntu-latest
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: read
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_R2_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_R2_BUCKET: crawshrimp-desktop-updates
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.12.0
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: crawshrimp-mac
+          path: release-assets/macos
+
+      - name: Download Windows artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: crawshrimp-win-x64
+          path: release-assets/windows
+
+      - name: Validate release tag and package version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! [[ "${GITHUB_REF_NAME}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Only exact stable vX.Y.Z tags can publish the Cloudflare update mirror: ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+          APP_VERSION=$(python3 -c "import json; print(json.load(open('app/package.json'))['version'])")
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${APP_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Package version ${APP_VERSION} does not match release tag ${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+      - name: Validate release update artifacts
+        run: node app/scripts/validate-update-artifacts.js release-assets --formal-release --version "${GITHUB_REF_NAME#v}"
+
+      - name: Upload update assets to Cloudflare R2
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "::error::CLOUDFLARE_R2_API_TOKEN and CLOUDFLARE_ACCOUNT_ID secrets are required"
+            exit 1
+          fi
+
+          upload_object() {
+            local file="$1"
+            local cache_control="$2"
+            local name="${file##*/}"
+            local content_type="application/octet-stream"
+            case "${name}" in
+              *.yml) content_type="application/x-yaml" ;;
+              *.zip) content_type="application/zip" ;;
+              *.exe) content_type="application/vnd.microsoft.portable-executable" ;;
+            esac
+            npx --yes wrangler@4.110.0 r2 object put "${CLOUDFLARE_R2_BUCKET}/${name}" \
+              --remote \
+              --file="${file}" \
+              --content-type="${content_type}" \
+              --cache-control="${cache_control}"
+          }
+
+          while IFS= read -r file; do
+            upload_object "${file}" 'public, max-age=31536000, immutable'
+          done < <(
+            {
+              find release-assets/macos -type f \( -name '*.zip' -o -name '*.zip.blockmap' \)
+              find release-assets/windows -type f \( -name '*.exe' -o -name '*.exe.blockmap' \)
+            } | sort
+          )
+
+          upload_object release-assets/macos/latest-mac.yml 'no-cache, max-age=0, must-revalidate'
+          upload_object release-assets/windows/latest.yml 'no-cache, max-age=0, must-revalidate'
+
+      - name: Verify Cloudflare R2 update metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for metadata in latest-mac.yml latest.yml; do
+            expected=$(find release-assets -name "${metadata}" -print -quit)
+            actual="$(mktemp)"
+            npx --yes wrangler@4.110.0 r2 object get "${CLOUDFLARE_R2_BUCKET}/${metadata}" --remote --file="${actual}"
+            cmp --silent "${expected}" "${actual}"
+          done
+
   publish-version-release:
     name: Publish Versioned GitHub Release
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, publish-cloudflare-r2]
     if: startsWith(github.ref, 'refs/tags/v')
     permissions:
       contents: write
