@@ -64,6 +64,27 @@ class RuntimePathsTests(unittest.TestCase):
 
             self.assertEqual(root, preferred_root)
 
+    def test_windows_ignores_unreadable_legacy_runtime_data_when_selecting_default_root(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            home_dir = Path(tmpdir) / "home"
+            local_app_data = Path(tmpdir) / "local-app-data"
+            unreadable_marker = home_dir / ".crawshrimp" / "adapters"
+            original_exists = Path.exists
+
+            def guarded_exists(path):
+                if path == unreadable_marker:
+                    raise PermissionError("[WinError 5] Access is denied")
+                return original_exists(path)
+
+            with patch.dict(os.environ, {"LOCALAPPDATA": str(local_app_data)}, clear=False):
+                os.environ.pop("CRAWSHRIMP_DATA", None)
+                with patch("pathlib.Path.home", return_value=home_dir):
+                    with patch("sys.platform", "win32"):
+                        with patch.object(Path, "exists", guarded_exists):
+                            root = runtime_paths.data_root()
+
+            self.assertEqual(root, local_app_data / "crawshrimp")
+
     def test_default_data_root_prefers_macos_application_support_when_local_app_data_is_absent(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             home_dir = Path(tmpdir) / "home"

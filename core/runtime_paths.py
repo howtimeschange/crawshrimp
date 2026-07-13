@@ -69,7 +69,11 @@ def _candidate_data_roots() -> tuple[list[Path], bool]:
 
 
 def _has_legacy_runtime_data(root: Path) -> bool:
-    return any((root / marker).exists() for marker in _LEGACY_RUNTIME_MARKERS)
+    try:
+        return any((root / marker).exists() for marker in _LEGACY_RUNTIME_MARKERS)
+    except OSError as e:
+        logger.warning("legacy runtime data unavailable %s: %s; using platform default", root, e)
+        return False
 
 
 def _selection_key() -> str:
