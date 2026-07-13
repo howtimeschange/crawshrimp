@@ -332,7 +332,7 @@
     ]), 0, 0, Number.MAX_SAFE_INTEGER)
   }
 
-  function hasMore(payload, rows, page, pageSize, total) {
+  function hasMore(payload, rows, page, pageSize, total, observedPageSize = 0) {
     const explicit = firstValue(payload, [
       ['has_more'],
       ['hasMore'],
@@ -345,7 +345,8 @@
     if (['true', '1', 'yes'].includes(text)) return true
     if (['false', '0', 'no'].includes(text)) return false
     if (total && page * pageSize < total) return true
-    return Array.isArray(rows) && rows.length >= pageSize
+    const effectivePageSize = Math.max(1, Math.min(pageSize, observedPageSize || pageSize))
+    return Array.isArray(rows) && rows.length >= effectivePageSize
   }
 
   function normalizeSpecs(value) {
@@ -547,14 +548,16 @@
     const info = await fetchOptionalProductInfo(goodsId)
     const rows = []
     let apiTotal = info.reviewCount || 0
+    let observedPageSize = 0
     for (let page = 1; page <= options.maxPages; page += 1) {
       const payload = await fetchReviewPage(goodsId, page, options.pageSize, options.sortType)
       const items = extractReviewItems(payload)
       const total = getTotalCount(payload)
       if (total) apiTotal = total
       if (!items.length) break
+      observedPageSize = Math.max(observedPageSize, items.length)
       rows.push(...normalizeReviewItems(items, goodsId, info, options, page, 'engels/reviews/list', rows.length))
-      if (!hasMore(payload, items, page, options.pageSize, apiTotal)) break
+      if (!hasMore(payload, items, page, options.pageSize, apiTotal, observedPageSize)) break
       await sleep(PAGE_DELAY_MS)
     }
     return {
@@ -568,14 +571,16 @@
     const info = await fetchOptionalProductInfo(goodsId)
     const rows = []
     let apiTotal = 0
+    let observedPageSize = 0
     for (let page = 1; page <= options.maxPages; page += 1) {
       const payload = await fetchSimilarReviewPage(goodsId, page, options.pageSize)
       const items = extractReviewItems(payload)
       const total = getTotalCount(payload)
       if (total) apiTotal = total
       if (!items.length) break
+      observedPageSize = Math.max(observedPageSize, items.length)
       rows.push(...normalizeReviewItems(items, goodsId, info, options, page, 'engels/reviews/similar/list', rows.length))
-      if (!hasMore(payload, items, page, options.pageSize, apiTotal)) break
+      if (!hasMore(payload, items, page, options.pageSize, apiTotal, observedPageSize)) break
       await sleep(PAGE_DELAY_MS)
     }
     return {

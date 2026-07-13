@@ -362,6 +362,34 @@ test('single product reviews normalizes Temu engels review API rows', async () =
   assert.ok(calls.some(url => url.includes('goods_id=605693750906920')))
 })
 
+test('single product reviews continues when Temu caps a requested 20-row page at 10 rows without pagination metadata', async () => {
+  const requestedPages = []
+  const fetchImpl = async (url) => {
+    const parsed = new URL(String(url))
+    if (parsed.pathname.endsWith('/reviews/info')) return createJsonResponse({ data: {} })
+
+    const page = Number(parsed.searchParams.get('page'))
+    requestedPages.push(page)
+    if (page === 1) return createJsonResponse({
+      data: createReviewItems('605693750906920', 'CAPPED-PAGE-1', 10, page),
+    })
+    if (page === 2) return createJsonResponse({
+      data: createReviewItems('605693750906920', 'CAPPED-PAGE-2', 7, page),
+    })
+    return createJsonResponse({ data: [] })
+  }
+
+  const result = await runScript({
+    params: { product_url: PRODUCT_URL, page_size: 20, max_pages: 3 },
+    fetchImpl,
+  })
+
+  assert.equal(result.success, true)
+  assert.deepEqual(requestedPages, [1, 2])
+  assert.equal(result.data.length, 17)
+  assert.equal(result.data[10].评论页码, 2)
+})
+
 test('single product reviews navigates to provided product page before collection', async () => {
   let fetchCalled = false
   const result = await runScript({
