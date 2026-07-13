@@ -2883,9 +2883,9 @@ SEMIR_FIND_JS = r"""
     const isDetail = (flags.selectedModelStyleColor || flags.flat) && !derivedReference;
     if (!isMain && !isDetail) return null;
     const mainRank = (
-      flags.showcase1 ? 30
-        : flags.yz1Bracket ? 25
-          : flags.yz1Bare ? 10
+      flags.yz1Bracket ? 30
+        : flags.yz1Bare ? 20
+          : flags.showcase1 ? 10
             : 0
     ) + (flags.selectedPath ? 2 : 0) + (flags.modelPath ? 1 : 0);
     const detailRank = (
@@ -2896,11 +2896,11 @@ SEMIR_FIND_JS = r"""
       + (flags.flatPath ? 8 : 0)
       + (flags.front ? 2 : flags.back ? 0 : 1)
     );
-    const role = flags.showcase1 ? 'origin_showcase1'
-      : flags.yz1Bracket ? 'origin_yz1_bracket'
-      : flags.yz1Bare ? 'origin_yz1_bare'
-      : flags.selectedModelStyleColor ? 'detail_selected_model_style_color'
-      : 'detail_skc_flat';
+    const role = flags.yz1Bracket ? 'origin_yz1_bracket'
+        : flags.yz1Bare ? 'origin_yz1_bare'
+          : flags.showcase1 ? 'origin_showcase1'
+            : flags.selectedModelStyleColor ? 'detail_selected_model_style_color'
+              : 'detail_skc_flat';
     const score = isMain ? 300 + mainRank * 20 : 200 + detailRank * 10;
     const resolvedSkcCode = flags.flat ? (compact(skcCode) || skcCodeFromStyleName(baseName, styleCode)) : '';
     return { ...item, filename, fullpath, ext: extOf({ ...item, filename }), score, mainRank, detailRank, role, flags: { ...flags, derivedMain, derivedReference }, skcCode: resolvedSkcCode };

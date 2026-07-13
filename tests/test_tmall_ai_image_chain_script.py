@@ -2363,7 +2363,7 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         self.assertEqual(payload["chosen"], "yz1.jpg")
         self.assertEqual(payload["mainCandidates"], ["yz1.jpg"])
 
-    def test_semir_main_matching_prefers_yz1_with_parentheses_over_bare_yz1(self):
+    def test_semir_main_matching_prefers_yz1_with_parentheses_over_bare_yz1_and_showcase1(self):
         module = load_script()
         code = module.js_call(module.SEMIR_FIND_JS, {
             "style_code": "208426103204",
@@ -2375,6 +2375,11 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
 ;(async () => {{
   const code = {json.dumps(code, ensure_ascii=False)};
   const searchItems = [
+    {{
+      filename: '橱窗1+海报.jpg',
+      fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/模拍原图/期货/0P/婴童/208426103204-已回齐6.3已选6.4/橱窗1+海报.jpg',
+      ext: 'jpg',
+    }},
     {{
       filename: 'yz1.jpg',
       fullpath: '巴拉货控/02 产品上新模块/2-2 巴拉产品上新/2026年巴拉秋/模拍原图/期货/0P/婴童/208426103204-已回齐6.3已选6.4/yz1.jpg',
@@ -2421,7 +2426,10 @@ class TmallAiImageChainScriptTests(unittest.TestCase):
         payload = json.loads(completed.stdout)
 
         self.assertEqual(payload["chosen"], "yz(1)-2026-5-18bala6206.jpg")
-        self.assertEqual(payload["mainCandidates"], ["yz(1)-2026-5-18bala6206.jpg", "yz1.jpg"])
+        self.assertEqual(
+            payload["mainCandidates"],
+            ["yz(1)-2026-5-18bala6206.jpg", "yz1.jpg", "橱窗1+海报.jpg"],
+        )
 
     def test_semir_detail_reference_prefers_selected_model_original_style_color_images(self):
         module = load_script()

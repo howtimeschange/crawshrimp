@@ -86,6 +86,10 @@ class TmallOpsManifestTests(unittest.TestCase):
         self.assertIn("AI生成图", params["output_dir"]["hint"])
         self.assertIn(r"%USERPROFILE%\Downloads", params["output_dir"]["hint"])
         self.assertNotIn("~/Downloads", params["output_dir"]["hint"])
+        self.assertEqual(
+            params["cloud_path"]["default"],
+            "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/",
+        )
         data_export_params = {item["id"]: item for item in data_export_task["params"]}
         self.assertEqual(data_export_params["output_dir"]["type"], "directory")
         self.assertIn("本地导出目录", data_export_params["output_dir"]["label"])
