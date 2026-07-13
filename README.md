@@ -8,6 +8,16 @@
 
 抓虾把三类工作放进同一套产品里：在已登录的 Chrome 中执行电商平台自动化，在桌面端完成 AI 生图与提示词管理，并通过可选的云端审批台让审核人员和任务机协同完成测图、重生图、上传与数据回收。
 
+## v2.1.3 Cloudflare 更新回退与 GitHub Bridge（2026-07-13）
+
+`v2.1.3` 补齐了 Cloudflare 更新源的 GitHub 自动回退，并恢复了旧版本到 R2 更新体系的兼容桥接。
+
+- 应用检查更新时优先读取 `updates.crawshrimp.com`；Cloudflare 检查异常会在同一次操作中自动改用 GitHub 正式 Release，不需要用户切换下载源或重启应用。
+- 下一次检查会恢复 Cloudflare 优先；成功的 GitHub 回退下载仍沿用 tag 正式构建的签名、公证和 SHA512 元数据。
+- `desktop-latest` 保留全部 10 个更新资产作为 GitHub bridge，因此 v2.1.1 及更早 GitHub-provider 客户端可以发现并升级，不会再因 `latest-mac.yml` 缺失而 404。
+
+完整变更见 [v2.1.3 Release Notes](release-notes/v2.1.3.md)。
+
 ## v2.1.2 Cloudflare 自动更新与 macOS 签名稳定性（2026-07-13）
 
 `v2.1.2` 将应用内更新的国内下载源切换到 `updates.crawshrimp.com`，并补足可靠的后台检查节奏与 macOS Python 运行时签名筛选。
@@ -111,9 +121,9 @@ flowchart LR
 - `crawshrimp-v版本号-mac-x64.dmg`
 - `crawshrimp-v版本号-win-x64.exe`
 
-正式 `vX.Y.Z` Release 同时包含应用内更新资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows EXE blockmap 与 `latest.yml`。`desktop-latest` 不包含这些更新元数据。
+正式 `vX.Y.Z` Release 与 `desktop-latest` 都包含应用内更新 bridge 资产：macOS arm64/x64 ZIP 与 blockmap、`latest-mac.yml`，以及 Windows EXE blockmap 与 `latest.yml`。
 
-应用内稳定更新从 [Cloudflare R2 下载源](https://updates.crawshrimp.com/) 读取这些已校验资产；GitHub Release 保留为版本溯源、海外下载和手动 fallback。每次正式 tag 会先将资产同步到 R2，确认可读后才发布 GitHub Release；安装包仍保留原有 macOS 签名/公证和 `latest*.yml` 的 SHA512 校验。
+应用内稳定更新优先从 [Cloudflare R2 下载源](https://updates.crawshrimp.com/) 读取这些已校验资产；检查失败时会自动回退 GitHub。每次正式 tag 会先将资产同步到 R2，确认可读后才发布 GitHub Release；安装包仍保留原有 macOS 签名/公证和 `latest*.yml` 的 SHA512 校验。
 
 安装包内置 Python 运行时，普通用户不需要单独安装 Python 或 Node.js。
 
@@ -125,7 +135,7 @@ Windows 从旧版手动覆盖安装前，先结束正在运行的任务，再从
 
 侧边栏底部默认只显示当前版本；只有检测到可用更新时才显示 `更新` 操作。进入具体脚本视图后，侧边栏保持展开，避免任务表单和脚本上下文被折叠打断。
 
-`desktop-latest` 只用于手动 QA/bridge 安装包，不作为应用内稳定更新源；应用内稳定更新读取 `https://updates.crawshrimp.com/` 的 Cloudflare R2 元数据，GitHub 正式 `vX.Y.Z` Release 仍是手动 fallback。
+`desktop-latest` 用于手动 QA/bridge 安装包，并保留 GitHub 更新 bridge 资产：旧客户端可先通过它升级；v2.1.2 及之后优先读取 `https://updates.crawshrimp.com/` 的 Cloudflare R2 元数据，失败时自动回退 GitHub。
 
 #### macOS
 
@@ -368,7 +378,7 @@ GitHub Actions 工作流为 [Build Desktop App](.github/workflows/build-desktop.
 - 推送 `v*` tag：再次测试与构建，执行 macOS 签名/公证（密钥齐全时），发布正式版本并刷新 `desktop-latest`。
 - 正式 Release 包含 macOS arm64、macOS x64、Windows x64 和 Windows blockmap。
 - 正式 tag 会将全部 updater 资产先同步到 Cloudflare R2：版本化安装包与 blockmap 使用长期 immutable 缓存，`latest.yml`/`latest-mac.yml` 使用每次重新校验的缓存策略；R2 同步失败会阻止 GitHub Release 发布。
-- `desktop-latest` 只上传手动安装用 DMG/EXE，并保持 `latest=false`；正式 `vX.Y.Z` Release 才包含应用内更新所需的 ZIP/YAML/blockmap 元数据。
+- `desktop-latest` 保持 `latest=false`，并上传手动安装包及完整 ZIP/YAML/blockmap bridge 资产；正式 `vX.Y.Z` Release 仍是 GitHub 的正式版本记录。
 
 应用版本以 `app/package.json` 和 `app/package-lock.json` 为准；tag 必须与版本号一致。每次发布先按[发布版本号规则](docs/release-versioning.md)确定 PATCH、MINOR 或 MAJOR 等级。详细版本说明存放在 `release-notes/vX.Y.Z.md`。
 

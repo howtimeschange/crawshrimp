@@ -1,6 +1,11 @@
 'use strict'
 
 const LATEST_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
+const GITHUB_FALLBACK_FEED = Object.freeze({
+  provider: 'github',
+  owner: 'howtimeschange',
+  repo: 'crawshrimp',
+})
 
 function createUpdateService({
   app,
@@ -15,6 +20,7 @@ function createUpdateService({
   const subscribers = new Set()
   let disposed = false
   let requiredBytes = 0
+  let usingGitHubFallback = false
 
   const state = {
     status: support.supported ? 'idle' : 'disabled',
@@ -103,11 +109,28 @@ function createUpdateService({
   async function checkForUpdates() {
     ensureSupported()
     publish({ status: 'checking', error: '', progress: null, lastCheckedAt: new Date().toISOString() })
+    if (usingGitHubFallback) {
+      configureUpdater(autoUpdater, updateFeedUrl, log)
+      usingGitHubFallback = false
+    }
     try {
       return await autoUpdater.checkForUpdates()
-    } catch (error) {
-      publish({ status: 'error', error: readableError(error), progress: null })
-      throw error
+    } catch (primaryError) {
+      if (!String(updateFeedUrl || '').trim()) {
+        publish({ status: 'error', error: readableError(primaryError), progress: null })
+        throw primaryError
+      }
+
+      try {
+        autoUpdater.setFeedURL(GITHUB_FALLBACK_FEED)
+        usingGitHubFallback = true
+        log?.warn?.('Cloudflare update feed failed; retrying through GitHub', primaryError)
+        return await autoUpdater.checkForUpdates()
+      } catch (fallbackError) {
+        const error = new Error(`Cloudflare 更新源不可用，GitHub 回退也失败：${readableError(fallbackError)}`)
+        publish({ status: 'error', error: readableError(error), progress: null })
+        throw error
+      }
     }
   }
 

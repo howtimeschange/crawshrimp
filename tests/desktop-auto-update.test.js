@@ -327,39 +327,42 @@ test('desktop workflow mirrors verified updater artifacts to Cloudflare R2 befor
   assert.match(versionJob, /needs: \[build, publish-cloudflare-r2\]/)
 })
 
-test('desktop workflow keeps rolling release manual installer only', () => {
+test('desktop workflow keeps GitHub updater bridge assets for pre-R2 clients', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingStep = workflow.slice(
     workflow.indexOf('name: Publish rolling release'),
     workflow.indexOf('publish-cloudflare-r2:'),
   )
 
-  assert.match(rollingStep, /manual_assets=\(/)
+  assert.match(rollingStep, /bridge_assets=\(/)
   assert.match(rollingStep, /release-assets\/macos\/\*\.dmg/)
+  assert.match(rollingStep, /release-assets\/macos\/\*\.zip/)
+  assert.match(rollingStep, /release-assets\/macos\/\*\.zip\.blockmap/)
+  assert.match(rollingStep, /release-assets\/macos\/latest-mac\.yml/)
   assert.match(rollingStep, /release-assets\/windows\/\*\.exe/)
-  assert.match(rollingStep, /gh release create desktop-latest[\s\S]*"\$\{manual_assets\[@\]\}"[\s\S]*--latest=false/)
-  assert.doesNotMatch(rollingStep, /release-assets\/macos\/\*\s*\\/)
-  assert.doesNotMatch(rollingStep, /release-assets\/windows\/\*\s*\\/)
-  assert.doesNotMatch(rollingStep, /latest\*\.yml/)
-  assert.doesNotMatch(rollingStep, /\*\.zip/)
-  assert.doesNotMatch(rollingStep, /\*\.blockmap/)
+  assert.match(rollingStep, /release-assets\/windows\/\*\.exe\.blockmap/)
+  assert.match(rollingStep, /release-assets\/windows\/latest\.yml/)
+  assert.match(rollingStep, /gh release create desktop-latest[\s\S]*"\$\{bridge_assets\[@\]\}"[\s\S]*--latest=false/)
 })
 
-test('desktop workflow validates manual installer assets before rolling release mutation', () => {
+test('desktop workflow validates GitHub updater bridge assets before rolling release mutation', () => {
   const workflow = readRepoFile('.github/workflows/build-desktop.yml')
   const rollingJob = workflow.slice(
     workflow.indexOf('publish-release:'),
     workflow.indexOf('publish-cloudflare-r2:'),
   )
-  const validateIndex = rollingJob.indexOf('name: Validate manual installer assets')
+  const validateIndex = rollingJob.indexOf('name: Validate GitHub updater bridge assets')
   const publishIndex = rollingJob.indexOf('name: Publish rolling release')
 
-  assert.ok(validateIndex !== -1, 'manual installer validation step is present')
-  assert.ok(validateIndex < publishIndex, 'manual installers are validated before rolling release mutation')
-  assert.match(rollingJob, /expected-manual-assets\.txt/)
+  assert.ok(validateIndex !== -1, 'GitHub updater bridge validation step is present')
+  assert.ok(validateIndex < publishIndex, 'bridge assets are validated before rolling release mutation')
+  assert.match(rollingJob, /expected-bridge-assets\.txt/)
   assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-mac-arm64\.dmg/)
   assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-mac-x64\.dmg/)
   assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-win-x64\.exe/)
+  assert.match(rollingJob, /crawshrimp-v\$\{APP_VERSION\}-win-x64\.exe\.blockmap/)
+  assert.match(rollingJob, /latest-mac\.yml/)
+  assert.match(rollingJob, /latest\.yml/)
 })
 
 test('desktop workflow updates desktop-latest in place and verifies its moved tag without delete-first mutation', () => {
@@ -369,11 +372,11 @@ test('desktop workflow updates desktop-latest in place and verifies its moved ta
     workflow.indexOf('publish-cloudflare-r2:'),
   )
   const versionReleaseDependencyIndex = rollingJob.indexOf('needs: publish-version-release')
-  const manualValidationIndex = rollingJob.indexOf('name: Validate manual installer assets')
+  const bridgeValidationIndex = rollingJob.indexOf('name: Validate GitHub updater bridge assets')
   const publishIndex = rollingJob.indexOf('name: Publish rolling release')
   const existingReleaseUploadIndex = rollingJob.indexOf('gh release upload desktop-latest')
   const newReleaseCreateIndex = rollingJob.indexOf('gh release create desktop-latest')
-  const finalAssetValidationIndex = rollingJob.indexOf('Unexpected desktop-latest manual asset set')
+  const finalAssetValidationIndex = rollingJob.indexOf('Unexpected desktop-latest GitHub updater bridge asset set')
   const tagMovementIndex = rollingJob.indexOf('git push --force origin "${GITHUB_SHA}:refs/tags/desktop-latest"')
   const tagReadbackIndex = rollingJob.indexOf('git ls-remote --refs origin refs/tags/desktop-latest')
 
@@ -381,10 +384,10 @@ test('desktop workflow updates desktop-latest in place and verifies its moved ta
   assert.match(rollingJob, /gh release upload desktop-latest[\s\S]*--clobber/)
   assert.match(rollingJob, /gh release create desktop-latest[\s\S]*--target "\$\{GITHUB_SHA\}"[\s\S]*--latest=false/)
   assert.match(rollingJob, /gh release view desktop-latest --json assets/)
-  assert.match(rollingJob, /Unexpected desktop-latest manual asset set/)
+  assert.match(rollingJob, /Unexpected desktop-latest GitHub updater bridge asset set/)
   assert.ok(versionReleaseDependencyIndex !== -1, 'rolling publication waits for version release success')
-  assert.ok(versionReleaseDependencyIndex < manualValidationIndex, 'version release succeeds before manual asset preflight')
-  assert.ok(manualValidationIndex < publishIndex, 'manual assets are prevalidated before rolling mutation')
+  assert.ok(versionReleaseDependencyIndex < bridgeValidationIndex, 'version release succeeds before bridge asset preflight')
+  assert.ok(bridgeValidationIndex < publishIndex, 'bridge assets are prevalidated before rolling mutation')
   assert.ok(existingReleaseUploadIndex < finalAssetValidationIndex, 'existing release updates converge on final asset verification')
   assert.ok(newReleaseCreateIndex < finalAssetValidationIndex, 'new release creation converges on final asset verification')
   assert.ok(finalAssetValidationIndex < tagMovementIndex, 'rolling assets are verified before moving the tag')
@@ -486,7 +489,7 @@ test('README documents desktop update install semantics and footer decisions', (
   assert.match(readme, /侧边栏底部默认只显示当前版本/)
   assert.match(readme, /只有检测到可用更新时才显示 `更新`/)
   assert.match(readme, /具体脚本视图后，侧边栏保持展开/)
-  assert.match(readme, /desktop-latest` 只用于手动 QA\/bridge 安装包/)
-  assert.match(readme, /应用内稳定更新读取 `https:\/\/updates\.crawshrimp\.com\/` 的 Cloudflare R2 元数据/)
+  assert.match(readme, /desktop-latest` 用于手动 QA\/bridge 安装包/)
+  assert.match(readme, /优先读取 `https:\/\/updates\.crawshrimp\.com\/` 的 Cloudflare R2 元数据，失败时自动回退 GitHub/)
   assert.doesNotMatch(readme, /应用内自动更新当前保持关闭/)
 })

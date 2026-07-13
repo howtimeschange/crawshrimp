@@ -389,23 +389,35 @@ jobs:
             "${GITHUB_REPOSITORY}" \
             "${GITHUB_RUN_ID}" >> release-notes.md
 
-      - name: Validate manual installer assets
+      - name: Validate GitHub updater bridge assets
         shell: bash
         run: |
           set -euo pipefail
           shopt -s nullglob
-          manual_assets=(
+          bridge_assets=(
             release-assets/macos/*.dmg
+            release-assets/macos/*.zip
+            release-assets/macos/*.zip.blockmap
+            release-assets/macos/latest-mac.yml
             release-assets/windows/*.exe
+            release-assets/windows/*.exe.blockmap
+            release-assets/windows/latest.yml
           )
           printf '%s\n' \
             "crawshrimp-v${APP_VERSION}-mac-arm64.dmg" \
             "crawshrimp-v${APP_VERSION}-mac-x64.dmg" \
+            "crawshrimp-v${APP_VERSION}-mac-arm64.zip" \
+            "crawshrimp-v${APP_VERSION}-mac-x64.zip" \
+            "crawshrimp-v${APP_VERSION}-mac-arm64.zip.blockmap" \
+            "crawshrimp-v${APP_VERSION}-mac-x64.zip.blockmap" \
+            "latest-mac.yml" \
             "crawshrimp-v${APP_VERSION}-win-x64.exe" \
-            | sort > expected-manual-assets.txt
-          printf '%s\n' "${manual_assets[@]##*/}" | sort > actual-manual-assets.txt
-          if ! diff -u expected-manual-assets.txt actual-manual-assets.txt; then
-            echo "::error::Unexpected manual installer asset set for desktop-latest"
+            "crawshrimp-v${APP_VERSION}-win-x64.exe.blockmap" \
+            "latest.yml" \
+            | sort > expected-bridge-assets.txt
+          printf '%s\n' "${bridge_assets[@]##*/}" | sort > actual-bridge-assets.txt
+          if ! diff -u expected-bridge-assets.txt actual-bridge-assets.txt; then
+            echo "::error::Unexpected GitHub updater bridge asset set for desktop-latest"
             exit 1
           fi
 
@@ -416,17 +428,22 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          manual_assets=(
+          bridge_assets=(
             release-assets/macos/*.dmg
+            release-assets/macos/*.zip
+            release-assets/macos/*.zip.blockmap
+            release-assets/macos/latest-mac.yml
             release-assets/windows/*.exe
+            release-assets/windows/*.exe.blockmap
+            release-assets/windows/latest.yml
           )
-          if [ "${#manual_assets[@]}" -eq 0 ]; then
-            echo "::error::No manual installer assets found for desktop-latest"
+          if [ "${#bridge_assets[@]}" -eq 0 ]; then
+            echo "::error::No GitHub updater bridge assets found for desktop-latest"
             exit 1
           fi
           if gh release view desktop-latest >/dev/null 2>&1; then
             gh release view desktop-latest --json assets --jq '.assets[].name' | sort > existing-desktop-latest-assets.txt
-            comm -23 existing-desktop-latest-assets.txt expected-manual-assets.txt | while IFS= read -r asset_name; do
+            comm -23 existing-desktop-latest-assets.txt expected-bridge-assets.txt | while IFS= read -r asset_name; do
               if [ -n "${asset_name}" ]; then
                 gh release delete-asset desktop-latest "${asset_name}" --yes
               fi
@@ -436,20 +453,20 @@ jobs:
               --notes-file release-notes.md \
               --latest=false
             gh release upload desktop-latest \
-              "${manual_assets[@]}" \
+              "${bridge_assets[@]}" \
               --clobber
           else
             gh release create desktop-latest \
               --target "${GITHUB_SHA}" \
-              "${manual_assets[@]}" \
+              "${bridge_assets[@]}" \
               --title "抓虾 Desktop Latest v${APP_VERSION}" \
               --notes-file release-notes.md \
               --latest=false
           fi
 
           gh release view desktop-latest --json assets --jq '.assets[].name' | sort > actual-desktop-latest-assets.txt
-          if ! diff -u expected-manual-assets.txt actual-desktop-latest-assets.txt; then
-            echo "::error::Unexpected desktop-latest manual asset set"
+          if ! diff -u expected-bridge-assets.txt actual-desktop-latest-assets.txt; then
+            echo "::error::Unexpected desktop-latest GitHub updater bridge asset set"
             exit 1
           fi
 

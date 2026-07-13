@@ -230,3 +230,29 @@ test('configured feed URL uses the generic updater provider', () => {
 
   assert.deepEqual(feeds, [{ provider: 'generic', url: 'https://updates.crawshrimp.com/' }])
 })
+
+test('Cloudflare update check falls back to GitHub when the primary feed is unavailable', async () => {
+  const updater = createUpdater()
+  const feeds = []
+  let checks = 0
+  updater.setFeedURL = options => feeds.push(options)
+  updater.checkForUpdates = async () => {
+    checks += 1
+    if (checks === 1) throw new Error('Cloudflare update feed unavailable')
+    updater.emit('update-available', { version: '2.1.3' })
+  }
+
+  const service = createService({
+    autoUpdater: updater,
+    updateFeedUrl: 'https://updates.crawshrimp.com/',
+    log: { warn: () => {} },
+  })
+
+  await assert.doesNotReject(() => service.checkForUpdates())
+
+  assert.equal(service.getStatus().status, 'available')
+  assert.deepEqual(feeds, [
+    { provider: 'generic', url: 'https://updates.crawshrimp.com/' },
+    { provider: 'github', owner: 'howtimeschange', repo: 'crawshrimp' },
+  ])
+})
