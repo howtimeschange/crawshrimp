@@ -31,8 +31,11 @@ function isMachOFile(filePath) {
 function createPythonDataIgnore(existingIgnore = () => false) {
   return filePath => {
     if (existingIgnore(filePath)) return true
-    const normalizedPath = String(filePath || '').replace(/\\\\/g, '/')
-    if (!normalizedPath.includes('/Contents/Resources/python/')) return false
+    try {
+      if (!fs.statSync(filePath).isFile()) return false
+    } catch {
+      return false
+    }
     return !isMachOFile(filePath)
   }
 }
