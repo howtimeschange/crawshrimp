@@ -28,6 +28,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import List, Optional
 from urllib.parse import urlencode, parse_qs, urlparse, unquote
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -97,6 +98,8 @@ RUNTIME_CLEANUP_TASKS = {
     ("semir-cloud-drive", "batch_image_download"),
     ("semir-cloud-drive", "tmall_material_match_buy"),
     ("semir-cloud-drive", "tmall_material_new_624"),
+    ("bala-ai-video-assistant", "semir_video_material_prepare"),
+    ("bala-ai-video-assistant", "bala_ai_face_background_generate"),
     ("shenhui-new-arrival", "prepare_upload_package"),
     ("tiktok-ops-assistant", "creator_video_download"),
     ("tmall-ops-assistant", "tmall_packaging_upload"),
@@ -2004,6 +2007,133 @@ def _shenhui_auto_zip_enabled(run_params: Optional[dict]) -> bool:
     return _truthy_param((run_params or {}).get("auto_zip_package"))
 
 
+def _bala_video_source_folder(source_type: object) -> str:
+    normalized = str(source_type or "").strip().lower()
+    if normalized == "model":
+        return "01_模拍原图"
+    if normalized == "detail":
+        return "02_商品细节图"
+    return "03_其他素材"
+
+
+def _bala_video_image_threshold_bytes(run_params: Optional[dict], row: Optional[dict] = None) -> int:
+    raw = (row or {}).get("__compress_threshold_bytes")
+    if raw in (None, ""):
+        raw = (run_params or {}).get("max_image_mb")
+        try:
+            mb = float(raw)
+        except Exception:
+            mb = 20
+        return max(1, min(80, int(mb))) * 1024 * 1024
+    try:
+        threshold = int(float(raw))
+    except Exception:
+        threshold = 20 * 1024 * 1024
+    return max(1, threshold)
+
+
+def _format_mb(size: int) -> str:
+    try:
+        return f"{size / 1024 / 1024:.2f}MB"
+    except Exception:
+        return "0.00MB"
+
+
+def _bala_video_rgb_image(image):
+    from PIL import Image
+
+    if image.mode in {"RGBA", "LA"} or "transparency" in getattr(image, "info", {}):
+        rgba = image.convert("RGBA")
+        canvas = Image.new("RGB", rgba.size, "white")
+        canvas.paste(rgba, mask=rgba.split()[-1])
+        return canvas
+    return image.convert("RGB")
+
+
+def _compress_bala_video_image_if_needed(path: Path, threshold_bytes: int, log) -> tuple[Path, str]:
+    if not path.is_file():
+        return path, "压缩跳过：文件不存在"
+    before = path.stat().st_size
+    if before <= threshold_bytes:
+        return path, "无需压缩"
+
+    try:
+        from PIL import Image, ImageOps
+    except Exception:
+        return path, "压缩失败：Pillow 不可用"
+
+    suffix = path.suffix.lower()
+    if suffix not in {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}:
+        return path, "压缩跳过：非支持图片格式"
+
+    temp_dir = _ensure_unique_local_dir(path.parent / ".__bala_compress_tmp")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    best_temp = None
+    best_size = before
+    target_suffix = suffix if suffix in {".jpg", ".jpeg"} else ".jpg"
+    try:
+        with Image.open(path) as source:
+            image = _bala_video_rgb_image(ImageOps.exif_transpose(source))
+            original_width, original_height = image.size
+            quality_steps = [92, 88, 84, 80, 76, 72, 68, 64, 60, 56, 52, 48]
+            scale_steps = [1.0, 0.92, 0.84, 0.76, 0.68, 0.60, 0.52]
+
+            for scale in scale_steps:
+                if scale == 1.0:
+                    candidate_image = image
+                else:
+                    width = max(1, int(original_width * scale))
+                    height = max(1, int(original_height * scale))
+                    candidate_image = image.resize((width, height))
+
+                for quality in quality_steps:
+                    temp_path = temp_dir / f"{path.stem}-{int(scale * 100)}-{quality}{target_suffix}"
+                    candidate_image.save(
+                        temp_path,
+                        "JPEG",
+                        quality=quality,
+                        optimize=True,
+                        progressive=True,
+                    )
+                    size = temp_path.stat().st_size
+                    if size < best_size:
+                        if best_temp and best_temp.exists():
+                            best_temp.unlink(missing_ok=True)
+                        best_temp = temp_path
+                        best_size = size
+                    else:
+                        temp_path.unlink(missing_ok=True)
+                    if size <= threshold_bytes:
+                        raise StopIteration
+    except StopIteration:
+        pass
+    except Exception as exc:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return path, f"压缩失败：{exc}"
+
+    if not best_temp or not best_temp.is_file() or best_size >= before:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        return path, f"压缩失败：未生成更小文件（原始 {_format_mb(before)}）"
+
+    final_path = path if target_suffix == suffix else _ensure_unique_local_path(path.with_suffix(target_suffix))
+    try:
+        if final_path == path:
+            best_temp.replace(path)
+        else:
+            shutil.move(str(best_temp), str(final_path))
+            path.unlink(missing_ok=True)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+
+    after = final_path.stat().st_size if final_path.is_file() else best_size
+    status = f"已压缩：{_format_mb(before)} -> {_format_mb(after)}"
+    if after > threshold_bytes:
+        status = f"{status}，仍超过阈值 {_format_mb(threshold_bytes)}"
+    if log:
+        log(f"Bala video image compressed: {final_path} ({status})")
+    return final_path, status
+
+
 def _verify_tiktok_creator_video_download_rows(data_rows: list, log=None) -> list:
     success_total = 0
     missing_rows = []
@@ -2051,6 +2181,550 @@ def _semir_output_roots(runtime_dir: Path, exported_files: list, run_params: dic
     if export_root:
         export_root.mkdir(parents=True, exist_ok=True)
     return default_root, export_root, exported_refs
+
+
+BALA_AI_VIDEO_ADAPTER_ID = "bala-ai-video-assistant"
+BALA_AI_FACE_BACKGROUND_TASK_ID = "bala_ai_face_background_generate"
+BALA_MODEL_LIBRARY_MANIFEST = "assets/model-library/manifest.json"
+BALA_AI_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _bala_string_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        source = value
+    else:
+        source = re.split(r"[\n,，、;；]+", str(value or ""))
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in source:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        result.append(text)
+        seen.add(text)
+    return result
+
+
+def _bala_image_path_allowed(path: Path) -> bool:
+    return path.suffix.lower() in BALA_AI_IMAGE_EXTS and path.is_file()
+
+
+def _bala_material_listing_paths(run_params: dict) -> list[Path]:
+    listing = (run_params or {}).get("material_root_files")
+    items = listing.get("paths") if isinstance(listing, dict) else listing
+    paths: list[Path] = []
+    for item in items or []:
+        raw_path = item.get("path") if isinstance(item, dict) else item
+        value = str(raw_path or "").strip()
+        if value:
+            paths.append(Path(value).expanduser())
+    return paths
+
+
+def _bala_selected_source_paths(run_params: dict) -> list[Path]:
+    source_images = (run_params or {}).get("source_images")
+    raw_paths = source_images.get("paths") if isinstance(source_images, dict) else source_images
+    return [Path(path).expanduser() for path in _bala_string_list(raw_paths)]
+
+
+def _bala_scan_material_root(run_params: dict) -> list[Path]:
+    root_value = str((run_params or {}).get("material_root") or "").strip()
+    if not root_value:
+        return []
+    root = Path(root_value).expanduser()
+    if not root.is_dir():
+        return []
+    paths: list[Path] = []
+    for path in root.rglob("*"):
+        if path.is_file() and path.suffix.lower() in BALA_AI_IMAGE_EXTS:
+            paths.append(path)
+    return paths
+
+
+def _bala_prefer_model_source(path: Path) -> int:
+    text = str(path).replace("\\", "/")
+    name = path.name
+    if re.search(r"(?i)(?:^|[-_\s])AI(?:$|[-_\s.])|AI换", name):
+        return -1
+    if "01_模拍原图" in text:
+        return 0
+    if "模拍" in text:
+        return 1
+    if "02_商品细节图" in text or "商品细节" in text or "平拍" in text:
+        return 9
+    return 3
+
+
+def _bala_extract_style_code(path: Path) -> str:
+    for part in reversed(path.parts):
+        match = re.search(r"\b(\d{12})\b", part)
+        if match:
+            return match.group(1)
+    match = re.search(r"\b(\d{12})\b", str(path))
+    return match.group(1) if match else ""
+
+
+def _bala_source_images_for_generation(run_params: dict) -> tuple[list[Path], list[str]]:
+    errors: list[str] = []
+    selected = _bala_selected_source_paths(run_params)
+    if selected:
+        candidates = selected
+    else:
+        candidates = _bala_material_listing_paths(run_params) or _bala_scan_material_root(run_params)
+    if not candidates:
+        return [], ["请先选择待处理图片，或选择包含 01_模拍原图 的素材根目录"]
+
+    valid: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        resolved = path.expanduser().resolve(strict=False)
+        identity = str(resolved)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        if not _bala_image_path_allowed(resolved):
+            continue
+        valid.append(resolved)
+    if not valid:
+        return [], ["没有找到可用的 JPG/PNG/WEBP 素材图"]
+
+    if not selected:
+        preferred = [path for path in valid if _bala_prefer_model_source(path) <= 1]
+        if preferred:
+            valid = preferred
+    valid.sort(key=lambda path: (_bala_prefer_model_source(path), str(path).lower()))
+    source_limit = _task_int_param(run_params, "source_limit", 3, min_value=1, max_value=100)
+    return valid[:source_limit], errors
+
+
+def _load_bala_model_library() -> tuple[list[dict], list[str]]:
+    try:
+        manifest_path = adapter_loader.resolve_adapter_file(
+            BALA_AI_VIDEO_ADAPTER_ID,
+            BALA_MODEL_LIBRARY_MANIFEST,
+            allowed_suffixes=None,
+        )
+    except Exception as exc:
+        return [], [f"无法读取巴拉模特库 manifest: {exc}"]
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return [], [f"巴拉模特库 manifest 解析失败: {exc}"]
+
+    items = payload.get("items") if isinstance(payload, dict) else []
+    root = manifest_path.parent
+    result: list[dict] = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        relative_path = str(item.get("relative_path") or "").strip()
+        if not relative_path:
+            continue
+        path = (root / relative_path).resolve(strict=False)
+        if not _bala_image_path_allowed(path):
+            continue
+        result.append({**item, "path": str(path)})
+    if not result:
+        return [], ["巴拉模特库为空或图片文件缺失"]
+    return result, []
+
+
+def _bala_model_rank(item: dict) -> tuple[int, str]:
+    expression = str(item.get("expression") or "")
+    if re.search(r"标准|原始|正脸", expression):
+        rank = 0
+    elif re.search(r"微笑|大笑|可爱", expression):
+        rank = 1
+    elif re.search(r"侧脸|低头|抬头", expression):
+        rank = 2
+    else:
+        rank = 3
+    return rank, str(item.get("id") or "")
+
+
+def _bala_models_for_generation(run_params: dict) -> tuple[list[dict], list[str]]:
+    library, errors = _load_bala_model_library()
+    if errors:
+        return [], errors
+    by_id = {str(item.get("id") or ""): item for item in library}
+    explicit_ids = _bala_string_list((run_params or {}).get("model_ref_ids"))
+    if explicit_ids:
+        selected: list[dict] = []
+        missing: list[str] = []
+        for model_id in explicit_ids:
+            item = by_id.get(model_id)
+            if item:
+                selected.append(item)
+            else:
+                missing.append(model_id)
+        if selected:
+            return selected, ([f"未找到指定模特图: {'、'.join(missing)}"] if missing else [])
+        return [], [f"指定模特图均不存在: {'、'.join(missing)}"]
+
+    groups = _bala_string_list((run_params or {}).get("model_groups")) or ["100女"]
+    per_group = _task_int_param(run_params, "models_per_group", 1, min_value=1, max_value=12)
+    selected = []
+    missing_groups = []
+    for group in groups:
+        candidates = [item for item in library if str(item.get("group") or "") == group]
+        candidates.sort(key=_bala_model_rank)
+        if not candidates:
+            missing_groups.append(group)
+            continue
+        selected.extend(candidates[:per_group])
+    warnings = [f"未找到模特分组: {'、'.join(missing_groups)}"] if missing_groups else []
+    if not selected:
+        return [], warnings or ["请至少选择一个可用的模特分组或具体模特图 ID"]
+    return selected, warnings
+
+
+def _bala_ai_prompt(source_path: Path, model_item: dict, background_prompt: str, extra: str = "") -> str:
+    model_label = (
+        f"{model_item.get('group_label') or model_item.get('group') or ''}"
+        f" {model_item.get('expression') or ''}"
+    ).strip()
+    lines = [
+        "请基于输入的第一张童装商品模拍图进行真实电商照片级图像编辑。",
+        "必须保留第一张图中的童装商品、版型、颜色、图案、材质、穿搭关系、身体姿态和主体构图，不要改款、不要换衣服、不要增加无关商品。",
+        f"参考第二张巴拉 AI 模特头像素材（{model_label}），只对人物脸部五官、年龄气质和表情进行自然替换；脸部需要贴合原图角度、光线、肤色和清晰度。",
+        f"将背景替换为：{background_prompt}。背景要真实自然、干净高级、符合儿童服装商业图，不要出现文字、水印、Logo、吊牌、合格证或多余人物。",
+        "输出完整儿童模特穿着原商品的照片，真实摄影质感，画面边缘完整，不要拼贴感。",
+    ]
+    extra_text = str(extra or "").strip()
+    if extra_text:
+        lines.append(f"补充要求：{extra_text}")
+    return "\n".join(lines)
+
+
+def _bala_ai_error_row(message: str, note: str = "") -> dict:
+    return {
+        "源图序号": "",
+        "源图文件": "",
+        "款号": "",
+        "模特ID": "",
+        "模特分组": "",
+        "模特年龄段": "",
+        "模特性别": "",
+        "模特表情": "",
+        "背景Prompt": "",
+        "完整Prompt": "",
+        "AI任务UID": "",
+        "AI任务标题": "",
+        "提交状态": "未创建",
+        "批次UID": "",
+        "运行UID": "",
+        "1XM任务ID": "",
+        "轮询URL": "",
+        "AI生图工作台": "AI 生图",
+        "执行结果": "失败",
+        "备注": _append_note(message, note),
+    }
+
+
+def _bala_create_ai_image_job_row(
+    *,
+    source_index: int,
+    source_path: Path,
+    model_item: dict,
+    run_params: dict,
+    background_prompt: str,
+    prompt: str,
+    submit_async: bool,
+) -> dict:
+    style_code = _bala_extract_style_code(source_path)
+    model_id = str(model_item.get("id") or "")
+    title_parts = [
+        "巴拉AI换脸换背景",
+        style_code or source_path.stem,
+        str(model_item.get("group") or ""),
+        str(model_item.get("expression") or ""),
+    ]
+    title = _safe_local_name(" ".join(part for part in title_parts if part), "巴拉AI换脸换背景")
+    output_dir = str(run_params.get("output_dir") or "").strip()
+    params = {
+        "prompt": prompt,
+        "size": str(run_params.get("image_size") or "1536x2048").strip() or "1536x2048",
+        "quality": str(run_params.get("quality") or "high").strip() or "high",
+        "output_format": str(run_params.get("output_format") or "png").strip() or "png",
+        "n": 1,
+        "model_key_tier": str(run_params.get("model_key_tier") or "4k").strip() or "4k",
+        "main_image_path": str(source_path),
+        "reference_image_paths": [str(model_item.get("path") or "")],
+        "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+        "background_prompt": background_prompt,
+        "style_code": style_code,
+        "bala_model": {
+            "id": model_id,
+            "group": model_item.get("group"),
+            "age_label": model_item.get("age_label"),
+            "gender": model_item.get("gender"),
+            "expression": model_item.get("expression"),
+        },
+    }
+    job = data_sink.create_ai_image_job({
+        "title": title,
+        "prompt": prompt,
+        "model_key": str(run_params.get("model") or "gpt-image-2").strip() or "gpt-image-2",
+        "status": "draft",
+        "output_dir": output_dir,
+        "params": params,
+        "summary": {
+            "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "source_path": str(source_path),
+            "model_id": model_id,
+            "background_prompt": background_prompt,
+        },
+    })
+    job_uid = str(job.get("job_uid") or "")
+    data_sink.create_ai_image_asset({
+        "job_uid": job_uid,
+        "kind": "main",
+        "source_type": "local",
+        "path": str(source_path),
+        "sort_order": 0,
+        "meta": {"role": "source_product_model", "style_code": style_code},
+    })
+    data_sink.create_ai_image_asset({
+        "job_uid": job_uid,
+        "kind": "reference",
+        "source_type": "local",
+        "path": str(model_item.get("path") or ""),
+        "sort_order": 1,
+        "meta": {"role": "bala_ai_model_face", "model_id": model_id},
+    })
+
+    submit_status = "已创建，未提交"
+    batch_uid = ""
+    run_uid = ""
+    task_id = ""
+    poll_url = ""
+    result = "已创建"
+    note = ""
+    if submit_async:
+        try:
+            batch = ai_image_service.submit_workbench_batch(
+                job_uid,
+                [{"title": "换脸换背景", "prompt": prompt, "count": 1}],
+                request_uid=f"bala-ai-face-bg-{uuid4().hex}",
+            )
+            submit_status = "已异步提交" if batch.get("accepted") else "提交未接受"
+            batch_uid = str(batch.get("batch_uid") or "")
+            first_run = next(iter(batch.get("runs") or []), {})
+            run_uid = str(first_run.get("run_uid") or "")
+            task_id = str(first_run.get("task_id") or "")
+            poll_url = str(first_run.get("poll_url") or "")
+            if first_run.get("error"):
+                note = str(first_run.get("error") or "")
+                result = "提交失败"
+            else:
+                result = "已提交"
+        except ai_image_service.MissingModelKeyError as exc:
+            submit_status = "提交失败"
+            result = "已创建，提交失败"
+            note = str(exc)
+        except Exception as exc:
+            submit_status = "提交失败"
+            result = "已创建，提交失败"
+            note = str(exc)
+
+    return {
+        "源图序号": source_index,
+        "源图文件": str(source_path),
+        "款号": style_code,
+        "模特ID": model_id,
+        "模特分组": str(model_item.get("group_label") or model_item.get("group") or ""),
+        "模特年龄段": str(model_item.get("age_label") or ""),
+        "模特性别": str(model_item.get("gender") or ""),
+        "模特表情": str(model_item.get("expression") or ""),
+        "背景Prompt": background_prompt,
+        "完整Prompt": prompt,
+        "AI任务UID": job_uid,
+        "AI任务标题": title,
+        "提交状态": submit_status,
+        "批次UID": batch_uid,
+        "运行UID": run_uid,
+        "1XM任务ID": task_id,
+        "轮询URL": poll_url,
+        "AI生图工作台": "AI 生图",
+        "执行结果": result,
+        "备注": note,
+    }
+
+
+async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_control, log) -> list[dict]:
+    background_prompt = str((run_params or {}).get("background_prompt") or "").strip()
+    if not background_prompt:
+        return [_bala_ai_error_row("请填写换背景 Prompt")]
+
+    sources, source_errors = _bala_source_images_for_generation(run_params)
+    models, model_warnings = _bala_models_for_generation(run_params)
+    if source_errors and not sources:
+        return [_bala_ai_error_row("；".join(source_errors))]
+    if not models:
+        return [_bala_ai_error_row("；".join(model_warnings or ["没有可用的巴拉 AI 模特素材"]))]
+
+    max_combinations = _task_int_param(run_params, "max_combinations", 12, min_value=1, max_value=100)
+    submit_async = str((run_params or {}).get("generation_mode") or "submit_async").strip() != "create_only"
+    rows: list[dict] = []
+    combinations: list[tuple[int, Path, dict]] = []
+    for source_index, source_path in enumerate(sources, start=1):
+        for model_item in models:
+            combinations.append((source_index, source_path, model_item))
+            if len(combinations) >= max_combinations:
+                break
+        if len(combinations) >= max_combinations:
+            break
+
+    if log:
+        mode = "异步提交" if submit_async else "仅创建"
+        log(f"Bala AI face/background generation: {len(combinations)} job(s), mode={mode}")
+    for index, (source_index, source_path, model_item) in enumerate(combinations, start=1):
+        await wait_for_control({"records": len(rows), "current_row": index, "phase": "create-ai-image-jobs"})
+        prompt = _bala_ai_prompt(
+            source_path,
+            model_item,
+            background_prompt,
+            str((run_params or {}).get("prompt_extra") or "").strip(),
+        )
+        try:
+            row = await asyncio.to_thread(
+                _bala_create_ai_image_job_row,
+                source_index=source_index,
+                source_path=source_path,
+                model_item=model_item,
+                run_params=run_params,
+                background_prompt=background_prompt,
+                prompt=prompt,
+                submit_async=submit_async,
+            )
+        except Exception as exc:
+            row = {
+                **_bala_ai_error_row(str(exc)),
+                "源图序号": source_index,
+                "源图文件": str(source_path),
+                "款号": _bala_extract_style_code(source_path),
+                "模特ID": str(model_item.get("id") or ""),
+                "模特分组": str(model_item.get("group_label") or model_item.get("group") or ""),
+                "模特年龄段": str(model_item.get("age_label") or ""),
+                "模特性别": str(model_item.get("gender") or ""),
+                "模特表情": str(model_item.get("expression") or ""),
+                "背景Prompt": background_prompt,
+                "完整Prompt": prompt,
+            }
+        if model_warnings:
+            row["备注"] = _append_note(row.get("备注"), "；".join(model_warnings))
+        rows.append(row)
+
+    await wait_for_control({"records": len(rows), "current_row": len(rows), "phase": "create-ai-image-jobs"})
+    return rows or [_bala_ai_error_row("没有生成任何任务组合")]
+
+
+def _finalize_bala_ai_video_assistant_outputs(
+    task_id: str,
+    data_rows: list,
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    runtime_artifact_dir: str,
+    log,
+) -> list[str]:
+    if task_id != "semir_video_material_prepare":
+        return [str(path) for path in (runtime_files or []) + (exported_files or []) if str(path or "").strip()]
+
+    def rewrite_row_paths(source_root: Path, target_root: Path) -> None:
+        for row in data_rows or []:
+            if not isinstance(row, dict):
+                continue
+            raw_path = str(row.get("本地文件") or "").strip()
+            if not raw_path:
+                continue
+            path = Path(raw_path).expanduser()
+            try:
+                relative = path.resolve(strict=False).relative_to(source_root.resolve(strict=False))
+            except Exception:
+                continue
+            row["本地文件"] = str(target_root / relative)
+
+    runtime_dir = Path(runtime_artifact_dir)
+    runtime_dir.mkdir(parents=True, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    package_base = _safe_local_name(
+        run_params.get("package_name") or f"巴拉AI视频素材_{timestamp}",
+        f"巴拉AI视频素材_{timestamp}",
+    )
+    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+
+    successful_rows = []
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        local_path = Path(str(row.get("本地文件") or "")).expanduser()
+        if str(row.get("下载结果") or "").strip() != "已下载" or not local_path.is_file():
+            continue
+        successful_rows.append((row, local_path))
+
+    if successful_rows:
+        started_at = time.monotonic()
+        log(f"Bala video material finalize started: {len(successful_rows)} downloaded files")
+        for row, local_path in successful_rows:
+            group_code = _safe_local_name(
+                row.get("__bala_group_code") or row.get("输入款号") or row.get("输入编码") or "未分类",
+                "未分类",
+            )
+            source_folder = _bala_video_source_folder(row.get("__bala_source_type") or row.get("素材来源"))
+            clean_filename = _safe_local_name(
+                row.get("__package_filename") or row.get("文件名") or local_path.name,
+                local_path.name,
+            )
+            target = package_root / group_code / source_folder / clean_filename
+            relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            threshold_bytes = _bala_video_image_threshold_bytes(run_params, row)
+            final_path, compress_status = _compress_bala_video_image_if_needed(relocated, threshold_bytes, log)
+            row["本地文件"] = str(final_path)
+            row["压缩结果"] = compress_status
+            if final_path.name != clean_filename:
+                row["文件名"] = final_path.name
+                row["__package_filename"] = final_path.name
+        log(
+            "Bala video material folder prepared without ZIP compression: "
+            f"{package_root} ({time.monotonic() - started_at:.1f}s)"
+        )
+
+    exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
+    final_refs = [*exported_refs]
+    export_folder = str(run_params.get("export_folder") or "").strip()
+
+    if successful_rows and package_root.exists():
+        if export_folder:
+            target_root = Path(export_folder).expanduser()
+            target_root.mkdir(parents=True, exist_ok=True)
+            external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
+            rewrite_row_paths(package_root, external_dir)
+            external_refs = [str(external_dir)]
+            log(f"Bala video material folder moved to export folder: {external_dir}")
+            for file_path in exported_files or []:
+                source = Path(str(file_path or "")).expanduser()
+                if not source.is_file():
+                    continue
+                copied = _copy_file_to_unique_target(source, target_root / source.name)
+                external_refs.append(str(copied))
+            final_refs = external_refs
+        else:
+            target_root = _default_output_root_for_runtime(runtime_dir, exported_files)
+            target_root.mkdir(parents=True, exist_ok=True)
+            external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
+            rewrite_row_paths(package_root, external_dir)
+            log(f"Bala video material folder moved to default output folder: {external_dir}")
+            final_refs = [str(external_dir), *exported_refs]
+    elif package_root.exists():
+        shutil.rmtree(package_root, ignore_errors=True)
+
+    _cleanup_semir_runtime_artifacts(runtime_files, None)
+    _cleanup_runtime_artifact_dir(str(runtime_dir), preserve_paths=final_refs)
+
+    return final_refs
 
 
 def _finalize_shenhui_new_arrival_outputs(
@@ -4704,6 +5378,23 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     log(f"[warn] MOP 云盘下载后处理失败，回退到原始输出: {package_error}")
                     return merge_output_file_refs(runtime_files, exported_files)
 
+            if adapter_id == 'bala-ai-video-assistant':
+                try:
+                    packaged_refs = await asyncio.to_thread(
+                        _finalize_bala_ai_video_assistant_outputs,
+                        task_id=task_id,
+                        data_rows=data_rows,
+                        runtime_files=runtime_files,
+                        exported_files=exported_files,
+                        run_params=run_params,
+                        runtime_artifact_dir=runtime_artifact_dir,
+                        log=log,
+                    )
+                    return merge_output_file_refs(packaged_refs)
+                except Exception as package_error:
+                    log(f"[warn] 巴拉AI视频素材后处理失败，回退到原始输出: {package_error}")
+                    return merge_output_file_refs(runtime_files, exported_files)
+
             if adapter_id == 'plm-ops-assistant' and task_id == 'size_chart_downloader':
                 try:
                     packaged_refs = await asyncio.to_thread(
@@ -4900,6 +5591,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raw_count = len(data)
         if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain'):
             data = await _apply_tmall_ai_image_test_chain(run_params, runtime_artifact_dir, wait_for_control, log)
+            raw_count = len(data)
+        if (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_FACE_BACKGROUND_TASK_ID):
+            data = await _apply_bala_ai_face_background_generate(run_params, wait_for_control, log)
             raw_count = len(data)
         deduped_count = len(data)
         log(f"Script complete. Records: {raw_count}")

@@ -1,0 +1,294 @@
+id: bala-ai-video-assistant
+name: 巴拉 AI 视频助手
+version: 0.1.0
+author: codex
+description: "巴拉 AI 自制视频链路的素材准备、AI 换图、图生视频、剪辑与发布自动化助手"
+entry_url: https://fmp.semirapp.com/web/index#/home/file
+tab_match_prefixes:
+  - https://fmp.semirapp.com/
+
+auth:
+  check_script: auth_check.js
+  login_url: https://fmp.semirapp.com/web/index#/home/file
+
+tasks:
+  - id: semir_video_material_prepare
+    name: 森马云盘视频素材图下载
+    description: 按款号在森马云盘搜索并下载 AI 自制视频所需模拍图和商品细节图，优先最新已选/已写文件夹，默认输出本地图包不打 ZIP
+    script: semir-video-material-prepare.js
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+      - id: cloud_path
+        type: text
+        label: 云盘搜索根路径
+        required: true
+        default: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        placeholder: "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"
+        hint: 从挂载点开始填写搜索根路径；脚本会自动在其下识别模拍原图和平拍原图
+        quick_fill_options:
+          - 巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/
+      - id: item_codes
+        type: textarea
+        label: 款号
+        rows: 8
+        required: true
+        placeholder: "一行一个款号，例如：\n208326102205\n208326105214"
+        hint: 支持粘贴多行；若粘贴款色编码，会按款号部分搜索对应素材文件夹
+      - id: folder_scan_depth
+        type: number
+        label: 文件夹扫描层级
+        default: 2
+        min: 1
+        max: 8
+        step: 1
+        ui_span: third
+        hint: 命中文件夹后递归下载图片的层级，默认 2
+      - id: duplicate_mode
+        type: select
+        label: 重复图处理
+        default: first_per_hash
+        ui_span: third
+        options:
+          - value: first_per_hash
+            label: 同 hash/同名只保留一张（推荐）
+          - value: all
+            label: 保留全部图片
+        hint: 默认按 filehash 去重；没有 hash 时按同名去重
+      - id: download_concurrency
+        type: number
+        label: 下载并发数
+        default: 8
+        min: 1
+        max: 32
+        step: 1
+        ui_span: third
+      - id: max_image_mb
+        type: number
+        label: 单图压缩阈值 MB
+        default: 20
+        min: 1
+        max: 80
+        step: 1
+        ui_span: third
+        hint: 下载后超过该大小的图片会尝试压缩；默认 20MB
+      - id: package_name
+        type: text
+        label: 导出包名称
+        ui_span: third
+        placeholder: "例如：巴拉AI视频素材_第一批"
+        hint: 可选。留空则按任务时间自动命名
+      - id: export_folder
+        type: directory
+        label: 导出目录
+        placeholder: "点击选择导出目录"
+        hint: 可选。留空则使用任务默认输出目录
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "巴拉AI视频素材准备结果_{timestamp}.xlsx"
+        columns:
+          - 输入款号
+          - 输入编码
+          - 素材来源
+          - 选择文件夹
+          - 文件名
+          - 云盘路径
+          - 文件大小MB
+          - 处理动作
+          - 下载结果
+          - 本地文件
+          - 压缩结果
+          - 备注
+
+  - id: bala_ai_face_background_generate
+    name: AI 换脸/换背景
+    description: 选择已下载的模拍素材图，匹配内置巴拉 AI 模特库，批量创建并可异步提交换脸与换背景 AI 生图任务
+    script: bala-ai-face-background-generate.js
+    entry_url: about:blank
+    skip_auth: true
+    params:
+      - id: source_images
+        type: file_images
+        label: 待处理图片
+        max: 40
+        hint: 可直接多选上一步下载的模拍图；如果留空，则从下方素材目录扫描 01_模拍原图
+      - id: material_root
+        type: directory
+        label: 素材根目录
+        include_file_listing: true
+        placeholder: "选择上一步下载的款号素材目录或整包目录"
+        hint: 可选择“巴拉AI视频素材_...”整包目录，也可选择单款目录；脚本会优先读取 01_模拍原图
+      - id: source_limit
+        type: number
+        label: 源图上限
+        default: 3
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+        hint: 未直接选择图片时，从目录中最多取多少张源图
+      - id: model_groups
+        type: checkbox
+        label: 模特分组
+        ui_variant: dropdown_multi
+        default:
+          - 100女
+        options:
+          - value: "66"
+            label: 66 新生儿
+          - value: 73女
+            label: 73 女 婴童
+          - value: 73男
+            label: 73 男 婴童
+          - value: 100女
+            label: 100 女 幼童
+          - value: 100男
+            label: 100 男 幼童
+          - value: 140女
+            label: 140 女 中大童
+          - value: 140男
+            label: 140 男 中大童
+        hint: 不填写具体模特图 ID 时，会按分组自动挑选模特素材
+      - id: model_ref_ids
+        type: textarea
+        label: 指定模特图 ID
+        rows: 4
+        placeholder: "一行一个，例如：\n100女/标准.jpg\n100男/正脸.jpg\n73女/微笑.jpg"
+        hint: 可选。留空则按上方分组自动选择；内置模型库位于 adapters/bala-ai-video-assistant/assets/model-library/manifest.json
+      - id: models_per_group
+        type: number
+        label: 每组模特数
+        default: 1
+        min: 1
+        max: 12
+        step: 1
+        ui_span: third
+      - id: max_combinations
+        type: number
+        label: 任务组合上限
+        default: 12
+        min: 1
+        max: 100
+        step: 1
+        ui_span: third
+        hint: 源图 × 模特图的最大组合数量，避免一次提交过多
+      - id: background_prompt
+        type: textarea
+        label: 换背景 Prompt
+        required: true
+        rows: 3
+        default: "换成马尔代夫的海边"
+        placeholder: "例如：换成马尔代夫的海边"
+      - id: prompt_extra
+        type: textarea
+        label: 补充要求
+        rows: 3
+        placeholder: "可选，例如：画面自然、有阳光、无文字、保留童装版型和颜色"
+        hint: 会追加到每条 AI 生图 Prompt
+      - id: generation_mode
+        type: radio
+        label: 生成方式
+        default: submit_async
+        options:
+          - value: submit_async
+            label: 创建并异步生成（推荐）
+          - value: create_only
+            label: 只创建任务，稍后到 AI 生图工作台手动运行
+      - id: model
+        type: select
+        label: 生图模型
+        default: gpt-image-2
+        ui_span: third
+        options:
+          - value: gpt-image-2
+            label: GPT Image
+      - id: model_key_tier
+        type: select
+        label: Key 档位
+        default: 4k
+        ui_span: third
+        options:
+          - value: 4k
+            label: GPT Image 4K
+          - value: 2k
+            label: GPT Image 2K
+      - id: image_size
+        type: select
+        label: 输出尺寸
+        default: 1536x2048
+        ui_span: third
+        options:
+          - value: 1536x2048
+            label: 3:4 竖图 1536×2048
+          - value: 2048x2048
+            label: 1:1 方图 2048×2048
+          - value: 2048x1536
+            label: 4:3 横图 2048×1536
+          - value: 1024x1024
+            label: 1:1 预览 1024×1024
+      - id: quality
+        type: select
+        label: 输出质量
+        default: high
+        ui_span: third
+        options:
+          - value: high
+            label: high
+          - value: medium
+            label: medium
+          - value: auto
+            label: auto
+      - id: output_format
+        type: select
+        label: 输出格式
+        default: png
+        ui_span: third
+        options:
+          - value: png
+            label: PNG
+          - value: jpeg
+            label: JPEG
+          - value: webp
+            label: WEBP
+      - id: output_dir
+        type: directory
+        label: AI 输出目录
+        placeholder: "可选，留空则使用 AI 生图默认输出目录"
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "巴拉AI换脸换背景任务_{timestamp}.xlsx"
+        columns:
+          - 源图序号
+          - 源图文件
+          - 款号
+          - 模特ID
+          - 模特分组
+          - 模特年龄段
+          - 模特性别
+          - 模特表情
+          - 背景Prompt
+          - 完整Prompt
+          - AI任务UID
+          - AI任务标题
+          - 提交状态
+          - 批次UID
+          - 运行UID
+          - 1XM任务ID
+          - 轮询URL
+          - AI生图工作台
+          - 执行结果
+          - 备注
