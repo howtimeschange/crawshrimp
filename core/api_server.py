@@ -32,7 +32,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
 from core import runtime_paths
@@ -79,6 +79,7 @@ PUBLIC_API_PREFIXES = (
     "/tmall-ai-image-approval/",
     "/bala-ai-video-materials/",
     "/bala-ai-video-model-library/",
+    "/bala-ai-video-review/",
 )
 
 # In-memory task run state for live status / logs
@@ -3877,6 +3878,16 @@ def _extract_tmall_approval_board_urls(data_rows: list) -> dict:
     return urls
 
 
+def _extract_bala_review_board_url(data_rows: list) -> str:
+    for row in data_rows or []:
+        if not isinstance(row, dict):
+            continue
+        board_url = str(row.get("审批看板") or row.get("bala_review_board_url") or "").strip()
+        if board_url.startswith(("http://", "https://")) and "/bala-ai-video-review/" in board_url:
+            return board_url
+    return ""
+
+
 def _is_tmall_ai_generation_confirmation_result(adapter_id: str, task_id: str, data_rows: list) -> bool:
     if (adapter_id, task_id) != ("tmall-ops-assistant", "tmall_ai_image_test_chain"):
         return False
@@ -5745,8 +5756,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             output_files = await finalize_output_files(data, runtime_files, exported_files)
         approval_board_urls = _extract_tmall_approval_board_urls(data) if (adapter_id, task_id) == ('tmall-ops-assistant', 'tmall_ai_image_test_chain') else {}
         approval_board_url = approval_board_urls.get("approval_board_url", "") if approval_board_urls else ""
+        bala_review_board_url = _extract_bala_review_board_url(data) if (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_FACE_BACKGROUND_TASK_ID) else ""
         if approval_board_url:
             output_files = merge_output_file_refs([approval_board_url], output_files)
+        if bala_review_board_url:
+            output_files = merge_output_file_refs([bala_review_board_url], output_files)
         data_sink.finish_run(run_id, len(data), output_files)
         if instance_uid:
             _sync_task_instance_artifacts(instance_uid, output_files, run_id)
@@ -5763,6 +5777,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         }
         if approval_board_url:
             done_status['approval_board_url'] = approval_board_url
+        if bala_review_board_url:
+            done_status['bala_review_board_url'] = bala_review_board_url
         _set_live_status(live_jids, done_status)
         if instance_uid:
             approval_summary = _parse_tmall_approval_board_url(
@@ -6190,6 +6206,26 @@ class BalaMaterialExportAiInputRequest(BaseModel):
     prompt_extra: str = ""
 
 
+class BalaReviewDecisionsRequest(BaseModel):
+    decisions: dict = {}
+
+
+class BalaReviewRegenerateRequest(BaseModel):
+    asset_id: str = ""
+    prompt: str = ""
+    reference_paths: Optional[List[str]] = None
+    submit_async: bool = False
+
+
+class BalaReviewExportVideoInputRequest(BaseModel):
+    provider: str = "qn_img2video"
+    output_dir: str = ""
+    template_id: str = ""
+    template_match: str = ""
+    prompt: str = ""
+    download_videos: bool = True
+
+
 def _bala_ai_video_base_url() -> str:
     return str(os.environ.get("CRAWSHRIMP_PUBLIC_BASE_URL") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").rstrip("/")
 
@@ -6208,6 +6244,162 @@ def _bala_material_asset_path(batch: dict, asset_id: str) -> Path:
                     raise HTTPException(404, "Bala material image not found")
                 return path
     raise HTTPException(404, "Bala material asset not found")
+
+
+def _bala_review_asset_path(batch: dict, asset_id: str) -> Path:
+    target = str(asset_id or "").strip()
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            if str(asset.get("id") or "").strip() == target:
+                path = Path(str(asset.get("path") or asset.get("source_path") or "")).expanduser()
+                if not path.is_file():
+                    raise HTTPException(404, "Bala review image not found")
+                return path
+    raise HTTPException(404, "Bala review asset not found")
+
+
+def _load_bala_review_batch_checked(batch_id: str, token: str) -> dict:
+    try:
+        batch = bala_ai_video_review.load_review_batch(batch_id)
+        bala_ai_video_review.validate_token(batch, token)
+        return batch
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+def _bala_review_find_asset(batch: dict, asset_id: str) -> tuple[dict, dict]:
+    target = str(asset_id or "").strip()
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        for asset in item.get("assets") or []:
+            if isinstance(asset, dict) and str(asset.get("id") or "").strip() == target:
+                return item, asset
+    raise HTTPException(404, "Bala review asset not found")
+
+
+def _bala_review_reference_paths(asset: dict, requested: Optional[List[str]]) -> list[str]:
+    if requested is not None:
+        source = requested
+    else:
+        source = [
+            asset.get("model_image_path"),
+            *(asset.get("garment_paths") or []),
+            *(asset.get("outfit_reference_paths") or []),
+            *(asset.get("variant_reference_paths") or []),
+        ]
+    paths: list[str] = []
+    for raw in source or []:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        if path.is_file() and path.suffix.lower() in BALA_AI_IMAGE_EXTS:
+            paths.append(str(path))
+    return paths
+
+
+def _append_bala_review_regenerate_asset(batch: dict, req: BalaReviewRegenerateRequest) -> dict:
+    item, source_asset = _bala_review_find_asset(batch, req.asset_id)
+    source_path = str(source_asset.get("source_path") or source_asset.get("path") or "").strip()
+    if not source_path or not Path(source_path).expanduser().is_file():
+        raise HTTPException(400, "重跑缺少可用源图")
+    operation_type = bala_ai_video_review.normalize_operation_type(source_asset.get("operation_type"))
+    prompt = str(req.prompt or source_asset.get("prompt") or source_asset.get("background_prompt") or source_asset.get("pose_prompt") or "").strip()
+    if not prompt:
+        prompt = _bala_ai_operation_prompt(Path(source_path).expanduser(), {}, {
+            "background_prompt": source_asset.get("background_prompt") or "",
+            "pose_prompt": source_asset.get("pose_prompt") or "",
+            "prompt_extra": source_asset.get("review_note") or "",
+        }, operation_type)
+    reference_paths = _bala_review_reference_paths(source_asset, req.reference_paths)
+    title = _safe_local_name(
+        f"巴拉审核重跑 {item.get('style_code') or ''} {operation_type}",
+        "巴拉审核重跑",
+    )
+    job = data_sink.create_ai_image_job({
+        "title": title,
+        "prompt": prompt,
+        "model_key": "gpt-image-2",
+        "status": "draft",
+        "output_dir": str(Path(str(batch.get("artifact_dir") or runtime_paths.child_dir("bala-ai-video-review"))).expanduser() / "regenerated"),
+        "params": {
+            "prompt": prompt,
+            "main_image_path": source_path,
+            "reference_image_paths": reference_paths,
+            "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "operation_type": operation_type,
+            "style_code": item.get("style_code") or "",
+        },
+        "summary": {
+            "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "operation_type": operation_type,
+            "source_path": source_path,
+            "regenerate_from_asset_id": source_asset.get("id"),
+        },
+    })
+    job_uid = str(job.get("job_uid") or "")
+    data_sink.create_ai_image_asset({
+        "job_uid": job_uid,
+        "kind": "main",
+        "source_type": "local",
+        "path": source_path,
+        "sort_order": 0,
+        "meta": {"role": "source_product_model", "style_code": item.get("style_code") or ""},
+    })
+    for index, path in enumerate(reference_paths, start=1):
+        data_sink.create_ai_image_asset({
+            "job_uid": job_uid,
+            "kind": "reference",
+            "source_type": "local",
+            "path": path,
+            "sort_order": index,
+            "meta": {"role": "reference"},
+        })
+
+    submit_note = "已创建重跑任务，未提交"
+    run_uid = ""
+    if req.submit_async:
+        try:
+            run_result = ai_image_service.submit_workbench_batch(
+                job_uid,
+                [{"title": title, "prompt": prompt, "count": 1}],
+                request_uid=f"bala-review-regenerate-{uuid4().hex}",
+            )
+            first_run = next(iter(run_result.get("runs") or []), {})
+            run_uid = str(first_run.get("run_uid") or "")
+            submit_note = "已异步提交重跑任务" if run_result.get("accepted") else "重跑提交未接受"
+        except ai_image_service.MissingModelKeyError as exc:
+            submit_note = str(exc)
+        except Exception as exc:
+            submit_note = str(exc)
+
+    new_asset_id = f"{source_asset.get('id') or 'asset'}-retry-{secrets.token_hex(3)}"
+    token = str(batch.get("token") or "")
+    item.setdefault("assets", []).append({
+        "id": new_asset_id,
+        "kind": "ai",
+        "style_code": item.get("style_code") or "",
+        "source_asset_id": source_asset.get("source_asset_id") or source_asset.get("id") or "",
+        "source_path": source_path,
+        "path": "",
+        "filename": "",
+        "status": "generating",
+        "operation_type": operation_type,
+        "job_uid": job_uid,
+        "run_uid": run_uid,
+        "prompt": prompt,
+        "image_url": f"{_bala_ai_video_base_url()}/bala-ai-video-review/api/{batch.get('batch_id')}/image/{new_asset_id}?token={token}",
+        "review_note": submit_note,
+        "regenerated_from_asset_id": source_asset.get("id") or "",
+    })
+    return bala_ai_video_review.refresh_generated_assets(batch)
 
 
 @app.post("/bala-ai-video-materials/api/from-rows")
@@ -6300,6 +6492,115 @@ def get_bala_ai_model_library_image(model_id: str):
         raise HTTPException(404, str(exc))
     media_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@app.get("/bala-ai-video-review/api/{batch_id}")
+def get_bala_ai_video_review_batch(batch_id: str, token: str = ""):
+    return _load_bala_review_batch_checked(batch_id, token)
+
+
+@app.get("/bala-ai-video-review/api/{batch_id}/image/{asset_id}")
+def get_bala_ai_video_review_image(batch_id: str, asset_id: str, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    path = _bala_review_asset_path(batch, asset_id)
+    media_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@app.post("/bala-ai-video-review/api/{batch_id}/decisions")
+def save_bala_ai_video_review_decisions(batch_id: str, req: BalaReviewDecisionsRequest, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    updated = bala_ai_video_review.update_review_decisions(batch, dict(req.decisions or {}))
+    bala_ai_video_review.save_review_batch(updated)
+    return updated
+
+
+@app.post("/bala-ai-video-review/api/{batch_id}/refresh")
+def refresh_bala_ai_video_review_batch(batch_id: str, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    updated = bala_ai_video_review.refresh_generated_assets(batch)
+    bala_ai_video_review.save_review_batch(updated)
+    return updated
+
+
+@app.post("/bala-ai-video-review/api/{batch_id}/regenerate")
+async def regenerate_bala_ai_video_review_asset(batch_id: str, req: BalaReviewRegenerateRequest, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    try:
+        updated = await asyncio.to_thread(_append_bala_review_regenerate_asset, batch, req)
+        bala_ai_video_review.save_review_batch(updated)
+        _, asset = _bala_review_find_asset(updated, next(
+            str(candidate.get("id") or "")
+            for item in updated.get("items") or []
+            for candidate in item.get("assets") or []
+            if str(candidate.get("regenerated_from_asset_id") or "") == str(req.asset_id or "").strip()
+        ))
+        return {"ok": True, "batch": updated, "asset": asset}
+    except StopIteration as exc:
+        raise HTTPException(400, "重跑任务已创建但未找到回写资产") from exc
+
+
+@app.post("/bala-ai-video-review/api/{batch_id}/export-video-input")
+def export_bala_ai_video_review_video_input(batch_id: str, req: BalaReviewExportVideoInputRequest, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    manifest = bala_ai_video_review.export_video_input_manifest(
+        batch,
+        req.output_dir,
+        provider=req.provider or batch.get("video_provider") or "qn_img2video",
+    )
+    params = bala_ai_video_review.build_qn_img2video_initial_params(manifest)
+    if req.template_id:
+        params["template_id"] = req.template_id
+    if req.template_match:
+        params["template_match"] = req.template_match
+    if req.prompt:
+        params["prompt"] = req.prompt
+        params["custom_prompt"] = req.prompt
+    params["download_template_previews"] = True
+    params["download_videos"] = bool(req.download_videos)
+    return {
+        "ok": True,
+        **manifest,
+        "images": manifest.get("image_paths") or [],
+        "next_task": {
+            "adapter_id": BALA_AI_VIDEO_ADAPTER_ID,
+            "task_id": "qn_img2video_batch",
+            "params": params,
+        },
+    }
+
+
+@app.get("/bala-ai-video-review/{batch_id}")
+def get_bala_ai_video_review_board(batch_id: str, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    title = f"巴拉 AI 图片审核 - {batch.get('batch_id') or batch_id}"
+    rows = []
+    for item in batch.get("items") or []:
+        style_code = str(item.get("style_code") or "")
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, dict) or asset.get("kind") != "ai":
+                continue
+            rows.append(
+                "<tr>"
+                f"<td>{style_code}</td>"
+                f"<td>{asset.get('operation_type') or ''}</td>"
+                f"<td>{asset.get('status') or ''}</td>"
+                f"<td>{asset.get('filename') or Path(str(asset.get('path') or '')).name}</td>"
+                "</tr>"
+            )
+    body = "\n".join(rows) or "<tr><td colspan=\"4\">暂无生成图片</td></tr>"
+    return HTMLResponse(f"""<!doctype html>
+<html lang=\"zh-CN\">
+<head><meta charset=\"utf-8\"><title>{title}</title></head>
+<body>
+<h1>{title}</h1>
+<p>请在抓虾客户端中打开审核抽屉完成选择、重试和进入视频生成。</p>
+<table border=\"1\" cellspacing=\"0\" cellpadding=\"6\">
+<thead><tr><th>款号</th><th>操作</th><th>状态</th><th>文件</th></tr></thead>
+<tbody>{body}</tbody>
+</table>
+</body>
+</html>""")
 
 
 class AiImageJobRequest(BaseModel):

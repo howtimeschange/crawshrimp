@@ -1005,11 +1005,17 @@
       :board-url="balaMaterialBoardUrl"
       @start-ai-stage="handleBalaStartAiStage"
     />
+    <BalaAiImageReviewDrawer
+      v-model="balaReviewDrawerOpen"
+      :board-url="balaReviewBoardUrl"
+      @start-video-stage="handleBalaStartVideoStage"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import BalaAiImageReviewDrawer from './BalaAiImageReviewDrawer.vue'
 import BalaAiMaterialSelectionDrawer from './BalaAiMaterialSelectionDrawer.vue'
 import TmallAiApprovalDrawer from './TmallAiApprovalDrawer.vue'
 import TaskOutputDrawer from './TaskOutputDrawer.vue'
@@ -1072,6 +1078,8 @@ const approvalBatch = ref(null)
 const approvalDrawerOpen = ref(false)
 const balaMaterialBoardUrl = ref('')
 const balaMaterialDrawerOpen = ref(false)
+const balaReviewBoardUrl = ref('')
+const balaReviewDrawerOpen = ref(false)
 const aiChainActiveStep = ref('config')
 const syncingOdps = ref(false)
 const excelLoading = ref({})
@@ -1442,6 +1450,8 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   approvalDrawerOpen.value = false
   balaMaterialBoardUrl.value = ''
   balaMaterialDrawerOpen.value = false
+  balaReviewBoardUrl.value = ''
+  balaReviewDrawerOpen.value = false
   aiChainActiveStep.value = initialAiChainActiveStep(adapterId, task)
   syncingOdps.value = false
   isRunning.value = false
@@ -2594,6 +2604,8 @@ function resetRunUi() {
   approvalDrawerOpen.value = false
   balaMaterialBoardUrl.value = ''
   balaMaterialDrawerOpen.value = false
+  balaReviewBoardUrl.value = ''
+  balaReviewDrawerOpen.value = false
   localLiveSnapshot.value = null
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
   syncingOdps.value = false
@@ -2772,6 +2784,11 @@ function isBalaMaterialPrepareTask() {
     && props.task?.task_id === 'semir_video_material_prepare'
 }
 
+function isBalaAiGenerationTask() {
+  return props.adapterId === 'bala-ai-video-assistant'
+    && props.task?.task_id === 'bala_ai_face_background_generate'
+}
+
 async function readBalaMaterialRowsFromOutputFiles(files = []) {
   const rows = []
   for (const file of (files || []).filter(isExcelFile).slice(0, 3)) {
@@ -2807,6 +2824,43 @@ async function maybeOpenBalaMaterialSelection(files = []) {
   }
 }
 
+async function findBalaReviewBoardUrlFromExcel(files = []) {
+  for (const file of (files || []).filter(isExcelFile).slice(0, 3)) {
+    try {
+      const payload = await window.cs.readExcel(file)
+      const rows = Array.isArray(payload?.rows) ? payload.rows : []
+      const row = rows.find(item => String(item?.审批看板 || '').includes('/bala-ai-video-review/'))
+      const boardUrl = String(row?.审批看板 || '').trim()
+      if (boardUrl) return boardUrl
+    } catch (error) {
+      logs.value.push(`[${now()}] 读取 AI 审核结果表失败：${error?.message || String(error)}`)
+    }
+  }
+  return ''
+}
+
+function findBalaReviewBoardUrl(files = [], result = null) {
+  const direct = String(result?.bala_review_board_url || '').trim()
+  if (direct) return direct
+  return (files || []).map(file => String(file || '').trim()).find(isBalaReviewBoardUrl) || ''
+}
+
+async function maybeOpenBalaImageReview(files = [], result = null) {
+  if (!isBalaAiGenerationTask()) return
+  if (typeof window.cs?.getBalaReviewBatch !== 'function') return
+  try {
+    const boardUrl = findBalaReviewBoardUrl(files, result) || await findBalaReviewBoardUrlFromExcel(files)
+    if (!boardUrl) return
+    balaReviewBoardUrl.value = boardUrl
+    balaReviewDrawerOpen.value = true
+    logs.value.push(`[${now()}] 已打开巴拉 AI 图片审核池`)
+    scrollToBottom()
+  } catch (error) {
+    logs.value.push(`[${now()}] 打开巴拉 AI 图片审核失败：${error?.message || String(error)}`)
+    scrollToBottom()
+  }
+}
+
 async function finishRun(result, options = {}) {
   clearInterval(pollTimer)
   pollTimer = null
@@ -2832,6 +2886,7 @@ async function finishRun(result, options = {}) {
       lastResult.value = { ok: true, msg: `✓ 完成，共 ${result.records ?? result.records_count ?? 0} 条记录` }
     }
     await maybeOpenBalaMaterialSelection(files)
+    await maybeOpenBalaImageReview(files, result)
   } else if (result.status === 'stopped') {
     await refreshOutputFiles()
     if (isInstanceMode.value) emit('instance-updated')
@@ -3062,6 +3117,10 @@ function handleBalaStartAiStage(request) {
   emit('open-task', request)
 }
 
+function handleBalaStartVideoStage(request) {
+  emit('open-task', request)
+}
+
 function shouldPreferCreateStepForInstance(detail) {
   if (!isTmallAiImageChainTask.value) return false
   if (normalizeAiChainStep(detail?.current_step) === 'create') return true
@@ -3140,6 +3199,10 @@ function isLocalTmallApprovalBoardUrl(path) {
   return isHttpUrl(path) && String(path || '').includes('/tmall-ai-image-approval/')
 }
 
+function isBalaReviewBoardUrl(path) {
+  return isHttpUrl(path) && String(path || '').includes('/bala-ai-video-review/')
+}
+
 function isCloudApprovalBoardUrl(path) {
   return isTrustedCloudApprovalBoardUrl(path, cloudApprovalBaseUrl.value)
 }
@@ -3149,7 +3212,7 @@ function isApprovalBoardUrl(path) {
 }
 
 function visibleOutputFiles(files = []) {
-  return (files || []).map(file => String(file || '').trim()).filter(file => file && !isApprovalBoardUrl(file))
+  return (files || []).map(file => String(file || '').trim()).filter(file => file && !isApprovalBoardUrl(file) && !isBalaReviewBoardUrl(file))
 }
 
 function findApprovalBoardUrl(files = [], result = null) {

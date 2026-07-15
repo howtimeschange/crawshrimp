@@ -2314,6 +2314,44 @@ secureHandle('list-bala-model-library', async (_, filters = {}) => {
   return apiCall('GET', `/bala-ai-video-model-library/api${suffix}`)
 })
 
+secureHandle('get-bala-review-batch', async (_, batchId, token) => {
+  return apiCall('GET', `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}?${approvalTokenQuery(token)}`)
+})
+
+secureHandle('save-bala-review-decisions', async (_, batchId, token, decisions) => {
+  return apiCall(
+    'POST',
+    `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}/decisions?${approvalTokenQuery(token)}`,
+    { decisions: decisions || {} },
+  )
+})
+
+secureHandle('refresh-bala-review-batch', async (_, batchId, token) => {
+  return apiCall(
+    'POST',
+    `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}/refresh?${approvalTokenQuery(token)}`,
+    {},
+  )
+})
+
+secureHandle('regenerate-bala-review-asset', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}/regenerate?${approvalTokenQuery(token)}`,
+    payload || {},
+    { timeoutMs: 20 * 60 * 1000 },
+  )
+})
+
+secureHandle('export-bala-video-input', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}/export-video-input?${approvalTokenQuery(token)}`,
+    payload || {},
+    { timeoutMs: 5 * 60 * 1000 },
+  )
+})
+
 secureHandle('get-cloud-approval-status', async (_, options = {}) => apiCall(
   'GET',
   options?.refresh ? '/cloud-approval/status?refresh=true' : '/cloud-approval/status',

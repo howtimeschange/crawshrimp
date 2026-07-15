@@ -333,6 +333,16 @@ contextBridge.exposeInMainWorld('cs', {
       const suffix = queryString(filters || {})
       return apiCall('GET', `/bala-ai-video-model-library/api${suffix ? `?${suffix}` : ''}`)
     }),
+  getBalaReviewBatch: (batchId, token) => invokeWithApiFallback('get-bala-review-batch', [batchId, token],
+    () => apiCall('GET', `/bala-ai-video-review/api/${encodePathPart(batchId)}?token=${encodePathPart(token)}`)),
+  saveBalaReviewDecisions: (batchId, token, decisions) => invokeWithApiFallback('save-bala-review-decisions', [batchId, token, decisions || {}],
+    () => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/decisions?token=${encodePathPart(token)}`, { decisions: decisions || {} })),
+  refreshBalaReviewBatch: (batchId, token) => invokeWithApiFallback('refresh-bala-review-batch', [batchId, token],
+    () => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/refresh?token=${encodePathPart(token)}`, {})),
+  regenerateBalaReviewAsset: (batchId, token, payload) => invokeWithApiFallback('regenerate-bala-review-asset', [batchId, token, payload || {}],
+    () => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/regenerate?token=${encodePathPart(token)}`, payload || {})),
+  exportBalaVideoInput: (batchId, token, payload) => invokeWithApiFallback('export-bala-video-input', [batchId, token, payload || {}],
+    () => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/export-video-input?token=${encodePathPart(token)}`, payload || {})),
   getCloudApprovalStatus: (options = {}) => ipcRenderer.invoke('get-cloud-approval-status', options || {}),
   saveCloudApprovalConfig: (payload) => ipcRenderer.invoke('save-cloud-approval-config', payload),
   enrollCloudMachine: (payload) => ipcRenderer.invoke('enroll-cloud-machine', payload),

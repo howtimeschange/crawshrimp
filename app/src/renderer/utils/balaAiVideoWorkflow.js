@@ -21,6 +21,49 @@ export function parseBalaMaterialBoardUrl(url = '') {
   }
 }
 
+export function parseBalaReviewBoardUrl(url = '') {
+  try {
+    const parsed = new URL(String(url || ''))
+    if (!parsed.pathname.includes('/bala-ai-video-review/')) return null
+    const parts = parsed.pathname.split('/').filter(Boolean)
+    const batchId = parts[parts.length - 1] || ''
+    const token = parsed.searchParams.get('token') || ''
+    if (!batchId || !token) return null
+    return { batchId, token }
+  } catch {
+    return null
+  }
+}
+
+export function buildBalaVideoStageRequest(exportResult = {}) {
+  const next = exportResult?.next_task || {}
+  return {
+    adapterId: String(next.adapter_id || 'bala-ai-video-assistant'),
+    taskId: String(next.task_id || 'qn_img2video_batch'),
+    params: next.params && typeof next.params === 'object' ? next.params : {},
+  }
+}
+
+export function summarizeBalaReviewBatch(batch = {}) {
+  const summary = {
+    total: 0,
+    pending: 0,
+    approved: 0,
+    rejected: 0,
+    generating: 0,
+    failed: 0,
+  }
+  for (const item of batch?.items || []) {
+    for (const asset of item?.assets || []) {
+      if (asset?.kind !== 'ai') continue
+      summary.total += 1
+      const status = String(asset.status || 'pending')
+      if (Object.prototype.hasOwnProperty.call(summary, status)) summary[status] += 1
+    }
+  }
+  return summary
+}
+
 export function collectDownloadedMaterialRows(payload = {}) {
   const rows = []
   const appendRows = (value) => {
