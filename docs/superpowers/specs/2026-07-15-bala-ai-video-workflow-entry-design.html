@@ -1,0 +1,814 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI 视频工作流视觉锚点</title>
+  <style>
+    :root {
+      --orange: #ff6b2b;
+      --orange-bg: rgba(255, 107, 43, 0.12);
+      --bg: #141418;
+      --bg2: #1c1c22;
+      --bg3: #242430;
+      --border: #2e2e3a;
+      --text: #e2e0f0;
+      --text2: #9a99ad;
+      --text3: #626074;
+      --green: #4ade80;
+      --red: #f87171;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+    button, input, textarea, select { font: inherit; letter-spacing: 0; }
+    button { cursor: default; }
+    .app {
+      width: 1440px;
+      height: 100vh;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 168px 1fr;
+      grid-template-rows: 40px 1fr;
+      background: var(--bg);
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+    .titlebar {
+      grid-column: 1 / -1;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 20px 0 12px;
+    }
+    .logo { font-size: 18px; font-weight: 800; }
+    .status { display: flex; gap: 16px; color: var(--text2); font-size: 11px; }
+    .status span { display: inline-flex; align-items: center; gap: 5px; }
+    .status span::before {
+      content: "";
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 6px var(--green);
+    }
+    .sidebar {
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      padding: 10px 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .nav-btn {
+      height: 38px;
+      padding: 0 12px;
+      color: var(--text2);
+      background: transparent;
+      border: 0;
+      border-radius: 8px;
+      text-align: left;
+    }
+    .nav-btn.active { color: var(--orange); background: var(--orange-bg); font-weight: 650; }
+    .content { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto auto minmax(0, 1fr); }
+    .page-head {
+      min-height: 86px;
+      padding: 18px 22px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    .kicker { margin: 0 0 4px; color: var(--orange); font-size: 11px; font-weight: 700; }
+    h1 { margin: 0 0 6px; font-size: 22px; line-height: 1.15; }
+    .subtitle { margin: 0; color: var(--text2); font-size: 12px; }
+    .head-actions, .inline-actions, .asset-actions, .page-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .btn {
+      height: 32px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text);
+    }
+    .btn.primary { border-color: var(--orange); background: var(--orange); color: #fff; font-weight: 700; }
+    .btn.ghost { background: transparent; color: var(--text2); }
+    .btn.small { height: 28px; padding: 0 9px; font-size: 12px; }
+    .btn.danger { color: var(--red); }
+    .stepper {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      padding: 12px 22px;
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+    }
+    .step-btn {
+      height: 58px;
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text2);
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr);
+      align-items: center;
+      gap: 9px;
+      text-align: left;
+    }
+    .step-btn.active { border-color: var(--orange); background: var(--orange-bg); color: var(--text); }
+    .step-index {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: grid;
+      place-items: center;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      font-weight: 800;
+      font-size: 12px;
+    }
+    .step-copy { min-width: 0; }
+    .step-copy strong, .step-copy span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .step-copy span { margin-top: 3px; color: var(--text3); font-size: 11px; }
+    .stage-shell { min-height: 0; overflow: auto; padding: 18px 22px 24px; }
+    .stage-page { display: none; min-height: 100%; gap: 14px; }
+    .stage-page.active { display: grid; }
+    .two-col { grid-template-columns: 360px minmax(0, 1fr); }
+    .workbench-col { grid-template-columns: 320px minmax(0, 1fr); }
+    .review-col { grid-template-columns: minmax(0, 1fr) 320px; }
+    .video-col { grid-template-columns: 320px minmax(0, 1fr); }
+    .one-col { grid-template-columns: minmax(0, 1fr); }
+    .panel {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+    }
+    .panel-head, .workspace-head {
+      min-height: 52px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .panel-head strong, .panel-head span, .workspace-head strong, .workspace-head span { display: block; }
+    .panel-head span, .workspace-head span { margin-top: 3px; color: var(--text3); font-size: 11px; }
+    .panel-body { padding: 14px; display: grid; gap: 12px; }
+    .page-actions {
+      justify-content: flex-end;
+      padding: 12px 14px;
+      border-top: 1px solid var(--border);
+    }
+    .field { display: grid; gap: 6px; }
+    .field label { color: var(--text2); font-size: 12px; font-weight: 650; }
+    input, textarea, select {
+      width: 100%;
+      color: var(--text);
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
+    }
+    input, select { height: 34px; padding: 0 10px; }
+    textarea { resize: none; padding: 10px; line-height: 1.5; }
+    .callout, .metric, .picked-row, .preview-meta, .progress-overview {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+    }
+    .callout { color: var(--text3); font-size: 11px; line-height: 1.5; }
+    .metric-grid, .batch-summary {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .metric strong, .metric span, .picked-row strong, .picked-row span, .progress-overview strong, .progress-overview span { display: block; }
+    .metric span, .picked-row span, .progress-overview span { margin-top: 4px; color: var(--text3); font-size: 11px; }
+    .style-card, .review-style { display: grid; gap: 10px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+    .style-card:last-child, .review-style:last-child { border-bottom: 0; padding-bottom: 0; }
+    .style-head, .section-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .style-head { width: 100%; padding: 0; border: 0; background: transparent; color: var(--text); text-align: left; }
+    .style-head span, .section-head span { display: block; margin-top: 3px; color: var(--text3); font-size: 11px; }
+    .style-title-row {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+    .style-title-row strong { flex: 0 0 auto; }
+    .style-title-row .title-meta {
+      min-width: 0;
+      margin-top: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .style-head > div:last-child { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+    .collapse-icon {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg3);
+      display: grid;
+      place-items: center;
+    }
+    .collapse-icon::before {
+      content: "";
+      width: 6px;
+      height: 6px;
+      border-right: 1px solid var(--text2);
+      border-bottom: 1px solid var(--text2);
+      transform: rotate(-45deg);
+    }
+    .collapse-icon.expanded::before { transform: rotate(45deg); }
+    .badge, .chip, .source-pill {
+      min-height: 22px;
+      padding: 3px 8px;
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text2);
+      background: var(--bg3);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    .badge.orange, .source-pill.selected { border-color: rgba(255, 107, 43, 0.45); color: var(--orange); background: var(--orange-bg); }
+    .source-board { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+    .thumb-grid, .large-thumb-grid, .video-images { display: grid; gap: 8px; }
+    .thumb-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .video-images { grid-template-columns: repeat(5, minmax(0, 120px)); }
+    .thumb, .large-thumb, .ai-preview, .add-image, .preview-box, .upload-card, .result-preview {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.06), transparent 45%), var(--bg3);
+      color: var(--text2);
+    }
+    .thumb, .large-thumb {
+      aspect-ratio: 3 / 4;
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 6px;
+      padding: 8px;
+      overflow: hidden;
+    }
+    .thumb.selected, .large-thumb.selected { border-color: var(--orange); color: var(--text); box-shadow: inset 0 0 0 1px var(--orange); }
+    .select-pill {
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      min-height: 20px;
+      padding: 2px 6px;
+      border-radius: 999px;
+      color: #fff;
+      background: var(--orange);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .thumb:not(.selected) .select-pill { color: var(--text2); background: var(--bg); border: 1px solid var(--border); }
+    .style-tabs { gap: 12px; }
+    .action-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+    .style-tab {
+      width: 100%;
+      min-height: 76px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text2);
+      background: var(--bg3);
+      text-align: left;
+    }
+    .style-tab.active { border-color: var(--orange); background: var(--orange-bg); color: var(--orange); box-shadow: inset 0 0 0 1px var(--orange); }
+    .style-tab strong, .style-tab span { display: block; }
+    .style-tab span { margin-top: 5px; color: var(--text3); font-size: 11px; }
+    .image-workbench { display: grid; grid-template-rows: auto minmax(0, 1fr); }
+    .workspace-body {
+      min-height: 0;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 320px;
+      gap: 14px;
+    }
+    .action-chip {
+      height: 28px;
+      padding: 0 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text2);
+      background: var(--bg3);
+    }
+    .action-chip.active { border-color: var(--orange); color: var(--orange); background: var(--orange-bg); }
+    .edit-queue { display: grid; align-content: start; gap: 12px; }
+    .edit-source-row {
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 10px;
+    }
+    .original-card, .version-card {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.06), transparent 45%), var(--bg3);
+      color: var(--text2);
+    }
+    .original-card {
+      aspect-ratio: 3 / 4;
+      padding: 10px;
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 6px;
+    }
+    .origin-label {
+      min-height: 20px;
+      padding: 2px 7px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--orange);
+      background: var(--orange-bg);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .version-rail { display: grid; grid-template-columns: repeat(4, minmax(112px, 1fr)); gap: 8px; }
+    .version-card {
+      min-height: 132px;
+      padding: 10px;
+      display: grid;
+      align-content: end;
+      gap: 6px;
+      text-align: left;
+    }
+    .version-card.selected { border-color: var(--orange); color: var(--text); box-shadow: inset 0 0 0 1px var(--orange); }
+    .version-card.add { border-style: dashed; align-content: center; justify-items: center; text-align: center; }
+    .reference-strip {
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .generate-panel {
+      display: grid;
+      align-content: start;
+      gap: 12px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .picked-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+    .upload-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+    .upload-card { min-height: 58px; }
+    .edit-summary {
+      padding: 9px 10px;
+      border: 1px solid rgba(255, 107, 43, 0.35);
+      border-radius: 8px;
+      background: var(--orange-bg);
+      display: grid;
+      gap: 4px;
+    }
+    .edit-summary span { color: var(--text2); font-size: 11px; line-height: 1.45; }
+    .review-toolbar {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) 140px auto auto auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .ai-asset-board { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .ai-card {
+      min-width: 0;
+      overflow: hidden;
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+    }
+    .ai-card.approved { border-color: rgba(74, 222, 128, 0.45); }
+    .ai-card.retry { border-color: rgba(255, 107, 43, 0.55); }
+    .ai-card.add { border-style: dashed; }
+    .ai-preview, .add-image {
+      width: 100%;
+      aspect-ratio: 3 / 4;
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 8px;
+      padding: 10px;
+    }
+    .ai-preview small, .add-image span { color: var(--text3); font-size: 11px; text-align: center; }
+    .ai-card footer { padding: 9px; display: grid; gap: 8px; }
+    .ai-card footer span { color: var(--text3); font-size: 11px; }
+    .asset-actions button, .add-menu button {
+      min-height: 24px;
+      padding: 0 7px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      color: var(--text2);
+      background: var(--bg);
+      font-size: 11px;
+    }
+    .asset-actions .ok { color: var(--green); }
+    .asset-actions .danger { color: var(--red); }
+    .add-menu {
+      position: absolute;
+      z-index: 3;
+      left: 8px;
+      right: 8px;
+      bottom: 8px;
+      padding: 8px;
+      display: grid;
+      gap: 6px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+    }
+    .source-assets {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .review-sticky-actions {
+      position: sticky;
+      bottom: 0;
+      z-index: 5;
+      border-top-color: rgba(255, 107, 43, 0.22);
+      background: linear-gradient(180deg, rgba(31, 31, 31, 0.92), var(--bg2));
+      backdrop-filter: blur(10px);
+    }
+    .review-preview { position: sticky; top: 0; }
+    .preview-box { aspect-ratio: 3 / 4; display: grid; place-items: center; color: var(--text3); }
+    .video-style-list, .video-task-list { display: grid; gap: 14px; }
+    .provider-badges { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex-wrap: wrap; }
+    .video-toolbar {
+      padding: 12px 14px;
+      display: grid;
+      grid-template-columns: minmax(260px, 0.9fr) minmax(280px, 1fr) auto auto auto auto;
+      gap: 10px;
+      align-items: end;
+    }
+    .video-config { display: grid; grid-template-columns: 190px minmax(220px, 0.8fr) minmax(320px, 1.4fr); gap: 12px; }
+    .video-task-assets { display: grid; grid-template-columns: repeat(6, minmax(104px, 1fr)); gap: 8px; }
+    .video-task-assets.picker { grid-template-columns: repeat(4, minmax(112px, 1fr)); align-content: start; }
+    .video-asset-card {
+      position: relative;
+      aspect-ratio: 3 / 4;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text2);
+      background: linear-gradient(135deg, rgba(255,255,255,0.06), transparent 45%), var(--bg3);
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 6px;
+    }
+    .video-asset-card.selected { border-color: var(--orange); color: var(--text); box-shadow: inset 0 0 0 1px var(--orange); }
+    .video-asset-card.pending { border-style: dashed; }
+    .status-pill {
+      position: absolute;
+      top: 7px;
+      right: 7px;
+      min-height: 20px;
+      padding: 2px 7px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--text2);
+      background: var(--bg);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .status-pill.approved { border-color: rgba(74, 222, 128, 0.45); color: var(--green); }
+    .status-pill.pending, .status-pill.retry { border-color: rgba(255, 107, 43, 0.45); color: var(--orange); background: var(--orange-bg); }
+    .video-task-meta { display: grid; grid-template-columns: 200px minmax(260px, 1fr) minmax(260px, 1fr); gap: 10px; }
+    .video-task-meta div {
+      min-width: 0;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+    }
+    .video-task-meta strong, .video-task-meta span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .video-task-meta span { margin-top: 4px; color: var(--text3); font-size: 11px; }
+    .seedance-callout {
+      padding: 10px 12px;
+      border: 1px solid rgba(255, 107, 43, 0.35);
+      border-radius: 8px;
+      background: var(--orange-bg);
+      display: grid;
+      gap: 4px;
+    }
+    .seedance-callout span, .seedance-callout small { color: var(--text2); font-size: 11px; line-height: 1.5; }
+    .progress-bar {
+      width: 100%;
+      height: 7px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--border);
+      display: block;
+    }
+    .progress-bar::before {
+      content: "";
+      width: var(--progress, 0%);
+      height: 100%;
+      display: block;
+      border-radius: inherit;
+      background: var(--orange);
+    }
+    .progress-bar.slim { height: 5px; }
+    .result-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .result-card {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      display: grid;
+      grid-template-rows: auto 1fr;
+    }
+    .result-preview {
+      aspect-ratio: 16 / 9;
+      display: grid;
+      align-content: center;
+      justify-items: center;
+      gap: 6px;
+      background: linear-gradient(135deg, rgba(255,255,255,0.07), transparent 45%), var(--bg);
+    }
+    .result-copy { padding: 10px; display: grid; gap: 9px; }
+    .result-copy header, .result-copy footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .result-copy p {
+      min-height: 32px;
+      margin: 0;
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.45;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .modal {
+      position: fixed;
+      z-index: 80;
+      inset: 0;
+      display: none;
+      place-items: center;
+      padding: 28px;
+      background: rgba(0, 0, 0, 0.56);
+    }
+    .modal.open { display: grid; }
+    .modal-panel {
+      width: min(1080px, 100%);
+      max-height: min(780px, 92vh);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+      box-shadow: 0 22px 80px rgba(0, 0, 0, 0.42);
+    }
+    .modal-panel.narrow { width: min(920px, 100%); }
+    .modal-panel.video-task-modal { width: min(1160px, 100%); }
+    .modal-head, .modal-foot {
+      min-height: 56px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .modal-foot { border-top: 1px solid var(--border); border-bottom: 0; }
+    .modal-head span, .modal-foot span { display: block; margin-top: 3px; color: var(--text3); font-size: 11px; }
+    .modal-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: 160px minmax(0, 1fr);
+      gap: 14px;
+    }
+    .modal-body.video-task { grid-template-columns: 320px minmax(0, 1fr); }
+    .video-task-form { display: grid; align-content: start; gap: 12px; }
+    .video-task-picker { display: grid; grid-template-rows: auto minmax(0, 1fr); gap: 12px; min-width: 0; }
+    .picker-head {
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+    }
+    .picker-head span { display: block; margin-top: 3px; color: var(--text3); font-size: 11px; }
+    .modal-filter { display: grid; align-content: start; gap: 8px; }
+    .model-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+    .template-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+    .model-card, .template-card {
+      min-width: 0;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+    }
+    .model-card.selected, .template-card.selected { border-color: var(--orange); box-shadow: inset 0 0 0 1px var(--orange); }
+    .model-card img, .template-card video, .video-fallback {
+      width: 100%;
+      aspect-ratio: 3 / 4;
+      display: grid;
+      place-items: center;
+      object-fit: cover;
+      background: var(--bg);
+      color: var(--text3);
+    }
+    .card-copy { padding: 9px; display: grid; gap: 5px; }
+    .card-copy p {
+      min-height: 34px;
+      margin: 0;
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.45;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar"><div class="logo">抓虾</div><div class="status"><span>核心 18766</span><span>Chrome 9222</span></div></header>
+    <aside class="sidebar">
+      <button class="nav-btn">我的脚本</button>
+      <button class="nav-btn">任务中心</button>
+      <button class="nav-btn">AI 生图</button>
+      <button class="nav-btn active">AI 视频</button>
+      <button class="nav-btn">提示词库</button>
+      <button class="nav-btn">数据文件</button>
+      <button class="nav-btn">设置</button>
+    </aside>
+    <main class="content">
+      <header class="page-head">
+        <div><p class="kicker">AI 视频</p><h1>AI 视频工作流</h1><p class="subtitle">按款号组织素材、AI 改图、审核、批量生视频和本地下载</p></div>
+        <div class="head-actions"><button class="btn ghost">打开输出目录</button></div>
+      </header>
+      <nav class="stepper">
+        <button class="step-btn active" data-step="materials"><span class="step-index">1</span><span class="step-copy"><strong>找图</strong><span>森马云盘素材下载</span></span></button>
+        <button class="step-btn" data-step="ai-edit"><span class="step-index">2</span><span class="step-copy"><strong>AI 改图</strong><span>原图与版本队列</span></span></button>
+        <button class="step-btn" data-step="review"><span class="step-index">3</span><span class="step-copy"><strong>审核</strong><span>新增图、通过和重跑</span></span></button>
+        <button class="step-btn" data-step="video"><span class="step-index">4</span><span class="step-copy"><strong>生视频</strong><span>按款号批量生成</span></span></button>
+        <button class="step-btn" data-step="results"><span class="step-index">5</span><span class="step-copy"><strong>结果</strong><span>卡片进度回显</span></span></button>
+      </nav>
+      <section class="stage-shell">
+        <section class="stage-page two-col active" data-page="materials">
+          <aside class="panel">
+            <header class="panel-head"><div><strong>森马云盘视频素材图下载</strong><span>semir_video_material_prepare</span></div></header>
+            <div class="panel-body">
+              <div class="field"><label>款号</label><textarea rows="8">208326102205
+208326105214
+208326108104</textarea></div>
+              <div class="field"><label>云盘搜索根路径</label><input value="巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/"></div>
+              <div class="field"><label>导出目录</label><input value="/Users/xingyicheng/Downloads/巴拉AI视频素材"></div>
+              <button class="btn primary">开始找图并回显</button>
+              <div class="callout">默认启用最新文件夹、Hash 去重和 20MB 压缩阈值；扫描层级和下载并发不在工作流首屏暴露。</div>
+            </div>
+          </aside>
+          <section class="panel">
+            <header class="panel-head"><div><strong>素材回显</strong><span>按款号折叠，先模拍后细节，点图查看大图</span></div><span class="badge orange">已选 9 / 23</span></header>
+            <div class="panel-body">
+              <article class="style-card">
+                <button class="style-head"><div class="style-title-row"><span class="collapse-icon expanded"></span><strong>208326102205</strong><span class="title-meta">已展开 · 优先确认模拍图</span></div><div><span class="badge orange">模拍 4</span> <span class="badge">细节 6</span> <span class="badge">收起</span></div></button>
+                <div class="source-board">
+                  <section><div class="section-head"><strong>模拍图</strong></div><div class="thumb-grid"><article class="thumb selected"><span class="select-pill">已选</span>全身正面</article><article class="thumb selected"><span class="select-pill">已选</span>前侧面</article><article class="thumb"><span class="select-pill">选择</span>背面</article><article class="thumb"><span class="select-pill">选择</span>坐姿</article></div></section>
+                  <section><div class="section-head"><strong>细节图</strong></div><div class="thumb-grid"><article class="thumb selected"><span class="select-pill">已选</span>领口</article><article class="thumb selected"><span class="select-pill">已选</span>门襟</article><article class="thumb">面料</article><article class="thumb">吊牌</article></div></section>
+                </div>
+              </article>
+              <article class="style-card">
+                <button class="style-head"><div class="style-title-row"><span class="collapse-icon expanded"></span><strong>208326105214</strong><span class="title-meta">已展开 · 2 张模拍图已选</span></div><div><span class="badge orange">模拍 3</span> <span class="badge">细节 5</span> <span class="badge">收起</span></div></button>
+                <div class="source-board">
+                  <section><div class="section-head"><strong>模拍图</strong></div><div class="thumb-grid"><article class="thumb selected">全身</article><article class="thumb selected">侧身</article><article class="thumb">背面</article></div></section>
+                  <section><div class="section-head"><strong>细节图</strong></div><div class="thumb-grid"><article class="thumb selected">门襟</article><article class="thumb">袖口</article><article class="thumb">面料</article></div></section>
+                </div>
+              </article>
+              <article class="style-card">
+                <button class="style-head"><div class="style-title-row"><span class="collapse-icon"></span><strong>208326108104</strong><span class="title-meta">已收起 · 点击展开</span></div><div><span class="badge orange">模拍 2</span> <span class="badge">细节 2</span> <span class="badge">展开</span></div></button>
+              </article>
+            </div>
+            <footer class="page-actions"><button class="btn ghost" data-go="ai-edit">进入 AI 改图</button><button class="btn primary" data-go="ai-edit">用已选素材创建图片工作台</button></footer>
+          </section>
+        </section>
+
+        <section class="stage-page workbench-col" data-page="ai-edit">
+          <aside class="panel">
+            <header class="panel-head"><div><strong>AI 改图动作</strong><span>先选动作，再在右侧按款号挑原图</span></div></header>
+            <div class="panel-body style-tabs"><div class="action-grid"><button class="style-tab active"><strong>AI 换脸</strong><span>选择模特素材库，保留服装版型</span></button><button class="style-tab"><strong>AI 换背景</strong><span>输入背景 Prompt</span></button><button class="style-tab"><strong>AI 换装</strong><span>服装图、搭配图、同款不同色参考</span></button><button class="style-tab"><strong>AI 换姿势</strong><span>输入姿势 Prompt</span></button></div><div class="picked-row"><div><span>AI 模特</span><strong>100女 / 标准</strong></div><button class="btn ghost small" data-open-model>选择模特</button></div><div class="field"><label>换脸补充要求</label><textarea rows="6">保留童装版型和颜色，画面自然，无文字，无品牌外露风险。</textarea></div><div class="callout">待生成队列：AI 换脸 · 7 张原图 · 3 个已选版本</div><div class="edit-summary"><strong>当前已选 3 个 AI 结果版本</strong><span>选中的版本会进入审核池，原图和未选版本保留在图片工作台。</span></div><button class="btn primary">开始生图</button><button class="btn ghost" data-go="review">将已选版本送审</button></div>
+          </aside>
+          <section class="panel image-workbench">
+            <header class="workspace-head"><div><strong>图片工作台</strong><span>按款号分组，支持展开收起；原图在左，AI 修改版本接在后面</span></div><button class="btn ghost small">只看已选版本</button></header>
+            <div class="panel-body">
+              <article class="style-card"><button class="style-head"><div class="style-title-row"><span class="collapse-icon expanded"></span><strong>208326102205 图片工作台</strong><span class="title-meta">4 张模拍 · 4 张细节 · 3 张 AI 图</span></div><div><span class="badge orange">原图 4</span> <span class="badge">版本 5</span> <span class="badge">收起</span></div></button><div class="edit-queue"><article class="edit-source-row"><button class="original-card"><span class="origin-label">原图</span><strong>全身正面</strong><small>模拍 · 208326102205</small></button><div class="version-rail"><button class="version-card selected"><span>AI 换脸</span><strong>换脸 01</strong><small>100女/标准 · 已选</small></button><button class="version-card"><span>AI 换背景</span><strong>马尔代夫海边 01</strong><small>待审核</small></button><button class="version-card"><span>AI 换姿势</span><strong>侧身行走 01</strong><small>生成中 64%</small></button><button class="version-card add"><strong>继续改这张</strong><small>换脸 / 换背景 / 换装 / 换姿势</small></button></div></article><article class="edit-source-row"><button class="original-card"><span class="origin-label">原图</span><strong>前侧面</strong><small>模拍 · 208326102205</small></button><div class="version-rail"><button class="version-card selected"><span>AI 换脸</span><strong>换脸 02</strong><small>100女/标准 · 已选</small></button><button class="version-card"><span>AI 换背景</span><strong>马尔代夫海边 02</strong><small>待审核</small></button><button class="version-card add"><strong>继续改这张</strong><small>选择动作后生成</small></button></div></article><section class="reference-strip"><strong>细节参考</strong><button class="source-pill selected">细节 · 领口</button><button class="source-pill selected">细节 · 门襟</button><button class="source-pill">细节 · 面料</button></section></div></article>
+              <article class="style-card"><button class="style-head"><div><strong>208326105214 图片工作台</strong><span>3 张模拍 · 3 张细节 · 2 张 AI 图</span></div><div><span class="badge orange">原图 3</span> <span class="badge">版本 2</span> <span class="badge">展开</span></div></button></article>
+              <article class="style-card"><button class="style-head"><div><strong>208326108104 图片工作台</strong><span>2 张模拍 · 2 张细节 · 0 张 AI 图</span></div><div><span class="badge orange">原图 2</span> <span class="badge">版本 0</span> <span class="badge">展开</span></div></button></article>
+            </div>
+          </section>
+        </section>
+
+        <section class="stage-page one-col" data-page="review">
+          <section class="panel">
+            <header class="panel-head"><div><strong>AI 结果审核池</strong><span>参考 AI 测图审图看板，支持新增图、通过、舍弃、重试和输出给视频</span></div><div><span class="badge orange">通过 12</span> <span class="badge">待审 8</span> <span class="badge">重跑 2</span></div></header>
+            <div class="review-toolbar"><input placeholder="筛选款号 / 动作 / 模特 / Prompt"><select><option>全部状态</option><option>待审</option><option>已通过</option><option>需重跑</option></select><button class="btn ghost small">待审全通过</button><button class="btn ghost small danger">待审全舍弃</button><button class="btn primary">保存审核状态</button></div>
+            <div class="panel-body">
+              <article class="review-style"><div class="style-head"><div><strong>208326102205</strong><span>3 张 AI 图 · 3 张源图</span></div><button class="btn ghost small">新增图片</button></div><section class="ai-asset-board"><article class="ai-card approved"><button class="ai-preview"><span>换脸 01</span><small>AI 换脸</small></button><footer><strong>换脸 01</strong><span>100女/标准 · 已通过</span><div class="asset-actions"><button class="ok">通过</button><button class="danger">舍弃</button><button>重跑</button></div></footer></article><article class="ai-card"><button class="ai-preview"><span>换背景 01</span><small>AI 换背景</small></button><footer><strong>换背景 01</strong><span>马尔代夫海边 · 待审</span><div class="asset-actions"><button class="ok">通过</button><button class="danger">舍弃</button><button>重跑</button></div></footer></article><article class="ai-card retry"><button class="ai-preview"><span>换姿势 01</span><small>AI 换姿势</small></button><footer><strong>换姿势 01</strong><span>侧身行走 · 需重跑</span><div class="asset-actions"><button class="ok">通过</button><button class="danger">舍弃</button><button>重跑</button></div></footer></article><article class="ai-card add"><button class="add-image"><strong>新增图片</strong><span>上传本地图，或继续 AI 改图</span></button><div class="add-menu"><button>上传本地图</button><button>AI 换脸</button><button>AI 换背景</button><button>AI 换装</button><button>AI 换姿势</button></div></article></section><section class="source-assets"><strong>主图 / 参考图</strong><button class="source-pill">模拍 · 全身正面</button><button class="source-pill">细节 · 领口</button><button class="source-pill">细节 · 门襟</button></section></article>
+            </div>
+            <footer class="page-actions review-sticky-actions"><button class="btn ghost" data-go="ai-edit">返回 AI 改图</button><button class="btn primary" data-go="video">输出到视频任务</button></footer>
+          </section>
+        </section>
+
+        <section class="stage-page one-col" data-page="video">
+          <section class="panel"><header class="video-toolbar"><div class="batch-summary"><div class="metric"><strong>3 款</strong><span>可建视频任务</span></div><div class="metric"><strong>12 张</strong><span>可选图片素材</span></div><div class="metric"><strong>3 条</strong><span>已建视频任务</span></div></div><div class="field"><label>默认输出目录</label><input value="/Users/xingyicheng/Downloads/巴拉AI视频成片"></div><button class="btn primary" data-open-video-task>新增视频任务</button><button class="btn primary">批量预检并生成</button><button class="btn ghost">只下载已完成视频</button><button class="btn ghost" data-go="results">查看结果进度</button></header></section>
+          <section class="video-task-list">
+            <article class="panel"><header class="panel-head"><div><strong>208326102205 · 领口模板视频 01</strong><span>2 张已选素材 · 1 张已审核 · 待预检</span></div><div class="provider-badges"><span class="badge">软件管家</span><span class="badge orange">领口</span></div></header><div class="panel-body"><div class="video-task-assets"><button class="video-asset-card selected"><span class="status-pill approved">已审核</span><strong>换脸 01</strong><small>AI 图</small></button><button class="video-asset-card selected pending"><span class="status-pill pending">待审</span><strong>换背景 01</strong><small>AI 图</small></button></div><div class="video-task-meta"><div><strong>生成方式</strong><span>多张图进入一个视频任务</span></div><div><strong>Prompt</strong><span>软件管家页面生成可不填写 Prompt</span></div><div><strong>输出目录</strong><span>/Users/xingyicheng/Downloads/巴拉AI视频成片</span></div></div><div class="inline-actions"><button class="btn ghost small" data-open-video-task>复制新建</button><button class="btn ghost small" data-open-template>查看模板</button><button class="btn primary">提交生成</button></div></div></article>
+            <article class="panel"><header class="panel-head"><div><strong>208326102205 · 细节补充视频 02</strong><span>1 张已选素材 · 0 张已审核 · 待提交</span></div><div class="provider-badges"><span class="badge">软件管家</span><span class="badge">不选模板</span></div></header><div class="panel-body"><div class="video-task-assets"><button class="video-asset-card selected pending"><span class="status-pill">素材</span><strong>领口细节</strong><small>细节图</small></button></div><div class="video-task-meta"><div><strong>生成方式</strong><span>每张图单独生成一条视频</span></div><div><strong>Prompt</strong><span>突出领口和门襟细节，画面干净。</span></div><div><strong>输出目录</strong><span>/Users/xingyicheng/Downloads/巴拉AI视频成片</span></div></div><div class="inline-actions"><button class="btn ghost small" data-open-video-task>复制新建</button><button class="btn ghost small" data-open-template>查看模板</button><button class="btn primary">提交生成</button></div></div></article>
+            <article class="panel"><header class="panel-head"><div><strong>208326105214 · Seedance 场景视频 01</strong><span>2 张已选素材 · 1 张已审核 · 待上传</span></div><div class="provider-badges"><span class="badge orange">Seedance 2.0</span><span class="badge">不选模板</span></div></header><div class="panel-body"><div class="video-task-assets"><button class="video-asset-card selected"><span class="status-pill approved">已审核</span><strong>换脸 01</strong><small>AI 图</small></button><button class="video-asset-card selected pending"><span class="status-pill pending">待审</span><strong>换装 01</strong><small>AI 图</small></button></div><div class="video-task-meta"><div><strong>生成方式</strong><span>多张图进入一个视频任务</span></div><div><strong>Prompt</strong><span>马尔代夫海边，儿童自然走动，突出服装版型。</span></div><div><strong>输出目录</strong><span>/Users/xingyicheng/Downloads/巴拉AI视频成片</span></div></div><div class="seedance-callout"><strong>Seedance 2.0</strong><span>引用项目共用依赖 integrations/seedanceCLI；ARK_API_KEY 走 AI 能力统一配置。</span><small>真人儿童图如触发隐私保护，转文字描述服装、场景和动作生成原创人物版本。</small></div><div class="inline-actions"><button class="btn ghost small" data-open-video-task>复制新建</button><button class="btn ghost small">打开 AI 能力配置</button><button class="btn primary">提交生成</button></div></div></article>
+          </section>
+        </section>
+
+        <section class="stage-page one-col" data-page="results">
+          <section class="panel"><header class="panel-head"><div><strong>视频结果</strong><span>卡片式结果、整体进度和单卡进度</span></div><div class="inline-actions"><button class="btn ghost small">刷新状态</button><button class="btn ghost small">打开输出目录</button></div></header><div class="panel-body"><section class="progress-overview"><div><strong>整体进度 56%</strong><span>1 / 3 个视频任务已完成</span></div><i class="progress-bar" style="--progress:56%"></i></section><div class="result-grid"><article class="result-card"><div class="result-preview"><strong>208326102205</strong><span>软件管家</span></div><div class="result-copy"><header><div><strong>208326102205 · 领口</strong><span>mtop-qn-731091</span></div><span class="badge orange">已完成</span></header><i class="progress-bar slim" style="--progress:100%"></i><p>/Users/xingyicheng/Downloads/巴拉AI视频成片/208326102205/领口_001.mp4</p><footer><button class="btn ghost small">预览</button><button class="btn primary small">打开文件</button></footer></div></article><article class="result-card"><div class="result-preview"><strong>208326105214</strong><span>Seedance</span></div><div class="result-copy"><header><div><strong>208326105214 · Seedance 2.0</strong><span>cgt-20260715104619-5dvj4</span></div><span class="badge">生成中</span></header><i class="progress-bar slim" style="--progress:68%"></i><p>/Users/xingyicheng/Documents/crawshrimp/integrations/seedanceCLI/outputs/beach-walk-play-original-child-208326102205.mp4</p><footer><button class="btn ghost small">轮询</button><button class="btn ghost small">重新下载</button></footer></div></article><article class="result-card"><div class="result-preview"><strong>208326108104</strong><span>软件管家</span></div><div class="result-copy"><header><div><strong>208326108104 · 无模板</strong><span>待提交</span></div><span class="badge">待生成</span></header><i class="progress-bar slim" style="--progress:0%"></i><p>等待审核图输出到视频阶段</p><footer><button class="btn ghost small" data-go="video">返回生成</button></footer></div></article></div><div class="page-actions"><button class="btn ghost" data-go="video">返回生视频</button><button class="btn primary">导出结果表</button></div></div></section>
+        </section>
+      </section>
+    </main>
+  </div>
+
+  <div class="modal" id="modelModal"><section class="modal-panel narrow"><header class="modal-head"><div><strong>选择 AI 模特</strong><span>仅 AI 换脸时打开，按年龄和性别分类</span></div><button class="btn ghost small" data-close-modal>关闭</button></header><div class="modal-body"><aside class="modal-filter"><button class="chip">66 新生儿</button><button class="chip">73 女</button><button class="chip">73 男</button><button class="chip">100 女</button><button class="chip">100 男</button><button class="chip">140 女</button><button class="chip">140 男</button></aside><div class="model-grid"><article class="model-card selected"><img src="../../../adapters/bala-ai-video-assistant/assets/model-library/100女/标准.jpg" alt="100女 标准"><div class="card-copy"><strong>100女</strong><span>幼童 / 标准</span></div></article><article class="model-card"><img src="../../../adapters/bala-ai-video-assistant/assets/model-library/73男/微笑.jpg" alt="73男 微笑"><div class="card-copy"><strong>73男</strong><span>婴童 / 微笑</span></div></article><article class="model-card"><img src="../../../adapters/bala-ai-video-assistant/assets/model-library/140女/微笑.jpg" alt="140女 微笑"><div class="card-copy"><strong>140女</strong><span>中大童 / 微笑</span></div></article></div></div><footer class="modal-foot"><span>已选 100女 / 标准</span><button class="btn primary" data-close-modal>确认选择</button></footer></section></div>
+  <div class="modal" id="templateModal"><section class="modal-panel"><header class="modal-head"><div><strong>软件管家模板库</strong><span>模板可选；不选模板也可以把 AI 图上传软件管家直接生成</span></div><button class="btn ghost small" data-close-modal>关闭</button></header><div class="modal-body"><aside class="modal-filter"><button class="chip">全部</button><button class="chip">领口</button><button class="chip">正面/侧面</button><button class="chip">正面/背面</button><button class="chip">门襟</button></aside><div class="template-grid"><article class="template-card selected"><video controls muted preload="metadata" poster="/Users/xingyicheng/Downloads/巴拉AI视频模板库/模板封面/01_641241_62536236_21_领口.png" src="/Users/xingyicheng/Downloads/巴拉AI视频模板库/模板预览/01_641241_62536236_21_领口.mp4"></video><div class="card-copy"><strong>领口</strong><p>7:模特全身(必填) - 单人全身正面模特，简单背景无手持物品</p><div><span class="badge orange">13s</span> <span class="badge">3:4</span></div></div></article><article class="template-card"><video controls muted preload="metadata" poster="/Users/xingyicheng/Downloads/巴拉AI视频模板库/模板封面/02_641241_42973198_20_正面_侧面.png" src="/Users/xingyicheng/Downloads/巴拉AI视频模板库/模板预览/02_641241_42973198_20_正面_侧面.mp4"></video><div class="card-copy"><strong>正面/侧面</strong><p>7:模特全身(必填) - 单人全身正面模特，简单背景无手持物品</p><div><span class="badge">13s</span> <span class="badge">3:4</span></div></div></article><article class="template-card"><video controls muted preload="metadata" poster="/Users/xingyicheng/Downloads/巴拉AI视频模板库/模板封面/08_641241_55685579_19_正面_背面_侧面.png" src="/Users/xingyicheng/Downloads/巴拉AI视频模板库/模板预览/08_641241_55685579_19_正面_背面_侧面.mp4"></video><div class="card-copy"><strong>正面/背面/侧面</strong><p>7:模特全身(必填) - 单人全身正面模特，简单背景无手持物品</p><div><span class="badge">16s</span> <span class="badge">3:4</span></div></div></article></div></div><footer class="modal-foot"><span>模板库仅在需要时打开</span><div class="head-actions"><button class="btn ghost" data-close-modal>不选模板直接生成</button><button class="btn primary" data-close-modal>确认模板</button></div></footer></section></div>
+  <div class="modal" id="videoTaskModal"><section class="modal-panel video-task-modal"><header class="modal-head"><div><strong>新增视频任务</strong><span>一个款号可以创建多条视频任务；先选生成方式、款号、图片和 Prompt，再进入提交队列</span></div><button class="btn ghost small" data-close-modal>关闭</button></header><div class="modal-body video-task"><aside class="video-task-form"><div class="field"><label>款号</label><select><option>208326102205</option><option>208326105214</option><option>208326108104</option></select></div><div class="field"><label>生成方式</label><select><option>软件管家页面生成</option><option>Seedance 2.0 API</option></select></div><div class="field"><label>成片拆分</label><select><option>多张图进入一个视频任务</option><option>每张图单独生成一条视频</option><option>多张图进入同一个多槽位模板</option></select></div><div class="field"><label>Prompt</label><textarea rows="4" placeholder="软件管家页面生成可不填写 Prompt"></textarea></div><div class="field"><label>输出目录</label><input value="/Users/xingyicheng/Downloads/巴拉AI视频成片"></div><div class="inline-actions"><button class="btn ghost small" data-open-template>选择软件管家模板</button><button class="btn ghost small">不选模板</button></div><div class="seedance-callout"><strong>Seedance 2.0</strong><span>调用 integrations/seedanceCLI：npm --prefix integrations/seedanceCLI run seedance -- submit payload.json --wait --download result.mp4</span><small>Ark Key 不进入任务参数，由 AI 能力配置注入运行环境。</small></div></aside><section class="video-task-picker"><header class="picker-head"><div><strong>208326102205 可选图片</strong><span>可选已审核和未审核图片，卡片保留审核状态标签</span></div><span class="badge orange">已选 2</span></header><div class="video-task-assets picker"><button class="video-asset-card selected"><span class="status-pill approved">已审核</span><strong>换脸 01</strong><small>AI 图</small></button><button class="video-asset-card selected pending"><span class="status-pill pending">待审</span><strong>换背景 01</strong><small>AI 图</small></button><button class="video-asset-card"><span class="status-pill">素材</span><strong>领口细节</strong><small>细节图</small></button><button class="video-asset-card pending"><span class="status-pill retry">需重跑</span><strong>换姿势 01</strong><small>AI 图</small></button></div></section></div><footer class="modal-foot"><span>软件管家 Prompt 可空，模板可选；Seedance 任务需要明确 Prompt</span><div class="head-actions"><button class="btn ghost" data-close-modal>取消</button><button class="btn primary" data-close-modal>创建视频任务</button></div></footer></section></div>
+
+  <script>
+    const order = ["materials", "ai-edit", "review", "video", "results"];
+    function setActive(step) {
+      if (!order.includes(step)) return;
+      document.querySelectorAll(".step-btn").forEach(button => button.classList.toggle("active", button.dataset.step === step));
+      document.querySelectorAll(".stage-page").forEach(page => page.classList.toggle("active", page.dataset.page === step));
+    }
+    document.querySelectorAll(".step-btn").forEach(button => button.addEventListener("click", () => setActive(button.dataset.step)));
+    document.querySelectorAll("[data-go]").forEach(button => button.addEventListener("click", () => setActive(button.dataset.go)));
+    document.querySelectorAll("[data-open-model]").forEach(button => button.addEventListener("click", () => document.getElementById("modelModal").classList.add("open")));
+    document.querySelectorAll("[data-open-template]").forEach(button => button.addEventListener("click", () => document.getElementById("templateModal").classList.add("open")));
+    document.querySelectorAll("[data-open-video-task]").forEach(button => button.addEventListener("click", () => document.getElementById("videoTaskModal").classList.add("open")));
+    document.querySelectorAll("[data-close-modal]").forEach(button => button.addEventListener("click", () => button.closest(".modal").classList.remove("open")));
+    document.querySelectorAll(".modal").forEach(modal => modal.addEventListener("click", event => { if (event.target === modal) modal.classList.remove("open"); }));
+  </script>
+</body>
+</html>
