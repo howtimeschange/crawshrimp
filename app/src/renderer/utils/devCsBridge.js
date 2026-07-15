@@ -416,6 +416,11 @@ export function createDevCsBridge() {
       const suffix = queryString(filters || {})
       return apiCall('GET', `/bala-ai-video-model-library/api${suffix ? `?${suffix}` : ''}`)
     },
+    listBalaVideoTemplates: (filters = {}) => {
+      const suffix = queryString(filters || {})
+      return apiCall('GET', `/bala-ai-video-templates/api${suffix ? `?${suffix}` : ''}`)
+    },
+    runBalaSeedanceVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {}),
     getBalaReviewBatch: (batchId, token) => apiCall('GET', `/bala-ai-video-review/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
     saveBalaReviewDecisions: (batchId, token, decisions) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/decisions?token=${encodeURIComponent(String(token || ''))}`, { decisions: decisions || {} }),
     refreshBalaReviewBatch: (batchId, token) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/refresh?token=${encodeURIComponent(String(token || ''))}`, {}),

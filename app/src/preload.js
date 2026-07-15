@@ -333,6 +333,13 @@ contextBridge.exposeInMainWorld('cs', {
       const suffix = queryString(filters || {})
       return apiCall('GET', `/bala-ai-video-model-library/api${suffix ? `?${suffix}` : ''}`)
     }),
+  listBalaVideoTemplates: (filters) => invokeWithApiFallback('list-bala-video-templates', [filters || {}],
+    () => {
+      const suffix = queryString(filters || {})
+      return apiCall('GET', `/bala-ai-video-templates/api${suffix ? `?${suffix}` : ''}`)
+    }),
+  runBalaSeedanceVideo: (payload) => invokeWithApiFallback('run-bala-seedance-video', [payload || {}],
+    () => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {})),
   getBalaReviewBatch: (batchId, token) => invokeWithApiFallback('get-bala-review-batch', [batchId, token],
     () => apiCall('GET', `/bala-ai-video-review/api/${encodePathPart(batchId)}?token=${encodePathPart(token)}`)),
   saveBalaReviewDecisions: (batchId, token, decisions) => invokeWithApiFallback('save-bala-review-decisions', [batchId, token, decisions || {}],

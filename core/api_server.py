@@ -10,6 +10,7 @@ Bundling notes (for electron-builder / python-build-standalone):
 """
 import asyncio
 import base64
+import csv
 import hashlib
 import hmac
 import json
@@ -2195,6 +2196,11 @@ def _semir_output_roots(runtime_dir: Path, exported_files: list, run_params: dic
 BALA_AI_VIDEO_ADAPTER_ID = "bala-ai-video-assistant"
 BALA_AI_FACE_BACKGROUND_TASK_ID = "bala_ai_face_background_generate"
 BALA_MODEL_LIBRARY_MANIFEST = "assets/model-library/manifest.json"
+BALA_VIDEO_TEMPLATE_DIR = Path.home() / "Downloads" / "巴拉AI视频模板库"
+BALA_VIDEO_TEMPLATE_CATALOG_JSON = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.json"
+BALA_VIDEO_TEMPLATE_CATALOG_CSV = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.csv"
+BALA_SEEDANCE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "seedanceCLI"
+BALA_SEEDANCE_DEFAULT_MODEL = "doubao-seedance-2-0-260128"
 BALA_AI_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -6226,8 +6232,202 @@ class BalaReviewExportVideoInputRequest(BaseModel):
     download_videos: bool = True
 
 
+class BalaSeedanceVideoRequest(BaseModel):
+    style_code: str = ""
+    prompt: str = ""
+    image_paths: List[str] = []
+    output_dir: str = ""
+    output_path: str = ""
+    model: str = BALA_SEEDANCE_DEFAULT_MODEL
+    ratio: str = "3:4"
+    duration: int = 8
+    generate_audio: bool = True
+    wait: bool = True
+    interval_seconds: int = 5
+    timeout_seconds: int = 1800
+
+
 def _bala_ai_video_base_url() -> str:
     return str(os.environ.get("CRAWSHRIMP_PUBLIC_BASE_URL") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").rstrip("/")
+
+
+def _safe_bala_template_text(value: object) -> str:
+    return str(value or "").replace("\ufeff", "").strip()
+
+
+def _normalize_bala_template(item: dict, index: int) -> dict:
+    template_id = _safe_bala_template_text(item.get("templateId") or item.get("template_id") or item.get("模板ID") or item.get("id"))
+    slot_description = _safe_bala_template_text(item.get("slotDescription") or item.get("slot_description") or item.get("槽位说明"))
+    return {
+        "index": int(item.get("index") or item.get("序号") or index),
+        "templateId": template_id,
+        "id": template_id,
+        "title": _safe_bala_template_text(item.get("title") or item.get("模板标题") or template_id),
+        "description": _safe_bala_template_text(item.get("description") or item.get("描述") or slot_description),
+        "slotDescription": slot_description,
+        "type": _safe_bala_template_text(item.get("type") or item.get("类型") or "action"),
+        "ratio": _safe_bala_template_text(item.get("ratio") or item.get("比例") or "3:4"),
+        "duration": int(float(str(item.get("duration") or item.get("时长秒") or 0) or 0)),
+        "provider": _safe_bala_template_text(item.get("provider") or "content"),
+        "videoUrl": _safe_bala_template_text(item.get("videoUrl") or item.get("远程预览视频")),
+        "coverUrl": _safe_bala_template_text(item.get("coverUrl") or item.get("远程封面")),
+        "localPreviewVideo": _safe_bala_template_text(item.get("localPreviewVideo") or item.get("本地预览视频")),
+        "localCoverImage": _safe_bala_template_text(item.get("localCoverImage") or item.get("本地封面")),
+        "slots": item.get("slots") if isinstance(item.get("slots"), list) else [],
+    }
+
+
+def _load_bala_video_template_catalog() -> dict:
+    if BALA_VIDEO_TEMPLATE_CATALOG_JSON.is_file():
+        payload = json.loads(BALA_VIDEO_TEMPLATE_CATALOG_JSON.read_text(encoding="utf-8-sig"))
+        source_templates = payload.get("templates") if isinstance(payload, dict) else []
+        templates = [
+            _normalize_bala_template(item, index)
+            for index, item in enumerate(source_templates or [], start=1)
+            if isinstance(item, dict)
+        ]
+        return {
+            "ok": True,
+            "source": str(BALA_VIDEO_TEMPLATE_CATALOG_JSON),
+            "mainCategory": _safe_bala_template_text(payload.get("mainCategory") if isinstance(payload, dict) else ""),
+            "templates": [item for item in templates if item.get("templateId")],
+            "count": len([item for item in templates if item.get("templateId")]),
+        }
+    if BALA_VIDEO_TEMPLATE_CATALOG_CSV.is_file():
+        with BALA_VIDEO_TEMPLATE_CATALOG_CSV.open("r", encoding="utf-8-sig", newline="") as handle:
+            rows = list(csv.DictReader(handle))
+        templates = [
+            _normalize_bala_template(row, index)
+            for index, row in enumerate(rows, start=1)
+        ]
+        return {
+            "ok": True,
+            "source": str(BALA_VIDEO_TEMPLATE_CATALOG_CSV),
+            "mainCategory": "童装/婴儿装/亲子装",
+            "templates": [item for item in templates if item.get("templateId")],
+            "count": len([item for item in templates if item.get("templateId")]),
+        }
+    return {
+        "ok": False,
+        "source": str(BALA_VIDEO_TEMPLATE_DIR),
+        "mainCategory": "",
+        "templates": [],
+        "count": 0,
+        "error": "未找到本地软件管家模板目录",
+    }
+
+
+def _parse_seedance_cli_json_objects(text: str) -> list[dict]:
+    decoder = json.JSONDecoder()
+    index = 0
+    objects: list[dict] = []
+    source = str(text or "")
+    while index < len(source):
+        brace = source.find("{", index)
+        if brace < 0:
+            break
+        try:
+            value, end = decoder.raw_decode(source[brace:])
+        except json.JSONDecodeError:
+            index = brace + 1
+            continue
+        if isinstance(value, dict):
+            objects.append(value)
+        index = brace + end
+    return objects
+
+
+def _seedance_output_path(req: BalaSeedanceVideoRequest) -> Path:
+    explicit = str(req.output_path or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    output_dir = Path(str(req.output_dir or Path.home() / "Downloads" / "巴拉AI视频成片")).expanduser()
+    style = re.sub(r"[^A-Za-z0-9._~-]+", "-", str(req.style_code or "seedance").strip()).strip("-") or "seedance"
+    return output_dir / f"{style}_seedance_{datetime.now().strftime('%Y%m%d-%H%M%S')}.mp4"
+
+
+def _build_seedance_payload(req: BalaSeedanceVideoRequest) -> dict:
+    prompt = str(req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(400, "Seedance 任务需要填写 Prompt")
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for raw_path in req.image_paths or []:
+        value = str(raw_path or "").strip()
+        if not value:
+            continue
+        path = Path(value).expanduser()
+        if not path.is_file():
+            raise HTTPException(400, f"Seedance 参考图不存在：{value}")
+        content.append({
+            "type": "image_url",
+            "image_url": {"url": file_to_data_url(str(path))},
+            "role": "reference_image",
+        })
+    return {
+        "model": str(req.model or BALA_SEEDANCE_DEFAULT_MODEL).strip() or BALA_SEEDANCE_DEFAULT_MODEL,
+        "content": content,
+        "generate_audio": bool(req.generate_audio),
+        "ratio": str(req.ratio or "3:4").strip() or "3:4",
+        "duration": max(2, min(int(req.duration or 8), 30)),
+        "watermark": False,
+    }
+
+
+async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
+    if not BALA_SEEDANCE_CLI_DIR.is_dir():
+        raise HTTPException(500, "Seedance CLI 未安装到项目 integrations 目录")
+    payload = _build_seedance_payload(req)
+    output_path = _seedance_output_path(req)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_dir = runtime_paths.child_dir("bala-ai-video-seedance")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload_path = run_dir / f"seedance-payload-{uuid4().hex}.json"
+    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    command = [
+        "node",
+        "bin/seedance.js",
+        "submit",
+        str(payload_path),
+    ]
+    if req.wait:
+        command.append("--wait")
+    command.extend([
+        "--download",
+        str(output_path),
+        "--interval",
+        str(max(1, min(int(req.interval_seconds or 5), 60))),
+        "--timeout",
+        str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
+    ])
+    env = dict(os.environ)
+    env.pop("ELECTRON_RUN_AS_NODE", None)
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(BALA_SEEDANCE_CLI_DIR),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await process.communicate()
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    objects = _parse_seedance_cli_json_objects(stdout)
+    created = objects[0] if objects else {}
+    final = objects[-1] if objects else {}
+    if process.returncode != 0:
+        sanitized = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~-]+", r"\1[redacted]", stderr or stdout)
+        raise HTTPException(500, sanitized.strip() or "Seedance CLI 执行失败")
+    return {
+        "ok": True,
+        "provider": "seedance",
+        "task_id": str(final.get("id") or created.get("id") or ""),
+        "status": str(final.get("status") or created.get("status") or ""),
+        "video_url": str(((final.get("content") or {}).get("video_url")) or ""),
+        "local_video_path": str(output_path) if output_path.is_file() else "",
+        "payload_path": str(payload_path),
+        "stderr_tail": "\n".join(stderr.splitlines()[-20:]),
+        "raw": final or created,
+    }
 
 
 def _bala_material_asset_path(batch: dict, asset_id: str) -> Path:
@@ -6480,6 +6680,37 @@ def list_bala_ai_model_library(age_label: str = "", gender: str = "", group: str
         group=group,
         search=search,
     )
+
+
+@app.get("/bala-ai-video-templates/api")
+def list_bala_ai_video_templates(search: str = "", template_type: str = ""):
+    payload = _load_bala_video_template_catalog()
+    keyword = str(search or "").strip().lower()
+    desired_type = str(template_type or "").strip()
+    templates = []
+    for item in payload.get("templates") or []:
+        haystack = " ".join([
+            str(item.get("templateId") or ""),
+            str(item.get("title") or ""),
+            str(item.get("description") or ""),
+            str(item.get("slotDescription") or ""),
+            str(item.get("type") or ""),
+        ]).lower()
+        if desired_type and str(item.get("type") or "") != desired_type:
+            continue
+        if keyword and keyword not in haystack:
+            continue
+        templates.append(item)
+    return {
+        **payload,
+        "templates": templates,
+        "count": len(templates),
+    }
+
+
+@app.post("/bala-ai-video-seedance/api/run")
+async def run_bala_ai_video_seedance(req: BalaSeedanceVideoRequest):
+    return await _run_seedance_cli(req)
 
 
 @app.get("/bala-ai-video-model-library/api/image/{model_id:path}")

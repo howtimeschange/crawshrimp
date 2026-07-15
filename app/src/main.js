@@ -2314,6 +2314,26 @@ secureHandle('list-bala-model-library', async (_, filters = {}) => {
   return apiCall('GET', `/bala-ai-video-model-library/api${suffix}`)
 })
 
+secureHandle('list-bala-video-templates', async (_, filters = {}) => {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters || {})) {
+    if (value !== undefined && value !== null && String(value) !== '') {
+      query.set(key, String(value))
+    }
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return apiCall('GET', `/bala-ai-video-templates/api${suffix}`)
+})
+
+secureHandle('run-bala-seedance-video', async (_, payload = {}) => {
+  return apiCall(
+    'POST',
+    '/bala-ai-video-seedance/api/run',
+    payload || {},
+    { timeoutMs: 2 * 60 * 60 * 1000 },
+  )
+})
+
 secureHandle('get-bala-review-batch', async (_, batchId, token) => {
   return apiCall('GET', `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}?${approvalTokenQuery(token)}`)
 })

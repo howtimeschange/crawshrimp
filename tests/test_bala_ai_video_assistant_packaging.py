@@ -1,6 +1,7 @@
 import tempfile
 import unittest
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -11,6 +12,8 @@ from core.api_server import (
     _apply_bala_ai_face_background_generate,
     _cleanup_orphaned_runtime_artifacts,
     _finalize_bala_ai_video_assistant_outputs,
+    _load_bala_video_template_catalog,
+    _parse_seedance_cli_json_objects,
     _load_bala_model_library,
     _bala_models_for_generation,
 )
@@ -86,6 +89,35 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(len(models), 1)
         self.assertEqual(models[0]["id"], "100女/标准.jpg")
         self.assertTrue(Path(models[0]["path"]).is_file())
+
+    def test_template_catalog_loader_reads_local_software_manager_catalog(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            catalog = Path(tmpdir) / "template-catalog.json"
+            catalog.write_text(json.dumps({
+                "mainCategory": "童装/婴儿装/亲子装",
+                "templates": [{
+                    "templateId": "641241_62536236_21",
+                    "title": "领口",
+                    "localPreviewVideo": "/tmp/preview.mp4",
+                    "localCoverImage": "/tmp/cover.png",
+                }],
+            }, ensure_ascii=False), encoding="utf-8")
+            with patch("core.api_server.BALA_VIDEO_TEMPLATE_CATALOG_JSON", catalog), \
+                    patch("core.api_server.BALA_VIDEO_TEMPLATE_CATALOG_CSV", Path(tmpdir) / "missing.csv"):
+                payload = _load_bala_video_template_catalog()
+
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["count"], 1)
+        first = payload["templates"][0]
+        self.assertIn("templateId", first)
+        self.assertIn("localPreviewVideo", first)
+        self.assertIn("localCoverImage", first)
+
+    def test_seedance_cli_json_parser_handles_pretty_stdout(self):
+        objects = _parse_seedance_cli_json_objects('noise\n{"id":"task-1"}\n{\n  "id": "task-1",\n  "status": "succeeded"\n}\n')
+
+        self.assertEqual(objects[0]["id"], "task-1")
+        self.assertEqual(objects[-1]["status"], "succeeded")
 
     def test_apply_face_background_creates_ai_image_job_with_source_and_model_assets(self):
         manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"

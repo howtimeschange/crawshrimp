@@ -1,0 +1,17 @@
+{
+  "name": "seedance2-ark-integration",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Volcengine Ark Seedance 2.0 content generation task client and CLI.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "seedance": "node bin/seedance.js"
+  },
+  "bin": {
+    "seedance": "./bin/seedance.js"
+  }
+}

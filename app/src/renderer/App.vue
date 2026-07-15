@@ -2,7 +2,7 @@
   <div
     class="layout"
     :class="{
-      'layout-ai-image': currentView === 'ai_image',
+      'layout-ai-image': currentView === 'ai_image' || currentView === 'ai_video',
       'sidebar-collapsed': effectiveSidebarCollapsed,
       'titlebar-macos': isMacTitlebar,
     }"
@@ -141,6 +141,13 @@
           @open-settings="openSettingsPanel('ai-1xm')"
         />
       </KeepAlive>
+      <!-- AI 视频 -->
+      <KeepAlive>
+        <AiVideoWorkflow
+          v-if="currentView === 'ai_video'"
+          @open-settings="openSettingsPanel('ai-1xm')"
+        />
+      </KeepAlive>
       <!-- 提示词库 -->
       <LocalPromptLibrary
         v-if="currentView === 'local_prompt_library'"
@@ -171,6 +178,7 @@ import TaskRunner  from './views/TaskRunner.vue'
 import TaskCenter  from './views/TaskCenter.vue'
 import TaskInstanceRunner from './views/TaskInstanceRunner.vue'
 import AiImageWorkbench from './views/AiImageWorkbench.vue'
+import AiVideoWorkflow from './views/AiVideoWorkflow.vue'
 import LocalPromptLibrary from './views/LocalPromptLibrary.vue'
 import DataFiles   from './views/DataFiles.vue'
 import SettingsPage from './views/SettingsPage.vue'
@@ -237,6 +245,7 @@ const navItems = [
   { id: 'scripts',  icon: '📄', label: '我的脚本' },
   { id: 'task_center', icon: '📋', label: '任务中心' },
   { id: 'ai_image', icon: '🎨', label: 'AI 生图' },
+  { id: 'ai_video', icon: '🎬', label: 'AI 视频' },
   { id: 'local_prompt_library', icon: '💬', label: '提示词库' },
   { id: 'files',    icon: '📁', label: '数据文件' },
   { id: 'cloud_approval', icon: '☁️', label: '云端审批' },
