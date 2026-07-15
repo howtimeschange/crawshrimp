@@ -34,6 +34,52 @@ export function normalizeStyleCodeLines(value = '') {
     })
 }
 
+export function toBalaBridgeStringArray(value = []) {
+  return Array.from(value || [], item => String(item || '').trim()).filter(Boolean)
+}
+
+export function hasGeneratingBalaReviewAssets(batch = {}) {
+  return (Array.isArray(batch?.items) ? batch.items : []).some(item => (
+    (Array.isArray(item?.assets) ? item.assets : []).some(asset => (
+      ['generating', 'running', 'queued', 'pending_generation'].includes(
+        String(asset?.status || '').trim().toLowerCase(),
+      )
+    ))
+  ))
+}
+
+export function selectVisibleEditableVersions(source = {}, selectedOnly = false) {
+  return (source?.versions || []).filter(version => (
+    !version?.deleted && (!selectedOnly || Boolean(version.editSelected))
+  ))
+}
+
+export function selectEditableSourcesForStyle(style = {}, selectedOnly = false) {
+  return (style?.modelPhotos || []).filter((asset) => {
+    const versions = selectVisibleEditableVersions(asset)
+    if (!asset?.selected && !versions.length) return false
+    if (!selectedOnly) return true
+    return Boolean(asset.editSelected) || versions.some(version => version.editSelected)
+  })
+}
+
+export function filterBalaModelLibraryItems(items = [], { age = '', gender = '' } = {}) {
+  const expectedAge = String(age || '').trim()
+  const expectedGender = String(gender || '').trim()
+  return (items || []).filter(item => (
+    (!expectedAge || String(item?.ageLabel || '').trim() === expectedAge)
+    && (!expectedGender || String(item?.gender || '').trim() === expectedGender)
+  ))
+}
+
+export function formatBalaModelDisplayLabel(item = {}) {
+  return [
+    item?.age_label || item?.ageLabel,
+    item?.gender,
+    item?.expression,
+  ].map(value => String(value || '').trim()).filter(Boolean).join(' / ')
+}
+
 export function buildBalaMaterialPrepareParams({
   itemCodes = '',
   cloudPath = '',
@@ -354,6 +400,16 @@ export function normalizeWorkflowStageStatus(value = '') {
   return 'idle'
 }
 
+export function qnTerminalRunFailure(snapshot = {}) {
+  const status = normalizeWorkflowStageStatus(snapshot?.status)
+  if (!['failed', 'stopped', 'partial'].includes(status)) return ''
+  const explicit = String(snapshot?.error || snapshot?.message || '').trim()
+  if (explicit) return explicit
+  if (status === 'stopped') return '软件管家视频任务已停止'
+  if (status === 'partial') return '软件管家视频任务部分失败'
+  return '软件管家视频任务失败'
+}
+
 export function isSeedancePrivacyProtectionError(error) {
   const message = String(error?.message || error?.error || error || '')
   return message.includes('InputImageSensitiveContentDetected.PrivacyInformation')
@@ -411,7 +467,7 @@ export function summarizeBalaReviewBatch(batch = {}) {
   }
   for (const item of batch?.items || []) {
     for (const asset of item?.assets || []) {
-      if (asset?.kind !== 'ai') continue
+      if (!['origin', 'ai'].includes(asset?.kind)) continue
       summary.total += 1
       const status = String(asset.status || 'pending')
       if (Object.prototype.hasOwnProperty.call(summary, status)) summary[status] += 1
@@ -430,26 +486,35 @@ export function normalizeBalaReviewStatus(value = '') {
   return 'pending'
 }
 
-export function normalizeBalaReviewBatchStyles(batch = {}) {
+export function normalizeBalaReviewBatchStyles(batch = {}, { reviewBoardUrl = '' } = {}) {
+  const resolvedReviewBoardUrl = compact(reviewBoardUrl || batch?.board_url || batch?.boardUrl)
   return (batch?.items || []).map((item) => {
     const styleCode = compact(item?.style_code || item?.styleCode || 'unknown')
     const sourceAssets = []
     const assets = []
     for (const rawAsset of item?.assets || []) {
       const kind = compact(rawAsset?.kind || 'ai')
+      const operationType = kind === 'origin'
+        ? 'origin'
+        : kind === 'reference'
+          ? 'reference'
+          : normalizeOperationType(rawAsset?.operation_type || rawAsset?.operationType)
       const base = {
         id: compact(rawAsset?.id),
+        remoteAssetId: compact(rawAsset?.id),
         label: compact(rawAsset?.filename || rawAsset?.label || rawAsset?.id || '图片'),
-        action: operationLabel(rawAsset?.operation_type || rawAsset?.operationType),
-        operationType: normalizeOperationType(rawAsset?.operation_type || rawAsset?.operationType),
+        action: kind === 'origin' ? '原图' : kind === 'reference' ? '素材' : operationLabel(operationType),
+        operationType,
         status: normalizeBalaReviewStatus(rawAsset?.status),
         meta: compact(rawAsset?.review_note || rawAsset?.prompt || rawAsset?.model_id || rawAsset?.modelId),
+        prompt: compact(rawAsset?.prompt || rawAsset?.background_prompt || rawAsset?.pose_prompt),
         path: compact(rawAsset?.path || rawAsset?.source_path || rawAsset?.sourcePath),
         imageUrl: compact(rawAsset?.image_url || rawAsset?.imageUrl),
         sourcePath: compact(rawAsset?.source_path || rawAsset?.sourcePath),
         sourceAssetId: compact(rawAsset?.source_asset_id || rawAsset?.sourceAssetId),
         jobUid: compact(rawAsset?.job_uid || rawAsset?.jobUid),
         runUid: compact(rawAsset?.run_uid || rawAsset?.runUid),
+        reviewBoardUrl: resolvedReviewBoardUrl,
         kind,
       }
       if (!base.id) continue
@@ -471,6 +536,56 @@ export function normalizeBalaReviewBatchStyles(batch = {}) {
   }).filter(item => item.assets.length || item.sourceAssets.length)
 }
 
+function balaWorkspaceVersionIdentity(asset = {}) {
+  const jobUid = compact(asset.jobUid || asset.job_uid)
+  if (jobUid) return `job-${jobUid}`
+  const runUid = compact(asset.runUid || asset.run_uid)
+  if (runUid) return `run-${runUid}`
+  const path = compact(asset.previewPath || asset.path)
+  if (path) return `path-${path}`
+  return ''
+}
+
+export function mergeBalaWorkspaceVersions(existingVersions = [], remoteAssets = []) {
+  const result = (existingVersions || []).map(version => ({ ...version }))
+  for (const remoteAsset of remoteAssets || []) {
+    const remoteAssetId = compact(remoteAsset.remoteAssetId || remoteAsset.id)
+    const identity = balaWorkspaceVersionIdentity(remoteAsset)
+    const operationType = normalizeOperationType(remoteAsset.operationType || remoteAsset.operation_type || remoteAsset.action)
+    let index = result.findIndex(version => {
+      const leftIdentity = balaWorkspaceVersionIdentity(version)
+      return Boolean(identity && leftIdentity && identity === leftIdentity)
+    })
+    if (index < 0 && identity) {
+      index = result.findIndex(version => (
+        !balaWorkspaceVersionIdentity(version)
+        && !compact(version.remoteAssetId)
+        && normalizeOperationType(version.operationType || version.operation_type || version.action) === operationType
+        && ['draft', 'running', 'queued', 'generating'].includes(compact(version.status).toLowerCase())
+      ))
+    }
+    if (index < 0 && !identity && remoteAssetId) {
+      index = result.findIndex(version => (
+        compact(version.remoteAssetId || version.id) === remoteAssetId
+        && !balaWorkspaceVersionIdentity(version)
+      ))
+    }
+    const stableId = identity ? `${remoteAssetId || 'ai-result'}-${identity}` : (remoteAssetId || `ai-result-${result.length + 1}`)
+    const next = {
+      ...remoteAsset,
+      id: stableId,
+      remoteAssetId,
+      operationType,
+      previewPath: compact(remoteAsset.previewPath || remoteAsset.path),
+      jobUid: compact(remoteAsset.jobUid || remoteAsset.job_uid),
+      runUid: compact(remoteAsset.runUid || remoteAsset.run_uid),
+    }
+    if (index >= 0) result[index] = { ...result[index], ...next }
+    else result.push(next)
+  }
+  return result
+}
+
 export function normalizeOperationType(value = '') {
   const text = compact(value).toLowerCase()
   if (['background_swap', 'background', '换背景', 'ai换背景'].includes(text)) return 'background_swap'
@@ -485,6 +600,257 @@ export function operationLabel(value = '') {
   if (operationType === 'outfit_swap') return 'AI 换装'
   if (operationType === 'pose_swap') return 'AI 换姿势'
   return 'AI 换脸'
+}
+
+function reviewAssetStatus(value = '') {
+  const normalized = normalizeBalaReviewStatus(value)
+  return normalized === 'generating' || normalized === 'failed' ? normalized : normalized
+}
+
+export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
+  return (styleWorkspaces || []).map((style) => {
+    const assets = []
+    for (const source of style?.modelPhotos || []) {
+      if (!source?.selected && !(source?.versions || []).length) continue
+      assets.push({
+        id: compact(source.id || source.path || source.name),
+        remoteAssetId: compact(source.remoteAssetId || source.remote_asset_id),
+        label: compact(source.name || source.filename || '原图'),
+        action: '原图',
+        operationType: 'origin',
+        status: normalizeBalaReviewStatus(source.reviewStatus || source.status),
+        meta: compact(source.note || source.action || '第一步已选模拍图'),
+        path: compact(source.path),
+        imageUrl: compact(source.imageUrl || source.image_url),
+        sourcePath: compact(source.path),
+        sourceAssetId: compact(source.id),
+        reviewBoardUrl: compact(source.reviewBoardUrl || source.review_board_url),
+        kind: 'origin',
+      })
+      for (const version of source?.versions || []) {
+        if (version?.deleted) continue
+        assets.push({
+          id: compact(version.id || version.previewPath || version.path),
+          remoteAssetId: compact(version.remoteAssetId || version.remote_asset_id),
+          label: compact(version.label || 'AI 结果'),
+          action: operationLabel(version.operationType || version.operation_type || version.action),
+          operationType: normalizeOperationType(version.operationType || version.operation_type || version.action),
+          status: normalizeBalaReviewStatus(version.reviewStatus || version.status),
+          meta: compact(version.meta || version.prompt),
+          prompt: compact(version.prompt || version.meta),
+          path: compact(version.previewPath || version.path),
+          imageUrl: compact(version.imageUrl || version.image_url),
+          sourcePath: compact(source.path),
+          sourceAssetId: compact(source.id),
+          jobUid: compact(version.jobUid || version.job_uid),
+          runUid: compact(version.runUid || version.run_uid),
+          reviewBoardUrl: compact(version.reviewBoardUrl || version.review_board_url),
+          kind: 'ai',
+        })
+      }
+    }
+    const sourceAssets = (style?.detailPhotos || []).map(asset => ({
+      id: compact(asset.id || asset.path || asset.name),
+      label: compact(asset.name || asset.filename || '素材'),
+      name: compact(asset.name || asset.filename || '素材'),
+      role: '参考图',
+      sourceType: 'detail',
+      status: normalizeBalaReviewStatus(asset.reviewStatus || asset.status),
+      path: compact(asset.path),
+      imageUrl: compact(asset.imageUrl || asset.image_url),
+      kind: 'reference',
+    }))
+    return { styleCode: compact(style?.styleCode || style?.style_code), assets, sourceAssets }
+  }).filter(style => style.styleCode && (style.assets.length || style.sourceAssets.length))
+}
+
+function reviewAssetKind(asset = {}) {
+  if (asset.kind === 'origin' || asset.operationType === 'origin' || asset.sourceType === 'model') return 'origin'
+  if (asset.kind === 'reference' || asset.sourceType === 'detail') return 'reference'
+  return 'ai'
+}
+
+function sameReviewAsset(left = {}, right = {}) {
+  const kind = reviewAssetKind(left)
+  if (kind !== reviewAssetKind(right)) return false
+  if (kind === 'ai') {
+    const leftJobUid = compact(left.jobUid || left.job_uid)
+    const rightJobUid = compact(right.jobUid || right.job_uid)
+    if (leftJobUid && rightJobUid) return leftJobUid === rightJobUid
+    const leftBoard = compact(left.reviewBoardUrl || left.review_board_url)
+    const rightBoard = compact(right.reviewBoardUrl || right.review_board_url)
+    const leftRemoteId = compact(left.remoteAssetId || left.remote_asset_id || left.id)
+    const rightRemoteId = compact(right.remoteAssetId || right.remote_asset_id || right.id)
+    if (leftBoard && rightBoard && leftRemoteId && rightRemoteId) {
+      return leftBoard === rightBoard && leftRemoteId === rightRemoteId
+    }
+  }
+  const leftId = compact(left.id)
+  const rightId = compact(right.id)
+  if (leftId && rightId && leftId === rightId) return true
+  const leftPath = compact(left.path || left.previewPath || left.sourcePath)
+  const rightPath = compact(right.path || right.previewPath || right.sourcePath)
+  return Boolean(leftPath && rightPath && leftPath === rightPath)
+}
+
+function persistedBalaWorkspaceVersion(version = {}) {
+  return {
+    id: compact(version.id),
+    remoteAssetId: compact(version.remoteAssetId || version.remote_asset_id),
+    action: compact(version.action),
+    operationType: normalizeOperationType(version.operationType || version.operation_type || version.action),
+    label: compact(version.label),
+    meta: compact(version.meta),
+    prompt: compact(version.prompt),
+    status: normalizeBalaReviewStatus(version.reviewStatus || version.status),
+    sourceAssetId: compact(version.sourceAssetId || version.source_asset_id),
+    sourcePath: compact(version.sourcePath || version.source_path),
+    previewPath: compact(version.previewPath || version.path),
+    imageUrl: compact(version.imageUrl || version.image_url),
+    jobUid: compact(version.jobUid || version.job_uid),
+    runUid: compact(version.runUid || version.run_uid),
+    reviewBoardUrl: compact(version.reviewBoardUrl || version.review_board_url),
+  }
+}
+
+export function serializeBalaImageWorkspaceState(styleWorkspaces = []) {
+  return (styleWorkspaces || []).map(style => ({
+    styleCode: compact(style?.styleCode || style?.style_code),
+    modelPhotos: (style?.modelPhotos || []).map(source => ({
+      id: compact(source?.id),
+      path: compact(source?.path),
+      reviewStatus: normalizeBalaReviewStatus(source?.reviewStatus || source?.status),
+      remoteAssetId: compact(source?.remoteAssetId || source?.remote_asset_id),
+      reviewBoardUrl: compact(source?.reviewBoardUrl || source?.review_board_url),
+      versions: (source?.versions || [])
+        .filter(version => !version?.deleted)
+        .map(persistedBalaWorkspaceVersion),
+    })).filter(source => source.id || source.path),
+  })).filter(style => style.styleCode && style.modelPhotos.length)
+}
+
+export function restoreBalaImageWorkspaceState(styleWorkspaces = [], snapshot = []) {
+  const savedStyles = new Map((snapshot || []).map(style => [compact(style?.styleCode || style?.style_code), style]))
+  for (const style of styleWorkspaces || []) {
+    const savedStyle = savedStyles.get(compact(style?.styleCode || style?.style_code))
+    if (!savedStyle) continue
+    for (const source of style?.modelPhotos || []) {
+      const savedSource = (savedStyle.modelPhotos || []).find(candidate => (
+        (compact(source?.id) && compact(source?.id) === compact(candidate?.id))
+        || (compact(source?.path) && compact(source?.path) === compact(candidate?.path))
+      ))
+      if (!savedSource) continue
+      source.reviewStatus = normalizeBalaReviewStatus(savedSource.reviewStatus)
+      source.remoteAssetId = compact(savedSource.remoteAssetId || savedSource.remote_asset_id)
+      source.reviewBoardUrl = compact(savedSource.reviewBoardUrl || savedSource.review_board_url)
+      source.versions = mergeBalaWorkspaceVersions(source.versions, savedSource.versions)
+    }
+  }
+  return styleWorkspaces
+}
+
+export function mergeBalaReviewWorkspaceStyles(localStyles = [], remoteStyles = []) {
+  const remoteByStyle = new Map((remoteStyles || []).map(style => [compact(style.styleCode || style.style_code), style]))
+  const merged = []
+  const seenStyles = new Set()
+
+  for (const localStyle of localStyles || []) {
+    const styleCode = compact(localStyle.styleCode || localStyle.style_code)
+    const remoteStyle = remoteByStyle.get(styleCode) || { assets: [], sourceAssets: [] }
+    const remoteReviewAssets = [
+      ...(remoteStyle.assets || []),
+      ...(remoteStyle.sourceAssets || []).filter(asset => reviewAssetKind(asset) === 'origin'),
+    ]
+    const remoteReferences = (remoteStyle.sourceAssets || []).filter(asset => reviewAssetKind(asset) === 'reference')
+    const usedReviewAssets = new Set()
+    const usedReferences = new Set()
+
+    const assets = (localStyle.assets || []).map((localAsset) => {
+      const index = remoteReviewAssets.findIndex((remoteAsset, candidateIndex) => (
+        !usedReviewAssets.has(candidateIndex) && sameReviewAsset(localAsset, remoteAsset)
+      ))
+      if (index < 0) return { ...localAsset }
+      usedReviewAssets.add(index)
+      return { ...localAsset, ...remoteReviewAssets[index] }
+    })
+    remoteReviewAssets.forEach((asset, index) => {
+      if (!usedReviewAssets.has(index)) assets.push({ ...asset })
+    })
+
+    const sourceAssets = (localStyle.sourceAssets || []).map((localAsset) => {
+      const index = remoteReferences.findIndex((remoteAsset, candidateIndex) => (
+        !usedReferences.has(candidateIndex) && sameReviewAsset(localAsset, remoteAsset)
+      ))
+      if (index < 0) return { ...localAsset }
+      usedReferences.add(index)
+      return { ...localAsset, ...remoteReferences[index] }
+    })
+    remoteReferences.forEach((asset, index) => {
+      if (!usedReferences.has(index)) sourceAssets.push({ ...asset })
+    })
+
+    merged.push({ ...localStyle, styleCode, assets, sourceAssets })
+    seenStyles.add(styleCode)
+  }
+
+  for (const remoteStyle of remoteStyles || []) {
+    const styleCode = compact(remoteStyle.styleCode || remoteStyle.style_code)
+    if (!styleCode || seenStyles.has(styleCode)) continue
+    merged.push({
+      ...remoteStyle,
+      styleCode,
+      assets: [
+        ...(remoteStyle.assets || []),
+        ...(remoteStyle.sourceAssets || []).filter(asset => reviewAssetKind(asset) === 'origin'),
+      ].map(asset => ({ ...asset })),
+      sourceAssets: (remoteStyle.sourceAssets || [])
+        .filter(asset => reviewAssetKind(asset) === 'reference')
+        .map(asset => ({ ...asset })),
+    })
+  }
+  return merged
+}
+
+function videoBusinessKind(asset = {}, fallback = '素材') {
+  if (asset.kind === 'origin' || asset.sourceType === 'model') return '模拍'
+  if (asset.kind === 'reference' || asset.sourceType === 'detail') return '素材'
+  return operationLabel(asset.operationType || asset.operation_type || asset.action || fallback)
+}
+
+export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null } = {}) {
+  const styleCode = compact(reviewStyle?.styleCode || reviewStyle?.style_code || materialStyle?.styleCode)
+  const output = []
+  const seenPaths = new Set()
+  const append = (asset, { source = false } = {}) => {
+    const status = reviewAssetStatus(asset?.status)
+    if (['rejected', 'failed', 'generating'].includes(status)) return
+    const path = compact(asset?.path || asset?.previewPath)
+    if (!path || seenPaths.has(path)) return
+    seenPaths.add(path)
+    const rawId = compact(asset?.id || path)
+    output.push({
+      id: source ? `vasset-${styleCode}-source-${rawId}` : `vasset-${rawId}`,
+      label: compact(asset?.label || asset?.name || asset?.filename || '图片'),
+      kind: videoBusinessKind(asset),
+      status,
+      selected: status === 'approved',
+      selectable: status === 'approved',
+      path,
+      imageUrl: compact(asset?.imageUrl || asset?.image_url),
+      operationType: normalizeOperationType(asset?.operationType || asset?.operation_type || asset?.action),
+    })
+  }
+
+  for (const asset of reviewStyle?.assets || []) append(asset)
+  for (const asset of reviewStyle?.sourceAssets || []) append(asset, { source: true })
+
+  for (const asset of materialStyle?.modelPhotos || []) {
+    append({ ...asset, kind: 'origin', status: asset.reviewStatus || 'pending' }, { source: true })
+  }
+  for (const asset of materialStyle?.detailPhotos || []) {
+    append({ ...asset, kind: 'reference', status: asset.reviewStatus || 'pending' }, { source: true })
+  }
+  return output
 }
 
 export function normalizeBalaTemplateCatalog(payload = {}) {
@@ -550,6 +916,17 @@ export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
       raw: row,
     }
   })
+}
+
+export function qnVideoResultFailure(rows = []) {
+  const failed = (rows || []).filter(row => String(row?.status || '').trim() === '失败')
+  if (!failed.length) return ''
+  const details = failed
+    .map(row => compact(row?.error || row?.taskId || row?.styleCode))
+    .filter(Boolean)
+    .slice(0, 3)
+    .join('；')
+  return `软件管家视频结果 ${failed.length} 条失败${details ? `：${details}` : ''}`
 }
 
 export function collectDownloadedMaterialRows(payload = {}) {

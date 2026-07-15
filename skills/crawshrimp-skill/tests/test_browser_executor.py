@@ -2,6 +2,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.browser_executor import (
     BrowserAction,
@@ -474,6 +475,40 @@ class BrowserExecutorTest(unittest.TestCase):
             self.assertEqual(browser_download_calls[0][0], "ws://example.test/devtools/page/tmp")
             self.assertEqual(browser_download_calls[0][1], "https://example.test/export.xlsx")
             self.assertTrue(browser_download_calls[0][2].name.startswith("crawshrimp-skill-browser-download-"))
+
+    def test_browser_session_download_never_moves_an_unrelated_home_download(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_home = Path(tmp) / "home"
+            downloads = fake_home / "Downloads"
+            downloads.mkdir(parents=True)
+
+            async def fake_browser_download(_ws_url, _url, _download_path, _timeout_seconds):
+                (downloads / "unrelated.pdf").write_bytes(b"personal")
+                return {"id": 1, "result": {}}
+
+            backend = ChromeCDPBackend(
+                tab_id="main",
+                get_json=lambda path: [],
+                browser_download_ws=fake_browser_download,
+                new_tab=lambda url: {
+                    "id": "tmp",
+                    "type": "page",
+                    "url": url,
+                    "webSocketDebuggerUrl": "ws://example.test/devtools/page/tmp",
+                },
+                close_tab=lambda _tab_id: None,
+            )
+            target = Path(tmp) / "final.xlsx"
+            with patch("scripts.browser_executor.Path.home", return_value=fake_home):
+                result = asyncio.run(backend.download_browser_session(
+                    {"url": "https://example.test/export.xlsx"},
+                    target,
+                    1,
+                ))
+
+            self.assertFalse(result["success"])
+            self.assertFalse(target.exists())
+            self.assertEqual((downloads / "unrelated.pdf").read_bytes(), b"personal")
 
 
 if __name__ == "__main__":

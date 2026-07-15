@@ -27,6 +27,11 @@ const { createUpdateService } = require('./updateService')
 const { createUpdateInstallCoordinator } = require('./updateInstallCoordinator')
 const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
 const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
+const {
+  deleteAuthorizedWorkspaceImage,
+  loadAuthorizedBalaWorkspaceRoots,
+  rememberAuthorizedBalaWorkspaceRoot,
+} = require('./balaWorkspaceFiles')
 const APP_METADATA = require('../package.json')
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
@@ -54,6 +59,8 @@ let resolvedCrawshrimpDataDir = ''
 let preferredCrawshrimpDataDir = ''
 let desktopServicesStartupPromise = null
 let dataDirRecoveryInfo = { recovered: false, from: '', to: '', errors: [] }
+const authorizedBalaWorkspaceRoots = new Set()
+let loadedBalaWorkspaceAuthorizationStore = ''
 
 function normalizePathForIdentity(rawPath = '') {
   const resolved = path.resolve(String(rawPath || ''))
@@ -355,6 +362,19 @@ function getCrawshrimpDataDir() {
     resolvedCrawshrimpDataDir = prepareCrawshrimpDataDir()
   }
   return resolvedCrawshrimpDataDir
+}
+
+function getBalaWorkspaceAuthorizationStorePath() {
+  return path.join(getCrawshrimpDataDir(), 'authorized-bala-workspaces.json')
+}
+
+function ensureBalaWorkspaceAuthorizationsLoaded() {
+  const storePath = getBalaWorkspaceAuthorizationStorePath()
+  if (sameRuntimePath(storePath, loadedBalaWorkspaceAuthorizationStore)) return storePath
+  authorizedBalaWorkspaceRoots.clear()
+  loadAuthorizedBalaWorkspaceRoots(storePath, { roots: authorizedBalaWorkspaceRoots })
+  loadedBalaWorkspaceAuthorizationStore = storePath
+  return storePath
 }
 
 function getApiTokenPath() {
@@ -2339,6 +2359,15 @@ secureHandle('get-bala-video-provider-status', async () => {
   return apiCall('GET', '/bala-ai-video-providers/api/status')
 })
 
+secureHandle('refresh-bala-video-provider-task', async (_, payload = {}) => {
+  return apiCall(
+    'POST',
+    '/bala-ai-video-providers/api/task',
+    payload || {},
+    { timeoutMs: 2 * 60 * 60 * 1000 },
+  )
+})
+
 secureHandle('run-bala-happyhorse-video', async (_, payload = {}) => {
   return apiCall(
     'POST',
@@ -2352,11 +2381,27 @@ secureHandle('get-bala-review-batch', async (_, batchId, token) => {
   return apiCall('GET', `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}?${approvalTokenQuery(token)}`)
 })
 
+secureHandle('list-bala-review-workspace-batches', async (_, filters = {}) => {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters || {})) {
+    if (value !== undefined && value !== null && String(value).trim()) query.set(key, String(value))
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return apiCall('GET', `/bala-ai-video-review-workspace/api/batches${suffix}`)
+})
+
 secureHandle('save-bala-review-decisions', async (_, batchId, token, decisions) => {
   return apiCall(
     'POST',
     `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}/decisions?${approvalTokenQuery(token)}`,
     { decisions: decisions || {} },
+  )
+})
+
+secureHandle('delete-bala-review-asset', async (_, batchId, token, assetId) => {
+  return apiCall(
+    'DELETE',
+    `/bala-ai-video-review/api/${encodeURIComponent(String(batchId || ''))}/asset/${encodeURIComponent(String(assetId || ''))}?${approvalTokenQuery(token)}`,
   )
 })
 
@@ -2541,6 +2586,29 @@ secureHandle('browse-file', async (_, opts = {}) => {
   })
   if (res.canceled) return opts.multi ? [] : ''
   return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
+})
+
+secureHandle('select-bala-workspace', async (_, opts = {}) => {
+  const res = await dialog.showOpenDialog(mainWindow, {
+    title: opts.title || '选择 AI 视频工作区目录',
+    defaultPath: opts.defaultPath || undefined,
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (res.canceled || !res.filePaths?.length) return ''
+  const storePath = ensureBalaWorkspaceAuthorizationsLoaded()
+  return rememberAuthorizedBalaWorkspaceRoot(res.filePaths[0], {
+    roots: authorizedBalaWorkspaceRoots,
+    storePath,
+  })
+})
+
+secureHandle('delete-bala-workspace-image', async (_, workspaceRoot, filePath) => {
+  ensureBalaWorkspaceAuthorizationsLoaded()
+  return deleteAuthorizedWorkspaceImage({
+    workspaceRoot,
+    filePath,
+    roots: authorizedBalaWorkspaceRoots,
+  })
 })
 
 secureHandle('read-local-image-preview', async (_, filePath) => {

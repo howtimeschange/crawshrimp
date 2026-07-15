@@ -67,6 +67,21 @@ class WebOperatorTest(unittest.TestCase):
                 self.assertIn("window.__webAgentAct", script)
                 self.assertIn(kind, script)
 
+    def test_click_script_checks_the_resolved_control_label_before_clicking(self):
+        script = make_action_script("click", selector="#opaque-action")
+
+        self.assertIn('userConfirmed', script)
+        self.assertIn('dangerousMarkers', script)
+        self.assertIn('targetLabel', script)
+        self.assertIn('requires explicit user confirmation', script)
+
+    def test_all_click_like_scripts_check_the_resolved_control_label(self):
+        for kind in ("click", "download", "paginate"):
+            with self.subTest(kind=kind):
+                script = make_action_script(kind, selector="#opaque-action")
+                self.assertIn("['click', 'download', 'paginate'].includes(payload.kind)", script)
+                self.assertIn('dangerousMarkers.some', script)
+
     def test_act_verify_and_journal_record_evidence_chain(self):
         backend = FakeBackend()
         operator = WebOperator(backend=backend, task="下载订单")
@@ -95,6 +110,50 @@ class WebOperatorTest(unittest.TestCase):
         self.assertIn("## Workflow Draft", workflow)
         self.assertIn("open export menu", workflow)
         self.assertIn("Export visible", workflow)
+
+    def test_navigate_action_redacts_sensitive_query_values_from_journal_and_workflow(self):
+        operator = WebOperator(backend=FakeBackend(), task="打开审核页")
+        operator.act(
+            "navigate",
+            url="https://example.test/review?token=action-secret&signature=sign-secret&mode=preview",
+            reason="open review",
+        )
+
+        payload = json.loads(operator.journal.to_json())
+        workflow = distill_workflow(payload)
+        serialized = json.dumps(payload, ensure_ascii=False)
+
+        self.assertNotIn("action-secret", serialized)
+        self.assertNotIn("sign-secret", serialized)
+        self.assertNotIn("action-secret", workflow)
+        self.assertNotIn("sign-secret", workflow)
+        self.assertIn("REDACTED", serialized)
+        self.assertIn("mode=preview", serialized)
+
+    def test_distill_redacts_sensitive_urls_from_every_legacy_journal_section(self):
+        legacy = {
+            "task": "旧审核流程",
+            "plan": {"kind": "flow"},
+            "observations": [{"page": {"network": [{
+                "url": "https://example.test/image?token=network-secret",
+            }]}}],
+            "actions": [],
+            "verifications": [{
+                "passed": True,
+                "evidence": "Verified https://example.test/verify?session=verification-secret after retry",
+            }],
+            "failures": [{
+                "evidence": "Failed /api/failure?signature=failure-secret after retry",
+                "recovery": "retry",
+            }],
+        }
+
+        workflow = distill_workflow(legacy)
+
+        self.assertNotIn("network-secret", workflow)
+        self.assertNotIn("verification-secret", workflow)
+        self.assertNotIn("failure-secret", workflow)
+        self.assertIn("REDACTED", workflow)
 
     def test_load_existing_journal_and_append_next_step(self):
         operator = WebOperator(backend=FakeBackend(), task="下载订单")
@@ -232,6 +291,33 @@ class WebOperatorTest(unittest.TestCase):
         self.assertEqual(page.active_regions[0]["kind"], "dialog")
         self.assertEqual(page.accessibility[0]["role"], "button")
         self.assertEqual(page.network[0]["kind"], "resource")
+
+    def test_observe_redacts_sensitive_query_values_from_page_and_network_urls(self):
+        class SecretUrlBackend(FakeBackend):
+            def execute(self, action):
+                if action.kind == "eval" and action.script == DOM_SNAPSHOT_SCRIPT:
+                    return BrowserResult(
+                        ok=True,
+                        action="eval",
+                        data={"value": {
+                            "url": "http://127.0.0.1/review?token=page-secret&mode=preview",
+                            "title": "Review",
+                            "resources": [{
+                            "url": "http://127.0.0.1/image?id=1&token=resource-secret&asid=session-secret",
+                                "initiatorType": "img",
+                            }],
+                        }},
+                    )
+                return super().execute(action)
+
+        page = WebOperator(backend=SecretUrlBackend(), task="观察审核页").observe()
+        serialized = json.dumps({"url": page.url, "network": page.network}, ensure_ascii=False)
+
+        self.assertNotIn("page-secret", serialized)
+        self.assertNotIn("resource-secret", serialized)
+        self.assertNotIn("session-secret", serialized)
+        self.assertIn("REDACTED", serialized)
+        self.assertIn("mode=preview", page.url)
 
     def test_observe_includes_framework_snapshot(self):
         class FrameworkBackend(FakeBackend):

@@ -1,8 +1,11 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from core import ai_image_service
 from core import bala_ai_video_review as review
+from core import runtime_paths
 
 
 def test_build_review_batch_keeps_four_ai_operations_separate(tmp_path):
@@ -74,6 +77,7 @@ def test_build_review_batch_keeps_four_ai_operations_separate(tmp_path):
     assert batch["status"] == "generating"
     assert batch["video_provider"] == "qn_img2video"
     assert batch["items"][0]["style_code"] == "208326100202"
+    assert next(asset for asset in batch["items"][0]["assets"] if asset["kind"] == "origin")["status"] == "pending"
     assert [asset["operation_type"] for asset in batch["items"][0]["assets"] if asset["kind"] == "ai"] == [
         "face_swap",
         "background_swap",
@@ -96,13 +100,17 @@ def test_update_decisions_and_export_video_manifest(tmp_path):
         "items": [{
             "style_code": "208326100202",
             "assets": [
-                {"id": "origin-1", "kind": "origin", "path": str(approved), "status": "reference"},
+                {"id": "origin-1", "kind": "origin", "path": str(approved), "status": "pending"},
                 {"id": "ai-1", "kind": "ai", "path": str(approved), "status": "pending", "operation_type": "face_swap"},
             ],
         }],
     }
 
-    updated = review.update_review_decisions(batch, {"ai-1": {"status": "approved"}})
+    updated = review.update_review_decisions(batch, {
+        "origin-1": {"status": "approved"},
+        "ai-1": {"status": "approved"},
+    })
+    assert updated["items"][0]["assets"][0]["status"] == "approved"
     assert updated["items"][0]["assets"][1]["status"] == "approved"
 
     manifest = review.export_video_input_manifest(updated, str(tmp_path / "video-input"), provider="qn_img2video")
@@ -111,13 +119,55 @@ def test_update_decisions_and_export_video_manifest(tmp_path):
     payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert payload["provider"] == "qn_img2video"
     assert payload["styles"][0]["style_code"] == "208326100202"
-    assert len(payload["styles"][0]["images"]) == 1
+    assert len(payload["styles"][0]["images"]) == 2
+    assert {item["kind"] for item in payload["styles"][0]["images"]} == {"origin", "ai"}
     assert Path(payload["styles"][0]["images"][0]["path"]).is_file()
 
     params = review.build_qn_img2video_initial_params(manifest)
     assert params["execute_mode"] == "plan"
     assert params["download_template_previews"] is True
-    assert params["material_images"]["paths"] == [payload["styles"][0]["images"][0]["path"]]
+    assert params["material_images"]["paths"] == [item["path"] for item in payload["styles"][0]["images"]]
+
+
+def test_origin_only_review_batch_can_be_approved_for_video(tmp_path):
+    source = tmp_path / "source.jpg"
+    source.write_bytes(b"\xff\xd8\xff")
+    batch = {
+        "batch_id": "origin-only",
+        "status": "pending_approval",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{"id": "origin-1", "kind": "origin", "path": str(source), "status": "pending"}],
+        }],
+    }
+
+    updated = review.update_review_decisions(batch, {"origin-1": {"status": "approved"}})
+
+    assert updated["status"] == "ready_for_video"
+    assert updated["items"][0]["assets"][0]["status"] == "approved"
+
+
+def test_removed_ai_result_does_not_reappear_when_review_batch_refreshes(tmp_path):
+    generated = tmp_path / "generated.png"
+    generated.write_bytes(b"\x89PNG\r\n\x1a\n")
+    batch = {
+        "batch_id": "delete-ai-result",
+        "status": "pending_approval",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [
+                {"id": "origin-1", "kind": "origin", "path": str(generated), "status": "pending"},
+                {"id": "ai-1", "kind": "ai", "path": str(generated), "status": "pending", "job_uid": "job-1"},
+            ],
+        }],
+    }
+
+    updated = review.remove_review_asset(batch, "ai-1")
+    refreshed = review.refresh_generated_assets(updated)
+
+    assert [asset["id"] for asset in refreshed["items"][0]["assets"]] == ["origin-1"]
+    with pytest.raises(ValueError, match="AI 结果"):
+        review.remove_review_asset(refreshed, "origin-1")
 
 
 def test_refresh_materializes_remote_ai_result_before_marking_pending(tmp_path, monkeypatch):
@@ -166,3 +216,33 @@ def test_refresh_materializes_remote_ai_result_before_marking_pending(tmp_path, 
     assert asset["filename"] == "generated.png"
     assert asset["status"] == "pending"
     assert refreshed["status"] == "pending_approval"
+
+
+def test_list_review_batches_restores_every_batch_for_requested_style(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    artifact_dir = runtime_paths.child_dir("bala-ai-video-review")
+
+    for batch_id, style_code, job_uid in [
+        ("bala-ai-video-20260716-000001-a", "208326102205", "face-job"),
+        ("bala-ai-video-20260716-000002-b", "208326102205", "pose-job"),
+        ("bala-ai-video-20260716-000003-c", "208326999999", "other-job"),
+    ]:
+        review.save_review_batch({
+            "batch_id": batch_id,
+            "token": f"token-{job_uid}",
+            "board_url": f"http://127.0.0.1/review/{batch_id}",
+            "artifact_dir": str(artifact_dir),
+            "items": [{
+                "style_code": style_code,
+                "assets": [{"id": "ai-1", "kind": "ai", "job_uid": job_uid, "status": "pending"}],
+            }],
+        })
+
+    batches = review.list_review_batches(style_codes=["208326102205"], limit=10)
+
+    assert [batch["batch_id"] for batch in batches] == [
+        "bala-ai-video-20260716-000001-a",
+        "bala-ai-video-20260716-000002-b",
+    ]
+    assert [batch["items"][0]["assets"][0]["job_uid"] for batch in batches] == ["face-job", "pose-job"]

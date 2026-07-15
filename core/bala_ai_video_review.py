@@ -131,11 +131,12 @@ def _all_assets(batch: Mapping[str, Any]) -> list[dict]:
 
 def _recompute_batch_status(batch: dict) -> dict:
     ai_assets = [asset for asset in _all_assets(batch) if asset.get("kind") == "ai"]
+    reviewable_assets = [asset for asset in _all_assets(batch) if asset.get("kind") in {"origin", "ai"}]
     if any(asset.get("status") == STATUS_GENERATING for asset in ai_assets):
         batch["status"] = STATUS_GENERATING
-    elif any(asset.get("status") == "pending" for asset in ai_assets):
+    elif any(asset.get("status") == "pending" for asset in reviewable_assets):
         batch["status"] = STATUS_PENDING_APPROVAL
-    elif any(asset.get("status") == "approved" for asset in ai_assets):
+    elif any(asset.get("status") == "approved" for asset in reviewable_assets):
         batch["status"] = STATUS_READY_FOR_VIDEO
     else:
         batch["status"] = STATUS_PENDING_APPROVAL
@@ -168,7 +169,7 @@ def build_review_batch(rows: list[dict], run_params: dict, artifact_dir: str, ap
                     "style_code": style_code,
                     "path": source_path,
                     "filename": Path(source_path).name,
-                    "status": "reference",
+                    "status": "pending",
                     "image_url": _asset_image_url(api_base_url, batch_id, source_asset_id, token),
                 })
 
@@ -229,6 +230,37 @@ def load_review_batch(batch_id: str) -> dict:
     raise FileNotFoundError(_text(batch_id))
 
 
+def list_review_batches(*, style_codes: list[str] | None = None, limit: int = 100) -> list[dict]:
+    requested_styles = {_text(value) for value in (style_codes or []) if _text(value)}
+    try:
+        safe_limit = max(1, min(int(limit), 200))
+    except (TypeError, ValueError):
+        safe_limit = 100
+    batches: list[dict] = []
+    seen_batch_ids: set[str] = set()
+    paths = sorted(_review_root().glob("**/review-batch.json"), key=lambda item: item.parent.name)
+    for path in paths:
+        try:
+            batch = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            continue
+        if not isinstance(batch, dict):
+            continue
+        batch_id = _text(batch.get("batch_id"))
+        if not batch_id or batch_id in seen_batch_ids:
+            continue
+        styles = {
+            _text(item.get("style_code") or item.get("styleCode"))
+            for item in (batch.get("items") or [])
+            if isinstance(item, Mapping)
+        }
+        if requested_styles and not requested_styles.intersection(styles):
+            continue
+        seen_batch_ids.add(batch_id)
+        batches.append(batch)
+    return batches[-safe_limit:]
+
+
 def validate_token(batch: Mapping[str, Any], token: str) -> None:
     expected = _text(batch.get("token"))
     provided = _text(token)
@@ -240,7 +272,7 @@ def update_review_decisions(batch: dict, decisions: dict) -> dict:
     decision_map = decisions or {}
     allowed = {"approved", "rejected", "pending"}
     for asset in _all_assets(batch):
-        if asset.get("kind") != "ai":
+        if asset.get("kind") not in {"origin", "ai"}:
             continue
         decision = decision_map.get(asset.get("id"))
         if not isinstance(decision, Mapping):
@@ -252,6 +284,22 @@ def update_review_decisions(batch: dict, decisions: dict) -> dict:
         if note:
             asset["review_note"] = note
     return _recompute_batch_status(batch)
+
+
+def remove_review_asset(batch: dict, asset_id: str) -> dict:
+    target = _text(asset_id)
+    for item in batch.get("items") or []:
+        assets = item.get("assets") if isinstance(item, dict) else None
+        if not isinstance(assets, list):
+            continue
+        for index, asset in enumerate(assets):
+            if not isinstance(asset, dict) or _text(asset.get("id")) != target:
+                continue
+            if asset.get("kind") != "ai":
+                raise ValueError("仅允许从审核批次删除 AI 结果")
+            assets.pop(index)
+            return _recompute_batch_status(batch)
+    raise KeyError(target)
 
 
 def _job_output_paths(job_uid: str) -> list[str]:
@@ -327,7 +375,7 @@ def export_video_input_manifest(batch: dict, output_root: str, provider: str = V
         style_dir = root / _safe_id(style_code, "style")
         images = []
         for asset in item.get("assets") or []:
-            if asset.get("kind") != "ai" or asset.get("status") != "approved":
+            if asset.get("kind") not in {"origin", "ai"} or asset.get("status") != "approved":
                 continue
             source = Path(_text(asset.get("path"))).expanduser()
             if not source.is_file() or source.suffix.lower() not in IMAGE_SUFFIXES:
@@ -340,7 +388,12 @@ def export_video_input_manifest(batch: dict, output_root: str, provider: str = V
             images.append({
                 "path": copied,
                 "source_asset_id": _text(asset.get("id")),
-                "operation_type": normalize_operation_type(asset.get("operation_type")),
+                "kind": _text(asset.get("kind")),
+                "operation_type": (
+                    normalize_operation_type(asset.get("operation_type"))
+                    if asset.get("kind") == "ai"
+                    else "origin"
+                ),
             })
         if images:
             styles.append({"style_code": style_code, "images": images})

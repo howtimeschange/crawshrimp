@@ -760,14 +760,9 @@ class ChromeCDPBackend:
         target = Path(target_path).expanduser()
         temp_tab_id = ""
         temp_dir = Path(tempfile.mkdtemp(prefix="crawshrimp-skill-browser-download-"))
-        default_download_dir = Path.home() / "Downloads"
         watch_dirs = [temp_dir]
-        if default_download_dir != temp_dir:
-            watch_dirs.append(default_download_dir)
         pattern = self._download_name_pattern(url, str((item or {}).get("expected_file") or (item or {}).get("filename") or ""))
-        fallback_pattern = re.compile(r".+\.(xlsx|xls|csv|zip|pdf|json|txt)$", re.IGNORECASE)
         baseline = self._snapshot_files(watch_dirs, pattern)
-        fallback_baseline = self._snapshot_files(watch_dirs, fallback_pattern)
         started_at_ns = time.time_ns()
         try:
             temp_tab = self.new_tab("about:blank")
@@ -786,10 +781,6 @@ class ChromeCDPBackend:
             matched_by = "expected_name"
             while time.monotonic() < deadline:
                 downloaded = self._find_new_file(watch_dirs, baseline, pattern, started_at_ns)
-                if not downloaded:
-                    downloaded = self._find_new_file(watch_dirs, fallback_baseline, fallback_pattern, started_at_ns)
-                    if downloaded:
-                        matched_by = "fallback_any_artifact"
                 if downloaded:
                     break
                 await asyncio.sleep(0.2)

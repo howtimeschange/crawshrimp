@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 
 from core import api_server
@@ -93,3 +94,124 @@ def test_bala_review_decisions_and_export_video_input(tmp_path, monkeypatch):
     assert payload["next_task"]["adapter_id"] == "bala-ai-video-assistant"
     assert payload["next_task"]["task_id"] == "qn_img2video_batch"
     assert payload["next_task"]["params"]["material_images"]["paths"]
+
+
+def test_regenerate_endpoint_returns_the_newest_retry_asset(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    artifact_dir = runtime_paths.child_dir("bala-ai-video-review")
+    batch = {
+        "batch_id": "bala-retry-latest",
+        "token": "token-retry",
+        "artifact_dir": str(artifact_dir),
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [
+                {"id": "ai-source", "kind": "ai", "status": "pending"},
+                {"id": "retry-old", "kind": "ai", "status": "generating", "regenerated_from_asset_id": "ai-source"},
+            ],
+        }],
+    }
+    review.save_review_batch(batch)
+
+    def fake_append(loaded, _req):
+        loaded["items"][0]["assets"].append({
+            "id": "retry-new",
+            "kind": "ai",
+            "status": "generating",
+            "regenerated_from_asset_id": "ai-source",
+        })
+        return loaded
+
+    monkeypatch.setattr(api_server, "_append_bala_review_regenerate_asset", fake_append)
+    result = asyncio.run(api_server.regenerate_bala_ai_video_review_asset(
+        "bala-retry-latest",
+        api_server.BalaReviewRegenerateRequest(asset_id="ai-source", submit_async=True),
+        token="token-retry",
+    ))
+
+    assert result["asset"]["id"] == "retry-new"
+
+
+def test_delete_review_asset_persists_ai_removal_and_rejects_origin(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    artifact_dir = runtime_paths.child_dir("bala-ai-video-review")
+    batch = {
+        "batch_id": "bala-delete-result",
+        "token": "token-delete",
+        "artifact_dir": str(artifact_dir),
+        "status": "pending_approval",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [
+                {"id": "origin-1", "kind": "origin", "status": "pending"},
+                {"id": "ai-1", "kind": "ai", "status": "pending", "job_uid": "job-1"},
+            ],
+        }],
+    }
+    review.save_review_batch(batch)
+
+    updated = api_server.delete_bala_ai_video_review_asset(
+        "bala-delete-result",
+        "ai-1",
+        token="token-delete",
+    )
+
+    assert [asset["id"] for asset in updated["items"][0]["assets"]] == ["origin-1"]
+    persisted = review.load_review_batch("bala-delete-result")
+    assert [asset["id"] for asset in persisted["items"][0]["assets"]] == ["origin-1"]
+
+    try:
+        api_server.delete_bala_ai_video_review_asset(
+            "bala-delete-result",
+            "origin-1",
+            token="token-delete",
+        )
+    except api_server.HTTPException as exc:
+        assert exc.status_code == 400
+        assert "AI" in str(exc.detail)
+    else:
+        raise AssertionError("origin asset deletion must be rejected")
+
+
+def test_review_fallback_board_escapes_persisted_asset_fields(monkeypatch):
+    batch = {
+        "batch_id": 'batch-<script>alert("id")</script>',
+        "items": [{
+            "style_code": '<img src=x onerror=alert("style")>',
+            "assets": [{
+                "id": "ai-1",
+                "kind": "ai",
+                "operation_type": '<script>alert("operation")</script>',
+                "status": '<b onmouseover=alert("status")>pending</b>',
+                "filename": '<svg onload=alert("file")>.png',
+            }],
+        }],
+    }
+    monkeypatch.setattr(api_server, "_load_bala_review_batch_checked", lambda _batch_id, _token: batch)
+
+    response = api_server.get_bala_ai_video_review_board("unsafe", token="token")
+    html = response.body.decode("utf-8")
+
+    assert "<script>" not in html
+    assert "<img src=x" not in html
+    assert "<svg onload" not in html
+    assert "&lt;script&gt;" in html
+    assert "&lt;img src=x" in html
+
+
+def test_review_workspace_api_lists_all_batches_for_a_style(monkeypatch):
+    batches = [{"batch_id": "batch-face"}, {"batch_id": "batch-pose"}]
+    calls = []
+    monkeypatch.setattr(review, "list_review_batches", lambda *, style_codes, limit: (
+        calls.append((style_codes, limit)) or batches
+    ))
+
+    result = api_server.list_bala_ai_video_review_workspace_batches(
+        style_codes="208326102205, 208326105214",
+        limit=25,
+    )
+
+    assert result == {"items": batches}
+    assert calls == [(["208326102205", "208326105214"], 25)]

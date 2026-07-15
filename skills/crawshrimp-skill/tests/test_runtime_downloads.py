@@ -24,6 +24,38 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((Path(tmp) / "first.txt").read_text(encoding="utf-8"), "first")
             self.assertEqual((Path(tmp) / "second.txt").read_text(encoding="utf-8"), "second")
 
+    async def test_download_urls_never_reuses_a_stale_same_name_artifact(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            stale = Path(tmp) / "report.txt"
+            stale.write_text("stale", encoding="utf-8")
+            manager = DownloadManager(Path(tmp))
+
+            result = await manager.download_urls([
+                {"url": "data:text/plain;base64,ZnJlc2g=", "filename": "report.txt"},
+            ])
+
+            self.assertTrue(result["ok"])
+            self.assertNotEqual(Path(result["items"][0]["path"]), stale)
+            self.assertEqual(Path(result["items"][0]["path"]).read_text(encoding="utf-8"), "fresh")
+            self.assertEqual(stale.read_text(encoding="utf-8"), "stale")
+
+    async def test_download_urls_reserves_unique_targets_for_concurrent_same_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            manager = DownloadManager(Path(tmp))
+
+            result = await manager.download_urls(
+                [
+                    {"url": "data:text/plain;base64,Zmlyc3Q=", "filename": "same.txt"},
+                    {"url": "data:text/plain;base64,c2Vjb25k", "filename": "same.txt"},
+                ],
+                concurrency=2,
+            )
+
+            paths = [Path(item["path"]) for item in result["items"]]
+            self.assertTrue(result["ok"])
+            self.assertEqual(len(set(paths)), 2)
+            self.assertEqual({path.read_text(encoding="utf-8") for path in paths}, {"first", "second"})
+
     async def test_download_urls_retries_and_reports_progress(self):
         calls = {"count": 0}
         progress = []
@@ -142,7 +174,7 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
             manager = DownloadManager(Path(artifacts))
 
             result = await manager.download_clicks(
-                [{"clicks": [{"x": 10, "y": 20}], "filename": "report.xlsx", "expected_name_regex": r"export\\.xlsx"}],
+                [{"clicks": [{"x": 10, "y": 20}], "filename": "report.xlsx", "expected_name_regex": r"export\.xlsx"}],
                 backend=backend,
                 download_dir=Path(downloads),
                 timeout_ms=1000,
@@ -172,6 +204,29 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result["ok"])
             self.assertIn("click failed", result["items"][0]["error"])
 
+    async def test_download_clicks_does_not_claim_an_unrelated_new_download(self):
+        class UnrelatedDownloadBackend:
+            def __init__(self, download_dir):
+                self.download_dir = Path(download_dir)
+
+            def execute(self, action):
+                if action.kind == "click":
+                    (self.download_dir / "unrelated.pdf").write_bytes(b"personal")
+                return BrowserResult(ok=True, action=action.kind, data={})
+
+        with tempfile.TemporaryDirectory() as downloads, tempfile.TemporaryDirectory() as artifacts:
+            manager = DownloadManager(Path(artifacts))
+            result = await manager.download_clicks(
+                [{"clicks": [{"x": 10, "y": 20}], "filename": "expected.xlsx"}],
+                backend=UnrelatedDownloadBackend(downloads),
+                download_dir=Path(downloads),
+                timeout_ms=1000,
+            )
+
+            self.assertFalse(result["ok"])
+            self.assertTrue((Path(downloads) / "unrelated.pdf").is_file())
+            self.assertFalse(any(Path(artifacts).iterdir()))
+
     async def test_download_clicks_prefers_async_backend_execute(self):
         class AsyncClickBackend:
             def __init__(self, download_dir):
@@ -189,7 +244,7 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
             manager = DownloadManager(Path(artifacts))
 
             result = await manager.download_clicks(
-                [{"clicks": [{"x": 10, "y": 20}], "filename": "report.xlsx", "expected_name_regex": r"export\\.xlsx"}],
+                [{"clicks": [{"x": 10, "y": 20}], "filename": "report.xlsx", "expected_name_regex": r"export\.xlsx"}],
                 backend=AsyncClickBackend(downloads),
                 download_dir=Path(downloads),
                 timeout_ms=1000,
@@ -216,7 +271,7 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
                     {
                         "clicks": [{"x": 10, "y": 20}],
                         "filename": "report.csv",
-                        "expected_name_regex": r"small\\.csv",
+                        "expected_name_regex": r"small\.csv",
                         "min_bytes": 2,
                     }
                 ],
@@ -237,7 +292,7 @@ class RuntimeDownloadsTest(unittest.IsolatedAsyncioTestCase):
                     {
                         "clicks": [{"x": 10, "y": 20}],
                         "filename": "report.csv",
-                        "expected_name_regex": r"small\\.csv",
+                        "expected_name_regex": r"small\.csv",
                         "expected_size": 2,
                     }
                 ],

@@ -153,7 +153,7 @@ const filteredItems = computed(() =>
     .map(item => ({
       ...item,
       assets: (item.assets || []).filter(asset =>
-        asset?.kind === 'ai'
+        ['origin', 'ai'].includes(asset?.kind)
         && (!activeStatus.value || String(asset.status || '') === activeStatus.value)
       ),
     }))
@@ -228,7 +228,7 @@ async function regenerateAsset(asset) {
     const result = await window.cs.regenerateBalaReviewAsset(ref.batchId, ref.token, {
       asset_id: asset.id,
       prompt: asset.prompt || asset.background_prompt || asset.pose_prompt || '',
-      submit_async: false,
+      submit_async: true,
     })
     batch.value = result?.batch || batch.value
     emit('batch-updated', batch.value)

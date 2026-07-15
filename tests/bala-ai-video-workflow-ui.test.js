@@ -137,6 +137,62 @@ test('AI video workflow restores downloaded Excel rows into material groups with
   assert.equal(persistedSelection[0].modelPhotos[0].selected, true)
 })
 
+test('AI edit source filtering preserves the reactive source object used by click selection', () => {
+  const source = {
+    name: 'front.jpg',
+    selected: true,
+    editSelected: false,
+    versions: [
+      { id: 'v1', editSelected: false, deleted: false },
+      { id: 'v2', editSelected: true, deleted: false },
+      { id: 'v3', editSelected: true, deleted: true },
+    ],
+  }
+  const style = { modelPhotos: [source] }
+
+  assert.equal(typeof balaWorkflow.selectEditableSourcesForStyle, 'function')
+  const visible = balaWorkflow.selectEditableSourcesForStyle(style)
+  assert.equal(visible[0], source)
+  visible[0].editSelected = true
+  assert.equal(source.editSelected, true)
+  assert.deepEqual(
+    balaWorkflow.selectVisibleEditableVersions(source, true).map(item => item.id),
+    ['v2'],
+  )
+  assert.equal(balaWorkflow.selectEditableSourcesForStyle(style, true)[0], source)
+})
+
+test('AI model library applies age and gender filters together', () => {
+  const items = [
+    { id: 'girl-young', ageLabel: '幼童', gender: '女' },
+    { id: 'boy-young', ageLabel: '幼童', gender: '男' },
+    { id: 'boy-older', ageLabel: '中大童', gender: '男' },
+  ]
+
+  assert.equal(typeof balaWorkflow.filterBalaModelLibraryItems, 'function')
+  assert.deepEqual(
+    balaWorkflow.filterBalaModelLibraryItems(items, { age: '幼童', gender: '男' }).map(item => item.id),
+    ['boy-young'],
+  )
+  assert.deepEqual(
+    balaWorkflow.filterBalaModelLibraryItems(items, { age: '', gender: '男' }).map(item => item.id),
+    ['boy-young', 'boy-older'],
+  )
+})
+
+test('AI model labels hide internal numeric group identifiers', () => {
+  assert.equal(typeof balaWorkflow.formatBalaModelDisplayLabel, 'function')
+  const label = balaWorkflow.formatBalaModelDisplayLabel({
+    group: '100',
+    group_label: '100 男 幼童',
+    age_label: '幼童',
+    gender: '男',
+    expression: '标准',
+  })
+  assert.equal(label, '幼童 / 男 / 标准')
+  assert.doesNotMatch(label, /\b(?:66|73|100|140)\b/)
+})
+
 test('AI video workflow derives independent search and download progress', () => {
   assert.equal(typeof balaWorkflow.normalizeBalaMaterialProgress, 'function')
   const progress = balaWorkflow.normalizeBalaMaterialProgress({
@@ -316,12 +372,12 @@ test('Bala review helpers parse board URL and build qn video handoff params', ()
 
   const summary = summarizeBalaReviewBatch({
     items: [{ assets: [
-      { kind: 'origin', status: 'reference' },
+      { kind: 'origin', status: 'pending' },
       { kind: 'ai', status: 'pending' },
       { kind: 'ai', status: 'approved' },
     ] }],
   })
-  assert.deepEqual(summary, { total: 2, pending: 1, approved: 1, rejected: 0, generating: 0, failed: 0 })
+  assert.deepEqual(summary, { total: 3, pending: 2, approved: 1, rejected: 0, generating: 0, failed: 0 })
 })
 
 test('AI video workflow maps real review batch assets into style cards', () => {
@@ -346,6 +402,8 @@ test('AI video workflow maps real review batch assets into style cards', () => {
   assert.equal(styles.length, 1)
   assert.equal(styles[0].styleCode, '208326102205')
   assert.equal(styles[0].sourceAssets[0].role, '原图')
+  assert.equal(styles[0].sourceAssets[0].action, '原图')
+  assert.equal(styles[0].sourceAssets[0].operationType, 'origin')
   assert.equal(styles[0].assets[0].status, 'approved')
   assert.equal(styles[0].assets[0].action, 'AI 换背景')
 })
@@ -463,7 +521,7 @@ test('AI video material tabs stay in fixed rows above the independently scrollin
   assert.match(switcherCss, /border-radius:\s*0/)
 })
 
-test('AI video review step restores the latest persisted review batch after remount', () => {
+test('AI video review step restores all persisted review batches with a latest-run fallback after remount', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
 
   assert.match(source, /@click="selectWorkflowStep\(step\.id\)"/)
@@ -471,8 +529,8 @@ test('AI video review step restores the latest persisted review batch after remo
   assert.match(source, /stepId === 'review'[\s\S]*?loadLatestReviewBatch\(\)/)
   assert.match(source, /async function restoreLatestReviewBatch\(/)
   assert.match(source, /window\.cs\.getData\(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID\)/)
-  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreLatestReviewBatch\(\{ silent: true \}\)/)
-  assert.match(source, /async function refreshReviewBatch\(\)[\s\S]*?if \(!ref\) \{[\s\S]*?loadLatestReviewBatch\(\)/)
+  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreReviewWorkspaceBatches\(\{ silent: true \}\)[\s\S]*?if \(!restoredBatchCount\) await restoreLatestReviewBatch\(\{ silent: true \}\)/)
+  assert.match(source, /async function refreshReviewBatch\(\)[\s\S]*?if \(!boardUrls\.length\) \{[\s\S]*?loadLatestReviewBatch\(\)/)
 })
 
 test('AI video step navigation restores the latest review assets before creating video tasks', () => {
@@ -531,6 +589,64 @@ test('Bala image review drawer exposes approval, retry, refresh, and video hando
   assert.match(source, /exportBalaVideoInput/)
   assert.match(source, /start-video-stage/)
   assert.match(source, /进入视频生成/)
+  assert.match(source, /submit_async:\s*true/)
+})
+
+test('review retry keeps display status out of the generation prompt', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('async function requestReviewAssetRetry')
+  const end = source.indexOf('function reviewSummaryCounts', start)
+  const retrySource = source.slice(start, end)
+
+  assert.match(retrySource, /const retryPrompt =/)
+  assert.match(retrySource, /prompt:\s*retryPrompt/)
+  assert.doesNotMatch(retrySource, /prompt:\s*asset\.meta/)
+  assert.doesNotMatch(retrySource, /asset\.prompt\s*\|\|\s*asset\.meta/)
+})
+
+test('review approvals become video-selectable only after the durable save succeeds', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const singleStart = source.indexOf('async function setReviewAssetStatus')
+  const singleEnd = source.indexOf('async function setStyleReviewStatus', singleStart)
+  const bulkStart = source.indexOf('async function saveReviewAssetsStatus')
+  const bulkEnd = source.indexOf('async function refreshReviewBatch', bulkStart)
+  const singleSource = source.slice(singleStart, singleEnd)
+  const bulkSource = source.slice(bulkStart, bulkEnd)
+
+  assert.doesNotMatch(singleSource, /asset\.status\s*=\s*normalized/)
+  assert.doesNotMatch(singleSource, /syncWorkspaceReviewDecision\(asset, normalized\)/)
+  assert.doesNotMatch(singleSource, /asset\.reviewBoardUrl\s*\|\|\s*reviewBoardUrl\.value/)
+  assert.doesNotMatch(bulkSource, /asset\.status\s*=\s*status/)
+  assert.doesNotMatch(bulkSource, /syncWorkspaceReviewDecision\(asset, status\)/)
+  assert.doesNotMatch(bulkSource, /asset\.reviewBoardUrl\s*\|\|\s*reviewBoardUrl\.value/)
+  assert.match(singleSource, /await window\.cs\.saveBalaReviewDecisions/)
+  assert.match(bulkSource, /await window\.cs\.saveBalaReviewDecisions/)
+  assert.match(singleSource, /if \(!ref\) \{[\s\S]*?applyLocalReviewDecision\(asset, normalized\)[\s\S]*?return/)
+  assert.match(bulkSource, /const localAssets = \[\]/)
+  assert.match(bulkSource, /localAssets\.push\(asset\)/)
+  assert.match(bulkSource, /for \(const asset of localAssets\) applyLocalReviewDecision\(asset, status\)/)
+})
+
+test('video tasks and provider results persist across reloads with real refresh and download actions', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const preload = fs.readFileSync('app/src/preload.js', 'utf8')
+  const devBridge = fs.readFileSync('app/src/renderer/utils/devCsBridge.js', 'utf8')
+  const main = fs.readFileSync('app/src/main.js', 'utf8')
+
+  assert.match(source, /BALA_AI_VIDEO_STATE_STORAGE_KEY/)
+  assert.match(source, /function persistVideoWorkflowState/)
+  assert.match(source, /function restoreVideoWorkflowState/)
+  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreVideoWorkflowState\(\)/)
+  assert.match(source, /providerTaskId/)
+  assert.match(templateSource, /@click="refreshVideoResults"/)
+  assert.match(templateSource, /@click="downloadCompletedVideoResults"/)
+  assert.match(source, /async function refreshVideoResults/)
+  assert.match(source, /async function downloadCompletedVideoResults/)
+  assert.match(source, /refreshBalaVideoProviderTask/)
+  assert.match(preload, /refreshBalaVideoProviderTask/)
+  assert.match(devBridge, /refreshBalaVideoProviderTask/)
+  assert.match(main, /refresh-bala-video-provider-task/)
 })
 
 test('TaskRunner opens Bala image review drawer after AI generation', () => {
@@ -601,6 +717,41 @@ test('AI video workflow only downloads software-manager previews when a template
   assert.match(builder, /ratio:\s*'3:4'/)
 })
 
+test('software-manager terminal failures stay failed instead of becoming preflight success', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const finalizeStart = source.indexOf('async function finalizeQnVideoTask')
+  const finalizeEnd = source.indexOf('async function waitForQnVideoTask', finalizeStart)
+  const finalizeSource = source.slice(finalizeStart, finalizeEnd)
+
+  assert.equal(typeof balaWorkflow.qnTerminalRunFailure, 'function')
+  assert.equal(balaWorkflow.qnTerminalRunFailure({ status: 'done' }), '')
+  assert.equal(
+    balaWorkflow.qnTerminalRunFailure({
+      status: 'error',
+      error: '软件管家页面加载超时，请保留已登录页面后重试',
+    }),
+    '软件管家页面加载超时，请保留已登录页面后重试',
+  )
+  assert.match(finalizeSource, /qnTerminalRunFailure\(terminalSnapshot\)/)
+  assert.match(finalizeSource, /if \(terminalFailure\) \{[\s\S]*?status:\s*'失败'[\s\S]*?path:\s*''[\s\S]*?throw new Error\(terminalFailure\)/)
+})
+
+test('software-manager failed output rows fail the parent video task', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const finalizeStart = source.indexOf('async function finalizeQnVideoTask')
+  const finalizeEnd = source.indexOf('async function waitForQnVideoTask', finalizeStart)
+  const finalizeSource = source.slice(finalizeStart, finalizeEnd)
+
+  assert.equal(typeof balaWorkflow.qnVideoResultFailure, 'function')
+  assert.equal(balaWorkflow.qnVideoResultFailure([{ status: '已完成' }]), '')
+  assert.match(
+    balaWorkflow.qnVideoResultFailure([{ status: '失败', error: '视频下载失败' }]),
+    /1 条失败.*视频下载失败/,
+  )
+  assert.match(finalizeSource, /const rowFailure = qnVideoResultFailure\(normalized\)/)
+  assert.match(finalizeSource, /if \(rowFailure\) throw new Error\(rowFailure\)/)
+})
+
 test('AI video task summary uses live counts and failed results expose their reason', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const templateSource = source.split('<script setup>')[0]
@@ -608,6 +759,15 @@ test('AI video task summary uses live counts and failed results expose their rea
   assert.match(templateSource, /<strong>\{\{ videoJobs\.length \}\} 款<\/strong>/)
   assert.match(templateSource, /v-if="item\.error" class="aiv-result-error"/)
   assert.match(templateSource, /\{\{ item\.error \}\}/)
+})
+
+test('failed video results without an output hide file actions and return to generation', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(templateSource, /v-if="videoResultHasOutput\(item\)"[^>]*@click="openVideoResult\(item\)"/)
+  assert.match(templateSource, /v-if="canRetryVideoResult\(item\)"[^>]*@click="retryVideoResult\(item\)"/)
+  assert.match(templateSource, /v-if="!videoResultHasOutput\(item\) && !canRetryVideoResult\(item\)"[^>]*@click="activeStep = 'templates'"/)
 })
 
 test('video task directory and image pickers use accessible explicit controls', () => {
@@ -643,4 +803,333 @@ test('AI capability settings provide local secret fields for video providers', (
   assert.match(settings, /ai\.video\.seedance_api_key/)
   assert.match(settings, /ai\.video\.bailian_api_key/)
   assert.match(settings, /type="password"/)
+})
+
+test('material thumbnails prioritize the currently rendered 20 cards without personal-path defaults', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.doesNotMatch(templateSource, /fetchpriority="low"/)
+  assert.match(templateSource, /loading="eager"/)
+  assert.doesNotMatch(source, /DEFAULT_BALA_AI_VIDEO_WORKSPACE_DIR\s*=\s*['"]\/Users\//)
+  assert.match(source, /const workspaceDir = ref\(loadStoredWorkspaceDir\(\)\)/)
+})
+
+test('AI edit workspace treats selection as operation scope and exposes shared edit tools', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const finalizeStart = source.indexOf('async function finalizeAiImageTask')
+  const finalizeEnd = source.indexOf('async function loadReviewBatchFromBoard', finalizeStart)
+  const finalizeSource = source.slice(finalizeStart, finalizeEnd)
+
+  assert.match(source, /PromptLibraryPickerModal/)
+  assert.match(source, /TldrawAnnotationLayer/)
+  assert.match(templateSource, /本地素材库/)
+  assert.match(templateSource, /从 Prompt 库选择/)
+  assert.match(templateSource, /aiv-selected-model-preview/)
+  assert.match(templateSource, /aiv-edit-sticky-actions/)
+  assert.match(templateSource, /删除生成结果/)
+  assert.match(templateSource, /生成历史/)
+  assert.doesNotMatch(templateSource, /选中的版本会进入审核池/)
+  assert.doesNotMatch(finalizeSource, /activeStep\.value = 'review'/)
+  assert.match(source, /function buildReviewWorkspaceStyles/)
+  assert.match(source, /const selectedInputPaths = selectedSources\.map/)
+  assert.match(source, /source_images:\s*\{\s*paths:\s*selectedInputPaths\s*\}/)
+  assert.match(source, /source_limit:\s*selectedInputPaths\.length/)
+  assert.match(source, /\.aiv-edit-action-panel[\s\S]*?overflow:\s*hidden/)
+  assert.match(source, /\.aiv-edit-action-panel \.aiv-panel-body[\s\S]*?overflow-y:\s*auto/)
+  assert.match(source, /\.aiv-edit-style-list[\s\S]*?align-content:\s*start/)
+})
+
+test('deleting an AI result requires confirmation and removes the authorized local image', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+  const deleteStart = source.indexOf('async function confirmDeleteGeneratedVersion')
+  const deleteEnd = source.indexOf('async function refreshReviewBatch', deleteStart)
+  const deleteSource = source.slice(deleteStart, deleteEnd)
+  const preload = fs.readFileSync('app/src/preload.js', 'utf8')
+  const main = fs.readFileSync('app/src/main.js', 'utf8')
+
+  assert.match(templateSource, /确认删除本地图片/)
+  assert.match(templateSource, /删除后无法撤销/)
+  assert.match(source, /window\.cs\.deleteBalaWorkspaceImage/)
+  assert.match(source, /window\.cs\.deleteBalaReviewAsset/)
+  assert.match(preload, /deleteBalaWorkspaceImage/)
+  assert.match(preload, /deleteBalaReviewAsset/)
+  assert.match(main, /delete-bala-workspace-image/)
+  assert.match(main, /rememberAuthorizedBalaWorkspaceRoot/)
+  assert.match(main, /loadAuthorizedBalaWorkspaceRoots/)
+  assert.match(main, /authorized-bala-workspaces\.json/)
+  assert.match(deleteSource, /const remoteAssetId = String\(reviewAsset\?\.remoteAssetId/)
+  assert.match(deleteSource, /const boardUrl = reviewAsset\?\.reviewBoardUrl/)
+  assert.doesNotMatch(deleteSource, /reviewAsset\?\.reviewBoardUrl \|\| reviewBoardUrl\.value/)
+  assert.doesNotMatch(source, /lastDeletedVersion/)
+  assert.doesNotMatch(templateSource, /撤销删除/)
+})
+
+test('precise image edits archive the generated result inside the selected workspace before adding history', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const editStart = source.indexOf('async function runPreviewImageEdit')
+  const editEnd = source.indexOf('function providerLabel', editStart)
+  const editSource = source.slice(editStart, editEnd)
+
+  assert.match(source, /async function archivePreviewOutputToWorkspace\(/)
+  assert.match(editSource, /const current = activePreviewHistoryItem\.value/)
+  assert.match(editSource, /main_image_path:\s*mainPath/)
+  assert.doesNotMatch(editSource, /selectedSourceAssetsForAi\(/)
+  assert.match(source, /window\.cs\.saveAsAiImageJob\(jobUid,\s*\{[\s\S]*?directory:\s*workspaceDir\.value[\s\S]*?files:\s*\[source\]/)
+  assert.match(editSource, /const localOutputPath = await archivePreviewOutputToWorkspace\(jobUid, output\)/)
+  assert.match(editSource, /if \(!localOutputPath\) throw new Error\('大图修改结果未能保存到当前工作区'\)/)
+  assert.match(editSource, /previewPath:\s*localOutputPath/)
+})
+
+test('review workspace includes originals and every non-deleted AI result', () => {
+  assert.equal(typeof balaWorkflow.buildBalaReviewWorkspaceStyles, 'function')
+  const styles = balaWorkflow.buildBalaReviewWorkspaceStyles([{
+    styleCode: '208326102205',
+    modelPhotos: [{
+      id: 'source-1',
+      name: 'front.jpg',
+      path: '/tmp/front.jpg',
+      sourceType: 'model',
+      selected: true,
+      versions: [
+        { id: 'ai-face', operationType: 'face_swap', label: '换脸结果', previewPath: '/tmp/face.png' },
+        { id: 'ai-bg', operationType: 'background_swap', label: '背景结果', previewPath: '/tmp/bg.png', deleted: true },
+      ],
+    }],
+    detailPhotos: [{ id: 'detail-1', name: 'neck.jpg', path: '/tmp/neck.jpg', sourceType: 'detail' }],
+  }])
+
+  assert.equal(styles.length, 1)
+  assert.deepEqual(styles[0].assets.map(asset => [asset.id, asset.kind, asset.status]), [
+    ['source-1', 'origin', 'pending'],
+    ['ai-face', 'ai', 'pending'],
+  ])
+  assert.equal(styles[0].sourceAssets.length, 1)
+
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /reviewAssetCount\(style, 'origin'\).*张原图/)
+  assert.match(source, /reviewAssetCount\(style, 'ai'\).*张 AI 图/)
+})
+
+test('review workspace merges remote origin decisions by path and keeps remote-only retries', () => {
+  assert.equal(typeof balaWorkflow.mergeBalaReviewWorkspaceStyles, 'function')
+  const local = [{
+    styleCode: '208326102205',
+    assets: [
+      { id: 'local-origin', kind: 'origin', path: '/tmp/source.jpg', sourcePath: '/tmp/source.jpg', status: 'pending' },
+      { id: 'local-ai', kind: 'ai', path: '/tmp/ai.png', sourcePath: '/tmp/source.jpg', status: 'pending' },
+    ],
+    sourceAssets: [{ id: 'detail-1', kind: 'reference', path: '/tmp/detail.jpg' }],
+  }]
+  const remote = [{
+    styleCode: '208326102205',
+    assets: [
+      { id: 'remote-ai', kind: 'ai', path: '/tmp/ai.png', sourcePath: '/tmp/source.jpg', status: 'approved' },
+      { id: 'retry-new', kind: 'ai', path: '/tmp/retry.png', sourcePath: '/tmp/source.jpg', status: 'pending' },
+    ],
+    sourceAssets: [
+      { id: 'remote-origin', kind: 'origin', path: '/tmp/source.jpg', sourcePath: '/tmp/source.jpg', status: 'rejected' },
+    ],
+  }]
+
+  const merged = balaWorkflow.mergeBalaReviewWorkspaceStyles(local, remote)
+
+  assert.deepEqual(merged[0].assets.map(asset => [asset.id, asset.kind, asset.status]), [
+    ['remote-origin', 'origin', 'rejected'],
+    ['remote-ai', 'ai', 'approved'],
+    ['retry-new', 'ai', 'pending'],
+  ])
+  assert.equal(merged[0].sourceAssets.length, 1)
+})
+
+test('workspace versions keep results from different review batches that reuse the same asset id', () => {
+  assert.equal(typeof balaWorkflow.mergeBalaWorkspaceVersions, 'function')
+  const existing = [{
+    id: '208326102205-ai-1-face-job',
+    remoteAssetId: '208326102205-ai-1',
+    jobUid: 'face-job',
+    operationType: 'face_swap',
+    previewPath: '/tmp/face.png',
+  }]
+  const merged = balaWorkflow.mergeBalaWorkspaceVersions(existing, [{
+    id: '208326102205-ai-1',
+    jobUid: 'background-job',
+    operationType: 'background_swap',
+    path: '/tmp/background.png',
+  }])
+
+  assert.equal(merged.length, 2)
+  assert.deepEqual(merged.map(item => [item.remoteAssetId, item.jobUid, item.operationType, item.previewPath]), [
+    ['208326102205-ai-1', 'face-job', 'face_swap', '/tmp/face.png'],
+    ['208326102205-ai-1', 'background-job', 'background_swap', '/tmp/background.png'],
+  ])
+  assert.notEqual(merged[0].id, merged[1].id)
+})
+
+test('review workspace keeps same-id AI assets from different persisted batches', () => {
+  const first = [{
+    styleCode: '208326102205',
+    assets: [{
+      id: '208326102205-ai-1',
+      remoteAssetId: '208326102205-ai-1',
+      kind: 'ai',
+      jobUid: 'face-job',
+      reviewBoardUrl: 'http://127.0.0.1/review/face?token=face',
+      path: '/tmp/face.png',
+      status: 'pending',
+    }],
+    sourceAssets: [],
+  }]
+  const second = [{
+    styleCode: '208326102205',
+    assets: [{
+      id: '208326102205-ai-1',
+      remoteAssetId: '208326102205-ai-1',
+      kind: 'ai',
+      jobUid: 'pose-job',
+      reviewBoardUrl: 'http://127.0.0.1/review/pose?token=pose',
+      path: '/tmp/pose.png',
+      status: 'approved',
+    }],
+    sourceAssets: [],
+  }]
+
+  const merged = balaWorkflow.mergeBalaReviewWorkspaceStyles(first, second)
+
+  assert.equal(merged[0].assets.length, 2)
+  assert.deepEqual(merged[0].assets.map(asset => asset.jobUid), ['face-job', 'pose-job'])
+})
+
+test('AI image workspace metadata survives reload without persisting thumbnail payloads', () => {
+  assert.equal(typeof balaWorkflow.serializeBalaImageWorkspaceState, 'function')
+  assert.equal(typeof balaWorkflow.restoreBalaImageWorkspaceState, 'function')
+  const original = [{
+    styleCode: '208326102205',
+    modelPhotos: [{
+      id: 'source-1',
+      path: '/tmp/source.jpg',
+      thumbnailDataUrl: 'data:image/webp;base64,huge-payload',
+      reviewStatus: 'approved',
+      versions: [{
+        id: 'face-version',
+        remoteAssetId: '208326102205-ai-1',
+        jobUid: 'face-job',
+        runUid: 'face-run',
+        operationType: 'face_swap',
+        previewPath: '/tmp/face.png',
+        reviewBoardUrl: 'http://127.0.0.1/review/face?token=face',
+        status: 'approved',
+      }],
+    }],
+  }]
+
+  const snapshot = balaWorkflow.serializeBalaImageWorkspaceState(original)
+  assert.doesNotMatch(JSON.stringify(snapshot), /huge-payload/)
+
+  const restored = [{
+    styleCode: '208326102205',
+    modelPhotos: [{ id: 'source-1', path: '/tmp/source.jpg', versions: [] }],
+  }]
+  balaWorkflow.restoreBalaImageWorkspaceState(restored, snapshot)
+
+  assert.equal(restored[0].modelPhotos[0].reviewStatus, 'approved')
+  assert.deepEqual(restored[0].modelPhotos[0].versions.map(version => ({
+    jobUid: version.jobUid,
+    previewPath: version.previewPath,
+    reviewBoardUrl: version.reviewBoardUrl,
+    status: version.status,
+  })), [{
+    jobUid: 'face-job',
+    previewPath: '/tmp/face.png',
+    reviewBoardUrl: 'http://127.0.0.1/review/face?token=face',
+    status: 'approved',
+  }])
+})
+
+test('workflow restores all persisted review batches and routes decisions through each asset board', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const preload = fs.readFileSync('app/src/preload.js', 'utf8')
+  const main = fs.readFileSync('app/src/main.js', 'utf8')
+
+  assert.match(source, /BALA_AI_IMAGE_WORKSPACE_STATE_STORAGE_KEY/)
+  assert.match(source, /async function restoreReviewWorkspaceBatches\(/)
+  assert.match(source, /window\.cs\.listBalaReviewWorkspaceBatches/)
+  assert.match(source, /normalizeBalaReviewBatchStyles\(batch,\s*\{\s*reviewBoardUrl/)
+  assert.match(source, /const boardUrl = asset\.reviewBoardUrl \|\| reviewBoardUrl\.value/)
+  assert.match(preload, /listBalaReviewWorkspaceBatches/)
+  assert.match(main, /list-bala-review-workspace-batches/)
+})
+
+test('video asset pool enforces the review gate and keeps business source labels', () => {
+  assert.equal(typeof balaWorkflow.buildBalaVideoAssetPool, 'function')
+  const assets = balaWorkflow.buildBalaVideoAssetPool({
+    reviewStyle: {
+      styleCode: '208326102205',
+      assets: [
+        { id: 'approved-face', label: '正面', operationType: 'face_swap', status: 'approved', path: '/tmp/face.png' },
+        { id: 'pending-outfit', label: '侧面', operationType: 'outfit_swap', status: 'pending', path: '/tmp/outfit.png' },
+        { id: 'retry-pose', label: '背面', operationType: 'pose_swap', status: 'retry', path: '/tmp/pose.png' },
+        { id: 'rejected-bg', label: '背景', operationType: 'background_swap', status: 'rejected', path: '/tmp/bg.png' },
+      ],
+      sourceAssets: [
+        { id: 'approved-origin', name: '原图', sourceType: 'model', status: 'approved', path: '/tmp/source.jpg' },
+        { id: 'rejected-detail', name: '细节', sourceType: 'detail', status: 'rejected', path: '/tmp/detail.jpg' },
+      ],
+    },
+  })
+
+  assert.deepEqual(assets.map(asset => [asset.id, asset.kind, asset.status, asset.selectable]), [
+    ['vasset-approved-face', 'AI 换脸', 'approved', true],
+    ['vasset-pending-outfit', 'AI 换装', 'pending', false],
+    ['vasset-retry-pose', 'AI 换姿势', 'retry', false],
+    ['vasset-208326102205-source-approved-origin', '模拍', 'approved', true],
+  ])
+})
+
+test('new video task uses a tiled style library, approved-only assets, and no split mode', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(templateSource, /aiv-video-style-library/)
+  assert.match(templateSource, /选择款号素材库/)
+  assert.doesNotMatch(templateSource, /v-model="videoTaskDraft\.styleCode"[\s\S]{0,120}<option/)
+  assert.doesNotMatch(templateSource, /成片拆分/)
+  assert.doesNotMatch(source, /videoTaskDraft\.groupMode/)
+  assert.doesNotMatch(source, /task\.groupMode/)
+  assert.match(templateSource, /:disabled="!asset\.selectable"/)
+  assert.match(source, /group_mode:\s*'all_images_one_video'/)
+  assert.match(source, /duration:\s*5,[\s\S]*?runBalaSeedanceVideo/)
+})
+
+test('AI outfit references cross the preload bridge as cloneable plain arrays', () => {
+  const reactivePaths = new Proxy(['/tmp/garment.jpg', '  /tmp/detail.jpg  '], {})
+  assert.throws(() => structuredClone({ paths: reactivePaths }))
+
+  assert.equal(typeof balaWorkflow.toBalaBridgeStringArray, 'function')
+  const paths = balaWorkflow.toBalaBridgeStringArray(reactivePaths)
+  assert.deepEqual(paths, ['/tmp/garment.jpg', '/tmp/detail.jpg'])
+  assert.deepEqual(structuredClone({ paths }), { paths })
+
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /garment_images:[\s\S]{0,120}toBalaBridgeStringArray\(garmentImagePaths\.value\)/)
+  assert.match(source, /outfit_reference_images:[\s\S]{0,140}toBalaBridgeStringArray\(outfitReferencePaths\.value\)/)
+  assert.match(source, /variant_reference_images:[\s\S]{0,140}toBalaBridgeStringArray\(variantReferencePaths\.value\)/)
+})
+
+test('AI image generation stays active until review assets leave generating state', () => {
+  assert.equal(typeof balaWorkflow.hasGeneratingBalaReviewAssets, 'function')
+  assert.equal(balaWorkflow.hasGeneratingBalaReviewAssets({
+    items: [{ assets: [{ status: 'pending' }, { status: 'generating' }] }],
+  }), true)
+  assert.equal(balaWorkflow.hasGeneratingBalaReviewAssets({
+    items: [{ assets: [{ status: 'pending' }, { status: 'failed' }] }],
+  }), false)
+
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /async function waitForAiReviewResults/)
+  assert.match(source, /refreshBalaReviewBatch/)
+  assert.match(source, /hasGeneratingBalaReviewAssets\(batch\)/)
+  assert.match(source, /AI 图片仍在生成/)
 })

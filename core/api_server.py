@@ -12,6 +12,7 @@ import asyncio
 import base64
 import csv
 import hashlib
+import html
 import hmac
 import json
 import logging
@@ -75,6 +76,7 @@ logger = logging.getLogger(__name__)
 API_VERSION = "1.4.16"
 API_TOKEN_HEADER = "x-crawshrimp-token"
 PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
+PRIVATE_API_PATHS = {"/bala-ai-video-materials/api/from-rows"}
 PUBLIC_API_PREFIXES = (
     "/adapter-assets/",
     "/tmall-ai-image-approval/",
@@ -1905,6 +1907,52 @@ def _cleanup_semir_runtime_artifacts(runtime_files: list, package_root: Optional
         logger.debug("Failed to clean semir package root %s", package_root, exc_info=True)
 
 
+def _rewrite_bala_material_summary_excels(exported_files: list, data_rows: list, log) -> None:
+    rows = [row for row in (data_rows or []) if isinstance(row, dict)]
+    if not rows:
+        return
+    try:
+        from openpyxl import load_workbook
+    except Exception as exc:
+        raise RuntimeError("openpyxl 不可用，无法刷新巴拉素材结果表最终路径") from exc
+
+    for raw_path in exported_files or []:
+        path = Path(str(raw_path or "")).expanduser()
+        if path.suffix.lower() != ".xlsx":
+            continue
+        if not path.is_file():
+            raise RuntimeError(f"巴拉素材结果表不存在，无法刷新本地文件路径: {path}")
+        workbook = None
+        try:
+            workbook = load_workbook(path)
+            changed = False
+            for sheet in workbook.worksheets:
+                header_row = 0
+                path_column = 0
+                for row_index in range(1, min(sheet.max_row, 3) + 1):
+                    for column_index in range(1, sheet.max_column + 1):
+                        if str(sheet.cell(row=row_index, column=column_index).value or "").strip() == "本地文件":
+                            header_row = row_index
+                            path_column = column_index
+                            break
+                    if path_column:
+                        break
+                if not path_column:
+                    continue
+                for offset, row in enumerate(rows, start=1):
+                    sheet.cell(row=header_row + offset, column=path_column).value = str(row.get("本地文件") or "")
+                changed = True
+            if not changed:
+                raise RuntimeError(f"巴拉素材结果表缺少本地文件列: {path}")
+            workbook.save(path)
+            log(f"Bala video material Excel paths refreshed: {path}")
+        except Exception as exc:
+            raise RuntimeError(f"巴拉素材结果表最终路径刷新失败: {path}: {exc}") from exc
+        finally:
+            if workbook is not None:
+                workbook.close()
+
+
 def _cleanup_shenhui_runtime_artifacts(runtime_files: list, package_root: Optional[Path], work_dir: Optional[Path]) -> None:
     _cleanup_semir_runtime_artifacts(runtime_files, package_root)
     try:
@@ -2748,7 +2796,7 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
     if review_mode == "create_review_batch":
         review_rows = [row for row in rows if str(row.get("AI任务UID") or "").strip()]
         if review_rows:
-            api_base_url = str((run_params or {}).get("approval_base_url") or "http://127.0.0.1:18765").strip()
+            api_base_url = str((run_params or {}).get("approval_base_url") or _bala_ai_video_base_url()).strip()
             batch = bala_ai_video_review.build_review_batch(
                 review_rows,
                 run_params or {},
@@ -2846,6 +2894,7 @@ def _finalize_bala_ai_video_assistant_outputs(
             target_root.mkdir(parents=True, exist_ok=True)
             external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
             rewrite_row_paths(package_root, external_dir)
+            _rewrite_bala_material_summary_excels(exported_files, data_rows, log)
             external_refs = [str(external_dir)]
             log(f"Bala video material folder moved to export folder: {external_dir}")
             for file_path in exported_files or []:
@@ -2860,6 +2909,7 @@ def _finalize_bala_ai_video_assistant_outputs(
             target_root.mkdir(parents=True, exist_ok=True)
             external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
             rewrite_row_paths(package_root, external_dir)
+            _rewrite_bala_material_summary_excels(exported_files, data_rows, log)
             log(f"Bala video material folder moved to default output folder: {external_dir}")
             final_refs = [str(external_dir), *exported_refs]
     elif package_root.exists():
@@ -3560,32 +3610,32 @@ def _resolve_one_xm_settings() -> dict:
     return {
         "base_url": base_url,
         "2k": (
-            os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
-            or _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            or os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
             or os.environ.get("ONE_XM_API_KEY", "").strip()
         ),
         "4k": (
-            os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
-            or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            or os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
             or os.environ.get("ONE_XM_API_KEY", "").strip()
         ),
         "ai.1xm.gpt_image_2k_key": (
-            os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
-            or _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            _nested_config_value(cfg, "ai.1xm.gpt_image_2k_key")
+            or os.environ.get("ONE_XM_GPT_IMAGE_2K_KEY", "").strip()
             or os.environ.get("ONE_XM_API_KEY", "").strip()
         ),
         "ai.1xm.gpt_image_4k_key": (
-            os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
-            or _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            _nested_config_value(cfg, "ai.1xm.gpt_image_4k_key")
+            or os.environ.get("ONE_XM_GPT_IMAGE_4K_KEY", "").strip()
             or os.environ.get("ONE_XM_API_KEY", "").strip()
         ),
         "ai.1xm.gemini_3_1_flash_image_preview_key": (
-            os.environ.get("ONE_XM_GEMINI_3_1_FLASH_IMAGE_PREVIEW_KEY", "").strip()
-            or _nested_config_value(cfg, "ai.1xm.gemini_3_1_flash_image_preview_key")
+            _nested_config_value(cfg, "ai.1xm.gemini_3_1_flash_image_preview_key")
+            or os.environ.get("ONE_XM_GEMINI_3_1_FLASH_IMAGE_PREVIEW_KEY", "").strip()
         ),
         "ai.1xm.gemini_3_pro_image_preview_key": (
-            os.environ.get("ONE_XM_GEMINI_3_PRO_IMAGE_PREVIEW_KEY", "").strip()
-            or _nested_config_value(cfg, "ai.1xm.gemini_3_pro_image_preview_key")
+            _nested_config_value(cfg, "ai.1xm.gemini_3_pro_image_preview_key")
+            or os.environ.get("ONE_XM_GEMINI_3_PRO_IMAGE_PREVIEW_KEY", "").strip()
         ),
     }
 
@@ -6160,6 +6210,8 @@ async def track_runtime_operation(request: Request, call_next):
 
 def _is_public_api_path(path: str) -> bool:
     normalized = str(path or "")
+    if normalized in PRIVATE_API_PATHS:
+        return False
     return normalized in PUBLIC_API_PATHS or any(normalized.startswith(prefix) for prefix in PUBLIC_API_PREFIXES)
 
 
@@ -6270,6 +6322,17 @@ class BalaHappyHorseVideoRequest(BaseModel):
     timeout_seconds: int = 1800
 
 
+class BalaVideoProviderTaskRequest(BaseModel):
+    provider: str = ""
+    task_id: str = ""
+    style_code: str = ""
+    output_dir: str = ""
+    output_path: str = ""
+    download: bool = False
+    interval_seconds: int = 5
+    timeout_seconds: int = 1800
+
+
 def _bala_ai_video_base_url() -> str:
     return str(os.environ.get("CRAWSHRIMP_PUBLIC_BASE_URL") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").rstrip("/")
 
@@ -6364,15 +6427,15 @@ def _bala_video_provider_secrets() -> dict[str, str]:
     cfg = load_config()
     return {
         "seedance": str(
-            os.environ.get("ARK_API_KEY")
+            _nested_config_value(cfg, "ai.video.seedance_api_key")
+            or os.environ.get("ARK_API_KEY")
             or os.environ.get("VOLCENGINE_ARK_API_KEY")
-            or _nested_config_value(cfg, "ai.video.seedance_api_key")
             or ""
         ).strip(),
         "happyhorse": str(
-            os.environ.get("DASHSCOPE_API_KEY")
+            _nested_config_value(cfg, "ai.video.bailian_api_key")
+            or os.environ.get("DASHSCOPE_API_KEY")
             or os.environ.get("BAILIAN_API_KEY")
-            or _nested_config_value(cfg, "ai.video.bailian_api_key")
             or ""
         ).strip(),
     }
@@ -6383,10 +6446,10 @@ def _bala_video_provider_status() -> dict:
     secrets = _bala_video_provider_secrets()
 
     def source_for(provider: str, environment_names: tuple[str, ...], config_key: str) -> str:
-        if any(str(os.environ.get(name) or "").strip() for name in environment_names):
-            return "运行环境"
         if str(_nested_config_value(cfg, config_key) or "").strip():
             return "AI 能力"
+        if any(str(os.environ.get(name) or "").strip() for name in environment_names):
+            return "运行环境"
         return "未配置"
 
     return {
@@ -6419,7 +6482,7 @@ def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
         if secrets["seedance"]:
             env["ARK_API_KEY"] = secrets["seedance"]
         base_url = str(_nested_config_value(cfg, "ai.video.seedance_base_url") or "").strip()
-        if base_url and not str(env.get("ARK_BASE_URL") or "").strip():
+        if base_url:
             env["ARK_BASE_URL"] = base_url
     elif provider == "happyhorse":
         if secrets["happyhorse"]:
@@ -6431,7 +6494,7 @@ def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
         }
         for environment_name, config_key in mappings.items():
             value = str(_nested_config_value(cfg, config_key) or "").strip()
-            if value and not str(env.get(environment_name) or "").strip():
+            if value:
                 env[environment_name] = value
     return env, secret_values
 
@@ -6728,6 +6791,100 @@ async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
         "payload_path": str(payload_path),
         "stderr_tail": "\n".join(_sanitize_video_provider_output(stderr, secret_values).splitlines()[-20:]),
         "raw": final or created,
+    }
+
+
+def _video_provider_task_output_path(req: BalaVideoProviderTaskRequest) -> Path:
+    explicit = str(req.output_path or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    root = Path(str(req.output_dir or Path.home() / "Downloads" / "巴拉AI视频成片")).expanduser()
+    style = re.sub(r"[^A-Za-z0-9._~-]+", "-", str(req.style_code or "video").strip()).strip("-") or "video"
+    provider = re.sub(r"[^a-z0-9]+", "-", str(req.provider or "provider").strip().lower()).strip("-") or "provider"
+    task_id = re.sub(r"[^A-Za-z0-9._~-]+", "-", str(req.task_id or "task").strip()).strip("-") or "task"
+    return root / f"{style}_{provider}_{task_id}.mp4"
+
+
+async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dict:
+    provider = str(req.provider or "").strip().lower()
+    task_id = str(req.task_id or "").strip()
+    if provider not in {"seedance", "happyhorse"}:
+        raise HTTPException(400, "视频供应商必须是 Seedance 或 HappyHorse")
+    if not task_id:
+        raise HTTPException(400, "刷新视频状态需要 provider task ID")
+
+    cli_dir = BALA_SEEDANCE_CLI_DIR if provider == "seedance" else BALA_HAPPYHORSE_CLI_DIR
+    cli_file = "bin/seedance.js" if provider == "seedance" else "bin/bailian.js"
+    if not cli_dir.is_dir():
+        raise HTTPException(500, "视频供应商共享 CLI 未安装")
+
+    node_executable, node_env = _bala_video_node_runtime()
+    output_path = _video_provider_task_output_path(req)
+    command = [node_executable, cli_file, "wait" if req.download else "get", task_id]
+    if req.download:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        command.extend([
+            "--download",
+            str(output_path),
+            "--interval",
+            str(max(1, min(int(req.interval_seconds or 5), 60))),
+            "--timeout",
+            str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
+        ])
+
+    env, secret_values = _bala_video_provider_env(provider)
+    env.update(node_env)
+    required_key = "ARK_API_KEY" if provider == "seedance" else "DASHSCOPE_API_KEY"
+    if not str(env.get(required_key) or "").strip():
+        return {
+            "ok": False,
+            "provider": provider,
+            "task_id": task_id,
+            "status": "needs_config",
+            "error": f"请先在 AI 能力或运行环境配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
+        }
+
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(cli_dir),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    timeout = max(60, min(int(req.timeout_seconds or 1800), 7200) + 120) if req.download else 120
+    stdout_bytes, stderr_bytes = await _communicate_video_provider_process(
+        process,
+        timeout_seconds=timeout,
+        provider_label="Seedance" if provider == "seedance" else "HappyHorse",
+    )
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    objects = _parse_seedance_cli_json_objects(stdout)
+    final = objects[-1] if objects else {}
+    if process.returncode != 0:
+        sanitized = _sanitize_video_provider_output(stderr or stdout, secret_values)
+        raise HTTPException(500, sanitized.strip() or "视频供应商任务刷新失败")
+
+    if provider == "seedance":
+        final_task_id = str(final.get("id") or task_id)
+        status = str(final.get("status") or "")
+        content = final.get("content") if isinstance(final.get("content"), dict) else {}
+        video_url = str(content.get("video_url") or "")
+    else:
+        output = final.get("output") if isinstance(final.get("output"), dict) else {}
+        final_task_id = str(output.get("task_id") or task_id)
+        status = str(output.get("task_status") or "")
+        video_url = str(output.get("video_url") or "")
+
+    return {
+        "ok": True,
+        "provider": provider,
+        "task_id": final_task_id,
+        "status": status,
+        "video_url": video_url,
+        "local_video_path": str(output_path) if req.download and output_path.is_file() else "",
+        "stderr_tail": "\n".join(_sanitize_video_provider_output(stderr, secret_values).splitlines()[-20:]),
+        "raw": final,
     }
 
 
@@ -7040,6 +7197,11 @@ def get_bala_ai_video_provider_status():
     return _bala_video_provider_status()
 
 
+@app.post("/bala-ai-video-providers/api/task")
+async def refresh_bala_ai_video_provider_task(req: BalaVideoProviderTaskRequest):
+    return await _run_video_provider_task_cli(req)
+
+
 @app.post("/bala-ai-video-happyhorse/api/run")
 async def run_bala_ai_video_happyhorse(req: BalaHappyHorseVideoRequest):
     return await _run_happyhorse_cli(req)
@@ -7062,6 +7224,21 @@ def get_bala_ai_video_review_batch(batch_id: str, token: str = ""):
     return _load_bala_review_batch_checked(batch_id, token)
 
 
+@app.get("/bala-ai-video-review-workspace/api/batches")
+def list_bala_ai_video_review_workspace_batches(style_codes: str = "", limit: int = 100):
+    requested_styles = [
+        value.strip()
+        for value in re.split(r"[,，\s]+", str(style_codes or ""))
+        if value.strip()
+    ]
+    return {
+        "items": bala_ai_video_review.list_review_batches(
+            style_codes=requested_styles,
+            limit=limit,
+        ),
+    }
+
+
 @app.get("/bala-ai-video-review/api/{batch_id}/image/{asset_id}")
 def get_bala_ai_video_review_image(batch_id: str, asset_id: str, token: str = ""):
     batch = _load_bala_review_batch_checked(batch_id, token)
@@ -7078,6 +7255,19 @@ def save_bala_ai_video_review_decisions(batch_id: str, req: BalaReviewDecisionsR
     return updated
 
 
+@app.delete("/bala-ai-video-review/api/{batch_id}/asset/{asset_id}")
+def delete_bala_ai_video_review_asset(batch_id: str, asset_id: str, token: str = ""):
+    batch = _load_bala_review_batch_checked(batch_id, token)
+    try:
+        updated = bala_ai_video_review.remove_review_asset(batch, asset_id)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(404, "Bala review asset not found") from exc
+    bala_ai_video_review.save_review_batch(updated)
+    return updated
+
+
 @app.post("/bala-ai-video-review/api/{batch_id}/refresh")
 def refresh_bala_ai_video_review_batch(batch_id: str, token: str = ""):
     batch = _load_bala_review_batch_checked(batch_id, token)
@@ -7089,18 +7279,18 @@ def refresh_bala_ai_video_review_batch(batch_id: str, token: str = ""):
 @app.post("/bala-ai-video-review/api/{batch_id}/regenerate")
 async def regenerate_bala_ai_video_review_asset(batch_id: str, req: BalaReviewRegenerateRequest, token: str = ""):
     batch = _load_bala_review_batch_checked(batch_id, token)
-    try:
-        updated = await asyncio.to_thread(_append_bala_review_regenerate_asset, batch, req)
-        bala_ai_video_review.save_review_batch(updated)
-        _, asset = _bala_review_find_asset(updated, next(
-            str(candidate.get("id") or "")
-            for item in updated.get("items") or []
-            for candidate in item.get("assets") or []
-            if str(candidate.get("regenerated_from_asset_id") or "") == str(req.asset_id or "").strip()
-        ))
-        return {"ok": True, "batch": updated, "asset": asset}
-    except StopIteration as exc:
-        raise HTTPException(400, "重跑任务已创建但未找到回写资产") from exc
+    updated = await asyncio.to_thread(_append_bala_review_regenerate_asset, batch, req)
+    bala_ai_video_review.save_review_batch(updated)
+    matching_retry_ids = [
+        str(candidate.get("id") or "")
+        for item in updated.get("items") or []
+        for candidate in item.get("assets") or []
+        if str(candidate.get("regenerated_from_asset_id") or "") == str(req.asset_id or "").strip()
+    ]
+    if not matching_retry_ids:
+        raise HTTPException(400, "重跑任务已创建但未找到回写资产")
+    _, asset = _bala_review_find_asset(updated, matching_retry_ids[-1])
+    return {"ok": True, "batch": updated, "asset": asset}
 
 
 @app.post("/bala-ai-video-review/api/{batch_id}/export-video-input")
@@ -7136,19 +7326,19 @@ def export_bala_ai_video_review_video_input(batch_id: str, req: BalaReviewExport
 @app.get("/bala-ai-video-review/{batch_id}")
 def get_bala_ai_video_review_board(batch_id: str, token: str = ""):
     batch = _load_bala_review_batch_checked(batch_id, token)
-    title = f"巴拉 AI 图片审核 - {batch.get('batch_id') or batch_id}"
+    title = html.escape(f"巴拉 AI 图片审核 - {batch.get('batch_id') or batch_id}", quote=True)
     rows = []
     for item in batch.get("items") or []:
-        style_code = str(item.get("style_code") or "")
+        style_code = html.escape(str(item.get("style_code") or ""), quote=True)
         for asset in item.get("assets") or []:
             if not isinstance(asset, dict) or asset.get("kind") != "ai":
                 continue
             rows.append(
                 "<tr>"
                 f"<td>{style_code}</td>"
-                f"<td>{asset.get('operation_type') or ''}</td>"
-                f"<td>{asset.get('status') or ''}</td>"
-                f"<td>{asset.get('filename') or Path(str(asset.get('path') or '')).name}</td>"
+                f"<td>{html.escape(str(asset.get('operation_type') or ''), quote=True)}</td>"
+                f"<td>{html.escape(str(asset.get('status') or ''), quote=True)}</td>"
+                f"<td>{html.escape(str(asset.get('filename') or Path(str(asset.get('path') or '')).name), quote=True)}</td>"
                 "</tr>"
             )
     body = "\n".join(rows) or "<tr><td colspan=\"4\">暂无生成图片</td></tr>"
@@ -9713,4 +9903,4 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     )
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    uvicorn.run(app, host="127.0.0.1", port=port, access_log=False)

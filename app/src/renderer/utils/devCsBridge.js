@@ -341,6 +341,11 @@ export function createDevCsBridge() {
     createAiImageAsset: (payload) => apiCall('POST', '/ai-image/assets', payload || {}),
     createAiImageCanvas: (payload) => apiCall('POST', '/ai-image/canvases', payload || {}),
 
+    listBalaReviewWorkspaceBatches: (filters = {}) => {
+      const suffix = queryString(filters || {})
+      return apiCall('GET', `/bala-ai-video-review-workspace/api/batches${suffix ? `?${suffix}` : ''}`)
+    },
+
     probeTaskParams: (aid, tid, params, options = {}) => apiCall('POST', `/tasks/${encodePathPart(aid)}/${encodePathPart(tid)}/params/probe`, {
       params: params || {},
       current_tab_id: options.current_tab_id || '',
@@ -422,9 +427,11 @@ export function createDevCsBridge() {
     },
     runBalaSeedanceVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {}),
     getBalaVideoProviderStatus: () => apiCall('GET', '/bala-ai-video-providers/api/status'),
+    refreshBalaVideoProviderTask: (payload = {}) => apiCall('POST', '/bala-ai-video-providers/api/task', payload || {}),
     runBalaHappyHorseVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-happyhorse/api/run', payload || {}),
     getBalaReviewBatch: (batchId, token) => apiCall('GET', `/bala-ai-video-review/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
     saveBalaReviewDecisions: (batchId, token, decisions) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/decisions?token=${encodeURIComponent(String(token || ''))}`, { decisions: decisions || {} }),
+    deleteBalaReviewAsset: (batchId, token, assetId) => apiCall('DELETE', `/bala-ai-video-review/api/${encodePathPart(batchId)}/asset/${encodePathPart(assetId)}?token=${encodeURIComponent(String(token || ''))}`),
     refreshBalaReviewBatch: (batchId, token) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/refresh?token=${encodeURIComponent(String(token || ''))}`, {}),
     regenerateBalaReviewAsset: (batchId, token, payload) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/regenerate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     exportBalaVideoInput: (batchId, token, payload) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/export-video-input?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
@@ -464,6 +471,10 @@ export function createDevCsBridge() {
     saveSettings: (cfg) => apiCall('PUT', '/settings', cfg || {}),
     patchSettings: (cfg) => apiCall('PATCH', '/settings', cfg || {}),
     browseFile: promptPath,
+    selectBalaWorkspace: promptPath,
+    deleteBalaWorkspaceImage: async () => {
+      throw devModeError('浏览器开发模式不能安全删除本地图片，请在 Electron 开发壳中操作')
+    },
     readLocalImagePreview: (path) => apiCall('POST', '/files/local-image-preview', { path }),
     listDirectoryFiles: async () => ({ ok: false, paths: [], error: '浏览器开发模式不支持直接扫描本地目录' }),
     renderPdfPreview: async () => ({ ok: false, error: '浏览器开发模式不支持本地 PDF 预览' }),

@@ -34,6 +34,28 @@ class WebAgentProtocolTest(unittest.TestCase):
 
         self.assertIsNone(validate_action(action, user_confirmed=True))
 
+    def test_blocks_ordinary_clicks_that_target_dangerous_controls(self):
+        for target in ("button.delete", "发布", "确认付款"):
+            with self.subTest(target=target):
+                with self.assertRaises(SafetyError):
+                    validate_action(Action(kind="click", target=target, value=None, risk="safe"))
+
+                self.assertIsNone(validate_action(
+                    Action(kind="click", target=target, value=None, risk="safe"),
+                    user_confirmed=True,
+                ))
+
+    def test_blocks_all_click_like_actions_that_target_dangerous_controls(self):
+        for kind in ("click", "download", "paginate"):
+            with self.subTest(kind=kind):
+                with self.assertRaises(SafetyError):
+                    validate_action(Action(kind=kind, target="确认发布", value=None, risk="safe"))
+
+                self.assertIsNone(validate_action(
+                    Action(kind=kind, target="确认发布", value=None, risk="safe"),
+                    user_confirmed=True,
+                ))
+
     def test_journal_records_minimum_evidence_chain_as_json(self):
         journal = Journal(task="下载当前筛选结果")
         state = PageState(

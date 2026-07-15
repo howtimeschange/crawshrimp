@@ -189,6 +189,7 @@ class DownloadManager:
         self,
         item: dict[str, Any],
         *,
+        target_path: Path | None = None,
         retry_attempts: int,
         retry_delay_ms: int,
         timeout_seconds: int,
@@ -203,21 +204,7 @@ class DownloadManager:
         browser_session = bool(item.get("browser_session") or item.get("browserSession"))
         if not url:
             return {"success": False, "label": label or "download", "filename": filename, "error": "download url is empty", "attempts": 0}
-        target = self.target_path(filename, url, reuse_existing=True)
-        if target.is_file() and target.stat().st_size > 0:
-            saved = str(target)
-            if saved not in self.runtime_output_files:
-                self.runtime_output_files.append(saved)
-            return {
-                "success": True,
-                "path": saved,
-                "label": label or target.name,
-                "filename": target.name,
-                "url": url,
-                "attempts": 0,
-                "skipped_existing": True,
-                "bytes": target.stat().st_size,
-            }
+        target = target_path or self.target_path(filename, url)
         last_result: dict[str, Any] | None = None
         for attempt in range(1, max(retry_attempts, 1) + 1):
             item_timeout = int(item.get("timeout_seconds") or item.get("timeoutSeconds") or item.get("timeout") or timeout_seconds)
@@ -286,6 +273,17 @@ class DownloadManager:
             return {"ok": True, "items": []}
         semaphore = asyncio.Semaphore(max(1, int(concurrency or 1)))
         results: list[dict[str, Any] | None] = [None] * len(normalized)
+        reserved_targets: set[str] = set()
+        targets: list[Path] = []
+        for item in normalized:
+            candidate = self.target_path(str(item.get("filename") or ""), str(item.get("url") or ""))
+            base = candidate
+            suffix_index = 2
+            while str(candidate) in reserved_targets or candidate.exists():
+                candidate = base.with_name(f"{base.stem}_{suffix_index}{base.suffix}")
+                suffix_index += 1
+            reserved_targets.add(str(candidate))
+            targets.append(candidate)
         state = {"completed": 0, "success": 0, "failed": 0, "total": len(normalized)}
         loop = asyncio.get_running_loop()
 
@@ -306,6 +304,7 @@ class DownloadManager:
 
                 result = await self._download_one(
                     item,
+                    target_path=targets[index],
                     retry_attempts=max(1, int(retry_attempts or 1)),
                     retry_delay_ms=max(0, int(retry_delay_ms or 0)),
                     timeout_seconds=max(1, int(timeout_seconds or 30)),
@@ -421,7 +420,6 @@ class DownloadManager:
 
         directory = Path(download_dir).expanduser() if download_dir else Path.home() / "Downloads"
         results: list[dict[str, Any]] = []
-        fallback_pattern = re.compile(r".+\.(xlsx|xls|csv|zip|pdf|json|txt)$", re.IGNORECASE)
         for item in items or []:
             clicks = item.get("clicks") or []
             filename = str(item.get("filename") or "").strip()
@@ -439,7 +437,12 @@ class DownloadManager:
             if pattern is None and expected_url:
                 derived = derive_url_filename(expected_url, "")
                 pattern = re.compile(rf"^{re.escape(Path(derived).stem)}.*{re.escape(Path(derived).suffix)}$", re.IGNORECASE) if derived else None
-            pattern = pattern or fallback_pattern
+            if pattern is None and filename:
+                expected = Path(filename)
+                pattern = re.compile(
+                    rf"^{re.escape(expected.stem)}(?: \(\d+\))?{re.escape(expected.suffix)}$",
+                    re.IGNORECASE,
+                )
             if not clicks:
                 failure = {"success": False, "label": label, "filename": filename, "error": "download_clicks requires clicks", "transientActions": []}
                 results.append(failure)
@@ -453,7 +456,6 @@ class DownloadManager:
                     raise RuntimeError(failure["error"])
                 continue
             baseline = self.snapshot_download_dir(directory, pattern)
-            fallback_baseline = self.snapshot_download_dir(directory, fallback_pattern)
             baseline_tabs = await self._maybe_call_backend_hook(backend, "list_page_tab_ids")
             if baseline_tabs is None:
                 baseline_tabs = set()
@@ -492,10 +494,6 @@ class DownloadManager:
                         seen_transient.add(key)
                         transient_actions.append(dict(action))
                     downloaded = self.find_new_downloaded_file(directory, baseline, pattern=pattern, started_at_ns=started_at_ns)
-                    if not downloaded:
-                        downloaded = self.find_new_downloaded_file(directory, fallback_baseline, pattern=fallback_pattern, started_at_ns=started_at_ns)
-                        if downloaded:
-                            matched_by = "fallback_any_artifact"
                     if downloaded:
                         break
                     await asyncio.sleep(0.1)

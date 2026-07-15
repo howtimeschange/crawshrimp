@@ -94,7 +94,7 @@ class PhaseBackend:
                             "data": [{"phase": "download"}],
                             "meta": {
                                 "action": "download_clicks",
-                                "items": [{"clicks": [{"x": 1, "y": 2}], "filename": "clicked.xlsx", "expected_name_regex": r"clicked\\.xlsx"}],
+                                "items": [{"clicks": [{"x": 1, "y": 2}], "filename": "clicked.xlsx", "expected_name_regex": r"clicked\.xlsx"}],
                                 "shared_key": "click_downloads",
                                 "next_phase": "url_download",
                                 "sleep_ms": 0,
@@ -265,6 +265,60 @@ class PhaseRunnerTest(unittest.IsolatedAsyncioTestCase):
         cleanup_scripts = [action.script for action in backend.actions if action.kind == "eval" and "sessionStorage.removeItem" in action.script]
         self.assertEqual(len(cleanup_scripts), 1)
         self.assertIn("delete window.__CRAWSHRIMP_PARAMS__", cleanup_scripts[0])
+
+    async def test_phase_runner_stops_when_a_cdp_click_fails(self):
+        class FailingClickBackend:
+            def __init__(self):
+                self.phase_calls = 0
+
+            def execute(self, action):
+                if action.kind == "eval" and "sessionStorage.removeItem" in action.script:
+                    return BrowserResult(ok=True, action="eval", data={"value": True})
+                if action.kind == "eval":
+                    self.phase_calls += 1
+                    return BrowserResult(ok=True, action="eval", data={"value": {
+                        "success": True,
+                        "data": [],
+                        "meta": {"action": "cdp_clicks", "clicks": [{"x": 1, "y": 2}], "next_phase": "must-not-run"},
+                    }})
+                if action.kind == "click":
+                    return BrowserResult(ok=False, action="click", error="click failed")
+                return BrowserResult(ok=True, action=action.kind, data={})
+
+        backend = FailingClickBackend()
+        runner = WebPhaseRunner(backend=backend, max_pages=1, max_phases=3)
+
+        with self.assertRaisesRegex(RuntimeError, "click failed"):
+            await runner.run_script("return true")
+
+        self.assertEqual(backend.phase_calls, 1)
+
+    async def test_phase_runner_stops_when_file_injection_fails(self):
+        class FailingUploadBackend:
+            def __init__(self):
+                self.phase_calls = 0
+
+            def execute(self, action):
+                if action.kind == "eval" and "sessionStorage.removeItem" in action.script:
+                    return BrowserResult(ok=True, action="eval", data={"value": True})
+                if action.kind == "eval":
+                    self.phase_calls += 1
+                    return BrowserResult(ok=True, action="eval", data={"value": {
+                        "success": True,
+                        "data": [],
+                        "meta": {"action": "inject_files", "items": [{"selector": "input[type=file]", "files": ["/tmp/a.png"]}], "next_phase": "must-not-run"},
+                    }})
+                if action.kind == "upload":
+                    return BrowserResult(ok=False, action="upload", error="file input not found")
+                return BrowserResult(ok=True, action=action.kind, data={})
+
+        backend = FailingUploadBackend()
+        runner = WebPhaseRunner(backend=backend, max_pages=1, max_phases=3)
+
+        with self.assertRaisesRegex(RuntimeError, "file input not found"):
+            await runner.run_script("return true")
+
+        self.assertEqual(backend.phase_calls, 1)
 
 
 if __name__ == "__main__":

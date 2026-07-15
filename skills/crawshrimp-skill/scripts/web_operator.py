@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 try:
     from scripts.browser_executor import (
@@ -19,10 +21,10 @@ try:
         normalize_crawshrimp_snapshot,
         snapshot_download_dir,
     )
-    from scripts.web_agent_protocol import Action, Journal, Observation, PageState, Plan, TaskKind, Verification, draft_plan, validate_action
+    from scripts.web_agent_protocol import Action, DANGEROUS_CLICK_TARGET_MARKERS, Journal, Observation, PageState, Plan, TaskKind, Verification, draft_plan, validate_action
 except ModuleNotFoundError:
     from browser_executor import BrowserAction, BrowserResult, ChromeCDPBackend, find_new_download, normalize_crawshrimp_snapshot, snapshot_download_dir
-    from web_agent_protocol import Action, Journal, Observation, PageState, Plan, TaskKind, Verification, draft_plan, validate_action
+    from web_agent_protocol import Action, DANGEROUS_CLICK_TARGET_MARKERS, Journal, Observation, PageState, Plan, TaskKind, Verification, draft_plan, validate_action
 
 
 DOM_SNAPSHOT_SCRIPT = r"""
@@ -142,17 +144,114 @@ DOM_SNAPSHOT_SCRIPT = r"""
 """.strip()
 
 
+SENSITIVE_URL_QUERY_KEYS = {
+    "access_token",
+    "accesskey",
+    "api_key",
+    "apikey",
+    "asid",
+    "auth",
+    "authorization",
+    "credential",
+    "key",
+    "password",
+    "secret",
+    "session",
+    "session_id",
+    "sessionid",
+    "sid",
+    "sign",
+    "signature",
+    "token",
+    "uid",
+    "uidaplus",
+    "userid",
+    "yunid",
+}
+
+URL_WITH_QUERY_PATTERN = re.compile(r"(?:https?://|/)[^\s\"'<>`]*\?[^\s\"'<>`]+")
+
+
+def _redact_sensitive_url(value: str) -> str:
+    text = str(value or "")
+    if "?" not in text:
+        return text
+    try:
+        parts = urlsplit(text)
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+    except Exception:
+        return text
+    changed = False
+    sanitized = []
+    for key, raw_value in pairs:
+        if str(key).strip().lower() in SENSITIVE_URL_QUERY_KEYS:
+            sanitized.append((key, "[REDACTED]"))
+            changed = True
+        else:
+            sanitized.append((key, raw_value))
+    if not changed:
+        return text
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(sanitized, doseq=True), parts.fragment))
+
+
+def _redact_snapshot_urls(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_snapshot_urls(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_snapshot_urls(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_snapshot_urls(item) for item in value)
+    if isinstance(value, str) and "?" in value:
+        return URL_WITH_QUERY_PATTERN.sub(
+            lambda match: _redact_sensitive_url(match.group(0)),
+            value,
+        )
+    return value
+
+
+def _redact_page_state_urls(page: PageState) -> PageState:
+    return replace(
+        page,
+        url=_redact_sensitive_url(page.url),
+        controls=_redact_snapshot_urls(page.controls),
+        tables=_redact_snapshot_urls(page.tables),
+        downloads=_redact_snapshot_urls(page.downloads),
+        network=_redact_snapshot_urls(page.network),
+        context=_redact_snapshot_urls(page.context),
+        active_regions=_redact_snapshot_urls(page.active_regions),
+        accessibility=_redact_snapshot_urls(page.accessibility),
+    )
+
+
+def _redact_action_urls(action: Action) -> Action:
+    return replace(
+        action,
+        target=_redact_snapshot_urls(action.target),
+        value=_redact_snapshot_urls(action.value),
+        metadata=_redact_snapshot_urls(action.metadata),
+    )
+
+
 def _json_string(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def make_action_script(kind: str, *, selector: str = "", value: str | None = None, text: str = "", timeout_ms: int = 8000) -> str:
+def make_action_script(
+    kind: str,
+    *,
+    selector: str = "",
+    value: str | None = None,
+    text: str = "",
+    timeout_ms: int = 8000,
+    user_confirmed: bool = False,
+) -> str:
     payload = {
         "kind": kind,
         "selector": selector,
         "value": value,
         "text": text,
         "timeoutMs": timeout_ms,
+        "userConfirmed": bool(user_confirmed),
     }
     return f"""
 window.__webAgentAct = async function(payload) {{
@@ -182,7 +281,19 @@ window.__webAgentAct = async function(payload) {{
     el.dispatchEvent(new Event('change', {{ bubbles: true }}))
   }}
   const target = payload.kind === 'wait' ? await waitFor() : await waitFor()
-  if (payload.kind === 'click' || payload.kind === 'download' || payload.kind === 'paginate') {{
+  if (['click', 'download', 'paginate'].includes(payload.kind)) {{
+    const dangerousMarkers = {json.dumps(list(DANGEROUS_CLICK_TARGET_MARKERS), ensure_ascii=False)}
+    const targetLabel = [
+      textOf(target),
+      target.getAttribute?.('aria-label') || '',
+      target.getAttribute?.('title') || '',
+      target.getAttribute?.('name') || '',
+      target.getAttribute?.('data-action') || '',
+      target.value || '',
+    ].join(' ').toLowerCase()
+    if (dangerousMarkers.some((marker) => targetLabel.includes(marker)) && !payload.userConfirmed) {{
+      throw new Error(`Action '${{payload.kind}}' on '${{targetLabel || payload.selector}}' requires explicit user confirmation.`)
+    }}
     target.click()
     return {{ ok: true, action: payload.kind, evidence: textOf(target) || target.href || payload.selector }}
   }}
@@ -317,7 +428,7 @@ class WebOperator:
         value = result.data.get("value")
         if not isinstance(value, dict):
             value = result.data
-        page = normalize_crawshrimp_snapshot({"dom": value})
+        page = _redact_page_state_urls(normalize_crawshrimp_snapshot({"dom": value}))
         if self.download_dir.exists() and self.download_dir.is_dir():
             page.downloads.append({
                 "kind": "directory",
@@ -374,13 +485,14 @@ class WebOperator:
             metadata = {"url": str(value or url or selector), "timeout_ms": timeout_ms}
         protocol_action = Action(kind=kind, target=target, value=value, risk=risk, reason=reason, metadata=metadata)
         validate_action(protocol_action, user_confirmed=user_confirmed)
+        journal_action = _redact_action_urls(protocol_action)
 
         if backend_kind in {"upload", "upload_chooser"}:
             missing_file = _missing_upload_file(files)
             if missing_file:
                 result = BrowserResult(ok=False, action=backend_kind, error=f"upload file not found: {missing_file}")
-                self.journal.add_action(protocol_action)
-                self.journal.add_failure({"action": asdict(protocol_action), "evidence": result.error, "recovery": "provide an existing local file path"})
+                self.journal.add_action(journal_action)
+                self.journal.add_failure({"action": asdict(journal_action), "evidence": result.error, "recovery": "provide an existing local file path"})
                 self.journal.add_verification(Verification(passed=False, evidence=result.error))
                 return result
 
@@ -405,12 +517,19 @@ class WebOperator:
         elif kind == "navigate":
             result = self.backend.execute(BrowserAction(kind="navigate", url=str(value or url or selector), timeout_ms=timeout_ms))
         else:
-            script = make_action_script(kind, selector=selector, value=value, text=text, timeout_ms=timeout_ms)
+            script = make_action_script(
+                kind,
+                selector=selector,
+                value=value,
+                text=text,
+                timeout_ms=timeout_ms,
+                user_confirmed=user_confirmed,
+            )
             result = self.backend.execute(BrowserAction(kind="eval", script=script, timeout_ms=timeout_ms, user_gesture=True))
 
-        self.journal.add_action(protocol_action)
+        self.journal.add_action(journal_action)
         if not result.ok:
-            failure = {"action": asdict(protocol_action), "evidence": result.error or "action failed", "recovery": "re-observe and replan"}
+            failure = {"action": asdict(journal_action), "evidence": result.error or "action failed", "recovery": "re-observe and replan"}
             self.journal.add_failure(failure)
             self.journal.add_verification(Verification(passed=False, evidence=result.error or "action failed"))
             return result
@@ -450,7 +569,7 @@ class WebOperator:
                 )
             else:
                 failure_text = f"No downloaded file detected in {self.download_dir}"
-                self.journal.add_failure({"action": asdict(protocol_action), "evidence": failure_text, "recovery": "check download directory or use direct URL download"})
+                self.journal.add_failure({"action": asdict(journal_action), "evidence": failure_text, "recovery": "check download directory or use direct URL download"})
                 self.journal.add_verification(Verification(passed=False, evidence=failure_text))
                 result = BrowserResult(ok=False, action=result.action, data=result.data, error=failure_text)
         return result
@@ -530,6 +649,7 @@ def build_snapshot(operator: WebOperator) -> dict[str, Any]:
 
 
 def distill_workflow(journal_payload: dict[str, Any]) -> str:
+    journal_payload = _redact_snapshot_urls(journal_payload)
     task = str(journal_payload.get("task") or "")
     plan = journal_payload.get("plan") or {}
     observations = journal_payload.get("observations") or []

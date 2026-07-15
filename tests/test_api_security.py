@@ -68,6 +68,23 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status_code, 200)
 
+    async def test_bala_material_batch_creation_requires_api_auth_while_tokenized_images_stay_public(self):
+        async def call_next(_request):
+            return PlainTextResponse("ok")
+
+        with patch.dict(os.environ, {"CRAWSHRIMP_API_TOKEN": "unit-token"}, clear=False):
+            blocked = await api_server.require_local_api_token(
+                FakeRequest("/bala-ai-video-materials/api/from-rows", method="POST"),
+                call_next,
+            )
+            allowed = await api_server.require_local_api_token(
+                FakeRequest("/bala-ai-video-materials/api/batch/image/asset", method="GET"),
+                call_next,
+            )
+
+        self.assertEqual(blocked.status_code, 401)
+        self.assertEqual(allowed.status_code, 200)
+
     def test_adapter_asset_response_is_path_scoped_and_cors_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter_dir = Path(tmpdir) / "demo-adapter"

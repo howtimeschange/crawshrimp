@@ -30,19 +30,33 @@
 
     <main
       class="aiv-stage"
-      :class="{ 'aiv-stage-material-active': activeStep === 'materials' }"
+      :class="{ 'aiv-stage-material-active': activeStep === 'materials', 'aiv-stage-ai-edit-active': activeStep === 'ai-edit' }"
       :inert="hasOpenModal ? '' : null"
       :aria-busy="materialIsRunning ? 'true' : 'false'"
     >
-      <section v-if="activeStep === 'materials'" class="aiv-stage-grid aiv-material-stage">
-        <aside class="aiv-panel aiv-params-panel">
+      <section v-if="activeStep === 'materials'" :class="['aiv-stage-grid', 'aiv-material-stage', { 'params-collapsed': !materialPanelExpanded }]">
+        <aside :class="['aiv-panel', 'aiv-params-panel', { collapsed: !materialPanelExpanded }]">
           <header class="aiv-panel-head">
-            <div>
+            <div v-if="materialPanelExpanded">
               <strong>森马云盘视频素材图下载</strong>
               <span>云盘找图 · 本地规整 · 可恢复任务</span>
             </div>
+            <div v-else class="aiv-collapsed-material-summary">
+              <strong>找图</strong>
+              <span>{{ materialIsRunning ? '进行中' : materialTask.status === 'failed' ? '失败' : '待命' }}</span>
+            </div>
+            <button
+              type="button"
+              class="aiv-collapse-action"
+              :aria-expanded="materialPanelExpanded"
+              aria-controls="aiv-material-params-body"
+              @click="materialPanelExpanded = !materialPanelExpanded"
+            >
+              <span>{{ materialPanelExpanded ? '收起找图' : '展开' }}</span>
+              <span class="aiv-collapse-chevron" aria-hidden="true"></span>
+            </button>
           </header>
-          <div class="aiv-panel-body">
+          <div v-show="materialPanelExpanded" id="aiv-material-params-body" class="aiv-panel-body">
             <label class="aiv-field">
               <span>款号</span>
               <textarea v-model="styleCodes" rows="8"></textarea>
@@ -191,9 +205,8 @@
                           v-if="thumbnailSourceFor(asset) && !brokenPreviews[thumbnailSourceFor(asset)]"
                           :src="thumbnailSourceFor(asset)"
                           :alt="asset.name"
-                          loading="lazy"
+                          loading="eager"
                           decoding="async"
-                          fetchpriority="low"
                           @error="markPreviewBroken(thumbnailSourceFor(asset))"
                         />
                         <template v-else>
@@ -244,9 +257,8 @@
                           v-if="thumbnailSourceFor(asset) && !brokenPreviews[thumbnailSourceFor(asset)]"
                           :src="thumbnailSourceFor(asset)"
                           :alt="asset.name"
-                          loading="lazy"
+                          loading="eager"
                           decoding="async"
-                          fetchpriority="low"
                           @error="markPreviewBroken(thumbnailSourceFor(asset))"
                         />
                         <template v-else>
@@ -286,7 +298,7 @@
             </div>
           </div>
           <footer class="aiv-page-actions aiv-material-sticky-actions">
-            <button type="button" class="aiv-primary" @click="activeStep = 'ai-edit'">进入 AI 改图</button>
+            <button type="button" class="aiv-primary" @click="enterAiEditWorkspace">进入 AI 改图</button>
           </footer>
         </section>
       </section>
@@ -296,10 +308,10 @@
           <header class="aiv-panel-head">
             <div>
               <strong>AI 改图动作</strong>
-              <span>先选动作，再在右侧按款号挑原图</span>
+              <span>选择只表示本次操作范围，不决定审核结果</span>
             </div>
           </header>
-          <div class="aiv-panel-body">
+          <div class="aiv-panel-body aiv-edit-scroll-body">
             <div class="aiv-action-grid">
               <button
                 v-for="action in aiActions"
@@ -313,7 +325,12 @@
               </button>
             </div>
 
-            <div v-if="activeAction === 'face_swap'" class="aiv-picked-row">
+            <div v-if="activeAction === 'face_swap'" class="aiv-picked-row aiv-selected-model-preview">
+              <img
+                v-if="selectedModel && previewSourceFor(selectedModel)"
+                :src="previewSourceFor(selectedModel)"
+                :alt="selectedModel.label"
+              />
               <div>
                 <span>AI 模特</span>
                 <strong>{{ selectedModel?.label || '未选择' }}</strong>
@@ -348,19 +365,49 @@
               </div>
             </div>
 
+            <details class="aiv-local-material-library" open>
+              <summary>
+                <span><strong>本地素材库</strong><small>换装与细节参考共用</small></span>
+                <span>{{ localMaterialLibraryAssets.length }} 张</span>
+              </summary>
+              <div class="aiv-reference-kind-switcher">
+                <button type="button" :class="{ active: activeLocalReferenceKind === 'garment' }" @click="activeLocalReferenceKind = 'garment'">服装图</button>
+                <button type="button" :class="{ active: activeLocalReferenceKind === 'outfit' }" @click="activeLocalReferenceKind = 'outfit'">搭配参考</button>
+                <button type="button" :class="{ active: activeLocalReferenceKind === 'variant' }" @click="activeLocalReferenceKind = 'variant'">同款不同色</button>
+              </div>
+              <div class="aiv-local-material-grid">
+                <button
+                  v-for="asset in localMaterialLibraryAssets"
+                  :key="asset.id || asset.path"
+                  type="button"
+                  :class="{ selected: localReferenceSelected(asset.path, activeLocalReferenceKind) }"
+                  :aria-pressed="localReferenceSelected(asset.path, activeLocalReferenceKind)"
+                  @click="toggleLocalReference(asset, activeLocalReferenceKind)"
+                >
+                  <img v-if="thumbnailSourceFor(asset)" :src="thumbnailSourceFor(asset)" :alt="asset.name" loading="lazy" decoding="async" />
+                  <span>{{ asset.role }} · {{ asset.name }}</span>
+                </button>
+              </div>
+            </details>
+
             <label class="aiv-field">
-              <span>{{ activePromptLabel }}</span>
+              <span class="aiv-field-heading">
+                {{ activePromptLabel }}
+                <button v-if="activeAction === 'pose_swap'" type="button" class="aiv-text-action" @click="promptLibraryTarget = 'workspace'; promptLibraryOpen = true">从 Prompt 库选择</button>
+              </span>
               <textarea v-model="aiPrompt" rows="6"></textarea>
             </label>
 
             <div class="aiv-generation-queue">
               <strong>待生成队列</strong>
-              <span>{{ activeActionTitle }} · {{ selectedEditSourceCount }} 张原图 · {{ selectedEditVersionCount }} 个已选版本</span>
+              <span>{{ activeActionTitle }} · {{ selectedEditSourceCount }} 张输入图</span>
             </div>
             <div v-if="aiTaskState.error" class="aiv-inline-error">{{ aiTaskState.error }}</div>
+          </div>
+          <footer class="aiv-edit-sticky-actions">
             <div class="aiv-edit-selection-summary">
-              <strong>当前已选 {{ selectedEditVersionCount }} 个 AI 结果版本</strong>
-              <span>选中的版本会进入审核池，原图和未选版本保留在图片工作台。</span>
+              <strong>本次操作 {{ selectedEditSourceCount }} 张图片</strong>
+              <span>原图和未删除的 AI 结果会全量进入下一步审核。</span>
             </div>
             <button
               type="button"
@@ -370,8 +417,8 @@
             >
               {{ aiIsRunning ? '正在生图...' : '开始生图' }}
             </button>
-            <button type="button" class="aiv-ghost wide" @click="loadLatestReviewBatch">刷新审核池</button>
-          </div>
+            <button type="button" class="aiv-ghost wide" @click="openReviewWorkspace">进入审核</button>
+          </footer>
         </aside>
 
         <section class="aiv-panel aiv-image-workbench">
@@ -424,7 +471,15 @@
                   :key="source.name"
                   class="aiv-edit-source-row"
                 >
-                  <button type="button" class="aiv-original-card" @click="openImagePreview(source, style.styleCode)">
+                  <article
+                    :class="['aiv-original-card', { selected: source.editSelected }]"
+                    role="button"
+                    tabindex="0"
+                    :aria-pressed="Boolean(source.editSelected)"
+                    @click="toggleEditInputSelection(source)"
+                    @keydown.enter.prevent="toggleEditInputSelection(source)"
+                    @keydown.space.prevent="toggleEditInputSelection(source)"
+                  >
                     <img
                       v-if="previewSourceFor(source) && !brokenPreviews[previewSourceFor(source)]"
                       :src="previewSourceFor(source)"
@@ -434,40 +489,35 @@
                     <span class="aiv-origin-label">原图</span>
                     <strong>{{ source.name }}</strong>
                     <small>{{ source.role }} · {{ style.styleCode }}</small>
-                  </button>
+                    <button type="button" class="aiv-thumb-zoom" title="大图修改" @click.stop="openImageEditor(source, style.styleCode)">
+                      <span aria-hidden="true">⌕</span>
+                    </button>
+                  </article>
                   <div class="aiv-version-rail">
-                    <button
-                      v-for="version in source.versions"
+                    <article
+                      v-for="version in visibleSourceVersions(source, showSelectedVersionsOnly)"
                       :key="version.id"
-                      type="button"
-                      :class="['aiv-version-card', { selected: version.selected, loading: version.status === 'running' }]"
-                      @click="toggleVersionSelection(version)"
-                      @dblclick="openImagePreview(version, style.styleCode)"
+                      :class="['aiv-version-card', { selected: version.editSelected, loading: version.status === 'running' }]"
+                      role="button"
+                      tabindex="0"
+                      :aria-pressed="Boolean(version.editSelected)"
+                      @click="toggleEditInputSelection(version)"
+                      @keydown.enter.prevent="toggleEditInputSelection(version)"
+                      @keydown.space.prevent="toggleEditInputSelection(version)"
                     >
                       <span>{{ version.action }}</span>
                       <strong>{{ version.label }}</strong>
                       <small>{{ version.meta }}</small>
                       <i class="aiv-mini-progress" :style="{ '--progress': `${version.progress || 100}%` }"></i>
-                    </button>
+                      <button type="button" class="aiv-version-edit" title="大图修改" @click.stop="openImageEditor(version, style.styleCode, source)">修改</button>
+                      <button type="button" class="aiv-version-delete" title="删除生成结果" @click.stop="requestDeleteGeneratedVersion(style, source, version)">删除生成结果</button>
+                    </article>
                     <button type="button" class="aiv-version-card add" @click="activeAction = 'background_swap'">
                       <strong>继续改这张</strong>
-                    <small>换脸 / 换背景 / 换装 / 换姿势</small>
-                  </button>
+                      <small>换脸 / 换背景 / 换装 / 换姿势</small>
+                    </button>
                   </div>
                 </article>
-
-                <section class="aiv-reference-strip">
-                  <strong>细节参考</strong>
-                  <button
-                    v-for="asset in style.detailPhotos"
-                    :key="asset.name"
-                    type="button"
-                    :class="['aiv-source-pill', { selected: asset.selected }]"
-                    @click="toggleMaterialSelection(asset)"
-                  >
-                    {{ asset.role }} · {{ asset.name }}
-                  </button>
-                </section>
                 <div v-if="!editSourcesForStyle(style).length" class="aiv-empty-inline">
                   本款还没有选中的模拍原图，可回到找图步骤补选。
                 </div>
@@ -510,7 +560,7 @@
               <div class="aiv-style-head">
                 <div>
                   <strong>{{ style.styleCode }}</strong>
-                  <span>{{ style.assets.length }} 张 AI 图 · {{ style.sourceAssets.length }} 张源图</span>
+                  <span>{{ reviewAssetCount(style, 'origin') }} 张原图 · {{ reviewAssetCount(style, 'ai') }} 张 AI 图 · {{ style.sourceAssets.length }} 张参考素材</span>
                 </div>
                 <div class="aiv-review-actions">
                   <button type="button" class="aiv-ghost small" @click="setStyleReviewStatus(style, 'approved')">本款全通过</button>
@@ -639,7 +689,7 @@
                 </button>
               </div>
               <div class="aiv-video-task-meta">
-                <div><strong>生成方式</strong><span>{{ groupModeLabel(task.groupMode) }}</span></div>
+                <div><strong>素材组合</strong><span>{{ task.assets.length }} 张图组成一条视频任务</span></div>
                 <div><strong>Prompt</strong><span>{{ task.prompt || '软件管家页面生成可不填写 Prompt' }}</span></div>
                 <div><strong>输出目录</strong><span>{{ task.outputDir }}</span></div>
               </div>
@@ -672,7 +722,7 @@
               <span>展示下载后的本地 MP4、任务状态和批量进度</span>
             </div>
             <div class="aiv-inline-actions">
-              <button type="button" class="aiv-ghost small" @click="activeStep = 'results'">刷新状态</button>
+              <button type="button" class="aiv-ghost small" @click="refreshVideoResults">刷新状态</button>
               <button type="button" class="aiv-ghost small" @click="openOutputDir">打开输出目录</button>
             </div>
           </header>
@@ -702,9 +752,17 @@
                   <p v-if="item.error" class="aiv-result-error">{{ item.error }}</p>
                   <p v-else>{{ item.path }}</p>
                   <footer>
-                    <button type="button" class="aiv-ghost small" @click="openVideoResult(item)">预览</button>
-                    <button type="button" class="aiv-ghost small" @click="retryVideoResult(item)">重新下载</button>
-                    <button type="button" class="aiv-primary small" @click="openVideoResult(item)">打开文件</button>
+                    <button v-if="videoResultHasOutput(item)" type="button" class="aiv-ghost small" @click="openVideoResult(item)">预览</button>
+                    <button v-if="canRetryVideoResult(item)" type="button" class="aiv-ghost small" @click="retryVideoResult(item)">重新下载</button>
+                    <button v-if="videoResultHasOutput(item)" type="button" class="aiv-primary small" @click="openVideoResult(item)">打开文件</button>
+                    <button
+                      v-if="!videoResultHasOutput(item) && !canRetryVideoResult(item)"
+                      type="button"
+                      class="aiv-primary small"
+                      @click="activeStep = 'templates'"
+                    >
+                      返回生视频
+                    </button>
                   </footer>
                 </div>
               </article>
@@ -720,7 +778,7 @@
 
     <div v-if="previewImage" class="aiv-modal" @click.self="closePreview">
       <section
-        class="aiv-preview-modal-panel"
+        class="aiv-preview-modal-panel aiv-image-editor-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aiv-preview-title"
@@ -736,20 +794,116 @@
           </div>
           <button type="button" class="aiv-ghost small" @click="closePreview">关闭</button>
         </header>
-        <div class="aiv-big-preview">
-          <img
-            v-if="previewImage.src && !brokenPreviews[previewImage.src]"
-            :src="previewImage.src"
-            :alt="previewImage.title"
-            @error="markPreviewBroken(previewImage.src)"
-          />
-          <div v-else>
-            <strong>{{ previewImage.title }}</strong>
-            <span>{{ previewImage.meta }}</span>
-          </div>
+        <div class="aiv-image-editor-layout">
+          <section class="aiv-image-editor-stage">
+            <div class="aiv-big-preview">
+              <img
+                v-if="activePreviewHistoryItem?.src && !brokenPreviews[activePreviewHistoryItem.src]"
+                :src="activePreviewHistoryItem.src"
+                :alt="activePreviewHistoryItem.label || previewImage.title"
+                @error="markPreviewBroken(activePreviewHistoryItem.src)"
+              />
+              <div v-else>
+                <strong>{{ previewImage.title }}</strong>
+                <span>{{ previewImage.meta }}</span>
+              </div>
+              <TldrawAnnotationLayer
+                v-if="activePreviewHistoryItem?.src"
+                class="aiv-image-annotation-layer"
+                :class="{ active: Boolean(previewAnnotationTool) }"
+                :image-src="activePreviewHistoryItem.src"
+                :image-label="activePreviewHistoryItem.label || previewImage.title"
+                :active-tool="previewAnnotationTool"
+                :annotation-color="previewAnnotationColor"
+                :clear-nonce="previewAnnotationClearNonce"
+                :export-nonce="previewAnnotationExportNonce"
+                @export-annotation="capturePreviewAnnotation"
+                @error="handlePreviewAnnotationError"
+              />
+              <div class="aiv-image-annotation-toolbar" aria-label="精确标注工具">
+                <button type="button" :class="{ active: previewAnnotationTool === 'draw' }" @click="previewAnnotationTool = 'draw'">画笔</button>
+                <button type="button" :class="{ active: previewAnnotationTool === 'arrow' }" @click="previewAnnotationTool = 'arrow'">箭头</button>
+                <button type="button" :class="{ active: previewAnnotationTool === 'text' }" @click="previewAnnotationTool = 'text'">文字</button>
+                <button type="button" @click="clearPreviewAnnotation">清除标注</button>
+              </div>
+            </div>
+            <div class="aiv-preview-history-strip" aria-label="生成历史">
+              <strong>生成历史</strong>
+              <button
+                v-for="(item, index) in previewHistoryItems"
+                :key="item.id || item.src || index"
+                type="button"
+                :class="{ active: previewHistoryIndex === index }"
+                @click="previewHistoryIndex = index"
+              >
+                <img v-if="item.src" :src="item.src" :alt="item.label" />
+                <span>{{ item.label }}</span>
+              </button>
+            </div>
+          </section>
+          <aside class="aiv-image-editor-tools">
+            <strong>大图修改</strong>
+            <span>Prompt 和精确标注只作用于当前图片</span>
+            <div class="aiv-image-editor-actions">
+              <button v-for="action in aiActions" :key="action.id" type="button" :class="{ active: previewEditAction === action.id }" @click="previewEditAction = action.id">
+                {{ action.title }}
+              </button>
+            </div>
+            <label class="aiv-field">
+              <span>Prompt 修改</span>
+              <textarea v-model="previewEditPrompt" rows="8" placeholder="描述只针对当前图片的修改要求"></textarea>
+            </label>
+            <button v-if="previewEditAction === 'pose_swap'" type="button" class="aiv-ghost wide" @click="promptLibraryTarget = 'preview'; promptLibraryOpen = true">从 Prompt 库选择</button>
+            <div v-if="previewEditError" class="aiv-inline-error">{{ previewEditError }}</div>
+            <button type="button" class="aiv-primary wide" :disabled="previewEditBusy" @click="runPreviewImageEdit">
+              {{ previewEditBusy ? '修改图生成中...' : '生成当前修改' }}
+            </button>
+          </aside>
         </div>
       </section>
     </div>
+
+    <div v-if="pendingVersionDeletion" class="aiv-modal" @click.self="closeDeleteConfirmation">
+      <section
+        class="aiv-modal-panel aiv-confirm-panel"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="aiv-delete-title"
+        aria-describedby="aiv-delete-description"
+        tabindex="-1"
+        data-aiv-dialog
+        @keydown.esc.prevent="closeDeleteConfirmation"
+        @keydown="trapDialogFocus"
+      >
+        <header class="aiv-modal-head">
+          <div>
+            <strong id="aiv-delete-title">确认删除本地图片</strong>
+            <span>这会真实删除工作区里的 AI 生成文件</span>
+          </div>
+        </header>
+        <div class="aiv-confirm-copy">
+          <strong>{{ pendingVersionDeletion.version?.label || '当前 AI 结果' }}</strong>
+          <span id="aiv-delete-description">删除后无法撤销，图片也会从工作台、审核池和视频素材池移除。</span>
+          <code>{{ pendingVersionDeletion.path }}</code>
+          <div v-if="deleteVersionError" class="aiv-inline-error">{{ deleteVersionError }}</div>
+        </div>
+        <footer class="aiv-modal-foot">
+          <span>仅允许删除已授权工作区内的图片文件</span>
+          <button type="button" class="aiv-ghost" :disabled="deleteVersionBusy" @click="closeDeleteConfirmation">取消</button>
+          <button type="button" class="aiv-danger" :disabled="deleteVersionBusy" @click="confirmDeleteGeneratedVersion">
+            {{ deleteVersionBusy ? '正在删除...' : '确认删除' }}
+          </button>
+        </footer>
+      </section>
+    </div>
+
+    <PromptLibraryPickerModal
+      :open="promptLibraryOpen"
+      title="从 Prompt 库选择"
+      subtitle="选中后回填当前姿势或大图修改 Prompt。"
+      @close="promptLibraryOpen = false"
+      @select="applyPromptLibrarySelection"
+    />
 
     <div v-if="modelLibraryOpen" class="aiv-modal" @click.self="closeModelLibrary">
       <section
@@ -771,22 +925,16 @@
         </header>
         <div class="aiv-modal-body">
           <aside class="aiv-modal-filter">
-            <button
-              type="button"
-              :class="['aiv-chip', { active: !modelGroupFilter }]"
-              @click="modelGroupFilter = ''"
-            >
-              全部
-            </button>
-            <button
-              v-for="group in modelGroups"
-              :key="group.id"
-              type="button"
-              :class="['aiv-chip', { active: modelGroupFilter === group.id }]"
-              @click="modelGroupFilter = group.id"
-            >
-              {{ group.label }}
-            </button>
+            <strong>年龄段</strong>
+            <div class="aiv-filter-chip-row">
+              <button type="button" :class="['aiv-chip', { active: !modelAgeFilter }]" @click="modelAgeFilter = ''">全部</button>
+              <button v-for="age in modelAgeOptions" :key="age" type="button" :class="['aiv-chip', { active: modelAgeFilter === age }]" @click="modelAgeFilter = age">{{ age }}</button>
+            </div>
+            <strong>性别</strong>
+            <div class="aiv-filter-chip-row">
+              <button type="button" :class="['aiv-chip', { active: !modelGenderFilter }]" @click="modelGenderFilter = ''">全部</button>
+              <button v-for="gender in modelGenderOptions" :key="gender" type="button" :class="['aiv-chip', { active: modelGenderFilter === gender }]" @click="modelGenderFilter = gender">{{ gender }}</button>
+            </div>
             <span v-if="modelLibraryState.loading" class="aiv-filter-note">加载模特库...</span>
             <span v-if="modelLibraryState.error" class="aiv-filter-note error">{{ modelLibraryState.error }}</span>
           </aside>
@@ -807,12 +955,14 @@
                   v-if="!brokenPreviews[model.imageUrl || model.path]"
                   :src="model.imageUrl || localFileUrl(model.path)"
                   :alt="model.name"
+                  loading="lazy"
+                  decoding="async"
                   @error="markPreviewBroken(model.imageUrl || model.path)"
                 />
-                <span v-else>{{ model.group }}</span>
+                    <span v-else>{{ model.ageLabel }} {{ model.gender }}</span>
               </div>
               <div>
-                <strong>{{ model.groupLabel || model.group }}</strong>
+                    <strong>{{ model.ageLabel }} · {{ model.gender }}</strong>
                 <span>{{ model.name }}</span>
               </div>
             </article>
@@ -919,18 +1069,31 @@
         <header class="aiv-modal-head">
           <div>
             <strong id="aiv-video-task-title">新增视频任务</strong>
-            <span>一个款号可以创建多条视频任务；先选生成方式、款号、图片和 Prompt，再进入提交队列</span>
+            <span>一个款号可以创建多条视频任务；先从素材库选款，再组合图片、Prompt 和生成方式</span>
           </div>
           <button type="button" class="aiv-ghost small" @click="closeVideoTaskDialog">关闭</button>
         </header>
         <div class="aiv-modal-body video-task">
+          <section class="aiv-video-style-library">
+            <header>
+              <strong>选择款号素材库</strong>
+              <span>第一步找过图的款号会在这里平铺；一次任务只使用一个款号</span>
+            </header>
+            <div>
+              <button
+                v-for="job in videoJobs"
+                :key="job.styleCode"
+                type="button"
+                :class="{ active: videoTaskDraft.styleCode === job.styleCode }"
+                :aria-pressed="videoTaskDraft.styleCode === job.styleCode"
+                @click="selectVideoTaskStyle(job.styleCode)"
+              >
+                <strong>{{ job.styleCode }}</strong>
+                <span>{{ job.assets.filter(asset => asset.selectable).length }} 张已审核可选 · {{ job.assets.length }} 张可查看</span>
+              </button>
+            </div>
+          </section>
           <aside class="aiv-video-task-form">
-            <label class="aiv-field">
-              <span>款号</span>
-              <select v-model="videoTaskDraft.styleCode" @change="resetVideoTaskDraftAssets">
-                <option v-for="job in videoJobs" :key="job.styleCode" :value="job.styleCode">{{ job.styleCode }}</option>
-              </select>
-            </label>
             <label class="aiv-field">
               <span>生成方式</span>
               <select v-model="videoTaskDraft.provider" @change="handleVideoProviderChange">
@@ -945,14 +1108,6 @@
                 <option value="t2v">文生视频</option>
                 <option value="i2v">图生视频</option>
                 <option value="r2v">参考生视频</option>
-              </select>
-            </label>
-            <label class="aiv-field">
-              <span>成片拆分</span>
-              <select v-model="videoTaskDraft.groupMode">
-                <option value="all_images_one_video">多张图进入一个视频任务</option>
-                <option value="one_image_per_video">每张图单独生成一条视频</option>
-                <option value="multi_slot_template">多张图进入同一个多槽位模板</option>
               </select>
             </label>
             <label class="aiv-field">
@@ -989,7 +1144,7 @@
             <header class="aiv-picker-head">
               <div>
                 <strong>{{ videoTaskDraft.styleCode }} 可选图片</strong>
-                <span>可选已审核和未审核图片，卡片会保留审核状态标签</span>
+                    <span>只有已审核图片可选择；待审图片只读展示，已舍弃图片不会出现</span>
               </div>
               <span class="aiv-badge orange">已选 {{ selectedVideoTaskAssetCount }}</span>
             </header>
@@ -998,13 +1153,15 @@
                 v-for="asset in videoTaskSelectableAssets"
                 :key="asset.id"
                 :class="['aiv-video-asset-card', { selected: videoTaskDraft.assetIds.includes(asset.id), pending: asset.status !== 'approved' }]"
-                role="button"
-                tabindex="0"
-                :aria-pressed="videoTaskDraft.assetIds.includes(asset.id)"
+                    role="button"
+                    :tabindex="asset.selectable ? 0 : -1"
+                    :disabled="!asset.selectable"
+                    :aria-disabled="!asset.selectable"
+                    :aria-pressed="videoTaskDraft.assetIds.includes(asset.id)"
                 :aria-label="`${videoTaskDraft.assetIds.includes(asset.id) ? '取消选择' : '选择'}视频素材 ${asset.label}`"
-                @click="toggleVideoTaskDraftAsset(asset.id)"
-                @keydown.enter.prevent="toggleVideoTaskDraftAsset(asset.id)"
-                @keydown.space.prevent="toggleVideoTaskDraftAsset(asset.id)"
+                    @click="toggleVideoTaskDraftAsset(asset)"
+                    @keydown.enter.prevent="toggleVideoTaskDraftAsset(asset)"
+                    @keydown.space.prevent="toggleVideoTaskDraftAsset(asset)"
               >
                 <img
                   v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
@@ -1039,6 +1196,8 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
+import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import {
   BALA_AI_IMAGE_TASK_ID,
   BALA_AI_VIDEO_ADAPTER_ID,
@@ -1046,11 +1205,18 @@ import {
   BALA_QN_VIDEO_TASK_ID,
   buildBalaAiStageRequest,
   buildBalaMaterialPrepareParams,
+  buildBalaReviewWorkspaceStyles,
+  buildBalaVideoAssetPool,
   collectVideoResultRows,
   collectDownloadedMaterialRows,
+  filterBalaModelLibraryItems,
+  formatBalaModelDisplayLabel,
+  hasGeneratingBalaReviewAssets,
   isSeedancePrivacyProtectionError,
   isActiveWorkflowStatus,
   latestRunForTaskData,
+  mergeBalaReviewWorkspaceStyles,
+  mergeBalaWorkspaceVersions,
   normalizeBalaMaterialGroups,
   normalizeBalaMaterialProgress,
   normalizeBalaReviewBatchStyles,
@@ -1062,17 +1228,26 @@ import {
   parseBalaMaterialBoardUrl,
   parseBalaReviewBoardUrl,
   parseRunOutputFiles,
+  qnTerminalRunFailure,
+  qnVideoResultFailure,
   rebaseBalaMaterialRowsToWorkspace,
+  restoreBalaImageWorkspaceState,
+  selectEditableSourcesForStyle,
   selectNewTaskRun,
+  selectVisibleEditableVersions,
+  serializeBalaImageWorkspaceState,
   summarizeBalaMaterialGroups,
+  toBalaBridgeStringArray,
   waitForNewTaskRun,
 } from '../utils/balaAiVideoWorkflow'
 
 const emit = defineEmits(['open-settings'])
 
 const BALA_AI_VIDEO_WORKSPACE_STORAGE_KEY = 'crawshrimp.bala-ai-video.workspace-dir'
-const DEFAULT_BALA_AI_VIDEO_WORKSPACE_DIR = '/Users/xingyicheng/Downloads/巴拉AI视频素材'
+const BALA_AI_VIDEO_STATE_STORAGE_KEY = 'crawshrimp.bala-ai-video.workflow-state.v1'
+const BALA_AI_IMAGE_WORKSPACE_STATE_STORAGE_KEY = 'crawshrimp.bala-ai-video.image-workspace-state.v1'
 const MATERIAL_RENDER_CHUNK = 20
+let aiImageWorkspaceStateHydrated = false
 
 function loadStoredWorkspaceDir() {
   try {
@@ -1082,12 +1257,13 @@ function loadStoredWorkspaceDir() {
   }
 }
 
-const workspaceDir = ref(loadStoredWorkspaceDir() || DEFAULT_BALA_AI_VIDEO_WORKSPACE_DIR)
+const workspaceDir = ref(loadStoredWorkspaceDir())
 const materialOutputDir = workspaceDir
 const videoOutputDir = workspaceDir
 
 const activeStep = ref('materials')
 const activeAction = ref('face_swap')
+const materialPanelExpanded = ref(true)
 const selectedTemplateId = ref('')
 const selectedModel = ref(null)
 const showSelectedVersionsOnly = ref(false)
@@ -1100,6 +1276,21 @@ const activeTemplateStyle = ref('')
 const addImageMenuStyle = ref('')
 const reviewFilter = ref('')
 const reviewStatusFilter = ref('')
+const promptLibraryOpen = ref(false)
+const promptLibraryTarget = ref('workspace')
+const activeLocalReferenceKind = ref('garment')
+const previewEditAction = ref('background_swap')
+const previewEditPrompt = ref('')
+const previewEditBusy = ref(false)
+const previewEditError = ref('')
+const previewHistoryIndex = ref(0)
+const previewAnnotationTool = ref('draw')
+const previewAnnotationColor = ref('red')
+const previewAnnotationClearNonce = ref(0)
+const previewAnnotationExportNonce = ref(0)
+const pendingVersionDeletion = ref(null)
+const deleteVersionBusy = ref(false)
+const deleteVersionError = ref('')
 const brokenPreviews = reactive({})
 const materialBatch = ref(null)
 const materialBoardUrl = ref('')
@@ -1110,7 +1301,6 @@ const videoTaskDraft = reactive({
   styleCode: '208326102205',
   provider: 'qn',
   happyhorseMode: 'i2v',
-  groupMode: 'all_images_one_video',
   prompt: '',
   outputDir: workspaceDir.value,
   templateId: '',
@@ -1171,7 +1361,8 @@ const modelLibraryState = reactive({
   groups: [],
   items: [],
 })
-const modelGroupFilter = ref('')
+const modelAgeFilter = ref('')
+const modelGenderFilter = ref('')
 const templateLibraryState = reactive({
   loading: false,
   error: '',
@@ -1230,22 +1421,170 @@ const activeMaterialGroup = computed(() => (
 const materialSummary = computed(() => summarizeBalaMaterialGroups(materialGroups))
 const selectedMaterialCount = computed(() => materialSummary.value.selectedCount)
 const selectedEditSourceCount = computed(() => (
-  styleWorkspaces.reduce((sum, style) => sum + editSourcesForStyle(style).length, 0)
+  styleWorkspaces.reduce((sum, style) => sum + (style.modelPhotos || []).reduce((inner, source) => (
+    inner + (source.editSelected ? 1 : 0) + visibleSourceVersions(source).filter(version => version.editSelected).length
+  ), 0), 0)
 ))
 const selectedEditVersionCount = computed(() => (
   styleWorkspaces.reduce((sum, style) => (
-    sum + editSourcesForStyle(style).reduce((inner, source) => inner + (source.versions || []).filter(version => version.selected).length, 0)
+    sum + editSourcesForStyle(style).reduce((inner, source) => inner + visibleSourceVersions(source).filter(version => version.editSelected).length, 0)
   ), 0)
 ))
 
 const modelGroups = computed(() => modelLibraryState.groups)
-const modelSamples = computed(() => modelLibraryState.items)
+const modelSamples = computed(() => filterBalaModelLibraryItems(modelLibraryState.items, {
+  age: modelAgeFilter.value,
+  gender: modelGenderFilter.value,
+}))
+const modelAgeOptions = computed(() => [...new Set([
+  ...modelLibraryState.groups.map(group => group.ageLabel),
+  ...modelLibraryState.items.map(item => item.ageLabel),
+].filter(Boolean))])
+const modelGenderOptions = computed(() => [...new Set([
+  ...modelLibraryState.groups.map(group => group.gender),
+  ...modelLibraryState.items.map(item => item.gender),
+].filter(Boolean))])
+const localMaterialLibraryAssets = computed(() => {
+  const group = activeMaterialGroup.value
+  if (!group) return []
+  return [...(group.modelPhotos || []), ...(group.detailPhotos || [])]
+})
+const previewHistoryItems = computed(() => {
+  if (!previewImage.value) return []
+  const items = Array.isArray(previewImage.value.history) ? previewImage.value.history : []
+  return items.filter(item => item && !item.deleted).map(item => ({
+    ...item,
+    src: previewSourceFor(item),
+    label: item.label || item.name || '图片',
+  }))
+})
+const activePreviewHistoryItem = computed(() => {
+  const items = previewHistoryItems.value
+  if (!items.length) return null
+  return items[Math.min(Math.max(previewHistoryIndex.value, 0), items.length - 1)]
+})
 
 const reviewStyles = reactive([])
 
 const videoJobs = reactive([])
 const videoTasks = reactive([])
 const videoResults = reactive([])
+
+function persistAiImageWorkspaceState() {
+  if (!aiImageWorkspaceStateHydrated) return
+  try {
+    localStorage.setItem(
+      BALA_AI_IMAGE_WORKSPACE_STATE_STORAGE_KEY,
+      JSON.stringify({
+        version: 1,
+        updatedAt: new Date().toISOString(),
+        styles: serializeBalaImageWorkspaceState(styleWorkspaces),
+      }),
+    )
+  } catch {
+    // Persistence is best-effort; review batches remain the durable fallback.
+  }
+}
+
+function restoreAiImageWorkspaceState() {
+  try {
+    const raw = localStorage.getItem(BALA_AI_IMAGE_WORKSPACE_STATE_STORAGE_KEY)
+    if (!raw) return false
+    const saved = JSON.parse(raw)
+    restoreBalaImageWorkspaceState(styleWorkspaces, Array.isArray(saved?.styles) ? saved.styles : [])
+    return true
+  } catch {
+    localStorage.removeItem(BALA_AI_IMAGE_WORKSPACE_STATE_STORAGE_KEY)
+    return false
+  }
+}
+
+function persistedVideoAsset(asset = {}) {
+  return {
+    id: String(asset.id || ''),
+    label: String(asset.label || asset.name || ''),
+    name: String(asset.name || ''),
+    kind: String(asset.kind || ''),
+    operationType: String(asset.operationType || ''),
+    status: String(asset.status || ''),
+    sourceAssetId: String(asset.sourceAssetId || ''),
+    styleCode: String(asset.styleCode || ''),
+    path: String(asset.path || ''),
+    previewPath: String(asset.previewPath || ''),
+    selectable: Boolean(asset.selectable),
+  }
+}
+
+function persistedVideoTask(task = {}) {
+  const template = task.template && typeof task.template === 'object'
+    ? {
+        id: String(task.template.id || ''),
+        title: String(task.template.title || ''),
+        duration: Number(task.template.duration || 0),
+        ratio: String(task.template.ratio || ''),
+      }
+    : null
+  return {
+    id: String(task.id || ''),
+    title: String(task.title || ''),
+    styleCode: String(task.styleCode || ''),
+    provider: String(task.provider || ''),
+    happyhorseMode: String(task.happyhorseMode || ''),
+    prompt: String(task.prompt || ''),
+    outputDir: String(task.outputDir || ''),
+    template,
+    status: String(task.status || ''),
+    providerTaskId: String(task.providerTaskId || ''),
+    runId: String(task.runId || ''),
+    assets: (task.assets || []).map(persistedVideoAsset),
+  }
+}
+
+function persistedVideoResult(item = {}) {
+  return {
+    id: String(item.id || ''),
+    taskRefId: String(item.taskRefId || ''),
+    styleCode: String(item.styleCode || ''),
+    template: String(item.template || ''),
+    provider: String(item.provider || ''),
+    providerKey: String(item.providerKey || ''),
+    providerTaskId: String(item.providerTaskId || item.taskId || ''),
+    taskId: String(item.taskId || item.providerTaskId || ''),
+    providerStatus: String(item.providerStatus || ''),
+    status: String(item.status || ''),
+    progress: Number(item.progress || 0),
+    path: String(item.path || ''),
+    videoUrl: String(item.videoUrl || ''),
+    error: String(item.error || ''),
+  }
+}
+
+function persistVideoWorkflowState() {
+  try {
+    localStorage.setItem(BALA_AI_VIDEO_STATE_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      updatedAt: new Date().toISOString(),
+      videoTasks: videoTasks.map(persistedVideoTask),
+      videoResults: videoResults.map(persistedVideoResult),
+    }))
+  } catch {
+    // Persistence is best-effort; the live task remains available in memory.
+  }
+}
+
+function restoreVideoWorkflowState() {
+  try {
+    const raw = localStorage.getItem(BALA_AI_VIDEO_STATE_STORAGE_KEY)
+    if (!raw) return
+    const saved = JSON.parse(raw)
+    const tasks = Array.isArray(saved?.videoTasks) ? saved.videoTasks.map(persistedVideoTask).filter(item => item.id) : []
+    const results = Array.isArray(saved?.videoResults) ? saved.videoResults.map(persistedVideoResult).filter(item => item.id) : []
+    videoTasks.splice(0, videoTasks.length, ...tasks)
+    videoResults.splice(0, videoResults.length, ...results)
+  } catch {
+    localStorage.removeItem(BALA_AI_VIDEO_STATE_STORAGE_KEY)
+  }
+}
 
 const completedVideoCount = computed(() => videoResults.filter(item => item.status === '已完成').length)
 const overallVideoProgress = computed(() => {
@@ -1265,7 +1604,7 @@ const materialIsRunning = computed(() => isActiveWorkflowStatus(materialTask.sta
 const aiIsRunning = computed(() => isActiveWorkflowStatus(aiTaskState.status))
 const videoIsRunning = computed(() => isActiveWorkflowStatus(videoStageState.status))
 const hasOpenModal = computed(() => Boolean(
-  previewImage.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value,
+  previewImage.value || pendingVersionDeletion.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || promptLibraryOpen.value,
 ))
 const templateCategories = computed(() => {
   const names = [...new Set(templateSamples.map(item => item.title).filter(Boolean))]
@@ -1298,7 +1637,11 @@ let materialPollTimer = null
 let materialPollRunId = ''
 let aiPollTimer = null
 let aiPollRunId = ''
+let aiReviewPollToken = 0
 let videoPollTimer = null
+let previewAnnotationResolve = null
+let previewAnnotationReject = null
+let previewAnnotationTimer = null
 
 function replaceStyleWorkspaces(groups = []) {
   for (const key of Object.keys(materialRenderLimits)) delete materialRenderLimits[key]
@@ -1373,6 +1716,7 @@ function thumbnailSourceFor(asset = {}) {
 }
 
 function normalizeModelLibraryItem(item = {}) {
+  const displayLabel = formatBalaModelDisplayLabel(item)
   return {
     id: String(item.id || '').trim(),
     group: String(item.group || '').trim(),
@@ -1380,8 +1724,8 @@ function normalizeModelLibraryItem(item = {}) {
     ageLabel: String(item.age_label || '').trim(),
     gender: String(item.gender || '').trim(),
     expression: String(item.expression || '').trim(),
-    name: [item.age_label, item.gender, item.expression].filter(Boolean).join(' / '),
-    label: [item.group_label || item.group, item.expression].filter(Boolean).join(' / '),
+    name: displayLabel,
+    label: displayLabel,
     imageUrl: absoluteApiUrl(item.image_url || item.imageUrl),
     path: '',
   }
@@ -1393,7 +1737,8 @@ async function loadModelLibrary() {
   modelLibraryState.error = ''
   try {
     const payload = await window.cs.listBalaModelLibrary({
-      group: modelGroupFilter.value || '',
+      age_label: modelAgeFilter.value || '',
+      gender: modelGenderFilter.value || '',
     })
     const groupsPayload = payload?.groups && typeof payload.groups === 'object' ? payload.groups : {}
     modelLibraryState.groups = Object.entries(groupsPayload).map(([id, group]) => ({
@@ -1403,7 +1748,6 @@ async function loadModelLibrary() {
       gender: String(group?.gender || ''),
     }))
     modelLibraryState.items = (payload?.items || []).map(normalizeModelLibraryItem).filter(item => item.id)
-    if (!selectedModel.value && modelLibraryState.items[0]) selectedModel.value = modelLibraryState.items[0]
   } catch (error) {
     modelLibraryState.error = error?.message || String(error)
   } finally {
@@ -1428,7 +1772,7 @@ async function loadTemplateCatalog() {
   }
 }
 
-watch(modelGroupFilter, () => {
+watch([modelAgeFilter, modelGenderFilter], () => {
   void loadModelLibrary()
 })
 
@@ -1499,8 +1843,7 @@ function applyWorkspaceDirectory(path = '') {
 
 async function pickMaterialOutputDirectory() {
   try {
-    const selected = await window.cs.browseFile({
-      directory: true,
+    const selected = await window.cs.selectBalaWorkspace({
       title: '选择 AI 视频工作区目录',
       defaultPath: workspaceDir.value,
     })
@@ -1517,8 +1860,7 @@ async function pickMaterialOutputDirectory() {
 
 async function pickVideoOutputDirectory() {
   try {
-    const selected = await window.cs.browseFile({
-      directory: true,
+    const selected = await window.cs.selectBalaWorkspace({
       title: '选择 AI 视频工作区目录',
       defaultPath: workspaceDir.value,
     })
@@ -1643,6 +1985,10 @@ async function startMaterialPrepare() {
   }
   if (!params.cloud_path) {
     updateMaterialTask({ status: 'failed', error: '请填写云盘搜索根路径', message: '请填写云盘搜索根路径。' })
+    return
+  }
+  if (!params.export_folder) {
+    updateMaterialTask({ status: 'failed', error: '请先选择 AI 视频工作区目录', message: '请先选择 AI 视频工作区目录。' })
     return
   }
   const previousStatus = await window.cs.getTaskStatus(
@@ -1874,7 +2220,140 @@ function toggleMaterialSelection(asset) {
 }
 
 function toggleVersionSelection(version) {
-  version.selected = !version.selected
+  toggleEditInputSelection(version)
+}
+
+function toggleEditInputSelection(asset) {
+  asset.editSelected = !asset.editSelected
+}
+
+function enterAiEditWorkspace() {
+  for (const style of styleWorkspaces) {
+    for (const source of style.modelPhotos || []) {
+      source.editSelected = false
+      for (const version of source.versions || []) version.editSelected = false
+    }
+  }
+  activeStep.value = 'ai-edit'
+}
+
+function visibleSourceVersions(source = {}, selectedOnly = false) {
+  return selectVisibleEditableVersions(source, selectedOnly)
+}
+
+function requestDeleteGeneratedVersion(style, source, version) {
+  const filePath = String(version?.previewPath || version?.path || '').trim()
+  pendingVersionDeletion.value = { style, source, version, path: filePath }
+  deleteVersionBusy.value = false
+  deleteVersionError.value = filePath ? '' : '当前结果没有可删除的本地图片文件'
+}
+
+function closeDeleteConfirmation() {
+  if (deleteVersionBusy.value) return
+  pendingVersionDeletion.value = null
+  deleteVersionError.value = ''
+}
+
+function sameDeletedVersion(asset, target) {
+  if (!asset || !target) return false
+  const targetId = String(target.id || '').trim()
+  const targetPath = String(target.previewPath || target.path || '').trim()
+  const assetId = String(asset.id || '').replace(/^vasset-/, '').trim()
+  const assetPath = String(asset.previewPath || asset.path || '').trim()
+  return Boolean((targetId && (asset.id === targetId || assetId === targetId)) || (targetPath && assetPath === targetPath))
+}
+
+function purgeDeletedGeneratedVersion({ style, source, version }) {
+  const sourceVersions = Array.isArray(source?.versions) ? source.versions : []
+  const sourceIndex = sourceVersions.findIndex(item => sameDeletedVersion(item, version))
+  if (sourceIndex >= 0) sourceVersions.splice(sourceIndex, 1)
+
+  for (const reviewStyle of reviewStyles) {
+    reviewStyle.assets = (reviewStyle.assets || []).filter(asset => !sameDeletedVersion(asset, version))
+  }
+  for (const job of videoJobs) {
+    job.assets = (job.assets || []).filter(asset => !sameDeletedVersion(asset, version))
+  }
+  for (const task of videoTasks) {
+    task.assets = (task.assets || []).filter(asset => !sameDeletedVersion(asset, version))
+  }
+  videoTaskDraft.assetIds = videoTaskDraft.assetIds.filter((assetId) => !sameDeletedVersion({ id: assetId }, version))
+
+  if (previewImage.value?.history) {
+    previewImage.value.history = previewImage.value.history.filter(item => !sameDeletedVersion(item, version))
+    previewHistoryIndex.value = Math.max(0, Math.min(previewHistoryIndex.value, previewImage.value.history.length - 1))
+  }
+  if (style?.styleCode) buildVideoJobsFromReview()
+}
+
+async function confirmDeleteGeneratedVersion() {
+  const target = pendingVersionDeletion.value
+  if (!target || deleteVersionBusy.value) return
+  if (!target.path) {
+    deleteVersionError.value = '当前结果没有可删除的本地图片文件'
+    return
+  }
+  if (!workspaceDir.value) {
+    deleteVersionError.value = '请先使用第一步的系统文件夹选择器选择工作区'
+    return
+  }
+  deleteVersionBusy.value = true
+  deleteVersionError.value = ''
+  try {
+    if (!target.localDeleted) {
+      await window.cs.deleteBalaWorkspaceImage(workspaceDir.value, target.path)
+      target.localDeleted = true
+    }
+    const reviewAsset = reviewStyles
+      .flatMap(style => style.assets || [])
+      .find(asset => asset.kind === 'ai' && sameDeletedVersion(asset, target.version))
+    const remoteAssetId = String(reviewAsset?.remoteAssetId || '').trim()
+    const boardUrl = reviewAsset?.reviewBoardUrl
+    const ref = parseBalaReviewBoardUrl(boardUrl)
+    if (reviewAsset && remoteAssetId && ref) {
+      const batch = await window.cs.deleteBalaReviewAsset(
+        ref.batchId,
+        ref.token,
+        remoteAssetId,
+      )
+      reviewBatch.value = batch
+    }
+    purgeDeletedGeneratedVersion(target)
+    updateAiTaskState({
+      status: 'done',
+      error: '',
+      message: `已删除本地图片并移出工作流：${target.version?.label || 'AI 结果'}`,
+    })
+    pendingVersionDeletion.value = null
+  } catch (error) {
+    const detail = error?.message || String(error)
+    deleteVersionError.value = target.localDeleted
+      ? `本地图片已删除，但审核池同步失败，请再次确认重试：${detail}`
+      : detail
+  } finally {
+    deleteVersionBusy.value = false
+  }
+}
+
+function referencePathsForKind(kind) {
+  if (kind === 'garment') return garmentImagePaths
+  if (kind === 'variant') return variantReferencePaths
+  return outfitReferencePaths
+}
+
+function localReferenceSelected(path, kind) {
+  return referencePathsForKind(kind).value.includes(String(path || '').trim())
+}
+
+function toggleLocalReference(asset, kind) {
+  const path = String(asset?.path || '').trim()
+  if (!path) return
+  const target = referencePathsForKind(kind)
+  const values = [...target.value]
+  const index = values.indexOf(path)
+  if (index >= 0) values.splice(index, 1)
+  else values.push(path)
+  target.value = values
 }
 
 function selectedMaterialAssetIds(options = {}) {
@@ -1885,11 +2364,28 @@ function selectedMaterialAssetIds(options = {}) {
 }
 
 function selectedSourceAssetsForAi() {
-  return styleWorkspaces.flatMap(style => (
-    (style.modelPhotos || [])
-      .filter(asset => asset.selected)
-      .map(asset => ({ style, asset }))
-  ))
+  return styleWorkspaces.flatMap(style => (style.modelPhotos || []).flatMap((asset) => [
+    ...(asset.editSelected ? [{ style, asset, version: null }] : []),
+    ...visibleSourceVersions(asset)
+      .filter(version => version.editSelected)
+      .map(version => ({ style, asset, version })),
+  ]))
+}
+
+function buildReviewWorkspaceStyles() {
+  const localStyles = buildBalaReviewWorkspaceStyles(styleWorkspaces)
+  return mergeBalaReviewWorkspaceStyles(localStyles, reviewStyles)
+}
+
+async function openReviewWorkspace() {
+  if (reviewBoardUrl.value && !reviewStyles.length) await loadReviewBatchFromBoard(reviewBoardUrl.value)
+  const styles = buildReviewWorkspaceStyles()
+  reviewStyles.splice(0, reviewStyles.length, ...styles)
+  if (!reviewStyles.length) {
+    updateAiTaskState({ status: 'failed', error: '当前没有可审核的原图或 AI 结果', message: '当前没有可审核的原图或 AI 结果' })
+    return
+  }
+  activeStep.value = 'review'
 }
 
 function operationMetaForDraft() {
@@ -2040,6 +2536,13 @@ async function startAiImageGeneration() {
     updateAiTaskState({ status: 'failed', error: '请先在找图步骤选择至少一张模拍原图', message: '请先在找图步骤选择至少一张模拍原图' })
     return
   }
+  const selectedInputPaths = selectedSources.map(({ asset, version }) => (
+    String(version?.previewPath || version?.path || asset?.path || '').trim()
+  )).filter(Boolean)
+  if (selectedInputPaths.length !== selectedSources.length) {
+    updateAiTaskState({ status: 'failed', error: '选中的图片中有尚未落盘的结果，请等待图片下载完成后重试', message: '选中的图片中有尚未落盘的结果，请等待图片下载完成后重试' })
+    return
+  }
   if (activeAction.value === 'face_swap' && !selectedModel.value) {
     updateAiTaskState({ status: 'failed', error: 'AI 换脸需要先选择模特素材', message: 'AI 换脸需要先选择模特素材' })
     return
@@ -2058,6 +2561,7 @@ async function startAiImageGeneration() {
   }
 
   resetAiPoll()
+  aiReviewPollToken += 1
   updateAiTaskState({
     status: 'running',
     message: '正在创建并提交 AI 改图任务...',
@@ -2071,16 +2575,16 @@ async function startAiImageGeneration() {
     const ref = parseBalaMaterialBoardUrl(materialBoardUrl.value)
     if (!ref) throw new Error('缺少素材批次，请先完成找图并生成素材回显')
     const selectedIds = selectedMaterialAssetIds()
-    const sourceIds = selectedMaterialAssetIds({ modelOnly: true })
+    const sourceIds = [...new Set(selectedSources.map(({ asset }) => asset?.id).filter(Boolean))]
     await window.cs.saveBalaMaterialSelection(ref.batchId, ref.token, selectedIds)
     const exportResult = await window.cs.exportBalaAiInput(ref.batchId, ref.token, {
       operation_type: activeAction.value,
       selected_asset_ids: sourceIds,
       model_ref_ids: selectedModel.value ? [selectedModel.value.id] : [],
       background_prompt: activeAction.value === 'background_swap' ? aiPrompt.value : '',
-      garment_images: activeAction.value === 'outfit_swap' ? { paths: garmentImagePaths.value } : { paths: [] },
-      outfit_reference_images: activeAction.value === 'outfit_swap' ? { paths: outfitReferencePaths.value } : { paths: [] },
-      variant_reference_images: activeAction.value === 'outfit_swap' ? { paths: variantReferencePaths.value } : { paths: [] },
+      garment_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(garmentImagePaths.value) } : { paths: [] },
+      outfit_reference_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(outfitReferencePaths.value) } : { paths: [] },
+      variant_reference_images: activeAction.value === 'outfit_swap' ? { paths: toBalaBridgeStringArray(variantReferencePaths.value) } : { paths: [] },
       pose_prompt: activeAction.value === 'pose_swap' ? aiPrompt.value : '',
       prompt_extra: aiPrompt.value,
       generation_mode: 'submit_async',
@@ -2092,9 +2596,10 @@ async function startAiImageGeneration() {
       output_format: 'png',
     })
     const request = buildBalaAiStageRequest(exportResult)
-    aiStageRequest.value = request
     const params = {
       ...request.params,
+      source_images: { paths: selectedInputPaths },
+      source_limit: selectedInputPaths.length,
       generation_mode: 'submit_async',
       review_mode: 'create_review_batch',
       model: 'gpt-image-2',
@@ -2103,6 +2608,7 @@ async function startAiImageGeneration() {
       quality: 'high',
       output_format: 'png',
     }
+    aiStageRequest.value = { ...request, params }
     const previousStatus = await window.cs.getTaskStatus(
       BALA_AI_VIDEO_ADAPTER_ID,
       BALA_AI_IMAGE_TASK_ID,
@@ -2188,12 +2694,66 @@ async function finalizeAiImageTask(runId = '') {
     })
     return
   }
-  await loadReviewBatchFromBoard(boardUrl)
+  let batch = await loadReviewBatchFromBoard(boardUrl)
+  if (hasGeneratingBalaReviewAssets(batch)) {
+    batch = await waitForAiReviewResults(boardUrl, batch)
+  }
+  if (hasGeneratingBalaReviewAssets(batch)) {
+    updateAiTaskState({
+      status: 'partial',
+      message: 'AI 图片仍在生成，可稍后进入审核刷新结果。',
+    })
+    return
+  }
   updateAiTaskState({
     status: 'done',
-    message: `已回填审核池：${reviewSummary.value.pending} 张待审，${reviewSummary.value.approved} 张已通过。`,
+    message: `AI 改图已回填图片工作台：${reviewSummary.value.pending} 张新结果。可继续修改、删除或进入审核。`,
   })
-  activeStep.value = 'review'
+}
+
+async function waitForAiReviewResults(boardUrl, initialBatch = null) {
+  const ref = parseBalaReviewBoardUrl(boardUrl)
+  if (!ref) throw new Error('审核池链接无效')
+  const pollToken = ++aiReviewPollToken
+  let batch = initialBatch
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    if (pollToken !== aiReviewPollToken) return batch
+    if (attempt > 0 || !batch) {
+      batch = await window.cs.refreshBalaReviewBatch(ref.batchId, ref.token)
+      reviewBatch.value = batch
+      applyReviewBatchStyles(normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl }))
+    }
+    if (!hasGeneratingBalaReviewAssets(batch)) return batch
+    updateAiTaskState({
+      status: 'running',
+      progress: Math.max(90, aiTaskState.progress || 0),
+      error: '',
+      message: 'AI 图片仍在生成，正在等待真实结果落盘...',
+    })
+    await sleep(3000)
+  }
+  return batch
+}
+
+async function resumeAiReviewResults(boardUrl, batch) {
+  if (!hasGeneratingBalaReviewAssets(batch)) return
+  try {
+    const settled = await waitForAiReviewResults(boardUrl, batch)
+    updateAiTaskState({
+      status: hasGeneratingBalaReviewAssets(settled) ? 'partial' : 'done',
+      progress: hasGeneratingBalaReviewAssets(settled) ? 90 : 100,
+      error: '',
+      message: hasGeneratingBalaReviewAssets(settled)
+        ? 'AI 图片仍在生成，可稍后进入审核刷新结果。'
+        : `AI 改图结果已落盘：${reviewSummary.value.pending} 张待审，${reviewSummary.value.approved} 张已通过。`,
+    })
+  } catch (error) {
+    updateAiTaskState({
+      status: 'partial',
+      error: error?.message || String(error),
+      message: `AI 任务已提交，但结果刷新失败：${error?.message || String(error)}`,
+    })
+  }
 }
 
 async function loadReviewBatchFromBoard(boardUrl = reviewBoardUrl.value) {
@@ -2202,10 +2762,45 @@ async function loadReviewBatchFromBoard(boardUrl = reviewBoardUrl.value) {
   const batch = await window.cs.getBalaReviewBatch(ref.batchId, ref.token)
   reviewBatch.value = batch
   reviewBoardUrl.value = boardUrl
-  const styles = normalizeBalaReviewBatchStyles(batch)
-  reviewStyles.splice(0, reviewStyles.length, ...styles)
-  syncWorkspaceVersionsFromReviewStyles(styles)
+  const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl })
+  applyReviewBatchStyles(styles)
   return batch
+}
+
+async function restoreReviewWorkspaceBatches({ silent = false } = {}) {
+  try {
+    const styleCodeValues = styleWorkspaces.map(style => style.styleCode).filter(Boolean)
+    const payload = await window.cs.listBalaReviewWorkspaceBatches({
+      style_codes: styleCodeValues.join(','),
+      limit: 100,
+    })
+    const batches = Array.isArray(payload?.items) ? payload.items : []
+    if (!batches.length) return 0
+    for (const batch of batches) {
+      const batchBoardUrl = String(batch?.board_url || batch?.boardUrl || '').trim()
+      const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: batchBoardUrl })
+      applyReviewBatchStyles(styles)
+    }
+    const latest = batches[batches.length - 1]
+    reviewBatch.value = latest
+    reviewBoardUrl.value = String(latest?.board_url || latest?.boardUrl || reviewBoardUrl.value || '').trim()
+    updateAiTaskState({
+      status: 'done',
+      progress: 100,
+      error: '',
+      message: `已恢复 ${batches.length} 个审核批次和全部 AI 修改版本。`,
+    })
+    return batches.length
+  } catch (error) {
+    if (!silent) {
+      updateAiTaskState({
+        status: 'failed',
+        error: error?.message || String(error),
+        message: error?.message || String(error),
+      })
+    }
+    return 0
+  }
 }
 
 async function restoreLatestReviewBatch({ silent = false } = {}) {
@@ -2225,6 +2820,7 @@ async function restoreLatestReviewBatch({ silent = false } = {}) {
       error: '',
       message: `已恢复审核池：${reviewSummary.value.pending} 张待审，${reviewSummary.value.approved} 张已通过。`,
     })
+    if (hasGeneratingBalaReviewAssets(batch)) void resumeAiReviewResults(boardUrl, batch)
     return batch
   } catch (error) {
     if (!silent) {
@@ -2265,8 +2861,10 @@ async function loadLatestReviewBatch() {
 }
 
 async function selectWorkflowStep(stepId) {
-  if (stepId === 'review' && !reviewStyles.length) {
-    await loadLatestReviewBatch()
+  if (stepId === 'review') {
+    if (!reviewStyles.length) await loadLatestReviewBatch()
+    await openReviewWorkspace()
+    return
   }
   if (stepId === 'templates') {
     if (!reviewStyles.length) {
@@ -2278,20 +2876,28 @@ async function selectWorkflowStep(stepId) {
 }
 
 function syncWorkspaceVersionsFromReviewStyles(styles = reviewStyles) {
-  for (const style of styleWorkspaces) {
-    for (const source of style.modelPhotos || []) source.versions = []
-  }
   for (const reviewStyle of styles || []) {
     const workspace = styleWorkspaces.find(item => item.styleCode === reviewStyle.styleCode)
     if (!workspace) continue
+    for (const origin of (reviewStyle.sourceAssets || []).filter(asset => asset.kind === 'origin')) {
+      const source = (workspace.modelPhotos || []).find(item => (
+        (item.path && origin.path && item.path === origin.path)
+        || (item.path && origin.sourcePath && item.path === origin.sourcePath)
+        || (item.id && origin.sourceAssetId && item.id === origin.sourceAssetId)
+      ))
+      if (source) {
+        source.reviewStatus = origin.status
+        source.remoteAssetId = origin.remoteAssetId || origin.id
+        source.reviewBoardUrl = origin.reviewBoardUrl
+      }
+    }
     for (const asset of reviewStyle.assets || []) {
       const source = (workspace.modelPhotos || []).find(item => (
         item.path && asset.sourcePath && item.path === asset.sourcePath
       )) || (workspace.modelPhotos || [])[0]
       if (!source) continue
-      source.versions = Array.isArray(source.versions) ? source.versions : []
-      source.versions.push({
-        id: asset.id,
+      const nextVersion = {
+        remoteAssetId: asset.remoteAssetId || asset.id,
         action: asset.action,
         operationType: asset.operationType,
         label: asset.label,
@@ -2303,69 +2909,82 @@ function syncWorkspaceVersionsFromReviewStyles(styles = reviewStyles) {
         sourcePath: asset.sourcePath,
         previewPath: asset.path,
         imageUrl: asset.imageUrl,
-      })
+        jobUid: asset.jobUid,
+        runUid: asset.runUid,
+        reviewBoardUrl: asset.reviewBoardUrl,
+      }
+      source.versions = mergeBalaWorkspaceVersions(source.versions, [nextVersion])
     }
   }
 }
 
-function sendSelectedVersionsToReview() {
-  const nextStyles = []
+function applyReviewBatchStyles(styles = []) {
+  syncWorkspaceVersionsFromReviewStyles(styles)
+  const localStyles = buildBalaReviewWorkspaceStyles(styleWorkspaces)
+  const merged = mergeBalaReviewWorkspaceStyles(localStyles, styles)
+  reviewStyles.splice(0, reviewStyles.length, ...merged)
+}
+
+function syncWorkspaceReviewDecision(asset, status) {
   for (const style of styleWorkspaces) {
-    const assets = []
     for (const source of style.modelPhotos || []) {
-      for (const version of source.versions || []) {
-        if (!version.selected) continue
-        assets.push({
-          id: version.id,
-          label: version.label,
-          action: version.action,
-          status: version.status === 'retry' ? 'retry' : 'pending',
-          meta: version.meta || '',
-          path: version.previewPath || version.path || source.path || '',
-          sourcePath: source.path || '',
-          sourceAssetId: source.id || '',
-          operationType: version.operationType || activeAction.value,
-        })
+      if (asset.kind === 'origin') {
+        const sameOrigin = (
+          (asset.sourceAssetId && source.id === asset.sourceAssetId)
+          || (asset.path && source.path === asset.path)
+          || (asset.sourcePath && source.path === asset.sourcePath)
+        )
+        if (sameOrigin) {
+          source.reviewStatus = status
+          source.remoteAssetId = asset.remoteAssetId || asset.id
+          source.reviewBoardUrl = asset.reviewBoardUrl || source.reviewBoardUrl
+        }
+        continue
       }
+      const version = (source.versions || []).find(candidate => (
+        (asset.jobUid && candidate.jobUid === asset.jobUid)
+        || (
+          asset.reviewBoardUrl
+          && candidate.reviewBoardUrl === asset.reviewBoardUrl
+          && String(candidate.remoteAssetId || '') === String(asset.remoteAssetId || asset.id || '')
+        )
+        || (asset.path && String(candidate.previewPath || candidate.path || '') === asset.path)
+      ))
+      if (!version) continue
+      version.status = status
+      version.reviewStatus = status
+      version.remoteAssetId = asset.remoteAssetId || asset.id
+      version.reviewBoardUrl = asset.reviewBoardUrl || version.reviewBoardUrl
     }
-    if (!assets.length) continue
-    nextStyles.push({
-      styleCode: style.styleCode,
-      assets,
-      sourceAssets: [
-        ...(style.modelPhotos || []).filter(asset => asset.selected),
-        ...(style.detailPhotos || []).filter(asset => asset.selected),
-      ],
-    })
   }
-  reviewStyles.splice(0, reviewStyles.length, ...nextStyles)
-  if (!reviewStyles.length) {
-    aiTaskState.status = 'failed'
-    aiTaskState.error = '请先在图片工作台选择至少一个 AI 版本'
-    aiTaskState.message = aiTaskState.error
-    return
-  }
-  aiTaskState.status = 'done'
-  aiTaskState.message = `已送审 ${reviewStyles.reduce((sum, style) => sum + style.assets.length, 0)} 张 AI 版本。`
-  activeStep.value = 'review'
+  persistAiImageWorkspaceState()
+}
+
+function applyLocalReviewDecision(asset, status) {
+  const normalized = normalizeBalaReviewStatus(status)
+  const baseMeta = String(asset.meta || asset.action || '').replace(/\s*·\s*(?:已通过|已舍弃)\s*$/, '')
+  asset.status = normalized
+  if (normalized === 'approved') asset.meta = `${baseMeta} · 已通过`
+  else if (normalized === 'rejected') asset.meta = `${baseMeta} · 已舍弃`
+  syncWorkspaceReviewDecision(asset, normalized)
 }
 
 async function setReviewAssetStatus(asset, status) {
   const normalized = normalizeBalaReviewStatus(status)
-  asset.status = normalized
-  if (normalized === 'approved') asset.meta = `${asset.meta || asset.action} · 已通过`
-  if (normalized === 'rejected') asset.meta = `${asset.meta || asset.action} · 已舍弃`
   try {
-    const ref = parseBalaReviewBoardUrl(reviewBoardUrl.value)
-    if (!ref) return
+    const boardUrl = asset.reviewBoardUrl
+    const ref = parseBalaReviewBoardUrl(boardUrl)
+    if (!ref) {
+      applyLocalReviewDecision(asset, normalized)
+      return
+    }
     const savedStatus = normalized === 'rejected' ? 'rejected' : normalized === 'approved' ? 'approved' : 'pending'
     const batch = await window.cs.saveBalaReviewDecisions(ref.batchId, ref.token, {
-      [asset.id]: { status: savedStatus },
+      [asset.remoteAssetId || asset.id]: { status: savedStatus },
     })
     reviewBatch.value = batch
-    const styles = normalizeBalaReviewBatchStyles(batch)
-    reviewStyles.splice(0, reviewStyles.length, ...styles)
-    syncWorkspaceVersionsFromReviewStyles(styles)
+    const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl })
+    applyReviewBatchStyles(styles)
   } catch (error) {
     aiTaskState.status = 'failed'
     aiTaskState.error = error?.message || String(error)
@@ -2374,38 +2993,37 @@ async function setReviewAssetStatus(asset, status) {
 }
 
 async function setStyleReviewStatus(style, status) {
-  const decisions = {}
-  for (const asset of style.assets || []) {
-    if (status === 'approved' || status === 'rejected') {
-      asset.status = status
-      decisions[asset.id] = { status }
-    }
-  }
-  await saveReviewDecisions(decisions)
+  if (status !== 'approved' && status !== 'rejected') return
+  await saveReviewAssetsStatus(style.assets || [], status)
 }
 
 async function setPendingReviewStatus(status) {
-  const decisions = {}
-  for (const style of reviewStyles) {
-    for (const asset of style.assets || []) {
-      if (asset.status !== 'pending') continue
-      asset.status = status
-      decisions[asset.id] = { status }
-    }
-  }
-  await saveReviewDecisions(decisions)
+  const assets = reviewStyles.flatMap(style => style.assets || []).filter(asset => asset.status === 'pending')
+  await saveReviewAssetsStatus(assets, status)
 }
 
-async function saveReviewDecisions(decisions = {}) {
-  if (!Object.keys(decisions).length) return
+async function saveReviewAssetsStatus(assets = [], status = 'pending') {
+  if (!assets.length) return
   try {
-    const ref = parseBalaReviewBoardUrl(reviewBoardUrl.value)
-    if (!ref) return
-    const batch = await window.cs.saveBalaReviewDecisions(ref.batchId, ref.token, decisions)
-    reviewBatch.value = batch
-    const styles = normalizeBalaReviewBatchStyles(batch)
-    reviewStyles.splice(0, reviewStyles.length, ...styles)
-    syncWorkspaceVersionsFromReviewStyles(styles)
+    const grouped = new Map()
+    const localAssets = []
+    for (const asset of assets) {
+      const boardUrl = asset.reviewBoardUrl
+      const ref = parseBalaReviewBoardUrl(boardUrl)
+      if (!ref) {
+        localAssets.push(asset)
+        continue
+      }
+      if (!grouped.has(boardUrl)) grouped.set(boardUrl, { ref, decisions: {} })
+      grouped.get(boardUrl).decisions[asset.remoteAssetId || asset.id] = { status }
+    }
+    for (const [boardUrl, group] of grouped) {
+      const batch = await window.cs.saveBalaReviewDecisions(group.ref.batchId, group.ref.token, group.decisions)
+      reviewBatch.value = batch
+      const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl })
+      applyReviewBatchStyles(styles)
+    }
+    for (const asset of localAssets) applyLocalReviewDecision(asset, status)
   } catch (error) {
     aiTaskState.status = 'failed'
     aiTaskState.error = error?.message || String(error)
@@ -2415,16 +3033,20 @@ async function saveReviewDecisions(decisions = {}) {
 
 async function refreshReviewBatch() {
   try {
-    const ref = parseBalaReviewBoardUrl(reviewBoardUrl.value)
-    if (!ref) {
+    const boardUrls = [...new Set(reviewStyles.flatMap(style => style.assets || []).map(asset => asset.reviewBoardUrl).filter(Boolean))]
+    if (!boardUrls.length && reviewBoardUrl.value) boardUrls.push(reviewBoardUrl.value)
+    if (!boardUrls.length) {
       await loadLatestReviewBatch()
       return
     }
-    const batch = await window.cs.refreshBalaReviewBatch(ref.batchId, ref.token)
-    reviewBatch.value = batch
-    const styles = normalizeBalaReviewBatchStyles(batch)
-    reviewStyles.splice(0, reviewStyles.length, ...styles)
-    syncWorkspaceVersionsFromReviewStyles(styles)
+    for (const boardUrl of boardUrls) {
+      const ref = parseBalaReviewBoardUrl(boardUrl)
+      if (!ref) continue
+      const batch = await window.cs.refreshBalaReviewBatch(ref.batchId, ref.token)
+      reviewBatch.value = batch
+      const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl })
+      applyReviewBatchStyles(styles)
+    }
   } catch (error) {
     aiTaskState.status = 'failed'
     aiTaskState.error = error?.message || String(error)
@@ -2433,21 +3055,22 @@ async function refreshReviewBatch() {
 }
 
 async function requestReviewAssetRetry(asset) {
+  const retryPrompt = String(asset.prompt || '').trim()
   asset.status = 'retry'
   asset.meta = `${asset.meta || asset.action} · 已请求重跑`
   try {
-    const ref = parseBalaReviewBoardUrl(reviewBoardUrl.value)
+    const boardUrl = asset.reviewBoardUrl || reviewBoardUrl.value
+    const ref = parseBalaReviewBoardUrl(boardUrl)
     if (!ref) return
     const result = await window.cs.regenerateBalaReviewAsset(ref.batchId, ref.token, {
-      asset_id: asset.id,
-      prompt: asset.meta || '',
+      asset_id: asset.remoteAssetId || asset.id,
+      prompt: retryPrompt,
       submit_async: true,
     })
     const batch = result?.batch || await window.cs.refreshBalaReviewBatch(ref.batchId, ref.token)
     reviewBatch.value = batch
-    const styles = normalizeBalaReviewBatchStyles(batch)
-    reviewStyles.splice(0, reviewStyles.length, ...styles)
-    syncWorkspaceVersionsFromReviewStyles(styles)
+    const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl })
+    applyReviewBatchStyles(styles)
   } catch (error) {
     aiTaskState.status = 'failed'
     aiTaskState.error = error?.message || String(error)
@@ -2471,45 +3094,8 @@ const reviewSummary = computed(reviewSummaryCounts)
 function buildVideoJobsFromReview() {
   const jobs = []
   for (const style of reviewStyles) {
-    const assets = []
-    for (const asset of style.assets || []) {
-      assets.push({
-        id: `vasset-${asset.id}`,
-        label: asset.label,
-        kind: 'AI 图',
-        status: asset.status === 'approved' ? 'approved' : asset.status === 'retry' ? 'retry' : 'pending',
-        selected: asset.status === 'approved',
-        path: asset.path,
-      })
-    }
-    for (const asset of style.sourceAssets || []) {
-      assets.push({
-        id: `vasset-${style.styleCode}-source-${asset.id || asset.name}`,
-        label: asset.name || asset.filename || '细节图',
-        kind: asset.sourceType === 'model' ? '原始模拍' : '细节图',
-        status: 'source',
-        selected: false,
-        path: asset.path,
-        imageUrl: asset.imageUrl,
-      })
-    }
     const materialStyle = styleWorkspaces.find(item => item.styleCode === style.styleCode)
-    for (const asset of [
-      ...((materialStyle?.modelPhotos || []).filter(item => item.selected)),
-      ...((materialStyle?.detailPhotos || []).filter(item => item.selected)),
-    ]) {
-      const id = `vasset-${style.styleCode}-material-${asset.id || asset.name}`
-      if (assets.some(item => item.id === id || item.path === asset.path)) continue
-      assets.push({
-        id,
-        label: asset.name || asset.filename || '素材图',
-        kind: asset.sourceType === 'model' ? '原始模拍' : '细节图',
-        status: 'source',
-        selected: false,
-        path: asset.path,
-        imageUrl: asset.imageUrl,
-      })
-    }
+    const assets = buildBalaVideoAssetPool({ reviewStyle: style, materialStyle })
     if (!assets.length) continue
     jobs.push({
       styleCode: style.styleCode,
@@ -2538,24 +3124,166 @@ function sendReviewToVideo() {
   resetVideoTaskDraftAssets()
 }
 
+function videoTaskForResult(item = {}) {
+  const taskRefId = String(item.taskRefId || item.id || '')
+  return videoTasks.find(task => task.id === taskRefId || String(item.id || '').startsWith(`${task.id}-`)) || null
+}
+
+function isProviderTaskSucceeded(provider, status) {
+  const normalized = String(status || '').trim().toLowerCase()
+  return provider === 'happyhorse' ? normalized === 'succeeded' : normalized === 'succeeded'
+}
+
+function providerTaskDisplayStatus(provider, status, localPath = '') {
+  if (String(localPath || '').trim()) return '已完成'
+  const normalized = String(status || '').trim().toLowerCase()
+  if (isProviderTaskSucceeded(provider, status)) return '生成完成待下载'
+  if (['failed', 'error', 'canceled', 'cancelled', 'unknown'].includes(normalized)) return '失败'
+  if (['running', 'processing', 'in_progress'].includes(normalized)) return '生成中'
+  if (['pending', 'queued', 'waiting'].includes(normalized)) return '排队中'
+  return status || '已提交'
+}
+
+async function refreshProviderVideoResult(item, { download = false } = {}) {
+  const task = videoTaskForResult(item)
+  const provider = String(task?.provider || item?.providerKey || '').trim()
+  const providerTaskId = String(task?.providerTaskId || item?.providerTaskId || item?.taskId || '').trim()
+  if (!['seedance', 'happyhorse'].includes(provider) || !providerTaskId) {
+    throw new Error('缺少可刷新的 provider task ID')
+  }
+  const existingLocalPath = /\.mp4$/i.test(String(item?.path || '').trim()) ? String(item.path).trim() : ''
+  const result = await window.cs.refreshBalaVideoProviderTask({
+    provider,
+    task_id: providerTaskId,
+    style_code: task?.styleCode || item?.styleCode || '',
+    output_dir: task?.outputDir || videoOutputDir.value,
+    output_path: download ? existingLocalPath : '',
+    download,
+    interval_seconds: 5,
+    timeout_seconds: 1800,
+  })
+  if (!result?.ok) throw new Error(result?.error || '视频任务刷新失败')
+  const localPath = String(result.local_video_path || existingLocalPath || '').trim()
+  if (task) {
+    task.providerTaskId = String(result.task_id || providerTaskId)
+    task.status = providerTaskDisplayStatus(provider, result.status, localPath)
+  }
+  const next = {
+    ...item,
+    id: item?.id || task?.id || `video-result-${providerTaskId}`,
+    taskRefId: item?.taskRefId || task?.id || '',
+    styleCode: item?.styleCode || task?.styleCode || '',
+    template: item?.template || (provider === 'seedance' ? 'Seedance' : happyHorseModeLabel(task?.happyhorseMode)),
+    provider: providerLabel(provider),
+    providerKey: provider,
+    providerTaskId: String(result.task_id || providerTaskId),
+    taskId: String(result.task_id || providerTaskId),
+    providerStatus: String(result.status || ''),
+    status: providerTaskDisplayStatus(provider, result.status, localPath),
+    progress: ['已完成', '生成完成待下载', '失败'].includes(providerTaskDisplayStatus(provider, result.status, localPath)) ? 100 : 70,
+    path: localPath,
+    videoUrl: String(result.video_url || item?.videoUrl || ''),
+    error: providerTaskDisplayStatus(provider, result.status, localPath) === '失败' ? String(result.error || result.status || '视频生成失败') : '',
+  }
+  upsertVideoResults([next])
+  return { result, item: next }
+}
+
+async function refreshQnVideoTask(task) {
+  const runId = String(task?.runId || task?.providerTaskId || '').trim()
+  if (!runId) throw new Error(`${task?.styleCode || '软件管家'} 缺少运行 ID`)
+  const status = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
+  const snapshot = [status?.live, status?.last_run].find(candidate => (
+    String(candidate?.run_id || candidate?.id || '').trim() === runId
+  ))
+  if (!snapshot) throw new Error(`${task.styleCode} 未找到对应的软件管家运行记录`)
+  const normalized = normalizeWorkflowStageStatus(snapshot.status)
+  if (['done', 'failed', 'stopped', 'partial'].includes(normalized)) {
+    await finalizeQnVideoTask(task, runId, 'live', snapshot)
+    task.status = normalized === 'done' ? '已完成' : '失败'
+    return
+  }
+  task.status = normalized === 'running' ? '生成中' : '已提交'
+  upsertVideoResults([{
+    id: task.id,
+    taskRefId: task.id,
+    styleCode: task.styleCode,
+    template: task.template?.title || '不选模板',
+    provider: providerLabel(task.provider),
+    providerKey: task.provider,
+    providerTaskId: runId,
+    taskId: runId,
+    providerStatus: normalized,
+    status: normalized === 'running' ? '生成中' : '已提交',
+    progress: normalized === 'running' ? 60 : 20,
+    path: '',
+    error: '',
+  }])
+}
+
+async function refreshVideoResults() {
+  activeStep.value = 'results'
+  const refreshable = videoTasks.filter(task => String(task.providerTaskId || task.runId || '').trim())
+  if (!refreshable.length) {
+    videoStageState.status = 'failed'
+    videoStageState.error = '当前没有可刷新的视频任务 ID'
+    videoStageState.message = videoStageState.error
+    return
+  }
+  videoStageState.status = 'running'
+  videoStageState.error = ''
+  videoStageState.message = `正在刷新 ${refreshable.length} 条视频任务...`
+  const errors = []
+  for (const task of refreshable) {
+    try {
+      if (task.provider === 'qn') await refreshQnVideoTask(task)
+      else {
+        const item = videoResults.find(result => videoTaskForResult(result)?.id === task.id) || {
+          id: task.id,
+          taskRefId: task.id,
+          styleCode: task.styleCode,
+          providerKey: task.provider,
+          providerTaskId: task.providerTaskId,
+        }
+        await refreshProviderVideoResult(item)
+      }
+    } catch (error) {
+      errors.push(`${task.styleCode}: ${error?.message || String(error)}`)
+    }
+  }
+  videoStageState.status = errors.length ? 'partial' : 'done'
+  videoStageState.error = errors.join('；')
+  videoStageState.message = errors.length
+    ? `状态刷新完成，${errors.length} 条失败：${errors.join('；')}`
+    : `已刷新 ${refreshable.length} 条视频任务。`
+}
+
 async function downloadCompletedVideoResults() {
-  const completed = videoResults.filter(item => item.status === '已完成')
-  if (!completed.length) {
+  activeStep.value = 'results'
+  const providerResults = videoResults.filter(item => ['seedance', 'happyhorse'].includes(String(item.providerKey || videoTaskForResult(item)?.provider || '')))
+  let downloaded = 0
+  const errors = []
+  for (const item of providerResults) {
+    try {
+      const refreshed = await refreshProviderVideoResult(item)
+      const provider = refreshed.item.providerKey
+      if (!isProviderTaskSucceeded(provider, refreshed.result.status)) continue
+      await refreshProviderVideoResult(refreshed.item, { download: true })
+      downloaded += 1
+    } catch (error) {
+      errors.push(`${item.styleCode || item.id}: ${error?.message || String(error)}`)
+    }
+  }
+  const localQnCount = videoResults.filter(item => item.providerKey === 'qn' && /\.mp4$/i.test(String(item.path || ''))).length
+  if (!downloaded && !localQnCount && !errors.length) {
     videoStageState.status = 'failed'
     videoStageState.error = '还没有已完成的视频结果可下载'
     videoStageState.message = videoStageState.error
-    activeStep.value = 'results'
     return
   }
-  const firstLocal = completed.find(item => String(item.path || '').trim())
-  if (firstLocal) {
-    await openVideoResult(firstLocal)
-  } else {
-    await openOutputDir()
-  }
-  videoStageState.status = 'done'
-  videoStageState.message = `已定位 ${completed.length} 个已完成视频，本地文件由生成任务下载归档。`
-  activeStep.value = 'results'
+  videoStageState.status = errors.length ? 'partial' : 'done'
+  videoStageState.error = errors.join('；')
+  videoStageState.message = `已下载 ${downloaded} 个供应商视频，软件管家本地结果 ${localQnCount} 个${errors.length ? `；${errors.length} 条失败` : ''}。`
 }
 
 function sleep(ms) {
@@ -2572,7 +3300,7 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
   return {
     execute_mode: mode,
     material_images: { paths: videoTaskImagePaths(task) },
-    group_mode: task.groupMode === 'multi_slot_template' ? 'all_images_one_video' : task.groupMode,
+    group_mode: 'all_images_one_video',
     template_id: task.template?.id || task.templateId || '',
     template_match: task.template?.title || '',
     prompt: task.prompt || '',
@@ -2609,7 +3337,27 @@ async function readVideoRowsFromOutputFiles(files = []) {
   return rows
 }
 
-async function finalizeQnVideoTask(task, runId = '', mode = 'plan') {
+async function finalizeQnVideoTask(task, runId = '', mode = 'plan', terminalSnapshot = null) {
+  const terminalFailure = qnTerminalRunFailure(terminalSnapshot)
+  if (terminalFailure) {
+    task.status = '失败'
+    upsertVideoResults([{
+      id: task.id,
+      taskRefId: task.id,
+      styleCode: task.styleCode,
+      template: task.template?.title || '不选模板',
+      provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: runId || task.providerTaskId || '',
+      taskId: runId || task.providerTaskId || '',
+      providerStatus: normalizeWorkflowStageStatus(terminalSnapshot?.status),
+      status: '失败',
+      progress: 100,
+      path: '',
+      error: terminalFailure,
+    }])
+    throw new Error(terminalFailure)
+  }
   const data = await window.cs.getData(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
   const run = latestRunForTaskData(data, runId)
   const outputFiles = parseRunOutputFiles(run?.output_files)
@@ -2618,18 +3366,26 @@ async function finalizeQnVideoTask(task, runId = '', mode = 'plan') {
     ...task,
     providerLabel: providerLabel(task.provider),
   })
+  const rowFailure = qnVideoResultFailure(normalized)
   if (normalized.length) {
     upsertVideoResults(normalized.map(item => ({
       ...item,
       id: `${task.id}-${item.id}`,
+      taskRefId: task.id,
       provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: runId || task.providerTaskId || '',
     })))
+    if (rowFailure) throw new Error(rowFailure)
   } else {
     upsertVideoResults([{
       id: task.id,
+      taskRefId: task.id,
       styleCode: task.styleCode,
       template: task.template?.title || '不选模板',
       provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: runId || task.providerTaskId || '',
       taskId: runId || '任务草稿',
       status: mode === 'live' ? '运行中' : '预检完成',
       progress: mode === 'live' ? 60 : 100,
@@ -2657,14 +3413,14 @@ async function waitForQnVideoTask(task, runId = '', mode = 'plan') {
         await sleep(2000)
         continue
       }
-      await finalizeQnVideoTask(task, String(live.run_id || runId || ''), mode)
+      await finalizeQnVideoTask(task, String(live.run_id || runId || ''), mode, live)
       return
     }
     const last = status?.last_run
     if (last && (!runId || String(last.id || '') === runId)) {
       const normalized = normalizeWorkflowStageStatus(last.status)
       if (['done', 'failed', 'stopped', 'partial'].includes(normalized)) {
-        await finalizeQnVideoTask(task, String(last.id || runId || ''), mode)
+        await finalizeQnVideoTask(task, String(last.id || runId || ''), mode, last)
         return
       }
     }
@@ -2678,13 +3434,16 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
     task.status = '预检完成，等待授权生成'
     upsertVideoResults([{
       id: task.id,
+      taskRefId: task.id,
       styleCode: task.styleCode,
       template: 'Seedance',
       provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: task.providerTaskId || '',
       taskId: '预检草稿',
       status: '待授权',
       progress: 0,
-      path: task.outputDir || videoOutputDir.value,
+      path: '',
     }])
     return
   }
@@ -2696,7 +3455,7 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
     image_paths: videoTaskImagePaths(task).slice(0, 4),
     output_dir: task.outputDir || videoOutputDir.value,
     ratio: '3:4',
-    duration: 8,
+    duration: 5,
     wait: true,
   }
   let result
@@ -2714,16 +3473,22 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
     })
   }
   if (!result?.ok) throw new Error(result?.error || 'Seedance 视频任务未能启动')
+  task.providerTaskId = String(result?.task_id || task.providerTaskId || '')
   task.status = result?.local_video_path ? '已下载' : (result?.status || '已提交')
   upsertVideoResults([{
     id: task.id,
+    taskRefId: task.id,
     styleCode: task.styleCode,
     template: usedTextOnlyFallback ? 'Seedance 原创人物' : 'Seedance',
     provider: providerLabel(task.provider),
+    providerKey: task.provider,
+    providerTaskId: task.providerTaskId,
     taskId: result?.task_id || '',
+    providerStatus: result?.status || '',
     status: result?.local_video_path ? '已完成' : (result?.status || '已提交'),
     progress: result?.local_video_path ? 100 : 80,
-    path: result?.local_video_path || result?.video_url || task.outputDir || videoOutputDir.value,
+    path: result?.local_video_path || '',
+    videoUrl: result?.video_url || '',
     error: '',
   }])
   activeStep.value = 'results'
@@ -2734,9 +3499,12 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
     task.status = '预检完成，等待授权生成'
     upsertVideoResults([{
       id: task.id,
+      taskRefId: task.id,
       styleCode: task.styleCode,
       template: happyHorseModeLabel(task.happyhorseMode),
       provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: task.providerTaskId || '',
       taskId: '预检草稿',
       status: '待授权',
       progress: 0,
@@ -2758,16 +3526,22 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
     wait: true,
   })
   if (!result?.ok) throw new Error(result?.error || 'HappyHorse 视频任务未能启动')
+  task.providerTaskId = String(result?.task_id || task.providerTaskId || '')
   task.status = result?.local_video_path ? '已下载' : (result?.status || '已提交')
   upsertVideoResults([{
     id: task.id,
+    taskRefId: task.id,
     styleCode: task.styleCode,
     template: happyHorseModeLabel(task.happyhorseMode),
     provider: providerLabel(task.provider),
+    providerKey: task.provider,
+    providerTaskId: task.providerTaskId,
     taskId: result?.task_id || '',
+    providerStatus: result?.status || '',
     status: result?.local_video_path ? '已完成' : (result?.status || '已提交'),
     progress: result?.local_video_path ? 100 : 80,
-    path: result?.local_video_path || result?.video_url || task.outputDir || videoOutputDir.value,
+    path: result?.local_video_path || '',
+    videoUrl: result?.video_url || '',
     error: '',
   }])
   activeStep.value = 'results'
@@ -2810,6 +3584,8 @@ async function runVideoTask(task, mode = 'plan') {
       if (!result?.ok) throw new Error(result?.message || result?.error || '视频任务启动失败')
       const launch = await waitForQnVideoRunStart(previousRunId)
       const runId = launch.runId
+      task.runId = runId
+      task.providerTaskId = runId
       if (launch.status === 'failed') {
         throw new Error(launch.snapshot?.error || '软件管家视频任务未成功启动，请重试。')
       }
@@ -2826,9 +3602,12 @@ async function runVideoTask(task, mode = 'plan') {
     videoStageState.message = videoStageState.error
     upsertVideoResults([{
       id: task.id,
+      taskRefId: task.id,
       styleCode: task.styleCode,
       template: task.template?.title || '不选模板',
       provider: providerLabel(task.provider),
+      providerKey: task.provider,
+      providerTaskId: task.providerTaskId || '',
       taskId: '',
       status: '失败',
       progress: 100,
@@ -2845,13 +3624,7 @@ async function runAllVideoTasks(mode = 'plan') {
 }
 
 function editSourcesForStyle(style) {
-  return (style?.modelPhotos || [])
-    .filter(asset => asset.selected || (asset.versions || []).length)
-    .map((asset) => {
-      const versions = (asset.versions || []).filter(version => !showSelectedVersionsOnly.value || version.selected)
-      return { ...asset, versions }
-    })
-    .filter(asset => !showSelectedVersionsOnly.value || asset.versions.length)
+  return selectEditableSourcesForStyle(style, showSelectedVersionsOnly.value)
 }
 
 function versionCountForStyle(style) {
@@ -2860,6 +3633,10 @@ function versionCountForStyle(style) {
 
 function approvedVideoAssetCount(job) {
   return (job?.assets || []).filter(asset => asset.status === 'approved').length
+}
+
+function reviewAssetCount(style, kind) {
+  return (style?.assets || []).filter(asset => asset.kind === kind).length
 }
 
 function approvedVideoTaskAssetCount(task) {
@@ -2876,14 +3653,228 @@ function assetStatusLabel(status) {
   return '素材'
 }
 
-function openImagePreview(asset, styleCode = '') {
+function openImageEditor(asset, styleCode = '', sourceAsset = null) {
   lastFocusedElement.value = document.activeElement
-  const src = previewSourceFor(asset || {})
+  const source = sourceAsset || (asset?.versions ? asset : null)
+  const history = source
+    ? [source, ...visibleSourceVersions(source)]
+    : [asset]
+  const selectedIndex = Math.max(0, history.findIndex(item => item === asset || (item.id && item.id === asset?.id)))
   previewImage.value = {
     title: asset?.label || asset?.name || '图片预览',
     meta: [styleCode, asset?.role || asset?.action, asset?.meta].filter(Boolean).join(' · '),
     path: String(asset?.path || asset?.previewPath || '').trim(),
-    src,
+    src: previewSourceFor(asset || {}),
+    asset,
+    source,
+    styleCode,
+    history,
+  }
+  previewHistoryIndex.value = selectedIndex
+  previewEditAction.value = asset?.operationType || activeAction.value || 'background_swap'
+  previewEditPrompt.value = String(asset?.prompt || asset?.meta || aiPrompt.value || '').trim()
+  previewEditError.value = ''
+  previewAnnotationTool.value = 'draw'
+  previewAnnotationClearNonce.value += 1
+}
+
+function openImagePreview(asset, styleCode = '') {
+  openImageEditor(asset, styleCode)
+}
+
+function applyPromptLibrarySelection(template = {}) {
+  const prompt = String(template?.prompt_text || template?.prompt || '').trim()
+  if (promptLibraryTarget.value === 'preview') previewEditPrompt.value = prompt
+  else aiPrompt.value = prompt
+  promptLibraryOpen.value = false
+  promptLibraryTarget.value = 'workspace'
+}
+
+function clearPreviewAnnotation() {
+  previewAnnotationClearNonce.value += 1
+}
+
+function capturePreviewAnnotation(dataUrl) {
+  if (previewAnnotationResolve) previewAnnotationResolve(String(dataUrl || ''))
+  clearPreviewAnnotationRequest()
+}
+
+function handlePreviewAnnotationError(error) {
+  const normalized = error instanceof Error ? error : new Error(String(error || '标注导出失败'))
+  if (previewAnnotationReject) previewAnnotationReject(normalized)
+  else previewEditError.value = normalized.message
+  clearPreviewAnnotationRequest()
+}
+
+function clearPreviewAnnotationRequest() {
+  if (previewAnnotationTimer) clearTimeout(previewAnnotationTimer)
+  previewAnnotationTimer = null
+  previewAnnotationResolve = null
+  previewAnnotationReject = null
+}
+
+function requestPreviewAnnotationExport() {
+  if (!activePreviewHistoryItem.value?.src) return Promise.resolve('')
+  return new Promise((resolve, reject) => {
+    clearPreviewAnnotationRequest()
+    previewAnnotationResolve = resolve
+    previewAnnotationReject = reject
+    previewAnnotationTimer = setTimeout(() => {
+      if (previewAnnotationReject) previewAnnotationReject(new Error('标注导出超时，请重试'))
+      clearPreviewAnnotationRequest()
+    }, 8000)
+    previewAnnotationExportNonce.value += 1
+  })
+}
+
+function editPromptText(operationType, instruction = '') {
+  const requirement = String(instruction || '').trim()
+  const prefixes = {
+    face_swap: '替换人物面部为参考模特，严格保留服装款式、颜色、纹理和画面构图。',
+    outfit_swap: '根据服装与搭配参考图完成换装，严格保留人物身份、姿势和场景。',
+    background_swap: '只修改画面背景，严格保留人物、服装款式、颜色和姿势。',
+    pose_swap: '只调整人物姿势，严格保留人物身份、服装款式、颜色和背景。',
+  }
+  return [prefixes[operationType], requirement].filter(Boolean).join('\n')
+}
+
+function previewEditPromptText() {
+  return editPromptText(previewEditAction.value, previewEditPrompt.value)
+}
+
+function latestAiJobOutput(job = {}) {
+  const runs = Array.isArray(job?.summary?.runs) ? job.summary.runs : []
+  const latest = runs[runs.length - 1] || job?.summary || {}
+  return {
+    path: (latest.output_files || job?.summary?.output_files || [])[0] || '',
+    url: (latest.image_urls || job?.summary?.image_urls || [])[0] || '',
+    runUid: latest.run_uid || latest.task_id || '',
+  }
+}
+
+async function materializePreviewReference(jobUid, value, filename) {
+  const source = String(value || '').trim()
+  if (!source || typeof window.cs?.materializeAiImageResult !== 'function') return ''
+  const payload = source.startsWith('data:')
+    ? { data_url: source, filename }
+    : { url: source, filename }
+  const result = await window.cs.materializeAiImageResult(jobUid, payload)
+  return String(result?.path || '').trim()
+}
+
+async function archivePreviewOutputToWorkspace(jobUid, output = {}) {
+  const source = String(output?.url || output?.path || '').trim()
+  if (!source) return ''
+  const saved = await window.cs.saveAsAiImageJob(jobUid, {
+    directory: workspaceDir.value,
+    files: [source],
+  })
+  return String(saved?.files?.[0] || '').trim()
+}
+
+async function runPreviewImageEdit() {
+  if (previewEditBusy.value) return
+  const current = activePreviewHistoryItem.value
+  const mainPath = String(current?.path || current?.previewPath || previewImage.value?.path || '').trim()
+  const prompt = previewEditPromptText()
+  if (!mainPath) {
+    previewEditError.value = '当前图片没有可用于修改的本地文件'
+    return
+  }
+  if (!workspaceDir.value) {
+    previewEditError.value = '请先在第一步选择工作区目录'
+    return
+  }
+  if (!prompt) {
+    previewEditError.value = '请填写当前图片的修改要求'
+    return
+  }
+  if (previewEditAction.value === 'face_swap' && !selectedModel.value) {
+    previewEditError.value = 'AI 换脸需要先选择模特'
+    return
+  }
+  previewEditBusy.value = true
+  previewEditError.value = ''
+  try {
+    const annotationDataUrl = await requestPreviewAnnotationExport()
+    const created = await window.cs.createAiImageJob({
+      title: `${previewImage.value?.styleCode || 'AI 视频'} · 大图修改`,
+      prompt,
+      model_key: 'gpt-image-2',
+      status: 'draft',
+      output_dir: workspaceDir.value,
+      params: {
+        size: '1536x2048',
+        quality: 'high',
+        response_format: 'png',
+        n: 1,
+        model_key_tier: '4k',
+        main_image_path: mainPath,
+        reference_image_paths: [],
+      },
+    })
+    const jobUid = String(created?.job_uid || '').trim()
+    if (!jobUid) throw new Error('AI 生图服务没有返回任务 ID')
+    const references = []
+    if (annotationDataUrl) {
+      const path = await materializePreviewReference(jobUid, annotationDataUrl, 'bala-video-annotation.png')
+      if (path) references.push(path)
+    }
+    if (previewEditAction.value === 'face_swap' && selectedModel.value?.imageUrl) {
+      const path = await materializePreviewReference(jobUid, selectedModel.value.imageUrl, 'bala-video-model-reference.png')
+      if (path) references.push(path)
+    }
+    if (previewEditAction.value === 'outfit_swap') {
+      references.push(...garmentImagePaths.value, ...outfitReferencePaths.value, ...variantReferencePaths.value)
+    }
+    await window.cs.updateAiImageJob(jobUid, {
+      prompt,
+      status: 'draft',
+      params: {
+        ...created.params,
+        size: '1536x2048',
+        quality: 'high',
+        response_format: 'png',
+        n: 1,
+        model_key_tier: '4k',
+        main_image_path: mainPath,
+        reference_image_paths: [...new Set(references.filter(Boolean))],
+      },
+    })
+    const runResult = await window.cs.runAiImageJob(jobUid)
+    if (runResult?.ok === false) throw new Error(runResult?.summary?.error || '大图修改失败')
+    const latest = await window.cs.getAiImageJob(jobUid)
+    const output = latestAiJobOutput(latest)
+    if (!output.path && !output.url) throw new Error('大图修改完成但没有返回结果图片')
+    const localOutputPath = await archivePreviewOutputToWorkspace(jobUid, output)
+    if (!localOutputPath) throw new Error('大图修改结果未能保存到当前工作区')
+    const source = previewImage.value?.source || previewImage.value?.asset
+    source.versions = Array.isArray(source.versions) ? source.versions : []
+    const version = {
+      id: `${jobUid}-${output.runUid || Date.now()}`,
+      action: aiActions.find(action => action.id === previewEditAction.value)?.title || 'AI 修改',
+      operationType: previewEditAction.value,
+      label: `大图修改 ${source.versions.length + 1}`,
+      meta: prompt,
+      prompt,
+      selected: false,
+      status: 'pending',
+      progress: 100,
+      sourceAssetId: source.id || '',
+      sourcePath: mainPath,
+      previewPath: localOutputPath,
+      imageUrl: output.url,
+      jobUid,
+      runUid: output.runUid,
+    }
+    source.versions.push(version)
+    previewImage.value.history = [source, ...visibleSourceVersions(source)]
+    previewHistoryIndex.value = previewImage.value.history.length - 1
+    previewAnnotationClearNonce.value += 1
+  } catch (error) {
+    previewEditError.value = error?.message || String(error)
+  } finally {
+    previewEditBusy.value = false
   }
 }
 
@@ -2903,12 +3894,6 @@ function providerStatusLabel(provider) {
   const status = videoProviderStatus[provider]
   if (!status) return '无需单独配置'
   return status.configured ? `已配置（${status.source || '本机'}）` : '未配置'
-}
-
-function groupModeLabel(mode) {
-  if (mode === 'one_image_per_video') return '每张图单独生成一条视频'
-  if (mode === 'multi_slot_template') return '多张图进入同一个多槽位模板'
-  return '多张图进入一个视频任务'
 }
 
 function openTemplateLibrary(styleCode = '') {
@@ -2939,12 +3924,9 @@ function resetVideoTaskDraftAssets() {
     videoTaskDraft.assetIds = []
     return
   }
-  videoTaskDraft.assetIds = assets.filter(asset => asset.status === 'approved').map(asset => asset.id)
+  videoTaskDraft.assetIds = assets.filter(asset => asset.selectable).map(asset => asset.id)
   if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v') {
     videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 1)
-  }
-  if (!videoTaskDraft.assetIds.length && assets[0]?.id) {
-    videoTaskDraft.assetIds = [assets[0].id]
   }
 }
 
@@ -2953,7 +3935,6 @@ function openVideoTaskDialog(styleCode = '') {
   videoTaskDraft.styleCode = styleCode || videoJobs[0]?.styleCode || ''
   videoTaskDraft.provider = 'qn'
   videoTaskDraft.happyhorseMode = 'i2v'
-  videoTaskDraft.groupMode = 'all_images_one_video'
   videoTaskDraft.prompt = ''
   videoTaskDraft.outputDir = videoOutputDir.value
   videoTaskDraft.templateId = ''
@@ -2970,7 +3951,14 @@ function handleHappyHorseModeChange() {
   resetVideoTaskDraftAssets()
 }
 
-function toggleVideoTaskDraftAsset(assetId) {
+function selectVideoTaskStyle(styleCode) {
+  videoTaskDraft.styleCode = String(styleCode || '').trim()
+  resetVideoTaskDraftAssets()
+}
+
+function toggleVideoTaskDraftAsset(asset) {
+  if (!asset?.selectable) return
+  const assetId = asset.id
   const index = videoTaskDraft.assetIds.indexOf(assetId)
   if (index >= 0) {
     videoTaskDraft.assetIds.splice(index, 1)
@@ -2980,7 +3968,7 @@ function toggleVideoTaskDraftAsset(assetId) {
 }
 
 function createVideoTaskFromDraft() {
-  const assets = videoTaskSelectableAssets.value.filter(asset => videoTaskDraft.assetIds.includes(asset.id))
+  const assets = videoTaskSelectableAssets.value.filter(asset => asset.selectable && videoTaskDraft.assetIds.includes(asset.id))
   const textOnlyHappyHorse = videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 't2v'
   if (!videoTaskDraft.styleCode || (!textOnlyHappyHorse && !assets.length)) {
     videoStageState.status = 'failed'
@@ -3017,11 +4005,12 @@ function createVideoTaskFromDraft() {
     styleCode: videoTaskDraft.styleCode,
     provider: videoTaskDraft.provider,
     happyhorseMode: videoTaskDraft.happyhorseMode,
-    groupMode: videoTaskDraft.groupMode,
     prompt: videoTaskDraft.prompt.trim(),
     outputDir: videoTaskDraft.outputDir.trim() || videoOutputDir.value,
     template,
     status: '待预检',
+    providerTaskId: '',
+    runId: '',
     assets: assets.map(asset => ({ ...asset })),
   })
   videoTaskDialogOpen.value = false
@@ -3040,15 +4029,17 @@ async function openOutputDir() {
 }
 
 async function openVideoResult(item) {
-  const target = String(item?.path || '').trim()
-  if (!target) {
+  const localTarget = String(item?.path || '').trim()
+  const remoteTarget = String(item?.videoUrl || '').trim()
+  if (!localTarget && !remoteTarget) {
     videoStageState.status = 'failed'
     videoStageState.error = '该视频结果还没有本地文件'
     videoStageState.message = videoStageState.error
     return
   }
   try {
-    await window.cs.openFile(target)
+    if (localTarget) await window.cs.openFile(localTarget)
+    else await window.cs.openExternalUrl(remoteTarget)
   } catch (error) {
     videoStageState.status = 'failed'
     videoStageState.error = error?.message || String(error)
@@ -3056,9 +4047,36 @@ async function openVideoResult(item) {
   }
 }
 
+function videoResultHasOutput(item) {
+  const localTarget = String(item?.path || '').trim()
+  const remoteTarget = String(item?.videoUrl || '').trim()
+  return /\.mp4(?:$|[?#])/i.test(localTarget) || /^https?:\/\//i.test(remoteTarget)
+}
+
+function canRetryVideoResult(item) {
+  if (String(item?.status || '').trim() === '失败') return false
+  const task = videoTaskForResult(item)
+  const providerTaskId = String(task?.providerTaskId || task?.runId || item?.providerTaskId || '').trim()
+  return Boolean(task && providerTaskId)
+}
+
 async function retryVideoResult(item) {
-  const task = videoTasks.find(candidate => candidate.id === item?.id || String(item?.id || '').startsWith(`${candidate.id}-`))
-  if (task) await runVideoTask(task, 'live')
+  const task = videoTaskForResult(item)
+  if (!task) return
+  try {
+    if (['seedance', 'happyhorse'].includes(task.provider)) {
+      await refreshProviderVideoResult(item, { download: true })
+    } else {
+      await refreshQnVideoTask(task)
+    }
+    videoStageState.status = 'done'
+    videoStageState.error = ''
+    videoStageState.message = `${task.styleCode} 已使用原任务 ID 重新读取并下载结果。`
+  } catch (error) {
+    videoStageState.status = 'failed'
+    videoStageState.error = error?.message || String(error)
+    videoStageState.message = videoStageState.error
+  }
 }
 
 function openAiCapabilitySettings(provider = '') {
@@ -3084,7 +4102,9 @@ function openModelLibrary() {
 }
 
 function closePreview() {
+  clearPreviewAnnotationRequest()
   previewImage.value = null
+  previewEditError.value = ''
 }
 
 function closeModelLibrary() {
@@ -3100,7 +4120,8 @@ function closeVideoTaskDialog() {
 }
 
 function closeTopDialog() {
-  if (previewImage.value) closePreview()
+  if (pendingVersionDeletion.value) closeDeleteConfirmation()
+  else if (previewImage.value) closePreview()
   else if (videoTaskDialogOpen.value) closeVideoTaskDialog()
   else if (templateLibraryOpen.value) closeTemplateLibrary()
   else if (modelLibraryOpen.value) closeModelLibrary()
@@ -3146,10 +4167,23 @@ watch(hasOpenModal, async (open) => {
   if (target && typeof target.focus === 'function') target.focus()
 })
 
+watch([videoTasks, videoResults], () => {
+  persistVideoWorkflowState()
+}, { deep: true })
+
+watch(styleWorkspaces, () => {
+  persistAiImageWorkspaceState()
+}, { deep: true })
+
 onMounted(() => {
+  restoreVideoWorkflowState()
   void (async () => {
     await restoreLatestMaterialTask()
-    await restoreLatestReviewBatch({ silent: true })
+    restoreAiImageWorkspaceState()
+    const restoredBatchCount = await restoreReviewWorkspaceBatches({ silent: true })
+    if (!restoredBatchCount) await restoreLatestReviewBatch({ silent: true })
+    aiImageWorkspaceStateHydrated = true
+    persistAiImageWorkspaceState()
   })()
   void loadModelLibrary()
   void loadTemplateCatalog()
@@ -3159,7 +4193,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   resetMaterialPoll()
   resetAiPoll()
+  aiReviewPollToken += 1
   if (videoPollTimer) clearTimeout(videoPollTimer)
+  clearPreviewAnnotationRequest()
 })
 
 function markPreviewBroken(path) {
@@ -3390,6 +4426,10 @@ function localFileUrl(path) {
   overflow: hidden;
 }
 
+.aiv-stage.aiv-stage-ai-edit-active {
+  overflow: hidden;
+}
+
 .aiv-stage-grid,
 .aiv-edit-workbench,
 .aiv-review-workbench,
@@ -3407,6 +4447,11 @@ function localFileUrl(path) {
 .aiv-material-stage {
   height: 100%;
   min-height: 0;
+  transition: grid-template-columns .18s ease;
+}
+
+.aiv-material-stage.params-collapsed {
+  grid-template-columns: 56px minmax(0, 1fr);
 }
 
 .aiv-params-panel,
@@ -3417,6 +4462,49 @@ function localFileUrl(path) {
 
 .aiv-params-panel {
   grid-template-rows: auto minmax(0, 1fr);
+}
+
+.aiv-params-panel.collapsed {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.aiv-params-panel.collapsed .aiv-panel-head {
+  height: 100%;
+  min-height: 0;
+  padding: 10px 7px;
+  flex-direction: column;
+  justify-content: space-between;
+  text-align: center;
+}
+
+.aiv-collapsed-material-summary {
+  display: grid;
+  gap: 8px;
+  justify-items: center;
+}
+
+.aiv-collapsed-material-summary strong {
+  writing-mode: vertical-rl;
+  letter-spacing: .16em;
+}
+
+.aiv-collapsed-material-summary span {
+  margin: 0;
+  writing-mode: vertical-rl;
+  font-size: 10px;
+}
+
+.aiv-params-panel.collapsed .aiv-collapse-action {
+  width: 40px;
+  min-height: 42px;
+  padding: 5px 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.aiv-params-panel.collapsed .aiv-collapse-action > span:first-child {
+  margin: 0;
+  font-size: 10px;
 }
 
 .aiv-material-results-panel {
@@ -3440,6 +4528,8 @@ function localFileUrl(path) {
 
 .aiv-edit-workbench {
   grid-template-columns: 320px minmax(0, 1fr);
+  height: 100%;
+  min-height: 0;
 }
 
 .aiv-review-workbench {
@@ -4181,7 +5271,40 @@ function localFileUrl(path) {
 }
 
 .aiv-edit-action-panel {
+  min-height: 0;
   align-self: stretch;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+}
+
+.aiv-edit-action-panel .aiv-panel-body {
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+  scrollbar-gutter: stable;
+}
+
+.aiv-edit-sticky-actions {
+  position: relative;
+  z-index: 4;
+  padding: 12px 14px;
+  border-top: 1px solid var(--border);
+  background: var(--bg2);
+  display: grid;
+  gap: 8px;
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, .18);
+}
+
+.aiv-edit-style-list {
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+  scrollbar-gutter: stable;
+}
+
+.aiv-edit-style-list .aiv-style-card {
+  align-self: start;
 }
 
 .aiv-action-grid {
@@ -5042,6 +6165,47 @@ function localFileUrl(path) {
 
 .aiv-modal-panel.aiv-video-task-modal-panel {
   width: min(1160px, 100%);
+}
+
+.aiv-modal-panel.aiv-confirm-panel {
+  width: min(520px, 100%);
+}
+
+.aiv-confirm-copy {
+  min-height: 0;
+  padding: 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.aiv-confirm-copy strong,
+.aiv-confirm-copy span,
+.aiv-confirm-copy code {
+  display: block;
+}
+
+.aiv-confirm-copy span,
+.aiv-confirm-copy code {
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.aiv-confirm-copy code {
+  padding: 9px 10px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.aiv-danger {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid rgba(248, 113, 113, .52);
+  border-radius: 8px;
+  color: #fff;
+  background: #b91c1c;
 }
 
 .aiv-modal-head,

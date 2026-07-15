@@ -201,6 +201,18 @@ test('builds one video job per image and matches templates by id or keyword', as
   assert.equal(matched[0].materialRefs.length, 2)
 })
 
+test('rejects an explicit missing template id instead of silently choosing another template', async () => {
+  const helpers = await loadExports()
+  const refs = [
+    { ref: '/tmp/a.png', path: '/tmp/a.png', source: 'local', name: 'a.png' },
+  ]
+
+  assert.throws(
+    () => helpers.buildJobs(refs, [actionTemplate(), multiSlotTemplate()], { template_id: 'missing-template' }),
+    /missing-template|指定模板|未找到/,
+  )
+})
+
 test('builds direct software-manager jobs without silently selecting a template', async () => {
   const helpers = await loadExports()
   const refs = [

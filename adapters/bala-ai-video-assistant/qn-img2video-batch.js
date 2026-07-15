@@ -336,7 +336,7 @@
     const wantedId = cleanText(request.templateId)
     if (wantedId) {
       const exact = list.find(template => cleanText(template.templateId || template.id) === wantedId)
-      if (exact) return exact
+      return exact || null
     }
     const needle = compact(request.templateMatch).toLowerCase()
     if (needle) {
@@ -405,7 +405,11 @@
     let index = 0
     for (const request of jobRequests) {
       const template = directMode ? null : chooseTemplate(templates, request, imageRefs.length)
-      if (!directMode && !template) continue
+      if (!directMode && !template) {
+        const requestedId = cleanText(request.templateId)
+        if (requestedId) throw new Error(`未找到指定模板：${requestedId}`)
+        continue
+      }
       const slots = getTemplateSlots(template)
       const requiredCount = directMode
         ? Math.max(imageRefs.length, 1)

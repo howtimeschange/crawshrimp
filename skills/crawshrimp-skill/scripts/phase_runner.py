@@ -236,7 +236,9 @@ class WebPhaseRunner:
                         clicks = meta.get("clicks") or []
                         for index, click in enumerate(clicks):
                             await cooperate("before_click", page, phase, shared, {"click_index": index, "click_total": len(clicks)})
-                            await self._execute(BrowserAction(kind="click", x=float(click["x"]), y=float(click["y"])))
+                            click_result = await self._execute(BrowserAction(kind="click", x=float(click["x"]), y=float(click["y"])))
+                            if not click_result.ok:
+                                raise RuntimeError(click_result.error or "cdp click failed")
                         await self._sleep(float(meta.get("sleep_ms", 300)) / 1000.0)
                         phase = str(meta.get("next_phase") or phase)
                         continue
@@ -244,7 +246,9 @@ class WebPhaseRunner:
                     if action == "inject_files":
                         items = meta.get("items") or []
                         for item in items:
-                            await self._execute(BrowserAction(kind="upload", selector=str(item.get("selector") or ""), files=list(item.get("files") or [])))
+                            upload_result = await self._execute(BrowserAction(kind="upload", selector=str(item.get("selector") or ""), files=list(item.get("files") or [])))
+                            if not upload_result.ok:
+                                raise RuntimeError(upload_result.error or "file injection failed")
                         await self._sleep(float(meta.get("sleep_ms", 500)) / 1000.0)
                         phase = str(meta.get("next_phase") or phase)
                         continue

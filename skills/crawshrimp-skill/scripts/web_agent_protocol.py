@@ -154,7 +154,31 @@ DANGEROUS_ACTION_KINDS = {
     "bulk_modify",
 }
 
+CLICK_LIKE_ACTION_KINDS = {"click", "download", "paginate"}
+
 DANGEROUS_RISKS = {"dangerous", "write", "destructive", "external_effect"}
+
+DANGEROUS_CLICK_TARGET_MARKERS = (
+    "delete",
+    "remove",
+    "publish",
+    "submit",
+    "send",
+    "pay",
+    "purchase",
+    "confirm",
+    "bulk",
+    "删除",
+    "移除",
+    "发布",
+    "提交",
+    "发送",
+    "付款",
+    "支付",
+    "购买",
+    "确认",
+    "批量",
+)
 
 
 def classify_task(prompt: str) -> TaskKind:
@@ -177,7 +201,9 @@ def validate_action(action: Action, *, user_confirmed: bool = False) -> None:
     """Reject dangerous actions unless the user has explicitly confirmed them."""
     kind = action.kind.strip().lower()
     risk = action.risk.strip().lower()
-    if (kind in DANGEROUS_ACTION_KINDS or risk in DANGEROUS_RISKS) and not user_confirmed:
+    target = action.target.strip().lower()
+    dangerous_click = kind in CLICK_LIKE_ACTION_KINDS and any(marker in target for marker in DANGEROUS_CLICK_TARGET_MARKERS)
+    if (kind in DANGEROUS_ACTION_KINDS or risk in DANGEROUS_RISKS or dangerous_click) and not user_confirmed:
         raise SafetyError(
             f"Action '{action.kind}' on '{action.target}' requires explicit user confirmation."
         )

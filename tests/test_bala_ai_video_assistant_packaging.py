@@ -263,6 +263,65 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertTrue(status["happyhorse"]["configured"])
         self.assertNotIn("runtime-placeholder", json.dumps(status))
 
+    def test_ai_capability_credentials_override_environment_fallbacks(self):
+        config = {
+            "ai": {
+                "1xm": {"gpt_image_4k_key": "config-placeholder-image"},
+                "video": {
+                    "seedance_api_key": "config-placeholder-seedance",
+                    "bailian_api_key": "config-placeholder-happyhorse",
+                },
+            },
+        }
+        with patch.dict("os.environ", {
+            "ONE_XM_GPT_IMAGE_4K_KEY": "runtime-placeholder-image",
+            "ARK_API_KEY": "runtime-placeholder-seedance",
+            "DASHSCOPE_API_KEY": "runtime-placeholder-happyhorse",
+        }, clear=False), patch("core.api_server.load_config", return_value=config):
+            secrets = api_server._bala_video_provider_secrets()
+            status = api_server._bala_video_provider_status()
+            one_xm = api_server._resolve_one_xm_settings()
+
+        self.assertEqual(secrets["seedance"], "config-placeholder-seedance")
+        self.assertEqual(secrets["happyhorse"], "config-placeholder-happyhorse")
+        self.assertEqual(status["seedance"]["source"], "AI 能力")
+        self.assertEqual(status["happyhorse"]["source"], "AI 能力")
+        self.assertEqual(one_xm["4k"], "config-placeholder-image")
+
+    def test_provider_task_refresh_and_download_use_shared_cli_commands(self):
+        runner = getattr(api_server, "_run_video_provider_task_cli", None)
+        request_type = getattr(api_server, "BalaVideoProviderTaskRequest", None)
+        self.assertTrue(callable(runner), "Provider task refresh must use the shared CLI")
+        self.assertTrue(request_type, "Provider task refresh request model must exist")
+
+        calls = []
+
+        class FinishedProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return (b'{"id":"seedance-task","status":"succeeded","content":{"video_url":"https://example.test/video.mp4"}}', b'')
+
+        async def fake_create_subprocess_exec(*command, **kwargs):
+            calls.append((command, kwargs))
+            return FinishedProcess()
+
+        request = request_type(
+            provider="seedance",
+            task_id="seedance-task",
+            output_dir="/tmp/provider-results",
+            style_code="208326102205",
+            download=False,
+        )
+        with patch("core.api_server._bala_video_node_runtime", return_value=("node", {})), \
+                patch("core.api_server._bala_video_provider_env", return_value=({"ARK_API_KEY": "placeholder"}, ["placeholder"])), \
+                patch("core.api_server.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            result = asyncio.run(runner(request))
+
+        self.assertEqual(calls[0][0][:4], ("node", "bin/seedance.js", "get", "seedance-task"))
+        self.assertEqual(result["task_id"], "seedance-task")
+        self.assertEqual(result["status"], "succeeded")
+
     def test_apply_face_background_creates_ai_image_job_with_source_and_model_assets(self):
         manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"
 
@@ -442,6 +501,8 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             runtime_paths.reset_runtime_data_root_cache()
 
     def test_finalize_material_prepare_groups_images_without_zip_by_default(self):
+        from openpyxl import Workbook
+
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
             runtime_dir = base / "runtime"
@@ -453,7 +514,11 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             detail_file.write_bytes(b"detail")
 
             exported = base / "summary.xlsx"
-            exported.write_bytes(b"excel")
+            workbook = Workbook()
+            workbook.active.append(["输入款号", "本地文件"])
+            workbook.active.append(["208326102205", str(model_file)])
+            workbook.active.append(["208326102205", str(detail_file)])
+            workbook.save(exported)
 
             result = _finalize_bala_ai_video_assistant_outputs(
                 task_id="semir_video_material_prepare",
@@ -548,6 +613,125 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             self.assertEqual(rows[0]["本地文件"], str(package_dir / "208326102205" / "01_模拍原图" / "model-compressed.jpg"))
             self.assertEqual(rows[0]["压缩结果"], "已压缩：测试")
             self.assertEqual(rows[0]["文件名"], "model-compressed.jpg")
+
+    def test_finalize_material_prepare_rewrites_exported_excel_to_final_image_paths(self):
+        from openpyxl import Workbook, load_workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "workspace"
+            runtime_dir.mkdir()
+            image_file = runtime_dir / "runtime-model.jpg"
+            image_file.write_bytes(b"image")
+            summary = base / "summary.xlsx"
+            workbook = Workbook()
+            sheet = workbook.active
+            sheet.append(["输入款号", "本地文件"])
+            sheet.append(["208326102205", str(image_file)])
+            workbook.save(summary)
+            rows = [{
+                "输入款号": "208326102205",
+                "输入编码": "208326102205",
+                "素材来源": "模拍图",
+                "文件名": "model.jpg",
+                "下载结果": "已下载",
+                "本地文件": str(image_file),
+                "__bala_group_code": "208326102205",
+                "__bala_source_type": "model",
+                "__package_filename": "model.jpg",
+                "__compress_threshold_bytes": 20 * 1024 * 1024,
+            }]
+
+            result = _finalize_bala_ai_video_assistant_outputs(
+                task_id="semir_video_material_prepare",
+                data_rows=rows,
+                runtime_files=[str(image_file)],
+                exported_files=[str(summary)],
+                run_params={"package_name": "final-paths", "export_folder": str(export_dir)},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            copied_summary = next(Path(item) for item in result if str(item).endswith(".xlsx"))
+            exported = load_workbook(copied_summary, read_only=True, data_only=True)
+            exported_path = exported.active.cell(row=2, column=2).value
+            exported.close()
+            self.assertEqual(exported_path, rows[0]["本地文件"])
+            self.assertTrue(Path(exported_path).is_file())
+
+    def test_finalize_material_prepare_fails_closed_when_excel_paths_cannot_be_rewritten(self):
+        from openpyxl import Workbook
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            export_dir = base / "workspace"
+            runtime_dir.mkdir()
+            image_file = runtime_dir / "runtime-model.jpg"
+            image_file.write_bytes(b"image")
+            summary = base / "summary.xlsx"
+            workbook = Workbook()
+            workbook.active.append(["输入款号", "错误路径列"])
+            workbook.active.append(["208326102205", str(image_file)])
+            workbook.save(summary)
+            rows = [{
+                "输入款号": "208326102205",
+                "输入编码": "208326102205",
+                "素材来源": "模拍图",
+                "文件名": "model.jpg",
+                "下载结果": "已下载",
+                "本地文件": str(image_file),
+                "__bala_group_code": "208326102205",
+                "__bala_source_type": "model",
+                "__package_filename": "model.jpg",
+                "__compress_threshold_bytes": 20 * 1024 * 1024,
+            }]
+
+            with self.assertRaisesRegex(RuntimeError, "本地文件"):
+                _finalize_bala_ai_video_assistant_outputs(
+                    task_id="semir_video_material_prepare",
+                    data_rows=rows,
+                    runtime_files=[str(image_file)],
+                    exported_files=[str(summary)],
+                    run_params={"package_name": "invalid-summary", "export_folder": str(export_dir)},
+                    runtime_artifact_dir=str(runtime_dir),
+                    log=lambda _: None,
+                )
+
+    def test_review_board_default_url_uses_the_active_backend_port(self):
+        async def wait_for_control(_status=None):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            source = base / "208326102205" / "source.png"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"\x89PNG\r\n\x1a\n")
+            with patch.dict("os.environ", {
+                "CRAWSHRIMP_DATA": str(base / "data"),
+                "CRAWSHRIMP_PORT": "18766",
+            }, clear=False):
+                runtime_paths.reset_runtime_data_root_cache()
+                data_sink.init_db()
+                rows = asyncio.run(_apply_bala_ai_face_background_generate(
+                    {
+                        "operation_type": "background_swap",
+                        "source_images": {"paths": [str(source)]},
+                        "background_prompt": "纯色背景",
+                        "generation_mode": "create_only",
+                        "review_mode": "create_review_batch",
+                    },
+                    wait_for_control,
+                    lambda _message: None,
+                ))
+
+            self.assertTrue(rows[0]["审批看板"].startswith("http://127.0.0.1:18766/bala-ai-video-review/"))
+            runtime_paths.reset_runtime_data_root_cache()
+
+    def test_backend_disables_query_string_access_logs(self):
+        source = (ROOT / "core" / "api_server.py").read_text(encoding="utf-8")
+        self.assertIn("access_log=False", source)
 
     def test_orphan_cleanup_includes_bala_video_runtime(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -135,10 +135,10 @@ HappyHorse 已在外部项目验证过文生视频、图生视频、参考生视
 
 | 阶段 | 当前状态 | 完成度 | 说明 |
 | --- | --- | --- | --- |
-| 森马云盘找图与本地规整 | 已落脚本 | 约 80% | `semir_video_material_prepare` 已支持手工键入款号、批量搜索下载、优先 `已选`/`已写`/款号目录、去重和本地规整；吊牌/洗唛过滤保留人工复核。 |
-| GPT Image 换脸/换背景 | 已落脚本 | 约 65% | `bala_ai_face_background_generate` 已接入内置巴拉 AI 模特库、按年龄/性别分组建任务，支持异步生成、结果回收、审批/重试方向；后续要继续补 UI 体验和大批量重跑管理。 |
-| 图生视频原子能力 | 已落脚本并通过真实链路测试 | 约 75% | `qn_img2video_batch` 已支持模板目录、模板预览下载、本地图片上传、模板提交、任务轮询、视频下载和本地归档；已用软件管家真实页面生成并下载 MP4。 |
-| 外部视频模型 provider | 迁移规划明确 | 约 40% | Seedance 已按共享 CLI 口径进入 `integrations/seedanceCLI`；HappyHorse 需要把 `/Users/xingyicheng/Documents/AI 视频` 中的百炼 CLI 迁移为 `integrations/bailianCLI`，作为生视频阶段第三个 provider。 |
+| 森马云盘找图与本地规整 | 已接通并真实验收 | 本期完成 | `semir_video_material_prepare` 已支持手工键入款号、批量搜索下载、优先 `已选`/`已写`/款号目录、去重、本地规整和工作区恢复；款号 `208326102205` 已下载并回显 127 张素材。 |
+| GPT Image 图片动作 | 已接通并真实验收 | 本期完成 | `bala_ai_face_background_generate` 已接入模特库和异步任务，工作流已跑通换脸、换背景、换装、换姿势、精确修改、结果回收、真实本地删除和审核持久化。 |
+| 图生视频原子能力 | 实现已接通；当前账号会话阻塞 | 本期实现完成 | `qn_img2video_batch` 已支持模板目录、本地图片上传、提交、轮询、视频下载和本地归档；本轮运行 `22` 因 `9222` 停在千牛登录页而在页面加载阶段失败，未伪造上传、任务 ID 或 MP4。 |
+| 外部视频模型 provider | 已迁移并真实接通 | 本期完成 | Seedance 通过 `integrations/seedanceCLI`、HappyHorse 通过 `integrations/bailianCLI` 调用；两者均已提交真实 5 秒任务并下载本地 MP4，应用层没有复制 Ark / DashScope client。 |
 | 自动剪辑 | 方案阶段 | 约 15% | 已确认借鉴 OpenCut 的时间线/素材管理思想，MVP 优先考虑本地模板/FFmpeg/Remotion 风格渲染；剪映可作为临时人工处理出口。 |
 | 发布预检与 live 发布 | 待实现 | 0% | 需要另建 `qn_short_video_publish`，默认 `plan`，只有明确授权后进入 `live`。 |
 | 登记回写与效果回收 | 待实现 | 0% | 需要对接钉钉登记、森马云盘归档、每日发布量和引导成交数据回收。 |
