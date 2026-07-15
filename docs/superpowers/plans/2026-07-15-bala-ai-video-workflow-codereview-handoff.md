@@ -4,234 +4,111 @@ Date: 2026-07-15
 
 Workspace: `/Users/xingyicheng/Documents/crawshrimp`
 
-## Original Spec References
-
-The implementation and review should be checked against these source specs:
+## Source Specs
 
 - `docs/superpowers/specs/2026-07-14-bala-ai-video-automation-workflow.md`
 - `docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.md`
 - `docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-design-review.md`
 - `docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.html`
 
-Key product rules from the specs:
+The implementation keeps the spec boundaries: five explicit stages, review before video generation, one style code with multiple independently created video tasks, three providers, shared provider CLIs, runtime-only credentials, and no implementation identifiers in the operator UI.
 
-- `AI 视频` is a first-level app entry below `AI 生图`.
-- The workflow is a real five-step operator surface: material prepare -> AI image edit -> review -> explicit video task creation -> results.
-- Material prepare starts from `semir_video_material_prepare` and groups results by style code.
-- AI image editing reuses `bala_ai_face_background_generate`, keeps `AI 换脸 / AI 换背景 / AI 换装 / AI 换姿势` as separate actions, and sends generated assets into review.
-- Video generation must be explicit `新增视频任务`; do not directly turn every image into a video.
-- QN/software-manager video provider reuses `qn_img2video_batch`.
-- Seedance provider must reuse `integrations/seedanceCLI`; do not reimplement Ark API inside the app.
-- HappyHorse provider must reuse the migrated Bailian CLI from `integrations/bailianCLI`; do not reimplement DashScope / Bailian API inside the app.
-- No API keys in source. GPT Image / Ark / Seedance / DashScope / Bailian credentials must come from AI capability config or environment.
-- Main UI must not expose implementation identifiers such as script ids, `integrations/seedanceCLI`, `integrations/bailianCLI`, `ARK_API_KEY`, or `DASHSCOPE_API_KEY`.
-- Long tasks need loading/progress/error/retry states.
-- Modals need `role=dialog`, `aria-modal`, focus trap, Escape close, and background inert.
+## Delivered Implementation
 
-## Current Implementation Status
+### Material workspace
 
-Implemented in this worktree:
+- The first step opens the Semir cloud-drive task in a new browser page by default and waits for a newly created run instead of silently binding an old run.
+- The workspace directory uses the native folder picker and is shared with the video output default.
+- Search and download use separate progress bars.
+- Downloaded assets are restored from the selected workspace, grouped by style-code tabs, and split into model/detail tabs.
+- Only one style and one asset type render at a time; model photos are the default view and no asset is selected by default.
+- The style tabs, source tabs, and independently scrolling image area occupy separate grid rows.
+- Cards use lazy 480px WebP thumbnails; the magnifier opens the original image. Pagination limits the initial DOM/image count.
 
-- `AI 视频` first-level navigation entry and dedicated `AiVideoWorkflow.vue`.
-- Five-step workflow shell with dark Crawshrimp workbench styling.
-- Material step:
-  - Batch style-code input.
-  - Real `semir_video_material_prepare` task submit/poll/finalize path.
-  - Material batch creation from task Excel output.
-  - Style-code grouped material cards with expand/collapse, selection state, image preview, skipped/issue rows.
-- AI edit step:
-  - Four action tiles: face/background/outfit/pose.
-  - Real model library API loading via `listBalaModelLibrary`.
-  - Model picker modal with age/gender groups and real image thumbnails.
-  - Real AI stage submit path through material selection export and `bala_ai_face_background_generate`.
-  - Outfit references now wire `garment_images`, `outfit_reference_images`, and `variant_reference_images`.
-  - Review batch URL parsing and review pool refresh.
-- Review step:
-  - Card-based review pool, status filters, approve/reject/rerun/refresh.
-  - Persisted review decisions through backend review APIs.
-  - Approved/pending/retry/source assets flow into the video task asset pool.
-- Video task step:
-  - Explicit `新增视频任务` modal.
-  - Per-task style code, provider, group mode, prompt, output dir, optional template, selected images.
-  - Images display approved/pending/retry/source state labels.
-  - QN provider builds `qn_img2video_batch` params for `plan` and `live`.
-  - Seedance provider calls backend bridge to `integrations/seedanceCLI`.
-  - Template library loads real local catalog from `/Users/xingyicheng/Downloads/巴拉AI视频模板库`.
-- Results step:
-  - Card layout with progress, status, task id, local MP4 path, preview/open/retry actions.
-- Backend/API additions:
-  - Local software-manager template catalog loader and `/bala-ai-video-templates/api`.
-  - Seedance request model, payload builder, CLI runner, and `/bala-ai-video-seedance/api/run`.
-  - Electron/preload/dev bridge methods for templates and Seedance.
-- Accessibility/design review items:
-  - Custom modals now have dialog semantics, Escape close, focus trap, and background inert.
-  - Main AI edit action text is `开始生图`.
-  - Implementation terms are not exposed in the main operator UI.
+### AI image and review
 
-Not yet completed:
+- Face, background, outfit, and pose edits use the existing AI image job capability.
+- AI generation waits for a new run and cannot reuse the previous task result.
+- The real model library, review persistence, approve/reject/retry actions, review restoration, and video handoff are connected.
+- Model, template, source, and video asset cards have keyboard selection and `aria-pressed` state.
 
-- HappyHorse / 百炼 provider is now specified but not yet migrated into `integrations/bailianCLI` in this worktree.
-- Full real external chain for style `208326102205` through software-manager upload/generation/download has not been completed in this session.
-- Final code review has not yet been performed after the latest front-end patch.
-- Final full test/build suite has not been rerun after the latest front-end patch.
-- No local commit has been created yet.
+### Explicit video tasks
 
-## Runtime State At Handoff
+- Video generation remains an explicit `新增视频任务` flow. One style code can own multiple tasks.
+- Entering the video step directly restores the latest review batch and rebuilds the style asset pool before the task dialog opens.
+- The task output directory is a folder picker, not a text path field.
+- Image selection and original-image preview are separate controls.
+- QN/software-manager launches wait for a new task run and preserve every injected file when different paths share the same basename.
+- Seedance and HappyHorse are invoked through `integrations/seedanceCLI` and `integrations/bailianCLI`; the application layer only builds payloads, invokes the CLI, parses status, and archives the result.
+- Packaged desktop builds copy both shared integrations and run them with the bundled Electron executable in Node mode, without requiring a system Node installation.
+- Provider subprocesses have an outer timeout and are killed on timeout. Local provider inputs reject unsupported, oversized, or invalid image files.
 
-The local development environment was started and smoke-tested:
+### Operator UI and recovery
 
-- Backend: `http://127.0.0.1:18765`, data dir `.crawshrimp-dev-ai-video`
-- Frontend Vite: `http://127.0.0.1:5173`, started from `app/`
-- Electron app shell: running via `npm exec electron .`
-- Dedicated CDP Chrome: `127.0.0.1:9222`
+- The main UI does not display script IDs, integration paths, or provider credential variable names.
+- Long-running stages expose running, partial, failed, done, progress, reason, and retry states.
+- All custom dialogs have dialog semantics, Escape close, focus containment, and inert background behavior.
+- Video result counts use live task data; failed cards show the concrete failure reason.
 
-Important note: an earlier Vite instance was accidentally started from the repo root and returned `HTTP 404`. It was stopped and replaced with the correct `app/` Vite server.
+## Real Integration Evidence
 
-Smoke evidence:
+Style code: `208326102205`
 
-- `AI 视频工作流` page rendered in the app shell.
-- Model library modal showed 70 real model thumbnails and the expected age/gender groups.
-- Video task dialog showed both software-manager and Seedance providers.
-- Modal background inert was true.
-- 390px mobile viewport reported no horizontal overflow.
-- Template API returned 26 templates, first template `641241_62536236_21`.
+- Material search/download: completed with 127 local assets (48 model photos and 79 detail photos).
+- AI image edit and review: completed; the approved AI result was restored into the video asset pool.
+- QN/software-manager: the authenticated 9222 page accepted the upload/business request path, but the account returned business code `30001` for insufficient points. No QN generation task ID or MP4 was produced in this run.
+- Seedance: the real-person image request hit the provider privacy guard and was safely retried as a text-only original-person task.
+  - Task ID: `cgt-20260715210351-472zp`
+  - MP4: `/Users/xingyicheng/Downloads/巴拉AI视频素材/208326102205_seedance_20260715-210351.mp4`
+- HappyHorse image-to-video:
+  - Task ID: `44dabf10-8321-4f57-b682-293e97d568d2`
+  - MP4: `/Users/xingyicheng/Downloads/巴拉AI视频素材/208326102205_happyhorse_i2v_20260715-211306.mp4`
 
-## Current Git State And Files
+The two local MP4 files were checked with media metadata. Seedance is about 8.05 seconds at 834x1112; HappyHorse is about 5.07 seconds at 832x1108. Both are H.264/AAC MP4 files.
 
-Tracked modified files:
+## Provider Status
 
-- `app/src/main.js`
-- `app/src/preload.js`
-- `app/src/renderer/App.vue`
-- `app/src/renderer/utils/balaAiVideoWorkflow.js`
-- `app/src/renderer/utils/devCsBridge.js`
-- `core/api_server.py`
-- `tests/bala-ai-video-workflow-ui.test.js`
-- `tests/test_bala_ai_video_assistant_packaging.py`
+| Provider | Status | Evidence |
+| --- | --- | --- |
+| QN/software-manager | Real upload/request path reached; generation blocked by account points | 9222 authenticated page and business response `30001` |
+| Seedance | Real provider connected | Real task ID and downloaded MP4 above |
+| HappyHorse | Real provider connected | Real task ID and downloaded MP4 above |
+| Automatic compose/publish/register | Plan only | Outside this MVP and not presented as connected |
 
-New relevant untracked files/directories:
+## Code Review Closure
 
-- `app/src/renderer/views/AiVideoWorkflow.vue`
-- `integrations/seedanceCLI/.env.example`
-- `integrations/seedanceCLI/.gitignore`
-- `integrations/seedanceCLI/README.md`
-- `integrations/seedanceCLI/bin/seedance.js`
-- `integrations/seedanceCLI/src/ark-client.js`
-- `integrations/seedanceCLI/src/config.js`
-- `integrations/seedanceCLI/test/ark-client.test.js`
-- `integrations/seedanceCLI/examples/*.json`
+Three read-only review passes reported no P0. Confirmed P1/P2 findings were reproduced and fixed:
 
-Do not stage unrelated or runtime files:
+- stale AI/QN run binding;
+- missing integrations in desktop packaging and reliance on system Node;
+- same-basename QN upload collision;
+- missing provider local-image validation and outer CLI timeout;
+- incomplete card keyboard/ARIA behavior;
+- video task text-path field and double-click preview;
+- stale handoff documentation.
 
-- `.crawshrimp-dev-ai-video/`
-- `.crawshrimp-dev-live-test/`
-- `.crawshrimp-dev/`
-- `tmp-tmall-packaging-*.csv`
-- `integrations/.DS_Store`
-- Unrelated untracked July 12 spec drafts unless the user explicitly asks for them.
+The final live UI readback verified:
 
-## Validation Already Run
+- style-code tab, source-type tab, and image scroll area are separate and aligned;
+- 480px thumbnails load, while original-image preview remains available;
+- direct navigation to the video step restores one style with two candidate assets;
+- the task dialog has a folder picker, two magnifier buttons, and two `aria-pressed` asset cards;
+- none of the forbidden implementation identifiers appear in any of the five visible steps.
 
-Latest after the most recent front-end patch:
+## Validation Bundle
+
+The delivery gate is:
 
 ```bash
 node --test tests/bala-ai-video-workflow-ui.test.js
-```
-
-Result: pass, 14/14.
-
-Earlier in this work sequence before the last front-end patch, the following were reported as passing and should be rerun after review/fixes:
-
-```bash
 python3 -m unittest tests.test_bala_ai_video_assistant_packaging
 npm --prefix integrations/seedanceCLI test
+npm --prefix integrations/bailianCLI test
+node --test tests/bala-ai-video-assistant-qn-img2video.test.js
 npm --prefix app run vite:build
 npm --prefix app test
+python3 -m unittest tests.test_bala_ai_video_materials tests.test_bala_ai_video_review tests.test_ai_settings_config
+git diff --check
 ```
 
-## Code Review Checklist
-
-Review focus areas:
-
-1. Front-end workflow state:
-   - `AiVideoWorkflow.vue` is large and should be reviewed for stale state, bad computed dependencies, duplicate actions, and accidental mock-only paths.
-   - Verify material -> AI -> review -> video task data contracts.
-   - Confirm all long actions have visible running/failed/retry paths.
-
-2. Provider boundaries:
-   - QN path should only call `qn_img2video_batch`.
-   - Seedance path should only call `integrations/seedanceCLI`; no Ark API logic should be embedded directly into the app surface.
-   - HappyHorse path should only call `integrations/bailianCLI`; no DashScope / Bailian API logic should be embedded directly into the app surface.
-   - No API keys should appear in source, tests, fixtures, docs, logs, or summaries.
-
-3. External side effects:
-   - Code review should be read-only.
-   - Live software-manager upload/generation/download for `208326102205` should happen only after review fixes and with current 9222/login state verified.
-
-4. Accessibility and UI polish:
-   - Verify all four modals have dialog semantics and focus behavior.
-   - Check desktop and mobile overflow.
-   - Check orange is limited to primary/current-step emphasis, with status labels carrying text.
-   - Main UI should not show script ids or secret/config names.
-
-5. Backend safety:
-   - Review `_load_bala_video_template_catalog`, `_parse_seedance_cli_json_objects`, `_build_seedance_payload`, and `_run_seedance_cli`.
-   - Confirm CLI stdout/stderr sanitization does not leak credentials.
-   - Confirm local image handling for Seedance is acceptable for the CLI provider contract.
-
-6. Tests:
-   - Add or refine tests if review finds state-machine or parser edge cases.
-   - Rerun all validation commands after fixes.
-
-## Recommended Next-Agent Prompt
-
-Use this prompt for the next agent:
-
-```text
-你接手的仓库是 /Users/xingyicheng/Documents/crawshrimp。
-
-请先不要提交、不要开无关子任务。先读：
-- docs/superpowers/specs/2026-07-14-bala-ai-video-automation-workflow.md
-- docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.md
-- docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-design-review.md
-- docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.html
-- docs/superpowers/plans/2026-07-15-bala-ai-video-workflow-codereview-handoff.md
-
-然后做一次独立 code review，重点审查：
-- app/src/renderer/views/AiVideoWorkflow.vue
-- app/src/renderer/utils/balaAiVideoWorkflow.js
-- core/api_server.py
-- app/src/main.js
-- app/src/preload.js
-- app/src/renderer/utils/devCsBridge.js
-- tests/bala-ai-video-workflow-ui.test.js
-- tests/test_bala_ai_video_assistant_packaging.py
-- integrations/seedanceCLI/
-
-审查目标：
-1. 对齐原 spec 和设计审查报告，确认 AI 视频工作流不是静态示意，而是真实接通五阶段能力。
-2. 检查 material prepare -> AI 改图 -> review -> 新增视频任务 -> QN/Seedance/HappyHorse -> results 的状态、错误、重试、数据契约。
-3. 确认 Seedance 只复用 integrations/seedanceCLI，不在 app/core 里重写 Ark API。
-4. 确认 HappyHorse 只复用迁移后的 integrations/bailianCLI，不在 app/core 里重写 DashScope / Bailian API。
-5. 确认没有 API key 或 secret 被写入源码、测试、文档或日志。
-6. 确认主界面没有暴露 semir_video_material_prepare、integrations/seedanceCLI、integrations/bailianCLI、ARK_API_KEY、DASHSCOPE_API_KEY 等实现词。
-7. 检查弹窗 role=dialog、aria-modal、Escape、focus trap、background inert 是否完整。
-8. 检查真实模特库和本地软件管家模板库显示。
-9. 检查 untracked runtime 目录、CSV、.DS_Store 不要被 stage。
-
-当前运行态：
-- 后端 http://127.0.0.1:18765
-- Vite http://127.0.0.1:5173，从 app/ 目录启动
-- Electron 应用壳已启动
-- CDP Chrome 127.0.0.1:9222
-
-先输出 review findings，按 P0/P1/P2 排序并引用具体文件/行。然后在主会话修复确认的问题。修复后至少跑：
-- node --test tests/bala-ai-video-workflow-ui.test.js
-- python3 -m unittest tests.test_bala_ai_video_assistant_packaging
-- npm --prefix integrations/seedanceCLI test
-- npm --prefix integrations/bailianCLI test （迁移 HappyHorse 后）
-- npm --prefix app run vite:build
-- npm --prefix app test
-
-如果 review 和测试通过，再按用户前序要求继续用款号 208326102205 做真实全链路联调，到软件管家上传视频、生成并下载本地 MP4 为止。执行 live 前核对 9222 登录态和外部页面状态；不要把任何 API key 写入文件。
-```
+Provider credentials are not stored in source, tests, documentation, fixtures, result summaries, or logs. The example environment files contain placeholders only.

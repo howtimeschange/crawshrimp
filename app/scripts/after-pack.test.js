@@ -91,3 +91,21 @@ test('requirePythonScriptsBundle rejects adapter directories without manifest', 
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+test('requirePythonScriptsBundle rejects resources without shared video integrations', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-resources-'))
+
+  try {
+    fs.mkdirSync(path.join(tmp, 'python-scripts', 'core'), { recursive: true })
+    fs.writeFileSync(path.join(tmp, 'python-scripts', 'core', 'api_server.py'), '')
+    fs.mkdirSync(path.join(tmp, 'python-scripts', 'adapters', 'good-adapter'), { recursive: true })
+    fs.writeFileSync(path.join(tmp, 'python-scripts', 'adapters', 'good-adapter', 'manifest.yaml'), '')
+
+    assert.throws(
+      () => requirePythonScriptsBundle(tmp),
+      /shared video integration/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})

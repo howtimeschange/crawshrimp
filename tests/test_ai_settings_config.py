@@ -15,6 +15,14 @@ class AiSettingsConfigTests(unittest.TestCase):
         self.assertEqual(one_xm["base_url"], "https://api.1xm.ai/v1")
         self.assertEqual(DEFAULT_CONFIG["notify"]["dingtalk_secret"], "")
 
+    def test_default_config_exposes_video_provider_fields_without_secret_values(self):
+        video = DEFAULT_CONFIG["ai"]["video"]
+
+        self.assertEqual(video["seedance_api_key"], "")
+        self.assertEqual(video["bailian_api_key"], "")
+        self.assertEqual(video["bailian_workspace_id"], "")
+        self.assertEqual(video["bailian_region"], "cn-beijing")
+
     def test_save_config_expands_dotted_settings_keys(self):
         with patch("core.config._config_path") as config_path:
             import tempfile

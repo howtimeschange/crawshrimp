@@ -21,12 +21,12 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前页面（推荐）
           - value: new
-            label: 全新页面
+            label: 全新页面（推荐）
+          - value: current
+            label: 当前页面
       - id: cloud_path
         type: text
         label: 云盘搜索根路径

@@ -2201,6 +2201,12 @@ BALA_VIDEO_TEMPLATE_CATALOG_JSON = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.j
 BALA_VIDEO_TEMPLATE_CATALOG_CSV = BALA_VIDEO_TEMPLATE_DIR / "template-catalog.csv"
 BALA_SEEDANCE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "seedanceCLI"
 BALA_SEEDANCE_DEFAULT_MODEL = "doubao-seedance-2-0-260128"
+BALA_HAPPYHORSE_CLI_DIR = Path(__file__).resolve().parents[1] / "integrations" / "bailianCLI"
+BALA_HAPPYHORSE_MODELS = {
+    "t2v": "happyhorse-1.1-t2v",
+    "i2v": "happyhorse-1.1-i2v",
+    "r2v": "happyhorse-1.1-r2v",
+}
 BALA_AI_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -6247,6 +6253,23 @@ class BalaSeedanceVideoRequest(BaseModel):
     timeout_seconds: int = 1800
 
 
+class BalaHappyHorseVideoRequest(BaseModel):
+    style_code: str = ""
+    mode: str = "i2v"
+    prompt: str = ""
+    image_paths: List[str] = []
+    image_urls: List[str] = []
+    output_dir: str = ""
+    output_path: str = ""
+    resolution: str = "720P"
+    ratio: str = "3:4"
+    duration: int = 5
+    watermark: bool = False
+    wait: bool = True
+    interval_seconds: int = 5
+    timeout_seconds: int = 1800
+
+
 def _bala_ai_video_base_url() -> str:
     return str(os.environ.get("CRAWSHRIMP_PUBLIC_BASE_URL") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").rstrip("/")
 
@@ -6337,6 +6360,145 @@ def _parse_seedance_cli_json_objects(text: str) -> list[dict]:
     return objects
 
 
+def _bala_video_provider_secrets() -> dict[str, str]:
+    cfg = load_config()
+    return {
+        "seedance": str(
+            os.environ.get("ARK_API_KEY")
+            or os.environ.get("VOLCENGINE_ARK_API_KEY")
+            or _nested_config_value(cfg, "ai.video.seedance_api_key")
+            or ""
+        ).strip(),
+        "happyhorse": str(
+            os.environ.get("DASHSCOPE_API_KEY")
+            or os.environ.get("BAILIAN_API_KEY")
+            or _nested_config_value(cfg, "ai.video.bailian_api_key")
+            or ""
+        ).strip(),
+    }
+
+
+def _bala_video_provider_status() -> dict:
+    cfg = load_config()
+    secrets = _bala_video_provider_secrets()
+
+    def source_for(provider: str, environment_names: tuple[str, ...], config_key: str) -> str:
+        if any(str(os.environ.get(name) or "").strip() for name in environment_names):
+            return "运行环境"
+        if str(_nested_config_value(cfg, config_key) or "").strip():
+            return "AI 能力"
+        return "未配置"
+
+    return {
+        "seedance": {
+            "configured": bool(secrets["seedance"]),
+            "source": source_for(
+                "seedance",
+                ("ARK_API_KEY", "VOLCENGINE_ARK_API_KEY"),
+                "ai.video.seedance_api_key",
+            ),
+        },
+        "happyhorse": {
+            "configured": bool(secrets["happyhorse"]),
+            "source": source_for(
+                "happyhorse",
+                ("DASHSCOPE_API_KEY", "BAILIAN_API_KEY"),
+                "ai.video.bailian_api_key",
+            ),
+        },
+    }
+
+
+def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
+    cfg = load_config()
+    secrets = _bala_video_provider_secrets()
+    env = dict(os.environ)
+    env.pop("ELECTRON_RUN_AS_NODE", None)
+    secret_values = [value for value in secrets.values() if value]
+    if provider == "seedance":
+        if secrets["seedance"]:
+            env["ARK_API_KEY"] = secrets["seedance"]
+        base_url = str(_nested_config_value(cfg, "ai.video.seedance_base_url") or "").strip()
+        if base_url and not str(env.get("ARK_BASE_URL") or "").strip():
+            env["ARK_BASE_URL"] = base_url
+    elif provider == "happyhorse":
+        if secrets["happyhorse"]:
+            env["DASHSCOPE_API_KEY"] = secrets["happyhorse"]
+        mappings = {
+            "BAILIAN_WORKSPACE_ID": "ai.video.bailian_workspace_id",
+            "BAILIAN_REGION": "ai.video.bailian_region",
+            "BAILIAN_BASE_URL": "ai.video.bailian_base_url",
+        }
+        for environment_name, config_key in mappings.items():
+            value = str(_nested_config_value(cfg, config_key) or "").strip()
+            if value and not str(env.get(environment_name) or "").strip():
+                env[environment_name] = value
+    return env, secret_values
+
+
+def _bala_video_node_runtime() -> tuple[str, dict[str, str]]:
+    bundled = str(os.environ.get("CRAWSHRIMP_NODE_EXECUTABLE") or "").strip()
+    if bundled:
+        return bundled, {"ELECTRON_RUN_AS_NODE": "1"}
+    return shutil.which("node") or "node", {}
+
+
+async def _communicate_video_provider_process(
+    process: object,
+    *,
+    timeout_seconds: float,
+    provider_label: str,
+) -> tuple[bytes, bytes]:
+    try:
+        return await asyncio.wait_for(
+            process.communicate(),
+            timeout=max(float(timeout_seconds), 0.001),
+        )
+    except asyncio.TimeoutError as exc:
+        try:
+            process.kill()
+        except (ProcessLookupError, OSError):
+            pass
+        try:
+            await process.wait()
+        except Exception:
+            pass
+        raise HTTPException(504, f"{provider_label} CLI 执行超时，进程已终止，可从当前视频任务重试") from exc
+
+
+def _validate_bala_video_provider_image_path(raw_path: object, provider_label: str) -> Path:
+    value = str(raw_path or "").strip()
+    path = Path(value).expanduser()
+    if not path.is_file():
+        raise HTTPException(400, f"{provider_label} 参考图片不存在：{value}")
+    if path.suffix.lower() not in BALA_AI_IMAGE_EXTS:
+        raise HTTPException(400, f"{provider_label} 参考文件不是支持的图片：{value}")
+    if path.stat().st_size > 20 * 1024 * 1024:
+        raise HTTPException(400, f"{provider_label} 参考图片超过 20MB：{value}")
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+    except Exception as exc:
+        raise HTTPException(400, f"{provider_label} 参考文件不是有效图片：{value}") from exc
+    return path
+
+
+def _sanitize_video_provider_output(text: object, secret_values: Optional[List[str]] = None) -> str:
+    sanitized = str(text or "")
+    for secret in secret_values or []:
+        if secret:
+            sanitized = sanitized.replace(secret, "[redacted]")
+    sanitized = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]+", r"\1[redacted]", sanitized)
+    sanitized = re.sub(
+        r"(?i)((?:api[_ -]?key|authorization)\s*[:=]\s*)[^\s,;]+",
+        r"\1[redacted]",
+        sanitized,
+    )
+    return sanitized
+
+
 def _seedance_output_path(req: BalaSeedanceVideoRequest) -> Path:
     explicit = str(req.output_path or "").strip()
     if explicit:
@@ -6355,9 +6517,7 @@ def _build_seedance_payload(req: BalaSeedanceVideoRequest) -> dict:
         value = str(raw_path or "").strip()
         if not value:
             continue
-        path = Path(value).expanduser()
-        if not path.is_file():
-            raise HTTPException(400, f"Seedance 参考图不存在：{value}")
+        path = _validate_bala_video_provider_image_path(value, "Seedance")
         content.append({
             "type": "image_url",
             "image_url": {"url": file_to_data_url(str(path))},
@@ -6383,8 +6543,9 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
     payload_path = run_dir / f"seedance-payload-{uuid4().hex}.json"
     payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    node_executable, node_env = _bala_video_node_runtime()
     command = [
-        "node",
+        node_executable,
         "bin/seedance.js",
         "submit",
         str(payload_path),
@@ -6399,8 +6560,15 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
         "--timeout",
         str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
     ])
-    env = dict(os.environ)
-    env.pop("ELECTRON_RUN_AS_NODE", None)
+    env, secret_values = _bala_video_provider_env("seedance")
+    env.update(node_env)
+    if not str(env.get("ARK_API_KEY") or "").strip():
+        return {
+            "ok": False,
+            "provider": "seedance",
+            "status": "needs_config",
+            "error": "请先在 AI 能力或运行环境配置 Seedance 凭据",
+        }
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(BALA_SEEDANCE_CLI_DIR),
@@ -6408,14 +6576,18 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout_bytes, stderr_bytes = await process.communicate()
+    stdout_bytes, stderr_bytes = await _communicate_video_provider_process(
+        process,
+        timeout_seconds=max(60, min(int(req.timeout_seconds or 1800), 7200) + 120),
+        provider_label="Seedance",
+    )
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
     objects = _parse_seedance_cli_json_objects(stdout)
     created = objects[0] if objects else {}
     final = objects[-1] if objects else {}
     if process.returncode != 0:
-        sanitized = re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._~-]+", r"\1[redacted]", stderr or stdout)
+        sanitized = _sanitize_video_provider_output(stderr or stdout, secret_values)
         raise HTTPException(500, sanitized.strip() or "Seedance CLI 执行失败")
     return {
         "ok": True,
@@ -6425,7 +6597,136 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
         "video_url": str(((final.get("content") or {}).get("video_url")) or ""),
         "local_video_path": str(output_path) if output_path.is_file() else "",
         "payload_path": str(payload_path),
-        "stderr_tail": "\n".join(stderr.splitlines()[-20:]),
+        "stderr_tail": "\n".join(_sanitize_video_provider_output(stderr, secret_values).splitlines()[-20:]),
+        "raw": final or created,
+    }
+
+
+def _happyhorse_media_urls(req: object) -> list[str]:
+    urls = [str(value or "").strip() for value in getattr(req, "image_urls", []) or []]
+    urls = [value for value in urls if value]
+    for raw_path in getattr(req, "image_paths", []) or []:
+        value = str(raw_path or "").strip()
+        if not value:
+            continue
+        path = _validate_bala_video_provider_image_path(value, "HappyHorse")
+        urls.append(file_to_data_url(str(path)))
+    return urls
+
+
+def _build_happyhorse_payload(req: object) -> dict:
+    mode = str(getattr(req, "mode", "i2v") or "i2v").strip().lower()
+    if mode not in BALA_HAPPYHORSE_MODELS:
+        raise HTTPException(400, "HappyHorse 生成方式必须是文生、图生或参考生视频")
+    prompt = str(getattr(req, "prompt", "") or "").strip()
+    if not prompt:
+        raise HTTPException(400, "HappyHorse 任务需要填写 Prompt")
+
+    urls = _happyhorse_media_urls(req)
+    input_payload: dict = {"prompt": prompt}
+    if mode == "i2v":
+        if len(urls) != 1:
+            raise HTTPException(400, "HappyHorse 图生视频只允许选择 1 张首帧图")
+        input_payload["media"] = [{"type": "first_frame", "url": urls[0]}]
+    elif mode == "r2v":
+        if not 1 <= len(urls) <= 9:
+            raise HTTPException(400, "HappyHorse 参考生视频需要选择 1-9 张参考图")
+        input_payload["media"] = [
+            {"type": "reference_image", "url": url}
+            for url in urls
+        ]
+
+    resolution = str(getattr(req, "resolution", "720P") or "720P").strip().upper()
+    if resolution not in {"720P", "1080P"}:
+        raise HTTPException(400, "HappyHorse 清晰度只支持 720P 或 1080P")
+    parameters: dict = {
+        "resolution": resolution,
+        "duration": max(3, min(int(getattr(req, "duration", 5) or 5), 15)),
+        "watermark": bool(getattr(req, "watermark", False)),
+    }
+    if mode != "i2v":
+        parameters["ratio"] = str(getattr(req, "ratio", "3:4") or "3:4").strip() or "3:4"
+    return {
+        "model": BALA_HAPPYHORSE_MODELS[mode],
+        "input": input_payload,
+        "parameters": parameters,
+    }
+
+
+def _happyhorse_output_path(req: BalaHappyHorseVideoRequest) -> Path:
+    explicit = str(req.output_path or "").strip()
+    if explicit:
+        return Path(explicit).expanduser()
+    output_dir = Path(str(req.output_dir or Path.home() / "Downloads" / "巴拉AI视频成片")).expanduser()
+    style = re.sub(r"[^A-Za-z0-9._~-]+", "-", str(req.style_code or "happyhorse").strip()).strip("-") or "happyhorse"
+    mode = str(req.mode or "i2v").strip().lower() or "i2v"
+    return output_dir / f"{style}_happyhorse_{mode}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.mp4"
+
+
+async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
+    if not BALA_HAPPYHORSE_CLI_DIR.is_dir():
+        raise HTTPException(500, "HappyHorse 视频能力未安装到项目共享目录")
+    payload = _build_happyhorse_payload(req)
+    output_path = _happyhorse_output_path(req)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    run_dir = runtime_paths.child_dir("bala-ai-video-happyhorse")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    payload_path = run_dir / f"happyhorse-payload-{uuid4().hex}.json"
+    payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    node_executable, node_env = _bala_video_node_runtime()
+    command = [node_executable, "bin/bailian.js", "submit", str(payload_path)]
+    if req.wait:
+        command.append("--wait")
+    command.extend([
+        "--download",
+        str(output_path),
+        "--interval",
+        str(max(1, min(int(req.interval_seconds or 5), 60))),
+        "--timeout",
+        str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
+    ])
+    env, secret_values = _bala_video_provider_env("happyhorse")
+    env.update(node_env)
+    if not str(env.get("DASHSCOPE_API_KEY") or "").strip():
+        return {
+            "ok": False,
+            "provider": "happyhorse",
+            "status": "needs_config",
+            "error": "请先在 AI 能力或运行环境配置 HappyHorse 凭据",
+        }
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(BALA_HAPPYHORSE_CLI_DIR),
+        env=env,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout_bytes, stderr_bytes = await _communicate_video_provider_process(
+        process,
+        timeout_seconds=max(60, min(int(req.timeout_seconds or 1800), 7200) + 120),
+        provider_label="HappyHorse",
+    )
+    stdout = stdout_bytes.decode("utf-8", errors="replace")
+    stderr = stderr_bytes.decode("utf-8", errors="replace")
+    objects = _parse_seedance_cli_json_objects(stdout)
+    created = objects[0] if objects else {}
+    final = objects[-1] if objects else {}
+    if process.returncode != 0:
+        sanitized = _sanitize_video_provider_output(stderr or stdout, secret_values)
+        raise HTTPException(500, sanitized.strip() or "HappyHorse CLI 执行失败")
+    created_output = created.get("output") if isinstance(created.get("output"), dict) else {}
+    final_output = final.get("output") if isinstance(final.get("output"), dict) else {}
+    return {
+        "ok": True,
+        "provider": "happyhorse",
+        "mode": str(req.mode or "i2v").strip().lower(),
+        "task_id": str(final_output.get("task_id") or created_output.get("task_id") or ""),
+        "status": str(final_output.get("task_status") or created_output.get("task_status") or ""),
+        "video_url": str(final_output.get("video_url") or ""),
+        "local_video_path": str(output_path) if output_path.is_file() else "",
+        "payload_path": str(payload_path),
+        "stderr_tail": "\n".join(_sanitize_video_provider_output(stderr, secret_values).splitlines()[-20:]),
         "raw": final or created,
     }
 
@@ -6619,7 +6920,7 @@ def get_bala_ai_video_material_batch(batch_id: str, token: str = ""):
     try:
         batch = bala_ai_video_materials.load_material_batch(batch_id)
         bala_ai_video_materials.validate_token(batch, token)
-        return batch
+        return bala_ai_video_materials.attach_material_preview_urls(batch, _bala_ai_video_base_url())
     except PermissionError as exc:
         raise HTTPException(403, str(exc))
     except FileNotFoundError as exc:
@@ -6638,6 +6939,27 @@ def get_bala_ai_video_material_image(batch_id: str, asset_id: str, token: str = 
         raise HTTPException(404, str(exc))
     media_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
     return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@app.get("/bala-ai-video-materials/api/{batch_id}/thumbnail/{asset_id}")
+def get_bala_ai_video_material_thumbnail(batch_id: str, asset_id: str, token: str = ""):
+    try:
+        batch = bala_ai_video_materials.load_material_batch(batch_id)
+        bala_ai_video_materials.validate_token(batch, token)
+        source_path = _bala_material_asset_path(batch, asset_id)
+        thumbnail = bala_ai_video_materials.ensure_material_thumbnail(batch, asset_id, source_path)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    except OSError as exc:
+        raise HTTPException(422, "素材缩略图生成失败") from exc
+    return FileResponse(
+        thumbnail,
+        media_type="image/webp",
+        filename=thumbnail.name,
+        headers={"Cache-Control": "private, max-age=31536000, immutable"},
+    )
 
 
 @app.post("/bala-ai-video-materials/api/{batch_id}/selection")
@@ -6711,6 +7033,16 @@ def list_bala_ai_video_templates(search: str = "", template_type: str = ""):
 @app.post("/bala-ai-video-seedance/api/run")
 async def run_bala_ai_video_seedance(req: BalaSeedanceVideoRequest):
     return await _run_seedance_cli(req)
+
+
+@app.get("/bala-ai-video-providers/api/status")
+def get_bala_ai_video_provider_status():
+    return _bala_video_provider_status()
+
+
+@app.post("/bala-ai-video-happyhorse/api/run")
+async def run_bala_ai_video_happyhorse(req: BalaHappyHorseVideoRequest):
+    return await _run_happyhorse_cli(req)
 
 
 @app.get("/bala-ai-video-model-library/api/image/{model_id:path}")

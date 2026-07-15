@@ -27,6 +27,14 @@ DEFAULT_CONFIG = {
             "gemini_3_1_flash_image_preview_key": "",
             "gemini_3_pro_image_preview_key": "",
         },
+        "video": {
+            "seedance_api_key": "",
+            "seedance_base_url": "https://ark.cn-beijing.volces.com",
+            "bailian_api_key": "",
+            "bailian_workspace_id": "",
+            "bailian_region": "cn-beijing",
+            "bailian_base_url": "",
+        },
     },
     "cloud_approval": {
         "base_url": "",

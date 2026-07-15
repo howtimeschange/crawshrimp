@@ -37,6 +37,34 @@ async function loadExports(params = {}) {
   return exportsBox
 }
 
+async function runScript({ params = {}, phase = 'main', shared = {}, windowOverrides = {} } = {}) {
+  const windowValue = {
+    __CRAWSHRIMP_PARAMS__: params,
+    __CRAWSHRIMP_PHASE__: phase,
+    __CRAWSHRIMP_SHARED__: shared,
+    ...windowOverrides,
+  }
+  const context = {
+    window: windowValue,
+    console,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    RegExp,
+    JSON,
+    Date,
+    Math,
+    Set,
+    Map,
+    parseInt,
+    Error,
+  }
+  context.globalThis = context
+  return await vm.runInNewContext(SCRIPT_SOURCE, context, { filename: SCRIPT_PATH })
+}
+
 function actionTemplate(overrides = {}) {
   return {
     templateId: 'tpl-action-001',
@@ -91,6 +119,34 @@ test('checkboxEnabled handles booleans, strings, arrays, and defaults', async ()
   assert.equal(shared.download_videos, true)
 })
 
+test('waits for the newly opened software-manager page runtime before reading templates', async () => {
+  const result = await runScript({ params: { execute_mode: 'plan' } })
+
+  assert.equal(result.success, true)
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'main')
+  assert.equal(result.meta.sleep_ms, 1000)
+  assert.equal(result.meta.shared.page_ready_attempts, 1)
+})
+
+test('preserves readable software-manager errors when the page rejects with a plain object', async () => {
+  const result = await runScript({
+    params: { execute_mode: 'plan' },
+    windowOverrides: {
+      lib: {
+        mtop: {
+          request: async () => {
+            throw { data: { errorMsg: '商品数据无效' }, ret: ['FAIL_SYS_INVALID_DATA'] }
+          },
+        },
+      },
+    },
+  })
+
+  assert.equal(result.success, false)
+  assert.match(result.error, /商品数据无效/)
+})
+
 test('normalizes local, remote, and directory images with AI result priority', async () => {
   const helpers = await loadExports()
   const refs = helpers.normalizeImageRefs({
@@ -108,6 +164,17 @@ test('normalizes local, remote, and directory images with AI result priority', a
   assert.equal(refs[0].source, 'remote')
   assert.equal(refs[1].name, '208326100202-ai-1.png')
   assert.equal(refs[1].styleCode, '208326100202')
+})
+
+test('keeps every injected file when different paths share the same basename', async () => {
+  const helpers = await loadExports()
+  assert.equal(typeof helpers.groupInjectedFilesByName, 'function')
+
+  const first = { name: '1.jpg', marker: 'first' }
+  const second = { name: '1.jpg', marker: 'second' }
+  const grouped = helpers.groupInjectedFilesByName([first, second])
+
+  assert.deepEqual(Array.from(grouped.get('1.jpg')), [first, second])
 })
 
 test('builds one video job per image and matches templates by id or keyword', async () => {
@@ -134,11 +201,66 @@ test('builds one video job per image and matches templates by id or keyword', as
   assert.equal(matched[0].materialRefs.length, 2)
 })
 
+test('builds direct software-manager jobs without silently selecting a template', async () => {
+  const helpers = await loadExports()
+  const refs = [
+    { ref: '/tmp/208326102205-ai-1.png', path: '/tmp/208326102205-ai-1.png', source: 'local', name: '208326102205-ai-1.png', styleCode: '208326102205' },
+    { ref: '/tmp/208326102205-ai-2.png', path: '/tmp/208326102205-ai-2.png', source: 'local', name: '208326102205-ai-2.png', styleCode: '208326102205' },
+  ]
+
+  const jobs = helpers.buildJobs(refs, [actionTemplate()], {
+    template_id: '',
+    template_match: '',
+    group_mode: 'one_image_per_video',
+    ratio: '9:16',
+    prompt: '儿童模特自然展示上衣细节',
+  })
+
+  assert.equal(jobs.length, 2)
+  assert.equal(jobs[0].template, null)
+  assert.equal(jobs[0].templateId, '')
+  assert.equal(jobs[0].generationMode, 'img2video')
+  assert.equal(jobs[0].ratio, '9:16')
+  assert.equal(jobs[0].styleCode, '208326102205')
+})
+
+test('builds direct software-manager payload for jobs without a template', async () => {
+  const helpers = await loadExports()
+  const job = {
+    template: null,
+    templateId: '',
+    generationMode: 'img2video',
+    styleCode: '208326102205',
+    prompt: '儿童模特自然展示上衣细节',
+    ratio: '3:4',
+  }
+
+  const payload = helpers.buildGenerationPayload(job, [
+    { ref: '/tmp/a.png', url: 'https://img.example/uploaded-a.png' },
+    { ref: '/tmp/b.png', url: 'https://img.example/uploaded-b.png' },
+  ])
+
+  assert.equal(payload.api, 'mtop.taobao.qn.copilot.image.generate.video.submit')
+  assert.equal(payload.data.funcType, 'model_img2video')
+  assert.equal(payload.data.ratio, '3:4')
+  assert.deepEqual(JSON.parse(payload.data.clips), [
+    {
+      modelUrl: 'https://img.example/uploaded-a.png',
+      prompt: '儿童模特自然展示上衣细节',
+    },
+    {
+      modelUrl: 'https://img.example/uploaded-b.png',
+      prompt: '儿童模特自然展示上衣细节',
+    },
+  ])
+  assert.equal(payload.data.itemVO, '{}')
+})
+
 test('buildTemplatePayload uses action template generate API with uploaded image', async () => {
   const helpers = await loadExports()
   const [job] = helpers.buildJobs([
     { ref: '/tmp/a.png', path: '/tmp/a.png', source: 'local', name: 'a.png' },
-  ], [actionTemplate()], {})
+  ], [actionTemplate()], { template_id: 'tpl-action-001' })
   const payload = helpers.buildTemplatePayload(job, [
     { ref: '/tmp/a.png', url: 'https://img.example/uploaded.png' },
   ])
@@ -154,7 +276,7 @@ test('buildTemplatePayload maps multiple images to non-action template slots', a
   const [job] = helpers.buildJobs([
     { ref: '/tmp/a.png', path: '/tmp/a.png', source: 'local', name: 'a.png' },
     { ref: '/tmp/b.png', path: '/tmp/b.png', source: 'local', name: 'b.png' },
-  ], [multiSlotTemplate()], { group_mode: 'all_images_one_video' })
+  ], [multiSlotTemplate()], { template_id: 'tpl-multi-001', group_mode: 'all_images_one_video' })
   const payload = helpers.buildTemplatePayload(job, [
     { ref: '/tmp/a.png', url: 'https://img.example/a.png' },
     { ref: '/tmp/b.png', url: 'https://img.example/b.png' },
@@ -194,7 +316,7 @@ test('extracts completed task video URL and builds download item', async () => {
 
   const [job] = helpers.buildJobs([
     { ref: '/tmp/208326100202-ai-1.png', path: '/tmp/208326100202-ai-1.png', source: 'local', name: '208326100202-ai-1.png', styleCode: '208326100202' },
-  ], [actionTemplate()], {})
+  ], [actionTemplate()], { template_id: 'tpl-action-001' })
   const item = helpers.videoDownloadItem({ ...job, taskId: '157' }, state)
   assert.equal(item.url, 'https://video.example/out.mp4')
   assert.match(item.target_relative_path, /208326100202/)

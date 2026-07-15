@@ -2,12 +2,13 @@ import tempfile
 import unittest
 import asyncio
 import json
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
 import yaml
 
-from core import data_sink, runtime_paths
+from core import api_server, data_sink, runtime_paths
 from core.api_server import (
     _apply_bala_ai_face_background_generate,
     _cleanup_orphaned_runtime_artifacts,
@@ -23,6 +24,48 @@ MANIFEST_PATH = ROOT / "adapters" / "bala-ai-video-assistant" / "manifest.yaml"
 
 
 class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
+    def test_happyhorse_cli_is_packaged_as_a_shared_integration(self):
+        integration_root = ROOT / "integrations" / "bailianCLI"
+        required_files = {
+            "package.json",
+            ".env.example",
+            ".gitignore",
+            "README.md",
+            "bin/bailian.js",
+            "src/bailian-client.js",
+            "src/config.js",
+            "examples/happyhorse-t2v.json",
+            "examples/happyhorse-i2v.json",
+            "examples/happyhorse-r2v.json",
+            "test/bailian-client.test.js",
+        }
+
+        missing = sorted(
+            relative_path
+            for relative_path in required_files
+            if not (integration_root / relative_path).is_file()
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_desktop_bundle_copies_shared_video_integrations_and_injects_node_runtime(self):
+        build_config = (ROOT / "app" / "build.yml").read_text(encoding="utf-8")
+        main_source = (ROOT / "app" / "src" / "main.js").read_text(encoding="utf-8")
+
+        self.assertIn('from: "../integrations"', build_config)
+        self.assertIn("to: python-scripts/integrations", build_config)
+        self.assertIn("CRAWSHRIMP_NODE_EXECUTABLE: process.execPath", main_source)
+
+    def test_video_provider_node_runtime_prefers_bundled_executable(self):
+        resolver = getattr(api_server, "_bala_video_node_runtime", None)
+        self.assertTrue(callable(resolver), "Video providers need a packaged Node runtime resolver")
+
+        with patch.dict("os.environ", {"CRAWSHRIMP_NODE_EXECUTABLE": "/Applications/Crawshrimp"}, clear=False):
+            executable, extra_env = resolver()
+
+        self.assertEqual(executable, "/Applications/Crawshrimp")
+        self.assertEqual(extra_env["ELECTRON_RUN_AS_NODE"], "1")
+
     def test_manifest_declares_material_prepare_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
 
@@ -118,6 +161,107 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
 
         self.assertEqual(objects[0]["id"], "task-1")
         self.assertEqual(objects[-1]["status"], "succeeded")
+
+    def test_happyhorse_payload_builder_supports_text_image_and_reference_modes(self):
+        builder = getattr(api_server, "_build_happyhorse_payload", None)
+        self.assertTrue(callable(builder), "HappyHorse payload builder must be implemented")
+
+        common = {
+            "prompt": "童装模特自然转身展示服装",
+            "image_paths": [],
+            "resolution": "720P",
+            "ratio": "3:4",
+            "duration": 5,
+        }
+        text_payload = builder(SimpleNamespace(**common, mode="t2v", image_urls=[]))
+        image_payload = builder(SimpleNamespace(
+            **common,
+            mode="i2v",
+            image_urls=["https://example.com/approved.png"],
+        ))
+        reference_payload = builder(SimpleNamespace(
+            **common,
+            mode="r2v",
+            image_urls=[
+                "https://example.com/model.png",
+                "https://example.com/detail.png",
+            ],
+        ))
+
+        self.assertEqual(text_payload["model"], "happyhorse-1.1-t2v")
+        self.assertEqual(text_payload["parameters"]["ratio"], "3:4")
+        self.assertEqual(image_payload["model"], "happyhorse-1.1-i2v")
+        self.assertNotIn("ratio", image_payload["parameters"])
+        self.assertEqual(image_payload["input"]["media"][0]["type"], "first_frame")
+        self.assertEqual(reference_payload["model"], "happyhorse-1.1-r2v")
+        self.assertEqual(len(reference_payload["input"]["media"]), 2)
+
+    def test_video_provider_payloads_reject_non_image_local_files(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            invalid_files = [
+                Path(tmpdir) / "not-an-image.txt",
+                Path(tmpdir) / "fake-image.png",
+            ]
+            invalid_files[0].write_text("not an image", encoding="utf-8")
+            invalid_files[1].write_bytes(b"not a real png")
+
+            for invalid_file in invalid_files:
+                with self.subTest(path=invalid_file.name):
+                    seedance = api_server.BalaSeedanceVideoRequest(
+                        prompt="test",
+                        image_paths=[str(invalid_file)],
+                    )
+                    happyhorse = SimpleNamespace(
+                        mode="i2v",
+                        prompt="test",
+                        image_paths=[str(invalid_file)],
+                        image_urls=[],
+                        resolution="720P",
+                        ratio="3:4",
+                        duration=5,
+                        watermark=False,
+                    )
+
+                    with self.assertRaisesRegex(Exception, "图片"):
+                        api_server._build_seedance_payload(seedance)
+                    with self.assertRaisesRegex(Exception, "图片"):
+                        api_server._build_happyhorse_payload(happyhorse)
+
+    def test_video_provider_process_communication_has_an_outer_timeout(self):
+        communicator = getattr(api_server, "_communicate_video_provider_process", None)
+        self.assertTrue(callable(communicator), "Video provider CLI processes need an outer timeout")
+
+        class HangingProcess:
+            def __init__(self):
+                self.killed = False
+
+            async def communicate(self):
+                await asyncio.sleep(60)
+
+            def kill(self):
+                self.killed = True
+
+            async def wait(self):
+                return -9
+
+        process = HangingProcess()
+        with self.assertRaisesRegex(Exception, "超时"):
+            asyncio.run(communicator(process, timeout_seconds=0.01, provider_label="测试供应商"))
+        self.assertTrue(process.killed)
+
+    def test_video_provider_status_never_returns_credentials(self):
+        resolver = getattr(api_server, "_bala_video_provider_status", None)
+        self.assertTrue(callable(resolver), "Video provider status resolver must be implemented")
+
+        with patch.dict("os.environ", {
+            "ARK_API_KEY": "runtime-placeholder-seedance",
+            "DASHSCOPE_API_KEY": "runtime-placeholder-happyhorse",
+        }, clear=False), patch("core.api_server.load_config", return_value={"ai": {"video": {}}}):
+            status = resolver()
+
+        self.assertTrue(status["seedance"]["configured"])
+        self.assertTrue(status["happyhorse"]["configured"])
+        self.assertNotIn("runtime-placeholder", json.dumps(status))
 
     def test_apply_face_background_creates_ai_image_job_with_source_and_model_assets(self):
         manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"

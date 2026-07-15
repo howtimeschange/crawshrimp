@@ -421,6 +421,8 @@ export function createDevCsBridge() {
       return apiCall('GET', `/bala-ai-video-templates/api${suffix ? `?${suffix}` : ''}`)
     },
     runBalaSeedanceVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {}),
+    getBalaVideoProviderStatus: () => apiCall('GET', '/bala-ai-video-providers/api/status'),
+    runBalaHappyHorseVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-happyhorse/api/run', payload || {}),
     getBalaReviewBatch: (batchId, token) => apiCall('GET', `/bala-ai-video-review/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
     saveBalaReviewDecisions: (batchId, token, decisions) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/decisions?token=${encodeURIComponent(String(token || ''))}`, { decisions: decisions || {} }),
     refreshBalaReviewBatch: (batchId, token) => apiCall('POST', `/bala-ai-video-review/api/${encodePathPart(batchId)}/refresh?token=${encodeURIComponent(String(token || ''))}`, {}),

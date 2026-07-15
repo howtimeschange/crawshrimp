@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from core import ai_image_service
 from core import bala_ai_video_review as review
 
 
@@ -117,3 +118,51 @@ def test_update_decisions_and_export_video_manifest(tmp_path):
     assert params["execute_mode"] == "plan"
     assert params["download_template_previews"] is True
     assert params["material_images"]["paths"] == [payload["styles"][0]["images"][0]["path"]]
+
+
+def test_refresh_materializes_remote_ai_result_before_marking_pending(tmp_path, monkeypatch):
+    generated = tmp_path / "generated.png"
+    generated.write_bytes(b"\x89PNG\r\n\x1a\n")
+    remote_url = "https://img.example/generated.png"
+    calls = []
+
+    monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {
+        "job_uid": "job-remote",
+        "status": "completed",
+        "summary": {
+            "ok": True,
+            "image_urls": [remote_url],
+            "output_files": [],
+            "runs": [{"status": "completed", "image_urls": [remote_url]}],
+        },
+    })
+    monkeypatch.setattr(review.data_sink, "list_ai_image_assets", lambda _job_uid: [])
+
+    def fake_materialize(job_uid, url):
+        calls.append((job_uid, url))
+        return {"ok": True, "job_uid": job_uid, "url": url, "path": str(generated)}
+
+    monkeypatch.setattr(ai_image_service, "materialize_remote_image", fake_materialize)
+    batch = {
+        "batch_id": "bala-review-remote",
+        "status": "generating",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{
+                "id": "ai-remote",
+                "kind": "ai",
+                "job_uid": "job-remote",
+                "path": "",
+                "status": "generating",
+            }],
+        }],
+    }
+
+    refreshed = review.refresh_generated_assets(batch)
+    asset = refreshed["items"][0]["assets"][0]
+
+    assert calls == [("job-remote", remote_url)]
+    assert asset["path"] == str(generated)
+    assert asset["filename"] == "generated.png"
+    assert asset["status"] == "pending"
+    assert refreshed["status"] == "pending_approval"

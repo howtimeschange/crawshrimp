@@ -1,0 +1,17 @@
+{
+  "name": "crawshrimp-bailian-video-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared Alibaba Bailian HappyHorse video generation client for Crawshrimp.",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "bailian": "node bin/bailian.js"
+  },
+  "bin": {
+    "bailian": "./bin/bailian.js"
+  }
+}

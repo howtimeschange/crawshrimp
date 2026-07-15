@@ -49,9 +49,36 @@ def test_build_material_batch_groups_downloaded_images_by_style_and_source(tmp_p
     assert batch["status"] == "pending_selection"
     assert batch["items"][0]["style_code"] == "208326100202"
     assert [asset["source_type"] for asset in batch["items"][0]["assets"]] == ["model", "detail"]
-    assert batch["items"][0]["assets"][0]["selected"] is True
+    assert batch["items"][0]["assets"][0]["selected"] is False
     assert batch["items"][0]["assets"][1]["selected"] is False
+    assert "/thumbnail/" in batch["items"][0]["assets"][0]["thumbnail_url"]
     assert "token=" in batch["board_url"]
+
+
+def test_material_thumbnail_is_compressed_cached_and_keeps_the_original(tmp_path):
+    from PIL import Image
+
+    source = tmp_path / "source.png"
+    Image.new("RGB", (1600, 1200), (225, 84, 42)).save(source)
+    original_bytes = source.read_bytes()
+    batch = {
+        "batch_id": "bala-material-thumbnail-test",
+        "artifact_dir": str(tmp_path / "material-batches"),
+    }
+
+    thumbnail = materials.ensure_material_thumbnail(batch, "asset-1", source, max_edge=320)
+
+    assert thumbnail.is_file()
+    assert thumbnail.suffix == ".webp"
+    assert thumbnail.stat().st_size < source.stat().st_size
+    with Image.open(thumbnail) as image:
+        assert image.format == "WEBP"
+        assert max(image.size) <= 320
+    assert source.read_bytes() == original_bytes
+
+    cached_mtime = thumbnail.stat().st_mtime_ns
+    assert materials.ensure_material_thumbnail(batch, "asset-1", source, max_edge=320) == thumbnail
+    assert thumbnail.stat().st_mtime_ns == cached_mtime
 
 
 def test_export_ai_input_builds_outfit_swap_params_from_selected_materials(tmp_path):

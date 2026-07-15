@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
+from core import ai_image_service
 from core import data_sink
 from core import runtime_paths
 
@@ -260,10 +261,30 @@ def _job_output_paths(job_uid: str) -> list[str]:
     job = data_sink.get_ai_image_job(job_uid) or {}
     summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
     paths.extend(_path_list(summary.get("output_files"), summary.get("files")))
+    result_cache = summary.get("result_cache") if isinstance(summary.get("result_cache"), Mapping) else {}
+    paths.extend(_path_list(list(result_cache.values())))
     for asset in data_sink.list_ai_image_assets(job_uid):
         if _text(asset.get("kind")).lower() in {"output", "result", "generated", "ai"}:
             paths.extend(_path_list(asset.get("path")))
-    return [path for path in paths if Path(path).expanduser().is_file()]
+    existing = [path for path in paths if Path(path).expanduser().is_file()]
+    if existing:
+        return existing
+
+    urls = _path_list(summary.get("image_urls"))
+    for run in summary.get("runs") or []:
+        if isinstance(run, Mapping):
+            urls.extend(_path_list(run.get("image_urls")))
+    for url in dict.fromkeys(urls):
+        if not url.startswith(("http://", "https://")):
+            continue
+        try:
+            materialized = ai_image_service.materialize_remote_image(job_uid, url)
+        except Exception:
+            continue
+        path = _text(materialized.get("path"))
+        if path and Path(path).expanduser().is_file():
+            existing.append(path)
+    return existing
 
 
 def refresh_generated_assets(batch: dict) -> dict:

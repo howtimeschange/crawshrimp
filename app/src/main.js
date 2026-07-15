@@ -808,6 +808,7 @@ function spawnBackendProcess() {
       CRAWSHRIMP_API_TOKEN: apiToken,
       CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID,
       CRAWSHRIMP_APP_ENV: CLOUD_APPROVAL_APP_ENV,
+      CRAWSHRIMP_NODE_EXECUTABLE: process.execPath,
       ELECTRON_RUN_AS_NODE: '',
       PYTHONPATH: scriptsDir,
     },
@@ -2329,6 +2330,19 @@ secureHandle('run-bala-seedance-video', async (_, payload = {}) => {
   return apiCall(
     'POST',
     '/bala-ai-video-seedance/api/run',
+    payload || {},
+    { timeoutMs: 2 * 60 * 60 * 1000 },
+  )
+})
+
+secureHandle('get-bala-video-provider-status', async () => {
+  return apiCall('GET', '/bala-ai-video-providers/api/status')
+})
+
+secureHandle('run-bala-happyhorse-video', async (_, payload = {}) => {
+  return apiCall(
+    'POST',
+    '/bala-ai-video-happyhorse/api/run',
     payload || {},
     { timeoutMs: 2 * 60 * 60 * 1000 },
   )

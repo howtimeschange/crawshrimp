@@ -452,6 +452,72 @@
           </div>
         </section>
 
+        <section v-else-if="activePanelId === 'ai-video'" key="ai-video" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">AI 视频</p>
+              <h3>视频模型 Provider</h3>
+            </div>
+            <span :class="['badge', hasAnyFieldConfigured(aiVideoKeyFields) ? 'on' : 'off']">
+              {{ hasAnyFieldConfigured(aiVideoKeyFields) ? '已配置' : '未配置' }}
+            </span>
+          </div>
+
+          <div class="panel-layout">
+            <div class="form-stack">
+              <div class="split-fields">
+                <div class="field">
+                  <label>Seedance API Key</label>
+                  <input
+                    v-model="cfg['ai.video.seedance_api_key']"
+                    class="input"
+                    type="password"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="field">
+                  <label>Seedance Base URL</label>
+                  <input v-model="cfg['ai.video.seedance_base_url']" class="input" />
+                </div>
+              </div>
+              <div class="split-fields">
+                <div class="field">
+                  <label>HappyHorse API Key</label>
+                  <input
+                    v-model="cfg['ai.video.bailian_api_key']"
+                    class="input"
+                    type="password"
+                    autocomplete="off"
+                  />
+                </div>
+                <div class="field">
+                  <label>百炼业务空间 ID</label>
+                  <input v-model="cfg['ai.video.bailian_workspace_id']" class="input" />
+                </div>
+              </div>
+              <div class="split-fields">
+                <div class="field">
+                  <label>百炼区域</label>
+                  <input v-model="cfg['ai.video.bailian_region']" class="input" />
+                </div>
+                <div class="field">
+                  <label>百炼 Base URL（可选）</label>
+                  <input v-model="cfg['ai.video.bailian_base_url']" class="input" />
+                </div>
+              </div>
+              <PanelActions panel-id="ai-video" @save="savePanel('ai-video')" />
+            </div>
+            <div class="side-note">
+              <strong>本机凭据</strong>
+              <div class="key-states">
+                <span :class="['key-pill', isFieldConfigured('ai.video.seedance_api_key') ? 'on' : 'off']">S</span>
+                <span :class="['key-pill', isFieldConfigured('ai.video.bailian_api_key') ? 'on' : 'off']">H</span>
+              </div>
+              <p>密钥只保存在本机抓虾配置中，运行视频任务时注入共享能力进程；工作流页面、任务参数和日志不会展示密钥。</p>
+            </div>
+          </div>
+        </section>
+
         <section v-else-if="activePanelId === 'cloud-approval'" key="cloud-approval" class="panel">
           <div class="panel-head">
             <div>
@@ -598,6 +664,10 @@ const ai1xmKeyFields = [
   'ai.1xm.gemini_3_1_flash_image_preview_key',
   'ai.1xm.gemini_3_pro_image_preview_key',
 ]
+const aiVideoKeyFields = [
+  'ai.video.seedance_api_key',
+  'ai.video.bailian_api_key',
+]
 
 const saveState = reactive({})
 
@@ -646,8 +716,11 @@ const menuGroups = [
     id: 'ai',
     icon: '●',
     label: 'AI 能力',
-    desc: '1XM 生图密钥',
-    children: [{ id: 'ai-1xm', label: '1XM 图片模型', statusKeys: ai1xmKeyFields }],
+    desc: '图片 / 视频模型',
+    children: [
+      { id: 'ai-1xm', label: '1XM 图片模型', statusKeys: ai1xmKeyFields },
+      { id: 'ai-video', label: '视频模型', statusKeys: aiVideoKeyFields },
+    ],
   },
   {
     id: 'cloud',
@@ -665,6 +738,7 @@ const panelFields = {
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
   'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
+  'ai-video': ['ai.video.seedance_api_key', 'ai.video.seedance_base_url', 'ai.video.bailian_api_key', 'ai.video.bailian_workspace_id', 'ai.video.bailian_region', 'ai.video.bailian_base_url'],
   'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
@@ -778,6 +852,8 @@ function flattenSettings(source, prefix = '', target = {}) {
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
+  if (!flat['ai.video.seedance_base_url']) flat['ai.video.seedance_base_url'] = 'https://ark.cn-beijing.volces.com'
+  if (!flat['ai.video.bailian_region']) flat['ai.video.bailian_region'] = 'cn-beijing'
   flat['cloud_approval.machine_enabled'] = Boolean(flat['cloud_approval.machine_enabled'])
   flat['cloud_approval.capabilities'] = normalizeCloudCapabilities(flat['cloud_approval.capabilities'])
   return flat

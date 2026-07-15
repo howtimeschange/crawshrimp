@@ -137,6 +137,11 @@
     return 'one_image_per_video'
   }
 
+  function normalizeRatio(value, fallback = '3:4') {
+    const text = compact(value || fallback).replace(/[：]/g, ':')
+    return ['3:4', '1:1', '9:16', '16:9'].includes(text) ? text : fallback
+  }
+
   function normalizeSelectedImagePaths(materialImages) {
     const paths = Array.isArray(materialImages?.paths) ? materialImages.paths : materialImages
     return stringList(paths).filter(path => isImagePath(path) || isRemoteImage(path))
@@ -204,6 +209,15 @@
     return refs
   }
 
+  function softwareManagerRuntimeReady(rawParams = params) {
+    const client = window.lib?.mtop || window.mtop
+    const mtopReady = typeof client?.request === 'function'
+    const needsLocalUpload = normalizeExecutionMode(rawParams.execute_mode) === 'live'
+      && normalizeImageRefs(rawParams).some(item => item.source === 'local')
+    const uploadReady = !needsLocalUpload || typeof window.$startFileUpload === 'function'
+    return { ready: mtopReady && uploadReady, needsLocalUpload }
+  }
+
   function extractStyleCode(path) {
     const match = cleanText(path).match(/\b(\d{12})\b/)
     return match ? match[1] : ''
@@ -215,7 +229,31 @@
     const result = []
     ids.forEach(id => result.push({ templateId: id, templateMatch: '' }))
     matches.forEach(match => result.push({ templateId: '', templateMatch: match }))
-    return result.length ? result : [{ templateId: '', templateMatch: '' }]
+    return result
+  }
+
+  function describeError(error, fallback = '') {
+    if (!error) return fallback || ''
+    if (typeof error === 'string') return cleanText(error)
+    if (error instanceof Error && error.message) return cleanText(error.message)
+    if (typeof error !== 'object') return cleanText(error)
+    const retText = Array.isArray(error.ret) ? error.ret.join('；') : ''
+    const data = error.data || error.result || {}
+    const parts = [
+      data.errorMsg,
+      data.message,
+      error.message,
+      error.msg,
+      retText,
+      data.errorCode ? `errorCode=${data.errorCode}` : '',
+      error.traceId ? `traceId=${error.traceId}` : '',
+    ].map(cleanText).filter(Boolean)
+    if (parts.length) return parts.join('；')
+    try {
+      return JSON.stringify(error)
+    } catch {
+      return fallback || String(error)
+    }
   }
 
   function unwrapMtopPayload(payload, api) {
@@ -233,16 +271,20 @@
     if (!client || typeof client.request !== 'function') {
       throw new Error('未找到软件管家页面 MTop 客户端，请确认当前 tab 是 https://quick.taobao.com/videostudio/img2video')
     }
-    const payload = await client.request({
-      api,
-      v: options.v || '1.0',
-      type: options.type || 'POST',
-      dataType: 'json',
-      H5Request: true,
-      preventFallback: true,
-      data,
-    })
-    return unwrapMtopPayload(payload, api)
+    try {
+      const payload = await client.request({
+        api,
+        v: options.v || '1.0',
+        type: options.type || 'POST',
+        dataType: 'json',
+        H5Request: true,
+        preventFallback: true,
+        data,
+      })
+      return unwrapMtopPayload(payload, api)
+    } catch (error) {
+      throw new Error(`${api} 返回失败：${describeError(error, '未知错误')}`)
+    }
   }
 
   async function fetchSellerCategory() {
@@ -357,13 +399,17 @@
   function buildJobs(imageRefs, templates, rawParams = params) {
     const requests = normalizeTemplateRequests(rawParams)
     const groupMode = normalizeGroupMode(rawParams.group_mode)
+    const directMode = requests.length === 0
+    const jobRequests = directMode ? [{ templateId: '', templateMatch: '' }] : requests
     const jobs = []
     let index = 0
-    for (const request of requests) {
-      const template = chooseTemplate(templates, request, imageRefs.length)
-      if (!template) continue
+    for (const request of jobRequests) {
+      const template = directMode ? null : chooseTemplate(templates, request, imageRefs.length)
+      if (!directMode && !template) continue
       const slots = getTemplateSlots(template)
-      const requiredCount = Math.max(1, slots.filter(slot => slot.required).length || slots.length || 1)
+      const requiredCount = directMode
+        ? Math.max(imageRefs.length, 1)
+        : Math.max(1, slots.filter(slot => slot.required).length || slots.length || 1)
       const groups = groupMode === 'all_images_one_video'
         ? [imageRefs.slice(0, Math.max(requiredCount, 1))]
         : imageRefs.map(ref => [ref])
@@ -375,15 +421,17 @@
           index,
           templateRequest: request,
           template,
-          templateId: cleanText(template.templateId || template.id),
-          templateName: cleanText(template.name || template.title),
-          templateType: cleanText(template.type),
-          ratio: cleanText(template.ratio),
-          duration: template.duration || '',
-          previewUrl: cleanText(template.videoUrl),
-          coverUrl: cleanText(template.coverUrl),
+          templateId: cleanText(template?.templateId || template?.id),
+          templateName: cleanText(template?.name || template?.title),
+          templateType: cleanText(template?.type),
+          ratio: directMode ? normalizeRatio(rawParams.ratio) : cleanText(template?.ratio),
+          duration: template?.duration || '',
+          previewUrl: cleanText(template?.videoUrl),
+          coverUrl: cleanText(template?.coverUrl),
           materialRefs,
           groupMode,
+          generationMode: directMode ? 'img2video' : 'template',
+          styleCode: materialRefs.map(item => item.styleCode).find(Boolean) || '',
           prompt: cleanText(rawParams.prompt),
           outputDir: cleanText(rawParams.output_dir) || DEFAULT_OUTPUT_DIR,
         })
@@ -422,12 +470,21 @@
     return input
   }
 
+  function groupInjectedFilesByName(files) {
+    const byName = new Map()
+    for (const file of Array.from(files || [])) {
+      const name = cleanText(file?.name)
+      if (!name) continue
+      const matches = byName.get(name) || []
+      matches.push(file)
+      byName.set(name, matches)
+    }
+    return byName
+  }
+
   function getInjectedFilesByName() {
     const input = typeof document !== 'undefined' ? document.querySelector?.(UPLOAD_INPUT_SELECTOR) : null
-    const files = Array.from(input?.files || [])
-    const byName = new Map()
-    for (const file of files) byName.set(cleanText(file.name), file)
-    return byName
+    return groupInjectedFilesByName(input?.files || [])
   }
 
   function fileToDataUrl(file) {
@@ -465,7 +522,8 @@
         materials.push({ ...material, url: cache[ref], uploadSource: 'local-cache' })
         continue
       }
-      const file = filesByName.get(pathBasename(ref))
+      const matchingFiles = filesByName.get(pathBasename(ref)) || []
+      const file = matchingFiles.shift()
       if (!file) throw new Error(`本地图片未注入或文件名不匹配：${ref}`)
       const dataUrl = await fileToDataUrl(file)
       const uploaded = await uploadDataUrlWithPageHelper(dataUrl, file.name)
@@ -529,6 +587,32 @@
         inputImages: JSON.stringify(inputImages),
       },
     }
+  }
+
+  function buildDirectVideoPayload(job, materials) {
+    if (!materials.length) throw new Error('没有可用图片素材')
+    const itemId = cleanText(job.productId || job.itemId)
+    return {
+      api: 'mtop.taobao.qn.copilot.image.generate.video.submit',
+      data: {
+        clips: JSON.stringify(materials.map(item => ({
+          modelUrl: item.url,
+          prompt: cleanText(job.prompt),
+          ...(itemId ? { itemId } : {}),
+        }))),
+        qualityMode: 'highQuality',
+        ratio: normalizeRatio(job.ratio),
+        selectFirstLastFrame: 'false',
+        itemVO: JSON.stringify(job.item || (itemId ? { itemId } : {})),
+        funcType: 'model_img2video',
+      },
+    }
+  }
+
+  function buildGenerationPayload(job, materials) {
+    return job?.template || cleanText(job?.templateId)
+      ? buildTemplatePayload(job, materials)
+      : buildDirectVideoPayload(job, materials)
   }
 
   function extractTaskId(result) {
@@ -711,7 +795,7 @@
     const limit = parseInteger(rawParams.template_preview_limit, 26, 1, 200)
     const targetDir = cleanText(rawParams.output_dir)
     return (templates || [])
-      .filter(template => cleanText(template.videoUrl))
+      .filter(template => cleanText(template?.videoUrl))
       .slice(0, limit)
       .map((template, index) => {
         const templateId = cleanText(template.templateId || template.id) || `template-${index + 1}`
@@ -741,7 +825,7 @@
   function videoDownloadItem(job, taskState) {
     const style = job.materialRefs.map(item => item.styleCode).find(Boolean) || pathStem(job.materialRefs[0]?.ref || '')
     const taskId = cleanText(job.taskId)
-    const filename = toSafeFilename(`${style || 'video'}_${job.templateName || job.templateId}_${taskId || Date.now()}`, 'bala-qn-video')
+    const filename = toSafeFilename(`${style || 'video'}_${job.templateName || job.templateId || '直接生成'}_${taskId || Date.now()}`, 'bala-qn-video')
     return {
       label: `视频 ${job.index}`,
       url: taskState.videoUrl,
@@ -770,6 +854,16 @@
 
   async function runMainPhase() {
     const executeMode = normalizeExecutionMode(params.execute_mode)
+    const readiness = softwareManagerRuntimeReady(params)
+    if (!readiness.ready) {
+      const pageReadyAttempts = Number(shared.page_ready_attempts || 0) + 1
+      if (pageReadyAttempts <= 30) {
+        return nextPhase('main', 1000, { ...shared, page_ready_attempts: pageReadyAttempts })
+      }
+      return fail(readiness.needsLocalUpload
+        ? '软件管家页面加载超时，图片上传能力尚未准备好，请保留已登录页面后重试'
+        : '软件管家页面加载超时，请保留已登录页面后重试')
+    }
     const prepared = await prepareTemplatesAndJobs()
     const previewDownloads = {}
     const shouldDownloadPreviews = checkboxEnabled(params.download_template_previews, false)
@@ -805,7 +899,7 @@
         备注: '请先选择图片、填写远程图片 URL，或选择带文件列表的素材目录',
       }])
     }
-    if (!prepared.templates.length) {
+    if (!prepared.templates.length && normalizeTemplateRequests(params).length) {
       return complete([{
         序号: '',
         作业类型: '视频生成',
@@ -895,7 +989,7 @@
         injected_refs_key: localKey,
         current_exec_no: index + 1,
         current_row_no: index + 1,
-        current_buyer_id: job.templateName || job.templateId,
+        current_buyer_id: job.templateName || job.templateId || job.styleCode,
       })
     }
 
@@ -903,12 +997,12 @@
       ...shared,
       current_exec_no: index + 1,
       current_row_no: index + 1,
-      current_buyer_id: job.templateName || job.templateId,
+      current_buyer_id: job.templateName || job.templateId || job.styleCode,
     }
 
     try {
       const materials = await resolveMaterialUrls(job)
-      const payload = buildTemplatePayload(job, materials)
+      const payload = buildGenerationPayload(job, materials)
       const submit = await callMtop(payload.api, payload.data)
       const taskId = extractTaskId(submit)
       const submitTaskId = extractSubmitTaskId(submit)
@@ -1054,6 +1148,7 @@
       normalizeSelectedImagePaths,
       normalizeDirectoryListingFiles,
       normalizeImageRefs,
+      groupInjectedFilesByName,
       normalizeTemplateRequests,
       getTemplateSlots,
       chooseTemplate,
@@ -1063,6 +1158,8 @@
       mapMaterialsToTemplateSlots,
       buildFallbackModelImages,
       buildTemplatePayload,
+      buildDirectVideoPayload,
+      buildGenerationPayload,
       extractTaskId,
       extractSubmitTaskId,
       normalizeTaskState,

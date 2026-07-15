@@ -32,6 +32,17 @@ const REQUIRED_BACKEND_IMPORTS = [
   'fitz',
 ]
 
+const REQUIRED_VIDEO_INTEGRATION_FILES = [
+  'seedanceCLI/package.json',
+  'seedanceCLI/bin/seedance.js',
+  'seedanceCLI/src/ark-client.js',
+  'seedanceCLI/src/config.js',
+  'bailianCLI/package.json',
+  'bailianCLI/bin/bailian.js',
+  'bailianCLI/src/bailian-client.js',
+  'bailianCLI/src/config.js',
+]
+
 function getPythonExecutable(srcPython, srcKey = '') {
   if (srcKey === 'win-x64') return path.join(srcPython, 'python.exe')
   if (srcKey === 'mac-arm64' || srcKey === 'mac-x64') return path.join(srcPython, 'bin', 'python3')
@@ -106,6 +117,18 @@ function requirePythonScriptsBundle(resourcesPath) {
 
   const adaptersDir = path.join(scriptsDir, 'adapters')
   requireAdapterManifests(adaptersDir)
+
+  const integrationsDir = path.join(scriptsDir, 'integrations')
+  const missingIntegrations = REQUIRED_VIDEO_INTEGRATION_FILES.filter(relativePath => {
+    const target = path.join(integrationsDir, relativePath)
+    return !fs.existsSync(target) || !fs.statSync(target).isFile()
+  })
+  if (missingIntegrations.length) {
+    throw new Error(
+      `[after-pack] shared video integration files are missing under ${integrationsDir}: ` +
+      missingIntegrations.join(', ')
+    )
+  }
 }
 
 async function afterPack(context) {
@@ -176,3 +199,4 @@ exports.default = afterPack
 exports.requirePythonBundle = requirePythonBundle
 exports.requirePythonScriptsBundle = requirePythonScriptsBundle
 exports.REQUIRED_BACKEND_IMPORTS = REQUIRED_BACKEND_IMPORTS
+exports.REQUIRED_VIDEO_INTEGRATION_FILES = REQUIRED_VIDEO_INTEGRATION_FILES

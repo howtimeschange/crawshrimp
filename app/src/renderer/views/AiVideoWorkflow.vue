@@ -18,7 +18,7 @@
         type="button"
         :class="['aiv-step', { active: activeStep === step.id, done: step.done }]"
         :aria-pressed="activeStep === step.id ? 'true' : 'false'"
-        @click="activeStep = step.id"
+        @click="selectWorkflowStep(step.id)"
       >
         <span class="aiv-step-index">{{ step.index }}</span>
         <span class="aiv-step-copy">
@@ -28,7 +28,12 @@
       </button>
     </nav>
 
-    <main class="aiv-stage" :inert="hasOpenModal ? '' : null" :aria-busy="materialIsRunning ? 'true' : 'false'">
+    <main
+      class="aiv-stage"
+      :class="{ 'aiv-stage-material-active': activeStep === 'materials' }"
+      :inert="hasOpenModal ? '' : null"
+      :aria-busy="materialIsRunning ? 'true' : 'false'"
+    >
       <section v-if="activeStep === 'materials'" class="aiv-stage-grid aiv-material-stage">
         <aside class="aiv-panel aiv-params-panel">
           <header class="aiv-panel-head">
@@ -46,10 +51,15 @@
               <span>云盘搜索根路径</span>
               <input v-model="cloudPath" />
             </label>
-            <label class="aiv-field">
-              <span>导出目录</span>
-              <input v-model="materialOutputDir" />
-            </label>
+            <div class="aiv-field">
+              <span>工作区目录</span>
+              <button type="button" class="aiv-directory-picker" @click="pickMaterialOutputDirectory">
+                <span class="aiv-directory-picker-path" :title="materialOutputDir">
+                  {{ materialOutputDir || '请选择 AI 视频工作区目录' }}
+                </span>
+                <strong>选择文件夹</strong>
+              </button>
+            </div>
             <label class="aiv-field">
               <span>导出包名称</span>
               <input v-model="materialPackageName" placeholder="可选，留空按时间生成" />
@@ -63,7 +73,16 @@
                   失败 {{ materialTask.failed || materialSummary.failedCount }}
                 </span>
               </div>
-              <i class="aiv-progress-bar slim" :style="{ '--progress': `${materialTask.progress || 0}%` }"></i>
+              <div class="aiv-dual-progress">
+                <div class="aiv-progress-line">
+                  <span><strong>找款进度</strong><small>{{ materialTask.searchCompleted }} / {{ materialTask.searchTotal || normalizeStyleCodeLines(styleCodes).length }} 款</small></span>
+                  <i class="aiv-progress-bar slim" :style="{ '--progress': `${materialTask.searchProgress || 0}%` }"></i>
+                </div>
+                <div class="aiv-progress-line">
+                  <span><strong>下载进度</strong><small>{{ materialTask.downloadCompleted }} / {{ materialTask.downloadTotal }} 张</small></span>
+                  <i class="aiv-progress-bar slim" :style="{ '--progress': `${materialTask.downloadProgress || 0}%` }"></i>
+                </div>
+              </div>
               <button
                 v-if="materialTask.error"
                 type="button"
@@ -87,7 +106,7 @@
           </div>
         </aside>
 
-        <section class="aiv-panel">
+        <section class="aiv-panel aiv-material-results-panel">
           <header class="aiv-panel-head">
             <div>
               <strong>素材回显</strong>
@@ -95,80 +114,168 @@
             </div>
             <span class="aiv-badge orange">已选 {{ selectedMaterialCount }} / {{ materialSummary.modelCount + materialSummary.detailCount }}</span>
           </header>
-          <div class="aiv-panel-body aiv-style-list">
-            <article v-for="item in materialGroups" :key="item.styleCode" class="aiv-style-card">
-              <button type="button" class="aiv-style-head aiv-collapse-head" @click="toggleMaterialGroup(item.styleCode)">
-                <div class="aiv-style-title-block">
-                  <div class="aiv-style-title-row">
-                    <span :class="['aiv-collapse-icon', { expanded: isMaterialExpanded(item.styleCode) }]" aria-hidden="true"></span>
-                    <strong>{{ item.styleCode }}</strong>
-                    <span class="aiv-title-meta">{{ isMaterialExpanded(item.styleCode) ? '已展开' : '已收起' }} · 先确认模拍图，再确认细节图</span>
-                  </div>
-                </div>
-                <div>
-                  <span class="aiv-badge orange">模拍 {{ item.modelPhotos.length }}</span>
-                  <span class="aiv-badge">细节 {{ item.detailPhotos.length }}</span>
-                  <span class="aiv-collapse-mark">{{ isMaterialExpanded(item.styleCode) ? '收起' : '展开' }}</span>
-                </div>
+          <div class="aiv-material-style-tabs" role="tablist" aria-label="素材款号">
+            <button
+              v-for="item in materialGroups"
+              :id="`material-style-tab-${item.styleCode}`"
+              :key="item.styleCode"
+              type="button"
+              role="tab"
+              :class="{ active: activeMaterialStyleCode === item.styleCode }"
+              :aria-selected="activeMaterialStyleCode === item.styleCode"
+              :aria-controls="`material-style-panel-${item.styleCode}`"
+              :tabindex="activeMaterialStyleCode === item.styleCode ? 0 : -1"
+              @click="selectMaterialStyle(item.styleCode)"
+            >
+              <strong>{{ item.styleCode }}</strong>
+              <span>{{ item.modelPhotos.length }} 模拍 / {{ item.detailPhotos.length }} 细节</span>
+            </button>
+          </div>
+
+          <div v-if="activeMaterialGroup" class="aiv-material-source-switcher">
+            <div class="aiv-material-source-tabs" role="tablist" :aria-label="`${activeMaterialGroup.styleCode} 素材类型`">
+              <button
+                type="button"
+                role="tab"
+                :class="{ active: activeMaterialSource === 'model' }"
+                :aria-selected="activeMaterialSource === 'model'"
+                :aria-controls="`material-model-panel-${activeMaterialGroup.styleCode}`"
+                @click="selectMaterialSource('model')"
+              >
+                模拍图 <strong>{{ activeMaterialGroup.modelPhotos.length }}</strong>
               </button>
-              <div v-if="isMaterialExpanded(item.styleCode)" class="aiv-source-board compact">
-                <section>
-                  <div class="aiv-source-title">模拍图</div>
+              <button
+                type="button"
+                role="tab"
+                :class="{ active: activeMaterialSource === 'detail' }"
+                :aria-selected="activeMaterialSource === 'detail'"
+                :aria-controls="`material-detail-panel-${activeMaterialGroup.styleCode}`"
+                @click="selectMaterialSource('detail')"
+              >
+                细节图 <strong>{{ activeMaterialGroup.detailPhotos.length }}</strong>
+              </button>
+            </div>
+            <span>{{ activeMaterialSource === 'model' ? '默认优先确认模拍图' : '已切换到细节图' }}</span>
+          </div>
+
+          <div class="aiv-panel-body aiv-style-list">
+            <article
+              v-if="activeMaterialGroup"
+              :id="`material-style-panel-${activeMaterialGroup.styleCode}`"
+              class="aiv-material-tab-panel"
+              role="tabpanel"
+              :aria-labelledby="`material-style-tab-${activeMaterialGroup.styleCode}`"
+            >
+              <div class="aiv-source-board compact single">
+                <section
+                  v-if="activeMaterialSource === 'model'"
+                  :id="`material-model-panel-${activeMaterialGroup.styleCode}`"
+                  role="tabpanel"
+                >
+                  <div class="aiv-source-title">模拍图 · 默认优先</div>
                   <div class="aiv-thumb-grid">
                     <article
-                      v-for="asset in item.modelPhotos"
-                      :key="asset.name"
+                      v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
+                      :key="asset.id || asset.path"
                       :class="['aiv-thumb', { selected: asset.selected }]"
+                      role="button"
+                      tabindex="0"
+                      :aria-pressed="asset.selected"
+                      :aria-label="`${asset.selected ? '取消选择' : '选择'}模拍图 ${asset.name}`"
+                      @click="toggleMaterialSelection(asset)"
+                      @keydown.enter.prevent="toggleMaterialSelection(asset)"
+                      @keydown.space.prevent="toggleMaterialSelection(asset)"
                     >
-                      <button type="button" class="aiv-thumb-preview-button" @click="openImagePreview(asset, item.styleCode)">
+                      <div class="aiv-thumb-media">
                         <img
-                          v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
-                          :src="previewSourceFor(asset)"
+                          v-if="thumbnailSourceFor(asset) && !brokenPreviews[thumbnailSourceFor(asset)]"
+                          :src="thumbnailSourceFor(asset)"
                           :alt="asset.name"
-                          @error="markPreviewBroken(previewSourceFor(asset))"
+                          loading="lazy"
+                          decoding="async"
+                          fetchpriority="low"
+                          @error="markPreviewBroken(thumbnailSourceFor(asset))"
                         />
                         <template v-else>
                           <strong>{{ asset.role }}</strong>
                           <span>{{ asset.name }}</span>
-                          <small>点击查看大图</small>
+                          <small>点击卡片选择</small>
                         </template>
-                      </button>
-                      <button type="button" class="aiv-select-ribbon" @click.stop="toggleMaterialSelection(asset)">
+                      </div>
+                      <span class="aiv-select-ribbon">
                         {{ asset.selected ? '已选' : '选择' }}
+                      </span>
+                      <button type="button" class="aiv-thumb-zoom" title="查看大图" @click.stop="openImagePreview(asset, activeMaterialGroup.styleCode)">
+                        <span aria-hidden="true">⌕</span>
                       </button>
                     </article>
                   </div>
+                  <button
+                    v-if="remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
+                    type="button"
+                    class="aiv-load-more"
+                    @click="showMoreMaterialAssets(activeMaterialGroup.styleCode, 'model')"
+                  >
+                    加载更多模拍图（剩余 {{ remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos) }} 张）
+                  </button>
                 </section>
-                <section>
+
+                <section
+                  v-else-if="activeMaterialSource === 'detail'"
+                  :id="`material-detail-panel-${activeMaterialGroup.styleCode}`"
+                  role="tabpanel"
+                >
                   <div class="aiv-source-title">细节图</div>
                   <div class="aiv-thumb-grid">
                     <article
-                      v-for="asset in item.detailPhotos"
-                      :key="asset.name"
+                      v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
+                      :key="asset.id || asset.path"
                       :class="['aiv-thumb', { selected: asset.selected, muted: asset.muted }]"
+                      role="button"
+                      tabindex="0"
+                      :aria-pressed="asset.selected"
+                      :aria-label="`${asset.selected ? '取消选择' : '选择'}细节图 ${asset.name}`"
+                      @click="toggleMaterialSelection(asset)"
+                      @keydown.enter.prevent="toggleMaterialSelection(asset)"
+                      @keydown.space.prevent="toggleMaterialSelection(asset)"
                     >
-                      <button type="button" class="aiv-thumb-preview-button" @click="openImagePreview(asset, item.styleCode)">
+                      <div class="aiv-thumb-media">
                         <img
-                          v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
-                          :src="previewSourceFor(asset)"
+                          v-if="thumbnailSourceFor(asset) && !brokenPreviews[thumbnailSourceFor(asset)]"
+                          :src="thumbnailSourceFor(asset)"
                           :alt="asset.name"
-                          @error="markPreviewBroken(previewSourceFor(asset))"
+                          loading="lazy"
+                          decoding="async"
+                          fetchpriority="low"
+                          @error="markPreviewBroken(thumbnailSourceFor(asset))"
                         />
                         <template v-else>
                           <strong>{{ asset.role }}</strong>
                           <span>{{ asset.name }}</span>
-                          <small>点击查看大图</small>
+                          <small>点击卡片选择</small>
                         </template>
-                      </button>
-                      <button type="button" class="aiv-select-ribbon" @click.stop="toggleMaterialSelection(asset)">
+                      </div>
+                      <span class="aiv-select-ribbon">
                         {{ asset.selected ? '已选' : '选择' }}
+                      </span>
+                      <button type="button" class="aiv-thumb-zoom" title="查看大图" @click.stop="openImagePreview(asset, activeMaterialGroup.styleCode)">
+                        <span aria-hidden="true">⌕</span>
                       </button>
                     </article>
                   </div>
+                  <button
+                    v-if="remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
+                    type="button"
+                    class="aiv-load-more"
+                    @click="showMoreMaterialAssets(activeMaterialGroup.styleCode, 'detail')"
+                  >
+                    加载更多细节图（剩余 {{ remainingMaterialAssetCount(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos) }} 张）
+                  </button>
                 </section>
-                <section v-if="item.skippedRows?.length" class="aiv-source-issues">
+
+                <section v-if="activeMaterialGroup.skippedRows?.length" class="aiv-source-issues">
                   <strong>已过滤 / 需复核</strong>
-                  <span v-for="row in item.skippedRows.slice(0, 4)" :key="row.id">
+                  <span v-for="row in activeMaterialGroup.skippedRows.slice(0, 4)" :key="row.id">
                     {{ row.role }} · {{ row.name || row.action }} · {{ row.note || row.downloadResult }}
                   </span>
                 </section>
@@ -178,7 +285,7 @@
               输入款号后点击“开始找图并回显”，这里会按款号显示真实下载素材。
             </div>
           </div>
-          <footer class="aiv-page-actions">
+          <footer class="aiv-page-actions aiv-material-sticky-actions">
             <button type="button" class="aiv-primary" @click="activeStep = 'ai-edit'">进入 AI 改图</button>
           </footer>
         </section>
@@ -284,10 +391,15 @@
 
           <div class="aiv-panel-body aiv-edit-style-list">
             <article v-for="style in styleWorkspaces" :key="style.styleCode" class="aiv-style-card">
-              <button type="button" class="aiv-style-head aiv-collapse-head" @click="toggleMaterialGroup(style.styleCode)">
+              <button
+                type="button"
+                class="aiv-style-head aiv-collapse-head"
+                :aria-expanded="isMaterialExpanded(style.styleCode) ? 'true' : 'false'"
+                :aria-controls="`image-workbench-${style.styleCode}`"
+                @click="toggleMaterialGroup(style.styleCode)"
+              >
                 <div class="aiv-style-title-block">
                   <div class="aiv-style-title-row">
-                    <span :class="['aiv-collapse-icon', { expanded: isMaterialExpanded(style.styleCode) }]" aria-hidden="true"></span>
                     <strong>{{ style.styleCode }} 图片工作台</strong>
                     <span class="aiv-title-meta">{{ style.modelPhotos.length }} 张模拍 · {{ style.detailPhotos.length }} 张细节 · {{ style.generated.length }} 张 AI 图</span>
                   </div>
@@ -295,11 +407,18 @@
                 <div>
                   <span class="aiv-badge orange">原图 {{ editSourcesForStyle(style).length }}</span>
                   <span class="aiv-badge">版本 {{ versionCountForStyle(style) }}</span>
-                  <span class="aiv-collapse-mark">{{ isMaterialExpanded(style.styleCode) ? '收起' : '展开' }}</span>
+                  <span class="aiv-collapse-action">
+                    {{ isMaterialExpanded(style.styleCode) ? '收起素材' : '展开素材' }}
+                    <span class="aiv-collapse-chevron" aria-hidden="true"></span>
+                  </span>
                 </div>
               </button>
 
-              <div v-if="isMaterialExpanded(style.styleCode)" class="aiv-edit-queue">
+              <div
+                v-if="isMaterialExpanded(style.styleCode)"
+                :id="`image-workbench-${style.styleCode}`"
+                class="aiv-edit-queue"
+              >
                 <article
                   v-for="source in editSourcesForStyle(style)"
                   :key="source.name"
@@ -464,14 +583,19 @@
         <section class="aiv-panel">
           <header class="aiv-video-toolbar">
             <div class="aiv-batch-summary inline">
-              <div><strong>3 款</strong><span>可建视频任务</span></div>
+              <div><strong>{{ videoJobs.length }} 款</strong><span>可建视频任务</span></div>
               <div><strong>{{ totalVideoAssetCount }} 张</strong><span>可选图片素材</span></div>
               <div><strong>{{ videoTasks.length }} 条</strong><span>已建视频任务</span></div>
             </div>
-            <label class="aiv-field compact">
+            <div class="aiv-field compact">
               <span>默认输出目录</span>
-              <input v-model="videoOutputDir" />
-            </label>
+              <button type="button" class="aiv-directory-picker" @click="pickVideoOutputDirectory">
+                <span class="aiv-directory-picker-path" :title="videoOutputDir">
+                  {{ videoOutputDir || '请选择 AI 视频工作区目录' }}
+                </span>
+                <strong>选择文件夹</strong>
+              </button>
+            </div>
             <button type="button" class="aiv-primary" @click="openVideoTaskDialog()">新增视频任务</button>
             <button type="button" class="aiv-ghost" :disabled="videoIsRunning" @click="runAllVideoTasks('plan')">批量预检</button>
             <button type="button" class="aiv-ghost" :disabled="videoIsRunning" @click="runAllVideoTasks('live')">批量生成并下载</button>
@@ -488,9 +612,9 @@
                 <span>{{ task.assets.length }} 张已选素材 · {{ approvedVideoTaskAssetCount(task) }} 张已审核 · {{ task.status }}</span>
               </div>
               <div class="aiv-provider-badges">
-                <span :class="['aiv-badge', task.provider === 'seedance' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
+                <span :class="['aiv-badge', task.provider !== 'qn' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
                 <span :class="['aiv-badge', task.template ? 'orange' : '']">
-                  {{ task.template ? task.template.title : '不选模板' }}
+                  {{ task.provider === 'happyhorse' ? happyHorseModeLabel(task.happyhorseMode) : (task.template ? task.template.title : '不选模板') }}
                 </span>
               </div>
             </header>
@@ -519,15 +643,16 @@
                 <div><strong>Prompt</strong><span>{{ task.prompt || '软件管家页面生成可不填写 Prompt' }}</span></div>
                 <div><strong>输出目录</strong><span>{{ task.outputDir }}</span></div>
               </div>
-              <div v-if="task.provider === 'seedance'" class="aiv-seedance-callout">
-                <strong>Seedance 2.0</strong>
-                <span>通过项目 AI 能力配置读取凭据；真人儿童图如触发隐私保护，则转为原创人物安全重试。</span>
-                <small>真人儿童图如触发隐私保护，则转为文字描述服装、场景和动作生成原创人物版本。</small>
+              <div v-if="task.provider !== 'qn'" class="aiv-seedance-callout">
+                <strong>{{ providerLabel(task.provider) }}</strong>
+                <span>凭据状态：{{ providerStatusLabel(task.provider) }}；预检不会提交，只有明确授权才会创建外部任务。</span>
+                <small v-if="task.provider === 'seedance'">真人儿童图如触发隐私保护，则转为文字描述服装、场景和动作生成原创人物版本。</small>
+                <small v-else>图生视频只选 1 张首帧图；参考生视频支持 1-9 张图片，成功后立即下载归档。</small>
               </div>
               <div class="aiv-inline-actions">
                 <button type="button" class="aiv-ghost small" @click="openVideoTaskDialog(task.styleCode)">复制新建</button>
                 <button v-if="task.provider === 'qn'" type="button" class="aiv-ghost small" @click="openTemplateLibrary(task.styleCode)">查看模板</button>
-                <button v-if="task.provider === 'seedance'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings">打开 AI 能力配置</button>
+                <button v-if="task.provider !== 'qn'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(task.provider)">打开 AI 能力配置</button>
                 <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="runVideoTask(task, 'plan')">提交前预检</button>
                 <button type="button" class="aiv-primary" :disabled="videoIsRunning" @click="runVideoTask(task, 'live')">授权生成并下载</button>
               </div>
@@ -574,7 +699,8 @@
                     <span :class="['aiv-badge', item.status === '已完成' ? 'orange' : '']">{{ item.status }}</span>
                   </header>
                   <i class="aiv-progress-bar slim" :style="{ '--progress': `${item.progress}%` }"></i>
-                  <p>{{ item.path }}</p>
+                  <p v-if="item.error" class="aiv-result-error">{{ item.error }}</p>
+                  <p v-else>{{ item.path }}</p>
                   <footer>
                     <button type="button" class="aiv-ghost small" @click="openVideoResult(item)">预览</button>
                     <button type="button" class="aiv-ghost small" @click="retryVideoResult(item)">重新下载</button>
@@ -669,7 +795,12 @@
               v-for="model in modelSamples"
               :key="model.id"
               :class="['aiv-model-card', { selected: selectedModel?.id === model.id }]"
+              role="button"
+              tabindex="0"
+              :aria-pressed="selectedModel?.id === model.id"
               @click="selectedModel = model"
+              @keydown.enter.prevent="selectedModel = model"
+              @keydown.space.prevent="selectedModel = model"
             >
               <div class="aiv-model-image">
                 <img
@@ -734,7 +865,12 @@
               v-for="template in filteredTemplateSamples"
               :key="template.id"
               :class="['aiv-template-card', { selected: selectedTemplateId === template.id }]"
+              role="button"
+              tabindex="0"
+              :aria-pressed="selectedTemplateId === template.id"
               @click="selectedTemplateId = template.id"
+              @keydown.enter.prevent="selectedTemplateId = template.id"
+              @keydown.space.prevent="selectedTemplateId = template.id"
             >
               <video
                 v-if="!brokenPreviews[template.video]"
@@ -797,9 +933,18 @@
             </label>
             <label class="aiv-field">
               <span>生成方式</span>
-              <select v-model="videoTaskDraft.provider">
+              <select v-model="videoTaskDraft.provider" @change="handleVideoProviderChange">
                 <option value="qn">软件管家页面生成</option>
                 <option value="seedance">Seedance 2.0 API</option>
+                <option value="happyhorse">百炼 HappyHorse</option>
+              </select>
+            </label>
+            <label v-if="videoTaskDraft.provider === 'happyhorse'" class="aiv-field">
+              <span>HappyHorse 模式</span>
+              <select v-model="videoTaskDraft.happyhorseMode" @change="handleHappyHorseModeChange">
+                <option value="t2v">文生视频</option>
+                <option value="i2v">图生视频</option>
+                <option value="r2v">参考生视频</option>
               </select>
             </label>
             <label class="aiv-field">
@@ -818,18 +963,26 @@
                 :placeholder="videoTaskDraft.provider === 'qn' ? '软件管家页面生成可不填写 Prompt' : '描述服装、场景、动作和镜头要求'"
               ></textarea>
             </label>
-            <label class="aiv-field">
+            <div class="aiv-field">
               <span>输出目录</span>
-              <input v-model="videoTaskDraft.outputDir" />
-            </label>
+              <button type="button" class="aiv-directory-picker" @click="pickVideoTaskOutputDirectory">
+                <span class="aiv-directory-picker-path" :title="videoTaskDraft.outputDir">
+                  {{ videoTaskDraft.outputDir || '请选择 AI 视频工作区目录' }}
+                </span>
+                <strong>选择文件夹</strong>
+              </button>
+            </div>
             <div v-if="videoTaskDraft.provider === 'qn'" class="aiv-inline-actions">
               <button type="button" class="aiv-ghost small" @click="openTemplateLibrary(videoTaskDraft.styleCode)">选择软件管家模板</button>
               <button type="button" class="aiv-ghost small" @click="videoTaskDraft.templateId = ''">不选模板</button>
             </div>
             <div v-else class="aiv-seedance-callout">
-              <strong>Seedance 2.0</strong>
-              <span>通过项目 AI 能力配置读取凭据，预检通过后等待明确授权再生成。</span>
-              <small>如触发隐私保护，改用服装、场景和动作文字描述生成原创人物版本。</small>
+              <strong>{{ providerLabel(videoTaskDraft.provider) }}</strong>
+              <span>凭据状态：{{ providerStatusLabel(videoTaskDraft.provider) }}；预检通过后仍需明确授权才会生成。</span>
+              <small v-if="videoTaskDraft.provider === 'seedance'">如触发隐私保护，改用服装、场景和动作文字描述生成原创人物版本。</small>
+              <small v-else-if="videoTaskDraft.happyhorseMode === 't2v'">文生视频不需要图片，使用原创人物和场景描述。</small>
+              <small v-else-if="videoTaskDraft.happyhorseMode === 'i2v'">图生视频只允许选择 1 张首帧图，画幅跟随图片。</small>
+              <small v-else>参考生视频支持 1-9 张图片，可组合模拍图和细节图。</small>
             </div>
           </aside>
           <section class="aiv-video-task-picker">
@@ -841,13 +994,17 @@
               <span class="aiv-badge orange">已选 {{ selectedVideoTaskAssetCount }}</span>
             </header>
             <div class="aiv-video-task-assets picker">
-              <button
+              <article
                 v-for="asset in videoTaskSelectableAssets"
                 :key="asset.id"
-                type="button"
                 :class="['aiv-video-asset-card', { selected: videoTaskDraft.assetIds.includes(asset.id), pending: asset.status !== 'approved' }]"
+                role="button"
+                tabindex="0"
+                :aria-pressed="videoTaskDraft.assetIds.includes(asset.id)"
+                :aria-label="`${videoTaskDraft.assetIds.includes(asset.id) ? '取消选择' : '选择'}视频素材 ${asset.label}`"
                 @click="toggleVideoTaskDraftAsset(asset.id)"
-                @dblclick="openImagePreview(asset, videoTaskDraft.styleCode)"
+                @keydown.enter.prevent="toggleVideoTaskDraftAsset(asset.id)"
+                @keydown.space.prevent="toggleVideoTaskDraftAsset(asset.id)"
               >
                 <img
                   v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
@@ -858,12 +1015,20 @@
                 <span :class="['aiv-status-pill', asset.status]">{{ assetStatusLabel(asset.status) }}</span>
                 <strong>{{ asset.label }}</strong>
                 <small>{{ asset.kind }}</small>
-              </button>
+                <button
+                  type="button"
+                  class="aiv-video-asset-zoom"
+                  title="查看大图"
+                  @click.stop="openImagePreview(asset, videoTaskDraft.styleCode)"
+                >
+                  <span aria-hidden="true">⌕</span>
+                </button>
+              </article>
             </div>
           </section>
         </div>
         <footer class="aiv-modal-foot">
-          <span>{{ videoTaskDraft.provider === 'qn' ? '软件管家 Prompt 可空，模板可选' : 'Seedance 任务需要明确 Prompt' }}</span>
+          <span>{{ videoTaskDraft.provider === 'qn' ? '软件管家 Prompt 可空，模板可选' : `${providerLabel(videoTaskDraft.provider)} 任务需要明确 Prompt` }}</span>
           <button type="button" class="aiv-ghost" @click="closeVideoTaskDialog">取消</button>
           <button type="button" class="aiv-primary" @click="createVideoTaskFromDraft">创建视频任务</button>
         </footer>
@@ -883,9 +1048,11 @@ import {
   buildBalaMaterialPrepareParams,
   collectVideoResultRows,
   collectDownloadedMaterialRows,
+  isSeedancePrivacyProtectionError,
   isActiveWorkflowStatus,
   latestRunForTaskData,
   normalizeBalaMaterialGroups,
+  normalizeBalaMaterialProgress,
   normalizeBalaReviewBatchStyles,
   normalizeBalaReviewStatus,
   normalizeStyleCodeLines,
@@ -895,10 +1062,29 @@ import {
   parseBalaMaterialBoardUrl,
   parseBalaReviewBoardUrl,
   parseRunOutputFiles,
+  rebaseBalaMaterialRowsToWorkspace,
+  selectNewTaskRun,
   summarizeBalaMaterialGroups,
+  waitForNewTaskRun,
 } from '../utils/balaAiVideoWorkflow'
 
 const emit = defineEmits(['open-settings'])
+
+const BALA_AI_VIDEO_WORKSPACE_STORAGE_KEY = 'crawshrimp.bala-ai-video.workspace-dir'
+const DEFAULT_BALA_AI_VIDEO_WORKSPACE_DIR = '/Users/xingyicheng/Downloads/巴拉AI视频素材'
+const MATERIAL_RENDER_CHUNK = 20
+
+function loadStoredWorkspaceDir() {
+  try {
+    return String(localStorage.getItem(BALA_AI_VIDEO_WORKSPACE_STORAGE_KEY) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+const workspaceDir = ref(loadStoredWorkspaceDir() || DEFAULT_BALA_AI_VIDEO_WORKSPACE_DIR)
+const materialOutputDir = workspaceDir
+const videoOutputDir = workspaceDir
 
 const activeStep = ref('materials')
 const activeAction = ref('face_swap')
@@ -923,9 +1109,10 @@ const aiStageRequest = ref(null)
 const videoTaskDraft = reactive({
   styleCode: '208326102205',
   provider: 'qn',
+  happyhorseMode: 'i2v',
   groupMode: 'all_images_one_video',
   prompt: '',
-  outputDir: '/Users/xingyicheng/Downloads/巴拉AI视频成片',
+  outputDir: workspaceDir.value,
   templateId: '',
   assetIds: [],
 })
@@ -934,13 +1121,12 @@ const materialExpanded = reactive({
   '208326105214': true,
   '208326108104': false,
 })
+const materialRenderLimits = reactive({})
 
 const styleCodes = ref('208326102205\n208326105214\n208326108104')
 const cloudPath = ref('巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/')
-const materialOutputDir = ref('/Users/xingyicheng/Downloads/巴拉AI视频素材')
 const materialPackageName = ref('')
 const aiPrompt = ref('保留童装版型和颜色，画面自然，无文字，无品牌外露风险。')
-const videoOutputDir = ref('/Users/xingyicheng/Downloads/巴拉AI视频成片')
 const garmentImagePaths = ref([])
 const outfitReferencePaths = ref([])
 const variantReferencePaths = ref([])
@@ -948,9 +1134,15 @@ const materialTask = reactive({
   status: 'idle',
   message: '等待输入款号后开始找图',
   progress: 0,
+  searchProgress: 0,
+  downloadProgress: 0,
   currentStyle: '',
   totalStyles: 0,
   completedStyles: 0,
+  searchTotal: 0,
+  searchCompleted: 0,
+  downloadTotal: 0,
+  downloadCompleted: 0,
   downloaded: 0,
   failed: 0,
   runId: '',
@@ -987,6 +1179,10 @@ const templateLibraryState = reactive({
 })
 const templateSamples = reactive([])
 const templateFilter = ref('')
+const videoProviderStatus = reactive({
+  seedance: { configured: false, source: '未配置' },
+  happyhorse: { configured: false, source: '未配置' },
+})
 
 const stepDefinitions = [
   { id: 'materials', index: 1, title: '找图', detail: '森马云盘素材下载' },
@@ -1024,6 +1220,13 @@ const styleWorkspaces = reactive(normalizeBalaMaterialGroups({
 }))
 
 const materialGroups = styleWorkspaces
+const activeMaterialStyleCode = ref(styleWorkspaces[0]?.styleCode || '')
+const activeMaterialSource = ref('model')
+const activeMaterialGroup = computed(() => (
+  materialGroups.find(item => item.styleCode === activeMaterialStyleCode.value)
+  || materialGroups[0]
+  || null
+))
 const materialSummary = computed(() => summarizeBalaMaterialGroups(materialGroups))
 const selectedMaterialCount = computed(() => materialSummary.value.selectedCount)
 const selectedEditSourceCount = computed(() => (
@@ -1098,12 +1301,49 @@ let aiPollRunId = ''
 let videoPollTimer = null
 
 function replaceStyleWorkspaces(groups = []) {
+  for (const key of Object.keys(materialRenderLimits)) delete materialRenderLimits[key]
   styleWorkspaces.splice(0, styleWorkspaces.length, ...groups)
+  if (!groups.some(group => group.styleCode === activeMaterialStyleCode.value)) {
+    activeMaterialStyleCode.value = groups[0]?.styleCode || ''
+  }
+  activeMaterialSource.value = 'model'
   for (const group of groups) {
     if (!Object.prototype.hasOwnProperty.call(materialExpanded, group.styleCode)) {
       materialExpanded[group.styleCode] = true
     }
   }
+}
+
+function selectMaterialStyle(styleCode) {
+  const next = String(styleCode || '').trim()
+  if (!materialGroups.some(item => item.styleCode === next)) return
+  activeMaterialStyleCode.value = next
+  activeMaterialSource.value = 'model'
+}
+
+function selectMaterialSource(sourceType) {
+  activeMaterialSource.value = sourceType === 'detail' ? 'detail' : 'model'
+}
+
+function materialRenderKey(styleCode, sourceType) {
+  return `${styleCode}:${sourceType}`
+}
+
+function materialRenderLimit(styleCode, sourceType) {
+  return materialRenderLimits[materialRenderKey(styleCode, sourceType)] || MATERIAL_RENDER_CHUNK
+}
+
+function visibleMaterialAssets(styleCode, sourceType, assets = []) {
+  return (assets || []).slice(0, materialRenderLimit(styleCode, sourceType))
+}
+
+function remainingMaterialAssetCount(styleCode, sourceType, assets = []) {
+  return Math.max(0, (assets || []).length - materialRenderLimit(styleCode, sourceType))
+}
+
+function showMoreMaterialAssets(styleCode, sourceType) {
+  const key = materialRenderKey(styleCode, sourceType)
+  materialRenderLimits[key] = materialRenderLimit(styleCode, sourceType) + MATERIAL_RENDER_CHUNK
 }
 
 function resetDraftMaterialGroups() {
@@ -1126,6 +1366,10 @@ function absoluteApiUrl(value = '') {
 
 function previewSourceFor(asset = {}) {
   return absoluteApiUrl(asset.imageUrl || asset.image_url) || localFileUrl(asset.path || asset.previewPath || '')
+}
+
+function thumbnailSourceFor(asset = {}) {
+  return absoluteApiUrl(asset.thumbnailUrl || asset.thumbnail_url) || previewSourceFor(asset)
 }
 
 function normalizeModelLibraryItem(item = {}) {
@@ -1204,6 +1448,105 @@ function scheduleMaterialPoll() {
   }, 900)
 }
 
+function persistWorkspaceDir(path = '') {
+  try {
+    localStorage.setItem(BALA_AI_VIDEO_WORKSPACE_STORAGE_KEY, String(path || '').trim())
+  } catch {
+    // The selected path still works for this session when storage is unavailable.
+  }
+}
+
+function resetMaterialWorkspace() {
+  resetMaterialPoll()
+  materialPollRunId = ''
+  materialBatch.value = null
+  materialBoardUrl.value = ''
+  for (const key of Object.keys(brokenPreviews)) delete brokenPreviews[key]
+  replaceStyleWorkspaces(normalizeBalaMaterialGroups({
+    fallbackCodes: normalizeStyleCodeLines(styleCodes.value),
+  }))
+  updateMaterialTask({
+    status: 'idle',
+    message: '工作区已切换，请开始找图并回显当前工作区素材。',
+    progress: 0,
+    searchProgress: 0,
+    downloadProgress: 0,
+    currentStyle: '',
+    totalStyles: 0,
+    completedStyles: 0,
+    searchTotal: 0,
+    searchCompleted: 0,
+    downloadTotal: 0,
+    downloadCompleted: 0,
+    downloaded: 0,
+    failed: 0,
+    runId: '',
+    error: '',
+    logs: [],
+    outputFiles: [],
+  })
+}
+
+function applyWorkspaceDirectory(path = '') {
+  const next = String(path || '').trim()
+  if (!next) return
+  const changed = next !== workspaceDir.value
+  workspaceDir.value = next
+  videoTaskDraft.outputDir = next
+  persistWorkspaceDir(next)
+  if (changed) resetMaterialWorkspace()
+}
+
+async function pickMaterialOutputDirectory() {
+  try {
+    const selected = await window.cs.browseFile({
+      directory: true,
+      title: '选择 AI 视频工作区目录',
+      defaultPath: workspaceDir.value,
+    })
+    const path = Array.isArray(selected) ? selected[0] : selected
+    applyWorkspaceDirectory(path)
+  } catch (error) {
+    updateMaterialTask({
+      status: 'failed',
+      error: error?.message || String(error),
+      message: `选择导出目录失败：${error?.message || String(error)}`,
+    })
+  }
+}
+
+async function pickVideoOutputDirectory() {
+  try {
+    const selected = await window.cs.browseFile({
+      directory: true,
+      title: '选择 AI 视频工作区目录',
+      defaultPath: workspaceDir.value,
+    })
+    const path = Array.isArray(selected) ? selected[0] : selected
+    applyWorkspaceDirectory(path)
+  } catch (error) {
+    videoStageState.status = 'failed'
+    videoStageState.error = error?.message || String(error)
+    videoStageState.message = `选择工作区目录失败：${videoStageState.error}`
+  }
+}
+
+async function pickVideoTaskOutputDirectory() {
+  try {
+    const selected = await window.cs.browseFile({
+      directory: true,
+      title: '选择视频任务输出目录',
+      defaultPath: videoTaskDraft.outputDir || workspaceDir.value,
+    })
+    const path = Array.isArray(selected) ? selected[0] : selected
+    if (String(path || '').trim()) videoTaskDraft.outputDir = String(path).trim()
+  } catch (error) {
+    videoStageState.status = 'failed'
+    videoStageState.error = error?.message || String(error)
+    videoStageState.message = `选择视频任务输出目录失败：${videoStageState.error}`
+  }
+}
+
 function materialRunParams() {
   return buildBalaMaterialPrepareParams({
     itemCodes: styleCodes.value,
@@ -1215,20 +1558,23 @@ function materialRunParams() {
 
 function applyMaterialLiveStatus(live = {}) {
   const status = normalizeWorkflowStageStatus(live?.status)
-  const total = Number(live?.search_total_codes || live?.total || 0)
-  const completed = Number(live?.search_completed_codes || live?.current || 0)
-  const downloaded = Number(live?.download_success || live?.records || 0)
-  const failed = Number(live?.download_failed || 0)
-  const explicitPercent = Number(live?.percent)
-  const progress = Number.isFinite(explicitPercent) && explicitPercent > 0
-    ? Math.max(0, Math.min(100, explicitPercent))
-    : (total > 0 ? Math.round((Math.min(completed, total) / total) * 100) : materialTask.progress)
+  const progress = normalizeBalaMaterialProgress(live)
+  const total = progress.searchTotal
+  const completed = progress.searchCompleted
+  const downloaded = progress.downloaded
+  const failed = progress.failed
   updateMaterialTask({
     status,
-    progress: status === 'done' ? 100 : progress,
+    progress: status === 'done' ? 100 : Math.round((progress.searchProgress + progress.downloadProgress) / 2),
+    searchProgress: status === 'done' ? 100 : progress.searchProgress,
+    downloadProgress: status === 'done' && progress.downloadTotal > 0 ? 100 : progress.downloadProgress,
     currentStyle: String(live?.buyer_id || live?.current_buyer_id || '').trim(),
     totalStyles: total,
     completedStyles: completed,
+    searchTotal: total,
+    searchCompleted: completed,
+    downloadTotal: progress.downloadTotal,
+    downloadCompleted: progress.downloadCompleted,
     downloaded,
     failed,
     runId: String(live?.run_id || materialTask.runId || '').trim(),
@@ -1259,6 +1605,35 @@ function isTerminalMaterialStatus(status) {
   return ['done', 'failed', 'stopped', 'partial'].includes(normalizeWorkflowStageStatus(status))
 }
 
+async function waitForMaterialRunStart(previousRunId = '', timeoutMs = 12000) {
+  return waitForNewTaskRun({
+    getStatus: () => window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_MATERIAL_PREPARE_TASK_ID),
+    previousRunId,
+    attempts: Math.max(1, Math.ceil(timeoutMs / 300)),
+    delayMs: 300,
+    sleepFn: sleep,
+    errorMessage: '素材下载页面或任务未成功启动，请检查 9222 浏览器登录态后重试。',
+  })
+}
+
+async function waitForAiImageRunStart(previousRunId = '') {
+  return waitForNewTaskRun({
+    getStatus: () => window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID),
+    previousRunId,
+    sleepFn: sleep,
+    errorMessage: 'AI 改图任务未成功启动，请重试。',
+  })
+}
+
+async function waitForQnVideoRunStart(previousRunId = '') {
+  return waitForNewTaskRun({
+    getStatus: () => window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID),
+    previousRunId,
+    sleepFn: sleep,
+    errorMessage: '软件管家视频任务未成功启动，请检查 9222 页面状态后重试。',
+  })
+}
+
 async function startMaterialPrepare() {
   resetMaterialPoll()
   const params = materialRunParams()
@@ -1270,13 +1645,26 @@ async function startMaterialPrepare() {
     updateMaterialTask({ status: 'failed', error: '请填写云盘搜索根路径', message: '请填写云盘搜索根路径。' })
     return
   }
+  const previousStatus = await window.cs.getTaskStatus(
+    BALA_AI_VIDEO_ADAPTER_ID,
+    BALA_MATERIAL_PREPARE_TASK_ID,
+  ).catch(() => null)
+  const previousRunId = String(
+    previousStatus?.live?.run_id || previousStatus?.last_run?.id || '',
+  ).trim()
   updateMaterialTask({
     status: 'running',
     message: '正在提交素材下载任务...',
     progress: 0,
+    searchProgress: 0,
+    downloadProgress: 0,
     currentStyle: '',
     totalStyles: normalizeStyleCodeLines(params.item_codes).length,
     completedStyles: 0,
+    searchTotal: normalizeStyleCodeLines(params.item_codes).length,
+    searchCompleted: 0,
+    downloadTotal: 0,
+    downloadCompleted: 0,
     downloaded: 0,
     failed: 0,
     runId: '',
@@ -1287,16 +1675,67 @@ async function startMaterialPrepare() {
   try {
     const result = await window.cs.runTask(BALA_AI_VIDEO_ADAPTER_ID, BALA_MATERIAL_PREPARE_TASK_ID, params, {})
     if (!result?.ok) throw new Error(result?.message || result?.error || '素材下载任务启动失败')
-    await new Promise(resolve => setTimeout(resolve, 600))
-    const initial = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_MATERIAL_PREPARE_TASK_ID)
-    materialPollRunId = String(initial?.live?.run_id || initial?.last_run?.id || '').trim()
+    const launch = await waitForMaterialRunStart(previousRunId)
+    materialPollRunId = launch.runId
     updateMaterialTask({ runId: materialPollRunId })
+    const launchSnapshot = launch.source === 'live'
+      ? launch.snapshot
+      : {
+          ...launch.snapshot,
+          run_id: launch.runId,
+          records: launch.snapshot?.records_count,
+        }
+    applyMaterialLiveStatus(launchSnapshot)
+    if (launch.status === 'failed') {
+      throw new Error(launch.snapshot?.error || '素材下载页面或任务未成功启动，请检查 9222 浏览器登录态后重试。')
+    }
+    if (isTerminalMaterialStatus(launch.status)) {
+      await finalizeMaterialTask(materialPollRunId)
+      return
+    }
     await pollMaterialTask()
   } catch (error) {
     updateMaterialTask({
       status: 'failed',
       error: error?.message || String(error),
       message: error?.message || String(error),
+    })
+  }
+}
+
+async function restoreLatestMaterialTask() {
+  try {
+    const status = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_MATERIAL_PREPARE_TASK_ID)
+    const live = status?.live
+    const liveRunId = String(live?.run_id || '').trim()
+    if (liveRunId && isActiveWorkflowStatus(live?.status)) {
+      materialPollRunId = liveRunId
+      applyMaterialLiveStatus(live)
+      scheduleMaterialPoll()
+      return
+    }
+    const last = status?.last_run
+    const lastRunId = String(last?.id || last?.run_id || '').trim()
+    if (!lastRunId || !isTerminalMaterialStatus(last?.status)) return
+    materialPollRunId = lastRunId
+    applyMaterialLiveStatus({
+      ...last,
+      run_id: lastRunId,
+      records: last?.records_count,
+    })
+    if (normalizeWorkflowStageStatus(last?.status) === 'done' || normalizeWorkflowStageStatus(last?.status) === 'partial') {
+      await finalizeMaterialTask(lastRunId)
+      return
+    }
+    updateMaterialTask({
+      error: String(last?.error || '').trim(),
+      message: String(last?.error || materialTask.message).trim(),
+    })
+  } catch (error) {
+    updateMaterialTask({
+      status: 'failed',
+      error: error?.message || String(error),
+      message: `恢复最近素材任务失败：${error?.message || String(error)}`,
     })
   }
 }
@@ -1358,22 +1797,38 @@ async function finalizeMaterialTask(runId = '') {
   const data = await window.cs.getData(BALA_AI_VIDEO_ADAPTER_ID, BALA_MATERIAL_PREPARE_TASK_ID)
   const run = latestRunForTaskData(data, runId || materialTask.runId)
   const outputFiles = parseRunOutputFiles(run?.output_files)
-  const rows = await readRowsFromOutputFiles(outputFiles)
+  const sourceRows = await readRowsFromOutputFiles(outputFiles)
+  const rows = rebaseBalaMaterialRowsToWorkspace({
+    rows: sourceRows,
+    outputFiles,
+    workspaceDir: workspaceDir.value,
+  })
+  if (sourceRows.length && !rows.length) {
+    materialTask.logs.push('最近素材任务不属于当前工作区，已忽略旧目录中的素材。')
+  }
   const downloadedRows = collectDownloadedMaterialRows({ rows })
   let batch = null
   if (downloadedRows.length && typeof window.cs.createBalaMaterialBatch === 'function') {
-    batch = await window.cs.createBalaMaterialBatch(downloadedRows, {
-      adapter_id: BALA_AI_VIDEO_ADAPTER_ID,
-      task_id: BALA_MATERIAL_PREPARE_TASK_ID,
-      run_id: runId || materialTask.runId,
-    })
-    materialBatch.value = batch
-    materialBoardUrl.value = String(batch?.board_url || '')
+    try {
+      batch = await window.cs.createBalaMaterialBatch(downloadedRows, {
+        adapter_id: BALA_AI_VIDEO_ADAPTER_ID,
+        task_id: BALA_MATERIAL_PREPARE_TASK_ID,
+        run_id: runId || materialTask.runId,
+      })
+      materialBatch.value = batch
+      materialBoardUrl.value = String(batch?.board_url || '')
+    } catch (error) {
+      materialTask.logs.push(`创建素材审核批次失败，已回退到本地结果回显：${error?.message || String(error)}`)
+    }
   }
+  const rowStyleCodes = [...new Set(rows
+    .map(row => String(row?.输入款号 || row?.款号 || row?.style_code || '').trim())
+    .filter(Boolean))]
+  if (rowStyleCodes.length) styleCodes.value = rowStyleCodes.join('\n')
   const groups = normalizeBalaMaterialGroups({
     batch,
     rows,
-    fallbackCodes: normalizeStyleCodeLines(styleCodes.value),
+    fallbackCodes: rowStyleCodes.length ? rowStyleCodes : normalizeStyleCodeLines(styleCodes.value),
   })
   replaceStyleWorkspaces(groups)
   const summary = summarizeBalaMaterialGroups(groups)
@@ -1381,12 +1836,20 @@ async function finalizeMaterialTask(runId = '') {
   updateMaterialTask({
     status: nextStatus,
     progress: 100,
+    searchProgress: 100,
+    downloadProgress: downloadedRows.length ? 100 : 0,
+    searchTotal: rowStyleCodes.length || summary.styleCount,
+    searchCompleted: rowStyleCodes.length || summary.styleCount,
+    downloadTotal: downloadedRows.length + summary.failedCount,
+    downloadCompleted: downloadedRows.length + summary.failedCount,
     outputFiles,
     downloaded: summary.modelCount + summary.detailCount,
     failed: summary.failedCount,
-    message: summary.styleCount
+    message: rows.length && summary.styleCount
       ? `找图完成：${summary.styleCount} 个款号，${summary.modelCount} 张模拍，${summary.detailCount} 张细节。`
-      : '找图完成，但没有可进入下一步的素材。',
+      : (sourceRows.length
+          ? '最近任务不属于当前工作区，请在当前工作区重新开始找图。'
+          : '找图完成，但没有可进入下一步的素材。'),
   })
 }
 
@@ -1640,6 +2103,13 @@ async function startAiImageGeneration() {
       quality: 'high',
       output_format: 'png',
     }
+    const previousStatus = await window.cs.getTaskStatus(
+      BALA_AI_VIDEO_ADAPTER_ID,
+      BALA_AI_IMAGE_TASK_ID,
+    ).catch(() => null)
+    const previousRunId = String(
+      previousStatus?.live?.run_id || previousStatus?.last_run?.id || '',
+    ).trim()
     const result = await window.cs.runTask(
       request.adapterId || BALA_AI_VIDEO_ADAPTER_ID,
       request.taskId || BALA_AI_IMAGE_TASK_ID,
@@ -1647,10 +2117,20 @@ async function startAiImageGeneration() {
       {},
     )
     if (!result?.ok) throw new Error(result?.message || result?.error || 'AI 改图任务启动失败')
-    await new Promise(resolve => setTimeout(resolve, 800))
-    const initial = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID)
-    aiPollRunId = String(initial?.live?.run_id || initial?.last_run?.id || '').trim()
+    const launch = await waitForAiImageRunStart(previousRunId)
+    aiPollRunId = launch.runId
     updateAiTaskState({ runId: aiPollRunId })
+    const launchSnapshot = launch.source === 'live'
+      ? launch.snapshot
+      : { ...launch.snapshot, run_id: launch.runId, records: launch.snapshot?.records_count }
+    applyAiLiveStatus(launchSnapshot)
+    if (launch.status === 'failed') {
+      throw new Error(launch.snapshot?.error || 'AI 改图任务未成功启动，请重试。')
+    }
+    if (isTerminalAiStatus(launch.status)) {
+      await finalizeAiImageTask(aiPollRunId)
+      return
+    }
     await pollAiImageTask()
   } catch (error) {
     updateAiTaskState({
@@ -1728,6 +2208,36 @@ async function loadReviewBatchFromBoard(boardUrl = reviewBoardUrl.value) {
   return batch
 }
 
+async function restoreLatestReviewBatch({ silent = false } = {}) {
+  try {
+    const data = await window.cs.getData(BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_IMAGE_TASK_ID)
+    const run = latestRunForTaskData(data)
+    if (!run) throw new Error('还没有可刷新的审核池')
+    const outputFiles = parseRunOutputFiles(run?.output_files)
+    const boardUrl = findBalaReviewBoardUrl(outputFiles, run) || await findBalaReviewBoardUrlFromExcel(outputFiles)
+    if (!boardUrl) throw new Error('最近的 AI 改图任务没有审核池链接')
+    const batch = await loadReviewBatchFromBoard(boardUrl)
+    updateAiTaskState({
+      status: 'done',
+      progress: 100,
+      runId: String(run?.id || run?.run_id || '').trim(),
+      outputFiles,
+      error: '',
+      message: `已恢复审核池：${reviewSummary.value.pending} 张待审，${reviewSummary.value.approved} 张已通过。`,
+    })
+    return batch
+  } catch (error) {
+    if (!silent) {
+      updateAiTaskState({
+        status: 'failed',
+        error: error?.message || String(error),
+        message: error?.message || String(error),
+      })
+    }
+    return null
+  }
+}
+
 async function loadLatestReviewBatch() {
   try {
     if (reviewBoardUrl.value) {
@@ -1743,10 +2253,28 @@ async function loadLatestReviewBatch() {
         return
       }
     }
+    const restored = await restoreLatestReviewBatch()
+    if (restored) {
+      activeStep.value = 'review'
+      return
+    }
     throw new Error('还没有可刷新的审核池')
   } catch (error) {
     updateAiTaskState({ status: 'failed', error: error?.message || String(error), message: error?.message || String(error) })
   }
+}
+
+async function selectWorkflowStep(stepId) {
+  if (stepId === 'review' && !reviewStyles.length) {
+    await loadLatestReviewBatch()
+  }
+  if (stepId === 'templates') {
+    if (!reviewStyles.length) {
+      await loadLatestReviewBatch()
+    }
+    buildVideoJobsFromReview()
+  }
+  activeStep.value = stepId
 }
 
 function syncWorkspaceVersionsFromReviewStyles(styles = reviewStyles) {
@@ -1888,7 +2416,10 @@ async function saveReviewDecisions(decisions = {}) {
 async function refreshReviewBatch() {
   try {
     const ref = parseBalaReviewBoardUrl(reviewBoardUrl.value)
-    if (!ref) return
+    if (!ref) {
+      await loadLatestReviewBatch()
+      return
+    }
     const batch = await window.cs.refreshBalaReviewBatch(ref.batchId, ref.token)
     reviewBatch.value = batch
     const styles = normalizeBalaReviewBatchStyles(batch)
@@ -2046,8 +2577,9 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
     template_match: task.template?.title || '',
     prompt: task.prompt || '',
     custom_prompt: task.prompt || '',
+    ratio: '3:4',
     output_dir: task.outputDir || videoOutputDir.value,
-    download_template_previews: true,
+    download_template_previews: Boolean(task.template),
     download_videos: mode === 'live',
     poll_timeout_minutes: 20,
     poll_interval_seconds: 20,
@@ -2158,7 +2690,7 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
   }
   const prompt = String(task.prompt || '').trim()
   if (!prompt) throw new Error('Seedance 任务需要填写 Prompt')
-  const result = await window.cs.runBalaSeedanceVideo({
+  const payload = {
     style_code: task.styleCode,
     prompt,
     image_paths: videoTaskImagePaths(task).slice(0, 4),
@@ -2166,12 +2698,71 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
     ratio: '3:4',
     duration: 8,
     wait: true,
-  })
+  }
+  let result
+  let usedTextOnlyFallback = false
+  try {
+    result = await window.cs.runBalaSeedanceVideo(payload)
+    if (!result?.ok) throw new Error(result?.error || 'Seedance 视频任务未能启动')
+  } catch (error) {
+    if (!isSeedancePrivacyProtectionError(error)) throw error
+    usedTextOnlyFallback = true
+    result = await window.cs.runBalaSeedanceVideo({
+      ...payload,
+      prompt: `${prompt}\n使用原创虚构儿童模特，不参考或复刻任何真实人物身份与面部特征。`,
+      image_paths: [],
+    })
+  }
+  if (!result?.ok) throw new Error(result?.error || 'Seedance 视频任务未能启动')
   task.status = result?.local_video_path ? '已下载' : (result?.status || '已提交')
   upsertVideoResults([{
     id: task.id,
     styleCode: task.styleCode,
-    template: 'Seedance',
+    template: usedTextOnlyFallback ? 'Seedance 原创人物' : 'Seedance',
+    provider: providerLabel(task.provider),
+    taskId: result?.task_id || '',
+    status: result?.local_video_path ? '已完成' : (result?.status || '已提交'),
+    progress: result?.local_video_path ? 100 : 80,
+    path: result?.local_video_path || result?.video_url || task.outputDir || videoOutputDir.value,
+    error: '',
+  }])
+  activeStep.value = 'results'
+}
+
+async function runHappyHorseVideoTask(task, mode = 'plan') {
+  if (mode !== 'live') {
+    task.status = '预检完成，等待授权生成'
+    upsertVideoResults([{
+      id: task.id,
+      styleCode: task.styleCode,
+      template: happyHorseModeLabel(task.happyhorseMode),
+      provider: providerLabel(task.provider),
+      taskId: '预检草稿',
+      status: '待授权',
+      progress: 0,
+      path: task.outputDir || videoOutputDir.value,
+    }])
+    return
+  }
+  const prompt = String(task.prompt || '').trim()
+  if (!prompt) throw new Error('HappyHorse 任务需要填写 Prompt')
+  const result = await window.cs.runBalaHappyHorseVideo({
+    style_code: task.styleCode,
+    mode: task.happyhorseMode || 'i2v',
+    prompt,
+    image_paths: videoTaskImagePaths(task),
+    output_dir: task.outputDir || videoOutputDir.value,
+    resolution: '720P',
+    ratio: '3:4',
+    duration: 5,
+    wait: true,
+  })
+  if (!result?.ok) throw new Error(result?.error || 'HappyHorse 视频任务未能启动')
+  task.status = result?.local_video_path ? '已下载' : (result?.status || '已提交')
+  upsertVideoResults([{
+    id: task.id,
+    styleCode: task.styleCode,
+    template: happyHorseModeLabel(task.happyhorseMode),
     provider: providerLabel(task.provider),
     taskId: result?.task_id || '',
     status: result?.local_video_path ? '已完成' : (result?.status || '已提交'),
@@ -2183,13 +2774,14 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
 }
 
 async function runVideoTask(task, mode = 'plan') {
-  if (!task?.assets?.length) {
+  const textOnlyHappyHorse = task?.provider === 'happyhorse' && task?.happyhorseMode === 't2v'
+  if (!textOnlyHappyHorse && !task?.assets?.length) {
     videoStageState.status = 'failed'
     videoStageState.error = '视频任务缺少素材图片'
     videoStageState.message = videoStageState.error
     return
   }
-  if (!videoTaskImagePaths(task).length) {
+  if (!textOnlyHappyHorse && !videoTaskImagePaths(task).length) {
     videoStageState.status = 'failed'
     videoStageState.error = '视频任务缺少可用的本地图片文件'
     videoStageState.message = videoStageState.error
@@ -2203,13 +2795,24 @@ async function runVideoTask(task, mode = 'plan') {
   try {
     if (task.provider === 'seedance') {
       await runSeedanceVideoTask(task, mode)
+    } else if (task.provider === 'happyhorse') {
+      await runHappyHorseVideoTask(task, mode)
     } else {
       const params = buildQnVideoTaskParams(task, mode)
+      const previousStatus = await window.cs.getTaskStatus(
+        BALA_AI_VIDEO_ADAPTER_ID,
+        BALA_QN_VIDEO_TASK_ID,
+      ).catch(() => null)
+      const previousRunId = String(
+        previousStatus?.live?.run_id || previousStatus?.last_run?.id || '',
+      ).trim()
       const result = await window.cs.runTask(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID, params, {})
       if (!result?.ok) throw new Error(result?.message || result?.error || '视频任务启动失败')
-      await sleep(800)
-      const initial = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
-      const runId = String(initial?.live?.run_id || initial?.last_run?.id || '').trim()
+      const launch = await waitForQnVideoRunStart(previousRunId)
+      const runId = launch.runId
+      if (launch.status === 'failed') {
+        throw new Error(launch.snapshot?.error || '软件管家视频任务未成功启动，请重试。')
+      }
       await waitForQnVideoTask(task, runId, mode)
       task.status = mode === 'live' ? '已提交 / 查看结果' : '预检完成，等待授权生成'
     }
@@ -2285,7 +2888,21 @@ function openImagePreview(asset, styleCode = '') {
 }
 
 function providerLabel(provider) {
-  return provider === 'seedance' ? 'Seedance 2.0' : '软件管家'
+  if (provider === 'seedance') return 'Seedance 2.0'
+  if (provider === 'happyhorse') return '百炼 HappyHorse'
+  return '软件管家'
+}
+
+function happyHorseModeLabel(mode) {
+  if (mode === 't2v') return '文生视频'
+  if (mode === 'r2v') return '参考生视频'
+  return '图生视频'
+}
+
+function providerStatusLabel(provider) {
+  const status = videoProviderStatus[provider]
+  if (!status) return '无需单独配置'
+  return status.configured ? `已配置（${status.source || '本机'}）` : '未配置'
 }
 
 function groupModeLabel(mode) {
@@ -2318,7 +2935,14 @@ function clearTemplateSelection() {
 
 function resetVideoTaskDraftAssets() {
   const assets = videoTaskSelectableAssets.value || []
+  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 't2v') {
+    videoTaskDraft.assetIds = []
+    return
+  }
   videoTaskDraft.assetIds = assets.filter(asset => asset.status === 'approved').map(asset => asset.id)
+  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v') {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 1)
+  }
   if (!videoTaskDraft.assetIds.length && assets[0]?.id) {
     videoTaskDraft.assetIds = [assets[0].id]
   }
@@ -2328,12 +2952,22 @@ function openVideoTaskDialog(styleCode = '') {
   lastFocusedElement.value = document.activeElement
   videoTaskDraft.styleCode = styleCode || videoJobs[0]?.styleCode || ''
   videoTaskDraft.provider = 'qn'
+  videoTaskDraft.happyhorseMode = 'i2v'
   videoTaskDraft.groupMode = 'all_images_one_video'
   videoTaskDraft.prompt = ''
   videoTaskDraft.outputDir = videoOutputDir.value
   videoTaskDraft.templateId = ''
   resetVideoTaskDraftAssets()
   videoTaskDialogOpen.value = true
+}
+
+function handleVideoProviderChange() {
+  videoTaskDraft.templateId = ''
+  resetVideoTaskDraftAssets()
+}
+
+function handleHappyHorseModeChange() {
+  resetVideoTaskDraftAssets()
 }
 
 function toggleVideoTaskDraftAsset(assetId) {
@@ -2347,9 +2981,28 @@ function toggleVideoTaskDraftAsset(assetId) {
 
 function createVideoTaskFromDraft() {
   const assets = videoTaskSelectableAssets.value.filter(asset => videoTaskDraft.assetIds.includes(asset.id))
-  if (!videoTaskDraft.styleCode || !assets.length) {
+  const textOnlyHappyHorse = videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 't2v'
+  if (!videoTaskDraft.styleCode || (!textOnlyHappyHorse && !assets.length)) {
     videoStageState.status = 'failed'
     videoStageState.error = '请先选择款号和至少一张素材图片'
+    videoStageState.message = videoStageState.error
+    return
+  }
+  if (videoTaskDraft.provider !== 'qn' && !videoTaskDraft.prompt.trim()) {
+    videoStageState.status = 'failed'
+    videoStageState.error = `${providerLabel(videoTaskDraft.provider)} 任务需要填写 Prompt`
+    videoStageState.message = videoStageState.error
+    return
+  }
+  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v' && assets.length !== 1) {
+    videoStageState.status = 'failed'
+    videoStageState.error = 'HappyHorse 图生视频只允许选择 1 张首帧图'
+    videoStageState.message = videoStageState.error
+    return
+  }
+  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'r2v' && (assets.length < 1 || assets.length > 9)) {
+    videoStageState.status = 'failed'
+    videoStageState.error = 'HappyHorse 参考生视频需要选择 1-9 张图片'
     videoStageState.message = videoStageState.error
     return
   }
@@ -2363,6 +3016,7 @@ function createVideoTaskFromDraft() {
     title: `${providerName} 视频任务 ${String(taskIndex).padStart(2, '0')}`,
     styleCode: videoTaskDraft.styleCode,
     provider: videoTaskDraft.provider,
+    happyhorseMode: videoTaskDraft.happyhorseMode,
     groupMode: videoTaskDraft.groupMode,
     prompt: videoTaskDraft.prompt.trim(),
     outputDir: videoTaskDraft.outputDir.trim() || videoOutputDir.value,
@@ -2407,10 +3061,21 @@ async function retryVideoResult(item) {
   if (task) await runVideoTask(task, 'live')
 }
 
-function openAiCapabilitySettings() {
+function openAiCapabilitySettings(provider = '') {
   videoStageState.status = 'done'
-  videoStageState.message = '请在抓虾 AI 能力配置中确认 Seedance / Ark 凭据；本页面不会保存密钥。'
-  emit('open-settings')
+  videoStageState.message = `请在抓虾 AI 能力配置中确认${provider ? ` ${providerLabel(provider)}` : '视频模型'}凭据；本页面不会保存密钥。`
+  emit('open-settings', 'ai-video')
+}
+
+async function loadVideoProviderStatus() {
+  try {
+    const status = await window.cs.getBalaVideoProviderStatus()
+    for (const provider of ['seedance', 'happyhorse']) {
+      if (status?.[provider]) Object.assign(videoProviderStatus[provider], status[provider])
+    }
+  } catch {
+    // Keep the safe unconfigured state until the backend is reachable.
+  }
 }
 
 function openModelLibrary() {
@@ -2482,8 +3147,13 @@ watch(hasOpenModal, async (open) => {
 })
 
 onMounted(() => {
+  void (async () => {
+    await restoreLatestMaterialTask()
+    await restoreLatestReviewBatch({ silent: true })
+  })()
   void loadModelLibrary()
   void loadTemplateCatalog()
+  void loadVideoProviderStatus()
 })
 
 onBeforeUnmount(() => {
@@ -2716,6 +3386,10 @@ function localFileUrl(path) {
   padding: 18px 22px 24px;
 }
 
+.aiv-stage.aiv-stage-material-active {
+  overflow: hidden;
+}
+
 .aiv-stage-grid,
 .aiv-edit-workbench,
 .aiv-review-workbench,
@@ -2728,6 +3402,40 @@ function localFileUrl(path) {
 
 .aiv-stage-grid {
   grid-template-columns: 360px minmax(0, 1fr);
+}
+
+.aiv-material-stage {
+  height: 100%;
+  min-height: 0;
+}
+
+.aiv-params-panel,
+.aiv-material-results-panel {
+  min-height: 0;
+  display: grid;
+}
+
+.aiv-params-panel {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.aiv-material-results-panel {
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+}
+
+.aiv-params-panel .aiv-panel-body,
+.aiv-material-results-panel .aiv-style-list {
+  min-height: 0;
+  overflow-y: auto;
+  align-content: start;
+}
+
+.aiv-material-sticky-actions {
+  position: relative;
+  z-index: 4;
+  flex: 0 0 auto;
+  background: var(--bg2);
+  box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.18);
 }
 
 .aiv-edit-workbench {
@@ -2834,6 +3542,48 @@ function localFileUrl(path) {
   line-height: 1.5;
 }
 
+.aiv-directory-picker {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 0 8px 0 11px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+}
+
+.aiv-directory-picker:hover,
+.aiv-directory-picker:focus-visible {
+  border-color: rgba(255, 107, 43, 0.55);
+}
+
+.aiv-directory-picker .aiv-directory-picker-path {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--text2);
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-directory-picker strong {
+  min-height: 26px;
+  padding: 0 9px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  color: var(--orange);
+  background: var(--orange-bg);
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+}
+
 .aiv-default-grid,
 .aiv-batch-summary {
   display: grid;
@@ -2889,6 +3639,126 @@ function localFileUrl(path) {
   gap: 12px;
 }
 
+.aiv-material-style-tabs {
+  min-width: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  background: var(--bg2);
+  scrollbar-width: thin;
+}
+
+.aiv-material-style-tabs button {
+  min-width: 158px;
+  padding: 8px 10px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  background: var(--bg3);
+  text-align: left;
+  cursor: pointer;
+}
+
+.aiv-material-style-tabs button:hover {
+  border-color: rgba(255, 107, 43, 0.34);
+}
+
+.aiv-material-style-tabs button:focus-visible,
+.aiv-material-source-tabs button:focus-visible {
+  outline: 2px solid rgba(255, 107, 43, 0.72);
+  outline-offset: 2px;
+}
+
+.aiv-material-style-tabs button.active {
+  border-color: var(--orange);
+  color: var(--text);
+  background: var(--orange-bg);
+  box-shadow: inset 0 -2px 0 var(--orange);
+}
+
+.aiv-material-style-tabs strong,
+.aiv-material-style-tabs span {
+  display: block;
+  white-space: nowrap;
+}
+
+.aiv-material-style-tabs span {
+  margin-top: 4px;
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-material-tab-panel {
+  min-width: 0;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.aiv-material-source-switcher {
+  min-width: 0;
+  min-height: 54px;
+  margin: 0;
+  padding: 9px 14px;
+  border: 1px solid var(--border);
+  border-left: 0;
+  border-right: 0;
+  border-radius: 0;
+  background: var(--bg3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.aiv-material-source-switcher > span {
+  color: var(--text3);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.aiv-material-source-tabs {
+  padding: 3px;
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(112px, auto));
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.aiv-material-source-tabs button {
+  min-height: 28px;
+  padding: 4px 10px;
+  border: 0;
+  border-radius: 6px;
+  color: var(--text2);
+  background: transparent;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.aiv-material-source-tabs button:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.aiv-material-source-tabs button.active {
+  color: var(--orange);
+  background: var(--orange-bg);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, 0.34);
+}
+
+.aiv-material-source-tabs strong {
+  margin-left: 5px;
+  display: inline;
+  color: inherit;
+}
+
 .aiv-style-card,
 .aiv-review-style-card {
   display: grid;
@@ -2913,11 +3783,34 @@ function localFileUrl(path) {
 
 .aiv-collapse-head {
   width: 100%;
-  padding: 0;
-  border: 0;
+  min-height: 46px;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 8px;
   color: var(--text);
-  background: transparent;
+  background: rgba(255, 255, 255, 0.015);
   text-align: left;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background-color 0.16s ease, transform 0.12s ease;
+}
+
+.aiv-collapse-head:hover {
+  border-color: rgba(255, 107, 43, 0.34);
+  background: rgba(255, 107, 43, 0.055);
+}
+
+.aiv-collapse-head:focus-visible {
+  outline: 2px solid rgba(255, 107, 43, 0.72);
+  outline-offset: 2px;
+}
+
+.aiv-collapse-head:active {
+  transform: translateY(1px);
+}
+
+.aiv-collapse-head[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--bg3);
 }
 
 .aiv-style-title-block {
@@ -2953,41 +3846,42 @@ function localFileUrl(path) {
   gap: 6px;
 }
 
-.aiv-collapse-icon {
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg3);
-  display: grid;
-  place-items: center;
-}
-
-.aiv-collapse-icon::before {
-  content: "";
-  width: 6px;
-  height: 6px;
-  border-right: 1px solid var(--text2);
-  border-bottom: 1px solid var(--text2);
-  transform: rotate(-45deg);
-  transition: transform 0.16s ease;
-}
-
-.aiv-collapse-icon.expanded::before {
-  transform: rotate(45deg);
-}
-
-.aiv-collapse-mark {
-  min-height: 22px;
-  padding: 3px 8px;
+.aiv-collapse-action {
+  min-height: 26px;
+  margin-top: 0;
+  padding: 4px 9px;
   display: inline-flex;
   align-items: center;
+  gap: 7px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text2);
-  background: var(--bg3);
+  background: var(--bg);
   font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.aiv-collapse-chevron {
+  width: 7px;
+  height: 7px;
+  margin-top: -3px;
+  display: inline-block;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.16s ease;
+}
+
+.aiv-collapse-head[aria-expanded="true"] .aiv-collapse-action {
+  border-color: rgba(255, 107, 43, 0.38);
+  color: var(--orange);
+  background: var(--orange-bg);
+}
+
+.aiv-collapse-head[aria-expanded="true"] .aiv-collapse-chevron {
+  margin-top: 3px;
+  transform: rotate(-135deg);
 }
 
 .aiv-style-head span,
@@ -3057,15 +3951,22 @@ function localFileUrl(path) {
   gap: 12px;
 }
 
+.aiv-source-board.compact.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
 .aiv-source-board.compact section,
 .aiv-source-column {
   display: grid;
+  align-content: start;
+  align-self: start;
   gap: 8px;
 }
 
 .aiv-thumb-grid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  align-content: start;
   gap: 8px;
 }
 
@@ -3093,12 +3994,31 @@ function localFileUrl(path) {
 .aiv-large-thumb {
   position: relative;
   aspect-ratio: 3 / 4;
+  contain: layout paint style;
   display: grid;
   align-content: center;
   justify-items: center;
   gap: 6px;
   padding: 8px;
   overflow: hidden;
+}
+
+.aiv-load-more {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 10px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  background: var(--bg);
+  font-size: 11px;
+}
+
+.aiv-load-more:hover,
+.aiv-load-more:focus-visible {
+  border-color: rgba(255, 107, 43, 0.55);
+  color: var(--orange);
+  background: var(--orange-bg);
 }
 
 .aiv-thumb.selected,
@@ -3139,20 +4059,17 @@ function localFileUrl(path) {
   border: 1px solid var(--border);
 }
 
-.aiv-thumb-preview-button {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  border: 0;
-  background: transparent;
-  color: inherit;
+.aiv-thumb-media {
+  position: absolute;
+  inset: 0;
   display: grid;
   align-content: center;
   justify-items: center;
   gap: 6px;
+  color: inherit;
 }
 
-.aiv-thumb-preview-button img,
+.aiv-thumb-media img,
 .aiv-original-card img,
 .aiv-ai-preview img,
 .aiv-video-asset-card img {
@@ -3163,7 +4080,7 @@ function localFileUrl(path) {
   object-fit: cover;
 }
 
-.aiv-thumb-preview-button::after,
+.aiv-thumb-media::after,
 .aiv-original-card::after,
 .aiv-ai-preview::after,
 .aiv-video-asset-card::after {
@@ -3174,9 +4091,9 @@ function localFileUrl(path) {
   background: linear-gradient(180deg, transparent 45%, rgba(0, 0, 0, 0.62));
 }
 
-.aiv-thumb-preview-button strong,
-.aiv-thumb-preview-button span,
-.aiv-thumb-preview-button small,
+.aiv-thumb-media strong,
+.aiv-thumb-media span,
+.aiv-thumb-media small,
 .aiv-original-card strong,
 .aiv-original-card small,
 .aiv-original-card .aiv-origin-label,
@@ -3190,14 +4107,52 @@ function localFileUrl(path) {
   text-shadow: 0 1px 8px rgba(0, 0, 0, 0.56);
 }
 
-.aiv-thumb-preview-button strong,
-.aiv-thumb-preview-button span,
-.aiv-thumb-preview-button small {
+.aiv-thumb-media strong,
+.aiv-thumb-media span,
+.aiv-thumb-media small {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.aiv-thumb-zoom {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 50%;
+  color: #fff;
+  background: rgba(8, 8, 10, 0.76);
+  display: grid;
+  place-items: center;
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.92);
+  transition: opacity 0.16s ease, transform 0.16s ease, background 0.16s ease;
+}
+
+.aiv-thumb-zoom span {
+  color: inherit;
+  font-size: 22px;
+  line-height: 1;
+}
+
+.aiv-thumb:hover .aiv-thumb-zoom,
+.aiv-thumb:focus-within .aiv-thumb-zoom,
+.aiv-thumb-zoom:focus-visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+
+.aiv-thumb-zoom:hover,
+.aiv-thumb-zoom:focus-visible {
+  border-color: var(--orange);
+  background: rgba(255, 107, 43, 0.92);
 }
 
 .aiv-style-tab {
@@ -3906,6 +4861,34 @@ function localFileUrl(path) {
   display: block;
 }
 
+.aiv-dual-progress {
+  display: grid;
+  gap: 9px;
+}
+
+.aiv-progress-line {
+  display: grid;
+  gap: 5px;
+}
+
+.aiv-progress-overview .aiv-progress-line > span {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiv-progress-line > span strong,
+.aiv-progress-line > span small {
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.aiv-progress-line > span small {
+  color: var(--text3);
+}
+
 .aiv-progress-overview span {
   margin-top: 4px;
   color: var(--text3);
@@ -3985,6 +4968,10 @@ function localFileUrl(path) {
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+.aiv-result-copy .aiv-result-error {
+  color: #f87171;
 }
 
 .aiv-preview-modal-panel {
@@ -4233,6 +5220,25 @@ function localFileUrl(path) {
 }
 
 @media (max-width: 1180px) {
+  .aiv-stage.aiv-stage-material-active {
+    overflow: auto;
+  }
+
+  .aiv-material-stage {
+    height: auto;
+  }
+
+  .aiv-params-panel,
+  .aiv-material-results-panel {
+    display: block;
+    overflow: hidden;
+  }
+
+  .aiv-params-panel .aiv-panel-body,
+  .aiv-material-results-panel .aiv-style-list {
+    overflow-y: visible;
+  }
+
   .aiv-stage-grid,
   .aiv-edit-workbench,
   .aiv-review-workbench,
@@ -4297,6 +5303,20 @@ function localFileUrl(path) {
     max-width: 100%;
     flex-wrap: wrap;
     justify-content: flex-start;
+  }
+
+  .aiv-material-source-switcher {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .aiv-material-source-switcher > span {
+    white-space: normal;
+  }
+
+  .aiv-material-source-tabs {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 </style>

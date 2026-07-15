@@ -14,6 +14,8 @@ WORKFLOW_ID = "bala_ai_video_material_selection"
 VIDEO_ADAPTER_ID = "bala-ai-video-assistant"
 AI_TASK_ID = "bala_ai_face_background_generate"
 VALID_OPERATION_TYPES = {"face_swap", "background_swap", "outfit_swap", "pose_swap"}
+THUMBNAIL_MAX_EDGE = 480
+THUMBNAIL_QUALITY = 72
 
 
 def compact(value: Any) -> str:
@@ -72,6 +74,71 @@ def _style_code_from_row(row: dict, local_path: str) -> str:
     return match.group(1) if match else "unknown"
 
 
+def _asset_version(path: str | Path) -> str:
+    try:
+        stat = Path(path).expanduser().stat()
+    except OSError:
+        return "0"
+    return f"{stat.st_mtime_ns:x}-{stat.st_size:x}"
+
+
+def attach_material_preview_urls(batch: dict, api_base_url: str) -> dict:
+    base = compact(api_base_url).rstrip("/")
+    batch_id = compact(batch.get("batch_id"))
+    token = compact(batch.get("token"))
+    if not base or not batch_id or not token:
+        return batch
+    for item in batch.get("items") or []:
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            asset_id = compact(asset.get("id"))
+            if not asset_id:
+                continue
+            version = _asset_version(asset.get("path") or "")
+            asset["image_url"] = f"{base}/bala-ai-video-materials/api/{batch_id}/image/{asset_id}?token={token}"
+            asset["thumbnail_url"] = (
+                f"{base}/bala-ai-video-materials/api/{batch_id}/thumbnail/{asset_id}"
+                f"?token={token}&v={version}"
+            )
+    return batch
+
+
+def ensure_material_thumbnail(
+    batch: dict,
+    asset_id: str,
+    source_path: str | Path,
+    *,
+    max_edge: int = THUMBNAIL_MAX_EDGE,
+    quality: int = THUMBNAIL_QUALITY,
+) -> Path:
+    from PIL import Image, ImageOps
+
+    source = Path(source_path).expanduser()
+    if not source.is_file():
+        raise FileNotFoundError(str(source))
+    edge = max(64, min(int(max_edge or THUMBNAIL_MAX_EDGE), 1024))
+    webp_quality = max(40, min(int(quality or THUMBNAIL_QUALITY), 90))
+    cache_dir = _batch_dir(batch) / "thumbnails"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    destination = cache_dir / f"{_safe_id(asset_id, 'asset')}-{edge}-q{webp_quality}.webp"
+    if destination.is_file() and destination.stat().st_mtime_ns >= source.stat().st_mtime_ns:
+        return destination
+
+    temporary = cache_dir / f".{destination.name}.{secrets.token_hex(4)}.tmp"
+    try:
+        with Image.open(source) as opened:
+            image = ImageOps.exif_transpose(opened)
+            if image.mode not in {"RGB", "RGBA"}:
+                image = image.convert("RGBA" if "transparency" in image.info else "RGB")
+            image.thumbnail((edge, edge), Image.Resampling.LANCZOS)
+            image.save(temporary, format="WEBP", quality=webp_quality, method=4)
+        temporary.replace(destination)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return destination
+
+
 def build_material_batch(rows: list[dict], artifact_dir: str, api_base_url: str) -> dict:
     batch_id = f"bala-material-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(3)}"
     token = secrets.token_urlsafe(18)
@@ -94,7 +161,7 @@ def build_material_batch(rows: list[dict], artifact_dir: str, api_base_url: str)
             "source_type": source_type,
             "filename": compact(row.get("文件名")) or Path(local_path).name,
             "path": str(Path(local_path).expanduser()),
-            "selected": source_type == "model",
+            "selected": False,
             "download_result": compact(row.get("下载结果")),
             "action": compact(row.get("处理动作")),
             "note": compact(row.get("备注")),
@@ -109,7 +176,7 @@ def build_material_batch(rows: list[dict], artifact_dir: str, api_base_url: str)
         "items": list(items_by_style.values()),
         "board_url": f"{api_base_url.rstrip('/')}/bala-ai-video-materials/{batch_id}?token={token}",
     }
-    return batch
+    return attach_material_preview_urls(batch, api_base_url)
 
 
 def save_material_batch(batch: dict) -> Path:

@@ -145,7 +145,7 @@
       <KeepAlive>
         <AiVideoWorkflow
           v-if="currentView === 'ai_video'"
-          @open-settings="openSettingsPanel('ai-1xm')"
+          @open-settings="openSettingsPanel"
         />
       </KeepAlive>
       <!-- 提示词库 -->

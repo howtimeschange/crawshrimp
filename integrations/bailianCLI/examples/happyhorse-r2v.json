@@ -1,0 +1,26 @@
+{
+  "model": "happyhorse-1.1-r2v",
+  "input": {
+    "prompt": "[Image 1]中的女性自然展示[Image 2]中的折扇，镜头缓慢推进，[Image 3]中的耳坠随动作轻微晃动，画面真实流畅。",
+    "media": [
+      {
+        "type": "reference_image",
+        "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260424/mvzfud/hh-v2v-girl.jpg"
+      },
+      {
+        "type": "reference_image",
+        "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260424/fvuihk/hh-v2v2-folding-fan.jpg"
+      },
+      {
+        "type": "reference_image",
+        "url": "https://help-static-aliyun-doc.aliyuncs.com/file-manage-files/zh-CN/20260424/imerii/hh-v2v-earrings.jpg"
+      }
+    ]
+  },
+  "parameters": {
+    "resolution": "720P",
+    "ratio": "16:9",
+    "duration": 3,
+    "watermark": false
+  }
+}

@@ -13,7 +13,7 @@ export const BALA_AI_IMAGE_TASK_ID = 'bala_ai_face_background_generate'
 export const BALA_QN_VIDEO_TASK_ID = 'qn_img2video_batch'
 
 const MATERIAL_PREPARE_DEFAULTS = Object.freeze({
-  mode: 'current',
+  mode: 'new',
   folder_scan_depth: 2,
   duplicate_mode: 'first_per_hash',
   download_concurrency: 8,
@@ -65,6 +65,45 @@ export function parseRunOutputFiles(value = []) {
   }
 }
 
+function normalizedLocalPath(value = '') {
+  const text = String(value || '').trim().replace(/\\/g, '/')
+  if (!text) return ''
+  return text.length > 1 ? text.replace(/\/+$/, '') : text
+}
+
+function pathInsideWorkspace(path = '', workspaceDir = '') {
+  const candidate = normalizedLocalPath(path)
+  const root = normalizedLocalPath(workspaceDir)
+  return Boolean(candidate && root && candidate !== root && candidate.startsWith(`${root}/`))
+}
+
+export function rebaseBalaMaterialRowsToWorkspace({ rows = [], outputFiles = [], workspaceDir = '' } = {}) {
+  const packageDir = parseRunOutputFiles(outputFiles)
+    .map(normalizedLocalPath)
+    .find(path => pathInsideWorkspace(path, workspaceDir) && !/\.(?:xlsx?|csv|json)$/i.test(path))
+  if (!packageDir) return []
+
+  return (rows || []).map((row) => {
+    if (!row || typeof row !== 'object') return row
+    const localPath = normalizedLocalPath(row['本地文件'] || row.local_file)
+    if (!localPath) return { ...row }
+    const styleCode = styleCodeFromRow(row, localPath)
+    const sourceType = assetSourceTypeFromRow(row)
+    const sourceFolder = sourceType === 'model' ? '01_模拍原图' : (sourceType === 'detail' ? '02_商品细节图' : '')
+    const filename = compact(row['文件名'] || row.filename || filenameFromPath(localPath))
+    const tailMatch = localPath.match(/(?:^|\/)(\d{12})\/(01_模拍原图|02_商品细节图)\/(.+)$/)
+    const relativePath = tailMatch
+      ? `${tailMatch[1]}/${tailMatch[2]}/${tailMatch[3]}`
+      : [styleCode, sourceFolder, filename].filter(Boolean).join('/')
+    const rebasedPath = relativePath ? `${packageDir}/${relativePath}` : localPath
+    return {
+      ...row,
+      本地文件: rebasedPath,
+      local_file: rebasedPath,
+    }
+  })
+}
+
 export function latestRunForTaskData(payload = {}, preferredRunId = '') {
   const runs = Array.isArray(payload?.runs) ? payload.runs : []
   const target = String(preferredRunId || '').trim()
@@ -113,12 +152,40 @@ function normalizeBatchAsset(asset = {}) {
     filename: compact(asset.filename || filenameFromPath(asset.path)),
     path: compact(asset.path),
     imageUrl: compact(asset.image_url || asset.imageUrl),
-    selected: asset.selected !== false && sourceType === 'model',
+    thumbnailUrl: compact(asset.thumbnail_url || asset.thumbnailUrl),
+    selected: asset.selected === true,
     downloadResult: compact(asset.download_result || asset.downloadResult || '已下载'),
     action: compact(asset.action),
     note: compact(asset.note),
     fileSizeMb: asset.file_size_mb || asset.fileSizeMb || '',
     folder: compact(asset.folder || asset.cloud_folder || ''),
+    versions: [],
+  }
+}
+
+function downloadedAssetForMaterial(row = {}) {
+  const localPath = compact(row['本地文件'] || row.local_file)
+  const downloadResult = compact(row['下载结果'] || row.download_result)
+  if (!localPath || ['已跳过', '失败', '下载失败'].includes(downloadResult)) return null
+  const sourceType = assetSourceTypeFromRow(row)
+  const styleCode = styleCodeFromRow(row, localPath)
+  const filename = compact(row['文件名'] || row.filename || filenameFromPath(localPath))
+  return {
+    id: `${styleCode}-${sourceType}-row-${localPath}`,
+    styleCode,
+    role: assetRole(sourceType),
+    sourceType,
+    name: filename,
+    filename,
+    path: localPath,
+    imageUrl: compact(row.image_url || row.imageUrl),
+    thumbnailUrl: compact(row.thumbnail_url || row.thumbnailUrl),
+    selected: false,
+    downloadResult: downloadResult || '已下载',
+    action: compact(row['处理动作'] || row.action),
+    note: compact(row['备注'] || row.note),
+    fileSizeMb: row['文件大小MB'] || row.file_size_mb || '',
+    folder: compact(row['选择文件夹'] || row.folder || row.cloud_folder),
     versions: [],
   }
 }
@@ -144,6 +211,7 @@ function skippedRowForMaterial(row = {}) {
 
 export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackCodes = [] } = {}) {
   const byStyle = new Map()
+  const representedPaths = new Set()
   const ensure = (styleCode) => {
     const key = compact(styleCode) || 'unknown'
     if (!byStyle.has(key)) {
@@ -162,11 +230,14 @@ export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackC
 
   for (const code of fallbackCodes || []) ensure(code)
 
+  const preserveBatchSelection = compact(batch?.status) === 'selected'
   for (const item of batch?.items || []) {
     const group = ensure(item?.style_code || item?.styleCode)
     for (const rawAsset of item?.assets || []) {
       const asset = normalizeBatchAsset(rawAsset)
+      asset.selected = preserveBatchSelection && asset.selected
       if (!asset.id) continue
+      if (asset.path) representedPaths.add(asset.path)
       if (asset.sourceType === 'model') group.modelPhotos.push(asset)
       else if (asset.sourceType === 'detail') group.detailPhotos.push(asset)
       else group.otherPhotos.push(asset)
@@ -174,6 +245,14 @@ export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackC
   }
 
   for (const row of rows || []) {
+    const downloaded = downloadedAssetForMaterial(row)
+    if (downloaded && !representedPaths.has(downloaded.path)) {
+      representedPaths.add(downloaded.path)
+      const group = ensure(downloaded.styleCode)
+      if (downloaded.sourceType === 'model') group.modelPhotos.push(downloaded)
+      else if (downloaded.sourceType === 'detail') group.detailPhotos.push(downloaded)
+      else group.otherPhotos.push(downloaded)
+    }
     const skipped = skippedRowForMaterial(row)
     if (!skipped) continue
     const group = ensure(skipped.styleCode)
@@ -183,10 +262,66 @@ export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackC
     }
   }
 
-  return Array.from(byStyle.values()).map(group => ({
-    ...group,
-    modelPhotos: group.modelPhotos.map((asset, index) => ({ ...asset, selected: asset.selected !== false || index < 3 })),
-  }))
+  return Array.from(byStyle.values())
+}
+
+function progressPercent(completed, total) {
+  if (!(total > 0)) return 0
+  return Math.max(0, Math.min(100, Math.round((Math.min(completed, total) / total) * 100)))
+}
+
+export function normalizeBalaMaterialProgress(live = {}) {
+  const searchTotal = Number(live?.search_total_codes || live?.total || 0)
+  const searchCompleted = Number(live?.search_completed_codes || live?.current || 0)
+  const downloadTotal = Number(live?.download_total || live?.download_total_files || 0)
+  const downloadCompleted = Number(live?.download_completed || live?.download_completed_files || 0)
+  return {
+    searchTotal,
+    searchCompleted,
+    searchProgress: progressPercent(searchCompleted, searchTotal),
+    downloadTotal,
+    downloadCompleted,
+    downloadProgress: progressPercent(downloadCompleted, downloadTotal),
+    downloaded: Number(live?.download_success || live?.download_success_files || live?.records || 0),
+    failed: Number(live?.download_failed || live?.download_failed_files || 0),
+  }
+}
+
+export function selectNewTaskRun(status = {}, previousRunId = '') {
+  const previous = String(previousRunId || '').trim()
+  const candidates = [
+    { source: 'live', snapshot: status?.live, id: status?.live?.run_id },
+    { source: 'last_run', snapshot: status?.last_run, id: status?.last_run?.id || status?.last_run?.run_id },
+  ]
+  for (const candidate of candidates) {
+    const runId = String(candidate.id || '').trim()
+    if (!runId || runId === previous) continue
+    return {
+      runId,
+      status: normalizeWorkflowStageStatus(candidate.snapshot?.status),
+      source: candidate.source,
+      snapshot: candidate.snapshot,
+    }
+  }
+  return null
+}
+
+export async function waitForNewTaskRun({
+  getStatus,
+  previousRunId = '',
+  attempts = 40,
+  delayMs = 300,
+  sleepFn = ms => new Promise(resolve => setTimeout(resolve, ms)),
+  errorMessage = '任务未成功启动，请重试。',
+} = {}) {
+  if (typeof getStatus !== 'function') throw new TypeError('getStatus must be a function')
+  const maxAttempts = Math.max(1, Number(attempts) || 1)
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    const candidate = selectNewTaskRun(await getStatus(), previousRunId)
+    if (candidate) return candidate
+    if (attempt + 1 < maxAttempts) await sleepFn(Math.max(0, Number(delayMs) || 0))
+  }
+  throw new Error(errorMessage)
 }
 
 export function summarizeBalaMaterialGroups(groups = []) {
@@ -217,6 +352,11 @@ export function normalizeWorkflowStageStatus(value = '') {
   if (['error', 'failed', 'failure'].includes(status)) return 'failed'
   if (['stopped', 'cancelled', 'canceled'].includes(status)) return 'stopped'
   return 'idle'
+}
+
+export function isSeedancePrivacyProtectionError(error) {
+  const message = String(error?.message || error?.error || error || '')
+  return message.includes('InputImageSensitiveContentDetected.PrivacyInformation')
 }
 
 export function isActiveWorkflowStatus(value = '') {

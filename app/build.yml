@@ -76,6 +76,16 @@ extraResources:
       - "!**/notes/**"
       - "!**/.DS_Store"
       - "!**/*.zip"
+  - from: "../integrations"
+    to: python-scripts/integrations
+    filter:
+      - "seedanceCLI/**/*"
+      - "bailianCLI/**/*"
+      - "!**/.env"
+      - "!**/.env.local"
+      - "!**/node_modules/**"
+      - "!**/outputs/**"
+      - "!**/.DS_Store"
   # Python interpreter (downloaded by scripts/download-python.sh)
   # Actual copy happens in afterPack hook
 
