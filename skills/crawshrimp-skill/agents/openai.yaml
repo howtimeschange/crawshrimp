@@ -1,0 +1,4 @@
+interface:
+  display_name: "Crawshrimp Skill"
+  short_description: "AI agent CDP web operation protocol with 9222 recovery"
+  default_prompt: "Use $crawshrimp-skill to operate the current webpage through the user's CDP 9222 browser; if 127.0.0.1:9222 is connection refused, proactively open the dedicated local CDP Chrome before continuing. Prefer page-owned API/request paths over manual clicking and complete the workflow with evidence."
