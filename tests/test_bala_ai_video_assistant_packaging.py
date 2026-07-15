@@ -52,6 +52,27 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertIn("AI任务UID", output_columns)
         self.assertIn("轮询URL", output_columns)
 
+    def test_manifest_declares_qn_img2video_batch_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+
+        task = next(item for item in manifest["tasks"] if item["id"] == "qn_img2video_batch")
+
+        self.assertEqual(task["script"], "qn-img2video-batch.js")
+        self.assertEqual(task["entry_url"], "https://quick.taobao.com/videostudio/img2video")
+        self.assertEqual(task["skip_auth"], True)
+        params = {item["id"]: item for item in task["params"]}
+        self.assertEqual(params["execute_mode"]["default"], "plan")
+        self.assertEqual(params["material_images"]["type"], "file_images")
+        self.assertEqual(params["material_root"]["include_file_listing"], True)
+        self.assertEqual(params["download_template_previews"]["default"], True)
+        self.assertEqual(params["download_videos"]["default"], True)
+        self.assertEqual(params["output_dir"]["type"], "directory")
+        output_columns = task["output"][0]["columns"]
+        self.assertIn("模板预览本地文件", output_columns)
+        self.assertIn("提交任务ID", output_columns)
+        self.assertIn("视频URL", output_columns)
+        self.assertIn("本地视频文件", output_columns)
+
     def test_model_library_manifest_is_packaged_and_group_selects_standard_first(self):
         manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"
 

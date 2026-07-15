@@ -292,3 +292,171 @@ tasks:
           - AI生图工作台
           - 执行结果
           - 备注
+
+  - id: qn_img2video_batch
+    name: 千牛软件管家图生视频批量生成
+    description: 选择已确认 AI 结果图，读取软件管家行业模板，支持模板预览下载、批量上传图片、模板图生视频、任务轮询和视频本地归档
+    script: qn-img2video-batch.js
+    entry_url: https://quick.taobao.com/videostudio/img2video
+    skip_auth: true
+    params:
+      - id: execute_mode
+        type: select
+        label: 执行模式
+        default: plan
+        options:
+          - value: plan
+            label: 只预检任务
+          - value: catalog
+            label: 只导出模板目录
+          - value: live
+            label: live 生成并下载视频
+        hint: 建议先导出模板目录/预检，再切 live 批量生成
+      - id: material_images
+        type: file_images
+        label: 待生成图片
+        max: 80
+        hint: 多选已审批的 AI 结果图；如果留空，则从下方素材目录扫描图片
+      - id: material_root
+        type: directory
+        label: 素材目录
+        include_file_listing: true
+        placeholder: "选择 AI 结果图目录或整包目录"
+        hint: 留空也可以只用上方多选图片；目录扫描会优先 AI 生成图、模拍图、3:4 主图
+      - id: image_urls
+        type: textarea
+        label: 远程图片 URL
+        rows: 3
+        placeholder: "可选，一行一个图片 URL"
+        hint: 已经是在线图片时可以直接填写 URL，脚本会跳过本地上传
+      - id: image_limit
+        type: number
+        label: 图片上限
+        default: 20
+        min: 1
+        max: 200
+        step: 1
+        ui_span: third
+      - id: main_category
+        type: text
+        label: 行业类目
+        default: "童装/婴儿装/亲子装"
+        ui_span: third
+        hint: 留空时脚本会读取当前店铺类目
+      - id: template_id
+        type: textarea
+        label: 模板 ID
+        rows: 3
+        placeholder: "可选，一行一个模板 ID；留空按模板关键词或图片数量自动选择"
+        hint: 模板 ID 可先用“只导出模板目录”模式获取
+      - id: template_match
+        type: textarea
+        label: 模板关键词
+        rows: 3
+        placeholder: "例如：领口\n正面/侧面"
+        hint: 未填写模板 ID 时，会按模板名称/描述/类目关键词匹配
+      - id: group_mode
+        type: radio
+        label: 图片成片方式
+        default: one_image_per_video
+        options:
+          - value: one_image_per_video
+            label: 每张图生成一个视频
+          - value: all_images_one_video
+            label: 多张图合成一个模板任务
+        hint: 当前童装 action 模板通常只用 1 张模特全身图；多图模式主要留给多槽位模板
+      - id: prompt
+        type: textarea
+        label: 视频 Prompt
+        rows: 2
+        placeholder: "可选；action 模板通常可留空"
+      - id: download_template_previews
+        type: checkbox
+        label: 下载模板预览视频
+        default: true
+        ui_span: third
+        hint: 方便业务在本地先看模板动效
+      - id: template_preview_limit
+        type: number
+        label: 模板预览下载上限
+        default: 26
+        min: 1
+        max: 200
+        step: 1
+        ui_span: third
+      - id: download_videos
+        type: checkbox
+        label: 生成后下载视频
+        default: true
+        ui_span: third
+      - id: poll_timeout_minutes
+        type: number
+        label: 单条轮询超时分钟
+        default: 12
+        min: 1
+        max: 120
+        step: 1
+        ui_span: third
+      - id: poll_interval_seconds
+        type: number
+        label: 轮询间隔秒
+        default: 20
+        min: 5
+        max: 300
+        step: 1
+        ui_span: third
+      - id: submit_delay_ms
+        type: number
+        label: 提交间隔毫秒
+        default: 2000
+        min: 0
+        max: 60000
+        step: 500
+        ui_span: third
+      - id: download_concurrency
+        type: number
+        label: 下载并发
+        default: 2
+        min: 1
+        max: 8
+        step: 1
+        ui_span: third
+      - id: output_dir
+        type: directory
+        label: 视频输出目录
+        placeholder: "可选，建议选择 Downloads 下的项目目录"
+        hint: 留空则保存到本次任务运行目录；填写后模板预览和生成视频都会按子目录归档
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "巴拉AI图生视频批量生成_{timestamp}.xlsx"
+        columns:
+          - 序号
+          - 作业类型
+          - 主类目
+          - 模板ID
+          - 模板名称
+          - 模板类型
+          - 模板比例
+          - 模板时长秒
+          - 槽位说明
+          - 模板预览URL
+          - 模板预览本地文件
+          - 模板封面URL
+          - 源图文件
+          - 源图URL
+          - 上传URL
+          - 图片数量
+          - 分组模式
+          - 提交API
+          - 提交任务ID
+          - 提交SubmitTaskID
+          - 任务状态码
+          - 任务状态
+          - 视频URL
+          - 封面URL
+          - 内容ID
+          - 本地视频文件
+          - 执行结果
+          - 备注
