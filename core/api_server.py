@@ -36,6 +36,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from core import runtime_paths
+from core import bala_ai_model_library
+from core import bala_ai_video_materials
 from core.config import load_config, patch_config, save_config
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 from core.cloud_approval_url import (
@@ -71,7 +73,12 @@ logger = logging.getLogger(__name__)
 API_VERSION = "1.4.16"
 API_TOKEN_HEADER = "x-crawshrimp-token"
 PUBLIC_API_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/docs/oauth2-redirect"}
-PUBLIC_API_PREFIXES = ("/adapter-assets/", "/tmall-ai-image-approval/")
+PUBLIC_API_PREFIXES = (
+    "/adapter-assets/",
+    "/tmall-ai-image-approval/",
+    "/bala-ai-video-materials/",
+    "/bala-ai-video-model-library/",
+)
 
 # In-memory task run state for live status / logs
 _run_logs: dict = {}   # job_id -> list[str]
@@ -6035,6 +6042,140 @@ def get_adapter_asset(adapter_id: str, asset_path: str):
         raise HTTPException(400, str(exc))
 
     return FileResponse(path, headers=_adapter_asset_headers())
+
+
+class BalaMaterialBatchFromRowsRequest(BaseModel):
+    rows: list = []
+    source_task: dict = {}
+
+
+class BalaMaterialSelectionRequest(BaseModel):
+    selected_asset_ids: List[str] = []
+
+
+class BalaMaterialExportAiInputRequest(BaseModel):
+    operation_type: str = "face_swap"
+    selected_asset_ids: List[str] = []
+    model_ref_ids: List[str] = []
+    background_prompt: str = ""
+    garment_images: dict = {}
+    outfit_reference_images: dict = {}
+    variant_reference_images: dict = {}
+    pose_prompt: str = ""
+    prompt_cards: list = []
+    prompt_extra: str = ""
+
+
+def _bala_ai_video_base_url() -> str:
+    return str(os.environ.get("CRAWSHRIMP_PUBLIC_BASE_URL") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").rstrip("/")
+
+
+def _bala_material_asset_path(batch: dict, asset_id: str) -> Path:
+    target = str(asset_id or "").strip()
+    for item in batch.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        for asset in item.get("assets") or []:
+            if not isinstance(asset, dict):
+                continue
+            if str(asset.get("id") or "").strip() == target:
+                path = Path(str(asset.get("path") or "")).expanduser()
+                if not path.is_file():
+                    raise HTTPException(404, "Bala material image not found")
+                return path
+    raise HTTPException(404, "Bala material asset not found")
+
+
+@app.post("/bala-ai-video-materials/api/from-rows")
+def create_bala_ai_video_material_batch(req: BalaMaterialBatchFromRowsRequest):
+    batch = bala_ai_video_materials.build_material_batch(
+        list(req.rows or []),
+        str(runtime_paths.child_dir("bala-ai-video-materials")),
+        _bala_ai_video_base_url(),
+    )
+    batch["source_task"] = dict(req.source_task or {})
+    bala_ai_video_materials.save_material_batch(batch)
+    return batch
+
+
+@app.get("/bala-ai-video-materials/api/{batch_id}")
+def get_bala_ai_video_material_batch(batch_id: str, token: str = ""):
+    try:
+        batch = bala_ai_video_materials.load_material_batch(batch_id)
+        bala_ai_video_materials.validate_token(batch, token)
+        return batch
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/bala-ai-video-materials/api/{batch_id}/image/{asset_id}")
+def get_bala_ai_video_material_image(batch_id: str, asset_id: str, token: str = ""):
+    try:
+        batch = bala_ai_video_materials.load_material_batch(batch_id)
+        bala_ai_video_materials.validate_token(batch, token)
+        path = _bala_material_asset_path(batch, asset_id)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    media_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+    return FileResponse(path, media_type=media_type, filename=path.name)
+
+
+@app.post("/bala-ai-video-materials/api/{batch_id}/selection")
+def save_bala_ai_video_material_selection(batch_id: str, req: BalaMaterialSelectionRequest, token: str = ""):
+    try:
+        batch = bala_ai_video_materials.load_material_batch(batch_id)
+        bala_ai_video_materials.validate_token(batch, token)
+        updated = bala_ai_video_materials.update_material_selection(batch, list(req.selected_asset_ids or []))
+        bala_ai_video_materials.save_material_batch(updated)
+        return updated
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.post("/bala-ai-video-materials/api/{batch_id}/export-ai-input")
+def export_bala_ai_video_material_ai_input(batch_id: str, req: BalaMaterialExportAiInputRequest, token: str = ""):
+    try:
+        batch = bala_ai_video_materials.load_material_batch(batch_id)
+        bala_ai_video_materials.validate_token(batch, token)
+        return bala_ai_video_materials.export_ai_input(
+            batch,
+            req.operation_type,
+            _model_payload(req),
+        )
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+
+
+@app.get("/bala-ai-video-model-library/api")
+def list_bala_ai_model_library(age_label: str = "", gender: str = "", group: str = "", search: str = ""):
+    data = bala_ai_model_library.load_model_library()
+    return bala_ai_model_library.filter_model_library(
+        data,
+        age_label=age_label,
+        gender=gender,
+        group=group,
+        search=search,
+    )
+
+
+@app.get("/bala-ai-video-model-library/api/image/{model_id:path}")
+def get_bala_ai_model_library_image(model_id: str):
+    try:
+        path = bala_ai_model_library.resolve_model_image_path(unquote(str(model_id or "")))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc))
+    media_type = mimetypes.guess_type(str(path))[0] or "image/jpeg"
+    return FileResponse(path, media_type=media_type, filename=path.name)
 
 
 class AiImageJobRequest(BaseModel):

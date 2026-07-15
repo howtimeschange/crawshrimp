@@ -116,10 +116,13 @@
       />
       <!-- 脚本任务执行页 -->
       <TaskRunner
+        :key="`${activeScript?.adapter_id || ''}:${activeTaskId || ''}:${taskRunnerHandoffKey}`"
         v-else-if="activeScript && activeTaskId"
         :adapter-id="activeScript.adapter_id"
         :task="activeScript.tasks.find(t => t.task_id === activeTaskId)"
+        :initial-params="taskRunnerHandoffParams"
         @status-change="onTaskStatusChange"
+        @open-task="openTaskFromRunner"
       />
       <!-- 任务中心 -->
       <TaskCenter
@@ -193,6 +196,8 @@ const status = ref({
 const activeScript = ref(null)   // { adapter_id, adapter_name, tasks[] }
 const activeTaskId = ref(null)
 const activeInstanceUid = ref('')
+const taskRunnerHandoffParams = ref({})
+const taskRunnerHandoffKey = ref(0)
 const scriptGroups = ref([])
 const cloudApprovalStatus = ref(null)
 const focusSettingsPanelId = ref('')
@@ -314,6 +319,8 @@ async function loadScriptGroups(options = {}) {
 function openScript(group) {
   activeScript.value = group
   activeTaskId.value = group.tasks[0]?.task_id || null
+  taskRunnerHandoffParams.value = {}
+  taskRunnerHandoffKey.value += 1
   currentView.value = 'scripts'
   activeInstanceUid.value = ''
 }
@@ -325,6 +332,20 @@ function exitScript() {
 
 function openTaskInstance(instanceUid) {
   activeInstanceUid.value = instanceUid || ''
+}
+
+function openTaskFromRunner(request = {}) {
+  const adapterId = String(request.adapterId || request.adapter_id || '').trim()
+  const taskId = String(request.taskId || request.task_id || '').trim()
+  if (!adapterId || !taskId) return
+  const group = scriptGroups.value.find(item => item.adapter_id === adapterId)
+  if (!group || !group.tasks?.some(task => task.task_id === taskId)) return
+  activeScript.value = group
+  activeTaskId.value = taskId
+  taskRunnerHandoffParams.value = request.params && typeof request.params === 'object' ? request.params : {}
+  taskRunnerHandoffKey.value += 1
+  currentView.value = 'scripts'
+  activeInstanceUid.value = ''
 }
 
 function onTaskStatusChange(status) {

@@ -320,6 +320,19 @@ contextBridge.exposeInMainWorld('cs', {
   generateTmallApprovalAsset: (batchId, token, payload) => ipcRenderer.invoke('generate-tmall-approval-asset', batchId, token, payload),
   submitTmallApprovalGeneration: (batchId, token, payload) => ipcRenderer.invoke('submit-tmall-approval-generation', batchId, token, payload),
   submitTmallApprovalBatch: (batchId, token) => ipcRenderer.invoke('submit-tmall-approval-batch', batchId, token),
+  createBalaMaterialBatch: (rows, sourceTask) => invokeWithApiFallback('create-bala-material-batch', [rows || [], sourceTask || {}],
+    () => apiCall('POST', '/bala-ai-video-materials/api/from-rows', { rows: rows || [], source_task: sourceTask || {} })),
+  getBalaMaterialBatch: (batchId, token) => invokeWithApiFallback('get-bala-material-batch', [batchId, token],
+    () => apiCall('GET', `/bala-ai-video-materials/api/${encodePathPart(batchId)}?token=${encodePathPart(token)}`)),
+  saveBalaMaterialSelection: (batchId, token, selectedAssetIds) => invokeWithApiFallback('save-bala-material-selection', [batchId, token, selectedAssetIds || []],
+    () => apiCall('POST', `/bala-ai-video-materials/api/${encodePathPart(batchId)}/selection?token=${encodePathPart(token)}`, { selected_asset_ids: selectedAssetIds || [] })),
+  exportBalaAiInput: (batchId, token, payload) => invokeWithApiFallback('export-bala-ai-input', [batchId, token, payload || {}],
+    () => apiCall('POST', `/bala-ai-video-materials/api/${encodePathPart(batchId)}/export-ai-input?token=${encodePathPart(token)}`, payload || {})),
+  listBalaModelLibrary: (filters) => invokeWithApiFallback('list-bala-model-library', [filters || {}],
+    () => {
+      const suffix = queryString(filters || {})
+      return apiCall('GET', `/bala-ai-video-model-library/api${suffix ? `?${suffix}` : ''}`)
+    }),
   getCloudApprovalStatus: (options = {}) => ipcRenderer.invoke('get-cloud-approval-status', options || {}),
   saveCloudApprovalConfig: (payload) => ipcRenderer.invoke('save-cloud-approval-config', payload),
   enrollCloudMachine: (payload) => ipcRenderer.invoke('enroll-cloud-machine', payload),

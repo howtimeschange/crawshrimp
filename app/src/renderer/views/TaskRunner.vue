@@ -1000,11 +1000,17 @@
       @submit-started="handleApprovalSubmitStarted"
       @committed="handleApprovalCommitted"
     />
+    <BalaAiMaterialSelectionDrawer
+      v-model="balaMaterialDrawerOpen"
+      :board-url="balaMaterialBoardUrl"
+      @start-ai-stage="handleBalaStartAiStage"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
+import BalaAiMaterialSelectionDrawer from './BalaAiMaterialSelectionDrawer.vue'
 import TmallAiApprovalDrawer from './TmallAiApprovalDrawer.vue'
 import TaskOutputDrawer from './TaskOutputDrawer.vue'
 import { summarizePrecheckRows } from '../utils/precheckSummary'
@@ -1012,6 +1018,7 @@ import { buildTaskRunnerProgressSummary, resolveTaskProgressConfig } from '../ut
 import { buildOdpsSyncFile, isOdpsSyncableFile, isOdpsSyncableTask } from '../utils/odpsSyncTasks'
 import { shouldResetTaskValues, taskIdentityKey } from '../utils/taskRunnerState'
 import { buildEmbeddedCloudApprovalUrl, isTrustedCloudApprovalBoardUrl } from '../utils/cloudApprovalUrl'
+import { collectDownloadedMaterialRows } from '../utils/balaAiVideoWorkflow'
 import {
   buildPromptLibraryPickerLibraries,
   buildPromptLibraryTaskSelection,
@@ -1034,7 +1041,7 @@ const props = defineProps({
   initialParams: { type: Object, default: () => ({}) },
   initialStep: { type: String, default: '' },
 })
-const emit = defineEmits(['status-change', 'instance-updated'])
+const emit = defineEmits(['status-change', 'instance-updated', 'open-task'])
 
 const AI_CHAIN_STEP_IDS = new Set(['config', 'confirm', 'approval', 'create'])
 
@@ -1063,6 +1070,8 @@ const localApprovalBoardUrl = ref('')
 const cloudApprovalBaseUrl = ref('')
 const approvalBatch = ref(null)
 const approvalDrawerOpen = ref(false)
+const balaMaterialBoardUrl = ref('')
+const balaMaterialDrawerOpen = ref(false)
 const aiChainActiveStep = ref('config')
 const syncingOdps = ref(false)
 const excelLoading = ref({})
@@ -1431,6 +1440,8 @@ watch(() => [props.adapterId, props.task], ([adapterId, task]) => {
   stopAiChainApprovalBatchPolling()
   aiChainTerminalInstanceUpdateEmitted = false
   approvalDrawerOpen.value = false
+  balaMaterialBoardUrl.value = ''
+  balaMaterialDrawerOpen.value = false
   aiChainActiveStep.value = initialAiChainActiveStep(adapterId, task)
   syncingOdps.value = false
   isRunning.value = false
@@ -2581,6 +2592,8 @@ function resetRunUi() {
   stopAiChainApprovalBatchPolling()
   aiChainTerminalInstanceUpdateEmitted = false
   approvalDrawerOpen.value = false
+  balaMaterialBoardUrl.value = ''
+  balaMaterialDrawerOpen.value = false
   localLiveSnapshot.value = null
   if (isTmallAiImageChainTask.value) aiChainActiveStep.value = 'config'
   syncingOdps.value = false
@@ -2754,6 +2767,46 @@ async function refreshOutputFiles() {
   }
 }
 
+function isBalaMaterialPrepareTask() {
+  return props.adapterId === 'bala-ai-video-assistant'
+    && props.task?.task_id === 'semir_video_material_prepare'
+}
+
+async function readBalaMaterialRowsFromOutputFiles(files = []) {
+  const rows = []
+  for (const file of (files || []).filter(isExcelFile).slice(0, 3)) {
+    try {
+      const payload = await window.cs.readExcel(file)
+      if (Array.isArray(payload?.rows)) rows.push(...payload.rows)
+    } catch (error) {
+      logs.value.push(`[${now()}] 读取素材结果表失败：${error?.message || String(error)}`)
+    }
+  }
+  return collectDownloadedMaterialRows({ rows })
+}
+
+async function maybeOpenBalaMaterialSelection(files = []) {
+  if (!isBalaMaterialPrepareTask()) return
+  if (typeof window.cs?.createBalaMaterialBatch !== 'function') return
+  try {
+    const rows = await readBalaMaterialRowsFromOutputFiles(files)
+    if (!rows.length) return
+    const materialBatch = await window.cs.createBalaMaterialBatch(rows, {
+      adapter_id: props.adapterId,
+      task_id: props.task?.task_id,
+    })
+    const boardUrl = String(materialBatch?.board_url || '').trim()
+    if (!boardUrl) return
+    balaMaterialBoardUrl.value = boardUrl
+    balaMaterialDrawerOpen.value = true
+    logs.value.push(`[${now()}] 已生成巴拉 AI 视频素材选择批次：${rows.length} 张候选图`)
+    scrollToBottom()
+  } catch (error) {
+    logs.value.push(`[${now()}] 打开巴拉 AI 视频素材选择失败：${error?.message || String(error)}`)
+    scrollToBottom()
+  }
+}
+
 async function finishRun(result, options = {}) {
   clearInterval(pollTimer)
   pollTimer = null
@@ -2778,6 +2831,7 @@ async function finishRun(result, options = {}) {
     } else {
       lastResult.value = { ok: true, msg: `✓ 完成，共 ${result.records ?? result.records_count ?? 0} 条记录` }
     }
+    await maybeOpenBalaMaterialSelection(files)
   } else if (result.status === 'stopped') {
     await refreshOutputFiles()
     if (isInstanceMode.value) emit('instance-updated')
@@ -3002,6 +3056,10 @@ function handleApprovalCommitted(payload) {
   handleApprovalBatchUpdated(payload)
   stopAiChainApprovalBatchPolling()
   if (isInstanceMode.value) emit('instance-updated')
+}
+
+function handleBalaStartAiStage(request) {
+  emit('open-task', request)
 }
 
 function shouldPreferCreateStepForInstance(detail) {

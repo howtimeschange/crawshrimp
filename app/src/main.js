@@ -2276,6 +2276,44 @@ secureHandle('submit-tmall-approval-batch', async (_, batchId, token) => {
   )
 })
 
+secureHandle('create-bala-material-batch', async (_, rows, sourceTask) => {
+  return apiCall('POST', '/bala-ai-video-materials/api/from-rows', {
+    rows: rows || [],
+    source_task: sourceTask || {},
+  })
+})
+
+secureHandle('get-bala-material-batch', async (_, batchId, token) => {
+  return apiCall('GET', `/bala-ai-video-materials/api/${encodeURIComponent(String(batchId || ''))}?${approvalTokenQuery(token)}`)
+})
+
+secureHandle('save-bala-material-selection', async (_, batchId, token, selectedAssetIds) => {
+  return apiCall(
+    'POST',
+    `/bala-ai-video-materials/api/${encodeURIComponent(String(batchId || ''))}/selection?${approvalTokenQuery(token)}`,
+    { selected_asset_ids: selectedAssetIds || [] },
+  )
+})
+
+secureHandle('export-bala-ai-input', async (_, batchId, token, payload) => {
+  return apiCall(
+    'POST',
+    `/bala-ai-video-materials/api/${encodeURIComponent(String(batchId || ''))}/export-ai-input?${approvalTokenQuery(token)}`,
+    payload || {},
+  )
+})
+
+secureHandle('list-bala-model-library', async (_, filters = {}) => {
+  const query = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters || {})) {
+    if (value !== undefined && value !== null && String(value) !== '') {
+      query.set(key, String(value))
+    }
+  }
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  return apiCall('GET', `/bala-ai-video-model-library/api${suffix}`)
+})
+
 secureHandle('get-cloud-approval-status', async (_, options = {}) => apiCall(
   'GET',
   options?.refresh ? '/cloud-approval/status?refresh=true' : '/cloud-approval/status',

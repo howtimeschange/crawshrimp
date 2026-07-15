@@ -408,6 +408,14 @@ export function createDevCsBridge() {
     generateTmallApprovalAsset: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/generate?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalGeneration: (batchId, token, payload) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit-generation?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
     submitTmallApprovalBatch: (batchId, token) => apiCall('POST', `/tmall-ai-image-approval/api/${encodePathPart(batchId)}/submit?token=${encodeURIComponent(String(token || ''))}`, {}),
+    createBalaMaterialBatch: (rows, sourceTask) => apiCall('POST', '/bala-ai-video-materials/api/from-rows', { rows: rows || [], source_task: sourceTask || {} }),
+    getBalaMaterialBatch: (batchId, token) => apiCall('GET', `/bala-ai-video-materials/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),
+    saveBalaMaterialSelection: (batchId, token, selectedAssetIds) => apiCall('POST', `/bala-ai-video-materials/api/${encodePathPart(batchId)}/selection?token=${encodeURIComponent(String(token || ''))}`, { selected_asset_ids: selectedAssetIds || [] }),
+    exportBalaAiInput: (batchId, token, payload) => apiCall('POST', `/bala-ai-video-materials/api/${encodePathPart(batchId)}/export-ai-input?token=${encodeURIComponent(String(token || ''))}`, payload || {}),
+    listBalaModelLibrary: (filters = {}) => {
+      const suffix = queryString(filters || {})
+      return apiCall('GET', `/bala-ai-video-model-library/api${suffix ? `?${suffix}` : ''}`)
+    },
     getCloudApprovalStatus: (options = {}) => apiCall(
       'GET',
       options?.refresh ? '/cloud-approval/status?refresh=true' : '/cloud-approval/status',
