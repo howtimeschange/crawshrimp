@@ -138,6 +138,20 @@ tasks:
         step: 1
         ui_span: third
         hint: 未直接选择图片时，从目录中最多取多少张源图
+      - id: operation_type
+        type: select
+        label: AI 动作
+        default: face_swap
+        options:
+          - value: face_swap
+            label: AI 换脸
+          - value: background_swap
+            label: AI 换背景
+          - value: outfit_swap
+            label: AI 换装
+          - value: pose_swap
+            label: AI 换姿势
+        hint: 工作流会从素材选择页带入；原子脚本也可单独选择
       - id: model_groups
         type: checkbox
         label: 模特分组
@@ -186,10 +200,29 @@ tasks:
       - id: background_prompt
         type: textarea
         label: 换背景 Prompt
-        required: true
         rows: 3
         default: "换成马尔代夫的海边"
         placeholder: "例如：换成马尔代夫的海边"
+      - id: garment_images
+        type: file_images
+        label: 换装服装图
+        max: 12
+        hint: AI 换装时必填；可从本地选择服装平拍或同款图
+      - id: outfit_reference_images
+        type: file_images
+        label: 搭配参考图
+        max: 12
+        hint: AI 换装时可选，用来提示搭配关系和穿着效果
+      - id: variant_reference_images
+        type: file_images
+        label: 同款不同色参考图
+        max: 12
+        hint: AI 换装时可选，用来提示版型结构
+      - id: pose_prompt
+        type: textarea
+        label: 换姿势 Prompt
+        rows: 3
+        placeholder: "例如：让模特自然侧身行走，保留服装版型和颜色"
       - id: prompt_extra
         type: textarea
         label: 补充要求
@@ -205,6 +238,16 @@ tasks:
             label: 创建并异步生成（推荐）
           - value: create_only
             label: 只创建任务，稍后到 AI 生图工作台手动运行
+      - id: review_mode
+        type: select
+        label: 结果回收
+        default: create_review_batch
+        ui_span: third
+        options:
+          - value: create_review_batch
+            label: 生成审核池（推荐）
+          - value: none
+            label: 只输出任务行
       - id: model
         type: select
         label: 生图模型
@@ -275,12 +318,17 @@ tasks:
           - 源图序号
           - 源图文件
           - 款号
+          - 操作类型
           - 模特ID
           - 模特分组
           - 模特年龄段
           - 模特性别
           - 模特表情
           - 背景Prompt
+          - 服装图文件
+          - 搭配参考图文件
+          - 同款不同色参考图文件
+          - 姿势Prompt
           - 完整Prompt
           - AI任务UID
           - AI任务标题
@@ -289,6 +337,9 @@ tasks:
           - 运行UID
           - 1XM任务ID
           - 轮询URL
+          - 审批批次UID
+          - 审批看板
+          - 下一步Provider
           - AI生图工作台
           - 执行结果
           - 备注

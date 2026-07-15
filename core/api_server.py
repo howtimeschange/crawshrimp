@@ -38,6 +38,7 @@ from pydantic import BaseModel
 from core import runtime_paths
 from core import bala_ai_model_library
 from core import bala_ai_video_materials
+from core import bala_ai_video_review
 from core.config import load_config, patch_config, save_config
 from core.cloud_approval_client import CloudApprovalClient, CloudApprovalError
 from core.cloud_approval_url import (
@@ -2196,6 +2197,19 @@ BALA_MODEL_LIBRARY_MANIFEST = "assets/model-library/manifest.json"
 BALA_AI_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
+def _bala_operation_type(run_params: dict) -> str:
+    return bala_ai_video_review.normalize_operation_type((run_params or {}).get("operation_type"))
+
+
+def _bala_operation_label(operation_type: str) -> str:
+    return {
+        "face_swap": "AI换脸",
+        "background_swap": "AI换背景",
+        "outfit_swap": "AI换装",
+        "pose_swap": "AI换姿势",
+    }.get(operation_type, "AI换脸")
+
+
 def _bala_string_list(value: object) -> list[str]:
     if isinstance(value, list):
         source = value
@@ -2386,6 +2400,17 @@ def _bala_models_for_generation(run_params: dict) -> tuple[list[dict], list[str]
     return selected, warnings
 
 
+def _bala_param_image_paths(run_params: dict, key: str) -> list[Path]:
+    value = (run_params or {}).get(key)
+    raw = value.get("paths") if isinstance(value, dict) else value
+    result: list[Path] = []
+    for item in _bala_string_list(raw):
+        path = Path(item).expanduser()
+        if _bala_image_path_allowed(path):
+            result.append(path)
+    return result
+
+
 def _bala_ai_prompt(source_path: Path, model_item: dict, background_prompt: str, extra: str = "") -> str:
     model_label = (
         f"{model_item.get('group_label') or model_item.get('group') or ''}"
@@ -2404,17 +2429,52 @@ def _bala_ai_prompt(source_path: Path, model_item: dict, background_prompt: str,
     return "\n".join(lines)
 
 
+def _bala_ai_operation_prompt(source_path: Path, model_item: dict, run_params: dict, operation_type: str) -> str:
+    extra = str((run_params or {}).get("prompt_extra") or "").strip()
+    if operation_type == "face_swap":
+        background_prompt = str((run_params or {}).get("background_prompt") or "保持原图自然背景").strip()
+        return _bala_ai_prompt(source_path, model_item or {}, background_prompt, extra)
+    if operation_type == "background_swap":
+        lines = [
+            "请基于输入的童装商品模拍图进行真实电商照片级图像编辑。",
+            "必须保留童装商品、版型、颜色、图案、材质、穿搭关系、人物姿态和主体构图，不要改款、不要换衣服。",
+            f"将背景替换为：{str((run_params or {}).get('background_prompt') or '').strip()}。背景真实自然，符合儿童服装商业图，不要出现文字、水印、Logo、吊牌、合格证或多余人物。",
+        ]
+    elif operation_type == "outfit_swap":
+        lines = [
+            "请基于输入的童装模特图进行真实电商照片级换装编辑。",
+            "将服装图中的商品自然替换到模特身上，保留童装版型、颜色、图案、材质和穿搭比例。",
+            "参考搭配图和同款不同色图理解衣服结构，输出自然、清晰、无拼贴感的完整儿童模特图。",
+        ]
+    elif operation_type == "pose_swap":
+        lines = [
+            "请基于输入的童装商品模拍图进行真实电商照片级姿势调整。",
+            f"姿势要求：{str((run_params or {}).get('pose_prompt') or '').strip()}。",
+            "必须保留童装商品、版型、颜色、图案、材质和人物年龄气质，不要出现文字、水印、Logo 或多余人物。",
+        ]
+    else:
+        lines = ["请基于输入图片生成真实自然的儿童服装电商图。"]
+    if extra:
+        lines.append(f"补充要求：{extra}")
+    return "\n".join(lines)
+
+
 def _bala_ai_error_row(message: str, note: str = "") -> dict:
     return {
         "源图序号": "",
         "源图文件": "",
         "款号": "",
+        "操作类型": "",
         "模特ID": "",
         "模特分组": "",
         "模特年龄段": "",
         "模特性别": "",
         "模特表情": "",
         "背景Prompt": "",
+        "服装图文件": "",
+        "搭配参考图文件": "",
+        "同款不同色参考图文件": "",
+        "姿势Prompt": "",
         "完整Prompt": "",
         "AI任务UID": "",
         "AI任务标题": "",
@@ -2423,6 +2483,9 @@ def _bala_ai_error_row(message: str, note: str = "") -> dict:
         "运行UID": "",
         "1XM任务ID": "",
         "轮询URL": "",
+        "审批批次UID": "",
+        "审批看板": "",
+        "下一步Provider": "",
         "AI生图工作台": "AI 生图",
         "执行结果": "失败",
         "备注": _append_note(message, note),
@@ -2435,19 +2498,39 @@ def _bala_create_ai_image_job_row(
     source_path: Path,
     model_item: dict,
     run_params: dict,
-    background_prompt: str,
+    operation_type: str,
     prompt: str,
     submit_async: bool,
 ) -> dict:
     style_code = _bala_extract_style_code(source_path)
     model_id = str(model_item.get("id") or "")
+    operation_label = _bala_operation_label(operation_type)
+    background_prompt = str(run_params.get("background_prompt") or "").strip()
+    garment_paths = _bala_param_image_paths(run_params, "garment_images")
+    outfit_reference_paths = _bala_param_image_paths(run_params, "outfit_reference_images")
+    variant_reference_paths = _bala_param_image_paths(run_params, "variant_reference_images")
+    pose_prompt = str(run_params.get("pose_prompt") or "").strip()
+    reference_paths: list[str] = []
+    reference_roles: list[str] = []
+    if operation_type == "face_swap" and str(model_item.get("path") or "").strip():
+        reference_paths.append(str(model_item.get("path") or ""))
+        reference_roles.append("bala_ai_model_face")
+    elif operation_type == "outfit_swap":
+        for role, paths in [
+            ("garment", garment_paths),
+            ("outfit_reference", outfit_reference_paths),
+            ("variant_reference", variant_reference_paths),
+        ]:
+            for path in paths:
+                reference_paths.append(str(path))
+                reference_roles.append(role)
     title_parts = [
-        "巴拉AI换脸换背景",
+        f"巴拉{operation_label}",
         style_code or source_path.stem,
         str(model_item.get("group") or ""),
         str(model_item.get("expression") or ""),
     ]
-    title = _safe_local_name(" ".join(part for part in title_parts if part), "巴拉AI换脸换背景")
+    title = _safe_local_name(" ".join(part for part in title_parts if part), f"巴拉{operation_label}")
     output_dir = str(run_params.get("output_dir") or "").strip()
     params = {
         "prompt": prompt,
@@ -2457,9 +2540,14 @@ def _bala_create_ai_image_job_row(
         "n": 1,
         "model_key_tier": str(run_params.get("model_key_tier") or "4k").strip() or "4k",
         "main_image_path": str(source_path),
-        "reference_image_paths": [str(model_item.get("path") or "")],
+        "reference_image_paths": reference_paths,
         "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+        "operation_type": operation_type,
         "background_prompt": background_prompt,
+        "garment_image_paths": [str(path) for path in garment_paths],
+        "outfit_reference_image_paths": [str(path) for path in outfit_reference_paths],
+        "variant_reference_image_paths": [str(path) for path in variant_reference_paths],
+        "pose_prompt": pose_prompt,
         "style_code": style_code,
         "bala_model": {
             "id": model_id,
@@ -2478,6 +2566,7 @@ def _bala_create_ai_image_job_row(
         "params": params,
         "summary": {
             "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "operation_type": operation_type,
             "source_path": str(source_path),
             "model_id": model_id,
             "background_prompt": background_prompt,
@@ -2492,14 +2581,16 @@ def _bala_create_ai_image_job_row(
         "sort_order": 0,
         "meta": {"role": "source_product_model", "style_code": style_code},
     })
-    data_sink.create_ai_image_asset({
-        "job_uid": job_uid,
-        "kind": "reference",
-        "source_type": "local",
-        "path": str(model_item.get("path") or ""),
-        "sort_order": 1,
-        "meta": {"role": "bala_ai_model_face", "model_id": model_id},
-    })
+    for index, path in enumerate(reference_paths, start=1):
+        role = reference_roles[index - 1] if index - 1 < len(reference_roles) else "reference"
+        data_sink.create_ai_image_asset({
+            "job_uid": job_uid,
+            "kind": "reference",
+            "source_type": "local",
+            "path": path,
+            "sort_order": index,
+            "meta": {"role": role, "model_id": model_id if role == "bala_ai_model_face" else ""},
+        })
 
     submit_status = "已创建，未提交"
     batch_uid = ""
@@ -2512,7 +2603,7 @@ def _bala_create_ai_image_job_row(
         try:
             batch = ai_image_service.submit_workbench_batch(
                 job_uid,
-                [{"title": "换脸换背景", "prompt": prompt, "count": 1}],
+                [{"title": operation_label, "prompt": prompt, "count": 1}],
                 request_uid=f"bala-ai-face-bg-{uuid4().hex}",
             )
             submit_status = "已异步提交" if batch.get("accepted") else "提交未接受"
@@ -2539,12 +2630,17 @@ def _bala_create_ai_image_job_row(
         "源图序号": source_index,
         "源图文件": str(source_path),
         "款号": style_code,
+        "操作类型": operation_label,
         "模特ID": model_id,
         "模特分组": str(model_item.get("group_label") or model_item.get("group") or ""),
         "模特年龄段": str(model_item.get("age_label") or ""),
         "模特性别": str(model_item.get("gender") or ""),
         "模特表情": str(model_item.get("expression") or ""),
         "背景Prompt": background_prompt,
+        "服装图文件": "\n".join(str(path) for path in garment_paths),
+        "搭配参考图文件": "\n".join(str(path) for path in outfit_reference_paths),
+        "同款不同色参考图文件": "\n".join(str(path) for path in variant_reference_paths),
+        "姿势Prompt": pose_prompt,
         "完整Prompt": prompt,
         "AI任务UID": job_uid,
         "AI任务标题": title,
@@ -2553,6 +2649,9 @@ def _bala_create_ai_image_job_row(
         "运行UID": run_uid,
         "1XM任务ID": task_id,
         "轮询URL": poll_url,
+        "审批批次UID": "",
+        "审批看板": "",
+        "下一步Provider": "",
         "AI生图工作台": "AI 生图",
         "执行结果": result,
         "备注": note,
@@ -2560,16 +2659,25 @@ def _bala_create_ai_image_job_row(
 
 
 async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_control, log) -> list[dict]:
+    operation_type = _bala_operation_type(run_params)
+    operation_label = _bala_operation_label(operation_type)
     background_prompt = str((run_params or {}).get("background_prompt") or "").strip()
-    if not background_prompt:
-        return [_bala_ai_error_row("请填写换背景 Prompt")]
+    if operation_type == "background_swap" and not background_prompt:
+        return [{**_bala_ai_error_row("请填写换背景 Prompt"), "操作类型": operation_label}]
+    if operation_type == "outfit_swap" and not _bala_param_image_paths(run_params, "garment_images"):
+        return [{**_bala_ai_error_row("请至少选择一张服装图"), "操作类型": operation_label}]
+    if operation_type == "pose_swap" and not str((run_params or {}).get("pose_prompt") or "").strip():
+        return [{**_bala_ai_error_row("请填写换姿势 Prompt"), "操作类型": operation_label}]
 
     sources, source_errors = _bala_source_images_for_generation(run_params)
-    models, model_warnings = _bala_models_for_generation(run_params)
+    models: list[dict] = [{}]
+    model_warnings: list[str] = []
+    if operation_type == "face_swap":
+        models, model_warnings = _bala_models_for_generation(run_params)
     if source_errors and not sources:
-        return [_bala_ai_error_row("；".join(source_errors))]
-    if not models:
-        return [_bala_ai_error_row("；".join(model_warnings or ["没有可用的巴拉 AI 模特素材"]))]
+        return [{**_bala_ai_error_row("；".join(source_errors)), "操作类型": operation_label}]
+    if operation_type == "face_swap" and not models:
+        return [{**_bala_ai_error_row("；".join(model_warnings or ["没有可用的巴拉 AI 模特素材"])), "操作类型": operation_label}]
 
     max_combinations = _task_int_param(run_params, "max_combinations", 12, min_value=1, max_value=100)
     submit_async = str((run_params or {}).get("generation_mode") or "submit_async").strip() != "create_only"
@@ -2585,15 +2693,10 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
 
     if log:
         mode = "异步提交" if submit_async else "仅创建"
-        log(f"Bala AI face/background generation: {len(combinations)} job(s), mode={mode}")
+        log(f"Bala AI image generation: operation={operation_type}, {len(combinations)} job(s), mode={mode}")
     for index, (source_index, source_path, model_item) in enumerate(combinations, start=1):
         await wait_for_control({"records": len(rows), "current_row": index, "phase": "create-ai-image-jobs"})
-        prompt = _bala_ai_prompt(
-            source_path,
-            model_item,
-            background_prompt,
-            str((run_params or {}).get("prompt_extra") or "").strip(),
-        )
+        prompt = _bala_ai_operation_prompt(source_path, model_item, run_params, operation_type)
         try:
             row = await asyncio.to_thread(
                 _bala_create_ai_image_job_row,
@@ -2601,7 +2704,7 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
                 source_path=source_path,
                 model_item=model_item,
                 run_params=run_params,
-                background_prompt=background_prompt,
+                operation_type=operation_type,
                 prompt=prompt,
                 submit_async=submit_async,
             )
@@ -2611,6 +2714,7 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
                 "源图序号": source_index,
                 "源图文件": str(source_path),
                 "款号": _bala_extract_style_code(source_path),
+                "操作类型": operation_label,
                 "模特ID": str(model_item.get("id") or ""),
                 "模特分组": str(model_item.get("group_label") or model_item.get("group") or ""),
                 "模特年龄段": str(model_item.get("age_label") or ""),
@@ -2624,7 +2728,27 @@ async def _apply_bala_ai_face_background_generate(run_params: dict, wait_for_con
         rows.append(row)
 
     await wait_for_control({"records": len(rows), "current_row": len(rows), "phase": "create-ai-image-jobs"})
-    return rows or [_bala_ai_error_row("没有生成任何任务组合")]
+    if not rows:
+        return [{**_bala_ai_error_row("没有生成任何任务组合"), "操作类型": operation_label}]
+
+    review_mode = str((run_params or {}).get("review_mode") or "").strip()
+    if review_mode == "create_review_batch":
+        review_rows = [row for row in rows if str(row.get("AI任务UID") or "").strip()]
+        if review_rows:
+            api_base_url = str((run_params or {}).get("approval_base_url") or "http://127.0.0.1:18765").strip()
+            batch = bala_ai_video_review.build_review_batch(
+                review_rows,
+                run_params or {},
+                str(runtime_paths.child_dir("bala-ai-video-review")),
+                api_base_url,
+            )
+            bala_ai_video_review.save_review_batch(batch)
+            for row in rows:
+                if str(row.get("AI任务UID") or "").strip():
+                    row["审批批次UID"] = batch.get("batch_id", "")
+                    row["审批看板"] = batch.get("board_url", "")
+                    row["下一步Provider"] = batch.get("video_provider", "qn_img2video")
+    return rows
 
 
 def _finalize_bala_ai_video_assistant_outputs(

@@ -185,6 +185,86 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
 
             runtime_paths.reset_runtime_data_root_cache()
 
+    def test_apply_background_swap_creates_review_batch_without_model_asset(self):
+        async def wait_for_control(_status=None):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            data_root = base / "data"
+            source = base / "208326100202" / "01_模拍原图" / "source.png"
+            source.parent.mkdir(parents=True)
+            source.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            with patch.dict("os.environ", {"CRAWSHRIMP_DATA": str(data_root)}, clear=False):
+                runtime_paths.reset_runtime_data_root_cache()
+                data_sink.init_db()
+                rows = asyncio.run(_apply_bala_ai_face_background_generate(
+                    {
+                        "operation_type": "background_swap",
+                        "source_images": {"paths": [str(source)]},
+                        "background_prompt": "换成马尔代夫的海边",
+                        "generation_mode": "create_only",
+                        "review_mode": "create_review_batch",
+                        "approval_base_url": "http://127.0.0.1:18765",
+                    },
+                    wait_for_control,
+                    lambda _message: None,
+                ))
+
+                self.assertEqual(rows[0]["操作类型"], "AI换背景")
+                self.assertEqual(rows[0]["模特ID"], "")
+                self.assertTrue(rows[0]["审批批次UID"])
+                self.assertTrue(rows[0]["审批看板"].startswith("http://127.0.0.1:18765/bala-ai-video-review/"))
+                self.assertEqual(rows[0]["下一步Provider"], "qn_img2video")
+                assets = data_sink.list_ai_image_assets(rows[0]["AI任务UID"])
+                self.assertEqual([asset["kind"] for asset in assets], ["main"])
+
+            runtime_paths.reset_runtime_data_root_cache()
+
+    def test_apply_outfit_swap_creates_review_batch_with_outfit_references(self):
+        async def wait_for_control(_status=None):
+            return None
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            data_root = base / "data"
+            source = base / "208326100202" / "01_模拍原图" / "source.png"
+            garment = base / "garment.png"
+            outfit = base / "outfit.png"
+            variant = base / "variant.png"
+            source.parent.mkdir(parents=True)
+            for path in [source, garment, outfit, variant]:
+                path.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            with patch.dict("os.environ", {"CRAWSHRIMP_DATA": str(data_root)}, clear=False):
+                runtime_paths.reset_runtime_data_root_cache()
+                data_sink.init_db()
+                rows = asyncio.run(_apply_bala_ai_face_background_generate(
+                    {
+                        "operation_type": "outfit_swap",
+                        "source_images": {"paths": [str(source)]},
+                        "garment_images": {"paths": [str(garment)]},
+                        "outfit_reference_images": {"paths": [str(outfit)]},
+                        "variant_reference_images": {"paths": [str(variant)]},
+                        "generation_mode": "create_only",
+                        "review_mode": "create_review_batch",
+                        "approval_base_url": "http://127.0.0.1:18765",
+                    },
+                    wait_for_control,
+                    lambda _message: None,
+                ))
+
+                self.assertEqual(rows[0]["操作类型"], "AI换装")
+                self.assertEqual(rows[0]["服装图文件"], str(garment))
+                self.assertEqual(rows[0]["搭配参考图文件"], str(outfit))
+                self.assertEqual(rows[0]["同款不同色参考图文件"], str(variant))
+                self.assertTrue(rows[0]["审批批次UID"])
+                assets = data_sink.list_ai_image_assets(rows[0]["AI任务UID"])
+                self.assertEqual([asset["kind"] for asset in assets], ["main", "reference", "reference", "reference"])
+
+            runtime_paths.reset_runtime_data_root_cache()
+
     def test_finalize_material_prepare_groups_images_without_zip_by_default(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)
