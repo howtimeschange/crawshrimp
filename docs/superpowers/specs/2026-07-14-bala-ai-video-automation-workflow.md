@@ -109,12 +109,25 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
 
 本期也暂不做 `ai_video_pool_import`。当前业务交互以“本地键入款号，一行一个款”作为找图入口已经够用；爆款池导入后续只作为批量运营效率增强，不阻塞图生视频和素材链路的原子能力建设。
 
+生视频阶段的 provider 口径扩展为三类：软件管家 `qn_img2video_batch`、Seedance 2.0 和百炼 HappyHorse。Seedance 与 HappyHorse 都不在抓虾主应用内重写供应商 API，而是把已在 `/Users/xingyicheng/Documents/AI 视频` 验证过的 CLI 能力迁移到仓库 `integrations/` 下作为公共方法，再由 AI 视频工作流统一调用。
+
+HappyHorse 新增视频模型的迁移目标是 `integrations/bailianCLI`。可迁移的核心能力包括：
+
+- `bin/bailian.js`：CLI 入口，支持 `create`、`submit`、`get`、`wait` 和 `--download`。
+- `src/bailian-client.js`：百炼 / DashScope 异步视频任务 client，负责创建、查询、轮询、下载和 payload 校验。
+- `src/config.js`：读取 `DASHSCOPE_API_KEY`、`BAILIAN_WORKSPACE_ID`、`BAILIAN_REGION`、`BAILIAN_BASE_URL`。
+- `examples/happyhorse-t2v.json`、`happyhorse-i2v.json`、`happyhorse-r2v.json`：文生、图生、参考生视频三类 payload 示例。
+- `test/bailian-client.test.js`：Node 18+ 自带 test runner 的 provider 合同测试。
+- `package.json`、`.env.example`、`README.md`：脚本、bin 入口、环境变量占位和使用说明。
+
+HappyHorse 已在外部项目验证过文生视频、图生视频、参考生视频三个模式，本仓库迁移时必须保留这些测试并通过 `npm --prefix integrations/bailianCLI test`。真实 `DASHSCOPE_API_KEY` 不能写入仓库，生产运行通过抓虾 `AI 能力` 配置或运行环境变量注入。
+
 新的推进方式是先把原子能力补齐、跑实，再串成完整工作流：
 
 1. 森马云盘找图与本地素材规整。
 2. GPT Image 换脸/换背景任务创建、异步生成、结果回收。
 3. 人工审核选图、失败重试/重跑，并输出给视频阶段。
-4. 千牛/软件管家 `img2video` 模板选择、图片上传、批量生成、视频下载和本地归档。
+4. 视频任务创建与执行：软件管家 `img2video` 模板选择、图片上传、批量生成、视频下载和本地归档；Seedance / HappyHorse 则通过共享 CLI provider 生成 payload、提交任务、轮询、下载和归档。
 5. 自动剪辑。优先借鉴 OpenCut 的时间线/素材管理思路；若批量自动剪辑实现成本过高，MVP 可先输出给线下剪映手动处理。
 6. 发布预检、`live` 发布、登记回写和效果回收。
 
@@ -125,6 +138,7 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
 | 森马云盘找图与本地规整 | 已落脚本 | 约 80% | `semir_video_material_prepare` 已支持手工键入款号、批量搜索下载、优先 `已选`/`已写`/款号目录、去重和本地规整；吊牌/洗唛过滤保留人工复核。 |
 | GPT Image 换脸/换背景 | 已落脚本 | 约 65% | `bala_ai_face_background_generate` 已接入内置巴拉 AI 模特库、按年龄/性别分组建任务，支持异步生成、结果回收、审批/重试方向；后续要继续补 UI 体验和大批量重跑管理。 |
 | 图生视频原子能力 | 已落脚本并通过真实链路测试 | 约 75% | `qn_img2video_batch` 已支持模板目录、模板预览下载、本地图片上传、模板提交、任务轮询、视频下载和本地归档；已用软件管家真实页面生成并下载 MP4。 |
+| 外部视频模型 provider | 迁移规划明确 | 约 40% | Seedance 已按共享 CLI 口径进入 `integrations/seedanceCLI`；HappyHorse 需要把 `/Users/xingyicheng/Documents/AI 视频` 中的百炼 CLI 迁移为 `integrations/bailianCLI`，作为生视频阶段第三个 provider。 |
 | 自动剪辑 | 方案阶段 | 约 15% | 已确认借鉴 OpenCut 的时间线/素材管理思想，MVP 优先考虑本地模板/FFmpeg/Remotion 风格渲染；剪映可作为临时人工处理出口。 |
 | 发布预检与 live 发布 | 待实现 | 0% | 需要另建 `qn_short_video_publish`，默认 `plan`，只有明确授权后进入 `live`。 |
 | 登记回写与效果回收 | 待实现 | 0% | 需要对接钉钉登记、森马云盘归档、每日发布量和引导成交数据回收。 |
@@ -184,19 +198,28 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
    - 轮询下载：提交返回的数字任务 ID 用 `mtop.taobao.qn.copilot.quick.task.get` 轮询；完成后从 `result.compositeVideo.videoUrl` / `videoList[0].videoUrl` 下载视频并本地归档。
    - 输出：模板预览、本地源图、上传 URL、视频任务 ID、视频 URL/本地文件、生成状态和失败原因。
 
-5. `ai_video_compose_batch`
+5. `integrations/bailianCLI`
+   - 定位：项目级共享能力，不属于单个适配器；与 `integrations/seedanceCLI` 同级。
+   - 来源：从 `/Users/xingyicheng/Documents/AI 视频` 迁移百炼 HappyHorse CLI。
+   - 核心文件：`bin/bailian.js`、`src/bailian-client.js`、`src/config.js`、`examples/happyhorse-t2v.json`、`examples/happyhorse-i2v.json`、`examples/happyhorse-r2v.json`、`test/bailian-client.test.js`、`package.json`、`.env.example`、`README.md`。
+   - 模型：`happyhorse-1.1-t2v`、`happyhorse-1.1-i2v`、`happyhorse-1.1-r2v`。
+   - 命令：`npm --prefix integrations/bailianCLI run bailian -- submit examples/happyhorse-i2v.json --wait --download outputs/demo.mp4`。
+   - 环境变量：`DASHSCOPE_API_KEY` 必填；`BAILIAN_WORKSPACE_ID`、`BAILIAN_REGION`、`BAILIAN_BASE_URL` 可选；真实 key 不能进入仓库。
+   - 验证：`npm --prefix integrations/bailianCLI test` 必须覆盖 create/get/poll、三类 payload 校验、图生视频禁止 `ratio`、参考图数量限制和配置 endpoint。
+
+6. `ai_video_compose_batch`
    - 输入：AI 视频片段、商品细节图、商品标题/FAB、品牌 logo、BGM。
    - 推荐实现：本地 `ffmpeg` 或 Remotion 模板渲染，避免依赖剪映桌面 UI。
    - 默认模板：开头封面文字 1.5-2 秒，AI 模拍动态 8-12 秒，商品细节 4-6 秒，卖点字幕 2-3 条，logo 结尾 1 秒。
    - 输出：成品视频、封面图、字幕/文案 JSON、剪辑审查结果。
 
-6. `qn_short_video_publish`
+7. `qn_short_video_publish`
    - 输入：成品视频、标题、文案、商品 ID、封面图、账号/达人信息。
    - 模式：`plan` 只校验；`live` 上传并发布。
    - 发布前必须检查：极限词、夸大描述、不良舆论、功能与商品详情一致、BGM 授权、视频尺寸/时长/码率、商品 ID 可访问。
    - 输出：发布 ID、发布 URL、千牛回读状态、失败原因。
 
-7. `ai_video_result_register`
+8. `ai_video_result_register`
    - 输入：发布结果。
    - 动作：写回钉钉登记表、上传成品到森马云盘 `AI自制视频素材` 目录、生成日报/看板。
    - 安全边界：写回钉钉和上传云盘都属于外部状态变更，需显式 live 模式。
@@ -211,7 +234,7 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
 | 批量找图 | 款号、商品 ID、云盘路径 | 森马云盘 API 搜索/下载 | 模拍图、细节图、缺图原因 | 抽检款号匹配 |
 | 图片预处理 | 模拍图/细节图 | 本地压缩、过滤白底/非模拍、去重 | 可上传图片包 | 抽检图片质量 |
 | AI 换脸/换背景 | 3-4 张候选模拍图 | 抓虾内置 GPT Image 生图能力 | AI 模特图、模型信息 | 必审，选 3-4 张 |
-| 图生视频 | 已审 AI 图 | 千牛软件管家 `img2video` MTop 提交和轮询 | 原始视频片段、本地归档 | 视频质量必审 |
+| 图生视频 | 已审 AI 图 | 千牛软件管家 `img2video` MTop 提交和轮询；Seedance / HappyHorse 共享 CLI 任务提交和轮询 | 原始视频片段、本地归档 | 视频质量必审 |
 | 自动剪辑 | 原始视频、细节图、FAB、logo、BGM | FFmpeg/Remotion 风格模板 | 标准成片、封面、时间线 JSON | 可重剪/重生 |
 | 发布预检 | 成片、标题、文案、商品 ID | 千牛/光合接口预检 | 发布计划表 | 发布确认 |
 | 自动上传/发布 | 已确认发布计划 | `live` 模式上传发布 | 发布 ID、后台回读、登记表 | 仅在明确授权后执行 |
@@ -264,6 +287,12 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
 
 新增 `qn_img2video_batch` 原子能力，先把软件管家模板目录、模板预览下载、图片上传、模板生成、任务轮询、视频下载和本地归档跑实。该能力不依赖 `ai_video_pool_import`，输入可以直接来自人工审批后的 AI 结果图目录或本地多选图片。先不做最终发布。
 
+同一阶段补齐视频模型 provider：Seedance 复用 `integrations/seedanceCLI`；HappyHorse 复用新迁移的 `integrations/bailianCLI`。前端必须通过“新增视频任务”弹窗选择 provider，不允许审核通过后自动把所有图片直接提交给任一模型。HappyHorse 支持：
+
+- 文生视频：`happyhorse-1.1-t2v`，适合无可用图或隐私安全重试。
+- 图生视频：`happyhorse-1.1-i2v`，只接收 1 张 `first_frame`，不传 `ratio`。
+- 参考生视频：`happyhorse-1.1-r2v`，支持 1-9 张 `reference_image`，适合把模拍图、细节图和搭配图组织成服装展示。
+
 ### MVP 4：模板剪辑
 
 用本地视频模板替代剪映重复劳动。剪映只作为人工精修工具，自动化输出一版标准成品。模板参数从品类方法论表生成：痛点、卖点、必拍画面、穿搭场景、挂品目标。
@@ -287,6 +316,8 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
 - `adapters/bala-ai-video-assistant/qn-short-video-publish.js`
 - `adapters/bala-ai-video-assistant/templates/ai-video-workflow-template.csv`
 - `adapters/bala-ai-video-assistant/templates/ai-video-publish-template.csv`
+- `integrations/seedanceCLI/`
+- `integrations/bailianCLI/`
 - `tests/bala-ai-video-assistant.test.js`
 - `tests/test_bala_ai_video_workflow.py`
 
@@ -296,6 +327,7 @@ OpenCut 的价值在“可人工审核的时间线编辑器”，不是立刻做
 - 云盘找图：随机抽样款号的本地图片与云盘搜索结果一致，缺图原因可解释。
 - AI 模特替换：同一输入重跑不会重复提交已成功任务；失败记录能恢复。
 - 图生视频：能回读任务 ID、下载视频，并把不可用视频标记为重生/二剪素材。
+- HappyHorse：`npm --prefix integrations/bailianCLI test` 通过；视频任务能生成 t2v/i2v/r2v payload，图生视频不传 `ratio`，参考生视频限制 1-9 张图，成功任务下载本地 MP4。
 - 剪辑：输出视频时长、画幅、音轨、logo 结尾、字幕不溢出。
 - 发布：`plan` 模式不产生外部发布；`live` 模式需要显式确认，并有后台回读证据。
 - 结果：每批都有 Excel/JSON 证据表、素材目录、审批看板链接、失败重跑入口。
