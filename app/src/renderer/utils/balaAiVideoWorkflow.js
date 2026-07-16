@@ -49,6 +49,17 @@ export function resolveBalaAssetPreviewSource(asset = {}, {
   return balaPreviewValue(localPreviews?.[localPath])
 }
 
+export function resolveBalaVersionPreviewSource(version = {}, source = {}, {
+  resolvePreview = asset => resolveBalaAssetPreviewSource(asset),
+  brokenSources = {},
+} = {}) {
+  for (const asset of [version, source]) {
+    const preview = balaPreviewValue(resolvePreview(asset))
+    if (preview && !brokenSources?.[preview]) return preview
+  }
+  return ''
+}
+
 export function balaMaterialPanelControl(expanded) {
   return expanded
     ? { label: '向左收起找图', ariaLabel: '向左收起找图面板', direction: 'left' }

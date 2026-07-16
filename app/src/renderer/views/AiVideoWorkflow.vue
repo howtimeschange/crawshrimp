@@ -342,18 +342,24 @@
               </button>
             </div>
 
-            <div v-if="activeAction === 'face_swap'" class="aiv-picked-row aiv-selected-model-preview">
-              <img
-                v-if="selectedModel && previewSourceFor(selectedModel)"
-                :src="previewSourceFor(selectedModel)"
-                :alt="selectedModel.label"
-              />
-              <div>
-                <span>AI 模特</span>
-                <strong>{{ selectedModel?.label || '未选择' }}</strong>
+            <section v-if="activeAction === 'face_swap'" class="aiv-selected-model-preview" aria-label="AI 换脸模特">
+              <div class="aiv-selected-model-thumb">
+                <img
+                  v-if="selectedModel && modelPreviewSource(selectedModel) && !brokenPreviews[modelPreviewSource(selectedModel)]"
+                  :src="modelPreviewSource(selectedModel)"
+                  :alt="selectedModel.label || '已选模特'"
+                  @error="markPreviewBroken(modelPreviewSource(selectedModel))"
+                />
+                <span v-else aria-hidden="true">模特</span>
               </div>
-              <button type="button" class="aiv-ghost small" @click="openModelLibrary">选择模特</button>
-            </div>
+              <div class="aiv-selected-model-copy">
+                <span>AI 模特</span>
+                <strong>{{ selectedModel?.label || '尚未选择模特' }}</strong>
+              </div>
+              <button type="button" class="aiv-ghost small" @click="openModelLibrary">
+                {{ selectedModel ? '更换模特' : '选择模特' }}
+              </button>
+            </section>
 
             <div v-if="activeAction === 'outfit_swap'" class="aiv-upload-strip vertical">
               <div class="aiv-file-picker">
@@ -361,7 +367,7 @@
                   <strong>服装图</strong>
                   <span>{{ selectedPathSummary(garmentImagePaths) }}</span>
                 </div>
-                <button type="button" class="aiv-ghost small" @click="pickOutfitImages('garment')">选择</button>
+                <button type="button" class="aiv-ghost small" @click="openLocalMaterialLibrary('garment')">选择</button>
                 <button v-if="garmentImagePaths.length" type="button" class="aiv-ghost small" @click="clearOutfitImages('garment')">清空</button>
               </div>
               <div class="aiv-file-picker">
@@ -369,7 +375,7 @@
                   <strong>搭配参考图</strong>
                   <span>{{ selectedPathSummary(outfitReferencePaths) }}</span>
                 </div>
-                <button type="button" class="aiv-ghost small" @click="pickOutfitImages('outfit')">选择</button>
+                <button type="button" class="aiv-ghost small" @click="openLocalMaterialLibrary('outfit')">选择</button>
                 <button v-if="outfitReferencePaths.length" type="button" class="aiv-ghost small" @click="clearOutfitImages('outfit')">清空</button>
               </div>
               <div class="aiv-file-picker">
@@ -377,35 +383,21 @@
                   <strong>同款不同色</strong>
                   <span>{{ selectedPathSummary(variantReferencePaths) }}</span>
                 </div>
-                <button type="button" class="aiv-ghost small" @click="pickOutfitImages('variant')">选择</button>
+                <button type="button" class="aiv-ghost small" @click="openLocalMaterialLibrary('variant')">选择</button>
                 <button v-if="variantReferencePaths.length" type="button" class="aiv-ghost small" @click="clearOutfitImages('variant')">清空</button>
               </div>
             </div>
 
-            <details v-if="activeAction === 'outfit_swap'" class="aiv-local-material-library">
-              <summary>
-                <span><strong>本地素材库</strong><small>换装与细节参考共用</small></span>
-                <span>{{ localMaterialLibraryAssets.length }} 张</span>
-            </summary>
-            <div class="aiv-reference-kind-switcher">
-                <button type="button" :class="['aiv-action-chip', { active: activeLocalReferenceKind === 'garment' }]" @click="activeLocalReferenceKind = 'garment'">服装图</button>
-                <button type="button" :class="['aiv-action-chip', { active: activeLocalReferenceKind === 'outfit' }]" @click="activeLocalReferenceKind = 'outfit'">搭配参考</button>
-                <button type="button" :class="['aiv-action-chip', { active: activeLocalReferenceKind === 'variant' }]" @click="activeLocalReferenceKind = 'variant'">同款不同色</button>
+            <label class="aiv-field">
+              <span>生图模型</span>
+              <select v-if="configuredAiImageModels.length" v-model="selectedAiImageModelId" :disabled="aiIsRunning">
+                <option v-for="model in configuredAiImageModels" :key="model.id" :value="model.id">{{ model.label }}</option>
+              </select>
+              <div v-else class="aiv-model-config-empty">
+                <span>尚未配置可用生图模型</span>
+                <button type="button" class="aiv-ghost small" @click="openAiImageModelSettings">去配置 1XM 图片模型</button>
               </div>
-              <div class="aiv-local-material-grid">
-                <button
-                  v-for="asset in localMaterialLibraryAssets"
-                  :key="asset.id || asset.path"
-                  type="button"
-                  :class="{ selected: localReferenceSelected(asset.path, activeLocalReferenceKind) }"
-                  :aria-pressed="localReferenceSelected(asset.path, activeLocalReferenceKind)"
-                  @click="toggleLocalReference(asset, activeLocalReferenceKind)"
-                >
-                  <img v-if="thumbnailSourceFor(asset)" :src="thumbnailSourceFor(asset)" :alt="asset.name" loading="lazy" decoding="async" />
-                  <span>{{ asset.role }} · {{ asset.name }}</span>
-                </button>
-              </div>
-            </details>
+            </label>
 
             <label class="aiv-field">
               <span class="aiv-field-heading">
@@ -429,7 +421,7 @@
             <button
               type="button"
               class="aiv-primary wide"
-              :disabled="aiIsRunning"
+              :disabled="aiIsRunning || !configuredAiImageModels.length"
               @click="startAiImageGeneration"
             >
               {{ aiIsRunning ? '正在生图...' : '开始生图' }}
@@ -507,7 +499,7 @@
                     <div class="aiv-media-hover-tools">
                       <div>
                         <span class="aiv-origin-label">原图</span>
-                        <strong>{{ source.name }}</strong>
+                        <strong :title="source.name">{{ shortDisplayName(source.name) }}</strong>
                         <small>{{ source.role }} · {{ style.styleCode }}</small>
                       </div>
                       <button type="button" class="aiv-thumb-zoom" title="大图修改" @click="openImageEditor(source, style.styleCode)">
@@ -539,8 +531,8 @@
                       <div class="aiv-media-hover-tools">
                         <div>
                           <span>{{ version.action }}</span>
-                          <strong>{{ version.label }}</strong>
-                          <small>{{ version.meta }}</small>
+                          <strong :title="version.label">{{ shortDisplayName(version.label) }}</strong>
+                          <small :title="version.meta">{{ shortDisplayName(version.meta, 36) }}</small>
                         </div>
                         <i v-if="version.status === 'running'" class="aiv-mini-progress" :style="{ '--progress': `${version.progress || 0}%` }"></i>
                         <div class="aiv-version-actions">
@@ -549,9 +541,14 @@
                         </div>
                       </div>
                     </article>
-                    <button type="button" class="aiv-version-card add" @click="activeAction = 'background_swap'">
+                    <button
+                      type="button"
+                      class="aiv-version-card add"
+                      :title="`将 ${source.name} 选为本次改图输入，再在左侧选择动作后点开始生图`"
+                      @click="continueEditingSource(source)"
+                    >
                       <strong>继续改这张</strong>
-                      <small>换脸 / 换背景 / 换装 / 换姿势</small>
+                      <small>选中本图 · 用左侧动作再生成</small>
                     </button>
                   </div>
                 </article>
@@ -569,10 +566,10 @@
           <header class="aiv-panel-head">
             <div>
               <strong>AI 结果审核池</strong>
-              <span>参考 AI 测图审图看板，支持新增图、通过、舍弃、重试和输出给视频</span>
+              <span>支持新增图、通过、舍弃、重试和输出到视频任务</span>
             </div>
-                <div>
-                  <span class="aiv-badge success">通过 {{ reviewSummary.approved }}</span>
+            <div class="aiv-review-summary-badges">
+              <span class="aiv-badge success">通过 {{ reviewSummary.approved }}</span>
               <span class="aiv-badge">待审 {{ reviewSummary.pending }}</span>
               <span class="aiv-badge retry">重跑 {{ reviewSummary.retry }}</span>
             </div>
@@ -587,9 +584,11 @@
               <option value="rejected">已舍弃</option>
               <option value="retry">需重跑</option>
             </select>
-            <button type="button" class="aiv-ghost small" @click="requestPendingReviewStatus('approved')">待审全通过</button>
-            <button type="button" class="aiv-ghost small danger" @click="requestPendingReviewStatus('rejected')">待审全舍弃</button>
-            <button type="button" class="aiv-ghost small" @click="refreshReviewBatch">刷新审核池</button>
+            <div class="aiv-review-toolbar-actions">
+              <button type="button" class="aiv-ghost small" @click="requestPendingReviewStatus('approved')">待审全通过</button>
+              <button type="button" class="aiv-ghost small danger" @click="requestPendingReviewStatus('rejected')">待审全舍弃</button>
+              <button type="button" class="aiv-ghost small" @click="refreshReviewBatch">刷新审核池</button>
+            </div>
           </div>
           <div v-if="reviewActionError" class="aiv-inline-error aiv-review-action-error" role="alert">{{ reviewActionError }}</div>
           <div v-if="recentReviewBulkAction" class="aiv-review-undo" role="status">
@@ -616,22 +615,25 @@
                   :key="asset.id"
                   :class="['aiv-ai-card', asset.status]"
                 >
-                  <button type="button" class="aiv-ai-preview" @click="openImagePreview(asset, style.styleCode)">
+                  <button type="button" class="aiv-ai-preview" :title="asset.label" @click="openImagePreview(asset, style.styleCode)">
                     <img
                       v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
                       :src="previewSourceFor(asset)"
                       :alt="asset.label"
+                      loading="lazy"
+                      decoding="async"
                       @error="markPreviewBroken(previewSourceFor(asset))"
                     />
                     <template v-else>
                       <span>{{ asset.label }}</span>
                       <small>{{ asset.action }}</small>
                     </template>
+                    <i class="aiv-ai-status-badge">{{ assetStatusLabel(asset.status) }}</i>
                   </button>
                   <footer>
-                    <div>
-                      <strong>{{ asset.label }}</strong>
-                      <span>{{ asset.meta }}</span>
+                    <div class="aiv-ai-card-copy">
+                      <strong :title="asset.label">{{ asset.label }}</strong>
+                      <span :title="asset.meta">{{ asset.meta }}</span>
                     </div>
                     <div class="aiv-ai-actions">
                       <button type="button" class="ok" @click="setReviewAssetStatus(asset, 'approved')">通过</button>
@@ -644,7 +646,7 @@
                 <article class="aiv-ai-card add">
                   <button type="button" class="aiv-add-image" @click="openAddImageMenu(style.styleCode)">
                     <strong>新增图片</strong>
-                    <span>上传本地图，或继续 AI 换脸/换背景/换装/换姿势</span>
+                    <span>本地上传或继续 AI 改图</span>
                   </button>
                   <div class="aiv-add-menu" v-if="addImageMenuStyle === style.styleCode">
                     <button type="button">上传本地图</button>
@@ -662,7 +664,7 @@
                   {{ asset.role }} · {{ asset.name }}
                 </button>
                 <details v-if="hiddenReviewSourceAssetCount(style)" class="aiv-source-assets-more">
-                  <summary>查看其余 {{ hiddenReviewSourceAssetCount(style) }} 张参考素材</summary>
+                  <summary>其余 {{ hiddenReviewSourceAssetCount(style) }} 张</summary>
                   <div>
                     <button v-for="asset in hiddenReviewSourceAssets(style)" :key="asset.name" type="button" class="aiv-source-pill">
                       {{ asset.role }} · {{ asset.name }}
@@ -716,61 +718,48 @@
 
         <section class="aiv-video-task-list">
           <article v-for="task in videoTasks" :key="task.id" class="aiv-panel aiv-video-task-card">
-            <header class="aiv-panel-head">
-              <div>
-                <strong>{{ task.styleCode }} · {{ task.title }}</strong>
-                <span>{{ task.assets.length }} 张已选素材 · {{ approvedVideoTaskAssetCount(task) }} 张已审核 · {{ task.status }}</span>
+            <div class="aiv-video-task-row">
+              <div class="aiv-video-task-assets compact">
+                <button
+                  v-for="asset in task.assets.slice(0, 4)"
+                  :key="asset.id"
+                  type="button"
+                  :class="['aiv-video-asset-card', 'thumb-only', 'selected', { pending: asset.status !== 'approved' }]"
+                  :title="asset.label"
+                  @click="openImagePreview(asset, task.styleCode)"
+                >
+                  <img
+                    v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
+                    :src="previewSourceFor(asset)"
+                    :alt="asset.label"
+                    @error="markPreviewBroken(previewSourceFor(asset))"
+                  />
+                  <span v-else class="aiv-video-thumb-fallback">图</span>
+                </button>
+                <span v-if="task.assets.length > 4" class="aiv-video-more-assets">+{{ task.assets.length - 4 }}</span>
               </div>
-              <div class="aiv-provider-badges">
-                <span :class="['aiv-badge', task.provider !== 'qn' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
-                <span :class="['aiv-badge', task.template ? 'orange' : '']">
-                  {{ task.provider === 'happyhorse' ? happyHorseModeLabel(task.happyhorseMode) : (task.template ? task.template.title : '不选模板') }}
-                </span>
+              <div class="aiv-video-task-main">
+                <div class="aiv-video-task-title-line">
+                  <strong :title="`${task.styleCode} · ${task.title}`">{{ task.styleCode }} · {{ task.title }}</strong>
+                  <span class="aiv-video-task-status">{{ task.assets.length }} 张素材 · {{ approvedVideoTaskAssetCount(task) }} 已审核 · {{ task.status }}</span>
+                  <span :class="['aiv-badge', task.provider !== 'qn' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
+                  <span :class="['aiv-badge', task.template ? 'orange' : '']">
+                    {{ task.provider === 'happyhorse' ? happyHorseModeLabel(task.happyhorseMode) : (task.template ? task.template.title : '不选模板') }}
+                  </span>
+                </div>
+                <div class="aiv-video-task-meta-line">
+                  <span><strong>素材</strong>{{ task.assets.length }} 张组成一条视频</span>
+                  <span :title="task.prompt || '生意管家页面生成可不填写 Prompt'"><strong>Prompt</strong>{{ task.prompt || '可不填写' }}</span>
+                  <span :title="task.outputDir"><strong>输出</strong>{{ shortDisplayPath(task.outputDir) }}</span>
+                </div>
               </div>
-            </header>
-            <div class="aiv-panel-body">
-              <div class="aiv-video-task-layout">
-                <div class="aiv-video-task-assets">
-                  <button
-                    v-for="asset in task.assets.slice(0, 3)"
-                    :key="asset.id"
-                    type="button"
-                    :class="['aiv-video-asset-card', 'selected', { pending: asset.status !== 'approved' }]"
-                    @click="openImagePreview(asset, task.styleCode)"
-                  >
-                    <img
-                      v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
-                      :src="previewSourceFor(asset)"
-                      :alt="asset.label"
-                      @error="markPreviewBroken(previewSourceFor(asset))"
-                    />
-                    <span :class="['aiv-status-pill', asset.status]">{{ assetStatusLabel(asset.status) }}</span>
-                    <strong>{{ asset.label }}</strong>
-                    <small>{{ asset.kind }}</small>
-                  </button>
-                  <span v-if="task.assets.length > 3" class="aiv-video-more-assets">+{{ task.assets.length - 3 }}</span>
-                </div>
-                <div class="aiv-video-task-details">
-                  <div class="aiv-video-task-meta">
-                    <div><strong>素材组合</strong><span>{{ task.assets.length }} 张图组成一条视频任务</span></div>
-                    <div><strong>Prompt</strong><span>{{ task.prompt || '生意管家页面生成可不填写 Prompt' }}</span></div>
-                    <div><strong>输出目录</strong><span>{{ task.outputDir }}</span></div>
-                  </div>
-                  <div v-if="task.provider !== 'qn'" class="aiv-seedance-callout">
-                    <strong>{{ providerLabel(task.provider) }}</strong>
-                    <span>凭据状态：{{ providerStatusLabel(task.provider) }}；预检不会提交，只有明确授权才会创建外部任务。</span>
-                    <small v-if="task.provider === 'seedance'">真人儿童图如触发隐私保护，则转为文字描述服装、场景和动作生成原创人物版本。</small>
-                    <small v-else>图生视频只选 1 张首帧图；参考生视频支持 1-9 张图片，成功后立即下载归档。</small>
-                  </div>
-                  <div class="aiv-inline-actions">
-                    <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="openVideoTaskDialog('', task, 'edit')">编辑视频任务</button>
-                    <button type="button" class="aiv-ghost small" @click="openVideoTaskDialog('', task, 'copy')">复制新建</button>
-                    <button v-if="task.provider === 'qn'" type="button" class="aiv-ghost small" @click="openTemplateLibrary(task.styleCode)">查看模板</button>
-                    <button v-if="task.provider !== 'qn'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(task.provider)">打开 AI 能力配置</button>
-                    <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="runVideoTask(task, 'plan')">提交前预检</button>
-                    <button type="button" class="aiv-primary" :disabled="videoIsRunning" @click="runVideoTask(task, 'live')">授权生成并下载</button>
-                  </div>
-                </div>
+              <div class="aiv-video-task-actions">
+                <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="openVideoTaskDialog('', task, 'edit')">编辑</button>
+                <button type="button" class="aiv-ghost small" @click="openVideoTaskDialog('', task, 'copy')">复制</button>
+                <button v-if="task.provider === 'qn'" type="button" class="aiv-ghost small" @click="openTemplateLibrary(task.styleCode)">模板</button>
+                <button v-if="task.provider !== 'qn'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(task.provider)">配置</button>
+                <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="runVideoTask(task, 'plan')">预检</button>
+                <button type="button" class="aiv-primary small" :disabled="videoIsRunning" @click="runVideoTask(task, 'live')">授权生成并下载</button>
               </div>
             </div>
           </article>
@@ -878,42 +867,52 @@
         @keydown="trapDialogFocus"
       >
         <header class="aiv-modal-head">
-          <div>
-            <strong id="aiv-preview-title">{{ previewImage.title }}</strong>
-            <span>{{ previewImage.meta }}</span>
+          <div class="aiv-preview-title-block">
+            <strong id="aiv-preview-title" :title="previewImage.title">{{ shortDisplayName(previewImage.title, 42) }}</strong>
+            <span :title="previewImage.meta">{{ previewImage.meta }}</span>
           </div>
           <button type="button" class="aiv-ghost small" @click="closePreview">关闭</button>
         </header>
         <div class="aiv-image-editor-layout">
           <section class="aiv-image-editor-stage">
             <div class="aiv-big-preview">
-              <img
-                v-if="activePreviewHistoryItem?.src && !brokenPreviews[activePreviewHistoryItem.src]"
-                :src="activePreviewHistoryItem.src"
-                :alt="activePreviewHistoryItem.label || previewImage.title"
-                @error="markPreviewBroken(activePreviewHistoryItem.src)"
-              />
-              <div v-else class="aiv-big-preview-placeholder">
-                <strong>{{ previewImage.title }}</strong>
-                <span>{{ previewImage.meta }}</span>
+              <div class="aiv-big-preview-frame">
+                <img
+                  v-if="activePreviewHistoryItem?.src && !brokenPreviews[activePreviewHistoryItem.src]"
+                  class="aiv-big-preview-image"
+                  :src="activePreviewHistoryItem.src"
+                  :alt="activePreviewHistoryItem.label || previewImage.title"
+                  @error="markPreviewBroken(activePreviewHistoryItem.src)"
+                />
+                <div v-else class="aiv-big-preview-placeholder">
+                  <strong>{{ previewImage.title }}</strong>
+                  <span>{{ previewImage.meta }}</span>
+                </div>
+                <TldrawAnnotationLayer
+                  v-if="activePreviewHistoryItem?.src && !brokenPreviews[activePreviewHistoryItem.src]"
+                  class="aiv-image-annotation-layer"
+                  :class="{ active: Boolean(previewAnnotationTool) }"
+                  :image-src="activePreviewHistoryItem.src"
+                  :image-label="activePreviewHistoryItem.label || previewImage.title"
+                  :active-tool="previewAnnotationTool"
+                  :annotation-color="previewAnnotationColor"
+                  :clear-nonce="previewAnnotationClearNonce"
+                  :export-nonce="previewAnnotationExportNonce"
+                  @export-annotation="capturePreviewAnnotation"
+                  @error="handlePreviewAnnotationError"
+                />
               </div>
-              <TldrawAnnotationLayer
-                v-if="activePreviewHistoryItem?.src && previewAnnotationTool"
-                class="aiv-image-annotation-layer"
-                :class="{ active: Boolean(previewAnnotationTool) }"
-                :image-src="activePreviewHistoryItem.src"
-                :image-label="activePreviewHistoryItem.label || previewImage.title"
-                :active-tool="previewAnnotationTool"
-                :annotation-color="previewAnnotationColor"
-                :clear-nonce="previewAnnotationClearNonce"
-                :export-nonce="previewAnnotationExportNonce"
-                @export-annotation="capturePreviewAnnotation"
-                @error="handlePreviewAnnotationError"
-              />
-              <div class="aiv-image-annotation-toolbar" aria-label="精确标注工具">
-                <button type="button" :class="{ active: previewAnnotationTool === 'draw' }" @click="previewAnnotationTool = 'draw'">画笔</button>
-                <button type="button" :class="{ active: previewAnnotationTool === 'arrow' }" @click="previewAnnotationTool = 'arrow'">箭头</button>
-                <button type="button" :class="{ active: previewAnnotationTool === 'text' }" @click="previewAnnotationTool = 'text'">文字</button>
+              <div
+                class="aiv-image-annotation-toolbar"
+                role="toolbar"
+                aria-label="精确标注工具"
+                @mousedown.stop
+                @pointerdown.stop
+                @click.stop
+              >
+                <button type="button" :class="{ active: previewAnnotationTool === 'draw' }" @click="previewAnnotationTool = previewAnnotationTool === 'draw' ? '' : 'draw'">画笔</button>
+                <button type="button" :class="{ active: previewAnnotationTool === 'arrow' }" @click="previewAnnotationTool = previewAnnotationTool === 'arrow' ? '' : 'arrow'">箭头</button>
+                <button type="button" :class="{ active: previewAnnotationTool === 'text' }" @click="previewAnnotationTool = previewAnnotationTool === 'text' ? '' : 'text'">文字</button>
                 <button type="button" @click="clearPreviewAnnotation">清除标注</button>
               </div>
             </div>
@@ -939,6 +938,20 @@
                 {{ action.title }}
               </button>
             </div>
+            <label class="aiv-field">
+              <span>生图模型</span>
+              <select
+                v-if="configuredAiImageModels.length"
+                v-model="selectedAiImageModelId"
+                :disabled="previewEditBusy"
+              >
+                <option v-for="model in configuredAiImageModels" :key="model.id" :value="model.id">{{ model.label }}</option>
+              </select>
+              <div v-else class="aiv-model-config-empty">
+                <span>尚未配置可用生图模型</span>
+                <button type="button" class="aiv-ghost small" @click="openAiImageModelSettings">去配置 1XM 图片模型</button>
+              </div>
+            </label>
             <section v-if="previewEditAction === 'face_swap'" class="aiv-preview-model-picker" aria-label="AI 换脸模特">
               <div class="aiv-preview-model-sample">
                 <img
@@ -955,13 +968,39 @@
               </div>
               <button type="button" class="aiv-ghost small" @click="openModelLibrary">{{ selectedModel ? '更换模特' : '选择模特' }}</button>
             </section>
+            <section v-if="previewEditAction === 'outfit_swap'" class="aiv-preview-outfit-pickers" aria-label="换装参考图">
+              <div class="aiv-file-picker">
+                <div>
+                  <strong>服装图</strong>
+                  <span>{{ selectedPathSummary(garmentImagePaths) }}</span>
+                </div>
+                <button type="button" class="aiv-ghost small" @click="openLocalMaterialLibrary('garment')">选择</button>
+                <button v-if="garmentImagePaths.length" type="button" class="aiv-ghost small" @click="clearOutfitImages('garment')">清空</button>
+              </div>
+              <div class="aiv-file-picker">
+                <div>
+                  <strong>搭配参考图</strong>
+                  <span>{{ selectedPathSummary(outfitReferencePaths) }}</span>
+                </div>
+                <button type="button" class="aiv-ghost small" @click="openLocalMaterialLibrary('outfit')">选择</button>
+                <button v-if="outfitReferencePaths.length" type="button" class="aiv-ghost small" @click="clearOutfitImages('outfit')">清空</button>
+              </div>
+              <div class="aiv-file-picker">
+                <div>
+                  <strong>同款不同色</strong>
+                  <span>{{ selectedPathSummary(variantReferencePaths) }}</span>
+                </div>
+                <button type="button" class="aiv-ghost small" @click="openLocalMaterialLibrary('variant')">选择</button>
+                <button v-if="variantReferencePaths.length" type="button" class="aiv-ghost small" @click="clearOutfitImages('variant')">清空</button>
+              </div>
+            </section>
             <label class="aiv-field">
               <span>Prompt 修改</span>
-              <textarea v-model="previewEditPrompt" rows="8" placeholder="描述只针对当前图片的修改要求"></textarea>
+              <textarea v-model="previewEditPrompt" rows="6" placeholder="描述只针对当前图片的修改要求"></textarea>
             </label>
             <button v-if="previewEditAction === 'pose_swap'" type="button" class="aiv-ghost wide" @click="promptLibraryTarget = 'preview'; promptLibraryOpen = true">从 Prompt 库选择</button>
             <div v-if="previewEditError" class="aiv-inline-error">{{ previewEditError }}</div>
-            <button type="button" class="aiv-primary wide" :disabled="previewEditBusy" @click="runPreviewImageEdit">
+            <button type="button" class="aiv-primary wide" :disabled="previewEditBusy || !configuredAiImageModels.length" @click="runPreviewImageEdit">
               {{ previewEditBusy ? '修改图生成中...' : '生成当前修改' }}
             </button>
           </aside>
@@ -1011,9 +1050,113 @@
       @select="applyPromptLibrarySelection"
     />
 
+    <div v-if="localMaterialLibraryOpen" class="aiv-modal aiv-modal-stacked" @click.self="closeLocalMaterialLibrary">
+      <section
+        class="aiv-modal-panel wide aiv-local-material-modal-panel"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="aiv-local-material-title"
+        tabindex="-1"
+        data-aiv-dialog
+        @keydown.esc.prevent="closeLocalMaterialLibrary"
+        @keydown="trapDialogFocus"
+      >
+        <header class="aiv-modal-head">
+          <div>
+            <strong id="aiv-local-material-title">选择{{ activeLocalReferenceLabel }}</strong>
+            <span>{{ localMaterialLibraryScopeLabel }} · 从素材库选取，或从本机上传补充</span>
+          </div>
+          <button type="button" class="aiv-ghost small" @click="closeLocalMaterialLibrary">关闭</button>
+        </header>
+        <div class="aiv-local-material-modal-body">
+          <div class="aiv-local-material-modal-toolbar aiv-local-material-modal-toolbar-primary">
+            <input
+              v-model="localMaterialLibraryStyleQuery"
+              class="aiv-local-material-style-search"
+              type="search"
+              placeholder="搜索款号 / 文件名"
+              aria-label="搜索款号或文件名"
+            />
+            <div class="aiv-local-material-modal-toolbar-actions">
+              <span>已选 {{ selectedLocalReferenceCount }} 张</span>
+              <button type="button" class="aiv-ghost small" @click="uploadLocalMaterialFromDisk">从本地上传</button>
+            </div>
+          </div>
+          <div class="aiv-local-material-style-tabs" role="tablist" aria-label="按款号筛选素材">
+            <button
+              type="button"
+              role="tab"
+              :aria-selected="localMaterialLibraryStyleFilter === 'all'"
+              :class="['aiv-action-chip', { active: localMaterialLibraryStyleFilter === 'all' }]"
+              @click="localMaterialLibraryStyleFilter = 'all'"
+            >
+              全部款号 <strong>{{ localMaterialLibraryStyleOptions.length }}</strong>
+            </button>
+            <button
+              v-for="styleCode in localMaterialLibraryStyleOptions"
+              :key="styleCode"
+              type="button"
+              role="tab"
+              :aria-selected="localMaterialLibraryStyleFilter === styleCode"
+              :class="['aiv-action-chip', { active: localMaterialLibraryStyleFilter === styleCode }]"
+              @click="localMaterialLibraryStyleFilter = styleCode"
+            >
+              {{ styleCode }}
+            </button>
+          </div>
+          <div class="aiv-local-material-modal-toolbar">
+            <div class="aiv-reference-kind-switcher" role="tablist" aria-label="素材类型">
+              <button type="button" role="tab" :aria-selected="localMaterialLibraryCategory === 'all'" :class="['aiv-action-chip', { active: localMaterialLibraryCategory === 'all' }]" @click="localMaterialLibraryCategory = 'all'">全部类型</button>
+              <button type="button" role="tab" :aria-selected="localMaterialLibraryCategory === 'model'" :class="['aiv-action-chip', { active: localMaterialLibraryCategory === 'model' }]" @click="localMaterialLibraryCategory = 'model'">模特图</button>
+              <button type="button" role="tab" :aria-selected="localMaterialLibraryCategory === 'detail'" :class="['aiv-action-chip', { active: localMaterialLibraryCategory === 'detail' }]" @click="localMaterialLibraryCategory = 'detail'">平拍图</button>
+            </div>
+            <span class="aiv-local-material-result-count">共 {{ filteredLocalMaterialLibraryAssets.length }} 张</span>
+          </div>
+          <div class="aiv-local-material-modal-grid">
+            <article
+              v-for="asset in filteredLocalMaterialLibraryAssets"
+              :key="`${asset.styleCode || ''}-${asset.id || asset.path}`"
+              :class="['aiv-local-material-card', { selected: localReferenceSelected(asset.path, activeLocalReferenceKind) }]"
+              role="button"
+              tabindex="0"
+              :aria-pressed="localReferenceSelected(asset.path, activeLocalReferenceKind) ? 'true' : 'false'"
+              :title="`${asset.styleCode || ''} · ${asset.name}`"
+              @click="toggleLocalReference(asset, activeLocalReferenceKind)"
+              @keydown.enter.prevent="toggleLocalReference(asset, activeLocalReferenceKind)"
+              @keydown.space.prevent="toggleLocalReference(asset, activeLocalReferenceKind)"
+            >
+              <div class="aiv-local-material-card-preview">
+                <img
+                  v-if="thumbnailSourceFor(asset) && !brokenPreviews[thumbnailSourceFor(asset)]"
+                  :src="thumbnailSourceFor(asset)"
+                  :alt="asset.name"
+                  loading="lazy"
+                  decoding="async"
+                  @error="markPreviewBroken(thumbnailSourceFor(asset))"
+                />
+                <span v-else class="aiv-local-material-card-fallback">{{ localMaterialCategoryLabel(asset) }}</span>
+                <i v-if="localReferenceSelected(asset.path, activeLocalReferenceKind)">已选</i>
+              </div>
+              <p class="aiv-local-material-card-meta">
+                <span>{{ asset.styleCode || '未分款' }} · {{ localMaterialCategoryLabel(asset) }}</span>
+                <strong>{{ shortDisplayName(asset.name) }}</strong>
+              </p>
+            </article>
+            <div v-if="!filteredLocalMaterialLibraryAssets.length" class="aiv-empty-inline aiv-local-material-empty">
+              当前筛选下没有可用素材，可切换款号、类型或从本地上传。
+            </div>
+          </div>
+        </div>
+        <footer class="aiv-modal-foot">
+          <span>{{ activeLocalReferenceLabel }}已选择 {{ selectedLocalReferenceCount }} 张</span>
+          <button type="button" class="aiv-primary" @click="closeLocalMaterialLibrary">完成选择</button>
+        </footer>
+      </section>
+    </div>
+
     <div v-if="modelLibraryOpen" class="aiv-modal" @click.self="closeModelLibrary">
       <section
-        class="aiv-modal-panel"
+        class="aiv-modal-panel aiv-model-library-modal-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aiv-model-title"
@@ -1029,7 +1172,7 @@
           </div>
           <button type="button" class="aiv-ghost small" @click="closeModelLibrary">关闭</button>
         </header>
-        <div class="aiv-modal-body">
+        <div class="aiv-modal-body model-library">
           <aside class="aiv-modal-filter">
             <strong>年龄段</strong>
             <div class="aiv-filter-chip-row">
@@ -1044,36 +1187,38 @@
             <span v-if="modelLibraryState.loading" class="aiv-filter-note">加载模特库...</span>
             <span v-if="modelLibraryState.error" class="aiv-filter-note error">{{ modelLibraryState.error }}</span>
           </aside>
-          <div class="aiv-model-grid">
-            <article
-              v-for="model in modelSamples"
-              :key="model.id"
-              :class="['aiv-model-card', { selected: selectedModel?.id === model.id }]"
-              role="button"
-              tabindex="0"
-              :aria-pressed="selectedModel?.id === model.id"
-              @click="selectedModel = model"
-              @keydown.enter.prevent="selectedModel = model"
-              @keydown.space.prevent="selectedModel = model"
-            >
-              <div class="aiv-model-image">
-                <img
-                  v-if="modelPreviewSource(model) && !brokenPreviews[modelPreviewSource(model)]"
-                  :src="modelPreviewSource(model)"
-                  :alt="model.name"
-                  loading="lazy"
-                  decoding="async"
-                  @error="markPreviewBroken(modelPreviewSource(model))"
-                />
-                    <span v-else>{{ model.ageLabel }} {{ model.gender }}</span>
+          <div class="aiv-model-grid-scroll">
+            <div class="aiv-model-grid">
+              <article
+                v-for="model in modelSamples"
+                :key="model.id"
+                :class="['aiv-model-card', { selected: selectedModel?.id === model.id }]"
+                role="button"
+                tabindex="0"
+                :aria-pressed="selectedModel?.id === model.id"
+                @click="selectedModel = model"
+                @keydown.enter.prevent="selectedModel = model"
+                @keydown.space.prevent="selectedModel = model"
+              >
+                <div class="aiv-model-image">
+                  <img
+                    v-if="modelPreviewSource(model) && !brokenPreviews[modelPreviewSource(model)]"
+                    :src="modelPreviewSource(model)"
+                    :alt="model.name"
+                    loading="lazy"
+                    decoding="async"
+                    @error="markPreviewBroken(modelPreviewSource(model))"
+                  />
+                  <span v-else>{{ model.ageLabel }} {{ model.gender }}</span>
+                </div>
+                <div>
+                  <strong>{{ model.ageLabel }} · {{ model.gender }}</strong>
+                  <span>{{ model.name }}</span>
+                </div>
+              </article>
+              <div v-if="!modelLibraryState.loading && !modelSamples.length" class="aiv-empty-inline">
+                当前筛选下没有可用模特素材。
               </div>
-              <div>
-                    <strong>{{ model.ageLabel }} · {{ model.gender }}</strong>
-                <span>{{ model.name }}</span>
-              </div>
-            </article>
-            <div v-if="!modelLibraryState.loading && !modelSamples.length" class="aiv-empty-inline">
-              当前筛选下没有可用模特素材。
             </div>
           </div>
         </div>
@@ -1235,6 +1380,19 @@
                   {{ tab.label }} <strong>{{ tab.count }}</strong>
                 </button>
               </div>
+              <div class="aiv-video-task-kind-tabs" role="tablist" aria-label="视频任务素材类型">
+                <button
+                  v-for="tab in videoTaskKindTabs"
+                  :key="tab.id"
+                  type="button"
+                  role="tab"
+                  :class="['aiv-video-asset-filter', { active: videoTaskKindFilter === tab.id }]"
+                  :aria-selected="videoTaskKindFilter === tab.id"
+                  @click="videoTaskKindFilter = tab.id"
+                >
+                  {{ tab.label }} <strong>{{ tab.count }}</strong>
+                </button>
+              </div>
               <div
                 :id="`video-task-asset-panel-${videoTaskAssetFilter}`"
                 class="aiv-video-task-assets picker"
@@ -1262,7 +1420,7 @@
                     />
                     <span :class="['aiv-status-pill', asset.status]">{{ assetStatusLabel(asset.status) }}</span>
                     <strong>{{ asset.label }}</strong>
-                    <small>{{ asset.kind }}</small>
+                    <small>{{ videoTaskAssetKindLabel(asset) }}</small>
                   </button>
                   <div class="aiv-video-asset-card-actions">
                     <button
@@ -1278,7 +1436,8 @@
                 </div>
                 <div v-if="!filteredVideoTaskAssets.length" class="aiv-video-task-empty">
                   <strong>{{ activeVideoTaskAssetTab?.label || '当前' }}图片为空</strong>
-                  <span v-if="videoTaskAssetFilter === 'approved'">请先在“AI 审核”中通过图片，或切换到“待审核”仅查看。</span>
+                  <span v-if="videoTaskAssetFilter === 'approved' && videoTaskKindFilter === 'all'">请先在“AI 审核”中通过图片，或切换到“待审核”仅查看。</span>
+                  <span v-else-if="videoTaskKindFilter !== 'all'">当前状态与类型筛选下没有图片，可切换「模特图 / 细节图 / AI 图」。</span>
                   <span v-else>当前款号没有这类图片。</span>
                 </div>
               </div>
@@ -1429,6 +1588,7 @@ import {
   qnVideoResultFailure,
   rebaseBalaMaterialRowsToWorkspace,
   resolveBalaAssetPreviewSource,
+  resolveBalaVersionPreviewSource,
   resolveBalaVideoPlaybackSource,
   selectEditableSourcesForStyle,
   selectNewTaskRun,
@@ -1438,6 +1598,14 @@ import {
   toBalaBridgeStringArray,
   waitForNewTaskRun,
 } from '../utils/balaAiVideoWorkflow'
+import {
+  AI_IMAGE_MODELS,
+  getAiImageModel,
+  isNanoBananaModel,
+  missingKeyForModel,
+  normalizeSettings,
+  sizeForModel,
+} from '../utils/aiImageModels.js'
 
 const emit = defineEmits(['open-settings'])
 
@@ -1468,6 +1636,12 @@ const selectedTemplateId = ref('')
 const selectedModel = ref(null)
 const showSelectedVersionsOnly = ref(false)
 const previewImage = ref(null)
+const localMaterialLibraryOpen = ref(false)
+const localMaterialLibraryCategory = ref('all')
+const localMaterialLibraryStyleFilter = ref('all')
+const localMaterialLibraryStyleQuery = ref('')
+const aiImageSettings = ref({})
+const selectedAiImageModelId = ref('')
 const modelLibraryOpen = ref(false)
 const templateLibraryOpen = ref(false)
 const videoTaskDialogOpen = ref(false)
@@ -1479,6 +1653,7 @@ const addImageMenuStyle = ref('')
 const reviewFilter = ref('')
 const reviewStatusFilter = ref('')
 const videoTaskAssetFilter = ref('approved')
+const videoTaskKindFilter = ref('all')
 const reviewBulkConfirmation = ref(null)
 const recentReviewBulkAction = ref(null)
 const reviewActionError = ref('')
@@ -1654,11 +1829,58 @@ const modelGenderOptions = computed(() => [...new Set([
   ...modelLibraryState.groups.map(group => group.gender),
   ...modelLibraryState.items.map(item => item.gender),
 ].filter(Boolean))])
+const localMaterialLibraryStyleOptions = computed(() => (
+  [...new Set(styleWorkspaces.map(style => String(style.styleCode || '').trim()).filter(Boolean))]
+))
 const localMaterialLibraryAssets = computed(() => {
-  const group = activeMaterialGroup.value
-  if (!group) return []
-  return [...(group.modelPhotos || []), ...(group.detailPhotos || [])]
+  const styles = localMaterialLibraryStyleFilter.value === 'all'
+    ? styleWorkspaces
+    : styleWorkspaces.filter(style => style.styleCode === localMaterialLibraryStyleFilter.value)
+  return styles.flatMap(style => {
+    const styleCode = String(style.styleCode || '').trim()
+    return [
+      ...(style.modelPhotos || []).map(asset => ({ ...asset, styleCode: asset.styleCode || styleCode })),
+      ...(style.detailPhotos || []).map(asset => ({ ...asset, styleCode: asset.styleCode || styleCode })),
+    ]
+  })
 })
+const filteredLocalMaterialLibraryAssets = computed(() => {
+  let assets = localMaterialLibraryAssets.value
+  const query = String(localMaterialLibraryStyleQuery.value || '').trim().toLowerCase()
+  if (query) {
+    assets = assets.filter(asset => (
+      String(asset.styleCode || '').toLowerCase().includes(query)
+      || String(asset.name || '').toLowerCase().includes(query)
+      || String(asset.role || '').toLowerCase().includes(query)
+    ))
+  }
+  if (localMaterialLibraryCategory.value === 'model') {
+    assets = assets.filter(asset => asset.sourceType === 'model')
+  } else if (localMaterialLibraryCategory.value === 'detail') {
+    assets = assets.filter(asset => asset.sourceType === 'detail')
+  }
+  return assets
+})
+const localMaterialLibraryScopeLabel = computed(() => {
+  if (localMaterialLibraryStyleFilter.value !== 'all') return localMaterialLibraryStyleFilter.value
+  const count = localMaterialLibraryStyleOptions.value.length
+  return count ? `工作区 ${count} 个款号` : '当前工作区'
+})
+const activeLocalReferenceLabel = computed(() => ({
+  garment: '服装图',
+  outfit: '搭配参考图',
+  variant: '同款不同色',
+}[activeLocalReferenceKind.value] || '素材'))
+const selectedLocalReferenceCount = computed(() => {
+  if (activeLocalReferenceKind.value === 'garment') return garmentImagePaths.value.length
+  if (activeLocalReferenceKind.value === 'variant') return variantReferencePaths.value.length
+  return outfitReferencePaths.value.length
+})
+const configuredAiImageModels = computed(() => {
+  const settings = normalizeSettings(aiImageSettings.value)
+  return AI_IMAGE_MODELS.filter(model => !missingKeyForModel(model.id, settings))
+})
+const selectedAiImageModel = computed(() => getAiImageModel(selectedAiImageModelId.value || configuredAiImageModels.value[0]?.id))
 const previewHistoryItems = computed(() => {
   if (!previewImage.value) return []
   const items = Array.isArray(previewImage.value.history) ? previewImage.value.history : []
@@ -1980,14 +2202,27 @@ const videoTaskAssetTabs = computed(() => {
     { id: 'all', label: '全部', count: assets.length },
   ]
 })
+const videoTaskKindTabs = computed(() => {
+  const assets = videoTaskSelectableAssets.value
+  return [
+    { id: 'all', label: '全部类型', count: assets.length },
+    { id: 'model', label: '模特图', count: assets.filter(asset => videoTaskAssetKind(asset) === 'model').length },
+    { id: 'detail', label: '细节图', count: assets.filter(asset => videoTaskAssetKind(asset) === 'detail').length },
+    { id: 'ai', label: 'AI 图', count: assets.filter(asset => videoTaskAssetKind(asset) === 'ai').length },
+  ]
+})
 const activeVideoTaskAssetTab = computed(() => (
   videoTaskAssetTabs.value.find(tab => tab.id === videoTaskAssetFilter.value) || videoTaskAssetTabs.value[0]
 ))
 const filteredVideoTaskAssets = computed(() => {
-  const filter = videoTaskAssetFilter.value
-  if (filter === 'approved') return videoTaskSelectableAssets.value.filter(asset => asset.status === 'approved')
-  if (filter === 'pending') return videoTaskSelectableAssets.value.filter(asset => asset.status === 'pending' || asset.status === 'retry')
-  return videoTaskSelectableAssets.value
+  const statusFilter = videoTaskAssetFilter.value
+  const kindFilter = videoTaskKindFilter.value
+  return videoTaskSelectableAssets.value.filter((asset) => {
+    if (statusFilter === 'approved' && asset.status !== 'approved') return false
+    if (statusFilter === 'pending' && !(asset.status === 'pending' || asset.status === 'retry')) return false
+    if (kindFilter !== 'all' && videoTaskAssetKind(asset) !== kindFilter) return false
+    return true
+  })
 })
 const selectedVideoTaskAssetCount = computed(() => videoTaskDraft.assetIds.length)
 const selectedVideoTaskDraftAssets = computed(() => videoTaskSelectableAssets.value.filter(asset => (
@@ -2019,7 +2254,7 @@ const materialIsRunning = computed(() => isActiveWorkflowStatus(materialTask.sta
 const aiIsRunning = computed(() => isActiveWorkflowStatus(aiTaskState.status))
 const videoIsRunning = computed(() => isActiveWorkflowStatus(videoStageState.status))
 const hasOpenModal = computed(() => Boolean(
-  previewImage.value || pendingVersionDeletion.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
+  previewImage.value || pendingVersionDeletion.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
 ))
 const templateCategories = computed(() => {
   const names = [...new Set(templateSamples.map(item => item.title).filter(Boolean))]
@@ -2179,7 +2414,10 @@ function previewSourceFor(asset = {}) {
 }
 
 function versionPreviewSource(version = {}, source = {}) {
-  return previewSourceFor(version) || previewSourceFor(source)
+  return resolveBalaVersionPreviewSource(version, source, {
+    resolvePreview: previewSourceFor,
+    brokenSources: brokenPreviews,
+  })
 }
 
 function thumbnailSourceFor(asset = {}) {
@@ -2830,6 +3068,12 @@ function toggleEditInputSelection(asset) {
   asset.editSelected = !asset.editSelected
 }
 
+/** Select this original as an AI-edit input so the left action can generate more versions. */
+function continueEditingSource(source = {}) {
+  if (!source || typeof source !== 'object') return
+  source.editSelected = true
+}
+
 function enterAiEditWorkspace() {
   activeStep.value = 'ai-edit'
 }
@@ -3004,32 +3248,103 @@ function fileNameFromPath(path = '') {
   return String(path || '').split('/').pop().split('\\').pop()
 }
 
-async function pickOutfitImages(kind) {
-  if (typeof window.cs?.browseFile !== 'function') {
-    updateAiTaskState({ status: 'failed', error: '当前环境不支持系统文件选择器，请在抓虾桌面端使用', message: '当前环境不支持系统文件选择器，请在抓虾桌面端使用' })
-    return
-  }
-  try {
-    const selected = await window.cs.browseFile({
-      title: kind === 'garment' ? '选择服装图' : kind === 'variant' ? '选择同款不同色参考图' : '选择搭配参考图',
-      images: true,
-      multi: true,
-    })
-    const paths = Array.isArray(selected)
-      ? selected.map(item => String(item || '').trim()).filter(Boolean)
-      : String(selected || '').split(',').map(item => item.trim()).filter(Boolean)
-    if (kind === 'garment') garmentImagePaths.value = paths
-    else if (kind === 'variant') variantReferencePaths.value = paths
-    else outfitReferencePaths.value = paths
-  } catch (error) {
-    updateAiTaskState({ status: 'failed', error: error?.message || String(error), message: error?.message || String(error) })
-  }
+function shortDisplayName(value = '', max = 28) {
+  const text = String(value || '').trim()
+  if (!text || text.length <= max) return text
+  const head = Math.max(8, Math.floor((max - 1) * 0.55))
+  const tail = Math.max(6, max - head - 1)
+  return `${text.slice(0, head)}…${text.slice(-tail)}`
+}
+
+function shortDisplayPath(path = '', max = 42) {
+  const text = String(path || '').trim()
+  if (!text || text.length <= max) return text
+  return `…${text.slice(-(max - 1))}`
+}
+
+function localMaterialCategoryLabel(asset = {}) {
+  if (asset?.sourceType === 'model') return '模特图'
+  if (asset?.sourceType === 'detail') return '平拍图'
+  return asset?.role || '素材'
 }
 
 function clearOutfitImages(kind) {
   if (kind === 'garment') garmentImagePaths.value = []
   else if (kind === 'variant') variantReferencePaths.value = []
   else outfitReferencePaths.value = []
+}
+
+function ensureAiImageModelSelected() {
+  const configured = configuredAiImageModels.value
+  if (!configured.length) {
+    selectedAiImageModelId.value = ''
+    return false
+  }
+  if (!configured.some(model => model.id === selectedAiImageModelId.value)) {
+    selectedAiImageModelId.value = configured[0].id
+  }
+  return true
+}
+
+async function loadAiImageSettings() {
+  try {
+    aiImageSettings.value = typeof window.cs?.getSettings === 'function'
+      ? await window.cs.getSettings()
+      : {}
+  } catch {
+    aiImageSettings.value = {}
+  }
+  ensureAiImageModelSelected()
+}
+
+function openAiImageModelSettings() {
+  emit('open-settings', 'ai-1xm')
+}
+
+function resolveSelectedAiImageGenerationParams() {
+  const model = selectedAiImageModel.value
+  const ratio = '3:4'
+  const size = isNanoBananaModel(model.id)
+    ? (model.size || '2K')
+    : sizeForModel(model.id, ratio, model.size)
+  return {
+    model,
+    modelKey: model.key,
+    modelKeyTier: model.keyTier,
+    size,
+    quality: isNanoBananaModel(model.id) ? undefined : 'high',
+    outputFormat: 'png',
+  }
+}
+
+async function uploadLocalMaterialFromDisk() {
+  if (typeof window.cs?.browseFile !== 'function') {
+    updateAiTaskState({
+      status: 'failed',
+      error: '当前环境不支持系统文件选择器，请在抓虾桌面端使用',
+      message: '当前环境不支持系统文件选择器，请在抓虾桌面端使用',
+    })
+    return
+  }
+  try {
+    const selected = await window.cs.browseFile({
+      title: `上传${activeLocalReferenceLabel.value}`,
+      images: true,
+      multi: true,
+    })
+    const paths = Array.isArray(selected)
+      ? selected.map(item => String(item || '').trim()).filter(Boolean)
+      : String(selected || '').split(',').map(item => item.trim()).filter(Boolean)
+    if (!paths.length) return
+    const target = referencePathsForKind(activeLocalReferenceKind.value)
+    target.value = [...new Set([...target.value, ...paths])]
+  } catch (error) {
+    updateAiTaskState({
+      status: 'failed',
+      error: error?.message || String(error),
+      message: error?.message || String(error),
+    })
+  }
 }
 
 function appendAiDraftVersions() {
@@ -3140,6 +3455,10 @@ async function startAiImageGeneration() {
     updateAiTaskState({ status: 'failed', error: '选中的图片中有尚未落盘的结果，请等待图片下载完成后重试', message: '选中的图片中有尚未落盘的结果，请等待图片下载完成后重试' })
     return
   }
+  if (!ensureAiImageModelSelected()) {
+    updateAiTaskState({ status: 'failed', error: '尚未配置可用生图模型，请先到设置页配置 1XM 图片模型', message: '尚未配置可用生图模型，请先到设置页配置 1XM 图片模型' })
+    return
+  }
   if (activeAction.value === 'face_swap' && !selectedModel.value) {
     updateAiTaskState({ status: 'failed', error: 'AI 换脸需要先选择模特素材', message: 'AI 换脸需要先选择模特素材' })
     return
@@ -3157,11 +3476,12 @@ async function startAiImageGeneration() {
     return
   }
 
+  const generation = resolveSelectedAiImageGenerationParams()
   resetAiPoll()
   aiReviewPollToken += 1
   updateAiTaskState({
     status: 'running',
-    message: '正在创建并提交 AI 改图任务...',
+    message: `正在用 ${generation.model.label} 创建并提交 AI 改图任务...`,
     error: '',
     progress: 0,
     runId: '',
@@ -3186,11 +3506,11 @@ async function startAiImageGeneration() {
       prompt_extra: aiPrompt.value,
       generation_mode: 'submit_async',
       review_mode: 'create_review_batch',
-      model: 'gpt-image-2',
-      model_key_tier: '4k',
-      image_size: '1536x2048',
-      quality: 'high',
-      output_format: 'png',
+      model: generation.modelKey,
+      model_key_tier: generation.modelKeyTier,
+      image_size: generation.size,
+      quality: generation.quality || 'high',
+      output_format: generation.outputFormat,
     })
     const request = buildBalaAiStageRequest(exportResult)
     const params = {
@@ -3202,11 +3522,11 @@ async function startAiImageGeneration() {
       source_limit: selectedInputPaths.length,
       generation_mode: 'submit_async',
       review_mode: 'create_review_batch',
-      model: 'gpt-image-2',
-      model_key_tier: '4k',
-      image_size: '1536x2048',
-      quality: 'high',
-      output_format: 'png',
+      model: generation.modelKey,
+      model_key_tier: generation.modelKeyTier,
+      image_size: generation.size,
+      quality: generation.quality || 'high',
+      output_format: generation.outputFormat,
     }
     aiStageRequest.value = { ...request, params }
     const previousStatus = await window.cs.getTaskStatus(
@@ -3468,6 +3788,9 @@ async function selectWorkflowStep(stepId) {
     if (!reviewStyles.length) await loadLatestReviewBatch()
     await openReviewWorkspace()
     return
+  }
+  if (stepId === 'ai-edit') {
+    void loadAiImageSettings()
   }
   if (stepId === 'templates') {
     if (!reviewStyles.length) {
@@ -4407,7 +4730,7 @@ function openImageEditor(asset, styleCode = '', sourceAsset = null) {
   const selectedIndex = Math.max(0, history.findIndex(item => item === asset || (item.id && item.id === asset?.id)))
   previewImage.value = {
     title: asset?.label || asset?.name || '图片预览',
-    meta: [styleCode, asset?.role || asset?.action, asset?.meta].filter(Boolean).join(' · '),
+    meta: [styleCode, asset?.role || asset?.action, shortDisplayName(asset?.meta || '', 48)].filter(Boolean).join(' · '),
     path: String(asset?.path || asset?.previewPath || '').trim(),
     src: previewSourceFor(asset || {}),
     asset,
@@ -4421,6 +4744,7 @@ function openImageEditor(asset, styleCode = '', sourceAsset = null) {
   previewEditError.value = ''
   previewAnnotationTool.value = ''
   previewAnnotationClearNonce.value += 1
+  void loadAiImageSettings()
 }
 
 function openImagePreview(asset, styleCode = '') {
@@ -4534,29 +4858,40 @@ async function runPreviewImageEdit() {
     previewEditError.value = '请填写当前图片的修改要求'
     return
   }
+  if (!ensureAiImageModelSelected()) {
+    previewEditError.value = '尚未配置可用生图模型，请先到设置页配置 1XM 图片模型'
+    return
+  }
   if (previewEditAction.value === 'face_swap' && !selectedModel.value) {
     previewEditError.value = 'AI 换脸需要先选择模特'
+    return
+  }
+  if (previewEditAction.value === 'outfit_swap' && !garmentImagePaths.value.length) {
+    previewEditError.value = 'AI 换装需要至少选择一张服装图'
     return
   }
   previewEditBusy.value = true
   previewEditError.value = ''
   try {
-    const annotationDataUrl = await requestPreviewAnnotationExport()
+    const generation = resolveSelectedAiImageGenerationParams()
+    const annotationDataUrl = previewAnnotationTool.value
+      ? await requestPreviewAnnotationExport()
+      : ''
     const created = await window.cs.createAiImageJob({
       title: `${previewImage.value?.styleCode || 'AI 视频'} · 大图修改`,
       prompt,
-      model_key: 'gpt-image-2',
+      model_key: generation.modelKey,
       status: 'draft',
       output_dir: workspaceDir.value,
       params: {
         workflow: BALA_AI_IMAGE_TASK_ID,
         surface: 'ai-video-workflow',
         workspace_dir: workspaceDir.value,
-        size: '1536x2048',
-        quality: 'high',
-        response_format: 'png',
+        size: generation.size,
+        quality: generation.quality || 'high',
+        response_format: generation.outputFormat,
         n: 1,
-        model_key_tier: '4k',
+        model_key_tier: generation.modelKeyTier,
         main_image_path: mainPath,
         reference_image_paths: [],
       },
@@ -4588,11 +4923,11 @@ async function runPreviewImageEdit() {
         workflow: BALA_AI_IMAGE_TASK_ID,
         surface: 'ai-video-workflow',
         workspace_dir: workspaceDir.value,
-        size: '1536x2048',
-        quality: 'high',
-        response_format: 'png',
+        size: generation.size,
+        quality: generation.quality || 'high',
+        response_format: generation.outputFormat,
         n: 1,
-        model_key_tier: '4k',
+        model_key_tier: generation.modelKeyTier,
         main_image_path: mainPath,
         reference_image_paths: [...new Set(references.filter(Boolean))],
       },
@@ -4690,6 +5025,7 @@ function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   lastFocusedElement.value = document.activeElement
   videoTaskDraftError.value = ''
   videoTaskAssetFilter.value = 'approved'
+  videoTaskKindFilter.value = 'all'
   const task = sourceTask && typeof sourceTask === 'object' ? sourceTask : null
   editingVideoTaskId.value = mode === 'edit' && task?.id ? String(task.id) : ''
   videoTaskDraft.styleCode = task?.styleCode || styleCode || videoJobs[0]?.styleCode || ''
@@ -4933,6 +5269,35 @@ function openModelLibrary() {
   modelLibraryOpen.value = true
 }
 
+function openLocalMaterialLibrary(kind = 'garment') {
+  activeLocalReferenceKind.value = ['garment', 'outfit', 'variant'].includes(kind) ? kind : 'garment'
+  localMaterialLibraryCategory.value = 'all'
+  localMaterialLibraryStyleFilter.value = 'all'
+  localMaterialLibraryStyleQuery.value = ''
+  if (previewImage.value?.styleCode) {
+    activeMaterialStyleCode.value = previewImage.value.styleCode
+  }
+  lastFocusedElement.value = document.activeElement
+  localMaterialLibraryOpen.value = true
+}
+
+function videoTaskAssetKind(asset = {}) {
+  const kind = String(asset.kind || '').toLowerCase()
+  const sourceType = String(asset.sourceType || '').toLowerCase()
+  if (kind === 'ai' || sourceType === 'ai') return 'ai'
+  if (kind === 'reference' || sourceType === 'detail') return 'detail'
+  if (kind === 'origin' || sourceType === 'model') return 'model'
+  if (sourceType === 'detail') return 'detail'
+  return 'model'
+}
+
+function videoTaskAssetKindLabel(asset = {}) {
+  const kind = videoTaskAssetKind(asset)
+  if (kind === 'detail') return '细节图'
+  if (kind === 'ai') return 'AI 图'
+  return '模特图'
+}
+
 function closePreview() {
   clearPreviewAnnotationRequest()
   previewImage.value = null
@@ -4941,6 +5306,10 @@ function closePreview() {
 
 function closeModelLibrary() {
   modelLibraryOpen.value = false
+}
+
+function closeLocalMaterialLibrary() {
+  localMaterialLibraryOpen.value = false
 }
 
 function closeTemplateLibrary() {
@@ -4959,6 +5328,7 @@ function closeTopDialog() {
   else if (videoTaskDialogOpen.value) closeVideoTaskDialog()
   else if (reviewBulkConfirmation.value) cancelReviewBulkAction()
   else if (templateLibraryOpen.value) closeTemplateLibrary()
+  else if (localMaterialLibraryOpen.value) closeLocalMaterialLibrary()
   else if (modelLibraryOpen.value) closeModelLibrary()
 }
 
@@ -5061,6 +5431,7 @@ onMounted(() => {
     if (restoredManifest && !restoredWorkspace) videoStageState.message = '已从当前工作区恢复视频任务和结果。'
     persistWorkspaceState()
   })()
+  void loadAiImageSettings()
   void loadModelLibrary()
   void loadTemplateCatalog()
   void loadVideoProviderStatus()
@@ -5456,6 +5827,12 @@ function localFileUrl(path) {
 
 .aiv-video-task-workbench {
   grid-template-columns: minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-content: start;
+}
+
+.aiv-video-task-workbench > .aiv-panel:first-child {
+  align-self: start;
 }
 
 .aiv-panel {
@@ -5765,6 +6142,11 @@ function localFileUrl(path) {
   gap: 10px;
   padding-bottom: 14px;
   border-bottom: 1px solid var(--border);
+}
+
+.aiv-review-style-card {
+  gap: 8px;
+  padding-bottom: 12px;
 }
 
 .aiv-style-card:last-child,
@@ -6229,16 +6611,21 @@ function localFileUrl(path) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+  flex: 0 0 auto;
+  align-content: start;
 }
 
 .aiv-action-option {
+  min-width: 0;
   min-height: 76px;
+  max-width: 100%;
   padding: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   color: var(--text2);
   background: var(--bg3);
   text-align: left;
+  overflow: hidden;
 }
 
 .aiv-action-option.active {
@@ -6251,12 +6638,83 @@ function localFileUrl(path) {
 .aiv-action-option strong,
 .aiv-action-option span {
   display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .aiv-action-option span {
   margin-top: 5px;
   color: var(--text3);
   font-size: 11px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+}
+
+/* Face-swap model picker: compact strip, never let model photo expand the rail */
+.aiv-selected-model-preview {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid rgba(255, 107, 43, .36);
+  border-radius: 8px;
+  background: var(--orange-bg);
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
+.aiv-selected-model-thumb {
+  width: 44px;
+  height: 56px;
+  min-width: 44px;
+  min-height: 56px;
+  max-width: 44px;
+  max-height: 56px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 107, 43, .38);
+  border-radius: 6px;
+  display: grid;
+  place-items: center;
+  color: var(--orange);
+  background: var(--bg);
+  font-size: 10px;
+}
+
+.aiv-selected-model-thumb img {
+  width: 100%;
+  height: 100%;
+  max-width: 44px;
+  max-height: 56px;
+  display: block;
+  object-fit: cover;
+}
+
+.aiv-selected-model-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.aiv-selected-model-copy span,
+.aiv-selected-model-copy strong {
+  min-width: 0;
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-selected-model-copy span {
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-selected-model-copy strong {
+  color: var(--text);
+  font-size: 12px;
 }
 
 .aiv-image-workbench {
@@ -6384,11 +6842,6 @@ function localFileUrl(path) {
   content: none;
 }
 
-.aiv-version-card > :not(.aiv-version-preview) {
-  position: relative;
-  z-index: 1;
-}
-
 .aiv-version-card.selected {
   border-color: var(--orange);
   color: var(--text);
@@ -6461,6 +6914,7 @@ function localFileUrl(path) {
   z-index: 2;
   inset: auto 0 0;
   min-width: 0;
+  max-width: 100%;
   padding: 26px 10px 10px;
   display: grid;
   gap: 7px;
@@ -6470,12 +6924,20 @@ function localFileUrl(path) {
   pointer-events: none;
   transform: translateY(8px);
   transition: opacity .18s ease-out, transform .18s ease-out;
+  overflow: hidden;
+}
+
+.aiv-media-hover-tools > div {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .aiv-media-hover-tools strong,
 .aiv-media-hover-tools small,
 .aiv-media-hover-tools span {
   min-width: 0;
+  max-width: 100%;
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -6489,10 +6951,18 @@ function localFileUrl(path) {
 }
 
 .aiv-media-card:hover .aiv-media-hover-tools,
-.aiv-media-card:focus-within .aiv-media-hover-tools {
+.aiv-media-hover-tools:focus-within {
   opacity: 1;
-  pointer-events: auto;
   transform: translateY(0);
+}
+
+.aiv-media-hover-tools button {
+  pointer-events: auto;
+}
+
+.aiv-media-select:focus-visible {
+  outline: 2px solid rgba(255, 107, 43, .78);
+  outline-offset: -3px;
 }
 
 .aiv-media-card.selected {
@@ -6724,19 +7194,37 @@ function localFileUrl(path) {
   backdrop-filter: blur(10px);
 }
 
+.aiv-review-summary-badges {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .aiv-review-toolbar {
-  padding: 12px 14px;
+  padding: 10px 12px;
   border-bottom: 1px solid var(--border);
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 140px auto auto auto;
+  grid-template-columns: minmax(160px, 1fr) 128px auto;
   gap: 8px;
   align-items: center;
 }
 
+.aiv-review-toolbar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+}
+
 .aiv-ai-asset-board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 10px;
+  /* Match AI-edit version cards (~112–160px) for denser review scanning */
+  grid-template-columns: repeat(auto-fill, minmax(132px, 148px));
+  justify-content: start;
+  align-content: start;
+  gap: 8px;
 }
 
 .aiv-ai-card {
@@ -6745,6 +7233,8 @@ function localFileUrl(path) {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg3);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
 }
 
 .aiv-ai-card.approved {
@@ -6755,13 +7245,18 @@ function localFileUrl(path) {
   border-color: rgba(255, 107, 43, 0.55);
 }
 
+.aiv-ai-card.rejected {
+  border-color: rgba(248, 113, 113, 0.4);
+  opacity: 0.88;
+}
+
 .aiv-ai-card.add {
   position: relative;
   border-style: dashed;
 }
 
-.aiv-ai-preview,
-.aiv-add-image {
+.aiv-ai-card .aiv-ai-preview,
+.aiv-ai-card .aiv-add-image {
   position: relative;
   overflow: hidden;
   width: 100%;
@@ -6769,25 +7264,81 @@ function localFileUrl(path) {
   display: grid;
   align-content: center;
   justify-items: center;
-  gap: 8px;
-  padding: 10px;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--bg);
+}
+
+.aiv-ai-card .aiv-add-image {
+  padding: 10px 8px;
+  gap: 6px;
+  color: var(--text2);
+  background: linear-gradient(135deg, rgba(255,255,255,0.04), transparent 45%), var(--bg3);
+}
+
+.aiv-ai-card .aiv-add-image strong {
+  font-size: 12px;
 }
 
 .aiv-ai-preview small,
 .aiv-add-image span {
   color: var(--text3);
-  font-size: 11px;
+  font-size: 10px;
   text-align: center;
+  line-height: 1.35;
+}
+
+.aiv-ai-status-badge {
+  position: absolute;
+  z-index: 2;
+  top: 6px;
+  left: 6px;
+  min-height: 18px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--text);
+  background: rgba(12, 12, 16, 0.78);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 16px;
+  pointer-events: none;
+}
+
+.aiv-ai-card.approved .aiv-ai-status-badge {
+  color: #102016;
+  background: rgba(74, 222, 128, 0.92);
+}
+
+.aiv-ai-card.retry .aiv-ai-status-badge {
+  color: var(--on-orange);
+  background: var(--orange);
+}
+
+.aiv-ai-card.rejected .aiv-ai-status-badge {
+  color: #fff;
+  background: rgba(248, 113, 113, 0.92);
 }
 
 .aiv-ai-card footer {
-  padding: 9px;
+  padding: 6px 7px 7px;
   display: grid;
-  gap: 8px;
+  gap: 6px;
+  align-content: start;
+}
+
+.aiv-ai-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
 }
 
 .aiv-ai-card footer strong,
-.aiv-ai-card footer span {
+.aiv-ai-card footer span,
+.aiv-ai-card-copy strong,
+.aiv-ai-card-copy span {
   display: block;
   min-width: 0;
   overflow: hidden;
@@ -6795,21 +7346,34 @@ function localFileUrl(path) {
   white-space: nowrap;
 }
 
-.aiv-ai-card footer span {
-  margin-top: 3px;
-  color: var(--text3);
+.aiv-ai-card footer strong,
+.aiv-ai-card-copy strong {
+  color: var(--text);
   font-size: 11px;
+  line-height: 1.25;
+}
+
+.aiv-ai-card footer span,
+.aiv-ai-card-copy span {
+  margin-top: 0;
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.aiv-ai-card .aiv-ai-actions {
+  gap: 4px;
 }
 
 .aiv-ai-actions button,
 .aiv-add-menu button {
-  min-height: 24px;
-  padding: 0 7px;
+  min-height: 22px;
+  padding: 0 6px;
   border: 1px solid var(--border);
-  border-radius: 7px;
+  border-radius: 6px;
   color: var(--text2);
   background: var(--bg);
-  font-size: 11px;
+  font-size: 10px;
 }
 
 .aiv-ai-actions .ok {
@@ -6819,12 +7383,12 @@ function localFileUrl(path) {
 .aiv-add-menu {
   position: absolute;
   z-index: 3;
-  left: 8px;
-  right: 8px;
-  bottom: 8px;
-  padding: 8px;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  padding: 6px;
   display: grid;
-  gap: 6px;
+  gap: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg2);
@@ -6834,9 +7398,9 @@ function localFileUrl(path) {
 .aiv-source-assets-row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
   flex-wrap: wrap;
-  padding: 10px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
@@ -6917,9 +7481,132 @@ function localFileUrl(path) {
 
 .aiv-video-task-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 8px;
+}
+
+.aiv-video-task-card {
+  overflow: hidden;
+}
+
+.aiv-video-task-row {
+  min-width: 0;
+  padding: 10px 12px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   gap: 12px;
+  align-items: center;
+}
+
+.aiv-video-task-assets.compact {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+
+.aiv-video-task-assets.compact .aiv-video-asset-card.thumb-only {
+  position: relative;
+  width: 48px;
+  height: 64px;
+  min-width: 48px;
+  aspect-ratio: auto;
+  padding: 0;
+  overflow: hidden;
+  border-radius: 6px;
+}
+
+.aiv-video-task-assets.compact .aiv-video-asset-card.thumb-only img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.aiv-video-thumb-fallback {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  color: var(--text3);
+  font-size: 11px;
+  background: var(--bg3);
+}
+
+.aiv-video-task-main {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.aiv-video-task-title-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+}
+
+.aiv-video-task-title-line > strong {
+  min-width: 0;
+  max-width: min(420px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.aiv-video-task-status {
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-video-task-meta-line {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.aiv-video-task-meta-line > span {
+  min-width: 0;
+  max-width: min(360px, 100%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-video-task-meta-line strong {
+  margin-right: 4px;
+  color: var(--text3);
+  font-weight: 600;
+}
+
+.aiv-video-task-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 420px;
+}
+
+.aiv-video-more-assets {
+  min-width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--text2);
+  background: var(--bg3);
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .aiv-video-toolbar {
@@ -7071,7 +7758,7 @@ function localFileUrl(path) {
 
 .aiv-video-task-layout {
   display: grid;
-  grid-template-columns: 116px minmax(0, 1fr);
+  grid-template-columns: auto minmax(0, 1fr);
   gap: 10px;
   align-items: start;
 }
@@ -7514,8 +8201,10 @@ function localFileUrl(path) {
 }
 
 .aiv-preview-modal-panel {
-  width: min(1280px, 100%);
-  max-height: min(900px, 94vh);
+  width: min(1360px, calc(100vw - 48px));
+  height: min(900px, calc(100vh - 48px));
+  max-height: none;
+  min-height: 0;
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
@@ -7525,40 +8214,75 @@ function localFileUrl(path) {
   box-shadow: 0 22px 80px rgba(0, 0, 0, 0.42);
 }
 
+.aiv-preview-title-block {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.aiv-preview-title-block strong,
+.aiv-preview-title-block span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .aiv-image-editor-layout {
+  min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  overflow: hidden;
 }
 
 .aiv-image-editor-stage {
+  min-width: 0;
   min-height: 0;
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
   background: var(--bg);
 }
 
 .aiv-big-preview {
   position: relative;
+  min-width: 0;
   min-height: 0;
-  padding: 18px;
-  display: grid;
-  place-items: center;
+  height: 100%;
+  padding: 0;
+  overflow: hidden;
   background: var(--bg);
 }
 
+.aiv-big-preview-frame {
+  position: absolute;
+  inset: 16px;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #0f1016;
+}
+
+.aiv-big-preview-image,
 .aiv-big-preview img {
-  width: 100%;
-  height: 100%;
+  display: block;
   max-width: 100%;
-  max-height: calc(94vh - 164px);
+  max-height: 100%;
+  width: auto;
+  height: auto;
   object-fit: contain;
   border-radius: 8px;
 }
 
 .aiv-big-preview-placeholder {
-  width: min(520px, 100%);
+  width: min(360px, 80%);
   aspect-ratio: 3 / 4;
+  max-height: 100%;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg3);
@@ -7601,14 +8325,30 @@ function localFileUrl(path) {
 
 .aiv-image-annotation-toolbar {
   position: absolute;
-  z-index: 4;
-  right: 22px;
-  top: 22px;
+  z-index: 5;
+  right: 28px;
+  top: 28px;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
-  max-width: calc(100% - 44px);
+  max-width: calc(100% - 56px);
+  pointer-events: auto;
+}
+
+.aiv-model-config-empty {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px dashed rgba(255, 107, 43, .4);
+  border-radius: 8px;
+  background: var(--orange-bg);
+}
+
+.aiv-model-config-empty > span {
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .aiv-image-annotation-toolbar button,
@@ -7776,6 +8516,266 @@ function localFileUrl(path) {
   width: min(1080px, 100%);
 }
 
+.aiv-modal-panel.aiv-local-material-modal-panel,
+.aiv-modal-panel.aiv-model-library-modal-panel {
+  height: min(780px, calc(100vh - 56px));
+}
+
+.aiv-local-material-modal-body {
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr);
+  overflow: hidden;
+}
+
+.aiv-local-material-modal-toolbar {
+  min-width: 0;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aiv-local-material-modal-toolbar-primary {
+  gap: 10px;
+}
+
+.aiv-local-material-style-search {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  background: var(--bg);
+  font-size: 12px;
+}
+
+.aiv-local-material-style-tabs {
+  min-width: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  max-height: 88px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.aiv-local-material-style-tabs .aiv-action-chip strong {
+  margin-left: 4px;
+  font-weight: 700;
+}
+
+.aiv-local-material-result-count {
+  flex: 0 0 auto;
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-local-material-modal-toolbar > span,
+.aiv-local-material-modal-toolbar-actions {
+  flex: 0 0 auto;
+  color: var(--text2);
+  font-size: 11px;
+}
+
+.aiv-local-material-modal-toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aiv-reference-kind-switcher {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.aiv-local-material-modal-grid {
+  min-height: 0;
+  padding: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  align-content: flex-start;
+  align-items: flex-start;
+  gap: 12px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
+
+.aiv-local-material-empty {
+  flex: 1 1 100%;
+}
+
+.aiv-local-material-card {
+  box-sizing: border-box;
+  flex: 0 0 148px;
+  width: 148px;
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text2);
+  background: var(--bg3);
+  overflow: hidden;
+  cursor: pointer;
+  display: block;
+  position: relative;
+  isolation: isolate;
+}
+
+.aiv-local-material-card:hover,
+.aiv-local-material-card:focus-visible {
+  border-color: rgba(255, 107, 43, .56);
+  outline: none;
+}
+
+.aiv-local-material-card.selected {
+  border-color: var(--orange);
+  box-shadow: inset 0 0 0 1px var(--orange);
+}
+
+/* padding-top % is relative to width — reliable 3:4 thumbnail height */
+.aiv-local-material-card-preview {
+  position: relative;
+  width: 100%;
+  height: 0;
+  padding-top: 133.333%;
+  margin: 0;
+  overflow: hidden;
+  background: #121218;
+}
+
+.aiv-local-material-card-preview img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  border: 0;
+  display: block;
+  object-fit: cover;
+  object-position: center center;
+}
+
+.aiv-local-material-card-fallback {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-local-material-card-preview i {
+  position: absolute;
+  z-index: 2;
+  top: 8px;
+  right: 8px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: var(--on-orange);
+  background: var(--orange);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.aiv-local-material-card-meta {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  padding: 7px 9px 9px;
+  display: block;
+  background: var(--bg3);
+}
+
+.aiv-local-material-card-meta span,
+.aiv-local-material-card-meta strong {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-local-material-card-meta span {
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.aiv-local-material-card-meta strong {
+  margin-top: 2px;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.aiv-preview-outfit-pickers {
+  display: grid;
+  gap: 8px;
+}
+
+.aiv-preview-outfit-pickers .aiv-file-picker {
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.aiv-preview-outfit-pickers .aiv-file-picker > div {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+
+.aiv-preview-outfit-pickers .aiv-file-picker strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.aiv-preview-outfit-pickers .aiv-file-picker span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-modal.aiv-modal-stacked {
+  z-index: 90;
+}
+
+.aiv-local-material-summary {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
 .aiv-modal-panel.aiv-video-task-modal-panel {
   width: min(1160px, 100%);
 }
@@ -7865,6 +8865,11 @@ function localFileUrl(path) {
 
 .aiv-modal-body.video-task {
   grid-template-columns: minmax(0, 1fr) 360px;
+  overflow: hidden;
+}
+
+.aiv-modal-body.model-library {
+  grid-template-columns: 190px minmax(0, 1fr);
   overflow: hidden;
 }
 
@@ -8045,11 +9050,16 @@ function localFileUrl(path) {
   font-size: 11px;
 }
 
-.aiv-video-task-asset-tabs {
+.aiv-video-task-asset-tabs,
+.aiv-video-task-kind-tabs {
   display: flex;
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+}
+
+.aiv-video-task-kind-tabs {
+  margin-top: 8px;
 }
 
 .aiv-video-asset-filter {
@@ -8113,6 +9123,14 @@ function localFileUrl(path) {
   display: grid;
   align-content: start;
   gap: 8px;
+}
+
+.aiv-model-grid-scroll {
+  min-width: 0;
+  min-height: 0;
+  padding-right: 4px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
 }
 
 .aiv-model-grid,
@@ -8267,28 +9285,39 @@ function localFileUrl(path) {
   }
 
   .aiv-preview-modal-panel {
+    height: calc(100vh - 24px);
     max-height: calc(100vh - 24px);
   }
 
   .aiv-image-editor-layout {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(0, 1fr) auto;
-    overflow: auto;
+    overflow: hidden;
   }
 
   .aiv-image-editor-stage {
-    min-height: min(62vh, 620px);
+    min-height: 0;
   }
 
-  .aiv-big-preview img {
-    max-height: min(58vh, 580px);
+  .aiv-big-preview-frame {
+    inset: 12px;
   }
 
   .aiv-image-editor-tools {
-    max-height: none;
+    max-height: 42vh;
     border-top: 1px solid var(--border);
     border-left: 0;
-    overflow: visible;
+    overflow-y: auto;
+  }
+
+  .aiv-video-task-row {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .aiv-video-task-actions {
+    max-width: none;
+    justify-content: flex-start;
   }
 }
 
@@ -8315,6 +9344,14 @@ function localFileUrl(path) {
 
   .aiv-review-toolbar {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aiv-review-toolbar-actions {
+    justify-content: flex-start;
+  }
+
+  .aiv-ai-asset-board {
+    grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
   }
 
   .aiv-style-head,

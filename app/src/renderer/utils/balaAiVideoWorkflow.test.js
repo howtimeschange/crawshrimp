@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile } from 'node:fs/promises'
+import * as balaWorkflow from './balaAiVideoWorkflow.js'
 
 import {
   balaMaterialPanelControl,
@@ -115,12 +116,12 @@ test('video result normalization keeps local files and remote playback URLs in s
   assert.equal(remoteResult.status, '已完成')
 })
 
-test('AI video local reference selectors reuse the styled action chips', async () => {
+test('AI video local material library uses category chips for model and detail photos', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
-  assert.match(workflowSource, /\['aiv-action-chip', \{ active: activeLocalReferenceKind === 'garment' \}\]/)
-  assert.match(workflowSource, /\['aiv-action-chip', \{ active: activeLocalReferenceKind === 'outfit' \}\]/)
-  assert.match(workflowSource, /\['aiv-action-chip', \{ active: activeLocalReferenceKind === 'variant' \}\]/)
+  assert.match(workflowSource, /\['aiv-action-chip', \{ active: localMaterialLibraryCategory === 'all' \}\]/)
+  assert.match(workflowSource, /\['aiv-action-chip', \{ active: localMaterialLibraryCategory === 'model' \}\]/)
+  assert.match(workflowSource, /\['aiv-action-chip', \{ active: localMaterialLibraryCategory === 'detail' \}\]/)
 })
 
 test('review image preview keeps its annotation canvas transparent and inactive until a tool is selected', async () => {
@@ -132,16 +133,15 @@ test('review image preview keeps its annotation canvas transparent and inactive 
   assert.match(workflowSource, /\.aiv-image-annotation-layer :deep\(\.tl-background\),[\s\S]*?background:\s*transparent !important;/)
 })
 
-test('video task cards use a compact asset-and-details layout and expose editing', async () => {
+test('video task cards use a compact horizontal row layout and expose editing', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
-  assert.match(workflowSource, /class="aiv-video-task-layout"/)
-  assert.match(workflowSource, /task\.assets\.slice\(0, 3\)/)
-  assert.match(workflowSource, /编辑视频任务/)
+  assert.match(workflowSource, /class="aiv-video-task-row"/)
+  assert.match(workflowSource, /task\.assets\.slice\(0, 4\)/)
   assert.match(workflowSource, /openVideoTaskDialog\('', task, 'edit'\)/)
   assert.match(workflowSource, /const editingVideoTaskId = ref\(''\)/)
-  assert.match(workflowSource, /\.aiv-video-task-list\s*\{[\s\S]*?grid-template-columns:\s*repeat\(auto-fit, minmax\(360px, 1fr\)\);/)
-  assert.match(workflowSource, /\.aiv-video-task-layout\s*\{[\s\S]*?grid-template-columns:\s*116px minmax\(0, 1fr\);/)
+  assert.match(workflowSource, /\.aiv-video-task-list\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/)
+  assert.match(workflowSource, /\.aiv-video-task-row\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto;/)
 })
 
 test('AI video keeps local references, image tasks, and workspace snapshots isolated', async () => {
@@ -162,11 +162,107 @@ test('AI video keeps local references, image tasks, and workspace snapshots isol
 test('AI edit keeps media cards clean until hover and exposes face selection in large preview', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
-  assert.match(workflowSource, /v-if="activeAction === 'outfit_swap'" class="aiv-local-material-library"/)
+  assert.match(workflowSource, /@click="openLocalMaterialLibrary\('garment'\)"/)
   assert.match(workflowSource, /class="aiv-media-hover-tools"/)
   assert.match(workflowSource, /\.aiv-media-card:hover \.aiv-media-hover-tools/)
   assert.match(workflowSource, /class="aiv-selected-indicator">已选/)
   assert.match(workflowSource, /v-if="previewEditAction === 'face_swap'" class="aiv-preview-model-picker"/)
+  assert.match(workflowSource, /v-if="activeAction === 'face_swap'" class="aiv-selected-model-preview"/)
+  assert.match(workflowSource, /\.aiv-selected-model-thumb\s*\{[\s\S]*?max-height:\s*56px;/)
+  assert.match(workflowSource, /configuredAiImageModels/)
+  assert.match(workflowSource, /shortDisplayName\(version\.label\)/)
+})
+
+test('AI edit version previews fall back after a generated preview is broken', () => {
+  assert.equal(typeof balaWorkflow.resolveBalaVersionPreviewSource, 'function')
+  assert.equal(
+    balaWorkflow.resolveBalaVersionPreviewSource(
+      { id: 'generated' },
+      { id: 'source' },
+      {
+        resolvePreview: asset => `${asset.id}.jpg`,
+        brokenSources: { 'generated.jpg': true },
+      },
+    ),
+    'source.jpg',
+  )
+})
+
+test('AI edit local materials open as a shared picker for each outfit reference role', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /const localMaterialLibraryOpen = ref\(false\)/)
+  assert.match(workflowSource, /function openLocalMaterialLibrary\(kind = 'garment'\)/)
+  assert.match(workflowSource, /@click="openLocalMaterialLibrary\('outfit'\)"/)
+  assert.match(workflowSource, /@click="openLocalMaterialLibrary\('variant'\)"/)
+  assert.match(workflowSource, /@click="uploadLocalMaterialFromDisk"/)
+  assert.match(workflowSource, /localMaterialLibraryCategory === 'model'/)
+  assert.match(workflowSource, /localMaterialLibraryCategory === 'detail'/)
+  assert.match(workflowSource, /localMaterialLibraryStyleFilter === 'all'/)
+  assert.match(workflowSource, /v-model="localMaterialLibraryStyleQuery"/)
+  assert.match(workflowSource, /localMaterialLibraryStyleOptions/)
+  assert.match(workflowSource, /v-if="localMaterialLibraryOpen" class="aiv-modal aiv-modal-stacked"/)
+  assert.match(workflowSource, /class="aiv-modal-panel wide aiv-local-material-modal-panel"/)
+  assert.match(workflowSource, /class="\['aiv-local-material-card'/)
+  assert.match(workflowSource, /\.aiv-local-material-card-preview\s*\{[\s\S]*?padding-top:\s*133\.333%;/)
+  assert.match(workflowSource, /\.aiv-local-material-card\s*\{[\s\S]*?flex:\s*0 0 148px;/)
+  assert.match(workflowSource, /v-if="previewEditAction === 'outfit_swap'" class="aiv-preview-outfit-pickers"/)
+  assert.match(workflowSource, /AI 换装需要至少选择一张服装图/)
+  assert.match(workflowSource, /function continueEditingSource/)
+  assert.doesNotMatch(workflowSource, /aria-label="素材用途"/)
+  assert.doesNotMatch(workflowSource, /<details[^>]*class="aiv-local-material-library"/)
+})
+
+test('video task dialog exposes model and detail image kind filters', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /const videoTaskKindFilter = ref\('all'\)/)
+  assert.match(workflowSource, /const videoTaskKindTabs = computed/)
+  assert.match(workflowSource, /function videoTaskAssetKind/)
+  assert.match(workflowSource, /class="aiv-video-task-kind-tabs"/)
+  assert.match(workflowSource, /label: '模特图'/)
+  assert.match(workflowSource, /label: '细节图'/)
+  assert.match(workflowSource, /label: 'AI 图'/)
+})
+
+test('AI edit hover tools do not steal card selection clicks', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+  const hoverRule = workflowSource.match(/\.aiv-media-card:hover \.aiv-media-hover-tools,[^{]+\{([^}]*)\}/)?.[1] || ''
+
+  assert.doesNotMatch(workflowSource, /\.aiv-version-card\s*>\s*:not\(\.aiv-version-preview\)/)
+  assert.match(workflowSource, /\.aiv-media-hover-tools\s*\{[\s\S]*?pointer-events:\s*none;/)
+  assert.match(workflowSource, /\.aiv-media-hover-tools button\s*\{[\s\S]*?pointer-events:\s*auto;/)
+  assert.doesNotMatch(hoverRule, /pointer-events:\s*auto;/)
+})
+
+test('large image editor uses a bounded viewport layout with a contained image and history rail', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /\.aiv-preview-modal-panel\s*\{[\s\S]*?height:\s*min\(900px, calc\(100vh - 48px\)\);/)
+  assert.match(workflowSource, /\.aiv-image-editor-stage\s*\{[\s\S]*?grid-template-rows:\s*minmax\(0, 1fr\) auto;[\s\S]*?overflow:\s*hidden;/)
+  assert.match(workflowSource, /\.aiv-big-preview\s*\{[\s\S]*?height:\s*100%;[\s\S]*?overflow:\s*hidden;/)
+  assert.match(workflowSource, /\.aiv-big-preview-frame\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?inset:\s*16px;/)
+  assert.match(workflowSource, /\.aiv-big-preview-image,[\s\S]*?max-height:\s*100%;[\s\S]*?object-fit:\s*contain;/)
+  assert.match(workflowSource, /TldrawAnnotationLayer[\s\S]*?v-if="activePreviewHistoryItem\?\.src && !brokenPreviews/)
+  assert.match(workflowSource, /selectedAiImageModelId/)
+  assert.match(workflowSource, /openAiImageModelSettings/)
+})
+
+test('model library keeps age and gender filters fixed while only results scroll', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.equal((workflowSource.match(/v-for="age in modelAgeOptions"/g) || []).length, 1)
+  assert.match(workflowSource, /class="aiv-modal-body model-library"/)
+  assert.match(workflowSource, /class="aiv-model-grid-scroll"/)
+  assert.match(workflowSource, /\.aiv-modal-body\.model-library\s*\{[\s\S]*?overflow:\s*hidden;/)
+  assert.match(workflowSource, /\.aiv-model-grid-scroll\s*\{[\s\S]*?overflow-y:\s*auto;/)
+})
+
+test('video task page packs its toolbar and cards at the top without stretching an empty panel', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /\.aiv-video-task-workbench\s*\{[\s\S]*?grid-template-rows:\s*auto auto;[\s\S]*?align-content:\s*start;/)
+  assert.match(workflowSource, /\.aiv-video-task-workbench\s*>\s*\.aiv-panel:first-child\s*\{[\s\S]*?align-self:\s*start;/)
 })
 
 test('video task creation shows in-dialog requirements and prevents incomplete submission', async () => {
@@ -215,6 +311,19 @@ test('review bulk actions disclose scope, require confirmation, and offer one-st
   assert.match(workflowSource, /async function undoReviewBulkAction/)
   assert.match(workflowSource, /role="alertdialog"[\s\S]*?aiv-review-bulk-title/)
   assert.match(workflowSource, /撤销本次批量操作/)
+})
+
+test('review cards use compact density matching AI-edit media cards', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+  const boardRule = workflowSource.match(/\.aiv-ai-asset-board\s*\{([^}]*)\}/)?.[1] || ''
+
+  assert.match(workflowSource, /class="aiv-ai-status-badge">\{\{ assetStatusLabel\(asset\.status\) \}\}<\/i>/)
+  assert.match(workflowSource, /class="aiv-ai-card-copy"/)
+  assert.match(boardRule, /grid-template-columns:\s*repeat\(auto-fill, minmax\(132px, 148px\)\);/)
+  assert.doesNotMatch(boardRule, /repeat\(4,\s*minmax\(0,\s*1fr\)\)/)
+  assert.match(workflowSource, /\.aiv-ai-card \.aiv-ai-preview,[\s\S]*?aspect-ratio:\s*3 \/ 4;/)
+  assert.match(workflowSource, /\.aiv-ai-card footer\s*\{[\s\S]*?padding:\s*6px 7px 7px;/)
+  assert.match(workflowSource, /\.aiv-version-rail\s*\{[\s\S]*?minmax\(112px, 1fr\)/)
 })
 
 test('workflow preserves selected-material filtering, readable tokens, focus, and reduced-motion support', async () => {
