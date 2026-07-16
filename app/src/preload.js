@@ -434,6 +434,8 @@ contextBridge.exposeInMainWorld('cs', {
   getLocalMediaUrl: (filePath) => ipcRenderer.invoke('get-local-media-url', filePath),
   readLocalImagePreview: (path) => invokeWithApiFallback('read-local-image-preview', [path],
     () => apiCall('POST', '/files/local-image-preview', { path })),
+  /** Compressed grid thumbnail (resized JPEG). Prefer this for libraries with many large images. */
+  readLocalImageThumbnail: (path, opts) => ipcRenderer.invoke('read-local-image-thumbnail', path, opts || {}),
   listDirectoryFiles: (path, opts) => ipcRenderer.invoke('list-directory-files', path, opts),
   renderPdfPreview:(path) => ipcRenderer.invoke('render-pdf-preview', path),
 

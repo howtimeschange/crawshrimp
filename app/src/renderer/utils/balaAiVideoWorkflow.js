@@ -895,27 +895,93 @@ function videoBusinessKind(asset = {}, fallback = '素材') {
   return operationLabel(asset.operationType || asset.operation_type || asset.action || fallback)
 }
 
+/**
+ * Folder source (model / detail) from path conventions + explicit fields.
+ * AI is a separate overlay flag — an AI result can still be model or detail.
+ */
+export function resolveVideoAssetTaxonomy(asset = {}, { folderHint = '' } = {}) {
+  const path = compact(asset?.path || asset?.previewPath || asset?.sourcePath).replace(/\\/g, '/')
+  const sourcePath = compact(asset?.sourcePath || asset?.source_path).replace(/\\/g, '/')
+  const kindRaw = compact(asset?.kind)
+  const kind = kindRaw.toLowerCase()
+  const sourceTypeRaw = compact(asset?.sourceType || asset?.source_type || folderHint).toLowerCase()
+  // normalizeOperationType('') defaults to face_swap — only normalize when explicitly set
+  const rawOperation = compact(asset?.operationType || asset?.operation_type || asset?.action)
+  const operationType = rawOperation ? normalizeOperationType(rawOperation) : ''
+  const label = compact(asset?.label || asset?.name || asset?.action)
+
+  const pathLooksDetail = (value = '') => (
+    /02[_-]?商品细节|商品细节图|细节图|\/detail(?:s)?\//i.test(value)
+  )
+  const pathLooksModel = (value = '') => (
+    /01[_-]?模拍|模拍原图|\/model(?:s)?\//i.test(value)
+  )
+
+  let sourceType = ''
+  if (sourceTypeRaw === 'detail' || sourceTypeRaw === 'reference') sourceType = 'detail'
+  else if (sourceTypeRaw === 'model' || sourceTypeRaw === 'origin') sourceType = 'model'
+  else if (kind === 'reference' || kindRaw === '素材' || kindRaw === '细节图') sourceType = 'detail'
+  else if (kind === 'origin' || kindRaw === '模拍' || kindRaw === '模特图' || kindRaw === '原图') sourceType = 'model'
+  else if (pathLooksDetail(path) || pathLooksDetail(sourcePath)) sourceType = 'detail'
+  else if (pathLooksModel(path) || pathLooksModel(sourcePath)) sourceType = 'model'
+  else if (folderHint === 'detail') sourceType = 'detail'
+  else if (folderHint === 'model') sourceType = 'model'
+  else sourceType = 'model'
+
+  // AI 是叠加属性：kind=ai / 有 job·run / 明确 AI 操作；原图 origin 不算 AI
+  const isAi = kind !== 'origin' && Boolean(
+    kind === 'ai'
+    || sourceTypeRaw === 'ai'
+    || asset?.isAi === true
+    || asset?.is_ai === true
+    || compact(asset?.jobUid || asset?.job_uid)
+    || compact(asset?.runUid || asset?.run_uid)
+    || (operationType && operationType !== 'origin')
+    || /ai\s*结果|换脸|换背景|换装|换姿势|ai图/i.test(label)
+  )
+
+  return {
+    sourceType, // model | detail — from folder / source
+    isAi, // overlay attribute
+    displayKind: isAi
+      ? (sourceType === 'detail' ? 'AI·细节' : 'AI·模拍')
+      : (sourceType === 'detail' ? '细节图' : '模特图'),
+  }
+}
+
 export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null } = {}) {
   const styleCode = compact(reviewStyle?.styleCode || reviewStyle?.style_code || materialStyle?.styleCode)
   const output = []
   const seenPaths = new Set()
-  const append = (asset, { source = false } = {}) => {
+  const append = (asset, { source = false, folderHint = '' } = {}) => {
     const status = reviewAssetStatus(asset?.status)
     if (['rejected', 'failed', 'generating'].includes(status)) return
     const path = compact(asset?.path || asset?.previewPath)
     if (!path || seenPaths.has(path)) return
     seenPaths.add(path)
     const rawId = compact(asset?.id || path)
+    const taxonomy = resolveVideoAssetTaxonomy(asset, { folderHint })
+    // Preserve structural kind for downstream: origin | reference | ai
+    const structuralKind = taxonomy.isAi
+      ? 'ai'
+      : (taxonomy.sourceType === 'detail' ? 'reference' : 'origin')
     output.push({
       id: source ? `vasset-${styleCode}-source-${rawId}` : `vasset-${rawId}`,
       label: compact(asset?.label || asset?.name || asset?.filename || '图片'),
-      kind: videoBusinessKind(asset),
+      kind: structuralKind,
+      sourceType: taxonomy.sourceType,
+      isAi: taxonomy.isAi,
+      businessKind: videoBusinessKind({ ...asset, kind: structuralKind, sourceType: taxonomy.sourceType }),
+      displayKind: taxonomy.displayKind,
       status,
       selected: status === 'approved',
       selectable: status === 'approved',
       path,
+      sourcePath: compact(asset?.sourcePath || asset?.source_path),
       imageUrl: compact(asset?.imageUrl || asset?.image_url),
       operationType: normalizeOperationType(asset?.operationType || asset?.operation_type || asset?.action),
+      jobUid: compact(asset?.jobUid || asset?.job_uid),
+      runUid: compact(asset?.runUid || asset?.run_uid),
     })
   }
 
@@ -923,10 +989,16 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
   for (const asset of reviewStyle?.sourceAssets || []) append(asset, { source: true })
 
   for (const asset of materialStyle?.modelPhotos || []) {
-    append({ ...asset, kind: 'origin', status: asset.reviewStatus || 'pending' }, { source: true })
+    append({ ...asset, kind: 'origin', sourceType: 'model', status: asset.reviewStatus || 'pending' }, {
+      source: true,
+      folderHint: 'model',
+    })
   }
   for (const asset of materialStyle?.detailPhotos || []) {
-    append({ ...asset, kind: 'reference', status: asset.reviewStatus || 'pending' }, { source: true })
+    append({ ...asset, kind: 'reference', sourceType: 'detail', status: asset.reviewStatus || 'pending' }, {
+      source: true,
+      folderHint: 'detail',
+    })
   }
   return output
 }

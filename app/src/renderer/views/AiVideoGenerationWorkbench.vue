@@ -2,7 +2,7 @@
   <section class="avg-workbench" :class="{ 'avg-compact': isCompact }">
     <header class="avg-page-head">
       <div class="avg-head-copy">
-        <p class="avg-kicker">一级菜单入口 · AI 生视频</p>
+        <p class="avg-kicker">AI 生视频</p>
         <h1>AI 生视频工作台</h1>
         <p class="avg-subtitle">纯 prompt 与参考图驱动的视频生成工作台，复用 Seedance 与 HappyHorse CLI 能力。</p>
       </div>
@@ -270,20 +270,10 @@
                 <img
                   v-if="jobCoverSrc(job)"
                   :src="jobCoverSrc(job)"
-                  class="avg-thumb-media"
+                  class="avg-thumb-media avg-thumb-cover"
                   :alt="job.title || '视频封面'"
                   @error="markCoverBroken(job)"
                 />
-                <video
-                  v-else-if="jobLocalVideo(job)"
-                  :src="videoCoverSrc(jobLocalVideo(job))"
-                  muted
-                  playsinline
-                  preload="auto"
-                  class="avg-thumb-media"
-                  @loadeddata="seekThumbFrame"
-                  @loadedmetadata="seekThumbFrame"
-                ></video>
                 <div
                   v-else-if="isActiveStatus(job.status)"
                   class="avg-thumb-loading"
@@ -292,6 +282,13 @@
                   <div class="avg-spinner" aria-hidden="true"></div>
                   <strong>{{ job.displayStatus || statusLabel(job.status) }}</strong>
                   <span>已等待 {{ formatWait(job.waitedSeconds) }} · 不显示虚构进度</span>
+                </div>
+                <div
+                  v-else-if="jobCoverCandidatePath(job) && !brokenCovers[job.id]"
+                  class="avg-thumb-loading"
+                >
+                  <div class="avg-spinner" aria-hidden="true"></div>
+                  <strong>加载封面</strong>
                 </div>
                 <div v-else class="avg-thumb-fallback">
                   <strong>{{ job.displayStatus || statusLabel(job.status) }}</strong>
@@ -347,37 +344,59 @@
         <div class="avg-modal-head">
           <div>
             <strong>本地参考图库</strong>
-            <span class="avg-library-sub">{{ libraryRoot ? shortDirLabel(libraryRoot) : '请先选择图库文件夹' }}</span>
+            <span class="avg-library-sub">{{ libraryRootLabel }}</span>
           </div>
           <button class="avg-btn icon" type="button" aria-label="关闭" @click="closeImageLibrary">×</button>
         </div>
         <div class="avg-library-toolbar">
-          <button class="avg-btn small" type="button" @click="chooseLibraryRoot">选择/更换文件夹</button>
+          <button class="avg-btn small" type="button" @click="chooseLibraryRoot">
+            {{ libraryRoot ? '更换文件夹' : '选择文件夹' }}
+          </button>
           <input
             v-model="libraryQuery"
             class="avg-library-search"
             type="search"
             placeholder="搜索文件名"
+            :disabled="!libraryRoot"
           />
           <span>已选 {{ librarySelected.length }} · 还可加 {{ Math.max(0, assetMax - form.assets.length) }}</span>
         </div>
         <div v-if="libraryError" class="avg-error-text avg-library-pad">{{ libraryError }}</div>
         <div v-else-if="libraryLoading" class="avg-library-state">正在扫描图库…</div>
-        <div v-else class="avg-library-grid">
+        <div v-else-if="!libraryRoot" class="avg-library-empty">
+          <strong>尚未设置图库目录</strong>
+          <p>默认使用「AI 视频工作流」已设置的工作区目录。当前未设置时，请选择一个本地文件夹。</p>
+          <button class="avg-btn primary" type="button" @click="chooseLibraryRoot">选择文件夹</button>
+        </div>
+        <div v-else ref="libraryGridRef" class="avg-library-grid">
           <button
             v-for="item in filteredLibraryItems"
             :key="item.path"
             type="button"
             class="avg-library-tile"
             :class="{ selected: librarySelected.includes(item.path) }"
+            :data-library-path="item.path"
             @click="toggleLibraryItem(item.path)"
           >
-            <img :src="previewSrc(item.path)" :alt="item.name" loading="lazy" />
+            <div class="avg-library-media">
+              <img
+                v-if="previewSrc(item.path)"
+                :src="previewSrc(item.path)"
+                :alt="item.name"
+                decoding="async"
+                @error="markImagePreviewBroken(item.path)"
+              />
+              <div v-else class="avg-library-tile-ph" aria-hidden="true">
+                <span v-if="imagePreviewLoading[item.path]">加载中</span>
+                <span v-else-if="imagePreviewBroken[item.path]">无预览</span>
+                <span v-else>…</span>
+              </div>
+            </div>
             <span class="avg-library-check">{{ librarySelected.includes(item.path) ? '已选' : '选择' }}</span>
-            <strong>{{ item.name }}</strong>
+            <strong :title="item.name">{{ item.name }}</strong>
           </button>
           <div v-if="!filteredLibraryItems.length" class="avg-library-state">
-            {{ libraryRoot ? '没有匹配的图片' : '请选择本地参考图库文件夹' }}
+            没有匹配的图片
           </div>
         </div>
         <div class="avg-library-foot">
@@ -423,6 +442,7 @@
     >
       <div
         class="avg-modal"
+        :class="{ 'avg-modal-portrait': detailIsPortrait }"
         role="dialog"
         aria-modal="true"
         :aria-labelledby="'avg-modal-title'"
@@ -433,7 +453,7 @@
           <button class="avg-btn icon" type="button" aria-label="关闭任务详情" ref="closeDetailBtn" @click="closeDetail">×</button>
         </div>
         <div class="avg-modal-body">
-          <div class="avg-modal-preview">
+          <div class="avg-modal-preview" :class="{ 'is-portrait': detailIsPortrait }">
             <template v-if="jobLocalVideo(detailJob)">
               <div v-if="detailVideoLoading" class="avg-thumb-loading avg-modal-loading">
                 <div class="avg-spinner" aria-hidden="true"></div>
@@ -447,6 +467,8 @@
               </div>
               <video
                 v-else-if="detailVideoSrc"
+                class="avg-detail-video"
+                :class="{ 'is-portrait': detailIsPortrait }"
                 :src="detailVideoSrc"
                 controls
                 playsinline
@@ -590,21 +612,63 @@ const closeDetailBtn = ref(null)
 const pollTimer = ref(null)
 const defaultOutputDir = ref('~/Downloads/抓虾AI生视频')
 const brokenCovers = reactive({})
+const coverUrls = reactive({})
+const coverLoading = reactive({})
 const mediaUrlCache = reactive({})
+const imagePreviewUrls = reactive({})
+const imagePreviewLoading = reactive({})
 const detailVideoSrc = ref('')
 const detailVideoLoading = ref(false)
 const detailVideoError = ref('')
 const libraryOpen = ref(false)
 const libraryRoot = ref('')
+const libraryRootSource = ref('') // workflow | manual | ''
 const libraryItems = ref([])
 const librarySelected = ref([])
 const libraryQuery = ref('')
 const libraryLoading = ref(false)
 const libraryError = ref('')
+const imagePreviewBroken = reactive({})
+/** 与 AI 视频工作流共用的工作区目录 key */
+const WORKFLOW_WORKSPACE_KEY = 'crawshrimp.bala-ai-video.workspace-dir'
+/** 本页手动覆盖的图库目录（仅当工作流无工作区时作为回退） */
 const LIBRARY_ROOT_KEY = 'crawshrimp.ai-video.reference-library-root'
+/** 缩略图并发；原图全量 base64 会卡死，只加载视口内缩略图 */
+const LIBRARY_PREVIEW_CONCURRENCY = 3
+const LIBRARY_THUMB_MAX_EDGE = 280
+const LIBRARY_THUMB_QUALITY = 0.72
+const libraryGridRef = ref(null)
+let libraryPreviewObserver = null
+let libraryPreviewQueue = []
+let libraryPreviewActive = 0
 
 const activeMeta = computed(() => modelOptions.find(item => item.id === form.provider) || modelOptions[0])
 const activeModelLabel = computed(() => activeMeta.value.label)
+
+const libraryRootLabel = computed(() => {
+  if (!libraryRoot.value) return '请先设置图库文件夹'
+  const dir = shortDirLabel(libraryRoot.value)
+  if (libraryRootSource.value === 'workflow') return `${dir} · 来自 AI 视频工作流工作区`
+  if (libraryRootSource.value === 'manual') return `${dir} · 手动选择`
+  return dir
+})
+
+/** 竖屏任务详情需要更高预览区，避免 9:16 被横框裁切 */
+const detailIsPortrait = computed(() => {
+  const job = detailJob.value
+  if (!job) return false
+  const ratio = String(
+    job?.parameters?.ratio
+    || job?.currentRun?.inputSnapshot?.parameters?.ratio
+    || '',
+  ).trim()
+  if (['9:16', '3:4', '2:3', '9/16', '3/4', '2/3'].includes(ratio)) return true
+  // Fallback: portrait-ish when width < height in free-form size strings like "720x1280"
+  const size = String(job?.parameters?.size || job?.parameters?.resolution || '').toLowerCase()
+  const match = size.match(/(\d+)\s*[x×]\s*(\d+)/)
+  if (match) return Number(match[1]) < Number(match[2])
+  return false
+})
 
 /** HappyHorse 模式由图片数量自动判定：0=t2v, 1=i2v, 2-9=r2v */
 const happyHorseMode = computed(() => resolveHappyHorseMode(form.assets.length))
@@ -774,10 +838,14 @@ function shortDirLabel(path) {
 function localFileUrl(path) {
   const value = String(path || '').trim()
   if (!value) return ''
-  if (value.startsWith('file://') || value.startsWith('data:')) return value
+  if (value.startsWith('file://') || value.startsWith('data:') || value.startsWith('crawshrimp-media:')) return value
   const normalized = value.replace(/\\/g, '/')
   const encoded = normalized.split('/').map(part => encodeURIComponent(part)).join('/')
   return encoded.startsWith('/') ? `file://${encoded}` : `file:///${encoded}`
+}
+
+function isLocalImagePath(path) {
+  return /\.(jpe?g|png|webp|gif)$/i.test(String(path || '').trim())
 }
 
 /** Force first-frame cover in Electron where metadata-only preload often stays black. */
@@ -798,8 +866,189 @@ function seekThumbFrame(event) {
   }
 }
 
+function thumbCacheKey(path) {
+  return `thumb:${String(path || '').trim()}`
+}
+
 function previewSrc(path) {
-  return localFileUrl(path)
+  const key = String(path || '').trim()
+  if (!key || imagePreviewBroken[key]) return ''
+  // Prefer compressed thumbnail; never fall back to file:// (Electron blocks it).
+  return imagePreviewUrls[thumbCacheKey(key)] || imagePreviewUrls[key] || ''
+}
+
+function markImagePreviewBroken(path) {
+  const key = String(path || '').trim()
+  if (!key) return
+  imagePreviewBroken[key] = true
+  delete imagePreviewUrls[key]
+  delete imagePreviewUrls[thumbCacheKey(key)]
+  delete mediaUrlCache[key]
+  delete mediaUrlCache[thumbCacheKey(key)]
+}
+
+async function ensureImagePreview(path, { thumbnail = true } = {}) {
+  const key = String(path || '').trim()
+  if (!key || imagePreviewBroken[key]) return ''
+  const cacheKey = thumbnail ? thumbCacheKey(key) : key
+  if (imagePreviewUrls[cacheKey] || imagePreviewLoading[cacheKey]) {
+    return imagePreviewUrls[cacheKey] || ''
+  }
+  imagePreviewLoading[cacheKey] = true
+  // Also mark path loading so tile UI can show spinner via imagePreviewLoading[path]
+  if (thumbnail) imagePreviewLoading[key] = true
+  try {
+    const src = await resolveLocalImageSrc(key, { thumbnail })
+    if (!src) throw new Error('预览不可用')
+    imagePreviewUrls[cacheKey] = src
+    delete imagePreviewBroken[key]
+  } catch {
+    imagePreviewBroken[key] = true
+    delete imagePreviewUrls[cacheKey]
+  } finally {
+    delete imagePreviewLoading[cacheKey]
+    if (thumbnail) delete imagePreviewLoading[key]
+  }
+  return imagePreviewUrls[cacheKey] || ''
+}
+
+async function resolveLocalImageSrc(filePath, { thumbnail = false } = {}) {
+  const key = String(filePath || '').trim()
+  if (!key) return ''
+  const cacheKey = thumbnail ? thumbCacheKey(key) : key
+  if (mediaUrlCache[cacheKey]) return mediaUrlCache[cacheKey]
+
+  // Grid / library: compressed JPEG thumbnail (hundreds of KB max, not multi‑MB originals).
+  if (thumbnail && isLocalImagePath(key) && typeof window?.cs?.readLocalImageThumbnail === 'function') {
+    const response = await window.cs.readLocalImageThumbnail(key, {
+      maxEdge: LIBRARY_THUMB_MAX_EDGE,
+      quality: LIBRARY_THUMB_QUALITY,
+    })
+    if (response?.ok === false) {
+      throw new Error(response?.error || '本地缩略图不可用')
+    }
+    const dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
+    if (!dataUrl) throw new Error(response?.error || '本地缩略图不可用')
+    mediaUrlCache[cacheKey] = dataUrl
+    return dataUrl
+  }
+
+  // Full preview path (selected assets / detail).
+  if (isLocalImagePath(key) && typeof window?.cs?.readLocalImagePreview === 'function') {
+    const response = await window.cs.readLocalImagePreview(key)
+    if (response?.ok === false) {
+      throw new Error(response?.error || '本地图片预览不可用')
+    }
+    const dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
+    if (!dataUrl) throw new Error(response?.error || '本地图片预览不可用')
+    mediaUrlCache[cacheKey] = dataUrl
+    return dataUrl
+  }
+
+  if (typeof window?.cs?.getLocalMediaUrl === 'function') {
+    return resolvePlayableMediaUrl(key)
+  }
+  return ''
+}
+
+function enqueueLibraryPreview(path) {
+  const key = String(path || '').trim()
+  if (!key || imagePreviewBroken[key] || previewSrc(key) || imagePreviewLoading[key]) return
+  if (libraryPreviewQueue.includes(key)) return
+  libraryPreviewQueue.push(key)
+  pumpLibraryPreviewQueue()
+}
+
+function pumpLibraryPreviewQueue() {
+  while (libraryPreviewActive < LIBRARY_PREVIEW_CONCURRENCY && libraryPreviewQueue.length) {
+    const next = libraryPreviewQueue.shift()
+    if (!next || previewSrc(next) || imagePreviewBroken[next]) continue
+    libraryPreviewActive += 1
+    void ensureImagePreview(next, { thumbnail: true })
+      .catch(() => {})
+      .finally(() => {
+        libraryPreviewActive = Math.max(0, libraryPreviewActive - 1)
+        pumpLibraryPreviewQueue()
+      })
+  }
+}
+
+function disconnectLibraryPreviewObserver() {
+  if (libraryPreviewObserver) {
+    libraryPreviewObserver.disconnect()
+    libraryPreviewObserver = null
+  }
+  libraryPreviewQueue = []
+  libraryPreviewActive = 0
+}
+
+function observeLibraryTiles() {
+  disconnectLibraryPreviewObserver()
+  const root = libraryGridRef.value
+  if (!root || typeof IntersectionObserver === 'undefined') {
+    // Fallback: only warm a small first page of thumbs.
+    for (const item of (filteredLibraryItems.value || []).slice(0, 24)) {
+      enqueueLibraryPreview(item.path)
+    }
+    return
+  }
+  libraryPreviewObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const path = entry.target?.getAttribute?.('data-library-path')
+      if (path) enqueueLibraryPreview(path)
+    }
+  }, {
+    root,
+    rootMargin: '160px 0px',
+    threshold: 0.01,
+  })
+  const tiles = root.querySelectorAll('[data-library-path]')
+  tiles.forEach((el) => libraryPreviewObserver.observe(el))
+}
+
+function fileBaseName(filePath) {
+  const value = String(filePath || '').trim().replace(/\\/g, '/')
+  if (!value) return ''
+  const parts = value.split('/').filter(Boolean)
+  return parts[parts.length - 1] || value
+}
+
+function loadWorkflowWorkspaceDir() {
+  try {
+    return String(window.localStorage?.getItem(WORKFLOW_WORKSPACE_KEY) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+function loadManualLibraryRoot() {
+  try {
+    return String(window.localStorage?.getItem(LIBRARY_ROOT_KEY) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 默认优先 AI 视频工作流工作区；无工作区时回退本页手动选择；都没有则空。
+ */
+function resolveLibraryRoot() {
+  const workflow = loadWorkflowWorkspaceDir()
+  if (workflow) return { path: workflow, source: 'workflow' }
+  const manual = loadManualLibraryRoot()
+  if (manual) return { path: manual, source: 'manual' }
+  return { path: '', source: '' }
+}
+
+/** @deprecated full preload removed — use IntersectionObserver via observeLibraryTiles */
+async function preloadLibraryPreviews(items = []) {
+  // Only warm first screen; rest loads when scrolled into view.
+  for (const item of (Array.isArray(items) ? items : []).slice(0, 16)) {
+    enqueueLibraryPreview(item?.path)
+  }
+  await nextTick()
+  observeLibraryTiles()
 }
 
 function modelLabel(model) {
@@ -898,21 +1147,27 @@ function jobPosterPath(job) {
   return String(job?.currentRun?.output?.localPosterPath || '').trim()
 }
 
-function jobCoverSrc(job) {
-  const id = job?.id || ''
-  if (id && brokenCovers[id]) return ''
+function jobCoverCandidatePath(job) {
   const poster = jobPosterPath(job)
-  if (poster) return localFileUrl(poster)
+  if (poster) return poster
   // Fallback: first input reference image while poster is missing.
   const assets = job?.assets || job?.currentRun?.inputSnapshot?.assets || []
   const first = assets.find(item => item?.localPath)
-  if (first?.localPath) return localFileUrl(first.localPath)
-  return ''
+  return String(first?.localPath || '').trim()
+}
+
+function jobCoverSrc(job) {
+  const id = job?.id || ''
+  if (!id || brokenCovers[id]) return ''
+  return coverUrls[id] || ''
 }
 
 function markCoverBroken(job) {
   const id = job?.id
-  if (id) brokenCovers[id] = true
+  if (id) {
+    brokenCovers[id] = true
+    delete coverUrls[id]
+  }
 }
 
 async function resolvePlayableMediaUrl(filePath) {
@@ -924,10 +1179,56 @@ async function resolvePlayableMediaUrl(filePath) {
     return localFileUrl(key)
   }
   const response = await window.cs.getLocalMediaUrl(key)
+  if (response?.ok === false) {
+    throw new Error(response?.error || response?.message || '本地媒体预览不可用')
+  }
   const mediaUrl = String(response?.media_url || response?.mediaUrl || '').trim()
-  if (!mediaUrl) throw new Error(response?.error || '本地视频预览不可用')
+  if (!mediaUrl) throw new Error(response?.error || '本地媒体预览不可用')
   mediaUrlCache[key] = mediaUrl
   return mediaUrl
+}
+
+async function ensureJobCover(job) {
+  const id = job?.id || ''
+  if (!id || coverUrls[id] || coverLoading[id]) return
+  const candidate = jobCoverCandidatePath(job)
+  if (!candidate) return
+  coverLoading[id] = true
+  try {
+    if (job?.outputDir && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
+      try { await window.cs.authorizeLocalMediaRoot(job.outputDir) } catch { /* ignore */ }
+    }
+    // Also authorize parent of poster/video path.
+    const parent = candidate.replace(/[/\\][^/\\]+$/, '')
+    if (parent && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
+      try { await window.cs.authorizeLocalMediaRoot(parent) } catch { /* ignore */ }
+    }
+    // Posters are images: prefer data URL (reliable for <img>); media protocol as fallback.
+    let src = ''
+    if (isLocalImagePath(candidate)) {
+      src = await resolveLocalImageSrc(candidate)
+    } else {
+      src = await resolvePlayableMediaUrl(candidate)
+    }
+    if (!src) throw new Error('封面地址为空')
+    coverUrls[id] = src
+    delete brokenCovers[id]
+  } catch {
+    // Mark broken so the card exits the loading spinner and shows fallback.
+    brokenCovers[id] = true
+    delete coverUrls[id]
+  } finally {
+    delete coverLoading[id]
+  }
+}
+
+function preloadJobCovers(list = []) {
+  for (const job of list) {
+    if (!job?.id) continue
+    if (jobLocalVideo(job) || jobPosterPath(job) || jobCoverCandidatePath(job)) {
+      void ensureJobCover(job)
+    }
+  }
 }
 
 async function loadDetailVideo(job) {
@@ -942,7 +1243,13 @@ async function loadDetailVideo(job) {
     if (job?.outputDir && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
       try { await window.cs.authorizeLocalMediaRoot(job.outputDir) } catch { /* ignore */ }
     }
+    const parent = videoPath.replace(/[/\\][^/\\]+$/, '')
+    if (parent && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
+      try { await window.cs.authorizeLocalMediaRoot(parent) } catch { /* ignore */ }
+    }
     detailVideoSrc.value = await resolvePlayableMediaUrl(videoPath)
+    // Ensure poster is ready for the video poster attribute.
+    void ensureJobCover(job)
   } catch (error) {
     detailVideoError.value = error?.message || String(error)
   } finally {
@@ -1026,6 +1333,7 @@ function addAssetPaths(paths) {
     if (added >= remain) break
     if (form.assets.some(item => item.path === path)) continue
     form.assets.push({ path, role: 'reference_image' })
+    void ensureImagePreview(path)
     added += 1
   }
   syncHappyHorseRatioDefault()
@@ -1055,19 +1363,20 @@ async function openImageLibrary() {
   libraryError.value = ''
   librarySelected.value = []
   libraryQuery.value = ''
-  if (!libraryRoot.value) {
-    try {
-      libraryRoot.value = window.localStorage?.getItem(LIBRARY_ROOT_KEY) || ''
-    } catch {
-      libraryRoot.value = ''
-    }
+  const resolved = resolveLibraryRoot()
+  libraryRoot.value = resolved.path
+  libraryRootSource.value = resolved.source
+  if (libraryRoot.value) {
+    await scanLibrary(libraryRoot.value)
+  } else {
+    libraryItems.value = []
   }
-  if (libraryRoot.value) await scanLibrary(libraryRoot.value)
 }
 
 function closeImageLibrary() {
   libraryOpen.value = false
   libraryError.value = ''
+  disconnectLibraryPreviewObserver()
 }
 
 async function chooseLibraryRoot() {
@@ -1075,13 +1384,15 @@ async function chooseLibraryRoot() {
     libraryError.value = '当前环境不支持系统文件夹选择器'
     return
   }
+  const defaultPath = libraryRoot.value || loadWorkflowWorkspaceDir() || undefined
   const directory = await window.cs.browseFile({
     title: '选择本地参考图库文件夹',
     directory: true,
-    defaultPath: libraryRoot.value || undefined,
+    defaultPath,
   })
   if (!directory) return
   libraryRoot.value = directory
+  libraryRootSource.value = 'manual'
   try {
     window.localStorage?.setItem(LIBRARY_ROOT_KEY, directory)
   } catch { /* ignore */ }
@@ -1096,6 +1407,9 @@ async function scanLibrary(rootPath) {
     if (typeof window?.cs?.listDirectoryFiles !== 'function') {
       throw new Error('当前环境不支持扫描本地目录')
     }
+    if (rootPath && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
+      try { await window.cs.authorizeLocalMediaRoot(rootPath) } catch { /* ignore */ }
+    }
     const result = await window.cs.listDirectoryFiles(rootPath, {
       extensions: ['jpg', 'jpeg', 'png', 'webp'],
       maxFiles: 500,
@@ -1106,10 +1420,17 @@ async function scanLibrary(rootPath) {
       const path = String(entry?.path || entry || '').trim()
       return {
         path,
-        name: pathLabel(path),
+        name: fileBaseName(path) || pathLabel(path),
         relativePath: entry?.relativePath || '',
       }
     }).filter(item => item.path)
+    // 缩略图 + 视口懒加载：禁止对工作区数百张 10MB 原图做全量 base64。
+    await nextTick()
+    observeLibraryTiles()
+    // Warm first visible rows immediately.
+    for (const item of libraryItems.value.slice(0, 16)) {
+      enqueueLibraryPreview(item.path)
+    }
   } catch (error) {
     libraryError.value = error?.message || String(error)
   } finally {
@@ -1234,6 +1555,9 @@ async function reloadJobs() {
       const latest = jobs.value.find(item => item.id === detailJob.value.id)
       if (latest) detailJob.value = latest
     }
+    // Clear previous cover failures so refreshed posters can load.
+    for (const key of Object.keys(brokenCovers)) delete brokenCovers[key]
+    preloadJobCovers(jobs.value)
   } catch (error) {
     formError.value = error?.message || String(error)
   }
@@ -1278,6 +1602,7 @@ function reuseParams(job) {
   form.assets = (job.assets || [])
     .map(asset => ({ path: asset.localPath, role: asset.role }))
     .filter(item => item.path)
+  for (const asset of form.assets) void ensureImagePreview(asset.path)
   syncHappyHorseRatioDefault()
   compactPane.value = 'inputs'
 }
@@ -1376,6 +1701,16 @@ watch(() => form.assets.length, () => {
   syncHappyHorseRatioDefault()
 })
 
+// Re-bind viewport observer when search filter changes or library reopens.
+watch([filteredLibraryItems, libraryOpen], async ([, open]) => {
+  if (!open) {
+    disconnectLibraryPreviewObserver()
+    return
+  }
+  await nextTick()
+  observeLibraryTiles()
+})
+
 onMounted(async () => {
   updateCompact()
   window.addEventListener('resize', updateCompact)
@@ -1393,6 +1728,7 @@ onUnmounted(() => {
   window.removeEventListener('resize', updateCompact)
   window.removeEventListener('keydown', onKeydown)
   stopPolling()
+  disconnectLibraryPreviewObserver()
 })
 </script>
 
@@ -2132,6 +2468,7 @@ onUnmounted(() => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 10px;
   align-content: start;
+  align-items: start;
 }
 
 .avg-library-tile {
@@ -2145,7 +2482,10 @@ onUnmounted(() => {
   color: inherit;
   cursor: pointer;
   display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
   gap: 6px;
+  min-width: 0;
+  align-content: start;
 }
 
 .avg-library-tile.selected {
@@ -2153,12 +2493,57 @@ onUnmounted(() => {
   box-shadow: 0 0 0 1px var(--orange-line);
 }
 
-.avg-library-tile img {
+/* Fixed 3:4 media box prevents collapsed / striped tiles while thumbs load */
+.avg-library-media {
+  position: relative;
   width: 100%;
   aspect-ratio: 3 / 4;
-  object-fit: cover;
-  display: block;
+  min-height: 96px;
+  overflow: hidden;
   background: #101015;
+}
+
+.avg-library-media img,
+.avg-library-tile-ph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  background: #101015;
+}
+
+.avg-library-tile-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+  font-size: 11px;
+  background: linear-gradient(145deg, #17171f, #0d0d12 55%, #1a1a22);
+}
+
+.avg-library-empty {
+  display: grid;
+  place-content: center;
+  gap: 10px;
+  padding: 40px 24px;
+  text-align: center;
+  color: var(--text2);
+  min-height: 280px;
+}
+
+.avg-library-empty strong {
+  font-size: 14px;
+  color: var(--text);
+}
+
+.avg-library-empty p {
+  margin: 0 auto;
+  max-width: 420px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text3);
 }
 
 .avg-library-tile strong {
@@ -2525,7 +2910,7 @@ select:focus-visible {
 
 .avg-modal {
   width: min(1040px, 100%);
-  max-height: min(760px, 92vh);
+  max-height: min(92vh, 860px);
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg2);
@@ -2533,6 +2918,12 @@ select:focus-visible {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   overflow: hidden;
+}
+
+/* 竖屏任务：加高预览区，侧栏略收，完整显示 9:16 */
+.avg-modal.avg-modal-portrait {
+  width: min(980px, 100%);
+  max-height: min(94vh, 920px);
 }
 
 .avg-modal-head {
@@ -2549,27 +2940,51 @@ select:focus-visible {
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1.35fr) 360px;
-  overflow: auto;
-}
-
-.avg-modal-preview {
-  min-height: 420px;
-  position: relative;
-  background: #0d0d12;
-  display: grid;
-  place-items: center;
   overflow: hidden;
 }
 
+.avg-modal.avg-modal-portrait .avg-modal-body {
+  grid-template-columns: minmax(0, 1.1fr) 320px;
+}
+
+.avg-modal-preview {
+  position: relative;
+  min-height: 420px;
+  height: min(70vh, 640px);
+  max-height: min(70vh, 640px);
+  background: #0d0d12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  padding: 0;
+}
+
+.avg-modal-preview.is-portrait {
+  height: min(82vh, 760px);
+  max-height: min(82vh, 760px);
+  min-height: 520px;
+}
+
+/* 绝对铺满 + contain：竖屏完整显示、横屏同样不裁切 */
 .avg-modal-preview video,
-.avg-modal-preview-pending {
+.avg-detail-video {
+  position: absolute;
+  inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   object-fit: contain;
+  object-position: center center;
   background: #0d0d12;
 }
 
 .avg-modal-preview-pending {
+  width: 100%;
+  height: 100%;
+  min-height: 360px;
   opacity: 0.42;
   background:
     radial-gradient(circle at 30% 40%, rgba(255, 107, 43, 0.18), transparent 40%),
@@ -2577,9 +2992,15 @@ select:focus-visible {
 }
 
 .avg-modal-loading {
-  min-height: 420px;
+  position: relative;
+  z-index: 1;
+  min-height: 360px;
   width: 100%;
   height: 100%;
+}
+
+.avg-thumb-cover {
+  object-fit: cover;
 }
 
 .avg-modal-state-overlay {

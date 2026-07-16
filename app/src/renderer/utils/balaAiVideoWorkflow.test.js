@@ -88,13 +88,12 @@ test('local video results use the authorized streaming-media bridge instead of B
 test('video-task asset selection keeps preview and selection as sibling native buttons', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
-  assert.match(workflowSource, /class="aiv-video-asset-card-actions"/)
-  assert.match(workflowSource, /class="aiv-video-asset-select"/)
-  assert.match(workflowSource, /class="aiv-video-asset-zoom"/)
-  assert.doesNotMatch(
-    workflowSource,
-    /<article[\s\S]*?class="aiv-video-asset-card"[\s\S]*?role="button"[\s\S]*?class="aiv-video-asset-zoom"[\s\S]*?<\/article>/,
-  )
+  assert.match(workflowSource, /class="aiv-vtask-card"/)
+  assert.match(workflowSource, /class="aiv-vtask-card-hit"/)
+  assert.match(workflowSource, /class="aiv-vtask-card-zoom"/)
+  assert.match(workflowSource, /class="aiv-vtask-card-img"/)
+  // Selection hit and zoom are separate buttons (zoom does not nest inside hit as role=button article)
+  assert.match(workflowSource, /@click\.stop="openImagePreview\(asset, videoTaskDraft\.styleCode\)"/)
 })
 
 test('video result normalization keeps local files and remote playback URLs in separate fields', () => {
@@ -218,11 +217,15 @@ test('video task dialog exposes model and detail image kind filters', async () =
 
   assert.match(workflowSource, /const videoTaskKindFilter = ref\('all'\)/)
   assert.match(workflowSource, /const videoTaskKindTabs = computed/)
-  assert.match(workflowSource, /function videoTaskAssetKind/)
+  assert.match(workflowSource, /function videoTaskAssetSourceType/)
+  assert.match(workflowSource, /function videoTaskAssetIsAi/)
   assert.match(workflowSource, /class="aiv-video-task-kind-tabs"/)
   assert.match(workflowSource, /label: '模特图'/)
   assert.match(workflowSource, /label: '细节图'/)
   assert.match(workflowSource, /label: 'AI 图'/)
+  // AI is overlay; model/detail come from folder source
+  assert.match(workflowSource, /videoTaskAssetIsAi\(asset\)/)
+  assert.match(workflowSource, /videoTaskAssetSourceType\(asset\) === 'detail'/)
 })
 
 test('AI edit hover tools do not steal card selection clicks', async () => {
@@ -282,12 +285,16 @@ test('video task creation prioritizes reviewed images in a left media area with 
   assert.match(workflowSource, /const videoTaskAssetFilter = ref\('approved'\)/)
   assert.match(workflowSource, /const videoTaskAssetTabs = computed/)
   assert.match(workflowSource, /const filteredVideoTaskAssets = computed/)
+  assert.match(workflowSource, /const displayedVideoTaskAssets = computed/)
   assert.match(workflowSource, /class="aiv-video-task-selection"/)
   assert.match(workflowSource, /role="tablist" aria-label="视频任务素材状态"/)
-  assert.match(workflowSource, /v-for="asset in filteredVideoTaskAssets"/)
+  assert.match(workflowSource, /v-for="asset in displayedVideoTaskAssets"/)
+  assert.match(workflowSource, /class="aiv-vtask-grid"/)
+  assert.match(workflowSource, /scheduleVideoTaskThumbs/)
   assert.match(workflowSource, /@keydown\.left\.prevent="moveVideoTaskStyleTab\('previous'\)"/)
   assert.match(workflowSource, /@keydown\.right\.prevent="moveVideoTaskAssetTab\('next'\)"/)
-  assert.match(workflowSource, /\.aiv-modal-body\.video-task\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) 360px;/)
+  // Left ops rail + right image content (aligned with AI 生视频)
+  assert.match(workflowSource, /\.aiv-modal-body\.video-task\s*\{[\s\S]*?grid-template-columns:\s*minmax\(300px, 360px\) minmax\(0, 1fr\);/)
 })
 
 test('video results use discrete task stages and reserve percent bars for reported live progress', async () => {

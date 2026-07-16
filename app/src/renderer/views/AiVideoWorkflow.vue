@@ -401,8 +401,13 @@
 
             <label class="aiv-field">
               <span class="aiv-field-heading">
-                {{ activePromptLabel }}
-                <button v-if="activeAction === 'pose_swap'" type="button" class="aiv-text-action" @click="promptLibraryTarget = 'workspace'; promptLibraryOpen = true">从 Prompt 库选择</button>
+                <span>{{ activePromptLabel }}</span>
+                <button
+                  v-if="activeAction === 'pose_swap'"
+                  type="button"
+                  class="aiv-ghost small"
+                  @click="promptLibraryTarget = 'workspace'; promptLibraryOpen = true"
+                >从 Prompt 库选择</button>
               </span>
               <textarea v-model="aiPrompt" rows="6"></textarea>
             </label>
@@ -749,6 +754,10 @@
                 </div>
                 <div class="aiv-video-task-meta-line">
                   <span><strong>素材</strong>{{ task.assets.length }} 张组成一条视频</span>
+                  <span
+                    v-if="task.provider === 'seedance' || task.provider === 'happyhorse'"
+                    :title="videoTaskParamSummary(task)"
+                  ><strong>参数</strong>{{ videoTaskParamSummary(task) }}</span>
                   <span :title="task.prompt || '生意管家页面生成可不填写 Prompt'"><strong>Prompt</strong>{{ task.prompt || '可不填写' }}</span>
                   <span :title="task.outputDir"><strong>输出</strong>{{ shortDisplayPath(task.outputDir) }}</span>
                 </div>
@@ -1229,7 +1238,7 @@
       </section>
     </div>
 
-    <div v-if="templateLibraryOpen" class="aiv-modal" @click.self="closeTemplateLibrary">
+    <div v-if="templateLibraryOpen" class="aiv-modal aiv-modal-stacked" @click.self="closeTemplateLibrary">
       <section
         class="aiv-modal-panel wide"
         role="dialog"
@@ -1325,11 +1334,24 @@
           <button type="button" class="aiv-ghost small" @click="closeVideoTaskDialog">关闭</button>
         </header>
         <div class="aiv-modal-body video-task">
-          <section class="aiv-video-task-selection">
+          <!-- 左：操作栏（对齐 AI 生视频） -->
+          <aside class="aiv-video-task-form" aria-label="视频任务参数">
+            <section class="aiv-task-readiness" aria-label="视频任务创建条件">
+              <div>
+                <strong>任务准备</strong>
+                <span>已完成 {{ videoTaskDraftCompletedCount }} / {{ videoTaskDraftRequirements.length }} 项</span>
+              </div>
+              <ul>
+                <li v-for="requirement in videoTaskDraftRequirements" :key="requirement.id" :class="{ complete: requirement.complete }">
+                  <span aria-hidden="true">{{ requirement.complete ? '✓' : '○' }}</span>{{ requirement.label }}
+                </li>
+              </ul>
+            </section>
+
             <section :class="['aiv-video-style-library', { 'aiv-field-invalid': !videoTaskDraftRequirement('style')?.complete }]">
               <header>
                 <strong>选择款号</strong>
-                <span>{{ videoTaskDraftRequirement('style')?.complete ? '一个视频任务只使用一个款号；优先从已审核图片开始选择' : videoTaskDraftRequirement('style')?.message }}</span>
+                <span>{{ videoTaskDraftRequirement('style')?.complete ? '一个任务只用一个款号' : videoTaskDraftRequirement('style')?.message }}</span>
               </header>
               <div class="aiv-video-style-tabs" role="tablist" aria-label="视频任务款号">
                 <button
@@ -1348,16 +1370,127 @@
                   @keydown.end.prevent="moveVideoTaskStyleTab('last')"
                 >
                   <strong>{{ job.styleCode }}</strong>
-                  <span>{{ job.assets.filter(asset => asset.selectable).length }} 张已审核可选</span>
+                  <span>{{ job.assets.filter(asset => asset.selectable).length }} 张已审核</span>
                 </button>
               </div>
             </section>
 
+            <div v-if="videoTaskDraftError" class="aiv-inline-error" role="alert">{{ videoTaskDraftError }}</div>
+
+            <div class="aiv-field">
+              <span>生成方式</span>
+              <div class="aiv-provider-switcher" role="group" aria-label="生成方式">
+                <button
+                  v-for="option in videoTaskProviderOptions"
+                  :key="option.id"
+                  type="button"
+                  class="aiv-provider-card"
+                  :class="{ active: videoTaskDraft.provider === option.id }"
+                  :aria-pressed="videoTaskDraft.provider === option.id ? 'true' : 'false'"
+                  :title="option.title"
+                  @click="selectVideoTaskProvider(option.id)"
+                >
+                  <div class="aiv-provider-card-head">
+                    <strong>{{ option.shortLabel }}</strong>
+                    <img class="aiv-provider-mark" :src="option.mark" :alt="option.markAlt" />
+                  </div>
+                </button>
+              </div>
+            </div>
+
+            <!-- HappyHorse 模式按已选图片数自动：0=文生 / 1=图生 / 2–9=参考生（与 AI 生视频一致） -->
+            <div v-if="videoTaskDraft.provider === 'happyhorse'" class="aiv-hh-mode-auto">
+              <span>HappyHorse 模式</span>
+              <strong>{{ happyHorseModeLabel(videoTaskDraft.happyhorseMode) }}</strong>
+              <small>{{ happyHorseAutoModeHint }}</small>
+            </div>
+
+            <section
+              v-if="videoTaskDraft.provider === 'seedance' || videoTaskDraft.provider === 'happyhorse'"
+              class="aiv-video-gen-params"
+              aria-label="生成参数"
+            >
+              <header class="aiv-video-gen-params-head">
+                <strong>生成参数</strong>
+                <span>{{ videoTaskParamBadge }}</span>
+              </header>
+              <div class="aiv-video-gen-params-grid">
+                <label class="aiv-field compact">
+                  <span>时长</span>
+                  <select v-model.number="videoTaskDraft.duration">
+                    <option v-for="sec in videoTaskDurationOptions" :key="sec" :value="sec">{{ sec }} 秒</option>
+                  </select>
+                </label>
+                <label v-if="videoTaskShowRatio" class="aiv-field compact">
+                  <span>比例</span>
+                  <select v-model="videoTaskDraft.ratio">
+                    <option v-for="ratio in videoTaskRatioOptions" :key="ratio" :value="ratio">{{ ratio }}</option>
+                  </select>
+                </label>
+                <label class="aiv-field compact">
+                  <span>清晰度</span>
+                  <select v-model="videoTaskDraft.resolution">
+                    <option v-for="item in videoTaskResolutionOptions" :key="item" :value="item">{{ item }}</option>
+                  </select>
+                </label>
+                <div v-if="videoTaskShowAudio" class="aiv-field compact">
+                  <span>音频</span>
+                  <div class="aiv-segmented" role="group" aria-label="音频开关">
+                    <button type="button" :class="{ active: videoTaskDraft.generateAudio }" @click="videoTaskDraft.generateAudio = true">开</button>
+                    <button type="button" :class="{ active: !videoTaskDraft.generateAudio }" @click="videoTaskDraft.generateAudio = false">关</button>
+                  </div>
+                </div>
+                <div class="aiv-field compact">
+                  <span>水印</span>
+                  <div class="aiv-segmented" role="group" aria-label="水印开关">
+                    <button type="button" :class="{ active: !videoTaskDraft.watermark }" @click="videoTaskDraft.watermark = false">关</button>
+                    <button type="button" :class="{ active: videoTaskDraft.watermark }" @click="videoTaskDraft.watermark = true">开</button>
+                  </div>
+                </div>
+              </div>
+              <p class="aiv-video-gen-params-hint">{{ videoTaskParamHint }}</p>
+            </section>
+
+            <label :class="['aiv-field', { 'aiv-field-invalid': !videoTaskDraftRequirement('prompt')?.complete }]">
+              <span>Prompt</span>
+              <textarea
+                v-model="videoTaskDraft.prompt"
+                rows="4"
+                :placeholder="videoTaskDraft.provider === 'qn' ? '生意管家页面生成可不填写 Prompt' : '描述服装、场景、动作和镜头要求'"
+              ></textarea>
+            </label>
+
+            <div :class="['aiv-field', { 'aiv-field-invalid': !videoTaskDraftRequirement('output')?.complete }]">
+              <span>输出目录</span>
+              <button type="button" class="aiv-directory-picker" @click="pickVideoTaskOutputDirectory">
+                <span class="aiv-directory-picker-path" :title="videoTaskDraft.outputDir">
+                  {{ videoTaskDraft.outputDir || '请选择 AI 视频工作区目录' }}
+                </span>
+                <strong>选择文件夹</strong>
+              </button>
+            </div>
+
+            <div v-if="videoTaskDraft.provider === 'qn'" class="aiv-inline-actions">
+              <button type="button" class="aiv-ghost small" @click="openTemplateLibrary(videoTaskDraft.styleCode)">选择生意管家模板</button>
+              <button type="button" class="aiv-ghost small" @click="videoTaskDraft.templateId = ''">不选模板</button>
+            </div>
+            <div v-else class="aiv-seedance-callout">
+              <strong>{{ providerLabel(videoTaskDraft.provider) }}</strong>
+              <span>凭据状态：{{ providerStatusLabel(videoTaskDraft.provider) }}；预检通过后仍需明确授权才会生成。</span>
+              <small v-if="videoTaskDraft.provider === 'seedance'">如触发隐私保护，改用服装、场景和动作文字描述生成原创人物版本。</small>
+              <small v-else-if="videoTaskDraft.happyhorseMode === 't2v'">文生视频不需要图片，使用原创人物和场景描述。</small>
+              <small v-else-if="videoTaskDraft.happyhorseMode === 'i2v'">图生视频只允许选择 1 张首帧图，画幅跟随图片。</small>
+              <small v-else>参考生视频支持 1-9 张图片，可组合模拍图和细节图。</small>
+            </div>
+          </aside>
+
+          <!-- 右：图片内容区 -->
+          <section class="aiv-video-task-selection" aria-label="图片素材">
             <section class="aiv-video-task-picker">
               <header :class="['aiv-picker-head', { 'aiv-field-invalid': !videoTaskDraftRequirement('assets')?.complete }]">
                 <div>
                   <strong>{{ videoTaskDraft.styleCode || '未选择款号' }} · 图片素材</strong>
-                  <span>{{ videoTaskDraftRequirement('assets')?.complete ? `${activeVideoTaskAssetTab?.label || '已审核'}图片展示中；待审核图片不会混入可选池` : videoTaskDraftRequirement('assets')?.message }}</span>
+                  <span>{{ videoTaskDraftRequirement('assets')?.complete ? `${activeVideoTaskAssetTab?.label || '已审核'}图片展示中；点击卡片切换选中` : videoTaskDraftRequirement('assets')?.message }}</span>
                 </div>
                 <span class="aiv-badge orange">已选 {{ selectedVideoTaskAssetCount }}</span>
               </header>
@@ -1388,52 +1521,78 @@
                   role="tab"
                   :class="['aiv-video-asset-filter', { active: videoTaskKindFilter === tab.id }]"
                   :aria-selected="videoTaskKindFilter === tab.id"
-                  @click="videoTaskKindFilter = tab.id"
+                  @click="videoTaskKindFilter = tab.id; resetVideoTaskAssetRenderLimit()"
                 >
                   {{ tab.label }} <strong>{{ tab.count }}</strong>
                 </button>
               </div>
               <div
                 :id="`video-task-asset-panel-${videoTaskAssetFilter}`"
-                class="aiv-video-task-assets picker"
+                ref="videoTaskGridRef"
+                class="aiv-vtask-grid"
                 role="tabpanel"
                 :aria-labelledby="`video-task-asset-tab-${videoTaskAssetFilter}`"
               >
-                <div
-                  v-for="asset in filteredVideoTaskAssets"
+                <article
+                  v-for="asset in displayedVideoTaskAssets"
                   :key="asset.id"
-                  :class="['aiv-video-asset-card', { selected: videoTaskDraft.assetIds.includes(asset.id), pending: asset.status !== 'approved', 'has-preview': Boolean(previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]) }]"
+                  class="aiv-vtask-card"
+                  :class="{
+                    selected: videoTaskDraft.assetIds.includes(asset.id),
+                    pending: asset.status !== 'approved',
+                  }"
+                  :data-vtask-id="asset.id"
                 >
                   <button
                     type="button"
-                    class="aiv-video-asset-select"
+                    class="aiv-vtask-card-hit"
                     :disabled="!asset.selectable"
                     :aria-pressed="videoTaskDraft.assetIds.includes(asset.id)"
                     :aria-label="`${asset.selectable ? (videoTaskDraft.assetIds.includes(asset.id) ? '取消选择' : '选择') : '仅查看'}视频素材 ${asset.label}`"
                     @click="toggleVideoTaskDraftAsset(asset)"
                   >
                     <img
-                      v-if="previewSourceFor(asset) && !brokenPreviews[previewSourceFor(asset)]"
-                      :src="previewSourceFor(asset)"
+                      v-if="videoTaskThumbSrcMap[asset.id]"
+                      class="aiv-vtask-card-img"
+                      :src="videoTaskThumbSrcMap[asset.id]"
                       :alt="asset.label"
-                      @error="markPreviewBroken(previewSourceFor(asset))"
+                      decoding="async"
+                      draggable="false"
+                      @error="markVideoTaskThumbBroken(asset)"
                     />
-                    <span :class="['aiv-status-pill', asset.status]">{{ assetStatusLabel(asset.status) }}</span>
-                    <strong>{{ asset.label }}</strong>
-                    <small>{{ videoTaskAssetKindLabel(asset) }}</small>
+                    <div v-else class="aiv-vtask-card-ph" aria-hidden="true">
+                      <span v-if="videoTaskThumbLoading[asset.id]">加载中</span>
+                      <span v-else>…</span>
+                    </div>
+                    <span
+                      v-if="videoTaskDraft.assetIds.includes(asset.id)"
+                      class="aiv-vtask-card-selected"
+                      aria-hidden="true"
+                    >已选</span>
+                    <span class="aiv-vtask-card-status" :class="asset.status">{{ assetStatusLabel(asset.status) }}</span>
+                    <span class="aiv-vtask-card-meta">
+                      <strong>{{ asset.label }}</strong>
+                      <small>{{ videoTaskAssetKindLabel(asset) }}</small>
+                    </span>
                   </button>
-                  <div class="aiv-video-asset-card-actions">
-                    <button
-                      type="button"
-                      class="aiv-video-asset-zoom"
-                      title="查看大图"
-                      :aria-label="`查看 ${asset.label} 大图`"
-                      @click="openImagePreview(asset, videoTaskDraft.styleCode)"
-                    >
-                      <span aria-hidden="true">⌕</span>
-                    </button>
-                  </div>
-                </div>
+                  <button
+                    type="button"
+                    class="aiv-vtask-card-zoom"
+                    title="查看大图"
+                    :aria-label="`查看 ${asset.label} 大图`"
+                    @click.stop="openImagePreview(asset, videoTaskDraft.styleCode)"
+                  >
+                    <span aria-hidden="true">⌕</span>
+                  </button>
+                </article>
+                <button
+                  v-if="remainingVideoTaskAssetCount > 0"
+                  type="button"
+                  class="aiv-video-task-load-more"
+                  @click="showMoreVideoTaskAssets"
+                >
+                  加载更多（剩余 {{ remainingVideoTaskAssetCount }} 张）
+                </button>
                 <div v-if="!filteredVideoTaskAssets.length" class="aiv-video-task-empty">
                   <strong>{{ activeVideoTaskAssetTab?.label || '当前' }}图片为空</strong>
                   <span v-if="videoTaskAssetFilter === 'approved' && videoTaskKindFilter === 'all'">请先在“AI 审核”中通过图片，或切换到“待审核”仅查看。</span>
@@ -1443,71 +1602,13 @@
               </div>
             </section>
           </section>
-
-          <aside class="aiv-video-task-form">
-            <section class="aiv-task-readiness" aria-label="视频任务创建条件">
-              <div>
-                <strong>任务准备</strong>
-                <span>已完成 {{ videoTaskDraftCompletedCount }} / {{ videoTaskDraftRequirements.length }} 项</span>
-              </div>
-              <ul>
-                <li v-for="requirement in videoTaskDraftRequirements" :key="requirement.id" :class="{ complete: requirement.complete }">
-                  <span aria-hidden="true">{{ requirement.complete ? '✓' : '○' }}</span>{{ requirement.label }}
-                </li>
-              </ul>
-            </section>
-            <div v-if="videoTaskDraftError" class="aiv-inline-error" role="alert">{{ videoTaskDraftError }}</div>
-            <label class="aiv-field">
-              <span>生成方式</span>
-              <select v-model="videoTaskDraft.provider" @change="handleVideoProviderChange">
-                <option value="qn">生意管家页面生成</option>
-                <option value="seedance">Seedance 2.0 API</option>
-                <option value="happyhorse">百炼 HappyHorse</option>
-              </select>
-            </label>
-            <label v-if="videoTaskDraft.provider === 'happyhorse'" class="aiv-field">
-              <span>HappyHorse 模式</span>
-              <select v-model="videoTaskDraft.happyhorseMode" @change="handleHappyHorseModeChange">
-                <option value="t2v">文生视频</option>
-                <option value="i2v">图生视频</option>
-                <option value="r2v">参考生视频</option>
-              </select>
-            </label>
-            <label :class="['aiv-field', { 'aiv-field-invalid': !videoTaskDraftRequirement('prompt')?.complete }]">
-              <span>Prompt</span>
-              <textarea
-                v-model="videoTaskDraft.prompt"
-                rows="4"
-                :placeholder="videoTaskDraft.provider === 'qn' ? '生意管家页面生成可不填写 Prompt' : '描述服装、场景、动作和镜头要求'"
-              ></textarea>
-            </label>
-            <div :class="['aiv-field', { 'aiv-field-invalid': !videoTaskDraftRequirement('output')?.complete }]">
-              <span>输出目录</span>
-              <button type="button" class="aiv-directory-picker" @click="pickVideoTaskOutputDirectory">
-                <span class="aiv-directory-picker-path" :title="videoTaskDraft.outputDir">
-                  {{ videoTaskDraft.outputDir || '请选择 AI 视频工作区目录' }}
-                </span>
-                <strong>选择文件夹</strong>
-              </button>
-            </div>
-            <div v-if="videoTaskDraft.provider === 'qn'" class="aiv-inline-actions">
-              <button type="button" class="aiv-ghost small" @click="openTemplateLibrary(videoTaskDraft.styleCode)">选择生意管家模板</button>
-              <button type="button" class="aiv-ghost small" @click="videoTaskDraft.templateId = ''">不选模板</button>
-            </div>
-            <div v-else class="aiv-seedance-callout">
-              <strong>{{ providerLabel(videoTaskDraft.provider) }}</strong>
-              <span>凭据状态：{{ providerStatusLabel(videoTaskDraft.provider) }}；预检通过后仍需明确授权才会生成。</span>
-              <small v-if="videoTaskDraft.provider === 'seedance'">如触发隐私保护，改用服装、场景和动作文字描述生成原创人物版本。</small>
-              <small v-else-if="videoTaskDraft.happyhorseMode === 't2v'">文生视频不需要图片，使用原创人物和场景描述。</small>
-              <small v-else-if="videoTaskDraft.happyhorseMode === 'i2v'">图生视频只允许选择 1 张首帧图，画幅跟随图片。</small>
-              <small v-else>参考生视频支持 1-9 张图片，可组合模拍图和细节图。</small>
-            </div>
-          </aside>
         </div>
         <footer class="aiv-modal-foot">
           <span>{{ videoTaskDraft.provider === 'qn' ? '生意管家 Prompt 可空，模板可选；输出目录必填' : `${providerLabel(videoTaskDraft.provider)} 需要明确 Prompt 和输出目录` }}</span>
-          <button type="button" class="aiv-ghost" @click="closeVideoTaskDialog">取消</button>
-          <button type="button" class="aiv-primary" :disabled="!canCreateVideoTask" @click="createVideoTaskFromDraft">{{ editingVideoTaskId ? '保存任务修改' : '创建视频任务' }}</button>
+          <div class="aiv-modal-foot-actions">
+            <button type="button" class="aiv-ghost" @click="closeVideoTaskDialog">取消</button>
+            <button type="button" class="aiv-primary" :disabled="!canCreateVideoTask" @click="createVideoTaskFromDraft">{{ editingVideoTaskId ? '保存任务修改' : '创建视频任务' }}</button>
+          </div>
         </footer>
       </section>
     </div>
@@ -1549,6 +1650,10 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
+import volcengineMark from '../assets/ai-video-generation/volcengine-mark.png'
+import aliyunMark from '../assets/ai-video-generation/aliyun-mark.png'
+import webPageMark from '../assets/ai-video-generation/web-page-mark.svg'
+import { resolveHappyHorseMode } from '../utils/aiVideoPricing.mjs'
 import {
   BALA_AI_IMAGE_TASK_ID,
   BALA_AI_VIDEO_ADAPTER_ID,
@@ -1682,6 +1787,34 @@ const materialBoardUrl = ref('')
 const reviewBatch = ref(null)
 const reviewBoardUrl = ref('')
 const aiStageRequest = ref(null)
+const SEEDANCE_RATIOS = ['16:9', '9:16', '1:1', '3:4', '4:3', '21:9', 'adaptive']
+const HAPPYHORSE_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '9:21', '21:9']
+
+/** 简写按钮卡：与 AI 生视频工作台同风格，侧栏三列紧凑展示 */
+const videoTaskProviderOptions = [
+  {
+    id: 'qn',
+    shortLabel: '生意管家',
+    title: '生意管家页面生成（图生视频网页）',
+    mark: webPageMark,
+    markAlt: '网页',
+  },
+  {
+    id: 'seedance',
+    shortLabel: 'Seedance 2.0',
+    title: 'Seedance 2.0 API · 火山引擎',
+    mark: volcengineMark,
+    markAlt: '火山引擎',
+  },
+  {
+    id: 'happyhorse',
+    shortLabel: 'HappyHorse 1.1',
+    title: '百炼 HappyHorse 1.1 · 阿里云',
+    mark: aliyunMark,
+    markAlt: '阿里云',
+  },
+]
+
 const videoTaskDraft = reactive({
   styleCode: '208326102205',
   provider: 'qn',
@@ -1690,6 +1823,12 @@ const videoTaskDraft = reactive({
   outputDir: workspaceDir.value,
   templateId: '',
   assetIds: [],
+  // 与 AI 生视频工作台对齐的生成参数
+  duration: 5,
+  resolution: '720p',
+  ratio: '9:16',
+  generateAudio: true,
+  watermark: false,
 })
 const materialExpanded = reactive({
   '208326102205': true,
@@ -2123,6 +2262,7 @@ function persistedVideoTask(task = {}) {
         ratio: String(task.template.ratio || ''),
       }
     : null
+  const gen = videoTaskGenerationParams(task)
   return {
     id: String(task.id || ''),
     title: migrateBalaBusinessManagerText(task.title),
@@ -2136,6 +2276,13 @@ function persistedVideoTask(task = {}) {
     providerTaskId: String(task.providerTaskId || ''),
     runId: String(task.runId || ''),
     assets: (task.assets || []).map(persistedVideoAsset),
+    duration: Number(task.duration ?? gen.duration ?? 5),
+    resolution: String(task.resolution || gen.resolution || ''),
+    ratio: String(task.ratio ?? gen.ratio ?? ''),
+    generateAudio: normalizeBalaVideoTaskProvider(task.provider) === 'seedance'
+      ? task.generateAudio !== false && task.generateAudio !== 0
+      : Boolean(task.generateAudio),
+    watermark: Boolean(task.watermark),
   }
 }
 
@@ -2206,9 +2353,10 @@ const videoTaskKindTabs = computed(() => {
   const assets = videoTaskSelectableAssets.value
   return [
     { id: 'all', label: '全部类型', count: assets.length },
-    { id: 'model', label: '模特图', count: assets.filter(asset => videoTaskAssetKind(asset) === 'model').length },
-    { id: 'detail', label: '细节图', count: assets.filter(asset => videoTaskAssetKind(asset) === 'detail').length },
-    { id: 'ai', label: 'AI 图', count: assets.filter(asset => videoTaskAssetKind(asset) === 'ai').length },
+    // 模特图 / 细节图按文件夹来源；AI 图是叠加属性，可与前两者重叠计数
+    { id: 'model', label: '模特图', count: assets.filter(asset => videoTaskAssetSourceType(asset) === 'model').length },
+    { id: 'detail', label: '细节图', count: assets.filter(asset => videoTaskAssetSourceType(asset) === 'detail').length },
+    { id: 'ai', label: 'AI 图', count: assets.filter(asset => videoTaskAssetIsAi(asset)).length },
   ]
 })
 const activeVideoTaskAssetTab = computed(() => (
@@ -2220,10 +2368,42 @@ const filteredVideoTaskAssets = computed(() => {
   return videoTaskSelectableAssets.value.filter((asset) => {
     if (statusFilter === 'approved' && asset.status !== 'approved') return false
     if (statusFilter === 'pending' && !(asset.status === 'pending' || asset.status === 'retry')) return false
-    if (kindFilter !== 'all' && videoTaskAssetKind(asset) !== kindFilter) return false
+    if (kindFilter === 'ai') return videoTaskAssetIsAi(asset)
+    if (kindFilter === 'model' || kindFilter === 'detail') {
+      return videoTaskAssetSourceType(asset) === kindFilter
+    }
     return true
   })
 })
+/** 多图分页 + 缩略图队列：首屏少挂载，禁止全量原图 base64 */
+const VIDEO_TASK_ASSET_CHUNK = 20
+const VIDEO_TASK_THUMB_CONCURRENCY = 3
+const videoTaskAssetRenderLimit = ref(VIDEO_TASK_ASSET_CHUNK)
+const videoTaskThumbSrcMap = reactive({})
+const videoTaskThumbLoading = reactive({})
+const videoTaskGridRef = ref(null)
+let videoTaskThumbQueue = []
+let videoTaskThumbActive = 0
+let videoTaskThumbObserver = null
+
+const displayedVideoTaskAssets = computed(() => (
+  filteredVideoTaskAssets.value.slice(0, videoTaskAssetRenderLimit.value)
+))
+const remainingVideoTaskAssetCount = computed(() => (
+  Math.max(0, filteredVideoTaskAssets.value.length - videoTaskAssetRenderLimit.value)
+))
+function showMoreVideoTaskAssets() {
+  videoTaskAssetRenderLimit.value += VIDEO_TASK_ASSET_CHUNK
+  nextTick(() => {
+    scheduleVideoTaskThumbs(displayedVideoTaskAssets.value)
+    observeVideoTaskThumbs()
+  })
+}
+function resetVideoTaskAssetRenderLimit() {
+  videoTaskAssetRenderLimit.value = VIDEO_TASK_ASSET_CHUNK
+  videoTaskThumbQueue = []
+  videoTaskThumbActive = 0
+}
 const selectedVideoTaskAssetCount = computed(() => videoTaskDraft.assetIds.length)
 const selectedVideoTaskDraftAssets = computed(() => videoTaskSelectableAssets.value.filter(asset => (
   asset.selectable && videoTaskDraft.assetIds.includes(asset.id)
@@ -2249,6 +2429,137 @@ const videoTaskDraftRequirements = computed(() => {
 })
 const videoTaskDraftCompletedCount = computed(() => videoTaskDraftRequirements.value.filter(item => item.complete).length)
 const canCreateVideoTask = computed(() => videoTaskDraftRequirements.value.every(item => item.complete))
+
+const videoTaskShowRatio = computed(() => !(
+  videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v'
+))
+const videoTaskShowAudio = computed(() => videoTaskDraft.provider === 'seedance')
+const videoTaskDurationOptions = computed(() => {
+  const min = videoTaskDraft.provider === 'seedance' ? 4 : 3
+  const options = []
+  for (let i = min; i <= 15; i += 1) options.push(i)
+  return options
+})
+const videoTaskRatioOptions = computed(() => (
+  videoTaskDraft.provider === 'seedance' ? SEEDANCE_RATIOS : HAPPYHORSE_RATIOS
+))
+const videoTaskResolutionOptions = computed(() => (
+  videoTaskDraft.provider === 'seedance' ? ['480p', '720p', '1080p'] : ['720P', '1080P']
+))
+const videoTaskParamBadge = computed(() => {
+  if (videoTaskDraft.provider === 'seedance') return 'Seedance 2.0'
+  return `HH · ${happyHorseModeLabel(videoTaskDraft.happyhorseMode)}`
+})
+const happyHorseAutoModeHint = computed(() => {
+  const n = selectedVideoTaskAssetCount.value
+  if (n <= 0) return '当前 0 张图 → 自动文生视频（t2v）'
+  if (n === 1) return '当前 1 张图 → 自动图生视频（i2v），画幅随首帧'
+  return `当前 ${n} 张图 → 自动参考生视频（r2v，最多 9 张）`
+})
+const videoTaskParamHint = computed(() => {
+  if (videoTaskDraft.provider === 'seedance') {
+    return `Seedance 默认 720p / 5 秒 / 9:16 / 音频开 / 水印关。当前：${videoTaskDraft.resolution} · ${videoTaskDraft.duration}s · ${videoTaskDraft.ratio} · 音频${videoTaskDraft.generateAudio ? '开' : '关'} · 水印${videoTaskDraft.watermark ? '开' : '关'}`
+  }
+  if (videoTaskDraft.happyhorseMode === 'i2v') {
+    return `图生视频默认 720P / 5 秒 / 比例随首帧 / 水印关。当前：${videoTaskDraft.resolution} · ${videoTaskDraft.duration}s · 水印${videoTaskDraft.watermark ? '开' : '关'}`
+  }
+  if (videoTaskDraft.happyhorseMode === 't2v') {
+    return `文生视频默认 720P / 5 秒 / 16:9 / 水印关。当前：${videoTaskDraft.resolution} · ${videoTaskDraft.duration}s · ${videoTaskDraft.ratio || '16:9'} · 水印${videoTaskDraft.watermark ? '开' : '关'}`
+  }
+  return `参考生视频默认 720P / 5 秒 / 9:16 / 水印关。当前：${videoTaskDraft.resolution} · ${videoTaskDraft.duration}s · ${videoTaskDraft.ratio || '9:16'} · 水印${videoTaskDraft.watermark ? '开' : '关'}`
+})
+
+function applyVideoTaskProviderDefaults(provider = videoTaskDraft.provider) {
+  if (provider === 'seedance') {
+    videoTaskDraft.ratio = '9:16'
+    videoTaskDraft.resolution = '720p'
+    videoTaskDraft.duration = 5
+    videoTaskDraft.generateAudio = true
+    videoTaskDraft.watermark = false
+    return
+  }
+  if (provider === 'happyhorse') {
+    videoTaskDraft.resolution = '720P'
+    videoTaskDraft.duration = 5
+    videoTaskDraft.generateAudio = false
+    videoTaskDraft.watermark = false
+    syncHappyHorseModeFromAssetCount()
+  }
+}
+
+/** 0 张 → t2v，1 张 → i2v，2–9 张 → r2v（与 AI 生视频工作台一致） */
+function syncHappyHorseModeFromAssetCount() {
+  if (videoTaskDraft.provider !== 'happyhorse') return
+  let count = selectedVideoTaskAssetCount.value
+  // 参考生最多 9 张；超出时裁剪并按 9 计
+  if (count > 9) {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 9)
+    count = 9
+  }
+  const nextMode = resolveHappyHorseMode(count)
+  if (videoTaskDraft.happyhorseMode !== nextMode) {
+    videoTaskDraft.happyhorseMode = nextMode
+  }
+  syncVideoTaskHappyHorseRatioDefault()
+}
+
+function syncVideoTaskHappyHorseRatioDefault() {
+  if (videoTaskDraft.provider !== 'happyhorse') return
+  const mode = videoTaskDraft.happyhorseMode || 'i2v'
+  if (mode === 'i2v') {
+    videoTaskDraft.ratio = ''
+    return
+  }
+  if (mode === 't2v') {
+    if (!videoTaskDraft.ratio) videoTaskDraft.ratio = '16:9'
+    return
+  }
+  if (!videoTaskDraft.ratio) videoTaskDraft.ratio = '9:16'
+}
+
+function videoTaskGenerationParams(task = videoTaskDraft) {
+  const provider = String(task?.provider || '').trim()
+  const duration = Number(task?.duration || 5)
+  const watermark = Boolean(task?.watermark)
+  if (provider === 'seedance') {
+    return {
+      duration: Number.isFinite(duration) ? Math.max(4, Math.min(15, duration)) : 5,
+      resolution: String(task?.resolution || '720p').trim() || '720p',
+      ratio: String(task?.ratio || '9:16').trim() || '9:16',
+      generateAudio: task?.generateAudio !== false,
+      watermark,
+    }
+  }
+  if (provider === 'happyhorse') {
+    const mode = String(task?.happyhorseMode || 'i2v').trim() || 'i2v'
+    const params = {
+      duration: Number.isFinite(duration) ? Math.max(3, Math.min(15, duration)) : 5,
+      resolution: String(task?.resolution || '720P').trim().toUpperCase() || '720P',
+      watermark,
+    }
+    if (mode !== 'i2v') {
+      params.ratio = String(task?.ratio || (mode === 't2v' ? '16:9' : '9:16')).trim()
+        || (mode === 't2v' ? '16:9' : '9:16')
+    }
+    return params
+  }
+  return {}
+}
+
+function videoTaskParamSummary(task = {}) {
+  const gen = videoTaskGenerationParams(task)
+  if (!gen || !Object.keys(gen).length) return ''
+  const parts = [
+    gen.resolution,
+    gen.duration != null ? `${gen.duration}s` : '',
+    gen.ratio || (task.provider === 'happyhorse' && task.happyhorseMode === 'i2v' ? '随首帧' : ''),
+  ]
+  if (task.provider === 'seedance') {
+    parts.push(`音频${gen.generateAudio !== false ? '开' : '关'}`)
+  }
+  parts.push(`水印${gen.watermark ? '开' : '关'}`)
+  return parts.filter(Boolean).join(' · ')
+}
 const hasRefreshableVideoTask = computed(() => videoTasks.some(task => String(task.providerTaskId || task.runId || '').trim()))
 const materialIsRunning = computed(() => isActiveWorkflowStatus(materialTask.status))
 const aiIsRunning = computed(() => isActiveWorkflowStatus(aiTaskState.status))
@@ -2382,35 +2693,156 @@ function resolveRemoteImageUrl(value = '') {
   return absoluteApiUrl(url)
 }
 
-async function loadLocalImagePreview(path = '') {
+function localImageCacheKey(path = '', thumbnail = false) {
   const key = String(path || '').trim()
-  if (!key || localImagePreviews[key] || brokenPreviews[key] || localImagePreviewLoading.has(key)) return
-  if (typeof window.cs?.readLocalImagePreview !== 'function') return
-  localImagePreviewLoading.add(key)
+  if (!key) return ''
+  return thumbnail ? `thumb:${key}` : key
+}
+
+async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
+  const key = String(path || '').trim()
+  if (!key) return
+  const cacheKey = localImageCacheKey(key, thumbnail)
+  if (!cacheKey || localImagePreviews[cacheKey] || brokenPreviews[cacheKey] || localImagePreviewLoading.has(cacheKey)) return
+  localImagePreviewLoading.add(cacheKey)
   try {
-    const response = await window.cs.readLocalImagePreview(key)
-    const dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
-    if (!dataUrl) throw new Error(response?.error || '本地图片预览不可用')
-    localImagePreviews[key] = dataUrl
+    let dataUrl = ''
+    // Grid / dense lists: compressed thumbnails only (full base64 of 10MB originals freezes the UI).
+    if (thumbnail && typeof window.cs?.readLocalImageThumbnail === 'function') {
+      const response = await window.cs.readLocalImageThumbnail(key, { maxEdge: 280, quality: 0.72 })
+      if (response?.ok === false) throw new Error(response?.error || '本地缩略图不可用')
+      dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
+    } else if (typeof window.cs?.readLocalImagePreview === 'function') {
+      const response = await window.cs.readLocalImagePreview(key)
+      if (response?.ok === false) throw new Error(response?.error || '本地图片预览不可用')
+      dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
+    } else {
+      return
+    }
+    if (!dataUrl) throw new Error(thumbnail ? '本地缩略图不可用' : '本地图片预览不可用')
+    localImagePreviews[cacheKey] = dataUrl
   } catch {
-    brokenPreviews[key] = true
+    brokenPreviews[cacheKey] = true
   } finally {
-    localImagePreviewLoading.delete(key)
+    localImagePreviewLoading.delete(cacheKey)
   }
 }
 
 function imagePreviewSource(asset = {}, { thumbnail = false } = {}) {
   const localPath = localImagePathFor(asset, thumbnail)
-  const source = resolveBalaAssetPreviewSource(
+  // Prefer remote URL when present (already small / CDN).
+  const remote = resolveRemoteImageUrl(
+    thumbnail
+      ? (asset.thumbnailUrl || asset.thumbnail_url || asset.imageUrl || asset.image_url)
+      : (asset.imageUrl || asset.image_url),
+  )
+  if (remote) return remote
+
+  if (localPath) {
+    const cacheKey = localImageCacheKey(localPath, thumbnail)
+    if (localImagePreviews[cacheKey]) return localImagePreviews[cacheKey]
+    // Full preview may already be cached under raw path — allow reuse for non-thumb.
+    if (!thumbnail && localImagePreviews[localPath]) return localImagePreviews[localPath]
+    if (!brokenPreviews[cacheKey]) void loadLocalImagePreview(localPath, { thumbnail })
+    return ''
+  }
+
+  // Fallback to shared resolver (remote / cached full previews).
+  return resolveBalaAssetPreviewSource(
     { ...asset, path: localPath },
     { localPreviews: localImagePreviews, thumbnail, resolveRemote: resolveRemoteImageUrl },
   )
-  if (!source && localPath) void loadLocalImagePreview(localPath)
-  return source
 }
 
 function previewSourceFor(asset = {}) {
-  return imagePreviewSource(asset)
+  return imagePreviewSource(asset, { thumbnail: false })
+}
+
+/**
+ * Video-task grid thumbs: ONLY local compressed JPEG (never full imageUrl / remote full-res).
+ * Full-size remote/local previews are reserved for lightbox.
+ */
+function videoTaskThumbLocalPath(asset = {}) {
+  return String(asset?.path || asset?.previewPath || '').trim()
+}
+
+function enqueueVideoTaskThumb(asset = {}) {
+  const id = String(asset?.id || '').trim()
+  const path = videoTaskThumbLocalPath(asset)
+  if (!id || !path) return
+  if (videoTaskThumbSrcMap[id] || videoTaskThumbLoading[id] || brokenPreviews[localImageCacheKey(path, true)]) return
+  if (videoTaskThumbQueue.some(item => item.id === id)) return
+  videoTaskThumbQueue.push({ id, path })
+  pumpVideoTaskThumbQueue()
+}
+
+function pumpVideoTaskThumbQueue() {
+  while (videoTaskThumbActive < VIDEO_TASK_THUMB_CONCURRENCY && videoTaskThumbQueue.length) {
+    const next = videoTaskThumbQueue.shift()
+    if (!next?.id || !next?.path) continue
+    if (videoTaskThumbSrcMap[next.id] || videoTaskThumbLoading[next.id]) continue
+    videoTaskThumbActive += 1
+    videoTaskThumbLoading[next.id] = true
+    void loadLocalImagePreview(next.path, { thumbnail: true })
+      .then(() => {
+        const cacheKey = localImageCacheKey(next.path, true)
+        const src = localImagePreviews[cacheKey] || ''
+        if (src) videoTaskThumbSrcMap[next.id] = src
+        else brokenPreviews[cacheKey] = true
+      })
+      .catch(() => {
+        brokenPreviews[localImageCacheKey(next.path, true)] = true
+      })
+      .finally(() => {
+        delete videoTaskThumbLoading[next.id]
+        videoTaskThumbActive = Math.max(0, videoTaskThumbActive - 1)
+        pumpVideoTaskThumbQueue()
+      })
+  }
+}
+
+function scheduleVideoTaskThumbs(assets = []) {
+  for (const asset of assets || []) enqueueVideoTaskThumb(asset)
+}
+
+function disconnectVideoTaskThumbObserver() {
+  if (videoTaskThumbObserver) {
+    videoTaskThumbObserver.disconnect()
+    videoTaskThumbObserver = null
+  }
+}
+
+function observeVideoTaskThumbs() {
+  disconnectVideoTaskThumbObserver()
+  const root = videoTaskGridRef.value
+  if (!root || typeof IntersectionObserver === 'undefined') {
+    scheduleVideoTaskThumbs(displayedVideoTaskAssets.value)
+    return
+  }
+  videoTaskThumbObserver = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (!entry.isIntersecting) continue
+      const id = entry.target?.getAttribute?.('data-vtask-id')
+      if (!id) continue
+      const asset = displayedVideoTaskAssets.value.find(item => String(item.id) === id)
+      if (asset) enqueueVideoTaskThumb(asset)
+    }
+  }, { root, rootMargin: '180px 0px', threshold: 0.01 })
+  root.querySelectorAll('[data-vtask-id]').forEach((el) => videoTaskThumbObserver.observe(el))
+}
+
+function markVideoTaskThumbBroken(asset = {}) {
+  const id = String(asset?.id || '').trim()
+  const path = videoTaskThumbLocalPath(asset)
+  const cacheKey = localImageCacheKey(path, true)
+  if (cacheKey) {
+    brokenPreviews[cacheKey] = true
+    delete localImagePreviews[cacheKey]
+  }
+  if (id) {
+    delete videoTaskThumbSrcMap[id]
+    delete videoTaskThumbLoading[id]
+  }
 }
 
 function versionPreviewSource(version = {}, source = {}) {
@@ -4464,7 +4896,8 @@ async function waitForQnVideoTask(task, runId = '', mode = 'plan') {
 }
 
 async function preflightVideoProviderTask(task) {
-  const result = await window.cs.preflightBalaVideoProvider({
+  const gen = videoTaskGenerationParams(task)
+  const payload = {
     provider: task.provider,
     style_code: task.styleCode,
     mode: task.happyhorseMode || 'i2v',
@@ -4473,11 +4906,16 @@ async function preflightVideoProviderTask(task) {
       ? []
       : videoTaskImagePaths(task),
     output_dir: task.outputDir || videoOutputDir.value,
-    resolution: '720P',
-    ratio: '3:4',
-    duration: 5,
-    generate_audio: true,
-  })
+    resolution: gen.resolution || (task.provider === 'seedance' ? '720p' : '720P'),
+    duration: gen.duration || 5,
+    generate_audio: gen.generateAudio !== false,
+    watermark: Boolean(gen.watermark),
+  }
+  // HappyHorse 图生不允许 ratio
+  if (!(task.provider === 'happyhorse' && task.happyhorseMode === 'i2v')) {
+    payload.ratio = gen.ratio || '9:16'
+  }
+  const result = await window.cs.preflightBalaVideoProvider(payload)
   if (!result?.ok) throw new Error(result?.error || `${providerLabel(task.provider)} 预检失败`)
   return result
 }
@@ -4503,13 +4941,17 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
   }
   const prompt = String(task.prompt || '').trim()
   if (!prompt) throw new Error('Seedance 任务需要填写 Prompt')
+  const gen = videoTaskGenerationParams(task)
   const payload = {
     style_code: task.styleCode,
     prompt,
     image_paths: videoTaskImagePaths(task).slice(0, 4),
     output_dir: task.outputDir || videoOutputDir.value,
-    ratio: '3:4',
-    duration: 5,
+    ratio: gen.ratio || '9:16',
+    resolution: gen.resolution || '720p',
+    duration: gen.duration || 5,
+    generate_audio: gen.generateAudio !== false,
+    watermark: Boolean(gen.watermark),
     wait: true,
   }
   let result
@@ -4572,17 +5014,20 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
   }
   const prompt = String(task.prompt || '').trim()
   if (!prompt) throw new Error('HappyHorse 任务需要填写 Prompt')
-  const result = await window.cs.runBalaHappyHorseVideo({
+  const gen = videoTaskGenerationParams(task)
+  const payload = {
     style_code: task.styleCode,
     mode: task.happyhorseMode || 'i2v',
     prompt,
     image_paths: videoTaskImagePaths(task),
     output_dir: task.outputDir || videoOutputDir.value,
-    resolution: '720P',
-    ratio: '3:4',
-    duration: 5,
+    resolution: gen.resolution || '720P',
+    duration: gen.duration || 5,
+    watermark: Boolean(gen.watermark),
     wait: true,
-  })
+  }
+  if (gen.ratio) payload.ratio = gen.ratio
+  const result = await window.cs.runBalaHappyHorseVideo(payload)
   if (!result?.ok) throw new Error(result?.error || 'HappyHorse 视频任务未能启动')
   task.providerTaskId = String(result?.task_id || task.providerTaskId || '')
   const displayStatus = providerTaskDisplayStatus(task.provider, result?.status, result?.local_video_path)
@@ -5011,14 +5456,15 @@ function clearTemplateSelection() {
 
 function resetVideoTaskDraftAssets() {
   const assets = videoTaskSelectableAssets.value || []
-  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 't2v') {
-    videoTaskDraft.assetIds = []
-    return
-  }
+  // 默认勾选已审核图；HappyHorse 再按数量自动切模式（不强制清空）
   videoTaskDraft.assetIds = assets.filter(asset => asset.selectable).map(asset => asset.id)
-  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v') {
-    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 1)
+  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length > 9) {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 9)
   }
+  if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length > 4) {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 4)
+  }
+  syncHappyHorseModeFromAssetCount()
 }
 
 function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
@@ -5026,6 +5472,9 @@ function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   videoTaskDraftError.value = ''
   videoTaskAssetFilter.value = 'approved'
   videoTaskKindFilter.value = 'all'
+  resetVideoTaskAssetRenderLimit()
+  // 用最新审核池/素材文件夹重算款号池，保证细节图·AI 图分类字段最新
+  if (reviewStyles.length) buildVideoJobsFromReview()
   const task = sourceTask && typeof sourceTask === 'object' ? sourceTask : null
   editingVideoTaskId.value = mode === 'edit' && task?.id ? String(task.id) : ''
   videoTaskDraft.styleCode = task?.styleCode || styleCode || videoJobs[0]?.styleCode || ''
@@ -5037,27 +5486,50 @@ function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   selectedTemplateId.value = videoTaskDraft.templateId
   if (task) {
     videoTaskDraft.assetIds = (task.assets || []).map(asset => asset?.id).filter(Boolean)
+    const gen = videoTaskGenerationParams(task)
+    videoTaskDraft.duration = Number(task.duration ?? gen.duration ?? 5)
+    videoTaskDraft.resolution = String(task.resolution || gen.resolution || '')
+    videoTaskDraft.ratio = String(task.ratio ?? gen.ratio ?? '')
+    videoTaskDraft.generateAudio = videoTaskDraft.provider === 'seedance'
+      ? task.generateAudio !== false && task.generateAudio !== 0
+      : Boolean(task.generateAudio)
+    videoTaskDraft.watermark = Boolean(task.watermark)
+    if (videoTaskDraft.provider === 'seedance' || videoTaskDraft.provider === 'happyhorse') {
+      if (!videoTaskDraft.resolution) applyVideoTaskProviderDefaults(videoTaskDraft.provider)
+    }
+    // 编辑/复制时也按当前勾选图数量重算 HH 模式
+    syncHappyHorseModeFromAssetCount()
   } else {
+    applyVideoTaskProviderDefaults(videoTaskDraft.provider)
     resetVideoTaskDraftAssets()
   }
   videoTaskDialogOpen.value = true
+  nextTick(() => {
+    scheduleVideoTaskThumbs(displayedVideoTaskAssets.value)
+    observeVideoTaskThumbs()
+  })
 }
 
 function handleVideoProviderChange() {
   videoTaskDraftError.value = ''
   videoTaskDraft.templateId = ''
+  applyVideoTaskProviderDefaults(videoTaskDraft.provider)
   resetVideoTaskDraftAssets()
 }
 
-function handleHappyHorseModeChange() {
-  videoTaskDraftError.value = ''
-  resetVideoTaskDraftAssets()
+function selectVideoTaskProvider(provider) {
+  const next = String(provider || '').trim()
+  if (!next || next === videoTaskDraft.provider) return
+  videoTaskDraft.provider = next
+  handleVideoProviderChange()
 }
 
 function selectVideoTaskStyle(styleCode) {
   videoTaskDraftError.value = ''
   videoTaskDraft.styleCode = String(styleCode || '').trim()
+  resetVideoTaskAssetRenderLimit()
   resetVideoTaskDraftAssets()
+  syncHappyHorseModeFromAssetCount()
 }
 
 function cyclingTabIndex(currentIndex, total, direction) {
@@ -5086,6 +5558,7 @@ function moveVideoTaskStyleTab(direction) {
 function selectVideoTaskAssetTab(filter) {
   if (!videoTaskAssetTabs.value.some(tab => tab.id === filter)) return
   videoTaskAssetFilter.value = filter
+  resetVideoTaskAssetRenderLimit()
 }
 
 function moveVideoTaskAssetTab(direction) {
@@ -5104,9 +5577,20 @@ function toggleVideoTaskDraftAsset(asset) {
   const index = videoTaskDraft.assetIds.indexOf(assetId)
   if (index >= 0) {
     videoTaskDraft.assetIds.splice(index, 1)
+    syncHappyHorseModeFromAssetCount()
+    return
+  }
+  // Seedance 最多 4 张；HappyHorse 最多 9 张（模式由数量自动决定）
+  if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length >= 9) {
+    videoTaskDraftError.value = 'HappyHorse 最多选择 9 张图片'
+    return
+  }
+  if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length >= 4) {
+    videoTaskDraftError.value = 'Seedance 最多选择 4 张参考图'
     return
   }
   videoTaskDraft.assetIds.push(assetId)
+  syncHappyHorseModeFromAssetCount()
 }
 
 function createVideoTaskFromDraft() {
@@ -5125,6 +5609,7 @@ function createVideoTaskFromDraft() {
   const providerName = providerLabel(videoTaskDraft.provider)
   const currentTask = videoTasks.find(task => task.id === editingVideoTaskId.value)
   const taskIndex = videoTasks.length + 1
+  const gen = videoTaskGenerationParams(videoTaskDraft)
   const nextTask = {
     styleCode: videoTaskDraft.styleCode,
     provider: videoTaskDraft.provider,
@@ -5136,6 +5621,11 @@ function createVideoTaskFromDraft() {
     providerTaskId: '',
     runId: '',
     assets: assets.map(asset => ({ ...asset })),
+    duration: gen.duration ?? videoTaskDraft.duration,
+    resolution: gen.resolution || videoTaskDraft.resolution,
+    ratio: gen.ratio ?? videoTaskDraft.ratio,
+    generateAudio: gen.generateAudio !== false,
+    watermark: Boolean(gen.watermark),
   }
   if (currentTask) {
     Object.assign(currentTask, nextTask)
@@ -5281,21 +5771,54 @@ function openLocalMaterialLibrary(kind = 'garment') {
   localMaterialLibraryOpen.value = true
 }
 
-function videoTaskAssetKind(asset = {}) {
+/**
+ * 文件夹来源：模特图 / 细节图（互斥）。
+ * AI 是叠加属性（videoTaskAssetIsAi），不占用这一维。
+ */
+function videoTaskAssetSourceType(asset = {}) {
+  const explicit = String(asset.sourceType || '').toLowerCase()
+  if (explicit === 'detail' || explicit === 'reference') return 'detail'
+  if (explicit === 'model' || explicit === 'origin') return 'model'
+
+  const path = String(asset.path || asset.previewPath || asset.sourcePath || '').replace(/\\/g, '/')
+  if (/02[_-]?商品细节|商品细节图|细节图|\/detail(?:s)?\//i.test(path)) return 'detail'
+  if (/01[_-]?模拍|模拍原图|\/model(?:s)?\//i.test(path)) return 'model'
+
   const kind = String(asset.kind || '').toLowerCase()
-  const sourceType = String(asset.sourceType || '').toLowerCase()
-  if (kind === 'ai' || sourceType === 'ai') return 'ai'
-  if (kind === 'reference' || sourceType === 'detail') return 'detail'
-  if (kind === 'origin' || sourceType === 'model') return 'model'
-  if (sourceType === 'detail') return 'detail'
+  if (kind === 'reference' || kind === '素材' || kind === '细节图') return 'detail'
+  if (kind === 'origin' || kind === '模拍' || kind === '模特图' || kind === '原图') return 'model'
+  // AI 结果优先看 sourcePath 所属文件夹，默认归模拍
+  if (kind === 'ai') {
+    const sourcePath = String(asset.sourcePath || '').replace(/\\/g, '/')
+    if (/02[_-]?商品细节|商品细节图|细节图/i.test(sourcePath)) return 'detail'
+    return 'model'
+  }
   return 'model'
 }
 
+/** AI 叠加属性：任意 AI 生成图（可同时是模特图或细节图） */
+function videoTaskAssetIsAi(asset = {}) {
+  if (asset?.isAi === true || asset?.is_ai === true) return true
+  const kind = String(asset.kind || '').toLowerCase()
+  if (kind === 'origin' || kind === '原图' || kind === '模拍') return false
+  if (kind === 'ai') return true
+  if (asset.jobUid || asset.job_uid || asset.runUid || asset.run_uid) return true
+  const op = String(asset.operationType || asset.action || '').trim()
+  if (op && !['origin', '原图', ''].includes(op.toLowerCase())) return true
+  const label = String(asset.label || asset.displayKind || '')
+  return /ai\s*结果|换脸|换背景|换装|换姿势|ai图|ai·/i.test(label)
+}
+
+/** @deprecated use sourceType / isAi; kept for any residual callers */
+function videoTaskAssetKind(asset = {}) {
+  if (videoTaskAssetIsAi(asset) && videoTaskKindFilter.value === 'ai') return 'ai'
+  return videoTaskAssetSourceType(asset)
+}
+
 function videoTaskAssetKindLabel(asset = {}) {
-  const kind = videoTaskAssetKind(asset)
-  if (kind === 'detail') return '细节图'
-  if (kind === 'ai') return 'AI 图'
-  return '模特图'
+  const source = videoTaskAssetSourceType(asset)
+  const base = source === 'detail' ? '细节图' : '模特图'
+  return videoTaskAssetIsAi(asset) ? `AI·${source === 'detail' ? '细节' : '模拍'}` : base
 }
 
 function closePreview() {
@@ -5320,6 +5843,9 @@ function closeVideoTaskDialog() {
   videoTaskDialogOpen.value = false
   editingVideoTaskId.value = ''
   videoTaskDraftError.value = ''
+  disconnectVideoTaskThumbObserver()
+  videoTaskThumbQueue = []
+  videoTaskThumbActive = 0
 }
 
 function closeTopDialog() {
@@ -5437,6 +5963,17 @@ onMounted(() => {
   void loadVideoProviderStatus()
 })
 
+// 筛选/款号切换后重绑缩略图观察
+watch([displayedVideoTaskAssets, () => videoTaskDialogOpen.value], async ([, open]) => {
+  if (!open) {
+    disconnectVideoTaskThumbObserver()
+    return
+  }
+  await nextTick()
+  scheduleVideoTaskThumbs(displayedVideoTaskAssets.value)
+  observeVideoTaskThumbs()
+})
+
 onBeforeUnmount(() => {
   resetMaterialPoll()
   resetAiPoll()
@@ -5444,6 +5981,7 @@ onBeforeUnmount(() => {
   if (videoPollTimer) clearTimeout(videoPollTimer)
   if (workspaceManifestWriteTimer) clearTimeout(workspaceManifestWriteTimer)
   clearPreviewAnnotationRequest()
+  disconnectVideoTaskThumbObserver()
   void flushWorkspaceManifest()
 })
 
@@ -5883,6 +6421,19 @@ function localFileUrl(path) {
   display: grid;
   gap: 6px;
   min-width: 0;
+}
+
+.aiv-field-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+
+.aiv-field-heading .aiv-ghost {
+  flex: 0 0 auto;
 }
 
 .aiv-field span,
@@ -7894,7 +8445,40 @@ function localFileUrl(path) {
 .aiv-video-asset-card.selected {
   border-color: var(--orange);
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--orange);
+  background: var(--orange-bg);
+  box-shadow:
+    0 0 0 2px var(--orange),
+    0 0 0 5px rgba(255, 107, 43, 0.28),
+    inset 0 0 0 1px rgba(255, 107, 43, 0.55);
+}
+
+.aiv-video-task-assets.picker .aiv-video-asset-card.selected {
+  transform: translateY(-1px);
+}
+
+.aiv-video-asset-selected-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 107, 43, 0.75);
+  background: rgba(255, 107, 43, 0.95);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  display: inline-flex;
+  align-items: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+}
+
+.aiv-video-task-assets.picker .aiv-video-asset-card.selected .aiv-status-pill {
+  top: 8px;
+  right: 8px;
+  left: auto;
 }
 
 .aiv-video-asset-card.pending {
@@ -8777,7 +9361,9 @@ function localFileUrl(path) {
 }
 
 .aiv-modal-panel.aiv-video-task-modal-panel {
-  width: min(1160px, 100%);
+  width: min(1240px, 100%);
+  height: min(820px, calc(100vh - 48px));
+  max-height: min(820px, calc(100vh - 48px));
 }
 
 .aiv-modal-panel.aiv-confirm-panel {
@@ -8837,6 +9423,45 @@ function localFileUrl(path) {
   border-bottom: 0;
 }
 
+.aiv-modal-foot-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+  flex: 0 0 auto;
+}
+
+.aiv-hh-mode-auto {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+
+.aiv-hh-mode-auto > span {
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-hh-mode-auto strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.aiv-hh-mode-auto small {
+  grid-column: 1 / -1;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
 .aiv-modal-head strong,
 .aiv-modal-head span,
 .aiv-modal-foot span {
@@ -8863,9 +9488,12 @@ function localFileUrl(path) {
   grid-template-columns: 160px minmax(0, 1fr);
 }
 
+/* 左操作栏 + 右图片区（对齐 AI 生视频） */
 .aiv-modal-body.video-task {
-  grid-template-columns: minmax(0, 1fr) 360px;
+  grid-template-columns: minmax(300px, 360px) minmax(0, 1fr);
+  gap: 12px;
   overflow: hidden;
+  padding: 12px;
 }
 
 .aiv-modal-body.model-library {
@@ -8938,33 +9566,56 @@ function localFileUrl(path) {
 .aiv-video-task-form {
   min-width: 0;
   min-height: 0;
+  max-height: 100%;
   padding: 12px;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--bg2);
   display: grid;
   align-content: start;
-  gap: 12px;
+  gap: 10px;
+  order: 0;
 }
 
 .aiv-video-task-selection {
   min-width: 0;
   min-height: 0;
+  max-height: 100%;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 12px;
+  grid-template-rows: minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  order: 1;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+  padding: 10px;
 }
 
 .aiv-video-style-library {
   min-width: 0;
-  padding: 12px;
+  padding: 10px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: var(--bg);
+  background: var(--bg3);
   display: grid;
-  gap: 10px;
+  gap: 8px;
+}
+
+.aiv-video-task-form .aiv-video-style-tabs {
+  flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  max-height: 120px;
+}
+
+.aiv-video-task-form .aiv-video-style-tabs button {
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 44px;
 }
 
 .aiv-video-style-library header strong,
@@ -9023,8 +9674,10 @@ function localFileUrl(path) {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  /* head + status tabs + kind tabs + asset grid */
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 8px;
+  overflow: hidden;
 }
 
 .aiv-picker-head {
@@ -9056,20 +9709,31 @@ function localFileUrl(path) {
   align-items: center;
   gap: 6px;
   flex-wrap: wrap;
+  flex: 0 0 auto;
+  min-height: 0;
+  /* 防止被 grid 1fr 行撑高后筛选项纵向分散 */
+  align-content: flex-start;
+  margin: 0;
+  padding: 0;
 }
 
 .aiv-video-task-kind-tabs {
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .aiv-video-asset-filter {
+  flex: 0 0 auto;
   min-height: 28px;
+  height: 28px;
   padding: 0 9px;
   border: 1px solid var(--border);
   border-radius: 7px;
   color: var(--text2);
   background: var(--bg3);
   font-size: 11px;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
 }
 
 .aiv-video-asset-filter strong {
@@ -9083,13 +9747,326 @@ function localFileUrl(path) {
   background: var(--orange-bg);
 }
 
-.aiv-video-task-assets.picker {
+/* 独立缩略图网格：不复用 .aiv-video-asset-card，避免全局 grid/absolute 冲突导致条状堆叠 */
+.aiv-vtask-grid {
   min-height: 0;
-  padding-right: 4px;
-  grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
+  height: 100%;
+  padding: 2px 2px 4px 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  grid-auto-rows: min-content;
+  gap: 10px;
   align-content: start;
+  overflow-x: hidden;
   overflow-y: auto;
   scrollbar-gutter: stable;
+}
+
+.aiv-vtask-card {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 3 / 4;
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #101015;
+  contain: layout paint;
+}
+
+.aiv-vtask-card.selected {
+  border-color: var(--orange);
+  box-shadow:
+    0 0 0 2px var(--orange),
+    0 0 0 5px rgba(255, 107, 43, 0.28);
+}
+
+.aiv-vtask-card.pending {
+  border-style: dashed;
+}
+
+.aiv-vtask-card-hit {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  display: block;
+}
+
+.aiv-vtask-card-hit:disabled {
+  cursor: default;
+}
+
+.aiv-vtask-card-img,
+.aiv-vtask-card-ph {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  object-position: center center;
+}
+
+.aiv-vtask-card-ph {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text3);
+  font-size: 11px;
+  background: linear-gradient(145deg, #17171f, #0d0d12 55%, #1a1a22);
+}
+
+.aiv-vtask-card-selected {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 3;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 107, 43, 0.75);
+  background: rgba(255, 107, 43, 0.95);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.aiv-vtask-card-status {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 3;
+  min-height: 20px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: rgba(20, 20, 24, 0.88);
+  color: var(--text2);
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+}
+
+.aiv-vtask-card-meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 2;
+  padding: 22px 8px 8px;
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  background: linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.72));
+  pointer-events: none;
+}
+
+.aiv-vtask-card-meta strong,
+.aiv-vtask-card-meta small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #fff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+}
+
+.aiv-vtask-card-meta strong {
+  font-size: 11px;
+}
+
+.aiv-vtask-card-meta small {
+  font-size: 10px;
+  opacity: 0.9;
+}
+
+.aiv-vtask-card-zoom {
+  position: absolute;
+  z-index: 4;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.26);
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(15, 17, 23, 0.82);
+  display: none;
+  place-items: center;
+  cursor: pointer;
+}
+
+.aiv-vtask-card:hover .aiv-vtask-card-zoom,
+.aiv-vtask-card:focus-within .aiv-vtask-card-zoom {
+  display: grid;
+}
+
+.aiv-vtask-card:hover .aiv-vtask-card-status,
+.aiv-vtask-card:focus-within .aiv-vtask-card-status {
+  right: 40px;
+}
+
+.aiv-video-task-load-more {
+  grid-column: 1 / -1;
+  min-height: 40px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  color: var(--text2);
+  background: var(--bg3);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.aiv-video-task-load-more:hover {
+  border-color: var(--orange);
+  color: var(--orange);
+}
+
+/* 生成方式：对齐 AI 生视频模型卡，侧栏三列简写 */
+.aiv-provider-switcher {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  min-width: 0;
+}
+
+.aiv-provider-card {
+  min-width: 0;
+  min-height: 52px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  color: var(--text2);
+  cursor: pointer;
+  display: grid;
+  align-content: center;
+  gap: 0;
+  text-align: left;
+}
+
+.aiv-provider-card.active {
+  border-color: var(--orange);
+  background: var(--orange-bg);
+  color: var(--text);
+  box-shadow: inset 0 0 0 1px var(--orange);
+}
+
+.aiv-provider-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  min-width: 0;
+}
+
+.aiv-provider-card-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.aiv-provider-mark {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  object-fit: contain;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* 侧栏生成参数：复用生视频工作台能力，紧凑两列 */
+.aiv-video-gen-params {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg3);
+  display: grid;
+  gap: 8px;
+}
+
+.aiv-video-gen-params-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiv-video-gen-params-head strong {
+  font-size: 12px;
+}
+
+.aiv-video-gen-params-head span {
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.aiv-video-gen-params-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.aiv-video-gen-params .aiv-field.compact {
+  gap: 4px;
+  min-width: 0;
+}
+
+.aiv-video-gen-params .aiv-field.compact > span {
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.aiv-segmented {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  min-height: 32px;
+}
+
+.aiv-segmented button {
+  min-height: 32px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text2);
+  background: var(--bg);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.aiv-segmented button.active {
+  border-color: var(--orange);
+  color: var(--orange);
+  background: var(--orange-bg);
+  box-shadow: inset 0 0 0 1px var(--orange);
+}
+
+.aiv-video-gen-params-hint {
+  margin: 0;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.45;
 }
 
 .aiv-video-task-empty {
@@ -9271,6 +10248,16 @@ function localFileUrl(path) {
   .aiv-modal-body.video-task {
     grid-template-columns: minmax(0, 1fr);
     overflow: auto;
+  }
+
+  .aiv-video-task-form {
+    order: 0;
+    max-height: none;
+  }
+
+  .aiv-video-task-selection {
+    order: 1;
+    min-height: 420px;
   }
 
   .aiv-video-task-form,

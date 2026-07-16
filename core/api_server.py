@@ -6314,9 +6314,11 @@ class BalaSeedanceVideoRequest(BaseModel):
     output_dir: str = ""
     output_path: str = ""
     model: str = BALA_SEEDANCE_DEFAULT_MODEL
-    ratio: str = "3:4"
-    duration: int = 8
+    ratio: str = "9:16"
+    resolution: str = "720p"
+    duration: int = 5
     generate_audio: bool = True
+    watermark: bool = False
     wait: bool = True
     interval_seconds: int = 5
     timeout_seconds: int = 1800
@@ -6358,7 +6360,7 @@ class BalaVideoProviderPreflightRequest(BaseModel):
     image_paths: List[str] = []
     output_dir: str = ""
     resolution: str = "720P"
-    ratio: str = "3:4"
+    ratio: str = "9:16"
     duration: int = 5
     generate_audio: bool = True
     watermark: bool = False
@@ -6604,13 +6606,17 @@ def _build_seedance_payload(req: BalaSeedanceVideoRequest) -> dict:
             "image_url": {"url": file_to_data_url(str(path))},
             "role": "reference_image",
         })
+    resolution = str(req.resolution or "720p").strip().lower() or "720p"
+    if resolution not in {"480p", "720p", "1080p"}:
+        raise HTTPException(400, "Seedance 清晰度仅支持 480p / 720p / 1080p")
     return {
         "model": str(req.model or BALA_SEEDANCE_DEFAULT_MODEL).strip() or BALA_SEEDANCE_DEFAULT_MODEL,
         "content": content,
         "generate_audio": bool(req.generate_audio),
-        "ratio": str(req.ratio or "3:4").strip() or "3:4",
-        "duration": max(2, min(int(req.duration or 8), 30)),
-        "watermark": False,
+        "ratio": str(req.ratio or "9:16").strip() or "9:16",
+        "resolution": resolution,
+        "duration": max(4, min(int(req.duration or 5), 15)),
+        "watermark": bool(req.watermark),
     }
 
 
@@ -6772,8 +6778,10 @@ def _preflight_bala_video_provider(req: BalaVideoProviderPreflightRequest) -> di
             image_paths=list(req.image_paths or []),
             output_dir=str(output_dir),
             ratio=req.ratio,
+            resolution=getattr(req, "resolution", None) or "720p",
             duration=req.duration,
             generate_audio=req.generate_audio,
+            watermark=bool(getattr(req, "watermark", False)),
             wait=False,
         ))
         mode = "reference"

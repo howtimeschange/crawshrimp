@@ -3,7 +3,7 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor, protocol } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor, protocol, nativeImage } = require('electron')
 const { Notification } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path   = require('path')
@@ -823,6 +823,95 @@ function readLocalImageDataUrl(rawPath = '') {
     path: imagePath,
     data_url: `data:${mime};base64,${raw.toString('base64')}`,
   }
+}
+
+/**
+ * Resize local images for grid thumbnails. Avoids loading multi‑MB originals as data URLs.
+ * Prefer Electron nativeImage; fall back to macOS sips.
+ */
+function readLocalImageThumbnail(rawPath = '', opts = {}) {
+  const imagePath = resolveLocalImagePath(rawPath)
+  const mime = imageMimeForPath(imagePath)
+  if (!imagePath || !mime) throw new Error('请选择 PNG、JPG、WEBP 或 GIF 图片')
+  const stat = fs.statSync(imagePath)
+  if (!stat.isFile()) throw new Error('图片文件不存在')
+  // Thumbnails can still be generated for larger sources than full preview.
+  if (stat.size > 80 * 1024 * 1024) throw new Error('图片超过 80MB，无法生成缩略图')
+
+  const maxEdge = Math.max(64, Math.min(Number(opts.maxEdge || opts.max_edge || 320) || 320, 1280))
+  const qualityPct = Math.round(Math.max(0.4, Math.min(Number(opts.quality || 0.72) || 0.72, 0.95)) * 100)
+
+  // Fast path: already tiny enough — return original bytes when small.
+  if (stat.size <= 120 * 1024) {
+    try {
+      return readLocalImageDataUrl(imagePath)
+    } catch {
+      // continue to resize path
+    }
+  }
+
+  try {
+    let image = nativeImage.createFromPath(imagePath)
+    if (!image.isEmpty()) {
+      const size = image.getSize()
+      const longEdge = Math.max(size.width || 0, size.height || 0)
+      if (longEdge > maxEdge && longEdge > 0) {
+        const scale = maxEdge / longEdge
+        image = image.resize({
+          width: Math.max(1, Math.round((size.width || maxEdge) * scale)),
+          height: Math.max(1, Math.round((size.height || maxEdge) * scale)),
+          quality: 'good',
+        })
+      }
+      const jpeg = image.toJPEG(qualityPct)
+      if (jpeg && jpeg.length) {
+        const outSize = image.getSize()
+        return {
+          ok: true,
+          path: imagePath,
+          data_url: `data:image/jpeg;base64,${jpeg.toString('base64')}`,
+          width: outSize.width,
+          height: outSize.height,
+          bytes: jpeg.length,
+          thumbnail: true,
+        }
+      }
+    }
+  } catch {
+    // fall through to sips
+  }
+
+  // macOS sips fallback for formats/sizes nativeImage struggles with
+  if (process.platform === 'darwin') {
+    const sipsBin = '/usr/bin/sips'
+    if (fs.existsSync(sipsBin)) {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-thumb-'))
+      const tmpOut = path.join(tmpDir, 'thumb.jpg')
+      try {
+        execFileSync(sipsBin, ['-s', 'format', 'jpeg', '-Z', String(maxEdge), imagePath, '--out', tmpOut], {
+          stdio: ['ignore', 'pipe', 'pipe'],
+          timeout: 20000,
+        })
+        if (fs.existsSync(tmpOut)) {
+          const raw = fs.readFileSync(tmpOut)
+          return {
+            ok: true,
+            path: imagePath,
+            data_url: `data:image/jpeg;base64,${raw.toString('base64')}`,
+            bytes: raw.length,
+            thumbnail: true,
+          }
+        }
+      } catch {
+        // fall through
+      } finally {
+        try { fs.rmSync(tmpDir, { recursive: true, force: true }) } catch { /* ignore */ }
+      }
+    }
+  }
+
+  // Last resort: full file if under the preview size cap
+  return readLocalImageDataUrl(imagePath)
 }
 
 function renderPdfPreviewWithPyMuPDF(pdfPath, outputDir) {
@@ -2952,6 +3041,14 @@ secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) 
 
 secureHandle('read-local-image-preview', async (_, filePath) => {
   return readLocalImageDataUrl(filePath)
+})
+
+secureHandle('read-local-image-thumbnail', async (_, filePath, opts = {}) => {
+  try {
+    return readLocalImageThumbnail(filePath, opts || {})
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) }
+  }
 })
 
 secureHandle('list-directory-files', async (_, rootPath, opts = {}) => {

@@ -484,6 +484,14 @@ export function createDevCsBridge() {
       throw devModeError('浏览器开发模式不能安全写入工作区恢复清单，请在 Electron 开发壳中操作')
     },
     readLocalImagePreview: (path) => apiCall('POST', '/files/local-image-preview', { path }),
+    readLocalImageThumbnail: async (path) => {
+      // Browser dev: no local resize; fall back to full preview if API available.
+      try {
+        return await apiCall('POST', '/files/local-image-preview', { path })
+      } catch (error) {
+        return { ok: false, error: error?.message || '浏览器开发模式不支持本地缩略图' }
+      }
+    },
     listDirectoryFiles: async () => ({ ok: false, paths: [], error: '浏览器开发模式不支持直接扫描本地目录' }),
     renderPdfPreview: async () => ({ ok: false, error: '浏览器开发模式不支持本地 PDF 预览' }),
 
