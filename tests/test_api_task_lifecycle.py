@@ -1415,6 +1415,108 @@ class ApiTaskLifecycleTests(unittest.IsolatedAsyncioTestCase):
             api_server._run_controls.clear()
             api_server._run_controls.update(original_controls)
 
+    async def test_tmall_compete_paid_monitor_new_mode_recovers_about_blank_runner(self):
+        target_url = "https://dmp.taobao.com/index_new.html?spm=x#!/compete/compete-situation"
+
+        class FakeBridge:
+            async def get_tabs_async(self):
+                return [{
+                    "id": "target-tab",
+                    "type": "page",
+                    "url": target_url,
+                    "webSocketDebuggerUrl": "ws://target.invalid",
+                }]
+
+            async def new_tab_async(self, url):
+                return {
+                    "id": "target-tab",
+                    "type": "page",
+                    "url": url,
+                    "webSocketDebuggerUrl": "ws://target.invalid",
+                }
+
+            def get_tab_ws_url(self, tab):
+                return tab.get("webSocketDebuggerUrl", "")
+
+        class FakeRunner:
+            def __init__(self, *args, **kwargs):
+                self.href = "about:blank"
+                self.navigations = []
+                self.runtime_output_files = []
+
+            async def evaluate(self, expression):
+                return type(
+                    "Result",
+                    (),
+                    {
+                        "success": True,
+                        "data": [{"href": self.href}],
+                        "meta": {"has_more": False},
+                        "error": None,
+                    },
+                )()
+
+            async def navigate(self, url, wait_seconds=0):
+                self.href = str(url)
+                self.navigations.append(str(url))
+                return type("Result", (), {"success": True, "data": [], "meta": {"has_more": False}, "error": None})()
+
+            async def run_script_file(self, script_path, params=None, control_hook=None):
+                return [{"执行结果": "成功"}]
+
+        class FakeTask:
+            id = "tmall_compete_paid_monitor"
+            name = "天猫-竞品付费投放数据监控"
+            description = ""
+            entry_url = target_url
+            tab_match_prefixes = ["https://dmp.taobao.com/index_new.html"]
+            params = [type("Param", (), {"id": "mode", "default": "new"})()]
+            skip_auth = True
+            output = []
+            script = "tmall-compete-paid-monitor.js"
+
+        class FakeAdapter:
+            name = "天猫运营助手"
+            entry_url = ""
+            tab_match_prefixes = []
+            auth = None
+            tasks = [FakeTask()]
+
+        fake_runner = FakeRunner()
+        original_status = dict(api_server._run_status)
+        original_logs = dict(api_server._run_logs)
+        original_controls = dict(api_server._run_controls)
+
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                script_path = Path(tmpdir) / "tmall-compete-paid-monitor.js"
+                script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+                with patch("core.api_server.adapter_loader.scan_all"):
+                    with patch("core.api_server.adapter_loader.get_adapter", return_value=FakeAdapter()):
+                        with patch("core.api_server.adapter_loader.resolve_adapter_file", return_value=script_path):
+                            with patch("core.api_server.get_bridge", return_value=FakeBridge()):
+                                with patch("core.js_runner.JSRunner", return_value=fake_runner):
+                                    with patch("core.api_server.data_sink.begin_run", return_value=78):
+                                        with patch("core.api_server.data_sink.heartbeat_run"):
+                                            with patch("core.api_server.data_sink.prepare_artifact_dir", return_value=str(Path(tmpdir) / "runtime")):
+                                                with patch("core.api_server.data_sink.finish_run"):
+                                                    await api_server._execute_task(
+                                                        "tmall-ops-assistant",
+                                                        "tmall_compete_paid_monitor",
+                                                        {"mode": "new"},
+                                                        {},
+                                                        run_control=api_server._build_run_control(),
+                                                    )
+
+            self.assertEqual(fake_runner.navigations, [target_url])
+        finally:
+            api_server._run_status.clear()
+            api_server._run_status.update(original_status)
+            api_server._run_logs.clear()
+            api_server._run_logs.update(original_logs)
+            api_server._run_controls.clear()
+            api_server._run_controls.update(original_controls)
+
     async def test_execute_task_runs_export_and_packaging_off_event_loop_thread(self):
         class FakeBridge:
             def get_tabs(self):

@@ -186,6 +186,29 @@ class TmallOpsPackagingTests(unittest.TestCase):
             self.assertTrue(copied_json.is_file())
             self.assertEqual(result, [str(copied_excel), str(copied_json)])
 
+    def test_compete_paid_monitor_copies_table_to_local_export_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            base = Path(tmpdir)
+            runtime_dir = base / "runtime"
+            runtime_dir.mkdir()
+            export_dir = base / "exports"
+            excel_file = base / "天猫竞品付费投放数据监控_20260716-180530.xlsx"
+            excel_file.write_bytes(b"excel")
+
+            result = _finalize_tmall_ops_assistant_outputs(
+                task_id="tmall_compete_paid_monitor",
+                data_rows=[],
+                runtime_files=[],
+                exported_files=[str(excel_file)],
+                run_params={"output_dir": str(export_dir)},
+                runtime_artifact_dir=str(runtime_dir),
+                log=lambda _: None,
+            )
+
+            copied_excel = export_dir / "数据表格" / excel_file.name
+            self.assertTrue(copied_excel.is_file())
+            self.assertEqual(result, [str(copied_excel)])
+
     def test_material_test_data_export_syncs_to_cloud_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             base = Path(tmpdir)

@@ -49,9 +49,243 @@ async function loadExports() {
   return exportsBox
 }
 
+async function runScript({
+  params = {},
+  shared = {},
+  phase = 'main',
+  href = 'https://dmp.taobao.com/index_new.html#!/compete/compete-situation',
+  bodyText = '',
+  documentImpl,
+  fetchImpl,
+} = {}) {
+  const scriptPath = path.resolve('adapters/tmall-ops-assistant/tmall-compete-paid-monitor.js')
+  const source = fs.readFileSync(scriptPath, 'utf8')
+  const location = new URL(href)
+  const document = documentImpl || {
+    body: {
+      innerText: bodyText,
+      textContent: bodyText,
+    },
+  }
+  const context = {
+    window: {
+      __CRAWSHRIMP_PARAMS__: params,
+      __CRAWSHRIMP_PHASE__: phase,
+      __CRAWSHRIMP_SHARED__: shared,
+      location,
+    },
+    location,
+    document,
+    performance: {
+      getEntriesByType: () => [],
+    },
+    fetch: fetchImpl || (async () => ({ ok: true, text: async () => '{}' })),
+    URL,
+    URLSearchParams,
+    console,
+    setTimeout,
+    clearTimeout,
+    Date,
+    Math,
+    JSON,
+    String,
+    Number,
+    Boolean,
+    Array,
+    Object,
+    RegExp,
+    Set,
+    Map,
+    Promise,
+  }
+  context.globalThis = context
+  return vm.runInNewContext(source, context, { filename: scriptPath })
+}
+
 function plain(value) {
   return JSON.parse(JSON.stringify(value))
 }
+
+function makeFakeMagixDateDocument() {
+  const elementsById = new Map()
+  const controls = []
+  const metrics = {
+    directValueWrites: 0,
+    directTextWrites: 0,
+  }
+
+  function makeControl(code, start, end) {
+    const parentId = `form_comp_${code}`
+    let parentData = { start, end }
+    const childState = { start, end }
+    const childView = {
+      updater: {
+        get(key) {
+          if (key === 'contentInfo') {
+            return {
+              dates: {
+                startStr: childState.start,
+                endStr: childState.end,
+                formatter: 'YYYY-MM-DD',
+              },
+            }
+          }
+          return undefined
+        },
+      },
+    }
+    const parentView = {
+      updater: {
+        get(key) {
+          if (key === 'data') return parentData
+          if (key === 'adcConfig') return { code }
+          return undefined
+        },
+        set(next) {
+          if (next?.data) parentData = next.data
+        },
+      },
+      handleUpdate({ data }) {
+        parentData = data
+        childState.start = data.start
+        childState.end = data.end
+      },
+    }
+    const parent = {
+      id: parentId,
+      vframe: { $v: parentView },
+      getAttribute(name) {
+        return name === 'data-brix-anchor' ? code : ''
+      },
+      querySelector(selector) {
+        return selector === '.mxgc-calendar-rangepicker' ? control : null
+      },
+      get innerText() {
+        return `${code} ${childState.start} 至 ${childState.end}`
+      },
+      get textContent() {
+        return this.innerText
+      },
+    }
+    const control = {
+      id: `mx_${code}`,
+      className: 'mxgc-calendar-rangepicker',
+      vframe: { pId: parentId, $v: childView },
+      get value() {
+        return JSON.stringify({
+          start: childState.start,
+          end: childState.end,
+          vs: false,
+          dates: {
+            startStr: childState.start,
+            endStr: childState.end,
+            formatter: 'YYYY-MM-DD',
+          },
+        })
+      },
+      set value(_) {
+        metrics.directValueWrites += 1
+        throw new Error('direct value mutation is not allowed')
+      },
+      get innerText() {
+        return `calendar ${childState.start} 至 ${childState.end}`
+      },
+      set innerText(_) {
+        metrics.directTextWrites += 1
+        throw new Error('direct text mutation is not allowed')
+      },
+      get textContent() {
+        return this.innerText
+      },
+      set textContent(_) {
+        metrics.directTextWrites += 1
+        throw new Error('direct text mutation is not allowed')
+      },
+      getAttribute(name) {
+        if (name === 'mx-change') return `input({'code': '${code}'})`
+        return ''
+      },
+      closest() {
+        return parent
+      },
+      querySelector() {
+        return null
+      },
+      querySelectorAll() {
+        return []
+      },
+    }
+    elementsById.set(parentId, parent)
+    controls.push(control)
+    return control
+  }
+
+  makeControl('date', '2026-07-09', '2026-07-15')
+  makeControl('datePeer', '2026-07-02', '2026-07-08')
+
+  return {
+    body: {
+      get innerText() {
+        return '分析周期 2026-07-09 至 昨日 对比周期 2026-07-02 至 2026-07-08'
+      },
+      get textContent() {
+        return this.innerText
+      },
+    },
+    __controls: controls,
+    __metrics: metrics,
+    getElementById(id) {
+      return elementsById.get(id) || null
+    },
+    querySelectorAll(selector) {
+      if (selector === '.mxgc-calendar-rangepicker') return controls
+      if (selector.includes('[id*="form_comp"]')) return Array.from(elementsById.values())
+      return []
+    },
+  }
+}
+
+test('compete paid monitor treats DMP base page as recoverable competition route', async () => {
+  const helpers = await loadExports()
+
+  assert.equal(helpers.isDmpIndexPage('https://dmp.taobao.com/index_new.html?spm=x'), true)
+  assert.equal(helpers.hasCompetitionRoute('https://dmp.taobao.com/index_new.html?spm=x'), false)
+  assert.equal(
+    helpers.hasCompetitionRoute('https://dmp.taobao.com/index_new.html?spm=x#!/compete/compete-situation'),
+    true,
+  )
+  assert.match(
+    helpers.targetCompetitionHref('https://dmp.taobao.com/index_new.html?spm=x'),
+    /#!\/compete\/compete-situation$/,
+  )
+
+  const result = await runScript({
+    href: 'https://dmp.taobao.com/index_new.html?spm=x',
+  })
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'prepare')
+  assert.equal(result.meta.shared.current_store, '打开竞争态势分析页面')
+})
+
+test('compete paid monitor prepare phase initializes progress shared state', async () => {
+  const pageText = '分析周期 2026-07-09 至 昨日 对比周期 2026-07-02 至 2026-07-08'
+  const result = await runScript({
+    phase: 'prepare',
+    href: 'https://dmp.taobao.com/index_new.html#!/compete/compete-situation',
+    bodyText: pageText,
+    params: {
+      shop_list: '巴拉巴拉官方旗舰\n左西旗舰店',
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.next_phase, 'resolve_shops')
+  assert.equal(result.meta.shared.current_store, '准备采集参数')
+  assert.equal(result.meta.shared.current_exec_no, 1)
+  assert.equal(result.meta.shared.monitorShops.length, 2)
+  assert.equal(result.meta.shared.dateRanges.beginDate, '2026-07-09')
+  assert.ok(result.meta.shared.total_rows >= 3)
+})
 
 test('compete paid monitor exposes default Bala monitor list and three-shop batches', async () => {
   const helpers = await loadExports()
@@ -179,6 +413,71 @@ test('compete paid monitor can still resolve weekly split dates as fallback', as
     mode: 'custom',
     weekLabel: '2026-07-01~2026-07-07',
   })
+})
+
+test('compete paid monitor prepares explicit date ranges for API collection', async () => {
+  const helpers = await loadExports()
+  const params = {
+    analysis_start_date: '2026-07-01',
+    analysis_end_date: '2026-07-07',
+    compare_start_date: '2026-06-20',
+    compare_end_date: '2026-06-27',
+  }
+
+  assert.equal(helpers.hasCompleteExplicitDateParams(params), true)
+  assert.deepEqual(plain(helpers.explicitDateParams(params)), {
+    beginDate: '2026-07-01',
+    endDate: '2026-07-07',
+    peerBeginDate: '2026-06-20',
+    peerEndDate: '2026-06-27',
+  })
+})
+
+test('compete paid monitor uses explicit dates for APIs without mutating page date controls', async () => {
+  const documentImpl = makeFakeMagixDateDocument()
+  const result = await runScript({
+    phase: 'prepare',
+    href: 'https://dmp.taobao.com/index_new.html#!/compete/compete-situation',
+    documentImpl,
+    params: {
+      analysis_start_date: '2026-07-01',
+      analysis_end_date: '2026-07-07',
+      compare_start_date: '2026-06-20',
+      compare_end_date: '2026-06-27',
+      shop_list: '巴拉巴拉官方旗舰',
+    },
+  })
+
+  assert.equal(result.meta.action, 'next_phase')
+  assert.equal(result.meta.shared.pageDateSync.status, 'api_params_only')
+  assert.equal(result.meta.shared.dateRanges.beginDate, '2026-07-01')
+  assert.equal(result.meta.shared.dateRanges.endDate, '2026-07-07')
+  assert.equal(result.meta.shared.dateRanges.peerBeginDate, '2026-06-20')
+  assert.equal(result.meta.shared.dateRanges.peerEndDate, '2026-06-27')
+  assert.equal(documentImpl.__metrics.directValueWrites, 0)
+  assert.equal(documentImpl.__metrics.directTextWrites, 0)
+  assert.deepEqual(documentImpl.__controls.map(control => JSON.parse(control.value)), [
+    {
+      start: '2026-07-09',
+      end: '2026-07-15',
+      vs: false,
+      dates: {
+        startStr: '2026-07-09',
+        endStr: '2026-07-15',
+        formatter: 'YYYY-MM-DD',
+      },
+    },
+    {
+      start: '2026-07-02',
+      end: '2026-07-08',
+      vs: false,
+      dates: {
+        startStr: '2026-07-02',
+        endStr: '2026-07-08',
+        formatter: 'YYYY-MM-DD',
+      },
+    },
+  ])
 })
 
 test('compete paid monitor computes promotion and tool formulas', async () => {

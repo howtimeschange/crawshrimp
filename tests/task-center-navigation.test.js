@@ -149,6 +149,15 @@ test('TaskRunner reads output files from task instance artifacts in instance mod
   assert.match(view, /parseLocalTmallApprovalBoardUrl\(localApprovalBoardUrl\.value \|\| approvalBoardUrl\.value\)/)
 })
 
+test('TaskRunner renders single date params with temporal date picker cards', () => {
+  const runner = fs.readFileSync('app/src/renderer/views/TaskRunner.vue', 'utf8')
+  const temporalTypeBlock = functionBlock(runner, 'isSingleTemporalParamType')
+
+  assert.match(temporalTypeBlock, /'date'/)
+  assert.match(runner, /v-else-if="isSingleTemporalParamType\(param\.type\)"/)
+  assert.match(runner, /openDatePicker\(param\.id\)/)
+})
+
 test('Task instance approval board button prefers the local board URL in the desktop client', () => {
   const view = fs.readFileSync('app/src/renderer/views/TaskInstanceRunner.vue', 'utf8')
   assert.match(view, /const preferredApprovalBoardUrl = computed/)

@@ -690,25 +690,25 @@ tasks:
             label: 当前页面
         hint: 请在已登录的达摩盘「竞争态势分析」页面运行；脚本通过页面自己的 DMP 接口只读采集。
       - id: analysis_start_date
-        type: text
+        type: date
         label: 分析开始日期
         placeholder: "2026-07-13"
         ui_span: third
         hint: 可选，格式 YYYY-MM-DD；留空使用当前页面分析周期开始日期。
       - id: analysis_end_date
-        type: text
+        type: date
         label: 分析结束日期
         placeholder: "2026-07-15"
         ui_span: third
         hint: 可选，格式 YYYY-MM-DD；留空使用当前页面分析周期结束日期。
       - id: compare_start_date
-        type: text
+        type: date
         label: 对比开始日期
         placeholder: "2026-07-16"
         ui_span: third
         hint: 可选，格式 YYYY-MM-DD；留空使用当前页面对比周期开始日期。
       - id: compare_end_date
-        type: text
+        type: date
         label: 对比结束日期
         placeholder: "2026-07-19"
         ui_span: third

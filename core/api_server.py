@@ -4367,6 +4367,21 @@ def _finalize_tmall_material_test_data_export_outputs(
     return final_refs
 
 
+def _finalize_tmall_compete_paid_monitor_outputs(
+    runtime_files: list,
+    exported_files: list,
+    run_params: dict,
+    log,
+) -> list[str]:
+    target_root = _tmall_local_export_root(run_params, "竞品付费投放数据监控")
+    fallback_refs = [str(path) for path in [*(runtime_files or []), *(exported_files or [])] if str(path or "").strip()]
+
+    table_refs = _copy_tmall_data_tables_to_local_export(exported_files, target_root)
+    if log:
+        log(f"竞品付费投放数据监控本地导出：表格 {len(table_refs)} 个，目录 {target_root}")
+    return table_refs or fallback_refs
+
+
 def _first_excel_output_path(paths: list) -> Path | None:
     for item in paths or []:
         path = Path(str(item or "")).expanduser()
@@ -4583,6 +4598,13 @@ def _finalize_tmall_ops_assistant_outputs(
         )
     if task_id == "tmall_material_test_data_export":
         return _finalize_tmall_material_test_data_export_outputs(
+            runtime_files=runtime_files,
+            exported_files=exported_files,
+            run_params=run_params,
+            log=log,
+        )
+    if task_id == "tmall_compete_paid_monitor":
+        return _finalize_tmall_compete_paid_monitor_outputs(
             runtime_files=runtime_files,
             exported_files=exported_files,
             run_params=run_params,
@@ -5184,6 +5206,10 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         target_entry_url = _resolve_task_target_entry_url(adapter_id, task_id, run_params, configured_entry_url)
         configured_match_prefixes = list(task.tab_match_prefixes or m.tab_match_prefixes or [])
         platform_name = m.name or adapter_id
+        tmall_new_mode_entry_guard_tasks = {
+            'tmall_material_test_data_export',
+            'tmall_compete_paid_monitor',
+        }
 
         def matches_task_entry_url(url: str) -> bool:
             prefixes = configured_match_prefixes or [target_entry_url]
@@ -5198,7 +5224,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             if (
                 mode == 'current'
                 or not initial_tab
-                or (adapter_id, task_id) != ('tmall-ops-assistant', 'tmall_material_test_data_export')
+                or adapter_id != 'tmall-ops-assistant'
+                or task_id not in tmall_new_mode_entry_guard_tasks
             ):
                 return initial_tab
             initial_tab_id = str(initial_tab.get('id') or '')
@@ -5474,7 +5501,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                     merged.append(path)
             return merged
 
-        if mode == 'new' and adapter_id == 'tmall-ops-assistant' and task_id == 'tmall_material_test_data_export':
+        if mode == 'new' and adapter_id == 'tmall-ops-assistant' and task_id in tmall_new_mode_entry_guard_tasks:
             page_href = await get_runner_page_href()
             if not is_task_entry_url(page_href):
                 log(f"新建页运行上下文尚未进入业务入口，导航到：{target_entry_url}（当前：{page_href[:120] or 'unknown'}）")
@@ -5623,6 +5650,7 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
                 'tmall_packaging_upload',
                 'tmall_ai_image_test_chain',
                 'tmall_material_test_data_export',
+                'tmall_compete_paid_monitor',
             }:
                 try:
                     packaged_refs = await asyncio.to_thread(

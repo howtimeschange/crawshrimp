@@ -64,6 +64,7 @@ class ParamType(str, Enum):
     radio      = "radio"       # 单选框组
     select     = "select"      # 下拉选择
     checkbox   = "checkbox"    # 复选框组（多选）
+    date       = "date"        # 单日选择（YYYY-MM-DD）
     week       = "week"        # 单周选择（YYYY-Www）
     month      = "month"       # 单月选择（YYYY-MM）
     date_range = "date_range"  # 日期区间（start_date / end_date）

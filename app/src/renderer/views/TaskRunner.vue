@@ -2344,7 +2344,7 @@ function isRangeParamType(type) {
 }
 
 function isSingleTemporalParamType(type) {
-  return ['week', 'month', 'week_range', 'month_range'].includes(String(type || ''))
+  return ['date', 'week', 'month', 'week_range', 'month_range'].includes(String(type || ''))
 }
 
 function normalizeRuleValues(value) {

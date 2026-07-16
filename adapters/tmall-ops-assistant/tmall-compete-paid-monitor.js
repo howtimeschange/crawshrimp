@@ -11,6 +11,8 @@
   const LOG_SHEET = '采集日志'
   const GATEWAY_ORIGIN = 'https://dmp.advgateway.taobao.com'
   const DEFAULT_BATCH_SIZE = 3
+  const TARGET_ENTRY_URL = 'https://dmp.taobao.com/index_new.html?spm=a2e3k.13920195.cf7687754.d46d8d2e4.4f7525ebKkzmUN#!/compete/compete-situation'
+  const TARGET_ROUTE_HASH = '!/compete/compete-situation'
 
   const SELF_SHOP_NAME = '巴拉巴拉官方旗舰'
   const DEFAULT_MONITOR_SHOPS = [
@@ -65,6 +67,78 @@
 
   function compact(value) {
     return String(value ?? '').replace(/\s+/g, ' ').trim()
+  }
+
+  function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, Math.max(0, Number(ms || 0))))
+  }
+
+  function parseUrl(value) {
+    try {
+      return new URL(String(value || ''), TARGET_ENTRY_URL)
+    } catch {
+      return null
+    }
+  }
+
+  function currentHref() {
+    return window.location?.href || location.href || ''
+  }
+
+  function isDmpIndexPage(href = currentHref()) {
+    const url = parseUrl(href)
+    return Boolean(url && url.hostname === 'dmp.taobao.com' && url.pathname === '/index_new.html')
+  }
+
+  function hasCompetitionRoute(href = currentHref()) {
+    const url = parseUrl(href)
+    if (!url || !isDmpIndexPage(url.href)) return false
+    const hash = decodeURIComponent(url.hash || '').replace(/^#/, '')
+    return hash === TARGET_ROUTE_HASH || hash.includes('/compete/compete-situation')
+  }
+
+  function targetCompetitionHref(href = currentHref()) {
+    const url = isDmpIndexPage(href) ? parseUrl(href) : parseUrl(TARGET_ENTRY_URL)
+    url.hash = TARGET_ROUTE_HASH
+    return url.toString()
+  }
+
+  async function ensureCompetitionRoute() {
+    const href = currentHref()
+    if (hasCompetitionRoute(href)) return { ok: true, href }
+    if (!isDmpIndexPage(href)) {
+      return {
+        ok: false,
+        href,
+        note: `当前页面=${href || '空'}；请在达摩盘「竞争态势分析」页面运行该任务`,
+      }
+    }
+
+    const target = targetCompetitionHref(href)
+    try {
+      if (window.location && 'hash' in window.location) {
+        window.location.hash = TARGET_ROUTE_HASH
+      } else if (window.location) {
+        window.location.href = target
+      } else {
+        location.href = target
+      }
+    } catch {
+      try {
+        location.href = target
+      } catch {}
+    }
+
+    for (let index = 0; index < 10; index += 1) {
+      if (hasCompetitionRoute(currentHref())) return { ok: true, href: currentHref(), corrected: true }
+      await sleep(300)
+    }
+    return {
+      ok: true,
+      href: currentHref(),
+      corrected: true,
+      note: '已切换到竞争态势分析路由，等待页面接口初始化',
+    }
   }
 
   function normalizeShopName(value) {
@@ -201,6 +275,37 @@
       return mergeExplicitDates(pageRanges, explicit, hasAnyExplicit ? 'page_current_with_overrides' : 'page_current')
     }
     return mergeExplicitDates(resolveWeekDateRanges('last_completed_week', referenceDate), explicit, 'fallback_last_completed_week')
+  }
+
+  function explicitDateParams(rawParams = params) {
+    return {
+      beginDate: normalizeDate(rawParams.analysis_start_date || rawParams.beginDate),
+      endDate: normalizeDate(rawParams.analysis_end_date || rawParams.endDate),
+      peerBeginDate: normalizeDate(rawParams.compare_start_date || rawParams.peerBeginDate),
+      peerEndDate: normalizeDate(rawParams.compare_end_date || rawParams.peerEndDate),
+    }
+  }
+
+  function hasCompleteExplicitDateParams(rawParams = params) {
+    return Object.values(explicitDateParams(rawParams)).every(Boolean)
+  }
+
+  async function syncExplicitDateRangesToPage(rawParams = params, dateRanges = resolveDateRanges(rawParams)) {
+    if (!hasCompleteExplicitDateParams(rawParams)) {
+      return { attempted: false, status: 'skipped', note: '未填写完整日期，沿用页面当前周期' }
+    }
+    const desired = {
+      analysis: { start: dateRanges.beginDate, end: dateRanges.endDate },
+      compare: { start: dateRanges.peerBeginDate, end: dateRanges.peerEndDate },
+    }
+    return {
+      attempted: true,
+      status: 'api_params_only',
+      analysisApplied: false,
+      compareApplied: false,
+      note: '已使用脚本参数作为接口采集周期，未修改页面日期控件',
+      desired,
+    }
   }
 
   function parseMonitorShopRows(value) {
@@ -786,6 +891,122 @@
     return rows
   }
 
+  function normalizeState(value = shared) {
+    return {
+      ...value,
+      monitorShops: Array.isArray(value.monitorShops) ? value.monitorShops : [],
+      resolvedShops: Array.isArray(value.resolvedShops) ? value.resolvedShops : [],
+      competitorShops: Array.isArray(value.competitorShops) ? value.competitorShops : [],
+      batches: Array.isArray(value.batches) ? value.batches : [],
+      structureShops: Array.isArray(value.structureShops) ? value.structureShops : [],
+      logRows: Array.isArray(value.logRows) ? value.logRows : [],
+      detailRows: Array.isArray(value.detailRows) ? value.detailRows : [],
+      seenDetailKeys: Array.isArray(value.seenDetailKeys) ? value.seenDetailKeys : [],
+      metricIndex: value.metricIndex && typeof value.metricIndex === 'object' ? value.metricIndex : {},
+      channelClickIndex: value.channelClickIndex && typeof value.channelClickIndex === 'object' ? value.channelClickIndex : {},
+      toolCostRateIndex: value.toolCostRateIndex && typeof value.toolCostRateIndex === 'object' ? value.toolCostRateIndex : {},
+      batchIndex: Math.max(0, Number(value.batchIndex || 0)),
+      structureIndex: Math.max(0, Number(value.structureIndex || 0)),
+      totalSteps: Math.max(1, Number(value.totalSteps || value.total_rows || 1)),
+    }
+  }
+
+  function makeCollectionContext(state) {
+    const selfShop = state.selfShop || state.resolvedShops.find(shop => shop.isSelf) || {
+      shopName: SELF_SHOP_NAME,
+      position: '本品',
+      isSelf: true,
+      status: '已解析',
+    }
+    const competitorShops = state.competitorShops || []
+    return {
+      dateRanges: state.dateRanges,
+      selfShop,
+      requestedTokens: new Set(competitorShops.map(shop => shop.token).filter(Boolean)),
+      tokenToShop: new Map(competitorShops.map(shop => [shop.token, shop]).filter(item => item[0])),
+      detailRows: [...(state.detailRows || [])],
+      seenDetailKeys: new Set(state.seenDetailKeys || []),
+      metricIndex: { ...(state.metricIndex || {}) },
+      channelClickIndex: { ...(state.channelClickIndex || {}) },
+      toolCostRateIndex: { ...(state.toolCostRateIndex || {}) },
+    }
+  }
+
+  function serializeCollectionState(context, state) {
+    const selfShop = context.selfShop || state.selfShop
+    const resolvedShops = (state.resolvedShops || []).map(shop => {
+      if (!shop.isSelf) return shop
+      return { ...shop, token: selfShop?.token || shop.token, shopId: selfShop?.shopId || shop.shopId }
+    })
+    return {
+      ...state,
+      selfShop,
+      resolvedShops,
+      detailRows: context.detailRows,
+      seenDetailKeys: Array.from(context.seenDetailKeys),
+      metricIndex: context.metricIndex,
+      channelClickIndex: context.channelClickIndex,
+      toolCostRateIndex: context.toolCostRateIndex,
+    }
+  }
+
+  function buildCollectionState(rawParams, dateRanges, monitorShops, resolvedShops) {
+    const selfShop = resolvedShops.find(shop => shop.isSelf) || {
+      shopName: SELF_SHOP_NAME,
+      position: '本品',
+      isSelf: true,
+      status: '已解析',
+    }
+    const competitorShops = resolvedShops.filter(shop => !shop.isSelf && shop.token)
+    const batchSize = rawParams.max_competitors_per_batch || DEFAULT_BATCH_SIZE
+    const chunks = chunkArray(competitorShops, batchSize)
+    const batches = chunks.length ? chunks : [[]]
+    const structureShops = [selfShop, ...competitorShops].filter(shop => shop.token)
+    const totalSteps = Math.max(1, 2 + batches.length + structureShops.length + 1)
+    return normalizeState({
+      dateRanges,
+      monitorShops,
+      resolvedShops,
+      selfShop,
+      competitorShops,
+      batches,
+      structureShops,
+      totalSteps,
+      batchIndex: 0,
+      structureIndex: 0,
+      logRows: [
+        makeLogRow(dateRanges, '准备', '已开始', `店铺=${monitorShops.length}；竞店批次=${batches.length}；每批最多3家`),
+      ],
+    })
+  }
+
+  function withProgress(state, currentNo, currentStore, extra = {}) {
+    const totalRows = Math.max(1, Number(state.totalSteps || state.total_rows || 1))
+    const current = Math.max(0, Math.min(totalRows, Number(currentNo || 0)))
+    return {
+      ...state,
+      ...extra,
+      total_rows: totalRows,
+      current_exec_no: current,
+      current_row_no: current,
+      current_store: currentStore || '',
+      current_buyer_id: extra.current_buyer_id || '',
+    }
+  }
+
+  function nextPhase(next, newShared, sleepMs = 100) {
+    return {
+      success: true,
+      data: [],
+      meta: {
+        action: 'next_phase',
+        next_phase: next,
+        sleep_ms: sleepMs,
+        shared: newShared,
+      },
+    }
+  }
+
   async function collectCompetitionData(rawParams = params) {
     const dateRanges = resolveDateRanges(rawParams)
     const monitorShops = parseMonitorShopRows(rawParams.shop_list)
@@ -899,6 +1120,202 @@
     return allRows
   }
 
+  async function runPreparePhase(rawParams = params) {
+    const route = await ensureCompetitionRoute()
+    if (!route.ok) {
+      return complete([{
+        __sheet_name: LOG_SHEET,
+        阶段: '页面检查',
+        执行结果: '页面不匹配',
+        备注: route.note || '请在达摩盘「竞争态势分析」页面运行该任务',
+      }])
+    }
+    const dateRanges = resolveDateRanges(rawParams)
+    const pageDateSync = await syncExplicitDateRangesToPage(rawParams, dateRanges)
+    const monitorShops = parseMonitorShopRows(rawParams.shop_list)
+    const state = normalizeState({
+      dateRanges,
+      monitorShops,
+      pageDateSync,
+      totalSteps: Math.max(3, monitorShops.length + 2),
+      routeHref: route.href,
+    })
+    return nextPhase('resolve_shops', withProgress(state, 1, '准备采集参数'), 100)
+  }
+
+  async function runResolveShopsPhase(rawParams = params) {
+    const baseState = normalizeState(shared)
+    const dateRanges = baseState.dateRanges || resolveDateRanges(rawParams)
+    const monitorShops = baseState.monitorShops.length ? baseState.monitorShops : parseMonitorShopRows(rawParams.shop_list)
+    const resolvedShops = await resolveMonitorShops(monitorShops)
+    const state = buildCollectionState(rawParams, dateRanges, monitorShops, resolvedShops)
+    if (baseState.pageDateSync?.attempted) {
+      const sync = baseState.pageDateSync
+      const result = sync.status === 'applied'
+        ? '已同步'
+        : sync.status === 'partial'
+          ? '部分同步'
+          : sync.status === 'api_params_only'
+            ? '使用接口参数'
+            : '同步失败'
+      const desired = sync.desired || {}
+      state.logRows.push(makeLogRow(
+        dateRanges,
+        '页面日期同步',
+        result,
+        `分析=${desired.analysis?.start || dateRanges.beginDate} 至 ${desired.analysis?.end || dateRanges.endDate}；对比=${desired.compare?.start || dateRanges.peerBeginDate} 至 ${desired.compare?.end || dateRanges.peerEndDate}${sync.note ? `；${sync.note}` : ''}`,
+      ))
+    }
+    const next = state.batches.length ? 'collect_batch' : 'collect_structure'
+    return nextPhase(next, withProgress(state, 2, '解析监控店铺', {
+      batch_no: 0,
+      total_batches: state.batches.length,
+    }), 100)
+  }
+
+  async function runCollectBatchPhase() {
+    let state = normalizeState(shared)
+    const batchIndex = Math.max(0, Number(state.batchIndex || 0))
+    if (batchIndex >= state.batches.length) {
+      return nextPhase('collect_structure', withProgress(state, 2 + state.batches.length, '基础/流量/客群已完成', {
+        batch_no: state.batches.length,
+        total_batches: state.batches.length,
+      }), 100)
+    }
+
+    const context = makeCollectionContext(state)
+    const batch = state.batches[batchIndex] || []
+    const competitorIds = batch.map(shop => shop.token).filter(Boolean)
+    const payload = buildAnalysisPayload(state.dateRanges, competitorIds)
+    try {
+      const control = await callGateway('/api/competition/analysis/base/control/ratio', payload)
+      addMetricMapRows(context, control, {
+        module: '基础分析',
+        tableName: '竞争控比分析',
+        source: '/api/competition/analysis/base/control/ratio',
+        metrics: CONTROL_METRICS,
+        metricPrefix: 'baseControl',
+      })
+      const shopIndicator = await callGateway('/api/competition/analysis/base/shop/indicator', payload)
+      addMetricMapRows(context, shopIndicator, {
+        module: '基础分析',
+        tableName: '经营指标对比',
+        source: '/api/competition/analysis/base/shop/indicator',
+        metrics: BASE_SHOP_METRICS,
+        metricPrefix: 'baseShop',
+      })
+      const adIndicator = await callGateway('/api/competition/analysis/base/indicator', payload)
+      addMetricMapRows(context, adIndicator, {
+        module: '基础分析',
+        tableName: '推广指标对比',
+        source: '/api/competition/analysis/base/indicator',
+        metrics: BASE_AD_METRICS,
+        metricPrefix: 'baseAd',
+      })
+      const flowIndicator = await callGateway('/api/competition/analysis/flow/indicator', {
+        ...payload,
+        attributionScale: '2',
+        attributionMode: 1,
+      })
+      addNestedChannelMetricRows(context, flowIndicator, {
+        module: '流量分析',
+        tableName: '核心指标对比',
+        source: '/api/competition/analysis/flow/indicator',
+        metrics: FLOW_METRICS,
+      })
+      for (const crowdBuyType of [1, 2]) {
+        const crowd = await callGateway('/api/competition/analysis/crowd/structural', {
+          ...payload,
+          crowdBuyType,
+        })
+        addCrowdRows(context, crowd, crowdBuyType)
+      }
+      state.logRows.push(makeLogRow(state.dateRanges, `基础/流量/客群批次 ${batchIndex + 1}`, '已采集', `竞店数=${competitorIds.length}`))
+    } catch (error) {
+      state.logRows.push(makeLogRow(state.dateRanges, `基础/流量/客群批次 ${batchIndex + 1}`, '采集失败', describeError(error)))
+    }
+
+    state = serializeCollectionState(context, {
+      ...state,
+      batchIndex: batchIndex + 1,
+    })
+    const next = state.batchIndex < state.batches.length ? 'collect_batch' : 'collect_structure'
+    return nextPhase(next, withProgress(state, 2 + state.batchIndex, `基础/流量/客群批次 ${state.batchIndex}/${state.batches.length}`, {
+      batch_no: state.batchIndex,
+      total_batches: state.batches.length,
+      current_buyer_id: competitorIds.join(','),
+    }), 100)
+  }
+
+  async function runCollectStructurePhase() {
+    let state = normalizeState(shared)
+    const structureIndex = Math.max(0, Number(state.structureIndex || 0))
+    if (structureIndex >= state.structureShops.length) {
+      const step = 2 + state.batches.length + state.structureShops.length
+      return nextPhase('finalize', withProgress(state, step, '渠道结构已完成', {
+        batch_no: state.structureShops.length,
+        total_batches: state.structureShops.length,
+      }), 100)
+    }
+
+    const context = makeCollectionContext(state)
+    const shop = state.structureShops[structureIndex]
+    const payload = buildAnalysisPayload(state.dateRanges, [shop.token])
+    try {
+      const paidFree = await callGateway('/api/competition/analysis/flow/paid_free/structural', payload)
+      addScalarStructureRows(context, paidFree, {
+        shop,
+        tableName: '渠道结构-付免流量结构',
+        source: '/api/competition/analysis/flow/paid_free/structural',
+        metric: { code: 'clickRate', name: '点击量占比', valueType: 'rate' },
+      })
+      const investor = await callGateway('/api/competition/analysis/flow/investor/structural', payload)
+      addScalarStructureRows(context, investor, {
+        shop,
+        tableName: '渠道结构-无界投资结构',
+        source: '/api/competition/analysis/flow/investor/structural',
+        metric: { code: 'costRate', name: '工具结构占比', valueType: 'rate' },
+      })
+      state.logRows.push(makeLogRow(state.dateRanges, `渠道结构 ${shop.shopName}`, '已采集', ''))
+    } catch (error) {
+      state.logRows.push(makeLogRow(state.dateRanges, `渠道结构 ${shop.shopName}`, '采集失败', describeError(error)))
+    }
+
+    state = serializeCollectionState(context, {
+      ...state,
+      structureIndex: structureIndex + 1,
+    })
+    const next = state.structureIndex < state.structureShops.length ? 'collect_structure' : 'finalize'
+    const step = 2 + state.batches.length + state.structureIndex
+    return nextPhase(next, withProgress(state, step, `渠道结构 ${shop.shopName}`, {
+      batch_no: state.structureIndex,
+      total_batches: state.structureShops.length,
+      current_buyer_id: shop.shopName,
+    }), 100)
+  }
+
+  function runFinalizePhase() {
+    const state = normalizeState(shared)
+    const dateRanges = state.dateRanges || resolveDateRanges(params)
+    const allRows = [
+      ...buildSummaryRows(state.resolvedShops, state.metricIndex, dateRanges),
+      ...buildToolRows(state.resolvedShops, state.metricIndex, state.channelClickIndex, state.toolCostRateIndex, dateRanges),
+      ...state.detailRows,
+      ...makeShopRows(state.resolvedShops, dateRanges),
+      ...state.logRows,
+    ]
+    const finalShared = withProgress(state, state.totalSteps, '采集完成', {
+      batch_no: state.totalSteps,
+      total_batches: state.totalSteps,
+    })
+    return complete(allRows.length ? allRows : [{
+      __sheet_name: LOG_SHEET,
+      阶段: '采集',
+      执行结果: '无数据',
+      备注: '接口未返回可导出的表格数据',
+    }], finalShared)
+  }
+
   function complete(data = [], newShared = shared, hasMore = false, sleepMs = 0) {
     return {
       success: true,
@@ -906,8 +1323,8 @@
       meta: {
         has_more: hasMore,
         sleep_ms: sleepMs,
+        shared: newShared,
       },
-      shared: newShared,
     }
   }
 
@@ -923,32 +1340,48 @@
       parseMetricNumber,
       resolveDateRanges,
       extractPageDateRanges,
+      explicitDateParams,
+      hasCompleteExplicitDateParams,
       parseMonitorShopRows,
       buildSummaryRows,
       buildToolRows,
       normalizeShopName,
       findBestShopMatch,
+      isDmpIndexPage,
+      hasCompetitionRoute,
+      targetCompetitionHref,
+      withProgress,
     })
   }
 
   if (phase === '__exports__') return complete([], shared)
 
   try {
-    const href = window.location?.href || location.href || ''
-    if (!/https:\/\/dmp\.taobao\.com\/index_new\.html/.test(href) || !/#!\/compete\/compete-situation/.test(href)) {
-      return complete([{
-        __sheet_name: LOG_SHEET,
-        阶段: '页面检查',
-        执行结果: '页面不匹配',
-        备注: '请在达摩盘「竞争态势分析」页面运行该任务',
-      }])
+    if (phase === 'main') {
+      const route = await ensureCompetitionRoute()
+      if (!route.ok) {
+        return complete([{
+          __sheet_name: LOG_SHEET,
+          阶段: '页面检查',
+          执行结果: '页面不匹配',
+          备注: route.note || '请在达摩盘「竞争态势分析」页面运行该任务',
+        }])
+      }
+      return nextPhase('prepare', withProgress(normalizeState({
+        totalSteps: 3,
+        routeHref: route.href,
+      }), 0, route.corrected ? '打开竞争态势分析页面' : '检查竞争态势分析页面'), 800)
     }
-    const rows = await collectCompetitionData(params)
-    return complete(rows.length ? rows : [{
+    if (phase === 'prepare') return runPreparePhase(params)
+    if (phase === 'resolve_shops') return runResolveShopsPhase(params)
+    if (phase === 'collect_batch') return runCollectBatchPhase()
+    if (phase === 'collect_structure') return runCollectStructurePhase()
+    if (phase === 'finalize') return runFinalizePhase()
+    return complete([{
       __sheet_name: LOG_SHEET,
-      阶段: '采集',
-      执行结果: '无数据',
-      备注: '接口未返回可导出的表格数据',
+      阶段: '脚本阶段',
+      执行结果: '阶段不支持',
+      备注: `未知阶段：${phase}`,
     }])
   } catch (error) {
     return {
