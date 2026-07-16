@@ -825,13 +825,13 @@ tasks:
       - id: mode
         type: radio
         label: 打开方式
-        default: current
+        default: new
         options:
-          - value: current
-            label: 当前页面（推荐）
           - value: new
-            label: 全新页面
-        hint: 推荐先在 9222 浏览器打开并登录任一会员中心页面；脚本会复用当前会话逐个跳转截图。
+            label: 全新页面（默认）
+          - value: current
+            label: 当前页面
+        hint: 默认新开会员中心页面并复用 9222 浏览器会话；如已停在目标会员页，也可改选当前页面。
       - id: input_file
         type: file_excel
         label: 竞品会员中心链接表
@@ -848,15 +848,6 @@ tasks:
         placeholder: "点击选择本地截图目录"
         hint: 可选。留空则保存到本次任务运行产物目录，并在任务详情里作为 PNG 输出文件展示。
         ui_span: third
-      - id: screenshot_limit
-        type: number
-        label: 截图数量上限
-        default: 0
-        min: 0
-        max: 200
-        step: 1
-        ui_span: third
-        hint: 0 表示处理全部有效链接；试跑时可填 1。
       - id: scroll_rounds
         type: number
         label: 滚动预热轮数

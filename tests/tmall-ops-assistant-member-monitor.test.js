@@ -97,6 +97,29 @@ test('member monitor parses pasted URL lines and builds safe screenshot names', 
   )
 })
 
+test('member monitor keeps every submitted valid member URL including duplicates', async () => {
+  const helpers = await loadExports()
+  const rows = helpers.parseMemberUrlLines([
+    '安踏童装旗舰店 https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365',
+    '安踏童装旗舰店 https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365',
+    'FILA童装旗舰店 https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=2960684901',
+    '左西旗舰店 https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1710394567',
+  ].join('\n'))
+
+  const normalized = helpers.normalizeMemberRows(rows, { limit: 1 })
+
+  assert.deepEqual(plain(normalized.rows.map(item => item.sellerId)), [
+    '1745656365',
+    '1745656365',
+    '2960684901',
+    '1710394567',
+  ])
+  assert.equal(
+    helpers.buildScreenshotFilename(normalized.rows[1]),
+    '安踏童装旗舰店_1745656365_会员中心_fullpage_2.png',
+  )
+})
+
 test('tmall manifest declares compete member monitor screenshot task', () => {
   const manifest = fs.readFileSync(path.resolve('adapters/tmall-ops-assistant/manifest.yaml'), 'utf8')
 
@@ -105,5 +128,6 @@ test('tmall manifest declares compete member monitor screenshot task', () => {
   assert.match(manifest, /name: 天猫-竞品会员页面监控/)
   assert.match(manifest, /script: tmall-compete-member-monitor\.js/)
   assert.match(manifest, /type: file_excel/)
+  assert.doesNotMatch(manifest, /screenshot_limit|截图数量上限/)
   assert.match(manifest, /截图文件/)
 })

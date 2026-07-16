@@ -87,11 +87,11 @@
     return !text || ['竞品店铺', '店铺名称', '会员中心固定链接', 'seller ID', '会员中心-完整链接'].includes(text)
   }
 
-  function normalizeMemberRows(rows, options = {}) {
+  function normalizeMemberRows(rows) {
     const sourceRows = Array.isArray(rows) ? rows : []
     const validRows = []
     const invalidRows = []
-    const seen = new Set()
+    const seenCounts = new Map()
     for (let index = 0; index < sourceRows.length; index += 1) {
       const row = sourceRows[index] || {}
       const rowNo = toInteger(row.__row_no || row.__row_index, index + 2)
@@ -117,19 +117,19 @@
       }
 
       const key = `${sellerId}:${url}`
-      if (seen.has(key)) continue
-      seen.add(key)
+      const duplicateNo = (seenCounts.get(key) || 0) + 1
+      seenCounts.set(key, duplicateNo)
       validRows.push({
         rowNo,
         shopName: shopName || `seller_${sellerId}`,
         sellerId,
         url,
+        duplicateNo,
       })
     }
 
-    const limit = Math.max(0, toInteger(options.limit, 0))
     return {
-      rows: limit > 0 ? validRows.slice(0, limit) : validRows,
+      rows: validRows,
       invalidRows,
     }
   }
@@ -182,7 +182,9 @@
   function buildScreenshotFilename(target) {
     const shop = sanitizeFilename(target?.shopName || '会员中心')
     const sellerId = sanitizeFilename(target?.sellerId || 'unknown')
-    return `${shop}_${sellerId}_会员中心_fullpage.png`
+    const duplicateNo = toInteger(target?.duplicateNo, 1)
+    const duplicateSuffix = duplicateNo > 1 ? `_${duplicateNo}` : ''
+    return `${shop}_${sellerId}_会员中心_fullpage${duplicateSuffix}.png`
   }
 
   function pageStatus(target) {
@@ -259,8 +261,7 @@
   }
 
   if (phase === 'main') {
-    const limit = toInteger(params.screenshot_limit, 0)
-    const parsed = normalizeMemberRows(collectInputRows(params), { limit })
+    const parsed = normalizeMemberRows(collectInputRows(params))
     const fallback = currentPageTarget()
     const queue = parsed.rows.length ? parsed.rows : (fallback ? [fallback] : [])
     const nextShared = {
