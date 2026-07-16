@@ -28,7 +28,7 @@ class TmallOpsManifestTests(unittest.TestCase):
         output_columns = task["output"][0]["columns"]
 
         self.assertEqual(manifest["id"], "tmall-ops-assistant")
-        self.assertEqual(manifest["version"], "0.1.1")
+        self.assertEqual(manifest["version"], "0.1.3")
         self.assertEqual(task["name"], "天猫包装图片上传")
         self.assertEqual(task["script"], "tmall-packaging-upload.js")
         self.assertEqual(task["entry_url"], "https://fmp.semirapp.com/web/index#/home/file")
@@ -59,6 +59,38 @@ class TmallOpsManifestTests(unittest.TestCase):
         self.assertEqual(output_columns[0], "表格行号")
         self.assertIn("上传结果", output_columns)
         self.assertIn("天猫货号", output_columns)
+
+    def test_manifest_declares_compete_paid_monitor_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "tmall_compete_paid_monitor")
+        params = {item["id"]: item for item in task["params"]}
+        output = task["output"][0]
+        sheets = {item["name"]: item for item in output["sheets"]}
+
+        self.assertEqual(task["name"], "天猫-竞品付费投放数据监控")
+        self.assertEqual(task["script"], "tmall-compete-paid-monitor.js")
+        self.assertIn("dmp.taobao.com/index_new.html", task["entry_url"])
+        self.assertIn("https://dmp.taobao.com/index_new.html", task["tab_match_prefixes"])
+        self.assertTrue(task["skip_auth"])
+        self.assertEqual(params["mode"]["default"], "new")
+        self.assertIn("全新页面", params["mode"]["options"][0]["label"])
+        self.assertNotIn("stat_week_mode", params)
+        self.assertIn("巴拉巴拉官方旗舰", params["shop_list"]["default"])
+        self.assertIn("moodytiger旗舰店", params["shop_list"]["default"])
+        self.assertNotIn("店铺定位", params["shop_list"]["default"])
+        self.assertNotIn("\t", params["shop_list"]["default"])
+        self.assertEqual(params["max_competitors_per_batch"]["default"], 3)
+        self.assertTrue(params["max_competitors_per_batch"]["hidden"])
+        self.assertEqual(output["sheet_key"], "__sheet_name")
+        self.assertEqual(output["filename"], "天猫竞品付费投放数据监控_{timestamp}.xlsx")
+        self.assertIn("汇总", sheets)
+        self.assertIn("工具汇总", sheets)
+        self.assertIn("明细", sheets)
+        self.assertIn("店铺解析", sheets)
+        self.assertIn("采集日志", sheets)
+        self.assertIn("投放费用", sheets["汇总"]["columns"])
+        self.assertIn("分工具PPC", sheets["工具汇总"]["columns"])
+        self.assertIn("数据来源", sheets["明细"]["columns"])
 
     def test_ai_image_test_chain_exposes_only_approval_and_direct_create_modes(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))

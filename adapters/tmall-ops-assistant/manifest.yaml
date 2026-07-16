@@ -1,6 +1,6 @@
 id: tmall-ops-assistant
 name: 天猫运营助手
-version: 0.1.1
+version: 0.1.3
 author: codex
 description: "天猫商品评价抓取、商品编辑页素材预检与运营批量处理"
 entry_url: https://detail.tmall.com/item.htm
@@ -667,5 +667,148 @@ tasks:
               - 详情支付转化
               - 详情支付转化率
               - 数据下载链接
+              - 执行结果
+              - 备注
+  - id: tmall_compete_paid_monitor
+    name: 天猫-竞品付费投放数据监控
+    description: 在达摩盘竞争态势分析页通过页面 DMP API 读取监控店铺的基础分析、流量分析、客群分析表格数据；按竞店 3 家一批循环采集，只读不修改竞店名单
+    script: tmall-compete-paid-monitor.js
+    entry_url: https://dmp.taobao.com/index_new.html?spm=a2e3k.13920195.cf7687754.d46d8d2e4.4f7525ebKkzmUN#!/compete/compete-situation
+    tab_match_prefixes:
+      - https://dmp.taobao.com/index_new.html
+      - https://dmp.taobao.com/
+    skip_auth: true
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: new
+        options:
+          - value: new
+            label: 全新页面（推荐）
+          - value: current
+            label: 当前页面
+        hint: 请在已登录的达摩盘「竞争态势分析」页面运行；脚本通过页面自己的 DMP 接口只读采集。
+      - id: analysis_start_date
+        type: text
+        label: 分析开始日期
+        placeholder: "2026-07-13"
+        ui_span: third
+        hint: 可选，格式 YYYY-MM-DD；留空使用当前页面分析周期开始日期。
+      - id: analysis_end_date
+        type: text
+        label: 分析结束日期
+        placeholder: "2026-07-15"
+        ui_span: third
+        hint: 可选，格式 YYYY-MM-DD；留空使用当前页面分析周期结束日期。
+      - id: compare_start_date
+        type: text
+        label: 对比开始日期
+        placeholder: "2026-07-16"
+        ui_span: third
+        hint: 可选，格式 YYYY-MM-DD；留空使用当前页面对比周期开始日期。
+      - id: compare_end_date
+        type: text
+        label: 对比结束日期
+        placeholder: "2026-07-19"
+        ui_span: third
+        hint: 可选，格式 YYYY-MM-DD；留空使用当前页面对比周期结束日期。
+      - id: shop_list
+        type: textarea
+        label: 监控名单
+        rows: 10
+        default: "巴拉巴拉官方旗舰\ndavebella旗舰店\n左西旗舰店\nmoodytiger旗舰店\nanta安踏童装旗舰店\nFILA童装旗舰店\n泰兰尼斯童鞋旗舰店\n贝肽斯官方旗舰店\n班喜迪旗舰店\n子瑞巴巴旗舰店"
+        hint: 每行一个店铺名称；脚本会自动识别默认名单的店铺定位，并用 DMP 店铺搜索接口解析 token。
+      - id: output_dir
+        type: directory
+        label: 本地导出目录
+        placeholder: "点击选择本地导出目录"
+        hint: 可选。留空默认导出到系统下载目录下的“抓虾导出/天猫运营助手/竞品付费投放数据监控”。
+        ui_span: third
+      - id: max_competitors_per_batch
+        type: number
+        label: 每批竞店数
+        default: 3
+        hidden: true
+        min: 1
+        max: 3
+        step: 1
+        ui_span: third
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "天猫竞品付费投放数据监控_{timestamp}.xlsx"
+        sheet_key: __sheet_name
+        sheets:
+          - name: 汇总
+            columns:
+              - 统计周
+              - 分析周期
+              - 对比周期
+              - 店铺名称
+              - 店铺定位
+              - 付费点击量
+              - 整体PPC
+              - 当天引导ROI
+              - 整体成交笔数
+              - 整体笔单价
+              - 投放费用
+              - 估算成交GMV
+              - 投放费比
+              - 付费成交GMV
+              - 付费渗透率
+              - 执行结果
+              - 备注
+          - name: 工具汇总
+            columns:
+              - 统计周
+              - 分析周期
+              - 店铺名称
+              - 店铺定位
+              - 工具名称
+              - 工具结构占比
+              - 分工具点击量
+              - 总投放费用
+              - 分工具费用
+              - 分工具PPC
+              - 执行结果
+              - 备注
+          - name: 明细
+            columns:
+              - 统计周
+              - 分析周期
+              - 对比周期
+              - 店铺名称
+              - 店铺定位
+              - 数据模块
+              - 表格名称
+              - 父级维度
+              - 维度名称
+              - 指标编码
+              - 指标名称
+              - 指标类型
+              - 本周期值
+              - 对比周期值
+              - 变化率
+              - 本周期数值
+              - 对比周期数值
+              - 数据来源
+              - 执行结果
+              - 备注
+          - name: 店铺解析
+            columns:
+              - 统计周
+              - 店铺名称
+              - 店铺定位
+              - 页面匹配名称
+              - 店铺ID
+              - 解析来源
+              - 执行结果
+              - 备注
+          - name: 采集日志
+            columns:
+              - 统计周
+              - 阶段
               - 执行结果
               - 备注
