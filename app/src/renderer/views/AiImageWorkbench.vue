@@ -979,6 +979,7 @@ import {
   retrySummaryText,
 } from '../utils/aiImageOperatorMessages.mjs'
 import { focusFirstInDialog, trapDialogFocus } from '../utils/dialogAccessibility.mjs'
+import { isAiVideoWorkflowJob, selectRestorableAiImageJob } from '../utils/aiImageTaskIsolation.js'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 
@@ -1297,14 +1298,14 @@ const taskRecords = computed(() => {
   const seen = new Set()
   for (const job of jobs.value) {
     const jobUid = job?.job_uid
-    if (!jobUid || seen.has(jobUid)) continue
+    if (!jobUid || seen.has(jobUid) || isAiVideoWorkflowJob(job)) continue
     const source = jobUid === activeJobUid.value && currentJob.value?.job_uid === jobUid
       ? { ...job, ...currentJob.value }
       : job
     records.push(mergeJobWithDraft(source, { includeGeneratedDrafts: false }))
     seen.add(jobUid)
   }
-  if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid)) {
+  if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid) && !isAiVideoWorkflowJob(currentJob.value)) {
     records.unshift(mergeJobWithDraft(currentJob.value, { includeGeneratedDrafts: false }))
     seen.add(currentJob.value.job_uid)
   }
@@ -1570,9 +1571,21 @@ function persistWorkbenchState() {
 
 async function restoreInitialTask() {
   if (activeJobUid.value) {
-    const matching = jobs.value.find((job) => job.job_uid === activeJobUid.value) || currentJob.value
-    const restored = await restoreJob(matching, { preserveCurrentDraft: false })
-    if (restored) return
+    const selection = selectRestorableAiImageJob({
+      persistedActiveJobUid: activeJobUid.value,
+      jobs: jobs.value,
+      currentJob: currentJob.value,
+    })
+    if (selection.clearPersistedActiveJob) {
+      currentJob.value = null
+      pendingActiveJobUid.value = ''
+      persistWorkbenchState()
+    }
+    const matching = selection.job
+    if (matching) {
+      const restored = await restoreJob(matching, { preserveCurrentDraft: false })
+      if (restored) return
+    }
     if (jobs.value[0]) await restoreJob(jobs.value[0], { preserveCurrentDraft: false })
     return
   }
@@ -1724,7 +1737,8 @@ function mergeResultCacheFromJob(job) {
 async function loadJobs() {
   try {
     const response = await window.cs.listAiImageJobs()
-    jobs.value = Array.isArray(response) ? response : response?.items || []
+    const records = Array.isArray(response) ? response : response?.items || []
+    jobs.value = records.filter(job => !isAiVideoWorkflowJob(job))
     jobs.value.forEach((job) => mergeResultCacheFromJob(job))
   } catch (error) {
     logs.value.push(`读取历史失败：${error.message || error}`)
@@ -3357,6 +3371,15 @@ async function restoreJob(job, options = {}) {
       }
       logs.value.push(`读取任务详情失败：${error.message || error}`)
     }
+  }
+  if (isAiVideoWorkflowJob(detail)) {
+    const uid = String(detail?.job_uid || job?.job_uid || '').trim()
+    logs.value.push(`已阻止 AI 视频工作流任务进入 AI 生图：${uid || '未命名任务'}`)
+    if (currentJob.value?.job_uid === uid) currentJob.value = null
+    if (pendingActiveJobUid.value === uid) pendingActiveJobUid.value = ''
+    if (uid) delete taskDrafts[uid]
+    persistWorkbenchState()
+    return null
   }
   const submittedDraft = detail?.job_uid ? taskDrafts[detail.job_uid] : null
   const submittedInputsCleared = Boolean(submittedDraft?.submittedInputsCleared)

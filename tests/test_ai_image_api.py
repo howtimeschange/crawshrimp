@@ -58,6 +58,14 @@ class AiImageApiTests(unittest.TestCase):
         self.assertEqual(result["path"], str(source))
         self.assertTrue(result["data_url"].startswith("data:image/png;base64,"))
 
+    def test_api_does_not_expose_an_unrestricted_local_video_data_url_route(self):
+        routes = [
+            route for route in api_server.app.routes
+            if getattr(route, "path", None) == "/files/local-video-preview"
+        ]
+        self.assertEqual(routes, [])
+        self.assertFalse(hasattr(api_server, "read_local_video_preview"))
+
     def test_job_crud_api_uses_data_sink(self):
         output_dir = str(self.root / "api-exports")
         created = api_server.create_ai_image_job(api_server.AiImageJobRequest(

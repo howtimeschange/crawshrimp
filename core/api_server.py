@@ -2593,6 +2593,7 @@ def _bala_create_ai_image_job_row(
     ]
     title = _safe_local_name(" ".join(part for part in title_parts if part), f"巴拉{operation_label}")
     output_dir = str(run_params.get("output_dir") or "").strip()
+    workspace_dir = str(run_params.get("workspace_dir") or output_dir).strip()
     params = {
         "prompt": prompt,
         "size": str(run_params.get("image_size") or "1536x2048").strip() or "1536x2048",
@@ -2603,6 +2604,8 @@ def _bala_create_ai_image_job_row(
         "main_image_path": str(source_path),
         "reference_image_paths": reference_paths,
         "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+        "surface": "ai-video-workflow",
+        "workspace_dir": workspace_dir,
         "operation_type": operation_type,
         "background_prompt": background_prompt,
         "garment_image_paths": [str(path) for path in garment_paths],
@@ -2627,6 +2630,8 @@ def _bala_create_ai_image_job_row(
         "params": params,
         "summary": {
             "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "surface": "ai-video-workflow",
+            "workspace_dir": workspace_dir,
             "operation_type": operation_type,
             "source_path": str(source_path),
             "model_id": model_id,
@@ -7074,11 +7079,15 @@ def _append_bala_review_regenerate_asset(batch: dict, req: BalaReviewRegenerateR
             "main_image_path": source_path,
             "reference_image_paths": reference_paths,
             "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "surface": "ai-video-workflow",
+            "workspace_dir": str(batch.get("workspace_dir") or ""),
             "operation_type": operation_type,
             "style_code": item.get("style_code") or "",
         },
         "summary": {
             "workflow": BALA_AI_FACE_BACKGROUND_TASK_ID,
+            "surface": "ai-video-workflow",
+            "workspace_dir": str(batch.get("workspace_dir") or ""),
             "operation_type": operation_type,
             "source_path": source_path,
             "regenerate_from_asset_id": source_asset.get("id"),
@@ -7312,7 +7321,7 @@ def get_bala_ai_video_review_batch(batch_id: str, token: str = ""):
 
 
 @app.get("/bala-ai-video-review-workspace/api/batches")
-def list_bala_ai_video_review_workspace_batches(style_codes: str = "", limit: int = 100):
+def list_bala_ai_video_review_workspace_batches(style_codes: str = "", workspace_dir: str = "", limit: int = 100):
     requested_styles = [
         value.strip()
         for value in re.split(r"[,，\s]+", str(style_codes or ""))
@@ -7321,6 +7330,7 @@ def list_bala_ai_video_review_workspace_batches(style_codes: str = "", limit: in
     return {
         "items": bala_ai_video_review.list_review_batches(
             style_codes=requested_styles,
+            workspace_dir=workspace_dir,
             limit=limit,
         ),
     }

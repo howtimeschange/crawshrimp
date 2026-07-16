@@ -14,6 +14,53 @@ export const BALA_QN_VIDEO_TASK_ID = 'qn_img2video_batch'
 
 const LEGACY_BALA_BUSINESS_MANAGER_NAME = ['软件', '管家'].join('')
 
+function balaPreviewValue(value = '') {
+  return String(value || '').trim()
+}
+
+export function isBalaVideoFilePath(path = '') {
+  return /\.(?:mp4|m4v|mov|webm)(?:$|[?#])/i.test(balaPreviewValue(path))
+}
+
+function balaLocalFileUrl(path = '') {
+  const value = balaPreviewValue(path)
+  if (!value || !isBalaVideoFilePath(value)) return ''
+  if (/^(https?:|data:|blob:|file:)/i.test(value)) return value
+  const normalized = value.replace(/\\/g, '/')
+  const withLeadingSlash = normalized.startsWith('/') ? normalized : `/${normalized}`
+  const encoded = withLeadingSlash
+    .split('/')
+    .map(segment => (/^[A-Za-z]:$/.test(segment) ? segment : encodeURIComponent(segment)))
+    .join('/')
+  return `file://${encoded}`
+}
+
+export function resolveBalaAssetPreviewSource(asset = {}, {
+  localPreviews = {},
+  thumbnail = false,
+  resolveRemote = value => value,
+} = {}) {
+  const remoteCandidate = thumbnail
+    ? (asset.thumbnailUrl || asset.thumbnail_url || asset.imageUrl || asset.image_url)
+    : (asset.imageUrl || asset.image_url)
+  const remote = balaPreviewValue(resolveRemote(remoteCandidate))
+  if (remote) return remote
+  const localPath = balaPreviewValue(asset.path || asset.previewPath)
+  return balaPreviewValue(localPreviews?.[localPath])
+}
+
+export function balaMaterialPanelControl(expanded) {
+  return expanded
+    ? { label: '向左收起找图', ariaLabel: '向左收起找图面板', direction: 'left' }
+    : { label: '展开找图', ariaLabel: '向右展开找图面板', direction: 'right' }
+}
+
+export function resolveBalaVideoPlaybackSource(result = {}, { resolveRemote = value => value } = {}) {
+  const remote = balaPreviewValue(resolveRemote(result.videoUrl || result.video_url))
+  if (remote) return remote
+  return balaLocalFileUrl(result.path || result.local_video_path)
+}
+
 export function migrateBalaBusinessManagerText(value = '') {
   return String(value || '').split(LEGACY_BALA_BUSINESS_MANAGER_NAME).join('生意管家')
 }
@@ -924,9 +971,12 @@ export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
   return (rows || []).map((row, index) => {
     const result = compact(row?.执行结果 || row?.result || row?.状态 || row?.status)
     const localPath = compact(row?.本地视频文件 || row?.本地文件 || row?.local_video_path || row?.localVideoPath)
+    const videoUrl = compact(
+      row?.视频URL || row?.视频链接 || row?.video_url || row?.videoUrl || row?.url || row?.download_url || row?.downloadUrl,
+    )
     const taskId = compact(row?.视频任务ID || row?.提交任务ID || row?.任务ID || row?.task_id || row?.taskId || fallbackTask?.id)
     const failed = /失败|超时|错误|failed|error|timeout/i.test(result)
-    const done = Boolean(localPath) || /成功|已下载|已生成|completed|succeeded/i.test(result)
+    const done = Boolean(localPath || videoUrl) || /成功|已下载|已生成|completed|succeeded/i.test(result)
     return {
       id: compact(row?.id || taskId || `${fallbackTask?.id || 'video-result'}-${index + 1}`),
       styleCode: compact(row?.款号 || row?.style_code || row?.styleCode || fallbackTask?.styleCode),
@@ -935,7 +985,8 @@ export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
       taskId,
       status: failed ? '失败' : (done ? '已完成' : (result || '运行中')),
       progress: failed ? 100 : (done ? 100 : Number(row?.progress || 60)),
-      path: localPath || compact(row?.视频URL || row?.video_url || row?.videoUrl || fallbackTask?.outputDir),
+      path: localPath,
+      videoUrl,
       error: failed ? compact(row?.备注 || row?.note || row?.error || result) : '',
       raw: row,
     }

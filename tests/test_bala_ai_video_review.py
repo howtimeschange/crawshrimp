@@ -251,6 +251,35 @@ def test_list_review_batches_restores_every_batch_for_requested_style(tmp_path, 
     assert [batch["items"][0]["assets"][0]["job_uid"] for batch in batches] == ["face-job", "pose-job"]
 
 
+def test_list_review_batches_scopes_matches_to_the_requested_workspace(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    artifact_dir = runtime_paths.child_dir("bala-ai-video-review")
+
+    for batch_id, workspace in [
+        ("workspace-a", "/tmp/ai-video/workspace-a"),
+        ("workspace-b", "/tmp/ai-video/workspace-b"),
+    ]:
+        review.save_review_batch({
+            "batch_id": batch_id,
+            "token": f"token-{batch_id}",
+            "artifact_dir": str(artifact_dir),
+            "workspace_dir": workspace,
+            "items": [{
+                "style_code": "208326102205",
+                "assets": [{"id": "origin", "kind": "origin", "path": f"{workspace}/208326102205/source.jpg"}],
+            }],
+        })
+
+    batches = review.list_review_batches(
+        style_codes=["208326102205"],
+        workspace_dir="/tmp/ai-video/workspace-a",
+        limit=10,
+    )
+
+    assert [batch["batch_id"] for batch in batches] == ["workspace-a"]
+
+
 def test_mutate_review_batch_serializes_concurrent_asset_updates(tmp_path, monkeypatch):
     monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
     runtime_paths.reset_runtime_data_root_cache()

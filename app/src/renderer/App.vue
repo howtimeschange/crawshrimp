@@ -471,13 +471,14 @@ provide('repairCoreService', repairCoreService)
   --orange: #FF6B2B;
   --orange-dim: #cc5522;
   --orange-bg: rgba(255, 107, 43, 0.12);
+  --on-orange: #17131A;
   --bg: #141418;
   --bg2: #1c1c22;
   --bg3: #242430;
   --border: #2e2e3a;
   --text: #e2e0f0;
-  --text2: #8b8aa0;
-  --text3: #555468;
+  --text2: #aaa8bd;
+  --text3: #8e8ca4;
   --green: #4ade80;
   --red: #f87171;
   --radius: 10px;

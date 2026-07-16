@@ -3,7 +3,7 @@
 // Prevent child processes from accidentally inheriting ELECTRON_RUN_AS_NODE
 delete process.env.ELECTRON_RUN_AS_NODE
 
-const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor } = require('electron')
+const { app, BrowserWindow, Menu, ipcMain, shell, dialog, session, powerMonitor, protocol } = require('electron')
 const { Notification } = require('electron')
 const { autoUpdater } = require('electron-updater')
 const path   = require('path')
@@ -12,6 +12,7 @@ const http   = require('http')
 const https  = require('https')
 const crypto = require('crypto')
 const { fileURLToPath } = require('url')
+const { Readable } = require('stream')
 const { spawn, execSync, execFileSync } = require('child_process')
 const { createBackendController } = require('./backendController')
 const { createLifecycleController } = require('./lifecycleController')
@@ -29,10 +30,25 @@ const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
 const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
 const {
   deleteAuthorizedWorkspaceImage,
+  getAuthorizedBalaWorkspaceVideo,
   loadAuthorizedBalaWorkspaceRoots,
+  readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,
+  writeAuthorizedBalaWorkspaceManifest,
 } = require('./balaWorkspaceFiles')
 const APP_METADATA = require('../package.json')
+
+const BALA_WORKSPACE_MEDIA_PROTOCOL = 'bala-workspace-media'
+protocol.registerSchemesAsPrivileged([{
+  scheme: BALA_WORKSPACE_MEDIA_PROTOCOL,
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+    corsEnabled: true,
+  },
+}])
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 let apiPort = DEFAULT_API_PORT
@@ -61,6 +77,73 @@ let desktopServicesStartupPromise = null
 let dataDirRecoveryInfo = { recovered: false, from: '', to: '', errors: [] }
 const authorizedBalaWorkspaceRoots = new Set()
 let loadedBalaWorkspaceAuthorizationStore = ''
+
+function balaWorkspaceMediaUrl(workspaceRoot = '', filePath = '') {
+  const payload = Buffer.from(JSON.stringify({ workspaceRoot, filePath }), 'utf8').toString('base64url')
+  return `${BALA_WORKSPACE_MEDIA_PROTOCOL}://workspace/${payload}`
+}
+
+function parseBalaWorkspaceMediaPayload(rawUrl = '') {
+  const url = new URL(String(rawUrl || ''))
+  if (url.protocol !== `${BALA_WORKSPACE_MEDIA_PROTOCOL}:` || url.hostname !== 'workspace') {
+    throw new Error('无效的工作区媒体地址')
+  }
+  const encoded = url.pathname.replace(/^\//, '')
+  if (!encoded) throw new Error('缺少工作区媒体地址')
+  const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+  if (!payload || typeof payload !== 'object') throw new Error('工作区媒体地址格式无效')
+  return payload
+}
+
+function parseByteRange(rangeHeader, size) {
+  const total = Number(size || 0)
+  if (!Number.isSafeInteger(total) || total < 1) throw new Error('视频文件为空')
+  const header = String(rangeHeader || '').trim()
+  if (!header) return { start: 0, end: total - 1, partial: false }
+  const match = header.match(/^bytes=(\d*)-(\d*)$/i)
+  if (!match) throw new RangeError('不支持的视频范围请求')
+  const [, rawStart, rawEnd] = match
+  if (!rawStart && !rawEnd) throw new RangeError('不支持的视频范围请求')
+  if (!rawStart) {
+    const suffixLength = Number(rawEnd)
+    if (!Number.isSafeInteger(suffixLength) || suffixLength < 1) throw new RangeError('无效的视频范围请求')
+    return { start: Math.max(0, total - suffixLength), end: total - 1, partial: true }
+  }
+  const start = Number(rawStart)
+  const end = rawEnd ? Number(rawEnd) : total - 1
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start < 0 || start > end || start >= total) {
+    throw new RangeError('视频范围不在文件内')
+  }
+  return { start, end: Math.min(end, total - 1), partial: true }
+}
+
+async function handleBalaWorkspaceMediaRequest(request) {
+  try {
+    ensureBalaWorkspaceAuthorizationsLoaded()
+    const payload = parseBalaWorkspaceMediaPayload(request.url)
+    const media = getAuthorizedBalaWorkspaceVideo({
+      workspaceRoot: payload.workspaceRoot,
+      filePath: payload.filePath,
+      roots: authorizedBalaWorkspaceRoots,
+    })
+    const range = parseByteRange(request.headers.get('range'), media.size)
+    const length = range.end - range.start + 1
+    const headers = {
+      'Content-Type': media.mime,
+      'Content-Length': String(length),
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-store',
+    }
+    if (range.partial) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${media.size}`
+    return new Response(Readable.toWeb(fs.createReadStream(media.path, { start: range.start, end: range.end })), {
+      status: range.partial ? 206 : 200,
+      headers,
+    })
+  } catch (error) {
+    const status = error instanceof RangeError ? 416 : 403
+    return new Response('本地工作区视频不可用', { status, headers: { 'Cache-Control': 'no-store' } })
+  }
+}
 
 function normalizePathForIdentity(rawPath = '') {
   const resolved = path.resolve(String(rawPath || ''))
@@ -1985,6 +2068,7 @@ configureSingleInstance({
   onPrimary: () => {
     app.whenReady().then(async () => {
       hideNativeAppMenu()
+      protocol.handle(BALA_WORKSPACE_MEDIA_PROTOCOL, handleBalaWorkspaceMediaRequest)
       createWindow()
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -2611,6 +2695,37 @@ secureHandle('delete-bala-workspace-image', async (_, workspaceRoot, filePath) =
   return deleteAuthorizedWorkspaceImage({
     workspaceRoot,
     filePath,
+    roots: authorizedBalaWorkspaceRoots,
+  })
+})
+
+secureHandle('get-bala-workspace-video-media', async (_, workspaceRoot, filePath) => {
+  ensureBalaWorkspaceAuthorizationsLoaded()
+  const media = getAuthorizedBalaWorkspaceVideo({
+    workspaceRoot,
+    filePath,
+    roots: authorizedBalaWorkspaceRoots,
+  })
+  return {
+    ok: true,
+    ...media,
+    media_url: balaWorkspaceMediaUrl(workspaceRoot, media.path),
+  }
+})
+
+secureHandle('read-bala-workspace-manifest', async (_, workspaceRoot) => {
+  ensureBalaWorkspaceAuthorizationsLoaded()
+  return readAuthorizedBalaWorkspaceManifest({
+    workspaceRoot,
+    roots: authorizedBalaWorkspaceRoots,
+  })
+})
+
+secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) => {
+  ensureBalaWorkspaceAuthorizationsLoaded()
+  return writeAuthorizedBalaWorkspaceManifest({
+    workspaceRoot,
+    payload,
     roots: authorizedBalaWorkspaceRoots,
   })
 })

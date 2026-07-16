@@ -206,17 +206,18 @@ def test_review_fallback_board_escapes_persisted_asset_fields(monkeypatch):
 def test_review_workspace_api_lists_all_batches_for_a_style(monkeypatch):
     batches = [{"batch_id": "batch-face"}, {"batch_id": "batch-pose"}]
     calls = []
-    monkeypatch.setattr(review, "list_review_batches", lambda *, style_codes, limit: (
-        calls.append((style_codes, limit)) or batches
+    monkeypatch.setattr(review, "list_review_batches", lambda *, style_codes, workspace_dir, limit: (
+        calls.append((style_codes, workspace_dir, limit)) or batches
     ))
 
     result = api_server.list_bala_ai_video_review_workspace_batches(
         style_codes="208326102205, 208326105214",
+        workspace_dir="/tmp/workspace-a",
         limit=25,
     )
 
     assert result == {"items": batches}
-    assert calls == [(["208326102205", "208326105214"], 25)]
+    assert calls == [(["208326102205", "208326105214"], "/tmp/workspace-a", 25)]
 
 
 def test_review_decision_endpoint_preserves_concurrent_updates(tmp_path, monkeypatch):

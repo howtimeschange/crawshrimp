@@ -81,3 +81,15 @@ test('dev bridge maps ai image methods directly to local HTTP API', () => {
   assert.match(devBridge, /createAiImageCanvas: \(payload\) => apiCall\('POST', '\/ai-image\/canvases', payload \|\| \{\}\)/)
   assert.match(devBridge, /readLocalImagePreview: \(path\) => apiCall\('POST', '\/files\/local-image-preview', \{ path \}\)/)
 })
+
+test('local video previews use an authorized Electron streaming bridge instead of an HTTP data URL', () => {
+  assert.match(main, /secureHandle\('get-bala-workspace-video-media'/)
+  assert.match(main, /protocol\.handle\(BALA_WORKSPACE_MEDIA_PROTOCOL, handleBalaWorkspaceMediaRequest\)/)
+  assert.match(main, /Readable\.toWeb\(fs\.createReadStream/)
+  assert.doesNotMatch(main, /readLocalVideoDataUrl|read-local-video-preview/)
+  assert.match(preload, /getBalaWorkspaceVideoMedia: \(workspaceRoot, filePath\) => ipcRenderer\.invoke\('get-bala-workspace-video-media'/)
+  assert.match(preload, /readBalaWorkspaceManifest: \(workspaceRoot\) => ipcRenderer\.invoke\('read-bala-workspace-manifest'/)
+  assert.match(preload, /writeBalaWorkspaceManifest: \(workspaceRoot, payload\) => ipcRenderer\.invoke\('write-bala-workspace-manifest'/)
+  assert.match(devBridge, /getBalaWorkspaceVideoMedia: async \(\) => \{/)
+  assert.doesNotMatch(devBridge, /files\/local-video-preview/)
+})

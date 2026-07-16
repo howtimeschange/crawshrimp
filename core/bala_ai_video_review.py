@@ -211,6 +211,7 @@ def build_review_batch(rows: list[dict], run_params: dict, artifact_dir: str, ap
         "workflow": WORKFLOW_ID,
         "status": STATUS_GENERATING,
         "artifact_dir": str(Path(artifact_dir or _review_root()).expanduser()),
+        "workspace_dir": _text((run_params or {}).get("workspace_dir") or (run_params or {}).get("output_dir")),
         "video_provider": _text((run_params or {}).get("video_provider")) or VIDEO_PROVIDER_QN,
         "items": list(items_by_style.values()),
         "board_url": f"{api_base_url.rstrip('/')}/bala-ai-video-review/{batch_id}?token={token}",
@@ -262,8 +263,9 @@ def load_review_batch(batch_id: str) -> dict:
     raise FileNotFoundError(_text(batch_id))
 
 
-def list_review_batches(*, style_codes: list[str] | None = None, limit: int = 100) -> list[dict]:
+def list_review_batches(*, style_codes: list[str] | None = None, workspace_dir: str = "", limit: int = 100) -> list[dict]:
     requested_styles = {_text(value) for value in (style_codes or []) if _text(value)}
+    requested_workspace = _text(workspace_dir).replace("\\", "/").rstrip("/")
     try:
         safe_limit = max(1, min(int(limit), 200))
     except (TypeError, ValueError):
@@ -288,6 +290,24 @@ def list_review_batches(*, style_codes: list[str] | None = None, limit: int = 10
         }
         if requested_styles and not requested_styles.intersection(styles):
             continue
+        if requested_workspace:
+            batch_workspace = _text(batch.get("workspace_dir")).replace("\\", "/").rstrip("/")
+            workspace_matches = batch_workspace == requested_workspace
+            if not workspace_matches:
+                asset_paths = [
+                    _text(asset.get(key)).replace("\\", "/")
+                    for item in (batch.get("items") or [])
+                    if isinstance(item, Mapping)
+                    for asset in (item.get("assets") or [])
+                    if isinstance(asset, Mapping)
+                    for key in ("path", "source_path", "source_image")
+                ]
+                workspace_matches = any(
+                    path == requested_workspace or path.startswith(f"{requested_workspace}/")
+                    for path in asset_paths if path
+                )
+            if not workspace_matches:
+                continue
         seen_batch_ids.add(batch_id)
         batches.append(batch)
     return batches[-safe_limit:]

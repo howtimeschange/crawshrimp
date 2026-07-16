@@ -4,6 +4,9 @@ const fs = require('node:fs')
 const path = require('node:path')
 
 const BALA_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp'])
+const BALA_VIDEO_EXTENSIONS = new Set(['.mp4', '.m4v', '.mov', '.webm'])
+const BALA_WORKSPACE_MANIFEST_FILENAME = '.crawshrimp-ai-video-workflow.json'
+const BALA_WORKSPACE_MANIFEST_MAX_BYTES = 8 * 1024 * 1024
 
 function canonicalPath(value, fsApi = fs) {
   const resolved = path.resolve(String(value || '').trim())
@@ -70,6 +73,83 @@ function assertDescendant(rootPath, filePath) {
   }
 }
 
+function authorizedWorkspaceRoot(workspaceRoot, { roots = new Set(), fsApi = fs } = {}) {
+  const rawRoot = String(workspaceRoot || '').trim()
+  if (!rawRoot) throw new Error('缺少 AI 视频工作区目录')
+  const canonicalRoot = canonicalPath(rawRoot, fsApi)
+  if (!roots.has(rootIdentity(canonicalRoot, fsApi))) {
+    throw new Error('当前工作区未授权，请重新使用系统文件夹选择器选择工作区')
+  }
+  return canonicalRoot
+}
+
+function videoMimeForPath(filePath = '') {
+  const extension = path.extname(String(filePath || '')).toLowerCase()
+  if (extension === '.mp4' || extension === '.m4v') return 'video/mp4'
+  if (extension === '.webm') return 'video/webm'
+  if (extension === '.mov') return 'video/quicktime'
+  return ''
+}
+
+function getAuthorizedBalaWorkspaceVideo({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
+  const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
+  const rawFile = String(filePath || '').trim()
+  if (!rawFile) throw new Error('缺少本地视频路径')
+  const resolvedFile = path.resolve(rawFile)
+  const stat = fsApi.lstatSync(resolvedFile)
+  if (stat.isSymbolicLink()) throw new Error('禁止预览符号链接')
+  if (!stat.isFile()) throw new Error('只能预览普通视频文件')
+  const mime = videoMimeForPath(resolvedFile)
+  if (!mime || !BALA_VIDEO_EXTENSIONS.has(path.extname(resolvedFile).toLowerCase())) {
+    throw new Error('只能预览 MP4、M4V、MOV 或 WEBM 视频文件')
+  }
+  const canonicalFile = canonicalPath(resolvedFile, fsApi)
+  assertDescendant(canonicalRoot, canonicalFile)
+  return {
+    path: canonicalFile,
+    mime,
+    size: stat.size,
+  }
+}
+
+function workspaceManifestPath(workspaceRoot, { roots = new Set(), fsApi = fs } = {}) {
+  return path.join(authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi }), BALA_WORKSPACE_MANIFEST_FILENAME)
+}
+
+function readAuthorizedBalaWorkspaceManifest({ workspaceRoot, roots = new Set(), fsApi = fs } = {}) {
+  const manifestPath = workspaceManifestPath(workspaceRoot, { roots, fsApi })
+  if (!fsApi.existsSync(manifestPath)) return null
+  const stat = fsApi.lstatSync(manifestPath)
+  if (stat.isSymbolicLink()) throw new Error('工作区恢复清单不能是符号链接')
+  if (!stat.isFile()) throw new Error('工作区恢复清单不是普通文件')
+  if (stat.size > BALA_WORKSPACE_MANIFEST_MAX_BYTES) throw new Error('工作区恢复清单超过大小限制')
+  let payload
+  try {
+    payload = JSON.parse(fsApi.readFileSync(manifestPath, 'utf8'))
+  } catch {
+    throw new Error('工作区恢复清单无法读取')
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('工作区恢复清单格式无效')
+  }
+  return payload
+}
+
+function writeAuthorizedBalaWorkspaceManifest({ workspaceRoot, payload, roots = new Set(), fsApi = fs } = {}) {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    throw new Error('工作区恢复清单格式无效')
+  }
+  const manifestPath = workspaceManifestPath(workspaceRoot, { roots, fsApi })
+  const serialized = `${JSON.stringify(payload)}\n`
+  if (Buffer.byteLength(serialized, 'utf8') > BALA_WORKSPACE_MANIFEST_MAX_BYTES) {
+    throw new Error('工作区恢复清单超过大小限制')
+  }
+  const temporaryPath = `${manifestPath}.${process.pid}.${Date.now().toString(36)}.tmp`
+  fsApi.writeFileSync(temporaryPath, serialized, { encoding: 'utf8', mode: 0o600 })
+  fsApi.renameSync(temporaryPath, manifestPath)
+  return { ok: true, path: manifestPath }
+}
+
 function canonicalMissingPath(filePath, fsApi = fs) {
   let cursor = path.resolve(filePath)
   const suffix = []
@@ -87,10 +167,7 @@ function deleteAuthorizedWorkspaceImage({ workspaceRoot, filePath, roots = new S
   const rawFile = String(filePath || '').trim()
   if (!rawRoot || !rawFile) throw new Error('缺少工作区或待删除图片路径')
 
-  const canonicalRoot = canonicalPath(rawRoot, fsApi)
-  if (!roots.has(rootIdentity(canonicalRoot, fsApi))) {
-    throw new Error('当前工作区未授权，请重新使用系统文件夹选择器选择工作区')
-  }
+  const canonicalRoot = authorizedWorkspaceRoot(rawRoot, { roots, fsApi })
 
   const resolvedFile = path.resolve(rawFile)
   if (!fsApi.existsSync(resolvedFile)) {
@@ -115,8 +192,13 @@ function deleteAuthorizedWorkspaceImage({ workspaceRoot, filePath, roots = new S
 
 module.exports = {
   BALA_IMAGE_EXTENSIONS,
+  BALA_VIDEO_EXTENSIONS,
+  BALA_WORKSPACE_MANIFEST_FILENAME,
   authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
+  getAuthorizedBalaWorkspaceVideo,
   loadAuthorizedBalaWorkspaceRoots,
+  readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,
+  writeAuthorizedBalaWorkspaceManifest,
 }

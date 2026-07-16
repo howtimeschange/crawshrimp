@@ -9,8 +9,11 @@ const path = require('node:path')
 const {
   authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
+  getAuthorizedBalaWorkspaceVideo,
   loadAuthorizedBalaWorkspaceRoots,
+  readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,
+  writeAuthorizedBalaWorkspaceManifest,
 } = require('./balaWorkspaceFiles')
 
 function withTempTree(run) {
@@ -142,5 +145,59 @@ test('authorized workspace deletion is idempotent when the image is already miss
       filePath: missingOutsideImage,
       roots,
     }), /工作区内/)
+  })
+})
+
+test('authorized workspace video metadata never serializes video bytes and rejects escapes', () => {
+  withTempTree(({ workspace, outside }) => {
+    const nested = path.join(workspace, '视频结果')
+    const videoPath = path.join(nested, 'result.mp4')
+    const outsideVideo = path.join(outside, 'outside.mp4')
+    const linkPath = path.join(workspace, 'linked.mp4')
+    fs.mkdirSync(nested)
+    fs.writeFileSync(videoPath, Buffer.alloc(64 * 1024, 7))
+    fs.writeFileSync(outsideVideo, 'outside')
+    fs.symlinkSync(outsideVideo, linkPath)
+    const roots = new Set()
+    authorizeBalaWorkspaceRoot(workspace, { roots })
+
+    const media = getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: videoPath, roots })
+
+    assert.equal(media.path, fs.realpathSync.native(videoPath))
+    assert.equal(media.mime, 'video/mp4')
+    assert.equal(media.size, 64 * 1024)
+    assert.equal(Object.hasOwn(media, 'data_url'), false)
+    assert.throws(
+      () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: outsideVideo, roots }),
+      /工作区内/,
+    )
+    assert.throws(
+      () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: linkPath, roots }),
+      /符号链接/,
+    )
+  })
+})
+
+test('workspace manifest restores video tasks and results only from its authorized workspace', () => {
+  withTempTree(({ workspace, outside }) => {
+    const roots = new Set()
+    authorizeBalaWorkspaceRoot(workspace, { roots })
+    const payload = {
+      version: 1,
+      workspaceDir: workspace,
+      video: {
+        tasks: [{ id: 'task-1', styleCode: '208326102205' }],
+        results: [{ id: 'result-1', path: path.join(workspace, '视频结果', 'result.mp4') }],
+      },
+    }
+
+    const saved = writeAuthorizedBalaWorkspaceManifest({ workspaceRoot: workspace, payload, roots })
+    assert.equal(saved.ok, true)
+    assert.equal(fs.existsSync(saved.path), true)
+    assert.deepEqual(readAuthorizedBalaWorkspaceManifest({ workspaceRoot: workspace, roots }), payload)
+    assert.throws(
+      () => readAuthorizedBalaWorkspaceManifest({ workspaceRoot: outside, roots }),
+      /未授权/,
+    )
   })
 })

@@ -476,6 +476,13 @@ export function createDevCsBridge() {
     deleteBalaWorkspaceImage: async () => {
       throw devModeError('浏览器开发模式不能安全删除本地图片，请在 Electron 开发壳中操作')
     },
+    getBalaWorkspaceVideoMedia: async () => {
+      throw devModeError('浏览器开发模式不能安全流式预览本地视频，请在 Electron 开发壳中查看')
+    },
+    readBalaWorkspaceManifest: async () => null,
+    writeBalaWorkspaceManifest: async () => {
+      throw devModeError('浏览器开发模式不能安全写入工作区恢复清单，请在 Electron 开发壳中操作')
+    },
     readLocalImagePreview: (path) => apiCall('POST', '/files/local-image-preview', { path }),
     listDirectoryFiles: async () => ({ ok: false, paths: [], error: '浏览器开发模式不支持直接扫描本地目录' }),
     renderPdfPreview: async () => ({ ok: false, error: '浏览器开发模式不支持本地 PDF 预览' }),
