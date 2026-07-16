@@ -280,6 +280,7 @@ class JSRunner:
         scroll_rounds: int = 1,
         target_dir: str = "",
         target_relative_path: str = "",
+        neutralize_fixed: bool = False,
     ) -> dict:
         """Capture the current CDP page as a PNG runtime artifact."""
         raw_filename = str(filename or "").strip() or "screenshot.png"
@@ -305,6 +306,16 @@ class JSRunner:
                 step = max(100, int(scroll_step or 650))
                 delay = max(0, int(scroll_delay_ms or 0))
                 rounds = max(0, int(scroll_rounds or 0)) if scroll_before_capture else 0
+                neutralize_fixed_js = "true" if neutralize_fixed else "false"
+                cleanup_expression = (
+                    "(() => {\n"
+                    "  const style = document.getElementById('__crawshrimp_capture_neutralize_fixed__');\n"
+                    "  if (style) style.remove();\n"
+                    "  document.querySelectorAll('[data-crawshrimp-capture-neutralized=\"1\"]').forEach(el => {\n"
+                    "    el.removeAttribute('data-crawshrimp-capture-neutralized');\n"
+                    "  });\n"
+                    "})()"
+                )
                 expression = (
                     "(async () => {\n"
                     "  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));\n"
@@ -312,6 +323,14 @@ class JSRunner:
                     f"  const step = {step};\n"
                     f"  const delay = {delay};\n"
                     f"  const settle = {settle};\n"
+                    f"  const neutralizeFixed = {neutralize_fixed_js};\n"
+                    "  const cleanupCaptureStyle = () => {\n"
+                    "    const style = document.getElementById('__crawshrimp_capture_neutralize_fixed__');\n"
+                    "    if (style) style.remove();\n"
+                    "    document.querySelectorAll('[data-crawshrimp-capture-neutralized=\"1\"]').forEach(el => {\n"
+                    "      el.removeAttribute('data-crawshrimp-capture-neutralized');\n"
+                    "    });\n"
+                    "  };\n"
                     "  for (let round = 0; round < rounds; round += 1) {\n"
                     "    const maxY = Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0, window.innerHeight || 0);\n"
                     "    for (let y = 0; y <= maxY; y += step) {\n"
@@ -321,6 +340,27 @@ class JSRunner:
                     "  }\n"
                     "  window.scrollTo(0, 0);\n"
                     "  if (settle > 0) await sleep(settle);\n"
+                    "  let neutralizedFixedCount = 0;\n"
+                    "  cleanupCaptureStyle();\n"
+                    "  if (neutralizeFixed) {\n"
+                    "    const style = document.createElement('style');\n"
+                    "    style.id = '__crawshrimp_capture_neutralize_fixed__';\n"
+                    "    style.textContent = '[data-crawshrimp-capture-neutralized=\"1\"]{position:static!important;top:auto!important;right:auto!important;bottom:auto!important;left:auto!important;transform:none!important;will-change:auto!important;}';\n"
+                    "    document.head.appendChild(style);\n"
+                    "    const viewportArea = Math.max(1, window.innerWidth * window.innerHeight);\n"
+                    "    for (const el of Array.from(document.body?.querySelectorAll('*') || [])) {\n"
+                    "      const computed = window.getComputedStyle(el);\n"
+                    "      if (computed.position !== 'fixed' && computed.position !== 'sticky') continue;\n"
+                    "      const rect = el.getBoundingClientRect();\n"
+                    "      if (rect.width <= 0 || rect.height <= 0) continue;\n"
+                    "      if ((rect.width * rect.height) > viewportArea * 0.95) continue;\n"
+                    "      el.setAttribute('data-crawshrimp-capture-neutralized', '1');\n"
+                    "      neutralizedFixedCount += 1;\n"
+                    "    }\n"
+                    "    window.scrollTo(0, 0);\n"
+                    "    await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));\n"
+                    "    await sleep(Math.min(800, Math.max(250, settle)));\n"
+                    "  }\n"
                     "  const width = Math.max(document.documentElement?.clientWidth || 0, document.body?.clientWidth || 0, window.innerWidth || 0, 1);\n"
                     "  const height = Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0, document.documentElement?.clientHeight || 0, window.innerHeight || 0, 1);\n"
                     "  return {\n"
@@ -329,51 +369,68 @@ class JSRunner:
                     "    devicePixelRatio: window.devicePixelRatio || 1,\n"
                     "    title: document.title || '',\n"
                     "    url: location.href || '',\n"
+                    "    neutralizedFixedCount,\n"
                     "    textSample: String(document.body?.innerText || '').slice(0, 200),\n"
                     "  };\n"
                     "})()"
                 )
-                eval_response = await self._cdp_send_on_ws(
-                    "Runtime.evaluate",
-                    {
-                        "expression": expression,
-                        "awaitPromise": True,
-                        "returnByValue": True,
-                        "timeout": max(1000, settle + (rounds * 30000)),
-                    },
-                    ws=ws,
-                    timeout=max(15, (settle / 1000.0) + 30),
-                )
-                info = dict(
-                    ((eval_response.get("result") or {}).get("result") or {}).get("value")
-                    or {}
-                )
+                try:
+                    eval_response = await self._cdp_send_on_ws(
+                        "Runtime.evaluate",
+                        {
+                            "expression": expression,
+                            "awaitPromise": True,
+                            "returnByValue": True,
+                            "timeout": max(1000, settle + (rounds * 30000)),
+                        },
+                        ws=ws,
+                        timeout=max(15, (settle / 1000.0) + 30),
+                    )
+                    info = dict(
+                        ((eval_response.get("result") or {}).get("result") or {}).get("value")
+                        or {}
+                    )
 
-                capture_params: dict[str, Any] = {
-                    "format": "png",
-                    "fromSurface": True,
-                    "captureBeyondViewport": bool(full_page),
-                }
-                if full_page:
-                    width = max(1, int(round(float(info.get("width") or 1))))
-                    height = max(1, int(round(float(info.get("height") or 1))))
-                    capture_params["clip"] = {
-                        "x": 0,
-                        "y": 0,
-                        "width": width,
-                        "height": height,
-                        "scale": 1,
+                    capture_params: dict[str, Any] = {
+                        "format": "png",
+                        "fromSurface": True,
+                        "captureBeyondViewport": bool(full_page),
                     }
+                    if full_page:
+                        width = max(1, int(round(float(info.get("width") or 1))))
+                        height = max(1, int(round(float(info.get("height") or 1))))
+                        capture_params["clip"] = {
+                            "x": 0,
+                            "y": 0,
+                            "width": width,
+                            "height": height,
+                            "scale": 1,
+                        }
 
-                response = await self._cdp_send_on_ws(
-                    "Page.captureScreenshot",
-                    capture_params,
-                    ws=ws,
-                    timeout=60,
-                )
-                image_data = str((response.get("result") or {}).get("data") or "")
-                if not image_data:
-                    raise RuntimeError("Page.captureScreenshot 未返回图片数据")
+                    response = await self._cdp_send_on_ws(
+                        "Page.captureScreenshot",
+                        capture_params,
+                        ws=ws,
+                        timeout=60,
+                    )
+                    image_data = str((response.get("result") or {}).get("data") or "")
+                    if not image_data:
+                        raise RuntimeError("Page.captureScreenshot 未返回图片数据")
+                finally:
+                    if neutralize_fixed:
+                        try:
+                            await self._cdp_send_on_ws(
+                                "Runtime.evaluate",
+                                {
+                                    "expression": cleanup_expression,
+                                    "awaitPromise": True,
+                                    "returnByValue": True,
+                                },
+                                ws=ws,
+                                timeout=10,
+                            )
+                        except Exception:
+                            logger.debug("cleanup neutralized screenshot styles failed", exc_info=True)
 
             target_path.parent.mkdir(parents=True, exist_ok=True)
             target_path.write_bytes(base64.b64decode(image_data))
@@ -2799,6 +2856,7 @@ class JSRunner:
                                 scroll_rounds=int(meta.get("scroll_rounds") or 1),
                                 target_dir=str(meta.get("target_dir") or "").strip(),
                                 target_relative_path=str(meta.get("target_relative_path") or "").strip(),
+                                neutralize_fixed=bool(meta.get("neutralize_fixed")),
                             )
                             if strict and not screenshot_result.get("ok"):
                                 raise RuntimeError(str(screenshot_result.get("error") or "capture_screenshot 失败"))

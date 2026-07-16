@@ -1181,6 +1181,58 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
                 {"x": 0, "y": 0, "width": 385, "height": 4960, "scale": 1},
             )
 
+    async def test_capture_screenshot_can_neutralize_fixed_elements(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://example.invalid", artifact_dir=tmpdir)
+            png_bytes = b"\x89PNG\r\n\x1a\nmember-page"
+            fake_ws = FakeCDPWebSocket([
+                {"id": 1, "result": {}},
+                {"id": 2, "result": {}},
+                {"id": 3, "result": {}},
+                {
+                    "id": 4,
+                    "result": {
+                        "result": {
+                            "type": "object",
+                            "value": {
+                                "width": 800,
+                                "height": 9000,
+                                "devicePixelRatio": 3,
+                                "title": "会员中心",
+                                "url": "https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index",
+                                "neutralizedFixedCount": 2,
+                            },
+                        },
+                    },
+                },
+                {"id": 5, "result": {"data": base64.b64encode(png_bytes).decode("ascii")}},
+                {"id": 6, "result": {"result": {"type": "undefined"}}},
+            ])
+
+            with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+                result = await runner.capture_screenshot(
+                    filename="会员页",
+                    neutralize_fixed=True,
+                    scroll_before_capture=False,
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["info"]["neutralizedFixedCount"], 2)
+            self.assertEqual(
+                [item["method"] for item in fake_ws.sent],
+                [
+                    "Page.enable",
+                    "Runtime.enable",
+                    "Page.bringToFront",
+                    "Runtime.evaluate",
+                    "Page.captureScreenshot",
+                    "Runtime.evaluate",
+                ],
+            )
+            self.assertIn("__crawshrimp_capture_neutralize_fixed__", fake_ws.sent[3]["params"]["expression"])
+            self.assertIn("const neutralizeFixed = true", fake_ws.sent[3]["params"]["expression"])
+            self.assertIn("removeAttribute('data-crawshrimp-capture-neutralized')", fake_ws.sent[5]["params"]["expression"])
+
     async def test_browser_session_download_uses_async_bridge_calls(self):
         class AsyncOnlyBridge:
             def __init__(self):

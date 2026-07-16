@@ -6,6 +6,7 @@
 
   const MEMBER_BASE_URL = 'https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId='
   const DEFAULT_WAIT_ATTEMPTS = 12
+  const MIN_MEMBER_SCROLL_HEIGHT = 1600
 
   function compact(value) {
     return String(value == null ? '' : value).replace(/\s+/g, ' ').trim()
@@ -17,6 +18,11 @@
     return Math.trunc(parsed)
   }
 
+  function clampInteger(value, fallback, min, max) {
+    const parsed = toInteger(value, fallback)
+    return Math.max(min, Math.min(max, parsed))
+  }
+
   function sanitizeFilename(value, fallback = 'member-page') {
     const text = compact(value)
       .replace(/[\\/:*?"<>|]+/g, '_')
@@ -25,6 +31,15 @@
       .replace(/_+/g, '_')
       .replace(/^[._\s-]+|[._\s-]+$/g, '')
     return text || fallback
+  }
+
+  function formatCaptureDate(value) {
+    const date = value instanceof Date ? value : (value ? new Date(value) : new Date())
+    if (!Number.isFinite(date.getTime())) return formatCaptureDate()
+    const year = date.getFullYear()
+    const month = String(date.getMonth() + 1).padStart(2, '0')
+    const day = String(date.getDate()).padStart(2, '0')
+    return `${year}-${month}-${day}`
   }
 
   function getValue(row, keys) {
@@ -179,12 +194,78 @@
     }
   }
 
-  function buildScreenshotFilename(target) {
+  function buildScreenshotFilename(target, captureDate = formatCaptureDate()) {
     const shop = sanitizeFilename(target?.shopName || '会员中心')
     const sellerId = sanitizeFilename(target?.sellerId || 'unknown')
     const duplicateNo = toInteger(target?.duplicateNo, 1)
     const duplicateSuffix = duplicateNo > 1 ? `_${duplicateNo}` : ''
-    return `${shop}_${sellerId}_会员中心_fullpage${duplicateSuffix}.png`
+    return `${captureDate}_${shop}_${sellerId}_会员中心_fullpage${duplicateSuffix}.png`
+  }
+
+  function buildScreenshotFolderName(rawParams = params, captureDate = formatCaptureDate()) {
+    const custom = compact(rawParams.screenshot_folder_name || rawParams.screenshotFolderName || rawParams.folder_name)
+    return sanitizeFilename(custom || `${captureDate}_竞品会员页面监控`, `${captureDate}_竞品会员页面监控`)
+  }
+
+  function buildScreenshotRelativePath(target, captureDate, folderName) {
+    const safeFolder = sanitizeFilename(folderName || `${captureDate}_竞品会员页面监控`, `${captureDate}_竞品会员页面监控`)
+    return `${safeFolder}/${buildScreenshotFilename(target, captureDate)}`
+  }
+
+  function normalizePacing(rawParams = params) {
+    const minSeconds = clampInteger(rawParams.pacing_min_seconds, 8, 0, 300)
+    const maxSeconds = Math.max(minSeconds, clampInteger(rawParams.pacing_max_seconds, 15, 0, 300))
+    return {
+      minSeconds,
+      maxSeconds,
+      cooldownEvery: clampInteger(rawParams.cooldown_every, 8, 0, 100),
+      cooldownSeconds: clampInteger(rawParams.cooldown_seconds, 120, 0, 1800),
+    }
+  }
+
+  function computePacingDelayMs(rawParams, completedCount) {
+    const pacing = normalizePacing(rawParams)
+    let delaySeconds = 0
+    if (pacing.maxSeconds > 0) {
+      const spread = Math.max(0, pacing.maxSeconds - pacing.minSeconds)
+      delaySeconds += pacing.minSeconds + Math.round(Math.random() * spread)
+    }
+    if (
+      pacing.cooldownEvery > 0 &&
+      pacing.cooldownSeconds > 0 &&
+      completedCount > 0 &&
+      completedCount % pacing.cooldownEvery === 0
+    ) {
+      delaySeconds += pacing.cooldownSeconds
+    }
+    return Math.max(0, delaySeconds * 1000)
+  }
+
+  function captureSettleMs(rawParams = params) {
+    return clampInteger(rawParams.capture_settle_seconds, 3, 0, 30) * 1000
+  }
+
+  function detectBlockReason(hostname, bodyText) {
+    const host = String(hostname || '')
+    const text = String(bodyText || '')
+    if (/login\.(taobao|tmall)\.com/i.test(host) || /亲，请登录|扫码登录|密码登录/.test(text)) {
+      return '页面进入登录态，请先在 9222 浏览器完成登录后重试'
+    }
+    if (
+      /(^|\.)?(punish|sec)\.(taobao|tmall)\.com$/i.test(host) ||
+      /安全验证|访问受限|访问过于频繁|操作频繁|滑动验证|拖动滑块|验证码|验证一下|请稍后再试|风险|风控/.test(text)
+    ) {
+      return '检测到疑似淘宝安全验证或访问频率限制，已停止后续任务；建议等待一段时间后重试，并调慢节奏参数'
+    }
+    return ''
+  }
+
+  function detectPageErrorReason(bodyText) {
+    const text = String(bodyText || '')
+    if (/服务溜了小差|小二很忙|页面走丢|页面不存在|页面加载失败|系统繁忙|网络竟然崩溃了|哎呀.*出错|刷新试试/.test(text)) {
+      return '会员中心页面异常或平台繁忙，本条未截图；建议稍后用更慢节奏重试'
+    }
+    return ''
   }
 
   function pageStatus(target) {
@@ -192,14 +273,30 @@
     const bodyText = String(document.body?.innerText || '')
     const sellerId = compact(target?.sellerId)
     const hrefMatches = sellerId ? href.includes(`sellerId=${sellerId}`) : href === target?.url
-    const loginBlocked = /login\.(taobao|tmall)\.com/i.test(location.hostname || '') || /亲，请登录|扫码登录|密码登录/.test(bodyText)
+    const blockReason = detectBlockReason(location.hostname, bodyText)
+    const pageErrorReason = detectPageErrorReason(bodyText)
+    const scrollHeight = Math.max(
+      document.documentElement?.scrollHeight || 0,
+      document.body?.scrollHeight || 0,
+      0,
+    )
+    const viewportHeight = Math.max(
+      document.documentElement?.clientHeight || 0,
+      window.innerHeight || 0,
+      0,
+    )
+    const shortPage = hrefMatches && scrollHeight > 0 && scrollHeight < Math.max(MIN_MEMBER_SCROLL_HEIGHT, viewportHeight + 300)
     return {
       href,
       title: document.title || '',
       hrefMatches,
       readyState: document.readyState || '',
       bodyTextLength: bodyText.trim().length,
-      loginBlocked,
+      blockReason,
+      pageErrorReason,
+      scrollHeight,
+      viewportHeight,
+      shortPage,
     }
   }
 
@@ -218,6 +315,13 @@
       执行结果: result.status || (item.success ? '已截图' : '截图失败'),
       备注: result.note || item.error || '',
     }
+  }
+
+  function buildStoppedRows(queue, startIndex, reason) {
+    return (Array.isArray(queue) ? queue.slice(startIndex) : []).map(target => buildResultRow(target, {
+      status: '已跳过',
+      note: reason,
+    }))
   }
 
   function nextPhase(next, sleepMs, nextShared, data = []) {
@@ -249,13 +353,22 @@
     Object.assign(testExports, {
       MEMBER_BASE_URL,
       sanitizeFilename,
+      formatCaptureDate,
       parseSellerId,
       normalizeMemberUrl,
       normalizeMemberRows,
       parseMemberUrlLines,
       collectInputRows,
       buildScreenshotFilename,
+      buildScreenshotFolderName,
+      buildScreenshotRelativePath,
       buildResultRow,
+      normalizePacing,
+      computePacingDelayMs,
+      captureSettleMs,
+      detectBlockReason,
+      detectPageErrorReason,
+      buildStoppedRows,
     })
     return complete([])
   }
@@ -264,6 +377,8 @@
     const parsed = normalizeMemberRows(collectInputRows(params))
     const fallback = currentPageTarget()
     const queue = parsed.rows.length ? parsed.rows : (fallback ? [fallback] : [])
+    const captureDate = formatCaptureDate()
+    const screenshotFolderName = buildScreenshotFolderName(params, captureDate)
     const nextShared = {
       ...shared,
       queue,
@@ -271,6 +386,8 @@
       total_rows: queue.length,
       current_exec_no: 0,
       output_dir: compact(params.output_dir),
+      capture_date: captureDate,
+      screenshot_folder_name: screenshotFolderName,
       wait_attempts: 0,
     }
     if (!queue.length) {
@@ -311,36 +428,72 @@
     const target = shared.current_target
     const status = pageStatus(target)
     const attempts = toInteger(shared.wait_attempts, 0)
-    if (status.loginBlocked) {
+    if (status.blockReason) {
+      const queue = Array.isArray(shared.queue) ? shared.queue : []
+      const cursor = Math.max(0, toInteger(shared.cursor, 0))
       const row = buildResultRow(target, {
         status: '失败',
-        note: '页面进入登录态，请先在 9222 浏览器完成登录后重试',
+        note: status.blockReason,
         pageTitle: status.title,
         pageUrl: status.href,
       })
-      return nextPhase('open_page', 0, {
+      return complete([row, ...buildStoppedRows(queue, cursor + 1, status.blockReason)], {
         ...shared,
-        cursor: toInteger(shared.cursor, 0) + 1,
-      }, [row])
+        cursor: queue.length,
+        wait_attempts: 0,
+      })
     }
-    if ((!status.hrefMatches || status.readyState === 'loading' || status.bodyTextLength < 10) && attempts < DEFAULT_WAIT_ATTEMPTS) {
+    if (status.pageErrorReason && attempts < 2) {
+      location.reload()
+      return nextPhase('wait_page', 4000, {
+        ...shared,
+        wait_attempts: attempts + 1,
+      })
+    }
+    if (
+      (!status.hrefMatches || status.readyState === 'loading' || status.bodyTextLength < 10 || status.shortPage) &&
+      attempts < DEFAULT_WAIT_ATTEMPTS
+    ) {
       return nextPhase('wait_page', 1000, {
         ...shared,
         wait_attempts: attempts + 1,
       })
+    }
+    if (status.pageErrorReason || status.shortPage) {
+      const row = buildResultRow(target, {
+        status: '失败',
+        note: status.pageErrorReason || `页面高度异常（${status.scrollHeight}px），为避免保存错位/错误页已跳过本条`,
+        pageTitle: status.title,
+        pageUrl: status.href,
+      })
+      const completedCount = toInteger(shared.current_exec_no, toInteger(shared.cursor, 0) + 1)
+      const delayMs = computePacingDelayMs(params, completedCount)
+      return nextPhase('open_page', delayMs, {
+        ...shared,
+        cursor: toInteger(shared.cursor, 0) + 1,
+        wait_attempts: 0,
+      }, [row])
     }
     return {
       success: true,
       data: [],
       meta: {
         action: 'capture_screenshot',
-        filename: buildScreenshotFilename(target),
+        filename: buildScreenshotFilename(target, shared.capture_date),
         label: `${target.shopName} 会员中心整页截图`,
         full_page: true,
         scroll_before_capture: true,
         scroll_rounds: toInteger(params.scroll_rounds, 2),
-        settle_ms: 800,
+        scroll_step: 480,
+        scroll_delay_ms: 260,
+        settle_ms: captureSettleMs(params),
+        neutralize_fixed: true,
         target_dir: compact(shared.output_dir || params.output_dir),
+        target_relative_path: buildScreenshotRelativePath(
+          target,
+          shared.capture_date || formatCaptureDate(),
+          shared.screenshot_folder_name || buildScreenshotFolderName(params, shared.capture_date),
+        ),
         shared_key: 'last_screenshot',
         next_phase: 'record_screenshot',
         strict: true,
@@ -359,7 +512,9 @@
       status,
       note: status === '已截图' ? '' : compact(screenshot.error || item?.error || '截图失败'),
     })
-    return nextPhase('open_page', 0, {
+    const completedCount = toInteger(shared.current_exec_no, toInteger(shared.cursor, 0) + 1)
+    const delayMs = computePacingDelayMs(params, completedCount)
+    return nextPhase('open_page', delayMs, {
       ...shared,
       cursor: toInteger(shared.cursor, 0) + 1,
       last_screenshot: null,
