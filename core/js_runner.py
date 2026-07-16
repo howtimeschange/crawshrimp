@@ -267,6 +267,145 @@ class JSRunner:
             logger.debug("refresh ws url failed after navigate", exc_info=True)
         return JSResult(success=True, data=[], meta={"has_more": False})
 
+    async def capture_screenshot(
+        self,
+        *,
+        filename: str = "",
+        label: str = "",
+        full_page: bool = True,
+        scroll_before_capture: bool = True,
+        settle_ms: int = 800,
+        scroll_step: int = 650,
+        scroll_delay_ms: int = 120,
+        scroll_rounds: int = 1,
+        target_dir: str = "",
+        target_relative_path: str = "",
+    ) -> dict:
+        """Capture the current CDP page as a PNG runtime artifact."""
+        raw_filename = str(filename or "").strip() or "screenshot.png"
+        if Path(raw_filename).suffix.lower() != ".png":
+            raw_filename = f"{raw_filename}.png"
+        relative_path = str(target_relative_path or "").strip()
+        if relative_path and Path(relative_path).suffix.lower() != ".png":
+            relative_path = f"{relative_path}.png"
+        target_path = self._build_artifact_target_path(
+            filename=raw_filename,
+            target_dir=str(target_dir or "").strip(),
+            target_relative_path=relative_path,
+        )
+
+        info: dict[str, Any] = {}
+        try:
+            async with websockets.connect(self.ws_url, max_size=80 * 1024 * 1024, proxy=None) as ws:
+                await self._cdp_send_on_ws("Page.enable", {}, ws=ws, timeout=10)
+                await self._cdp_send_on_ws("Runtime.enable", {}, ws=ws, timeout=10)
+                await self._cdp_send_on_ws("Page.bringToFront", {}, ws=ws, timeout=10)
+
+                settle = max(0, int(settle_ms or 0))
+                step = max(100, int(scroll_step or 650))
+                delay = max(0, int(scroll_delay_ms or 0))
+                rounds = max(0, int(scroll_rounds or 0)) if scroll_before_capture else 0
+                expression = (
+                    "(async () => {\n"
+                    "  const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));\n"
+                    f"  const rounds = {rounds};\n"
+                    f"  const step = {step};\n"
+                    f"  const delay = {delay};\n"
+                    f"  const settle = {settle};\n"
+                    "  for (let round = 0; round < rounds; round += 1) {\n"
+                    "    const maxY = Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0, window.innerHeight || 0);\n"
+                    "    for (let y = 0; y <= maxY; y += step) {\n"
+                    "      window.scrollTo(0, y);\n"
+                    "      if (delay > 0) await sleep(delay);\n"
+                    "    }\n"
+                    "  }\n"
+                    "  window.scrollTo(0, 0);\n"
+                    "  if (settle > 0) await sleep(settle);\n"
+                    "  const width = Math.max(document.documentElement?.clientWidth || 0, document.body?.clientWidth || 0, window.innerWidth || 0, 1);\n"
+                    "  const height = Math.max(document.documentElement?.scrollHeight || 0, document.body?.scrollHeight || 0, document.documentElement?.clientHeight || 0, window.innerHeight || 0, 1);\n"
+                    "  return {\n"
+                    "    width,\n"
+                    "    height,\n"
+                    "    devicePixelRatio: window.devicePixelRatio || 1,\n"
+                    "    title: document.title || '',\n"
+                    "    url: location.href || '',\n"
+                    "    textSample: String(document.body?.innerText || '').slice(0, 200),\n"
+                    "  };\n"
+                    "})()"
+                )
+                eval_response = await self._cdp_send_on_ws(
+                    "Runtime.evaluate",
+                    {
+                        "expression": expression,
+                        "awaitPromise": True,
+                        "returnByValue": True,
+                        "timeout": max(1000, settle + (rounds * 30000)),
+                    },
+                    ws=ws,
+                    timeout=max(15, (settle / 1000.0) + 30),
+                )
+                info = dict(
+                    ((eval_response.get("result") or {}).get("result") or {}).get("value")
+                    or {}
+                )
+
+                capture_params: dict[str, Any] = {
+                    "format": "png",
+                    "fromSurface": True,
+                    "captureBeyondViewport": bool(full_page),
+                }
+                if full_page:
+                    width = max(1, int(round(float(info.get("width") or 1))))
+                    height = max(1, int(round(float(info.get("height") or 1))))
+                    capture_params["clip"] = {
+                        "x": 0,
+                        "y": 0,
+                        "width": width,
+                        "height": height,
+                        "scale": 1,
+                    }
+
+                response = await self._cdp_send_on_ws(
+                    "Page.captureScreenshot",
+                    capture_params,
+                    ws=ws,
+                    timeout=60,
+                )
+                image_data = str((response.get("result") or {}).get("data") or "")
+                if not image_data:
+                    raise RuntimeError("Page.captureScreenshot 未返回图片数据")
+
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            target_path.write_bytes(base64.b64decode(image_data))
+            saved_path = str(target_path)
+            if saved_path not in self.runtime_output_files:
+                self.runtime_output_files.append(saved_path)
+
+            item = {
+                "success": True,
+                "label": str(label or raw_filename),
+                "filename": target_path.name,
+                "path": saved_path,
+                "bytes": target_path.stat().st_size,
+                "width": info.get("width"),
+                "height": info.get("height"),
+                "devicePixelRatio": info.get("devicePixelRatio"),
+                "pageTitle": info.get("title") or "",
+                "pageUrl": info.get("url") or "",
+            }
+            return {"ok": True, "items": [item], "info": info}
+        except Exception as e:
+            item = {
+                "success": False,
+                "label": str(label or raw_filename),
+                "filename": Path(raw_filename).name,
+                "path": str(target_path),
+                "error": str(e),
+                "pageTitle": info.get("title") or "",
+                "pageUrl": info.get("url") or "",
+            }
+            return {"ok": False, "items": [item], "info": info, "error": str(e)}
+
     async def cdp_mouse_click(self, x: float, y: float, delay_ms: int = 50) -> None:
         """用 CDP Input.dispatchMouseEvent 在真实坐标上执行鼠标点击。
         这能触发 React 合成事件，而 JS dispatchEvent 无法做到。
@@ -2633,6 +2772,48 @@ class JSRunner:
                                 phase,
                                 len([item for item in download_result.get("items", []) if item.get("success")]),
                                 len(download_result.get("items", [])),
+                                next_phase,
+                            )
+                            phase = str(next_phase)
+                            await self._refresh_ws_url()
+                            continue
+
+                        if action == "capture_screenshot":
+                            filename = str(meta.get("filename") or "").strip()
+                            label = str(meta.get("label") or "").strip()
+                            strict = bool(meta.get("strict"))
+                            shared_key = str(meta.get("shared_key") or "").strip()
+                            shared_append = bool(meta.get("shared_append"))
+                            await cooperate("before_capture_screenshot", page, phase, shared, {
+                                "filename": filename,
+                                "label": label,
+                            })
+                            screenshot_result = await self.capture_screenshot(
+                                filename=filename,
+                                label=label,
+                                full_page=bool(meta.get("full_page", True)),
+                                scroll_before_capture=bool(meta.get("scroll_before_capture", True)),
+                                settle_ms=int(meta.get("settle_ms") or 800),
+                                scroll_step=int(meta.get("scroll_step") or 650),
+                                scroll_delay_ms=int(meta.get("scroll_delay_ms") or 120),
+                                scroll_rounds=int(meta.get("scroll_rounds") or 1),
+                                target_dir=str(meta.get("target_dir") or "").strip(),
+                                target_relative_path=str(meta.get("target_relative_path") or "").strip(),
+                            )
+                            if strict and not screenshot_result.get("ok"):
+                                raise RuntimeError(str(screenshot_result.get("error") or "capture_screenshot 失败"))
+
+                            shared = self._merge_runtime_shared(shared, shared_key, screenshot_result, append=shared_append)
+                            next_phase = meta.get("next_phase") or phase
+                            sleep_ms = float(meta.get("sleep_ms", 0))
+                            if sleep_ms > 0:
+                                await cooperate("before_sleep", page, phase, shared, {"sleep_ms": int(sleep_ms)})
+                                await asyncio.sleep(sleep_ms / 1000.0)
+                            logger.info(
+                                "capture_screenshot: page=%s phase=%s ok=%s -> %s",
+                                page,
+                                phase,
+                                bool(screenshot_result.get("ok")),
                                 next_phase,
                             )
                             phase = str(next_phase)

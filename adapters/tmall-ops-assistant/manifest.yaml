@@ -812,3 +812,73 @@ tasks:
               - 阶段
               - 执行结果
               - 备注
+  - id: tmall_compete_member_monitor
+    name: 天猫-竞品会员页面监控
+    description: 读取竞品会员中心链接表或当前会员页，通过已登录的 9222 浏览器逐个打开会员中心页面并保存整页 PNG 截图；本阶段只读取页面和本地落图，不修改页面状态
+    script: tmall-compete-member-monitor.js
+    entry_url: https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365
+    tab_match_prefixes:
+      - https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index
+      - https://market.m.taobao.com/
+    skip_auth: false
+    params:
+      - id: mode
+        type: radio
+        label: 打开方式
+        default: current
+        options:
+          - value: current
+            label: 当前页面（推荐）
+          - value: new
+            label: 全新页面
+        hint: 推荐先在 9222 浏览器打开并登录任一会员中心页面；脚本会复用当前会话逐个跳转截图。
+      - id: input_file
+        type: file_excel
+        label: 竞品会员中心链接表
+        hint: 可选。支持“竞品店铺、seller ID、会员中心-完整链接”等列；留空时会截图当前已打开的会员中心页面。
+      - id: member_urls
+        type: textarea
+        label: 会员中心链接
+        rows: 5
+        placeholder: "安踏童装旗舰店 https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365"
+        hint: 可选。没有 Excel 时可一行一个“店铺名 + URL”；也可只填 sellerId，脚本会拼会员中心固定链接。
+      - id: output_dir
+        type: directory
+        label: 本地截图目录
+        placeholder: "点击选择本地截图目录"
+        hint: 可选。留空则保存到本次任务运行产物目录，并在任务详情里作为 PNG 输出文件展示。
+        ui_span: third
+      - id: screenshot_limit
+        type: number
+        label: 截图数量上限
+        default: 0
+        min: 0
+        max: 200
+        step: 1
+        ui_span: third
+        hint: 0 表示处理全部有效链接；试跑时可填 1。
+      - id: scroll_rounds
+        type: number
+        label: 滚动预热轮数
+        default: 2
+        hidden: true
+        min: 0
+        max: 5
+        step: 1
+    trigger:
+      type: manual
+    output:
+      - type: excel
+        filename: "天猫竞品会员页面监控_{timestamp}.xlsx"
+        columns:
+          - 表格行号
+          - 店铺名称
+          - seller ID
+          - 会员中心链接
+          - 页面标题
+          - 页面URL
+          - 截图文件
+          - 截图宽度
+          - 截图高度
+          - 执行结果
+          - 备注

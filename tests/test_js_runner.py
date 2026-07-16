@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import json
 import shutil
 import subprocess
@@ -672,6 +673,78 @@ class RuntimeClickDownloadRunner(JSRunner):
         }
 
 
+class RuntimeScreenshotRunner(JSRunner):
+    def __init__(self, artifact_dir: str):
+        super().__init__("ws://example.invalid", artifact_dir=artifact_dir)
+        self.calls = []
+        self.screenshot_payloads = []
+
+    async def _persist_run_params(self, run_token: str, params_json: str) -> None:
+        return None
+
+    async def _clear_run_params(self, run_token: str) -> None:
+        return None
+
+    async def _refresh_ws_url(self) -> None:
+        return None
+
+    async def _reload_current_page(self) -> None:
+        return None
+
+    async def evaluate_with_reconnect(self, expression: str, allow_navigation_retry: bool = False) -> JSResult:
+        phase_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_PHASE__")
+        shared_raw = _extract_window_assignment(expression, "__CRAWSHRIMP_SHARED__")
+        phase = json.loads(phase_raw) if phase_raw is not None else None
+        shared = json.loads(shared_raw) if shared_raw is not None else None
+
+        self.calls.append({
+            "phase": phase,
+            "shared": shared,
+        })
+
+        if phase == "main":
+            return JSResult(
+                success=True,
+                data=[],
+                meta={
+                    "action": "capture_screenshot",
+                    "filename": "demo-member-page.png",
+                    "label": "会员页截图",
+                    "shared_key": "screenshot",
+                    "next_phase": "after_screenshot",
+                    "scroll_rounds": 2,
+                    "shared": shared or {},
+                },
+            )
+
+        return JSResult(
+            success=True,
+            data=[{"filename": shared["screenshot"]["items"][0]["filename"]}],
+            meta={
+                "action": "complete",
+                "has_more": False,
+                "shared": shared or {},
+            },
+        )
+
+    async def capture_screenshot(self, **kwargs):
+        self.screenshot_payloads.append(kwargs)
+        path = self.artifact_dir / kwargs["filename"]
+        path.write_bytes(b"png")
+        saved_path = str(path)
+        if saved_path not in self.runtime_output_files:
+            self.runtime_output_files.append(saved_path)
+        return {
+            "ok": True,
+            "items": [{
+                "success": True,
+                "label": kwargs["label"],
+                "filename": path.name,
+                "path": saved_path,
+            }],
+        }
+
+
 class RuntimeFileChooserRunner(JSRunner):
     def __init__(self):
         super().__init__("ws://example.invalid")
@@ -1061,6 +1134,53 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         )
         refresh_ws_url.assert_awaited_once()
 
+    async def test_capture_screenshot_saves_png_runtime_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = JSRunner("ws://example.invalid", artifact_dir=tmpdir)
+            png_bytes = b"\x89PNG\r\n\x1a\nmember-page"
+            fake_ws = FakeCDPWebSocket([
+                {"id": 1, "result": {}},
+                {"id": 2, "result": {}},
+                {"id": 3, "result": {}},
+                {
+                    "id": 4,
+                    "result": {
+                        "result": {
+                            "type": "object",
+                            "value": {
+                                "width": 385,
+                                "height": 4960,
+                                "devicePixelRatio": 2,
+                                "title": "会员中心",
+                                "url": "https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index",
+                            },
+                        },
+                    },
+                },
+                {"id": 5, "result": {"data": base64.b64encode(png_bytes).decode("ascii")}},
+            ])
+
+            with patch("core.js_runner.websockets.connect", return_value=fake_ws):
+                result = await runner.capture_screenshot(
+                    filename="安踏会员页",
+                    label="安踏",
+                    scroll_before_capture=False,
+                )
+
+            self.assertTrue(result["ok"])
+            saved = Path(result["items"][0]["path"])
+            self.assertEqual(saved.name, "安踏会员页.png")
+            self.assertEqual(saved.read_bytes(), png_bytes)
+            self.assertEqual(runner.runtime_output_files, [str(saved)])
+            self.assertEqual(
+                [item["method"] for item in fake_ws.sent],
+                ["Page.enable", "Runtime.enable", "Page.bringToFront", "Runtime.evaluate", "Page.captureScreenshot"],
+            )
+            self.assertEqual(
+                fake_ws.sent[4]["params"]["clip"],
+                {"x": 0, "y": 0, "width": 385, "height": 4960, "scale": 1},
+            )
+
     async def test_browser_session_download_uses_async_bridge_calls(self):
         class AsyncOnlyBridge:
             def __init__(self):
@@ -1289,6 +1409,21 @@ class JSRunnerTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("click_downloads", runner.calls[1]["shared"])
         self.assertEqual(len(runner.runtime_output_files), 1)
         self.assertEqual(Path(runner.runtime_output_files[0]).name, "clicked.xlsx")
+
+    async def test_run_script_file_handles_runtime_capture_screenshot_action(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runner = RuntimeScreenshotRunner(tmpdir)
+            script_path = Path(tmpdir) / "noop.js"
+            script_path.write_text("({ success: true, data: [], meta: { has_more: false } })", encoding="utf-8")
+            data = await runner.run_script_file(script_path, params={})
+
+        self.assertEqual(data, [{"filename": "demo-member-page.png"}])
+        self.assertEqual(len(runner.screenshot_payloads), 1)
+        self.assertEqual(runner.screenshot_payloads[0]["filename"], "demo-member-page.png")
+        self.assertEqual(runner.screenshot_payloads[0]["scroll_rounds"], 2)
+        self.assertIn("screenshot", runner.calls[1]["shared"])
+        self.assertEqual(len(runner.runtime_output_files), 1)
+        self.assertEqual(Path(runner.runtime_output_files[0]).name, "demo-member-page.png")
 
     async def test_run_script_file_handles_runtime_file_chooser_upload_action(self):
         runner = RuntimeFileChooserRunner()

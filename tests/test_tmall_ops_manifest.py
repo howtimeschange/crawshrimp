@@ -92,6 +92,27 @@ class TmallOpsManifestTests(unittest.TestCase):
         self.assertIn("分工具PPC", sheets["工具汇总"]["columns"])
         self.assertIn("数据来源", sheets["明细"]["columns"])
 
+    def test_manifest_declares_compete_member_monitor_task(self):
+        manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
+        task = next(item for item in manifest["tasks"] if item["id"] == "tmall_compete_member_monitor")
+        params = {item["id"]: item for item in task["params"]}
+        output_columns = task["output"][0]["columns"]
+
+        self.assertEqual(task["name"], "天猫-竞品会员页面监控")
+        self.assertEqual(task["script"], "tmall-compete-member-monitor.js")
+        self.assertIn("market.m.taobao.com/app/sj/member-center-rax", task["entry_url"])
+        self.assertIn("https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index", task["tab_match_prefixes"])
+        self.assertFalse(task["skip_auth"])
+        self.assertEqual(params["mode"]["default"], "current")
+        self.assertEqual(params["input_file"]["type"], "file_excel")
+        self.assertEqual(params["member_urls"]["type"], "textarea")
+        self.assertEqual(params["output_dir"]["type"], "directory")
+        self.assertEqual(params["screenshot_limit"]["default"], 0)
+        self.assertTrue(params["scroll_rounds"]["hidden"])
+        self.assertEqual(task["output"][0]["filename"], "天猫竞品会员页面监控_{timestamp}.xlsx")
+        self.assertIn("截图文件", output_columns)
+        self.assertIn("截图高度", output_columns)
+
     def test_ai_image_test_chain_exposes_only_approval_and_direct_create_modes(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))
         tasks_by_id = {item["id"]: item for item in manifest["tasks"]}

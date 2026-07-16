@@ -501,7 +501,7 @@ tasks:
 
 对于需要依次完成多个交互步骤的任务（如表单填写、店铺切换、日期选择），使用 **多 Phase 状态机**。
 
-底座会重复注入同一脚本，通过 `window.__CRAWSHRIMP_PHASE__` 区分当前阶段，脚本通过 `meta.action` 返回 `next_phase` / `cdp_clicks` / `inject_files` / `file_chooser_upload` / `capture_click_requests` / `capture_url_requests` / `download_urls` / `download_clicks` / `reload_page` / `complete` 来驱动状态机。
+底座会重复注入同一脚本，通过 `window.__CRAWSHRIMP_PHASE__` 区分当前阶段，脚本通过 `meta.action` 返回 `next_phase` / `cdp_clicks` / `inject_files` / `file_chooser_upload` / `capture_click_requests` / `capture_url_requests` / `download_urls` / `download_clicks` / `capture_screenshot` / `reload_page` / `complete` 来驱动状态机。
 
 #### 推荐的 Phase 粒度（最佳实践）
 
@@ -543,6 +543,7 @@ tasks:
 | `capture_url_requests` | 打开临时 tab 访问指定 URL，并捕获匹配的网络请求/响应 |
 | `download_urls` | 下载一组 URL 到本次运行的 runtime 产物目录，并加入输出文件列表 |
 | `download_clicks` | 点击页面按钮后监听系统下载目录，收集由页面触发的下载文件 |
+| `capture_screenshot` | 用 CDP 对当前页面截 PNG，可截整页并加入输出文件列表 |
 | `reload_page` | 执行 `Page.reload(ignoreCache=true)`，等待后切到 `meta.next_phase` |
 | `complete` | 当前页/当前 phase 路径结束；顶层 `data` 会被累计，`meta.has_more=true` 时进入下一页 |
 
@@ -818,6 +819,26 @@ return {
       },
     ],
     next_phase: 'after_download',
+    shared,
+  },
+}
+```
+
+`capture_screenshot` 用于把当前页面保存成 PNG 产物。移动端长页建议保留默认的整页截图和滚动预热：
+
+```js
+return {
+  success: true,
+  data: [],
+  meta: {
+    action: 'capture_screenshot',
+    filename: '安踏童装旗舰店_1745656365_会员中心.png',
+    label: '会员中心整页截图',
+    full_page: true,
+    scroll_before_capture: true,
+    scroll_rounds: 2,
+    shared_key: 'screenshot',
+    next_phase: 'record_screenshot',
     shared,
   },
 }
