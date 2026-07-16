@@ -297,6 +297,35 @@ contextBridge.exposeInMainWorld('cs', {
     () => apiCall('POST', '/ai-image/assets', payload || {})),
   createAiImageCanvas: (payload) => invokeWithApiFallback('create-ai-image-canvas', [payload],
     () => apiCall('POST', '/ai-image/canvases', payload || {})),
+  getAiVideoConfig: () => invokeWithApiFallback('ai-video:get-config', [],
+    () => apiCall('GET', '/ai-video/config')),
+  validateAiVideo: (payload) => invokeWithApiFallback('ai-video:validate', [payload],
+    () => apiCall('POST', '/ai-video/validate', payload || {})),
+  createAiVideoJob: (payload) => invokeWithApiFallback('ai-video:create-job', [payload],
+    () => apiCall('POST', '/ai-video/jobs', payload || {})),
+  listAiVideoJobs: (query) => invokeWithApiFallback('ai-video:list-jobs', [query || {}],
+    () => {
+      const params = new URLSearchParams()
+      if (query?.status) params.set('status', String(query.status))
+      if (query?.provider) params.set('provider', String(query.provider))
+      if (query?.limit) params.set('limit', String(query.limit))
+      const suffix = params.toString()
+      return apiCall('GET', `/ai-video/jobs${suffix ? `?${suffix}` : ''}`)
+    }),
+  getAiVideoJob: (jobId) => invokeWithApiFallback('ai-video:get-job', [jobId],
+    () => apiCall('GET', `/ai-video/jobs/${encodePathPart(jobId)}`)),
+  updateAiVideoJob: (jobId, payload) => invokeWithApiFallback('ai-video:update-job', [jobId, payload],
+    () => apiCall('PATCH', `/ai-video/jobs/${encodePathPart(jobId)}`, payload || {})),
+  duplicateAiVideoJob: (jobId) => invokeWithApiFallback('ai-video:duplicate-job', [jobId],
+    () => apiCall('POST', `/ai-video/jobs/${encodePathPart(jobId)}/duplicate`, {})),
+  retryAiVideoJob: (jobId, payload) => invokeWithApiFallback('ai-video:retry-job', [jobId, payload],
+    () => apiCall('POST', `/ai-video/jobs/${encodePathPart(jobId)}/retry`, payload || {})),
+  deleteAiVideoJobRecord: (jobId) => invokeWithApiFallback('ai-video:delete-job-record', [jobId],
+    () => apiCall('DELETE', `/ai-video/jobs/${encodePathPart(jobId)}`)),
+  getAiVideoRun: (runId) => invokeWithApiFallback('ai-video:get-run', [runId],
+    () => apiCall('GET', `/ai-video/runs/${encodePathPart(runId)}`)),
+  retryAiVideoArchive: (runId) => invokeWithApiFallback('ai-video:retry-archive', [runId],
+    () => apiCall('POST', `/ai-video/runs/${encodePathPart(runId)}/archive`, {})),
   probeTaskParams: (aid, tid, params, options) => ipcRenderer.invoke('probe-task-params', aid, tid, params, options),
   runTask:         (aid, tid, params, options) => ipcRenderer.invoke('run-task', aid, tid, params, options),
   pauseTask:       (aid, tid, instanceUid = '') => ipcRenderer.invoke('pause-task', aid, tid, instanceUid),
@@ -401,6 +430,8 @@ contextBridge.exposeInMainWorld('cs', {
   getBalaWorkspaceVideoMedia: (workspaceRoot, filePath) => ipcRenderer.invoke('get-bala-workspace-video-media', workspaceRoot, filePath),
   readBalaWorkspaceManifest: (workspaceRoot) => ipcRenderer.invoke('read-bala-workspace-manifest', workspaceRoot),
   writeBalaWorkspaceManifest: (workspaceRoot, payload) => ipcRenderer.invoke('write-bala-workspace-manifest', workspaceRoot, payload || {}),
+  authorizeLocalMediaRoot: (rootPath) => ipcRenderer.invoke('authorize-local-media-root', rootPath),
+  getLocalMediaUrl: (filePath) => ipcRenderer.invoke('get-local-media-url', filePath),
   readLocalImagePreview: (path) => invokeWithApiFallback('read-local-image-preview', [path],
     () => apiCall('POST', '/files/local-image-preview', { path })),
   listDirectoryFiles: (path, opts) => ipcRenderer.invoke('list-directory-files', path, opts),

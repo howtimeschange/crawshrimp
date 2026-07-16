@@ -1,0 +1,2168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>抓虾 AI 生视频工作台视觉锚点</title>
+  <style>
+    :root {
+      --orange: #ff6b2b;
+      --orange-soft: rgba(255, 107, 43, 0.13);
+      --orange-line: rgba(255, 107, 43, 0.42);
+      --bg: #141418;
+      --bg2: #1c1c22;
+      --bg3: #242430;
+      --bg4: #2a2a36;
+      --border: #2e2e3a;
+      --text: #e2e0f0;
+      --text2: #aaa8ba;
+      --text3: #737184;
+      --green: #4ade80;
+      --yellow: #facc15;
+      --red: #f87171;
+      --blue: #60a5fa;
+      --shadow: rgba(0, 0, 0, 0.32);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      letter-spacing: 0;
+    }
+
+    button, input, textarea, select {
+      font: inherit;
+      letter-spacing: 0;
+    }
+
+    button { cursor: pointer; }
+
+    .app {
+      width: min(100vw, 1500px);
+      height: 100vh;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 168px minmax(0, 1fr);
+      grid-template-rows: 42px minmax(0, 1fr);
+      background: var(--bg);
+      border-left: 1px solid var(--border);
+      border-right: 1px solid var(--border);
+    }
+
+    .app.sidebar-collapsed {
+      grid-template-columns: 56px minmax(0, 1fr);
+    }
+
+    .titlebar {
+      grid-column: 1 / -1;
+      grid-row: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px 0 16px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 142px;
+      min-width: 0;
+    }
+
+    .app.sidebar-collapsed .brand { width: 30px; }
+    .app.sidebar-collapsed .brand > strong { display: none; }
+
+    .brand-mark {
+      width: 22px;
+      height: 22px;
+      border-radius: 7px;
+      display: grid;
+      place-items: center;
+      background: var(--orange);
+      color: #fff;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .brand strong {
+      display: block;
+      font-size: 15px;
+      white-space: nowrap;
+    }
+
+    .sidebar-toggle {
+      width: 24px;
+      height: 24px;
+      margin-left: auto;
+      padding: 0;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text2);
+      font-size: 18px;
+      line-height: 1;
+    }
+
+    .sidebar-toggle:hover,
+    .sidebar-toggle:focus-visible {
+      border-color: var(--orange-line);
+      color: var(--text);
+      outline: none;
+    }
+
+    .app.sidebar-collapsed .sidebar-toggle { margin-left: 0; }
+
+    .app-sidebar {
+      grid-column: 1;
+      grid-row: 2;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      padding: 10px 0;
+      border-right: 1px solid var(--border);
+      background: var(--bg2);
+    }
+
+    .app-nav {
+      min-height: 0;
+      display: flex;
+      flex: 1;
+      flex-direction: column;
+      gap: 2px;
+      overflow-y: auto;
+      padding: 0 8px;
+    }
+
+    .app-nav-btn {
+      position: relative;
+      width: 100%;
+      min-height: 38px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 12px;
+      border: 0;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text2);
+      text-align: left;
+      transition: background-color 150ms ease, color 150ms ease;
+    }
+
+    .app-nav-btn:hover { background: var(--bg3); color: var(--text); }
+    .app-nav-btn.active { background: var(--orange-soft); color: var(--orange); font-weight: 750; }
+    .app-nav-btn:focus-visible { outline: 2px solid var(--orange); outline-offset: 1px; }
+
+    .sidebar-icon {
+      width: 20px;
+      flex: 0 0 20px;
+      text-align: center;
+      font-size: 15px;
+    }
+
+    .nav-label {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .app.sidebar-collapsed .app-nav { padding: 0 6px; overflow: visible; }
+    .app.sidebar-collapsed .app-nav-btn { justify-content: center; padding: 9px 0; }
+    .app.sidebar-collapsed .nav-label { display: none; }
+    .app.sidebar-collapsed .sidebar-icon { width: auto; flex-basis: auto; font-size: 17px; }
+
+    .app.sidebar-collapsed .app-nav-btn::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      top: 50%;
+      left: calc(100% + 10px);
+      z-index: 40;
+      min-width: max-content;
+      padding: 7px 10px;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 7px;
+      background: #292932;
+      color: var(--text);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
+      font-size: 12px;
+      font-weight: 650;
+      line-height: 1;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transform: translate(-4px, -50%);
+      transition: opacity 120ms ease, transform 120ms ease, visibility 120ms ease;
+    }
+
+    .app.sidebar-collapsed .app-nav-btn:hover::after,
+    .app.sidebar-collapsed .app-nav-btn:focus-visible::after {
+      opacity: 1;
+      visibility: visible;
+      transform: translate(0, -50%);
+    }
+
+    .sidebar-foot {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: auto;
+      padding: 10px 14px 0;
+      border-top: 1px solid var(--border);
+      color: var(--text3);
+      font-size: 11px;
+    }
+
+    .sidebar-foot .dot { margin-right: 0; }
+    .app.sidebar-collapsed .sidebar-foot { justify-content: center; padding: 10px 0 0; }
+    .app.sidebar-collapsed .sidebar-foot span:last-child { display: none; }
+
+    .workspace-shell {
+      grid-column: 2;
+      grid-row: 2;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto auto minmax(0, 1fr);
+      overflow: hidden;
+      background: var(--bg);
+    }
+
+    .top-status {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: var(--text2);
+      font-size: 11px;
+    }
+
+    .dot {
+      width: 7px;
+      height: 7px;
+      display: inline-block;
+      border-radius: 999px;
+      background: var(--green);
+      box-shadow: 0 0 8px rgba(74, 222, 128, 0.56);
+      margin-right: 6px;
+      vertical-align: 1px;
+    }
+
+    .page-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 13px 18px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .head-copy { min-width: 0; }
+
+    .kicker {
+      margin: 0 0 4px;
+      color: var(--orange);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.1;
+    }
+
+    .subtitle {
+      margin: 6px 0 0;
+      color: var(--text2);
+      font-size: 12px;
+    }
+
+    .head-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .prototype-flag {
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 10px;
+      border: 1px solid var(--orange-line);
+      border-radius: 8px;
+      background: var(--orange-soft);
+      color: var(--orange);
+      font-size: 12px;
+      font-weight: 750;
+      white-space: nowrap;
+    }
+
+    .btn {
+      height: 32px;
+      padding: 0 12px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text);
+      font-weight: 650;
+    }
+
+    .btn:hover { border-color: var(--orange-line); }
+    .btn.primary { background: var(--orange); border-color: var(--orange); color: #fff; }
+    .btn.ghost { background: transparent; color: var(--text2); }
+    .btn.small { height: 28px; padding: 0 9px; font-size: 12px; }
+    .btn.icon { width: 30px; padding: 0; display: grid; place-items: center; }
+    .btn:disabled { opacity: 0.46; cursor: not-allowed; }
+    .btn:focus-visible, .model-card:focus-visible, .filter-tabs button:focus-visible,
+    .mobile-tabs button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+      outline: 2px solid var(--orange-line);
+      outline-offset: 2px;
+    }
+
+    .main {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 374px minmax(0, 1fr);
+      background: var(--bg);
+    }
+
+    .mobile-tabs { display: none; }
+
+    .control-pane {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+      border-right: 1px solid var(--border);
+      background: var(--bg2);
+    }
+
+    .model-switcher {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .model-card {
+      min-height: 82px;
+      text-align: left;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text2);
+      padding: 9px;
+      display: grid;
+      gap: 7px;
+    }
+
+    .model-card.active {
+      border-color: var(--orange);
+      background: var(--orange-soft);
+      color: var(--text);
+    }
+
+    .model-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+
+    .model-head strong {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+
+    .provider-mark {
+      width: 18px;
+      height: 18px;
+      border-radius: 5px;
+      object-fit: cover;
+      flex: 0 0 auto;
+    }
+
+    .model-card span {
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .control-scroll {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px;
+      display: grid;
+      align-content: start;
+      gap: 12px;
+    }
+
+    .section {
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      overflow: hidden;
+    }
+
+    .section-head {
+      min-height: 40px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .section-head strong { font-size: 12px; }
+    .section-head span { color: var(--text3); font-size: 11px; }
+
+    .section-body {
+      padding: 12px;
+      display: grid;
+      gap: 12px;
+    }
+
+    .field { display: grid; gap: 6px; }
+    .field-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .field label { color: var(--text2); font-size: 12px; font-weight: 700; }
+
+    input, textarea, select {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      outline: none;
+      background: var(--bg2);
+      color: var(--text);
+    }
+
+    input, select { height: 34px; padding: 0 10px; }
+    textarea { min-height: 142px; resize: vertical; padding: 10px; line-height: 1.5; }
+    textarea:focus, input:focus, select:focus { border-color: var(--orange-line); }
+
+    .hint {
+      margin: 0;
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .error-text { color: var(--red); font-size: 11px; min-height: 15px; }
+
+    .segmented {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+    }
+
+    .segmented button {
+      height: 30px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+      color: var(--text2);
+    }
+
+    .segmented button.active {
+      border-color: var(--orange);
+      color: var(--orange);
+      background: var(--orange-soft);
+      font-weight: 800;
+    }
+
+    .ratio-field.hidden { display: none; }
+    .section.hidden, .field.hidden { display: none; }
+
+    .asset-grid {
+      display: grid;
+      gap: 8px;
+    }
+
+    .asset-card {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 9px;
+      min-height: 70px;
+      padding: 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+    }
+
+    .asset-card.sortable { cursor: grab; }
+    .asset-card.dragging { opacity: 0.45; }
+
+    .asset-card img {
+      width: 58px;
+      height: 52px;
+      border-radius: 7px;
+      object-fit: cover;
+      border: 1px solid var(--border);
+    }
+
+    .asset-meta { min-width: 0; }
+    .asset-meta strong, .asset-meta span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .asset-meta span {
+      margin-top: 4px;
+      color: var(--text3);
+      font-size: 11px;
+    }
+
+    .asset-actions {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .drop-zone {
+      min-height: 74px;
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      padding: 10px;
+      color: var(--text3);
+      background: var(--bg2);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .reference-limit {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      color: var(--text3);
+      font-size: 11px;
+    }
+
+    .control-footer {
+      padding: 12px;
+      border-top: 1px solid var(--border);
+      background: var(--bg2);
+      display: grid;
+      gap: 8px;
+    }
+
+    .submit-line {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .payload-note {
+      min-height: 36px;
+      padding: 9px 10px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.45;
+    }
+
+    .result-pane {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      background: var(--bg);
+    }
+
+    .result-toolbar {
+      min-height: 54px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg2);
+    }
+
+    .summary-strip {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      min-width: 0;
+    }
+
+    .pill {
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 9px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text2);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .pill.orange { color: var(--orange); border-color: var(--orange-line); background: var(--orange-soft); }
+    .pill.green { color: var(--green); border-color: rgba(74, 222, 128, 0.32); }
+    .pill.yellow { color: var(--yellow); border-color: rgba(250, 204, 21, 0.32); }
+    .pill.red { color: var(--red); border-color: rgba(248, 113, 113, 0.32); }
+
+    .filter-tabs {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .filter-tabs button {
+      height: 28px;
+      padding: 0 9px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      color: var(--text2);
+      font-size: 12px;
+    }
+
+    .filter-tabs button.active {
+      color: var(--orange);
+      border-color: var(--orange);
+      background: var(--orange-soft);
+      font-weight: 800;
+    }
+
+    .result-body {
+      min-height: 0;
+      overflow: auto;
+      padding: 14px;
+      display: grid;
+      align-content: start;
+      gap: 10px;
+    }
+
+    .play-mark {
+      position: absolute;
+      width: 66px;
+      height: 66px;
+      border-radius: 999px;
+      background: rgba(20, 20, 24, 0.78);
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      display: grid;
+      place-items: center;
+      box-shadow: 0 18px 36px var(--shadow);
+      color: #fff;
+      font-size: 28px;
+      padding-left: 4px;
+    }
+
+    .result-grid-head {
+      min-height: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--text3);
+      font-size: 11px;
+    }
+
+    .result-grid-head strong {
+      color: var(--text);
+      font-size: 13px;
+    }
+
+    .result-grid-head span {
+      text-align: right;
+    }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .kv {
+      min-width: 0;
+      padding: 9px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+    }
+
+    .kv span, .kv strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .kv span { color: var(--text3); font-size: 11px; margin-bottom: 5px; }
+    .kv strong { font-size: 12px; }
+
+    .task-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .task-card {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+      overflow: hidden;
+      display: grid;
+      grid-template-rows: auto 1fr;
+      min-height: 302px;
+      cursor: pointer;
+      transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+    }
+
+    .task-card:hover {
+      border-color: var(--orange-line);
+      background: #202027;
+      transform: translateY(-1px);
+    }
+
+    .task-card:has(.card-open-surface:focus-visible) {
+      outline: 2px solid var(--orange);
+      outline-offset: 2px;
+      border-color: var(--orange);
+    }
+
+    .card-open-surface,
+    .history-open-surface {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      padding: 0;
+      border: 0;
+      border-radius: inherit;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .card-open-surface:focus-visible,
+    .history-open-surface:focus-visible {
+      outline: 0;
+    }
+
+    .thumb {
+      height: 168px;
+      position: relative;
+      overflow: hidden;
+      background: #101015;
+    }
+
+    .thumb img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      opacity: 0.86;
+    }
+
+    .thumb::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      pointer-events: none;
+    }
+
+    .status-chip {
+      position: absolute;
+      left: 9px;
+      top: 9px;
+      height: 24px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      border-radius: 8px;
+      background: rgba(20, 20, 24, 0.82);
+      border: 1px solid var(--border);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .status-chip.queued { color: var(--text2); }
+    .status-chip.running { color: var(--yellow); border-color: rgba(250, 204, 21, 0.38); }
+    .status-chip.completed { color: var(--green); border-color: rgba(74, 222, 128, 0.34); }
+    .status-chip.downloading { color: var(--blue); border-color: rgba(96, 165, 250, 0.34); }
+    .status-chip.needs_config { color: var(--orange); border-color: var(--orange-line); }
+    .status-chip.cancelled, .status-chip.expired { color: var(--text3); }
+    .status-chip.failed { color: var(--red); border-color: rgba(248, 113, 113, 0.34); }
+
+    .stage-note {
+      position: absolute;
+      left: 9px;
+      bottom: 9px;
+      max-width: calc(100% - 18px);
+      padding: 5px 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(20, 20, 24, 0.84);
+      color: var(--text2);
+      font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .task-body {
+      padding: 10px;
+      display: grid;
+      align-content: start;
+      gap: 8px;
+    }
+
+    .task-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .task-title strong {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .task-title span {
+      color: var(--text3);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .task-card p {
+      margin: 0;
+      color: var(--text3);
+      font-size: 11px;
+      line-height: 1.45;
+      min-height: 34px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .task-actions {
+      position: relative;
+      z-index: 2;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .task-actions .details-task {
+      color: var(--orange);
+      border-color: var(--orange-line);
+      background: var(--orange-soft);
+    }
+
+    .empty {
+      min-height: 200px;
+      display: none;
+      place-items: center;
+      text-align: center;
+      color: var(--text3);
+      border: 1px dashed var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+      padding: 18px;
+      line-height: 1.55;
+    }
+
+    .empty.visible { display: grid; }
+
+    .drawer {
+      position: fixed;
+      right: 0;
+      top: 0;
+      bottom: 0;
+      width: 360px;
+      max-width: calc(100vw - 24px);
+      transform: translateX(104%);
+      transition: transform 160ms ease;
+      z-index: 20;
+      background: var(--bg2);
+      border-left: 1px solid var(--border);
+      box-shadow: -20px 0 44px var(--shadow);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+    }
+
+    .drawer.open { transform: translateX(0); }
+
+    .drawer-head {
+      min-height: 58px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .drawer-head strong, .drawer-head span { display: block; }
+    .drawer-head span { margin-top: 4px; color: var(--text3); font-size: 11px; }
+
+    .history-list {
+      min-height: 0;
+      overflow: auto;
+      padding: 12px;
+      display: grid;
+      align-content: start;
+      gap: 9px;
+    }
+
+    .history-item {
+      position: relative;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+      cursor: pointer;
+    }
+
+    .history-item:hover {
+      border-color: var(--orange-line);
+      background: #1f1f26;
+    }
+
+    .history-item:has(.history-open-surface:focus-visible) {
+      outline: 2px solid var(--orange);
+      outline-offset: 2px;
+    }
+
+    .history-item strong, .history-item span {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .history-item span {
+      color: var(--text3);
+      font-size: 11px;
+    }
+
+    .overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.56);
+      z-index: 30;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+    }
+
+    .overlay.open { display: flex; }
+
+    .modal {
+      width: min(1040px, 100%);
+      max-height: min(760px, 92vh);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg2);
+      box-shadow: 0 28px 70px var(--shadow);
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .modal-head {
+      min-height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .modal-body {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) 360px;
+      overflow: auto;
+    }
+
+    .modal-preview {
+      min-height: 420px;
+      position: relative;
+      background: #0d0d12;
+      display: grid;
+      place-items: center;
+      overflow: hidden;
+    }
+
+    .modal-preview img {
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      background: #0d0d12;
+      transition: opacity 140ms ease;
+    }
+
+    .modal-preview img.pending {
+      opacity: 0.42;
+    }
+
+    .modal-state-overlay {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      width: min(320px, calc(100% - 36px));
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: rgba(20, 20, 24, 0.9);
+      text-align: center;
+      box-shadow: 0 18px 40px var(--shadow);
+    }
+
+    .modal-state-overlay strong,
+    .modal-state-overlay span {
+      display: block;
+    }
+
+    .modal-state-overlay strong {
+      margin-bottom: 6px;
+      font-size: 14px;
+    }
+
+    .modal-state-overlay span {
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .modal-side {
+      padding: 14px;
+      border-left: 1px solid var(--border);
+      display: grid;
+      align-content: start;
+      gap: 12px;
+      min-height: 0;
+      overflow: auto;
+    }
+
+    .modal-title-line {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 10px;
+    }
+
+    .modal-side h3 { margin: 0; font-size: 16px; line-height: 1.35; }
+
+    .detail-status {
+      flex: 0 0 auto;
+      min-height: 24px;
+      display: inline-flex;
+      align-items: center;
+      padding: 0 8px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg3);
+      font-size: 11px;
+      font-weight: 800;
+    }
+
+    .detail-status.queued { color: var(--text2); }
+    .detail-status.running { color: var(--yellow); border-color: rgba(250, 204, 21, 0.38); }
+    .detail-status.completed { color: var(--green); border-color: rgba(74, 222, 128, 0.34); }
+    .detail-status.downloading { color: var(--blue); border-color: rgba(96, 165, 250, 0.34); }
+    .detail-status.needs_config { color: var(--orange); border-color: var(--orange-line); }
+    .detail-status.cancelled, .detail-status.expired { color: var(--text3); }
+    .detail-status.failed { color: var(--red); border-color: rgba(248, 113, 113, 0.34); }
+
+    .detail-section {
+      display: grid;
+      gap: 6px;
+      padding-top: 11px;
+      border-top: 1px solid var(--border);
+    }
+
+    .detail-section > span {
+      color: var(--text3);
+      font-size: 11px;
+    }
+
+    .detail-section p {
+      margin: 0;
+      color: var(--text2);
+      font-size: 12px;
+      line-height: 1.55;
+      overflow-wrap: anywhere;
+    }
+
+    .detail-meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .detail-actions {
+      display: flex;
+      gap: 7px;
+      flex-wrap: wrap;
+      padding-top: 2px;
+    }
+
+    [hidden] { display: none !important; }
+
+    @media (max-width: 1180px) {
+      .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @media (max-width: 1059px) {
+      body { overflow: hidden; }
+      .app {
+        width: 100%;
+        height: 100vh;
+        min-height: 0;
+        grid-template-rows: 42px minmax(0, 1fr);
+      }
+
+      .workspace-shell { grid-template-rows: auto auto minmax(0, 1fr); }
+
+      .page-head { align-items: flex-start; flex-direction: column; }
+      .head-actions { justify-content: flex-start; }
+
+      .mobile-tabs {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        background: var(--bg2);
+      }
+
+      .mobile-tabs button {
+        height: 34px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--bg3);
+        color: var(--text2);
+        font-weight: 750;
+      }
+
+      .mobile-tabs button.active {
+        color: var(--orange);
+        border-color: var(--orange);
+        background: var(--orange-soft);
+      }
+
+      .main {
+        display: block;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .control-pane, .result-pane { display: none; min-height: 0; height: 100%; }
+      .control-pane.mobile-active, .result-pane.mobile-active { display: grid; }
+      .control-pane { border-right: 0; }
+      .result-toolbar { align-items: flex-start; flex-direction: column; }
+      .filter-tabs { justify-content: flex-start; }
+      .task-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .modal-body { grid-template-columns: 1fr; }
+      .modal-side { border-left: 0; border-top: 1px solid var(--border); }
+    }
+
+    @media (max-width: 760px) {
+      .app,
+      .app.sidebar-collapsed {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: 42px minmax(0, 1fr) 56px;
+      }
+
+      .titlebar { grid-column: 1; grid-row: 1; }
+      .workspace-shell { grid-column: 1; grid-row: 2; }
+      .sidebar-toggle { display: none; }
+      .app.sidebar-collapsed .brand { width: auto; }
+      .app.sidebar-collapsed .brand > strong { display: block; }
+
+      .app-sidebar {
+        grid-column: 1;
+        grid-row: 3;
+        flex-direction: row;
+        padding: 0;
+        overflow-x: auto;
+        border-top: 1px solid var(--border);
+        border-right: 0;
+      }
+
+      .app-nav,
+      .app.sidebar-collapsed .app-nav {
+        width: auto;
+        min-width: 0;
+        flex: 1 1 auto;
+        flex-direction: row;
+        align-items: stretch;
+        gap: 4px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0 6px;
+      }
+
+      .app-nav-btn,
+      .app.sidebar-collapsed .app-nav-btn {
+        width: auto;
+        min-width: 48px;
+        flex: 1 0 48px;
+        justify-content: center;
+        padding: 8px;
+      }
+
+      .nav-label,
+      .app.sidebar-collapsed .nav-label { display: none; }
+      .sidebar-icon,
+      .app.sidebar-collapsed .sidebar-icon { width: auto; flex-basis: auto; font-size: 18px; }
+      .app.sidebar-collapsed .app-nav-btn::after { display: none; }
+
+      .sidebar-foot,
+      .app.sidebar-collapsed .sidebar-foot {
+        flex: 0 0 52px;
+        height: 56px;
+        justify-content: center;
+        margin-top: 0;
+        padding: 0 4px;
+        border-top: 0;
+        border-left: 1px solid var(--border);
+      }
+
+      .sidebar-foot span:last-child { display: none; }
+    }
+
+    @media (max-width: 620px) {
+      .model-switcher { grid-template-columns: 1fr; }
+      .field-row, .kv-grid { grid-template-columns: 1fr; }
+      .top-status { display: none; }
+      .task-grid { grid-template-columns: 1fr; }
+      .result-grid-head { align-items: flex-start; }
+      .result-grid-head span { max-width: 180px; }
+      .overlay { padding: 8px; }
+      .modal { max-height: 94vh; }
+      .modal-preview { min-height: 260px; }
+      .detail-meta { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="titlebar">
+      <div class="brand">
+        <div class="brand-mark">虾</div>
+        <strong>抓虾</strong>
+        <button class="sidebar-toggle" id="sidebarToggle" type="button" aria-label="收起侧边栏" title="收起侧边栏">‹</button>
+      </div>
+      <div class="top-status">
+        <span><i class="dot"></i>视觉锚点</span>
+        <span>模拟数据 · 不连接 provider</span>
+        <span>默认归档：~/Downloads/抓虾AI生视频</span>
+      </div>
+    </header>
+
+    <aside class="app-sidebar" aria-label="抓虾一级菜单">
+      <nav class="app-nav">
+        <button class="app-nav-btn" type="button" data-tooltip="我的脚本" title="我的脚本">
+          <span class="sidebar-icon" aria-hidden="true">📄</span><span class="nav-label">我的脚本</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-tooltip="任务中心" title="任务中心">
+          <span class="sidebar-icon" aria-hidden="true">📋</span><span class="nav-label">任务中心</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-tooltip="AI 生图" title="AI 生图">
+          <span class="sidebar-icon" aria-hidden="true">🎨</span><span class="nav-label">AI 生图</span>
+        </button>
+        <button class="app-nav-btn active" type="button" data-view="ai_video_generation" data-tooltip="AI 生视频" title="AI 生视频" aria-current="page">
+          <span class="sidebar-icon" aria-hidden="true">🎬</span><span class="nav-label">AI 生视频</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-view="ai_video" data-tooltip="AI 视频工作流" title="AI 视频工作流">
+          <span class="sidebar-icon" aria-hidden="true">🎞️</span><span class="nav-label">AI 视频工作流</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-tooltip="提示词库" title="提示词库">
+          <span class="sidebar-icon" aria-hidden="true">💬</span><span class="nav-label">提示词库</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-tooltip="数据文件" title="数据文件">
+          <span class="sidebar-icon" aria-hidden="true">📁</span><span class="nav-label">数据文件</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-tooltip="云端审批" title="云端审批">
+          <span class="sidebar-icon" aria-hidden="true">☁️</span><span class="nav-label">云端审批</span>
+        </button>
+        <button class="app-nav-btn" type="button" data-tooltip="设置" title="设置">
+          <span class="sidebar-icon" aria-hidden="true">⚙️</span><span class="nav-label">设置</span>
+        </button>
+      </nav>
+      <div class="sidebar-foot"><i class="dot"></i><span>视觉锚点</span></div>
+    </aside>
+
+    <section class="workspace-shell">
+      <section class="page-head">
+      <div class="head-copy">
+        <p class="kicker">一级菜单入口 · AI 生视频</p>
+        <h1>AI 生视频工作台</h1>
+        <p class="subtitle">纯 prompt 与参考图驱动的视频生成工作台，复用 Seedance 与 HappyHorse CLI 能力。</p>
+      </div>
+      <div class="head-actions">
+        <span class="prototype-flag">视觉原型 / 不发起真实生成</span>
+        <button class="btn ghost" id="openHistoryTop">历史记录</button>
+        <button class="btn">打开输出文件夹</button>
+      </div>
+      </section>
+
+    <nav class="mobile-tabs" aria-label="移动端视图切换">
+      <button class="active" data-mobile-tab="input">输入与参数</button>
+      <button data-mobile-tab="result">结果与队列</button>
+    </nav>
+
+    <main class="main">
+      <aside class="control-pane mobile-active" id="controlPane">
+        <div class="model-switcher" id="modelSwitcher">
+          <button class="model-card active" data-model="seedance_2_0">
+            <div class="model-head">
+              <strong>Seedance 2.0</strong>
+              <img class="provider-mark" src="../assets/ai-video-generation-workbench/volcengine-mark.png" alt="" />
+            </div>
+            <span>统一入口，支持 prompt 与 0-4 张参考图。</span>
+          </button>
+          <button class="model-card" data-model="happyhorse_1_1_t2v">
+            <div class="model-head">
+              <strong>HappyHorse 1.1 T2V</strong>
+              <img class="provider-mark" src="../assets/ai-video-generation-workbench/aliyun-mark.png" alt="" />
+            </div>
+            <span>文本生视频，不接收参考图。</span>
+          </button>
+          <button class="model-card" data-model="happyhorse_1_1_i2v">
+            <div class="model-head">
+              <strong>HappyHorse 1.1 I2V</strong>
+              <img class="provider-mark" src="../assets/ai-video-generation-workbench/aliyun-mark.png" alt="" />
+            </div>
+            <span>单张参考图生视频，彻底隐藏比例。</span>
+          </button>
+          <button class="model-card" data-model="happyhorse_1_1_r2v">
+            <div class="model-head">
+              <strong>HappyHorse 1.1 R2V</strong>
+              <img class="provider-mark" src="../assets/ai-video-generation-workbench/aliyun-mark.png" alt="" />
+            </div>
+            <span>1-9 张参考图，可排序并插入 [Image n]。</span>
+          </button>
+        </div>
+
+        <div class="control-scroll">
+          <section class="section">
+            <div class="section-head">
+              <strong>Prompt</strong>
+              <span id="promptModeLabel">文本生视频</span>
+            </div>
+            <div class="section-body">
+              <div class="field">
+                <label for="promptInput">生成描述</label>
+                <textarea id="promptInput">生成一条 5 秒竖屏童装商品广告视频：原创虚构儿童模特穿着绿色格纹衬衫，在明亮海边自然走动，镜头轻微跟拍，衣服细节稳定，画面干净真实，无文字和水印。</textarea>
+                <div class="error-text" id="promptError"></div>
+              </div>
+              <p class="hint" id="promptHint">R2V 模型可点击参考图右侧插入按钮，把 [Image n] 写入 prompt。</p>
+            </div>
+          </section>
+
+          <section class="section" id="referenceSection">
+            <div class="section-head">
+              <strong>参考图</strong>
+              <span id="referencePolicy">当前模型可选 0-4 张</span>
+            </div>
+            <div class="section-body">
+              <div class="asset-grid" id="assetList"></div>
+              <div class="drop-zone">
+                点击“加入样例图”模拟上传；真实实现中这里接入本地图片选择、拖拽排序和预览。
+              </div>
+              <div class="reference-limit">
+                <span id="referenceCount">已选 0 张</span>
+                <button class="btn small" id="addAsset">加入样例图</button>
+              </div>
+              <div class="error-text" id="assetError"></div>
+            </div>
+          </section>
+
+          <section class="section">
+            <div class="section-head">
+              <strong>生成参数</strong>
+              <span id="modelApiName">doubao-seedance-2-0-260128</span>
+            </div>
+            <div class="section-body">
+              <div class="field-row">
+                <div class="field">
+                  <label for="durationSelect">时长</label>
+                  <select id="durationSelect"></select>
+                </div>
+                <div class="field ratio-field" id="ratioField">
+                  <label for="ratioSelect">比例</label>
+                  <select id="ratioSelect"></select>
+                </div>
+              </div>
+              <div class="field-row">
+                <div class="field">
+                  <label for="resolutionSelect">清晰度</label>
+                  <select id="resolutionSelect"></select>
+                </div>
+              </div>
+              <div class="field" id="audioField">
+                <label>音频</label>
+                <div class="segmented" id="audioSegment">
+                  <button class="active" data-audio="on">开</button>
+                  <button data-audio="off">关</button>
+                </div>
+              </div>
+              <div class="field">
+                <label>水印</label>
+                <div class="segmented" id="watermarkSegment">
+                  <button class="active" data-watermark="off">关</button>
+                  <button data-watermark="on">开</button>
+                </div>
+              </div>
+              <p class="hint" id="paramHint">HappyHorse 1.1 I2V 隐藏比例字段，输出比例跟随参考图或模型自适应策略。</p>
+            </div>
+          </section>
+        </div>
+
+        <footer class="control-footer">
+          <div class="payload-note" id="payloadNote">当前 payload：Seedance 2.0，prompt 必填，参考图 0-4 张，720p/5s/9:16/音频开/水印关。</div>
+          <div class="submit-line">
+            <button class="btn ghost" id="resetBtn">重置</button>
+            <button class="btn primary" id="createBtn">创建模拟任务</button>
+          </div>
+        </footer>
+      </aside>
+
+      <section class="result-pane mobile-active" id="resultPane">
+        <div class="result-toolbar">
+          <div class="summary-strip">
+            <span class="pill orange" id="activeModelPill">Seedance 2.0</span>
+            <span class="pill" id="queuePill">队列 3</span>
+            <span class="pill yellow" id="runningPill">生成中 1</span>
+            <span class="pill green" id="donePill">完成 2</span>
+            <span class="pill red" id="failedPill">失败 1</span>
+          </div>
+          <div class="filter-tabs" id="statusFilters">
+            <button class="active" data-filter="all">全部</button>
+            <button data-filter="queued">排队</button>
+            <button data-filter="running">生成中</button>
+            <button data-filter="downloading">下载归档</button>
+            <button data-filter="completed">已完成</button>
+            <button data-filter="needs_config">待配置</button>
+            <button data-filter="failed">失败</button>
+            <button data-filter="cancelled">已取消</button>
+            <button data-filter="expired">已过期</button>
+            <button id="openHistory">历史</button>
+          </div>
+        </div>
+
+        <div class="result-body">
+          <div class="result-grid-head">
+            <strong>视频任务</strong>
+            <span>所有任务同级平铺 · 点击任意卡片查看详情</span>
+          </div>
+          <section class="task-grid" id="taskGrid"></section>
+          <div class="empty" id="emptyState">当前筛选下没有任务。切换状态筛选，或点击左侧“创建模拟任务”。</div>
+        </div>
+      </section>
+    </main>
+    </section>
+  </div>
+
+  <aside class="drawer" id="historyDrawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <strong>历史记录</strong>
+        <span>最近生成与失败任务，支持复用参数</span>
+      </div>
+      <button class="btn icon" id="closeHistory" aria-label="关闭历史记录">×</button>
+    </div>
+    <div class="history-list" id="historyList"></div>
+  </aside>
+
+  <div class="overlay" id="taskDetailModal" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+      <div class="modal-head">
+        <strong id="modalTitle">任务详情</strong>
+        <button class="btn icon" id="closeTaskDetail" aria-label="关闭任务详情">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-preview">
+          <img id="modalImage" src="../assets/ai-video-generation-workbench/seedance-kidswear.jpg" alt="任务视频预览画面" />
+          <button class="play-mark" id="modalPlay" aria-label="模拟播放视频">▶</button>
+          <div class="modal-state-overlay" id="modalStateOverlay" hidden>
+            <strong id="modalStateTitle">任务生成中</strong>
+            <span id="modalStateCopy">provider 生成中 · 未返回进度</span>
+          </div>
+        </div>
+        <aside class="modal-side">
+          <div class="modal-title-line">
+            <h3 id="modalTaskTitle">童装海边试穿广告</h3>
+            <span class="detail-status completed" id="modalStatus">已完成</span>
+          </div>
+          <div class="detail-meta">
+            <div class="kv"><span>任务 ID</span><strong id="modalTaskId">mock-video-0716-003</strong></div>
+            <div class="kv"><span>模型</span><strong id="modalModel">Seedance 2.0</strong></div>
+            <div class="kv"><span>创建时间</span><strong id="modalCreatedAt">今天 14:18</strong></div>
+            <div class="kv"><span>任务阶段</span><strong id="modalStage">本地 MP4 已归档</strong></div>
+          </div>
+          <div class="detail-section">
+            <span>完整 Prompt</span>
+            <p id="modalPrompt">原创虚构儿童模特穿着绿色格纹衬衫，在海边自然走动。</p>
+          </div>
+          <div class="detail-section">
+            <span>生成参数</span>
+            <p id="modalParams">720p · 5 秒 · 9:16 · 音频开 · 水印关</p>
+          </div>
+          <div class="detail-section">
+            <span>本地归档</span>
+            <p id="modalArchive">~/Downloads/抓虾AI生视频/mock-video-0716-003.mp4</p>
+          </div>
+          <div class="detail-actions">
+            <button class="btn primary">复用参数</button>
+            <button class="btn">查看日志</button>
+            <button class="btn" id="modalOpenFile">打开本地文件</button>
+          </div>
+        </aside>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const modelConfig = {
+      seedance_2_0: {
+        name: "Seedance 2.0",
+        api: "doubao-seedance-2-0-260128",
+        mode: "统一生视频",
+        references: { min: 0, max: 4, sortable: false, insert: false },
+        hideRatio: false,
+        ratios: ["16:9", "9:16", "1:1", "3:4", "4:3", "21:9", "adaptive"],
+        resolutions: ["480p", "720p", "1080p"],
+        duration: { min: 4, max: 15 },
+        defaults: { resolution: "720p", duration: "5", ratio: "9:16", audio: "on", watermark: "off" },
+        cover: "../assets/ai-video-generation-workbench/seedance-kidswear.jpg",
+        note: "当前 payload：Seedance 2.0，prompt 必填，参考图 0-4 张，720p/5s/9:16/音频开/水印关。"
+      },
+      happyhorse_1_1_t2v: {
+        name: "HappyHorse 1.1 T2V",
+        api: "happyhorse-1.1-t2v",
+        mode: "文本场景视频",
+        references: { min: 0, max: 0, sortable: false, insert: false },
+        hideRatio: false,
+        ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
+        resolutions: ["720P", "1080P"],
+        duration: { min: 3, max: 15 },
+        defaults: { resolution: "720P", duration: "5", ratio: "16:9", audio: "off", watermark: "off" },
+        cover: "../assets/ai-video-generation-workbench/happyhorse-text-scene.jpg",
+        note: "当前 payload：HappyHorse 1.1 T2V，prompt 必填，参考图 0 张，720P/5s/16:9/水印关。"
+      },
+      happyhorse_1_1_i2v: {
+        name: "HappyHorse 1.1 I2V",
+        api: "happyhorse-1.1-i2v",
+        mode: "单图生视频",
+        references: { min: 1, max: 1, sortable: false, insert: false },
+        hideRatio: true,
+        ratios: [],
+        resolutions: ["720P", "1080P"],
+        duration: { min: 3, max: 15 },
+        defaults: { resolution: "720P", duration: "5", audio: "off", watermark: "off" },
+        cover: "../assets/ai-video-generation-workbench/happyhorse-reference-kidswear.jpg",
+        note: "当前 payload：HappyHorse 1.1 I2V，prompt 必填，参考图恰好 1 张，720P/5s/无比例/水印关。"
+      },
+      happyhorse_1_1_r2v: {
+        name: "HappyHorse 1.1 R2V",
+        api: "happyhorse-1.1-r2v",
+        mode: "多参考图生视频",
+        references: { min: 1, max: 9, sortable: true, insert: true },
+        hideRatio: false,
+        ratios: ["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"],
+        resolutions: ["720P", "1080P"],
+        duration: { min: 3, max: 15 },
+        defaults: { resolution: "720P", duration: "5", ratio: "9:16", audio: "off", watermark: "off" },
+        cover: "../assets/ai-video-generation-workbench/happyhorse-reference-kidswear.jpg",
+        note: "当前 payload：HappyHorse 1.1 R2V，prompt 必填，参考图 1-9 张，可排序并插入 [Image n]，720P/5s/9:16/水印关。"
+      }
+    };
+
+    const sampleAssets = [
+      {
+        src: "../assets/ai-video-generation-workbench/seedance-kidswear.jpg",
+        name: "绿色格纹衬衫商品图",
+        meta: "405x720 · 商品主体"
+      },
+      {
+        src: "../assets/ai-video-generation-workbench/happyhorse-reference-kidswear.jpg",
+        name: "童装参考穿搭图",
+        meta: "540x720 · 服装版型"
+      },
+      {
+        src: "../assets/ai-video-generation-workbench/happyhorse-text-scene.jpg",
+        name: "海边场景氛围图",
+        meta: "720x405 · 场景参考"
+      }
+    ];
+
+    let activeModel = "seedance_2_0";
+    let assets = [];
+    let filter = "all";
+    let taskSeq = 7;
+    let draggedIndex = null;
+    let detailTaskId = null;
+    let modalReturnFocus = null;
+    let modalReturnTaskId = null;
+    let drawerReturnFocus = null;
+
+    const tasks = [
+      {
+        id: "mock-video-0716-003",
+        title: "童装海边试穿广告",
+        model: "Seedance 2.0",
+        status: "completed",
+        stage: "本地 MP4 已归档",
+        image: "../assets/ai-video-generation-workbench/seedance-kidswear.jpg",
+        prompt: "原创虚构儿童模特穿着绿色格纹衬衫，在海边自然走动。",
+        params: "720p · 5 秒 · 9:16 · 音频开 · 水印关",
+        createdAt: "今天 14:18",
+        archive: "~/Downloads/抓虾AI生视频/mock-video-0716-003.mp4"
+      },
+      {
+        id: "mock-video-0716-004",
+        title: "多参考图童装短片",
+        model: "HappyHorse 1.1 R2V",
+        status: "running",
+        stage: "provider 生成中 · 已等待 00:42 · 未返回进度",
+        image: "../assets/ai-video-generation-workbench/happyhorse-reference-kidswear.jpg",
+        prompt: "使用 [Image 1] 的服装与 [Image 2] 的场景生成 5 秒广告。",
+        params: "720P · 5 秒 · 9:16 · 2 张参考图 · 水印关",
+        createdAt: "今天 14:26",
+        archive: "任务完成后自动归档"
+      },
+      {
+        id: "mock-video-0716-005",
+        title: "海边场景概念片",
+        model: "HappyHorse 1.1 T2V",
+        status: "queued",
+        stage: "等待后台 worker 提交",
+        image: "../assets/ai-video-generation-workbench/happyhorse-text-scene.jpg",
+        prompt: "清新海边童装广告，柔和阳光，轻快镜头运动。",
+        params: "720P · 5 秒 · 16:9 · 水印关",
+        createdAt: "今天 14:31",
+        archive: "等待 provider 完成"
+      },
+      {
+        id: "mock-video-0716-002",
+        title: "输入图隐私拦截",
+        model: "Seedance 2.0",
+        status: "failed",
+        stage: "真实错误摘要已保留",
+        image: "../assets/ai-video-generation-workbench/seedance-kidswear.jpg",
+        prompt: "Seedance 返回隐私拦截，建议改用商品图和原创人物描述。",
+        params: "720p · 5 秒 · 9:16 · 音频开 · 水印关",
+        createdAt: "今天 13:52",
+        archive: "未生成本地文件"
+      }
+    ];
+
+    const statusText = {
+      queued: "排队",
+      running: "生成中",
+      downloading: "下载归档",
+      completed: "已完成",
+      needs_config: "待配置",
+      failed: "失败",
+      cancelled: "已取消",
+      expired: "已过期"
+    };
+
+    const $ = (selector) => document.querySelector(selector);
+    const $$ = (selector) => [...document.querySelectorAll(selector)];
+
+    function setOptions(selector, values, formatter = (value) => value) {
+      const select = $(selector);
+      select.innerHTML = "";
+      values.forEach((value) => {
+        const option = document.createElement("option");
+        option.value = String(value);
+        option.textContent = formatter(value);
+        select.appendChild(option);
+      });
+    }
+
+    function renderModel() {
+      const config = modelConfig[activeModel];
+      $$(".model-card").forEach((card) => card.classList.toggle("active", card.dataset.model === activeModel));
+      $$(".model-card").forEach((card) => card.setAttribute("aria-pressed", card.dataset.model === activeModel ? "true" : "false"));
+      $("#promptModeLabel").textContent = config.mode;
+      $("#modelApiName").textContent = config.api;
+      $("#ratioField").classList.toggle("hidden", config.hideRatio);
+      $("#referenceSection").classList.toggle("hidden", config.references.max === 0);
+      $("#audioField").classList.toggle("hidden", activeModel !== "seedance_2_0");
+      setOptions("#durationSelect", Array.from({ length: config.duration.max - config.duration.min + 1 }, (_, index) => config.duration.min + index), (value) => `${value} 秒`);
+      setOptions("#resolutionSelect", config.resolutions);
+      if (!config.hideRatio) setOptions("#ratioSelect", config.ratios);
+      $("#durationSelect").value = config.defaults.duration;
+      $("#resolutionSelect").value = config.defaults.resolution;
+      if (!config.hideRatio) $("#ratioSelect").value = config.defaults.ratio;
+      setSegment("#audioSegment", "audio", config.defaults.audio);
+      setSegment("#watermarkSegment", "watermark", config.defaults.watermark);
+      $("#referencePolicy").textContent = config.references.max === 0
+        ? "当前模型不接收参考图"
+        : config.references.min === config.references.max
+          ? `当前模型必须 ${config.references.min} 张参考图`
+          : `当前模型支持 ${config.references.min}-${config.references.max} 张参考图`;
+      $("#promptHint").textContent = config.references.insert
+        ? "点击参考图右侧插入按钮，可把 [Image n] 写入 prompt；拖拽卡片可调整顺序。"
+        : "Prompt 必填。这里只显示当前模型支持且首版开放的参数。";
+      $("#paramHint").textContent = config.hideRatio
+        ? "HappyHorse 1.1 I2V 不展示 ratio 控件，payload 也不携带 ratio 字段。"
+        : activeModel === "seedance_2_0"
+          ? "Seedance 2.0 默认 720p、5 秒、9:16、音频开、水印关。"
+          : "比例、时长、清晰度和水印会按 HappyHorse 1.1 CLI payload 映射；不携带音频参数。";
+      $("#payloadNote").textContent = config.note;
+      $("#activeModelPill").textContent = config.name;
+      validateAssets();
+      renderAssets();
+    }
+
+    function setSegment(selector, key, value) {
+      $$(`${selector} button`).forEach((button) => {
+        button.classList.toggle("active", button.dataset[key] === value);
+      });
+    }
+
+    function renderAssets() {
+      const config = modelConfig[activeModel];
+      const list = $("#assetList");
+      list.innerHTML = "";
+      if (!assets.length) {
+        const empty = document.createElement("div");
+        empty.className = "drop-zone";
+        empty.textContent = config.references.max === 0 ? "当前模型不使用参考图。" : "还没有参考图。";
+        list.appendChild(empty);
+      }
+
+      assets.forEach((asset, index) => {
+        const card = document.createElement("div");
+        card.className = `asset-card ${config.references.sortable ? "sortable" : ""}`;
+        card.draggable = config.references.sortable;
+        card.dataset.index = String(index);
+        card.innerHTML = `
+          <img src="${asset.src}" alt="" />
+          <div class="asset-meta">
+            <strong>[Image ${index + 1}] ${asset.name}</strong>
+            <span>${asset.meta}</span>
+          </div>
+          <div class="asset-actions">
+            ${config.references.insert ? `<button class="btn icon insert-token" title="插入 [Image ${index + 1}]">↵</button>` : ""}
+            <button class="btn icon remove-asset" title="移除">×</button>
+          </div>
+        `;
+        list.appendChild(card);
+      });
+
+      $("#referenceCount").textContent = `已选 ${assets.length} 张`;
+      $$(".insert-token").forEach((button, index) => {
+        button.addEventListener("click", () => insertImageToken(index + 1));
+      });
+      $$(".remove-asset").forEach((button, index) => {
+        button.addEventListener("click", () => {
+          assets.splice(index, 1);
+          renderAssets();
+          validateAssets();
+        });
+      });
+      bindSort();
+    }
+
+    function bindSort() {
+      $$(".asset-card.sortable").forEach((card) => {
+        card.addEventListener("dragstart", () => {
+          draggedIndex = Number(card.dataset.index);
+          card.classList.add("dragging");
+        });
+        card.addEventListener("dragend", () => {
+          draggedIndex = null;
+          card.classList.remove("dragging");
+        });
+        card.addEventListener("dragover", (event) => event.preventDefault());
+        card.addEventListener("drop", (event) => {
+          event.preventDefault();
+          const to = Number(card.dataset.index);
+          if (draggedIndex === null || draggedIndex === to) return;
+          const [moved] = assets.splice(draggedIndex, 1);
+          assets.splice(to, 0, moved);
+          renderAssets();
+        });
+      });
+    }
+
+    function insertImageToken(n) {
+      const input = $("#promptInput");
+      const token = `[Image ${n}]`;
+      const start = input.selectionStart;
+      const end = input.selectionEnd;
+      input.value = `${input.value.slice(0, start)}${token}${input.value.slice(end)}`;
+      input.focus();
+      input.selectionStart = input.selectionEnd = start + token.length;
+      validatePrompt();
+    }
+
+    function validatePrompt() {
+      const value = $("#promptInput").value.trim();
+      $("#promptError").textContent = value ? "" : "Prompt 必填。";
+      return Boolean(value);
+    }
+
+    function validateAssets() {
+      const config = modelConfig[activeModel];
+      let message = "";
+      if (config.references.max === 0) {
+        $("#assetError").textContent = "";
+        return true;
+      } else if (assets.length < config.references.min) {
+        message = `当前模型至少需要 ${config.references.min} 张参考图。`;
+      } else if (assets.length > config.references.max) {
+        message = config.references.max === 0
+          ? "当前模型不接收参考图，请移除后再创建。"
+          : `当前模型最多支持 ${config.references.max} 张参考图。`;
+      }
+      $("#assetError").textContent = message;
+      return !message;
+    }
+
+    function renderTasks() {
+      const grid = $("#taskGrid");
+      const visible = tasks.filter((task) => filter === "all" || task.status === filter);
+      grid.innerHTML = "";
+      visible.forEach((task) => {
+        const card = document.createElement("article");
+        card.className = "task-card";
+        card.dataset.taskId = task.id;
+        card.innerHTML = `
+          <button class="card-open-surface" type="button" aria-label="查看任务详情：${task.title}"></button>
+          <div class="thumb">
+            <img src="${task.image}" alt="${task.title} 任务封面" />
+            <span class="status-chip ${task.status}">${statusText[task.status]}</span>
+            <span class="stage-note">${task.stage}</span>
+          </div>
+          <div class="task-body">
+            <div class="task-title">
+              <strong>${task.title}</strong>
+              <span>${task.model}</span>
+            </div>
+            <p>${task.prompt}</p>
+            <div class="task-actions">
+              <button class="btn small details-task" type="button">查看详情</button>
+              <button class="btn small" type="button">复用参数</button>
+              <button class="btn small" type="button">日志</button>
+            </div>
+          </div>
+        `;
+        card.querySelectorAll("button").forEach((button) => {
+          button.addEventListener("click", (event) => event.stopPropagation());
+        });
+        card.querySelector(".details-task").addEventListener("click", (event) => {
+          openTaskDetail(task, event.currentTarget);
+        });
+        card.querySelector(".card-open-surface").addEventListener("click", (event) => {
+          openTaskDetail(task, event.currentTarget);
+        });
+        grid.appendChild(card);
+      });
+      $("#emptyState").classList.toggle("visible", visible.length === 0);
+      updateCounts();
+      renderHistory();
+      if (detailTaskId && $("#taskDetailModal").classList.contains("open")) {
+        const detailTask = tasks.find((task) => task.id === detailTaskId);
+        if (detailTask) populateTaskDetail(detailTask);
+      }
+    }
+
+    function updateCounts() {
+      const count = (status) => tasks.filter((task) => task.status === status).length;
+      $("#queuePill").textContent = `任务 ${tasks.length}`;
+      $("#runningPill").textContent = `生成中 ${count("running")}`;
+      $("#donePill").textContent = `完成 ${count("completed")}`;
+      $("#failedPill").textContent = `失败 ${count("failed")}`;
+    }
+
+    function renderHistory() {
+      const list = $("#historyList");
+      list.innerHTML = "";
+      tasks.forEach((task) => {
+        const item = document.createElement("div");
+        item.className = "history-item";
+        item.innerHTML = `
+          <button class="history-open-surface" type="button" aria-label="查看历史任务详情：${task.title}"></button>
+          <strong>${task.title}</strong>
+          <span>${task.id} · ${task.model} · ${statusText[task.status]}</span>
+          <div class="task-actions">
+            <button class="btn small history-detail" type="button">查看详情</button>
+            <button class="btn small" type="button">复用参数</button>
+          </div>
+        `;
+        const openFromHistory = () => {
+          const returnFocus = drawerReturnFocus;
+          closeHistoryDrawer(false);
+          drawerReturnFocus = null;
+          openTaskDetail(task, returnFocus);
+        };
+        item.querySelectorAll("button").forEach((button) => {
+          button.addEventListener("click", (event) => event.stopPropagation());
+        });
+        item.querySelector(".history-detail").addEventListener("click", openFromHistory);
+        item.querySelector(".history-open-surface").addEventListener("click", () => {
+          openFromHistory();
+        });
+        list.appendChild(item);
+      });
+    }
+
+    function createTask() {
+      const promptOk = validatePrompt();
+      const assetOk = validateAssets();
+      if (!promptOk || !assetOk) {
+        if (!promptOk) $("#promptInput").focus();
+        return;
+      }
+
+      const config = modelConfig[activeModel];
+      const image = assets[0]?.src || config.cover;
+      const prompt = $("#promptInput").value.trim();
+      const ratio = config.hideRatio ? "比例随参考图" : $("#ratioSelect").value;
+      const audio = activeModel === "seedance_2_0"
+        ? ` · 音频${$("#audioSegment button.active").dataset.audio === "on" ? "开" : "关"}`
+        : "";
+      const watermark = $("#watermarkSegment button.active").dataset.watermark === "on" ? "开" : "关";
+      const task = {
+        id: `mock-video-0716-${String(++taskSeq).padStart(3, "0")}`,
+        title: `${config.name} 模拟任务`,
+        model: config.name,
+        status: "queued",
+        stage: "等待后台 worker 提交",
+        image: config.references.max === 0 ? config.cover : image,
+        prompt,
+        params: `${$("#resolutionSelect").value} · ${$("#durationSelect").value} 秒 · ${ratio}${audio} · 水印${watermark}`,
+        createdAt: "刚刚",
+        archive: "等待 provider 完成"
+      };
+      tasks.unshift(task);
+      filter = "all";
+      $$("#statusFilters button").forEach((button) => button.classList.toggle("active", button.dataset.filter === "all"));
+      renderTasks();
+      if (window.matchMedia("(max-width: 1059px)").matches) setMobileTab("result");
+      simulateTask(task);
+    }
+
+    function simulateTask(task) {
+      setTimeout(() => {
+        task.status = "running";
+        task.stage = "provider 生成中 · 未返回进度";
+        renderTasks();
+      }, 650);
+      setTimeout(() => {
+        task.status = "downloading";
+        task.stage = "provider 已完成 · 正在本地归档";
+        task.archive = "正在写入本地 MP4";
+        renderTasks();
+      }, 1400);
+      setTimeout(() => {
+        task.status = "completed";
+        task.stage = "本地 MP4 已归档";
+        task.archive = `~/Downloads/抓虾AI生视频/${task.id}.mp4`;
+        renderTasks();
+      }, 2200);
+    }
+
+    function populateTaskDetail(task) {
+      $("#modalImage").src = task.image;
+      $("#modalTitle").textContent = `${task.title} · 任务详情`;
+      $("#modalTaskTitle").textContent = task.title;
+      $("#modalTaskId").textContent = task.id;
+      $("#modalModel").textContent = task.model;
+      $("#modalCreatedAt").textContent = task.createdAt;
+      $("#modalStage").textContent = task.stage;
+      $("#modalPrompt").textContent = task.prompt;
+      $("#modalParams").textContent = task.params;
+      $("#modalArchive").textContent = task.archive;
+      $("#modalStatus").textContent = statusText[task.status];
+      $("#modalStatus").className = `detail-status ${task.status}`;
+
+      const playable = task.status === "completed";
+      $("#modalPlay").hidden = !playable;
+      $("#modalStateOverlay").hidden = playable;
+      $("#modalImage").classList.toggle("pending", !playable);
+      $("#modalStateTitle").textContent = statusText[task.status];
+      $("#modalStateCopy").textContent = task.stage;
+      $("#modalOpenFile").disabled = !playable;
+      $("#modalOpenFile").textContent = playable ? "打开本地文件" : "尚无本地文件";
+    }
+
+    function openTaskDetail(task, returnFocus = document.activeElement) {
+      if (!task) return;
+      detailTaskId = task.id;
+      modalReturnFocus = returnFocus;
+      modalReturnTaskId = task.id;
+      populateTaskDetail(task);
+      $("#taskDetailModal").classList.add("open");
+      $("#taskDetailModal").setAttribute("aria-hidden", "false");
+      $("#closeTaskDetail").focus();
+    }
+
+    function closeTaskDetail() {
+      $("#taskDetailModal").classList.remove("open");
+      $("#taskDetailModal").setAttribute("aria-hidden", "true");
+      detailTaskId = null;
+      if (modalReturnFocus instanceof HTMLElement && modalReturnFocus.isConnected) {
+        modalReturnFocus.focus();
+      } else if (modalReturnTaskId) {
+        document.querySelector(`[data-task-id="${modalReturnTaskId}"] .card-open-surface`)?.focus();
+      }
+      modalReturnFocus = null;
+      modalReturnTaskId = null;
+    }
+
+    function openHistoryDrawer() {
+      drawerReturnFocus = document.activeElement;
+      $("#historyDrawer").classList.add("open");
+      $("#historyDrawer").setAttribute("aria-hidden", "false");
+      $("#closeHistory").focus();
+    }
+
+    function closeHistoryDrawer(restoreFocus = true) {
+      $("#historyDrawer").classList.remove("open");
+      $("#historyDrawer").setAttribute("aria-hidden", "true");
+      if (restoreFocus && drawerReturnFocus instanceof HTMLElement && drawerReturnFocus.isConnected) {
+        drawerReturnFocus.focus();
+      }
+      if (restoreFocus) drawerReturnFocus = null;
+    }
+
+    function setMobileTab(tab) {
+      $$(".mobile-tabs button").forEach((item) => item.classList.toggle("active", item.dataset.mobileTab === tab));
+      $("#controlPane").classList.toggle("mobile-active", tab === "input");
+      $("#resultPane").classList.toggle("mobile-active", tab === "result");
+    }
+
+    function resetForm() {
+      activeModel = "seedance_2_0";
+      assets = [];
+      $("#promptInput").value = "生成一条 5 秒竖屏童装商品广告视频：原创虚构儿童模特穿着绿色格纹衬衫，在明亮海边自然走动，镜头轻微跟拍，衣服细节稳定，画面干净真实，无文字和水印。";
+      renderModel();
+      validatePrompt();
+    }
+
+    $$("#modelSwitcher .model-card").forEach((button) => {
+      button.addEventListener("click", () => {
+        activeModel = button.dataset.model;
+        renderModel();
+      });
+    });
+
+    $("#addAsset").addEventListener("click", () => {
+      const next = sampleAssets[assets.length % sampleAssets.length];
+      assets.push(next);
+      renderAssets();
+      validateAssets();
+    });
+
+    $("#promptInput").addEventListener("input", validatePrompt);
+    $("#createBtn").addEventListener("click", createTask);
+    $("#resetBtn").addEventListener("click", resetForm);
+    $("#sidebarToggle").addEventListener("click", () => {
+      const collapsed = $(".app").classList.toggle("sidebar-collapsed");
+      $("#sidebarToggle").textContent = collapsed ? "›" : "‹";
+      $("#sidebarToggle").setAttribute("aria-label", collapsed ? "展开侧边栏" : "收起侧边栏");
+      $("#sidebarToggle").title = collapsed ? "展开侧边栏" : "收起侧边栏";
+    });
+    $("#closeTaskDetail").addEventListener("click", closeTaskDetail);
+    $("#taskDetailModal").addEventListener("click", (event) => {
+      if (event.target.id === "taskDetailModal") closeTaskDetail();
+    });
+
+    $("#openHistory").addEventListener("click", openHistoryDrawer);
+    $("#openHistoryTop").addEventListener("click", openHistoryDrawer);
+    $("#closeHistory").addEventListener("click", closeHistoryDrawer);
+
+    $$("#statusFilters button[data-filter]").forEach((button) => {
+      button.addEventListener("click", () => {
+        if (button.dataset.filter === "history") return;
+        filter = button.dataset.filter;
+        $$("#statusFilters button").forEach((item) => item.classList.toggle("active", item === button));
+        renderTasks();
+      });
+    });
+
+    $$("#audioSegment button").forEach((button) => {
+      button.addEventListener("click", () => {
+        $$("#audioSegment button").forEach((item) => item.classList.toggle("active", item === button));
+      });
+    });
+
+    $$("#watermarkSegment button").forEach((button) => {
+      button.addEventListener("click", () => {
+        $$("#watermarkSegment button").forEach((item) => item.classList.toggle("active", item === button));
+      });
+    });
+
+    $$(".mobile-tabs button").forEach((button) => {
+      button.addEventListener("click", () => {
+        setMobileTab(button.dataset.mobileTab);
+      });
+    });
+
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if ($("#taskDetailModal").classList.contains("open")) closeTaskDetail();
+      else if ($("#historyDrawer").classList.contains("open")) closeHistoryDrawer();
+    });
+
+    setMobileTab("input");
+    renderModel();
+    renderTasks();
+  </script>
+</body>
+</html>

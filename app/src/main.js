@@ -11,6 +11,7 @@ const fs     = require('fs')
 const http   = require('http')
 const https  = require('https')
 const crypto = require('crypto')
+const os     = require('os')
 const { fileURLToPath } = require('url')
 const { Readable } = require('stream')
 const { spawn, execSync, execFileSync } = require('child_process')
@@ -39,16 +40,32 @@ const {
 const APP_METADATA = require('../package.json')
 
 const BALA_WORKSPACE_MEDIA_PROTOCOL = 'bala-workspace-media'
-protocol.registerSchemesAsPrivileged([{
-  scheme: BALA_WORKSPACE_MEDIA_PROTOCOL,
-  privileges: {
-    standard: true,
-    secure: true,
-    supportFetchAPI: true,
-    stream: true,
-    corsEnabled: true,
+const LOCAL_MEDIA_PROTOCOL = 'crawshrimp-media'
+const LOCAL_MEDIA_VIDEO_EXTS = new Set(['.mp4', '.m4v', '.mov', '.webm'])
+const LOCAL_MEDIA_IMAGE_EXTS = new Set(['.jpg', '.jpeg', '.png', '.webp', '.gif'])
+const authorizedLocalMediaRoots = new Set()
+protocol.registerSchemesAsPrivileged([
+  {
+    scheme: BALA_WORKSPACE_MEDIA_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
   },
-}])
+  {
+    scheme: LOCAL_MEDIA_PROTOCOL,
+    privileges: {
+      standard: true,
+      secure: true,
+      supportFetchAPI: true,
+      stream: true,
+      corsEnabled: true,
+    },
+  },
+])
 
 const DEFAULT_API_PORT = parseInt(process.env.CRAWSHRIMP_PORT || '18765')
 let apiPort = DEFAULT_API_PORT
@@ -142,6 +159,148 @@ async function handleBalaWorkspaceMediaRequest(request) {
   } catch (error) {
     const status = error instanceof RangeError ? 416 : 403
     return new Response('本地工作区视频不可用', { status, headers: { 'Cache-Control': 'no-store' } })
+  }
+}
+
+function localMediaRootIdentity(rootPath = '') {
+  const resolved = path.resolve(String(rootPath || '').trim())
+  try {
+    const real = fs.realpathSync.native(resolved)
+    return process.platform === 'win32' ? real.toLowerCase() : real
+  } catch {
+    return process.platform === 'win32' ? resolved.toLowerCase() : resolved
+  }
+}
+
+function ensureDefaultLocalMediaRoots() {
+  const defaults = [
+    path.join(os.homedir(), 'Downloads', '抓虾AI生视频'),
+    path.join(os.homedir(), 'Downloads', '巴拉AI视频成片'),
+    path.join(os.homedir(), 'Downloads'),
+  ]
+  for (const root of defaults) {
+    try {
+      if (fs.existsSync(root) && fs.statSync(root).isDirectory()) {
+        authorizedLocalMediaRoots.add(localMediaRootIdentity(root))
+      } else {
+        // Still authorize the intended root path so files can land there later.
+        authorizedLocalMediaRoots.add(localMediaRootIdentity(root))
+      }
+    } catch {
+      authorizedLocalMediaRoots.add(localMediaRootIdentity(root))
+    }
+  }
+}
+
+function authorizeLocalMediaRoot(rootPath = '') {
+  const raw = String(rootPath || '').trim()
+  if (!raw) throw new Error('媒体授权目录不能为空')
+  const resolved = path.resolve(raw)
+  let stat
+  try {
+    stat = fs.lstatSync(resolved)
+  } catch {
+    // Directory may not exist yet; still remember intended root.
+    authorizedLocalMediaRoots.add(localMediaRootIdentity(resolved))
+    return resolved
+  }
+  if (stat.isSymbolicLink()) throw new Error('媒体授权目录不能是符号链接')
+  if (!stat.isDirectory()) throw new Error('媒体授权路径必须是文件夹')
+  const identity = localMediaRootIdentity(resolved)
+  authorizedLocalMediaRoots.add(identity)
+  return identity
+}
+
+function localMediaMime(filePath = '') {
+  const ext = path.extname(String(filePath || '')).toLowerCase()
+  if (ext === '.mp4' || ext === '.m4v') return 'video/mp4'
+  if (ext === '.webm') return 'video/webm'
+  if (ext === '.mov') return 'video/quicktime'
+  if (ext === '.jpg' || ext === '.jpeg') return 'image/jpeg'
+  if (ext === '.png') return 'image/png'
+  if (ext === '.webp') return 'image/webp'
+  if (ext === '.gif') return 'image/gif'
+  return ''
+}
+
+function getAuthorizedLocalMediaFile(filePath = '') {
+  ensureDefaultLocalMediaRoots()
+  const raw = String(filePath || '').trim()
+  if (!raw) throw new Error('缺少本地媒体路径')
+  const resolved = path.resolve(raw)
+  const stat = fs.lstatSync(resolved)
+  if (stat.isSymbolicLink()) throw new Error('禁止预览符号链接媒体')
+  if (!stat.isFile()) throw new Error('本地媒体不是文件')
+  const real = fs.realpathSync.native(resolved)
+  const realIdentity = process.platform === 'win32' ? real.toLowerCase() : real
+  const allowed = [...authorizedLocalMediaRoots].some((root) => (
+    realIdentity === root || realIdentity.startsWith(`${root}${path.sep}`) || realIdentity.startsWith(`${root}/`)
+  ))
+  if (!allowed) throw new Error('该本地媒体未授权预览，请确认输出目录已通过选择器授权')
+  const mime = localMediaMime(real)
+  if (!mime) throw new Error('不支持的媒体类型')
+  const ext = path.extname(real).toLowerCase()
+  if (!LOCAL_MEDIA_VIDEO_EXTS.has(ext) && !LOCAL_MEDIA_IMAGE_EXTS.has(ext)) {
+    throw new Error('仅支持图片与常见视频格式')
+  }
+  return {
+    path: real,
+    mime,
+    size: stat.size,
+  }
+}
+
+function localMediaUrl(filePath = '') {
+  const payload = Buffer.from(JSON.stringify({ filePath: String(filePath || '') }), 'utf8').toString('base64url')
+  return `${LOCAL_MEDIA_PROTOCOL}://local/${payload}`
+}
+
+function parseLocalMediaPayload(rawUrl = '') {
+  const url = new URL(String(rawUrl || ''))
+  if (url.protocol !== `${LOCAL_MEDIA_PROTOCOL}:` || url.hostname !== 'local') {
+    throw new Error('无效的本地媒体地址')
+  }
+  const encoded = url.pathname.replace(/^\//, '')
+  if (!encoded) throw new Error('缺少本地媒体地址')
+  const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
+  if (!payload || typeof payload !== 'object') throw new Error('本地媒体地址格式无效')
+  return payload
+}
+
+async function handleLocalMediaRequest(request) {
+  try {
+    const payload = parseLocalMediaPayload(request.url)
+    const media = getAuthorizedLocalMediaFile(payload.filePath)
+    const isVideo = String(media.mime || '').startsWith('video/')
+    if (!isVideo) {
+      return new Response(Readable.toWeb(fs.createReadStream(media.path)), {
+        status: 200,
+        headers: {
+          'Content-Type': media.mime,
+          'Content-Length': String(media.size),
+          'Cache-Control': 'no-store',
+        },
+      })
+    }
+    const range = parseByteRange(request.headers.get('range'), media.size)
+    const length = range.end - range.start + 1
+    const headers = {
+      'Content-Type': media.mime,
+      'Content-Length': String(length),
+      'Accept-Ranges': 'bytes',
+      'Cache-Control': 'no-store',
+    }
+    if (range.partial) headers['Content-Range'] = `bytes ${range.start}-${range.end}/${media.size}`
+    return new Response(Readable.toWeb(fs.createReadStream(media.path, { start: range.start, end: range.end })), {
+      status: range.partial ? 206 : 200,
+      headers,
+    })
+  } catch (error) {
+    const status = error instanceof RangeError ? 416 : 403
+    return new Response(String(error?.message || '本地媒体不可用'), {
+      status,
+      headers: { 'Cache-Control': 'no-store' },
+    })
   }
 }
 
@@ -2069,6 +2228,8 @@ configureSingleInstance({
     app.whenReady().then(async () => {
       hideNativeAppMenu()
       protocol.handle(BALA_WORKSPACE_MEDIA_PROTOCOL, handleBalaWorkspaceMediaRequest)
+      protocol.handle(LOCAL_MEDIA_PROTOCOL, handleLocalMediaRequest)
+      ensureDefaultLocalMediaRoots()
       createWindow()
       app.on('activate', () => {
         if (BrowserWindow.getAllWindows().length === 0) createWindow()
@@ -2237,6 +2398,34 @@ secureHandle('create-ai-image-asset', async (_, payload) =>
   apiCall('POST', '/ai-image/assets', payload || {}))
 secureHandle('create-ai-image-canvas', async (_, payload) =>
   apiCall('POST', '/ai-image/canvases', payload || {}))
+secureHandle('ai-video:get-config', async () =>
+  apiCall('GET', '/ai-video/config'))
+secureHandle('ai-video:validate', async (_, payload) =>
+  apiCall('POST', '/ai-video/validate', payload || {}))
+secureHandle('ai-video:create-job', async (_, payload) =>
+  apiCall('POST', '/ai-video/jobs', payload || {}))
+secureHandle('ai-video:list-jobs', async (_, query = {}) => {
+  const params = new URLSearchParams()
+  if (query?.status) params.set('status', String(query.status))
+  if (query?.provider) params.set('provider', String(query.provider))
+  if (query?.limit) params.set('limit', String(query.limit))
+  const suffix = params.toString()
+  return apiCall('GET', `/ai-video/jobs${suffix ? `?${suffix}` : ''}`)
+})
+secureHandle('ai-video:get-job', async (_, jobId) =>
+  apiCall('GET', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}`))
+secureHandle('ai-video:update-job', async (_, jobId, payload) =>
+  apiCall('PATCH', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}`, payload || {}))
+secureHandle('ai-video:duplicate-job', async (_, jobId) =>
+  apiCall('POST', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}/duplicate`, {}))
+secureHandle('ai-video:retry-job', async (_, jobId, payload) =>
+  apiCall('POST', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}/retry`, payload || {}))
+secureHandle('ai-video:delete-job-record', async (_, jobId) =>
+  apiCall('DELETE', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}`))
+secureHandle('ai-video:get-run', async (_, runId) =>
+  apiCall('GET', `/ai-video/runs/${encodeURIComponent(String(runId || ''))}`))
+secureHandle('ai-video:retry-archive', async (_, runId) =>
+  apiCall('POST', `/ai-video/runs/${encodeURIComponent(String(runId || ''))}/archive`, {}))
 secureHandle('probe-task-params', async (_, aid, tid, params, options) =>
   apiCall('POST', `/tasks/${aid}/${tid}/params/probe`, {
     params: params || {},
@@ -2673,7 +2862,18 @@ secureHandle('browse-file', async (_, opts = {}) => {
     filters,
   })
   if (res.canceled) return opts.multi ? [] : ''
-  return opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
+  const selected = opts.multi ? (res.filePaths || []) : (res.filePaths[0] || '')
+  // Authorize selected directories (and parent of selected files) for local media playback.
+  const paths = opts.multi ? selected : (selected ? [selected] : [])
+  for (const item of paths) {
+    try {
+      const target = String(item || '').trim()
+      if (!target) continue
+      const st = fs.statSync(target)
+      authorizeLocalMediaRoot(st.isDirectory() ? target : path.dirname(target))
+    } catch { /* ignore authorization failures */ }
+  }
+  return selected
 })
 
 secureHandle('select-bala-workspace', async (_, opts = {}) => {
@@ -2710,6 +2910,26 @@ secureHandle('get-bala-workspace-video-media', async (_, workspaceRoot, filePath
     ok: true,
     ...media,
     media_url: balaWorkspaceMediaUrl(workspaceRoot, media.path),
+  }
+})
+
+secureHandle('authorize-local-media-root', async (_, rootPath) => {
+  const root = authorizeLocalMediaRoot(rootPath)
+  return { ok: true, root }
+})
+
+secureHandle('get-local-media-url', async (_, filePath) => {
+  const media = getAuthorizedLocalMediaFile(filePath)
+  // Also authorize the parent tree so sibling posters stay playable.
+  try {
+    authorizeLocalMediaRoot(path.dirname(media.path))
+  } catch { /* ignore */ }
+  return {
+    ok: true,
+    path: media.path,
+    mime: media.mime,
+    size: media.size,
+    media_url: localMediaUrl(media.path),
   }
 })
 

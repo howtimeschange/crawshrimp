@@ -51,6 +51,7 @@ from core.cloud_batch_sync import sync_local_approval_batch
 from core.cloud_machine_agent import CloudMachineAgent
 from core import adapter_loader
 from core import ai_image_service
+from core import ai_video_generation_service
 from core import data_sink
 from core import notifier
 from core import odps_sync
@@ -6116,6 +6117,11 @@ async def lifespan(app: FastAPI):
             _start_cloud_machine_if_enabled()
         except Exception:
             logger.exception("cloud approval machine auto-start failed; continuing without cloud machine loop")
+        try:
+            ai_video_generation_service.ensure_worker_started()
+            ai_video_generation_service.recover_active_runs(once=True)
+        except Exception:
+            logger.exception("ai video generation recovery failed; continuing without active video recovery")
     logger.info("crawshrimp core started")
     try:
         yield
@@ -6125,6 +6131,10 @@ async def lifespan(app: FastAPI):
                 sched_module.shutdown()
         except Exception:
             logger.exception("scheduler shutdown failed")
+        try:
+            ai_video_generation_service.stop_worker()
+        except Exception:
+            logger.exception("ai video worker shutdown failed")
         app.state.owns_backend_instance = False
         instance_lock.close()
 
@@ -7740,6 +7750,162 @@ def create_ai_image_canvas(req: AiImageCanvasRequest):
     if not data_sink.get_ai_image_job(req.job_uid):
         raise HTTPException(404, f"AI image job not found: {req.job_uid}")
     return data_sink.create_ai_image_canvas(_model_payload(req, exclude_none=True))
+
+
+class AiVideoAssetInputRequest(BaseModel):
+    role: str = "reference_image"
+    sourceType: str = "local_file"
+    fileToken: Optional[str] = None
+    localPath: Optional[str] = None
+    path: Optional[str] = None
+    assetLibraryId: Optional[str] = None
+    remoteUrl: Optional[str] = None
+    sortOrder: int = 0
+
+
+class AiVideoPublicParametersRequest(BaseModel):
+    ratio: Optional[str] = None
+    resolution: Optional[str] = None
+    duration: Optional[int] = None
+    watermark: Optional[bool] = None
+    generateAudio: Optional[bool] = None
+
+
+class AiVideoCreateJobRequest(BaseModel):
+    requestUid: str
+    provider: str
+    model: str
+    prompt: str
+    assets: List[AiVideoAssetInputRequest] = []
+    parameters: AiVideoPublicParametersRequest = AiVideoPublicParametersRequest()
+    outputDir: str = ""
+
+
+class AiVideoValidateRequest(BaseModel):
+    provider: str
+    model: str
+    prompt: str = ""
+    assets: List[AiVideoAssetInputRequest] = []
+    parameters: AiVideoPublicParametersRequest = AiVideoPublicParametersRequest()
+    outputDir: str = ""
+
+
+class AiVideoUpdateJobRequest(BaseModel):
+    provider: Optional[str] = None
+    model: Optional[str] = None
+    prompt: Optional[str] = None
+    assets: Optional[List[AiVideoAssetInputRequest]] = None
+    parameters: Optional[AiVideoPublicParametersRequest] = None
+    outputDir: Optional[str] = None
+
+
+class AiVideoRetryRequest(BaseModel):
+    requestUid: str
+
+
+def _ai_video_http_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, ai_video_generation_service.AiVideoError):
+        return HTTPException(
+            status_code=int(exc.http_status or 400),
+            detail={
+                "ok": False,
+                "error": {
+                    "code": exc.code,
+                    "message": str(exc),
+                    "detail": exc.provider_message or None,
+                },
+            },
+        )
+    return HTTPException(status_code=500, detail=ai_video_generation_service.envelope_error(exc))
+
+
+@app.get("/ai-video/config")
+def ai_video_get_config():
+    return ai_video_generation_service.get_config()
+
+
+@app.post("/ai-video/validate")
+def ai_video_validate(req: AiVideoValidateRequest):
+    try:
+        payload = _model_payload(req, exclude_none=True)
+        result = ai_video_generation_service.validate_input(payload)
+        return {"ok": True, "data": result}
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.post("/ai-video/jobs")
+def ai_video_create_job(req: AiVideoCreateJobRequest):
+    try:
+        payload = _model_payload(req, exclude_none=True)
+        return ai_video_generation_service.create_job(payload)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.get("/ai-video/jobs")
+def ai_video_list_jobs(status: str = "", provider: str = "", limit: int = 50):
+    try:
+        return ai_video_generation_service.list_jobs(status=status, provider=provider, limit=limit)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.get("/ai-video/jobs/{job_id}")
+def ai_video_get_job(job_id: str):
+    try:
+        return ai_video_generation_service.get_job(job_id)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.patch("/ai-video/jobs/{job_id}")
+def ai_video_update_job(job_id: str, req: AiVideoUpdateJobRequest):
+    try:
+        payload = _model_payload(req, exclude_none=True, exclude_unset=True)
+        return ai_video_generation_service.update_job(job_id, payload)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.post("/ai-video/jobs/{job_id}/duplicate")
+def ai_video_duplicate_job(job_id: str):
+    try:
+        return ai_video_generation_service.duplicate_job(job_id)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.post("/ai-video/jobs/{job_id}/retry")
+def ai_video_retry_job(job_id: str, req: AiVideoRetryRequest):
+    try:
+        return ai_video_generation_service.retry_job(job_id, req.requestUid)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.delete("/ai-video/jobs/{job_id}")
+def ai_video_delete_job(job_id: str):
+    try:
+        return ai_video_generation_service.delete_job(job_id)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.get("/ai-video/runs/{run_id}")
+def ai_video_get_run(run_id: str):
+    try:
+        return ai_video_generation_service.get_run(run_id)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
+
+
+@app.post("/ai-video/runs/{run_id}/archive")
+def ai_video_retry_archive(run_id: str):
+    try:
+        return ai_video_generation_service.retry_archive(run_id)
+    except Exception as exc:
+        raise _ai_video_http_error(exc) from exc
 
 
 def _normalize_tmall_approval_batch_id(batch_id: str) -> str:

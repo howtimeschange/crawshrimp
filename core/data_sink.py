@@ -273,6 +273,85 @@ def init_db():
             CREATE INDEX IF NOT EXISTS idx_ai_image_canvases_job
             ON ai_image_canvases (job_uid, updated_at)
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_video_jobs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_uid TEXT NOT NULL UNIQUE,
+                request_uid TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'draft',
+                provider TEXT NOT NULL DEFAULT 'seedance',
+                model TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                parameters_json TEXT NOT NULL DEFAULT '{}',
+                current_run_uid TEXT NOT NULL DEFAULT '',
+                output_dir TEXT NOT NULL DEFAULT '',
+                deleted_at TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_video_jobs_updated
+            ON ai_video_jobs (updated_at DESC)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_video_jobs_status
+            ON ai_video_jobs (status, updated_at DESC)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_video_assets (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_uid TEXT NOT NULL UNIQUE,
+                job_uid TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'image',
+                role TEXT NOT NULL DEFAULT 'reference_image',
+                source_type TEXT NOT NULL DEFAULT 'local_file',
+                original_name TEXT NOT NULL DEFAULT '',
+                local_path TEXT NOT NULL DEFAULT '',
+                remote_url TEXT NOT NULL DEFAULT '',
+                mime_type TEXT NOT NULL DEFAULT '',
+                width INTEGER NOT NULL DEFAULT 0,
+                height INTEGER NOT NULL DEFAULT 0,
+                size_bytes INTEGER NOT NULL DEFAULT 0,
+                sha256 TEXT NOT NULL DEFAULT '',
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_video_assets_job_order
+            ON ai_video_assets (job_uid, sort_order, id)
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS ai_video_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_uid TEXT NOT NULL UNIQUE,
+                request_uid TEXT NOT NULL UNIQUE,
+                job_uid TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'queued',
+                provider TEXT NOT NULL DEFAULT '',
+                model TEXT NOT NULL DEFAULT '',
+                input_snapshot_json TEXT NOT NULL DEFAULT '{}',
+                provider_task_id TEXT NOT NULL DEFAULT '',
+                provider_status TEXT NOT NULL DEFAULT '',
+                archive_status TEXT NOT NULL DEFAULT 'none',
+                output_json TEXT NOT NULL DEFAULT '{}',
+                error_json TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                submitted_at TEXT NOT NULL DEFAULT '',
+                completed_at TEXT NOT NULL DEFAULT ''
+            )
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_video_runs_job
+            ON ai_video_runs (job_uid, created_at DESC)
+        """)
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_ai_video_runs_active
+            ON ai_video_runs (status, updated_at DESC)
+        """)
         conn.commit()
     _harden_db_file_permissions()
 
@@ -757,6 +836,542 @@ def list_ai_image_canvases(job_uid: str = "", limit: int = 100) -> list[dict]:
             [*params, safe_limit],
         ).fetchall()
     return [item for row in rows if (item := _ai_image_canvas_from_row(row))]
+
+
+def _ai_video_job_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    data = _row_to_dict(row)
+    if not data:
+        return None
+    data["id"] = str(data.get("job_uid") or "")
+    data["requestUid"] = str(data.get("request_uid") or "")
+    data["parameters"] = _json_loads_object(data.pop("parameters_json", "{}"))
+    data["currentRunId"] = str(data.get("current_run_uid") or "") or None
+    data["outputDir"] = str(data.get("output_dir") or "")
+    data["createdAt"] = str(data.get("created_at") or "")
+    data["updatedAt"] = str(data.get("updated_at") or "")
+    deleted_at = str(data.get("deleted_at") or "").strip()
+    data["deletedAt"] = deleted_at or None
+    return data
+
+
+def _ai_video_asset_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    data = _row_to_dict(row)
+    if not data:
+        return None
+    return {
+        "id": str(data.get("asset_uid") or ""),
+        "jobId": str(data.get("job_uid") or ""),
+        "kind": str(data.get("kind") or "image"),
+        "role": str(data.get("role") or "reference_image"),
+        "sourceType": str(data.get("source_type") or "local_file"),
+        "originalName": str(data.get("original_name") or ""),
+        "localPath": str(data.get("local_path") or "") or None,
+        "remoteUrl": str(data.get("remote_url") or "") or None,
+        "mimeType": str(data.get("mime_type") or ""),
+        "width": int(data.get("width") or 0),
+        "height": int(data.get("height") or 0),
+        "sizeBytes": int(data.get("size_bytes") or 0),
+        "sha256": str(data.get("sha256") or ""),
+        "sortOrder": int(data.get("sort_order") or 0),
+        "createdAt": str(data.get("created_at") or ""),
+    }
+
+
+def _ai_video_run_from_row(row: Optional[sqlite3.Row]) -> Optional[dict]:
+    data = _row_to_dict(row)
+    if not data:
+        return None
+    output = _json_loads_object(data.pop("output_json", "{}"))
+    error = _json_loads_object(data.pop("error_json", "{}"))
+    return {
+        "id": str(data.get("run_uid") or ""),
+        "requestUid": str(data.get("request_uid") or ""),
+        "jobId": str(data.get("job_uid") or ""),
+        "status": str(data.get("status") or ""),
+        "provider": str(data.get("provider") or ""),
+        "model": str(data.get("model") or ""),
+        "inputSnapshot": _json_loads_object(data.pop("input_snapshot_json", "{}")),
+        "providerTaskId": str(data.get("provider_task_id") or "") or None,
+        "providerStatus": str(data.get("provider_status") or "") or None,
+        "archiveStatus": str(data.get("archive_status") or "none"),
+        "output": output or None,
+        "error": error or None,
+        "createdAt": str(data.get("created_at") or ""),
+        "updatedAt": str(data.get("updated_at") or ""),
+        "submittedAt": str(data.get("submitted_at") or "") or None,
+        "completedAt": str(data.get("completed_at") or "") or None,
+    }
+
+
+def get_ai_video_job_by_request_uid(request_uid: str) -> Optional[dict]:
+    uid = str(request_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_video_jobs WHERE request_uid=? LIMIT 1",
+            (uid,),
+        ).fetchone()
+    return _ai_video_job_from_row(row)
+
+
+def get_ai_video_run_by_request_uid(request_uid: str) -> Optional[dict]:
+    uid = str(request_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_video_runs WHERE request_uid=? LIMIT 1",
+            (uid,),
+        ).fetchone()
+    return _ai_video_run_from_row(row)
+
+
+def create_ai_video_job_with_run(
+    job_payload: Optional[Mapping[str, Any]] = None,
+    assets: Optional[list[Mapping[str, Any]]] = None,
+    run_payload: Optional[Mapping[str, Any]] = None,
+) -> dict:
+    """Atomically create one Job, its Assets, and the first Run."""
+    job_source = dict(job_payload or {})
+    run_source = dict(run_payload or {})
+    now = _now_iso()
+    job_uid = str(job_source.get("id") or job_source.get("job_uid") or "").strip() or f"avj_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    run_uid = str(run_source.get("id") or run_source.get("run_uid") or "").strip() or f"avr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    job_request_uid = str(job_source.get("requestUid") or job_source.get("request_uid") or "").strip()
+    run_request_uid = str(run_source.get("requestUid") or run_source.get("request_uid") or job_request_uid).strip()
+    if not job_request_uid or not run_request_uid:
+        raise ValueError("requestUid is required")
+
+    existing_job = get_ai_video_job_by_request_uid(job_request_uid)
+    if existing_job:
+        existing_run = get_ai_video_run(existing_job.get("currentRunId") or "") or get_ai_video_run_by_request_uid(run_request_uid)
+        return {
+            "job": get_ai_video_job(existing_job["id"]) or existing_job,
+            "run": existing_run or {},
+            "reused": True,
+        }
+
+    existing_run = get_ai_video_run_by_request_uid(run_request_uid)
+    if existing_run:
+        return {
+            "job": get_ai_video_job(existing_run["jobId"]) or {},
+            "run": existing_run,
+            "reused": True,
+        }
+
+    parameters = job_source.get("parameters") if isinstance(job_source.get("parameters"), Mapping) else {}
+    input_snapshot = run_source.get("inputSnapshot") if isinstance(run_source.get("inputSnapshot"), Mapping) else {}
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_video_jobs (
+                job_uid, request_uid, title, status, provider, model, prompt,
+                parameters_json, current_run_uid, output_dir, deleted_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', ?, ?)
+            """,
+            (
+                job_uid,
+                job_request_uid,
+                str(job_source.get("title") or "").strip() or "未命名视频任务",
+                str(job_source.get("status") or "queued").strip() or "queued",
+                str(job_source.get("provider") or "seedance").strip() or "seedance",
+                str(job_source.get("model") or "").strip(),
+                str(job_source.get("prompt") or "").strip(),
+                _json_dumps(parameters),
+                run_uid,
+                str(job_source.get("outputDir") or job_source.get("output_dir") or "").strip(),
+                now,
+                now,
+            ),
+        )
+        for index, asset in enumerate(assets or []):
+            source = dict(asset or {})
+            asset_uid = str(source.get("id") or source.get("asset_uid") or "").strip() or f"ava_{uuid.uuid4().hex[:10]}"
+            conn.execute(
+                """
+                INSERT INTO ai_video_assets (
+                    asset_uid, job_uid, kind, role, source_type, original_name, local_path,
+                    remote_url, mime_type, width, height, size_bytes, sha256, sort_order, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_uid,
+                    job_uid,
+                    str(source.get("kind") or "image"),
+                    str(source.get("role") or "reference_image"),
+                    str(source.get("sourceType") or source.get("source_type") or "local_file"),
+                    str(source.get("originalName") or source.get("original_name") or ""),
+                    str(source.get("localPath") or source.get("local_path") or ""),
+                    str(source.get("remoteUrl") or source.get("remote_url") or ""),
+                    str(source.get("mimeType") or source.get("mime_type") or ""),
+                    int(source.get("width") or 0),
+                    int(source.get("height") or 0),
+                    int(source.get("sizeBytes") or source.get("size_bytes") or 0),
+                    str(source.get("sha256") or ""),
+                    int(source.get("sortOrder") if source.get("sortOrder") is not None else source.get("sort_order") or index),
+                    now,
+                ),
+            )
+        conn.execute(
+            """
+            INSERT INTO ai_video_runs (
+                run_uid, request_uid, job_uid, status, provider, model, input_snapshot_json,
+                provider_task_id, provider_status, archive_status, output_json, error_json,
+                created_at, updated_at, submitted_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_uid,
+                run_request_uid,
+                job_uid,
+                str(run_source.get("status") or "queued").strip() or "queued",
+                str(run_source.get("provider") or job_source.get("provider") or "").strip(),
+                str(run_source.get("model") or job_source.get("model") or "").strip(),
+                _json_dumps(input_snapshot),
+                str(run_source.get("providerTaskId") or run_source.get("provider_task_id") or ""),
+                str(run_source.get("providerStatus") or run_source.get("provider_status") or ""),
+                str(run_source.get("archiveStatus") or run_source.get("archive_status") or "none"),
+                _json_dumps(run_source.get("output") if isinstance(run_source.get("output"), Mapping) else {}),
+                _json_dumps(run_source.get("error") if isinstance(run_source.get("error"), Mapping) else {}),
+                now,
+                now,
+                str(run_source.get("submittedAt") or run_source.get("submitted_at") or ""),
+                str(run_source.get("completedAt") or run_source.get("completed_at") or ""),
+            ),
+        )
+        conn.commit()
+    return {
+        "job": get_ai_video_job(job_uid) or {},
+        "run": get_ai_video_run(run_uid) or {},
+        "reused": False,
+    }
+
+
+def get_ai_video_job(job_uid: str) -> Optional[dict]:
+    uid = str(job_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_video_jobs WHERE job_uid=? LIMIT 1",
+            (uid,),
+        ).fetchone()
+    job = _ai_video_job_from_row(row)
+    if not job:
+        return None
+    job["assets"] = list_ai_video_assets(uid)
+    job["runs"] = list_ai_video_runs(uid)
+    return job
+
+
+def list_ai_video_jobs(
+    *,
+    status: str = "",
+    provider: str = "",
+    limit: int = 50,
+    include_deleted: bool = False,
+) -> list[dict]:
+    try:
+        safe_limit = max(1, min(int(limit), 200))
+    except Exception:
+        safe_limit = 50
+    clauses: list[str] = []
+    params: list[Any] = []
+    if not include_deleted:
+        clauses.append("(deleted_at IS NULL OR deleted_at = '')")
+    status_value = str(status or "").strip()
+    if status_value and status_value != "all":
+        clauses.append("status=?")
+        params.append(status_value)
+    provider_value = str(provider or "").strip()
+    if provider_value:
+        clauses.append("provider=?")
+        params.append(provider_value)
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM ai_video_jobs
+            {where}
+            ORDER BY updated_at DESC, id DESC
+            LIMIT ?
+            """,
+            [*params, safe_limit],
+        ).fetchall()
+    jobs = []
+    for row in rows:
+        job = _ai_video_job_from_row(row)
+        if not job:
+            continue
+        job["assets"] = list_ai_video_assets(job["id"])
+        current_run = get_ai_video_run(job.get("currentRunId") or "")
+        job["currentRun"] = current_run
+        jobs.append(job)
+    return jobs
+
+
+def list_active_ai_video_runs() -> list[dict]:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM ai_video_runs
+            WHERE lower(status) IN ('queued', 'running', 'downloading')
+            ORDER BY updated_at ASC, id ASC
+            """
+        ).fetchall()
+    return [item for row in rows if (item := _ai_video_run_from_row(row))]
+
+
+def update_ai_video_job(job_uid: str, payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    uid = str(job_uid or "").strip()
+    if not uid:
+        return {}
+    updates: dict[str, Any] = {}
+    mapping = {
+        "title": "title",
+        "status": "status",
+        "provider": "provider",
+        "model": "model",
+        "prompt": "prompt",
+        "outputDir": "output_dir",
+        "output_dir": "output_dir",
+        "currentRunId": "current_run_uid",
+        "current_run_uid": "current_run_uid",
+        "deletedAt": "deleted_at",
+        "deleted_at": "deleted_at",
+    }
+    for src_key, column in mapping.items():
+        if src_key in source:
+            value = source.get(src_key)
+            updates[column] = "" if value is None else str(value).strip()
+    if "parameters" in source:
+        updates["parameters_json"] = _json_dumps(source.get("parameters") if isinstance(source.get("parameters"), Mapping) else {})
+    updates["updated_at"] = _now_iso()
+    assignments = ", ".join(f"{key}=?" for key in updates)
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE ai_video_jobs SET {assignments} WHERE job_uid=?", [*updates.values(), uid])
+        conn.commit()
+    return get_ai_video_job(uid) or {}
+
+
+def replace_ai_video_assets(job_uid: str, assets: Optional[list[Mapping[str, Any]]] = None) -> list[dict]:
+    uid = str(job_uid or "").strip()
+    if not uid:
+        return []
+    now = _now_iso()
+    with _get_conn() as conn:
+        conn.execute("DELETE FROM ai_video_assets WHERE job_uid=?", (uid,))
+        for index, asset in enumerate(assets or []):
+            source = dict(asset or {})
+            asset_uid = str(source.get("id") or source.get("asset_uid") or "").strip() or f"ava_{uuid.uuid4().hex[:10]}"
+            conn.execute(
+                """
+                INSERT INTO ai_video_assets (
+                    asset_uid, job_uid, kind, role, source_type, original_name, local_path,
+                    remote_url, mime_type, width, height, size_bytes, sha256, sort_order, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    asset_uid,
+                    uid,
+                    str(source.get("kind") or "image"),
+                    str(source.get("role") or "reference_image"),
+                    str(source.get("sourceType") or source.get("source_type") or "local_file"),
+                    str(source.get("originalName") or source.get("original_name") or ""),
+                    str(source.get("localPath") or source.get("local_path") or ""),
+                    str(source.get("remoteUrl") or source.get("remote_url") or ""),
+                    str(source.get("mimeType") or source.get("mime_type") or ""),
+                    int(source.get("width") or 0),
+                    int(source.get("height") or 0),
+                    int(source.get("sizeBytes") or source.get("size_bytes") or 0),
+                    str(source.get("sha256") or ""),
+                    int(source.get("sortOrder") if source.get("sortOrder") is not None else source.get("sort_order") or index),
+                    now,
+                ),
+            )
+        conn.execute("UPDATE ai_video_jobs SET updated_at=? WHERE job_uid=?", (now, uid))
+        conn.commit()
+    return list_ai_video_assets(uid)
+
+
+def list_ai_video_assets(job_uid: str = "") -> list[dict]:
+    uid = str(job_uid or "").strip()
+    with _get_conn() as conn:
+        if uid:
+            rows = conn.execute(
+                """
+                SELECT * FROM ai_video_assets
+                WHERE job_uid=?
+                ORDER BY sort_order ASC, id ASC
+                """,
+                (uid,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM ai_video_assets ORDER BY sort_order ASC, id ASC LIMIT 500"
+            ).fetchall()
+    return [item for row in rows if (item := _ai_video_asset_from_row(row))]
+
+
+def create_ai_video_run(payload: Optional[Mapping[str, Any]] = None) -> dict:
+    source = dict(payload or {})
+    now = _now_iso()
+    run_uid = str(source.get("id") or source.get("run_uid") or "").strip() or f"avr_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:4]}"
+    request_uid = str(source.get("requestUid") or source.get("request_uid") or "").strip()
+    if not request_uid:
+        raise ValueError("requestUid is required")
+    existing = get_ai_video_run_by_request_uid(request_uid)
+    if existing:
+        return existing
+    job_uid = str(source.get("jobId") or source.get("job_uid") or "").strip()
+    with _get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO ai_video_runs (
+                run_uid, request_uid, job_uid, status, provider, model, input_snapshot_json,
+                provider_task_id, provider_status, archive_status, output_json, error_json,
+                created_at, updated_at, submitted_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_uid,
+                request_uid,
+                job_uid,
+                str(source.get("status") or "queued").strip() or "queued",
+                str(source.get("provider") or "").strip(),
+                str(source.get("model") or "").strip(),
+                _json_dumps(source.get("inputSnapshot") if isinstance(source.get("inputSnapshot"), Mapping) else {}),
+                str(source.get("providerTaskId") or source.get("provider_task_id") or ""),
+                str(source.get("providerStatus") or source.get("provider_status") or ""),
+                str(source.get("archiveStatus") or source.get("archive_status") or "none"),
+                _json_dumps(source.get("output") if isinstance(source.get("output"), Mapping) else {}),
+                _json_dumps(source.get("error") if isinstance(source.get("error"), Mapping) else {}),
+                now,
+                now,
+                str(source.get("submittedAt") or source.get("submitted_at") or ""),
+                str(source.get("completedAt") or source.get("completed_at") or ""),
+            ),
+        )
+        if job_uid:
+            conn.execute(
+                "UPDATE ai_video_jobs SET current_run_uid=?, status=?, updated_at=? WHERE job_uid=?",
+                (run_uid, str(source.get("status") or "queued"), now, job_uid),
+            )
+        conn.commit()
+    return get_ai_video_run(run_uid) or {}
+
+
+def get_ai_video_run(run_uid: str) -> Optional[dict]:
+    uid = str(run_uid or "").strip()
+    if not uid:
+        return None
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ai_video_runs WHERE run_uid=? LIMIT 1",
+            (uid,),
+        ).fetchone()
+    return _ai_video_run_from_row(row)
+
+
+def list_ai_video_runs(job_uid: str = "", limit: int = 50) -> list[dict]:
+    uid = str(job_uid or "").strip()
+    try:
+        safe_limit = max(1, min(int(limit), 200))
+    except Exception:
+        safe_limit = 50
+    with _get_conn() as conn:
+        if uid:
+            rows = conn.execute(
+                """
+                SELECT * FROM ai_video_runs
+                WHERE job_uid=?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (uid, safe_limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM ai_video_runs
+                ORDER BY created_at DESC, id DESC
+                LIMIT ?
+                """,
+                (safe_limit,),
+            ).fetchall()
+    return [item for row in rows if (item := _ai_video_run_from_row(row))]
+
+
+def update_ai_video_run(run_uid: str, payload: Optional[Mapping[str, Any]] = None) -> dict:
+    """Update mutable execution fields only; never rewrite input snapshot."""
+    source = dict(payload or {})
+    uid = str(run_uid or "").strip()
+    if not uid:
+        return {}
+    updates: dict[str, Any] = {}
+    mapping = {
+        "status": "status",
+        "providerTaskId": "provider_task_id",
+        "provider_task_id": "provider_task_id",
+        "providerStatus": "provider_status",
+        "provider_status": "provider_status",
+        "archiveStatus": "archive_status",
+        "archive_status": "archive_status",
+        "submittedAt": "submitted_at",
+        "submitted_at": "submitted_at",
+        "completedAt": "completed_at",
+        "completed_at": "completed_at",
+    }
+    for src_key, column in mapping.items():
+        if src_key in source:
+            value = source.get(src_key)
+            updates[column] = "" if value is None else str(value).strip()
+    if "output" in source:
+        updates["output_json"] = _json_dumps(source.get("output") if isinstance(source.get("output"), Mapping) else {})
+    if "error" in source:
+        updates["error_json"] = _json_dumps(source.get("error") if isinstance(source.get("error"), Mapping) else {})
+    updates["updated_at"] = _now_iso()
+    assignments = ", ".join(f"{key}=?" for key in updates)
+    with _get_conn() as conn:
+        conn.execute(f"UPDATE ai_video_runs SET {assignments} WHERE run_uid=?", [*updates.values(), uid])
+        if "status" in source:
+            job_uid = conn.execute(
+                "SELECT job_uid FROM ai_video_runs WHERE run_uid=? LIMIT 1",
+                (uid,),
+            ).fetchone()
+            if job_uid and str(job_uid["job_uid"] or "").strip():
+                jid = str(job_uid["job_uid"])
+                current = conn.execute(
+                    "SELECT current_run_uid FROM ai_video_jobs WHERE job_uid=? LIMIT 1",
+                    (jid,),
+                ).fetchone()
+                if current and str(current["current_run_uid"] or "") == uid:
+                    conn.execute(
+                        "UPDATE ai_video_jobs SET status=?, updated_at=? WHERE job_uid=?",
+                        (str(source.get("status") or "").strip(), updates["updated_at"], jid),
+                    )
+        conn.commit()
+    return get_ai_video_run(uid) or {}
+
+
+def soft_delete_ai_video_job(job_uid: str) -> bool:
+    uid = str(job_uid or "").strip()
+    if not uid:
+        return False
+    job = get_ai_video_job(uid)
+    if not job:
+        return False
+    update_ai_video_job(uid, {"deletedAt": _now_iso()})
+    return True
 
 
 def create_task_instance(adapter_id: str, task_id: str, title: str, params: Optional[Mapping[str, Any]] = None) -> dict:
