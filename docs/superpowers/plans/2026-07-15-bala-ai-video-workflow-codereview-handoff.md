@@ -11,7 +11,7 @@ Workspace: `/Users/xingyicheng/Documents/crawshrimp`
 - `docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-design-review.md`
 - `docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.html`
 
-The implementation keeps the spec boundaries: five explicit stages, review before video generation, one style code with multiple independently created video tasks, three providers, shared provider CLIs, runtime-only credentials, and no implementation identifiers in the operator UI.
+The implementation keeps the spec boundaries: five explicit stages, review before video generation, one style code with multiple independently created video tasks, three providers, shared provider CLIs, credentials sourced only from `设置 -> AI 能力`, and no implementation identifiers in the operator UI.
 
 ## Delivered Implementation
 
@@ -62,7 +62,7 @@ Style code: `208326102205`
   - Outfit: `aabfe5b0bdb244e785b0a7e6f33b45db`
   - Pose: `35fa6ff0cec04700b88434d4c7080aa5`
   - Precise single-image edit: `3b0dcbcb310d49f0a45aa1ef826ecdee`
-- QN/software-manager: run ID `22` ended as `error`. The live `9222` tab is currently `https://loginmyseller.taobao.com/`, and the task failed with `软件管家页面加载超时，请保留已登录页面后重试` before a verifiable upload/generation task was created. No QN provider task ID or MP4 is claimed.
+- QN/software-manager: run ID `22` ended as `error`. The live `9222` tab is currently `https://loginmyseller.taobao.com/`, and the task failed with `生意管家页面加载超时，请保留已登录页面后重试` before a verifiable upload/generation task was created. No QN provider task ID or MP4 is claimed.
 - Seedance: the real-person image request hit the provider privacy guard and was safely retried as a text-only original-person task.
   - Task ID: `cgt-20260716015202-rpz94`
   - MP4: `/Users/xingyicheng/Downloads/巴拉AI视频素材/208326102205-20260715-live/208326102205_seedance_20260716-015202.mp4`
@@ -97,7 +97,13 @@ Three read-only review passes reported no P0. Confirmed P1/P2 findings were repr
 - dangerous click/download/paginate checks trusting the requested action instead of the matched control;
 - sensitive query values in old journal observations, actions, verifications, and failures, including relative URLs embedded in prose;
 - failed result cards exposing preview/download actions for nonexistent files;
-- stale handoff documentation.
+- stale handoff documentation;
+- provider credentials falling back to application startup environment variables instead of only `设置 -> AI 能力`;
+- review-token-only video export granting an arbitrary local output-directory write surface without local API authentication;
+- concurrent review decisions, deletion, refresh, and regeneration losing updates through non-atomic read/modify/write;
+- pending-only styles entering the video stage without any approved asset;
+- Seedance/HappyHorse plan mode reporting success without a real backend provider preflight;
+- submitted tasks being able to create duplicate external runs, including the preflight-reset bypass after submission.
 
 The final live UI readback verified:
 
@@ -128,11 +134,13 @@ Provider credentials are not stored in source, tests, documentation, fixtures, r
 
 Fresh delivery results:
 
-- Workflow UI: 56/56 passed.
-- Bala packaging/material/review/settings/security Python bundle: 36/36 passed.
+- Workflow UI: 59/59 passed.
+- Bala provider packaging: 29/29 passed.
+- Bala review/security pytest bundle: 25/25 passed.
+- Bala material/review/settings unittest bundle: 11/11 passed.
 - Seedance CLI: 6/6 passed.
 - HappyHorse CLI: 8/8 passed.
-- Material/AI/QN adapter plus workspace-file boundary tests: 26/26 passed.
+- QN/software-manager adapter: 13/13 passed.
 - Desktop application tests: 244/244 passed.
 - Crawshrimp skill tests: 75/75 passed.
 - Vite production build: passed; only the existing large-chunk warning remains.

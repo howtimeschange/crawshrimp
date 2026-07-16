@@ -427,6 +427,7 @@ export function createDevCsBridge() {
     },
     runBalaSeedanceVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {}),
     getBalaVideoProviderStatus: () => apiCall('GET', '/bala-ai-video-providers/api/status'),
+    preflightBalaVideoProvider: (payload = {}) => apiCall('POST', '/bala-ai-video-providers/api/preflight', payload || {}),
     refreshBalaVideoProviderTask: (payload = {}) => apiCall('POST', '/bala-ai-video-providers/api/task', payload || {}),
     runBalaHappyHorseVideo: (payload = {}) => apiCall('POST', '/bala-ai-video-happyhorse/api/run', payload || {}),
     getBalaReviewBatch: (batchId, token) => apiCall('GET', `/bala-ai-video-review/api/${encodePathPart(batchId)}?token=${encodeURIComponent(String(token || ''))}`),

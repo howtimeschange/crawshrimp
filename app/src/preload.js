@@ -342,6 +342,8 @@ contextBridge.exposeInMainWorld('cs', {
     () => apiCall('POST', '/bala-ai-video-seedance/api/run', payload || {})),
   getBalaVideoProviderStatus: () => invokeWithApiFallback('get-bala-video-provider-status', [],
     () => apiCall('GET', '/bala-ai-video-providers/api/status')),
+  preflightBalaVideoProvider: (payload) => invokeWithApiFallback('preflight-bala-video-provider', [payload || {}],
+    () => apiCall('POST', '/bala-ai-video-providers/api/preflight', payload || {})),
   refreshBalaVideoProviderTask: (payload) => invokeWithApiFallback('refresh-bala-video-provider-task', [payload || {}],
     () => apiCall('POST', '/bala-ai-video-providers/api/task', payload || {})),
   runBalaHappyHorseVideo: (payload) => invokeWithApiFallback('run-bala-happyhorse-video', [payload || {}],

@@ -4,7 +4,7 @@
 
 ## 结论
 
-新增抓虾一级菜单：`AI 视频`，放在 `AI 生图` 下方。这个入口不是新的黑盒脚本，也不替代现有原子能力，而是在前端串联已经落地的 `semir_video_material_prepare`、`bala_ai_face_background_generate`、`qn_img2video_batch`，并在生视频阶段接入软件管家、Seedance 和百炼 HappyHorse 三类 provider，给业务一个从找图到 AI 改图、审核、选模板/选模型、生视频、下载回显的分步工作流体验。
+新增抓虾一级菜单：`AI 视频`，放在 `AI 生图` 下方。这个入口不是新的黑盒脚本，也不替代现有原子能力，而是在前端串联已经落地的 `semir_video_material_prepare`、`bala_ai_face_background_generate`、`qn_img2video_batch`，并在生视频阶段接入生意管家、Seedance 和百炼 HappyHorse 三类 provider，给业务一个从找图到 AI 改图、审核、选模板/选模型、生视频、下载回显的分步工作流体验。
 
 本入口只显示工作流界面，不显示通用脚本参数表。原来的 `巴拉 AI 视频助手` 适配器和原子脚本仍保留，方便单独调试、重跑和排障。
 
@@ -19,18 +19,18 @@
 5. 素材可进入四个 AI 图片动作：`AI 换脸`、`AI 换背景`、`AI 换装`、`AI 换姿势`。
 6. AI 结果进入统一审核池，支持通过、驳回、重试重跑、继续进入视频阶段。
 7. 视频阶段先创建视频任务，再提交生成；只有审核通过的图片可被选入任务，待审核图片只读展示并禁选，已驳回图片完全不进入视频素材库。
-8. 视频模型 provider 需要同时支持软件管家页面生成、Seedance 2.0 API 和百炼 HappyHorse；HappyHorse 作为新视频模型接入，不放在 AI 改图阶段。
+8. 视频模型 provider 需要同时支持生意管家页面生成、Seedance 2.0 API 和百炼 HappyHorse；HappyHorse 作为新视频模型接入，不放在 AI 改图阶段。
 9. 结果页采用卡片式任务回显，展示整体进度条、单卡进度条、任务 ID、供应商、本地 MP4 路径和失败原因。
 
 ### 非目标
 
 1. 本期不做 `ai_video_pool_import`。批量输入款号已经满足当前起步体验。
-2. 本期不把软件管家智图/大森 AI 做成必接换脸 provider。AI 换脸/换背景走抓虾内置 GPT Image 生图能力，这是方案口径。
+2. 本期不把生意管家智图/大森 AI 做成必接换脸 provider。AI 换脸/换背景走抓虾内置 GPT Image 生图能力，这是方案口径。
 3. 本期不做自动发布、登记回写、效果回收，只在界面上预留后续阶段。
 4. 本期不把 OpenCut 嵌成完整剪辑器。视频下载后可先保留人工剪映或后续自动剪辑出口。
 5. 本期不在抓虾内重新实现 Seedance API 封装。Seedance CLI 作为项目级共享依赖放在 `integrations/seedanceCLI`，工作流通过该 CLI 调用 Ark 任务接口。
 6. 本期不在抓虾内重新实现百炼 HappyHorse API 封装。HappyHorse 的百炼 CLI 已在 `/Users/xingyicheng/Documents/AI 视频` 跑通，迁移为 `integrations/bailianCLI` 共享能力后由工作流调用。
-7. 本期不把 Ark / DashScope / 百炼 API Key 写进工作流源码、脚本参数、测试、文档或日志中；三类凭据都必须可在抓虾 `设置 -> AI 能力` 中统一配置，运行环境变量只作为兼容回退。
+7. 本期不把 Ark / DashScope / 百炼 API Key 写进工作流源码、脚本参数、测试、文档或日志中；抓虾应用工作流的三类凭据都只从 `设置 -> AI 能力` 读取，不从应用启动环境或 `.env.local` 回退。独立 CLI 手工调试仍可读取自身环境变量，但不属于应用工作流凭据来源。
 
 ## 入口定义
 
@@ -160,23 +160,23 @@
 
 - 点击 `新增视频任务` 打开弹窗；素材库按第一步找过图的款号平铺，用户在款号卡片上直接选择，不使用款号下拉。
 - 弹窗内选择 `生成供应商/方式`、`Prompt`、`输出目录` 和图片素材；输出目录必须是系统文件夹选择器，默认继承第一步工作区。
-- 一个款号可以重复创建多条任务，例如同一款同时创建“软件管家领口模板视频”、“Seedance 场景视频”和“HappyHorse 参考生视频”。
+- 一个款号可以重复创建多条任务，例如同一款同时创建“生意管家领口模板视频”、“Seedance 场景视频”和“HappyHorse 参考生视频”。
 - 每个款号卡片展示原始模拍图、细节素材和 AI 结果，并打上业务标签：`模拍`、`素材`、`AI 换脸`、`AI 换装`、`AI 换背景`、`AI 换姿势`、`已审核`。
 - 只有 `approved` 图片可选择；`pending` / `retry_requested` 可见但禁选，`rejected` 完全排除。
 - 页面顶部是当前 tab 内的批量工具条，一行展示批量预检、下载已完成、查看结果进度、默认输出目录等动作，不再放左侧按钮栏。
 - 每个视频任务独立保存 `prompt`、`provider`、`template_id`、`selected_image_refs` 和输出目录。
 - 批量执行时按视频任务拆分队列，避免款号多时素材混在同一个任务里。
-- 删除面向用户的“成片拆分”配置；一条视频任务就是用户本次自由组合的一组图片。软件管家内部需要兼容参数时固定传 `all_images_one_video`。
+- 删除面向用户的“成片拆分”配置；一条视频任务就是用户本次自由组合的一组图片。生意管家内部需要兼容参数时固定传 `all_images_one_video`。
 
 供应商选择：
 
 | 供应商 | 入口 | 模板 | 说明 |
 | --- | --- | --- | --- |
-| `qn` | 软件管家页面生成 | 可选 | 复用 `qn_img2video_batch` 的上传、提交、轮询、下载链路 |
-| `seedance` | Seedance 2.0 API | 不使用软件管家模板 | 复用 `integrations/seedanceCLI` 的 Node.js CLI |
-| `happyhorse` | 百炼 HappyHorse 视频模型 | 不使用软件管家模板 | 复用 `integrations/bailianCLI` 的 Node.js CLI，支持文生、图生、参考生视频 |
+| `qn` | 生意管家页面生成 | 可选 | 复用 `qn_img2video_batch` 的上传、提交、轮询、下载链路 |
+| `seedance` | Seedance 2.0 API | 不使用生意管家模板 | 复用 `integrations/seedanceCLI` 的 Node.js CLI |
+| `happyhorse` | 百炼 HappyHorse 视频模型 | 不使用生意管家模板 | 复用 `integrations/bailianCLI` 的 Node.js CLI，支持文生、图生、参考生视频 |
 
-软件管家模板库不是主页面常驻区域，只作为“选择模板”弹窗。模板是可选项，常见链路可以不选模板，直接把上一阶段审核通过的 AI 图上传到软件管家生成视频，再下载素材到本地。
+生意管家模板库不是主页面常驻区域，只作为“选择模板”弹窗。模板是可选项，常见链路可以不选模板，直接把上一阶段审核通过的 AI 图上传到生意管家生成视频，再下载素材到本地。
 
 模板选择来自本地模板目录：
 
@@ -190,7 +190,7 @@
 模板弹窗卡片展示：
 
 - 模板标题。
-- 描述；当软件管家返回空描述时，展示槽位说明。
+- 描述；当生意管家返回空描述时，展示槽位说明。
 - 比例、时长、模板类型。
 - 本地预览视频。
 - 模板 ID，方便排障和原子脚本复跑。
@@ -211,7 +211,7 @@ Seedance 对接不在抓虾内重写 Ark API，先调用项目级共享依赖 `i
 | 查询任务 | `npm --prefix integrations/seedanceCLI run seedance -- get <task-id>` |
 | 等待并下载 | `npm --prefix integrations/seedanceCLI run seedance -- wait <task-id> --download outputs/result.mp4` |
 
-工作流实现时只需要负责生成 payload、调用 CLI、解析 stdout/stderr、登记任务 ID、轮询状态和复制本地 MP4 到当前款号输出目录。`ARK_API_KEY` 不写入源码，统一由 `AI 能力` 配置写入运行环境或 `.env.local`。
+工作流实现时只需要负责生成 payload、调用 CLI、解析 stdout/stderr、登记任务 ID、轮询状态和复制本地 MP4 到当前款号输出目录。应用后端只从 `AI 能力` 读取 Seedance 凭据，启动 CLI 前清除同名运行环境别名，再显式注入本次配置；应用工作流不把运行环境或 `.env.local` 当作凭据来源。独立 CLI 手工调试仍可自行读取 `ARK_API_KEY`。
 
 隐私边界：
 
@@ -268,7 +268,7 @@ HappyHorse 接入方式与 Seedance 保持一致：不把百炼 / DashScope API 
 
 该 CLI 没有 npm 依赖，Node 18+ 自带 `fetch` 即可运行。
 
-配置来源：
+独立 CLI 手工调试配置来源（不属于抓虾应用工作流凭据来源）：
 
 | 环境变量 | 说明 |
 | --- | --- |
@@ -311,7 +311,7 @@ HappyHorse 三种模式：
 
 HappyHorse 失败恢复：
 
-- 未配置 `DASHSCOPE_API_KEY`：视频任务停在 `needs_config`，提示去 `AI 能力` 或运行环境配置。
+- `AI 能力` 未配置 HappyHorse 凭据：视频任务停在 `needs_config`，提示去 `AI 能力` 配置；不得回退读取应用启动环境。
 - 图生视频传入 `ratio`：前端预检直接拦截，提示“图生视频比例跟随首帧图”。
 - 参考图超过 9 张：前端预检要求精简素材，不提交任务。
 - 百炼任务失败或过期：保留 payload、task ID、失败原因和重试按钮；重试不得重复使用已过期视频 URL。
@@ -400,7 +400,7 @@ HappyHorse 失败恢复：
   "provider": "qn",
   "template_id": "",
   "template_title": "",
-  "prompt": "上传本款审核通过 AI 图，由软件管家直接生成视频",
+  "prompt": "上传本款审核通过 AI 图，由生意管家直接生成视频",
   "selected_image_refs": [
     {
       "path": "/Users/.../AI生成图/208326102205_001.png",
@@ -480,7 +480,7 @@ HappyHorse 失败恢复：
 2. 决策降噪：每个步骤只保留一个主动作；AI 改图和生视频不要同时暴露过多同权重按钮。
 3. 弹窗可访问性：图片预览、模特库、模板库、视频任务创建必须对齐 AI 生图页面的 `role=dialog`、`aria-modal`、focus trap、Escape 关闭和背景 inert。
 4. 状态色分工：橙色只承担主动作和当前步骤；选中态、通过、待审、失败、重跑必须有独立文字/图标表达。
-5. 边界状态产品化：无素材、部分成功、AI 生成失败、Seedance 隐私拦截、API key 未配置、软件管家上传/轮询/下载失败、视频 URL 过期都要有“原因 + 下一步动作”。
+5. 边界状态产品化：无素材、部分成功、AI 生成失败、Seedance 隐私拦截、API key 未配置、生意管家上传/轮询/下载失败、视频 URL 过期都要有“原因 + 下一步动作”。
 
 布局要求：
 
@@ -497,7 +497,7 @@ HappyHorse 失败恢复：
 - `生视频` 主体必须展示视频任务队列；用户通过 `新增视频任务` 弹窗选择素材图、填写 Prompt、选择生成方式、款号和供应商。
 - `生视频` 顶部批量动作必须在当前 tab 页面内横向展示，不使用左侧按钮栏。
 - `生视频` 只允许选择审核通过图片；待审核/需重跑图片只读禁选，已驳回图片不进入素材库。
-- `生视频` 同一款号可以创建多条视频任务；每条任务可选 `软件管家页面生成`、`Seedance 2.0 API` 或 `百炼 HappyHorse`；Ark / DashScope / 百炼 Key 只显示配置状态，不在页面内明文填写。
+- `生视频` 同一款号可以创建多条视频任务；每条任务可选 `生意管家页面生成`、`Seedance 2.0 API` 或 `百炼 HappyHorse`；Ark / DashScope / 百炼 Key 只显示配置状态，不在页面内明文填写。
 - `Seedance 2.0 API` 调用项目级共享依赖 `integrations/seedanceCLI`，不引用用户目录里的外部临时项目。
 - `百炼 HappyHorse` 调用项目级共享依赖 `integrations/bailianCLI`，不引用用户目录里的外部临时项目。
 - `结果` 主体必须为卡片式布局，包含整体进度条和单卡片进度条。
@@ -530,7 +530,7 @@ HappyHorse 失败恢复：
 8. 视频模板卡片能展示标题、描述/槽位说明、本地预览视频。
 9. 生视频页通过“新增视频任务”弹窗按款号平铺素材库，组织图片、Prompt、生成方式和供应商；一个款号可创建多条任务，且不再暴露“成片拆分”。
 10. 视频任务只允许选择已审核图片，素材卡具有明确的来源动作和审核状态标签。
-11. 软件管家模板不是必填；不选模板也能提交生成。
+11. 生意管家模板不是必填；不选模板也能提交生成。
 12. Seedance provider 能生成 payload、调用既有 CLI、登记任务 ID，并把成功视频下载到本地。
 13. HappyHorse provider 能生成 t2v / i2v / r2v payload、调用 `integrations/bailianCLI`、登记 `output.task_id`，并把成功视频下载到本地。
 14. HappyHorse 图生视频不允许传 `ratio`；参考生视频支持 1-9 张参考图；未配置 `DASHSCOPE_API_KEY` 时只显示配置状态和恢复动作，不提交 live 任务。

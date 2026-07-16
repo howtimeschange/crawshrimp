@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from PIL import Image
 
 from core import api_server, data_sink, runtime_paths
 from core.api_server import (
@@ -249,7 +250,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             asyncio.run(communicator(process, timeout_seconds=0.01, provider_label="测试供应商"))
         self.assertTrue(process.killed)
 
-    def test_video_provider_status_never_returns_credentials(self):
+    def test_video_provider_status_ignores_runtime_environment_credentials(self):
         resolver = getattr(api_server, "_bala_video_provider_status", None)
         self.assertTrue(callable(resolver), "Video provider status resolver must be implemented")
 
@@ -259,8 +260,10 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         }, clear=False), patch("core.api_server.load_config", return_value={"ai": {"video": {}}}):
             status = resolver()
 
-        self.assertTrue(status["seedance"]["configured"])
-        self.assertTrue(status["happyhorse"]["configured"])
+        self.assertFalse(status["seedance"]["configured"])
+        self.assertFalse(status["happyhorse"]["configured"])
+        self.assertEqual(status["seedance"]["source"], "未配置")
+        self.assertEqual(status["happyhorse"]["source"], "未配置")
         self.assertNotIn("runtime-placeholder", json.dumps(status))
 
     def test_ai_capability_credentials_override_environment_fallbacks(self):
@@ -287,6 +290,94 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(status["seedance"]["source"], "AI 能力")
         self.assertEqual(status["happyhorse"]["source"], "AI 能力")
         self.assertEqual(one_xm["4k"], "config-placeholder-image")
+
+    def test_video_provider_subprocess_environment_drops_runtime_credentials(self):
+        config = {
+            "ai": {
+                "video": {
+                    "seedance_api_key": "config-placeholder-seedance",
+                    "bailian_api_key": "config-placeholder-happyhorse",
+                },
+            },
+        }
+        with patch.dict("os.environ", {
+            "ARK_API_KEY": "runtime-placeholder-seedance",
+            "VOLCENGINE_ARK_API_KEY": "runtime-placeholder-seedance-alias",
+            "DASHSCOPE_API_KEY": "runtime-placeholder-happyhorse",
+            "BAILIAN_API_KEY": "runtime-placeholder-happyhorse-alias",
+        }, clear=False), patch("core.api_server.load_config", return_value=config):
+            seedance_env, _ = api_server._bala_video_provider_env("seedance")
+            happyhorse_env, _ = api_server._bala_video_provider_env("happyhorse")
+
+        self.assertEqual(seedance_env["ARK_API_KEY"], "config-placeholder-seedance")
+        self.assertNotIn("VOLCENGINE_ARK_API_KEY", seedance_env)
+        self.assertEqual(happyhorse_env["DASHSCOPE_API_KEY"], "config-placeholder-happyhorse")
+        self.assertNotIn("BAILIAN_API_KEY", happyhorse_env)
+
+    def test_video_provider_preflight_validates_without_launching_a_cli(self):
+        request_type = getattr(api_server, "BalaVideoProviderPreflightRequest", None)
+        preflight = getattr(api_server, "_preflight_bala_video_provider", None)
+        self.assertTrue(request_type, "Provider preflight request model must exist")
+        self.assertTrue(callable(preflight), "Provider preflight validator must exist")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "source.png"
+            Image.new("RGB", (8, 8), color=(255, 255, 255)).save(image)
+            config = {
+                "ai": {
+                    "video": {
+                        "seedance_api_key": "config-placeholder-seedance",
+                        "bailian_api_key": "config-placeholder-happyhorse",
+                    },
+                },
+            }
+            request = request_type(
+                provider="seedance",
+                style_code="208326102205",
+                prompt="童装模特自然转身展示服装",
+                image_paths=[str(image)],
+                output_dir=tmpdir,
+            )
+            with patch("core.api_server.load_config", return_value=config), patch(
+                "core.api_server.asyncio.create_subprocess_exec",
+                side_effect=AssertionError("preflight must not launch a provider CLI"),
+            ):
+                result = preflight(request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["provider"], "seedance")
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["source"], "AI 能力")
+
+    def test_missing_video_provider_credentials_direct_users_to_ai_capabilities_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_dir = Path(tmpdir) / "output"
+            runtime_dir = Path(tmpdir) / "runtime"
+            seedance_request = api_server.BalaSeedanceVideoRequest(
+                prompt="童装模特自然转身展示服装",
+                output_dir=str(output_dir),
+            )
+            happyhorse_request = api_server.BalaHappyHorseVideoRequest(
+                mode="t2v",
+                prompt="童装模特自然转身展示服装",
+                output_dir=str(output_dir),
+            )
+            refresh_request = api_server.BalaVideoProviderTaskRequest(
+                provider="seedance",
+                task_id="seedance-task",
+                output_dir=str(output_dir),
+                download=False,
+            )
+            with patch("core.api_server.runtime_paths.child_dir", return_value=runtime_dir), \
+                    patch("core.api_server._bala_video_provider_env", return_value=({}, [])), \
+                    patch("core.api_server.asyncio.create_subprocess_exec", side_effect=AssertionError("missing credentials must not launch a provider CLI")):
+                seedance_result = asyncio.run(api_server._run_seedance_cli(seedance_request))
+                happyhorse_result = asyncio.run(api_server._run_happyhorse_cli(happyhorse_request))
+                refresh_result = asyncio.run(api_server._run_video_provider_task_cli(refresh_request))
+
+        self.assertEqual(seedance_result["error"], "请先在 AI 能力配置 Seedance 凭据")
+        self.assertEqual(happyhorse_result["error"], "请先在 AI 能力配置 HappyHorse 凭据")
+        self.assertEqual(refresh_result["error"], "请先在 AI 能力配置 Seedance 凭据")
 
     def test_provider_task_refresh_and_download_use_shared_cli_commands(self):
         runner = getattr(api_server, "_run_video_provider_task_cli", None)

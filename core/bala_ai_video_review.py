@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import hmac
 import json
+import os
 import re
 import secrets
 import shutil
+import threading
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from core import ai_image_service
 from core import data_sink
@@ -19,6 +21,8 @@ STATUS_GENERATING = "generating"
 STATUS_PENDING_APPROVAL = "pending_approval"
 STATUS_READY_FOR_VIDEO = "ready_for_video"
 VIDEO_PROVIDER_QN = "qn_img2video"
+_REVIEW_BATCH_LOCKS: dict[str, threading.RLock] = {}
+_REVIEW_BATCH_LOCKS_GUARD = threading.Lock()
 
 
 def _text(value: Any) -> str:
@@ -216,8 +220,36 @@ def build_review_batch(rows: list[dict], run_params: dict, artifact_dir: str, ap
 
 def save_review_batch(batch: dict) -> Path:
     path = _batch_json_path(batch)
-    path.write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.{secrets.token_hex(6)}.tmp")
+    try:
+        temporary.write_text(json.dumps(batch, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
     return path
+
+
+def _review_batch_lock(batch_id: str) -> threading.RLock:
+    safe_batch_id = _safe_id(batch_id, "")
+    with _REVIEW_BATCH_LOCKS_GUARD:
+        lock = _REVIEW_BATCH_LOCKS.get(safe_batch_id)
+        if lock is None:
+            lock = threading.RLock()
+            _REVIEW_BATCH_LOCKS[safe_batch_id] = lock
+        return lock
+
+
+def mutate_review_batch(
+    batch_id: str,
+    token: str,
+    mutation: Callable[[dict], dict | None],
+) -> dict:
+    with _review_batch_lock(batch_id):
+        batch = load_review_batch(batch_id)
+        validate_token(batch, token)
+        updated = mutation(batch) or batch
+        save_review_batch(updated)
+        return updated
 
 
 def load_review_batch(batch_id: str) -> dict:

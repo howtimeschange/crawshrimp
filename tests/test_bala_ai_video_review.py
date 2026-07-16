@@ -1,4 +1,7 @@
 import json
+import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -246,3 +249,81 @@ def test_list_review_batches_restores_every_batch_for_requested_style(tmp_path, 
         "bala-ai-video-20260716-000002-b",
     ]
     assert [batch["items"][0]["assets"][0]["job_uid"] for batch in batches] == ["face-job", "pose-job"]
+
+
+def test_mutate_review_batch_serializes_concurrent_asset_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    batch = {
+        "batch_id": "concurrent-review",
+        "token": "token-concurrent",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [
+                {"id": "asset-a", "kind": "ai", "status": "pending"},
+                {"id": "asset-b", "kind": "ai", "status": "pending"},
+            ],
+        }],
+    }
+    review.save_review_batch(batch)
+    first_loaded = threading.Event()
+    second_finished = threading.Event()
+
+    def approve_first(loaded):
+        first_loaded.set()
+        second_finished.wait(0.2)
+        return review.update_review_decisions(loaded, {"asset-a": {"status": "approved"}})
+
+    def reject_second(loaded):
+        return review.update_review_decisions(loaded, {"asset-b": {"status": "rejected"}})
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(
+            review.mutate_review_batch,
+            "concurrent-review",
+            "token-concurrent",
+            approve_first,
+        )
+        assert first_loaded.wait(1)
+        second = executor.submit(
+            review.mutate_review_batch,
+            "concurrent-review",
+            "token-concurrent",
+            reject_second,
+        )
+        second.add_done_callback(lambda _future: second_finished.set())
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    persisted = review.load_review_batch("concurrent-review")
+    statuses = {
+        asset["id"]: asset["status"]
+        for asset in persisted["items"][0]["assets"]
+    }
+    assert statuses == {"asset-a": "approved", "asset-b": "rejected"}
+
+
+def test_save_review_batch_atomically_replaces_the_manifest(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    replacements = []
+    original_replace = os.replace
+
+    def recording_replace(source, target):
+        replacements.append((Path(source), Path(target)))
+        return original_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", recording_replace)
+    path = review.save_review_batch({
+        "batch_id": "atomic-review",
+        "token": "token-atomic",
+        "items": [],
+    })
+
+    assert len(replacements) == 1
+    temporary, target = replacements[0]
+    assert target == path
+    assert temporary.parent == path.parent
+    assert temporary != path
+    assert not temporary.exists()
+    assert review.load_review_batch("atomic-review")["token"] == "token-atomic"

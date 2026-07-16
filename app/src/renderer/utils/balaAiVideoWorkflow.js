@@ -12,6 +12,19 @@ export const BALA_MATERIAL_PREPARE_TASK_ID = 'semir_video_material_prepare'
 export const BALA_AI_IMAGE_TASK_ID = 'bala_ai_face_background_generate'
 export const BALA_QN_VIDEO_TASK_ID = 'qn_img2video_batch'
 
+const LEGACY_BALA_BUSINESS_MANAGER_NAME = ['软件', '管家'].join('')
+
+export function migrateBalaBusinessManagerText(value = '') {
+  return String(value || '').split(LEGACY_BALA_BUSINESS_MANAGER_NAME).join('生意管家')
+}
+
+export function normalizeBalaVideoTaskProvider(value = '') {
+  const provider = String(value || '').trim()
+  if (provider === 'qn' || provider === BALA_QN_VIDEO_TASK_ID) return 'qn'
+  if (migrateBalaBusinessManagerText(provider).includes('生意管家')) return 'qn'
+  return provider
+}
+
 const MATERIAL_PREPARE_DEFAULTS = Object.freeze({
   mode: 'new',
   folder_scan_depth: 2,
@@ -405,9 +418,9 @@ export function qnTerminalRunFailure(snapshot = {}) {
   if (!['failed', 'stopped', 'partial'].includes(status)) return ''
   const explicit = String(snapshot?.error || snapshot?.message || '').trim()
   if (explicit) return explicit
-  if (status === 'stopped') return '软件管家视频任务已停止'
-  if (status === 'partial') return '软件管家视频任务部分失败'
-  return '软件管家视频任务失败'
+  if (status === 'stopped') return '生意管家视频任务已停止'
+  if (status === 'partial') return '生意管家视频任务部分失败'
+  return '生意管家视频任务失败'
 }
 
 export function isSeedancePrivacyProtectionError(error) {
@@ -417,6 +430,13 @@ export function isSeedancePrivacyProtectionError(error) {
 
 export function isActiveWorkflowStatus(value = '') {
   return normalizeWorkflowStageStatus(value) === 'running'
+}
+
+export function shouldCreateBalaVideoProviderRun(task = {}) {
+  const providerTaskId = String(task?.providerTaskId || task?.runId || '').trim()
+  if (!providerTaskId) return true
+  const status = String(task?.status || '').trim().toLowerCase()
+  return /失败|错误|failed|error/.test(status) || /待预检|预检完成/.test(status)
 }
 
 export function parseBalaMaterialBoardUrl(url = '') {
@@ -853,6 +873,10 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
   return output
 }
 
+export function hasApprovedBalaVideoAsset(assets = []) {
+  return (assets || []).some(asset => asset?.status === 'approved' && asset?.selectable === true)
+}
+
 export function normalizeBalaTemplateCatalog(payload = {}) {
   const templates = Array.isArray(payload?.templates) ? payload.templates : (Array.isArray(payload?.items) ? payload.items : [])
   return templates.map((item, index) => {
@@ -864,7 +888,7 @@ export function normalizeBalaTemplateCatalog(payload = {}) {
       templateId: id,
       index: Number(item?.index || item?.序号 || index + 1),
       title: compact(item?.title || item?.模板标题 || id),
-      description: compact(item?.description || item?.描述 || slotDescription || '软件管家模板未返回描述'),
+      description: compact(item?.description || item?.描述 || slotDescription || '生意管家模板未返回描述'),
       slotDescription,
       type: compact(item?.type || item?.类型 || 'action'),
       ratio: compact(item?.ratio || item?.比例 || '3:4'),
@@ -907,7 +931,7 @@ export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
       id: compact(row?.id || taskId || `${fallbackTask?.id || 'video-result'}-${index + 1}`),
       styleCode: compact(row?.款号 || row?.style_code || row?.styleCode || fallbackTask?.styleCode),
       template: compact(row?.模板标题 || row?.模板名称 || row?.模板ID || row?.template || fallbackTask?.template?.title || '不选模板'),
-      provider: compact(row?.供应商 || row?.provider || fallbackTask?.providerLabel || fallbackTask?.provider || '软件管家'),
+      provider: compact(row?.供应商 || row?.provider || fallbackTask?.providerLabel || fallbackTask?.provider || '生意管家'),
       taskId,
       status: failed ? '失败' : (done ? '已完成' : (result || '运行中')),
       progress: failed ? 100 : (done ? 100 : Number(row?.progress || 60)),
@@ -926,7 +950,7 @@ export function qnVideoResultFailure(rows = []) {
     .filter(Boolean)
     .slice(0, 3)
     .join('；')
-  return `软件管家视频结果 ${failed.length} 条失败${details ? `：${details}` : ''}`
+  return `生意管家视频结果 ${failed.length} 条失败${details ? `：${details}` : ''}`
 }
 
 export function collectDownloadedMaterialRows(payload = {}) {

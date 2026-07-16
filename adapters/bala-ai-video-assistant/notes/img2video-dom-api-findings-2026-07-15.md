@@ -1,4 +1,4 @@
-# 千牛软件管家 img2video 页面探查记录 2026-07-15
+# 千牛生意管家 img2video 页面探查记录 2026-07-15
 
 页面：`https://quick.taobao.com/videostudio/img2video`
 

@@ -85,6 +85,24 @@ class ApiSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocked.status_code, 401)
         self.assertEqual(allowed.status_code, 200)
 
+    async def test_bala_review_export_requires_local_api_auth(self):
+        async def call_next(_request):
+            return PlainTextResponse("ok")
+
+        path = "/bala-ai-video-review/api/review-batch/export-video-input"
+        with patch.dict(os.environ, {"CRAWSHRIMP_API_TOKEN": "unit-token"}, clear=False):
+            blocked = await api_server.require_local_api_token(
+                FakeRequest(path, method="POST"),
+                call_next,
+            )
+            allowed = await api_server.require_local_api_token(
+                FakeRequest(path, {"x-crawshrimp-token": "unit-token"}, method="POST"),
+                call_next,
+            )
+
+        self.assertEqual(blocked.status_code, 401)
+        self.assertEqual(allowed.status_code, 200)
+
     def test_adapter_asset_response_is_path_scoped_and_cors_enabled(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             adapter_dir = Path(tmpdir) / "demo-adapter"

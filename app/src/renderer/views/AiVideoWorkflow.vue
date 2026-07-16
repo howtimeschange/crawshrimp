@@ -690,7 +690,7 @@
               </div>
               <div class="aiv-video-task-meta">
                 <div><strong>素材组合</strong><span>{{ task.assets.length }} 张图组成一条视频任务</span></div>
-                <div><strong>Prompt</strong><span>{{ task.prompt || '软件管家页面生成可不填写 Prompt' }}</span></div>
+                <div><strong>Prompt</strong><span>{{ task.prompt || '生意管家页面生成可不填写 Prompt' }}</span></div>
                 <div><strong>输出目录</strong><span>{{ task.outputDir }}</span></div>
               </div>
               <div v-if="task.provider !== 'qn'" class="aiv-seedance-callout">
@@ -991,8 +991,8 @@
       >
         <header class="aiv-modal-head">
           <div>
-            <strong id="aiv-template-title">软件管家模板库</strong>
-            <span>模板可选；不选模板也可以把 AI 图上传软件管家直接生成</span>
+            <strong id="aiv-template-title">生意管家模板库</strong>
+            <span>模板可选；不选模板也可以把 AI 图上传生意管家直接生成</span>
           </div>
           <button type="button" class="aiv-ghost small" @click="closeTemplateLibrary">关闭</button>
         </header>
@@ -1043,7 +1043,7 @@
               </div>
             </article>
             <div v-if="!templateLibraryState.loading && !filteredTemplateSamples.length" class="aiv-empty-inline">
-              未读取到本地软件管家模板库。
+              未读取到本地生意管家模板库。
             </div>
           </div>
         </div>
@@ -1097,7 +1097,7 @@
             <label class="aiv-field">
               <span>生成方式</span>
               <select v-model="videoTaskDraft.provider" @change="handleVideoProviderChange">
-                <option value="qn">软件管家页面生成</option>
+                <option value="qn">生意管家页面生成</option>
                 <option value="seedance">Seedance 2.0 API</option>
                 <option value="happyhorse">百炼 HappyHorse</option>
               </select>
@@ -1115,7 +1115,7 @@
               <textarea
                 v-model="videoTaskDraft.prompt"
                 rows="4"
-                :placeholder="videoTaskDraft.provider === 'qn' ? '软件管家页面生成可不填写 Prompt' : '描述服装、场景、动作和镜头要求'"
+                :placeholder="videoTaskDraft.provider === 'qn' ? '生意管家页面生成可不填写 Prompt' : '描述服装、场景、动作和镜头要求'"
               ></textarea>
             </label>
             <div class="aiv-field">
@@ -1128,7 +1128,7 @@
               </button>
             </div>
             <div v-if="videoTaskDraft.provider === 'qn'" class="aiv-inline-actions">
-              <button type="button" class="aiv-ghost small" @click="openTemplateLibrary(videoTaskDraft.styleCode)">选择软件管家模板</button>
+              <button type="button" class="aiv-ghost small" @click="openTemplateLibrary(videoTaskDraft.styleCode)">选择生意管家模板</button>
               <button type="button" class="aiv-ghost small" @click="videoTaskDraft.templateId = ''">不选模板</button>
             </div>
             <div v-else class="aiv-seedance-callout">
@@ -1185,7 +1185,7 @@
           </section>
         </div>
         <footer class="aiv-modal-foot">
-          <span>{{ videoTaskDraft.provider === 'qn' ? '软件管家 Prompt 可空，模板可选' : `${providerLabel(videoTaskDraft.provider)} 任务需要明确 Prompt` }}</span>
+          <span>{{ videoTaskDraft.provider === 'qn' ? '生意管家 Prompt 可空，模板可选' : `${providerLabel(videoTaskDraft.provider)} 任务需要明确 Prompt` }}</span>
           <button type="button" class="aiv-ghost" @click="closeVideoTaskDialog">取消</button>
           <button type="button" class="aiv-primary" @click="createVideoTaskFromDraft">创建视频任务</button>
         </footer>
@@ -1211,18 +1211,21 @@ import {
   collectDownloadedMaterialRows,
   filterBalaModelLibraryItems,
   formatBalaModelDisplayLabel,
+  hasApprovedBalaVideoAsset,
   hasGeneratingBalaReviewAssets,
   isSeedancePrivacyProtectionError,
   isActiveWorkflowStatus,
   latestRunForTaskData,
   mergeBalaReviewWorkspaceStyles,
   mergeBalaWorkspaceVersions,
+  migrateBalaBusinessManagerText,
   normalizeBalaMaterialGroups,
   normalizeBalaMaterialProgress,
   normalizeBalaReviewBatchStyles,
   normalizeBalaReviewStatus,
   normalizeStyleCodeLines,
   normalizeBalaTemplateCatalog,
+  normalizeBalaVideoTaskProvider,
   normalizeBalaVideoResultRows,
   normalizeWorkflowStageStatus,
   parseBalaMaterialBoardUrl,
@@ -1236,6 +1239,7 @@ import {
   selectNewTaskRun,
   selectVisibleEditableVersions,
   serializeBalaImageWorkspaceState,
+  shouldCreateBalaVideoProviderRun,
   summarizeBalaMaterialGroups,
   toBalaBridgeStringArray,
   waitForNewTaskRun,
@@ -1519,21 +1523,21 @@ function persistedVideoTask(task = {}) {
   const template = task.template && typeof task.template === 'object'
     ? {
         id: String(task.template.id || ''),
-        title: String(task.template.title || ''),
+        title: migrateBalaBusinessManagerText(task.template.title),
         duration: Number(task.template.duration || 0),
         ratio: String(task.template.ratio || ''),
       }
     : null
   return {
     id: String(task.id || ''),
-    title: String(task.title || ''),
+    title: migrateBalaBusinessManagerText(task.title),
     styleCode: String(task.styleCode || ''),
-    provider: String(task.provider || ''),
+    provider: normalizeBalaVideoTaskProvider(task.provider),
     happyhorseMode: String(task.happyhorseMode || ''),
-    prompt: String(task.prompt || ''),
+    prompt: migrateBalaBusinessManagerText(task.prompt),
     outputDir: String(task.outputDir || ''),
     template,
-    status: String(task.status || ''),
+    status: migrateBalaBusinessManagerText(task.status),
     providerTaskId: String(task.providerTaskId || ''),
     runId: String(task.runId || ''),
     assets: (task.assets || []).map(persistedVideoAsset),
@@ -1545,17 +1549,17 @@ function persistedVideoResult(item = {}) {
     id: String(item.id || ''),
     taskRefId: String(item.taskRefId || ''),
     styleCode: String(item.styleCode || ''),
-    template: String(item.template || ''),
-    provider: String(item.provider || ''),
-    providerKey: String(item.providerKey || ''),
+    template: migrateBalaBusinessManagerText(item.template),
+    provider: migrateBalaBusinessManagerText(item.provider),
+    providerKey: normalizeBalaVideoTaskProvider(item.providerKey || item.provider),
     providerTaskId: String(item.providerTaskId || item.taskId || ''),
     taskId: String(item.taskId || item.providerTaskId || ''),
-    providerStatus: String(item.providerStatus || ''),
-    status: String(item.status || ''),
+    providerStatus: migrateBalaBusinessManagerText(item.providerStatus),
+    status: migrateBalaBusinessManagerText(item.status),
     progress: Number(item.progress || 0),
     path: String(item.path || ''),
     videoUrl: String(item.videoUrl || ''),
-    error: String(item.error || ''),
+    error: migrateBalaBusinessManagerText(item.error),
   }
 }
 
@@ -1972,7 +1976,7 @@ async function waitForQnVideoRunStart(previousRunId = '') {
     getStatus: () => window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID),
     previousRunId,
     sleepFn: sleep,
-    errorMessage: '软件管家视频任务未成功启动，请检查 9222 页面状态后重试。',
+    errorMessage: '生意管家视频任务未成功启动，请检查 9222 页面状态后重试。',
   })
 }
 
@@ -3096,7 +3100,7 @@ function buildVideoJobsFromReview() {
   for (const style of reviewStyles) {
     const materialStyle = styleWorkspaces.find(item => item.styleCode === style.styleCode)
     const assets = buildBalaVideoAssetPool({ reviewStyle: style, materialStyle })
-    if (!assets.length) continue
+    if (!hasApprovedBalaVideoAsset(assets)) continue
     jobs.push({
       styleCode: style.styleCode,
       provider: 'qn',
@@ -3191,12 +3195,12 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
 
 async function refreshQnVideoTask(task) {
   const runId = String(task?.runId || task?.providerTaskId || '').trim()
-  if (!runId) throw new Error(`${task?.styleCode || '软件管家'} 缺少运行 ID`)
+  if (!runId) throw new Error(`${task?.styleCode || '生意管家'} 缺少运行 ID`)
   const status = await window.cs.getTaskStatus(BALA_AI_VIDEO_ADAPTER_ID, BALA_QN_VIDEO_TASK_ID)
   const snapshot = [status?.live, status?.last_run].find(candidate => (
     String(candidate?.run_id || candidate?.id || '').trim() === runId
   ))
-  if (!snapshot) throw new Error(`${task.styleCode} 未找到对应的软件管家运行记录`)
+  if (!snapshot) throw new Error(`${task.styleCode} 未找到对应的生意管家运行记录`)
   const normalized = normalizeWorkflowStageStatus(snapshot.status)
   if (['done', 'failed', 'stopped', 'partial'].includes(normalized)) {
     await finalizeQnVideoTask(task, runId, 'live', snapshot)
@@ -3283,7 +3287,7 @@ async function downloadCompletedVideoResults() {
   }
   videoStageState.status = errors.length ? 'partial' : 'done'
   videoStageState.error = errors.join('；')
-  videoStageState.message = `已下载 ${downloaded} 个供应商视频，软件管家本地结果 ${localQnCount} 个${errors.length ? `；${errors.length} 条失败` : ''}。`
+  videoStageState.message = `已下载 ${downloaded} 个供应商视频，生意管家本地结果 ${localQnCount} 个${errors.length ? `；${errors.length} 条失败` : ''}。`
 }
 
 function sleep(ms) {
@@ -3429,8 +3433,28 @@ async function waitForQnVideoTask(task, runId = '', mode = 'plan') {
   throw new Error('视频任务轮询超时')
 }
 
+async function preflightVideoProviderTask(task) {
+  const result = await window.cs.preflightBalaVideoProvider({
+    provider: task.provider,
+    style_code: task.styleCode,
+    mode: task.happyhorseMode || 'i2v',
+    prompt: String(task.prompt || '').trim(),
+    image_paths: task.provider === 'happyhorse' && task.happyhorseMode === 't2v'
+      ? []
+      : videoTaskImagePaths(task),
+    output_dir: task.outputDir || videoOutputDir.value,
+    resolution: '720P',
+    ratio: '3:4',
+    duration: 5,
+    generate_audio: true,
+  })
+  if (!result?.ok) throw new Error(result?.error || `${providerLabel(task.provider)} 预检失败`)
+  return result
+}
+
 async function runSeedanceVideoTask(task, mode = 'plan') {
   if (mode !== 'live') {
+    await preflightVideoProviderTask(task)
     task.status = '预检完成，等待授权生成'
     upsertVideoResults([{
       id: task.id,
@@ -3496,6 +3520,7 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
 
 async function runHappyHorseVideoTask(task, mode = 'plan') {
   if (mode !== 'live') {
+    await preflightVideoProviderTask(task)
     task.status = '预检完成，等待授权生成'
     upsertVideoResults([{
       id: task.id,
@@ -3548,6 +3573,13 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
 }
 
 async function runVideoTask(task, mode = 'plan') {
+  if (!shouldCreateBalaVideoProviderRun(task)) {
+    videoStageState.status = 'done'
+    videoStageState.error = ''
+    videoStageState.message = `${task.styleCode} 这条视频任务已提交，请到结果页刷新或复制新建后再次生成。`
+    activeStep.value = 'results'
+    return
+  }
   const textOnlyHappyHorse = task?.provider === 'happyhorse' && task?.happyhorseMode === 't2v'
   if (!textOnlyHappyHorse && !task?.assets?.length) {
     videoStageState.status = 'failed'
@@ -3587,7 +3619,7 @@ async function runVideoTask(task, mode = 'plan') {
       task.runId = runId
       task.providerTaskId = runId
       if (launch.status === 'failed') {
-        throw new Error(launch.snapshot?.error || '软件管家视频任务未成功启动，请重试。')
+        throw new Error(launch.snapshot?.error || '生意管家视频任务未成功启动，请重试。')
       }
       await waitForQnVideoTask(task, runId, mode)
       task.status = mode === 'live' ? '已提交 / 查看结果' : '预检完成，等待授权生成'
@@ -3881,7 +3913,7 @@ async function runPreviewImageEdit() {
 function providerLabel(provider) {
   if (provider === 'seedance') return 'Seedance 2.0'
   if (provider === 'happyhorse') return '百炼 HappyHorse'
-  return '软件管家'
+  return '生意管家'
 }
 
 function happyHorseModeLabel(mode) {

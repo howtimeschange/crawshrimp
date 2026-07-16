@@ -2359,6 +2359,10 @@ secureHandle('get-bala-video-provider-status', async () => {
   return apiCall('GET', '/bala-ai-video-providers/api/status')
 })
 
+secureHandle('preflight-bala-video-provider', async (_, payload = {}) => {
+  return apiCall('POST', '/bala-ai-video-providers/api/preflight', payload || {})
+})
+
 secureHandle('refresh-bala-video-provider-task', async (_, payload = {}) => {
   return apiCall(
     'POST',

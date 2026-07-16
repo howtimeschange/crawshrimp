@@ -1287,8 +1287,8 @@ In `adapters/bala-ai-video-assistant/manifest.yaml`, add these params under `bal
         default: qn_img2video
         options:
           - value: qn_img2video
-            label: 软件管家图生视频
-        hint: 当前接软件管家；字段命名保持 provider 边界，便于增加其他平台或 API
+            label: 生意管家图生视频
+        hint: 当前接生意管家；字段命名保持 provider 边界，便于增加其他平台或 API
 ```
 
 Add output columns:
@@ -1940,7 +1940,7 @@ The UI must show:
 - template ID field.
 - template keyword field.
 - video prompt field.
-- "进入软件管家图生视频" button.
+- "进入生意管家图生视频" button.
 
 Template preview videos are not selected in this drawer; they are downloaded and displayed by `qn_img2video_batch` in catalog/plan mode. After the drawer emits `start-video-stage`, the operator lands on the `qn_img2video_batch` task with approved images filled in, then chooses a template using the task's local preview files and title/description rows.
 
@@ -2075,7 +2075,7 @@ Use one or two real style codes that already have Semir cloud-drive material:
 7. Open the Bala image review drawer from TaskRunner.
 8. Click refresh until generated assets appear or confirm placeholder status is visible.
 9. Approve one image.
-10. Click "进入软件管家图生视频".
+10. Click "进入生意管家图生视频".
 11. Confirm TaskRunner switches to `qn_img2video_batch` with `material_images.paths` populated.
 12. Run `plan` with `download_template_previews=true`.
 13. Confirm template previews download locally and result rows include `模板标题`, `模板描述`, and `模板预览本地文件`.

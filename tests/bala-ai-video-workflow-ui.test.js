@@ -717,6 +717,64 @@ test('AI video workflow only downloads software-manager previews when a template
   assert.match(builder, /ratio:\s*'3:4'/)
 })
 
+test('legacy provider wording is migrated when persisted video tasks and results are restored', () => {
+  const legacyProviderName = ['软件', '管家'].join('')
+
+  assert.equal(typeof balaWorkflow.migrateBalaBusinessManagerText, 'function')
+  assert.equal(typeof balaWorkflow.normalizeBalaVideoTaskProvider, 'function')
+  assert.equal(
+    balaWorkflow.migrateBalaBusinessManagerText(`208326102205 · ${legacyProviderName} 视频任务 01`),
+    '208326102205 · 生意管家 视频任务 01',
+  )
+  assert.equal(
+    balaWorkflow.migrateBalaBusinessManagerText(`${legacyProviderName}页面加载超时`),
+    '生意管家页面加载超时',
+  )
+  assert.equal(balaWorkflow.normalizeBalaVideoTaskProvider(legacyProviderName), 'qn')
+  assert.equal(balaWorkflow.normalizeBalaVideoTaskProvider('生意管家页面生成'), 'qn')
+  assert.equal(balaWorkflow.normalizeBalaVideoTaskProvider('qn'), 'qn')
+
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const taskStart = source.indexOf('function persistedVideoTask')
+  const resultStart = source.indexOf('function persistedVideoResult', taskStart)
+  const persistStart = source.indexOf('function persistVideoWorkflowState', resultStart)
+  const taskSource = source.slice(taskStart, resultStart)
+  const resultSource = source.slice(resultStart, persistStart)
+
+  assert.match(taskSource, /title:\s*migrateBalaBusinessManagerText\(/)
+  assert.match(taskSource, /provider:\s*normalizeBalaVideoTaskProvider\(/)
+  assert.match(taskSource, /prompt:\s*migrateBalaBusinessManagerText\(/)
+  assert.match(taskSource, /status:\s*migrateBalaBusinessManagerText\(/)
+  assert.match(resultSource, /template:\s*migrateBalaBusinessManagerText\(/)
+  assert.match(resultSource, /provider:\s*migrateBalaBusinessManagerText\(/)
+  assert.match(resultSource, /error:\s*migrateBalaBusinessManagerText\(/)
+})
+
+test('Bala business surfaces consistently call the QN provider business-manager', () => {
+  const legacyProviderName = ['软件', '管家'].join('')
+  const businessSurfacePaths = [
+    'adapters/bala-ai-video-assistant/manifest.yaml',
+    'adapters/bala-ai-video-assistant/notes/img2video-dom-api-findings-2026-07-15.md',
+    'adapters/bala-ai-video-assistant/qn-img2video-batch.js',
+    'app/src/renderer/utils/balaAiVideoWorkflow.js',
+    'app/src/renderer/views/AiVideoWorkflow.vue',
+    'core/api_server.py',
+    'docs/superpowers/plans/2026-07-15-bala-ai-video-image-review-workflow.md',
+    'docs/superpowers/plans/2026-07-15-bala-ai-video-workflow-codereview-handoff.md',
+    'docs/superpowers/plans/2026-07-15-bala-ai-video-workflow-operational-completion.md',
+    'docs/superpowers/specs/2026-07-14-bala-ai-video-automation-workflow.md',
+    'docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-design-review.md',
+    'docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.html',
+    'docs/superpowers/specs/2026-07-15-bala-ai-video-workflow-entry-design.md',
+    'tests/bala-ai-video-workflow-ui.test.js',
+  ]
+
+  for (const filePath of businessSurfacePaths) {
+    const source = fs.readFileSync(filePath, 'utf8')
+    assert.equal(source.includes(legacyProviderName), false, `${filePath} still contains the legacy provider name`)
+  }
+})
+
 test('software-manager terminal failures stay failed instead of becoming preflight success', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const finalizeStart = source.indexOf('async function finalizeQnVideoTask')
@@ -728,9 +786,9 @@ test('software-manager terminal failures stay failed instead of becoming preflig
   assert.equal(
     balaWorkflow.qnTerminalRunFailure({
       status: 'error',
-      error: '软件管家页面加载超时，请保留已登录页面后重试',
+      error: '生意管家页面加载超时，请保留已登录页面后重试',
     }),
-    '软件管家页面加载超时，请保留已登录页面后重试',
+    '生意管家页面加载超时，请保留已登录页面后重试',
   )
   assert.match(finalizeSource, /qnTerminalRunFailure\(terminalSnapshot\)/)
   assert.match(finalizeSource, /if \(terminalFailure\) \{[\s\S]*?status:\s*'失败'[\s\S]*?path:\s*''[\s\S]*?throw new Error\(terminalFailure\)/)
@@ -1086,6 +1144,54 @@ test('video asset pool enforces the review gate and keeps business source labels
     ['vasset-retry-pose', 'AI 换姿势', 'retry', false],
     ['vasset-208326102205-source-approved-origin', '模拍', 'approved', true],
   ])
+})
+
+test('video stage only exposes styles that contain an approved asset', () => {
+  assert.equal(typeof balaWorkflow.hasApprovedBalaVideoAsset, 'function')
+  assert.equal(balaWorkflow.hasApprovedBalaVideoAsset([
+    { status: 'pending', selectable: false },
+    { status: 'retry', selectable: false },
+  ]), false)
+  assert.equal(balaWorkflow.hasApprovedBalaVideoAsset([
+    { status: 'pending', selectable: false },
+    { status: 'approved', selectable: true },
+  ]), true)
+
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(
+    source,
+    /function buildVideoJobsFromReview\(\)[\s\S]*?hasApprovedBalaVideoAsset\(assets\)[\s\S]*?continue/,
+  )
+})
+
+test('Seedance and HappyHorse plan mode uses the backend provider preflight', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const preload = fs.readFileSync('app/src/preload.js', 'utf8')
+  const main = fs.readFileSync('app/src/main.js', 'utf8')
+  const devBridge = fs.readFileSync('app/src/renderer/utils/devCsBridge.js', 'utf8')
+
+  assert.match(source, /async function preflightVideoProviderTask\(task\)/)
+  assert.match(source, /window\.cs\.preflightBalaVideoProvider\(/)
+  assert.match(source, /async function runSeedanceVideoTask[\s\S]*?mode !== 'live'[\s\S]*?preflightVideoProviderTask\(task\)/)
+  assert.match(source, /async function runHappyHorseVideoTask[\s\S]*?mode !== 'live'[\s\S]*?preflightVideoProviderTask\(task\)/)
+  assert.match(preload, /preflightBalaVideoProvider:[\s\S]*?preflight-bala-video-provider/)
+  assert.match(main, /secureHandle\('preflight-bala-video-provider'[\s\S]*?bala-ai-video-providers\/api\/preflight/)
+  assert.match(devBridge, /preflightBalaVideoProvider:[\s\S]*?bala-ai-video-providers\/api\/preflight/)
+})
+
+test('a submitted video task cannot be reset by preflight or create a duplicate live provider run', () => {
+  assert.equal(typeof balaWorkflow.shouldCreateBalaVideoProviderRun, 'function')
+  assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ status: '待预检' }), true)
+  assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'plan-run', status: '预检完成，等待授权生成' }), true)
+  assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'failed-run', status: '失败' }), true)
+  assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'live-run', status: '已提交 / 查看结果' }), false)
+  assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'provider-task', status: '已下载' }), false)
+
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(
+    source,
+    /async function runVideoTask\(task, mode = 'plan'\) \{\s*if \(!shouldCreateBalaVideoProviderRun\(task\)\)[\s\S]*?return/,
+  )
 })
 
 test('new video task uses a tiled style library, approved-only assets, and no split mode', () => {

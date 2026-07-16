@@ -1,4 +1,6 @@
 import asyncio
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from core import api_server
@@ -215,3 +217,150 @@ def test_review_workspace_api_lists_all_batches_for_a_style(monkeypatch):
 
     assert result == {"items": batches}
     assert calls == [(["208326102205", "208326105214"], 25)]
+
+
+def test_review_decision_endpoint_preserves_concurrent_updates(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    review.save_review_batch({
+        "batch_id": "review-endpoint-concurrent",
+        "token": "token-endpoint",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [
+                {"id": "asset-a", "kind": "ai", "status": "pending"},
+                {"id": "asset-b", "kind": "ai", "status": "pending"},
+            ],
+        }],
+    })
+    first_loaded = threading.Event()
+    second_finished = threading.Event()
+    original_update = review.update_review_decisions
+
+    def delayed_update(batch, decisions):
+        if "asset-a" in decisions:
+            first_loaded.set()
+            second_finished.wait(0.2)
+        return original_update(batch, decisions)
+
+    monkeypatch.setattr(review, "update_review_decisions", delayed_update)
+
+    def save(decisions):
+        return api_server.save_bala_ai_video_review_decisions(
+            "review-endpoint-concurrent",
+            api_server.BalaReviewDecisionsRequest(decisions=decisions),
+            token="token-endpoint",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(save, {"asset-a": {"status": "approved"}})
+        assert first_loaded.wait(1)
+        second = executor.submit(save, {"asset-b": {"status": "rejected"}})
+        second.add_done_callback(lambda _future: second_finished.set())
+        first.result(timeout=2)
+        second.result(timeout=2)
+
+    persisted = review.load_review_batch("review-endpoint-concurrent")
+    statuses = {
+        asset["id"]: asset["status"]
+        for asset in persisted["items"][0]["assets"]
+    }
+    assert statuses == {"asset-a": "approved", "asset-b": "rejected"}
+
+
+def test_review_delete_is_not_undone_by_concurrent_refresh(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    review.save_review_batch({
+        "batch_id": "review-delete-refresh",
+        "token": "token-delete-refresh",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{"id": "ai-delete", "kind": "ai", "status": "pending"}],
+        }],
+    })
+    refresh_loaded = threading.Event()
+    delete_finished = threading.Event()
+    original_refresh = review.refresh_generated_assets
+
+    def delayed_refresh(batch):
+        refresh_loaded.set()
+        delete_finished.wait(0.2)
+        return original_refresh(batch)
+
+    monkeypatch.setattr(review, "refresh_generated_assets", delayed_refresh)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        refresh = executor.submit(
+            api_server.refresh_bala_ai_video_review_batch,
+            "review-delete-refresh",
+            "token-delete-refresh",
+        )
+        assert refresh_loaded.wait(1)
+        delete = executor.submit(
+            api_server.delete_bala_ai_video_review_asset,
+            "review-delete-refresh",
+            "ai-delete",
+            "token-delete-refresh",
+        )
+        delete.add_done_callback(lambda _future: delete_finished.set())
+        refresh.result(timeout=2)
+        delete.result(timeout=2)
+
+    persisted = review.load_review_batch("review-delete-refresh")
+    assert persisted["items"][0]["assets"] == []
+
+
+def test_review_regenerate_preserves_concurrent_decision(tmp_path, monkeypatch):
+    monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
+    runtime_paths.reset_runtime_data_root_cache()
+    review.save_review_batch({
+        "batch_id": "review-regenerate-decision",
+        "token": "token-regenerate-decision",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{"id": "ai-source", "kind": "ai", "status": "pending"}],
+        }],
+    })
+    regenerate_loaded = threading.Event()
+    decision_finished = threading.Event()
+
+    def delayed_append(batch, _req):
+        regenerate_loaded.set()
+        decision_finished.wait(0.2)
+        batch["items"][0]["assets"].append({
+            "id": "ai-retry",
+            "kind": "ai",
+            "status": "generating",
+            "regenerated_from_asset_id": "ai-source",
+        })
+        return batch
+
+    monkeypatch.setattr(api_server, "_append_bala_review_regenerate_asset", delayed_append)
+
+    def regenerate():
+        return asyncio.run(api_server.regenerate_bala_ai_video_review_asset(
+            "review-regenerate-decision",
+            api_server.BalaReviewRegenerateRequest(asset_id="ai-source", submit_async=True),
+            token="token-regenerate-decision",
+        ))
+
+    def approve():
+        return api_server.save_bala_ai_video_review_decisions(
+            "review-regenerate-decision",
+            api_server.BalaReviewDecisionsRequest(decisions={"ai-source": {"status": "approved"}}),
+            token="token-regenerate-decision",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        regeneration = executor.submit(regenerate)
+        assert regenerate_loaded.wait(1)
+        decision = executor.submit(approve)
+        decision.add_done_callback(lambda _future: decision_finished.set())
+        regeneration.result(timeout=2)
+        decision.result(timeout=2)
+
+    persisted = review.load_review_batch("review-regenerate-decision")
+    assets = {asset["id"]: asset for asset in persisted["items"][0]["assets"]}
+    assert assets["ai-source"]["status"] == "approved"
+    assert assets["ai-retry"]["status"] == "generating"

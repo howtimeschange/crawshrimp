@@ -345,8 +345,8 @@ tasks:
           - 备注
 
   - id: qn_img2video_batch
-    name: 千牛软件管家图生视频批量生成
-    description: 选择已确认 AI 结果图，读取软件管家行业模板，支持模板预览下载、批量上传图片、模板图生视频、任务轮询和视频本地归档
+    name: 千牛生意管家图生视频批量生成
+    description: 选择已确认 AI 结果图，读取生意管家行业模板，支持模板预览下载、批量上传图片、模板图生视频、任务轮询和视频本地归档
     script: qn-img2video-batch.js
     entry_url: https://quick.taobao.com/videostudio/img2video
     skip_auth: true

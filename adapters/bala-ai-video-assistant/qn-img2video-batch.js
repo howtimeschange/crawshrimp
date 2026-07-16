@@ -269,7 +269,7 @@
   async function callMtop(api, data = {}, options = {}) {
     const client = window.lib?.mtop || window.mtop
     if (!client || typeof client.request !== 'function') {
-      throw new Error('未找到软件管家页面 MTop 客户端，请确认当前 tab 是 https://quick.taobao.com/videostudio/img2video')
+      throw new Error('未找到生意管家页面 MTop 客户端，请确认当前 tab 是 https://quick.taobao.com/videostudio/img2video')
     }
     try {
       const payload = await client.request({
@@ -502,7 +502,7 @@
 
   async function uploadDataUrlWithPageHelper(dataUrl, name) {
     if (typeof window.$startFileUpload !== 'function') {
-      throw new Error('当前页面未暴露图片上传工具 $startFileUpload，请打开软件管家图生视频页后重试')
+      throw new Error('当前页面未暴露图片上传工具 $startFileUpload，请打开生意管家图生视频页后重试')
     }
     const uploaded = await window.$startFileUpload(dataUrl)
     if (!uploaded || typeof uploaded !== 'object') throw new Error(`图片上传未返回结果：${name}`)
@@ -675,7 +675,7 @@
       current_exec_no: 0,
       current_row_no: 0,
       current_buyer_id: '',
-      current_store: '千牛软件管家图生视频',
+      current_store: '千牛生意管家图生视频',
       batch_no: 1,
       total_batches: 1,
       execute_mode: normalizeExecutionMode(rawParams.execute_mode),
@@ -865,8 +865,8 @@
         return nextPhase('main', 1000, { ...shared, page_ready_attempts: pageReadyAttempts })
       }
       return fail(readiness.needsLocalUpload
-        ? '软件管家页面加载超时，图片上传能力尚未准备好，请保留已登录页面后重试'
-        : '软件管家页面加载超时，请保留已登录页面后重试')
+        ? '生意管家页面加载超时，图片上传能力尚未准备好，请保留已登录页面后重试'
+        : '生意管家页面加载超时，请保留已登录页面后重试')
     }
     const prepared = await prepareTemplatesAndJobs()
     const previewDownloads = {}
@@ -882,7 +882,7 @@
           category: prepared.category,
           current_exec_no: 1,
           total_rows: rows.length,
-          current_store: '千牛软件管家图生视频',
+          current_store: '千牛生意管家图生视频',
         }
         return downloadUrls(
           templatePreviewDownloadItems(prepared.templates, params),
@@ -909,7 +909,7 @@
         作业类型: '视频生成',
         主类目: prepared.category,
         执行结果: '预检失败',
-        备注: '未读取到软件管家模板，请确认当前页面已登录且主类目正确',
+        备注: '未读取到生意管家模板，请确认当前页面已登录且主类目正确',
       }])
     }
     if (!prepared.jobs.length) {

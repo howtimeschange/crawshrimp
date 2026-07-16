@@ -28,7 +28,7 @@ import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import Callable, List, Optional
 from urllib.parse import urlencode, parse_qs, urlparse, unquote
 from uuid import uuid4
 
@@ -6212,6 +6212,8 @@ def _is_public_api_path(path: str) -> bool:
     normalized = str(path or "")
     if normalized in PRIVATE_API_PATHS:
         return False
+    if re.fullmatch(r"/bala-ai-video-review/api/[^/]+/export-video-input", normalized):
+        return False
     return normalized in PUBLIC_API_PATHS or any(normalized.startswith(prefix) for prefix in PUBLIC_API_PREFIXES)
 
 
@@ -6333,6 +6335,20 @@ class BalaVideoProviderTaskRequest(BaseModel):
     timeout_seconds: int = 1800
 
 
+class BalaVideoProviderPreflightRequest(BaseModel):
+    provider: str = ""
+    style_code: str = ""
+    mode: str = "i2v"
+    prompt: str = ""
+    image_paths: List[str] = []
+    output_dir: str = ""
+    resolution: str = "720P"
+    ratio: str = "3:4"
+    duration: int = 5
+    generate_audio: bool = True
+    watermark: bool = False
+
+
 def _bala_ai_video_base_url() -> str:
     return str(os.environ.get("CRAWSHRIMP_PUBLIC_BASE_URL") or f"http://127.0.0.1:{os.environ.get('CRAWSHRIMP_PORT', '18765')}").rstrip("/")
 
@@ -6399,7 +6415,7 @@ def _load_bala_video_template_catalog() -> dict:
         "mainCategory": "",
         "templates": [],
         "count": 0,
-        "error": "未找到本地软件管家模板目录",
+        "error": "未找到本地生意管家模板目录",
     }
 
 
@@ -6426,18 +6442,8 @@ def _parse_seedance_cli_json_objects(text: str) -> list[dict]:
 def _bala_video_provider_secrets() -> dict[str, str]:
     cfg = load_config()
     return {
-        "seedance": str(
-            _nested_config_value(cfg, "ai.video.seedance_api_key")
-            or os.environ.get("ARK_API_KEY")
-            or os.environ.get("VOLCENGINE_ARK_API_KEY")
-            or ""
-        ).strip(),
-        "happyhorse": str(
-            _nested_config_value(cfg, "ai.video.bailian_api_key")
-            or os.environ.get("DASHSCOPE_API_KEY")
-            or os.environ.get("BAILIAN_API_KEY")
-            or ""
-        ).strip(),
+        "seedance": str(_nested_config_value(cfg, "ai.video.seedance_api_key") or "").strip(),
+        "happyhorse": str(_nested_config_value(cfg, "ai.video.bailian_api_key") or "").strip(),
     }
 
 
@@ -6445,29 +6451,19 @@ def _bala_video_provider_status() -> dict:
     cfg = load_config()
     secrets = _bala_video_provider_secrets()
 
-    def source_for(provider: str, environment_names: tuple[str, ...], config_key: str) -> str:
+    def source_for(config_key: str) -> str:
         if str(_nested_config_value(cfg, config_key) or "").strip():
             return "AI 能力"
-        if any(str(os.environ.get(name) or "").strip() for name in environment_names):
-            return "运行环境"
         return "未配置"
 
     return {
         "seedance": {
             "configured": bool(secrets["seedance"]),
-            "source": source_for(
-                "seedance",
-                ("ARK_API_KEY", "VOLCENGINE_ARK_API_KEY"),
-                "ai.video.seedance_api_key",
-            ),
+            "source": source_for("ai.video.seedance_api_key"),
         },
         "happyhorse": {
             "configured": bool(secrets["happyhorse"]),
-            "source": source_for(
-                "happyhorse",
-                ("DASHSCOPE_API_KEY", "BAILIAN_API_KEY"),
-                "ai.video.bailian_api_key",
-            ),
+            "source": source_for("ai.video.bailian_api_key"),
         },
     }
 
@@ -6477,6 +6473,13 @@ def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
     secrets = _bala_video_provider_secrets()
     env = dict(os.environ)
     env.pop("ELECTRON_RUN_AS_NODE", None)
+    for environment_name in (
+        "ARK_API_KEY",
+        "VOLCENGINE_ARK_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "BAILIAN_API_KEY",
+    ):
+        env.pop(environment_name, None)
     secret_values = [value for value in secrets.values() if value]
     if provider == "seedance":
         if secrets["seedance"]:
@@ -6630,7 +6633,7 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
             "ok": False,
             "provider": "seedance",
             "status": "needs_config",
-            "error": "请先在 AI 能力或运行环境配置 Seedance 凭据",
+            "error": "请先在 AI 能力配置 Seedance 凭据",
         }
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -6716,6 +6719,76 @@ def _build_happyhorse_payload(req: object) -> dict:
     }
 
 
+def _preflight_bala_video_provider(req: BalaVideoProviderPreflightRequest) -> dict:
+    provider = str(req.provider or "").strip().lower()
+    if provider not in {"seedance", "happyhorse"}:
+        raise HTTPException(400, "视频供应商必须是 Seedance 或 HappyHorse")
+    status = _bala_video_provider_status()[provider]
+    if not status["configured"]:
+        return {
+            "ok": False,
+            "provider": provider,
+            "status": "needs_config",
+            "configured": False,
+            "source": status["source"],
+            "error": f"请先在 AI 能力配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
+        }
+
+    cli_dir = BALA_SEEDANCE_CLI_DIR if provider == "seedance" else BALA_HAPPYHORSE_CLI_DIR
+    cli_file = cli_dir / "bin" / ("seedance.js" if provider == "seedance" else "bailian.js")
+    if not cli_file.is_file():
+        raise HTTPException(500, "视频供应商共享能力未完整安装")
+
+    output_dir = Path(str(req.output_dir or "").strip()).expanduser()
+    if not str(req.output_dir or "").strip():
+        raise HTTPException(400, "请先选择视频输出目录")
+    if output_dir.exists() and not output_dir.is_dir():
+        raise HTTPException(400, "视频输出路径不是文件夹")
+    writable_parent = output_dir
+    while not writable_parent.exists() and writable_parent != writable_parent.parent:
+        writable_parent = writable_parent.parent
+    if not writable_parent.is_dir() or not os.access(writable_parent, os.W_OK):
+        raise HTTPException(400, "视频输出目录不可写")
+
+    if provider == "seedance":
+        payload = _build_seedance_payload(BalaSeedanceVideoRequest(
+            style_code=req.style_code,
+            prompt=req.prompt,
+            image_paths=list(req.image_paths or []),
+            output_dir=str(output_dir),
+            ratio=req.ratio,
+            duration=req.duration,
+            generate_audio=req.generate_audio,
+            wait=False,
+        ))
+        mode = "reference"
+    else:
+        payload = _build_happyhorse_payload(BalaHappyHorseVideoRequest(
+            style_code=req.style_code,
+            mode=req.mode,
+            prompt=req.prompt,
+            image_paths=list(req.image_paths or []),
+            output_dir=str(output_dir),
+            resolution=req.resolution,
+            ratio=req.ratio,
+            duration=req.duration,
+            watermark=req.watermark,
+            wait=False,
+        ))
+        mode = str(req.mode or "i2v").strip().lower()
+    return {
+        "ok": True,
+        "provider": provider,
+        "status": "ready",
+        "configured": True,
+        "source": status["source"],
+        "mode": mode,
+        "model": str(payload.get("model") or ""),
+        "image_count": len(req.image_paths or []),
+        "output_dir": str(output_dir),
+    }
+
+
 def _happyhorse_output_path(req: BalaHappyHorseVideoRequest) -> Path:
     explicit = str(req.output_path or "").strip()
     if explicit:
@@ -6756,7 +6829,7 @@ async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
             "ok": False,
             "provider": "happyhorse",
             "status": "needs_config",
-            "error": "请先在 AI 能力或运行环境配置 HappyHorse 凭据",
+            "error": "请先在 AI 能力配置 HappyHorse 凭据",
         }
     process = await asyncio.create_subprocess_exec(
         *command,
@@ -6841,7 +6914,7 @@ async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dic
             "provider": provider,
             "task_id": task_id,
             "status": "needs_config",
-            "error": f"请先在 AI 能力或运行环境配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
+            "error": f"请先在 AI 能力配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
         }
 
     process = await asyncio.create_subprocess_exec(
@@ -6925,6 +6998,15 @@ def _load_bala_review_batch_checked(batch_id: str, token: str) -> dict:
         batch = bala_ai_video_review.load_review_batch(batch_id)
         bala_ai_video_review.validate_token(batch, token)
         return batch
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+
+def _mutate_bala_review_batch_checked(batch_id: str, token: str, mutation: Callable[[dict], dict | None]) -> dict:
+    try:
+        return bala_ai_video_review.mutate_review_batch(batch_id, token, mutation)
     except PermissionError as exc:
         raise HTTPException(403, str(exc)) from exc
     except FileNotFoundError as exc:
@@ -7197,6 +7279,11 @@ def get_bala_ai_video_provider_status():
     return _bala_video_provider_status()
 
 
+@app.post("/bala-ai-video-providers/api/preflight")
+def preflight_bala_ai_video_provider(req: BalaVideoProviderPreflightRequest):
+    return _preflight_bala_video_provider(req)
+
+
 @app.post("/bala-ai-video-providers/api/task")
 async def refresh_bala_ai_video_provider_task(req: BalaVideoProviderTaskRequest):
     return await _run_video_provider_task_cli(req)
@@ -7249,38 +7336,45 @@ def get_bala_ai_video_review_image(batch_id: str, asset_id: str, token: str = ""
 
 @app.post("/bala-ai-video-review/api/{batch_id}/decisions")
 def save_bala_ai_video_review_decisions(batch_id: str, req: BalaReviewDecisionsRequest, token: str = ""):
-    batch = _load_bala_review_batch_checked(batch_id, token)
-    updated = bala_ai_video_review.update_review_decisions(batch, dict(req.decisions or {}))
-    bala_ai_video_review.save_review_batch(updated)
-    return updated
+    decisions = dict(req.decisions or {})
+    return _mutate_bala_review_batch_checked(
+        batch_id,
+        token,
+        lambda batch: bala_ai_video_review.update_review_decisions(batch, decisions),
+    )
 
 
 @app.delete("/bala-ai-video-review/api/{batch_id}/asset/{asset_id}")
 def delete_bala_ai_video_review_asset(batch_id: str, asset_id: str, token: str = ""):
-    batch = _load_bala_review_batch_checked(batch_id, token)
     try:
-        updated = bala_ai_video_review.remove_review_asset(batch, asset_id)
+        return _mutate_bala_review_batch_checked(
+            batch_id,
+            token,
+            lambda batch: bala_ai_video_review.remove_review_asset(batch, asset_id),
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(404, "Bala review asset not found") from exc
-    bala_ai_video_review.save_review_batch(updated)
-    return updated
 
 
 @app.post("/bala-ai-video-review/api/{batch_id}/refresh")
 def refresh_bala_ai_video_review_batch(batch_id: str, token: str = ""):
-    batch = _load_bala_review_batch_checked(batch_id, token)
-    updated = bala_ai_video_review.refresh_generated_assets(batch)
-    bala_ai_video_review.save_review_batch(updated)
-    return updated
+    return _mutate_bala_review_batch_checked(
+        batch_id,
+        token,
+        bala_ai_video_review.refresh_generated_assets,
+    )
 
 
 @app.post("/bala-ai-video-review/api/{batch_id}/regenerate")
 async def regenerate_bala_ai_video_review_asset(batch_id: str, req: BalaReviewRegenerateRequest, token: str = ""):
-    batch = _load_bala_review_batch_checked(batch_id, token)
-    updated = await asyncio.to_thread(_append_bala_review_regenerate_asset, batch, req)
-    bala_ai_video_review.save_review_batch(updated)
+    updated = await asyncio.to_thread(
+        _mutate_bala_review_batch_checked,
+        batch_id,
+        token,
+        lambda batch: _append_bala_review_regenerate_asset(batch, req),
+    )
     matching_retry_ids = [
         str(candidate.get("id") or "")
         for item in updated.get("items") or []
