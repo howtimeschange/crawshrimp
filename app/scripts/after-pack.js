@@ -30,6 +30,7 @@ const REQUIRED_BACKEND_IMPORTS = [
   'tzdata',
   'PIL',
   'fitz',
+  'cryptography',
 ]
 
 const REQUIRED_VIDEO_INTEGRATION_FILES = [

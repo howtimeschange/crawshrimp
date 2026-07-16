@@ -127,7 +127,8 @@ has_core_requirements() {
     [ -d "${site_packages}/jsonschema" ] &&
     [ -d "${site_packages}/tzdata" ] &&
     [ -d "${site_packages}/PIL" ] &&
-    [ -d "${site_packages}/fitz" ]
+    [ -d "${site_packages}/fitz" ] &&
+    [ -d "${site_packages}/cryptography" ]
 }
 
 target_pip_platform() {

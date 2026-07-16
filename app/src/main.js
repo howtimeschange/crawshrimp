@@ -19,8 +19,17 @@ const { createBackendController } = require('./backendController')
 const { createLifecycleController } = require('./lifecycleController')
 const { stopManagedChrome: stopManagedChromeFromState } = require('./managedChrome')
 const { startDesktopServices } = require('./startupServices')
-const { requestBackendApi } = require('./backendApi')
+const {
+  requestBackendApi,
+  resolveAiVideoCapabilityPath,
+  sanitizeAiVideoConfigResponse,
+  signAiVideoCapability,
+} = require('./backendApi')
 const { collectCrawshrimpDataDirCandidates } = require('./dataDirRecovery')
+const {
+  readSavedAiVideoInputDirectory,
+  rememberAiVideoInputDirectory,
+} = require('./aiVideoDirectoryStore')
 const { createSingleFlightRecovery, isOwnedBackendRuntime, classifyBackendHealth } = require('./serviceRecovery')
 const { probeChromeCdp: probeChromeCdpHealth, prepareChromeRecovery } = require('./chromeCdp')
 const { requestBackendHealth } = require('./backendHealth')
@@ -77,6 +86,7 @@ const CLOUD_APPROVAL_APP_ENV = IS_DEV ? 'development' : 'production'
 const BACKEND_STARTUP_ATTEMPTS = process.platform === 'win32' ? 60 : 20
 const BACKEND_LAUNCH_RETRIES = process.platform === 'win32' ? 2 : 1
 const BACKEND_INSTANCE_ID = crypto.randomUUID()
+const AI_VIDEO_CAPABILITY_SECRET = crypto.randomBytes(32).toString('hex')
 const LEGACY_RUNTIME_MARKERS = [
   'adapters',
   'adapter-meta',
@@ -176,19 +186,12 @@ function ensureDefaultLocalMediaRoots() {
   const defaults = [
     path.join(os.homedir(), 'Downloads', '抓虾AI生视频'),
     path.join(os.homedir(), 'Downloads', '巴拉AI视频成片'),
-    path.join(os.homedir(), 'Downloads'),
+    getCrawshrimpDataDir(),
   ]
   for (const root of defaults) {
     try {
-      if (fs.existsSync(root) && fs.statSync(root).isDirectory()) {
-        authorizedLocalMediaRoots.add(localMediaRootIdentity(root))
-      } else {
-        // Still authorize the intended root path so files can land there later.
-        authorizedLocalMediaRoots.add(localMediaRootIdentity(root))
-      }
-    } catch {
-      authorizedLocalMediaRoots.add(localMediaRootIdentity(root))
-    }
+      if (fs.existsSync(root)) authorizeLocalMediaRoot(root)
+    } catch { /* fixed app roots are best effort */ }
   }
 }
 
@@ -196,19 +199,23 @@ function authorizeLocalMediaRoot(rootPath = '') {
   const raw = String(rootPath || '').trim()
   if (!raw) throw new Error('媒体授权目录不能为空')
   const resolved = path.resolve(raw)
-  let stat
-  try {
-    stat = fs.lstatSync(resolved)
-  } catch {
-    // Directory may not exist yet; still remember intended root.
-    authorizedLocalMediaRoots.add(localMediaRootIdentity(resolved))
-    return resolved
-  }
+  const stat = fs.lstatSync(resolved)
   if (stat.isSymbolicLink()) throw new Error('媒体授权目录不能是符号链接')
   if (!stat.isDirectory()) throw new Error('媒体授权路径必须是文件夹')
-  const identity = localMediaRootIdentity(resolved)
+  const real = fs.realpathSync.native(resolved)
+  if (localMediaRootIdentity(resolved) !== localMediaRootIdentity(real) || path.resolve(resolved) !== path.resolve(real)) {
+    throw new Error('媒体授权目录不能包含符号链接')
+  }
+  const identity = localMediaRootIdentity(real)
   authorizedLocalMediaRoots.add(identity)
   return identity
+}
+
+function localMediaPathIsAuthorized(realPath = '') {
+  const realIdentity = localMediaRootIdentity(realPath)
+  return [...authorizedLocalMediaRoots].some((root) => (
+    realIdentity === root || realIdentity.startsWith(`${root}${path.sep}`) || realIdentity.startsWith(`${root}/`)
+  ))
 }
 
 function localMediaMime(filePath = '') {
@@ -232,11 +239,8 @@ function getAuthorizedLocalMediaFile(filePath = '') {
   if (stat.isSymbolicLink()) throw new Error('禁止预览符号链接媒体')
   if (!stat.isFile()) throw new Error('本地媒体不是文件')
   const real = fs.realpathSync.native(resolved)
-  const realIdentity = process.platform === 'win32' ? real.toLowerCase() : real
-  const allowed = [...authorizedLocalMediaRoots].some((root) => (
-    realIdentity === root || realIdentity.startsWith(`${root}${path.sep}`) || realIdentity.startsWith(`${root}/`)
-  ))
-  if (!allowed) throw new Error('该本地媒体未授权预览，请确认输出目录已通过选择器授权')
+  if (path.resolve(resolved) !== path.resolve(real)) throw new Error('禁止预览包含符号链接的媒体')
+  if (!localMediaPathIsAuthorized(real)) throw new Error('该本地媒体未授权预览，请先通过系统选择器选择所在目录')
   const mime = localMediaMime(real)
   if (!mime) throw new Error('不支持的媒体类型')
   const ext = path.extname(real).toLowerCase()
@@ -250,9 +254,42 @@ function getAuthorizedLocalMediaFile(filePath = '') {
   }
 }
 
-function localMediaUrl(filePath = '') {
-  const payload = Buffer.from(JSON.stringify({ filePath: String(filePath || '') }), 'utf8').toString('base64url')
-  return `${LOCAL_MEDIA_PROTOCOL}://local/${payload}`
+function getAuthorizedLocalMediaDirectory(rootPath = '') {
+  ensureDefaultLocalMediaRoots()
+  const raw = String(rootPath || '').trim()
+  if (!raw) throw new Error('目录路径不能为空')
+  const resolved = path.resolve(raw)
+  const stat = fs.lstatSync(resolved)
+  if (stat.isSymbolicLink()) throw new Error('禁止扫描符号链接目录')
+  if (!stat.isDirectory()) throw new Error('不是有效目录')
+  const real = fs.realpathSync.native(resolved)
+  if (path.resolve(resolved) !== path.resolve(real)) throw new Error('禁止扫描包含符号链接的目录')
+  if (!localMediaPathIsAuthorized(real)) throw new Error('该目录未授权，请先通过系统选择器选择目录')
+  return real
+}
+
+function getAiVideoCapabilityMediaFile(fileToken = '', allowedScopes = ['input', 'media']) {
+  const resolved = resolveAiVideoCapabilityPath(fileToken, {
+    secret: AI_VIDEO_CAPABILITY_SECRET,
+    expectedKind: 'file',
+    allowedScopes,
+  })
+  const mime = localMediaMime(resolved.path)
+  const ext = path.extname(resolved.path).toLowerCase()
+  if (!mime || (!LOCAL_MEDIA_VIDEO_EXTS.has(ext) && !LOCAL_MEDIA_IMAGE_EXTS.has(ext))) {
+    throw new Error('仅支持图片与常见视频格式')
+  }
+  return {
+    path: resolved.path,
+    mime,
+    size: resolved.stat.size,
+  }
+}
+
+function localMediaUrl(fileToken = '') {
+  const value = String(fileToken || '').trim()
+  if (!value) throw new Error('缺少本地媒体授权')
+  return `${LOCAL_MEDIA_PROTOCOL}://local/${encodeURIComponent(value)}`
 }
 
 function parseLocalMediaPayload(rawUrl = '') {
@@ -262,15 +299,13 @@ function parseLocalMediaPayload(rawUrl = '') {
   }
   const encoded = url.pathname.replace(/^\//, '')
   if (!encoded) throw new Error('缺少本地媒体地址')
-  const payload = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'))
-  if (!payload || typeof payload !== 'object') throw new Error('本地媒体地址格式无效')
-  return payload
+  return decodeURIComponent(encoded)
 }
 
 async function handleLocalMediaRequest(request) {
   try {
-    const payload = parseLocalMediaPayload(request.url)
-    const media = getAuthorizedLocalMediaFile(payload.filePath)
+    const fileToken = parseLocalMediaPayload(request.url)
+    const media = getAiVideoCapabilityMediaFile(fileToken)
     const isVideo = String(media.mime || '').startsWith('video/')
     if (!isVideo) {
       return new Response(Readable.toWeb(fs.createReadStream(media.path)), {
@@ -608,6 +643,10 @@ function getCrawshrimpDataDir() {
 
 function getBalaWorkspaceAuthorizationStorePath() {
   return path.join(getCrawshrimpDataDir(), 'authorized-bala-workspaces.json')
+}
+
+function getAiVideoInputDirectoryStorePath() {
+  return path.join(getCrawshrimpDataDir(), 'ai-video-input-directory.json')
 }
 
 function ensureBalaWorkspaceAuthorizationsLoaded() {
@@ -1158,6 +1197,7 @@ function spawnBackendProcess() {
       CRAWSHRIMP_ALLOW_DATA_FALLBACK: '1',
       CRAWSHRIMP_API_TOKEN: apiToken,
       CRAWSHRIMP_BACKEND_INSTANCE_ID: BACKEND_INSTANCE_ID,
+      CRAWSHRIMP_AI_VIDEO_CAPABILITY_SECRET: AI_VIDEO_CAPABILITY_SECRET,
       CRAWSHRIMP_APP_ENV: CLOUD_APPROVAL_APP_ENV,
       CRAWSHRIMP_NODE_EXECUTABLE: process.execPath,
       ELECTRON_RUN_AS_NODE: '',
@@ -1453,6 +1493,181 @@ function apiCall(method, urlPath, body = null, options = {}) {
     runWhenReady: (request, runOptions) => backendController.runWhenReady(request, runOptions),
     describeFailure: describeApiCallFailure,
   })
+}
+
+function canonicalAiVideoSelection(rawPath = '', expectedKind = 'file') {
+  const value = String(rawPath || '').trim()
+  if (!value || !path.isAbsolute(value)) throw new Error('AI 视频选择路径无效')
+  const absolute = path.resolve(value)
+  const selectedStat = fs.lstatSync(absolute)
+  if (selectedStat.isSymbolicLink()) throw new Error('AI 视频选择路径不能是符号链接')
+  const real = fs.realpathSync.native(absolute)
+  if (path.resolve(absolute) !== path.resolve(real)) throw new Error('AI 视频选择路径不能包含符号链接')
+  const stat = fs.lstatSync(real)
+  if (expectedKind === 'file' && !stat.isFile()) throw new Error('AI 视频选择项不是文件')
+  if (expectedKind === 'directory' && !stat.isDirectory()) throw new Error('AI 视频选择项不是目录')
+  return { path: real, stat }
+}
+
+function issueAiVideoPathCapability(rawPath, { kind, scope }) {
+  const selected = canonicalAiVideoSelection(rawPath, kind)
+  return {
+    ...selected,
+    token: signAiVideoCapability({
+      secret: AI_VIDEO_CAPABILITY_SECRET,
+      kind,
+      scope,
+      filePath: selected.path,
+    }),
+  }
+}
+
+function aiVideoDefaultOutputDirectory() {
+  const outputDir = path.join(os.homedir(), 'Downloads', '抓虾AI生视频')
+  fs.mkdirSync(outputDir, { recursive: true })
+  return canonicalAiVideoSelection(outputDir, 'directory').path
+}
+
+async function aiVideoConfigForRenderer() {
+  const response = await apiCall('GET', '/ai-video/config')
+  const outputDir = issueAiVideoPathCapability(aiVideoDefaultOutputDirectory(), {
+    kind: 'directory',
+    scope: 'output',
+  })
+  return sanitizeAiVideoConfigResponse(response, {
+    defaultOutputDirToken: outputDir.token,
+    defaultOutputDirName: path.basename(outputDir.path),
+  })
+}
+
+function aiVideoPublicFileItem(rawPath, { scope = 'input', relativePath = '' } = {}) {
+  const selected = issueAiVideoPathCapability(rawPath, { kind: 'file', scope })
+  const ext = path.extname(selected.path).toLowerCase()
+  if (!LOCAL_MEDIA_IMAGE_EXTS.has(ext) || ext === '.gif') {
+    throw new Error('AI 视频参考图仅支持 JPG、PNG、WEBP')
+  }
+  return {
+    fileToken: selected.token,
+    previewToken: selected.token,
+    name: path.basename(selected.path),
+    relativePath: String(relativePath || '').replace(/\\/g, '/'),
+    size: selected.stat.size,
+    mtimeMs: selected.stat.mtimeMs,
+  }
+}
+
+async function selectAiVideoFiles(opts = {}) {
+  const maxCount = Math.max(1, Math.min(Number(opts?.maxCount || 9) || 9, 9))
+  const response = await dialog.showOpenDialog(mainWindow, {
+    title: String(opts?.title || '选择 AI 视频参考图'),
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: '图片文件', extensions: ['jpg', 'jpeg', 'png', 'webp'] },
+    ],
+  })
+  if (response.canceled) return { ok: true, canceled: true, items: [] }
+  const items = []
+  for (const filePath of (response.filePaths || []).slice(0, maxCount)) {
+    items.push(aiVideoPublicFileItem(filePath))
+  }
+  return { ok: true, canceled: false, items }
+}
+
+async function selectAiVideoDirectory(opts = {}) {
+  const scope = String(opts?.scope || '')
+  if (scope !== 'input' && scope !== 'output') throw new Error('AI 视频目录用途无效')
+  const response = await dialog.showOpenDialog(mainWindow, {
+    title: String(opts?.title || (scope === 'output' ? '选择 AI 生视频输出目录' : '选择本地参考图库文件夹')),
+    properties: ['openDirectory', 'createDirectory'],
+  })
+  if (response.canceled || !response.filePaths?.length) return { ok: true, canceled: true }
+  const selected = issueAiVideoPathCapability(response.filePaths[0], { kind: 'directory', scope })
+  if (scope === 'input') {
+    rememberAiVideoInputDirectory(getAiVideoInputDirectoryStorePath(), selected.path)
+  }
+  return {
+    ok: true,
+    canceled: false,
+    directoryToken: selected.token,
+    name: path.basename(selected.path),
+    scope,
+  }
+}
+
+function getSavedAiVideoDirectory(scope = 'input') {
+  const requestedScope = String(scope || 'input')
+  if (requestedScope !== 'input') throw new Error('仅支持恢复 AI 视频输入图库')
+  return readSavedAiVideoInputDirectory(getAiVideoInputDirectoryStorePath(), {
+    secret: AI_VIDEO_CAPABILITY_SECRET,
+  })
+}
+
+function listAiVideoDirectory(directoryToken, opts = {}) {
+  const directory = resolveAiVideoCapabilityPath(directoryToken, {
+    secret: AI_VIDEO_CAPABILITY_SECRET,
+    expectedKind: 'directory',
+    allowedScopes: ['input'],
+  })
+  const requested = normalizeExtensionList(opts?.extensions)
+  const extensions = ['jpg', 'jpeg', 'png', 'webp'].filter(ext => !requested.size || requested.has(ext))
+  if (!extensions.length) return { ok: true, items: [], truncated: false }
+  const maxFiles = Math.max(1, Math.min(Number(opts?.maxFiles || 500) || 500, 500))
+  const snapshot = listDirectoryFilesSnapshot(directory.path, { extensions, maxFiles })
+  return {
+    ok: true,
+    items: snapshot.paths.map(item => aiVideoPublicFileItem(item.path, {
+      scope: 'input',
+      relativePath: item.relativePath,
+    })),
+    truncated: snapshot.truncated,
+  }
+}
+
+async function openAiVideoDirectory(directoryToken) {
+  const directory = resolveAiVideoCapabilityPath(directoryToken, {
+    secret: AI_VIDEO_CAPABILITY_SECRET,
+    expectedKind: 'directory',
+    allowedScopes: ['output'],
+  })
+  const error = await shell.openPath(directory.path)
+  if (error) throw new Error(error)
+  return { ok: true }
+}
+
+async function openAiVideoFile(fileToken) {
+  const media = getAiVideoCapabilityMediaFile(fileToken, ['media'])
+  if (!String(media.mime || '').startsWith('video/')) throw new Error('该授权不是视频文件')
+  const error = await shell.openPath(media.path)
+  if (error) throw new Error(error)
+  return { ok: true }
+}
+
+function aiVideoMediaForRenderer(fileToken) {
+  const media = getAiVideoCapabilityMediaFile(fileToken)
+  return {
+    ok: true,
+    mime: media.mime,
+    size: media.size,
+    media_url: localMediaUrl(fileToken),
+  }
+}
+
+function stripLocalPath(result = {}) {
+  const sanitized = { ...(result || {}) }
+  delete sanitized.path
+  return sanitized
+}
+
+function readAiVideoImagePreview(fileToken) {
+  const media = getAiVideoCapabilityMediaFile(fileToken)
+  if (!String(media.mime || '').startsWith('image/')) throw new Error('该授权不是图片')
+  return stripLocalPath(readLocalImageDataUrl(media.path))
+}
+
+function readAiVideoImageThumbnail(fileToken, opts = {}) {
+  const media = getAiVideoCapabilityMediaFile(fileToken)
+  if (!String(media.mime || '').startsWith('image/')) throw new Error('该授权不是图片')
+  return stripLocalPath(readLocalImageThumbnail(media.path, opts || {}))
 }
 
 function normalizeUpdaterApiError(error) {
@@ -2488,7 +2703,30 @@ secureHandle('create-ai-image-asset', async (_, payload) =>
 secureHandle('create-ai-image-canvas', async (_, payload) =>
   apiCall('POST', '/ai-image/canvases', payload || {}))
 secureHandle('ai-video:get-config', async () =>
-  apiCall('GET', '/ai-video/config'))
+  aiVideoConfigForRenderer())
+secureHandle('ai-video:select-files', async (_, opts = {}) =>
+  selectAiVideoFiles(opts || {}))
+secureHandle('ai-video:select-directory', async (_, opts = {}) =>
+  selectAiVideoDirectory(opts || {}))
+secureHandle('ai-video:get-saved-directory', async (_, scope = 'input') =>
+  getSavedAiVideoDirectory(scope))
+secureHandle('ai-video:list-directory', async (_, directoryToken, opts = {}) =>
+  listAiVideoDirectory(directoryToken, opts || {}))
+secureHandle('ai-video:open-directory', async (_, directoryToken) =>
+  openAiVideoDirectory(directoryToken))
+secureHandle('ai-video:open-file', async (_, fileToken) =>
+  openAiVideoFile(fileToken))
+secureHandle('ai-video:get-media-url', async (_, fileToken) =>
+  aiVideoMediaForRenderer(fileToken))
+secureHandle('ai-video:read-image-preview', async (_, fileToken) =>
+  readAiVideoImagePreview(fileToken))
+secureHandle('ai-video:read-image-thumbnail', async (_, fileToken, opts = {}) => {
+  try {
+    return readAiVideoImageThumbnail(fileToken, opts || {})
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) }
+  }
+})
 secureHandle('ai-video:validate', async (_, payload) =>
   apiCall('POST', '/ai-video/validate', payload || {}))
 secureHandle('ai-video:create-job', async (_, payload) =>
@@ -3002,23 +3240,19 @@ secureHandle('get-bala-workspace-video-media', async (_, workspaceRoot, filePath
   }
 })
 
-secureHandle('authorize-local-media-root', async (_, rootPath) => {
-  const root = authorizeLocalMediaRoot(rootPath)
-  return { ok: true, root }
-})
-
 secureHandle('get-local-media-url', async (_, filePath) => {
   const media = getAuthorizedLocalMediaFile(filePath)
-  // Also authorize the parent tree so sibling posters stay playable.
-  try {
-    authorizeLocalMediaRoot(path.dirname(media.path))
-  } catch { /* ignore */ }
+  const fileToken = signAiVideoCapability({
+    secret: AI_VIDEO_CAPABILITY_SECRET,
+    kind: 'file',
+    scope: 'media',
+    filePath: media.path,
+  })
   return {
     ok: true,
-    path: media.path,
     mime: media.mime,
     size: media.size,
-    media_url: localMediaUrl(media.path),
+    media_url: localMediaUrl(fileToken),
   }
 })
 
@@ -3040,19 +3274,24 @@ secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) 
 })
 
 secureHandle('read-local-image-preview', async (_, filePath) => {
-  return readLocalImageDataUrl(filePath)
+  const media = getAuthorizedLocalMediaFile(filePath)
+  if (!String(media.mime || '').startsWith('image/')) throw new Error('该文件不是图片')
+  return readLocalImageDataUrl(media.path)
 })
 
 secureHandle('read-local-image-thumbnail', async (_, filePath, opts = {}) => {
   try {
-    return readLocalImageThumbnail(filePath, opts || {})
+    const media = getAuthorizedLocalMediaFile(filePath)
+    if (!String(media.mime || '').startsWith('image/')) throw new Error('该文件不是图片')
+    return readLocalImageThumbnail(media.path, opts || {})
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }
 })
 
 secureHandle('list-directory-files', async (_, rootPath, opts = {}) => {
-  return listDirectoryFilesSnapshot(rootPath, opts)
+  const directory = getAuthorizedLocalMediaDirectory(rootPath)
+  return listDirectoryFilesSnapshot(directory, opts)
 })
 
 secureHandle('render-pdf-preview', async (_, filePath) => {

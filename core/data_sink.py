@@ -22,6 +22,14 @@ logger = logging.getLogger(__name__)
 MAX_EXPORT_FILENAME_LENGTH = 140
 
 
+class AiVideoRequestUidConflictError(Exception):
+    """Raised when a globally unique AI-video requestUid belongs to another Job."""
+
+
+class AiVideoRetryConflictError(Exception):
+    """Raised when a retry loses the Job status/current-Run compare-and-swap."""
+
+
 class _SafeTemplateVars(dict):
     def __missing__(self, key):
         return ""
@@ -943,26 +951,45 @@ def create_ai_video_job_with_run(
     if not job_request_uid or not run_request_uid:
         raise ValueError("requestUid is required")
 
-    existing_job = get_ai_video_job_by_request_uid(job_request_uid)
-    if existing_job:
-        existing_run = get_ai_video_run(existing_job.get("currentRunId") or "") or get_ai_video_run_by_request_uid(run_request_uid)
-        return {
-            "job": get_ai_video_job(existing_job["id"]) or existing_job,
-            "run": existing_run or {},
-            "reused": True,
-        }
-
-    existing_run = get_ai_video_run_by_request_uid(run_request_uid)
-    if existing_run:
-        return {
-            "job": get_ai_video_job(existing_run["jobId"]) or {},
-            "run": existing_run,
-            "reused": True,
-        }
-
     parameters = job_source.get("parameters") if isinstance(job_source.get("parameters"), Mapping) else {}
     input_snapshot = run_source.get("inputSnapshot") if isinstance(run_source.get("inputSnapshot"), Mapping) else {}
     with _get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing_job_row = conn.execute(
+            "SELECT * FROM ai_video_jobs WHERE request_uid=? LIMIT 1",
+            (job_request_uid,),
+        ).fetchone()
+        if existing_job_row:
+            existing_job = _ai_video_job_from_row(existing_job_row) or {}
+            existing_run_row = None
+            current_run_uid = str(existing_job.get("currentRunId") or "")
+            if current_run_uid:
+                existing_run_row = conn.execute(
+                    "SELECT * FROM ai_video_runs WHERE run_uid=? LIMIT 1",
+                    (current_run_uid,),
+                ).fetchone()
+            if not existing_run_row:
+                existing_run_row = conn.execute(
+                    "SELECT * FROM ai_video_runs WHERE request_uid=? LIMIT 1",
+                    (run_request_uid,),
+                ).fetchone()
+            existing_run = _ai_video_run_from_row(existing_run_row) or {}
+            conn.commit()
+            return {
+                "job": get_ai_video_job(existing_job.get("id") or "") or existing_job,
+                "run": existing_run,
+                "reused": True,
+            }
+
+        existing_run_row = conn.execute(
+            "SELECT * FROM ai_video_runs WHERE request_uid=? LIMIT 1",
+            (run_request_uid,),
+        ).fetchone()
+        if existing_run_row:
+            raise AiVideoRequestUidConflictError(
+                "AI video create requestUid is already owned by a Run without a matching Job"
+            )
+
         conn.execute(
             """
             INSERT INTO ai_video_jobs (
@@ -1228,11 +1255,34 @@ def create_ai_video_run(payload: Optional[Mapping[str, Any]] = None) -> dict:
     request_uid = str(source.get("requestUid") or source.get("request_uid") or "").strip()
     if not request_uid:
         raise ValueError("requestUid is required")
-    existing = get_ai_video_run_by_request_uid(request_uid)
-    if existing:
-        return existing
     job_uid = str(source.get("jobId") or source.get("job_uid") or "").strip()
     with _get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        existing_row = conn.execute(
+            "SELECT * FROM ai_video_runs WHERE request_uid=? LIMIT 1",
+            (request_uid,),
+        ).fetchone()
+        if existing_row:
+            existing = _ai_video_run_from_row(existing_row) or {}
+            if str(existing.get("jobId") or "").strip() != job_uid:
+                raise AiVideoRequestUidConflictError("AI video requestUid belongs to another Job")
+            conn.commit()
+            existing["_reused"] = True
+            return existing
+        if "expectedCurrentRunId" in source or "expectedJobStatus" in source:
+            expected_current_run_uid = str(source.get("expectedCurrentRunId") or "").strip()
+            expected_job_status = str(source.get("expectedJobStatus") or "").strip()
+            job_row = conn.execute(
+                "SELECT status, current_run_uid, deleted_at FROM ai_video_jobs WHERE job_uid=? LIMIT 1",
+                (job_uid,),
+            ).fetchone()
+            if (
+                not job_row
+                or str(job_row["deleted_at"] or "").strip()
+                or str(job_row["status"] or "").strip() != expected_job_status
+                or str(job_row["current_run_uid"] or "").strip() != expected_current_run_uid
+            ):
+                raise AiVideoRetryConflictError("AI video Job changed before retry Run creation")
         conn.execute(
             """
             INSERT INTO ai_video_runs (
@@ -1267,7 +1317,9 @@ def create_ai_video_run(payload: Optional[Mapping[str, Any]] = None) -> dict:
                 (run_uid, str(source.get("status") or "queued"), now, job_uid),
             )
         conn.commit()
-    return get_ai_video_run(run_uid) or {}
+    created = get_ai_video_run(run_uid) or {}
+    created["_reused"] = False
+    return created
 
 
 def get_ai_video_run(run_uid: str) -> Optional[dict]:
@@ -1361,6 +1413,52 @@ def update_ai_video_run(run_uid: str, payload: Optional[Mapping[str, Any]] = Non
                     )
         conn.commit()
     return get_ai_video_run(uid) or {}
+
+
+def cancel_ai_video_run_if_unsubmitted(run_uid: str) -> Optional[dict]:
+    """Atomically cancel the current queued Run only before provider submission."""
+    uid = str(run_uid or "").strip()
+    if not uid:
+        return None
+    now = _now_iso()
+    with _get_conn() as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        run_row = conn.execute(
+            "SELECT * FROM ai_video_runs WHERE run_uid=? LIMIT 1",
+            (uid,),
+        ).fetchone()
+        if (
+            not run_row
+            or str(run_row["status"] or "").strip() != "queued"
+            or str(run_row["provider_task_id"] or "").strip()
+            or str(run_row["submitted_at"] or "").strip()
+            or str(run_row["provider_status"] or "").strip()
+        ):
+            conn.commit()
+            return None
+        job_uid = str(run_row["job_uid"] or "").strip()
+        job_row = conn.execute(
+            "SELECT status, current_run_uid, deleted_at FROM ai_video_jobs WHERE job_uid=? LIMIT 1",
+            (job_uid,),
+        ).fetchone()
+        if (
+            not job_row
+            or str(job_row["status"] or "").strip() != "queued"
+            or str(job_row["current_run_uid"] or "").strip() != uid
+            or str(job_row["deleted_at"] or "").strip()
+        ):
+            conn.commit()
+            return None
+        conn.execute(
+            "UPDATE ai_video_runs SET status='cancelled', error_json='{}', updated_at=? WHERE run_uid=?",
+            (now, uid),
+        )
+        conn.execute(
+            "UPDATE ai_video_jobs SET status='cancelled', updated_at=? WHERE job_uid=? AND current_run_uid=?",
+            (now, job_uid, uid),
+        )
+        conn.commit()
+    return get_ai_video_run(uid)
 
 
 def soft_delete_ai_video_job(job_uid: str) -> bool:

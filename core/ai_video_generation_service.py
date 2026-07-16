@@ -1,6 +1,7 @@
 """AI video generation workbench: validation, provider adapters, worker."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import logging
@@ -8,19 +9,23 @@ import mimetypes
 import os
 import re
 import shutil
+import stat
 import subprocess
 import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional
 from uuid import uuid4
 
+from cryptography.exceptions import InvalidTag
+from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
 from core import data_sink, runtime_paths
 from core.config import load_config
-from core.one_xm_image import file_to_data_url
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +83,13 @@ DEFAULT_OUTPUT_DIR_NAME = "抓虾AI生视频"
 POLL_INTERVAL_SECONDS = 5.0
 POLL_TIMEOUT_SECONDS = 30 * 60
 SUBMIT_TIMEOUT_SECONDS = 120
+RECOVERY_MAX_WORKERS = 4
+CAPABILITY_PREFIX = "avcap2"
+CAPABILITY_MAX_AGE_SECONDS = 24 * 60 * 60
+CAPABILITY_FUTURE_SKEW_SECONDS = 5 * 60
+CAPABILITY_NONCE_BYTES = 12
+CAPABILITY_TAG_BYTES = 16
+CAPABILITY_AAD = CAPABILITY_PREFIX.encode("ascii")
 CLI_ROOT = Path(__file__).resolve().parents[1] / "integrations"
 SEEDANCE_CLI_DIR = CLI_ROOT / "seedanceCLI"
 BAILIAN_CLI_DIR = CLI_ROOT / "bailianCLI"
@@ -151,6 +163,172 @@ def expand_output_dir(raw: Any) -> Path:
     return Path(value).expanduser().resolve()
 
 
+def _capability_secret() -> bytes:
+    raw = _compact(os.environ.get("CRAWSHRIMP_AI_VIDEO_CAPABILITY_SECRET"))
+    if re.fullmatch(r"[0-9A-Fa-f]{64}", raw):
+        return bytes.fromhex(raw)
+    encoded = raw.encode("utf-8")
+    if len(encoded) >= 32:
+        return hashlib.sha256(encoded).digest()
+    raise AiVideoError(
+        "AI 视频路径授权未配置",
+        code="NEEDS_CONFIG",
+        safe_suggestion="请完整重启桌面端后重试",
+        http_status=503,
+    )
+
+
+def _b64url_encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _b64url_decode(value: str) -> bytes:
+    try:
+        if not value or not re.fullmatch(r"[A-Za-z0-9_-]+", value):
+            raise ValueError("invalid base64url")
+        padding = "=" * (-len(value) % 4)
+        decoded = base64.urlsafe_b64decode((value + padding).encode("ascii"))
+        if _b64url_encode(decoded) != value:
+            raise ValueError("non-canonical base64url")
+        return decoded
+    except Exception as exc:
+        raise AiVideoError("路径授权格式无效", code="PATH_CAPABILITY_INVALID") from exc
+
+
+def _encrypt_path_capability_payload(payload: Mapping[str, Any], *, nonce: Optional[bytes] = None) -> str:
+    nonce_bytes = os.urandom(CAPABILITY_NONCE_BYTES) if nonce is None else bytes(nonce)
+    if len(nonce_bytes) != CAPABILITY_NONCE_BYTES:
+        raise AiVideoError("路径授权 nonce 无效", code="PATH_CAPABILITY_INVALID")
+    plaintext = json.dumps(
+        dict(payload),
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    sealed = AESGCM(_capability_secret()).encrypt(nonce_bytes, plaintext, CAPABILITY_AAD)
+    return f"{CAPABILITY_PREFIX}.{_b64url_encode(nonce_bytes)}.{_b64url_encode(sealed)}"
+
+
+def _decrypt_path_capability_payload(token: Any) -> dict:
+    value = _compact(token)
+    parts = value.split(".")
+    if len(parts) != 3 or parts[0] != CAPABILITY_PREFIX:
+        raise AiVideoError("路径授权格式无效", code="PATH_CAPABILITY_INVALID")
+    nonce = _b64url_decode(parts[1])
+    sealed = _b64url_decode(parts[2])
+    if len(nonce) != CAPABILITY_NONCE_BYTES or len(sealed) <= CAPABILITY_TAG_BYTES:
+        raise AiVideoError("路径授权格式无效", code="PATH_CAPABILITY_INVALID")
+    try:
+        plaintext = AESGCM(_capability_secret()).decrypt(nonce, sealed, CAPABILITY_AAD)
+    except InvalidTag as exc:
+        raise AiVideoError("路径授权认证无效", code="PATH_CAPABILITY_INVALID") from exc
+    try:
+        payload = json.loads(plaintext.decode("utf-8"))
+    except Exception as exc:
+        raise AiVideoError("路径授权载荷无效", code="PATH_CAPABILITY_INVALID") from exc
+    if not isinstance(payload, Mapping):
+        raise AiVideoError("路径授权载荷无效", code="PATH_CAPABILITY_INVALID")
+    return dict(payload)
+
+
+def _assert_no_symlink_components(path: Path) -> None:
+    absolute = path.expanduser().absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        try:
+            if current.is_symlink():
+                raise AiVideoError("路径包含符号链接", code="PATH_NOT_ALLOWED")
+            if not current.exists():
+                break
+        except AiVideoError:
+            raise
+        except OSError as exc:
+            raise AiVideoError("无法校验路径安全性", code="PATH_NOT_ALLOWED") from exc
+
+
+def _validated_existing_file(path: Path) -> Path:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise AiVideoError("文件授权路径必须是绝对路径", code="PATH_CAPABILITY_INVALID")
+    absolute = candidate.absolute()
+    _assert_no_symlink_components(absolute)
+    try:
+        resolved = absolute.resolve(strict=True)
+    except OSError as exc:
+        raise AiVideoError("授权文件不存在", code="PATH_NOT_ALLOWED") from exc
+    if resolved != absolute or not resolved.is_file():
+        raise AiVideoError("授权文件路径无效", code="PATH_NOT_ALLOWED")
+    return resolved
+
+
+def _validated_output_dir(path: Path) -> Path:
+    candidate = path.expanduser()
+    if not candidate.is_absolute():
+        raise AiVideoError("输出目录授权路径必须是绝对路径", code="PATH_CAPABILITY_INVALID")
+    absolute = candidate.absolute()
+    _assert_no_symlink_components(absolute)
+    resolved = absolute.resolve(strict=False)
+    if resolved != absolute:
+        raise AiVideoError("输出目录包含符号链接", code="PATH_NOT_ALLOWED")
+    if absolute.exists() and not absolute.is_dir():
+        raise AiVideoError("输出路径不是目录", code="ARCHIVE_WRITE_FAILED")
+    writable_parent = absolute
+    while not writable_parent.exists() and writable_parent != writable_parent.parent:
+        writable_parent = writable_parent.parent
+    _assert_no_symlink_components(writable_parent)
+    if not writable_parent.is_dir() or not os.access(writable_parent, os.W_OK):
+        raise AiVideoError(
+            "输出目录不可写",
+            code="ARCHIVE_WRITE_FAILED",
+            safe_suggestion="重新选择有写入权限的输出目录",
+        )
+    return resolved
+
+
+def issue_path_capability(path: str | Path, *, kind: str, scope: str) -> str:
+    if kind not in {"file", "directory"} or scope not in {"input", "output", "media"}:
+        raise AiVideoError("路径授权范围无效", code="PATH_CAPABILITY_INVALID")
+    raw_path = Path(str(path or "")).expanduser()
+    if kind == "file":
+        safe_path = _validated_existing_file(raw_path)
+    else:
+        safe_path = _validated_output_dir(raw_path)
+    payload = {
+        "v": 2,
+        "kind": kind,
+        "scope": scope,
+        "path": str(safe_path),
+        "issuedAt": int(time.time() * 1000),
+    }
+    return _encrypt_path_capability_payload(payload)
+
+
+def verify_path_capability(token: Any, *, expected_kind: str, expected_scope: str) -> Path:
+    payload = _decrypt_path_capability_payload(token)
+    if payload.get("v") != 2:
+        raise AiVideoError("路径授权版本无效", code="PATH_CAPABILITY_INVALID")
+    if _compact(payload.get("kind")) != expected_kind or _compact(payload.get("scope")) != expected_scope:
+        raise AiVideoError("路径授权范围不匹配", code="PATH_CAPABILITY_INVALID")
+    try:
+        issued_at = float(payload.get("issuedAt"))
+    except Exception as exc:
+        raise AiVideoError("路径授权时间无效", code="PATH_CAPABILITY_INVALID") from exc
+    if issued_at > 100_000_000_000:
+        issued_at /= 1000.0
+    now = time.time()
+    if issued_at > now + CAPABILITY_FUTURE_SKEW_SECONDS:
+        raise AiVideoError("路径授权时间无效", code="PATH_CAPABILITY_INVALID")
+    if now - issued_at > CAPABILITY_MAX_AGE_SECONDS:
+        raise AiVideoError("路径授权已过期", code="PATH_CAPABILITY_EXPIRED")
+    path_value = _compact(payload.get("path"))
+    if not path_value or "\x00" in path_value:
+        raise AiVideoError("路径授权载荷无效", code="PATH_CAPABILITY_INVALID")
+    path = Path(path_value).expanduser()
+    if expected_kind == "file":
+        return _validated_existing_file(path)
+    return _validated_output_dir(path)
+
+
 def safety_identifier() -> str:
     seed = f"{os.uname().nodename if hasattr(os, 'uname') else 'host'}:{Path.home()}:crawshrimp-ai-video"
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:32]
@@ -193,6 +371,8 @@ def redact_obj(value: Any, secret_values: Optional[list[str]] = None) -> Any:
     if isinstance(value, list):
         return [redact_obj(item, secret_values) for item in value]
     if isinstance(value, str):
+        if value.lstrip().lower().startswith("data:"):
+            return "[redacted-data-url]"
         return redact_text(value, secret_values)
     return value
 
@@ -229,17 +409,35 @@ def provider_status() -> dict:
 def provider_env(provider: str) -> tuple[dict[str, str], list[str]]:
     cfg = load_config()
     secrets = provider_secrets()
-    env = dict(os.environ)
-    env.pop("ELECTRON_RUN_AS_NODE", None)
-    for name in ("ARK_API_KEY", "VOLCENGINE_ARK_API_KEY", "DASHSCOPE_API_KEY", "BAILIAN_API_KEY"):
-        env.pop(name, None)
-    secret_values = [value for value in secrets.values() if value]
+    allowed_names = {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "LANG",
+        "TZ",
+        "SYSTEMROOT",
+        "WINDIR",
+        "COMSPEC",
+        "PATHEXT",
+    }
+    env: dict[str, str] = {}
+    for name, value in os.environ.items():
+        upper = name.upper()
+        if upper.endswith(("_KEY", "_TOKEN", "_SECRET")):
+            continue
+        if upper in allowed_names or upper.startswith("LC_"):
+            env[name] = value
+    selected_secret = _compact(secrets.get(provider))
+    secret_values = [selected_secret] if selected_secret else []
     if provider == "seedance":
         if secrets["seedance"]:
             env["ARK_API_KEY"] = secrets["seedance"]
         base_url = _compact(_nested_config_value(cfg, "ai.video.seedance_base_url"))
         if base_url:
             env["ARK_BASE_URL"] = base_url
+            secret_values.append(base_url)
     elif provider == "happyhorse":
         if secrets["happyhorse"]:
             env["DASHSCOPE_API_KEY"] = secrets["happyhorse"]
@@ -251,7 +449,8 @@ def provider_env(provider: str) -> tuple[dict[str, str], list[str]]:
             value = _compact(_nested_config_value(cfg, config_key))
             if value:
                 env[env_name] = value
-    return env, secret_values
+                secret_values.append(value)
+    return env, list(dict.fromkeys(secret_values))
 
 
 def node_runtime() -> tuple[str, dict[str, str]]:
@@ -380,17 +579,21 @@ def _safe_suggestion_for(code: str) -> str:
 def resolve_model(provider: str, model: str) -> tuple[str, str]:
     provider_value = _compact(provider).lower()
     model_value = _compact(model)
+    if provider_value not in {"seedance", "happyhorse"}:
+        raise AiVideoError("不支持的 provider")
     if model_value in UI_MODEL_IDS:
         meta = UI_MODEL_IDS[model_value]
-        return meta["provider"], meta["model"]
+        if provider_value != meta["provider"]:
+            raise AiVideoError("provider 与 model 不匹配")
+        return provider_value, meta["model"]
     if provider_value == "seedance":
-        return "seedance", model_value or SEEDANCE_MODEL
+        if model_value != SEEDANCE_MODEL:
+            raise AiVideoError("Seedance 模型必须是 doubao-seedance-2-0-260128")
+        return "seedance", SEEDANCE_MODEL
     if provider_value == "happyhorse":
         if model_value not in HAPPYHORSE_MODELS:
             raise AiVideoError("HappyHorse 模型必须是 happyhorse-1.1-t2v/i2v/r2v")
         return "happyhorse", model_value
-    if model_value == SEEDANCE_MODEL:
-        return "seedance", SEEDANCE_MODEL
     raise AiVideoError("不支持的 provider 或 model")
 
 
@@ -512,7 +715,7 @@ def normalize_parameters(provider: str, model: str, parameters: Optional[Mapping
     return params
 
 
-def validate_input(payload: Mapping[str, Any]) -> dict:
+def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
     provider, model = resolve_model(payload.get("provider"), payload.get("model"))
     prompt = _compact(payload.get("prompt"))
     if not prompt:
@@ -520,30 +723,43 @@ def validate_input(payload: Mapping[str, Any]) -> dict:
     if len(prompt) > 4000:
         raise AiVideoError("Prompt 不能超过 4000 字符")
     parameters = normalize_parameters(provider, model, payload.get("parameters") if isinstance(payload.get("parameters"), Mapping) else {})
-    output_dir = expand_output_dir(payload.get("outputDir") or payload.get("output_dir"))
-    try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        raise AiVideoError(
-            "输出目录不可写",
-            code="ARCHIVE_WRITE_FAILED",
-            safe_suggestion="重新选择有写入权限的输出目录",
-        ) from exc
-    if not os.access(output_dir, os.W_OK):
-        raise AiVideoError(
-            "输出目录不可写",
-            code="ARCHIVE_WRITE_FAILED",
-            safe_suggestion="重新选择有写入权限的输出目录",
+    if trusted_paths:
+        raw_output_dir = _compact(payload.get("outputDir") or payload.get("output_dir"))
+        if not raw_output_dir:
+            raw_output_dir = str(default_output_dir())
+        output_dir = _validated_output_dir(Path(raw_output_dir))
+    else:
+        if _compact(payload.get("outputDir") or payload.get("output_dir")):
+            raise AiVideoError("输出目录必须使用授权 token", code="PATH_CAPABILITY_REQUIRED")
+        output_token = _compact(payload.get("outputDirToken") or payload.get("output_dir_token"))
+        if not output_token:
+            raise AiVideoError("缺少输出目录授权", code="PATH_CAPABILITY_REQUIRED")
+        output_dir = verify_path_capability(
+            output_token,
+            expected_kind="directory",
+            expected_scope="output",
         )
 
     asset_inputs = list(payload.get("assets") or [])
     assets: list[dict] = []
     for index, item in enumerate(asset_inputs):
         source = dict(item or {})
-        path_value = _compact(source.get("localPath") or source.get("local_path") or source.get("fileToken") or source.get("path"))
-        if not path_value:
-            raise AiVideoError("参考图路径不能为空")
-        path = Path(path_value).expanduser()
+        if trusted_paths:
+            path_value = _compact(source.get("localPath") or source.get("local_path") or source.get("path"))
+            if not path_value:
+                raise AiVideoError("参考图路径不能为空")
+            path = _validated_existing_file(Path(path_value))
+        else:
+            if _compact(source.get("localPath") or source.get("local_path") or source.get("path")):
+                raise AiVideoError("参考图必须使用授权 token", code="PATH_CAPABILITY_REQUIRED")
+            file_token = _compact(source.get("fileToken") or source.get("file_token"))
+            if not file_token:
+                raise AiVideoError("缺少参考图授权", code="PATH_CAPABILITY_REQUIRED")
+            path = verify_path_capability(
+                file_token,
+                expected_kind="file",
+                expected_scope="input",
+            )
         inspected = _inspect_image(path)
         role = _compact(source.get("role")) or ("first_frame" if model.endswith("-i2v") else "reference_image")
         if model.endswith("-i2v"):
@@ -598,6 +814,128 @@ def validate_input(payload: Mapping[str, Any]) -> dict:
     }
 
 
+def validate_input(payload: Mapping[str, Any]) -> dict:
+    """Validate an untrusted renderer/HTTP request using signed path capabilities."""
+    return _validate_input(payload, trusted_paths=False)
+
+
+def validate_public_input(payload: Mapping[str, Any]) -> dict:
+    """Validate a renderer request and return only path-free public metadata."""
+    normalized = validate_input(payload)
+    assets = []
+    for item in normalized.get("assets") or []:
+        if not isinstance(item, Mapping):
+            continue
+        local_path = _compact(item.get("localPath"))
+        assets.append({
+            "name": _compact(item.get("originalName") or item.get("name"))
+            or (Path(local_path).name if local_path else ""),
+            "mimeType": _compact(item.get("mimeType")),
+            "width": int(item.get("width") or 0),
+            "height": int(item.get("height") or 0),
+            "sizeBytes": int(item.get("sizeBytes") or 0),
+            "role": _compact(item.get("role")) or "reference_image",
+            "sortOrder": int(item.get("sortOrder") or 0),
+        })
+    return {
+        "provider": normalized.get("provider"),
+        "model": normalized.get("model"),
+        "parameters": normalized.get("parameters") or {},
+        "assets": assets,
+        "configured": bool(normalized.get("configured")),
+        "cliReady": bool(normalized.get("cliReady")),
+        "warnings": list(normalized.get("warnings") or []),
+        "needsConfig": bool(normalized.get("needsConfig")),
+    }
+
+
+def _validate_trusted_input(payload: Mapping[str, Any]) -> dict:
+    """Validate paths already persisted by the backend; never expose this through HTTP/IPC."""
+    return _validate_input(payload, trusted_paths=True)
+
+
+def _reference_asset_bytes(asset: Mapping[str, Any]) -> bytes:
+    path_value = _compact(asset.get("localPath") or asset.get("local_path"))
+    expected_sha256 = _compact(asset.get("sha256")).lower()
+    if not path_value or not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise AiVideoError("参考图完整性信息缺失，请重新选择后重试")
+
+    path = Path(path_value).expanduser()
+    if not path.is_absolute() or not path.name:
+        raise AiVideoError("参考图在提交前已变化，请重新选择后重试")
+
+    directory_fd: Optional[int] = None
+    file_fd: Optional[int] = None
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_CLOEXEC", 0)
+        supports_dir_fd = getattr(os, "supports_dir_fd", set())
+        if hasattr(os, "O_NOFOLLOW") and os.open in supports_dir_fd and os.stat in supports_dir_fd:
+            directory_fd = _open_directory_no_follow(path.parent)
+            file_fd = os.open(path.name, flags | os.O_NOFOLLOW, dir_fd=directory_fd)
+            opened = os.fstat(file_fd)
+            current = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+        else:
+            before = os.stat(path, follow_symlinks=False)
+            if not stat.S_ISREG(before.st_mode):
+                raise OSError("reference path is not a regular file")
+            file_fd = os.open(path, flags)
+            opened = os.fstat(file_fd)
+            current = os.stat(path, follow_symlinks=False)
+            if (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino):
+                raise OSError("reference path changed while opening")
+
+        if not stat.S_ISREG(opened.st_mode) or not stat.S_ISREG(current.st_mode):
+            raise OSError("reference path is not a regular file")
+        if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+            raise OSError("reference path changed while opening")
+        if opened.st_size > 20 * 1024 * 1024:
+            raise OSError("reference image is too large")
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = os.read(file_fd, 256 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > 20 * 1024 * 1024:
+                raise OSError("reference image is too large")
+            chunks.append(chunk)
+        payload = b"".join(chunks)
+        if hashlib.sha256(payload).hexdigest() != expected_sha256:
+            raise OSError("reference image digest changed")
+        return payload
+    except (AiVideoError, OSError) as exc:
+        raise AiVideoError("参考图在提交前已变化，请重新选择后重试") from exc
+    finally:
+        if file_fd is not None:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+
+
+def _reference_asset_data_url(asset: Mapping[str, Any]) -> str:
+    mime = _compact(asset.get("mimeType") or asset.get("mime_type"))
+    if mime not in ALLOWED_MIME:
+        suffix = Path(_compact(asset.get("localPath") or asset.get("local_path"))).suffix.lower()
+        mime = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }.get(suffix, "")
+    if mime not in ALLOWED_MIME:
+        raise AiVideoError("参考图格式无效，请重新选择后重试")
+    encoded = base64.b64encode(_reference_asset_bytes(asset)).decode("ascii")
+    return f"data:{mime};base64,{encoded}"
+
+
 def build_seedance_payload(normalized: Mapping[str, Any]) -> dict:
     content: list[dict] = [{"type": "text", "text": normalized["prompt"]}]
     for asset in normalized.get("assets") or []:
@@ -606,7 +944,7 @@ def build_seedance_payload(normalized: Mapping[str, Any]) -> dict:
             continue
         content.append({
             "type": "image_url",
-            "image_url": {"url": file_to_data_url(path)},
+            "image_url": {"url": _reference_asset_data_url(asset)},
             "role": "reference_image",
         })
     params = normalized["parameters"]
@@ -629,11 +967,11 @@ def build_happyhorse_payload(normalized: Mapping[str, Any]) -> dict:
     input_payload: dict[str, Any] = {"prompt": normalized["prompt"]}
     assets = list(normalized.get("assets") or [])
     if mode == "i2v":
-        url = file_to_data_url(assets[0]["localPath"])
+        url = _reference_asset_data_url(assets[0])
         input_payload["media"] = [{"type": "first_frame", "url": url}]
     elif mode == "r2v":
         input_payload["media"] = [
-            {"type": "reference_image", "url": file_to_data_url(asset["localPath"])}
+            {"type": "reference_image", "url": _reference_asset_data_url(asset)}
             for asset in assets
         ]
     parameters = {
@@ -666,6 +1004,54 @@ def archive_dir_for(job_id: str, run_id: str, output_root: Path, created_at: Opt
     return Path(output_root).expanduser() / day / job_id / run_id
 
 
+def _secure_mkdir_tree(path: Path) -> Path:
+    absolute = path.expanduser().absolute()
+    current = Path(absolute.anchor)
+    for part in absolute.parts[1:]:
+        current = current / part
+        if current.is_symlink():
+            raise AiVideoError("输出路径包含符号链接", code="ARCHIVE_WRITE_FAILED")
+        if current.exists():
+            if not current.is_dir():
+                raise AiVideoError("输出路径不是目录", code="ARCHIVE_WRITE_FAILED")
+            continue
+        try:
+            current.mkdir(mode=0o700)
+        except FileExistsError:
+            if current.is_symlink() or not current.is_dir():
+                raise AiVideoError("输出路径创建发生安全冲突", code="ARCHIVE_WRITE_FAILED")
+        except OSError as exc:
+            raise AiVideoError(
+                "输出目录不可写",
+                code="ARCHIVE_WRITE_FAILED",
+                safe_suggestion="重新选择有写入权限的输出目录",
+            ) from exc
+    return absolute
+
+
+def _secure_prepare_archive_dir(output_root: Path, archive_dir: Path) -> Path:
+    try:
+        safe_root = _validated_output_dir(output_root)
+    except AiVideoError as exc:
+        raise AiVideoError(
+            str(exc),
+            code="ARCHIVE_WRITE_FAILED",
+            safe_suggestion=exc.safe_suggestion,
+        ) from exc
+    target = archive_dir.expanduser().absolute()
+    try:
+        target.relative_to(safe_root)
+    except ValueError as exc:
+        raise AiVideoError("归档路径超出授权输出目录", code="ARCHIVE_WRITE_FAILED") from exc
+    _secure_mkdir_tree(safe_root)
+    _assert_no_symlink_components(safe_root)
+    _secure_mkdir_tree(target)
+    _assert_no_symlink_components(target)
+    if target.resolve(strict=True) != target:
+        raise AiVideoError("归档路径包含符号链接", code="ARCHIVE_WRITE_FAILED")
+    return target
+
+
 def output_filename(provider: str, model: str, job_id: str, run_id: str, created_at: Optional[str] = None) -> str:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     if created_at:
@@ -676,30 +1062,198 @@ def output_filename(provider: str, model: str, job_id: str, run_id: str, created
     return f"{stamp}-{provider}-{model_short(model)}-{job_id[-4:]}-{run_id[-4:]}.mp4"
 
 
+def _secure_archive_dirfd_available() -> bool:
+    supports_dir_fd = getattr(os, "supports_dir_fd", set())
+    required_dirfd_calls = (os.open, os.mkdir, os.stat, os.unlink, os.rename)
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and all(call in supports_dir_fd for call in required_dirfd_calls)
+    )
+
+
+def _directory_open_flags() -> int:
+    if not _secure_archive_dirfd_available():
+        raise AiVideoError(
+            "当前系统不支持安全归档写入",
+            code="ARCHIVE_WRITE_FAILED",
+        )
+    return os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0)
+
+
+def _open_directory_no_follow(path: Path) -> int:
+    absolute = path.expanduser().absolute()
+    if not absolute.is_absolute():
+        raise AiVideoError("归档目录必须是绝对路径", code="ARCHIVE_WRITE_FAILED")
+    component_flags = _directory_open_flags()
+    root_flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0)
+    directory_fd: Optional[int] = None
+    try:
+        directory_fd = os.open(absolute.anchor, root_flags)
+        for component in absolute.parts[1:]:
+            child_fd = os.open(component, component_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = child_fd
+        return directory_fd
+    except OSError as exc:
+        if directory_fd is not None:
+            try:
+                os.close(directory_fd)
+            except OSError:
+                pass
+        raise AiVideoError(
+            "归档目录在写入前发生安全变化",
+            code="ARCHIVE_WRITE_FAILED",
+        ) from exc
+
+
+def _atomic_write_bytes_at(directory_fd: int, name: str, payload: bytes) -> None:
+    if not name or Path(name).name != name:
+        raise AiVideoError("归档文件名无效", code="ARCHIVE_WRITE_FAILED")
+    temporary_name = f".{name}.{uuid4().hex}.tmp"
+    file_fd: Optional[int] = None
+    try:
+        file_fd = os.open(
+            temporary_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            0o600,
+            dir_fd=directory_fd,
+        )
+        remaining = memoryview(payload)
+        while remaining:
+            written = os.write(file_fd, remaining)
+            if written <= 0:
+                raise OSError("short archive write")
+            remaining = remaining[written:]
+        os.fsync(file_fd)
+        os.close(file_fd)
+        file_fd = None
+        os.rename(
+            temporary_name,
+            name,
+            src_dir_fd=directory_fd,
+            dst_dir_fd=directory_fd,
+        )
+    except OSError as exc:
+        raise AiVideoError("归档文件安全写入失败", code="ARCHIVE_WRITE_FAILED") from exc
+    finally:
+        if file_fd is not None:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+        try:
+            os.unlink(temporary_name, dir_fd=directory_fd)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
+def _read_optional_bytes_at(directory_fd: int, name: str) -> bytes:
+    file_fd: Optional[int] = None
+    try:
+        file_fd = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+            dir_fd=directory_fd,
+        )
+        chunks = []
+        while True:
+            chunk = os.read(file_fd, 256 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        return b"".join(chunks)
+    except FileNotFoundError:
+        return b""
+    except OSError as exc:
+        raise AiVideoError("归档事件文件读取失败", code="ARCHIVE_WRITE_FAILED") from exc
+    finally:
+        if file_fd is not None:
+            try:
+                os.close(file_fd)
+            except OSError:
+                pass
+
+
+def _write_archive_json(archive_dir: Path, name: str, value: Any) -> None:
+    if not _secure_archive_dirfd_available():
+        logger.warning("Skipping optional AI video archive JSON: secure dir-fd writes are unavailable")
+        return
+    directory_fd = _open_directory_no_follow(archive_dir)
+    try:
+        payload = json.dumps(value, ensure_ascii=False, indent=2).encode("utf-8")
+        _atomic_write_bytes_at(directory_fd, name, payload)
+    finally:
+        os.close(directory_fd)
+
+
+def _append_archive_event(archive_dir: Path, value: Mapping[str, Any]) -> None:
+    if not _secure_archive_dirfd_available():
+        logger.warning("Skipping optional AI video archive event: secure dir-fd writes are unavailable")
+        return
+    directory_fd = _open_directory_no_follow(archive_dir)
+    try:
+        existing = _read_optional_bytes_at(directory_fd, "events.jsonl")
+        line = (json.dumps(dict(value), ensure_ascii=False) + "\n").encode("utf-8")
+        _atomic_write_bytes_at(directory_fd, "events.jsonl", existing + line)
+    finally:
+        os.close(directory_fd)
+
+
 def _write_run_artifacts(archive_dir: Path, *, normalized: Mapping[str, Any], provider_payload: Mapping[str, Any], event: str) -> None:
-    archive_dir.mkdir(parents=True, exist_ok=True)
-    (archive_dir / "request.normalized.json").write_text(
-        json.dumps(redact_obj(dict(normalized)), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    (archive_dir / "request.provider.redacted.json").write_text(
-        json.dumps(redact_obj(dict(provider_payload)), ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    events_path = archive_dir / "events.jsonl"
-    with events_path.open("a", encoding="utf-8") as handle:
-        handle.write(json.dumps({"at": _now_iso(), "event": event}, ensure_ascii=False) + "\n")
-    input_dir = archive_dir / "input"
-    input_dir.mkdir(exist_ok=True)
-    for index, asset in enumerate(normalized.get("assets") or [], start=1):
-        src = _compact(asset.get("localPath"))
-        if not src:
-            continue
-        path = Path(src)
-        if path.is_file():
-            target = input_dir / f"image-{index:02d}{path.suffix.lower() or '.jpg'}"
-            if not target.exists():
-                shutil.copy2(path, target)
+    if not _secure_archive_dirfd_available():
+        logger.warning("Skipping optional AI video run artifacts: secure dir-fd writes are unavailable")
+        return
+    _secure_mkdir_tree(archive_dir)
+    directory_fd = _open_directory_no_follow(archive_dir)
+    input_fd: Optional[int] = None
+    try:
+        _atomic_write_bytes_at(
+            directory_fd,
+            "request.normalized.json",
+            json.dumps(redact_obj(dict(normalized)), ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        _atomic_write_bytes_at(
+            directory_fd,
+            "request.provider.redacted.json",
+            json.dumps(redact_obj(dict(provider_payload)), ensure_ascii=False, indent=2).encode("utf-8"),
+        )
+        existing_events = _read_optional_bytes_at(directory_fd, "events.jsonl")
+        event_line = json.dumps({"at": _now_iso(), "event": event}, ensure_ascii=False).encode("utf-8") + b"\n"
+        _atomic_write_bytes_at(directory_fd, "events.jsonl", existing_events + event_line)
+        try:
+            os.mkdir("input", mode=0o700, dir_fd=directory_fd)
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise AiVideoError("归档输入目录创建失败", code="ARCHIVE_WRITE_FAILED") from exc
+        try:
+            input_fd = os.open("input", _directory_open_flags(), dir_fd=directory_fd)
+        except OSError as exc:
+            raise AiVideoError("归档输入目录发生安全变化", code="ARCHIVE_WRITE_FAILED") from exc
+        for index, asset in enumerate(normalized.get("assets") or [], start=1):
+            src = _compact(asset.get("localPath"))
+            if not src:
+                continue
+            source_path = _validated_existing_file(Path(src))
+            target_name = f"image-{index:02d}{source_path.suffix.lower() or '.jpg'}"
+            try:
+                existing = os.stat(target_name, dir_fd=input_fd, follow_symlinks=False)
+            except FileNotFoundError:
+                existing = None
+            except OSError as exc:
+                raise AiVideoError("归档输入文件校验失败", code="ARCHIVE_WRITE_FAILED") from exc
+            if existing is not None:
+                if not stat.S_ISREG(existing.st_mode):
+                    raise AiVideoError("归档输入文件类型不安全", code="ARCHIVE_WRITE_FAILED")
+                continue
+            _atomic_write_bytes_at(input_fd, target_name, source_path.read_bytes())
+    finally:
+        if input_fd is not None:
+            os.close(input_fd)
+        os.close(directory_fd)
 
 
 def create_job(payload: Mapping[str, Any]) -> dict:
@@ -722,27 +1276,36 @@ def create_job(payload: Mapping[str, Any]) -> dict:
         "assets": normalized["assets"],
         "parameters": normalized["parameters"],
     }
-    created = data_sink.create_ai_video_job_with_run(
-        job_payload={
-            "requestUid": request_uid,
-            "title": title,
-            "status": status,
-            "provider": provider,
-            "model": model,
-            "prompt": normalized["prompt"],
-            "parameters": normalized["parameters"],
-            "outputDir": normalized["outputDir"],
-        },
-        assets=normalized["assets"],
-        run_payload={
-            "requestUid": request_uid,
-            "status": status,
-            "provider": provider,
-            "model": model,
-            "inputSnapshot": input_snapshot,
-            "archiveStatus": "none",
-        },
-    )
+    try:
+        created = data_sink.create_ai_video_job_with_run(
+            job_payload={
+                "requestUid": request_uid,
+                "title": title,
+                "status": status,
+                "provider": provider,
+                "model": model,
+                "prompt": normalized["prompt"],
+                "parameters": normalized["parameters"],
+                "outputDir": normalized["outputDir"],
+            },
+            assets=normalized["assets"],
+            run_payload={
+                "requestUid": request_uid,
+                "status": status,
+                "provider": provider,
+                "model": model,
+                "inputSnapshot": input_snapshot,
+                "archiveStatus": "none",
+            },
+        )
+    except data_sink.AiVideoRequestUidConflictError as exc:
+        raise AiVideoError(
+            "requestUid 已被其他执行使用",
+            code="REQUEST_UID_CONFLICT",
+            retryable=False,
+            safe_suggestion="请为本次创建生成新的 requestUid",
+            http_status=409,
+        ) from exc
     job = created["job"]
     run = created["run"]
     if created.get("reused"):
@@ -762,19 +1325,52 @@ def duplicate_job(job_id: str) -> dict:
     assets = []
     for asset in job.get("assets") or []:
         assets.append({
+            "kind": asset.get("kind"),
             "role": asset.get("role"),
+            "sourceType": asset.get("sourceType"),
+            "originalName": asset.get("originalName"),
             "localPath": asset.get("localPath"),
+            "mimeType": asset.get("mimeType"),
+            "width": asset.get("width"),
+            "height": asset.get("height"),
+            "sizeBytes": asset.get("sizeBytes"),
+            "sha256": asset.get("sha256"),
             "sortOrder": asset.get("sortOrder"),
         })
-    return create_job({
-        "requestUid": request_uid,
-        "provider": job.get("provider"),
-        "model": job.get("model"),
-        "prompt": job.get("prompt"),
-        "parameters": job.get("parameters") or {},
+    input_snapshot = {
+        "prompt": job.get("prompt") or "",
         "assets": assets,
-        "outputDir": job.get("outputDir"),
-    })
+        "parameters": job.get("parameters") or {},
+    }
+    created = data_sink.create_ai_video_job_with_run(
+        job_payload={
+            "requestUid": request_uid,
+            "title": job_title_from_prompt(job.get("prompt") or ""),
+            "status": "draft",
+            "provider": job.get("provider"),
+            "model": job.get("model"),
+            "prompt": job.get("prompt"),
+            "parameters": job.get("parameters") or {},
+            "outputDir": job.get("outputDir"),
+        },
+        assets=assets,
+        run_payload={
+            "requestUid": request_uid,
+            "status": "draft",
+            "provider": job.get("provider"),
+            "model": job.get("model"),
+            "inputSnapshot": input_snapshot,
+            "archiveStatus": "none",
+        },
+    )
+    return {
+        "ok": True,
+        "data": {
+            "job": public_job(created["job"]),
+            "run": public_run(created["run"]),
+        },
+        "reused": bool(created.get("reused")),
+    }
 
 
 def retry_job(job_id: str, request_uid: str) -> dict:
@@ -786,9 +1382,27 @@ def retry_job(job_id: str, request_uid: str) -> dict:
         raise AiVideoError("requestUid 必填")
     existing_run = data_sink.get_ai_video_run_by_request_uid(request)
     if existing_run:
+        if _compact(existing_run.get("jobId")) != _compact(job_id):
+            raise AiVideoError(
+                "requestUid 已被其他任务使用",
+                code="REQUEST_UID_CONFLICT",
+                retryable=False,
+                safe_suggestion="请为本次重试生成新的 requestUid",
+                http_status=409,
+            )
         return {"ok": True, "data": {"job": public_job(job), "run": public_run(existing_run)}, "reused": True}
     if job.get("status") in ACTIVE_STATUSES:
         raise AiVideoError("任务仍在执行中，请等待完成后再重试")
+    current_run = data_sink.get_ai_video_run(job.get("currentRunId") or "") or {}
+    current_error = current_run.get("error") if isinstance(current_run.get("error"), Mapping) else {}
+    if _compact(current_error.get("code")) == "UNKNOWN_SUBMIT_RESULT":
+        raise AiVideoError(
+            "远端提交结果未知，禁止直接重试以避免重复扣费",
+            code="UNKNOWN_SUBMIT_RESULT",
+            retryable=False,
+            safe_suggestion="请先核对 provider 任务；需要调整时可复制为新草稿",
+            http_status=409,
+        )
 
     assets = []
     for asset in job.get("assets") or []:
@@ -797,7 +1411,7 @@ def retry_job(job_id: str, request_uid: str) -> dict:
             "localPath": asset.get("localPath"),
             "sortOrder": asset.get("sortOrder"),
         })
-    normalized = validate_input({
+    normalized = _validate_trusted_input({
         "provider": job.get("provider"),
         "model": job.get("model"),
         "prompt": job.get("prompt"),
@@ -805,20 +1419,54 @@ def retry_job(job_id: str, request_uid: str) -> dict:
         "assets": assets,
         "outputDir": job.get("outputDir"),
     })
-    status = "needs_config" if normalized["needsConfig"] else "queued"
-    run = data_sink.create_ai_video_run({
-        "requestUid": request,
-        "jobId": job["id"],
-        "status": status,
-        "provider": normalized["provider"],
-        "model": normalized["model"],
-        "inputSnapshot": {
-            "prompt": normalized["prompt"],
-            "assets": normalized["assets"],
-            "parameters": normalized["parameters"],
-        },
-        "archiveStatus": "none",
-    })
+    if normalized["needsConfig"]:
+        raise AiVideoError(
+            "视频供应商尚未配置完成，不能创建重试任务",
+            code="NEEDS_CONFIG",
+            retryable=True,
+            safe_suggestion="请先在设置中的 AI 能力完成对应 provider 配置",
+            http_status=409,
+        )
+    status = "queued"
+    try:
+        run = data_sink.create_ai_video_run({
+            "requestUid": request,
+            "jobId": job["id"],
+            "expectedJobStatus": job.get("status"),
+            "expectedCurrentRunId": job.get("currentRunId"),
+            "status": status,
+            "provider": normalized["provider"],
+            "model": normalized["model"],
+            "inputSnapshot": {
+                "prompt": normalized["prompt"],
+                "assets": normalized["assets"],
+                "parameters": normalized["parameters"],
+            },
+            "archiveStatus": "none",
+        })
+    except data_sink.AiVideoRequestUidConflictError as exc:
+        raise AiVideoError(
+            "requestUid 已被其他任务使用",
+            code="REQUEST_UID_CONFLICT",
+            retryable=False,
+            safe_suggestion="请为本次重试生成新的 requestUid",
+            http_status=409,
+        ) from exc
+    except data_sink.AiVideoRetryConflictError as exc:
+        raise AiVideoError(
+            "任务状态已变化，本次重试未创建",
+            code="RETRY_CONFLICT",
+            retryable=True,
+            safe_suggestion="请刷新任务状态后再重试",
+            http_status=409,
+        ) from exc
+    if run.get("_reused"):
+        current_job = data_sink.get_ai_video_job(job["id"]) or job
+        return {
+            "ok": True,
+            "data": {"job": public_job(current_job), "run": public_run(run)},
+            "reused": True,
+        }
     data_sink.update_ai_video_job(job["id"], {
         "status": status,
         "currentRunId": run["id"],
@@ -838,12 +1486,33 @@ def delete_job(job_id: str) -> dict:
     job = data_sink.get_ai_video_job(job_id)
     if not job or job.get("deletedAt"):
         raise AiVideoError("任务不存在", code="VALIDATION_FAILED", http_status=404)
-    status = _compact(job.get("status"))
-    run = data_sink.get_ai_video_run(job.get("currentRunId") or "") or {}
-    if status in DELETE_BLOCKED_STATUSES or (status == "queued" and _compact(run.get("providerTaskId"))):
-        raise AiVideoError("任务已提交或运行中，不能删除记录", code="VALIDATION_FAILED", http_status=409)
-    data_sink.soft_delete_ai_video_job(job_id)
-    return {"ok": True, "data": {"id": job_id}}
+    run_id = _compact(job.get("currentRunId"))
+    lock = _run_lock(run_id) if run_id else None
+    if lock:
+        lock.acquire()
+    try:
+        job = data_sink.get_ai_video_job(job_id)
+        if not job or job.get("deletedAt"):
+            raise AiVideoError("任务不存在", code="VALIDATION_FAILED", http_status=404)
+        status = _compact(job.get("status"))
+        current_run_id = _compact(job.get("currentRunId"))
+        run = data_sink.get_ai_video_run(current_run_id) or {}
+        if status == "queued" and current_run_id == run_id and not _compact(run.get("providerTaskId")):
+            cancelled_run = data_sink.cancel_ai_video_run_if_unsubmitted(run_id)
+            if cancelled_run:
+                return {"ok": True, "data": {"id": job_id, "status": "cancelled"}}
+            job = data_sink.get_ai_video_job(job_id) or job
+            status = _compact(job.get("status"))
+            run = data_sink.get_ai_video_run(job.get("currentRunId") or "") or run
+        if status in DELETE_BLOCKED_STATUSES or (
+            status == "queued" and _compact(run.get("providerTaskId"))
+        ):
+            raise AiVideoError("任务已提交或运行中，不能删除记录", code="VALIDATION_FAILED", http_status=409)
+        data_sink.soft_delete_ai_video_job(job_id)
+        return {"ok": True, "data": {"id": job_id}}
+    finally:
+        if lock:
+            lock.release()
 
 
 def update_job(job_id: str, payload: Mapping[str, Any]) -> dict:
@@ -852,20 +1521,52 @@ def update_job(job_id: str, payload: Mapping[str, Any]) -> dict:
         raise AiVideoError("任务不存在", code="VALIDATION_FAILED", http_status=404)
     if _compact(job.get("status")) not in EDITABLE_STATUSES:
         raise AiVideoError("当前状态不可编辑输入参数")
+    if _compact(payload.get("outputDir") or payload.get("output_dir")):
+        raise AiVideoError("输出目录必须使用授权 token", code="PATH_CAPABILITY_REQUIRED")
+    output_token = _compact(payload.get("outputDirToken") or payload.get("output_dir_token"))
+    if output_token:
+        merged_output_dir = str(verify_path_capability(
+            output_token,
+            expected_kind="directory",
+            expected_scope="output",
+        ))
+    else:
+        merged_output_dir = job.get("outputDir")
+
+    requested_assets = payload.get("assets")
+    if requested_assets is None:
+        merged_assets = [
+            {"role": a.get("role"), "localPath": a.get("localPath"), "sortOrder": a.get("sortOrder")}
+            for a in (job.get("assets") or [])
+        ]
+    else:
+        merged_assets = []
+        for index, item in enumerate(list(requested_assets or [])):
+            source = dict(item or {})
+            if _compact(source.get("localPath") or source.get("local_path") or source.get("path")):
+                raise AiVideoError("参考图必须使用授权 token", code="PATH_CAPABILITY_REQUIRED")
+            file_token = _compact(source.get("fileToken") or source.get("file_token"))
+            if not file_token:
+                raise AiVideoError("缺少参考图授权", code="PATH_CAPABILITY_REQUIRED")
+            path = verify_path_capability(
+                file_token,
+                expected_kind="file",
+                expected_scope="input",
+            )
+            merged_assets.append({
+                "role": source.get("role"),
+                "localPath": str(path),
+                "sortOrder": source.get("sortOrder") if source.get("sortOrder") is not None else index,
+            })
     merged = {
         "provider": payload.get("provider", job.get("provider")),
         "model": payload.get("model", job.get("model")),
         "prompt": payload.get("prompt", job.get("prompt")),
         "parameters": payload.get("parameters", job.get("parameters") or {}),
-        "assets": payload.get("assets"),
-        "outputDir": payload.get("outputDir", job.get("outputDir")),
+        "assets": merged_assets,
+        "outputDir": merged_output_dir,
     }
-    if merged["assets"] is None:
-        merged["assets"] = [
-            {"role": a.get("role"), "localPath": a.get("localPath"), "sortOrder": a.get("sortOrder")}
-            for a in (job.get("assets") or [])
-        ]
-    normalized = validate_input(merged)
+    normalized = _validate_trusted_input(merged)
     data_sink.update_ai_video_job(job_id, {
         "provider": normalized["provider"],
         "model": normalized["model"],
@@ -879,12 +1580,38 @@ def update_job(job_id: str, payload: Mapping[str, Any]) -> dict:
     return {"ok": True, "data": {"job": public_job(data_sink.get_ai_video_job(job_id) or {})}}
 
 
+def _public_path_token(path_value: Any, *, kind: str, scope: str) -> Optional[str]:
+    path = _compact(path_value)
+    if not path:
+        return None
+    try:
+        return issue_path_capability(path, kind=kind, scope=scope)
+    except AiVideoError:
+        logger.warning("Skipping unsafe or unavailable AI video public path", exc_info=True)
+        return None
+
+
+def _public_asset(asset: Mapping[str, Any]) -> dict:
+    result = dict(asset or {})
+    local_path = _compact(result.pop("localPath", None) or result.pop("local_path", None))
+    name = _compact(result.get("originalName") or result.get("name"))
+    if not name and local_path:
+        name = Path(local_path).name
+    result["name"] = name
+    token = _public_path_token(local_path, kind="file", scope="input")
+    if token:
+        result["fileToken"] = token
+    return result
+
+
 def public_job(job: Mapping[str, Any]) -> dict:
     if not job:
         return {}
     current_run = job.get("currentRun")
     if not current_run and job.get("currentRunId"):
         current_run = data_sink.get_ai_video_run(job.get("currentRunId") or "")
+    output_dir = _compact(job.get("outputDir"))
+    output_dir_token = _public_path_token(output_dir, kind="directory", scope="output")
     result = {
         "id": job.get("id"),
         "requestUid": job.get("requestUid"),
@@ -895,11 +1622,12 @@ def public_job(job: Mapping[str, Any]) -> dict:
         "prompt": job.get("prompt"),
         "parameters": job.get("parameters") or {},
         "currentRunId": job.get("currentRunId"),
-        "outputDir": job.get("outputDir"),
+        "outputDirToken": output_dir_token,
+        "outputDirName": Path(output_dir).name if output_dir else "",
         "createdAt": job.get("createdAt"),
         "updatedAt": job.get("updatedAt"),
         "deletedAt": job.get("deletedAt"),
-        "assets": job.get("assets") or [],
+        "assets": [_public_asset(asset) for asset in (job.get("assets") or []) if isinstance(asset, Mapping)],
         "currentRun": public_run(current_run) if current_run else None,
         "displayStatus": display_status(job.get("status"), current_run),
         "waitedSeconds": waited_seconds(current_run or job),
@@ -912,10 +1640,30 @@ def public_run(run: Optional[Mapping[str, Any]]) -> dict:
     if not run:
         return {}
     output = dict(run.get("output") or {}) if isinstance(run.get("output"), Mapping) else {}
-    # Strip provider video URL from public response
+    local_video_path = _compact(output.pop("localVideoPath", None) or output.pop("local_video_path", None))
+    local_poster_path = _compact(output.pop("localPosterPath", None) or output.pop("local_poster_path", None))
+    output.pop("archiveDir", None)
+    output.pop("archive_dir", None)
+    # Strip provider video URL from public response.
     output.pop("providerVideoUrl", None)
     output.pop("videoUrl", None)
     output.pop("video_url", None)
+    if local_video_path:
+        token = _public_path_token(local_video_path, kind="file", scope="media")
+        if token:
+            output["localVideoToken"] = token
+            output["videoFileName"] = Path(local_video_path).name
+    if local_poster_path:
+        token = _public_path_token(local_poster_path, kind="file", scope="media")
+        if token:
+            output["localPosterToken"] = token
+            output["posterFileName"] = Path(local_poster_path).name
+    snapshot = dict(run.get("inputSnapshot") or {}) if isinstance(run.get("inputSnapshot"), Mapping) else {}
+    snapshot["assets"] = [
+        _public_asset(asset)
+        for asset in (snapshot.get("assets") or [])
+        if isinstance(asset, Mapping)
+    ]
     error = run.get("error") if isinstance(run.get("error"), Mapping) else None
     return {
         "id": run.get("id"),
@@ -924,7 +1672,7 @@ def public_run(run: Optional[Mapping[str, Any]]) -> dict:
         "status": run.get("status"),
         "provider": run.get("provider"),
         "model": run.get("model"),
-        "inputSnapshot": run.get("inputSnapshot") or {},
+        "inputSnapshot": snapshot,
         "providerTaskId": run.get("providerTaskId"),
         "providerStatus": run.get("providerStatus"),
         "archiveStatus": run.get("archiveStatus") or "none",
@@ -1094,8 +1842,28 @@ def _run_lock(run_id: str) -> threading.RLock:
         return lock
 
 
-def process_run(run_id: str) -> None:
-    with _run_lock(run_id):
+def _has_submission_attempt_marker(run: Mapping[str, Any]) -> bool:
+    return bool(_compact(run.get("submittedAt"))) or _compact(run.get("providerStatus")).lower() == "submitting"
+
+
+def _mark_unknown_submission_attempt(run_id: str) -> None:
+    error = AiVideoError(
+        "检测到未完成的 provider 提交，远端结果未知",
+        code="UNKNOWN_SUBMIT_RESULT",
+        retryable=False,
+        safe_suggestion="为避免重复扣费，本次不会自动重提；请先核对 provider 任务",
+    )
+    data_sink.update_ai_video_run(run_id, {
+        "status": "failed",
+        "error": error.as_dict(),
+    })
+
+
+def process_run(run_id: str, *, once: bool = False) -> None:
+    lock = _run_lock(run_id)
+    if not lock.acquire(blocking=False):
+        return
+    try:
         run = data_sink.get_ai_video_run(run_id)
         if not run:
             return
@@ -1103,15 +1871,20 @@ def process_run(run_id: str) -> None:
         if status in {"completed", "failed", "cancelled", "expired", "needs_config"}:
             return
         if status == "queued" and not _compact(run.get("providerTaskId")):
-            _submit_run(run)
+            if _has_submission_attempt_marker(run):
+                _mark_unknown_submission_attempt(run_id)
+            else:
+                _submit_run(run)
             run = data_sink.get_ai_video_run(run_id) or run
         if _compact(run.get("status")) in {"running", "queued"} and _compact(run.get("providerTaskId")):
-            _poll_until_terminal_or_once(run_id)
+            _poll_until_terminal_or_once(run_id, once=once)
             run = data_sink.get_ai_video_run(run_id) or run
         if _compact(run.get("status")) == "downloading" or (
             _compact(run.get("status")) == "running" and _provider_succeeded(run)
         ):
             _archive_run(run_id)
+    finally:
+        lock.release()
 
 
 def _provider_succeeded(run: Mapping[str, Any]) -> bool:
@@ -1126,6 +1899,13 @@ def _provider_succeeded(run: Mapping[str, Any]) -> bool:
 
 def _submit_run(run: Mapping[str, Any]) -> None:
     run_id = run["id"]
+    if (
+        _compact(run.get("status")) == "queued"
+        and not _compact(run.get("providerTaskId"))
+        and _has_submission_attempt_marker(run)
+    ):
+        _mark_unknown_submission_attempt(run_id)
+        return
     job = data_sink.get_ai_video_job(run.get("jobId") or "") or {}
     snapshot = run.get("inputSnapshot") if isinstance(run.get("inputSnapshot"), Mapping) else {}
     normalized = {
@@ -1158,13 +1938,22 @@ def _submit_run(run: Mapping[str, Any]) -> None:
         data_sink.update_ai_video_run(run_id, {"status": "failed", "error": error.as_dict()})
         return
 
-    archive_dir = archive_dir_for(run.get("jobId") or "job", run_id, Path(normalized["outputDir"]), run.get("createdAt"))
+    archive_root = Path(normalized["outputDir"]).expanduser().absolute()
+    archive_dir = archive_dir_for(run.get("jobId") or "job", run_id, archive_root, run.get("createdAt"))
+    payload_path: Optional[Path] = None
     try:
+        archive_dir = _secure_prepare_archive_dir(archive_root, archive_dir)
         _write_run_artifacts(archive_dir, normalized=normalized, provider_payload=provider_payload, event="submit_start")
         payload_path = runtime_paths.child_dir("ai-video-generation") / f"payload-{run_id}.json"
         payload_path.parent.mkdir(parents=True, exist_ok=True)
         # Write raw payload for CLI only; redacted copy already archived.
         payload_path.write_text(json.dumps(provider_payload, ensure_ascii=False), encoding="utf-8")
+        data_sink.update_ai_video_run(run_id, {
+            "status": "queued",
+            "providerStatus": "submitting",
+            "submittedAt": _now_iso(),
+            "error": {},
+        })
         if provider == "seedance":
             result = _run_cli(
                 provider="seedance",
@@ -1195,10 +1984,7 @@ def _submit_run(run: Mapping[str, Any]) -> None:
                 "error": error.as_dict(),
                 "providerStatus": provider_status_value,
             })
-            (archive_dir / "response.provider.redacted.json").write_text(
-                json.dumps(redact_obj(created), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
+            _write_archive_json(archive_dir, "response.provider.redacted.json", redact_obj(created))
             return
         data_sink.update_ai_video_run(run_id, {
             "status": "running",
@@ -1207,13 +1993,19 @@ def _submit_run(run: Mapping[str, Any]) -> None:
             "submittedAt": _now_iso(),
             "error": {},
         })
-        (archive_dir / "response.provider.redacted.json").write_text(
-            json.dumps(redact_obj(created), ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        _write_archive_json(archive_dir, "response.provider.redacted.json", redact_obj(created))
+        _append_archive_event(
+            archive_dir,
+            {"at": _now_iso(), "event": "submitted", "providerTaskId": task_id},
         )
-        with (archive_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"at": _now_iso(), "event": "submitted", "providerTaskId": task_id}, ensure_ascii=False) + "\n")
     except AiVideoError as exc:
+        if exc.code == "PROVIDER_TIMEOUT":
+            exc = AiVideoError(
+                "create 执行超时，远端提交结果未知",
+                code="UNKNOWN_SUBMIT_RESULT",
+                retryable=False,
+                safe_suggestion="为避免重复扣费，请先核对 provider 任务；不要直接重试",
+            )
         status_value = "needs_config" if exc.code in {"CREDENTIAL_MISSING", "NEEDS_CONFIG"} else "failed"
         data_sink.update_ai_video_run(run_id, {"status": status_value, "error": exc.as_dict()})
     except Exception as exc:
@@ -1223,10 +2015,18 @@ def _submit_run(run: Mapping[str, Any]) -> None:
             safe_suggestion="为避免重复扣费，本次不会自动重提；请确认后复制为新任务",
         )
         data_sink.update_ai_video_run(run_id, {"status": "failed", "error": error.as_dict()})
+    finally:
+        if payload_path is not None:
+            try:
+                payload_path.unlink(missing_ok=True)
+            except TypeError:
+                if payload_path.exists():
+                    payload_path.unlink()
+            except OSError:
+                logger.warning("Failed to remove raw AI video provider payload %s", payload_path, exc_info=True)
 
 
 def _poll_until_terminal_or_once(run_id: str, *, once: bool = False) -> None:
-    started = time.monotonic()
     while True:
         run = data_sink.get_ai_video_run(run_id)
         if not run:
@@ -1258,9 +2058,24 @@ def _poll_until_terminal_or_once(run_id: str, *, once: bool = False) -> None:
                 output = snapshot.get("output") if isinstance(snapshot.get("output"), dict) else {}
                 provider_status_value = _compact(output.get("task_status"))
                 video_url = _compact(output.get("video_url"))
-                terminal = provider_status_value.upper() in {"SUCCEEDED", "FAILED", "CANCELED", "UNKNOWN"}
+                terminal = provider_status_value.upper() in {"SUCCEEDED", "FAILED", "CANCELED"}
                 provider_status_value = provider_status_value.upper()
         except AiVideoError as exc:
+            if exc.retryable:
+                active_status = _compact(run.get("status"))
+                if active_status not in ACTIVE_STATUSES:
+                    active_status = "running"
+                data_sink.update_ai_video_run(run_id, {
+                    "status": active_status,
+                    "error": exc.as_dict(),
+                })
+                if waited_seconds(run) >= POLL_TIMEOUT_SECONDS:
+                    _expire_polled_run(run_id, provider_status_value=_compact(run.get("providerStatus")))
+                    return
+                if once:
+                    return
+                time.sleep(POLL_INTERVAL_SECONDS)
+                continue
             data_sink.update_ai_video_run(run_id, {"status": "failed", "error": exc.as_dict()})
             return
         except Exception as exc:
@@ -1285,7 +2100,6 @@ def _poll_until_terminal_or_once(run_id: str, *, once: bool = False) -> None:
                 "archiveStatus": "pending_archive",
                 "output": output,
             })
-            _archive_run(run_id)
             return
         elif mapped in {"failed", "cancelled", "expired"}:
             data_sink.update_ai_video_run(run_id, {
@@ -1299,21 +2113,26 @@ def _poll_until_terminal_or_once(run_id: str, *, once: bool = False) -> None:
             })
             return
 
+        if waited_seconds(run) >= POLL_TIMEOUT_SECONDS:
+            _expire_polled_run(run_id, provider_status_value=provider_status_value)
+            return
         if once or terminal:
             return
-        if time.monotonic() - started > POLL_TIMEOUT_SECONDS:
-            data_sink.update_ai_video_run(run_id, {
-                "status": "expired",
-                "providerStatus": provider_status_value,
-                "error": AiVideoError(
-                    "长时间未完成",
-                    code="PROVIDER_TIMEOUT",
-                    retryable=True,
-                    safe_suggestion="可稍后恢复查询或复制为新任务",
-                ).as_dict(),
-            })
-            return
         time.sleep(POLL_INTERVAL_SECONDS)
+
+
+def _expire_polled_run(run_id: str, *, provider_status_value: str) -> None:
+    data_sink.update_ai_video_run(run_id, {
+        "status": "expired",
+        "providerStatus": provider_status_value,
+        "completedAt": _now_iso(),
+        "error": AiVideoError(
+            "长时间未完成",
+            code="PROVIDER_TIMEOUT",
+            retryable=True,
+            safe_suggestion="可稍后恢复查询或复制为新任务",
+        ).as_dict(),
+    })
 
 
 def map_provider_public_status(provider: str, provider_status_value: str) -> str:
@@ -1341,7 +2160,7 @@ def map_provider_public_status(provider: str, provider_status_value: str) -> str
     if upper == "CANCELED":
         return "cancelled"
     if upper == "UNKNOWN":
-        return "expired"
+        return "running"
     return "running"
 
 
@@ -1547,22 +2366,46 @@ def _finalize_archived_output(
     })
 
 
+def _assert_safe_download_path(path: Path) -> None:
+    absolute = path.expanduser().absolute()
+    try:
+        _assert_no_symlink_components(absolute.parent)
+    except AiVideoError as exc:
+        raise AiVideoError(
+            "下载目标目录包含符号链接",
+            code="ARCHIVE_WRITE_FAILED",
+            safe_suggestion="重新选择有写入权限的输出目录",
+        ) from exc
+    if absolute.is_symlink():
+        raise AiVideoError(
+            "下载目标文件不能是符号链接",
+            code="ARCHIVE_WRITE_FAILED",
+            safe_suggestion="重新选择有写入权限的输出目录",
+        )
+
+
 def _download_file(url: str, target: Path) -> Path:
+    target = target.expanduser().absolute()
+    _assert_safe_download_path(target)
     if _DOWNLOADER is not None:
         return _DOWNLOADER(url=url, target_path=str(target))
     target.parent.mkdir(parents=True, exist_ok=True)
+    _assert_safe_download_path(target)
     part = target.with_suffix(target.suffix + ".part")
+    _assert_safe_download_path(part)
     if part.exists():
         try:
             part.unlink()
         except OSError:
             pass
+    _assert_safe_download_path(part)
 
     # Prefer curl for robust large-file download with connect/max time limits.
     curl = shutil.which("curl")
     last_error: Exception | None = None
     if curl:
         try:
+            _assert_safe_download_path(part)
             completed = subprocess.run(
                 [
                     curl,
@@ -1582,6 +2425,8 @@ def _download_file(url: str, target: Path) -> Path:
             if completed.returncode != 0 or not part.is_file() or part.stat().st_size <= 0:
                 detail = (completed.stderr or completed.stdout or f"curl exit {completed.returncode}").strip()
                 raise RuntimeError(detail[:300])
+            _assert_safe_download_path(part)
+            _assert_safe_download_path(target)
             part.replace(target)
             return target
         except Exception as exc:
@@ -1594,7 +2439,8 @@ def _download_file(url: str, target: Path) -> Path:
 
     request = urllib.request.Request(url, method="GET", headers={"User-Agent": "crawshrimp-ai-video/1.0"})
     try:
-        with urllib.request.urlopen(request, timeout=30) as response, part.open("wb") as handle:
+        _assert_safe_download_path(part)
+        with urllib.request.urlopen(request, timeout=30) as response, part.open("xb") as handle:
             while True:
                 chunk = response.read(1024 * 256)
                 if not chunk:
@@ -1602,6 +2448,8 @@ def _download_file(url: str, target: Path) -> Path:
                 handle.write(chunk)
         if not part.is_file() or part.stat().st_size <= 0:
             raise RuntimeError("downloaded file is empty")
+        _assert_safe_download_path(part)
+        _assert_safe_download_path(target)
         part.replace(target)
         return target
     except Exception as exc:
@@ -1626,9 +2474,13 @@ def _archive_run(run_id: str) -> None:
     job = data_sink.get_ai_video_job(run.get("jobId") or "") or {}
     output = dict(run.get("output") or {}) if isinstance(run.get("output"), Mapping) else {}
     video_url = _compact(output.get("providerVideoUrl") or output.get("video_url"))
-    archive_root = expand_output_dir(job.get("outputDir") or default_output_dir())
-    archive_dir = Path(output.get("archiveDir") or archive_dir_for(job.get("id") or run.get("jobId") or "job", run_id, archive_root, run.get("createdAt")))
-    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_root = Path(str(job.get("outputDir") or default_output_dir())).expanduser().absolute()
+    archive_dir = Path(output.get("archiveDir") or archive_dir_for(
+        job.get("id") or run.get("jobId") or "job",
+        run_id,
+        archive_root,
+        run.get("createdAt"),
+    ))
     file_name = _compact(output.get("fileName")) or output_filename(
         _compact(run.get("provider")),
         _compact(run.get("model")),
@@ -1636,6 +2488,16 @@ def _archive_run(run_id: str) -> None:
         run_id,
         run.get("createdAt"),
     )
+    try:
+        archive_dir = _secure_prepare_archive_dir(archive_root, archive_dir)
+    except AiVideoError as exc:
+        data_sink.update_ai_video_run(run_id, {
+            "status": "failed",
+            "archiveStatus": "archive_failed",
+            "error": exc.as_dict(),
+            "output": {**output, "fileName": file_name},
+        })
+        return
     # Keep stable local name output.mp4 plus friendly file name hardlink/copy.
     local_mp4 = archive_dir / "output.mp4"
     friendly = archive_dir / file_name
@@ -1681,8 +2543,10 @@ def _archive_run(run_id: str) -> None:
         _download_file(video_url, local_mp4)
         if not friendly.exists():
             shutil.copy2(local_mp4, friendly)
-        with (archive_dir / "events.jsonl").open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps({"at": _now_iso(), "event": "archived", "file": file_name}, ensure_ascii=False) + "\n")
+        _append_archive_event(
+            archive_dir,
+            {"at": _now_iso(), "event": "archived", "file": file_name},
+        )
         _finalize_archived_output(
             run_id=run_id,
             run=run,
@@ -1716,19 +2580,64 @@ def _archive_run(run_id: str) -> None:
 
 
 def retry_archive(run_id: str) -> dict:
-    run = data_sink.get_ai_video_run(run_id)
-    if not run:
-        raise AiVideoError("Run 不存在", http_status=404)
-    if not _compact(run.get("providerTaskId")):
-        raise AiVideoError("缺少 provider task id，无法重新归档")
-    data_sink.update_ai_video_run(run_id, {
-        "status": "downloading",
-        "archiveStatus": "pending_archive",
-        "error": {},
-    })
-    ensure_worker_started()
-    process_run(run_id)
-    run = data_sink.get_ai_video_run(run_id) or run
+    should_schedule = False
+    lock = _run_lock(run_id)
+    if not lock.acquire(blocking=False):
+        run = data_sink.get_ai_video_run(run_id)
+        if not run:
+            raise AiVideoError("Run 不存在", http_status=404)
+        if (
+            _provider_succeeded(run)
+            and _compact(run.get("status")) == "downloading"
+            and _compact(run.get("archiveStatus")) == "pending_archive"
+        ):
+            job = data_sink.get_ai_video_job(run.get("jobId") or "") or {}
+            return {"ok": True, "data": {"job": public_job(job), "run": public_run(run)}}
+        raise AiVideoError(
+            "当前任务正在处理，请稍后刷新状态",
+            code="ARCHIVE_RETRY_NOT_ALLOWED",
+            safe_suggestion="请等待当前处理结束后再重试",
+            http_status=409,
+        )
+    try:
+        run = data_sink.get_ai_video_run(run_id)
+        if not run:
+            raise AiVideoError("Run 不存在", http_status=404)
+        if not _compact(run.get("providerTaskId")):
+            raise AiVideoError("缺少 provider task id，无法重新归档")
+        archive_status = _compact(run.get("archiveStatus"))
+        already_downloading = (
+            _compact(run.get("status")) == "downloading"
+            and archive_status == "pending_archive"
+        )
+        if not _provider_succeeded(run) or archive_status not in {
+            "archive_failed",
+            "pending_archive",
+        }:
+            raise AiVideoError(
+                "当前任务尚未进入可重新归档状态",
+                code="ARCHIVE_RETRY_NOT_ALLOWED",
+                safe_suggestion="请等待 provider 生成成功后再重新归档",
+                http_status=409,
+            )
+        if not already_downloading:
+            run = data_sink.update_ai_video_run(run_id, {
+                "status": "downloading",
+                "archiveStatus": "pending_archive",
+                "error": {},
+            })
+            should_schedule = True
+    finally:
+        lock.release()
+    if should_schedule:
+        ensure_worker_started()
+        threading.Thread(
+            target=process_run,
+            args=(run_id,),
+            daemon=True,
+            name=f"ai-video-archive-{run_id[-6:]}",
+        ).start()
+        run = data_sink.get_ai_video_run(run_id) or run
     job = data_sink.get_ai_video_job(run.get("jobId") or "") or {}
     return {"ok": True, "data": {"job": public_job(job), "run": public_run(run)}}
 
@@ -1758,23 +2667,24 @@ def stop_worker() -> None:
 
 def recover_active_runs(*, once: bool = False) -> None:
     runs = data_sink.list_active_ai_video_runs()
-    for run in runs:
-        run_id = run.get("id")
-        if not run_id:
-            continue
-        status = _compact(run.get("status"))
-        task_id = _compact(run.get("providerTaskId"))
-        if status == "queued" and not task_id:
-            process_run(run_id)
-            continue
-        if status in {"running", "downloading", "queued"} and task_id:
-            if once:
-                _poll_until_terminal_or_once(run_id, once=True)
-                latest = data_sink.get_ai_video_run(run_id)
-                if latest and _compact(latest.get("status")) == "downloading":
-                    _archive_run(run_id)
-            else:
-                process_run(run_id)
+    run_ids = [
+        str(run.get("id") or "").strip()
+        for run in runs
+        if str(run.get("id") or "").strip()
+    ]
+    if not run_ids:
+        return
+    max_workers = min(RECOVERY_MAX_WORKERS, len(run_ids))
+    with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="ai-video-recovery") as executor:
+        futures = {
+            executor.submit(process_run, run_id, once=once): run_id
+            for run_id in run_ids
+        }
+        for future, run_id in futures.items():
+            try:
+                future.result()
+            except Exception:
+                logger.exception("ai video Run recovery failed: %s", run_id)
 
 
 def envelope_error(exc: Exception) -> dict:

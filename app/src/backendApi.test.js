@@ -76,3 +76,29 @@ test('requestBackendApi rejects 404 responses with backend message', async () =>
     )
   })
 })
+
+test('requestBackendApi preserves structured AI video error messages', async () => {
+  await withServer((_req, res) => {
+    res.writeHead(400, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({
+      detail: {
+        ok: false,
+        error: {
+          code: 'VALIDATION_FAILED',
+          message: 'Prompt 不能为空',
+          detail: null,
+        },
+      },
+    }))
+  }, async (port) => {
+    await assert.rejects(
+      () => callBackend(port, '/ai-video/validate'),
+      (error) => {
+        assert.equal(error.statusCode, 400)
+        assert.equal(error.message, 'Prompt 不能为空')
+        assert.equal(error.code, 'VALIDATION_FAILED')
+        return true
+      }
+    )
+  })
+})

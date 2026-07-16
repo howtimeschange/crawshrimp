@@ -35,7 +35,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from core import runtime_paths
 from core import bala_ai_model_library
@@ -6147,7 +6147,6 @@ async def lifespan(app: FastAPI):
             logger.exception("cloud approval machine auto-start failed; continuing without cloud machine loop")
         try:
             ai_video_generation_service.ensure_worker_started()
-            ai_video_generation_service.recover_active_runs(once=True)
         except Exception:
             logger.exception("ai video generation recovery failed; continuing without active video recovery")
     logger.info("crawshrimp core started")
@@ -7789,17 +7788,17 @@ def create_ai_image_canvas(req: AiImageCanvasRequest):
 
 
 class AiVideoAssetInputRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     role: str = "reference_image"
     sourceType: str = "local_file"
     fileToken: Optional[str] = None
-    localPath: Optional[str] = None
-    path: Optional[str] = None
-    assetLibraryId: Optional[str] = None
-    remoteUrl: Optional[str] = None
     sortOrder: int = 0
 
 
 class AiVideoPublicParametersRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     ratio: Optional[str] = None
     resolution: Optional[str] = None
     duration: Optional[int] = None
@@ -7808,35 +7807,52 @@ class AiVideoPublicParametersRequest(BaseModel):
 
 
 class AiVideoCreateJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     requestUid: str
     provider: str
     model: str
     prompt: str
     assets: List[AiVideoAssetInputRequest] = []
     parameters: AiVideoPublicParametersRequest = AiVideoPublicParametersRequest()
-    outputDir: str = ""
+    outputDirToken: str = ""
 
 
 class AiVideoValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     provider: str
     model: str
     prompt: str = ""
     assets: List[AiVideoAssetInputRequest] = []
     parameters: AiVideoPublicParametersRequest = AiVideoPublicParametersRequest()
-    outputDir: str = ""
+    outputDirToken: str = ""
 
 
 class AiVideoUpdateJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     provider: Optional[str] = None
     model: Optional[str] = None
     prompt: Optional[str] = None
     assets: Optional[List[AiVideoAssetInputRequest]] = None
     parameters: Optional[AiVideoPublicParametersRequest] = None
-    outputDir: Optional[str] = None
+    outputDirToken: Optional[str] = None
 
 
 class AiVideoRetryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     requestUid: str
+
+
+def _require_ai_video_worker_owner() -> None:
+    """Only the process holding the shared backend lock may mutate video work."""
+    if getattr(app.state, "owns_backend_instance", True) is False:
+        raise HTTPException(
+            status_code=503,
+            detail="当前核心服务不是任务执行主实例，请连接已持有数据目录锁的桌面端",
+        )
 
 
 def _ai_video_http_error(exc: Exception) -> HTTPException:
@@ -7864,7 +7880,7 @@ def ai_video_get_config():
 def ai_video_validate(req: AiVideoValidateRequest):
     try:
         payload = _model_payload(req, exclude_none=True)
-        result = ai_video_generation_service.validate_input(payload)
+        result = ai_video_generation_service.validate_public_input(payload)
         return {"ok": True, "data": result}
     except Exception as exc:
         raise _ai_video_http_error(exc) from exc
@@ -7872,6 +7888,7 @@ def ai_video_validate(req: AiVideoValidateRequest):
 
 @app.post("/ai-video/jobs")
 def ai_video_create_job(req: AiVideoCreateJobRequest):
+    _require_ai_video_worker_owner()
     try:
         payload = _model_payload(req, exclude_none=True)
         return ai_video_generation_service.create_job(payload)
@@ -7897,6 +7914,7 @@ def ai_video_get_job(job_id: str):
 
 @app.patch("/ai-video/jobs/{job_id}")
 def ai_video_update_job(job_id: str, req: AiVideoUpdateJobRequest):
+    _require_ai_video_worker_owner()
     try:
         payload = _model_payload(req, exclude_none=True, exclude_unset=True)
         return ai_video_generation_service.update_job(job_id, payload)
@@ -7906,6 +7924,7 @@ def ai_video_update_job(job_id: str, req: AiVideoUpdateJobRequest):
 
 @app.post("/ai-video/jobs/{job_id}/duplicate")
 def ai_video_duplicate_job(job_id: str):
+    _require_ai_video_worker_owner()
     try:
         return ai_video_generation_service.duplicate_job(job_id)
     except Exception as exc:
@@ -7914,6 +7933,7 @@ def ai_video_duplicate_job(job_id: str):
 
 @app.post("/ai-video/jobs/{job_id}/retry")
 def ai_video_retry_job(job_id: str, req: AiVideoRetryRequest):
+    _require_ai_video_worker_owner()
     try:
         return ai_video_generation_service.retry_job(job_id, req.requestUid)
     except Exception as exc:
@@ -7922,6 +7942,7 @@ def ai_video_retry_job(job_id: str, req: AiVideoRetryRequest):
 
 @app.delete("/ai-video/jobs/{job_id}")
 def ai_video_delete_job(job_id: str):
+    _require_ai_video_worker_owner()
     try:
         return ai_video_generation_service.delete_job(job_id)
     except Exception as exc:
@@ -7938,6 +7959,7 @@ def ai_video_get_run(run_id: str):
 
 @app.post("/ai-video/runs/{run_id}/archive")
 def ai_video_retry_archive(run_id: str):
+    _require_ai_video_worker_owner()
     try:
         return ai_video_generation_service.retry_archive(run_id)
     except Exception as exc:
@@ -10153,21 +10175,67 @@ def stop_cloud_machine():
     return {"ok": True, "status": _cloud_approval_status()}
 
 
+_AI_VIDEO_PRIVATE_SETTING_FIELDS = frozenset({
+    "seedance_api_key",
+    "seedance_base_url",
+    "bailian_api_key",
+    "bailian_workspace_id",
+    "bailian_region",
+    "bailian_base_url",
+})
+
+
+def _public_settings() -> dict:
+    """Return renderer-safe settings without provider credentials or routing data."""
+    saved = load_config()
+    public = json.loads(json.dumps(saved, ensure_ascii=False))
+    ai = public.get("ai") if isinstance(public.get("ai"), dict) else {}
+    source_ai = saved.get("ai") if isinstance(saved.get("ai"), dict) else {}
+    source_video = source_ai.get("video") if isinstance(source_ai.get("video"), dict) else {}
+    ai["video"] = {
+        "seedance_configured": bool(str(source_video.get("seedance_api_key") or "").strip()),
+        "happyhorse_configured": bool(str(source_video.get("bailian_api_key") or "").strip()),
+    }
+    public["ai"] = ai
+    return public
+
+
+def _safe_settings_write_patch(cfg: dict) -> dict:
+    """Treat blank write-only AI-video fields as unchanged, never as secret erasure."""
+    patch = json.loads(json.dumps(cfg if isinstance(cfg, dict) else {}, ensure_ascii=False))
+    for field in _AI_VIDEO_PRIVATE_SETTING_FIELDS:
+        dotted = f"ai.video.{field}"
+        if dotted in patch and not str(patch.get(dotted) or "").strip():
+            patch.pop(dotted, None)
+    ai = patch.get("ai") if isinstance(patch.get("ai"), dict) else None
+    video = ai.get("video") if isinstance(ai, dict) and isinstance(ai.get("video"), dict) else None
+    if isinstance(video, dict):
+        for field in _AI_VIDEO_PRIVATE_SETTING_FIELDS:
+            if field in video and not str(video.get(field) or "").strip():
+                video.pop(field, None)
+        # These are response-only status flags and must never be persisted.
+        video.pop("seedance_configured", None)
+        video.pop("happyhorse_configured", None)
+    return patch
+
+
 @app.get("/settings")
 def get_settings():
-    return load_config()
+    return _public_settings()
 
 
 @app.put("/settings")
 def put_settings(cfg: dict):
-    save_config(cfg)
+    # Renderer reads a redacted document, so PUT must merge rather than erase
+    # provider secrets that were intentionally omitted from that document.
+    patch_config(_safe_settings_write_patch(cfg))
     reset_bridge()
     return {"ok": True}
 
 
 @app.patch("/settings")
 def patch_settings(cfg: dict):
-    patch_config(cfg)
+    patch_config(_safe_settings_write_patch(cfg))
     reset_bridge()
     return {"ok": True}
 

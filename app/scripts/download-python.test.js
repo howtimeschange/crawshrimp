@@ -7,6 +7,11 @@ const { spawnSync } = require('node:child_process')
 
 const scriptPath = path.join(__dirname, 'download-python.sh')
 
+test('download-python cache validation requires cryptography', () => {
+  const source = fs.readFileSync(scriptPath, 'utf8')
+  assert.match(source, /site_packages\}\/cryptography/)
+})
+
 function writeExecutable(filePath, body) {
   fs.writeFileSync(filePath, body, { mode: 0o755 })
 }

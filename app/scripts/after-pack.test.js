@@ -44,6 +44,39 @@ test('requirePythonBundle rejects bundle missing required backend dependencies',
   }
 })
 
+test('requirePythonBundle rejects a legacy-complete bundle missing cryptography', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-python-crypto-'))
+
+  try {
+    const sitePackages = path.join(tmp, 'Lib', 'site-packages')
+    fs.writeFileSync(path.join(tmp, 'python.exe'), '')
+    for (const name of [
+      'fastapi',
+      'uvicorn',
+      'websockets',
+      'yaml',
+      'apscheduler',
+      'openpyxl',
+      'xlrd',
+      'pydantic',
+      'aiofiles',
+      'jsonschema',
+      'tzdata',
+      'PIL',
+      'fitz',
+    ]) {
+      fs.mkdirSync(path.join(sitePackages, name), { recursive: true })
+    }
+
+    assert.throws(
+      () => requirePythonBundle(tmp, 'win-x64'),
+      /cryptography/
+    )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('requirePythonScriptsBundle rejects resources without backend entrypoint', () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'crawshrimp-resources-'))
 

@@ -472,12 +472,13 @@
                     v-model="cfg['ai.video.seedance_api_key']"
                     class="input"
                     type="password"
-                    autocomplete="off"
+                    autocomplete="new-password"
+                    :placeholder="isFieldConfigured('ai.video.seedance_api_key') ? '已配置；输入新值可替换' : '输入后仅写入本机后端'"
                   />
                 </div>
                 <div class="field">
                   <label>Seedance Base URL</label>
-                  <input v-model="cfg['ai.video.seedance_base_url']" class="input" />
+                  <input v-model="cfg['ai.video.seedance_base_url']" class="input" placeholder="留空保持后端当前配置" />
                 </div>
               </div>
               <div class="split-fields">
@@ -487,22 +488,23 @@
                     v-model="cfg['ai.video.bailian_api_key']"
                     class="input"
                     type="password"
-                    autocomplete="off"
+                    autocomplete="new-password"
+                    :placeholder="isFieldConfigured('ai.video.bailian_api_key') ? '已配置；输入新值可替换' : '输入后仅写入本机后端'"
                   />
                 </div>
                 <div class="field">
                   <label>百炼业务空间 ID</label>
-                  <input v-model="cfg['ai.video.bailian_workspace_id']" class="input" />
+                  <input v-model="cfg['ai.video.bailian_workspace_id']" class="input" placeholder="留空保持后端当前配置" />
                 </div>
               </div>
               <div class="split-fields">
                 <div class="field">
                   <label>百炼区域</label>
-                  <input v-model="cfg['ai.video.bailian_region']" class="input" />
+                  <input v-model="cfg['ai.video.bailian_region']" class="input" placeholder="留空保持后端当前配置" />
                 </div>
                 <div class="field">
                   <label>百炼 Base URL（可选）</label>
-                  <input v-model="cfg['ai.video.bailian_base_url']" class="input" />
+                  <input v-model="cfg['ai.video.bailian_base_url']" class="input" placeholder="留空保持后端当前配置" />
                 </div>
               </div>
               <PanelActions panel-id="ai-video" @save="savePanel('ai-video')" />
@@ -619,6 +621,12 @@
 
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
+import {
+  AI_VIDEO_WRITE_ONLY_FIELDS,
+  buildWriteOnlyAiVideoPatch,
+  clearWrittenAiVideoFields,
+  isAiVideoCredentialConfigured,
+} from '../utils/aiVideoSettings.mjs'
 
 const OFFICIAL_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
 
@@ -852,8 +860,9 @@ function flattenSettings(source, prefix = '', target = {}) {
 function normalizedSettings(raw) {
   const flat = flattenSettings(raw || {})
   if (!flat['ai.1xm.base_url']) flat['ai.1xm.base_url'] = 'https://api.1xm.ai/v1'
-  if (!flat['ai.video.seedance_base_url']) flat['ai.video.seedance_base_url'] = 'https://ark.cn-beijing.volces.com'
-  if (!flat['ai.video.bailian_region']) flat['ai.video.bailian_region'] = 'cn-beijing'
+  // Provider connection fields are write-only. Never retain a value returned
+  // by an older backend, and never synthesize defaults that could overwrite it.
+  for (const key of AI_VIDEO_WRITE_ONLY_FIELDS) flat[key] = ''
   flat['cloud_approval.machine_enabled'] = Boolean(flat['cloud_approval.machine_enabled'])
   flat['cloud_approval.capabilities'] = normalizeCloudCapabilities(flat['cloud_approval.capabilities'])
   return flat
@@ -886,6 +895,7 @@ function focusPanel(panelId) {
 }
 
 function isFieldConfigured(key) {
+  if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
   return String(cfg.value[key] || '').trim().length > 0
 }
 
@@ -904,6 +914,7 @@ async function browseDir() {
 }
 
 function buildPatch(panelId) {
+  if (panelId === 'ai-video') return buildWriteOnlyAiVideoPatch(cfg.value)
   const keys = panelFields[panelId] || []
   return keys.reduce((patch, key) => {
     patch[key] = key === 'cloud_approval.capabilities'
@@ -943,7 +954,12 @@ async function savePanel(panelId, options = {}) {
       ? await window.cs.patchSettings(patch)
       : await window.cs.saveSettings({ ...savedCfg.value, ...patch })
 
-    savedCfg.value = { ...savedCfg.value, ...patch }
+    if (panelId === 'ai-video') {
+      clearWrittenAiVideoFields(cfg.value, patch)
+      clearWrittenAiVideoFields(savedCfg.value, patch)
+    } else {
+      savedCfg.value = { ...savedCfg.value, ...patch }
+    }
     state.err = false
     if (!options.silent) {
       state.msg = result?.restart_required ? '已保存，重启应用后生效' : '已保存'

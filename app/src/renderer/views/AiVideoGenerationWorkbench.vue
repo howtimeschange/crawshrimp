@@ -1,23 +1,23 @@
 <template>
   <section class="avg-workbench" :class="{ 'avg-compact': isCompact }">
-    <header class="avg-page-head">
+    <header class="avg-page-head" :inert="backgroundInert || undefined">
       <div class="avg-head-copy">
         <p class="avg-kicker">AI 生视频</p>
         <h1>AI 生视频工作台</h1>
         <p class="avg-subtitle">纯 prompt 与参考图驱动的视频生成工作台，复用 Seedance 与 HappyHorse CLI 能力。</p>
       </div>
       <div class="avg-head-actions">
-        <button class="avg-btn ghost" type="button" @click="openHistory = true">历史记录</button>
+        <button class="avg-btn ghost" type="button" @click="openHistoryDrawer($event)">历史记录</button>
         <button class="avg-btn" type="button" @click="openOutputFolder">打开输出文件夹</button>
       </div>
     </header>
 
-    <nav class="avg-mobile-tabs" aria-label="移动端视图切换">
+    <nav class="avg-mobile-tabs" :inert="backgroundInert || undefined" aria-label="移动端视图切换">
       <button type="button" :class="{ active: compactPane === 'inputs' }" @click="compactPane = 'inputs'">输入与参数</button>
       <button type="button" :class="{ active: compactPane === 'results' }" @click="compactPane = 'results'">结果与队列</button>
     </nav>
 
-    <div class="avg-main">
+    <div class="avg-main" :inert="backgroundInert || undefined">
       <aside class="avg-control-pane" :class="{ 'mobile-active': compactPane === 'inputs' }">
         <div class="avg-model-switcher avg-model-switcher-2" role="group" aria-label="模型选择">
           <button
@@ -65,7 +65,7 @@
                 <button class="avg-btn small" type="button" :disabled="form.assets.length >= assetMax" @click="chooseImages">
                   本地上传
                 </button>
-                <button class="avg-btn small ghost" type="button" :disabled="form.assets.length >= assetMax" @click="openImageLibrary">
+                <button class="avg-btn small ghost" type="button" :disabled="form.assets.length >= assetMax" @click="openImageLibrary($event)">
                   本地参考图库
                 </button>
                 <span class="avg-ref-count">已选 {{ form.assets.length }} / {{ assetMax }}</span>
@@ -73,12 +73,12 @@
               <div v-if="form.assets.length" class="avg-asset-grid">
                 <article
                   v-for="(asset, index) in form.assets"
-                  :key="`${asset.path}-${index}`"
+                  :key="`${asset.fileToken}-${index}`"
                   class="avg-asset-card"
                 >
-                  <img v-if="previewSrc(asset.path)" :src="previewSrc(asset.path)" :alt="pathLabel(asset.path)" />
+                  <img v-if="previewSrc(assetPreviewToken(asset))" :src="previewSrc(assetPreviewToken(asset))" :alt="assetDisplayName(asset)" />
                   <div class="avg-asset-meta">
-                    <strong>{{ pathLabel(asset.path) }}</strong>
+                    <strong>{{ assetDisplayName(asset) }}</strong>
                     <span>{{ assetRoleLabel(index) }}</span>
                   </div>
                   <div class="avg-asset-actions">
@@ -188,17 +188,20 @@
               <button
                 class="avg-path-btn"
                 type="button"
-                :title="form.outputDir || defaultOutputDir"
+                :title="outputDirectoryName || defaultOutputDirectoryName"
                 @click="chooseOutputDir"
               >
-                <strong>{{ form.outputDir ? pathLabel(form.outputDir) : '选择输出文件夹' }}</strong>
-                <span>{{ shortDirLabel(form.outputDir || defaultOutputDir) }}</span>
+                <strong>{{ outputDirectoryName || defaultOutputDirectoryName || '选择输出文件夹' }}</strong>
+                <span>{{ form.outputDirToken ? '已授权输出目录' : '请选择输出目录' }}</span>
               </button>
               <div class="avg-error-text">{{ errors.outputDir }}</div>
             </div>
           </section>
 
-          <p v-if="configHint" class="avg-config-hint">{{ configHint }}</p>
+          <div v-if="configHint" class="avg-config-hint">
+            <span>{{ configHint }}</span>
+            <button class="avg-btn small" type="button" @click="openVideoSettings">去设置</button>
+          </div>
         </div>
 
         <footer class="avg-control-footer">
@@ -240,7 +243,7 @@
             >
               {{ item.label }}
             </button>
-            <button type="button" @click="openHistory = true">历史</button>
+            <button type="button" @click="openHistoryDrawer($event)">历史</button>
           </div>
         </div>
 
@@ -307,23 +310,39 @@
                   <button class="avg-btn small avg-details-task" type="button" @click.stop="openDetail(job, $event)">查看详情</button>
                   <button class="avg-btn small" type="button" @click.stop="reuseParams(job)">复用参数</button>
                   <button
+                    v-if="canDuplicate(job)"
+                    class="avg-btn small"
+                    type="button"
+                    :disabled="isDuplicatingJob(job)"
+                    @click.stop="duplicateJob(job)"
+                  >{{ isDuplicatingJob(job) ? '复制中…' : '复制为新任务' }}</button>
+                  <button v-if="canEdit(job)" class="avg-btn small" type="button" @click.stop="editDraft(job)">{{ editActionLabel(job) }}</button>
+                  <button
                     v-if="canRetry(job)"
                     class="avg-btn small"
                     type="button"
+                    :disabled="isRetryingJob(job)"
                     @click.stop="retryJob(job)"
-                  >重试</button>
+                  >{{ isRetryingJob(job) ? '重试中…' : '重试' }}</button>
                   <button
                     v-if="canRetryArchive(job)"
                     class="avg-btn small"
                     type="button"
+                    :disabled="isRetryingArchive(job)"
                     @click.stop="retryArchive(job)"
-                  >重新归档</button>
+                  >{{ isRetryingArchive(job) ? '归档中…' : '重新归档' }}</button>
                   <button
                     v-if="jobLocalVideo(job)"
                     class="avg-btn small"
                     type="button"
                     @click.stop="openLocalFile(jobLocalVideo(job))"
                   >打开文件</button>
+                  <button
+                    v-if="canCancelQueuedJob(job)"
+                    class="avg-btn small ghost"
+                    type="button"
+                    @click.stop="cancelQueuedJob(job)"
+                  >取消任务</button>
                   <button
                     v-if="canDelete(job)"
                     class="avg-btn small ghost"
@@ -340,7 +359,7 @@
 
     <!-- 本地参考图库 -->
     <div v-if="libraryOpen" class="avg-overlay open" @click.self="closeImageLibrary">
-      <div class="avg-library-modal" role="dialog" aria-modal="true" aria-label="本地参考图库">
+      <div ref="libraryModalRef" class="avg-library-modal" role="dialog" aria-modal="true" aria-label="本地参考图库" tabindex="-1">
         <div class="avg-modal-head">
           <div>
             <strong>本地参考图库</strong>
@@ -349,50 +368,50 @@
           <button class="avg-btn icon" type="button" aria-label="关闭" @click="closeImageLibrary">×</button>
         </div>
         <div class="avg-library-toolbar">
-          <button class="avg-btn small" type="button" @click="chooseLibraryRoot">
-            {{ libraryRoot ? '更换文件夹' : '选择文件夹' }}
+          <button class="avg-btn small" type="button" data-library-root-trigger @click="chooseLibraryRoot">
+            {{ libraryDirectoryToken ? '更换文件夹' : '选择文件夹' }}
           </button>
           <input
             v-model="libraryQuery"
             class="avg-library-search"
             type="search"
             placeholder="搜索文件名"
-            :disabled="!libraryRoot"
+            :disabled="!libraryDirectoryToken"
           />
           <span>已选 {{ librarySelected.length }} · 还可加 {{ Math.max(0, assetMax - form.assets.length) }}</span>
         </div>
         <div v-if="libraryError" class="avg-error-text avg-library-pad">{{ libraryError }}</div>
         <div v-else-if="libraryLoading" class="avg-library-state">正在扫描图库…</div>
-        <div v-else-if="!libraryRoot" class="avg-library-empty">
+        <div v-else-if="!libraryDirectoryToken" class="avg-library-empty">
           <strong>尚未设置图库目录</strong>
-          <p>默认使用「AI 视频工作流」已设置的工作区目录。当前未设置时，请选择一个本地文件夹。</p>
-          <button class="avg-btn primary" type="button" @click="chooseLibraryRoot">选择文件夹</button>
+          <p>请选择一个本地文件夹；桌面端会在下次启动时安全恢复该选择。</p>
+          <button class="avg-btn primary" type="button" data-library-root-trigger @click="chooseLibraryRoot">选择文件夹</button>
         </div>
         <div v-else ref="libraryGridRef" class="avg-library-grid">
           <button
             v-for="item in filteredLibraryItems"
-            :key="item.path"
+            :key="item.fileToken"
             type="button"
             class="avg-library-tile"
-            :class="{ selected: librarySelected.includes(item.path) }"
-            :data-library-path="item.path"
-            @click="toggleLibraryItem(item.path)"
+            :class="{ selected: librarySelected.includes(item.fileToken) }"
+            :data-library-token="item.fileToken"
+            @click="toggleLibraryItem(item.fileToken)"
           >
             <div class="avg-library-media">
               <img
-                v-if="previewSrc(item.path)"
-                :src="previewSrc(item.path)"
+                v-if="previewSrc(assetPreviewToken(item))"
+                :src="previewSrc(assetPreviewToken(item))"
                 :alt="item.name"
                 decoding="async"
-                @error="markImagePreviewBroken(item.path)"
+                @error="markImagePreviewBroken(assetPreviewToken(item))"
               />
               <div v-else class="avg-library-tile-ph" aria-hidden="true">
-                <span v-if="imagePreviewLoading[item.path]">加载中</span>
-                <span v-else-if="imagePreviewBroken[item.path]">无预览</span>
+                <span v-if="imagePreviewLoading[assetPreviewToken(item)]">加载中</span>
+                <span v-else-if="imagePreviewBroken[assetPreviewToken(item)]">无预览</span>
                 <span v-else>…</span>
               </div>
             </div>
-            <span class="avg-library-check">{{ librarySelected.includes(item.path) ? '已选' : '选择' }}</span>
+            <span class="avg-library-check">{{ librarySelected.includes(item.fileToken) ? '已选' : '选择' }}</span>
             <strong :title="item.name">{{ item.name }}</strong>
           </button>
           <div v-if="!filteredLibraryItems.length" class="avg-library-state">
@@ -409,7 +428,7 @@
     </div>
 
     <div v-if="openHistory" class="avg-drawer-mask" @click="closeHistory"></div>
-    <aside class="avg-drawer" :class="{ open: openHistory }" aria-label="历史记录" :aria-hidden="openHistory ? 'false' : 'true'">
+    <aside class="avg-drawer" :class="{ open: openHistory }" :inert="openHistory ? undefined : true" aria-label="历史记录" :aria-hidden="openHistory ? 'false' : 'true'">
       <div class="avg-drawer-head">
         <div>
           <strong>历史记录</strong>
@@ -423,12 +442,12 @@
             class="avg-history-open-surface"
             type="button"
             :aria-label="`查看历史任务详情：${job.title || job.id}`"
-            @click="openHistoryItem(job)"
+            @click="openHistoryItem(job, $event)"
           ></button>
           <strong>{{ job.title || job.prompt }}</strong>
           <span>{{ job.id }} · {{ modelLabel(job.model) }} · {{ job.displayStatus || statusLabel(job.status) }}</span>
           <div class="avg-task-actions">
-            <button class="avg-btn small" type="button" @click="openHistoryItem(job)">查看详情</button>
+            <button class="avg-btn small" type="button" @click="openHistoryItem(job, $event)">查看详情</button>
             <button class="avg-btn small" type="button" @click="reuseParams(job); closeHistory()">复用参数</button>
           </div>
         </div>
@@ -474,6 +493,7 @@
                 playsinline
                 preload="auto"
                 :poster="jobCoverSrc(detailJob) || undefined"
+                @error="handleDetailVideoPlaybackError"
               ></video>
             </template>
             <template v-else-if="isActiveStatus(detailJob.status)">
@@ -521,14 +541,23 @@
             </div>
             <div class="avg-detail-actions">
               <button class="avg-btn primary" type="button" @click="reuseParams(detailJob); closeDetail()">复用参数</button>
-              <button v-if="canRetry(detailJob)" class="avg-btn" type="button" @click="retryJob(detailJob)">重试</button>
-              <button v-if="canRetryArchive(detailJob)" class="avg-btn" type="button" @click="retryArchive(detailJob)">重新归档</button>
+              <button v-if="canDuplicate(detailJob)" class="avg-btn" type="button" :disabled="isDuplicatingJob(detailJob)" @click="duplicateJob(detailJob)">
+                {{ isDuplicatingJob(detailJob) ? '复制中…' : '复制为新任务' }}
+              </button>
+              <button v-if="canEdit(detailJob)" class="avg-btn" type="button" @click="editDraft(detailJob); closeDetail()">{{ editActionLabel(detailJob) }}</button>
+              <button v-if="canRetry(detailJob)" class="avg-btn" type="button" :disabled="isRetryingJob(detailJob)" @click="retryJob(detailJob)">
+                {{ isRetryingJob(detailJob) ? '重试中…' : '重试' }}
+              </button>
+              <button v-if="canRetryArchive(detailJob)" class="avg-btn" type="button" :disabled="isRetryingArchive(detailJob)" @click="retryArchive(detailJob)">
+                {{ isRetryingArchive(detailJob) ? '归档中…' : '重新归档' }}
+              </button>
               <button
                 class="avg-btn"
                 type="button"
                 :disabled="!jobLocalVideo(detailJob)"
                 @click="openLocalFile(jobLocalVideo(detailJob))"
               >{{ jobLocalVideo(detailJob) ? '打开本地文件' : '尚无本地文件' }}</button>
+              <button v-if="canCancelQueuedJob(detailJob)" class="avg-btn ghost" type="button" @click="cancelQueuedJob(detailJob)">取消任务</button>
               <button v-if="canDelete(detailJob)" class="avg-btn ghost" type="button" @click="deleteJob(detailJob)">删除记录</button>
             </div>
           </aside>
@@ -539,7 +568,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import volcengineMark from '../assets/ai-video-generation/volcengine-mark.png'
 import aliyunMark from '../assets/ai-video-generation/aliyun-mark.png'
 import {
@@ -549,6 +578,7 @@ import {
   happyHorseModelId,
   resolveHappyHorseMode,
 } from '../utils/aiVideoPricing.mjs'
+import { trapDialogFocus } from '../utils/dialogAccessibility.mjs'
 
 const emit = defineEmits(['open-settings'])
 
@@ -593,7 +623,7 @@ const form = reactive({
   duration: 5,
   generateAudio: true,
   watermark: false,
-  outputDir: '',
+  outputDirToken: '',
 })
 
 const jobs = ref([])
@@ -607,13 +637,18 @@ const config = ref(null)
 const openHistory = ref(false)
 const detailJob = ref(null)
 const detailTriggerEl = ref(null)
+const historyTriggerEl = ref(null)
 const modalRef = ref(null)
 const closeDetailBtn = ref(null)
 const pollTimer = ref(null)
-const defaultOutputDir = ref('~/Downloads/抓虾AI生视频')
+const outputDirectoryName = ref('')
+const outputDirectorySource = ref('') // default | manual | job | ''
+const defaultOutputDirectoryName = ref('抓虾AI生视频')
 const brokenCovers = reactive({})
 const coverUrls = reactive({})
 const coverLoading = reactive({})
+const coverSourceKeys = reactive({})
+const coverRequestSequences = Object.create(null)
 const mediaUrlCache = reactive({})
 const imagePreviewUrls = reactive({})
 const imagePreviewLoading = reactive({})
@@ -621,35 +656,58 @@ const detailVideoSrc = ref('')
 const detailVideoLoading = ref(false)
 const detailVideoError = ref('')
 const libraryOpen = ref(false)
-const libraryRoot = ref('')
-const libraryRootSource = ref('') // workflow | manual | ''
+const libraryDirectoryToken = ref('')
+const libraryDirectoryName = ref('')
+const libraryRootSource = ref('') // saved | manual | ''
 const libraryItems = ref([])
 const librarySelected = ref([])
 const libraryQuery = ref('')
 const libraryLoading = ref(false)
 const libraryError = ref('')
 const imagePreviewBroken = reactive({})
-/** 与 AI 视频工作流共用的工作区目录 key */
-const WORKFLOW_WORKSPACE_KEY = 'crawshrimp.bala-ai-video.workspace-dir'
-/** 本页手动覆盖的图库目录（仅当工作流无工作区时作为回退） */
-const LIBRARY_ROOT_KEY = 'crawshrimp.ai-video.reference-library-root'
+const retryingJobIds = reactive(new Set())
+const duplicatingJobIds = reactive(new Set())
+const archivingRunIds = reactive(new Set())
+const editingDraftJobId = ref('')
+const requiredReusedAssetCount = ref(0)
+const requiredReusedModelId = ref('')
+const LEGACY_RENDERER_LIBRARY_CAPABILITY_KEYS = Object.freeze([
+  'crawshrimp.ai-video.reference-library-capability',
+  'crawshrimp.ai-video.reference-library-root',
+  'crawshrimp.bala-ai-video.workspace-directory-token',
+])
 /** 缩略图并发；原图全量 base64 会卡死，只加载视口内缩略图 */
 const LIBRARY_PREVIEW_CONCURRENCY = 3
 const LIBRARY_THUMB_MAX_EDGE = 280
 const LIBRARY_THUMB_QUALITY = 0.72
 const libraryGridRef = ref(null)
+const libraryModalRef = ref(null)
+const libraryTriggerEl = ref(null)
 let libraryPreviewObserver = null
 let libraryPreviewQueue = []
 let libraryPreviewActive = 0
+let libraryPreviewGeneration = 0
+const libraryPreviewTokens = new Set()
+let imagePreviewActive = 0
+const imagePreviewWaiters = []
+let detailVideoRequestSequence = 0
+let activationSequence = 0
+let workbenchActive = false
+let jobsReloadSequence = 0
+let libraryScanSequence = 0
+let detailVideoRecoverySourceKey = ''
+let detailVideoRecoveryAttempted = false
+let detailVideoRecoveryInFlight = false
 
 const activeMeta = computed(() => modelOptions.find(item => item.id === form.provider) || modelOptions[0])
 const activeModelLabel = computed(() => activeMeta.value.label)
+const backgroundInert = computed(() => Boolean(detailJob.value || libraryOpen.value || openHistory.value))
 
 const libraryRootLabel = computed(() => {
-  if (!libraryRoot.value) return '请先设置图库文件夹'
-  const dir = shortDirLabel(libraryRoot.value)
-  if (libraryRootSource.value === 'workflow') return `${dir} · 来自 AI 视频工作流工作区`
+  if (!libraryDirectoryToken.value) return '请先设置图库文件夹'
+  const dir = libraryDirectoryName.value || '已授权图库'
   if (libraryRootSource.value === 'manual') return `${dir} · 手动选择`
+  if (libraryRootSource.value === 'saved') return `${dir} · 已恢复上次选择`
   return dir
 })
 
@@ -756,14 +814,19 @@ const filteredLibraryItems = computed(() => {
   const query = String(libraryQuery.value || '').trim().toLowerCase()
   const items = libraryItems.value || []
   if (!query) return items
-  return items.filter(item => String(item.name || item.path || '').toLowerCase().includes(query))
+  return items.filter(item => String(item.name || item.relativePath || '').toLowerCase().includes(query))
 })
 
 function countByStatus(status) {
   return jobs.value.filter(job => job.status === status).length
 }
 
+function openVideoSettings() {
+  emit('open-settings')
+}
+
 function selectProvider(provider) {
+  clearReusedAssetGuard()
   form.provider = provider === 'happyhorse' ? 'happyhorse' : 'seedance'
   applyProviderDefaults()
 }
@@ -783,21 +846,23 @@ function applyProviderDefaults() {
   form.watermark = false
   form.generateAudio = false
   if (form.assets.length > 9) form.assets = form.assets.slice(0, 9)
-  syncHappyHorseRatioDefault()
+  const mode = resolveHappyHorseMode(form.assets.length)
+  form.ratio = mode === 'i2v' ? '' : mode === 't2v' ? '16:9' : '9:16'
 }
 
-function syncHappyHorseRatioDefault() {
+function syncHappyHorseRatioDefault(previousMode = '') {
   if (form.provider !== 'happyhorse') return
   const mode = resolveHappyHorseMode(form.assets.length)
   if (mode === 'i2v') {
     form.ratio = ''
     return
   }
+  const modeChanged = Boolean(previousMode) && previousMode !== mode
   if (mode === 't2v') {
-    if (!form.ratio || form.ratio === '') form.ratio = '16:9'
+    if (modeChanged || !form.ratio) form.ratio = '16:9'
     return
   }
-  if (!form.ratio || form.ratio === '') form.ratio = '9:16'
+  if (modeChanged || !form.ratio) form.ratio = '9:16'
 }
 
 function assetRoleLabel(index) {
@@ -805,7 +870,46 @@ function assetRoleLabel(index) {
   return `参考图 ${index + 1}`
 }
 
+function assetFileToken(asset) {
+  return String(asset?.fileToken || '').trim()
+}
+
+function assetPreviewToken(asset) {
+  return String(asset?.previewToken || asset?.fileToken || '').trim()
+}
+
+function assetDisplayName(asset) {
+  return String(asset?.name || asset?.relativePath || '本地图片').trim() || '本地图片'
+}
+
+function normalizeSelectedAsset(item) {
+  const fileToken = String(item?.fileToken || '').trim()
+  if (!fileToken) return null
+  return {
+    fileToken,
+    previewToken: String(item?.previewToken || '').trim() || undefined,
+    name: String(item?.name || '本地图片').trim() || '本地图片',
+    relativePath: String(item?.relativePath || '').trim() || undefined,
+    size: Number.isFinite(Number(item?.size)) ? Number(item.size) : undefined,
+  }
+}
+
+function clearReusedAssetGuard() {
+  requiredReusedAssetCount.value = 0
+  requiredReusedModelId.value = ''
+}
+
+function clearReusedAssetGuardWhenRecovered() {
+  if (!requiredReusedAssetCount.value) return
+  if (form.assets.length < requiredReusedAssetCount.value) return
+  if (requiredReusedModelId.value && requiredReusedModelId.value !== resolvedModelId.value) return
+  clearReusedAssetGuard()
+  if (/参考图不可用/.test(formError.value)) formError.value = ''
+}
+
 function resetForm() {
+  editingDraftJobId.value = ''
+  clearReusedAssetGuard()
   form.prompt = ''
   form.assets = []
   applyProviderDefaults()
@@ -816,56 +920,6 @@ function resetForm() {
   errors.outputDir = ''
 }
 
-function pathLabel(path) {
-  const value = String(path || '')
-  const parts = value.split(/[/\\]/)
-  return parts[parts.length - 1] || value
-}
-
-function shortDirLabel(path) {
-  const value = String(path || '').trim()
-  if (!value) return ''
-  const normalized = value.replace(/\\/g, '/')
-  if (normalized.includes('/Downloads/')) {
-    const idx = normalized.indexOf('/Downloads/')
-    return `~${normalized.slice(idx)}`
-  }
-  const parts = normalized.split('/').filter(Boolean)
-  if (parts.length <= 3) return value
-  return `…/${parts.slice(-3).join('/')}`
-}
-
-function localFileUrl(path) {
-  const value = String(path || '').trim()
-  if (!value) return ''
-  if (value.startsWith('file://') || value.startsWith('data:') || value.startsWith('crawshrimp-media:')) return value
-  const normalized = value.replace(/\\/g, '/')
-  const encoded = normalized.split('/').map(part => encodeURIComponent(part)).join('/')
-  return encoded.startsWith('/') ? `file://${encoded}` : `file:///${encoded}`
-}
-
-function isLocalImagePath(path) {
-  return /\.(jpe?g|png|webp|gif)$/i.test(String(path || '').trim())
-}
-
-/** Force first-frame cover in Electron where metadata-only preload often stays black. */
-function videoCoverSrc(path) {
-  const base = localFileUrl(path)
-  if (!base || base.includes('#')) return base
-  return `${base}#t=0.1`
-}
-
-function seekThumbFrame(event) {
-  const video = event?.target
-  if (!video || typeof video.currentTime !== 'number') return
-  try {
-    if (video.currentTime < 0.05) video.currentTime = 0.1
-    video.pause?.()
-  } catch {
-    // Some local files reject seeking; #t=0.1 is still the best-effort fallback.
-  }
-}
-
 function thumbCacheKey(path) {
   return `thumb:${String(path || '').trim()}`
 }
@@ -873,7 +927,7 @@ function thumbCacheKey(path) {
 function previewSrc(path) {
   const key = String(path || '').trim()
   if (!key || imagePreviewBroken[key]) return ''
-  // Prefer compressed thumbnail; never fall back to file:// (Electron blocks it).
+  // Prefer compressed thumbnails; never fall back to direct filesystem URLs.
   return imagePreviewUrls[thumbCacheKey(key)] || imagePreviewUrls[key] || ''
 }
 
@@ -887,7 +941,47 @@ function markImagePreviewBroken(path) {
   delete mediaUrlCache[thumbCacheKey(key)]
 }
 
-async function ensureImagePreview(path, { thumbnail = true } = {}) {
+function clearImagePreviewCache(path) {
+  const key = String(path || '').trim()
+  if (!key) return
+  delete imagePreviewUrls[key]
+  delete imagePreviewUrls[thumbCacheKey(key)]
+  delete imagePreviewLoading[key]
+  delete imagePreviewLoading[thumbCacheKey(key)]
+  delete imagePreviewBroken[key]
+  delete mediaUrlCache[key]
+  delete mediaUrlCache[thumbCacheKey(key)]
+}
+
+function formUsesPreviewToken(path) {
+  const key = String(path || '').trim()
+  return Boolean(key) && form.assets.some(asset => assetPreviewToken(asset) === key)
+}
+
+function resetLibraryPreviewGeneration() {
+  libraryPreviewGeneration += 1
+  for (const token of libraryPreviewTokens) {
+    if (!formUsesPreviewToken(token)) clearImagePreviewCache(token)
+  }
+  libraryPreviewTokens.clear()
+  return libraryPreviewGeneration
+}
+
+function registerLibraryPreviewTokens(items, generation) {
+  if (generation !== libraryPreviewGeneration) return
+  for (const item of items || []) {
+    const token = assetPreviewToken(item)
+    if (token) libraryPreviewTokens.add(token)
+  }
+}
+
+function isStaleLibraryPreviewRequest(path, generation) {
+  if (!Number.isInteger(generation) || generation === libraryPreviewGeneration) return false
+  const key = String(path || '').trim()
+  return !libraryPreviewTokens.has(key) && !formUsesPreviewToken(key)
+}
+
+async function ensureImagePreview(path, { thumbnail = true, libraryGeneration = null } = {}) {
   const key = String(path || '').trim()
   if (!key || imagePreviewBroken[key]) return ''
   const cacheKey = thumbnail ? thumbCacheKey(key) : key
@@ -898,18 +992,39 @@ async function ensureImagePreview(path, { thumbnail = true } = {}) {
   // Also mark path loading so tile UI can show spinner via imagePreviewLoading[path]
   if (thumbnail) imagePreviewLoading[key] = true
   try {
-    const src = await resolveLocalImageSrc(key, { thumbnail })
+    const src = await withImagePreviewSlot(() => resolveLocalImageSrc(key, { thumbnail }))
+    if (isStaleLibraryPreviewRequest(key, libraryGeneration)) {
+      clearImagePreviewCache(key)
+      return ''
+    }
     if (!src) throw new Error('预览不可用')
     imagePreviewUrls[cacheKey] = src
     delete imagePreviewBroken[key]
   } catch {
-    imagePreviewBroken[key] = true
-    delete imagePreviewUrls[cacheKey]
+    if (isStaleLibraryPreviewRequest(key, libraryGeneration)) {
+      clearImagePreviewCache(key)
+    } else {
+      imagePreviewBroken[key] = true
+      delete imagePreviewUrls[cacheKey]
+    }
   } finally {
     delete imagePreviewLoading[cacheKey]
     if (thumbnail) delete imagePreviewLoading[key]
   }
   return imagePreviewUrls[cacheKey] || ''
+}
+
+async function withImagePreviewSlot(task) {
+  if (imagePreviewActive >= LIBRARY_PREVIEW_CONCURRENCY) {
+    await new Promise(resolve => imagePreviewWaiters.push(resolve))
+  }
+  imagePreviewActive += 1
+  try {
+    return await task()
+  } finally {
+    imagePreviewActive = Math.max(0, imagePreviewActive - 1)
+    imagePreviewWaiters.shift()?.()
+  }
 }
 
 async function resolveLocalImageSrc(filePath, { thumbnail = false } = {}) {
@@ -918,24 +1033,41 @@ async function resolveLocalImageSrc(filePath, { thumbnail = false } = {}) {
   const cacheKey = thumbnail ? thumbCacheKey(key) : key
   if (mediaUrlCache[cacheKey]) return mediaUrlCache[cacheKey]
 
-  // Grid / library: compressed JPEG thumbnail (hundreds of KB max, not multi‑MB originals).
-  if (thumbnail && isLocalImagePath(key) && typeof window?.cs?.readLocalImageThumbnail === 'function') {
-    const response = await window.cs.readLocalImageThumbnail(key, {
-      maxEdge: LIBRARY_THUMB_MAX_EDGE,
-      quality: LIBRARY_THUMB_QUALITY,
-    })
-    if (response?.ok === false) {
-      throw new Error(response?.error || '本地缩略图不可用')
+  // Grid / library previews must stay bounded. Resolve the compressed thumbnail
+  // before considering the original media stream.
+  if (thumbnail && typeof window?.cs?.readAiVideoImageThumbnail === 'function') {
+    try {
+      const response = await window.cs.readAiVideoImageThumbnail(key, {
+        maxEdge: LIBRARY_THUMB_MAX_EDGE,
+        quality: LIBRARY_THUMB_QUALITY,
+      })
+      if (response?.ok === false) throw new Error(response?.error || '本地缩略图不可用')
+      const dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
+      if (!dataUrl) throw new Error(response?.error || '本地缩略图不可用')
+      mediaUrlCache[cacheKey] = dataUrl
+      return dataUrl
+    } catch {
+      // Fall through to the capability-backed original only when thumbnailing fails.
     }
-    const dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
-    if (!dataUrl) throw new Error(response?.error || '本地缩略图不可用')
-    mediaUrlCache[cacheKey] = dataUrl
-    return dataUrl
+  }
+
+  // Opaque file capabilities can be streamed through crawshrimp-media without
+  // materializing the original image as a Base64 string in renderer memory.
+  if (typeof window?.cs?.getAiVideoMediaUrl === 'function') {
+    try {
+      const mediaUrl = await resolvePlayableMediaUrl(key)
+      if (mediaUrl) {
+        mediaUrlCache[cacheKey] = mediaUrl
+        return mediaUrl
+      }
+    } catch {
+      // Fall through to the full preview IPC when the protocol is unavailable.
+    }
   }
 
   // Full preview path (selected assets / detail).
-  if (isLocalImagePath(key) && typeof window?.cs?.readLocalImagePreview === 'function') {
-    const response = await window.cs.readLocalImagePreview(key)
+  if (typeof window?.cs?.readAiVideoImagePreview === 'function') {
+    const response = await window.cs.readAiVideoImagePreview(key)
     if (response?.ok === false) {
       throw new Error(response?.error || '本地图片预览不可用')
     }
@@ -945,26 +1077,29 @@ async function resolveLocalImageSrc(filePath, { thumbnail = false } = {}) {
     return dataUrl
   }
 
-  if (typeof window?.cs?.getLocalMediaUrl === 'function') {
+  if (typeof window?.cs?.getAiVideoMediaUrl === 'function') {
     return resolvePlayableMediaUrl(key)
   }
   return ''
 }
 
-function enqueueLibraryPreview(path) {
+function enqueueLibraryPreview(path, generation = libraryPreviewGeneration) {
   const key = String(path || '').trim()
   if (!key || imagePreviewBroken[key] || previewSrc(key) || imagePreviewLoading[key]) return
-  if (libraryPreviewQueue.includes(key)) return
-  libraryPreviewQueue.push(key)
+  if (libraryPreviewQueue.some(item => item.key === key && item.generation === generation)) return
+  libraryPreviewQueue.push({ key, generation })
   pumpLibraryPreviewQueue()
 }
 
 function pumpLibraryPreviewQueue() {
   while (libraryPreviewActive < LIBRARY_PREVIEW_CONCURRENCY && libraryPreviewQueue.length) {
     const next = libraryPreviewQueue.shift()
-    if (!next || previewSrc(next) || imagePreviewBroken[next]) continue
+    if (!next?.key || previewSrc(next.key) || imagePreviewBroken[next.key]) continue
     libraryPreviewActive += 1
-    void ensureImagePreview(next, { thumbnail: true })
+    void ensureImagePreview(next.key, {
+      thumbnail: true,
+      libraryGeneration: next.generation,
+    })
       .catch(() => {})
       .finally(() => {
         libraryPreviewActive = Math.max(0, libraryPreviewActive - 1)
@@ -988,67 +1123,53 @@ function observeLibraryTiles() {
   if (!root || typeof IntersectionObserver === 'undefined') {
     // Fallback: only warm a small first page of thumbs.
     for (const item of (filteredLibraryItems.value || []).slice(0, 24)) {
-      enqueueLibraryPreview(item.path)
+      enqueueLibraryPreview(assetPreviewToken(item))
     }
     return
   }
   libraryPreviewObserver = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (!entry.isIntersecting) continue
-      const path = entry.target?.getAttribute?.('data-library-path')
-      if (path) enqueueLibraryPreview(path)
+      const fileToken = entry.target?.getAttribute?.('data-library-token')
+      if (fileToken) enqueueLibraryPreview(fileToken)
     }
   }, {
     root,
     rootMargin: '160px 0px',
     threshold: 0.01,
   })
-  const tiles = root.querySelectorAll('[data-library-path]')
+  const tiles = root.querySelectorAll('[data-library-token]')
   tiles.forEach((el) => libraryPreviewObserver.observe(el))
 }
 
-function fileBaseName(filePath) {
-  const value = String(filePath || '').trim().replace(/\\/g, '/')
-  if (!value) return ''
-  const parts = value.split('/').filter(Boolean)
-  return parts[parts.length - 1] || value
-}
-
-function loadWorkflowWorkspaceDir() {
+async function restoreSavedLibraryDirectory({ surfaceError = false, shouldCommit = () => true } = {}) {
+  if (typeof window?.cs?.getSavedAiVideoDirectory !== 'function') return false
   try {
-    return String(window.localStorage?.getItem(WORKFLOW_WORKSPACE_KEY) || '').trim()
-  } catch {
-    return ''
+    const result = await window.cs.getSavedAiVideoDirectory('input')
+    if (!shouldCommit()) return false
+    const saved = result?.data || result || null
+    const directoryToken = String(saved?.directoryToken || '').trim()
+    if (!directoryToken) return false
+    libraryDirectoryToken.value = directoryToken
+    libraryDirectoryName.value = String(saved?.name || '已授权图库')
+    libraryRootSource.value = 'saved'
+    return true
+  } catch (error) {
+    if (surfaceError && shouldCommit()) libraryError.value = error?.message || String(error)
+    return false
   }
 }
 
-function loadManualLibraryRoot() {
-  try {
-    return String(window.localStorage?.getItem(LIBRARY_ROOT_KEY) || '').trim()
-  } catch {
-    return ''
+function clearLegacyLibraryCapabilities() {
+  for (const key of LEGACY_RENDERER_LIBRARY_CAPABILITY_KEYS) {
+    try { window.localStorage?.removeItem(key) } catch { /* best-effort migration cleanup */ }
   }
 }
 
-/**
- * 默认优先 AI 视频工作流工作区；无工作区时回退本页手动选择；都没有则空。
- */
-function resolveLibraryRoot() {
-  const workflow = loadWorkflowWorkspaceDir()
-  if (workflow) return { path: workflow, source: 'workflow' }
-  const manual = loadManualLibraryRoot()
-  if (manual) return { path: manual, source: 'manual' }
-  return { path: '', source: '' }
-}
-
-/** @deprecated full preload removed — use IntersectionObserver via observeLibraryTiles */
-async function preloadLibraryPreviews(items = []) {
-  // Only warm first screen; rest loads when scrolled into view.
-  for (const item of (Array.isArray(items) ? items : []).slice(0, 16)) {
-    enqueueLibraryPreview(item?.path)
-  }
-  await nextTick()
-  observeLibraryTiles()
+function isPathCapabilityError(error) {
+  const code = String(error?.code || error?.response?.code || '').trim().toUpperCase()
+  if (code === 'PATH_CAPABILITY_EXPIRED' || code === 'PATH_CAPABILITY_INVALID') return true
+  return /capability.*(?:过期|无效|签名|不匹配)|授权.*(?:过期|无效)/i.test(String(error?.message || error || ''))
 }
 
 function modelLabel(model) {
@@ -1132,19 +1253,30 @@ function paramSummary(job) {
 
 function archiveDisplay(job) {
   const output = job?.currentRun?.output || {}
-  if (output.fileName) return output.fileName
-  if (output.localVideoPath) return pathLabel(output.localVideoPath)
+  if (output.videoFileName) return output.videoFileName
   if (job?.status === 'completed') return '本地 MP4 已归档'
   if (job?.displayStatus === '待归档') return '待重新归档'
   return '等待 provider 完成'
 }
 
 function jobLocalVideo(job) {
-  return String(job?.currentRun?.output?.localVideoPath || '').trim()
+  return String(job?.currentRun?.output?.localVideoToken || '').trim()
+}
+
+function jobRunId(job) {
+  return String(job?.currentRun?.id || job?.currentRunId || '').trim()
+}
+
+function jobLocalVideoSourceKey(job) {
+  if (!jobLocalVideo(job)) return ''
+  const output = job?.currentRun?.output || {}
+  const runId = jobRunId(job) || `job-${String(job?.id || 'unknown')}`
+  const fileName = String(output.videoFileName || 'output.mp4').trim() || 'output.mp4'
+  return `video:${runId}:${fileName}`
 }
 
 function jobPosterPath(job) {
-  return String(job?.currentRun?.output?.localPosterPath || '').trim()
+  return String(job?.currentRun?.output?.localPosterToken || '').trim()
 }
 
 function jobCoverCandidatePath(job) {
@@ -1152,8 +1284,34 @@ function jobCoverCandidatePath(job) {
   if (poster) return poster
   // Fallback: first input reference image while poster is missing.
   const assets = job?.assets || job?.currentRun?.inputSnapshot?.assets || []
-  const first = assets.find(item => item?.localPath)
-  return String(first?.localPath || '').trim()
+  const first = assets.find(item => item?.fileToken)
+  return String(first?.previewToken || first?.fileToken || '').trim()
+}
+
+function jobCoverSourceKey(job) {
+  const poster = jobPosterPath(job)
+  if (poster) {
+    const output = job?.currentRun?.output || {}
+    const runId = jobRunId(job) || `job-${String(job?.id || 'unknown')}`
+    const fileName = String(output.posterFileName || 'poster.jpg').trim() || 'poster.jpg'
+    return `poster:${runId}:${fileName}`
+  }
+  const assets = job?.assets || job?.currentRun?.inputSnapshot?.assets || []
+  const index = assets.findIndex(item => item?.fileToken)
+  if (index < 0) return ''
+  const asset = assets[index] || {}
+  const identity = [
+    asset.id,
+    asset.sha256,
+    asset.originalName || asset.name,
+    asset.sizeBytes ?? asset.size,
+    asset.width,
+    asset.height,
+    asset.mtimeMs,
+    asset.relativePath,
+    asset.sortOrder ?? index,
+  ].map(value => String(value ?? '').trim()).join(':')
+  return `asset:${String(job?.id || 'unknown')}:${identity}`
 }
 
 function jobCoverSrc(job) {
@@ -1174,11 +1332,10 @@ async function resolvePlayableMediaUrl(filePath) {
   const key = String(filePath || '').trim()
   if (!key) return ''
   if (mediaUrlCache[key]) return mediaUrlCache[key]
-  if (typeof window?.cs?.getLocalMediaUrl !== 'function') {
-    // Browser/dev fallback only.
-    return localFileUrl(key)
+  if (typeof window?.cs?.getAiVideoMediaUrl !== 'function') {
+    throw new Error('当前版本不支持 AI 视频媒体预览，请完整重启桌面端')
   }
-  const response = await window.cs.getLocalMediaUrl(key)
+  const response = await window.cs.getAiVideoMediaUrl(key)
   if (response?.ok === false) {
     throw new Error(response?.error || response?.message || '本地媒体预览不可用')
   }
@@ -1190,35 +1347,30 @@ async function resolvePlayableMediaUrl(filePath) {
 
 async function ensureJobCover(job) {
   const id = job?.id || ''
-  if (!id || coverUrls[id] || coverLoading[id]) return
   const candidate = jobCoverCandidatePath(job)
-  if (!candidate) return
-  coverLoading[id] = true
+  const sourceKey = jobCoverSourceKey(job)
+  if (!id || !candidate || !sourceKey) return
+  if (coverUrls[id] && coverSourceKeys[id] === sourceKey) return
+  if (coverLoading[id] === sourceKey) return
+  const requestId = (coverRequestSequences[id] || 0) + 1
+  coverRequestSequences[id] = requestId
+  coverSourceKeys[id] = sourceKey
+  delete coverUrls[id]
+  delete brokenCovers[id]
+  coverLoading[id] = sourceKey
   try {
-    if (job?.outputDir && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-      try { await window.cs.authorizeLocalMediaRoot(job.outputDir) } catch { /* ignore */ }
-    }
-    // Also authorize parent of poster/video path.
-    const parent = candidate.replace(/[/\\][^/\\]+$/, '')
-    if (parent && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-      try { await window.cs.authorizeLocalMediaRoot(parent) } catch { /* ignore */ }
-    }
-    // Posters are images: prefer data URL (reliable for <img>); media protocol as fallback.
-    let src = ''
-    if (isLocalImagePath(candidate)) {
-      src = await resolveLocalImageSrc(candidate)
-    } else {
-      src = await resolvePlayableMediaUrl(candidate)
-    }
+    const src = await resolveLocalImageSrc(candidate, { thumbnail: false })
     if (!src) throw new Error('封面地址为空')
+    if (coverRequestSequences[id] !== requestId || coverSourceKeys[id] !== sourceKey) return
     coverUrls[id] = src
     delete brokenCovers[id]
   } catch {
+    if (coverRequestSequences[id] !== requestId || coverSourceKeys[id] !== sourceKey) return
     // Mark broken so the card exits the loading spinner and shows fallback.
     brokenCovers[id] = true
     delete coverUrls[id]
   } finally {
-    delete coverLoading[id]
+    if (coverLoading[id] === sourceKey) delete coverLoading[id]
   }
 }
 
@@ -1232,33 +1384,114 @@ function preloadJobCovers(list = []) {
 }
 
 async function loadDetailVideo(job) {
+  const requestId = ++detailVideoRequestSequence
+  const jobId = String(job?.id || '').trim()
+  const videoSourceKey = jobLocalVideoSourceKey(job)
+  if (videoSourceKey !== detailVideoRecoverySourceKey) {
+    detailVideoRecoverySourceKey = videoSourceKey
+    detailVideoRecoveryAttempted = false
+  }
   detailVideoSrc.value = ''
   detailVideoError.value = ''
   detailVideoLoading.value = false
   const videoPath = jobLocalVideo(job)
-  if (!videoPath) return
+  if (!videoPath || !videoSourceKey) return
   detailVideoLoading.value = true
   try {
-    // Authorize output dir parent so sibling files are streamable.
-    if (job?.outputDir && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-      try { await window.cs.authorizeLocalMediaRoot(job.outputDir) } catch { /* ignore */ }
-    }
-    const parent = videoPath.replace(/[/\\][^/\\]+$/, '')
-    if (parent && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-      try { await window.cs.authorizeLocalMediaRoot(parent) } catch { /* ignore */ }
-    }
-    detailVideoSrc.value = await resolvePlayableMediaUrl(videoPath)
+    const mediaUrl = await resolvePlayableMediaUrl(videoPath)
+    if (!isCurrentDetailVideoRequest(requestId, jobId, videoSourceKey)) return
+    detailVideoSrc.value = mediaUrl
     // Ensure poster is ready for the video poster attribute.
     void ensureJobCover(job)
   } catch (error) {
+    if (!isCurrentDetailVideoRequest(requestId, jobId, videoSourceKey)) return
     detailVideoError.value = error?.message || String(error)
   } finally {
-    detailVideoLoading.value = false
+    if (isCurrentDetailVideoRequest(requestId, jobId, videoSourceKey)) {
+      detailVideoLoading.value = false
+    }
   }
 }
 
+async function handleDetailVideoPlaybackError() {
+  const job = detailJob.value
+  const sourceKey = jobLocalVideoSourceKey(job)
+  const previousToken = jobLocalVideo(job)
+  detailVideoSrc.value = ''
+  if (!sourceKey || !previousToken) {
+    detailVideoLoading.value = false
+    detailVideoError.value = '视频播放失败，请尝试打开本地文件。'
+    return
+  }
+  if (detailVideoRecoveryInFlight) return
+  if (sourceKey !== detailVideoRecoverySourceKey) {
+    detailVideoRecoverySourceKey = sourceKey
+    detailVideoRecoveryAttempted = false
+  }
+  if (detailVideoRecoveryAttempted) {
+    detailVideoLoading.value = false
+    detailVideoError.value = '视频播放失败，请尝试打开本地文件。'
+    return
+  }
+
+  detailVideoRecoveryAttempted = true
+  detailVideoRecoveryInFlight = true
+  detailVideoLoading.value = true
+  detailVideoError.value = ''
+  delete mediaUrlCache[previousToken]
+  try {
+    await reloadJobs()
+    const latest = detailJob.value
+    const latestToken = jobLocalVideo(latest)
+    if (!detailVideoSrc.value && latestToken && latestToken !== previousToken) {
+      await loadDetailVideo(latest)
+    }
+    if (!detailVideoSrc.value && !detailVideoError.value) {
+      detailVideoError.value = '视频播放失败，请尝试打开本地文件。'
+    }
+  } catch (error) {
+    detailVideoError.value = error?.message || '视频播放失败，请尝试打开本地文件。'
+  } finally {
+    detailVideoRecoveryInFlight = false
+    if (!detailVideoSrc.value) detailVideoLoading.value = false
+  }
+}
+
+function isCurrentDetailVideoRequest(requestId, jobId, videoSourceKey) {
+  return requestId === detailVideoRequestSequence
+    && String(detailJob.value?.id || '').trim() === jobId
+    && jobLocalVideoSourceKey(detailJob.value) === videoSourceKey
+}
+
 function canRetry(job) {
-  return ['failed', 'needs_config', 'expired'].includes(String(job?.status || ''))
+  const error = job?.currentRun?.error || {}
+  const code = String(error.code || '').trim().toUpperCase()
+  if (['SUBMIT_RESULT_UNKNOWN', 'UNKNOWN_SUBMIT_RESULT'].includes(code)) return false
+  if (String(job?.status || '') === 'needs_config') {
+    const provider = String(job?.provider || job?.currentRun?.provider || '').includes('happy')
+      ? 'happyhorse'
+      : 'seedance'
+    const providerConfig = config.value?.providers?.[provider]
+    return providerConfig?.configured === true && providerConfig?.cliReady === true
+  }
+  return !canRetryArchive(job)
+    && ['failed', 'needs_config', 'expired'].includes(String(job?.status || ''))
+    && error.retryable === true
+}
+
+function canEdit(job) {
+  const code = String(job?.currentRun?.error?.code || '').trim().toUpperCase()
+  if (['SUBMIT_RESULT_UNKNOWN', 'UNKNOWN_SUBMIT_RESULT'].includes(code)) return false
+  if (canRetryArchive(job)) return false
+  return ['draft', 'needs_config', 'failed', 'expired'].includes(String(job?.status || ''))
+}
+
+function editActionLabel(job) {
+  return String(job?.status || '') === 'draft' ? '编辑草稿' : '编辑并重试'
+}
+
+function canDuplicate(job) {
+  return ['failed', 'completed', 'expired', 'cancelled'].includes(String(job?.status || ''))
 }
 
 function canRetryArchive(job) {
@@ -1268,6 +1501,11 @@ function canRetryArchive(job) {
 function canDelete(job) {
   if (isActiveStatus(job?.status)) return false
   return ['draft', 'needs_config', 'failed', 'expired', 'completed', 'cancelled'].includes(String(job?.status || ''))
+}
+
+function canCancelQueuedJob(job) {
+  return String(job?.status || '') === 'queued'
+    && !String(job?.currentRun?.providerTaskId || '').trim()
 }
 
 function buildParameters() {
@@ -1288,10 +1526,9 @@ function buildAssetsPayload() {
   return form.assets.map((asset, index) => ({
     role,
     sourceType: 'local_file',
-    localPath: asset.path,
-    fileToken: asset.path,
+    fileToken: assetFileToken(asset),
     sortOrder: index,
-  }))
+  })).filter(asset => asset.fileToken)
 }
 
 function validateLocal() {
@@ -1309,11 +1546,17 @@ function validateLocal() {
   if (form.provider === 'happyhorse' && form.assets.length > 9) {
     errors.assets = 'HappyHorse 参考生最多 9 张图。'
   }
+  if (
+    requiredReusedAssetCount.value > form.assets.length
+    || (requiredReusedModelId.value && requiredReusedModelId.value !== resolvedModelId.value)
+  ) {
+    errors.assets = `原任务有 ${requiredReusedAssetCount.value} 张参考图不可用，请重新选择后再生成，避免静默切换模型。`
+  }
   const duration = Number(form.duration)
   if (!Number.isInteger(duration)) errors.parameters = '时长必须是整数'
   else if (form.provider === 'seedance' && (duration < 4 || duration > 15)) errors.parameters = 'Seedance 时长需 4-15 秒'
   else if (form.provider === 'happyhorse' && (duration < 3 || duration > 15)) errors.parameters = 'HappyHorse 时长需 3-15 秒'
-  if (!String(form.outputDir || '').trim()) errors.outputDir = '请选择输出目录'
+  if (!String(form.outputDirToken || '').trim()) errors.outputDir = '请选择输出目录'
   return !errors.prompt && !errors.assets && !errors.parameters && !errors.outputDir
 }
 
@@ -1323,25 +1566,29 @@ function insertImageRef(index) {
   form.prompt = current ? `${current.trim()} ${token}` : token
 }
 
-function addAssetPaths(paths) {
+function addAssetItems(items) {
+  const previousMode = form.provider === 'happyhorse'
+    ? resolveHappyHorseMode(form.assets.length)
+    : ''
   const remain = Math.max(0, assetMax.value - form.assets.length)
-  const list = (Array.isArray(paths) ? paths : [paths])
-    .map(item => String(item || '').trim())
+  const list = (Array.isArray(items) ? items : [items])
+    .map(normalizeSelectedAsset)
     .filter(Boolean)
   let added = 0
-  for (const path of list) {
+  for (const asset of list) {
     if (added >= remain) break
-    if (form.assets.some(item => item.path === path)) continue
-    form.assets.push({ path, role: 'reference_image' })
-    void ensureImagePreview(path)
+    if (form.assets.some(item => assetFileToken(item) === asset.fileToken)) continue
+    form.assets.push(asset)
+    void ensureImagePreview(assetPreviewToken(asset))
     added += 1
   }
-  syncHappyHorseRatioDefault()
+  syncHappyHorseRatioDefault(previousMode)
+  clearReusedAssetGuardWhenRecovered()
   return added
 }
 
 async function chooseImages() {
-  if (typeof window?.cs?.browseFile !== 'function') {
+  if (typeof window?.cs?.selectAiVideoImages !== 'function') {
     formError.value = '当前环境不支持系统文件选择器'
     return
   }
@@ -1350,96 +1597,122 @@ async function chooseImages() {
     formError.value = `最多添加 ${assetMax.value} 张图`
     return
   }
-  const selected = await window.cs.browseFile({
-    title: '本地上传参考图',
-    images: true,
-    multi: true,
-  })
-  addAssetPaths(selected)
+  formError.value = ''
+  try {
+    const selected = await window.cs.selectAiVideoImages({
+      maxCount: remain,
+    })
+    addAssetItems(selected?.items || [])
+  } catch (error) {
+    formError.value = error?.message || String(error)
+  }
 }
 
-async function openImageLibrary() {
+async function openImageLibrary(event) {
+  libraryTriggerEl.value = event?.currentTarget || document.activeElement
   libraryOpen.value = true
   libraryError.value = ''
   librarySelected.value = []
   libraryQuery.value = ''
-  const resolved = resolveLibraryRoot()
-  libraryRoot.value = resolved.path
-  libraryRootSource.value = resolved.source
-  if (libraryRoot.value) {
-    await scanLibrary(libraryRoot.value)
+  if (!libraryDirectoryToken.value) await restoreSavedLibraryDirectory({ surfaceError: true })
+  if (libraryDirectoryToken.value) {
+    await scanLibrary(libraryDirectoryToken.value)
   } else {
     libraryItems.value = []
   }
+  if (!libraryOpen.value) return
+  await nextTick()
+  const initialSelector = libraryItems.value.length
+    ? '[data-library-token]'
+    : '[data-library-root-trigger]'
+  const initialControl = libraryModalRef.value?.querySelector?.(initialSelector)
+  initialControl?.focus?.()
 }
 
 function closeImageLibrary() {
   libraryOpen.value = false
   libraryError.value = ''
+  libraryScanSequence += 1
   disconnectLibraryPreviewObserver()
+  resetLibraryPreviewGeneration()
+  nextTick(() => {
+    libraryTriggerEl.value?.focus?.()
+    libraryTriggerEl.value = null
+  })
 }
 
 async function chooseLibraryRoot() {
-  if (typeof window?.cs?.browseFile !== 'function') {
+  if (typeof window?.cs?.selectAiVideoDirectory !== 'function') {
     libraryError.value = '当前环境不支持系统文件夹选择器'
     return
   }
-  const defaultPath = libraryRoot.value || loadWorkflowWorkspaceDir() || undefined
-  const directory = await window.cs.browseFile({
-    title: '选择本地参考图库文件夹',
-    directory: true,
-    defaultPath,
-  })
-  if (!directory) return
-  libraryRoot.value = directory
-  libraryRootSource.value = 'manual'
+  libraryError.value = ''
   try {
-    window.localStorage?.setItem(LIBRARY_ROOT_KEY, directory)
-  } catch { /* ignore */ }
-  await scanLibrary(directory)
+    const directory = await window.cs.selectAiVideoDirectory({
+      scope: 'input',
+      title: '选择本地参考图库文件夹',
+    })
+    if (!directory?.directoryToken) return
+    libraryDirectoryToken.value = String(directory.directoryToken)
+    libraryDirectoryName.value = String(directory.name || '已授权图库')
+    libraryRootSource.value = 'manual'
+    await scanLibrary(libraryDirectoryToken.value)
+  } catch (error) {
+    libraryError.value = error?.message || String(error)
+  }
 }
 
-async function scanLibrary(rootPath) {
+async function scanLibrary(directoryToken, { allowCapabilityRecovery = true } = {}) {
+  const requestId = ++libraryScanSequence
+  disconnectLibraryPreviewObserver()
+  const previewGeneration = resetLibraryPreviewGeneration()
   libraryLoading.value = true
   libraryError.value = ''
   libraryItems.value = []
   try {
-    if (typeof window?.cs?.listDirectoryFiles !== 'function') {
+    if (typeof window?.cs?.listAiVideoDirectory !== 'function') {
       throw new Error('当前环境不支持扫描本地目录')
     }
-    if (rootPath && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-      try { await window.cs.authorizeLocalMediaRoot(rootPath) } catch { /* ignore */ }
-    }
-    const result = await window.cs.listDirectoryFiles(rootPath, {
+    const result = await window.cs.listAiVideoDirectory(directoryToken, {
       extensions: ['jpg', 'jpeg', 'png', 'webp'],
       maxFiles: 500,
     })
+    if (requestId !== libraryScanSequence) return
     if (result?.ok === false) throw new Error(result?.error || '扫描失败')
-    const paths = Array.isArray(result?.paths) ? result.paths : []
-    libraryItems.value = paths.map(entry => {
-      const path = String(entry?.path || entry || '').trim()
-      return {
-        path,
-        name: fileBaseName(path) || pathLabel(path),
-        relativePath: entry?.relativePath || '',
-      }
-    }).filter(item => item.path)
+    const nextItems = (Array.isArray(result?.items) ? result.items : [])
+      .map(normalizeSelectedAsset)
+      .filter(Boolean)
+    registerLibraryPreviewTokens(nextItems, previewGeneration)
+    libraryItems.value = nextItems
     // 缩略图 + 视口懒加载：禁止对工作区数百张 10MB 原图做全量 base64。
     await nextTick()
+    if (requestId !== libraryScanSequence) return
     observeLibraryTiles()
     // Warm first visible rows immediately.
     for (const item of libraryItems.value.slice(0, 16)) {
-      enqueueLibraryPreview(item.path)
+      enqueueLibraryPreview(assetPreviewToken(item))
     }
   } catch (error) {
+    if (requestId !== libraryScanSequence) return
+    if (allowCapabilityRecovery && isPathCapabilityError(error)) {
+      const restored = await restoreSavedLibraryDirectory({
+        shouldCommit: () => requestId === libraryScanSequence,
+      })
+      if (requestId !== libraryScanSequence) return
+      const refreshedToken = String(libraryDirectoryToken.value || '').trim()
+      if (restored && refreshedToken && refreshedToken !== String(directoryToken || '').trim()) {
+        await scanLibrary(refreshedToken, { allowCapabilityRecovery: false })
+        return
+      }
+    }
     libraryError.value = error?.message || String(error)
   } finally {
-    libraryLoading.value = false
+    if (requestId === libraryScanSequence) libraryLoading.value = false
   }
 }
 
-function toggleLibraryItem(path) {
-  const value = String(path || '').trim()
+function toggleLibraryItem(fileToken) {
+  const value = String(fileToken || '').trim()
   if (!value) return
   const index = librarySelected.value.indexOf(value)
   if (index >= 0) {
@@ -1451,7 +1724,7 @@ function toggleLibraryItem(path) {
     libraryError.value = `本次最多再选 ${Math.max(0, assetMax.value - form.assets.length)} 张`
     return
   }
-  if (form.assets.some(item => item.path === value)) {
+  if (form.assets.some(item => assetFileToken(item) === value)) {
     libraryError.value = '该图片已在当前任务中'
     return
   }
@@ -1460,44 +1733,57 @@ function toggleLibraryItem(path) {
 }
 
 function confirmLibrarySelection() {
-  addAssetPaths(librarySelected.value)
+  addAssetItems(librarySelected.value
+    .map(fileToken => libraryItems.value.find(item => item.fileToken === fileToken))
+    .filter(Boolean))
   closeImageLibrary()
 }
 
 function removeAsset(index) {
-  form.assets.splice(index, 1)
-  syncHappyHorseRatioDefault()
+  const previousMode = form.provider === 'happyhorse'
+    ? resolveHappyHorseMode(form.assets.length)
+    : ''
+  const [removed] = form.assets.splice(index, 1)
+  const removedPreviewToken = assetPreviewToken(removed)
+  if (removedPreviewToken && !libraryPreviewTokens.has(removedPreviewToken)) {
+    clearImagePreviewCache(removedPreviewToken)
+  }
+  syncHappyHorseRatioDefault(previousMode)
 }
 
 async function chooseOutputDir() {
-  if (typeof window?.cs?.browseFile !== 'function') {
+  if (typeof window?.cs?.selectAiVideoDirectory !== 'function') {
     formError.value = '当前环境不支持系统文件夹选择器'
     return
   }
-  const directory = await window.cs.browseFile({
-    title: '选择 AI 生视频输出目录',
-    directory: true,
-    defaultPath: form.outputDir || undefined,
-  })
-  if (directory) {
-    form.outputDir = directory
-    if (typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-      try { await window.cs.authorizeLocalMediaRoot(directory) } catch { /* ignore */ }
+  formError.value = ''
+  try {
+    const directory = await window.cs.selectAiVideoDirectory({
+      scope: 'output',
+      title: '选择 AI 生视频输出目录',
+    })
+    if (directory?.directoryToken) {
+      form.outputDirToken = String(directory.directoryToken)
+      outputDirectoryName.value = String(directory.name || '已选输出目录')
+      outputDirectorySource.value = 'manual'
     }
+  } catch (error) {
+    formError.value = error?.message || String(error)
   }
 }
 
 async function openOutputFolder() {
-  const target = form.outputDir || defaultOutputDir.value
-  if (typeof window?.cs?.openFile === 'function' && target) {
-    try {
-      await window.cs.openFile(target)
+  formError.value = ''
+  try {
+    if (form.outputDirToken && typeof window?.cs?.openAiVideoDirectory === 'function') {
+      const result = await window.cs.openAiVideoDirectory(form.outputDirToken)
+      if (result?.ok === false) throw new Error(result?.error || result?.message || '打开输出目录失败')
       return
-    } catch {
-      // fall through
     }
+    await chooseOutputDir()
+  } catch (error) {
+    formError.value = error?.message || String(error)
   }
-  await chooseOutputDir()
 }
 
 function requestUid() {
@@ -1513,19 +1799,30 @@ async function submitJob() {
   submitting.value = true
   formError.value = ''
   try {
-    const payload = {
-      requestUid: requestUid(),
+    const draftPayload = {
       provider: form.provider,
       model: resolvedModelId.value,
       prompt: String(form.prompt || '').trim(),
       assets: buildAssetsPayload(),
       parameters: buildParameters(),
-      outputDir: form.outputDir,
+      outputDirToken: form.outputDirToken,
     }
-    const result = await window.cs.createAiVideoJob(payload)
+    let result
+    if (editingDraftJobId.value) {
+      const draftJobId = editingDraftJobId.value
+      const updated = await window.cs.updateAiVideoJob(draftJobId, draftPayload)
+      if (updated?.ok === false) throw new Error(updated?.error?.message || '保存草稿失败')
+      result = await window.cs.retryAiVideoJob(draftJobId, { requestUid: requestUid() })
+    } else {
+      result = await window.cs.createAiVideoJob({
+        requestUid: requestUid(),
+        ...draftPayload,
+      })
+    }
     if (result?.ok === false) throw new Error(result?.error?.message || '创建失败')
     const job = result?.data?.job || result?.job
     if (job) upsertJob(job)
+    editingDraftJobId.value = ''
     statusFilter.value = 'all'
     if (isCompact.value) compactPane.value = 'results'
     await reloadJobs()
@@ -1547,19 +1844,30 @@ function upsertJob(job) {
 
 async function reloadJobs() {
   if (typeof window?.cs?.listAiVideoJobs !== 'function') return
+  const requestId = ++jobsReloadSequence
   try {
     const result = await window.cs.listAiVideoJobs({ limit: 50 })
+    if (requestId !== jobsReloadSequence) return
     const list = result?.data?.jobs || result?.jobs || []
     jobs.value = Array.isArray(list) ? list : []
     if (detailJob.value?.id) {
+      const previousVideoSourceKey = jobLocalVideoSourceKey(detailJob.value)
       const latest = jobs.value.find(item => item.id === detailJob.value.id)
-      if (latest) detailJob.value = latest
+      if (latest) {
+        detailJob.value = latest
+        const nextVideoToken = jobLocalVideo(latest)
+        const nextVideoSourceKey = jobLocalVideoSourceKey(latest)
+        if (nextVideoToken && (nextVideoSourceKey !== previousVideoSourceKey || !detailVideoSrc.value)) {
+          await loadDetailVideo(latest)
+        }
+      }
     }
+    if (requestId !== jobsReloadSequence) return
     // Clear previous cover failures so refreshed posters can load.
     for (const key of Object.keys(brokenCovers)) delete brokenCovers[key]
     preloadJobCovers(jobs.value)
   } catch (error) {
-    formError.value = error?.message || String(error)
+    if (requestId === jobsReloadSequence) formError.value = error?.message || String(error)
   }
 }
 
@@ -1568,55 +1876,121 @@ async function loadConfig() {
   try {
     const result = await window.cs.getAiVideoConfig()
     config.value = result?.data || result || null
-    if (!form.outputDir) {
-      form.outputDir = config.value?.defaultOutputDir || defaultOutputDir.value
+    const defaultOutputToken = String(config.value?.defaultOutputDirToken || '').trim()
+    if (defaultOutputToken && (!form.outputDirToken || ['', 'default'].includes(outputDirectorySource.value))) {
+      form.outputDirToken = defaultOutputToken
+      outputDirectoryName.value = String(config.value?.defaultOutputDirName || '')
+      outputDirectorySource.value = 'default'
     }
-    defaultOutputDir.value = config.value?.defaultOutputDir || defaultOutputDir.value
+    defaultOutputDirectoryName.value = String(config.value?.defaultOutputDirName || defaultOutputDirectoryName.value)
   } catch (error) {
     formError.value = error?.message || String(error)
   }
 }
 
 async function retryJob(job) {
+  const jobId = String(job?.id || '').trim()
+  if (!jobId || retryingJobIds.has(jobId)) return
+  retryingJobIds.add(jobId)
   try {
-    const result = await window.cs.retryAiVideoJob(job.id, { requestUid: requestUid() })
+    const result = await window.cs.retryAiVideoJob(jobId, { requestUid: requestUid() })
     if (result?.ok === false) throw new Error(result?.error?.message || '重试失败')
     await reloadJobs()
   } catch (error) {
     formError.value = error?.message || String(error)
+  } finally {
+    retryingJobIds.delete(jobId)
   }
 }
 
-function reuseParams(job) {
+function isRetryingJob(job) {
+  return retryingJobIds.has(String(job?.id || '').trim())
+}
+
+async function duplicateJob(job) {
+  const jobId = String(job?.id || '').trim()
+  if (!jobId || duplicatingJobIds.has(jobId)) return
+  duplicatingJobIds.add(jobId)
+  try {
+    const result = await window.cs.duplicateAiVideoJob(jobId)
+    if (result?.ok === false) throw new Error(result?.error?.message || '复制失败')
+    const draft = result?.data?.job || result?.job
+    if (!draft?.id || draft.status !== 'draft') {
+      throw new Error('复制接口未返回可编辑草稿，为避免意外生成已停止后续操作')
+    }
+    upsertJob(draft)
+    editDraft(draft)
+    statusFilter.value = 'all'
+  } catch (error) {
+    formError.value = error?.message || String(error)
+  } finally {
+    duplicatingJobIds.delete(jobId)
+  }
+}
+
+function isDuplicatingJob(job) {
+  return duplicatingJobIds.has(String(job?.id || '').trim())
+}
+
+function reuseParams(job, { editingDraft = false } = {}) {
   if (!job) return
+  clearReusedAssetGuard()
+  formError.value = ''
+  errors.prompt = ''
+  errors.assets = ''
+  errors.parameters = ''
+  errors.outputDir = ''
   form.provider = String(job.provider || '').includes('happy') ? 'happyhorse' : 'seedance'
+  const sourceAssets = Array.isArray(job.assets) ? job.assets : []
+  form.assets = sourceAssets
+    .map(normalizeSelectedAsset)
+    .filter(Boolean)
+  if (form.assets.length < sourceAssets.length) {
+    requiredReusedAssetCount.value = sourceAssets.length
+    requiredReusedModelId.value = String(job.model || '').trim()
+    formError.value = `原任务有 ${sourceAssets.length - form.assets.length} 张参考图不可用，请重新选择后再生成。`
+  }
   applyProviderDefaults()
   form.prompt = job.prompt || ''
-  form.outputDir = job.outputDir || form.outputDir
+  if (job.outputDirToken) {
+    form.outputDirToken = job.outputDirToken
+    outputDirectoryName.value = job.outputDirName || outputDirectoryName.value
+    outputDirectorySource.value = 'job'
+  }
   const params = job.parameters || {}
   if (params.ratio) form.ratio = params.ratio
   if (params.resolution) form.resolution = params.resolution
   if (params.duration != null) form.duration = params.duration
   if (params.generateAudio != null) form.generateAudio = Boolean(params.generateAudio)
   if (params.watermark != null) form.watermark = Boolean(params.watermark)
-  form.assets = (job.assets || [])
-    .map(asset => ({ path: asset.localPath, role: asset.role }))
-    .filter(item => item.path)
-  for (const asset of form.assets) void ensureImagePreview(asset.path)
+  for (const asset of form.assets) void ensureImagePreview(assetPreviewToken(asset))
   syncHappyHorseRatioDefault()
+  editingDraftJobId.value = editingDraft ? String(job.id || '') : ''
   compactPane.value = 'inputs'
 }
 
+function editDraft(job) {
+  reuseParams(job, { editingDraft: true })
+}
+
 async function retryArchive(job) {
-  const runId = job?.currentRunId || job?.currentRun?.id
-  if (!runId) return
+  const runId = String(job?.currentRunId || job?.currentRun?.id || '').trim()
+  if (!runId || archivingRunIds.has(runId)) return
+  archivingRunIds.add(runId)
   try {
     const result = await window.cs.retryAiVideoArchive(runId)
     if (result?.ok === false) throw new Error(result?.error?.message || '重新归档失败')
     await reloadJobs()
   } catch (error) {
     formError.value = error?.message || String(error)
+  } finally {
+    archivingRunIds.delete(runId)
   }
+}
+
+function isRetryingArchive(job) {
+  const runId = String(job?.currentRunId || job?.currentRun?.id || '').trim()
+  return Boolean(runId) && archivingRunIds.has(runId)
 }
 
 async function deleteJob(job) {
@@ -1630,17 +2004,27 @@ async function deleteJob(job) {
   }
 }
 
-async function openLocalFile(path) {
-  if (!path || typeof window?.cs?.openFile !== 'function') return
+async function cancelQueuedJob(job) {
+  if (!canCancelQueuedJob(job)) return
+  await deleteJob(job)
+}
+
+async function openLocalFile(fileToken) {
+  if (!fileToken) return
+  if (typeof window?.cs?.openAiVideoFile !== 'function') {
+    formError.value = '当前版本不支持安全打开 AI 视频文件，请完整重启桌面端'
+    return
+  }
   try {
-    await window.cs.openFile(path)
+    const result = await window.cs.openAiVideoFile(fileToken)
+    if (result?.ok === false) throw new Error(result?.error || result?.message || '打开文件失败')
   } catch (error) {
     formError.value = error?.message || String(error)
   }
 }
 
-function openDetail(job, event) {
-  detailTriggerEl.value = event?.currentTarget || document.activeElement
+function openDetail(job, event, returnFocusOverride = null) {
+  detailTriggerEl.value = returnFocusOverride || event?.currentTarget || document.activeElement
   detailJob.value = job
   void loadDetailVideo(job)
   nextTick(() => {
@@ -1649,10 +2033,14 @@ function openDetail(job, event) {
 }
 
 function closeDetail() {
+  detailVideoRequestSequence += 1
   detailJob.value = null
   detailVideoSrc.value = ''
   detailVideoError.value = ''
   detailVideoLoading.value = false
+  detailVideoRecoverySourceKey = ''
+  detailVideoRecoveryAttempted = false
+  detailVideoRecoveryInFlight = false
   nextTick(() => {
     detailTriggerEl.value?.focus?.()
     detailTriggerEl.value = null
@@ -1661,11 +2049,17 @@ function closeDetail() {
 
 function closeHistory() {
   openHistory.value = false
+  nextTick(() => historyTriggerEl.value?.focus?.())
 }
 
-function openHistoryItem(job) {
+function openHistoryDrawer(event) {
+  historyTriggerEl.value = event?.currentTarget || document.activeElement
+  openHistory.value = true
+}
+
+function openHistoryItem(job, event) {
   openHistory.value = false
-  openDetail(job)
+  openDetail(job, event, historyTriggerEl.value)
 }
 
 function updateCompact() {
@@ -1673,9 +2067,16 @@ function updateCompact() {
 }
 
 function onKeydown(event) {
-  if (event.key === 'Escape' && detailJob.value) {
+  if (event.key === 'Tab' && detailJob.value) {
+    trapDialogFocus(event, modalRef.value)
+  } else if (event.key === 'Tab' && libraryOpen.value) {
+    trapDialogFocus(event, libraryModalRef.value)
+  } else if (event.key === 'Escape' && detailJob.value) {
     event.preventDefault()
     closeDetail()
+  } else if (event.key === 'Escape' && libraryOpen.value) {
+    event.preventDefault()
+    closeImageLibrary()
   } else if (event.key === 'Escape' && openHistory.value) {
     event.preventDefault()
     closeHistory()
@@ -1692,14 +2093,26 @@ function startPolling() {
 
 function stopPolling() {
   if (pollTimer.value) {
-    clearInterval(pollTimer.value)
+    window.clearInterval(pollTimer.value)
     pollTimer.value = null
   }
 }
 
-watch(() => form.assets.length, () => {
-  syncHappyHorseRatioDefault()
-})
+async function activateWorkbench() {
+  workbenchActive = true
+  const requestId = ++activationSequence
+  await loadConfig()
+  await restoreSavedLibraryDirectory()
+  await reloadJobs()
+  if (workbenchActive && requestId === activationSequence) startPolling()
+}
+
+function deactivateWorkbench() {
+  workbenchActive = false
+  activationSequence += 1
+  stopPolling()
+  disconnectLibraryPreviewObserver()
+}
 
 // Re-bind viewport observer when search filter changes or library reopens.
 watch([filteredLibraryItems, libraryOpen], async ([, open]) => {
@@ -1711,24 +2124,21 @@ watch([filteredLibraryItems, libraryOpen], async ([, open]) => {
   observeLibraryTiles()
 })
 
-onMounted(async () => {
+onMounted(() => {
   updateCompact()
   window.addEventListener('resize', updateCompact)
   window.addEventListener('keydown', onKeydown)
   applyProviderDefaults()
-  await loadConfig()
-  if (form.outputDir && typeof window?.cs?.authorizeLocalMediaRoot === 'function') {
-    try { await window.cs.authorizeLocalMediaRoot(form.outputDir) } catch { /* ignore */ }
-  }
-  await reloadJobs()
-  startPolling()
+  clearLegacyLibraryCapabilities()
 })
+
+onActivated(activateWorkbench)
+onDeactivated(deactivateWorkbench)
 
 onUnmounted(() => {
   window.removeEventListener('resize', updateCompact)
   window.removeEventListener('keydown', onKeydown)
-  stopPolling()
-  disconnectLibraryPreviewObserver()
+  deactivateWorkbench()
 })
 </script>
 
@@ -2814,6 +3224,10 @@ select:focus-visible {
   border-radius: 8px;
   background: var(--orange-soft);
   color: var(--orange);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .avg-drawer-mask {
