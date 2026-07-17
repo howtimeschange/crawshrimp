@@ -468,9 +468,9 @@ test('AI video image workbench groups expose an obvious accessible accordion act
 
   assert.match(source, /:aria-expanded="isMaterialExpanded\(/)
   assert.match(source, /:aria-controls="`image-workbench-\$\{style\.styleCode\}`"/)
-  assert.match(source, /class="aiv-collapse-action"/)
-  assert.match(source, /展开素材/)
-  assert.match(source, /收起素材/)
+  assert.match(source, /:class="\['aiv-collapse-action', `direction-\$\{balaMaterialPanelControl\(materialPanelExpanded\)\.direction\}`\]"/)
+  assert.match(source, /展开图片/)
+  assert.match(source, /收起图片/)
   assert.match(source, /\.aiv-collapse-head:hover/)
   assert.match(source, /\.aiv-collapse-head:focus-visible/)
   assert.match(source, /\.aiv-collapse-head:active/)
@@ -514,12 +514,8 @@ test('AI video material tabs stay in fixed rows above the independently scrollin
   assert.doesNotMatch(source, /\.aiv-material-style-tabs\s*\{[^}]*position:\s*sticky/)
   assert.doesNotMatch(source, /\.aiv-material-source-switcher\s*\{[^}]*position:\s*sticky/)
 
-  const switcherCssStart = source.indexOf('.aiv-material-source-switcher {')
-  const switcherCss = source.slice(switcherCssStart, source.indexOf('}', switcherCssStart) + 1)
-  assert.match(switcherCss, /margin:\s*0/)
-  assert.match(switcherCss, /border-left:\s*0/)
-  assert.match(switcherCss, /border-right:\s*0/)
-  assert.match(switcherCss, /border-radius:\s*0/)
+  assert.match(source, /\.aiv-material-source-switcher\s*\{[\s\S]*?display:\s*flex/)
+  assert.match(source, /\.aiv-material-source-switcher > span\s*\{[\s\S]*?margin-left:\s*auto/)
 })
 
 test('AI video review step restores all persisted review batches with a latest-run fallback after remount', () => {
@@ -702,7 +698,7 @@ test('video generation keeps task controls independent, submits asynchronously, 
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(source, /const videoTaskBusyIds = reactive\(new Set\(\)\)/)
-  assert.match(templateSource, /:disabled="isVideoTaskBusy\(task\)"[^>]*@click="handleVideoTaskAction\(task\)">\{\{ videoTaskActionLabel\(task\) \}\}/)
+  assert.match(templateSource, /:disabled="isVideoTaskBusy\(task\) \|\| \(!isVideoTaskSubmittable\(task\) && !videoTaskHasViewableResult\(task\)\)"[^>]*@click="handleVideoTaskAction\(task\)">\{\{ videoTaskActionLabel\(task\) \}\}/)
   assert.doesNotMatch(templateSource, /@click="runVideoTask\(task, 'live'\)">授权生成并下载<\/button>/)
   assert.match(source, /wait:\s*false/)
   assert.match(source, /finally\s*\{[\s\S]*?videoTaskBusyIds\.delete\(/)
@@ -1310,11 +1306,14 @@ test('a submitted video task cannot be reset by preflight or create a duplicate 
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'failed-run', status: '失败' }), true)
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'live-run', status: '已提交 / 查看结果' }), false)
   assert.equal(balaWorkflow.shouldCreateBalaVideoProviderRun({ providerTaskId: 'provider-task', status: '已下载' }), false)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已生成' }), false)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已下载' }), false)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '待预检' }), true)
 
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(
     source,
-    /async function runVideoTask\(task, mode = 'plan'\) \{\s*if \(!shouldCreateBalaVideoProviderRun\(task\)\)[\s\S]*?return/,
+    /async function runVideoTask\(task, mode = 'plan'\) \{\s*if \(!isVideoTaskSubmittable\(task\)\)[\s\S]*?不能重复提交[\s\S]*?return/,
   )
 })
 
