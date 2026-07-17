@@ -37,9 +37,7 @@
                 :disabled="favoritePendingIds.has(entry.group.adapter_id)"
                 @click.stop="toggleFavorite(entry.group.adapter_id)"
               >
-                <svg class="favorite-icon" viewBox="0 0 24 24" aria-hidden="true">
-                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
-                </svg>
+                <IconBookmark class="favorite-icon" :size="17" :stroke-width="2" aria-hidden="true" />
               </button>
               <div class="card-top">
                 <span class="card-icon">🦐</span>
@@ -177,6 +175,7 @@
 
 <script setup>
 import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
+import { IconBookmark } from '@tabler/icons-vue'
 import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
 import { partitionScriptGroups } from '../utils/scriptFavorites'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
@@ -612,33 +611,43 @@ onUnmounted(() => {
 }
 .favorite-btn {
   position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 32px;
-  height: 32px;
+  top: 14px;
+  right: 14px;
+  width: 30px;
+  height: 30px;
   padding: 0;
-  border: 0;
-  border-radius: 50%;
-  background: transparent;
-  color: var(--orange);
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .025);
+  color: #a7a5b8;
   display: grid;
   place-items: center;
   cursor: pointer;
-  transition: color 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+  transition: border-color 0.16s ease, color 0.16s ease, background-color 0.16s ease, box-shadow 0.16s ease, transform 0.16s ease, opacity 0.16s ease;
 }
 .favorite-icon {
-  width: 22px;
-  height: 22px;
   fill: transparent;
   stroke: currentColor;
-  stroke-width: 1.7;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  transition: fill 0.15s ease, stroke-width 0.15s ease;
+  transition: fill 0.16s ease, transform 0.16s cubic-bezier(.16, 1, .3, 1);
 }
-.favorite-btn:hover { color: #ff8d58; transform: scale(1.06); }
-.favorite-btn:active { transform: scale(0.94); }
-.favorite-btn.active .favorite-icon { fill: currentColor; stroke-width: 1.2; }
+.favorite-btn:hover:not(:disabled),
+.favorite-btn:focus-visible:not(:disabled) {
+  border-color: rgba(255, 107, 43, .56);
+  color: #ffb28d;
+  background: rgba(255, 107, 43, .10);
+  box-shadow: 0 5px 12px rgba(0, 0, 0, .16), inset 0 1px 0 rgba(255, 255, 255, .07);
+  outline: none;
+  transform: translateY(-1px);
+}
+.favorite-btn:active:not(:disabled) { transform: translateY(0) scale(.94); }
+.favorite-btn.active {
+  border-color: rgba(255, 107, 43, .58);
+  color: var(--orange);
+  background: rgba(255, 107, 43, .16);
+  box-shadow: 0 4px 12px rgba(255, 107, 43, .12), inset 0 1px 0 rgba(255, 255, 255, .10);
+}
+.favorite-btn.active .favorite-icon { fill: currentColor; transform: translateY(-.5px); }
 .favorite-btn:disabled { cursor: wait; opacity: 0.55; }
 .task-count { font-size: 12px; color: var(--text3); }
 .task-chips {

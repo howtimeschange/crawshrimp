@@ -14,13 +14,15 @@
       </p>
     </header>
 
-    <nav class="aiv-stepper" aria-label="AI 视频工作流步骤">
+    <nav class="aiv-stepper" role="tablist" aria-label="AI 视频工作流步骤">
       <button
         v-for="step in steps"
         :key="step.id"
         type="button"
+        role="tab"
         :class="['aiv-step', { active: activeStep === step.id, done: step.done }]"
         :aria-pressed="activeStep === step.id ? 'true' : 'false'"
+        :aria-selected="activeStep === step.id"
         @click="selectWorkflowStep(step.id)"
       >
         <span class="aiv-step-index">{{ step.index }}</span>
@@ -348,18 +350,27 @@
             </div>
           </header>
           <div class="aiv-panel-body aiv-edit-scroll-body">
-            <div class="aiv-action-grid">
+            <div class="aiv-action-grid" role="tablist" aria-label="AI 改图动作">
               <button
                 v-for="action in aiActions"
                 :key="action.id"
                 type="button"
+                role="tab"
                 :class="['aiv-action-option', { active: activeAction === action.id }]"
+                :aria-selected="activeAction === action.id"
+                :aria-label="`${action.title}：${activeAction === action.id ? '当前已选择' : action.requirement}`"
                 @click="activeAction = action.id"
               >
-                <strong>{{ action.title }}</strong>
-                <span>{{ action.detail }}</span>
+                <component :is="aiActionIcons[action.id]" class="aiv-action-option-icon" aria-hidden="true" />
+                <span class="aiv-action-option-copy">
+                  <strong>{{ action.shortTitle }}</strong>
+                </span>
               </button>
             </div>
+            <p class="aiv-action-grid-hint">
+              <strong>{{ activeAiAction.title }}</strong>
+              <span>{{ activeAiAction.requirement }}</span>
+            </p>
 
             <section v-if="activeAction === 'face_swap'" class="aiv-selected-model-preview" aria-label="AI 换脸模特">
               <div class="aiv-selected-model-thumb">
@@ -487,9 +498,9 @@
                 <div>
                   <span class="aiv-badge orange">原图 {{ editSourcesForStyle(style).length }}</span>
                   <span class="aiv-badge">版本 {{ versionCountForStyle(style) }}</span>
-                  <span class="aiv-collapse-action">
-                    {{ isMaterialExpanded(style.styleCode) ? '收起素材' : '展开素材' }}
-                    <span class="aiv-collapse-chevron" aria-hidden="true"></span>
+                  <span class="aiv-workspace-collapse" :class="{ expanded: isMaterialExpanded(style.styleCode) }">
+                    <span>{{ isMaterialExpanded(style.styleCode) ? '收起图片' : '展开图片' }}</span>
+                    <IconChevronDown class="aiv-workspace-collapse-icon" :size="16" :stroke-width="2.4" aria-hidden="true" />
                   </span>
                 </div>
               </button>
@@ -504,77 +515,96 @@
                   :key="source.name"
                   class="aiv-edit-source-row"
                 >
-                  <article :class="['aiv-media-card', 'aiv-original-card', { selected: source.editSelected }]">
-                    <button
-                      type="button"
-                      class="aiv-media-select"
-                      :aria-pressed="Boolean(source.editSelected)"
-                      :aria-label="`${source.name}：${source.editSelected ? '取消选择' : '选择'}为本次改图输入`"
-                      @click="toggleEditInputSelection(source)"
-                    >
-                      <img
-                        v-if="previewSourceFor(source) && !brokenPreviews[previewSourceFor(source)]"
-                        :src="previewSourceFor(source)"
-                        :alt="source.name"
-                        @error="markPreviewBroken(previewSourceFor(source))"
-                      />
-                      <span v-if="source.editSelected" class="aiv-selected-indicator">已选</span>
-                    </button>
-                    <div class="aiv-media-hover-tools">
-                      <div>
-                        <span class="aiv-origin-label">原图</span>
-                        <strong :title="source.name">{{ shortDisplayName(source.name) }}</strong>
-                        <small>{{ source.role }} · {{ style.styleCode }}</small>
-                      </div>
-                      <button type="button" class="aiv-thumb-zoom" title="大图修改" @click="openImageEditor(source, style.styleCode)">
-                        <span aria-hidden="true">⌕</span>
-                      </button>
+                  <section class="aiv-edit-origin-zone" aria-label="原图区">
+                    <div class="aiv-edit-lane-head">
+                      <strong>原图区</strong>
+                      <span>改图输入</span>
                     </div>
-                  </article>
-                  <div class="aiv-version-rail">
-                    <article
-                      v-for="version in visibleSourceVersions(source, showSelectedVersionsOnly)"
-                      :key="version.id"
-                      :class="['aiv-media-card', 'aiv-version-card', { selected: version.editSelected, loading: version.status === 'running' }]"
-                    >
+                    <article :class="['aiv-media-card', 'aiv-original-card', { selected: source.editSelected }]">
                       <button
                         type="button"
                         class="aiv-media-select"
-                        :aria-pressed="Boolean(version.editSelected)"
-                        :aria-label="`${version.label || 'AI 修改'}：${version.editSelected ? '取消选择' : '选择'}为本次改图输入`"
-                        @click="toggleEditInputSelection(version)"
+                        :aria-pressed="Boolean(source.editSelected)"
+                        :aria-label="`${source.name}：${source.editSelected ? '取消选择' : '选择'}为本次改图输入`"
+                        @click="toggleEditInputSelection(source)"
                       >
                         <img
-                          v-if="versionPreviewSource(version, source) && !brokenPreviews[versionPreviewSource(version, source)]"
-                          :src="versionPreviewSource(version, source)"
-                          :alt="`${version.label || 'AI 修改'}预览`"
-                          @error="markPreviewBroken(versionPreviewSource(version, source))"
+                          v-if="previewSourceFor(source) && !brokenPreviews[previewSourceFor(source)]"
+                          :src="previewSourceFor(source)"
+                          :alt="source.name"
+                          @error="markPreviewBroken(previewSourceFor(source))"
                         />
-                        <span v-if="version.editSelected" class="aiv-selected-indicator">已选</span>
+                        <span v-if="source.editSelected" class="aiv-selected-indicator">已选</span>
                       </button>
                       <div class="aiv-media-hover-tools">
                         <div>
-                          <span>{{ version.action }}</span>
-                          <strong :title="version.label">{{ shortDisplayName(version.label) }}</strong>
-                          <small :title="version.meta">{{ shortDisplayName(version.meta, 36) }}</small>
+                          <span class="aiv-origin-label">原图</span>
+                          <strong :title="source.name">{{ shortDisplayName(source.name) }}</strong>
+                          <small>{{ source.role }} · {{ style.styleCode }}</small>
                         </div>
-                        <i v-if="version.status === 'running'" class="aiv-mini-progress" :style="{ '--progress': `${version.progress || 0}%` }"></i>
-                        <div class="aiv-version-actions">
-                          <button type="button" class="aiv-version-edit" @click="openImageEditor(version, style.styleCode, source)">大图修改</button>
-                          <button type="button" class="aiv-version-delete" @click="requestDeleteGeneratedVersion(style, source, version)">删除</button>
-                        </div>
+                        <button type="button" class="aiv-thumb-zoom" title="大图修改" @click="openImageEditor(source, style.styleCode)">
+                          <span aria-hidden="true">⌕</span>
+                        </button>
                       </div>
                     </article>
-                    <button
-                      type="button"
-                      class="aiv-version-card add"
-                      :title="`将 ${source.name} 选为本次改图输入，再在左侧选择动作后点开始生图`"
-                      @click="continueEditingSource(source)"
-                    >
-                      <strong>继续改这张</strong>
-                      <small>选中本图 · 用左侧动作再生成</small>
-                    </button>
-                  </div>
+                  </section>
+                  <span class="aiv-edit-lane-connector" aria-hidden="true">→</span>
+                  <section class="aiv-edit-ai-zone" aria-label="AI 改图区">
+                    <div class="aiv-edit-lane-head">
+                      <div>
+                        <strong>AI 改图区</strong>
+                        <span>{{ visibleSourceVersions(source, showSelectedVersionsOnly).length }} 个版本</span>
+                      </div>
+                      <small>左右滑动查看</small>
+                    </div>
+                    <div class="aiv-version-rail">
+                      <article
+                        v-for="version in visibleSourceVersions(source, showSelectedVersionsOnly)"
+                        :key="version.id"
+                        :class="['aiv-media-card', 'aiv-version-card', { selected: version.editSelected, loading: version.status === 'running' }]"
+                      >
+                        <button
+                          type="button"
+                          class="aiv-media-select"
+                          :aria-pressed="Boolean(version.editSelected)"
+                          :aria-label="`${version.label || 'AI 修改'}：${version.editSelected ? '取消选择' : '选择'}为本次改图输入`"
+                          @click="toggleEditInputSelection(version)"
+                        >
+                          <img
+                            v-if="versionPreviewSource(version, source) && !brokenPreviews[versionPreviewSource(version, source)]"
+                            :src="versionPreviewSource(version, source)"
+                            :alt="`${version.label || 'AI 修改'}预览`"
+                            @error="markPreviewBroken(versionPreviewSource(version, source))"
+                          />
+                          <span v-if="version.editSelected" class="aiv-selected-indicator">已选</span>
+                        </button>
+                        <div class="aiv-media-hover-tools">
+                          <div>
+                            <span>{{ version.action }}</span>
+                            <strong :title="version.label">{{ shortDisplayName(version.label) }}</strong>
+                            <small :title="version.meta">{{ shortDisplayName(version.meta, 36) }}</small>
+                          </div>
+                          <div v-if="version.status === 'running'" class="aiv-version-generation-status" role="status">
+                            <span>生成中 <strong>{{ version.progress || 0 }}%</strong></span>
+                            <i class="aiv-mini-progress" :style="{ '--progress': `${version.progress || 0}%` }" aria-hidden="true"></i>
+                          </div>
+                          <div class="aiv-version-actions">
+                            <button type="button" class="aiv-version-edit" @click="openImageEditor(version, style.styleCode, source)">大图修改</button>
+                            <button type="button" class="aiv-version-delete" @click="requestDeleteGeneratedVersion(style, source, version)">删除</button>
+                          </div>
+                        </div>
+                      </article>
+                      <button
+                        type="button"
+                        class="aiv-version-card add"
+                        :title="`将 ${source.name} 选为本次改图输入，再在左侧选择动作后点开始生图`"
+                        @click="continueEditingSource(source)"
+                      >
+                        <strong>继续改这张</strong>
+                        <small>选中本图 · 用左侧动作再生成</small>
+                      </button>
+                    </div>
+                  </section>
                 </article>
                 <div v-if="!editSourcesForStyle(style).length" class="aiv-empty-inline">
                   本款还没有选中的模拍原图，可回到找图步骤补选。
@@ -614,6 +644,20 @@
               <button type="button" class="aiv-ghost small" @click="refreshReviewBatch">刷新审核池</button>
             </div>
           </div>
+          <div class="aiv-review-selection-bar" aria-label="批量选择审核图片">
+            <div class="aiv-review-selection-copy">
+              <strong>已选 {{ selectedVisibleReviewAssets.length }} 张</strong>
+              <span>仅作用于当前筛选结果</span>
+            </div>
+            <div class="aiv-review-selection-actions">
+              <button type="button" class="aiv-ghost small" :disabled="!visibleReviewAssetCount" @click="toggleAllVisibleReviewAssetSelections">
+                {{ allVisibleReviewAssetsSelected ? '取消全选' : '全选当前筛选项' }}
+              </button>
+              <button type="button" class="aiv-ghost small" :disabled="!selectedVisibleReviewAssets.length" @click="clearReviewAssetSelection">清空</button>
+              <button type="button" class="aiv-ghost small ok" :disabled="!selectedVisibleReviewAssets.length" @click="requestSelectedReviewStatus('approved')">批量通过</button>
+              <button type="button" class="aiv-ghost small danger" :disabled="!selectedVisibleReviewAssets.length" @click="requestSelectedReviewStatus('rejected')">批量舍弃</button>
+            </div>
+          </div>
           <div v-if="reviewActionError" class="aiv-inline-error aiv-review-action-error" role="alert">{{ reviewActionError }}</div>
           <div v-if="recentReviewBulkAction" class="aiv-review-undo" role="status">
             <span>{{ recentReviewBulkAction.scopeLabel }}已{{ recentReviewBulkAction.status === 'approved' ? '通过' : '舍弃' }} {{ recentReviewBulkAction.entries.length }} 张图片。</span>
@@ -637,7 +681,7 @@
                 <article
                   v-for="asset in style.assets"
                   :key="asset.id"
-                  :class="['aiv-ai-card', asset.status]"
+                  :class="['aiv-ai-card', asset.status, { selected: isReviewAssetSelected(asset), saving: isReviewAssetSaving(asset), 'has-feedback': reviewAssetFeedback[asset.id] }]"
                 >
                   <button type="button" class="aiv-ai-preview" :title="asset.label" @click="openImagePreview(asset, style.styleCode)">
                     <img
@@ -653,18 +697,35 @@
                       <small>{{ asset.action }}</small>
                     </template>
                     <i class="aiv-ai-status-badge">{{ assetStatusLabel(asset.status) }}</i>
+                    <span class="aiv-ai-preview-zoom" aria-hidden="true">
+                      <IconZoomIn />
+                      查看大图
+                    </span>
                   </button>
+                  <span v-if="reviewAssetFeedback[asset.id]" :class="['aiv-review-card-feedback', reviewAssetFeedback[asset.id]]" role="status">
+                    {{ reviewAssetFeedbackLabel(asset) }}
+                  </span>
                   <footer>
                     <div class="aiv-ai-card-copy">
                       <strong :title="asset.label">{{ asset.label }}</strong>
                       <span :title="asset.meta">{{ asset.meta }}</span>
                     </div>
                     <div class="aiv-ai-actions">
-                      <button type="button" class="ok" @click="setReviewAssetStatus(asset, 'approved')">通过</button>
-                      <button type="button" class="danger" @click="setReviewAssetStatus(asset, 'rejected')">舍弃</button>
-                      <button type="button" @click="requestReviewAssetRetry(asset)">
+                      <button type="button" class="ok" :disabled="isReviewAssetSaving(asset)" @click="setReviewAssetStatus(asset, 'approved')">通过</button>
+                      <button type="button" class="danger" :disabled="isReviewAssetSaving(asset)" @click="setReviewAssetStatus(asset, 'rejected')">舍弃</button>
+                      <button type="button" :disabled="isReviewAssetSaving(asset)" @click="requestReviewAssetRetry(asset)">
                         {{ canRegenerateRemoteReviewAsset(asset) ? '重跑' : '继续改图' }}
                       </button>
+                      <label :class="['aiv-review-card-select', { selected: isReviewAssetSelected(asset) }]" :title="`${isReviewAssetSelected(asset) ? '取消选择' : '选择'} ${asset.label}`">
+                        <input
+                          type="checkbox"
+                          :checked="isReviewAssetSelected(asset)"
+                          :disabled="isReviewAssetSaving(asset)"
+                          @change="toggleReviewAssetSelection(asset)"
+                        />
+                        <IconCheck class="aiv-review-card-select-icon" :size="14" :stroke-width="3" aria-hidden="true" />
+                        <span class="aiv-sr-only">{{ isReviewAssetSelected(asset) ? '取消选择' : '选择' }} {{ asset.label }}</span>
+                      </label>
                     </div>
                   </footer>
                 </article>
@@ -727,25 +788,49 @@
             <div class="aiv-video-toolbar-actions">
               <button type="button" class="aiv-primary" @click="openVideoTaskDialog()">新增视频任务</button>
               <button type="button" class="aiv-ghost" @click="activeStep = 'results'">查看结果</button>
-              <details class="aiv-batch-actions">
-                <summary>批量操作</summary>
-                <div>
-                  <span>仅作用于当前已创建的视频任务；“生成视频”会创建外部视频任务。</span>
-                  <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !videoTasks.length" @click="runAllVideoTasks('plan')">批量预检</button>
-                  <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !videoTasks.length" @click="runAllVideoTasks('live')">生成视频</button>
-                  <button type="button" class="aiv-ghost small" :disabled="!videoResults.length" @click="downloadCompletedVideoResults">只下载已完成视频</button>
-                </div>
-              </details>
+              <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !selectedVisibleVideoTasks.length" @click="runSelectedVideoTasks('plan')">批量预检{{ selectedVisibleVideoTasks.length ? ` (${selectedVisibleVideoTasks.length})` : '' }}</button>
+              <button type="button" class="aiv-primary small" :disabled="videoIsRunning || !selectedVisibleVideoTasks.length" @click="runSelectedVideoTasks('live')">批量提交{{ selectedVisibleVideoTasks.length ? ` (${selectedVisibleVideoTasks.length})` : '' }}</button>
+              <button type="button" class="aiv-ghost small" :disabled="!videoResults.length" @click="downloadCompletedVideoResults">只下载已完成视频</button>
             </div>
           </header>
+          <div class="aiv-video-task-filterbar">
+            <div class="aiv-video-task-status-tabs" role="tablist" aria-label="视频任务状态筛选">
+              <button
+                v-for="tab in videoTaskStatusTabs"
+                :key="tab.id"
+                type="button"
+                role="tab"
+                :class="{ active: videoTaskStatusFilter === tab.id }"
+                :aria-selected="videoTaskStatusFilter === tab.id"
+                @click="videoTaskStatusFilter = tab.id"
+              >
+                {{ tab.label }} <strong>{{ tab.count }}</strong>
+              </button>
+            </div>
+            <label class="aiv-video-task-select-all">
+              <input
+                type="checkbox"
+                :checked="allVisibleVideoTasksSelected"
+                :indeterminate.prop="selectedVisibleVideoTasks.length > 0 && !allVisibleVideoTasksSelected"
+                :disabled="!filteredVideoTasks.length"
+                @change="toggleAllVisibleVideoTaskSelection"
+              />
+              <span>全选当前筛选</span>
+            </label>
+            <span class="aiv-video-task-selection-hint">已勾选 {{ selectedVisibleVideoTasks.length }} 条；批量提交只处理当前筛选中的勾选任务。</span>
+          </div>
           <div v-if="videoStageState.error" class="aiv-inline-error aiv-video-stage-feedback" role="alert">{{ videoStageState.error }}</div>
           <div v-else-if="videoStageState.message && videoStageState.status !== 'idle'" class="aiv-stage-feedback" role="status">{{ videoStageState.message }}</div>
         </section>
 
         <section class="aiv-video-task-list">
-          <article v-for="task in videoTasks" :key="task.id" class="aiv-panel aiv-video-task-card">
+          <article v-for="task in filteredVideoTasks" :key="task.id" :class="['aiv-panel', 'aiv-video-task-card', { selected: isVideoTaskSelected(task) }]">
             <div class="aiv-video-task-row">
               <div class="aiv-video-task-assets compact">
+                <label class="aiv-video-task-check" :title="`${isVideoTaskSelected(task) ? '取消勾选' : '勾选'} ${task.styleCode} 视频任务`">
+                  <input type="checkbox" :checked="isVideoTaskSelected(task)" @change="toggleVideoTaskSelection(task.id)" />
+                  <span class="aiv-sr-only">勾选 {{ task.styleCode }} 视频任务</span>
+                </label>
                 <button
                   v-for="asset in task.assets.slice(0, 4)"
                   :key="asset.id"
@@ -767,6 +852,7 @@
               <div class="aiv-video-task-main">
                 <div class="aiv-video-task-title-line">
                   <strong :title="`${task.styleCode} · ${task.title}`">{{ task.styleCode }} · {{ task.title }}</strong>
+                  <span class="aiv-video-task-stage" :class="`is-${videoTaskStage(task).id}`" :title="videoTaskStage(task).message"><i></i>{{ videoTaskStage(task).label }}</span>
                   <span class="aiv-video-task-status">{{ task.assets.length }} 张素材 · {{ approvedVideoTaskAssetCount(task) }} 已审核 · {{ task.status }}</span>
                   <span :class="['aiv-badge', task.provider !== 'qn' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
                   <span :class="['aiv-badge', task.template ? 'orange' : '']">
@@ -795,6 +881,9 @@
           </article>
           <div v-if="!videoTasks.length" class="aiv-empty-inline">
             先点击“新增视频任务”，为单个款号选择图片、供应商和 Prompt。
+          </div>
+          <div v-else-if="!filteredVideoTasks.length" class="aiv-empty-inline">
+            当前状态下没有视频任务，请切换状态筛选查看。
           </div>
         </section>
       </section>
@@ -909,7 +998,10 @@
       >
         <header class="aiv-modal-head">
           <div class="aiv-preview-title-block">
-            <strong id="aiv-preview-title" :title="previewImage.title">{{ shortDisplayName(previewImage.title, 42) }}</strong>
+            <div class="aiv-preview-title-main">
+              <strong id="aiv-preview-title" :title="previewImage.title">{{ shortDisplayName(previewImage.title, 42) }}</strong>
+              <span class="aiv-preview-version-count">版本 {{ previewHistoryIndex + 1 }} / {{ previewHistoryItems.length }}</span>
+            </div>
             <span :title="previewImage.meta">{{ previewImage.meta }}</span>
           </div>
           <button type="button" class="aiv-ghost small" @click="closePreview">关闭</button>
@@ -918,6 +1010,10 @@
           <section class="aiv-image-editor-stage">
             <div class="aiv-big-preview">
               <div class="aiv-big-preview-frame">
+                <div class="aiv-preview-canvas-status" aria-live="polite">
+                  <strong>{{ activePreviewHistoryItem?.action || '原图' }}</strong>
+                  <span>当前编辑版本</span>
+                </div>
                 <img
                   v-if="activePreviewHistoryItem?.src && !brokenPreviews[activePreviewHistoryItem.src]"
                   class="aiv-big-preview-image"
@@ -958,25 +1054,45 @@
               </div>
             </div>
             <div class="aiv-preview-history-strip" aria-label="生成历史">
-              <strong>生成历史</strong>
-              <button
-                v-for="(item, index) in previewHistoryItems"
-                :key="item.id || item.src || index"
-                type="button"
-                :class="{ active: previewHistoryIndex === index }"
-                @click="previewHistoryIndex = index"
-              >
-                <img v-if="item.src" :src="item.src" :alt="item.label" />
-                <span>{{ item.label }}</span>
-              </button>
+              <div class="aiv-preview-history-title">
+                <strong>生成历史</strong>
+                <span>{{ previewHistoryItems.length }} 个版本</span>
+              </div>
+              <div class="aiv-preview-history-list">
+                <button
+                  v-for="(item, index) in previewHistoryItems"
+                  :key="item.id || item.src || index"
+                  type="button"
+                  :class="{ active: previewHistoryIndex === index }"
+                  :aria-label="`查看版本 ${index + 1}：${item.label}`"
+                  @click="previewHistoryIndex = index"
+                >
+                  <img v-if="item.src" :src="item.src" :alt="item.label" />
+                  <span>{{ item.label }}</span>
+                </button>
+              </div>
             </div>
           </section>
           <aside class="aiv-image-editor-tools">
-            <strong>大图修改</strong>
-            <span>Prompt 和精确标注只作用于当前图片</span>
-            <div class="aiv-image-editor-actions">
-              <button v-for="action in aiActions" :key="action.id" type="button" :class="{ active: previewEditAction === action.id }" @click="previewEditAction = action.id">
-                {{ action.title }}
+            <header class="aiv-image-editor-tools-head">
+              <div>
+                <strong>大图修改</strong>
+                <span>修改只作用于当前历史版本</span>
+              </div>
+              <span class="aiv-editor-current-action">{{ previewEditActionConfig.title }}</span>
+            </header>
+            <div class="aiv-image-editor-actions" role="tablist" aria-label="大图修改动作">
+              <button
+                v-for="action in aiActions"
+                :key="action.id"
+                type="button"
+                role="tab"
+                :aria-selected="previewEditAction === action.id"
+                :class="{ active: previewEditAction === action.id }"
+                @click="previewEditAction = action.id"
+              >
+                <component :is="aiActionIcons[action.id]" aria-hidden="true" />
+                <span>{{ action.shortTitle }}</span>
               </button>
             </div>
             <label class="aiv-field">
@@ -1036,14 +1152,20 @@
               </div>
             </section>
             <label class="aiv-field">
-              <span>Prompt 修改</span>
+              <span class="aiv-field-heading">
+                <span>当前图片修改 Prompt</span>
+                <small>{{ previewEditPrompt.length }} 字</small>
+              </span>
               <textarea v-model="previewEditPrompt" rows="6" placeholder="描述只针对当前图片的修改要求"></textarea>
             </label>
             <button v-if="previewEditAction === 'pose_swap'" type="button" class="aiv-ghost wide" @click="promptLibraryTarget = 'preview'; promptLibraryOpen = true">从 Prompt 库选择</button>
             <div v-if="previewEditError" class="aiv-inline-error">{{ previewEditError }}</div>
-            <button type="button" class="aiv-primary wide" :disabled="previewEditBusy || !configuredAiImageModels.length" @click="runPreviewImageEdit">
-              {{ previewEditBusy ? '修改图生成中...' : '生成当前修改' }}
-            </button>
+            <footer class="aiv-image-editor-tools-foot">
+              <span>输出将作为当前图片的新版本加入历史</span>
+              <button type="button" class="aiv-primary wide" :disabled="previewEditBusy || !configuredAiImageModels.length" @click="runPreviewImageEdit">
+                {{ previewEditBusy ? '修改图生成中...' : '生成当前修改' }}
+              </button>
+            </footer>
           </aside>
         </div>
       </section>
@@ -1129,7 +1251,7 @@
 
     <div v-if="localMaterialLibraryOpen" class="aiv-modal aiv-modal-stacked" @click.self="closeLocalMaterialLibrary">
       <section
-        class="aiv-modal-panel wide aiv-local-material-modal-panel"
+        class="aiv-modal-panel wide aiv-local-material-modal-panel aiv-picker-modal-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aiv-local-material-title"
@@ -1225,7 +1347,7 @@
           </div>
         </div>
         <footer class="aiv-modal-foot">
-          <span>{{ activeLocalReferenceLabel }}已选择 {{ selectedLocalReferenceCount }} 张</span>
+          <span class="aiv-picker-selection-summary">{{ activeLocalReferenceLabel }}已选择 {{ selectedLocalReferenceCount }} 张</span>
           <button type="button" class="aiv-primary" @click="closeLocalMaterialLibrary">完成选择</button>
         </footer>
       </section>
@@ -1233,7 +1355,7 @@
 
     <div v-if="modelLibraryOpen" class="aiv-modal" @click.self="closeModelLibrary">
       <section
-        class="aiv-modal-panel aiv-model-library-modal-panel"
+        class="aiv-modal-panel aiv-model-library-modal-panel aiv-picker-modal-panel"
         role="dialog"
         aria-modal="true"
         aria-labelledby="aiv-model-title"
@@ -1250,19 +1372,24 @@
           <button type="button" class="aiv-ghost small" @click="closeModelLibrary">关闭</button>
         </header>
         <div class="aiv-modal-body model-library">
-          <aside class="aiv-modal-filter">
-            <strong>年龄段</strong>
-            <div class="aiv-filter-chip-row">
-              <button type="button" :class="['aiv-chip', { active: !modelAgeFilter }]" @click="modelAgeFilter = ''">全部</button>
-              <button v-for="age in modelAgeOptions" :key="age" type="button" :class="['aiv-chip', { active: modelAgeFilter === age }]" @click="modelAgeFilter = age">{{ age }}</button>
+          <aside class="aiv-modal-filter aiv-model-filter-rail">
+            <div class="aiv-picker-filter-group">
+              <strong>年龄段</strong>
+              <div class="aiv-filter-chip-row">
+                <button type="button" :class="['aiv-chip', { active: !modelAgeFilter }]" @click="modelAgeFilter = ''">全部</button>
+                <button v-for="age in modelAgeOptions" :key="age" type="button" :class="['aiv-chip', { active: modelAgeFilter === age }]" @click="modelAgeFilter = age">{{ age }}</button>
+              </div>
             </div>
-            <strong>性别</strong>
-            <div class="aiv-filter-chip-row">
-              <button type="button" :class="['aiv-chip', { active: !modelGenderFilter }]" @click="modelGenderFilter = ''">全部</button>
-              <button v-for="gender in modelGenderOptions" :key="gender" type="button" :class="['aiv-chip', { active: modelGenderFilter === gender }]" @click="modelGenderFilter = gender">{{ gender }}</button>
+            <div class="aiv-picker-filter-group">
+              <strong>性别</strong>
+              <div class="aiv-filter-chip-row">
+                <button type="button" :class="['aiv-chip', { active: !modelGenderFilter }]" @click="modelGenderFilter = ''">全部</button>
+                <button v-for="gender in modelGenderOptions" :key="gender" type="button" :class="['aiv-chip', { active: modelGenderFilter === gender }]" @click="modelGenderFilter = gender">{{ gender }}</button>
+              </div>
             </div>
             <span v-if="modelLibraryState.loading" class="aiv-filter-note">加载模特库...</span>
-            <span v-if="modelLibraryState.error" class="aiv-filter-note error">{{ modelLibraryState.error }}</span>
+            <span v-if="modelLibraryState.error" class="aiv-filter-note error">{{ modelLibraryErrorMessage }}</span>
+            <button v-if="modelLibraryState.error" type="button" class="aiv-ghost small aiv-model-retry" @click="loadModelLibrary">重新加载</button>
           </aside>
           <div class="aiv-model-grid-scroll">
             <div class="aiv-model-grid">
@@ -1300,7 +1427,7 @@
           </div>
         </div>
         <footer class="aiv-modal-foot">
-          <span>{{ selectedModel ? `已选 ${selectedModel.label}` : '请选择一个模特素材' }}</span>
+          <span class="aiv-picker-selection-summary">{{ selectedModel ? `已选 ${selectedModel.label}` : '请选择一个模特素材' }}</span>
           <button type="button" class="aiv-primary" @click="closeModelLibrary">确认选择</button>
         </footer>
       </section>
@@ -1754,8 +1881,10 @@
         </div>
         <footer class="aiv-modal-foot">
           <span>请确认影响范围后继续</span>
-          <button type="button" class="aiv-ghost" @click="cancelReviewBulkAction">取消</button>
-          <button type="button" class="aiv-primary" @click="confirmReviewBulkAction">确认{{ reviewBulkConfirmation.status === 'approved' ? '通过' : '舍弃' }}</button>
+          <div class="aiv-modal-foot-actions">
+            <button type="button" class="aiv-ghost" @click="cancelReviewBulkAction">取消</button>
+            <button type="button" class="aiv-primary" @click="confirmReviewBulkAction">确认{{ reviewBulkConfirmation.status === 'approved' ? '通过' : '舍弃' }}</button>
+          </div>
         </footer>
       </section>
     </div>
@@ -1764,6 +1893,7 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { IconCheck, IconChevronDown, IconFaceId, IconPhoto, IconRun, IconShirt, IconZoomIn } from '@tabler/icons-vue'
 import PromptLibraryPickerModal from '../components/PromptLibraryPickerModal.vue'
 import TldrawAnnotationLayer from '../components/TldrawAnnotationLayer.js'
 import volcengineMark from '../assets/ai-video-generation/volcengine-mark.png'
@@ -1880,6 +2010,10 @@ const videoTaskKindFilter = ref('all')
 const reviewBulkConfirmation = ref(null)
 const recentReviewBulkAction = ref(null)
 const reviewActionError = ref('')
+const selectedReviewAssetIds = reactive(new Set())
+const reviewAssetFeedback = reactive({})
+const reviewAssetSavingIds = reactive(new Set())
+const reviewFeedbackTimers = new Map()
 const promptLibraryOpen = ref(false)
 const promptLibraryTarget = ref('workspace')
 const activeLocalReferenceKind = ref('garment')
@@ -2066,11 +2200,21 @@ const steps = computed(() => stepDefinitions.map(step => ({
 })))
 
 const aiActions = [
-  { id: 'face_swap', title: 'AI 换脸', detail: '选择模特素材库，保留服装版型' },
-  { id: 'background_swap', title: 'AI 换背景', detail: '输入背景 Prompt' },
-  { id: 'outfit_swap', title: 'AI 换装', detail: '服装图、搭配图、同款不同色参考' },
-  { id: 'pose_swap', title: 'AI 换姿势', detail: '输入姿势 Prompt' },
+  { id: 'face_swap', title: 'AI 换脸', shortTitle: '换脸', detail: '替换人物面部，保留服装版型', requirement: '选择模特' },
+  { id: 'background_swap', title: 'AI 换背景', shortTitle: '换背景', detail: '只改场景，不改变人物与服装', requirement: '填写背景 Prompt' },
+  { id: 'outfit_swap', title: 'AI 换装', shortTitle: '换装', detail: '按服装与搭配参考完成替换', requirement: '选择服装图' },
+  { id: 'pose_swap', title: 'AI 换姿势', shortTitle: '换姿势', detail: '调整人物姿势，保留人物与服装', requirement: '填写姿势 Prompt' },
 ]
+
+const activeAiAction = computed(() => aiActions.find(action => action.id === activeAction.value) || aiActions[0])
+const previewEditActionConfig = computed(() => aiActions.find(action => action.id === previewEditAction.value) || aiActions[0])
+
+const aiActionIcons = {
+  face_swap: IconFaceId,
+  background_swap: IconPhoto,
+  outfit_swap: IconShirt,
+  pose_swap: IconRun,
+}
 
 const activeActionConfig = computed(() => aiActions.find(action => action.id === activeAction.value) || aiActions[0])
 const activeActionTitle = computed(() => activeActionConfig.value.title)
@@ -2124,6 +2268,12 @@ const modelSamples = computed(() => filterBalaModelLibraryItems(modelLibraryStat
   age: modelAgeFilter.value,
   gender: modelGenderFilter.value,
 }))
+const modelLibraryErrorMessage = computed(() => {
+  const message = String(modelLibraryState.error || '').trim()
+  if (!message) return ''
+  if (/failed to fetch|networkerror|network request failed/i.test(message)) return '模特库暂时无法加载，请检查网络后重试。'
+  return message
+})
 const modelAgeOptions = computed(() => [...new Set([
   ...modelLibraryState.groups.map(group => group.ageLabel),
   ...modelLibraryState.items.map(item => item.ageLabel),
@@ -2204,6 +2354,8 @@ const reviewStyles = reactive([])
 const videoJobs = reactive([])
 const videoTasks = reactive([])
 const videoResults = reactive([])
+const selectedVideoTaskIds = reactive(new Set())
+const videoTaskStatusFilter = ref('all')
 
 function cloneWorkspaceValue(value, fallback = null) {
   try {
@@ -2223,12 +2375,23 @@ function workspaceStateRegistry() {
   return { version: 2, activeWorkspace: '', workspaces: {} }
 }
 
+function workspaceSnapshotStep() {
+  return activeStep.value === 'results' ? 'templates' : activeStep.value
+}
+
+function restoreWorkspaceActiveStep(snapshot = {}) {
+  const restoredStep = String(snapshot.activeStep || '') === 'results' ? 'templates' : String(snapshot.activeStep || '')
+  if (!stepDefinitions.some(step => step.id === restoredStep)) return false
+  activeStep.value = restoredStep
+  return true
+}
+
 function workspaceSnapshot() {
   return {
     version: 2,
     workspaceDir: workspaceDir.value,
     updatedAt: new Date().toISOString(),
-    activeStep: activeStep.value,
+    activeStep: workspaceSnapshotStep(),
     input: {
       styleCodes: styleCodes.value,
       cloudPath: cloudPath.value,
@@ -2280,8 +2443,7 @@ function restoreWorkspaceVideoManifest(snapshot = {}, workspace = workspaceDir.v
   if (!tasks.length && !results.length) return false
   videoTasks.splice(0, videoTasks.length, ...tasks)
   videoResults.splice(0, videoResults.length, ...results)
-  const restoredStep = String(snapshot.activeStep || '')
-  if (stepDefinitions.some(step => step.id === restoredStep)) activeStep.value = restoredStep
+  restoreWorkspaceActiveStep(snapshot)
   return true
 }
 
@@ -2387,8 +2549,7 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   videoTasks.splice(0, videoTasks.length, ...tasks)
   videoResults.splice(0, videoResults.length, ...results)
   videoTaskDraft.outputDir = workspace
-  const restoredStep = String(snapshot.activeStep || '')
-  if (stepDefinitions.some(step => step.id === restoredStep)) activeStep.value = restoredStep
+  restoreWorkspaceActiveStep(snapshot)
   if (reviewStyles.length) buildVideoJobsFromReview()
   return true
 }
@@ -2507,6 +2668,32 @@ const videoResultStageSummary = computed(() => {
 const clearableVideoResults = computed(() => videoResults.filter(isClearableVideoResult))
 const totalVideoAssetCount = computed(() => (
   videoJobs.reduce((sum, job) => sum + (job.assets || []).length, 0)
+))
+const videoTaskStatusTabs = computed(() => {
+  const counts = { pending: 0, authorization: 0, submitted: 0, queued: 0, generating: 0, ready: 0, downloaded: 0, failed: 0 }
+  for (const task of videoTasks) counts[videoTaskStage(task).id] += 1
+  return [
+    { id: 'all', label: '全部', count: videoTasks.length },
+    { id: 'pending', label: '待生成', count: counts.pending },
+    { id: 'authorization', label: '待授权', count: counts.authorization },
+    { id: 'submitted', label: '已提交', count: counts.submitted },
+    { id: 'queued', label: '排队中', count: counts.queued },
+    { id: 'generating', label: '生成中', count: counts.generating },
+    { id: 'ready', label: '待下载', count: counts.ready },
+    { id: 'downloaded', label: '已下载', count: counts.downloaded },
+    { id: 'failed', label: '失败', count: counts.failed },
+  ]
+})
+const filteredVideoTasks = computed(() => {
+  const status = videoTaskStatusFilter.value
+  if (status === 'all') return videoTasks
+  return videoTasks.filter(task => videoTaskStage(task).id === status)
+})
+const selectedVisibleVideoTasks = computed(() => (
+  filteredVideoTasks.value.filter(task => selectedVideoTaskIds.has(String(task.id || '')))
+))
+const allVisibleVideoTasksSelected = computed(() => (
+  filteredVideoTasks.value.length > 0 && selectedVisibleVideoTasks.value.length === filteredVideoTasks.value.length
 ))
 const activeVideoAssetPool = computed(() => (
   videoJobs.find(job => job.styleCode === videoTaskDraft.styleCode) || videoJobs[0] || { assets: [] }
@@ -2847,6 +3034,28 @@ const videoIsRunning = computed(() => isActiveWorkflowStatus(videoStageState.sta
 function isVideoTaskBusy(task = {}) {
   return videoTaskBusyIds.has(String(task?.id || ''))
 }
+
+function isVideoTaskSelected(task = {}) {
+  return selectedVideoTaskIds.has(String(task?.id || ''))
+}
+
+function toggleVideoTaskSelection(taskId = '') {
+  const id = String(taskId || '').trim()
+  if (!id) return
+  if (selectedVideoTaskIds.has(id)) selectedVideoTaskIds.delete(id)
+  else selectedVideoTaskIds.add(id)
+}
+
+function toggleAllVisibleVideoTaskSelection() {
+  if (allVisibleVideoTasksSelected.value) {
+    for (const task of filteredVideoTasks.value) selectedVideoTaskIds.delete(String(task.id || ''))
+    return
+  }
+  for (const task of filteredVideoTasks.value) {
+    const id = String(task.id || '').trim()
+    if (id) selectedVideoTaskIds.add(id)
+  }
+}
 const hasOpenModal = computed(() => Boolean(
   previewImage.value || pendingVersionDeletion.value || pendingVideoHistoryCleanup.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
 ))
@@ -2875,6 +3084,18 @@ const filteredReviewStyles = computed(() => {
     })
     return { ...style, assets }
   }).filter(style => style.assets.length || !status)
+})
+const selectedVisibleReviewAssets = computed(() => filteredReviewStyles.value
+  .flatMap(style => style.assets || [])
+  .filter(asset => selectedReviewAssetIds.has(reviewAssetFeedbackKey(asset))))
+const visibleReviewAssetCount = computed(() => filteredReviewStyles.value
+  .reduce((total, style) => total + (style.assets || []).length, 0))
+const allVisibleReviewAssetsSelected = computed(() => (
+  visibleReviewAssetCount.value > 0 && selectedVisibleReviewAssets.value.length === visibleReviewAssetCount.value
+))
+
+watch([reviewFilter, reviewStatusFilter], () => {
+  selectedReviewAssetIds.clear()
 })
 
 let materialPollTimer = null
@@ -4932,8 +5153,84 @@ function applyLocalReviewDecision(asset, status) {
   syncWorkspaceReviewDecision(asset, normalized)
 }
 
+function reviewAssetFeedbackKey(asset = {}) {
+  return String(asset?.id || asset?.remoteAssetId || '').trim()
+}
+
+function isReviewAssetSelected(asset = {}) {
+  const key = reviewAssetFeedbackKey(asset)
+  return Boolean(key && selectedReviewAssetIds.has(key))
+}
+
+function toggleReviewAssetSelection(asset = {}) {
+  const key = reviewAssetFeedbackKey(asset)
+  if (!key || isReviewAssetSaving(asset)) return
+  if (selectedReviewAssetIds.has(key)) selectedReviewAssetIds.delete(key)
+  else selectedReviewAssetIds.add(key)
+}
+
+function clearReviewAssetSelection(assets = []) {
+  if (!assets.length) {
+    selectedReviewAssetIds.clear()
+    return
+  }
+  for (const asset of assets) {
+    const key = reviewAssetFeedbackKey(asset)
+    if (key) selectedReviewAssetIds.delete(key)
+  }
+}
+
+function toggleAllVisibleReviewAssetSelections() {
+  const assets = filteredReviewStyles.value.flatMap(style => style.assets || [])
+  if (!assets.length) return
+  if (allVisibleReviewAssetsSelected.value) {
+    clearReviewAssetSelection(assets)
+    return
+  }
+  for (const asset of assets) {
+    const key = reviewAssetFeedbackKey(asset)
+    if (key && !isReviewAssetSaving(asset)) selectedReviewAssetIds.add(key)
+  }
+}
+
+function isReviewAssetSaving(asset = {}) {
+  const key = reviewAssetFeedbackKey(asset)
+  return Boolean(key && reviewAssetSavingIds.has(key))
+}
+
+function reviewAssetFeedbackLabel(asset = {}) {
+  const status = reviewAssetFeedback[reviewAssetFeedbackKey(asset)]
+  if (status === 'approved') return '已通过'
+  if (status === 'rejected') return '已舍弃'
+  if (status === 'retry') return '已加入重跑队列'
+  return ''
+}
+
+function flashReviewAssetFeedback(asset = {}, status = '') {
+  const key = reviewAssetFeedbackKey(asset)
+  if (!key || !status) return
+  const previousTimer = reviewFeedbackTimers.get(key)
+  if (previousTimer) clearTimeout(previousTimer)
+  reviewAssetFeedback[key] = status
+  reviewFeedbackTimers.set(key, setTimeout(() => {
+    delete reviewAssetFeedback[key]
+    reviewFeedbackTimers.delete(key)
+  }, 900))
+}
+
 async function setReviewAssetStatus(asset, status) {
-  await saveReviewAssetDecisions([{ asset, status }])
+  const key = reviewAssetFeedbackKey(asset)
+  if (!key || reviewAssetSavingIds.has(key)) return
+  reviewAssetSavingIds.add(key)
+  try {
+    const saved = await saveReviewAssetDecisions([{ asset, status }])
+    if (saved) {
+      clearReviewAssetSelection([asset])
+      flashReviewAssetFeedback(asset, status)
+    }
+  } finally {
+    reviewAssetSavingIds.delete(key)
+  }
 }
 
 function requestStyleReviewStatus(style, status) {
@@ -4944,6 +5241,15 @@ function requestStyleReviewStatus(style, status) {
 function requestPendingReviewStatus(status) {
   const assets = reviewStyles.flatMap(style => style.assets || []).filter(asset => asset.status === 'pending')
   requestReviewBulkAction(assets, status, '当前筛选范围内的待审图片')
+}
+
+function requestSelectedReviewStatus(status) {
+  const assets = selectedVisibleReviewAssets.value
+  if (!assets.length) {
+    reviewActionError.value = '请先选择需要处理的图片'
+    return
+  }
+  requestReviewBulkAction(assets, status, '已选图片')
 }
 
 function requestReviewBulkAction(assets = [], status = 'pending', scopeLabel = '批量审核') {
@@ -4976,6 +5282,7 @@ async function confirmReviewBulkAction() {
     status: confirmation.status,
     entries: confirmation.entries.map(entry => ({ ...entry })),
   }
+  clearReviewAssetSelection(confirmation.entries.map(entry => entry.asset))
   reviewBulkConfirmation.value = null
 }
 
@@ -5067,10 +5374,15 @@ async function requestReviewAssetRetry(asset) {
     queueLocalReviewAssetForAiEdit(asset)
     return
   }
+  const key = reviewAssetFeedbackKey(asset)
+  if (!key || reviewAssetSavingIds.has(key)) return
+  reviewAssetSavingIds.add(key)
   const previousStatus = asset.status
   const previousMeta = asset.meta
+  clearReviewAssetSelection([asset])
   asset.status = 'retry'
   asset.meta = `${asset.meta || asset.action} · 已请求重跑`
+  flashReviewAssetFeedback(asset, 'retry')
   try {
     const boardUrl = asset.reviewBoardUrl
     const ref = parseBalaReviewBoardUrl(boardUrl)
@@ -5100,6 +5412,8 @@ async function requestReviewAssetRetry(asset) {
     aiTaskState.status = 'failed'
     aiTaskState.error = detail
     aiTaskState.message = aiTaskState.error
+  } finally {
+    reviewAssetSavingIds.delete(key)
   }
 }
 
@@ -5250,6 +5564,18 @@ function videoResultStage(item = {}) {
     return { id: 'submitted', label: '已提交', message: '任务已提交，供应商尚未返回排队或生成状态；可刷新状态。' }
   }
   return { id: 'pending', label: '待生成', message: '尚未创建外部视频任务，请返回生视频完成预检并点击“生成视频”。' }
+}
+
+function videoTaskStage(task = {}) {
+  const result = videoResultForTask(task)
+  if (result) return videoResultStage(result)
+  return videoResultStage({
+    status: task.status,
+    providerStatus: task.providerStatus,
+    providerTaskId: task.providerTaskId,
+    taskId: task.runId,
+    error: task.error,
+  })
 }
 
 function videoResultHasLiveProgress(item = {}) {
@@ -5926,8 +6252,18 @@ async function runVideoTask(task, mode = 'plan') {
   }
 }
 
-async function runAllVideoTasks(mode = 'plan') {
-  for (const task of videoTasks) {
+async function runSelectedVideoTasks(mode = 'plan') {
+  const tasks = selectedVisibleVideoTasks.value.slice()
+  if (!tasks.length) {
+    videoStageState.status = 'idle'
+    videoStageState.error = '请先勾选当前状态筛选中的视频任务。'
+    videoStageState.message = videoStageState.error
+    return
+  }
+  videoStageState.error = ''
+  videoStageState.status = 'running'
+  videoStageState.message = `正在${mode === 'live' ? '提交' : '预检'}已勾选的 ${tasks.length} 条视频任务。`
+  for (const task of tasks) {
     await runVideoTask(task, mode)
   }
 }
@@ -6911,6 +7247,8 @@ onBeforeUnmount(() => {
   if (workspaceManifestWriteTimer) clearTimeout(workspaceManifestWriteTimer)
   clearPreviewAnnotationRequest()
   disconnectVideoTaskThumbObserver()
+  for (const timer of reviewFeedbackTimers.values()) clearTimeout(timer)
+  reviewFeedbackTimers.clear()
   void flushWorkspaceManifest()
 })
 
@@ -7095,31 +7433,45 @@ function localFileUrl(path) {
 .aiv-stepper {
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-  padding: 12px 22px;
+  gap: 6px;
+  padding: 8px 22px;
   background: var(--bg2);
   border-bottom: 1px solid var(--border);
 }
 
 .aiv-step {
   min-width: 0;
-  height: 58px;
-  padding: 9px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--border);
-  background: var(--bg3);
+  height: 46px;
+  padding: 6px 9px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(255, 255, 255, .025);
   color: var(--text2);
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 24px minmax(0, 1fr);
   align-items: center;
-  gap: 9px;
+  gap: 8px;
   text-align: left;
+  cursor: pointer;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .025);
+  transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.aiv-step:hover:not(.active),
+.aiv-step:focus-visible:not(.active) {
+  border-color: rgba(255, 107, 43, .38);
+  color: var(--text);
+  background: rgba(255, 107, 43, .06);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, .14);
+  outline: none;
+  transform: translateY(-1px);
 }
 
 .aiv-step.active {
   border-color: var(--orange);
-  background: var(--orange-bg);
+  background: linear-gradient(90deg, rgba(255, 107, 43, .16), rgba(255, 107, 43, .06));
   color: var(--text);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .14), 0 5px 14px rgba(0, 0, 0, .16);
 }
 
 .aiv-step.done .aiv-step-index {
@@ -7127,9 +7479,9 @@ function localFileUrl(path) {
 }
 
 .aiv-step-index {
-  width: 28px;
-  height: 28px;
-  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
   display: grid;
   place-items: center;
   background: var(--bg);
@@ -7151,12 +7503,16 @@ function localFileUrl(path) {
 }
 
 .aiv-step-copy strong {
-  margin-bottom: 3px;
+  margin-bottom: 1px;
   color: inherit;
+  font-size: 12px;
+  line-height: 1.15;
 }
 
 .aiv-step-copy small {
   color: var(--text3);
+  font-size: 10px;
+  line-height: 1.15;
 }
 
 .aiv-stage {
@@ -7807,7 +8163,7 @@ function localFileUrl(path) {
   padding: 3px;
   display: inline-grid;
   grid-template-columns: repeat(2, minmax(112px, auto));
-  gap: 3px;
+  gap: 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg);
@@ -8001,6 +8357,62 @@ function localFileUrl(path) {
   font-size: 11px;
 }
 
+.aiv-workspace-collapse {
+  min-height: 30px;
+  margin-top: 0 !important;
+  padding: 0 6px 0 9px;
+  border: 1px solid rgba(255, 255, 255, .12);
+  border-radius: 7px;
+  color: var(--text2) !important;
+  background: rgba(255, 255, 255, .025);
+  display: inline-flex !important;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px !important;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+  transition: border-color .16s ease, color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .14s ease;
+}
+
+.aiv-workspace-collapse > span {
+  margin: 0 !important;
+  color: inherit !important;
+  font: inherit !important;
+}
+
+.aiv-workspace-collapse-icon {
+  flex: 0 0 auto;
+  color: currentColor;
+  transition: transform .2s cubic-bezier(.16, 1, .3, 1);
+}
+
+.aiv-workspace-collapse.expanded {
+  border-color: rgba(255, 107, 43, .46);
+  color: var(--orange) !important;
+  background: rgba(255, 107, 43, .095);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .08), 0 4px 10px rgba(0, 0, 0, .1);
+}
+
+.aiv-workspace-collapse.expanded .aiv-workspace-collapse-icon {
+  transform: rotate(180deg);
+}
+
+.aiv-collapse-head:hover .aiv-workspace-collapse {
+  border-color: rgba(255, 107, 43, .58);
+  color: var(--text) !important;
+  background: rgba(255, 107, 43, .11);
+}
+
+.aiv-collapse-head:hover .aiv-workspace-collapse.expanded {
+  color: var(--orange) !important;
+}
+
+.aiv-collapse-head:active .aiv-workspace-collapse {
+  transform: scale(.97);
+}
+
 .aiv-badge,
 .aiv-chip {
   min-height: 22px;
@@ -8144,7 +8556,7 @@ function localFileUrl(path) {
 .aiv-large-thumb.selected {
   border-color: var(--orange);
   color: var(--text);
-  box-shadow: inset 0 0 0 1px var(--orange);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 3px rgba(255, 107, 43, .16);
 }
 
 .aiv-thumb.muted {
@@ -8337,50 +8749,106 @@ function localFileUrl(path) {
   align-self: start;
 }
 
-.aiv-action-grid {
+.aiv-edit-workbench .aiv-action-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 8px;
   flex: 0 0 auto;
   align-content: start;
 }
 
-.aiv-action-option {
+.aiv-edit-workbench .aiv-action-option {
   min-width: 0;
-  min-height: 76px;
+  min-height: 48px;
   max-width: 100%;
-  padding: 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
+  padding: 7px 4px 8px;
+  border: 1px solid transparent;
+  border-bottom-color: var(--border);
+  border-radius: 7px 7px 3px 3px;
   color: var(--text2);
-  background: var(--bg3);
-  text-align: left;
+  background: rgba(255, 255, 255, .018);
+  text-align: center;
   overflow: hidden;
+  cursor: pointer;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 3px;
+  transition: border-color .16s ease, background-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease;
 }
 
-.aiv-action-option.active {
-  border-color: var(--orange);
-  color: var(--orange);
-  background: var(--orange-bg);
-  box-shadow: inset 0 0 0 1px var(--orange);
+.aiv-edit-workbench .aiv-action-option.active {
+  border-color: rgba(255, 107, 43, .44);
+  border-bottom-color: var(--orange);
+  color: var(--text);
+  background: linear-gradient(180deg, rgba(255, 107, 43, .12), rgba(255, 107, 43, .035));
+  box-shadow: inset 0 -2px 0 var(--orange), inset 0 0 0 1px rgba(255, 107, 43, .08);
 }
 
-.aiv-action-option strong,
-.aiv-action-option span {
+.aiv-edit-workbench .aiv-action-option:hover:not(.active) {
+  border-bottom-color: rgba(255, 107, 43, .54);
+  color: var(--text);
+  background: rgba(255, 255, 255, .05);
+  transform: translateY(-1px);
+}
+
+.aiv-edit-workbench .aiv-action-option:focus-visible {
+  outline: 2px solid rgba(255, 107, 43, .78);
+  outline-offset: 2px;
+}
+
+.aiv-edit-workbench .aiv-action-option-copy,
+.aiv-edit-workbench .aiv-action-option-copy strong {
   display: block;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.aiv-action-option span {
-  margin-top: 5px;
+.aiv-edit-workbench .aiv-action-option-copy strong {
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 1.25;
+}
+
+.aiv-edit-workbench .aiv-action-option-icon {
+  width: 18px;
+  height: 18px;
+  stroke-width: 1.9;
   color: var(--text3);
+}
+
+.aiv-edit-workbench .aiv-action-option.active .aiv-action-option-icon {
+  color: var(--orange);
+}
+
+.aiv-action-grid-hint {
+  min-height: 28px;
+  margin: 7px 0 0;
+  padding: 6px 8px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-left: 2px solid var(--orange);
+  border-radius: 0 6px 6px 0;
+  color: var(--text3);
+  background: rgba(255, 107, 43, .06);
   font-size: 11px;
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  white-space: normal;
+  line-height: 1.2;
+}
+
+.aiv-action-grid-hint strong {
+  flex: 0 0 auto;
+  color: var(--orange);
+  font-size: 11px;
+}
+
+.aiv-action-grid-hint span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Face-swap model picker: compact strip, never let model photo expand the rail */
@@ -8496,8 +8964,72 @@ function localFileUrl(path) {
   border-radius: 8px;
   background: var(--bg);
   display: grid;
-  grid-template-columns: 132px minmax(0, 1fr);
+  grid-template-columns: 148px 24px minmax(0, 1fr);
   gap: 10px;
+}
+
+.aiv-edit-origin-zone,
+.aiv-edit-ai-zone {
+  min-width: 0;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 7px;
+}
+
+.aiv-edit-lane-head {
+  min-height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+}
+
+.aiv-edit-lane-head > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.aiv-edit-lane-head strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.aiv-edit-lane-head span,
+.aiv-edit-lane-head small {
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.aiv-edit-origin-zone .aiv-edit-lane-head {
+  padding: 0 3px;
+}
+
+.aiv-edit-origin-zone .aiv-edit-lane-head strong {
+  color: var(--orange);
+}
+
+.aiv-edit-ai-zone .aiv-edit-lane-head {
+  padding: 0 2px 0 4px;
+}
+
+.aiv-edit-lane-connector {
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(255, 107, 43, .28);
+  border-radius: 999px;
+  color: var(--orange);
+  background: var(--orange-bg);
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  line-height: 1;
+  box-shadow: 0 4px 10px rgba(0, 0, 0, .14);
 }
 
 .aiv-original-card,
@@ -8543,13 +9075,22 @@ function localFileUrl(path) {
 
 .aiv-version-rail {
   min-width: 0;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(112px, 1fr));
+  padding: 2px 3px 7px;
+  display: flex;
+  align-items: flex-start;
   gap: 8px;
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  scrollbar-gutter: stable;
+}
+
+.aiv-version-rail > .aiv-version-card {
+  flex: 0 0 144px;
 }
 
 .aiv-version-card {
-  min-height: 208px;
+  aspect-ratio: 3 / 4;
+  min-height: 0;
   text-align: left;
   overflow: hidden;
 }
@@ -8632,11 +9173,20 @@ function localFileUrl(path) {
   min-height: 24px;
   padding: 3px 8px;
   border-radius: 999px;
-  color: var(--on-orange);
-  background: var(--orange);
+  border: 1px solid rgba(255, 255, 255, .34);
+  color: #fff !important;
+  background: #f26322;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, .28);
   font-size: 11px;
   font-weight: 800;
   line-height: 18px;
+  letter-spacing: .01em;
+  text-shadow: 0 1px 1px rgba(91, 28, 4, .36);
+}
+
+.aiv-version-card .aiv-selected-indicator {
+  color: #fff !important;
+  font-size: 11px;
 }
 
 .aiv-media-hover-tools {
@@ -8704,6 +9254,60 @@ function localFileUrl(path) {
   box-shadow: inset 0 0 0 3px var(--orange);
 }
 
+/* 改图工作台：画面默认保持干净，悬浮时再显露信息与操作。 */
+.aiv-edit-workbench .aiv-edit-source-row {
+  padding: 11px;
+  border-color: rgba(255, 255, 255, .09);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, .018), transparent 42%), var(--bg);
+}
+
+.aiv-edit-workbench .aiv-media-card {
+  border-color: rgba(255, 255, 255, .11);
+  border-radius: 10px;
+  background: var(--bg3);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .11);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.aiv-edit-workbench .aiv-media-card:hover,
+.aiv-edit-workbench .aiv-media-card:focus-within {
+  border-color: rgba(255, 107, 43, .58);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, .22), 0 0 0 1px rgba(255, 107, 43, .14);
+  transform: translateY(-2px);
+}
+
+.aiv-edit-workbench .aiv-media-select img {
+  transition: transform .24s ease, filter .24s ease;
+}
+
+.aiv-edit-workbench .aiv-media-card:hover .aiv-media-select img,
+.aiv-edit-workbench .aiv-media-card:focus-within .aiv-media-select img {
+  filter: brightness(.86) saturate(.94);
+  transform: scale(1.018);
+}
+
+.aiv-edit-workbench .aiv-media-hover-tools {
+  padding: 42px 10px 10px;
+  background: linear-gradient(180deg, transparent, rgba(8, 8, 12, .95) 46%);
+  transition: opacity .18s ease-out, transform .18s ease-out, backdrop-filter .18s ease-out;
+}
+
+.aiv-edit-workbench .aiv-media-card:hover .aiv-media-hover-tools,
+.aiv-edit-workbench .aiv-media-card:focus-within .aiv-media-hover-tools {
+  backdrop-filter: blur(3px);
+}
+
+.aiv-edit-workbench .aiv-media-card.selected {
+  border-color: var(--orange);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(255, 107, 43, .14);
+}
+
+.aiv-edit-workbench .aiv-media-card.selected:hover,
+.aiv-edit-workbench .aiv-media-card.selected:focus-within {
+  box-shadow: inset 0 0 0 2px var(--orange), 0 12px 22px rgba(0, 0, 0, .24), 0 0 0 3px rgba(255, 107, 43, .18);
+}
+
 .aiv-media-card .aiv-thumb-zoom {
   position: absolute;
   inset: auto 10px 10px auto;
@@ -8717,6 +9321,29 @@ function localFileUrl(path) {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 6px;
+}
+
+.aiv-version-generation-status {
+  display: grid;
+  gap: 5px;
+  padding: 6px 7px;
+  border: 1px solid rgba(255, 107, 43, .32);
+  border-radius: 6px;
+  background: rgba(255, 107, 43, .1);
+}
+
+.aiv-version-generation-status > span {
+  display: flex !important;
+  align-items: center;
+  justify-content: space-between;
+  color: rgba(255, 236, 226, .9) !important;
+  font-size: 10px !important;
+  font-weight: 700;
+}
+
+.aiv-version-generation-status > span strong {
+  color: var(--orange);
+  font-size: 10px;
 }
 
 .aiv-version-actions .aiv-version-delete {
@@ -8931,13 +9558,27 @@ function localFileUrl(path) {
   gap: 6px;
 }
 
+.aiv-review-workbench .aiv-review-summary-badges .aiv-badge {
+  min-height: 26px;
+  padding-right: 9px;
+  padding-left: 9px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  font-variant-numeric: tabular-nums;
+  transition: transform .16s ease, border-color .16s ease, background-color .16s ease;
+}
+
+.aiv-review-workbench .aiv-review-summary-badges .aiv-badge:hover {
+  transform: translateY(-1px);
+}
+
 .aiv-review-toolbar {
   padding: 10px 12px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid rgba(255, 255, 255, .09);
   display: grid;
   grid-template-columns: minmax(160px, 1fr) 128px auto;
   gap: 8px;
   align-items: center;
+  background: linear-gradient(90deg, rgba(255, 255, 255, .012), transparent 65%);
 }
 
 .aiv-review-toolbar-actions {
@@ -8946,6 +9587,58 @@ function localFileUrl(path) {
   flex-wrap: wrap;
   gap: 6px;
   justify-content: flex-end;
+}
+
+.aiv-review-selection-bar {
+  min-height: 44px;
+  padding: 7px 12px;
+  border-bottom: 1px solid rgba(255, 107, 43, .17);
+  background: linear-gradient(90deg, rgba(255, 107, 43, .08), rgba(255, 107, 43, .018) 48%, transparent);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aiv-review-selection-copy {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.aiv-review-selection-copy strong {
+  color: var(--text);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.aiv-review-selection-copy span {
+  overflow: hidden;
+  color: var(--text3);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-review-selection-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.aiv-review-selection-actions .ok:not(:disabled) {
+  border-color: rgba(74, 222, 128, .36);
+  color: var(--green);
+}
+
+.aiv-review-selection-actions .ok:hover:not(:disabled),
+.aiv-review-selection-actions .ok:focus-visible:not(:disabled) {
+  border-color: rgba(74, 222, 128, .58);
+  color: #78e7a1;
+  background: rgba(74, 222, 128, .09);
 }
 
 .aiv-ai-asset-board {
@@ -8958,6 +9651,7 @@ function localFileUrl(path) {
 }
 
 .aiv-ai-card {
+  position: relative;
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -8965,19 +9659,47 @@ function localFileUrl(path) {
   background: var(--bg3);
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .12);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease, opacity .18s ease;
+}
+
+.aiv-ai-card:hover,
+.aiv-ai-card:focus-within {
+  border-color: rgba(255, 107, 43, .5);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, .26), 0 0 0 1px rgba(255, 107, 43, .12);
+  transform: translateY(-2px);
 }
 
 .aiv-ai-card.approved {
   border-color: rgba(74, 222, 128, 0.45);
+  box-shadow: inset 0 0 0 1px rgba(74, 222, 128, .08), 0 4px 12px rgba(0, 0, 0, .12);
 }
 
 .aiv-ai-card.retry {
   border-color: rgba(255, 107, 43, 0.55);
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .1), 0 4px 12px rgba(0, 0, 0, .12);
 }
 
 .aiv-ai-card.rejected {
   border-color: rgba(248, 113, 113, 0.4);
   opacity: 0.88;
+}
+
+.aiv-ai-card.selected {
+  border-color: rgba(255, 107, 43, .62);
+  box-shadow: 0 0 0 2px rgba(255, 107, 43, .18), 0 9px 20px rgba(0, 0, 0, .2);
+}
+
+.aiv-ai-card.saving {
+  pointer-events: none;
+}
+
+.aiv-ai-card.saving .aiv-ai-preview {
+  opacity: .72;
+}
+
+.aiv-ai-card.has-feedback {
+  animation: aiv-review-card-feedback .9s cubic-bezier(.16, 1, .3, 1);
 }
 
 .aiv-ai-card.add {
@@ -8999,6 +9721,77 @@ function localFileUrl(path) {
   border: 0;
   border-radius: 0;
   background: var(--bg);
+}
+
+.aiv-ai-actions .aiv-review-card-select {
+  position: relative;
+  flex: 0 0 22px;
+  width: 22px;
+  height: 22px;
+  margin-left: auto;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .26);
+  border-radius: 6px;
+  color: var(--text3);
+  background: rgba(255, 255, 255, .035);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+  cursor: pointer;
+  transition: border-color .16s ease, color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.aiv-ai-actions .aiv-review-card-select:hover,
+.aiv-ai-actions .aiv-review-card-select:focus-within {
+  border-color: rgba(255, 107, 43, .62);
+  color: #ffd4c1;
+  background: rgba(255, 107, 43, .11);
+  transform: translateY(-1px);
+}
+
+.aiv-review-card-select.selected {
+  border-color: rgba(255, 107, 43, .82);
+  color: #fff;
+  background: var(--orange);
+  box-shadow: 0 3px 9px rgba(255, 107, 43, .22), inset 0 1px 0 rgba(255, 255, 255, .2);
+}
+
+.aiv-review-card-select input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: inherit;
+}
+
+.aiv-review-card-select input:disabled {
+  cursor: default;
+}
+
+.aiv-review-card-select-icon {
+  opacity: 0;
+  transform: scale(.72);
+  transition: opacity .14s ease, transform .16s cubic-bezier(.16, 1, .3, 1);
+}
+
+.aiv-review-card-select.selected .aiv-review-card-select-icon {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.aiv-ai-card .aiv-ai-preview img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+  transition: filter .22s ease, transform .26s cubic-bezier(.16, 1, .3, 1);
+}
+
+.aiv-ai-card:hover .aiv-ai-preview img,
+.aiv-ai-card:focus-within .aiv-ai-preview img {
+  filter: brightness(.88) saturate(.94);
+  transform: scale(1.035);
 }
 
 .aiv-ai-card .aiv-add-image {
@@ -9037,6 +9830,40 @@ function localFileUrl(path) {
   pointer-events: none;
 }
 
+.aiv-ai-preview-zoom {
+  position: absolute;
+  z-index: 2;
+  right: 6px;
+  bottom: 6px;
+  min-height: 24px;
+  padding: 3px 7px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 6px;
+  color: #fff;
+  background: rgba(12, 12, 16, .72);
+  font-size: 10px;
+  font-weight: 700;
+  opacity: 0;
+  transform: translateY(4px);
+  transition: opacity .16s ease, transform .16s ease, background-color .16s ease;
+  pointer-events: none;
+}
+
+.aiv-ai-preview-zoom svg {
+  width: 13px;
+  height: 13px;
+  stroke-width: 2;
+}
+
+.aiv-ai-card:hover .aiv-ai-preview-zoom,
+.aiv-ai-card:focus-within .aiv-ai-preview-zoom {
+  opacity: 1;
+  transform: translateY(0);
+}
+
 .aiv-ai-card.approved .aiv-ai-status-badge {
   color: #102016;
   background: rgba(74, 222, 128, 0.92);
@@ -9057,6 +9884,41 @@ function localFileUrl(path) {
   display: grid;
   gap: 6px;
   align-content: start;
+}
+
+.aiv-review-card-feedback {
+  position: absolute;
+  z-index: 4;
+  top: 50%;
+  left: 50%;
+  min-width: 78px;
+  padding: 7px 9px;
+  border: 1px solid rgba(255, 255, 255, .24);
+  border-radius: 7px;
+  color: #fff;
+  background: rgba(15, 17, 22, .82);
+  box-shadow: 0 10px 26px rgba(0, 0, 0, .28);
+  font-size: 11px;
+  font-weight: 800;
+  text-align: center;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: aiv-review-feedback-label .9s cubic-bezier(.16, 1, .3, 1) both;
+}
+
+.aiv-review-card-feedback.approved {
+  border-color: rgba(74, 222, 128, .56);
+  background: rgba(24, 92, 53, .9);
+}
+
+.aiv-review-card-feedback.rejected {
+  border-color: rgba(248, 113, 113, .56);
+  background: rgba(130, 42, 42, .9);
+}
+
+.aiv-review-card-feedback.retry {
+  border-color: rgba(255, 107, 43, .56);
+  background: rgba(136, 62, 29, .9);
 }
 
 .aiv-ai-card-copy {
@@ -9104,10 +9966,50 @@ function localFileUrl(path) {
   color: var(--text2);
   background: var(--bg);
   font-size: 10px;
+  transition: border-color .15s ease, color .15s ease, background-color .15s ease, transform .15s ease;
 }
 
 .aiv-ai-actions .ok {
   color: var(--green);
+}
+
+.aiv-ai-actions button:hover:not(:disabled),
+.aiv-ai-actions button:focus-visible:not(:disabled) {
+  border-color: rgba(255, 107, 43, .45);
+  color: var(--text);
+  background: rgba(255, 255, 255, .07);
+  outline: none;
+  transform: translateY(-1px);
+}
+
+.aiv-ai-actions .ok:hover:not(:disabled),
+.aiv-ai-actions .ok:focus-visible:not(:disabled) {
+  border-color: rgba(74, 222, 128, .5);
+  color: #78e7a1;
+  background: rgba(74, 222, 128, .09);
+}
+
+.aiv-ai-actions .danger:hover:not(:disabled),
+.aiv-ai-actions .danger:focus-visible:not(:disabled) {
+  border-color: rgba(248, 113, 113, .52);
+  color: #f99a9a;
+  background: rgba(248, 113, 113, .09);
+}
+
+.aiv-ai-actions button:active:not(:disabled) {
+  transform: translateY(0) scale(.96);
+}
+
+@keyframes aiv-review-card-feedback {
+  0% { transform: scale(.98); }
+  32% { transform: scale(1.018); }
+  100% { transform: scale(1); }
+}
+
+@keyframes aiv-review-feedback-label {
+  0% { opacity: 0; transform: translate(-50%, -42%) scale(.92); }
+  18%, 72% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -58%) scale(.98); }
 }
 
 .aiv-add-menu {
@@ -9218,6 +10120,13 @@ function localFileUrl(path) {
 
 .aiv-video-task-card {
   overflow: hidden;
+  border-left: 3px solid transparent;
+  transition: border-color .2s ease, background-color .2s ease;
+}
+
+.aiv-video-task-card.selected {
+  border-left-color: var(--orange);
+  background: linear-gradient(90deg, rgba(255, 107, 43, .08), transparent 22%);
 }
 
 .aiv-video-task-row {
@@ -9234,6 +10143,36 @@ function localFileUrl(path) {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+}
+
+.aiv-video-task-check {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 20px;
+  display: inline-grid;
+  place-items: center;
+  cursor: pointer;
+}
+
+.aiv-video-task-check input,
+.aiv-video-task-select-all input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+
+.aiv-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .aiv-video-task-assets.compact .aiv-video-asset-card.thumb-only {
@@ -9292,6 +10231,44 @@ function localFileUrl(path) {
 .aiv-video-task-status {
   color: var(--text3);
   font-size: 11px;
+}
+
+.aiv-video-task-stage {
+  min-height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text2);
+  background: var(--bg3);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.aiv-video-task-stage i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.aiv-video-task-stage.is-pending { color: var(--text3); }
+.aiv-video-task-stage.is-authorization,
+.aiv-video-task-stage.is-ready { border-color: rgba(251, 191, 36, .48); color: #fbbf24; background: rgba(251, 191, 36, .10); }
+.aiv-video-task-stage.is-submitted,
+.aiv-video-task-stage.is-queued { border-color: rgba(96, 165, 250, .48); color: #60a5fa; background: rgba(96, 165, 250, .10); }
+.aiv-video-task-stage.is-generating { border-color: rgba(192, 132, 252, .52); color: #c084fc; background: rgba(192, 132, 252, .10); }
+.aiv-video-task-stage.is-generating i { animation: aiv-status-pulse 1.2s ease-in-out infinite; }
+.aiv-video-task-stage.is-downloaded { border-color: rgba(74, 222, 128, .48); color: var(--green); background: rgba(74, 222, 128, .10); }
+.aiv-video-task-stage.is-failed { border-color: rgba(248, 113, 113, .5); color: #f87171; background: rgba(248, 113, 113, .10); }
+
+@keyframes aiv-status-pulse {
+  50% { transform: scale(1.45); opacity: .55; }
 }
 
 .aiv-video-task-meta-line {
@@ -9354,6 +10331,69 @@ function localFileUrl(path) {
   justify-content: flex-end;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.aiv-video-task-filterbar {
+  min-height: 46px;
+  padding: 0 14px 10px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.aiv-video-task-status-tabs {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.aiv-video-task-status-tabs button {
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text3);
+  background: transparent;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.aiv-video-task-status-tabs button strong {
+  margin-left: 3px;
+  color: var(--text2);
+  font-variant-numeric: tabular-nums;
+}
+
+.aiv-video-task-status-tabs button:hover,
+.aiv-video-task-status-tabs button.active {
+  border-color: rgba(255, 107, 43, .42);
+  color: var(--orange);
+  background: var(--orange-bg);
+}
+
+.aiv-video-task-status-tabs button.active strong { color: inherit; }
+
+.aiv-video-task-select-all {
+  min-height: 28px;
+  padding-left: 10px;
+  border-left: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text2);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.aiv-video-task-selection-hint {
+  color: var(--text3);
+  font-size: 11px;
 }
 
 .aiv-batch-actions {
@@ -10017,8 +11057,8 @@ function localFileUrl(path) {
 }
 
 .aiv-preview-modal-panel {
-  width: min(1360px, calc(100vw - 48px));
-  height: min(900px, calc(100vh - 48px));
+  width: min(1440px, calc(100vw - 48px));
+  height: min(920px, calc(100vh - 48px));
   max-height: none;
   min-height: 0;
   display: grid;
@@ -10036,6 +11076,30 @@ function localFileUrl(path) {
   gap: 2px;
 }
 
+.aiv-preview-title-main {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.aiv-preview-title-main > strong {
+  flex: 0 1 auto;
+}
+
+.aiv-preview-version-count,
+.aiv-editor-current-action {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid rgba(255, 107, 43, .34);
+  border-radius: 999px;
+  color: var(--orange);
+  background: rgba(255, 107, 43, .08);
+  font-size: 10px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
 .aiv-preview-title-block strong,
 .aiv-preview-title-block span {
   min-width: 0;
@@ -10048,7 +11112,7 @@ function localFileUrl(path) {
   min-width: 0;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, 360px);
+  grid-template-columns: minmax(0, 1fr) minmax(340px, 380px);
   overflow: hidden;
 }
 
@@ -10058,7 +11122,7 @@ function localFileUrl(path) {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
   overflow: hidden;
-  background: var(--bg);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .018), transparent 42%), var(--bg);
 }
 
 .aiv-big-preview {
@@ -10068,20 +11132,24 @@ function localFileUrl(path) {
   height: 100%;
   padding: 0;
   overflow: hidden;
-  background: var(--bg);
+  background: linear-gradient(135deg, rgba(255, 255, 255, .018), transparent 54%), var(--bg);
 }
 
 .aiv-big-preview-frame {
   position: absolute;
-  inset: 16px;
+  inset: 14px 18px;
   min-width: 0;
   min-height: 0;
   display: flex;
   align-items: center;
   justify-content: center;
   overflow: hidden;
-  border-radius: 8px;
-  background: #0f1016;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255, 255, 255, .035), transparent 48%),
+    #0f1016;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
 }
 
 .aiv-big-preview-image,
@@ -10093,6 +11161,41 @@ function localFileUrl(path) {
   height: auto;
   object-fit: contain;
   border-radius: 8px;
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .22);
+}
+
+.aiv-preview-canvas-status {
+  position: absolute;
+  z-index: 4;
+  top: 12px;
+  left: 12px;
+  min-width: 0;
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, .13);
+  border-radius: 7px;
+  background: rgba(11, 12, 18, .7);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+.aiv-preview-canvas-status strong,
+.aiv-preview-canvas-status span {
+  display: block;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.aiv-preview-canvas-status strong {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.aiv-preview-canvas-status span {
+  margin-top: 2px;
+  color: var(--text3);
+  font-size: 10px;
 }
 
 .aiv-big-preview-placeholder {
@@ -10142,8 +11245,8 @@ function localFileUrl(path) {
 .aiv-image-annotation-toolbar {
   position: absolute;
   z-index: 5;
-  right: 28px;
-  top: 28px;
+  right: 30px;
+  top: 30px;
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
@@ -10186,46 +11289,69 @@ function localFileUrl(path) {
 }
 
 .aiv-preview-history-strip {
-  min-height: 86px;
+  min-height: 98px;
   padding: 10px 14px;
-  border-top: 1px solid var(--border);
-  display: flex;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: center;
-  gap: 8px;
-  overflow-x: auto;
+  gap: 12px;
+  background: rgba(255, 255, 255, .012);
 }
 
-.aiv-preview-history-strip > strong {
+.aiv-preview-history-title {
   flex: 0 0 auto;
+  display: grid;
+  gap: 3px;
+  padding-right: 2px;
+}
+
+.aiv-preview-history-title strong {
   color: var(--text2);
   font-size: 11px;
 }
 
+.aiv-preview-history-title span {
+  color: var(--text3);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.aiv-preview-history-list {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 1px 1px 3px;
+}
+
 .aiv-preview-history-strip button {
-  flex: 0 0 52px;
-  height: 62px;
+  flex: 0 0 58px;
+  height: 70px;
   overflow: hidden;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 7px;
   color: var(--text3);
   background: var(--bg3);
 }
 
 .aiv-preview-history-strip button.active {
   border-color: var(--orange);
+  box-shadow: 0 0 0 1px rgba(255, 107, 43, .22);
 }
 
 .aiv-preview-history-strip img {
   width: 100%;
-  height: 42px;
+  height: 48px;
   display: block;
   object-fit: cover;
 }
 
-.aiv-preview-history-strip span {
+.aiv-preview-history-list button span {
   display: block;
-  padding: 2px 4px;
+  padding: 3px 4px;
   overflow: hidden;
   font-size: 9px;
   text-overflow: ellipsis;
@@ -10234,21 +11360,32 @@ function localFileUrl(path) {
 
 .aiv-image-editor-tools {
   min-width: 0;
-  padding: 16px;
-  border-left: 1px solid var(--border);
-  background: var(--bg2);
+  padding: 14px;
+  border-left: 1px solid rgba(255, 255, 255, .1);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .018), transparent 160px), var(--bg2);
   display: grid;
   align-content: start;
   gap: 10px;
   overflow-y: auto;
 }
 
-.aiv-image-editor-tools > strong,
-.aiv-image-editor-tools > span {
+.aiv-image-editor-tools-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.aiv-image-editor-tools-head > div {
+  min-width: 0;
+}
+
+.aiv-image-editor-tools-head strong,
+.aiv-image-editor-tools-head span {
   display: block;
 }
 
-.aiv-image-editor-tools > span {
+.aiv-image-editor-tools-head > div > span {
   color: var(--text3);
   font-size: 11px;
   line-height: 1.45;
@@ -10258,6 +11395,54 @@ function localFileUrl(path) {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 6px;
+}
+
+.aiv-image-editor-actions button {
+  min-height: 36px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, .018);
+  transition: border-color .16s ease, color .16s ease, background-color .16s ease, transform .16s ease;
+}
+
+.aiv-image-editor-actions button:hover:not(.active) {
+  border-color: rgba(255, 107, 43, .48);
+  color: var(--text);
+  background: rgba(255, 255, 255, .05);
+  transform: translateY(-1px);
+}
+
+.aiv-image-editor-actions button svg {
+  width: 15px;
+  height: 15px;
+  stroke-width: 1.9;
+}
+
+.aiv-image-editor-actions button span {
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.aiv-image-editor-tools .aiv-field-heading small {
+  color: var(--text3);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.aiv-image-editor-tools-foot {
+  margin-top: 2px;
+  padding-top: 10px;
+  border-top: 1px solid rgba(255, 255, 255, .08);
+  display: grid;
+  gap: 8px;
+}
+
+.aiv-image-editor-tools-foot > span {
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.4;
 }
 
 .aiv-preview-model-picker {
@@ -10337,6 +11522,37 @@ function localFileUrl(path) {
   height: min(780px, calc(100vh - 56px));
 }
 
+/* 两类改图选择器共享层级：标题与选择状态固定，筛选与素材区各自滚动。 */
+.aiv-picker-modal-panel {
+  border-color: rgba(255, 255, 255, .12);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .025), transparent 100px), var(--bg2);
+  box-shadow: 0 26px 90px rgba(0, 0, 0, .52);
+}
+
+.aiv-picker-modal-panel .aiv-modal-head {
+  min-height: 64px;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, .014);
+}
+
+.aiv-picker-modal-panel .aiv-modal-foot {
+  min-height: 58px;
+  padding: 11px 16px;
+  background: rgba(7, 8, 12, .46);
+}
+
+.aiv-picker-selection-summary {
+  min-height: 26px;
+  margin-top: 0 !important;
+  padding: 4px 8px;
+  border: 1px solid rgba(255, 107, 43, .30);
+  border-radius: 6px;
+  color: var(--text2) !important;
+  background: rgba(255, 107, 43, .065);
+  font-variant-numeric: tabular-nums;
+}
+
 .aiv-local-material-modal-body {
   min-height: 0;
   display: grid;
@@ -10407,6 +11623,18 @@ function localFileUrl(path) {
   gap: 8px;
 }
 
+.aiv-picker-modal-panel .aiv-local-material-modal-toolbar {
+  padding-right: 16px;
+  padding-left: 16px;
+  background: rgba(255, 255, 255, .012);
+}
+
+.aiv-picker-modal-panel .aiv-local-material-style-search:focus {
+  border-color: rgba(255, 107, 43, .64);
+  box-shadow: 0 0 0 3px rgba(255, 107, 43, .09);
+  outline: none;
+}
+
 .aiv-reference-kind-switcher {
   min-width: 0;
   display: flex;
@@ -10448,17 +11676,21 @@ function localFileUrl(path) {
   display: block;
   position: relative;
   isolation: isolate;
+  box-shadow: 0 5px 14px rgba(0, 0, 0, .12);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
 }
 
 .aiv-local-material-card:hover,
 .aiv-local-material-card:focus-visible {
   border-color: rgba(255, 107, 43, .56);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, .24), 0 0 0 1px rgba(255, 107, 43, .14);
   outline: none;
+  transform: translateY(-2px);
 }
 
 .aiv-local-material-card.selected {
   border-color: var(--orange);
-  box-shadow: inset 0 0 0 1px var(--orange);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(255, 107, 43, .14);
 }
 
 /* padding-top % is relative to width — reliable 3:4 thumbnail height */
@@ -10483,6 +11715,13 @@ function localFileUrl(path) {
   display: block;
   object-fit: cover;
   object-position: center center;
+  transition: transform .24s ease, filter .24s ease;
+}
+
+.aiv-local-material-card:hover .aiv-local-material-card-preview img,
+.aiv-local-material-card:focus-visible .aiv-local-material-card-preview img {
+  filter: brightness(.92);
+  transform: scale(1.025);
 }
 
 .aiv-local-material-card-fallback {
@@ -10731,6 +11970,45 @@ function localFileUrl(path) {
 .aiv-modal-body.model-library {
   grid-template-columns: 190px minmax(0, 1fr);
   overflow: hidden;
+  background: rgba(7, 8, 12, .20);
+}
+
+.aiv-model-filter-rail {
+  padding: 16px 14px;
+  border-right: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255, 255, 255, .018), transparent 46%), var(--bg2);
+  gap: 14px;
+}
+
+.aiv-picker-filter-group {
+  display: grid;
+  gap: 7px;
+}
+
+.aiv-picker-filter-group > strong {
+  color: var(--text2);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.aiv-model-filter-rail .aiv-filter-chip-row {
+  gap: 6px;
+}
+
+.aiv-model-filter-rail .aiv-chip {
+  min-height: 26px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  transition: border-color .16s ease, background-color .16s ease, color .16s ease;
+}
+
+.aiv-model-filter-rail .aiv-filter-note {
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+.aiv-model-retry {
+  justify-self: start;
 }
 
 .aiv-task-readiness {
@@ -11337,7 +12615,7 @@ function localFileUrl(path) {
 .aiv-model-grid-scroll {
   min-width: 0;
   min-height: 0;
-  padding-right: 4px;
+  padding: 16px;
   overflow-y: auto;
   scrollbar-gutter: stable;
 }
@@ -11345,8 +12623,8 @@ function localFileUrl(path) {
 .aiv-model-grid,
 .aiv-template-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+  gap: 12px;
 }
 
 .aiv-template-grid {
@@ -11358,14 +12636,25 @@ function localFileUrl(path) {
   min-width: 0;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 8px;
+  border-radius: 10px;
   background: var(--bg3);
+  cursor: pointer;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, .12);
+  transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease;
+}
+
+.aiv-model-card:hover,
+.aiv-model-card:focus-visible {
+  border-color: rgba(255, 107, 43, .56);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, .24), 0 0 0 1px rgba(255, 107, 43, .14);
+  outline: none;
+  transform: translateY(-2px);
 }
 
 .aiv-model-card.selected,
 .aiv-template-card.selected {
   border-color: var(--orange);
-  box-shadow: inset 0 0 0 1px var(--orange);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(255, 107, 43, .14);
 }
 
 .aiv-model-image,
@@ -11384,6 +12673,13 @@ function localFileUrl(path) {
   width: 100%;
   height: 100%;
   object-fit: cover;
+  transition: transform .24s ease, filter .24s ease;
+}
+
+.aiv-model-card:hover .aiv-model-image img,
+.aiv-model-card:focus-visible .aiv-model-image img {
+  filter: brightness(.93);
+  transform: scale(1.025);
 }
 
 .aiv-model-card div:last-child,
@@ -11466,9 +12762,17 @@ function localFileUrl(path) {
   .aiv-video-toolbar,
   .aiv-video-task-config,
   .aiv-video-task-meta,
-  .aiv-workspace-body,
-  .aiv-edit-source-row {
+  .aiv-workspace-body {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .aiv-edit-workbench .aiv-edit-source-row {
+    grid-template-columns: 128px 20px minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  .aiv-edit-workbench .aiv-version-rail > .aiv-version-card {
+    flex-basis: 132px;
   }
 
   .aiv-review-preview {
@@ -11571,6 +12875,26 @@ function localFileUrl(path) {
 
   .aiv-ai-asset-board {
     grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  }
+
+  .aiv-edit-workbench .aiv-edit-source-row {
+    grid-template-columns: 112px 16px minmax(0, 1fr);
+    padding: 8px;
+    gap: 6px;
+  }
+
+  .aiv-edit-workbench .aiv-version-rail {
+    gap: 6px;
+  }
+
+  .aiv-edit-workbench .aiv-version-rail > .aiv-version-card {
+    flex-basis: 120px;
+  }
+
+  .aiv-edit-workbench .aiv-edit-lane-connector {
+    width: 16px;
+    height: 16px;
+    font-size: 10px;
   }
 
   .aiv-result-card-grid {
