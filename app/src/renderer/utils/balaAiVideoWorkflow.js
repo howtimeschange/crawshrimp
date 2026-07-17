@@ -1077,6 +1077,33 @@ export function normalizeBalaVideoResultRows(rows = [], fallbackTask = {}) {
   })
 }
 
+function balaVideoResultHasOutput(result = {}) {
+  return Boolean(compact(result?.path || result?.videoUrl || result?.video_url))
+}
+
+export function mergeBalaVideoResults(existingResults = [], incomingResults = []) {
+  const merged = [...(existingResults || [])]
+  for (const item of incomingResults || []) {
+    const itemId = compact(item?.id)
+    const taskRefId = compact(item?.taskRefId || itemId)
+    const exactIndex = merged.findIndex(existing => compact(existing?.id) === itemId)
+    if (exactIndex >= 0) {
+      merged.splice(exactIndex, 1, item)
+      continue
+    }
+
+    const loadingIndex = balaVideoResultHasOutput(item)
+      ? merged.findIndex(existing => (
+        compact(existing?.taskRefId || existing?.id) === taskRefId
+        && !balaVideoResultHasOutput(existing)
+      ))
+      : -1
+    if (loadingIndex >= 0) merged.splice(loadingIndex, 1, item)
+    else merged.unshift(item)
+  }
+  return merged
+}
+
 export function qnVideoResultFailure(rows = []) {
   const failed = (rows || []).filter(row => String(row?.status || '').trim() === '失败')
   if (!failed.length) return ''

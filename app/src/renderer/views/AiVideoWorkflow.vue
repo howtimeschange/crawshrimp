@@ -1733,6 +1733,7 @@ import {
   isSeedancePrivacyProtectionError,
   isActiveWorkflowStatus,
   latestRunForTaskData,
+  mergeBalaVideoResults,
   mergeBalaReviewWorkspaceStyles,
   mergeBalaWorkspaceVersions,
   migrateBalaBusinessManagerText,
@@ -5244,6 +5245,7 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
   const localPath = String(result.local_video_path || existingLocalPath || '').trim()
   if (task) {
     task.providerTaskId = String(result.task_id || providerTaskId)
+    task.providerStatus = String(result.status || '')
     task.status = providerTaskDisplayStatus(provider, result.status, localPath)
   }
   const displayStatus = providerTaskDisplayStatus(provider, result.status, localPath)
@@ -5304,18 +5306,47 @@ async function refreshQnVideoTask(task) {
   }])
 }
 
-async function refreshVideoResults() {
-  activeStep.value = 'results'
+function resetVideoResultPoll() {
+  if (videoPollTimer) clearTimeout(videoPollTimer)
+  videoPollTimer = null
+}
+
+function videoTaskNeedsResultPoll(task = {}) {
+  if (!String(task?.providerTaskId || task?.runId || '').trim()) return false
+  if (task.provider === 'qn') return !['已完成', '失败'].includes(String(task.status || '').trim())
+  const providerStatus = String(task?.providerStatus || '').trim().toLowerCase()
+  return !['succeeded', 'failed', 'error', 'canceled', 'cancelled', 'unknown'].includes(providerStatus)
+}
+
+function scheduleVideoResultPoll() {
+  resetVideoResultPoll()
+  if (!videoTasks.some(videoTaskNeedsResultPoll)) return
+  videoPollTimer = setTimeout(async () => {
+    videoPollTimer = null
+    try {
+      await refreshVideoResults({ silent: true })
+    } finally {
+      scheduleVideoResultPoll()
+    }
+  }, 5000)
+}
+
+async function refreshVideoResults({ silent = false } = {}) {
+  if (!silent) activeStep.value = 'results'
   const refreshable = videoTasks.filter(task => String(task.providerTaskId || task.runId || '').trim())
   if (!refreshable.length) {
-    videoStageState.status = 'failed'
-    videoStageState.error = '当前没有可刷新的视频任务 ID'
-    videoStageState.message = videoStageState.error
+    if (!silent) {
+      videoStageState.status = 'failed'
+      videoStageState.error = '当前没有可刷新的视频任务 ID'
+      videoStageState.message = videoStageState.error
+    }
     return
   }
-  videoStageState.status = 'running'
-  videoStageState.error = ''
-  videoStageState.message = `正在刷新 ${refreshable.length} 条视频任务...`
+  if (!silent) {
+    videoStageState.status = 'running'
+    videoStageState.error = ''
+    videoStageState.message = `正在刷新 ${refreshable.length} 条视频任务...`
+  }
   const errors = []
   for (const task of refreshable) {
     try {
@@ -5334,11 +5365,13 @@ async function refreshVideoResults() {
       errors.push(`${task.styleCode}: ${error?.message || String(error)}`)
     }
   }
-  videoStageState.status = errors.length ? 'partial' : 'done'
-  videoStageState.error = errors.join('；')
-  videoStageState.message = errors.length
-    ? `状态刷新完成，${errors.length} 条失败：${errors.join('；')}`
-    : `已刷新 ${refreshable.length} 条视频任务。`
+  if (!silent) {
+    videoStageState.status = errors.length ? 'partial' : 'done'
+    videoStageState.error = errors.join('；')
+    videoStageState.message = errors.length
+      ? `状态刷新完成，${errors.length} 条失败：${errors.join('；')}`
+      : `已刷新 ${refreshable.length} 条视频任务。`
+  }
 }
 
 async function downloadCompletedVideoResults() {
@@ -5406,11 +5439,7 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
 }
 
 function upsertVideoResults(results = []) {
-  for (const item of results) {
-    const index = videoResults.findIndex(existing => existing.id === item.id)
-    if (index >= 0) videoResults.splice(index, 1, item)
-    else videoResults.unshift(item)
-  }
+  videoResults.splice(0, videoResults.length, ...mergeBalaVideoResults(videoResults, results))
 }
 
 async function readVideoRowsFromOutputFiles(files = []) {
@@ -5780,6 +5809,7 @@ async function runVideoTaskInternal(task, mode = 'plan') {
         task.status = mode === 'live' ? '已提交 / 查看结果' : '预检完成，等待授权生成'
       }
     }
+    if (mode === 'live') scheduleVideoResultPoll()
     videoStageState.status = 'done'
     videoStageState.progress = 100
     videoStageState.message = `${task.styleCode} 视频任务${mode === 'live' ? '已完成提交链路' : '预检完成'}。`
@@ -6693,6 +6723,7 @@ onMounted(() => {
     }
     if (restoredManifest && !restoredWorkspace) videoStageState.message = '已从当前工作区恢复视频任务和结果。'
     persistWorkspaceState()
+    scheduleVideoResultPoll()
   })()
   void loadAiImageSettings()
   void loadModelLibrary()
@@ -6715,7 +6746,7 @@ onBeforeUnmount(() => {
   resetMaterialPoll()
   resetAiPoll()
   aiReviewPollToken += 1
-  if (videoPollTimer) clearTimeout(videoPollTimer)
+  resetVideoResultPoll()
   if (workspaceManifestWriteTimer) clearTimeout(workspaceManifestWriteTimer)
   clearPreviewAnnotationRequest()
   disconnectVideoTaskThumbObserver()

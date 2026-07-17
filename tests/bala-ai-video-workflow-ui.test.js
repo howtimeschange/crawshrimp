@@ -708,6 +708,21 @@ test('video generation keeps task controls independent, submits asynchronously, 
   assert.match(source, /finally\s*\{[\s\S]*?videoTaskBusyIds\.delete\(/)
 })
 
+test('submitted video tasks automatically poll until their provider result becomes terminal', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const runStart = source.indexOf('async function runVideoTaskInternal')
+  const runEnd = source.indexOf('async function runVideoTask(', runStart)
+  const runSource = source.slice(runStart, runEnd)
+
+  assert.match(source, /function resetVideoResultPoll\(\)/)
+  assert.match(source, /function scheduleVideoResultPoll\(\)/)
+  assert.match(source, /await refreshVideoResults\(\{ silent: true \}\)/)
+  assert.match(source, /scheduleVideoResultPoll\(\)/)
+  assert.match(runSource, /scheduleVideoResultPoll\(\)/)
+  assert.match(source, /restoreWorkspaceManifest\(workspaceDir\.value\)[\s\S]*?scheduleVideoResultPoll\(\)/)
+  assert.match(source, /onBeforeUnmount\(\(\) => \{[\s\S]*?resetVideoResultPoll\(\)/)
+})
+
 test('video result cards show a bounded loading state for submitted async tasks', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
 
