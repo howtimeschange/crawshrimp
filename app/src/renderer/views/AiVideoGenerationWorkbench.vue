@@ -406,6 +406,19 @@
                 @click="openDetail(job, $event)"
               ></button>
               <div class="avg-thumb">
+                <video
+                  v-if="isInlinePlaying(job) && inlineVideoSrc[job.id]"
+                  class="avg-inline-video"
+                  :src="inlineVideoSrc[job.id]"
+                  :poster="jobCoverSrc(job) || undefined"
+                  controls
+                  autoplay
+                  playsinline
+                  preload="metadata"
+                  @click.stop
+                  @ended="stopInlineVideo(job)"
+                  @error="handleInlineVideoError(job)"
+                ></video>
                 <img
                   v-if="jobCoverSrc(job)"
                   :src="jobCoverSrc(job)"
@@ -433,8 +446,26 @@
                   <strong>{{ job.displayStatus || statusLabel(job.status) }}</strong>
                   <span>{{ stageNote(job) }}</span>
                 </div>
+                <button
+                  v-if="jobLocalVideo(job) && !isInlinePlaying(job)"
+                  class="avg-inline-play"
+                  type="button"
+                  :disabled="inlineVideoLoading[job.id]"
+                  :aria-label="`播放 ${job.title || job.id}`"
+                  @click.stop="playInlineVideo(job)"
+                >
+                  <span aria-hidden="true">▶</span>
+                  {{ inlineVideoLoading[job.id] ? '加载中…' : '播放' }}
+                </button>
+                <button
+                  v-if="isInlinePlaying(job)"
+                  class="avg-inline-stop"
+                  type="button"
+                  :aria-label="`停止播放 ${job.title || job.id}`"
+                  @click.stop="stopInlineVideo(job)"
+                >×</button>
                 <span class="avg-status-chip" :class="job.status">{{ job.displayStatus || statusLabel(job.status) }}</span>
-                <span class="avg-stage-note">{{ stageNote(job) }}</span>
+                <span v-if="!isInlinePlaying(job)" class="avg-stage-note">{{ stageNote(job) }}</span>
               </div>
               <div class="avg-task-body">
                 <div class="avg-task-title">
@@ -445,13 +476,6 @@
                 <div class="avg-task-actions">
                   <button class="avg-btn small avg-details-task" type="button" @click.stop="openDetail(job, $event)">查看详情</button>
                   <button class="avg-btn small" type="button" @click.stop="reuseParams(job)">复用参数</button>
-                  <button
-                    v-if="canDuplicate(job)"
-                    class="avg-btn small"
-                    type="button"
-                    :disabled="isDuplicatingJob(job)"
-                    @click.stop="duplicateJob(job)"
-                  >{{ isDuplicatingJob(job) ? '复制中…' : '复制为新任务' }}</button>
                   <button v-if="canEdit(job)" class="avg-btn small" type="button" @click.stop="editDraft(job)">{{ editActionLabel(job) }}</button>
                   <button
                     v-if="canRetry(job)"
@@ -483,8 +507,8 @@
                     v-if="canDelete(job)"
                     class="avg-btn small ghost"
                     type="button"
-                    @click.stop="deleteJob(job)"
-                  >删除</button>
+                    @click.stop="requestDeleteJob(job)"
+                  >删除记录</button>
                 </div>
               </div>
             </article>
@@ -677,9 +701,6 @@
             </div>
             <div class="avg-detail-actions">
               <button class="avg-btn primary" type="button" @click="reuseParams(detailJob); closeDetail()">复用参数</button>
-              <button v-if="canDuplicate(detailJob)" class="avg-btn" type="button" :disabled="isDuplicatingJob(detailJob)" @click="duplicateJob(detailJob)">
-                {{ isDuplicatingJob(detailJob) ? '复制中…' : '复制为新任务' }}
-              </button>
               <button v-if="canEdit(detailJob)" class="avg-btn" type="button" @click="editDraft(detailJob); closeDetail()">{{ editActionLabel(detailJob) }}</button>
               <button v-if="canRetry(detailJob)" class="avg-btn" type="button" :disabled="isRetryingJob(detailJob)" @click="retryJob(detailJob)">
                 {{ isRetryingJob(detailJob) ? '重试中…' : '重试' }}
@@ -694,11 +715,27 @@
                 @click="openLocalFile(jobLocalVideo(detailJob))"
               >{{ jobLocalVideo(detailJob) ? '打开本地文件' : '尚无本地文件' }}</button>
               <button v-if="canCancelQueuedJob(detailJob)" class="avg-btn ghost" type="button" @click="cancelQueuedJob(detailJob)">取消任务</button>
-              <button v-if="canDelete(detailJob)" class="avg-btn ghost" type="button" @click="deleteJob(detailJob)">删除记录</button>
+              <button v-if="canDelete(detailJob)" class="avg-btn ghost" type="button" @click="requestDeleteJob(detailJob)">删除记录</button>
             </div>
           </aside>
         </div>
       </div>
+    </div>
+
+    <div v-if="pendingDeleteJob" class="avg-overlay open avg-delete-confirm-overlay" @click.self="cancelDeleteJob">
+      <section class="avg-delete-confirm" role="dialog" aria-modal="true" aria-labelledby="avg-delete-confirm-title" aria-describedby="avg-delete-confirm-copy">
+        <div class="avg-delete-confirm-icon" aria-hidden="true">!</div>
+        <div>
+          <strong id="avg-delete-confirm-title">删除任务记录？</strong>
+          <p id="avg-delete-confirm-copy">“{{ pendingDeleteJob.title || pendingDeleteJob.prompt || pendingDeleteJob.id }}”会从当前任务列表和历史记录中移除。</p>
+          <p class="avg-delete-confirm-note">“删除本地文件”会移除已归档的 MP4 与本地预览封面；两种删除都不会取消已提交的供应商任务。</p>
+        </div>
+        <div class="avg-delete-confirm-actions">
+          <button class="avg-btn ghost" type="button" :disabled="isDeletingJob" @click="cancelDeleteJob">取消</button>
+          <button class="avg-btn ghost" type="button" :disabled="isDeletingJob" @click="confirmDeleteJob(false)">仅删除记录</button>
+          <button class="avg-btn danger" type="button" :disabled="isDeletingJob || !jobLocalVideo(pendingDeleteJob)" @click="confirmDeleteJob(true)">{{ isDeletingJob ? '删除中…' : '删除本地文件' }}</button>
+        </div>
+      </section>
     </div>
   </section>
 </template>
@@ -870,6 +907,9 @@ const imagePreviewLoading = reactive({})
 const detailVideoSrc = ref('')
 const detailVideoLoading = ref(false)
 const detailVideoError = ref('')
+const inlinePlayingJobId = ref('')
+const inlineVideoSrc = reactive({})
+const inlineVideoLoading = reactive({})
 const libraryOpen = ref(false)
 const libraryDirectoryToken = ref('')
 const libraryDirectoryName = ref('')
@@ -881,9 +921,10 @@ const libraryLoading = ref(false)
 const libraryError = ref('')
 const imagePreviewBroken = reactive({})
 const retryingJobIds = reactive(new Set())
-const duplicatingJobIds = reactive(new Set())
 const archivingRunIds = reactive(new Set())
 const editingDraftJobId = ref('')
+const pendingDeleteJob = ref(null)
+const isDeletingJob = ref(false)
 const requiredReusedAssetCount = ref(0)
 const requiredReusedModelId = ref('')
 const LEGACY_RENDERER_LIBRARY_CAPABILITY_KEYS = Object.freeze([
@@ -917,7 +958,7 @@ let detailVideoRecoveryInFlight = false
 
 const activeMeta = computed(() => modelOptions.find(item => item.id === form.provider) || modelOptions[0])
 const activeModelLabel = computed(() => activeMeta.value.label)
-const backgroundInert = computed(() => Boolean(detailJob.value || libraryOpen.value || openHistory.value))
+const backgroundInert = computed(() => Boolean(detailJob.value || libraryOpen.value || openHistory.value || pendingDeleteJob.value))
 const isSeedance = computed(() => form.provider === 'seedance')
 const isHappyHorse = computed(() => form.provider === 'happyhorse')
 const isKling = computed(() => form.provider === 'kling-v3' || form.provider === 'kling-omni')
@@ -1788,6 +1829,38 @@ async function loadDetailVideo(job) {
   }
 }
 
+function isInlinePlaying(job) {
+  return Boolean(job?.id) && inlinePlayingJobId.value === job.id
+}
+
+async function playInlineVideo(job) {
+  const jobId = String(job?.id || '').trim()
+  const videoToken = jobLocalVideo(job)
+  if (!jobId || !videoToken) return
+  inlinePlayingJobId.value = jobId
+  if (inlineVideoSrc[jobId]) return
+  inlineVideoLoading[jobId] = true
+  try {
+    inlineVideoSrc[jobId] = await resolvePlayableMediaUrl(videoToken)
+  } catch (error) {
+    if (inlinePlayingJobId.value === jobId) inlinePlayingJobId.value = ''
+    formError.value = error?.message || '视频预览不可用，请尝试打开本地文件。'
+  } finally {
+    inlineVideoLoading[jobId] = false
+  }
+}
+
+function stopInlineVideo(job) {
+  if (inlinePlayingJobId.value === String(job?.id || '').trim()) {
+    inlinePlayingJobId.value = ''
+  }
+}
+
+function handleInlineVideoError(job) {
+  stopInlineVideo(job)
+  formError.value = '视频播放失败，请尝试打开本地文件。'
+}
+
 async function handleDetailVideoPlaybackError() {
   const job = detailJob.value
   const sourceKey = jobLocalVideoSourceKey(job)
@@ -1863,10 +1936,6 @@ function canEdit(job) {
 
 function editActionLabel(job) {
   return String(job?.status || '') === 'draft' ? '编辑草稿' : '编辑并重试'
-}
-
-function canDuplicate(job) {
-  return ['failed', 'completed', 'expired', 'cancelled'].includes(String(job?.status || ''))
 }
 
 function canRetryArchive(job) {
@@ -2417,31 +2486,6 @@ function isRetryingJob(job) {
   return retryingJobIds.has(String(job?.id || '').trim())
 }
 
-async function duplicateJob(job) {
-  const jobId = String(job?.id || '').trim()
-  if (!jobId || duplicatingJobIds.has(jobId)) return
-  duplicatingJobIds.add(jobId)
-  try {
-    const result = await window.cs.duplicateAiVideoJob(jobId)
-    if (result?.ok === false) throw new Error(result?.error?.message || '复制失败')
-    const draft = result?.data?.job || result?.job
-    if (!draft?.id || draft.status !== 'draft') {
-      throw new Error('复制接口未返回可编辑草稿，为避免意外生成已停止后续操作')
-    }
-    upsertJob(draft)
-    editDraft(draft)
-    statusFilter.value = 'all'
-  } catch (error) {
-    formError.value = error?.message || String(error)
-  } finally {
-    duplicatingJobIds.delete(jobId)
-  }
-}
-
-function isDuplicatingJob(job) {
-  return duplicatingJobIds.has(String(job?.id || '').trim())
-}
-
 function reuseParams(job, { editingDraft = false } = {}) {
   if (!job) return
   clearReusedAssetGuard()
@@ -2526,14 +2570,37 @@ function isRetryingArchive(job) {
   return Boolean(runId) && archivingRunIds.has(runId)
 }
 
-async function deleteJob(job) {
+async function deleteJob(job, { deleteLocalFile = false } = {}) {
   try {
-    const result = await window.cs.deleteAiVideoJobRecord(job.id)
+    const result = await window.cs.deleteAiVideoJobRecord(job.id, { deleteLocalFile })
     if (result?.ok === false) throw new Error(result?.error?.message || '删除失败')
     if (detailJob.value?.id === job.id) closeDetail()
     await reloadJobs()
+    return true
   } catch (error) {
     formError.value = error?.message || String(error)
+    return false
+  }
+}
+
+function requestDeleteJob(job) {
+  if (!job || !canDelete(job)) return
+  pendingDeleteJob.value = job
+}
+
+function cancelDeleteJob() {
+  if (isDeletingJob.value) return
+  pendingDeleteJob.value = null
+}
+
+async function confirmDeleteJob(deleteLocalFile = false) {
+  const job = pendingDeleteJob.value
+  if (!job || isDeletingJob.value) return
+  isDeletingJob.value = true
+  try {
+    if (await deleteJob(job, { deleteLocalFile })) pendingDeleteJob.value = null
+  } finally {
+    isDeletingJob.value = false
   }
 }
 
@@ -2603,6 +2670,9 @@ function onKeydown(event) {
   if (event.key === 'Escape' && modelPickerOpen.value) {
     event.preventDefault()
     closeModelPicker()
+  } else if (event.key === 'Escape' && pendingDeleteJob.value) {
+    event.preventDefault()
+    cancelDeleteJob()
   } else if (event.key === 'Tab' && detailJob.value) {
     trapDialogFocus(event, modalRef.value)
   } else if (event.key === 'Tab' && libraryOpen.value) {
@@ -3750,7 +3820,7 @@ onUnmounted(() => {
 }
 
 .avg-thumb {
-  height: 168px;
+  aspect-ratio: 3 / 4;
   position: relative;
   overflow: hidden;
   background: #101015;
@@ -3758,6 +3828,7 @@ onUnmounted(() => {
 
 .avg-thumb-media,
 .avg-thumb video,
+.avg-inline-video,
 .avg-thumb-fallback,
 .avg-thumb-loading {
   width: 100%;
@@ -3766,6 +3837,55 @@ onUnmounted(() => {
   display: block;
   background: linear-gradient(145deg, #17171f, #0d0d12 55%, #1a1a22);
 }
+
+.avg-inline-video {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  background: #050507;
+}
+
+.avg-inline-play,
+.avg-inline-stop {
+  position: absolute;
+  z-index: 4;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  color: #fff;
+  background: rgba(14, 14, 18, 0.78);
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+
+.avg-inline-play {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-height: 36px;
+  padding: 0 13px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.avg-inline-play:hover { border-color: var(--orange); background: rgba(31, 22, 18, 0.88); }
+.avg-inline-play:disabled { cursor: wait; opacity: 0.78; }
+
+.avg-inline-stop {
+  right: 8px;
+  top: 8px;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.avg-status-chip,
+.avg-stage-note { z-index: 4; }
 
 .avg-thumb-media {
   opacity: 0.96;
@@ -4089,7 +4209,15 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  padding-bottom: 1px;
+}
+
+.avg-task-actions .avg-btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .avg-task-actions .avg-details-task {
@@ -4128,6 +4256,7 @@ onUnmounted(() => {
 .avg-btn:hover { border-color: var(--orange-line); }
 .avg-btn.primary { background: var(--orange); border-color: var(--orange); color: #fff; }
 .avg-btn.ghost { background: transparent; color: var(--text2); }
+.avg-btn.danger { background: #d94b46; border-color: #d94b46; color: #fff; }
 .avg-btn.small { height: 28px; padding: 0 9px; font-size: 12px; }
 .avg-btn.icon {
   width: 30px;
@@ -4265,6 +4394,51 @@ select:focus-visible {
   align-items: center;
   justify-content: center;
   padding: 22px;
+}
+
+.avg-delete-confirm-overlay { z-index: 40; }
+
+.avg-delete-confirm {
+  width: min(420px, 100%);
+  padding: 20px;
+  border: 1px solid rgba(248, 113, 113, 0.34);
+  border-radius: 12px;
+  background: var(--bg2);
+  box-shadow: 0 28px 70px var(--shadow);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 12px;
+}
+
+.avg-delete-confirm-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: rgba(248, 113, 113, 0.16);
+  color: var(--red);
+  display: grid;
+  place-items: center;
+  font-weight: 800;
+}
+
+.avg-delete-confirm strong,
+.avg-delete-confirm p { display: block; }
+.avg-delete-confirm strong { font-size: 15px; }
+.avg-delete-confirm p {
+  margin: 7px 0 0;
+  color: var(--text2);
+  font-size: 12px;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+.avg-delete-confirm .avg-delete-confirm-note { color: var(--text3); }
+
+.avg-delete-confirm-actions {
+  grid-column: 2;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 4px;
 }
 
 .avg-modal {

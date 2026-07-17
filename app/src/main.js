@@ -2768,12 +2768,10 @@ secureHandle('ai-video:get-job', async (_, jobId) =>
   apiCall('GET', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}`))
 secureHandle('ai-video:update-job', async (_, jobId, payload) =>
   apiCall('PATCH', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}`, payload || {}))
-secureHandle('ai-video:duplicate-job', async (_, jobId) =>
-  apiCall('POST', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}/duplicate`, {}))
 secureHandle('ai-video:retry-job', async (_, jobId, payload) =>
   apiCall('POST', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}/retry`, payload || {}))
-secureHandle('ai-video:delete-job-record', async (_, jobId) =>
-  apiCall('DELETE', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}`))
+secureHandle('ai-video:delete-job-record', async (_, jobId, { deleteLocalFile = false } = {}) =>
+  apiCall('DELETE', `/ai-video/jobs/${encodeURIComponent(String(jobId || ''))}${deleteLocalFile ? '?delete_local_file=true' : ''}`))
 secureHandle('ai-video:get-run', async (_, runId) =>
   apiCall('GET', `/ai-video/runs/${encodeURIComponent(String(runId || ''))}`))
 secureHandle('ai-video:retry-archive', async (_, runId) =>

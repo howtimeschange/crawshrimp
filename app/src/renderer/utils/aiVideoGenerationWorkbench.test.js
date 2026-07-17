@@ -379,6 +379,33 @@ test('queued cancellation reuses record deletion and refuses submitted jobs', as
   assert.equal(reloads, 1)
 })
 
+test('deleting a job waits for an explicit record-only or local-file choice', async () => {
+  const deleted = []
+  const workbench = await setupWorkbench({
+    async deleteAiVideoJobRecord(jobId, options) {
+      deleted.push([jobId, options])
+      return { ok: true }
+    },
+    async listAiVideoJobs() { return { data: { jobs: [] } } },
+  })
+  const job = { id: 'job-delete-confirmed', status: 'completed', title: '成片任务' }
+
+  workbench.requestDeleteJob(job)
+  assert.equal(workbench.pendingDeleteJob.value?.id, job.id)
+  assert.deepEqual(deleted, [])
+
+  await workbench.confirmDeleteJob()
+  assert.deepEqual(deleted, [[job.id, { deleteLocalFile: false }]])
+  assert.equal(workbench.pendingDeleteJob.value, null)
+
+  workbench.requestDeleteJob(job)
+  await workbench.confirmDeleteJob(true)
+  assert.deepEqual(deleted, [
+    [job.id, { deleteLocalFile: false }],
+    [job.id, { deleteLocalFile: true }],
+  ])
+})
+
 test('provider retry is single-flight per job', async () => {
   const pending = deferred()
   let retryCalls = 0
@@ -398,43 +425,6 @@ test('provider retry is single-flight per job', async () => {
   pending.resolve({ data: { job: { ...job, status: 'queued' } } })
   await Promise.all([first, second])
   assert.equal(retryCalls, 1)
-})
-
-test('duplicate creates a persisted draft and loads it for editing without starting a run', async () => {
-  const calls = []
-  const draft = {
-    id: 'job-draft-copy',
-    status: 'draft',
-    provider: 'happyhorse',
-    model: 'happyhorse-1.1-i2v',
-    prompt: '复制后的提示词',
-    parameters: { resolution: '720P', duration: 5, watermark: false },
-    outputDirToken: 'directory-token-output',
-    outputDirName: '视频输出',
-    assets: [{ fileToken: 'draft-image-token', name: '首帧.png', role: 'first_frame' }],
-  }
-  const workbench = await setupWorkbench({
-    async duplicateAiVideoJob(jobId) {
-      calls.push(['duplicate', jobId])
-      return { data: { job: draft } }
-    },
-    async createAiVideoJob() {
-      calls.push(['create'])
-      throw new Error('duplicate must not create a run')
-    },
-    async retryAiVideoJob() {
-      calls.push(['retry'])
-      throw new Error('duplicate must not retry a run')
-    },
-  })
-
-  await workbench.duplicateJob({ id: 'job-source', status: 'completed' })
-
-  assert.deepEqual(calls, [['duplicate', 'job-source']])
-  assert.equal(workbench.editingDraftJobId.value, 'job-draft-copy')
-  assert.equal(workbench.form.prompt, '复制后的提示词')
-  assert.equal(workbench.form.assets[0].fileToken, 'draft-image-token')
-  assert.equal(workbench.form.outputDirToken, 'directory-token-output')
 })
 
 test('reusing a job blocks silent HappyHorse mode changes when an input capability is unavailable', async () => {
@@ -1022,6 +1012,28 @@ test('completed detail video loads from the run output media token', async () =>
   assert.equal(workbench.detailVideoSrc.value, 'crawshrimp-media://local/video-token-1')
 })
 
+test('playing a completed card loads only that card video without opening its details', async () => {
+  const requested = []
+  const workbench = await setupWorkbench({
+    async getAiVideoMediaUrl(fileToken) {
+      requested.push(fileToken)
+      return { ok: true, media_url: `crawshrimp-media://local/${fileToken}` }
+    },
+  })
+  const job = {
+    id: 'job-inline-video',
+    status: 'completed',
+    currentRun: { output: { localVideoToken: 'inline-video-token' } },
+  }
+
+  await workbench.playInlineVideo(job)
+
+  assert.deepEqual(requested, ['inline-video-token'])
+  assert.equal(workbench.inlinePlayingJobId.value, job.id)
+  assert.equal(workbench.inlineVideoSrc[job.id], 'crawshrimp-media://local/inline-video-token')
+  assert.equal(workbench.detailJob.value, null)
+})
+
 test('opening a completed video delegates its media capability to token-only IPC', async () => {
   const opened = []
   let legacyCalls = 0
@@ -1486,4 +1498,28 @@ test('modal and history surfaces make background and hidden drawer controls iner
   assert.match(source, /class="avg-page-head"\s+:inert="backgroundInert \|\| undefined"/)
   assert.match(source, /class="avg-main"\s+:inert="backgroundInert \|\| undefined"/)
   assert.match(source, /class="avg-drawer"[\s\S]*?:inert="openHistory \? undefined : true"/)
+})
+
+test('video task covers use a fixed 3:4 portrait frame', () => {
+  const source = fs.readFileSync(
+    path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
+    'utf8',
+  )
+
+  assert.match(source, /\.avg-thumb\s*\{[\s\S]*?aspect-ratio:\s*3\s*\/\s*4;/)
+  assert.doesNotMatch(source, /\.avg-thumb\s*\{[\s\S]*?height:\s*168px;/)
+})
+
+test('task cards omit duplication and keep actions in one horizontal row', () => {
+  const source = fs.readFileSync(
+    path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
+    'utf8',
+  )
+
+  assert.doesNotMatch(source, /复制为新任务|duplicateJob|canDuplicate|duplicateAiVideoJob/)
+  assert.match(source, /@click\.stop="requestDeleteJob\(job\)"/)
+  assert.match(source, /@click="confirmDeleteJob\(false\)"[\s\S]*?仅删除记录/)
+  assert.match(source, /@click="confirmDeleteJob\(true\)"[\s\S]*?删除本地文件/)
+  assert.match(source, /\.avg-task-actions\s*\{[\s\S]*?flex-wrap:\s*nowrap;/)
+  assert.match(source, /\.avg-task-actions\s*\{[\s\S]*?overflow-x:\s*auto;/)
 })

@@ -24,6 +24,13 @@ class AiVideoGenerationApiTests(unittest.TestCase):
         ]
         self.assertTrue(routes, f"{method} {path} is not registered")
 
+    def assertRouteNotRegistered(self, path, method):
+        routes = [
+            route for route in api_server.app.routes
+            if getattr(route, "path", "") == path and method in getattr(route, "methods", set())
+        ]
+        self.assertFalse(routes, f"{method} {path} is unexpectedly registered")
+
     def test_ai_video_routes_are_registered(self):
         for method, path in [
             ("GET", "/ai-video/config"),
@@ -32,13 +39,22 @@ class AiVideoGenerationApiTests(unittest.TestCase):
             ("GET", "/ai-video/jobs"),
             ("GET", "/ai-video/jobs/{job_id}"),
             ("PATCH", "/ai-video/jobs/{job_id}"),
-            ("POST", "/ai-video/jobs/{job_id}/duplicate"),
             ("POST", "/ai-video/jobs/{job_id}/retry"),
             ("DELETE", "/ai-video/jobs/{job_id}"),
             ("GET", "/ai-video/runs/{run_id}"),
             ("POST", "/ai-video/runs/{run_id}/archive"),
         ]:
             self.assertRouteRegistered(path, method)
+
+    def test_ai_video_duplicate_route_is_not_exposed(self):
+        self.assertRouteNotRegistered("/ai-video/jobs/{job_id}/duplicate", "POST")
+
+    def test_delete_job_passes_local_file_deletion_option(self):
+        with patch.object(api_server.ai_video_generation_service, "delete_job", return_value={"ok": True}) as deleted:
+            result = api_server.ai_video_delete_job("job-1", delete_local_file=True)
+
+        self.assertTrue(result["ok"])
+        deleted.assert_called_once_with("job-1", delete_local_file=True)
 
     def test_config_endpoint_returns_models(self):
         result = api_server.ai_video_get_config()

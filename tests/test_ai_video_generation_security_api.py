@@ -103,7 +103,6 @@ class AiVideoGenerationSecurityApiTests(unittest.TestCase):
                 "update_job",
                 lambda: api_server.ai_video_update_job("job-1", api_server.AiVideoUpdateJobRequest(prompt="next")),
             ),
-            ("duplicate_job", lambda: api_server.ai_video_duplicate_job("job-1")),
             (
                 "retry_job",
                 lambda: api_server.ai_video_retry_job("job-1", api_server.AiVideoRetryRequest(requestUid="retry-1")),

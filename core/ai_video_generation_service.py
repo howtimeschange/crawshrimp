@@ -813,7 +813,7 @@ def _run_cli(
             f"{provider} CLI 执行超时",
             code="PROVIDER_TIMEOUT",
             retryable=True,
-            safe_suggestion="稍后可复制为新任务或等待后重试",
+            safe_suggestion="请复用参数后新建任务，或等待后重试",
             http_status=504,
         ) from exc
     stdout = completed.stdout or ""
@@ -861,10 +861,10 @@ def _safe_suggestion_for(code: str) -> str:
         "VALIDATION_FAILED": "按提示修改 Prompt、图片或参数后重新提交",
         "CREDENTIAL_MISSING": "到设置中的 AI 能力配置对应密钥",
         "NEEDS_CONFIG": "配置后可继续提交当前 Job",
-        "UNKNOWN_SUBMIT_RESULT": "为避免重复扣费，本次不会自动重提；请确认后复制为新任务",
+        "UNKNOWN_SUBMIT_RESULT": "为避免重复扣费，本次不会自动重提；请确认后复用参数新建任务",
         "PROVIDER_REJECTED": "查看原因后调整素材或 Prompt",
         "PRIVACY_BLOCKED": "不绕过平台保护，可改用商品图和原创人物描述重试",
-        "PROVIDER_TIMEOUT": "可稍后恢复查询或复制为新任务",
+        "PROVIDER_TIMEOUT": "可稍后恢复查询或复用参数新建任务",
         "DOWNLOAD_FAILED": "当前视频待归档，可点击重新归档",
         "ARCHIVE_WRITE_FAILED": "重新选择有写入权限的输出目录",
     }.get(code, "请根据提示处理后重试")
@@ -1874,62 +1874,6 @@ def create_job(payload: Mapping[str, Any]) -> dict:
     return {"ok": True, "data": {"job": public_job(job), "run": public_run(run)}, "reused": False}
 
 
-def duplicate_job(job_id: str) -> dict:
-    job = data_sink.get_ai_video_job(job_id)
-    if not job or job.get("deletedAt"):
-        raise AiVideoError("任务不存在", code="VALIDATION_FAILED", http_status=404)
-    request_uid = f"dup_{uuid4().hex}"
-    assets = []
-    for asset in job.get("assets") or []:
-        assets.append({
-            "kind": asset.get("kind"),
-            "role": asset.get("role"),
-            "sourceType": asset.get("sourceType"),
-            "originalName": asset.get("originalName"),
-            "localPath": asset.get("localPath"),
-            "mimeType": asset.get("mimeType"),
-            "width": asset.get("width"),
-            "height": asset.get("height"),
-            "sizeBytes": asset.get("sizeBytes"),
-            "sha256": asset.get("sha256"),
-            "sortOrder": asset.get("sortOrder"),
-        })
-    input_snapshot = {
-        "prompt": job.get("prompt") or "",
-        "assets": assets,
-        "parameters": job.get("parameters") or {},
-    }
-    created = data_sink.create_ai_video_job_with_run(
-        job_payload={
-            "requestUid": request_uid,
-            "title": job_title_from_prompt(job.get("prompt") or ""),
-            "status": "draft",
-            "provider": job.get("provider"),
-            "model": job.get("model"),
-            "prompt": job.get("prompt"),
-            "parameters": job.get("parameters") or {},
-            "outputDir": job.get("outputDir"),
-        },
-        assets=assets,
-        run_payload={
-            "requestUid": request_uid,
-            "status": "draft",
-            "provider": job.get("provider"),
-            "model": job.get("model"),
-            "inputSnapshot": input_snapshot,
-            "archiveStatus": "none",
-        },
-    )
-    return {
-        "ok": True,
-        "data": {
-            "job": public_job(created["job"]),
-            "run": public_run(created["run"]),
-        },
-        "reused": bool(created.get("reused")),
-    }
-
-
 def retry_job(job_id: str, request_uid: str) -> dict:
     job = data_sink.get_ai_video_job(job_id)
     if not job or job.get("deletedAt"):
@@ -2039,7 +1983,7 @@ def retry_job(job_id: str, request_uid: str) -> dict:
     return {"ok": True, "data": {"job": public_job(job), "run": public_run(run)}, "reused": False}
 
 
-def delete_job(job_id: str) -> dict:
+def delete_job(job_id: str, *, delete_local_file: bool = False) -> dict:
     job = data_sink.get_ai_video_job(job_id)
     if not job or job.get("deletedAt"):
         raise AiVideoError("任务不存在", code="VALIDATION_FAILED", http_status=404)
@@ -2065,8 +2009,32 @@ def delete_job(job_id: str) -> dict:
             status == "queued" and _compact(run.get("providerTaskId"))
         ):
             raise AiVideoError("任务已提交或运行中，不能删除记录", code="VALIDATION_FAILED", http_status=409)
+        deleted_local_files = []
+        if delete_local_file:
+            output = dict(run.get("output") or {}) if isinstance(run.get("output"), Mapping) else {}
+            archive_dir_value = _compact(output.get("archiveDir") or output.get("archive_dir"))
+            if not archive_dir_value:
+                raise AiVideoError("任务没有可安全删除的本地归档目录", code="VALIDATION_FAILED", http_status=409)
+            archive_dir = Path(archive_dir_value).expanduser().resolve(strict=False)
+            for output_key in ("localVideoPath", "local_video_path", "localPosterPath", "local_poster_path"):
+                local_path_value = _compact(output.get(output_key))
+                if not local_path_value:
+                    continue
+                local_path = Path(local_path_value).expanduser().resolve(strict=False)
+                try:
+                    local_path.relative_to(archive_dir)
+                except ValueError as exc:
+                    raise AiVideoError("本地归档文件路径异常，已停止删除", code="VALIDATION_FAILED", http_status=409) from exc
+                if local_path.exists():
+                    if not local_path.is_file():
+                        raise AiVideoError("本地归档文件不可删除", code="VALIDATION_FAILED", http_status=409)
+                    try:
+                        local_path.unlink()
+                    except OSError as exc:
+                        raise AiVideoError(f"本地文件删除失败：{exc}", code="LOCAL_DELETE_FAILED", retryable=True) from exc
+                    deleted_local_files.append(str(local_path))
         data_sink.soft_delete_ai_video_job(job_id)
-        return {"ok": True, "data": {"id": job_id}}
+        return {"ok": True, "data": {"id": job_id, "deletedLocalFiles": deleted_local_files}}
     finally:
         if lock:
             lock.release()
@@ -2569,7 +2537,7 @@ def _submit_run(run: Mapping[str, Any]) -> None:
             error = AiVideoError(
                 "create 未返回 provider task id",
                 code="UNKNOWN_SUBMIT_RESULT",
-                safe_suggestion="为避免重复扣费，本次不会自动重提；请确认后复制为新任务",
+                safe_suggestion="为避免重复扣费，本次不会自动重提；请确认后复用参数新建任务",
             )
             data_sink.update_ai_video_run(run_id, {
                 "status": "failed",
@@ -2604,7 +2572,7 @@ def _submit_run(run: Mapping[str, Any]) -> None:
         error = AiVideoError(
             f"提交失败：{exc}",
             code="UNKNOWN_SUBMIT_RESULT",
-            safe_suggestion="为避免重复扣费，本次不会自动重提；请确认后复制为新任务",
+            safe_suggestion="为避免重复扣费，本次不会自动重提；请确认后复用参数新建任务",
         )
         data_sink.update_ai_video_run(run_id, {"status": "failed", "error": error.as_dict()})
     finally:
@@ -2722,7 +2690,7 @@ def _expire_polled_run(run_id: str, *, provider_status_value: str) -> None:
             "长时间未完成",
             code="PROVIDER_TIMEOUT",
             retryable=True,
-            safe_suggestion="可稍后恢复查询或复制为新任务",
+            safe_suggestion="可稍后恢复查询或复用参数新建任务",
         ).as_dict(),
     })
 
