@@ -43,6 +43,9 @@
             <div v-if="materialPanelExpanded">
               <strong>森马云盘视频素材图下载</strong>
               <span>云盘找图 · 本地规整 · 可恢复任务</span>
+              <span class="aiv-material-task-state" :class="`is-${materialTaskStage.id}`">
+                <i aria-hidden="true"></i>{{ materialTaskStage.label }}
+              </span>
             </div>
             <div v-else class="aiv-collapsed-material-summary">
               <strong>找图</strong>
@@ -129,12 +132,26 @@
         </aside>
 
         <section class="aiv-panel aiv-material-results-panel">
-          <header class="aiv-panel-head">
+          <header class="aiv-panel-head aiv-material-results-head">
             <div>
               <strong>素材回显</strong>
               <span>按款号分组选择进入 AI 改图的模拍图和细节图</span>
             </div>
-            <span class="aiv-badge orange">已选 {{ selectedMaterialCount }} / {{ materialSummary.modelCount + materialSummary.detailCount }}</span>
+            <div class="aiv-material-header-stats" aria-label="找图批次概览">
+              <div class="aiv-material-stat">
+                <strong>{{ materialGroups.length }}</strong>
+                <span>款号</span>
+              </div>
+              <div class="aiv-material-stat">
+                <strong>{{ materialSummary.modelCount + materialSummary.detailCount }}</strong>
+                <span>已回显素材</span>
+              </div>
+              <div class="aiv-material-stat selected">
+                <strong>{{ selectedMaterialCount }}</strong>
+                <span>已选择</span>
+              </div>
+              <p class="aiv-material-selection-summary">{{ materialTaskStage.detail }}</p>
+            </div>
           </header>
           <div class="aiv-material-style-tabs" role="tablist" aria-label="素材款号">
             <button
@@ -155,37 +172,39 @@
           </div>
 
           <div v-if="activeMaterialGroup" class="aiv-material-source-switcher">
-            <div class="aiv-material-source-tabs" role="tablist" :aria-label="`${activeMaterialGroup.styleCode} 素材类型`">
+            <div class="aiv-material-source-actions">
+              <div class="aiv-material-source-tabs" role="tablist" :aria-label="`${activeMaterialGroup.styleCode} 素材类型`">
+                <button
+                  type="button"
+                  role="tab"
+                  :class="{ active: activeMaterialSource === 'model' }"
+                  :aria-selected="activeMaterialSource === 'model'"
+                  :aria-controls="`material-model-panel-${activeMaterialGroup.styleCode}`"
+                  @click="selectMaterialSource('model')"
+                >
+                  模拍图 <strong>{{ activeMaterialGroup.modelPhotos.length }}</strong>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  :class="{ active: activeMaterialSource === 'detail' }"
+                  :aria-selected="activeMaterialSource === 'detail'"
+                  :aria-controls="`material-detail-panel-${activeMaterialGroup.styleCode}`"
+                  @click="selectMaterialSource('detail')"
+                >
+                  细节图 <strong>{{ activeMaterialGroup.detailPhotos.length }}</strong>
+                </button>
+              </div>
               <button
                 type="button"
-                role="tab"
-                :class="{ active: activeMaterialSource === 'model' }"
-                :aria-selected="activeMaterialSource === 'model'"
-                :aria-controls="`material-model-panel-${activeMaterialGroup.styleCode}`"
-                @click="selectMaterialSource('model')"
+                class="aiv-ghost small"
+                :class="{ active: materialShowSelectedOnly }"
+                :aria-pressed="materialShowSelectedOnly"
+                @click="materialShowSelectedOnly = !materialShowSelectedOnly"
               >
-                模拍图 <strong>{{ activeMaterialGroup.modelPhotos.length }}</strong>
-              </button>
-              <button
-                type="button"
-                role="tab"
-                :class="{ active: activeMaterialSource === 'detail' }"
-                :aria-selected="activeMaterialSource === 'detail'"
-                :aria-controls="`material-detail-panel-${activeMaterialGroup.styleCode}`"
-                @click="selectMaterialSource('detail')"
-              >
-                细节图 <strong>{{ activeMaterialGroup.detailPhotos.length }}</strong>
+                {{ materialShowSelectedOnly ? '显示全部素材' : '只看已选素材' }}
               </button>
             </div>
-            <button
-              type="button"
-              class="aiv-ghost small"
-              :class="{ active: materialShowSelectedOnly }"
-              :aria-pressed="materialShowSelectedOnly"
-              @click="materialShowSelectedOnly = !materialShowSelectedOnly"
-            >
-              {{ materialShowSelectedOnly ? '显示全部素材' : '只看已选素材' }}
-            </button>
             <span>{{ activeMaterialSource === 'model' ? '默认优先确认模拍图' : '已切换到细节图' }}</span>
           </div>
 
@@ -2077,6 +2096,18 @@ const activeMaterialGroup = computed(() => (
 ))
 const materialSummary = computed(() => summarizeBalaMaterialGroups(materialGroups))
 const selectedMaterialCount = computed(() => materialSummary.value.selectedCount)
+const materialTaskStage = computed(() => {
+  if (materialTask.error || materialTask.status === 'failed') {
+    return { id: 'failed', label: '需要处理', detail: '找图失败，可查看提示后重试。' }
+  }
+  if (materialIsRunning.value) {
+    return { id: 'running', label: '正在找图', detail: materialTask.message || '正在读取并规整素材。' }
+  }
+  if (materialGroups.length) {
+    return { id: 'ready', label: '素材已就绪', detail: '可继续筛选素材并进入 AI 改图。' }
+  }
+  return { id: 'idle', label: '等待找图', detail: '输入款号后开始从云盘获取素材。' }
+})
 const selectedEditSourceCount = computed(() => (
   styleWorkspaces.reduce((sum, style) => sum + (style.modelPhotos || []).reduce((inner, source) => (
     inner + (source.editSelected ? 1 : 0) + visibleSourceVersions(source).filter(version => version.editSelected).length
@@ -7207,6 +7238,38 @@ function localFileUrl(path) {
   font-size: 10px;
 }
 
+.aiv-material-task-state {
+  width: fit-content;
+  min-height: 22px;
+  margin-top: 8px !important;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  display: inline-flex !important;
+  align-items: center;
+  gap: 6px;
+  color: var(--text2) !important;
+  background: var(--bg3);
+  font-size: 10px !important;
+  font-weight: 750;
+  line-height: 1;
+  letter-spacing: .01em;
+}
+
+.aiv-material-task-state i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.aiv-material-task-state.is-idle { color: var(--text3) !important; }
+.aiv-material-task-state.is-running { border-color: rgba(96, 165, 250, .48); color: #60a5fa; background: rgba(96, 165, 250, .10); }
+.aiv-material-task-state.is-running i { animation: aiv-status-pulse 1.2s ease-in-out infinite; }
+.aiv-material-task-state.is-ready { border-color: rgba(74, 222, 128, .42); color: var(--green) !important; background: rgba(74, 222, 128, .09); }
+.aiv-material-task-state.is-failed { border-color: rgba(248, 113, 113, .5); color: #f87171 !important; background: rgba(248, 113, 113, .10); }
+
 .aiv-params-panel.collapsed .aiv-collapse-action {
   order: -1;
   width: 40px;
@@ -7228,6 +7291,59 @@ function localFileUrl(path) {
   grid-template-rows: auto auto auto minmax(0, 1fr) auto;
 }
 
+.aiv-material-results-head {
+  min-height: 66px;
+}
+
+.aiv-material-header-stats {
+  min-width: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.aiv-material-stat {
+  min-width: 72px;
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
+  display: grid;
+  align-content: center;
+  gap: 2px;
+}
+
+.aiv-material-stat strong {
+  color: var(--text);
+  font-size: 16px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.aiv-material-stat span,
+.aiv-material-selection-summary {
+  margin: 0;
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.aiv-material-stat.selected strong { color: var(--orange); }
+
+.aiv-material-selection-summary {
+  max-width: 250px;
+  padding-left: 12px;
+  color: var(--text2);
+}
+
+.aiv-material-results-head .aiv-material-stat span,
+.aiv-material-results-head .aiv-material-selection-summary {
+  margin-top: 0;
+}
+
+.aiv-material-results-head .aiv-material-stat span {
+  white-space: nowrap;
+}
+
 .aiv-params-panel .aiv-panel-body,
 .aiv-material-results-panel .aiv-style-list {
   min-height: 0;
@@ -7241,6 +7357,95 @@ function localFileUrl(path) {
   flex: 0 0 auto;
   background: var(--bg2);
   box-shadow: 0 -10px 24px rgba(0, 0, 0, 0.18);
+}
+
+/* 找图页保持运营台密度，但将表单、标签、媒体卡统一为同一套精致的表面语言。 */
+.aiv-material-stage .aiv-panel {
+  border-color: rgba(255, 255, 255, .10);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, .022), transparent 76px), var(--bg2);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .16);
+}
+
+.aiv-material-stage .aiv-panel-head {
+  padding: 13px 14px;
+  background: rgba(255, 255, 255, .012);
+}
+
+.aiv-material-stage .aiv-panel-body {
+  gap: 11px;
+}
+
+.aiv-material-stage .aiv-field {
+  gap: 5px;
+}
+
+.aiv-material-stage .aiv-field input,
+.aiv-material-stage .aiv-field textarea {
+  border-color: rgba(255, 255, 255, .11);
+  border-radius: 9px;
+  background: rgba(7, 8, 12, .42);
+  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
+}
+
+.aiv-material-stage .aiv-field input:hover,
+.aiv-material-stage .aiv-field textarea:hover,
+.aiv-material-stage .aiv-field input:focus,
+.aiv-material-stage .aiv-field textarea:focus {
+  border-color: rgba(255, 107, 43, .58);
+  background: rgba(12, 12, 17, .78);
+  box-shadow: 0 0 0 3px rgba(255, 107, 43, .08);
+}
+
+.aiv-material-stage .aiv-directory-picker,
+.aiv-material-stage .aiv-progress-overview {
+  border-color: rgba(255, 255, 255, .11);
+  border-radius: 10px;
+  background: rgba(7, 8, 12, .34);
+}
+
+.aiv-material-stage .aiv-material-style-tabs {
+  padding: 10px 14px 11px;
+  background: rgba(255, 255, 255, .012);
+}
+
+.aiv-material-stage .aiv-material-style-tabs button {
+  min-height: 54px;
+  padding: 9px 11px;
+  border-color: rgba(255, 255, 255, .09);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .026);
+  transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.aiv-material-stage .aiv-material-style-tabs button:hover {
+  border-color: rgba(255, 107, 43, .48);
+  background: rgba(255, 107, 43, .065);
+  transform: translateY(-1px);
+}
+
+.aiv-material-stage .aiv-material-source-switcher {
+  min-height: 56px;
+  background: linear-gradient(90deg, rgba(255, 107, 43, .035), transparent 35%), rgba(255, 255, 255, .018);
+}
+
+.aiv-material-stage .aiv-material-source-tabs {
+  border-color: rgba(255, 255, 255, .11);
+  border-radius: 9px;
+  background: rgba(7, 8, 12, .46);
+}
+
+.aiv-material-stage .aiv-thumb {
+  border-color: rgba(255, 255, 255, .11);
+  border-radius: 10px;
+  background: var(--bg3);
+  transition: border-color .16s ease, box-shadow .16s ease, transform .16s ease;
+}
+
+.aiv-material-stage .aiv-thumb:hover,
+.aiv-material-stage .aiv-thumb:focus-within {
+  border-color: rgba(255, 107, 43, .48);
+  transform: translateY(-2px);
 }
 
 .aiv-edit-workbench {
@@ -7546,7 +7751,7 @@ function localFileUrl(path) {
   border-color: var(--orange);
   color: var(--text);
   background: var(--orange-bg);
-  box-shadow: inset 0 -2px 0 var(--orange);
+  box-shadow: inset 0 -2px 0 var(--orange), 0 6px 16px rgba(255, 107, 43, .12);
 }
 
 .aiv-material-style-tabs strong,
@@ -7580,14 +7785,22 @@ function localFileUrl(path) {
   background: var(--bg3);
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
 }
 
 .aiv-material-source-switcher > span {
+  margin-left: auto;
   color: var(--text3);
   font-size: 11px;
   white-space: nowrap;
+}
+
+.aiv-material-source-actions {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .aiv-material-source-tabs {
@@ -7737,6 +7950,20 @@ function localFileUrl(path) {
   white-space: nowrap;
 }
 
+.aiv-params-panel:not(.collapsed) .aiv-collapse-action {
+  min-height: 30px;
+  padding: 4px 7px 4px 9px;
+  border-radius: 7px;
+  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .08);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.aiv-params-panel:not(.collapsed) .aiv-collapse-action:hover {
+  border-color: rgba(255, 107, 43, .62);
+  background: rgba(255, 107, 43, .14);
+}
+
 .aiv-collapse-chevron {
   width: 7px;
   height: 7px;
@@ -7852,6 +8079,11 @@ function localFileUrl(path) {
   gap: 8px;
 }
 
+.aiv-material-tab-panel .aiv-thumb-grid {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 10px;
+}
+
 .aiv-large-thumb-grid,
 .aiv-video-images {
   display: grid;
@@ -7903,7 +8135,12 @@ function localFileUrl(path) {
   background: var(--orange-bg);
 }
 
-.aiv-thumb.selected,
+.aiv-thumb.selected {
+  border-color: var(--orange);
+  color: var(--text);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 3px rgba(255, 107, 43, .16);
+}
+
 .aiv-large-thumb.selected {
   border-color: var(--orange);
   color: var(--text);
@@ -11370,7 +11607,13 @@ function localFileUrl(path) {
   }
 
   .aiv-material-source-switcher > span {
+    margin-left: 0;
     white-space: normal;
+  }
+
+  .aiv-material-source-actions {
+    width: 100%;
+    flex-wrap: wrap;
   }
 
   .aiv-material-source-tabs {

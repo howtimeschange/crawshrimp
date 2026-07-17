@@ -42,12 +42,12 @@ test('remote AI-video image URLs take precedence over local cached previews', ()
 
 test('material panel control describes a horizontal collapse and keeps expansion reachable', () => {
   assert.deepEqual(balaMaterialPanelControl(true), {
-    label: '向左收起找图',
+    label: '收起',
     ariaLabel: '向左收起找图面板',
     direction: 'left',
   })
   assert.deepEqual(balaMaterialPanelControl(false), {
-    label: '展开找图',
+    label: '展开',
     ariaLabel: '向右展开找图面板',
     direction: 'right',
   })
@@ -141,6 +141,16 @@ test('video task cards use a compact horizontal row layout and expose editing', 
   assert.match(workflowSource, /const editingVideoTaskId = ref\(''\)/)
   assert.match(workflowSource, /\.aiv-video-task-list\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/)
   assert.match(workflowSource, /\.aiv-video-task-row\s*\{[\s\S]*?grid-template-columns:\s*auto minmax\(0, 1fr\) auto;/)
+})
+
+test('find-materials page exposes operational state, aligned stats, and selected-card feedback', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /const materialTaskStage = computed/)
+  assert.match(workflowSource, /class="aiv-material-task-state"/)
+  assert.match(workflowSource, /class="aiv-material-header-stats"/)
+  assert.match(workflowSource, /class="aiv-material-stat"/)
+  assert.match(workflowSource, /class="aiv-material-selection-summary"/)
 })
 
 test('AI video keeps local references, image tasks, and workspace snapshots isolated', async () => {

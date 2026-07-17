@@ -62,8 +62,8 @@ export function resolveBalaVersionPreviewSource(version = {}, source = {}, {
 
 export function balaMaterialPanelControl(expanded) {
   return expanded
-    ? { label: '向左收起找图', ariaLabel: '向左收起找图面板', direction: 'left' }
-    : { label: '展开找图', ariaLabel: '向右展开找图面板', direction: 'right' }
+    ? { label: '收起', ariaLabel: '向左收起找图面板', direction: 'left' }
+    : { label: '展开', ariaLabel: '向右展开找图面板', direction: 'right' }
 }
 
 export function resolveBalaVideoPlaybackSource(result = {}, { resolveRemote = value => value } = {}) {
