@@ -723,14 +723,29 @@ test('submitted video tasks automatically poll until their provider result becom
   assert.match(source, /onBeforeUnmount\(\(\) => \{[\s\S]*?resetVideoResultPoll\(\)/)
 })
 
+test('video results support safe history cleanup in a 9:16 feed layout', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(templateSource, /@click="requestClearVideoHistory"/)
+  assert.match(templateSource, /@click="requestClearVideoResult\(item\)"/)
+  assert.match(templateSource, /仅清除记录/)
+  assert.match(templateSource, /同时删除本地视频/)
+  assert.match(source, /async function confirmVideoHistoryCleanup\(deleteFiles = false\)/)
+  assert.match(source, /await window\.cs\.deleteFiles\(localPaths\)/)
+  assert.match(source, /function isClearableVideoResult\(item = \{\}\)/)
+  assert.match(source, /\.aiv-result-card\s*\{[\s\S]*?aspect-ratio:\s*9\s*\/\s*16;/)
+  assert.match(source, /\.aiv-result-preview\s*\{[\s\S]*?aspect-ratio:\s*9\s*\/\s*16;/)
+})
+
 test('video result cards show a bounded loading state for submitted async tasks', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
 
   assert.match(source, /function videoResultIsLoading\(item = \{\}\)/)
   assert.match(source, /v-else-if="videoResultIsLoading\(item\)" class="aiv-result-preview-loading"/)
   assert.match(source, /class="aiv-result-spinner"/)
-  assert.match(source, /\.aiv-result-preview\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*min\(360px, 50vh\);[\s\S]*?overflow:\s*hidden;/)
-  assert.match(source, /\.aiv-result-preview video\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*100%;/)
+  assert.match(source, /\.aiv-result-preview\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?aspect-ratio:\s*9\s*\/\s*16;[\s\S]*?overflow:\s*hidden;/)
+  assert.match(source, /\.aiv-result-preview video\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?object-fit:\s*cover;/)
 })
 
 test('completed video tasks switch to view action and autoplay their result', () => {

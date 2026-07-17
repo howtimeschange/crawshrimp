@@ -789,6 +789,7 @@
             </div>
             <div class="aiv-inline-actions">
               <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !hasRefreshableVideoTask" @click="refreshVideoResults">刷新状态</button>
+              <button type="button" class="aiv-ghost small" :disabled="!clearableVideoResults.length" @click="requestClearVideoHistory">清理历史</button>
               <button type="button" class="aiv-ghost small" :disabled="!videoOutputDir" @click="openOutputDir">打开输出目录</button>
             </div>
           </header>
@@ -854,6 +855,7 @@
                     <button v-else-if="canRefreshVideoResult(item)" type="button" class="aiv-ghost small" @click="refreshSingleVideoResult(item)">刷新状态</button>
                     <button v-else-if="canDownloadVideoResult(item)" type="button" class="aiv-ghost small" @click="downloadVideoResult(item)">下载视频</button>
                     <button v-if="videoResultHasOutput(item)" type="button" class="aiv-primary small" @click="openVideoResult(item)">打开文件</button>
+                    <button v-if="isClearableVideoResult(item)" type="button" class="aiv-ghost small aiv-result-clear" @click="requestClearVideoResult(item)">清除</button>
                     <button
                       v-if="!videoResultHasOutput(item) && !canRefreshVideoResult(item) && !canDownloadVideoResult(item)"
                       type="button"
@@ -1058,6 +1060,42 @@
           <button type="button" class="aiv-danger" :disabled="deleteVersionBusy" @click="confirmDeleteGeneratedVersion">
             {{ deleteVersionBusy ? '正在删除...' : '确认删除' }}
           </button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="pendingVideoHistoryCleanup" class="aiv-modal" @click.self="closeVideoHistoryCleanup">
+      <section
+        class="aiv-modal-panel aiv-confirm-panel"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="aiv-video-cleanup-title"
+        aria-describedby="aiv-video-cleanup-description"
+        tabindex="-1"
+        data-aiv-dialog
+        @keydown.esc.prevent="closeVideoHistoryCleanup"
+        @keydown="trapDialogFocus"
+      >
+        <header class="aiv-modal-head">
+          <div>
+            <strong id="aiv-video-cleanup-title">清理视频历史</strong>
+            <span>失败任务只会清除记录；已完成视频可选择是否删除本地文件。</span>
+          </div>
+        </header>
+        <div class="aiv-confirm-copy">
+          <strong>{{ pendingVideoHistoryCleanup.items.length }} 条历史记录将被清除</strong>
+          <span id="aiv-video-cleanup-description">“仅清除记录”会保留本地 MP4；删除文件仅作用于抓虾登记的任务输出视频。</span>
+          <div v-if="videoHistoryCleanupError" class="aiv-inline-error" role="alert">{{ videoHistoryCleanupError }}</div>
+        </div>
+        <footer class="aiv-modal-foot">
+          <span>删除本地视频后无法恢复</span>
+          <div class="aiv-modal-foot-actions">
+            <button type="button" class="aiv-ghost" :disabled="videoHistoryCleanupBusy" @click="closeVideoHistoryCleanup">取消</button>
+            <button type="button" class="aiv-ghost" :disabled="videoHistoryCleanupBusy" @click="confirmVideoHistoryCleanup(false)">仅清除记录</button>
+            <button type="button" class="aiv-danger" :disabled="videoHistoryCleanupBusy || !pendingVideoHistoryCleanup.localPaths.length" @click="confirmVideoHistoryCleanup(true)">
+              {{ videoHistoryCleanupBusy ? '正在清理...' : '同时删除本地视频' }}
+            </button>
+          </div>
         </footer>
       </section>
     </div>
@@ -1971,6 +2009,9 @@ const videoStageState = reactive({
   progress: 0,
 })
 const videoTaskBusyIds = reactive(new Set())
+const pendingVideoHistoryCleanup = ref(null)
+const videoHistoryCleanupBusy = ref(false)
+const videoHistoryCleanupError = ref('')
 const modelLibraryState = reactive({
   loading: false,
   error: '',
@@ -2432,6 +2473,7 @@ const videoResultStageSummary = computed(() => {
     { id: 'failed', label: '失败', count: counts.failed },
   ].filter(stage => stage.count)
 })
+const clearableVideoResults = computed(() => videoResults.filter(isClearableVideoResult))
 const totalVideoAssetCount = computed(() => (
   videoJobs.reduce((sum, job) => sum + (job.assets || []).length, 0)
 ))
@@ -2775,7 +2817,7 @@ function isVideoTaskBusy(task = {}) {
   return videoTaskBusyIds.has(String(task?.id || ''))
 }
 const hasOpenModal = computed(() => Boolean(
-  previewImage.value || pendingVersionDeletion.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
+  previewImage.value || pendingVersionDeletion.value || pendingVideoHistoryCleanup.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
 ))
 const templateCategories = computed(() => {
   const names = [...new Set(templateSamples.map(item => item.title).filter(Boolean))]
@@ -6452,6 +6494,94 @@ function videoResultHasOutput(item) {
   return Boolean(localTarget || remoteTarget)
 }
 
+function isClearableVideoResult(item = {}) {
+  return ['failed', 'ready', 'downloaded'].includes(videoResultStage(item).id)
+}
+
+function videoResultLocalPath(item = {}) {
+  return String(localVideoPathFor(item) || '').trim()
+}
+
+function requestClearVideoResult(item = {}) {
+  if (!isClearableVideoResult(item)) return
+  if (videoResultStage(item).id === 'failed') {
+    void clearVideoHistoryRecords([item])
+    return
+  }
+  openVideoHistoryCleanup([item])
+}
+
+function requestClearVideoHistory() {
+  const items = clearableVideoResults.value
+  if (!items.length) return
+  const successful = items.filter(item => videoResultStage(item).id !== 'failed')
+  if (!successful.length) {
+    void clearVideoHistoryRecords(items)
+    return
+  }
+  openVideoHistoryCleanup(items)
+}
+
+function openVideoHistoryCleanup(items = []) {
+  const localPaths = [...new Set(items.map(videoResultLocalPath).filter(Boolean))]
+  pendingVideoHistoryCleanup.value = { items: [...items], localPaths }
+  videoHistoryCleanupBusy.value = false
+  videoHistoryCleanupError.value = ''
+}
+
+function closeVideoHistoryCleanup() {
+  if (videoHistoryCleanupBusy.value) return
+  pendingVideoHistoryCleanup.value = null
+  videoHistoryCleanupError.value = ''
+}
+
+function removeClearedVideoTasks(removedResults = []) {
+  const removedTaskIds = new Set(removedResults.map(item => String(item.taskRefId || item.id || '').trim()).filter(Boolean))
+  for (let index = videoTasks.length - 1; index >= 0; index -= 1) {
+    const task = videoTasks[index]
+    if (!removedTaskIds.has(String(task?.id || '').trim())) continue
+    const stillTracked = videoResults.some(item => String(item?.taskRefId || item?.id || '').trim() === String(task.id || '').trim())
+    if (!stillTracked) videoTasks.splice(index, 1)
+  }
+}
+
+async function clearVideoHistoryRecords(items = []) {
+  const ids = new Set(items.map(item => String(item?.id || '').trim()).filter(Boolean))
+  if (!ids.size) return
+  const removed = videoResults.filter(item => ids.has(String(item?.id || '').trim()))
+  videoResults.splice(0, videoResults.length, ...videoResults.filter(item => !ids.has(String(item?.id || '').trim())))
+  removeClearedVideoTasks(removed)
+  for (const item of removed) {
+    delete videoResultElements[String(item.id || '')]
+    if (videoResultToPlayId.value === item.id) videoResultToPlayId.value = ''
+  }
+  videoStageState.status = 'done'
+  videoStageState.error = ''
+  videoStageState.message = `已清除 ${removed.length} 条视频历史记录。`
+}
+
+async function confirmVideoHistoryCleanup(deleteFiles = false) {
+  const target = pendingVideoHistoryCleanup.value
+  if (!target || videoHistoryCleanupBusy.value) return
+  const localPaths = deleteFiles ? target.localPaths : []
+  videoHistoryCleanupBusy.value = true
+  videoHistoryCleanupError.value = ''
+  try {
+    if (localPaths.length) {
+      const result = await window.cs.deleteFiles(localPaths)
+      if (!result?.ok || Number(result.failed_count || 0) > 0) {
+        throw new Error(result?.error || '本地视频删除失败，历史记录未清除')
+      }
+    }
+    await clearVideoHistoryRecords(target.items)
+    pendingVideoHistoryCleanup.value = null
+  } catch (error) {
+    videoHistoryCleanupError.value = error?.message || String(error)
+  } finally {
+    videoHistoryCleanupBusy.value = false
+  }
+}
+
 function canRefreshVideoResult(item) {
   const stage = videoResultStage(item).id
   if (!['submitted', 'queued', 'generating'].includes(stage)) return false
@@ -9487,8 +9617,9 @@ function localFileUrl(path) {
 
 .aiv-result-card-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(228px, 280px));
+  justify-content: start;
+  gap: 18px;
 }
 
 .aiv-result-empty {
@@ -9519,22 +9650,24 @@ function localFileUrl(path) {
 
 .aiv-result-card {
   min-width: 0;
+  aspect-ratio: 9 / 16;
   overflow: hidden;
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg3);
+  border-radius: 12px;
+  background: #111116;
   display: grid;
-  grid-template-rows: auto 1fr;
+  grid-template-rows: minmax(0, 1fr) auto;
+  box-shadow: 0 16px 34px rgba(0, 0, 0, 0.22);
 }
 
 .aiv-result-preview {
   min-width: 0;
   min-height: 0;
   width: 100%;
-  height: min(360px, 50vh);
-  max-height: min(360px, 50vh);
+  height: 100%;
+  max-height: none;
   overflow: hidden;
-  aspect-ratio: 16 / 9;
+  aspect-ratio: 9 / 16;
   display: grid;
   align-content: center;
   justify-items: center;
@@ -9551,7 +9684,7 @@ function localFileUrl(path) {
   max-width: 100%;
   max-height: 100%;
   display: block;
-  object-fit: contain;
+  object-fit: cover;
   background: #09090b;
 }
 
@@ -9608,9 +9741,11 @@ function localFileUrl(path) {
 }
 
 .aiv-result-copy {
-  padding: 10px;
+  padding: 11px 12px 12px;
   display: grid;
-  gap: 9px;
+  gap: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  background: linear-gradient(180deg, rgba(30, 30, 38, 0.98), rgba(18, 18, 23, 0.98));
 }
 
 .aiv-result-copy header,
@@ -9636,6 +9771,12 @@ function localFileUrl(path) {
 
 .aiv-result-copy .aiv-result-error {
   color: #f87171;
+}
+
+.aiv-result-clear {
+  margin-left: auto;
+  color: #f6b29f;
+  border-color: rgba(244, 118, 74, 0.42);
 }
 
 .aiv-preview-modal-panel {
@@ -11193,6 +11334,11 @@ function localFileUrl(path) {
 
   .aiv-ai-asset-board {
     grid-template-columns: repeat(auto-fill, minmax(124px, 1fr));
+  }
+
+  .aiv-result-card-grid {
+    grid-template-columns: minmax(0, 360px);
+    justify-content: center;
   }
 
   .aiv-style-head,
