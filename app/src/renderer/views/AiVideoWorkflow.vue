@@ -2507,6 +2507,7 @@ function isApiVideoProvider(provider = '') {
   return key === 'seedance' || isBailianVideoProvider(key)
 }
 function providerUsesLocalImages(provider = '', mode = '') {
+  if (provider === 'qn') return true
   if (provider === 'seedance') return true
   if (provider === 'happyhorse') return mode !== 't2v'
   if (isKlingVideoProvider(provider)) return true
@@ -2951,19 +2952,28 @@ function previewSourceFor(asset = {}) {
   return imagePreviewSource(asset, { thumbnail: false })
 }
 
-/**
- * Video-task grid thumbs: ONLY local compressed JPEG (never full imageUrl / remote full-res).
- * Full-size remote/local previews are reserved for lightbox.
- */
 function videoTaskThumbLocalPath(asset = {}) {
   return String(asset?.path || asset?.previewPath || '').trim()
 }
 
+// Material batches provide a signed, generated thumbnail. Prefer it over raw local paths,
+// which are intentionally unavailable unless their directory was explicitly authorized.
+function videoTaskThumbRemoteSource(asset = {}) {
+  return resolveRemoteImageUrl(asset.thumbnailUrl || asset.thumbnail_url)
+}
+
 function enqueueVideoTaskThumb(asset = {}) {
   const id = String(asset?.id || '').trim()
+  if (!id) return
+  if (videoTaskThumbSrcMap[id] || videoTaskThumbLoading[id]) return
+  const remoteSrc = videoTaskThumbRemoteSource(asset)
+  if (remoteSrc) {
+    videoTaskThumbSrcMap[id] = remoteSrc
+    return
+  }
   const path = videoTaskThumbLocalPath(asset)
-  if (!id || !path) return
-  if (videoTaskThumbSrcMap[id] || videoTaskThumbLoading[id] || brokenPreviews[localImageCacheKey(path, true)]) return
+  if (!path) return
+  if (brokenPreviews[localImageCacheKey(path, true)]) return
   if (videoTaskThumbQueue.some(item => item.id === id)) return
   videoTaskThumbQueue.push({ id, path })
   pumpVideoTaskThumbQueue()

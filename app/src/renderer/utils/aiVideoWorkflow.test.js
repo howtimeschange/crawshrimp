@@ -34,7 +34,7 @@ test('AI video workflow review local upload menu opens the desktop image picker'
   assert.match(source, /async function uploadLocalReviewImage\(styleCode = ''\)[\s\S]*window\.cs\.browseFile\(\{[\s\S]*images: true,[\s\S]*multi: true/)
 })
 
-test('AI video workflow keeps local assets enabled for Bailian Kling and PixVerse models', () => {
+test('AI video workflow keeps local assets enabled for Business Manager and supported image-to-video models', () => {
   const source = readView('AiVideoWorkflow.vue')
   const providerUsesLocalImages = source.match(/function providerUsesLocalImages[\s\S]*?\n}/)?.[0] || ''
   const klingDefaults = source.match(/if \(isKlingVideoProvider\(provider\)\) \{[\s\S]*?\n  \}/)?.[0] || ''
@@ -42,10 +42,20 @@ test('AI video workflow keeps local assets enabled for Bailian Kling and PixVers
 
   assert.match(providerUsesLocalImages, /isKlingVideoProvider\(provider\)/)
   assert.match(providerUsesLocalImages, /isPixVerseVideoProvider\(provider\)/)
+  assert.match(providerUsesLocalImages, /provider === 'qn'/)
   assert.doesNotMatch(klingDefaults, /videoTaskDraft\.assetIds\s*=\s*\[\]/)
   assert.doesNotMatch(pixverseDefaults, /videoTaskDraft\.assetIds\s*=\s*\[\]/)
   assert.match(source, /pixverse_video_path:\s*gen\.videoPath \|\| task\.pixverseVideoPath \|\| ''/)
   assert.match(source, /video_paths:\s*videoTaskVideoPaths\(task\)/)
+})
+
+test('video task grid prefers the signed material thumbnail before requesting a locally authorized file', () => {
+  const source = readView('AiVideoWorkflow.vue')
+  const enqueue = source.match(/function enqueueVideoTaskThumb[\s\S]*?\n}/)?.[0] || ''
+
+  assert.match(source, /function videoTaskThumbRemoteSource/)
+  assert.match(source, /asset\.thumbnailUrl \|\| asset\.thumbnail_url/)
+  assert.match(enqueue, /videoTaskThumbRemoteSource\(asset\)/)
 })
 
 test('AI video workflow review retry sends only durable review assets to remote regenerate', () => {
