@@ -7,7 +7,7 @@
       </div>
     </header>
 
-    <div class="script-grid">
+    <div class="script-content">
       <div v-if="loading" class="placeholder">加载中…</div>
       <div v-else-if="loadError && !groups.length" class="placeholder placeholder-stack">
         <span>{{ loadError }}</span>
@@ -17,66 +17,87 @@
         还没有脚本。点击「导入脚本」安装你的第一个适配包。
       </div>
 
-      <div
-        v-for="entry in displayGroups" :key="entry.group.adapter_id"
-        class="script-card"
-        :class="{ disabled: !entry.group.enabled }"
-        @click="$emit('open-script', entry.group)"
-      >
-        <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
-        <div class="card-top">
-          <span class="card-icon">🦐</span>
-          <div class="card-info">
-            <div class="card-title-row">
-              <strong>{{ entry.group.adapter_name }}</strong>
+      <template v-else>
+        <p v-if="favoriteError" class="favorite-error" role="status">{{ favoriteError }}</p>
+        <section v-for="section in scriptSections" :key="section.id" class="script-section">
+          <h3 class="script-section-title">{{ section.title }}</h3>
+          <div class="script-grid">
+            <div
+              v-for="entry in section.entries" :key="entry.group.adapter_id"
+              class="script-card"
+              :class="{ disabled: !entry.group.enabled }"
+              @click="$emit('open-script', entry.group)"
+            >
+              <button
+                class="favorite-btn"
+                type="button"
+                :class="{ active: isFavorite(entry.group.adapter_id) }"
+                :aria-label="isFavorite(entry.group.adapter_id) ? `取消收藏 ${entry.group.adapter_name}` : `收藏 ${entry.group.adapter_name}`"
+                :aria-pressed="isFavorite(entry.group.adapter_id)"
+                :disabled="favoritePendingIds.has(entry.group.adapter_id)"
+                @click.stop="toggleFavorite(entry.group.adapter_id)"
+              >
+                <svg class="favorite-icon" viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z" />
+                </svg>
+              </button>
+              <div class="card-top">
+                <span class="card-icon">🦐</span>
+                <div class="card-info">
+                  <div class="card-title-row">
+                    <strong>{{ entry.group.adapter_name }}</strong>
+                    <span v-if="entry.group.adapter_version" class="adapter-version">v{{ entry.group.adapter_version }}</span>
+                  </div>
+                  <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
+                </div>
+              </div>
+              <div class="task-chips">
+                <div class="task-chips-list" :style="{ maxHeight: `${entry.preview.maxHeight}px` }">
+                  <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
+                </div>
+                <button
+                  v-if="entry.preview.isOverflowing"
+                  class="more-btn"
+                  @click.stop="$emit('open-script', entry.group)"
+                >
+                  还有 {{ entry.preview.hiddenTaskCount }} 个任务，点击查看
+                </button>
+              </div>
+              <div v-if="entry.isEnhancedProgress && entry.progress" class="card-progress">
+                <div class="card-progress-head">
+                  <span class="running-badge">运行中</span>
+                  <span class="card-progress-task">{{ entry.runningTask.task_name }}</span>
+                  <span class="card-progress-percent">{{ entry.progress.percentLabel }}</span>
+                </div>
+                <div
+                  v-if="entry.progress.overall"
+                  class="card-progress-bar"
+                  role="progressbar"
+                  :aria-label="entry.progress.overall.ariaLabel"
+                  :aria-valuenow="entry.progress.overall.percentValue"
+                  aria-valuemin="0"
+                  aria-valuemax="100"
+                >
+                  <div class="card-progress-fill" :style="{ width: `${entry.progress.overall.percentValue}%` }"></div>
+                </div>
+                <div v-if="entry.progress.batch" class="card-progress-sub">
+                  {{ entry.progress.batch.main }}
+                </div>
+                <div v-if="entry.progress.metaLine" class="card-progress-sub muted">
+                  {{ entry.progress.metaLine }}
+                </div>
+              </div>
+              <div class="card-bottom">
+                <span v-if="entry.runningTask" class="running-badge">运行中</span>
+                <span v-else-if="lastStatus(entry.group)" :class="['status-badge', lastStatus(entry.group)]">
+                  {{ lastStatusLabel(lastStatus(entry.group)) }}
+                </span>
+                <button class="remove-btn" @click.stop="removeAdapter(entry.group.adapter_id)">移除</button>
+              </div>
             </div>
-            <span class="task-count">{{ entry.group.tasks.length }} 个任务</span>
           </div>
-        </div>
-        <div class="task-chips">
-          <div class="task-chips-list" :style="{ maxHeight: `${entry.preview.maxHeight}px` }">
-            <span v-for="t in entry.group.tasks" :key="t.task_id" class="chip">{{ t.task_name }}</span>
-          </div>
-          <button
-            v-if="entry.preview.isOverflowing"
-            class="more-btn"
-            @click.stop="$emit('open-script', entry.group)"
-          >
-            还有 {{ entry.preview.hiddenTaskCount }} 个任务，点击查看
-          </button>
-        </div>
-        <div v-if="entry.isEnhancedProgress && entry.progress" class="card-progress">
-          <div class="card-progress-head">
-            <span class="running-badge">运行中</span>
-            <span class="card-progress-task">{{ entry.runningTask.task_name }}</span>
-            <span class="card-progress-percent">{{ entry.progress.percentLabel }}</span>
-          </div>
-          <div
-            v-if="entry.progress.overall"
-            class="card-progress-bar"
-            role="progressbar"
-            :aria-label="entry.progress.overall.ariaLabel"
-            :aria-valuenow="entry.progress.overall.percentValue"
-            aria-valuemin="0"
-            aria-valuemax="100"
-          >
-            <div class="card-progress-fill" :style="{ width: `${entry.progress.overall.percentValue}%` }"></div>
-          </div>
-          <div v-if="entry.progress.batch" class="card-progress-sub">
-            {{ entry.progress.batch.main }}
-          </div>
-          <div v-if="entry.progress.metaLine" class="card-progress-sub muted">
-            {{ entry.progress.metaLine }}
-          </div>
-        </div>
-        <div class="card-bottom">
-          <span v-if="entry.runningTask" class="running-badge">运行中</span>
-          <span v-else-if="lastStatus(entry.group)" :class="['status-badge', lastStatus(entry.group)]">
-            {{ lastStatusLabel(lastStatus(entry.group)) }}
-          </span>
-          <button class="remove-btn" @click.stop="removeAdapter(entry.group.adapter_id)">移除</button>
-        </div>
-      </div>
+        </section>
+      </template>
     </div>
 
     <!-- 导入弹窗 -->
@@ -157,6 +178,7 @@
 <script setup>
 import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
 import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
+import { partitionScriptGroups } from '../utils/scriptFavorites'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
 
 const emit = defineEmits(['open-script', 'reload'])
@@ -166,6 +188,9 @@ const repairCoreService = inject('repairCoreService')
 
 const loading = ref(false)
 const loadError = ref('')
+const favoriteError = ref('')
+const favorites = ref({})
+const favoritePendingIds = ref(new Set())
 const showInstall = ref(false)
 const installPath = ref('')
 const installType = ref('')
@@ -184,28 +209,70 @@ let pollTimer = null
 
 const groups = scriptGroups
 
-const displayGroups = computed(() =>
-  (groups.value || []).map(group => {
-    const runningTask = group.tasks.find(task => isTaskLiveActive(task.live?.status)) || null
-    const isEnhancedProgress = !!runningTask &&
-      resolveTaskProgressConfig(group.adapter_id, runningTask.task_id).usage.scriptList === 'enhanced'
-    const preview = getScriptCardTaskPreviewMeta(group)
-    return {
-      group,
-      runningTask,
-      preview,
-      isEnhancedProgress,
-      progress: isEnhancedProgress
-        ? buildTaskOverviewProgress(group.adapter_id, runningTask.task_id, runningTask.live || {})
-        : null,
-    }
-  })
-)
+function buildDisplayEntry(group) {
+  const runningTask = group.tasks.find(task => isTaskLiveActive(task.live?.status)) || null
+  const isEnhancedProgress = !!runningTask &&
+    resolveTaskProgressConfig(group.adapter_id, runningTask.task_id).usage.scriptList === 'enhanced'
+  const preview = getScriptCardTaskPreviewMeta(group)
+  return {
+    group,
+    runningTask,
+    preview,
+    isEnhancedProgress,
+    progress: isEnhancedProgress
+      ? buildTaskOverviewProgress(group.adapter_id, runningTask.task_id, runningTask.live || {})
+      : null,
+  }
+}
+
+const scriptSections = computed(() => {
+  const partition = partitionScriptGroups(groups.value, favorites.value)
+  const sections = []
+  if (partition.favorites.length) {
+    sections.push({ id: 'favorites', title: '我的收藏', entries: partition.favorites.map(buildDisplayEntry) })
+  }
+  if (partition.scripts.length) {
+    sections.push({ id: 'scripts', title: '全部脚本', entries: partition.scripts.map(buildDisplayEntry) })
+  }
+  return sections
+})
+
+function isFavorite(adapterId) {
+  return Object.prototype.hasOwnProperty.call(favorites.value, adapterId)
+}
+
+async function loadFavorites({ quiet = false } = {}) {
+  try {
+    const response = await window.cs.getScriptFavorites()
+    favorites.value = response?.favorites && typeof response.favorites === 'object' ? response.favorites : {}
+    if (!quiet) favoriteError.value = ''
+  } catch (error) {
+    if (!quiet) favoriteError.value = error?.message || '收藏列表加载失败，请稍后重试'
+  }
+}
+
+async function toggleFavorite(adapterId) {
+  if (favoritePendingIds.value.has(adapterId)) return
+  favoritePendingIds.value = new Set(favoritePendingIds.value).add(adapterId)
+  try {
+    const response = isFavorite(adapterId)
+      ? await window.cs.unfavoriteScript(adapterId)
+      : await window.cs.favoriteScript(adapterId)
+    favorites.value = response?.favorites && typeof response.favorites === 'object' ? response.favorites : favorites.value
+    favoriteError.value = ''
+  } catch (error) {
+    favoriteError.value = error?.message || '收藏操作失败，请重试'
+  } finally {
+    const next = new Set(favoritePendingIds.value)
+    next.delete(adapterId)
+    favoritePendingIds.value = next
+  }
+}
 
 onMounted(async () => {
-  await loadGroups()
+  await Promise.all([loadGroups(), loadFavorites()])
   pollTimer = window.setInterval(() => {
-    loadGroups({ quiet: true }).catch(() => {})
+    Promise.all([loadGroups({ quiet: true }), loadFavorites({ quiet: true })]).catch(() => {})
   }, 2000)
 })
 
@@ -275,7 +342,7 @@ const installSummary = computed(() => {
 async function removeAdapter(id) {
   if (!confirm(`确认移除「${id}」？相关数据不会删除。`)) return
   await window.cs.uninstallAdapter(id)
-  await loadScriptGroups()
+  await Promise.all([loadScriptGroups(), loadFavorites()])
 }
 
 function resetDragState() {
@@ -493,8 +560,14 @@ onUnmounted(() => {
 .placeholder { color: var(--text3); text-align: center; padding: 60px; font-size: 14px; grid-column: 1/-1; }
 .placeholder-stack { display: flex; flex-direction: column; align-items: center; gap: 12px; }
 
-.script-grid {
+.script-content {
   flex: 1; overflow-y: auto; padding: 20px 24px;
+  display: flex; flex-direction: column; gap: 28px;
+}
+.script-section { display: flex; flex-direction: column; gap: 12px; }
+.script-section-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.favorite-error { margin: 0; color: var(--orange); font-size: 13px; }
+.script-grid {
   display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   gap: 16px; align-content: start;
 }
@@ -506,16 +579,18 @@ onUnmounted(() => {
 }
 .script-card:hover { border-color: var(--orange); background: var(--bg3); }
 .script-card.disabled { opacity: 0.5; }
-.card-top { display: flex; align-items: center; gap: 12px; padding-right: 88px; }
+.card-top { display: flex; align-items: center; gap: 12px; padding-right: 48px; }
 .card-icon { font-size: 26px; }
 .card-info { flex: 1; }
 .card-title-row {
   display: flex;
   align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 .card-info strong {
   display: block;
+  flex: 0 1 auto;
   min-width: 0;
   font-size: 15px;
   font-weight: 700;
@@ -525,9 +600,7 @@ onUnmounted(() => {
   text-overflow: ellipsis;
 }
 .adapter-version {
-  position: absolute;
-  top: 18px;
-  right: 18px;
+  flex-shrink: 0;
   padding: 2px 8px;
   border-radius: 999px;
   background: rgba(22, 24, 32, 0.92);
@@ -537,6 +610,36 @@ onUnmounted(() => {
   font-weight: 700;
   letter-spacing: 0.02em;
 }
+.favorite-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--orange);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+  transition: color 0.15s ease, transform 0.15s ease, opacity 0.15s ease;
+}
+.favorite-icon {
+  width: 22px;
+  height: 22px;
+  fill: transparent;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: fill 0.15s ease, stroke-width 0.15s ease;
+}
+.favorite-btn:hover { color: #ff8d58; transform: scale(1.06); }
+.favorite-btn:active { transform: scale(0.94); }
+.favorite-btn.active .favorite-icon { fill: currentColor; stroke-width: 1.2; }
+.favorite-btn:disabled { cursor: wait; opacity: 0.55; }
 .task-count { font-size: 12px; color: var(--text3); }
 .task-chips {
   display: flex;

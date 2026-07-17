@@ -314,6 +314,9 @@ export function createDevCsBridge() {
     installAdapter: (payload) => apiCall('POST', '/adapters/install', payload || {}),
     uninstallAdapter: (id) => apiCall('DELETE', `/adapters/${encodePathPart(id)}`),
     enableAdapter: (id, enabled) => apiCall('PATCH', `/adapters/${encodePathPart(id)}/enable`, { enabled }),
+    getScriptFavorites: () => apiCall('GET', '/script-favorites'),
+    favoriteScript: (id) => apiCall('PUT', `/script-favorites/${encodePathPart(id)}`),
+    unfavoriteScript: (id) => apiCall('DELETE', `/script-favorites/${encodePathPart(id)}`),
 
     getTasks: () => apiCall('GET', '/tasks'),
     listTaskInstances: (query = {}) => apiCall('GET', `/task-instances?${queryString(query)}`),

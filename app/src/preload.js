@@ -247,6 +247,9 @@ contextBridge.exposeInMainWorld('cs', {
   installAdapter:  (payload) => ipcRenderer.invoke('install-adapter', payload),
   uninstallAdapter:(id) => ipcRenderer.invoke('uninstall-adapter', id),
   enableAdapter:   (id, enabled) => ipcRenderer.invoke('enable-adapter', id, enabled),
+  getScriptFavorites: () => ipcRenderer.invoke('get-script-favorites'),
+  favoriteScript: (id) => ipcRenderer.invoke('favorite-script', id),
+  unfavoriteScript: (id) => ipcRenderer.invoke('unfavorite-script', id),
 
   getTasks:        () => ipcRenderer.invoke('get-tasks'),
   listTaskInstances: (query = {}) => invokeWithApiFallback('list-task-instances', [query],

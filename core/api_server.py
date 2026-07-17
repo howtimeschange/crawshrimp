@@ -38,6 +38,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from core import runtime_paths
+from core import script_favorites
 from core import bala_ai_model_library
 from core import bala_ai_video_materials
 from core import bala_ai_video_review
@@ -8833,6 +8834,24 @@ def health(probe: bool = False):
 
 # ─── Adapters ───
 
+@app.get("/script-favorites")
+def get_script_favorites():
+    return {"favorites": script_favorites.list_favorites()}
+
+
+@app.put("/script-favorites/{adapter_id}")
+def favorite_script(adapter_id: str):
+    if not adapter_loader.get_adapter(adapter_id):
+        raise HTTPException(404, f"Adapter not found: {adapter_id}")
+    return {"favorites": script_favorites.favorite(adapter_id)}
+
+
+@app.delete("/script-favorites/{adapter_id}")
+def unfavorite_script(adapter_id: str):
+    if not adapter_loader.get_adapter(adapter_id):
+        raise HTTPException(404, f"Adapter not found: {adapter_id}")
+    return {"favorites": script_favorites.unfavorite(adapter_id)}
+
 @app.get("/adapters")
 def list_adapters():
     return adapter_loader.list_all()
@@ -8885,6 +8904,7 @@ def uninstall_adapter(adapter_id: str):
         raise HTTPException(404, f"Adapter not found: {adapter_id}")
     sched_module.unregister_adapter(adapter_id)
     adapter_loader.uninstall(adapter_id)
+    script_favorites.unfavorite(adapter_id)
     return {"ok": True}
 
 

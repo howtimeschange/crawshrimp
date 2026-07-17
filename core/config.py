@@ -48,6 +48,7 @@ DEFAULT_CONFIG = {
         "idle_heartbeat_seconds": 60,
         "busy_heartbeat_seconds": 10,
     },
+    "script_favorites": {},
     "api_port": 18765,
 }
 

@@ -2659,6 +2659,9 @@ secureHandle('get-adapters',     async () => apiCall('GET',    '/adapters'))
 secureHandle('uninstall-adapter',async (_, id) => apiCall('DELETE', `/adapters/${id}`))
 secureHandle('enable-adapter',   async (_, id, enabled) =>
   apiCall('PATCH', `/adapters/${id}/enable`, { enabled }))
+secureHandle('get-script-favorites', async () => apiCall('GET', '/script-favorites'))
+secureHandle('favorite-script', async (_, id) => apiCall('PUT', `/script-favorites/${id}`))
+secureHandle('unfavorite-script', async (_, id) => apiCall('DELETE', `/script-favorites/${id}`))
 
 secureHandle('install-adapter', async (_, payload) => {
   const installMode = payload?.install_mode || 'copy'
