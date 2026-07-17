@@ -59,7 +59,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install Python deps
-        run: python -m pip install -r core/requirements.txt
+        run: python -m pip install -r core/requirements.txt -r tests/requirements.txt
 
       - name: Run Python tests
         env:

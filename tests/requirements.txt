@@ -1,0 +1,2 @@
+# CI-only test runner; do not bundle this into the desktop Python runtime.
+pytest>=8.0.0
