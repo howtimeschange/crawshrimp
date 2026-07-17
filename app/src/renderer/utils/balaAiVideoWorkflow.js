@@ -979,6 +979,7 @@ export function buildBalaVideoAssetPool({ reviewStyle = {}, materialStyle = null
       path,
       sourcePath: compact(asset?.sourcePath || asset?.source_path),
       imageUrl: compact(asset?.imageUrl || asset?.image_url),
+      thumbnailUrl: compact(asset?.thumbnailUrl || asset?.thumbnail_url),
       operationType: normalizeOperationType(asset?.operationType || asset?.operation_type || asset?.action),
       jobUid: compact(asset?.jobUid || asset?.job_uid),
       runUid: compact(asset?.runUid || asset?.run_uid),

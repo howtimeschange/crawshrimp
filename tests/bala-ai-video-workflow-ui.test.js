@@ -1148,7 +1148,7 @@ test('video asset pool enforces the review gate and keeps business source labels
     reviewStyle: {
       styleCode: '208326102205',
       assets: [
-        { id: 'approved-face', label: '正面', operationType: 'face_swap', status: 'approved', path: '/tmp/face.png' },
+        { id: 'approved-face', label: '正面', operationType: 'face_swap', status: 'approved', path: '/tmp/face.png', thumbnailUrl: 'http://127.0.0.1:18765/thumbnail/approved-face' },
         { id: 'pending-outfit', label: '侧面', operationType: 'outfit_swap', status: 'pending', path: '/tmp/outfit.png' },
         { id: 'retry-pose', label: '背面', operationType: 'pose_swap', status: 'retry', path: '/tmp/pose.png' },
         { id: 'rejected-bg', label: '背景', operationType: 'background_swap', status: 'rejected', path: '/tmp/bg.png' },
@@ -1173,6 +1173,7 @@ test('video asset pool enforces the review gate and keeps business source labels
     ['vasset-retry-pose', 'ai', '模拍', 'AI·模拍', 'retry', false],
     ['vasset-208326102205-source-approved-origin', 'origin', '模拍', '模特图', 'approved', true],
   ])
+  assert.equal(assets[0].thumbnailUrl, 'http://127.0.0.1:18765/thumbnail/approved-face')
 })
 
 test('video stage only exposes styles that contain an approved asset', () => {
