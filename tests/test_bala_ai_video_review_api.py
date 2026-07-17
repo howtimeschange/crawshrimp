@@ -3,6 +3,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+import pytest
+
+from core import ai_image_service
 from core import api_server
 from core import bala_ai_video_review as review
 from core import runtime_paths
@@ -133,6 +136,62 @@ def test_regenerate_endpoint_returns_the_newest_retry_asset(tmp_path, monkeypatc
     ))
 
     assert result["asset"]["id"] == "retry-new"
+
+
+@pytest.mark.parametrize("submission_result", ["rejected", "missing_key", "missing_run"])
+def test_regenerate_asset_is_failed_when_async_submission_did_not_start(submission_result, tmp_path, monkeypatch):
+    source = tmp_path / "source.png"
+    source.write_bytes(b"\x89PNG\r\n\x1a\n")
+    batch = {
+        "batch_id": "bala-retry-submit-failed",
+        "token": "token-retry-failed",
+        "artifact_dir": str(tmp_path / "artifacts"),
+        "status": "pending_approval",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{
+                "id": "ai-source",
+                "kind": "ai",
+                "source_path": str(source),
+                "path": str(source),
+                "status": "pending",
+                "operation_type": "pose_swap",
+                "prompt": "保持服装版型，调整姿势",
+            }],
+        }],
+    }
+    monkeypatch.setattr(api_server.data_sink, "create_ai_image_job", lambda _payload: {
+        "job_uid": "job-rejected",
+    })
+    monkeypatch.setattr(api_server.data_sink, "create_ai_image_asset", lambda _payload: {})
+    monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {
+        "job_uid": "job-rejected",
+        "status": "draft",
+        "summary": {},
+    })
+    monkeypatch.setattr(review.data_sink, "list_ai_image_assets", lambda _job_uid: [])
+
+    def submit(*_args, **_kwargs):
+        if submission_result == "missing_key":
+            raise ai_image_service.MissingModelKeyError(
+                "缺少 GPT Image 2 API Key",
+                config_id="ai.image.gpt_image_2_api_key",
+            )
+        if submission_result == "missing_run":
+            return {"accepted": True, "runs": []}
+        return {"accepted": False, "runs": []}
+
+    monkeypatch.setattr(api_server.ai_image_service, "submit_workbench_batch", submit)
+
+    updated = api_server._append_bala_review_regenerate_asset(
+        batch,
+        api_server.BalaReviewRegenerateRequest(asset_id="ai-source", submit_async=True),
+    )
+    retry_asset = updated["items"][0]["assets"][-1]
+
+    assert retry_asset["status"] == "failed"
+    assert retry_asset["review_note"]
+    assert updated["status"] != "generating"
 
 
 def test_delete_review_asset_persists_ai_removal_and_rejects_origin(tmp_path, monkeypatch):

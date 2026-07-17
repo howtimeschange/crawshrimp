@@ -221,6 +221,85 @@ def test_refresh_materializes_remote_ai_result_before_marking_pending(tmp_path, 
     assert refreshed["status"] == "pending_approval"
 
 
+@pytest.mark.parametrize("terminal_status", ["failed", "cancelled", "canceled", "expired"])
+def test_refresh_marks_terminal_ai_image_job_as_failed(terminal_status, monkeypatch):
+    monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {
+        "job_uid": "job-terminal",
+        "status": terminal_status,
+        "summary": {
+            "ok": False,
+            "error": f"provider task {terminal_status}",
+            "runs": [{
+                "run_uid": "run-terminal",
+                "status": terminal_status,
+                "error": f"provider task {terminal_status}",
+            }],
+        },
+    })
+    monkeypatch.setattr(review.data_sink, "list_ai_image_assets", lambda _job_uid: [])
+    batch = {
+        "batch_id": "bala-review-terminal",
+        "status": "generating",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{
+                "id": "ai-terminal",
+                "kind": "ai",
+                "job_uid": "job-terminal",
+                "run_uid": "run-terminal",
+                "path": "",
+                "status": "generating",
+                "review_note": "已异步提交重跑任务",
+            }],
+        }],
+    }
+
+    refreshed = review.refresh_generated_assets(batch)
+    asset = refreshed["items"][0]["assets"][0]
+
+    assert asset["status"] == "failed"
+    assert terminal_status in asset["review_note"]
+    assert refreshed["status"] != "generating"
+
+
+def test_refresh_uses_terminal_provider_status_when_public_status_is_stale(monkeypatch):
+    monkeypatch.setattr(review.data_sink, "get_ai_image_job", lambda _job_uid: {
+        "job_uid": "job-provider-terminal",
+        "status": "running",
+        "summary": {
+            "runs": [{
+                "run_uid": "run-provider-terminal",
+                "status": "running",
+                "provider_status": "expired",
+                "error": "provider task expired",
+            }],
+        },
+    })
+    monkeypatch.setattr(review.data_sink, "list_ai_image_assets", lambda _job_uid: [])
+    batch = {
+        "batch_id": "bala-review-provider-terminal",
+        "status": "generating",
+        "items": [{
+            "style_code": "208326102205",
+            "assets": [{
+                "id": "ai-provider-terminal",
+                "kind": "ai",
+                "job_uid": "job-provider-terminal",
+                "run_uid": "run-provider-terminal",
+                "path": "",
+                "status": "generating",
+            }],
+        }],
+    }
+
+    refreshed = review.refresh_generated_assets(batch)
+    asset = refreshed["items"][0]["assets"][0]
+
+    assert asset["status"] == "failed"
+    assert asset["review_note"] == "provider task expired"
+    assert refreshed["status"] != "generating"
+
+
 def test_list_review_batches_restores_every_batch_for_requested_style(tmp_path, monkeypatch):
     monkeypatch.setenv("CRAWSHRIMP_DATA", str(tmp_path / "data"))
     runtime_paths.reset_runtime_data_root_cache()

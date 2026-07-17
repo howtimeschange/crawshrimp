@@ -1,9 +1,17 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const viewsDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../views')
+
+function readView(name) {
+  return fs.readFileSync(path.join(viewsDir, name), 'utf8')
+}
 
 test('AI video workflow only applies inert as a real boolean while a modal is open', () => {
-  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const source = readView('AiVideoWorkflow.vue')
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(templateSource, /class="aiv-stage"[\s\S]*:inert="hasOpenModal \|\| undefined"/)
@@ -11,7 +19,7 @@ test('AI video workflow only applies inert as a real boolean while a modal is op
 })
 
 test('AI video settings keep provider advanced fields folded and expose dedicated OSS upload config', () => {
-  const settings = fs.readFileSync('app/src/renderer/views/SettingsPage.vue', 'utf8')
+  const settings = readView('SettingsPage.vue')
 
   assert.match(settings, /<details class="settings-advanced-panel">[\s\S]*百炼业务空间 ID[\s\S]*百炼区域[\s\S]*<\/details>/)
   assert.match(settings, /OSS 上传配置/)
@@ -20,14 +28,14 @@ test('AI video settings keep provider advanced fields folded and expose dedicate
 })
 
 test('AI video workflow review local upload menu opens the desktop image picker', () => {
-  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const source = readView('AiVideoWorkflow.vue')
 
   assert.match(source, /<button type="button"[^>]*@click="uploadLocalReviewImage\(style\.styleCode\)"[^>]*>\s*上传本地图\s*<\/button>/)
   assert.match(source, /async function uploadLocalReviewImage\(styleCode = ''\)[\s\S]*window\.cs\.browseFile\(\{[\s\S]*images: true,[\s\S]*multi: true/)
 })
 
 test('AI video workflow keeps local assets enabled for Bailian Kling and PixVerse models', () => {
-  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const source = readView('AiVideoWorkflow.vue')
   const providerUsesLocalImages = source.match(/function providerUsesLocalImages[\s\S]*?\n}/)?.[0] || ''
   const klingDefaults = source.match(/if \(isKlingVideoProvider\(provider\)\) \{[\s\S]*?\n  \}/)?.[0] || ''
   const pixverseDefaults = source.match(/if \(isPixVerseVideoProvider\(provider\)\) \{[\s\S]*?\n  \}/)?.[0] || ''
@@ -41,7 +49,7 @@ test('AI video workflow keeps local assets enabled for Bailian Kling and PixVers
 })
 
 test('AI video workflow review retry sends only durable review assets to remote regenerate', () => {
-  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const source = readView('AiVideoWorkflow.vue')
   const start = source.indexOf('async function requestReviewAssetRetry')
   const end = source.indexOf('function reviewSummaryCounts', start)
   const retrySource = source.slice(start, end)
@@ -56,7 +64,7 @@ test('AI video workflow review retry sends only durable review assets to remote 
 })
 
 test('AI video workflow continuing an original image counts it as an AI edit input', () => {
-  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const source = readView('AiVideoWorkflow.vue')
   const start = source.indexOf('const selectedEditSourceCount = computed')
   const end = source.indexOf('const selectedEditVersionCount = computed', start)
   const countSource = source.slice(start, end)
@@ -66,7 +74,7 @@ test('AI video workflow continuing an original image counts it as an AI edit inp
 })
 
 test('AI video workflow local review-only edit inputs do not sync fake asset ids to material selection', () => {
-  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const source = readView('AiVideoWorkflow.vue')
   const start = source.indexOf('function selectedMaterialAssetIds')
   const end = source.indexOf('function selectedSourceAssetsForAi', start)
   const selectionSource = source.slice(start, end)

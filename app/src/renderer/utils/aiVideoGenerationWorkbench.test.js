@@ -279,6 +279,36 @@ test('deactivation during an in-flight refresh cannot restart background polling
   assert.equal(workbench.pollTimer.value, null)
 })
 
+test('four-second polling keeps job reloads single-flight', async () => {
+  const jobsRequest = deferred()
+  let listCalls = 0
+  let pollCallback
+  const workbench = await setupWorkbench({
+    listAiVideoJobs() {
+      listCalls += 1
+      return jobsRequest.promise
+    },
+  }, {
+    windowOverrides: {
+      setInterval(callback) {
+        pollCallback = callback
+        return 1
+      },
+      clearInterval() {},
+    },
+  })
+  workbench.jobs.value = [{ id: 'job-running', status: 'running' }]
+  workbench.startPolling()
+
+  pollCallback()
+  pollCallback()
+
+  assert.equal(listCalls, 1)
+  jobsRequest.resolve({ data: { jobs: [] } })
+  await jobsRequest.promise
+  await nextTick()
+})
+
 test('secure picker and output-folder IPC failures are surfaced inline', async () => {
   const workbench = await setupWorkbench({
     async selectAiVideoImages() { throw new Error('图片选择失败') },

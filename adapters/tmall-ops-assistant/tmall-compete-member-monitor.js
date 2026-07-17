@@ -170,11 +170,17 @@
   function collectInputRows(rawParams = params) {
     const rows = []
     const file = rawParams.input_file || rawParams.member_file || rawParams.file
-    if (Array.isArray(file?.rows)) rows.push(...file.rows)
+    const hasTopLevelRows = Array.isArray(file?.rows) && file.rows.length > 0
+    if (hasTopLevelRows) rows.push(...file.rows)
     const sheets = file?.sheets || file?.workbook_tables || file?.workbookTables
+    const activeSheetName = compact(file?.sheet_name || file?.sheetName || file?.active_sheet_name)
     if (sheets && typeof sheets === 'object') {
-      for (const sheet of Object.values(sheets)) {
-        if (Array.isArray(sheet?.rows) && sheet.rows !== file?.rows) rows.push(...sheet.rows)
+      for (const [sheetName, sheet] of Object.entries(sheets)) {
+        if (hasTopLevelRows && (
+          (activeSheetName && compact(sheetName) === activeSheetName)
+          || sheet?.rows === file?.rows
+        )) continue
+        if (Array.isArray(sheet?.rows)) rows.push(...sheet.rows)
       }
     }
     rows.push(...parseMemberUrlLines(rawParams.member_urls || rawParams.urls || rawParams.links))

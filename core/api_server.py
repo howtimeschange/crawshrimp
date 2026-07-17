@@ -7472,6 +7472,7 @@ def _append_bala_review_regenerate_asset(batch: dict, req: BalaReviewRegenerateR
         })
 
     submit_note = "已创建重跑任务，未提交"
+    retry_status = "failed"
     run_uid = ""
     if req.submit_async:
         try:
@@ -7482,7 +7483,11 @@ def _append_bala_review_regenerate_asset(batch: dict, req: BalaReviewRegenerateR
             )
             first_run = next(iter(run_result.get("runs") or []), {})
             run_uid = str(first_run.get("run_uid") or "")
-            submit_note = "已异步提交重跑任务" if run_result.get("accepted") else "重跑提交未接受"
+            if run_result.get("accepted") and run_uid:
+                retry_status = "generating"
+                submit_note = "已异步提交重跑任务"
+            else:
+                submit_note = "重跑提交未接受" if not run_result.get("accepted") else "重跑提交未返回运行记录"
         except ai_image_service.MissingModelKeyError as exc:
             submit_note = str(exc)
         except Exception as exc:
@@ -7498,7 +7503,7 @@ def _append_bala_review_regenerate_asset(batch: dict, req: BalaReviewRegenerateR
         "source_path": source_path,
         "path": "",
         "filename": "",
-        "status": "generating",
+        "status": retry_status,
         "operation_type": operation_type,
         "job_uid": job_uid,
         "run_uid": run_uid,

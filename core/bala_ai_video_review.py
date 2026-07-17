@@ -354,12 +354,12 @@ def remove_review_asset(batch: dict, asset_id: str) -> dict:
     raise KeyError(target)
 
 
-def _job_output_paths(job_uid: str) -> list[str]:
+def _job_output_paths(job_uid: str, job: Mapping[str, Any] | None = None) -> list[str]:
     paths: list[str] = []
     if not job_uid:
         return paths
-    job = data_sink.get_ai_image_job(job_uid) or {}
-    summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    source_job = job if isinstance(job, Mapping) else (data_sink.get_ai_image_job(job_uid) or {})
+    summary = source_job.get("summary") if isinstance(source_job.get("summary"), Mapping) else {}
     paths.extend(_path_list(summary.get("output_files"), summary.get("files")))
     result_cache = summary.get("result_cache") if isinstance(summary.get("result_cache"), Mapping) else {}
     paths.extend(_path_list(list(result_cache.values())))
@@ -387,6 +387,30 @@ def _job_output_paths(job_uid: str) -> list[str]:
     return existing
 
 
+def _job_failure_note(job: Mapping[str, Any], run_uid: str = "") -> str:
+    terminal_statuses = {"failed", "cancelled", "canceled", "expired"}
+    summary = job.get("summary") if isinstance(job.get("summary"), Mapping) else {}
+    runs = [run for run in summary.get("runs") or [] if isinstance(run, Mapping)]
+    target_run = next((run for run in runs if _text(run.get("run_uid")) == run_uid), None) if run_uid else None
+    candidates = [target_run, summary, job]
+    for source in candidates:
+        if not isinstance(source, Mapping):
+            continue
+        terminal_status = next((
+            status
+            for status in (
+                _text(source.get("status")).lower(),
+                _text(source.get("provider_status")).lower(),
+            )
+            if status in terminal_statuses
+        ), "")
+        if not terminal_status:
+            continue
+        detail = _text(source.get("error") or source.get("message"))
+        return detail or f"AI 生图任务已{terminal_status}"
+    return ""
+
+
 def refresh_generated_assets(batch: dict) -> dict:
     for asset in _all_assets(batch):
         if asset.get("kind") != "ai":
@@ -395,8 +419,14 @@ def refresh_generated_assets(batch: dict) -> dict:
             if asset.get("status") == STATUS_GENERATING:
                 asset["status"] = "pending"
             continue
-        paths = _job_output_paths(_text(asset.get("job_uid")))
+        job_uid = _text(asset.get("job_uid"))
+        job = data_sink.get_ai_image_job(job_uid) or {} if job_uid else {}
+        paths = _job_output_paths(job_uid, job)
         if not paths:
+            failure_note = _job_failure_note(job, _text(asset.get("run_uid")))
+            if failure_note:
+                asset["status"] = "failed"
+                asset["review_note"] = failure_note
             continue
         asset["path"] = paths[0]
         asset["filename"] = Path(paths[0]).name

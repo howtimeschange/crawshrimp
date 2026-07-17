@@ -97,7 +97,7 @@ test('desktop hides native application menu on Windows and Linux', () => {
   assert.match(main, /function hideNativeAppMenu\(\) \{\s*if \(process\.platform === 'darwin'\) return\s*Menu\.setApplicationMenu\(null\)\s*\}/)
   assert.match(main, /autoHideMenuBar: process\.platform !== 'darwin'/)
   assert.match(main, /if \(process\.platform !== 'darwin'\) \{\s*mainWindow\.setMenuBarVisibility\(false\)\s*\}/)
-  assert.match(main, /app\.whenReady\(\)\.then\(async \(\) => \{\s*hideNativeAppMenu\(\)\s*createWindow\(\)/)
+  assert.match(main, /app\.whenReady\(\)\.then\(async \(\) => \{\s*hideNativeAppMenu\(\)\s*protocol\.handle\(BALA_WORKSPACE_MEDIA_PROTOCOL, handleBalaWorkspaceMediaRequest\)\s*protocol\.handle\(LOCAL_MEDIA_PROTOCOL, handleLocalMediaRequest\)\s*ensureDefaultLocalMediaRoots\(\)\s*createWindow\(\)/)
 })
 
 test('desktop lifecycle confirms active tasks before quitting', () => {
@@ -273,10 +273,12 @@ test('desktop API helper rejects HTTP error responses with backend detail', () =
   const main = readRepoFile('app/src/main.js')
   const backendApi = readRepoFile('app/src/backendApi.js')
 
-  assert.match(main, /const \{ requestBackendApi \} = require\('\.\/backendApi'\)/)
+  assert.match(main, /const \{[\s\S]*?\brequestBackendApi,?[\s\S]*?\} = require\('\.\/backendApi'\)/)
   assert.match(main, /function apiCall\(method, urlPath, body = null, options = \{\}\) \{\s*return requestBackendApi\(\{/)
   assert.match(backendApi, /if \(statusCode >= 400\) \{\s*reject\(backendErrorFromResponse\(statusCode, res\.statusMessage, payload\)\)/)
-  assert.match(backendApi, /payload\.detail \|\| payload\.error \|\| payload\.message/)
+  assert.match(backendApi, /const detail = structuredErrorDetail\(payload\)/)
+  assert.match(backendApi, /const error = new Error\(detail\.message \|\| fallback\)/)
+  assert.match(backendApi, /for \(const key of \['detail', 'error'\]\)/)
   assert.match(backendApi, /error\.statusCode = statusCode/)
 })
 

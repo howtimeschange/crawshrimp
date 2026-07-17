@@ -412,7 +412,7 @@ test('AI video workflow wires outfit references and settings handoff in the fixe
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const appSource = fs.readFileSync('app/src/renderer/App.vue', 'utf8')
 
-  assert.match(source, /pickOutfitImages/)
+  assert.match(source, /openLocalMaterialLibrary\('outfit'\)/)
   assert.match(source, /garment_images/)
   assert.match(source, /outfit_reference_images/)
   assert.match(source, /variant_reference_images/)
@@ -621,24 +621,24 @@ test('workflow review retry never sends local-only assets to the remote review r
 test('review approvals become video-selectable only after the durable save succeeds', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const singleStart = source.indexOf('async function setReviewAssetStatus')
-  const singleEnd = source.indexOf('async function setStyleReviewStatus', singleStart)
-  const bulkStart = source.indexOf('async function saveReviewAssetsStatus')
-  const bulkEnd = source.indexOf('async function refreshReviewBatch', bulkStart)
+  const singleEnd = source.indexOf('function requestStyleReviewStatus', singleStart)
+  const bulkStart = source.indexOf('async function saveReviewAssetDecisions')
+  const bulkEnd = source.indexOf('function visibleReviewSourceAssets', bulkStart)
   const singleSource = source.slice(singleStart, singleEnd)
   const bulkSource = source.slice(bulkStart, bulkEnd)
 
-  assert.doesNotMatch(singleSource, /asset\.status\s*=\s*normalized/)
-  assert.doesNotMatch(singleSource, /syncWorkspaceReviewDecision\(asset, normalized\)/)
-  assert.doesNotMatch(singleSource, /asset\.reviewBoardUrl\s*\|\|\s*reviewBoardUrl\.value/)
-  assert.doesNotMatch(bulkSource, /asset\.status\s*=\s*status/)
-  assert.doesNotMatch(bulkSource, /syncWorkspaceReviewDecision\(asset, status\)/)
+  assert.match(singleSource, /await saveReviewAssetDecisions\(\[\{ asset, status \}\]\)/)
   assert.doesNotMatch(bulkSource, /asset\.reviewBoardUrl\s*\|\|\s*reviewBoardUrl\.value/)
-  assert.match(singleSource, /await window\.cs\.saveBalaReviewDecisions/)
+  assert.match(bulkSource, /const grouped = new Map\(\)/)
+  assert.match(bulkSource, /const localEntries = \[\]/)
+  assert.match(bulkSource, /const boardUrl = asset\.reviewBoardUrl/)
   assert.match(bulkSource, /await window\.cs\.saveBalaReviewDecisions/)
-  assert.match(singleSource, /if \(!ref\) \{[\s\S]*?applyLocalReviewDecision\(asset, normalized\)[\s\S]*?return/)
-  assert.match(bulkSource, /const localAssets = \[\]/)
-  assert.match(bulkSource, /localAssets\.push\(asset\)/)
-  assert.match(bulkSource, /for \(const asset of localAssets\) applyLocalReviewDecision\(asset, status\)/)
+  assert.match(bulkSource, /applyReviewBatchStyles\(styles\)/)
+  assert.match(bulkSource, /for \(const entry of localEntries\) applyLocalReviewDecision\(entry\.asset, entry\.status\)/)
+  assert.ok(
+    bulkSource.indexOf('await window.cs.saveBalaReviewDecisions') < bulkSource.indexOf('for (const entry of localEntries) applyLocalReviewDecision'),
+    'local review decisions should apply only after every durable board save succeeds',
+  )
 })
 
 test('video tasks and provider results persist across reloads with real refresh and download actions', () => {
@@ -648,10 +648,11 @@ test('video tasks and provider results persist across reloads with real refresh 
   const devBridge = fs.readFileSync('app/src/renderer/utils/devCsBridge.js', 'utf8')
   const main = fs.readFileSync('app/src/main.js', 'utf8')
 
-  assert.match(source, /BALA_AI_VIDEO_STATE_STORAGE_KEY/)
+  assert.match(source, /function workspaceRecoveryManifest/)
+  assert.match(source, /function restoreWorkspaceVideoManifest/)
   assert.match(source, /function persistVideoWorkflowState/)
   assert.match(source, /function restoreVideoWorkflowState/)
-  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreVideoWorkflowState\(\)/)
+  assert.match(source, /onMounted\(\(\) => \{[\s\S]*?restoreWorkspaceManifest\(workspaceDir\.value\)/)
   assert.match(source, /providerTaskId/)
   assert.match(templateSource, /@click="refreshVideoResults"/)
   assert.match(templateSource, /@click="downloadCompletedVideoResults"/)
@@ -659,8 +660,12 @@ test('video tasks and provider results persist across reloads with real refresh 
   assert.match(source, /async function downloadCompletedVideoResults/)
   assert.match(source, /refreshBalaVideoProviderTask/)
   assert.match(preload, /refreshBalaVideoProviderTask/)
+  assert.match(preload, /readBalaWorkspaceManifest/)
+  assert.match(preload, /writeBalaWorkspaceManifest/)
   assert.match(devBridge, /refreshBalaVideoProviderTask/)
   assert.match(main, /refresh-bala-video-provider-task/)
+  assert.match(main, /read-bala-workspace-manifest/)
+  assert.match(main, /write-bala-workspace-manifest/)
 })
 
 test('TaskRunner opens Bala image review drawer after AI generation', () => {
@@ -695,7 +700,8 @@ test('AI video workflow exposes HappyHorse as an explicit video task provider', 
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const templateSource = source.split('<script setup>')[0]
 
-  assert.match(templateSource, /百炼 HappyHorse/)
+  assert.match(source, /title: '百炼 HappyHorse 1\.1 · 阿里云'/)
+  assert.match(templateSource, /v-for="option in videoTaskProviderOptions"/)
   assert.match(templateSource, /文生视频/)
   assert.match(templateSource, /图生视频/)
   assert.match(templateSource, /参考生视频/)
@@ -838,8 +844,9 @@ test('failed video results without an output hide file actions and return to gen
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(templateSource, /v-if="videoResultHasOutput\(item\)"[^>]*@click="openVideoResult\(item\)"/)
-  assert.match(templateSource, /v-if="canRetryVideoResult\(item\)"[^>]*@click="retryVideoResult\(item\)"/)
-  assert.match(templateSource, /v-if="!videoResultHasOutput\(item\) && !canRetryVideoResult\(item\)"[^>]*@click="activeStep = 'templates'"/)
+  assert.match(templateSource, /v-else-if="canRefreshVideoResult\(item\)"[^>]*@click="refreshSingleVideoResult\(item\)"/)
+  assert.match(templateSource, /v-else-if="canDownloadVideoResult\(item\)"[^>]*@click="downloadVideoResult\(item\)"/)
+  assert.match(templateSource, /v-if="!videoResultHasOutput\(item\) && !canRefreshVideoResult\(item\) && !canDownloadVideoResult\(item\)"[\s\S]{0,180}@click="activeStep = 'templates'"/)
 })
 
 test('video task directory and image pickers use accessible explicit controls', () => {
@@ -853,7 +860,7 @@ test('video task directory and image pickers use accessible explicit controls', 
   assert.match(templateSource, /:aria-pressed="asset\.selected"/)
   assert.match(templateSource, /:aria-pressed="selectedModel\?\.id === model\.id"/)
   assert.match(templateSource, /:aria-pressed="selectedTemplateId === template\.id"/)
-  assert.match(templateSource, /class="aiv-video-asset-zoom"/)
+  assert.match(templateSource, /class="aiv-vtask-card-zoom"/)
 })
 
 test('HappyHorse bridge is exposed in preload and browser fallback', () => {
@@ -896,11 +903,11 @@ test('AI edit workspace treats selection as operation scope and exposes shared e
 
   assert.match(source, /PromptLibraryPickerModal/)
   assert.match(source, /TldrawAnnotationLayer/)
-  assert.match(templateSource, /本地素材库/)
+  assert.match(templateSource, /openLocalMaterialLibrary\('garment'\)/)
   assert.match(templateSource, /从 Prompt 库选择/)
   assert.match(templateSource, /aiv-selected-model-preview/)
   assert.match(templateSource, /aiv-edit-sticky-actions/)
-  assert.match(templateSource, /删除生成结果/)
+  assert.match(templateSource, /class="aiv-version-delete"[^>]*>删除<\/button>/)
   assert.match(templateSource, /生成历史/)
   assert.doesNotMatch(templateSource, /选中的版本会进入审核池/)
   assert.doesNotMatch(finalizeSource, /activeStep\.value = 'review'/)
@@ -1125,11 +1132,12 @@ test('workflow restores all persisted review batches and routes decisions throug
   const preload = fs.readFileSync('app/src/preload.js', 'utf8')
   const main = fs.readFileSync('app/src/main.js', 'utf8')
 
-  assert.match(source, /BALA_AI_IMAGE_WORKSPACE_STATE_STORAGE_KEY/)
+  assert.match(source, /async function restoreWorkspaceManifest\(/)
+  assert.match(source, /async function flushWorkspaceManifest\(/)
   assert.match(source, /async function restoreReviewWorkspaceBatches\(/)
   assert.match(source, /window\.cs\.listBalaReviewWorkspaceBatches/)
   assert.match(source, /normalizeBalaReviewBatchStyles\(batch,\s*\{\s*reviewBoardUrl/)
-  assert.match(source, /const boardUrl = asset\.reviewBoardUrl \|\| reviewBoardUrl\.value/)
+  assert.match(source, /const boardUrl = asset\.reviewBoardUrl/)
   assert.match(preload, /listBalaReviewWorkspaceBatches/)
   assert.match(main, /list-bala-review-workspace-batches/)
 })
@@ -1152,11 +1160,18 @@ test('video asset pool enforces the review gate and keeps business source labels
     },
   })
 
-  assert.deepEqual(assets.map(asset => [asset.id, asset.kind, asset.status, asset.selectable]), [
-    ['vasset-approved-face', 'AI 换脸', 'approved', true],
-    ['vasset-pending-outfit', 'AI 换装', 'pending', false],
-    ['vasset-retry-pose', 'AI 换姿势', 'retry', false],
-    ['vasset-208326102205-source-approved-origin', '模拍', 'approved', true],
+  assert.deepEqual(assets.map(asset => [
+    asset.id,
+    asset.kind,
+    asset.businessKind,
+    asset.displayKind,
+    asset.status,
+    asset.selectable,
+  ]), [
+    ['vasset-approved-face', 'ai', '模拍', 'AI·模拍', 'approved', true],
+    ['vasset-pending-outfit', 'ai', '模拍', 'AI·模拍', 'pending', false],
+    ['vasset-retry-pose', 'ai', '模拍', 'AI·模拍', 'retry', false],
+    ['vasset-208326102205-source-approved-origin', 'origin', '模拍', '模特图', 'approved', true],
   ])
 })
 
@@ -1213,7 +1228,7 @@ test('new video task uses a tiled style library, approved-only assets, and no sp
   const templateSource = source.split('<script setup>')[0]
 
   assert.match(templateSource, /aiv-video-style-library/)
-  assert.match(templateSource, /选择款号素材库/)
+  assert.match(templateSource, /<strong>选择款号<\/strong>/)
   assert.doesNotMatch(templateSource, /v-model="videoTaskDraft\.styleCode"[\s\S]{0,120}<option/)
   assert.doesNotMatch(templateSource, /成片拆分/)
   assert.doesNotMatch(source, /videoTaskDraft\.groupMode/)

@@ -841,6 +841,7 @@ let detailVideoRequestSequence = 0
 let activationSequence = 0
 let workbenchActive = false
 let jobsReloadSequence = 0
+let jobsReloading = 0
 let libraryScanSequence = 0
 let detailVideoRecoverySourceKey = ''
 let detailVideoRecoveryAttempted = false
@@ -2274,6 +2275,7 @@ function upsertJob(job) {
 async function reloadJobs() {
   if (typeof window?.cs?.listAiVideoJobs !== 'function') return
   const requestId = ++jobsReloadSequence
+  jobsReloading += 1
   try {
     const result = await window.cs.listAiVideoJobs({ limit: 50 })
     if (requestId !== jobsReloadSequence) return
@@ -2297,6 +2299,8 @@ async function reloadJobs() {
     preloadJobCovers(jobs.value)
   } catch (error) {
     if (requestId === jobsReloadSequence) formError.value = error?.message || String(error)
+  } finally {
+    jobsReloading = Math.max(0, jobsReloading - 1)
   }
 }
 
@@ -2539,7 +2543,7 @@ function startPolling() {
   stopPolling()
   pollTimer.value = window.setInterval(() => {
     const hasActive = jobs.value.some(job => isActiveStatus(job.status))
-    if (hasActive) reloadJobs()
+    if (hasActive && jobsReloading === 0) reloadJobs()
   }, 4000)
 }
 

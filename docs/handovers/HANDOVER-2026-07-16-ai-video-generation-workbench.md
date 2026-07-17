@@ -1,6 +1,6 @@
 # 交接：AI 生视频工作台落地
 
-日期：2026-07-16  
+日期：2026-07-16
 范围：通用「AI 生视频」工作台（非巴拉五步「AI 视频工作流」）
 
 ## 1. 本轮结论
@@ -54,7 +54,7 @@
 - `create` 只调 CLI `create`，禁止 wait/download
 - worker `get` 轮询；成功后下载 `output.mp4` 并抽 `poster.jpg`
 - poster：ffmpeg → macOS qlmanage+sips → 首张参考图回退
-- list/get 会对缺 poster 的 completed 任务补抽
+- list/get 保持只读；poster 仅在归档完成时生成，历史缺失 poster 不在读取接口同步补抽
 
 ### 播放
 

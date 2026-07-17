@@ -1,3 +1,5 @@
+import hashlib
+import io
 import json
 import os
 import subprocess
@@ -6,6 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
@@ -33,6 +36,27 @@ class _ImmediateThread:
             self.target(*self.args, **self.kwargs)
 
     def is_alive(self):
+        return False
+
+
+class _FakeHttpResponse:
+    def __init__(self, body: bytes, headers: dict[str, str] | None = None, status: int = 200):
+        self._stream = io.BytesIO(body)
+        self.headers = headers or {}
+        self.status = status
+        self.read_calls = 0
+
+    def read(self, size: int = -1):
+        self.read_calls += 1
+        return self._stream.read(size)
+
+    def getcode(self):
+        return self.status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback):
         return False
 
 
@@ -426,6 +450,69 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
 
         self.assertEqual(used_keys, ["official-upload-key"])
         self.assertEqual(prepared["parameters"]["media"][0]["url"], "oss://dashscope-instant/test/kling-first-frame.jpg")
+
+    def test_bailian_multipart_upload_streams_file_with_explicit_content_length(self):
+        video = self.root / "stream-upload.mp4"
+        file_bytes = b"\x00\x00\x00\x18ftypmp42streamed-video"
+        video.write_bytes(file_bytes)
+        captured = {}
+        policy = {
+            "upload_dir": "dashscope-instant/test",
+            "upload_host": "https://upload.example.invalid",
+            "oss_access_key_id": "access-key",
+            "signature": "signature",
+            "policy": "policy",
+            "x_oss_object_acl": "private",
+            "x_oss_forbid_overwrite": "true",
+            "max_file_size_mb": 200,
+        }
+
+        def fake_urlopen(request, timeout):
+            captured["timeout"] = timeout
+            captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+            captured["data"] = request.data
+            captured["payload"] = b"".join(request.data)
+            return _FakeHttpResponse(b"{}")
+
+        with patch.object(svc, "_request_bailian_upload_policy", return_value=policy), \
+                patch.object(svc.urllib.request, "urlopen", side_effect=fake_urlopen), \
+                patch.object(Path, "read_bytes", side_effect=AssertionError("multipart must stream")):
+            result = svc._upload_file_to_bailian_temp_storage(
+                api_key="runtime-key",
+                model=svc.KLING_V3_MODEL,
+                path=video,
+            )
+
+        self.assertTrue(result.startswith("oss://dashscope-instant/test/"))
+        self.assertNotIsInstance(captured["data"], (bytes, bytearray))
+        self.assertIn(file_bytes, captured["payload"])
+        self.assertEqual(int(captured["headers"]["content-length"]), len(captured["payload"]))
+
+    def test_bailian_multipart_stream_rejects_file_growth_after_length_is_declared(self):
+        video = self.root / "growing-upload.mp4"
+        original = b"original-upload-bytes"
+        video.write_bytes(original)
+
+        body, _boundary = svc._multipart_form_body({}, file_path=video)
+        declared_length = len(body)
+        self.assertGreater(declared_length, len(original))
+        with video.open("ab") as handle:
+            handle.write(b"growth-after-body-created")
+
+        with self.assertRaises(svc.AiVideoError) as captured:
+            b"".join(body)
+
+        self.assertEqual(captured.exception.code, "PROVIDER_UPLOAD_FAILED")
+
+    def test_video_inspection_hashes_in_chunks_without_read_bytes(self):
+        video = self.root / "stream-hash.mp4"
+        content = b"\x00\x00\x00\x18ftypmp42hash-in-chunks"
+        video.write_bytes(content)
+
+        with patch.object(Path, "read_bytes", side_effect=AssertionError("video hash must stream")):
+            inspected = svc._inspect_video(video)
+
+        self.assertEqual(inspected["sha256"], hashlib.sha256(content).hexdigest())
 
     def test_bailian_upload_policy_url_can_be_overridden_without_exposing_it_to_ui(self):
         with patch.dict(os.environ, {"BAILIAN_UPLOADS_URL": "https://gateway.example.com/uploads"}), \
@@ -846,6 +933,36 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
         self.assertIn("localPosterToken", run["output"])
         self.assertEqual(run["output"]["videoFileName"], video.name)
         self.assertEqual(run["output"]["posterFileName"], poster.name)
+
+    def test_list_and_get_job_never_backfill_posters_on_read(self):
+        video = self.output_dir / "read-only.mp4"
+        video.write_bytes(b"video")
+        created = data_sink.create_ai_video_job_with_run(
+            job_payload={
+                "requestUid": "read-only-poster",
+                "status": "completed",
+                "provider": "seedance",
+                "model": svc.SEEDANCE_MODEL,
+                "prompt": "read-only list and detail",
+                "outputDir": str(self.output_dir),
+            },
+            run_payload={
+                "requestUid": "read-only-poster",
+                "status": "completed",
+                "provider": "seedance",
+                "model": svc.SEEDANCE_MODEL,
+                "archiveStatus": "archived",
+                "output": {"localVideoPath": str(video)},
+            },
+        )
+
+        with patch.object(svc, "ensure_run_poster") as ensure_poster:
+            listed = svc.list_jobs(limit=50)
+            detailed = svc.get_job(created["job"]["id"])
+
+        self.assertEqual(listed["data"]["jobs"][0]["id"], created["job"]["id"])
+        self.assertEqual(detailed["data"]["job"]["id"], created["job"]["id"])
+        ensure_poster.assert_not_called()
 
     def test_request_uid_idempotent_create_and_mock_provider_flow(self):
         state = {"create_calls": 0, "get_calls": 0}
@@ -1813,7 +1930,7 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
         target.with_suffix(".mp4.part").symlink_to(outside)
 
         with patch.object(svc.shutil, "which", return_value=None), \
-                patch.object(svc.urllib.request, "urlopen") as urlopen:
+                patch.object(svc, "_open_download_url") as urlopen:
             with self.assertRaises(svc.AiVideoError) as captured:
                 svc._download_file("https://example.invalid/output.mp4", target)
 
@@ -1831,13 +1948,147 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
         target = archive_dir / "output.mp4"
 
         with patch.object(svc.shutil, "which", return_value=None), \
-                patch.object(svc.urllib.request, "urlopen") as urlopen:
+                patch.object(svc, "_open_download_url") as urlopen:
             with self.assertRaises(svc.AiVideoError) as captured:
                 svc._download_file("https://example.invalid/output.mp4", target)
 
         urlopen.assert_not_called()
         self.assertEqual(captured.exception.code, "ARCHIVE_WRITE_FAILED")
         self.assertFalse((outside / "output.mp4").exists())
+
+    def test_download_rejects_non_http_url_before_transport(self):
+        target = self.output_dir / "non-http.mp4"
+
+        with patch.object(svc.shutil, "which", return_value=None), \
+                patch.object(svc, "_open_download_url", side_effect=AssertionError("transport must not run")) as urlopen:
+            with self.assertRaises(svc.AiVideoError):
+                svc._download_file("file:///private/tmp/provider-output.mp4", target)
+
+        urlopen.assert_not_called()
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix(".mp4.part").exists())
+
+    def test_download_does_not_follow_http_redirect_to_ftp(self):
+        class RedirectToFtpHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", "ftp://127.0.0.1/provider-output.mp4")
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), RedirectToFtpHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        target = self.output_dir / "redirected-to-ftp.mp4"
+        url = f"http://127.0.0.1:{server.server_port}/output.mp4"
+        try:
+            with patch.object(svc.shutil, "which", return_value=None), \
+                    patch.object(
+                        svc.urllib.request.FTPHandler,
+                        "ftp_open",
+                        side_effect=AssertionError("FTP transport must not run"),
+                    ) as ftp_open:
+                with self.assertRaises(svc.AiVideoError):
+                    svc._download_file(url, target)
+
+            ftp_open.assert_not_called()
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)
+
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix(".mp4.part").exists())
+
+    def test_download_rejects_explicit_non_video_content_type_and_cleans_partial(self):
+        target = self.output_dir / "html-response.mp4"
+        response = _FakeHttpResponse(
+            b"<html>provider error</html>",
+            {"Content-Type": "text/html; charset=utf-8", "Content-Length": "27"},
+        )
+
+        with patch.object(svc.shutil, "which", return_value=None), \
+                patch.object(svc, "_open_download_url", return_value=response):
+            with self.assertRaises(svc.AiVideoError):
+                svc._download_file("https://example.invalid/output.mp4", target)
+
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix(".mp4.part").exists())
+
+    def test_download_rejects_declared_size_before_reading_body(self):
+        target = self.output_dir / "declared-too-large.mp4"
+        response = _FakeHttpResponse(
+            b"123456789",
+            {"Content-Type": "video/mp4", "Content-Length": "9"},
+        )
+
+        with patch.object(svc, "MAX_VIDEO_DOWNLOAD_BYTES", 8, create=True), \
+                patch.object(svc.shutil, "which", return_value=None), \
+                patch.object(svc, "_open_download_url", return_value=response):
+            with self.assertRaises(svc.AiVideoError):
+                svc._download_file("https://example.invalid/output.mp4", target)
+
+        self.assertEqual(response.read_calls, 0)
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix(".mp4.part").exists())
+
+    def test_download_enforces_streamed_byte_limit_and_cleans_partial(self):
+        target = self.output_dir / "stream-too-large.mp4"
+        response = _FakeHttpResponse(b"123456789", {"Content-Type": "video/mp4"})
+
+        with patch.object(svc, "MAX_VIDEO_DOWNLOAD_BYTES", 8, create=True), \
+                patch.object(svc.shutil, "which", return_value=None), \
+                patch.object(svc, "_open_download_url", return_value=response):
+            with self.assertRaises(svc.AiVideoError):
+                svc._download_file("https://example.invalid/output.mp4", target)
+
+        self.assertFalse(target.exists())
+        self.assertFalse(target.with_suffix(".mp4.part").exists())
+
+    def test_curl_download_restricts_protocol_and_size(self):
+        target = self.output_dir / "curl-guarded.mp4"
+        commands = []
+
+        def fake_run(command, **_kwargs):
+            commands.append(command)
+            Path(command[command.index("-o") + 1]).write_bytes(b"video")
+            return subprocess.CompletedProcess(command, 0, stdout="video/mp4", stderr="")
+
+        with patch.object(svc, "MAX_VIDEO_DOWNLOAD_BYTES", 8, create=True), \
+                patch.object(svc.shutil, "which", return_value="/usr/bin/curl"), \
+                patch.object(svc.subprocess, "run", side_effect=fake_run):
+            downloaded = svc._download_file("https://example.invalid/output.mp4", target)
+
+        self.assertEqual(downloaded, target)
+        command = commands[0]
+        self.assertIn("--max-filesize", command)
+        self.assertEqual(command[command.index("--max-filesize") + 1], "8")
+        self.assertIn("--proto", command)
+        self.assertIn("--proto-redir", command)
+
+    def test_curl_download_rejects_non_video_response_and_oversized_final_file(self):
+        for label, content_type, body in [
+            ("html", "text/html", b"<html>bad</html>"),
+            ("oversized", "video/mp4", b"123456789"),
+        ]:
+            with self.subTest(label=label):
+                target = self.output_dir / f"curl-{label}.mp4"
+
+                def fake_run(command, **_kwargs):
+                    Path(command[command.index("-o") + 1]).write_bytes(body)
+                    return subprocess.CompletedProcess(command, 0, stdout=content_type, stderr="")
+
+                with patch.object(svc, "MAX_VIDEO_DOWNLOAD_BYTES", 8, create=True), \
+                        patch.object(svc.shutil, "which", return_value="/usr/bin/curl"), \
+                        patch.object(svc.subprocess, "run", side_effect=fake_run), \
+                        patch.object(svc, "_open_download_url", side_effect=AssertionError("unsafe curl result must not retry")):
+                    with self.assertRaises(svc.AiVideoError):
+                        svc._download_file("https://example.invalid/output.mp4", target)
+
+                self.assertFalse(target.exists())
+                self.assertFalse(target.with_suffix(".mp4.part").exists())
 
     def test_concurrent_create_request_uid_returns_same_job(self):
         start_gate = threading.Barrier(2)

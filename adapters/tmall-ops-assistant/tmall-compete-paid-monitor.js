@@ -213,7 +213,7 @@
       peerBeginDate,
       peerEndDate,
       mode: 'page_current',
-      weekLabel: `${beginDate}~${peerEndDate}`,
+      weekLabel: `${beginDate}~${endDate}`,
     }
   }
 
@@ -228,7 +228,9 @@
     return {
       ...ranges,
       mode,
-      weekLabel: `${ranges.beginDate}~${ranges.peerEndDate}`,
+      weekLabel: String(mode || '').startsWith('page_current')
+        ? `${ranges.beginDate}~${ranges.endDate}`
+        : `${ranges.beginDate}~${ranges.peerEndDate}`,
     }
   }
 
@@ -468,7 +470,7 @@
     return [shop.shopName, ...(Array.isArray(shop.aliases) ? shop.aliases : [])].filter(Boolean)
   }
 
-  function findBestShopMatch(list, shop, options = {}) {
+  function findBestShopMatch(list, shop) {
     const wanted = new Set(shopAliases(shop).map(normalizeShopName))
     const candidates = (Array.isArray(list) ? list : []).map(item => {
       const info = item?.competitorInfo || item || {}
@@ -486,7 +488,7 @@
       const normalized = normalizeShopName(item.shopName)
       return Array.from(wanted).some(name => normalized.includes(name) || name.includes(normalized))
     })
-    return match || (options.allowFirstFallback ? candidates[0] : null) || null
+    return match || null
   }
 
   async function fetchMonitorList() {
@@ -503,9 +505,7 @@
         method: 'GET',
         query: { keyword, type: 3 },
       })
-      const match = findBestShopMatch(extractArray(payload, ['data.list', 'list']), shop, {
-        allowFirstFallback: true,
-      })
+      const match = findBestShopMatch(extractArray(payload, ['data.list', 'list']), shop)
       if (match) return { ...match, source: '搜索接口', keyword }
     }
     return null
@@ -938,10 +938,14 @@
       if (!shop.isSelf) return shop
       return { ...shop, token: selfShop?.token || shop.token, shopId: selfShop?.shopId || shop.shopId }
     })
+    const structureShops = [selfShop, ...(state.competitorShops || [])].filter(shop => shop?.token)
+    const totalSteps = Math.max(1, 2 + (state.batches?.length || 0) + structureShops.length + 1)
     return {
       ...state,
       selfShop,
       resolvedShops,
+      structureShops,
+      totalSteps,
       detailRows: context.detailRows,
       seenDetailKeys: Array.from(context.seenDetailKeys),
       metricIndex: context.metricIndex,

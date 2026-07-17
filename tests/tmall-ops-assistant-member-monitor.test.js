@@ -138,6 +138,74 @@ test('member monitor keeps every submitted valid member URL including duplicates
   )
 })
 
+test('member monitor collects the active workbook sheet once after JSON transport', async () => {
+  const helpers = await loadExports()
+  const activeRow = {
+    竞品店铺: '安踏童装旗舰店',
+    'seller ID': '1745656365',
+    '会员中心-完整链接': 'https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365',
+  }
+  const secondaryRow = {
+    竞品店铺: 'FILA童装旗舰店',
+    'seller ID': '2960684901',
+    '会员中心-完整链接': 'https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=2960684901',
+  }
+  const inputFile = JSON.parse(JSON.stringify({
+    sheet_name: '活动页',
+    rows: [activeRow],
+    sheets: {
+      活动页: { rows: [activeRow] },
+      补充页: { rows: [secondaryRow] },
+    },
+  }))
+
+  const rows = helpers.collectInputRows({ input_file: inputFile })
+
+  assert.deepEqual(plain(rows.map(row => row['seller ID'])), [
+    '1745656365',
+    '2960684901',
+  ])
+})
+
+test('member monitor falls back to the active sheet when top-level rows are empty', async () => {
+  const helpers = await loadExports()
+  const activeRow = {
+    竞品店铺: '安踏童装旗舰店',
+    'seller ID': '1745656365',
+    '会员中心-完整链接': 'https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365',
+  }
+  const rows = helpers.collectInputRows({
+    input_file: {
+      sheet_name: '活动页',
+      rows: [],
+      sheets: {
+        活动页: { rows: [activeRow] },
+      },
+    },
+  })
+
+  assert.deepEqual(plain(rows.map(row => row['seller ID'])), ['1745656365'])
+})
+
+test('member monitor does not repeat a sheet that shares the top-level rows array', async () => {
+  const helpers = await loadExports()
+  const sharedRows = [{
+    竞品店铺: '安踏童装旗舰店',
+    'seller ID': '1745656365',
+    '会员中心-完整链接': 'https://market.m.taobao.com/app/sj/member-center-rax/pages/pages_index_index?wh_weex=true&source=ShopSelfUse&sellerId=1745656365',
+  }]
+  const rows = helpers.collectInputRows({
+    input_file: {
+      rows: sharedRows,
+      sheets: {
+        活动页: { rows: sharedRows },
+      },
+    },
+  })
+
+  assert.deepEqual(plain(rows.map(row => row['seller ID'])), ['1745656365'])
+})
+
 test('member monitor stores screenshots in a dated batch folder', async () => {
   const target = {
     rowNo: 2,

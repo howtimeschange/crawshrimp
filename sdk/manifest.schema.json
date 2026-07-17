@@ -67,6 +67,7 @@
             "radio",
             "select",
             "checkbox",
+            "date",
             "week",
             "month",
             "date_range",

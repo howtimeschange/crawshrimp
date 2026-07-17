@@ -307,14 +307,11 @@ test('AI image task records keep history order while highlighting the clicked ta
 
   assert.notEqual(taskRecordsStart, -1, 'taskRecords computed should exist')
   assert.ok(
-    taskRecordsBody.indexOf('for (const job of jobs.value)') < taskRecordsBody.indexOf('if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid))'),
+    taskRecordsBody.indexOf('for (const job of jobs.value)') < taskRecordsBody.indexOf('if (currentJob.value?.job_uid && !seen.has(currentJob.value.job_uid) && !isAiVideoWorkflowJob(currentJob.value))'),
     'taskRecords should preserve jobs.value ordering before adding an unlisted current task',
   )
-  assert.doesNotMatch(
-    taskRecordsBody,
-    /records\.push\(mergeJobWithDraft\(currentJob\.value\)\)[\s\S]*for \(const job of jobs\.value\)/,
-    'taskRecords should not move the active task before the history list',
-  )
+  assert.match(taskRecordsBody, /if \(!jobUid \|\| seen\.has\(jobUid\) \|\| isAiVideoWorkflowJob\(job\)\) continue/)
+  assert.match(taskRecordsBody, /records\.unshift\(mergeJobWithDraft\(currentJob\.value, \{ includeGeneratedDrafts: false \}\)\)/)
   assert.match(workbench, /const pendingActiveJobUid = ref\(''\)/)
   assert.match(workbench, /const highlightedJobUid = computed\(\(\) => pendingActiveJobUid\.value \|\| activeJobUid\.value\)/)
   assert.match(workbench, /:class="\{ active: highlightedJobUid === job\.job_uid \}"/)
@@ -322,9 +319,10 @@ test('AI image task records keep history order while highlighting the clicked ta
     restoreBody.indexOf('pendingActiveJobUid.value = job.job_uid') < restoreBody.indexOf('window.cs.getAiImageJob(job.job_uid)'),
     'clicked task should highlight before detail loading finishes',
   )
-  assert.ok(
-    restoreBody.indexOf('currentJob.value = detail') < restoreBody.indexOf("pendingActiveJobUid.value = ''"),
-    'pending highlight should clear after current task is restored',
+  assert.match(
+    restoreBody,
+    /currentJob\.value = detail\s*pendingActiveJobUid\.value = ''/,
+    'pending highlight should clear immediately after the current task is restored',
   )
 })
 

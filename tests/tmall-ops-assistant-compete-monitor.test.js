@@ -343,10 +343,76 @@ test('compete paid monitor does not fallback to unrelated followed shops', async
   }]
 
   assert.equal(helpers.findBestShopMatch(followedList, { shopName: '左西旗舰店' }), null)
-  assert.equal(
-    helpers.findBestShopMatch(followedList, { shopName: '左西旗舰店' }, { allowFirstFallback: true }).shopName,
-    '江博士官方旗舰店',
-  )
+  assert.equal(helpers.findBestShopMatch(
+    followedList,
+    { shopName: '左西旗舰店' },
+    { allowFirstFallback: true },
+  ), null)
+})
+
+test('compete paid monitor carries a discovered self token into structure collection', async () => {
+  const selfShop = {
+    shopName: '巴拉巴拉官方旗舰',
+    position: '本品',
+    isSelf: true,
+    status: '已解析',
+  }
+  const competitor = {
+    shopName: '左西旗舰店',
+    position: '常规竞争',
+    token: 'competitor-token',
+    status: '已解析',
+  }
+  const result = await runScript({
+    phase: 'collect_batch',
+    shared: {
+      dateRanges: {
+        beginDate: '2026-07-09',
+        endDate: '2026-07-15',
+        peerBeginDate: '2026-07-02',
+        peerEndDate: '2026-07-08',
+        weekLabel: '2026-07-09~2026-07-15',
+      },
+      selfShop,
+      resolvedShops: [selfShop, competitor],
+      competitorShops: [competitor],
+      batches: [[competitor]],
+      structureShops: [competitor],
+      totalSteps: 5,
+      batchIndex: 0,
+      structureIndex: 0,
+      logRows: [],
+    },
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname
+      const payload = pathname.endsWith('/base/control/ratio')
+        ? {
+            data: {
+              click: {
+                competitorList: [
+                  { competitorId: 'self-token', base: 10 },
+                  { competitorId: 'competitor-token', base: 20 },
+                ],
+              },
+            },
+          }
+        : {}
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(payload),
+      }
+    },
+  })
+
+  assert.deepEqual(plain(result.meta.shared.structureShops.map(shop => ({
+    shopName: shop.shopName,
+    token: shop.token,
+  }))), [
+    { shopName: '巴拉巴拉官方旗舰', token: 'self-token' },
+    { shopName: '左西旗舰店', token: 'competitor-token' },
+  ])
+  assert.equal(result.meta.shared.totalSteps, 6)
 })
 
 test('compete paid monitor defaults to selected page dates', async () => {
@@ -360,7 +426,7 @@ test('compete paid monitor defaults to selected page dates', async () => {
     peerBeginDate: '2026-07-02',
     peerEndDate: '2026-07-08',
     mode: 'page_current',
-    weekLabel: '2026-07-09~2026-07-08',
+    weekLabel: '2026-07-09~2026-07-15',
   })
   assert.deepEqual(plain(helpers.resolveDateRanges({ analysis_end_date: '2026-07-14' }, reference, pageText)), {
     beginDate: '2026-07-09',
@@ -368,7 +434,7 @@ test('compete paid monitor defaults to selected page dates', async () => {
     peerBeginDate: '2026-07-02',
     peerEndDate: '2026-07-08',
     mode: 'page_current_with_overrides',
-    weekLabel: '2026-07-09~2026-07-08',
+    weekLabel: '2026-07-09~2026-07-14',
   })
 })
 

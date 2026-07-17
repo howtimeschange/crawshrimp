@@ -110,6 +110,19 @@ POLL_INTERVAL_SECONDS = 5.0
 POLL_TIMEOUT_SECONDS = 30 * 60
 SUBMIT_TIMEOUT_SECONDS = 120
 RECOVERY_MAX_WORKERS = 4
+FILE_STREAM_CHUNK_BYTES = 256 * 1024
+MAX_VIDEO_DOWNLOAD_BYTES = 200 * 1024 * 1024
+DOWNLOAD_BINARY_CONTENT_TYPES = frozenset({
+    "application/octet-stream",
+    "binary/octet-stream",
+    "application/binary",
+    "application/x-binary",
+    "application/download",
+    "application/x-download",
+    "application/mp4",
+    "application/quicktime",
+    "application/webm",
+})
 CAPABILITY_PREFIX = "avcap2"
 CAPABILITY_MAX_AGE_SECONDS = 24 * 60 * 60
 CAPABILITY_FUTURE_SKEW_SECONDS = 5 * 60
@@ -549,23 +562,74 @@ def _request_bailian_upload_policy(api_key: str, model: str) -> dict:
     return dict(data)
 
 
-def _multipart_form_body(fields: Mapping[str, str], *, file_path: Path, file_field: str = "file") -> tuple[bytes, str]:
+class _MultipartFormBody:
+    def __init__(self, prefix: list[bytes], file_path: Path, suffix: list[bytes]):
+        self._prefix = tuple(prefix)
+        self._file_path = file_path
+        self._suffix = tuple(suffix)
+        self._file_stat = file_path.stat()
+        self.content_length = (
+            sum(len(chunk) for chunk in self._prefix)
+            + self._file_stat.st_size
+            + sum(len(chunk) for chunk in self._suffix)
+        )
+
+    def __len__(self) -> int:
+        return self.content_length
+
+    def _assert_source_unchanged(self, current: os.stat_result) -> None:
+        expected = self._file_stat
+        if (
+            current.st_dev != expected.st_dev
+            or current.st_ino != expected.st_ino
+            or current.st_size != expected.st_size
+            or current.st_mtime_ns != expected.st_mtime_ns
+        ):
+            raise AiVideoError(
+                "上传文件在请求发送前发生变化，请重试",
+                code="PROVIDER_UPLOAD_FAILED",
+                retryable=True,
+            )
+
+    def __iter__(self):
+        with self._file_path.open("rb") as handle:
+            self._assert_source_unchanged(os.fstat(handle.fileno()))
+            yield from self._prefix
+            remaining = self._file_stat.st_size
+            while remaining > 0:
+                chunk = handle.read(min(FILE_STREAM_CHUNK_BYTES, remaining))
+                if not chunk:
+                    raise AiVideoError(
+                        "上传文件在请求发送过程中发生变化，请重试",
+                        code="PROVIDER_UPLOAD_FAILED",
+                        retryable=True,
+                    )
+                remaining -= len(chunk)
+                yield chunk
+            self._assert_source_unchanged(os.fstat(handle.fileno()))
+        yield from self._suffix
+
+
+def _multipart_form_body(
+    fields: Mapping[str, str],
+    *,
+    file_path: Path,
+    file_field: str = "file",
+) -> tuple[_MultipartFormBody, str]:
     boundary = f"----CrawshrimpBailian{uuid4().hex}"
-    chunks: list[bytes] = []
+    prefix: list[bytes] = []
     for name, value in fields.items():
-        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
-        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
-        chunks.append(str(value).encode("utf-8"))
-        chunks.append(b"\r\n")
+        prefix.append(f"--{boundary}\r\n".encode("utf-8"))
+        prefix.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        prefix.append(str(value).encode("utf-8"))
+        prefix.append(b"\r\n")
     file_name = _safe_upload_filename(file_path.name)
     content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
-    chunks.append(f"--{boundary}\r\n".encode("utf-8"))
-    chunks.append(f'Content-Disposition: form-data; name="{file_field}"; filename="{file_name}"\r\n'.encode("utf-8"))
-    chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
-    chunks.append(file_path.read_bytes())
-    chunks.append(b"\r\n")
-    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
-    return b"".join(chunks), boundary
+    prefix.append(f"--{boundary}\r\n".encode("utf-8"))
+    prefix.append(f'Content-Disposition: form-data; name="{file_field}"; filename="{file_name}"\r\n'.encode("utf-8"))
+    prefix.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+    suffix = [b"\r\n", f"--{boundary}--\r\n".encode("utf-8")]
+    return _MultipartFormBody(prefix, file_path, suffix), boundary
 
 
 def _upload_file_to_bailian_temp_storage(*, api_key: str, model: str, path: Path) -> str:
@@ -598,7 +662,10 @@ def _upload_file_to_bailian_temp_storage(*, api_key: str, model: str, path: Path
     request = urllib.request.Request(
         upload_host,
         data=body,
-        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        headers={
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "Content-Length": str(len(body)),
+        },
         method="POST",
     )
     try:
@@ -872,7 +939,7 @@ def _inspect_image(path: Path) -> dict:
             image.verify()
     except Exception as exc:
         raise AiVideoError(f"参考文件不是有效图片：{path.name}") from exc
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = _sha256_file(path)
     return {
         "kind": "image",
         "sourceType": "local_file",
@@ -897,6 +964,17 @@ def _video_mime_for_path(path: Path) -> str:
     return mimetypes.guess_type(str(path))[0] or ""
 
 
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while True:
+            chunk = handle.read(FILE_STREAM_CHUNK_BYTES)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _inspect_video(path: Path) -> dict:
     if not path.is_file():
         raise AiVideoError(f"参考视频不存在：{path}")
@@ -908,7 +986,7 @@ def _inspect_video(path: Path) -> dict:
     mime = _video_mime_for_path(path)
     if mime not in ALLOWED_VIDEO_MIME:
         raise AiVideoError("视频格式仅允许 MP4、MOV、M4V、WEBM")
-    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    digest = _sha256_file(path)
     return {
         "kind": "video",
         "sourceType": "local_file",
@@ -2322,17 +2400,6 @@ def get_config() -> dict:
 
 def list_jobs(status: str = "", provider: str = "", limit: int = 50) -> dict:
     jobs = data_sink.list_ai_video_jobs(status=status, provider=provider, limit=limit)
-    # Best-effort poster backfill for completed archives without poster.jpg.
-    for job in jobs:
-        run = job.get("currentRun") if isinstance(job.get("currentRun"), Mapping) else None
-        if not run or _compact(run.get("status")) != "completed":
-            continue
-        output = run.get("output") if isinstance(run.get("output"), Mapping) else {}
-        poster = _compact((output or {}).get("localPosterPath"))
-        video = _compact((output or {}).get("localVideoPath"))
-        if video and (not poster or not Path(poster).expanduser().is_file()):
-            ensure_run_poster(run.get("id") or "")
-    jobs = data_sink.list_ai_video_jobs(status=status, provider=provider, limit=limit)
     return {"ok": True, "data": {"jobs": [public_job(job) for job in jobs]}}
 
 
@@ -2340,10 +2407,6 @@ def get_job(job_id: str) -> dict:
     job = data_sink.get_ai_video_job(job_id)
     if not job or job.get("deletedAt"):
         raise AiVideoError("任务不存在", http_status=404)
-    run_id = _compact(job.get("currentRunId"))
-    if run_id:
-        ensure_run_poster(run_id)
-        job = data_sink.get_ai_video_job(job_id) or job
     return {"ok": True, "data": {"job": public_job(job), "runs": [public_run(run) for run in job.get("runs") or []]}}
 
 
@@ -2913,20 +2976,90 @@ def _assert_safe_download_path(path: Path) -> None:
         )
 
 
+def _download_validation_error(message: str) -> AiVideoError:
+    return AiVideoError(
+        message,
+        code="DOWNLOAD_FAILED",
+        retryable=False,
+        safe_suggestion=message,
+    )
+
+
+def _response_header(response: Any, name: str) -> str:
+    headers = getattr(response, "headers", None)
+    if headers is not None and hasattr(headers, "get"):
+        value = headers.get(name)
+        if value is None:
+            value = headers.get(name.lower())
+        if value is not None:
+            return _compact(value)
+    getheader = getattr(response, "getheader", None)
+    if callable(getheader):
+        return _compact(getheader(name))
+    return ""
+
+
+def _validate_download_content_type(value: Any) -> None:
+    content_type = _compact(value).split(";", 1)[0].strip().lower()
+    if not content_type:
+        return
+    if content_type.startswith("video/") or content_type in DOWNLOAD_BINARY_CONTENT_TYPES:
+        return
+    raise _download_validation_error(f"下载响应不是视频内容：{content_type}")
+
+
+def _validate_download_size(size: int) -> None:
+    if size > MAX_VIDEO_DOWNLOAD_BYTES:
+        raise _download_validation_error("远端视频不能超过 200MB")
+
+
+def _remove_partial_download(part: Path) -> None:
+    try:
+        part.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+class _HttpOnlyRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        redirected = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if redirected is not None and not _is_http_url(redirected.full_url):
+            raise _download_validation_error("视频下载重定向必须使用 HTTP/HTTPS URL")
+        return redirected
+
+
+def _open_download_url(request: urllib.request.Request, *, timeout: float):
+    opener = urllib.request.build_opener(_HttpOnlyRedirectHandler())
+    return opener.open(request, timeout=timeout)
+
+
+def _finalize_download_part(part: Path, target: Path) -> Path:
+    if not part.is_file() or part.stat().st_size <= 0:
+        raise RuntimeError("downloaded file is empty")
+    _validate_download_size(part.stat().st_size)
+    _assert_safe_download_path(part)
+    _assert_safe_download_path(target)
+    part.replace(target)
+    return target
+
+
 def _download_file(url: str, target: Path) -> Path:
+    download_url = _compact(url)
+    if not _is_http_url(download_url):
+        raise _download_validation_error("视频下载地址必须是 HTTP/HTTPS URL")
     target = target.expanduser().absolute()
     _assert_safe_download_path(target)
     if _DOWNLOADER is not None:
-        return _DOWNLOADER(url=url, target_path=str(target))
+        downloaded = Path(_DOWNLOADER(url=download_url, target_path=str(target))).expanduser().absolute()
+        if not downloaded.is_file() or downloaded.stat().st_size <= 0:
+            raise AiVideoError("下载失败：downloaded file is empty", code="DOWNLOAD_FAILED", retryable=True)
+        _validate_download_size(downloaded.stat().st_size)
+        return downloaded
     target.parent.mkdir(parents=True, exist_ok=True)
     _assert_safe_download_path(target)
     part = target.with_suffix(target.suffix + ".part")
     _assert_safe_download_path(part)
-    if part.exists():
-        try:
-            part.unlink()
-        except OSError:
-            pass
+    _remove_partial_download(part)
     _assert_safe_download_path(part)
 
     # Prefer curl for robust large-file download with connect/max time limits.
@@ -2939,54 +3072,71 @@ def _download_file(url: str, target: Path) -> Path:
                 [
                     curl,
                     "-fsSL",
+                    "--proto",
+                    "=http,https",
+                    "--proto-redir",
+                    "=http,https",
                     "--connect-timeout",
                     "20",
                     "--max-time",
                     "300",
+                    "--max-filesize",
+                    str(MAX_VIDEO_DOWNLOAD_BYTES),
+                    "--write-out",
+                    "%{content_type}",
                     "-o",
                     str(part),
-                    url,
+                    download_url,
                 ],
                 capture_output=True,
                 text=True,
                 check=False,
             )
-            if completed.returncode != 0 or not part.is_file() or part.stat().st_size <= 0:
+            if completed.returncode == 63:
+                raise _download_validation_error("远端视频不能超过 200MB")
+            if completed.returncode != 0:
                 detail = (completed.stderr or completed.stdout or f"curl exit {completed.returncode}").strip()
                 raise RuntimeError(detail[:300])
-            _assert_safe_download_path(part)
-            _assert_safe_download_path(target)
-            part.replace(target)
-            return target
+            _validate_download_content_type(completed.stdout)
+            return _finalize_download_part(part, target)
+        except AiVideoError:
+            _remove_partial_download(part)
+            raise
         except Exception as exc:
             last_error = exc
-            if part.exists():
-                try:
-                    part.unlink()
-                except OSError:
-                    pass
+            _remove_partial_download(part)
 
-    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "crawshrimp-ai-video/1.0"})
+    request = urllib.request.Request(download_url, method="GET", headers={"User-Agent": "crawshrimp-ai-video/1.0"})
     try:
         _assert_safe_download_path(part)
-        with urllib.request.urlopen(request, timeout=30) as response, part.open("xb") as handle:
-            while True:
-                chunk = response.read(1024 * 256)
-                if not chunk:
-                    break
-                handle.write(chunk)
-        if not part.is_file() or part.stat().st_size <= 0:
-            raise RuntimeError("downloaded file is empty")
-        _assert_safe_download_path(part)
-        _assert_safe_download_path(target)
-        part.replace(target)
-        return target
+        with _open_download_url(request, timeout=30) as response:
+            final_url = _compact(response.geturl()) if callable(getattr(response, "geturl", None)) else ""
+            if final_url and not _is_http_url(final_url):
+                raise _download_validation_error("视频下载重定向必须使用 HTTP/HTTPS URL")
+            _validate_download_content_type(_response_header(response, "Content-Type"))
+            content_length = _response_header(response, "Content-Length")
+            if content_length:
+                try:
+                    declared_size = int(content_length)
+                except (TypeError, ValueError):
+                    declared_size = -1
+                if declared_size >= 0:
+                    _validate_download_size(declared_size)
+            downloaded_size = 0
+            with part.open("xb") as handle:
+                while True:
+                    chunk = response.read(FILE_STREAM_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    downloaded_size += len(chunk)
+                    _validate_download_size(downloaded_size)
+                    handle.write(chunk)
+        return _finalize_download_part(part, target)
+    except AiVideoError:
+        _remove_partial_download(part)
+        raise
     except Exception as exc:
-        if part.exists():
-            try:
-                part.unlink()
-            except OSError:
-                pass
+        _remove_partial_download(part)
         message = str(exc or last_error or "download failed")
         raise AiVideoError(
             f"下载失败：{message}",
