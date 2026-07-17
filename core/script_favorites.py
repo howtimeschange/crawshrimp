@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from core.config import load_config, patch_config
+from core.config import load_config, save_config
 
 
 def _normalize(raw: object) -> dict[str, str]:
@@ -27,15 +27,20 @@ def list_favorites() -> dict[str, str]:
     return _normalize(load_config().get("script_favorites"))
 
 
+def _save_favorites(favorites: dict[str, str]) -> dict[str, str]:
+    config = load_config()
+    config["script_favorites"] = favorites
+    save_config(config)
+    return favorites
+
+
 def favorite(adapter_id: str, now: datetime | None = None) -> dict[str, str]:
     favorites = list_favorites()
     favorites[str(adapter_id).strip()] = (now or datetime.now(timezone.utc)).isoformat()
-    patch_config({"script_favorites": favorites})
-    return favorites
+    return _save_favorites(favorites)
 
 
 def unfavorite(adapter_id: str) -> dict[str, str]:
     favorites = list_favorites()
     favorites.pop(str(adapter_id or "").strip(), None)
-    patch_config({"script_favorites": favorites})
-    return favorites
+    return _save_favorites(favorites)

@@ -33,8 +33,8 @@ class ScriptFavoritesTests(unittest.TestCase):
             )
             self.assertEqual(script_favorites.list_favorites(), saved)
 
-    def test_unfavorite_removes_only_the_requested_adapter(self):
-        with isolated_config_path():
+    def test_unfavorite_removes_the_requested_adapter_from_persisted_config(self):
+        with isolated_config_path() as config_path:
             save_config({
                 "script_favorites": {
                     "tmall": "2026-07-17T09:00:00+00:00",
@@ -44,6 +44,14 @@ class ScriptFavoritesTests(unittest.TestCase):
 
             self.assertEqual(
                 script_favorites.unfavorite("tmall"),
+                {"shopee": "2026-07-17T10:00:00+00:00"},
+            )
+            self.assertEqual(
+                json.loads(config_path.read_text(encoding="utf-8"))["script_favorites"],
+                {"shopee": "2026-07-17T10:00:00+00:00"},
+            )
+            self.assertEqual(
+                script_favorites.list_favorites(),
                 {"shopee": "2026-07-17T10:00:00+00:00"},
             )
 

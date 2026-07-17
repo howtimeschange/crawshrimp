@@ -8260,15 +8260,6 @@ def ai_video_update_job(job_id: str, req: AiVideoUpdateJobRequest):
         raise _ai_video_http_error(exc) from exc
 
 
-@app.post("/ai-video/jobs/{job_id}/duplicate")
-def ai_video_duplicate_job(job_id: str):
-    _require_ai_video_worker_owner()
-    try:
-        return ai_video_generation_service.duplicate_job(job_id)
-    except Exception as exc:
-        raise _ai_video_http_error(exc) from exc
-
-
 @app.post("/ai-video/jobs/{job_id}/retry")
 def ai_video_retry_job(job_id: str, req: AiVideoRetryRequest):
     _require_ai_video_worker_owner()
@@ -8279,10 +8270,10 @@ def ai_video_retry_job(job_id: str, req: AiVideoRetryRequest):
 
 
 @app.delete("/ai-video/jobs/{job_id}")
-def ai_video_delete_job(job_id: str):
+def ai_video_delete_job(job_id: str, delete_local_file: bool = False):
     _require_ai_video_worker_owner()
     try:
-        return ai_video_generation_service.delete_job(job_id)
+        return ai_video_generation_service.delete_job(job_id, delete_local_file=delete_local_file)
     except Exception as exc:
         raise _ai_video_http_error(exc) from exc
 

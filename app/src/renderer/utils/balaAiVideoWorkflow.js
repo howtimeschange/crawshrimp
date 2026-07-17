@@ -62,8 +62,8 @@ export function resolveBalaVersionPreviewSource(version = {}, source = {}, {
 
 export function balaMaterialPanelControl(expanded) {
   return expanded
-    ? { label: '向左收起找图', ariaLabel: '向左收起找图面板', direction: 'left' }
-    : { label: '展开找图', ariaLabel: '向右展开找图面板', direction: 'right' }
+    ? { label: '收起', ariaLabel: '向左收起找图面板', direction: 'left' }
+    : { label: '展开', ariaLabel: '向右展开找图面板', direction: 'right' }
 }
 
 export function resolveBalaVideoPlaybackSource(result = {}, { resolveRemote = value => value } = {}) {
@@ -495,6 +495,20 @@ export function shouldCreateBalaVideoProviderRun(task = {}) {
   if (!providerTaskId) return true
   const status = String(task?.status || '').trim().toLowerCase()
   return /失败|错误|failed|error/.test(status) || /待预检|预检完成/.test(status)
+}
+
+export function isBalaVideoTaskSubmitEligible(task = {}, result = {}) {
+  const status = [task?.status, result?.status, result?.providerStatus]
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ')
+  const hasGeneratedOutput = Boolean(
+    String(result?.path || result?.local_video_path || result?.videoUrl || result?.video_url || '').trim(),
+  )
+  if (hasGeneratedOutput || /已下载|已生成|生成完成|已完成|downloaded|completed|succeeded/.test(status)) {
+    return false
+  }
+  return shouldCreateBalaVideoProviderRun(task)
 }
 
 export function parseBalaMaterialBoardUrl(url = '') {

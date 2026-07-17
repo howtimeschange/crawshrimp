@@ -1059,48 +1059,39 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
             self.assertTrue(local.is_file())
             self.assertTrue(local.stat().st_size > 0)
 
-    def test_duplicate_creates_persistent_draft_without_provider_calls(self):
-        original = data_sink.create_ai_video_job_with_run(
+    def test_delete_job_can_remove_its_archived_local_mp4_before_soft_deleting_the_record(self):
+        video = self.output_dir / "delete-me.mp4"
+        video.write_bytes(b"local video")
+        created = data_sink.create_ai_video_job_with_run(
             job_payload={
-                "requestUid": "duplicate-source",
-                "title": "source",
+                "requestUid": "delete-local-video",
                 "status": "completed",
                 "provider": "seedance",
                 "model": svc.SEEDANCE_MODEL,
-                "prompt": "duplicate source prompt",
+                "prompt": "delete local video",
                 "parameters": {"ratio": "9:16", "resolution": "720p", "duration": 5},
                 "outputDir": str(self.output_dir),
             },
             assets=[],
             run_payload={
-                "requestUid": "duplicate-source",
+                "requestUid": "delete-local-video",
                 "status": "completed",
                 "provider": "seedance",
                 "model": svc.SEEDANCE_MODEL,
                 "inputSnapshot": {},
                 "archiveStatus": "archived",
+                "output": {
+                    "localVideoPath": str(video),
+                    "archiveDir": str(self.output_dir),
+                },
             },
         )
-        cli_calls = []
 
-        def fake_cli(*, provider, args, cwd, timeout_seconds):
-            cli_calls.append((provider, list(args)))
-            if args[1] == "create":
-                return {"objects": [{"id": "unexpected-task", "status": "queued"}]}
-            return {"objects": [{"id": "unexpected-task", "status": "failed"}]}
+        result = svc.delete_job(created["job"]["id"], delete_local_file=True)
 
-        svc.set_cli_runner(fake_cli)
-        with patch.object(svc, "provider_status", return_value=READY_PROVIDER_STATUS), \
-                patch.object(svc, "ensure_worker_started", return_value=None), \
-                patch.object(svc.threading, "Thread", _ImmediateThread):
-            duplicated = svc.duplicate_job(original["job"]["id"])
-
-        job = data_sink.get_ai_video_job(duplicated["data"]["job"]["id"])
-        self.assertEqual(job["status"], "draft")
-        self.assertEqual(len(job["runs"]), 1)
-        self.assertEqual(job["runs"][0]["status"], "draft")
-        self.assertIsNone(job["runs"][0]["providerTaskId"])
-        self.assertEqual(cli_calls, [])
+        self.assertTrue(result["ok"])
+        self.assertFalse(video.exists())
+        self.assertIsNotNone(data_sink.get_ai_video_job(created["job"]["id"])["deletedAt"])
 
     def test_raw_provider_payload_is_deleted_after_submit(self):
         created = data_sink.create_ai_video_job_with_run(

@@ -10,11 +10,15 @@ export function partitionScriptGroups(groups = [], favorites = {}) {
   const favoriteRecords = records.filter(({ group }) => isFavorite(group))
 
   favoriteRecords.sort((left, right) =>
-    favoriteTime(favoriteMap[right.group.adapter_id]) - favoriteTime(favoriteMap[left.group.adapter_id]) ||
+    favoriteTime(favoriteMap[left.group.adapter_id]) - favoriteTime(favoriteMap[right.group.adapter_id]) ||
     left.index - right.index)
 
   return {
     favorites: favoriteRecords.map(({ group }) => group),
     scripts: records.filter(({ group }) => !isFavorite(group)).map(({ group }) => group),
   }
+}
+
+export function shouldApplyScriptFavoritesSnapshot(readVersion = 0, mutationVersion = 0) {
+  return Number(readVersion) === Number(mutationVersion)
 }

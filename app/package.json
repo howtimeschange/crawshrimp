@@ -16,6 +16,7 @@
     "test:update-artifacts": "node --test scripts/validate-update-artifacts.test.js"
   },
   "dependencies": {
+    "@tabler/icons-vue": "^3.45.0",
     "@tldraw/assets": "^5.2.3",
     "electron-updater": "6.8.9",
     "portfinder": "^1.0.32",
