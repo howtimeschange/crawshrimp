@@ -177,7 +177,7 @@
 import { computed, ref, inject, onMounted, onUnmounted } from 'vue'
 import { IconBookmark } from '@tabler/icons-vue'
 import { getScriptCardTaskPreviewMeta } from '../utils/scriptCardPreview'
-import { partitionScriptGroups } from '../utils/scriptFavorites'
+import { partitionScriptGroups, shouldApplyScriptFavoritesSnapshot } from '../utils/scriptFavorites'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from '../utils/taskProgress'
 
 const emit = defineEmits(['open-script', 'reload'])
@@ -205,6 +205,7 @@ const successAdapterVersion = ref('')
 const successDetail = ref('')
 const successCloseTimer = ref(null)
 let pollTimer = null
+let favoriteMutationVersion = 0
 
 const groups = scriptGroups
 
@@ -240,9 +241,12 @@ function isFavorite(adapterId) {
   return Object.prototype.hasOwnProperty.call(favorites.value, adapterId)
 }
 
-async function loadFavorites({ quiet = false } = {}) {
+async function loadFavorites({ quiet = false, force = false } = {}) {
+  if (quiet && !force && favoritePendingIds.value.size) return
+  const favoriteReadVersion = favoriteMutationVersion
   try {
     const response = await window.cs.getScriptFavorites()
+    if (!shouldApplyScriptFavoritesSnapshot(favoriteReadVersion, favoriteMutationVersion)) return
     favorites.value = response?.favorites && typeof response.favorites === 'object' ? response.favorites : {}
     if (!quiet) favoriteError.value = ''
   } catch (error) {
@@ -252,6 +256,7 @@ async function loadFavorites({ quiet = false } = {}) {
 
 async function toggleFavorite(adapterId) {
   if (favoritePendingIds.value.has(adapterId)) return
+  favoriteMutationVersion += 1
   favoritePendingIds.value = new Set(favoritePendingIds.value).add(adapterId)
   try {
     const response = isFavorite(adapterId)
@@ -265,6 +270,7 @@ async function toggleFavorite(adapterId) {
     const next = new Set(favoritePendingIds.value)
     next.delete(adapterId)
     favoritePendingIds.value = next
+    if (!favoritePendingIds.value.size) await loadFavorites({ quiet: true, force: true })
   }
 }
 

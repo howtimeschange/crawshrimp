@@ -812,12 +812,12 @@
                 type="checkbox"
                 :checked="allVisibleVideoTasksSelected"
                 :indeterminate.prop="selectedVisibleVideoTasks.length > 0 && !allVisibleVideoTasksSelected"
-                :disabled="!filteredVideoTasks.length"
+                :disabled="!selectableVisibleVideoTasks.length"
                 @change="toggleAllVisibleVideoTaskSelection"
               />
               <span>全选当前筛选</span>
             </label>
-            <span class="aiv-video-task-selection-hint">已勾选 {{ selectedVisibleVideoTasks.length }} 条；批量提交只处理当前筛选中的勾选任务。</span>
+            <span class="aiv-video-task-selection-hint">已勾选 {{ selectedVisibleVideoTasks.length }} 条可提交任务；已生成或已下载的视频不会重复提交。</span>
           </div>
           <div v-if="videoStageState.error" class="aiv-inline-error aiv-video-stage-feedback" role="alert">{{ videoStageState.error }}</div>
           <div v-else-if="videoStageState.message && videoStageState.status !== 'idle'" class="aiv-stage-feedback" role="status">{{ videoStageState.message }}</div>
@@ -827,9 +827,9 @@
           <article v-for="task in filteredVideoTasks" :key="task.id" :class="['aiv-panel', 'aiv-video-task-card', { selected: isVideoTaskSelected(task) }]">
             <div class="aiv-video-task-row">
               <div class="aiv-video-task-assets compact">
-                <label class="aiv-video-task-check" :title="`${isVideoTaskSelected(task) ? '取消勾选' : '勾选'} ${task.styleCode} 视频任务`">
-                  <input type="checkbox" :checked="isVideoTaskSelected(task)" @change="toggleVideoTaskSelection(task.id)" />
-                  <span class="aiv-sr-only">勾选 {{ task.styleCode }} 视频任务</span>
+                <label class="aiv-video-task-check" :title="videoTaskSelectionLabel(task)">
+                  <input type="checkbox" :checked="isVideoTaskSelected(task)" :disabled="!isVideoTaskSubmittable(task)" @change="toggleVideoTaskSelection(task)" />
+                  <span class="aiv-sr-only">{{ videoTaskSelectionLabel(task) }}</span>
                 </label>
                 <button
                   v-for="asset in task.assets.slice(0, 4)"
@@ -874,8 +874,8 @@
                 <button type="button" class="aiv-ghost small" @click="openVideoTaskDialog('', task, 'copy')">复制</button>
                 <button v-if="task.provider === 'qn'" type="button" class="aiv-ghost small" @click="openTemplateLibrary(task.styleCode)">模板</button>
                 <button v-if="task.provider !== 'qn'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(task.provider)">配置</button>
-                <button type="button" class="aiv-ghost small" :disabled="isVideoTaskBusy(task)" @click="runVideoTask(task, 'plan')">预检</button>
-                <button type="button" class="aiv-primary small" :disabled="isVideoTaskBusy(task)" @click="handleVideoTaskAction(task)">{{ videoTaskActionLabel(task) }}</button>
+                <button type="button" class="aiv-ghost small" :disabled="isVideoTaskBusy(task) || !isVideoTaskSubmittable(task)" @click="runVideoTask(task, 'plan')">预检</button>
+                <button type="button" class="aiv-primary small" :disabled="isVideoTaskBusy(task) || (!isVideoTaskSubmittable(task) && !videoTaskHasViewableResult(task))" @click="handleVideoTaskAction(task)">{{ videoTaskActionLabel(task) }}</button>
               </div>
             </div>
           </article>
@@ -1946,7 +1946,7 @@ import {
   selectEditableSourcesForStyle,
   selectNewTaskRun,
   selectVisibleEditableVersions,
-  shouldCreateBalaVideoProviderRun,
+  isBalaVideoTaskSubmitEligible,
   summarizeBalaMaterialGroups,
   toBalaBridgeStringArray,
   waitForNewTaskRun,
@@ -2689,11 +2689,14 @@ const filteredVideoTasks = computed(() => {
   if (status === 'all') return videoTasks
   return videoTasks.filter(task => videoTaskStage(task).id === status)
 })
+const selectableVisibleVideoTasks = computed(() => (
+  filteredVideoTasks.value.filter(task => isVideoTaskSubmittable(task))
+))
 const selectedVisibleVideoTasks = computed(() => (
-  filteredVideoTasks.value.filter(task => selectedVideoTaskIds.has(String(task.id || '')))
+  selectableVisibleVideoTasks.value.filter(task => selectedVideoTaskIds.has(String(task.id || '')))
 ))
 const allVisibleVideoTasksSelected = computed(() => (
-  filteredVideoTasks.value.length > 0 && selectedVisibleVideoTasks.value.length === filteredVideoTasks.value.length
+  selectableVisibleVideoTasks.value.length > 0 && selectedVisibleVideoTasks.value.length === selectableVisibleVideoTasks.value.length
 ))
 const activeVideoAssetPool = computed(() => (
   videoJobs.find(job => job.styleCode === videoTaskDraft.styleCode) || videoJobs[0] || { assets: [] }
@@ -3036,22 +3039,35 @@ function isVideoTaskBusy(task = {}) {
 }
 
 function isVideoTaskSelected(task = {}) {
-  return selectedVideoTaskIds.has(String(task?.id || ''))
+  return isVideoTaskSubmittable(task) && selectedVideoTaskIds.has(String(task?.id || ''))
 }
 
-function toggleVideoTaskSelection(taskId = '') {
-  const id = String(taskId || '').trim()
+function isVideoTaskSubmittable(task = {}) {
+  return isBalaVideoTaskSubmitEligible(task, videoResultForTask(task))
+}
+
+function videoTaskSelectionLabel(task = {}) {
+  if (!isVideoTaskSubmittable(task)) return `${task.styleCode} 视频已生成或已下载，不可重复提交`
+  return `${isVideoTaskSelected(task) ? '取消勾选' : '勾选'} ${task.styleCode} 视频任务`
+}
+
+function toggleVideoTaskSelection(task = {}) {
+  const id = String(task?.id || '').trim()
   if (!id) return
+  if (!isVideoTaskSubmittable(task)) {
+    selectedVideoTaskIds.delete(id)
+    return
+  }
   if (selectedVideoTaskIds.has(id)) selectedVideoTaskIds.delete(id)
   else selectedVideoTaskIds.add(id)
 }
 
 function toggleAllVisibleVideoTaskSelection() {
   if (allVisibleVideoTasksSelected.value) {
-    for (const task of filteredVideoTasks.value) selectedVideoTaskIds.delete(String(task.id || ''))
+    for (const task of selectableVisibleVideoTasks.value) selectedVideoTaskIds.delete(String(task.id || ''))
     return
   }
-  for (const task of filteredVideoTasks.value) {
+  for (const task of selectableVisibleVideoTasks.value) {
     const id = String(task.id || '').trim()
     if (id) selectedVideoTaskIds.add(id)
   }
@@ -6235,10 +6251,13 @@ async function runVideoTaskInternal(task, mode = 'plan') {
 }
 
 async function runVideoTask(task, mode = 'plan') {
-  if (!shouldCreateBalaVideoProviderRun(task)) {
+  if (!isVideoTaskSubmittable(task)) {
+    const stage = videoTaskStage(task)
     videoStageState.status = 'done'
     videoStageState.error = ''
-    videoStageState.message = `${task.styleCode} 这条视频任务已提交，请到结果页刷新或复制新建后再次生成。`
+    videoStageState.message = ['ready', 'downloaded'].includes(stage.id)
+      ? `${task.styleCode} 视频已${stage.label}，不能重复提交；如需新版本请复制任务后生成。`
+      : `${task.styleCode} 这条视频任务已提交，请到结果页刷新或复制新建后再次生成。`
     activeStep.value = 'results'
     return
   }

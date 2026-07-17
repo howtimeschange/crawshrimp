@@ -158,6 +158,23 @@ test('video task list filters by state and submits only checked tasks in bulk', 
   assert.match(workflowSource, /批量提交/)
 })
 
+test('generated or downloaded video tasks are excluded from resubmission candidates', async () => {
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '待生成' }), true)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '失败', providerTaskId: 'retryable-run' }), true)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已生成' }), false)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '已下载' }), false)
+  assert.equal(balaWorkflow.isBalaVideoTaskSubmitEligible({ status: '待生成' }, {
+    status: '生成完成待下载',
+    videoUrl: 'https://cdn.example.com/generated.mp4',
+  }), false)
+
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+  assert.match(workflowSource, /const selectableVisibleVideoTasks = computed/)
+  assert.match(workflowSource, /isBalaVideoTaskSubmitEligible\(task, videoResultForTask\(task\)\)/)
+  assert.match(workflowSource, /:disabled="!isVideoTaskSubmittable\(task\)"/)
+  assert.match(workflowSource, /function isVideoTaskSelected\(task = \{\}\) \{\s*return isVideoTaskSubmittable\(task\) && selectedVideoTaskIds\.has/)
+})
+
 test('find-materials page exposes operational state, aligned stats, and selected-card feedback', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 

@@ -497,6 +497,20 @@ export function shouldCreateBalaVideoProviderRun(task = {}) {
   return /失败|错误|failed|error/.test(status) || /待预检|预检完成/.test(status)
 }
 
+export function isBalaVideoTaskSubmitEligible(task = {}, result = {}) {
+  const status = [task?.status, result?.status, result?.providerStatus]
+    .map(value => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ')
+  const hasGeneratedOutput = Boolean(
+    String(result?.path || result?.local_video_path || result?.videoUrl || result?.video_url || '').trim(),
+  )
+  if (hasGeneratedOutput || /已下载|已生成|生成完成|已完成|downloaded|completed|succeeded/.test(status)) {
+    return false
+  }
+  return shouldCreateBalaVideoProviderRun(task)
+}
+
 export function parseBalaMaterialBoardUrl(url = '') {
   try {
     const parsed = new URL(String(url || ''))
