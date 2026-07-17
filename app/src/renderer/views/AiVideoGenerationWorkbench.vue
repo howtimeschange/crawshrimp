@@ -4,7 +4,7 @@
       <div class="avg-head-copy">
         <p class="avg-kicker">AI 生视频</p>
         <h1>AI 生视频工作台</h1>
-        <p class="avg-subtitle">纯 prompt 与参考图驱动的视频生成工作台，复用 Seedance 与 HappyHorse CLI 能力。</p>
+        <p class="avg-subtitle">纯 prompt、参考图与动作素材驱动的视频生成工作台，复用 Seedance 与百炼视频网关能力。</p>
       </div>
       <div class="avg-head-actions">
         <button class="avg-btn ghost" type="button" @click="openHistoryDrawer($event)">历史记录</button>
@@ -19,26 +19,24 @@
 
     <div class="avg-main" :inert="backgroundInert || undefined">
       <aside class="avg-control-pane" :class="{ 'mobile-active': compactPane === 'inputs' }">
-        <div class="avg-model-switcher avg-model-switcher-2" role="group" aria-label="模型选择">
-          <button
-            v-for="model in modelOptions"
-            :key="model.id"
-            type="button"
-            class="avg-model-card"
-            :class="{ active: form.provider === model.id }"
-            :aria-pressed="form.provider === model.id ? 'true' : 'false'"
-            @click="selectProvider(model.id)"
-          >
-            <div class="avg-model-head">
-              <strong>{{ model.label }}</strong>
-              <img class="avg-provider-mark" :src="model.mark" alt="" />
+        <div class="avg-model-select-card">
+          <label class="avg-model-select-label" for="avg-video-model-select">视频模型</label>
+          <select id="avg-video-model-select" :value="form.provider" class="avg-model-select" @change="selectProvider($event.target.value)">
+            <option v-for="model in modelOptions" :key="model.id" :value="model.id">
+              {{ model.label }}
+            </option>
+          </select>
+          <div class="avg-model-select-current" aria-live="polite">
+            <img class="avg-provider-mark" :src="activeMeta.mark" alt="" />
+            <div>
+              <strong>{{ activeMeta.label }}</strong>
+              <span>{{ activeMeta.hint }}</span>
             </div>
-            <span>{{ model.hint }}</span>
-          </button>
+          </div>
         </div>
 
         <div class="avg-control-scroll">
-          <section class="avg-section avg-section-prompt">
+          <section v-if="showPromptInput" class="avg-section avg-section-prompt">
             <div class="avg-section-head">
               <strong>Prompt</strong>
               <span>{{ modeBadge }}</span>
@@ -55,13 +53,13 @@
             </div>
           </section>
 
-          <section class="avg-section">
+          <section v-if="!isPixVerse" class="avg-section">
             <div class="avg-section-head">
               <strong>{{ referenceTitle }}</strong>
               <span>{{ referencePolicy }}</span>
             </div>
             <div class="avg-section-body avg-section-body-tight">
-              <div class="avg-ref-actions">
+              <div v-if="showReferenceAssets" class="avg-ref-actions">
                 <button class="avg-btn small" type="button" :disabled="form.assets.length >= assetMax" @click="chooseImages">
                   本地上传
                 </button>
@@ -70,17 +68,32 @@
                 </button>
                 <span class="avg-ref-count">已选 {{ form.assets.length }} / {{ assetMax }}</span>
               </div>
-              <div v-if="form.assets.length" class="avg-asset-grid">
+              <div v-if="showReferenceAssets && form.assets.length" class="avg-asset-grid">
                 <article
                   v-for="(asset, index) in form.assets"
                   :key="`${asset.fileToken}-${index}`"
                   class="avg-asset-card"
                 >
-                  <img v-if="previewSrc(assetPreviewToken(asset))" :src="previewSrc(assetPreviewToken(asset))" :alt="assetDisplayName(asset)" />
+                  <img
+                    v-if="assetKind(asset) === 'image' && previewSrc(assetPreviewToken(asset))"
+                    :src="previewSrc(assetPreviewToken(asset))"
+                    :alt="assetDisplayName(asset)"
+                  />
+                  <div v-else class="avg-asset-placeholder" :class="{ video: assetKind(asset) === 'video' }">
+                    {{ assetKind(asset) === 'video' ? '视频' : '图片' }}
+                  </div>
                   <div class="avg-asset-meta">
                     <strong>{{ assetDisplayName(asset) }}</strong>
                     <span>{{ assetRoleLabel(index) }}</span>
                   </div>
+                  <label v-if="isKling" class="avg-asset-role-select">
+                    <span>角色</span>
+                    <select v-model="asset.role">
+                      <option v-for="role in klingAssetRoleOptions(asset)" :key="role.value" :value="role.value">
+                        {{ role.label }}
+                      </option>
+                    </select>
+                  </label>
                   <div class="avg-asset-actions">
                     <button
                       v-if="showImageInsert"
@@ -94,10 +107,88 @@
                 </article>
               </div>
               <div v-else class="avg-drop-zone avg-drop-zone-static">
-                JPEG / PNG / WEBP · 单张 ≤ 20MB · 用上方按钮添加
+                {{ referenceEmptyText }}
               </div>
               <p class="avg-hint">{{ modeAutoHint }}</p>
               <div class="avg-error-text">{{ errors.assets }}</div>
+            </div>
+          </section>
+
+          <section v-if="isPixVerse" class="avg-section">
+            <div class="avg-section-head">
+              <strong>PixVerse 动作模仿素材</strong>
+              <span>优先本地上传</span>
+            </div>
+            <div class="avg-section-body avg-section-body-tight">
+              <div class="avg-pixverse-local-grid">
+                <button
+                  class="avg-local-source-card avg-local-source-card-media"
+                  :class="{ active: pixverseImageAsset }"
+                  type="button"
+                  @click="choosePixverseAsset('image')"
+                >
+                  <span>角色图</span>
+                  <img
+                    v-if="pixverseImageAsset && previewSrc(assetPreviewToken(pixverseImageAsset))"
+                    :src="previewSrc(assetPreviewToken(pixverseImageAsset))"
+                    :alt="assetDisplayName(pixverseImageAsset)"
+                  />
+                  <div v-else class="avg-local-source-placeholder">图片</div>
+                  <strong>{{ pixverseImageAsset ? assetDisplayName(pixverseImageAsset) : '选择本地图片' }}</strong>
+                </button>
+                <button
+                  class="avg-local-source-card avg-local-source-card-media"
+                  :class="{ active: pixverseVideoAsset }"
+                  type="button"
+                  @click="choosePixverseAsset('video')"
+                >
+                  <span>动作视频</span>
+                  <div class="avg-local-source-placeholder video">视频</div>
+                  <strong>{{ pixverseVideoAsset ? assetDisplayName(pixverseVideoAsset) : '选择本地视频' }}</strong>
+                </button>
+              </div>
+              <p class="avg-hint">PixVerse 不使用 Prompt；本地素材会在提交时上传到百炼 48 小时临时 OSS，再用于模型调用。</p>
+              <details class="avg-advanced-panel">
+                <summary>
+                  <span>URL / oss URL 输入</span>
+                  <em>可选，高级方式</em>
+                </summary>
+                <div class="avg-param-stack avg-advanced-panel-body">
+                  <label class="avg-field">
+                    <span>角色图 URL / oss URL</span>
+                    <input v-model="form.pixverseImageUrl" placeholder="https://.../character.png 或 oss://..." />
+                  </label>
+                  <label class="avg-field">
+                    <span>动作视频 URL / oss URL</span>
+                    <input v-model="form.pixverseVideoUrl" placeholder="https://.../motion.mp4 或 oss://..." />
+                  </label>
+                </div>
+              </details>
+              <div class="avg-error-text">{{ errors.pixverse }}</div>
+            </div>
+          </section>
+
+          <section v-if="isKling" class="avg-section avg-section-advanced">
+            <div class="avg-section-body avg-section-body-tight">
+              <details class="avg-advanced-panel">
+                <summary>
+                  <span>Kling 素材 URL</span>
+                  <em>可选，高级方式</em>
+                </summary>
+                <div class="avg-param-stack avg-advanced-panel-body">
+                  <div v-for="slot in klingUrlSlots" :key="slot.type" class="avg-param-row">
+                    <label class="avg-field">
+                      <span>{{ slot.label }}</span>
+                      <input
+                        :value="klingMediaUrl(slot.type)"
+                        :placeholder="slot.placeholder"
+                        @input="setKlingMediaUrl(slot.type, $event.target.value)"
+                      />
+                    </label>
+                  </div>
+                </div>
+              </details>
+              <p class="avg-hint">默认使用上方本地上传；仅当已有 HTTPS / oss:// 素材地址时再展开填写。</p>
             </div>
           </section>
 
@@ -109,7 +200,7 @@
             <div class="avg-section-body avg-section-body-tight">
               <div class="avg-param-stack">
                 <div class="avg-param-row">
-                  <label class="avg-field">
+                  <label v-if="showDuration" class="avg-field">
                     <span>时长</span>
                     <select v-model.number="form.duration">
                       <option v-for="sec in durationOptions" :key="sec" :value="sec">{{ sec }} 秒</option>
@@ -130,7 +221,14 @@
                 </div>
 
                 <div v-if="showRatio" class="avg-param-row">
-                  <label class="avg-field">
+                  <label v-if="isKling" class="avg-field">
+                    <span>模式</span>
+                    <select v-model="form.klingMode">
+                      <option value="std">std · 720P</option>
+                      <option value="pro">pro · 1080P</option>
+                    </select>
+                  </label>
+                  <label v-else class="avg-field">
                     <span>清晰度</span>
                     <select v-model="form.resolution">
                       <option v-for="item in resolutionOptions" :key="item" :value="item">{{ item }}</option>
@@ -206,7 +304,7 @@
 
         <footer class="avg-control-footer">
           <div class="avg-payload-note" :title="payloadNote">{{ payloadNote }}</div>
-          <div class="avg-cost-card" aria-live="polite">
+          <div v-if="showCostEstimate" class="avg-cost-card" aria-live="polite">
             <div class="avg-cost-main">
               <span>预估花费</span>
               <strong>{{ formatCny(costEstimate.total) }}</strong>
@@ -583,6 +681,9 @@ import { trapDialogFocus } from '../utils/dialogAccessibility.mjs'
 const emit = defineEmits(['open-settings'])
 
 const SEEDANCE_MODEL = 'doubao-seedance-2-0-260128'
+const KLING_V3_MODEL = 'kling/kling-v3-video-generation'
+const KLING_OMNI_MODEL = 'kling/kling-v3-omni-video-generation'
+const PIXVERSE_MOTIONCONTROL_MODEL = 'pixverse/pixverse-motioncontrol'
 
 const modelOptions = [
   {
@@ -597,6 +698,48 @@ const modelOptions = [
     hint: '按是否传图与数量自动切换：文生 / 图生 / 参考生。',
     mark: aliyunMark,
   },
+  {
+    id: 'kling-v3',
+    label: 'Kling v3',
+    hint: '百炼可灵：文生、首帧图生、首尾帧图生。',
+    mark: aliyunMark,
+  },
+  {
+    id: 'kling-omni',
+    label: 'Kling Omni',
+    hint: '百炼可灵 Omni：支持参考图、首尾帧、参考/编辑视频。',
+    mark: aliyunMark,
+  },
+  {
+    id: 'pixverse-motioncontrol',
+    label: 'PixVerse Motion',
+    hint: '动作模仿：角色图 URL + 动作视频 URL。',
+    mark: aliyunMark,
+  },
+]
+
+const KLING_V3_LOCAL_ROLES = [
+  { value: 'first_frame', label: '首帧图' },
+  { value: 'last_frame', label: '尾帧图' },
+]
+const KLING_OMNI_IMAGE_ROLES = [
+  { value: 'first_frame', label: '首帧图' },
+  { value: 'last_frame', label: '尾帧图' },
+  { value: 'refer', label: '参考图' },
+]
+const KLING_OMNI_VIDEO_ROLES = [
+  { value: 'feature', label: '特征参考视频' },
+  { value: 'base', label: '待编辑视频' },
+]
+const KLING_URL_SLOTS_V3 = [
+  { type: 'first_frame', label: '首帧图 URL', placeholder: 'https://.../first-frame.jpg 或 oss://...' },
+  { type: 'last_frame', label: '尾帧图 URL', placeholder: 'https://.../last-frame.jpg 或 oss://...' },
+]
+const KLING_URL_SLOTS_OMNI = [
+  ...KLING_URL_SLOTS_V3,
+  { type: 'refer', label: '参考图 URL', placeholder: 'https://.../reference.png 或 oss://...' },
+  { type: 'feature', label: '特征参考视频 URL', placeholder: 'https://.../feature.mp4 或 oss://...' },
+  { type: 'base', label: '待编辑视频 URL', placeholder: 'https://.../base.mov 或 oss://...' },
 ]
 
 const statusFilters = [
@@ -622,6 +765,10 @@ const form = reactive({
   resolution: '720p',
   duration: 5,
   generateAudio: true,
+  klingMode: 'std',
+  klingMedia: [],
+  pixverseImageUrl: '',
+  pixverseVideoUrl: '',
   watermark: false,
   outputDirToken: '',
 })
@@ -632,7 +779,7 @@ const compactPane = ref('inputs')
 const isCompact = ref(false)
 const submitting = ref(false)
 const formError = ref('')
-const errors = reactive({ prompt: '', assets: '', parameters: '', outputDir: '' })
+const errors = reactive({ prompt: '', assets: '', parameters: '', pixverse: '', outputDir: '' })
 const config = ref(null)
 const openHistory = ref(false)
 const detailJob = ref(null)
@@ -702,6 +849,23 @@ let detailVideoRecoveryInFlight = false
 const activeMeta = computed(() => modelOptions.find(item => item.id === form.provider) || modelOptions[0])
 const activeModelLabel = computed(() => activeMeta.value.label)
 const backgroundInert = computed(() => Boolean(detailJob.value || libraryOpen.value || openHistory.value))
+const isSeedance = computed(() => form.provider === 'seedance')
+const isHappyHorse = computed(() => form.provider === 'happyhorse')
+const isKling = computed(() => form.provider === 'kling-v3' || form.provider === 'kling-omni')
+const isPixVerse = computed(() => form.provider === 'pixverse-motioncontrol')
+const backendProvider = computed(() => (isSeedance.value ? 'seedance' : 'happyhorse'))
+const pixverseImageAsset = computed(() => form.assets.find(asset => asset?.role === 'image_url') || null)
+const pixverseVideoAsset = computed(() => form.assets.find(asset => asset?.role === 'video_url') || null)
+const pixverseMediaCount = computed(() => {
+  let count = 0
+  if (String(form.pixverseImageUrl || '').trim() || pixverseImageAsset.value) count += 1
+  if (String(form.pixverseVideoUrl || '').trim() || pixverseVideoAsset.value) count += 1
+  return count
+})
+const klingUrlSlots = computed(() => (form.provider === 'kling-omni' ? KLING_URL_SLOTS_OMNI : KLING_URL_SLOTS_V3))
+const klingUrlMedia = computed(() => form.klingMedia.filter(item => String(item?.url || '').trim()))
+const klingMediaCount = computed(() => (isKling.value ? form.assets.length + klingUrlMedia.value.length : 0))
+const klingLocalMediaKind = computed(() => (form.provider === 'kling-omni' ? 'image-video' : 'image'))
 
 const libraryRootLabel = computed(() => {
   if (!libraryDirectoryToken.value) return '请先设置图库文件夹'
@@ -731,56 +895,101 @@ const detailIsPortrait = computed(() => {
 /** HappyHorse 模式由图片数量自动判定：0=t2v, 1=i2v, 2-9=r2v */
 const happyHorseMode = computed(() => resolveHappyHorseMode(form.assets.length))
 const resolvedModelId = computed(() => {
-  if (form.provider === 'seedance') return SEEDANCE_MODEL
+  if (isSeedance.value) return SEEDANCE_MODEL
+  if (form.provider === 'kling-v3') return KLING_V3_MODEL
+  if (form.provider === 'kling-omni') return KLING_OMNI_MODEL
+  if (isPixVerse.value) return PIXVERSE_MOTIONCONTROL_MODEL
   return happyHorseModelId(happyHorseMode.value)
 })
 const modeBadge = computed(() => {
-  if (form.provider === 'seedance') {
+  if (isSeedance.value) {
     return form.assets.length ? `参考图生视频 · ${form.assets.length} 张` : '文生 / 可加参考图'
   }
+  if (isKling.value) return klingMediaCount.value ? `Kling 多模态 · ${klingMediaCount.value} 个素材` : 'Kling 文生'
+  if (isPixVerse.value) return 'PixVerse 动作模仿'
   return happyHorseModeLabel(happyHorseMode.value)
 })
 const shortModelLabel = computed(() => {
-  if (form.provider === 'seedance') return 'Seedance 2.0'
+  if (isSeedance.value) return 'Seedance 2.0'
+  if (form.provider === 'kling-v3') return 'Kling v3'
+  if (form.provider === 'kling-omni') return 'Kling Omni'
+  if (isPixVerse.value) return 'PixVerse'
   return `HH · ${happyHorseModeLabel(happyHorseMode.value)}`
 })
-const assetMax = computed(() => (form.provider === 'seedance' ? 4 : 9))
-const showRatio = computed(() => !(form.provider === 'happyhorse' && happyHorseMode.value === 'i2v'))
-const showAudio = computed(() => form.provider === 'seedance')
-const showImageInsert = computed(() => form.provider === 'happyhorse' && happyHorseMode.value === 'r2v')
-const durationMin = computed(() => (form.provider === 'seedance' ? 4 : 3))
+const assetMax = computed(() => {
+  if (isSeedance.value) return 4
+  if (isHappyHorse.value) return 9
+  if (form.provider === 'kling-v3') return 2
+  if (form.provider === 'kling-omni') return 7
+  if (isPixVerse.value) return 2
+  return 0
+})
+const showReferenceAssets = computed(() => assetMax.value > 0 && !isPixVerse.value)
+const showPromptInput = computed(() => !isPixVerse.value)
+const showDuration = computed(() => !isPixVerse.value)
+const showRatio = computed(() => {
+  if (isPixVerse.value) return false
+  return !(isHappyHorse.value && happyHorseMode.value === 'i2v')
+})
+const showAudio = computed(() => isSeedance.value || isKling.value)
+const showImageInsert = computed(() => isHappyHorse.value && happyHorseMode.value === 'r2v')
+const durationMin = computed(() => (isSeedance.value ? 4 : 3))
 const durationOptions = computed(() => {
   const options = []
   for (let i = durationMin.value; i <= 15; i += 1) options.push(i)
   return options
 })
-const ratioOptions = computed(() => (form.provider === 'seedance' ? SEEDANCE_RATIOS : HAPPYHORSE_RATIOS))
-const resolutionOptions = computed(() => (form.provider === 'seedance' ? ['480p', '720p', '1080p'] : ['720P', '1080P']))
+const ratioOptions = computed(() => {
+  if (isSeedance.value) return SEEDANCE_RATIOS
+  if (isKling.value) return ['16:9', '9:16', '1:1']
+  return HAPPYHORSE_RATIOS
+})
+const resolutionOptions = computed(() => {
+  if (isSeedance.value) return ['480p', '720p', '1080p']
+  if (isPixVerse.value) return ['360P', '540P', '720P']
+  return ['720P', '1080P']
+})
 const referenceTitle = computed(() => {
-  if (form.provider === 'happyhorse' && happyHorseMode.value === 'i2v') return '首帧图'
+  if (isKling.value) return '参考素材'
+  if (isPixVerse.value) return '本地参考图'
+  if (isHappyHorse.value && happyHorseMode.value === 'i2v') return '首帧图'
   return '参考图'
 })
 const referencePolicy = computed(() => {
-  if (form.provider === 'seedance') return '可选 0-4 张'
+  if (isSeedance.value) return '可选 0-4 张'
+  if (form.provider === 'kling-v3') return '可选 0-2 张首/尾帧'
+  if (form.provider === 'kling-omni') return '可选图片/视频素材'
+  if (isPixVerse.value) return '改用 URL 输入'
   if (happyHorseMode.value === 't2v') return '0 张 → 文生；加图将切换模式'
   if (happyHorseMode.value === 'i2v') return '1 张 → 图生视频（首帧）'
   return '2-9 张 → 参考生视频'
 })
+const referenceEmptyText = computed(() => {
+  if (isKling.value) return '可本地上传素材，提交时自动上传到百炼临时 OSS；也可在下方直接填写 URL。'
+  if (isPixVerse.value) return 'PixVerse 请在下方填写角色图 URL 和动作视频 URL。'
+  return 'JPEG / PNG / WEBP · 单张 ≤ 20MB · 用上方按钮添加'
+})
 const modeAutoHint = computed(() => {
-  if (form.provider === 'seedance') return 'Seedance：0 张纯文生，1-4 张作为 reference_image。'
+  if (isSeedance.value) return 'Seedance：0 张纯文生，1-4 张作为 reference_image。'
+  if (isKling.value) return 'Kling：本地素材会转成百炼临时 oss:// URL；v3 仅支持首帧/尾帧，Omni 还支持参考图/视频。'
+  if (isPixVerse.value) return 'PixVerse：输出动作由动作视频 URL 决定，角色由角色图 URL 决定。'
   if (happyHorseMode.value === 't2v') return '当前 0 张图 → 自动调用文生视频（t2v）。'
   if (happyHorseMode.value === 'i2v') return '当前 1 张图 → 自动调用图生视频（i2v），比例隐藏。'
   return '当前 ≥2 张图 → 自动调用参考生视频（r2v），建议 Prompt 使用 [Image n]。'
 })
 const promptHint = computed(() => {
-  if (form.provider === 'happyhorse' && happyHorseMode.value === 'r2v') {
+  if (isPixVerse.value) return 'PixVerse 不使用 Prompt；这里可留空，主要填写角色图 URL 和动作视频 URL。'
+  if (isKling.value) return 'Kling Prompt 必填；请写清主体、场景、动作、镜头和风格。'
+  if (isHappyHorse.value && happyHorseMode.value === 'r2v') {
     if (/\[Image\s*\d+\]/i.test(form.prompt)) return '已检测到 Image 引用。'
     return '参考生视频可点击图片旁插入 [Image n] 写入 Prompt。'
   }
   return 'Prompt 必填。HappyHorse 会按图片数量自动选择文生 / 图生 / 参考生。'
 })
 const paramHint = computed(() => {
-  if (form.provider === 'seedance') return 'Seedance 默认 720p / 5 秒 / 9:16 / 音频开 / 水印关。'
+  if (isSeedance.value) return 'Seedance 默认 720p / 5 秒 / 9:16 / 音频开 / 水印关。'
+  if (isKling.value) return 'Kling 默认 std / 5 秒 / 16:9 / 音频开 / 水印关；pro 对应更高清模式。'
+  if (isPixVerse.value) return 'PixVerse 只提交 resolution 与 watermark，时长跟随动作参考视频。'
   if (happyHorseMode.value === 'i2v') return '图生视频隐藏比例，输出画幅跟随首帧。'
   if (happyHorseMode.value === 't2v') return '文生视频默认 720P / 5 秒 / 16:9 / 水印关。'
   return '参考生视频默认 720P / 5 秒 / 9:16 / 水印关。'
@@ -790,16 +999,24 @@ const costEstimate = computed(() => estimateVideoCost({
   resolution: form.resolution,
   duration: form.duration,
 }))
+const providerAllowsCostEstimate = computed(() => {
+  if (backendProvider.value !== 'happyhorse') return true
+  return config.value?.providers?.happyhorse?.pricingEstimateAvailable !== false
+})
+const showCostEstimate = computed(() => costEstimate.value?.known === true && providerAllowsCostEstimate.value)
 const payloadNote = computed(() => {
   const audio = showAudio.value ? ` / 音频${form.generateAudio ? '开' : '关'}` : ''
-  const ratio = showRatio.value ? ` / ${form.ratio}` : ' / 比例随首帧'
-  return `将调用 ${resolvedModelId.value} · ${modeBadge.value} · ${form.assets.length} 张图 · ${form.resolution}/${form.duration}s${ratio}${audio} / 水印${form.watermark ? '开' : '关'}`
+  const ratio = showRatio.value ? ` / ${form.ratio}` : (isPixVerse.value ? '' : ' / 比例随首帧')
+  const quality = isKling.value ? form.klingMode : form.resolution
+  const duration = showDuration.value ? `/${form.duration}s` : ''
+  const inputCount = isPixVerse.value ? `${pixverseMediaCount.value}/2 个动作模仿素材` : isKling.value ? `${klingMediaCount.value} 个素材` : `${form.assets.length} 张图`
+  return `将调用 ${resolvedModelId.value} · ${modeBadge.value} · ${inputCount} · ${quality}${duration}${ratio}${audio} / 水印${form.watermark ? '开' : '关'}`
 })
 const configHint = computed(() => {
   const providers = config.value?.providers || {}
-  const item = providers[form.provider]
+  const item = providers[backendProvider.value]
   if (!item) return ''
-  if (!item.configured) return `当前 ${form.provider === 'seedance' ? 'Seedance' : 'HappyHorse'} 凭据未配置，请到设置 → AI 能力配置`
+  if (!item.configured) return `当前 ${isSeedance.value ? 'Seedance' : '百炼'} 凭据未配置，请到设置 → AI 能力配置`
   if (item.cliReady === false) return '共享 CLI 能力未就绪'
   return ''
 })
@@ -827,31 +1044,58 @@ function openVideoSettings() {
 
 function selectProvider(provider) {
   clearReusedAssetGuard()
-  form.provider = provider === 'happyhorse' ? 'happyhorse' : 'seedance'
+  const previous = form.provider
+  form.provider = modelOptions.some(item => item.id === provider) ? provider : 'seedance'
+  if (previous !== form.provider) {
+    form.assets = []
+    form.klingMedia = []
+    form.pixverseImageUrl = ''
+    form.pixverseVideoUrl = ''
+  }
   applyProviderDefaults()
 }
 
 function applyProviderDefaults() {
-  if (form.provider === 'seedance') {
+  if (isSeedance.value) {
     form.ratio = '9:16'
     form.resolution = '720p'
     form.duration = 5
     form.generateAudio = true
+    form.klingMode = 'std'
     form.watermark = false
     if (form.assets.length > 4) form.assets = form.assets.slice(0, 4)
+    return
+  }
+  if (isKling.value) {
+    form.ratio = '16:9'
+    form.resolution = '720P'
+    form.duration = 5
+    form.generateAudio = true
+    form.klingMode = 'std'
+    form.watermark = false
+    return
+  }
+  if (isPixVerse.value) {
+    form.ratio = ''
+    form.resolution = '720P'
+    form.duration = 5
+    form.generateAudio = false
+    form.klingMode = 'std'
+    form.watermark = false
     return
   }
   form.resolution = '720P'
   form.duration = 5
   form.watermark = false
   form.generateAudio = false
+  form.klingMode = 'std'
   if (form.assets.length > 9) form.assets = form.assets.slice(0, 9)
   const mode = resolveHappyHorseMode(form.assets.length)
   form.ratio = mode === 'i2v' ? '' : mode === 't2v' ? '16:9' : '9:16'
 }
 
 function syncHappyHorseRatioDefault(previousMode = '') {
-  if (form.provider !== 'happyhorse') return
+  if (!isHappyHorse.value) return
   const mode = resolveHappyHorseMode(form.assets.length)
   if (mode === 'i2v') {
     form.ratio = ''
@@ -866,7 +1110,13 @@ function syncHappyHorseRatioDefault(previousMode = '') {
 }
 
 function assetRoleLabel(index) {
-  if (form.provider === 'happyhorse' && happyHorseMode.value === 'i2v') return '首帧'
+  const asset = form.assets[index]
+  if (isKling.value) {
+    const role = klingAssetRoleOptions(asset).find(item => item.value === asset?.role)
+    return role?.label || 'Kling 素材'
+  }
+  if (isPixVerse.value) return asset?.role === 'video_url' ? '动作视频' : '角色图'
+  if (isHappyHorse.value && happyHorseMode.value === 'i2v') return '首帧'
   return `参考图 ${index + 1}`
 }
 
@@ -879,7 +1129,30 @@ function assetPreviewToken(asset) {
 }
 
 function assetDisplayName(asset) {
-  return String(asset?.name || asset?.relativePath || '本地图片').trim() || '本地图片'
+  return String(asset?.name || asset?.relativePath || (assetKind(asset) === 'video' ? '本地视频' : '本地图片')).trim() || '本地图片'
+}
+
+function assetKind(asset) {
+  const kind = String(asset?.kind || '').trim()
+  if (kind) return kind
+  const mime = String(asset?.mimeType || '').trim()
+  if (mime.startsWith('video/')) return 'video'
+  return 'image'
+}
+
+function klingAssetRoleOptions(asset) {
+  if (form.provider === 'kling-v3') return KLING_V3_LOCAL_ROLES
+  return assetKind(asset) === 'video'
+    ? KLING_OMNI_VIDEO_ROLES
+    : KLING_OMNI_IMAGE_ROLES
+}
+
+function defaultKlingAssetRole(asset, index = 0) {
+  if (form.provider === 'kling-v3') return index === 0 ? 'first_frame' : 'last_frame'
+  if (assetKind(asset) === 'video') {
+    return form.assets.some(item => item?.role === 'feature') ? 'base' : 'feature'
+  }
+  return index === 0 ? 'first_frame' : 'refer'
 }
 
 function normalizeSelectedAsset(item) {
@@ -890,6 +1163,9 @@ function normalizeSelectedAsset(item) {
     previewToken: String(item?.previewToken || '').trim() || undefined,
     name: String(item?.name || '本地图片').trim() || '本地图片',
     relativePath: String(item?.relativePath || '').trim() || undefined,
+    kind: String(item?.kind || '').trim() || undefined,
+    mimeType: String(item?.mimeType || '').trim() || undefined,
+    role: String(item?.role || '').trim() || undefined,
     size: Number.isFinite(Number(item?.size)) ? Number(item.size) : undefined,
   }
 }
@@ -912,11 +1188,15 @@ function resetForm() {
   clearReusedAssetGuard()
   form.prompt = ''
   form.assets = []
+  form.klingMedia = []
+  form.pixverseImageUrl = ''
+  form.pixverseVideoUrl = ''
   applyProviderDefaults()
   formError.value = ''
   errors.prompt = ''
   errors.assets = ''
   errors.parameters = ''
+  errors.pixverse = ''
   errors.outputDir = ''
 }
 
@@ -1175,6 +1455,9 @@ function isPathCapabilityError(error) {
 function modelLabel(model) {
   const value = String(model || '')
   if (value.includes('seedance') || value === SEEDANCE_MODEL) return 'Seedance 2.0'
+  if (value === KLING_V3_MODEL || value.includes('kling-v3-video-generation')) return 'Kling v3'
+  if (value === KLING_OMNI_MODEL || value.includes('kling-v3-omni-video-generation')) return 'Kling Omni'
+  if (value === PIXVERSE_MOTIONCONTROL_MODEL || value.includes('pixverse-motioncontrol')) return 'PixVerse Motion Control'
   if (value.includes('happyhorse') || value === 'happyhorse') {
     if (value.includes('i2v')) return 'HappyHorse 1.1 · 图生'
     if (value.includes('r2v')) return 'HappyHorse 1.1 · 参考生'
@@ -1242,6 +1525,20 @@ function stageNote(job) {
 function paramSummary(job) {
   const params = job?.parameters || {}
   const parts = []
+  if (job?.model === KLING_V3_MODEL || job?.model === KLING_OMNI_MODEL) {
+    if (params.mode) parts.push(params.mode)
+    if (params.duration) parts.push(`${params.duration} 秒`)
+    if (params.aspect_ratio) parts.push(params.aspect_ratio)
+    if (params.audio != null) parts.push(`音频${params.audio ? '开' : '关'}`)
+    parts.push(`水印${params.watermark ? '开' : '关'}`)
+    return parts.join(' · ')
+  }
+  if (job?.model === PIXVERSE_MOTIONCONTROL_MODEL) {
+    if (params.resolution) parts.push(params.resolution)
+    parts.push(`水印${params.watermark ? '开' : '关'}`)
+    parts.push(params.imageUrl && params.videoUrl ? '角色图 + 动作视频 URL' : 'URL 待补齐')
+    return parts.join(' · ')
+  }
   if (params.resolution) parts.push(params.resolution)
   if (params.duration) parts.push(`${params.duration} 秒`)
   if (params.ratio) parts.push(params.ratio)
@@ -1508,7 +1805,52 @@ function canCancelQueuedJob(job) {
     && !String(job?.currentRun?.providerTaskId || '').trim()
 }
 
+function isProviderMediaUrl(value) {
+  return /^(https?:\/\/|oss:\/\/)/i.test(String(value || '').trim())
+}
+
+function klingMediaUrl(type) {
+  return String(form.klingMedia.find(item => item.type === type)?.url || '')
+}
+
+function setKlingMediaUrl(type, url) {
+  const mediaType = String(type || '').trim()
+  if (!mediaType) return
+  const value = String(url || '').trim()
+  const existing = form.klingMedia.find(item => item.type === mediaType)
+  if (existing) {
+    existing.url = value
+  } else {
+    form.klingMedia.push({ type: mediaType, url: value })
+  }
+}
+
 function buildParameters() {
+  if (isKling.value) {
+    const params = {
+      mode: form.klingMode || 'std',
+      aspect_ratio: form.ratio || '16:9',
+      duration: Number(form.duration || 5),
+      audio: Boolean(form.generateAudio),
+      watermark: Boolean(form.watermark),
+    }
+    const media = form.klingMedia
+      .map(item => ({
+        type: String(item?.type || '').trim(),
+        url: String(item?.url || '').trim(),
+      }))
+      .filter(item => item.type && item.url)
+    if (media.length) params.media = media
+    return params
+  }
+  if (isPixVerse.value) {
+    return {
+      imageUrl: String(form.pixverseImageUrl || '').trim(),
+      videoUrl: String(form.pixverseVideoUrl || '').trim(),
+      resolution: form.resolution || '720P',
+      watermark: Boolean(form.watermark),
+    }
+  }
   const params = {
     resolution: form.resolution,
     duration: Number(form.duration || 5),
@@ -1520,7 +1862,24 @@ function buildParameters() {
 }
 
 function buildAssetsPayload() {
-  const role = form.provider === 'happyhorse' && happyHorseMode.value === 'i2v'
+  if (isPixVerse.value) {
+    return form.assets.map((asset, index) => ({
+      role: asset.role,
+      sourceType: 'local_file',
+      fileToken: assetFileToken(asset),
+      sortOrder: index,
+    })).filter(asset => asset.fileToken && asset.role)
+  }
+  if (!showReferenceAssets.value) return []
+  if (isKling.value) {
+    return form.assets.map((asset, index) => ({
+      role: asset.role || defaultKlingAssetRole(asset, index),
+      sourceType: 'local_file',
+      fileToken: assetFileToken(asset),
+      sortOrder: index,
+    })).filter(asset => asset.fileToken && asset.role)
+  }
+  const role = isHappyHorse.value && happyHorseMode.value === 'i2v'
     ? 'first_frame'
     : 'reference_image'
   return form.assets.map((asset, index) => ({
@@ -1535,16 +1894,54 @@ function validateLocal() {
   errors.prompt = ''
   errors.assets = ''
   errors.parameters = ''
+  errors.pixverse = ''
   errors.outputDir = ''
   formError.value = ''
   const prompt = String(form.prompt || '').trim()
-  if (!prompt) errors.prompt = 'Prompt 必填。'
+  if (!isPixVerse.value && !prompt) errors.prompt = 'Prompt 必填。'
   if (prompt.length > 4000) errors.prompt = 'Prompt 不能超过 4000 字符'
-  if (form.provider === 'seedance' && form.assets.length > 4) {
+  if (isSeedance.value && form.assets.length > 4) {
     errors.assets = 'Seedance 最多支持 4 张参考图。'
   }
-  if (form.provider === 'happyhorse' && form.assets.length > 9) {
+  if (isHappyHorse.value && form.assets.length > 9) {
     errors.assets = 'HappyHorse 参考生最多 9 张图。'
+  }
+  if (isKling.value) {
+    for (const item of klingUrlMedia.value) {
+      if (!isProviderMediaUrl(item.url)) errors.assets = 'Kling 素材 URL 必须是 HTTP/HTTPS 或百炼 oss:// 地址。'
+    }
+    const klingMediaRoles = [
+      ...form.assets.map(asset => asset.role),
+      ...klingUrlMedia.value.map(item => item.type),
+    ]
+    const firstCount = klingMediaRoles.filter(role => role === 'first_frame').length
+    const lastCount = klingMediaRoles.filter(role => role === 'last_frame').length
+    const featureCount = klingMediaRoles.filter(role => role === 'feature').length
+    const baseCount = klingMediaRoles.filter(role => role === 'base').length
+    if (form.provider === 'kling-v3' && klingMediaRoles.some(role => !['first_frame', 'last_frame'].includes(role))) {
+      errors.assets = 'Kling v3 素材仅支持首帧图 / 尾帧图。'
+    } else if (lastCount && firstCount !== 1) {
+      errors.assets = 'Kling 尾帧图必须与 1 张首帧图配对。'
+    } else if (firstCount > 1 || lastCount > 1 || featureCount > 1 || baseCount > 1) {
+      errors.assets = 'Kling 首帧、尾帧、feature、base 各最多 1 个。'
+    }
+  }
+  if (isPixVerse.value) {
+    const hasImageUrl = Boolean(String(form.pixverseImageUrl || '').trim())
+    const hasVideoUrl = Boolean(String(form.pixverseVideoUrl || '').trim())
+    if (hasImageUrl && !isProviderMediaUrl(form.pixverseImageUrl)) {
+      errors.pixverse = 'PixVerse 角色图 URL 必须是 HTTP/HTTPS 或百炼 oss:// 地址。'
+    } else if (hasVideoUrl && !isProviderMediaUrl(form.pixverseVideoUrl)) {
+      errors.pixverse = 'PixVerse 动作视频 URL 必须是 HTTP/HTTPS 或百炼 oss:// 地址。'
+    } else if (hasImageUrl && pixverseImageAsset.value) {
+      errors.pixverse = '角色图请在本地素材和 URL 中二选一。'
+    } else if (hasVideoUrl && pixverseVideoAsset.value) {
+      errors.pixverse = '动作视频请在本地素材和 URL 中二选一。'
+    } else if (!hasImageUrl && !pixverseImageAsset.value) {
+      errors.pixverse = '请选择本地角色图或填写角色图 URL。'
+    } else if (!hasVideoUrl && !pixverseVideoAsset.value) {
+      errors.pixverse = '请选择本地动作视频或填写动作视频 URL。'
+    }
   }
   if (
     requiredReusedAssetCount.value > form.assets.length
@@ -1553,11 +1950,11 @@ function validateLocal() {
     errors.assets = `原任务有 ${requiredReusedAssetCount.value} 张参考图不可用，请重新选择后再生成，避免静默切换模型。`
   }
   const duration = Number(form.duration)
-  if (!Number.isInteger(duration)) errors.parameters = '时长必须是整数'
-  else if (form.provider === 'seedance' && (duration < 4 || duration > 15)) errors.parameters = 'Seedance 时长需 4-15 秒'
-  else if (form.provider === 'happyhorse' && (duration < 3 || duration > 15)) errors.parameters = 'HappyHorse 时长需 3-15 秒'
+  if (showDuration.value && !Number.isInteger(duration)) errors.parameters = '时长必须是整数'
+  else if (isSeedance.value && (duration < 4 || duration > 15)) errors.parameters = 'Seedance 时长需 4-15 秒'
+  else if ((isHappyHorse.value || isKling.value) && (duration < 3 || duration > 15)) errors.parameters = `${shortModelLabel.value} 时长需 3-15 秒`
   if (!String(form.outputDirToken || '').trim()) errors.outputDir = '请选择输出目录'
-  return !errors.prompt && !errors.assets && !errors.parameters && !errors.outputDir
+  return !errors.prompt && !errors.assets && !errors.parameters && !errors.pixverse && !errors.outputDir
 }
 
 function insertImageRef(index) {
@@ -1567,7 +1964,7 @@ function insertImageRef(index) {
 }
 
 function addAssetItems(items) {
-  const previousMode = form.provider === 'happyhorse'
+  const previousMode = isHappyHorse.value
     ? resolveHappyHorseMode(form.assets.length)
     : ''
   const remain = Math.max(0, assetMax.value - form.assets.length)
@@ -1578,8 +1975,11 @@ function addAssetItems(items) {
   for (const asset of list) {
     if (added >= remain) break
     if (form.assets.some(item => assetFileToken(item) === asset.fileToken)) continue
+    if (isKling.value && !asset.role) {
+      asset.role = defaultKlingAssetRole(asset, form.assets.length)
+    }
     form.assets.push(asset)
-    void ensureImagePreview(assetPreviewToken(asset))
+    if (assetKind(asset) === 'image') void ensureImagePreview(assetPreviewToken(asset))
     added += 1
   }
   syncHappyHorseRatioDefault(previousMode)
@@ -1588,7 +1988,8 @@ function addAssetItems(items) {
 }
 
 async function chooseImages() {
-  if (typeof window?.cs?.selectAiVideoImages !== 'function') {
+  const selectMedia = window?.cs?.selectAiVideoMedia || window?.cs?.selectAiVideoImages
+  if (typeof selectMedia !== 'function') {
     formError.value = '当前环境不支持系统文件选择器'
     return
   }
@@ -1599,10 +2000,38 @@ async function chooseImages() {
   }
   formError.value = ''
   try {
-    const selected = await window.cs.selectAiVideoImages({
+    const selected = await selectMedia({
       maxCount: remain,
+      mediaKind: klingLocalMediaKind.value,
+      title: isKling.value ? '选择 Kling 本地素材' : '选择 AI 视频参考图',
     })
     addAssetItems(selected?.items || [])
+  } catch (error) {
+    formError.value = error?.message || String(error)
+  }
+}
+
+async function choosePixverseAsset(kind) {
+  const mediaKind = kind === 'video' ? 'video' : 'image'
+  const role = mediaKind === 'video' ? 'video_url' : 'image_url'
+  const selectMedia = window?.cs?.selectAiVideoMedia || window?.cs?.selectAiVideoImages
+  if (typeof selectMedia !== 'function') {
+    formError.value = '当前环境不支持系统文件选择器'
+    return
+  }
+  formError.value = ''
+  try {
+    const selected = await selectMedia({
+      maxCount: 1,
+      mediaKind,
+      title: mediaKind === 'video' ? '选择 PixVerse 动作视频' : '选择 PixVerse 角色图',
+    })
+    const asset = normalizeSelectedAsset((selected?.items || [])[0])
+    if (!asset) return
+    asset.role = role
+    form.assets = form.assets.filter(item => item.role !== role)
+    form.assets.push(asset)
+    if (assetKind(asset) === 'image') void ensureImagePreview(assetPreviewToken(asset))
   } catch (error) {
     formError.value = error?.message || String(error)
   }
@@ -1740,7 +2169,7 @@ function confirmLibrarySelection() {
 }
 
 function removeAsset(index) {
-  const previousMode = form.provider === 'happyhorse'
+  const previousMode = isHappyHorse.value
     ? resolveHappyHorseMode(form.assets.length)
     : ''
   const [removed] = form.assets.splice(index, 1)
@@ -1800,7 +2229,7 @@ async function submitJob() {
   formError.value = ''
   try {
     const draftPayload = {
-      provider: form.provider,
+      provider: backendProvider.value,
       model: resolvedModelId.value,
       prompt: String(form.prompt || '').trim(),
       assets: buildAssetsPayload(),
@@ -1939,8 +2368,9 @@ function reuseParams(job, { editingDraft = false } = {}) {
   errors.prompt = ''
   errors.assets = ''
   errors.parameters = ''
+  errors.pixverse = ''
   errors.outputDir = ''
-  form.provider = String(job.provider || '').includes('happy') ? 'happyhorse' : 'seedance'
+  form.provider = modelChoiceForJob(job)
   const sourceAssets = Array.isArray(job.assets) ? job.assets : []
   form.assets = sourceAssets
     .map(normalizeSelectedAsset)
@@ -1959,11 +2389,24 @@ function reuseParams(job, { editingDraft = false } = {}) {
   }
   const params = job.parameters || {}
   if (params.ratio) form.ratio = params.ratio
+  if (params.aspect_ratio) form.ratio = params.aspect_ratio
   if (params.resolution) form.resolution = params.resolution
   if (params.duration != null) form.duration = params.duration
   if (params.generateAudio != null) form.generateAudio = Boolean(params.generateAudio)
+  if (params.audio != null) form.generateAudio = Boolean(params.audio)
+  if (params.mode) form.klingMode = params.mode
+  form.klingMedia = Array.isArray(params.media)
+    ? params.media.map(item => ({
+      type: String(item?.type || '').trim(),
+      url: String(item?.url || '').trim(),
+    })).filter(item => item.type && item.url)
+    : []
+  if (params.imageUrl) form.pixverseImageUrl = params.imageUrl
+  if (params.videoUrl) form.pixverseVideoUrl = params.videoUrl
   if (params.watermark != null) form.watermark = Boolean(params.watermark)
-  for (const asset of form.assets) void ensureImagePreview(assetPreviewToken(asset))
+  for (const asset of form.assets) {
+    if (assetKind(asset) === 'image') void ensureImagePreview(assetPreviewToken(asset))
+  }
   syncHappyHorseRatioDefault()
   editingDraftJobId.value = editingDraft ? String(job.id || '') : ''
   compactPane.value = 'inputs'
@@ -1971,6 +2414,15 @@ function reuseParams(job, { editingDraft = false } = {}) {
 
 function editDraft(job) {
   reuseParams(job, { editingDraft: true })
+}
+
+function modelChoiceForJob(job = {}) {
+  const model = String(job?.model || '').trim()
+  if (model === KLING_V3_MODEL) return 'kling-v3'
+  if (model === KLING_OMNI_MODEL) return 'kling-omni'
+  if (model === PIXVERSE_MOTIONCONTROL_MODEL) return 'pixverse-motioncontrol'
+  if (model.includes('happyhorse') || String(job?.provider || '').includes('happy')) return 'happyhorse'
+  return 'seedance'
 }
 
 async function retryArchive(job) {
@@ -2251,19 +2703,72 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.avg-model-switcher {
+.avg-model-select-card {
   flex: 0 0 auto;
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
   padding: 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
   z-index: 2;
 }
 
-.avg-model-switcher-2 {
-  grid-template-columns: 1fr 1fr;
+.avg-model-select-label {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.avg-model-select-current {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px;
+  border: 1px solid var(--orange-line);
+  border-radius: 10px;
+  background: var(--orange-soft);
+}
+
+.avg-model-select-current strong,
+.avg-model-select-current span {
+  display: block;
+}
+
+.avg-model-select-current strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.avg-model-select-current span {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.avg-model-select {
+  width: 100%;
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #20202a;
+  color: var(--text);
+  padding: 0 34px 0 12px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 760;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  color-scheme: dark;
+}
+
+.avg-model-select:hover,
+.avg-model-select:focus {
+  border-color: var(--orange-line);
+  background: #242430;
 }
 
 .avg-cost-card {
@@ -2355,6 +2860,185 @@ onUnmounted(() => {
   color: var(--text3);
   font-size: 11px;
   line-height: 1.35;
+}
+
+.avg-asset-placeholder {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed var(--border);
+  background: var(--bg2);
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.avg-asset-placeholder.video {
+  background: #111827;
+  color: #fff;
+}
+
+.avg-asset-role-select {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text3);
+}
+
+.avg-asset-role-select select {
+  min-height: 30px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #20202a;
+  color: var(--text);
+  padding: 0 26px 0 9px;
+  font-size: 12px;
+  font-weight: 740;
+  outline: none;
+  color-scheme: dark;
+}
+
+.avg-asset-role-select select:focus {
+  border-color: var(--orange-line);
+}
+
+.avg-pixverse-local-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.avg-local-source-card {
+  min-height: 68px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--text2);
+  padding: 10px;
+  text-align: left;
+  display: grid;
+  gap: 4px;
+  cursor: pointer;
+}
+
+.avg-local-source-card.active {
+  border-style: solid;
+  border-color: var(--orange-line);
+  background: rgba(255, 107, 43, 0.08);
+}
+
+.avg-local-source-card-media {
+  grid-template-columns: 58px minmax(0, 1fr);
+  align-items: center;
+  column-gap: 10px;
+}
+
+.avg-local-source-card span {
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.avg-local-source-card-media span {
+  grid-column: 2;
+}
+
+.avg-local-source-card strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.avg-local-source-card-media strong {
+  grid-column: 2;
+}
+
+.avg-local-source-card-media img,
+.avg-local-source-placeholder {
+  grid-row: 1 / span 2;
+  width: 58px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+}
+
+.avg-local-source-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--text3);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.avg-local-source-placeholder.video {
+  background: linear-gradient(135deg, #111827, #242430);
+  color: #fff;
+}
+
+.avg-section-advanced {
+  border-style: dashed;
+}
+
+.avg-advanced-panel {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg3);
+  overflow: hidden;
+}
+
+.avg-advanced-panel summary {
+  min-height: 38px;
+  padding: 0 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--text2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.avg-advanced-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.avg-advanced-panel summary::after {
+  content: '展开';
+  flex: 0 0 auto;
+  color: var(--orange);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.avg-advanced-panel[open] summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.avg-advanced-panel[open] summary::after {
+  content: '收起';
+}
+
+.avg-advanced-panel summary span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.avg-advanced-panel summary em {
+  margin-left: auto;
+  color: var(--text3);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.avg-advanced-panel-body {
+  padding: 10px;
 }
 
 .avg-control-scroll {
@@ -3593,13 +4277,14 @@ select:focus-visible {
 }
 
 @media (max-width: 620px) {
-  .avg-model-switcher,
+  .avg-model-select-card,
   .avg-param-row,
   .avg-ref-actions,
   .avg-library-toolbar,
   .avg-detail-meta {
     grid-template-columns: 1fr;
   }
+  .avg-pixverse-local-grid { grid-template-columns: 1fr; }
   .avg-library-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .avg-ref-count { justify-self: start; }
   .avg-field-spacer { display: none; }

@@ -166,6 +166,14 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
             svc.resolve_model("happyhorse", "happyhorse-1.1-t2v"),
             ("happyhorse", "happyhorse-1.1-t2v"),
         )
+        self.assertEqual(
+            svc.resolve_model("happyhorse", svc.KLING_V3_MODEL),
+            ("happyhorse", svc.KLING_V3_MODEL),
+        )
+        self.assertEqual(
+            svc.resolve_model("happyhorse", "pixverse-motioncontrol"),
+            ("happyhorse", svc.PIXVERSE_MOTIONCONTROL_MODEL),
+        )
         for provider, model in (
             ("seedance", "happyhorse-1.1-t2v"),
             ("happyhorse", "seedance-2.0"),
@@ -174,6 +182,287 @@ class AiVideoGenerationServiceTests(unittest.TestCase):
             with self.subTest(provider=provider, model=model):
                 with self.assertRaises(svc.AiVideoError):
                     svc.resolve_model(provider, model)
+
+    def test_bailian_gateway_models_validate_and_build_payloads(self):
+        output_token = self._capability("directory", "output", self.output_dir)
+        with patch.object(svc, "provider_status", return_value=READY_PROVIDER_STATUS):
+            kling = svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.KLING_V3_MODEL,
+                "prompt": "在火车里吃火锅唱歌",
+                "parameters": {
+                    "mode": "std",
+                    "aspect_ratio": "16:9",
+                    "duration": 5,
+                    "audio": True,
+                    "watermark": False,
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+            self.assertEqual(kling["model"], svc.KLING_V3_MODEL)
+            self.assertEqual(kling["parameters"]["aspect_ratio"], "16:9")
+            self.assertEqual(svc.build_provider_payload(kling), {
+                "model": svc.KLING_V3_MODEL,
+                "input": {"prompt": "在火车里吃火锅唱歌"},
+                "parameters": {
+                    "mode": "std",
+                    "aspect_ratio": "16:9",
+                    "duration": 5,
+                    "audio": True,
+                    "watermark": False,
+                },
+            })
+
+            kling_i2v = svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.KLING_V3_MODEL,
+                "prompt": "从车厢窗边推近到火锅桌，人物开口唱歌",
+                "parameters": {
+                    "mode": "std",
+                    "aspect_ratio": "16:9",
+                    "duration": 5,
+                    "audio": True,
+                    "watermark": False,
+                    "media": [
+                        {"type": "first_frame", "url": "https://example.com/train-start.jpg"},
+                        {"type": "last_frame", "url": "https://example.com/train-end.jpg"},
+                    ],
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+            self.assertEqual(kling_i2v["parameters"]["media"], [
+                {"type": "first_frame", "url": "https://example.com/train-start.jpg"},
+                {"type": "last_frame", "url": "https://example.com/train-end.jpg"},
+            ])
+            self.assertEqual(svc.build_provider_payload(kling_i2v), {
+                "model": svc.KLING_V3_MODEL,
+                "input": {
+                    "prompt": "从车厢窗边推近到火锅桌，人物开口唱歌",
+                    "media": [
+                        {"type": "first_frame", "url": "https://example.com/train-start.jpg"},
+                        {"type": "last_frame", "url": "https://example.com/train-end.jpg"},
+                    ],
+                },
+                "parameters": {
+                    "mode": "std",
+                    "duration": 5,
+                    "audio": True,
+                    "watermark": False,
+                },
+            })
+
+            kling_omni = svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.KLING_OMNI_MODEL,
+                "prompt": "参考人物主体，在火车里吃火锅唱歌",
+                "parameters": {
+                    "mode": "std",
+                    "aspect_ratio": "16:9",
+                    "duration": 5,
+                    "audio": False,
+                    "watermark": False,
+                    "media": [
+                        {"type": "refer", "url": "https://example.com/person.png"},
+                        {
+                            "type": "feature",
+                            "url": "https://example.com/motion.mp4",
+                            "keep_original_sound": "no",
+                        },
+                    ],
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+            self.assertEqual(svc.build_provider_payload(kling_omni)["input"]["media"], [
+                {"type": "refer", "url": "https://example.com/person.png"},
+                {"type": "feature", "url": "https://example.com/motion.mp4", "keep_original_sound": "no"},
+            ])
+
+            pixverse = svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.PIXVERSE_MOTIONCONTROL_MODEL,
+                "prompt": "",
+                "parameters": {
+                    "imageUrl": "https://example.com/character.png",
+                    "videoUrl": "https://example.com/motion.mp4",
+                    "resolution": "720P",
+                    "watermark": False,
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+            self.assertEqual(svc.build_provider_payload(pixverse), {
+                "model": svc.PIXVERSE_MOTIONCONTROL_MODEL,
+                "input": {
+                    "media": [
+                        {"type": "image_url", "url": "https://example.com/character.png"},
+                        {"type": "video_url", "url": "https://example.com/motion.mp4"},
+                    ],
+                },
+                "parameters": {"resolution": "720P", "watermark": False},
+            })
+
+    def test_bailian_gateway_models_reject_wrong_input_shapes(self):
+        img = self._write_image("kling-local-ref.jpg")
+        image_token = self._capability("file", "input", img)
+        output_token = self._capability("directory", "output", self.output_dir)
+        local_kling = svc.validate_input({
+            "provider": "happyhorse",
+            "model": svc.KLING_V3_MODEL,
+            "prompt": "local image should be uploaded before provider submission",
+            "parameters": {"aspect_ratio": "16:9", "duration": 5},
+            "assets": [{"fileToken": image_token, "role": "first_frame"}],
+            "outputDirToken": output_token,
+        })
+        self.assertEqual(local_kling["assets"][0]["role"], "first_frame")
+        self.assertEqual(local_kling["assets"][0]["kind"], "image")
+        with self.assertRaises(svc.AiVideoError):
+            svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.KLING_V3_MODEL,
+                "prompt": "file URL should be rejected",
+                "parameters": {
+                    "aspect_ratio": "16:9",
+                    "duration": 5,
+                    "media": [{"type": "first_frame", "url": "file:///tmp/frame.jpg"}],
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+        with self.assertRaises(svc.AiVideoError):
+            svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.KLING_V3_MODEL,
+                "prompt": "unsupported media type for v3",
+                "parameters": {
+                    "aspect_ratio": "16:9",
+                    "duration": 5,
+                    "media": [{"type": "refer", "url": "https://example.com/ref.jpg"}],
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+        with self.assertRaises(svc.AiVideoError):
+            svc.validate_input({
+                "provider": "happyhorse",
+                "model": svc.PIXVERSE_MOTIONCONTROL_MODEL,
+                "prompt": "",
+                "parameters": {
+                    "imageUrl": "file:///tmp/character.png",
+                    "videoUrl": "https://example.com/motion.mp4",
+                    "resolution": "720P",
+                },
+                "assets": [],
+                "outputDirToken": output_token,
+            })
+
+    def test_pixverse_local_assets_are_uploaded_to_bailian_temp_urls_before_payload(self):
+        image = self._write_image("pixverse-character.jpg")
+        video = self.root / "pixverse-motion.mp4"
+        video.write_bytes(b"\x00\x00\x00\x18ftypmp42demo-video")
+        output_token = self._capability("directory", "output", self.output_dir)
+        normalized = svc.validate_input({
+            "provider": "happyhorse",
+            "model": svc.PIXVERSE_MOTIONCONTROL_MODEL,
+            "prompt": "",
+            "parameters": {"resolution": "720P", "watermark": False},
+            "assets": [
+                {"fileToken": self._capability("file", "input", image), "role": "image_url", "sortOrder": 0},
+                {"fileToken": self._capability("file", "input", video), "role": "video_url", "sortOrder": 1},
+            ],
+            "outputDirToken": output_token,
+        })
+        self.assertEqual([asset["kind"] for asset in normalized["assets"]], ["image", "video"])
+
+        def fake_upload(*, api_key, model, path):
+            self.assertEqual(api_key, "runtime-key")
+            self.assertEqual(model, svc.PIXVERSE_MOTIONCONTROL_MODEL)
+            return f"oss://dashscope-instant/test/{Path(path).name}"
+
+        with patch.object(svc, "provider_secrets", return_value={"happyhorse": "runtime-key"}), \
+                patch.object(svc, "_upload_file_to_bailian_temp_storage", side_effect=fake_upload):
+            prepared = svc._with_bailian_temp_uploaded_assets(normalized)
+
+        self.assertEqual(svc.build_provider_payload(prepared), {
+            "model": svc.PIXVERSE_MOTIONCONTROL_MODEL,
+            "input": {
+                "media": [
+                    {"type": "image_url", "url": "oss://dashscope-instant/test/pixverse-character.jpg"},
+                    {"type": "video_url", "url": "oss://dashscope-instant/test/pixverse-motion.mp4"},
+                ],
+            },
+            "parameters": {"resolution": "720P", "watermark": False},
+        })
+
+    def test_bailian_temp_upload_prefers_dedicated_upload_key(self):
+        image = self._write_image("kling-first-frame.jpg")
+        output_token = self._capability("directory", "output", self.output_dir)
+        normalized = svc.validate_input({
+            "provider": "happyhorse",
+            "model": svc.KLING_V3_MODEL,
+            "prompt": "在火车里吃火锅唱歌",
+            "parameters": {"aspect_ratio": "16:9", "duration": 5, "media": []},
+            "assets": [
+                {"fileToken": self._capability("file", "input", image), "role": "first_frame", "sortOrder": 0},
+            ],
+            "outputDirToken": output_token,
+        })
+
+        used_keys = []
+
+        def fake_upload(*, api_key, model, path):
+            used_keys.append(api_key)
+            self.assertEqual(model, svc.KLING_V3_MODEL)
+            self.assertEqual(Path(path).name, "kling-first-frame.jpg")
+            return "oss://dashscope-instant/test/kling-first-frame.jpg"
+
+        with patch.object(svc, "provider_secrets", return_value={
+            "happyhorse": "video-generation-key",
+            "bailian_upload": "official-upload-key",
+        }), patch.object(svc, "_upload_file_to_bailian_temp_storage", side_effect=fake_upload):
+            prepared = svc._with_bailian_temp_uploaded_assets(normalized)
+
+        self.assertEqual(used_keys, ["official-upload-key"])
+        self.assertEqual(prepared["parameters"]["media"][0]["url"], "oss://dashscope-instant/test/kling-first-frame.jpg")
+
+    def test_bailian_upload_policy_url_can_be_overridden_without_exposing_it_to_ui(self):
+        with patch.dict(os.environ, {"BAILIAN_UPLOADS_URL": "https://gateway.example.com/uploads"}), \
+                patch.object(svc, "load_config", return_value={}):
+            self.assertEqual(svc.bailian_upload_policy_url(), "https://gateway.example.com/uploads")
+        with patch.dict(os.environ, {"BAILIAN_UPLOADS_URL": "https://env.example.com/uploads"}), \
+                patch.object(svc, "load_config", return_value={"ai": {"video": {"bailian_uploads_url": "https://cfg.example.com/uploads"}}}):
+            self.assertEqual(svc.bailian_upload_policy_url(), "https://cfg.example.com/uploads")
+
+    def test_semir_bailian_gateway_disables_local_pricing_estimate(self):
+        cfg = {
+            "ai": {
+                "video": {
+                    "bailian_api_key": "runtime-key",
+                    "bailian_base_url": "https://ai-aigw.semir.com/bailian-vedio/api/v1",
+                },
+            },
+        }
+        with patch.object(svc, "load_config", return_value=cfg):
+            status = svc.provider_status()
+        self.assertTrue(status["happyhorse"]["configured"])
+        self.assertFalse(status["happyhorse"]["pricingEstimateAvailable"])
+
+    def test_provider_status_reports_dedicated_bailian_upload_configuration(self):
+        cfg = {
+            "ai": {
+                "video": {
+                    "bailian_upload_api_key": "official-upload-key",
+                    "bailian_uploads_url": "https://dashscope.example.com/api/v1/uploads",
+                },
+            },
+        }
+        with patch.object(svc, "load_config", return_value=cfg):
+            status = svc.provider_status()
+        self.assertTrue(status["bailianUpload"]["configured"])
+        self.assertEqual(status["bailianUpload"]["source"], "AI 能力")
+        self.assertTrue(status["bailianUpload"]["policyUrlConfigured"])
 
     def test_provider_env_uses_minimal_allowlist_and_selected_provider_only(self):
         allowed = {

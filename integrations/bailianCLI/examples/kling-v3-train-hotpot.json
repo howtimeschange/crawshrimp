@@ -1,0 +1,13 @@
+{
+  "model": "kling/kling-v3-video-generation",
+  "input": {
+    "prompt": "在火车里吃火锅唱歌，车窗外风景飞驰，朋友围坐在热气腾腾的火锅旁，气氛欢乐自然，写实电影感，镜头平稳，5秒视频。"
+  },
+  "parameters": {
+    "mode": "std",
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "audio": true,
+    "watermark": false
+  }
+}

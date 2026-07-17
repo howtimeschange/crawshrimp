@@ -473,47 +473,109 @@
                     class="input"
                     type="password"
                     autocomplete="new-password"
-                    :placeholder="isFieldConfigured('ai.video.seedance_api_key') ? '已配置；输入新值可替换' : '输入后仅写入本机后端'"
+                    placeholder="sk-..."
+                    @focus="selectInputText"
                   />
                 </div>
                 <div class="field">
                   <label>Seedance Base URL</label>
-                  <input v-model="cfg['ai.video.seedance_base_url']" class="input" placeholder="留空保持后端当前配置" />
+                  <input
+                    v-model="cfg['ai.video.seedance_base_url']"
+                    class="input"
+                    :placeholder="aiVideoConnectionPlaceholder('ai.video.seedance_base_url')"
+                  />
+                  <p class="field-hint">{{ aiVideoConnectionHint('ai.video.seedance_base_url') }}</p>
                 </div>
               </div>
               <div class="split-fields">
                 <div class="field">
-                  <label>HappyHorse API Key</label>
+                  <label>百炼 API key（HappyHorse、Kling、PixVerse）</label>
                   <input
                     v-model="cfg['ai.video.bailian_api_key']"
                     class="input"
                     type="password"
                     autocomplete="new-password"
-                    :placeholder="isFieldConfigured('ai.video.bailian_api_key') ? '已配置；输入新值可替换' : '输入后仅写入本机后端'"
+                    placeholder="sk-..."
+                    @focus="selectInputText"
                   />
                 </div>
                 <div class="field">
-                  <label>百炼业务空间 ID</label>
-                  <input v-model="cfg['ai.video.bailian_workspace_id']" class="input" placeholder="留空保持后端当前配置" />
-                </div>
-              </div>
-              <div class="split-fields">
-                <div class="field">
-                  <label>百炼区域</label>
-                  <input v-model="cfg['ai.video.bailian_region']" class="input" placeholder="留空保持后端当前配置" />
-                </div>
-                <div class="field">
                   <label>百炼 Base URL（可选）</label>
-                  <input v-model="cfg['ai.video.bailian_base_url']" class="input" placeholder="留空保持后端当前配置" />
+                  <input
+                    v-model="cfg['ai.video.bailian_base_url']"
+                    class="input"
+                    :placeholder="aiVideoConnectionPlaceholder('ai.video.bailian_base_url')"
+                  />
+                  <p class="field-hint">{{ aiVideoConnectionHint('ai.video.bailian_base_url') }}</p>
                 </div>
               </div>
+
+              <details class="settings-advanced-panel">
+                <summary>
+                  <span>更多 Provider 配置</span>
+                  <small>业务空间 ID / 区域</small>
+                </summary>
+                <div class="settings-advanced-body split-fields">
+                  <div class="field">
+                    <label>百炼业务空间 ID</label>
+                    <input
+                      v-model="cfg['ai.video.bailian_workspace_id']"
+                      class="input"
+                      placeholder="可选：留空使用区域默认 endpoint"
+                    />
+                    <p class="field-hint">填写后百炼默认 endpoint 会按业务空间 ID + 区域自动生成。</p>
+                  </div>
+                  <div class="field">
+                    <label>百炼区域</label>
+                    <input
+                      v-model="cfg['ai.video.bailian_region']"
+                      class="input"
+                      :placeholder="aiVideoConnectionPlaceholder('ai.video.bailian_region')"
+                    />
+                    <p class="field-hint">{{ aiVideoConnectionHint('ai.video.bailian_region') }}</p>
+                  </div>
+                </div>
+              </details>
+
+              <section class="settings-subsection">
+                <header>
+                  <div>
+                    <strong>OSS 上传配置</strong>
+                    <span>仅用于把本地素材上传为百炼临时 OSS 地址，不参与视频生成网关调用。</span>
+                  </div>
+                  <span :class="['key-pill', isFieldConfigured('ai.video.bailian_upload_api_key') ? 'on' : 'off']">OSS</span>
+                </header>
+                <div class="split-fields">
+                  <div class="field">
+                    <label>百炼 OSS 上传 API Key</label>
+                    <input
+                      v-model="cfg['ai.video.bailian_upload_api_key']"
+                      class="input"
+                      type="password"
+                      autocomplete="new-password"
+                      placeholder="sk-..."
+                      @focus="selectInputText"
+                    />
+                  </div>
+                  <div class="field">
+                    <label>百炼 OSS 上传 Base URL</label>
+                    <input
+                      v-model="cfg['ai.video.bailian_uploads_url']"
+                      class="input"
+                      :placeholder="aiVideoConnectionPlaceholder('ai.video.bailian_uploads_url')"
+                    />
+                    <p class="field-hint">{{ aiVideoConnectionHint('ai.video.bailian_uploads_url') }}</p>
+                  </div>
+                </div>
+              </section>
               <PanelActions panel-id="ai-video" @save="savePanel('ai-video')" />
             </div>
             <div class="side-note">
               <strong>本机凭据</strong>
               <div class="key-states">
                 <span :class="['key-pill', isFieldConfigured('ai.video.seedance_api_key') ? 'on' : 'off']">S</span>
-                <span :class="['key-pill', isFieldConfigured('ai.video.bailian_api_key') ? 'on' : 'off']">H</span>
+                <span :class="['key-pill', isFieldConfigured('ai.video.bailian_api_key') ? 'on' : 'off']">B</span>
+                <span :class="['key-pill', isFieldConfigured('ai.video.bailian_upload_api_key') ? 'on' : 'off']">OSS</span>
               </div>
               <p>密钥只保存在本机抓虾配置中，运行视频任务时注入共享能力进程；工作流页面、任务参数和日志不会展示密钥。</p>
             </div>
@@ -622,6 +684,9 @@
 <script setup>
 import { computed, defineComponent, h, onMounted, reactive, ref, watch } from 'vue'
 import {
+  AI_VIDEO_CONNECTION_DEFAULTS,
+  AI_VIDEO_CREDENTIAL_FIELDS,
+  AI_VIDEO_MASKED_CREDENTIAL_VALUE,
   AI_VIDEO_WRITE_ONLY_FIELDS,
   buildWriteOnlyAiVideoPatch,
   clearWrittenAiVideoFields,
@@ -675,7 +740,14 @@ const ai1xmKeyFields = [
 const aiVideoKeyFields = [
   'ai.video.seedance_api_key',
   'ai.video.bailian_api_key',
+  'ai.video.bailian_upload_api_key',
 ]
+const aiVideoConnectionHints = {
+  'ai.video.seedance_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.seedance_base_url']}；输入新值才会覆盖。`,
+  'ai.video.bailian_region': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_region']}；输入新值才会覆盖。`,
+  'ai.video.bailian_base_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_base_url']}；有业务空间 ID 时会按空间和区域自动生成 endpoint。`,
+  'ai.video.bailian_uploads_url': `默认：${AI_VIDEO_CONNECTION_DEFAULTS['ai.video.bailian_uploads_url']}；仅用于本地素材临时 OSS 上传。`,
+}
 
 const saveState = reactive({})
 
@@ -746,7 +818,7 @@ const panelFields = {
   'storage-data': ['data_dir'],
   'sync-odps': ['odps.app_code'],
   'ai-1xm': ['ai.1xm.base_url', 'ai.1xm.gpt_image_2k_key', 'ai.1xm.gpt_image_4k_key', 'ai.1xm.gemini_3_1_flash_image_preview_key', 'ai.1xm.gemini_3_pro_image_preview_key'],
-  'ai-video': ['ai.video.seedance_api_key', 'ai.video.seedance_base_url', 'ai.video.bailian_api_key', 'ai.video.bailian_workspace_id', 'ai.video.bailian_region', 'ai.video.bailian_base_url'],
+  'ai-video': ['ai.video.seedance_api_key', 'ai.video.seedance_base_url', 'ai.video.bailian_api_key', 'ai.video.bailian_workspace_id', 'ai.video.bailian_region', 'ai.video.bailian_base_url', 'ai.video.bailian_upload_api_key', 'ai.video.bailian_uploads_url'],
   'cloud-approval': ['cloud_approval.registration_token', 'cloud_approval.machine_name', 'cloud_approval.machine_enabled', 'cloud_approval.capabilities'],
 }
 
@@ -863,6 +935,9 @@ function normalizedSettings(raw) {
   // Provider connection fields are write-only. Never retain a value returned
   // by an older backend, and never synthesize defaults that could overwrite it.
   for (const key of AI_VIDEO_WRITE_ONLY_FIELDS) flat[key] = ''
+  for (const key of AI_VIDEO_CREDENTIAL_FIELDS) {
+    if (isAiVideoCredentialConfigured(flat, key)) flat[key] = AI_VIDEO_MASKED_CREDENTIAL_VALUE
+  }
   flat['cloud_approval.machine_enabled'] = Boolean(flat['cloud_approval.machine_enabled'])
   flat['cloud_approval.capabilities'] = normalizeCloudCapabilities(flat['cloud_approval.capabilities'])
   return flat
@@ -894,9 +969,22 @@ function focusPanel(panelId) {
   activePanelId.value = panelId
 }
 
+function selectInputText(event) {
+  event?.target?.select?.()
+}
+
 function isFieldConfigured(key) {
   if (aiVideoKeyFields.includes(key)) return isAiVideoCredentialConfigured(cfg.value, key)
   return String(cfg.value[key] || '').trim().length > 0
+}
+
+function aiVideoConnectionPlaceholder(key) {
+  const value = AI_VIDEO_CONNECTION_DEFAULTS[key]
+  return value ? `默认：${value}` : '留空保持后端当前配置'
+}
+
+function aiVideoConnectionHint(key) {
+  return aiVideoConnectionHints[key] || '留空使用默认或后端已有配置，输入新值才会覆盖。'
 }
 
 function hasAnyFieldConfigured(keys) {
@@ -1507,6 +1595,98 @@ watch(activePanelId, panelId => {
 .field label {
   font-size: 12px;
   color: var(--text2);
+}
+
+.field-hint {
+  margin: -2px 0 0;
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.settings-advanced-panel,
+.settings-subsection {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.settings-advanced-panel {
+  overflow: hidden;
+}
+
+.settings-advanced-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 42px;
+  padding: 11px 13px;
+  color: var(--text2);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.settings-advanced-panel summary::-webkit-details-marker {
+  display: none;
+}
+
+.settings-advanced-panel summary::after {
+  content: '展开';
+  flex: 0 0 auto;
+  color: var(--orange);
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.settings-advanced-panel[open] summary {
+  border-bottom: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.settings-advanced-panel[open] summary::after {
+  content: '收起';
+}
+
+.settings-advanced-panel summary span,
+.settings-subsection header strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 750;
+}
+
+.settings-advanced-panel summary small,
+.settings-subsection header span {
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.settings-advanced-body {
+  padding: 13px;
+}
+
+.settings-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: 13px;
+  padding: 14px;
+}
+
+.settings-subsection header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-subsection header div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
 }
 
 .input-row,

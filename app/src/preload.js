@@ -299,6 +299,7 @@ contextBridge.exposeInMainWorld('cs', {
     () => apiCall('POST', '/ai-image/canvases', payload || {})),
   getAiVideoConfig: () => ipcRenderer.invoke('ai-video:get-config'),
   selectAiVideoImages: (opts = {}) => ipcRenderer.invoke('ai-video:select-files', opts || {}),
+  selectAiVideoMedia: (opts = {}) => ipcRenderer.invoke('ai-video:select-files', opts || {}),
   selectAiVideoDirectory: (opts = {}) => ipcRenderer.invoke('ai-video:select-directory', opts || {}),
   getSavedAiVideoDirectory: (scope = 'input') => ipcRenderer.invoke('ai-video:get-saved-directory', scope),
   listAiVideoDirectory: (directoryToken, opts = {}) => ipcRenderer.invoke('ai-video:list-directory', directoryToken, opts || {}),

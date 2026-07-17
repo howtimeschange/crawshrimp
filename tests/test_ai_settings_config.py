@@ -22,6 +22,8 @@ class AiSettingsConfigTests(unittest.TestCase):
         self.assertEqual(video["bailian_api_key"], "")
         self.assertEqual(video["bailian_workspace_id"], "")
         self.assertEqual(video["bailian_region"], "cn-beijing")
+        self.assertEqual(video["bailian_upload_api_key"], "")
+        self.assertEqual(video["bailian_uploads_url"], "https://dashscope.aliyuncs.com/api/v1/uploads")
 
     def test_save_config_expands_dotted_settings_keys(self):
         with patch("core.config._config_path") as config_path:

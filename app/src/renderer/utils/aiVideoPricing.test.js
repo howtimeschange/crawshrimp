@@ -34,3 +34,12 @@ test('seedance cost estimate for 5s 720p', () => {
   assert.equal(cost.total, 5)
   assert.equal(formatCny(cost.total), '¥5.00')
 })
+
+test('bailian gateway models show unknown local price instead of a fake estimate', () => {
+  for (const provider of ['kling-v3', 'kling-omni', 'pixverse-motioncontrol']) {
+    const cost = estimateVideoCost({ provider, resolution: '720P', duration: 5 })
+    assert.equal(cost.known, false)
+    assert.equal(formatCny(cost.total), '—')
+    assert.match(cost.formula, /百炼控制台/)
+  }
+})

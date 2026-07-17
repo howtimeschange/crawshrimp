@@ -604,6 +604,20 @@ test('review retry keeps display status out of the generation prompt', () => {
   assert.doesNotMatch(retrySource, /asset\.prompt\s*\|\|\s*asset\.meta/)
 })
 
+test('workflow review retry never sends local-only assets to the remote review regenerate API', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('async function requestReviewAssetRetry')
+  const end = source.indexOf('function reviewSummaryCounts', start)
+  const retrySource = source.slice(start, end)
+
+  assert.match(source, /function canRegenerateRemoteReviewAsset\(/)
+  assert.match(retrySource, /if \(!canRegenerateRemoteReviewAsset\(asset\)\)/)
+  assert.match(retrySource, /queueLocalReviewAssetForAiEdit\(asset\)/)
+  assert.doesNotMatch(retrySource, /asset\.reviewBoardUrl\s*\|\|\s*reviewBoardUrl\.value/)
+  assert.doesNotMatch(retrySource, /asset_id:\s*asset\.remoteAssetId\s*\|\|\s*asset\.id/)
+  assert.match(retrySource, /asset_id:\s*remoteAssetId/)
+})
+
 test('review approvals become video-selectable only after the durable save succeeds', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   const singleStart = source.indexOf('async function setReviewAssetStatus')

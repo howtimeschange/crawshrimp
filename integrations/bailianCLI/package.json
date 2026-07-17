@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Shared Alibaba Bailian HappyHorse video generation client for Crawshrimp.",
+  "description": "Shared Alibaba Bailian video gateway client for Crawshrimp.",
   "engines": {
     "node": ">=18"
   },

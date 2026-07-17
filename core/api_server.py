@@ -35,7 +35,7 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from core import runtime_paths
 from core import bala_ai_model_library
@@ -2256,6 +2256,20 @@ BALA_HAPPYHORSE_MODELS = {
     "i2v": "happyhorse-1.1-i2v",
     "r2v": "happyhorse-1.1-r2v",
 }
+BALA_KLING_VIDEO_MODELS = {
+    "kling-v3": "kling/kling-v3-video-generation",
+    "kling-omni": "kling/kling-v3-omni-video-generation",
+}
+BALA_PIXVERSE_PROVIDER = "pixverse-motioncontrol"
+BALA_PIXVERSE_MODEL = "pixverse/pixverse-motioncontrol"
+BALA_BAILIAN_VIDEO_PROVIDERS = frozenset({
+    "happyhorse",
+    *BALA_KLING_VIDEO_MODELS.keys(),
+    BALA_PIXVERSE_PROVIDER,
+})
+BALA_KLING_MODES = frozenset({"std", "pro"})
+BALA_KLING_RATIOS = frozenset({"16:9", "9:16", "1:1"})
+BALA_PIXVERSE_RESOLUTIONS = frozenset({"360P", "540P", "720P"})
 BALA_AI_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -6352,16 +6366,24 @@ class BalaSeedanceVideoRequest(BaseModel):
 
 
 class BalaHappyHorseVideoRequest(BaseModel):
+    provider: str = "happyhorse"
     style_code: str = ""
     mode: str = "i2v"
     prompt: str = ""
     image_paths: List[str] = []
+    video_paths: List[str] = []
     image_urls: List[str] = []
     output_dir: str = ""
     output_path: str = ""
     resolution: str = "720P"
     ratio: str = "3:4"
     duration: int = 5
+    generate_audio: bool = False
+    kling_mode: str = "std"
+    pixverse_image_path: str = ""
+    pixverse_video_path: str = ""
+    pixverse_image_url: str = ""
+    pixverse_video_url: str = ""
     watermark: bool = False
     wait: bool = True
     interval_seconds: int = 5
@@ -6385,11 +6407,17 @@ class BalaVideoProviderPreflightRequest(BaseModel):
     mode: str = "i2v"
     prompt: str = ""
     image_paths: List[str] = []
+    video_paths: List[str] = []
     output_dir: str = ""
     resolution: str = "720P"
     ratio: str = "9:16"
     duration: int = 5
     generate_audio: bool = True
+    kling_mode: str = "std"
+    pixverse_image_path: str = ""
+    pixverse_video_path: str = ""
+    pixverse_image_url: str = ""
+    pixverse_video_url: str = ""
     watermark: bool = False
 
 
@@ -6515,6 +6543,7 @@ def _bala_video_provider_status() -> dict:
 def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
     cfg = load_config()
     secrets = _bala_video_provider_secrets()
+    status_key = _bala_provider_status_key(provider)
     env = dict(os.environ)
     env.pop("ELECTRON_RUN_AS_NODE", None)
     for environment_name in (
@@ -6525,13 +6554,13 @@ def _bala_video_provider_env(provider: str) -> tuple[dict, list[str]]:
     ):
         env.pop(environment_name, None)
     secret_values = [value for value in secrets.values() if value]
-    if provider == "seedance":
+    if status_key == "seedance":
         if secrets["seedance"]:
             env["ARK_API_KEY"] = secrets["seedance"]
         base_url = str(_nested_config_value(cfg, "ai.video.seedance_base_url") or "").strip()
         if base_url:
             env["ARK_BASE_URL"] = base_url
-    elif provider == "happyhorse":
+    elif status_key == "happyhorse":
         if secrets["happyhorse"]:
             env["DASHSCOPE_API_KEY"] = secrets["happyhorse"]
         mappings = {
@@ -6595,6 +6624,27 @@ def _validate_bala_video_provider_image_path(raw_path: object, provider_label: s
     return path
 
 
+def _validate_bala_video_provider_video_path(raw_path: object, provider_label: str) -> Path:
+    value = str(raw_path or "").strip()
+    path = Path(value).expanduser()
+    if not path.is_file():
+        raise HTTPException(400, f"{provider_label} 参考视频不存在：{value}")
+    if path.suffix.lower() not in {".mp4", ".mov", ".m4v", ".webm"}:
+        raise HTTPException(400, f"{provider_label} 参考文件不是支持的视频：{value}")
+    if path.stat().st_size > 200 * 1024 * 1024:
+        raise HTTPException(400, f"{provider_label} 参考视频超过 200MB：{value}")
+    mime = mimetypes.guess_type(str(path))[0] or ""
+    if path.suffix.lower() in {".mp4", ".m4v"}:
+        mime = "video/mp4"
+    elif path.suffix.lower() == ".mov":
+        mime = "video/quicktime"
+    elif path.suffix.lower() == ".webm":
+        mime = "video/webm"
+    if mime not in {"video/mp4", "video/quicktime", "video/webm"}:
+        raise HTTPException(400, f"{provider_label} 参考文件不是支持的视频：{value}")
+    return path
+
+
 def _sanitize_video_provider_output(text: object, secret_values: Optional[List[str]] = None) -> str:
     sanitized = str(text or "")
     for secret in secret_values or []:
@@ -6607,6 +6657,81 @@ def _sanitize_video_provider_output(text: object, secret_values: Optional[List[s
         sanitized,
     )
     return sanitized
+
+
+def _normalize_bala_bailian_provider(value: object) -> str:
+    provider = str(value or "happyhorse").strip().lower() or "happyhorse"
+    if provider not in BALA_BAILIAN_VIDEO_PROVIDERS:
+        raise HTTPException(400, "百炼视频模型必须是 HappyHorse、Kling 或 PixVerse")
+    return provider
+
+
+def _bala_provider_status_key(provider: str) -> str:
+    provider = str(provider or "").strip().lower()
+    return "happyhorse" if provider in BALA_BAILIAN_VIDEO_PROVIDERS else provider
+
+
+def _bala_video_provider_label(provider: str) -> str:
+    provider = str(provider or "").strip().lower()
+    if provider == "seedance":
+        return "Seedance"
+    if provider == "happyhorse":
+        return "百炼 HappyHorse"
+    if provider == "kling-v3":
+        return "百炼 Kling v3"
+    if provider == "kling-omni":
+        return "百炼 Kling Omni"
+    if provider == BALA_PIXVERSE_PROVIDER:
+        return "百炼 PixVerse"
+    return "视频供应商"
+
+
+def _bala_is_http_url(value: object) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _bala_is_provider_media_url(value: object) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return False
+    if parsed.scheme in {"http", "https"}:
+        return bool(parsed.netloc)
+    return parsed.scheme == "oss" and bool(parsed.netloc) and bool(parsed.path.strip("/"))
+
+
+def _bala_bailian_upload_api_key() -> str:
+    secrets = ai_video_generation_service.provider_secrets()
+    return str(secrets.get("bailian_upload") or secrets.get("happyhorse") or "").strip()
+
+
+def _upload_bala_bailian_asset(*, model: str, path: Path, provider_label: str) -> str:
+    api_key = _bala_bailian_upload_api_key()
+    if not api_key:
+        raise HTTPException(400, f"{provider_label} 本地素材上传需要先在 AI 能力配置 OSS 上传百炼 key")
+    try:
+        return ai_video_generation_service._upload_file_to_bailian_temp_storage(
+            api_key=api_key,
+            model=model,
+            path=path,
+        )
+    except ai_video_generation_service.AiVideoError as exc:
+        raise HTTPException(exc.http_status, str(exc)) from exc
+
+
+def _bala_preflight_media_url(path: Path) -> str:
+    safe_name = re.sub(r"[^A-Za-z0-9._~-]+", "-", path.name).strip("-") or "local"
+    return f"oss://bala-preflight/{safe_name}"
 
 
 def _seedance_output_path(req: BalaSeedanceVideoRequest) -> Path:
@@ -6767,11 +6892,163 @@ def _build_happyhorse_payload(req: object) -> dict:
     }
 
 
+def _bala_bailian_local_media_url(
+    *,
+    model: str,
+    path: Path,
+    provider_label: str,
+    upload_local_assets: bool,
+) -> str:
+    if upload_local_assets:
+        return _upload_bala_bailian_asset(
+            model=model,
+            path=path,
+            provider_label=provider_label,
+        )
+    return _bala_preflight_media_url(path)
+
+
+def _build_kling_payload(req: object, provider: str, *, upload_local_assets: bool = False) -> dict:
+    prompt = str(getattr(req, "prompt", "") or "").strip()
+    if not prompt:
+        raise HTTPException(400, f"{_bala_video_provider_label(provider)} 任务需要填写 Prompt")
+    model = BALA_KLING_VIDEO_MODELS[provider]
+    provider_label = _bala_video_provider_label(provider)
+    local_image_paths = [
+        _validate_bala_video_provider_image_path(value, provider_label)
+        for value in (getattr(req, "image_paths", []) or [])
+        if str(value or "").strip()
+    ]
+    if len(local_image_paths) > 2:
+        raise HTTPException(400, "Kling 本地图片最多选择 2 张（首帧 / 尾帧）")
+    media: list[dict] = []
+    for index, path in enumerate(local_image_paths):
+        media.append({
+            "type": "first_frame" if index == 0 else "last_frame",
+            "url": _bala_bailian_local_media_url(
+                model=model,
+                path=path,
+                provider_label=provider_label,
+                upload_local_assets=upload_local_assets,
+            ),
+        })
+    image_urls = [
+        str(value or "").strip()
+        for value in (getattr(req, "image_urls", []) or [])
+        if str(value or "").strip()
+    ]
+    if image_urls:
+        if len(local_image_paths) + len(image_urls) > 2:
+            raise HTTPException(400, "Kling 图片素材最多 2 张（首帧 / 尾帧）")
+        for index, url in enumerate(image_urls, start=len(local_image_paths)):
+            if not _bala_is_provider_media_url(url):
+                raise HTTPException(400, "Kling 图片 URL 必须是 HTTP/HTTPS 或百炼临时 oss:// URL")
+            media.append({"type": "first_frame" if index == 0 else "last_frame", "url": url})
+    mode = str(getattr(req, "kling_mode", "") or getattr(req, "mode", "") or "std").strip().lower()
+    if mode not in BALA_KLING_MODES:
+        raise HTTPException(400, "Kling 模式仅支持 std 或 pro")
+    ratio = str(getattr(req, "ratio", "") or "16:9").strip() or "16:9"
+    if ratio not in BALA_KLING_RATIOS:
+        raise HTTPException(400, "Kling 比例仅支持 16:9 / 9:16 / 1:1")
+    input_payload = {"prompt": prompt}
+    if media:
+        input_payload["media"] = media
+    return {
+        "model": model,
+        "input": input_payload,
+        "parameters": {
+            "mode": mode,
+            "aspect_ratio": ratio,
+            "duration": max(3, min(int(getattr(req, "duration", 5) or 5), 15)),
+            "audio": bool(getattr(req, "generate_audio", False)),
+            "watermark": bool(getattr(req, "watermark", False)),
+        },
+    }
+
+
+def _build_pixverse_payload(req: object, *, upload_local_assets: bool = False) -> dict:
+    provider_label = _bala_video_provider_label(BALA_PIXVERSE_PROVIDER)
+    local_image_values = [
+        str(value or "").strip()
+        for value in [
+            getattr(req, "pixverse_image_path", ""),
+            *(getattr(req, "image_paths", []) or []),
+        ]
+        if str(value or "").strip()
+    ]
+    if len(local_image_values) > 1:
+        raise HTTPException(400, "PixVerse 只能提供 1 张角色图")
+    local_video_values = [
+        str(value or "").strip()
+        for value in [
+            getattr(req, "pixverse_video_path", ""),
+            *(getattr(req, "video_paths", []) or []),
+        ]
+        if str(value or "").strip()
+    ]
+    if len(local_video_values) > 1:
+        raise HTTPException(400, "PixVerse 只能提供 1 条动作视频")
+    image_url = str(getattr(req, "pixverse_image_url", "") or "").strip()
+    video_url = str(getattr(req, "pixverse_video_url", "") or "").strip()
+    if image_url and not _bala_is_provider_media_url(image_url):
+        raise HTTPException(400, "PixVerse 角色图 URL 必须是 HTTP/HTTPS 或百炼临时 oss:// URL")
+    if video_url and not _bala_is_provider_media_url(video_url):
+        raise HTTPException(400, "PixVerse 动作视频 URL 必须是 HTTP/HTTPS 或百炼临时 oss:// URL")
+    if local_image_values:
+        if image_url:
+            raise HTTPException(400, "PixVerse 角色图请在本地上传和 URL 中二选一")
+        image_path = _validate_bala_video_provider_image_path(local_image_values[0], provider_label)
+        image_url = _bala_bailian_local_media_url(
+            model=BALA_PIXVERSE_MODEL,
+            path=image_path,
+            provider_label=provider_label,
+            upload_local_assets=upload_local_assets,
+        )
+    if local_video_values:
+        if video_url:
+            raise HTTPException(400, "PixVerse 动作视频请在本地上传和 URL 中二选一")
+        video_path = _validate_bala_video_provider_video_path(local_video_values[0], provider_label)
+        video_url = _bala_bailian_local_media_url(
+            model=BALA_PIXVERSE_MODEL,
+            path=video_path,
+            provider_label=provider_label,
+            upload_local_assets=upload_local_assets,
+        )
+    if not image_url or not video_url:
+        raise HTTPException(400, "PixVerse 需要 1 张角色图和 1 条动作视频，可本地上传或填写 URL")
+    resolution = str(getattr(req, "resolution", "720P") or "720P").strip().upper()
+    if resolution not in BALA_PIXVERSE_RESOLUTIONS:
+        raise HTTPException(400, "PixVerse 清晰度仅支持 360P / 540P / 720P")
+    return {
+        "model": BALA_PIXVERSE_MODEL,
+        "input": {
+            "media": [
+                {"type": "image_url", "url": image_url},
+                {"type": "video_url", "url": video_url},
+            ],
+        },
+        "parameters": {
+            "resolution": resolution,
+            "watermark": bool(getattr(req, "watermark", False)),
+        },
+    }
+
+
+def _build_bailian_video_payload(req: object, *, upload_local_assets: bool = False) -> dict:
+    provider = _normalize_bala_bailian_provider(getattr(req, "provider", "happyhorse"))
+    if provider == "happyhorse":
+        return _build_happyhorse_payload(req)
+    if provider in BALA_KLING_VIDEO_MODELS:
+        return _build_kling_payload(req, provider, upload_local_assets=upload_local_assets)
+    return _build_pixverse_payload(req, upload_local_assets=upload_local_assets)
+
+
 def _preflight_bala_video_provider(req: BalaVideoProviderPreflightRequest) -> dict:
     provider = str(req.provider or "").strip().lower()
-    if provider not in {"seedance", "happyhorse"}:
-        raise HTTPException(400, "视频供应商必须是 Seedance 或 HappyHorse")
-    status = _bala_video_provider_status()[provider]
+    if provider not in {"seedance", *BALA_BAILIAN_VIDEO_PROVIDERS}:
+        raise HTTPException(400, "视频供应商必须是 Seedance、HappyHorse、Kling 或 PixVerse")
+    status_key = _bala_provider_status_key(provider)
+    status = _bala_video_provider_status()[status_key]
     if not status["configured"]:
         return {
             "ok": False,
@@ -6779,7 +7056,7 @@ def _preflight_bala_video_provider(req: BalaVideoProviderPreflightRequest) -> di
             "status": "needs_config",
             "configured": False,
             "source": status["source"],
-            "error": f"请先在 AI 能力配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
+            "error": f"请先在 AI 能力配置 {_bala_video_provider_label(provider)} 凭据",
         }
 
     cli_dir = BALA_SEEDANCE_CLI_DIR if provider == "seedance" else BALA_HAPPYHORSE_CLI_DIR
@@ -6813,19 +7090,33 @@ def _preflight_bala_video_provider(req: BalaVideoProviderPreflightRequest) -> di
         ))
         mode = "reference"
     else:
-        payload = _build_happyhorse_payload(BalaHappyHorseVideoRequest(
+        payload = _build_bailian_video_payload(BalaHappyHorseVideoRequest(
+            provider=provider,
             style_code=req.style_code,
             mode=req.mode,
             prompt=req.prompt,
             image_paths=list(req.image_paths or []),
+            video_paths=list(req.video_paths or []),
             output_dir=str(output_dir),
             resolution=req.resolution,
             ratio=req.ratio,
             duration=req.duration,
+            generate_audio=req.generate_audio,
+            kling_mode=req.kling_mode,
+            pixverse_image_path=req.pixverse_image_path,
+            pixverse_video_path=req.pixverse_video_path,
+            pixverse_image_url=req.pixverse_image_url,
+            pixverse_video_url=req.pixverse_video_url,
             watermark=req.watermark,
             wait=False,
-        ))
-        mode = str(req.mode or "i2v").strip().lower()
+        ), upload_local_assets=False)
+        mode = (
+            str(req.mode or "i2v").strip().lower()
+            if provider == "happyhorse"
+            else str(req.kling_mode or "std").strip().lower()
+            if provider in BALA_KLING_VIDEO_MODELS
+            else "motioncontrol"
+        )
     return {
         "ok": True,
         "provider": provider,
@@ -6840,27 +7131,51 @@ def _preflight_bala_video_provider(req: BalaVideoProviderPreflightRequest) -> di
 
 
 def _happyhorse_output_path(req: BalaHappyHorseVideoRequest) -> Path:
+    return _bailian_output_path(req)
+
+
+def _bailian_output_path(req: BalaHappyHorseVideoRequest) -> Path:
     explicit = str(req.output_path or "").strip()
     if explicit:
         return Path(explicit).expanduser()
     output_dir = Path(str(req.output_dir or Path.home() / "Downloads" / "巴拉AI视频成片")).expanduser()
-    style = re.sub(r"[^A-Za-z0-9._~-]+", "-", str(req.style_code or "happyhorse").strip()).strip("-") or "happyhorse"
-    mode = str(req.mode or "i2v").strip().lower() or "i2v"
-    return output_dir / f"{style}_happyhorse_{mode}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.mp4"
+    provider = _normalize_bala_bailian_provider(getattr(req, "provider", "happyhorse"))
+    style = re.sub(r"[^A-Za-z0-9._~-]+", "-", str(req.style_code or provider).strip()).strip("-") or provider
+    if provider == "happyhorse":
+        mode = str(req.mode or "i2v").strip().lower() or "i2v"
+    elif provider in BALA_KLING_VIDEO_MODELS:
+        mode = str(req.kling_mode or "std").strip().lower() or "std"
+    else:
+        mode = "motioncontrol"
+    provider_slug = re.sub(r"[^a-z0-9]+", "-", provider).strip("-") or "bailian"
+    mode_slug = re.sub(r"[^a-z0-9]+", "-", mode).strip("-") or "video"
+    return output_dir / f"{style}_{provider_slug}_{mode_slug}_{datetime.now().strftime('%Y%m%d-%H%M%S')}.mp4"
 
 
 async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
     if not BALA_HAPPYHORSE_CLI_DIR.is_dir():
-        raise HTTPException(500, "HappyHorse 视频能力未安装到项目共享目录")
-    payload = _build_happyhorse_payload(req)
-    output_path = _happyhorse_output_path(req)
+        raise HTTPException(500, "百炼视频能力未安装到项目共享目录")
+    provider = _normalize_bala_bailian_provider(getattr(req, "provider", "happyhorse"))
+    provider_label = _bala_video_provider_label(provider)
+    node_executable, node_env = _bala_video_node_runtime()
+    env, secret_values = _bala_video_provider_env(provider)
+    env.update(node_env)
+    if not str(env.get("DASHSCOPE_API_KEY") or "").strip():
+        return {
+            "ok": False,
+            "provider": provider,
+            "status": "needs_config",
+            "error": f"请先在 AI 能力配置 {provider_label} 凭据",
+        }
+    payload = _build_bailian_video_payload(req, upload_local_assets=True)
+    output_path = _bailian_output_path(req)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    run_dir = runtime_paths.child_dir("bala-ai-video-happyhorse")
+    run_dir = runtime_paths.child_dir("bala-ai-video-bailian")
     run_dir.mkdir(parents=True, exist_ok=True)
-    payload_path = run_dir / f"happyhorse-payload-{uuid4().hex}.json"
+    provider_slug = re.sub(r"[^a-z0-9]+", "-", provider).strip("-") or "bailian"
+    payload_path = run_dir / f"{provider_slug}-payload-{uuid4().hex}.json"
     payload_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    node_executable, node_env = _bala_video_node_runtime()
     command = [node_executable, "bin/bailian.js", "submit", str(payload_path)]
     if req.wait:
         command.append("--wait")
@@ -6872,15 +7187,6 @@ async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
         "--timeout",
         str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
     ])
-    env, secret_values = _bala_video_provider_env("happyhorse")
-    env.update(node_env)
-    if not str(env.get("DASHSCOPE_API_KEY") or "").strip():
-        return {
-            "ok": False,
-            "provider": "happyhorse",
-            "status": "needs_config",
-            "error": "请先在 AI 能力配置 HappyHorse 凭据",
-        }
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(BALA_HAPPYHORSE_CLI_DIR),
@@ -6891,7 +7197,7 @@ async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
     stdout_bytes, stderr_bytes = await _communicate_video_provider_process(
         process,
         timeout_seconds=max(60, min(int(req.timeout_seconds or 1800), 7200) + 120),
-        provider_label="HappyHorse",
+        provider_label=provider_label,
     )
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -6900,13 +7206,19 @@ async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
     final = objects[-1] if objects else {}
     if process.returncode != 0:
         sanitized = _sanitize_video_provider_output(stderr or stdout, secret_values)
-        raise HTTPException(500, sanitized.strip() or "HappyHorse CLI 执行失败")
+        raise HTTPException(500, sanitized.strip() or f"{provider_label} CLI 执行失败")
     created_output = created.get("output") if isinstance(created.get("output"), dict) else {}
     final_output = final.get("output") if isinstance(final.get("output"), dict) else {}
     return {
         "ok": True,
-        "provider": "happyhorse",
-        "mode": str(req.mode or "i2v").strip().lower(),
+        "provider": provider,
+        "mode": (
+            str(req.mode or "i2v").strip().lower()
+            if provider == "happyhorse"
+            else str(req.kling_mode or "std").strip().lower()
+            if provider in BALA_KLING_VIDEO_MODELS
+            else "motioncontrol"
+        ),
         "task_id": str(final_output.get("task_id") or created_output.get("task_id") or ""),
         "status": str(final_output.get("task_status") or created_output.get("task_status") or ""),
         "video_url": str(final_output.get("video_url") or ""),
@@ -6931,8 +7243,8 @@ def _video_provider_task_output_path(req: BalaVideoProviderTaskRequest) -> Path:
 async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dict:
     provider = str(req.provider or "").strip().lower()
     task_id = str(req.task_id or "").strip()
-    if provider not in {"seedance", "happyhorse"}:
-        raise HTTPException(400, "视频供应商必须是 Seedance 或 HappyHorse")
+    if provider not in {"seedance", *BALA_BAILIAN_VIDEO_PROVIDERS}:
+        raise HTTPException(400, "视频供应商必须是 Seedance、HappyHorse、Kling 或 PixVerse")
     if not task_id:
         raise HTTPException(400, "刷新视频状态需要 provider task ID")
 
@@ -6955,16 +7267,18 @@ async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dic
             str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
         ])
 
+    status_key = _bala_provider_status_key(provider)
+    provider_label = _bala_video_provider_label(provider)
     env, secret_values = _bala_video_provider_env(provider)
     env.update(node_env)
-    required_key = "ARK_API_KEY" if provider == "seedance" else "DASHSCOPE_API_KEY"
+    required_key = "ARK_API_KEY" if status_key == "seedance" else "DASHSCOPE_API_KEY"
     if not str(env.get(required_key) or "").strip():
         return {
             "ok": False,
             "provider": provider,
             "task_id": task_id,
             "status": "needs_config",
-            "error": f"请先在 AI 能力配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
+            "error": f"请先在 AI 能力配置 {provider_label} 凭据",
         }
 
     process = await asyncio.create_subprocess_exec(
@@ -6978,7 +7292,7 @@ async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dic
     stdout_bytes, stderr_bytes = await _communicate_video_provider_process(
         process,
         timeout_seconds=timeout,
-        provider_label="Seedance" if provider == "seedance" else "HappyHorse",
+        provider_label=provider_label,
     )
     stdout = stdout_bytes.decode("utf-8", errors="replace")
     stderr = stderr_bytes.decode("utf-8", errors="replace")
@@ -6988,7 +7302,7 @@ async def _run_video_provider_task_cli(req: BalaVideoProviderTaskRequest) -> dic
         sanitized = _sanitize_video_provider_output(stderr or stdout, secret_values)
         raise HTTPException(500, sanitized.strip() or "视频供应商任务刷新失败")
 
-    if provider == "seedance":
+    if status_key == "seedance":
         final_task_id = str(final.get("id") or task_id)
         status = str(final.get("status") or "")
         content = final.get("content") if isinstance(final.get("content"), dict) else {}
@@ -7796,14 +8110,32 @@ class AiVideoAssetInputRequest(BaseModel):
     sortOrder: int = 0
 
 
+class AiVideoMediaInputRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: str
+    url: str
+    keep_original_sound: Optional[str] = None
+    keepOriginalSound: Optional[str] = None
+
+
 class AiVideoPublicParametersRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     ratio: Optional[str] = None
+    aspect_ratio: Optional[str] = None
+    aspectRatio: Optional[str] = None
     resolution: Optional[str] = None
     duration: Optional[int] = None
+    mode: Optional[str] = None
+    audio: Optional[bool] = None
     watermark: Optional[bool] = None
     generateAudio: Optional[bool] = None
+    imageUrl: Optional[str] = None
+    image_url: Optional[str] = None
+    videoUrl: Optional[str] = None
+    video_url: Optional[str] = None
+    media: List[AiVideoMediaInputRequest] = Field(default_factory=list)
 
 
 class AiVideoCreateJobRequest(BaseModel):
@@ -7813,8 +8145,8 @@ class AiVideoCreateJobRequest(BaseModel):
     provider: str
     model: str
     prompt: str
-    assets: List[AiVideoAssetInputRequest] = []
-    parameters: AiVideoPublicParametersRequest = AiVideoPublicParametersRequest()
+    assets: List[AiVideoAssetInputRequest] = Field(default_factory=list)
+    parameters: AiVideoPublicParametersRequest = Field(default_factory=AiVideoPublicParametersRequest)
     outputDirToken: str = ""
 
 
@@ -7824,8 +8156,8 @@ class AiVideoValidateRequest(BaseModel):
     provider: str
     model: str
     prompt: str = ""
-    assets: List[AiVideoAssetInputRequest] = []
-    parameters: AiVideoPublicParametersRequest = AiVideoPublicParametersRequest()
+    assets: List[AiVideoAssetInputRequest] = Field(default_factory=list)
+    parameters: AiVideoPublicParametersRequest = Field(default_factory=AiVideoPublicParametersRequest)
     outputDirToken: str = ""
 
 
@@ -10182,6 +10514,8 @@ _AI_VIDEO_PRIVATE_SETTING_FIELDS = frozenset({
     "bailian_workspace_id",
     "bailian_region",
     "bailian_base_url",
+    "bailian_upload_api_key",
+    "bailian_uploads_url",
 })
 
 
@@ -10195,6 +10529,7 @@ def _public_settings() -> dict:
     ai["video"] = {
         "seedance_configured": bool(str(source_video.get("seedance_api_key") or "").strip()),
         "happyhorse_configured": bool(str(source_video.get("bailian_api_key") or "").strip()),
+        "bailian_upload_configured": bool(str(source_video.get("bailian_upload_api_key") or "").strip()),
     }
     public["ai"] = ai
     return public
@@ -10216,6 +10551,7 @@ def _safe_settings_write_patch(cfg: dict) -> dict:
         # These are response-only status flags and must never be persisted.
         video.pop("seedance_configured", None)
         video.pop("happyhorse_configured", None)
+        video.pop("bailian_upload_configured", None)
     return patch
 
 

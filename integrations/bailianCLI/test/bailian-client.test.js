@@ -42,6 +42,54 @@ test("createVideoTask posts payload to Bailian video synthesis endpoint", async 
   assert.equal(getBailianTaskId(result), "task-test");
 });
 
+test("baseUrl can already include api version without double-appending", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse({ output: { task_id: "task-test", task_status: "PENDING" } });
+  };
+  const client = new BailianVideoGenerationClient({
+    apiKey: PLACEHOLDER_CREDENTIAL,
+    baseUrl: "https://ai-aigw.example.com/bailian-vedio/api/v1",
+    fetchImpl
+  });
+
+  await client.createVideoTask({
+    model: "kling/kling-v3-video-generation",
+    input: { prompt: "hello" },
+    parameters: { mode: "std", aspect_ratio: "16:9", duration: 5 }
+  });
+
+  assert.equal(
+    calls[0].url,
+    "https://ai-aigw.example.com/bailian-vedio/api/v1/services/aigc/video-generation/video-synthesis"
+  );
+});
+
+test("createVideoTask enables DashScope OSS resolution for temporary oss media URLs", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    return jsonResponse({ output: { task_id: "task-oss", task_status: "PENDING" } });
+  };
+  const client = new BailianVideoGenerationClient({
+    apiKey: PLACEHOLDER_CREDENTIAL,
+    baseUrl: "https://ai-aigw.example.com/bailian-vedio/api/v1",
+    fetchImpl
+  });
+
+  await client.createVideoTask({
+    model: "kling/kling-v3-video-generation",
+    input: {
+      prompt: "hello",
+      media: [{ type: "first_frame", url: "oss://dashscope-instant/demo/frame.png" }]
+    },
+    parameters: { mode: "std", duration: 5 }
+  });
+
+  assert.equal(calls[0].init.headers["X-DashScope-OssResourceResolve"], "enable");
+});
+
 test("getVideoTask fetches Bailian task by path id", async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
@@ -91,6 +139,75 @@ test("validateBailianTaskPayload accepts HappyHorse examples", async () => {
     const source = await readFile(new URL(`../examples/${fileName}`, import.meta.url), "utf8");
     assert.doesNotThrow(() => validateBailianTaskPayload(JSON.parse(source)), fileName);
   }
+});
+
+test("validateBailianTaskPayload accepts Bailian gateway model examples", async () => {
+  for (const fileName of [
+    "kling-v3-train-hotpot.json",
+    "kling-v3-omni-train-hotpot.json",
+    "pixverse-motioncontrol.json",
+  ]) {
+    const source = await readFile(new URL(`../examples/${fileName}`, import.meta.url), "utf8");
+    assert.doesNotThrow(() => validateBailianTaskPayload(JSON.parse(source)), fileName);
+  }
+});
+
+test("validateBailianTaskPayload rejects invalid Kling parameter names and missing aspect ratio", () => {
+  assert.throws(
+    () => validateBailianTaskPayload({
+      model: "kling/kling-v3-video-generation",
+      input: { prompt: "text only" },
+      parameters: { mode: "std", resolution: "720P", duration: 5 }
+    }),
+    /aspect_ratio is required/
+  );
+  assert.throws(
+    () => validateBailianTaskPayload({
+      model: "kling/kling-v3-video-generation",
+      input: { prompt: "text only" },
+      parameters: { mode: "fast", aspect_ratio: "16:9", duration: 5 }
+    }),
+    /mode must be std or pro/
+  );
+});
+
+test("validateBailianTaskPayload rejects incomplete PixVerse motion-control inputs", () => {
+  assert.throws(
+    () => validateBailianTaskPayload({
+      model: "pixverse/pixverse-motioncontrol",
+      input: {
+        media: [{ type: "image_url", url: "https://example.com/character.png" }]
+      },
+      parameters: { resolution: "720P" }
+    }),
+    /exactly one image_url and one video_url/
+  );
+  assert.throws(
+    () => validateBailianTaskPayload({
+      model: "pixverse/pixverse-motioncontrol",
+      input: {
+        media: [
+          { type: "image_url", url: "file:///tmp/character.png" },
+          { type: "video_url", url: "https://example.com/motion.mp4" }
+        ]
+      },
+      parameters: { resolution: "720P" }
+    }),
+    /must be an http\(s\) URL or oss:\/\/ URL/
+  );
+  assert.throws(
+    () => validateBailianTaskPayload({
+      model: "pixverse/pixverse-motioncontrol",
+      input: {
+        media: [
+          { type: "image_url", url: "https://example.com/character.png" },
+          { type: "video_url", url: "https://example.com/motion.mp4" }
+        ]
+      },
+      parameters: { resolution: "1080P" }
+    }),
+    /360P, 540P, or 720P/
+  );
 });
 
 test("validateBailianTaskPayload rejects image-to-video ratio", () => {

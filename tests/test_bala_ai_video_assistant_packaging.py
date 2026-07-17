@@ -197,6 +197,120 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(reference_payload["model"], "happyhorse-1.1-r2v")
         self.assertEqual(len(reference_payload["input"]["media"]), 2)
 
+    def test_bailian_payload_builder_supports_kling_and_pixverse_models(self):
+        builder = getattr(api_server, "_build_bailian_video_payload", None)
+        self.assertTrue(callable(builder), "Bailian payload builder must be implemented")
+
+        kling_payload = builder(SimpleNamespace(
+            provider="kling-v3",
+            prompt="在火车里吃火锅唱歌",
+            image_paths=[],
+            ratio="16:9",
+            duration=5,
+            generate_audio=True,
+            kling_mode="std",
+            watermark=False,
+        ))
+        omni_payload = builder(SimpleNamespace(
+            provider="kling-omni",
+            prompt="在火车里吃火锅唱歌",
+            image_paths=[],
+            ratio="9:16",
+            duration=5,
+            generate_audio=False,
+            kling_mode="pro",
+            watermark=False,
+        ))
+        pixverse_payload = builder(SimpleNamespace(
+            provider="pixverse-motioncontrol",
+            image_paths=[],
+            pixverse_image_url="https://example.com/character.png",
+            pixverse_video_url="https://example.com/motion.mp4",
+            resolution="720P",
+            watermark=False,
+        ))
+
+        self.assertEqual(kling_payload["model"], "kling/kling-v3-video-generation")
+        self.assertEqual(kling_payload["parameters"]["mode"], "std")
+        self.assertEqual(kling_payload["parameters"]["aspect_ratio"], "16:9")
+        self.assertTrue(kling_payload["parameters"]["audio"])
+        self.assertEqual(omni_payload["model"], "kling/kling-v3-omni-video-generation")
+        self.assertEqual(omni_payload["parameters"]["mode"], "pro")
+        self.assertEqual(pixverse_payload["model"], "pixverse/pixverse-motioncontrol")
+        self.assertEqual(
+            [item["type"] for item in pixverse_payload["input"]["media"]],
+            ["image_url", "video_url"],
+        )
+        self.assertEqual(pixverse_payload["parameters"], {"resolution": "720P", "watermark": False})
+
+    def test_bailian_payload_builder_uploads_local_assets_for_kling_and_pixverse_models(self):
+        builder = getattr(api_server, "_build_bailian_video_payload", None)
+        self.assertTrue(callable(builder), "Bailian payload builder must be implemented")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            character = Path(tmpdir) / "character.png"
+            last_frame = Path(tmpdir) / "last-frame.png"
+            motion = Path(tmpdir) / "motion.mp4"
+            Image.new("RGB", (8, 8), color=(255, 255, 255)).save(character)
+            Image.new("RGB", (8, 8), color=(0, 0, 0)).save(last_frame)
+            motion.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            upload_calls = []
+
+            def fake_upload(*, api_key, model, path):
+                upload_calls.append((api_key, model, Path(path).name))
+                return f"oss://dashscope-temp/{Path(path).name}"
+
+            with patch(
+                "core.api_server.ai_video_generation_service.provider_secrets",
+                return_value={"bailian_upload": "config-placeholder-upload", "happyhorse": "config-placeholder-happyhorse"},
+            ), patch(
+                "core.api_server.ai_video_generation_service._upload_file_to_bailian_temp_storage",
+                side_effect=fake_upload,
+            ):
+                kling_payload = builder(SimpleNamespace(
+                    provider="kling-v3",
+                    prompt="在火车里吃火锅唱歌",
+                    image_paths=[str(character), str(last_frame)],
+                    ratio="16:9",
+                    duration=5,
+                    generate_audio=True,
+                    kling_mode="std",
+                    watermark=False,
+                ), upload_local_assets=True)
+                pixverse_payload = builder(SimpleNamespace(
+                    provider="pixverse-motioncontrol",
+                    image_paths=[str(character)],
+                    pixverse_video_path=str(motion),
+                    pixverse_image_url="",
+                    pixverse_video_url="",
+                    resolution="720P",
+                    watermark=False,
+                ), upload_local_assets=True)
+
+        self.assertEqual(
+            kling_payload["input"]["media"],
+            [
+                {"type": "first_frame", "url": "oss://dashscope-temp/character.png"},
+                {"type": "last_frame", "url": "oss://dashscope-temp/last-frame.png"},
+            ],
+        )
+        self.assertEqual(
+            pixverse_payload["input"]["media"],
+            [
+                {"type": "image_url", "url": "oss://dashscope-temp/character.png"},
+                {"type": "video_url", "url": "oss://dashscope-temp/motion.mp4"},
+            ],
+        )
+        self.assertEqual(
+            upload_calls,
+            [
+                ("config-placeholder-upload", "kling/kling-v3-video-generation", "character.png"),
+                ("config-placeholder-upload", "kling/kling-v3-video-generation", "last-frame.png"),
+                ("config-placeholder-upload", "pixverse/pixverse-motioncontrol", "character.png"),
+                ("config-placeholder-upload", "pixverse/pixverse-motioncontrol", "motion.mp4"),
+            ],
+        )
+
     def test_video_provider_payloads_reject_non_image_local_files(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             invalid_files = [
@@ -349,6 +463,62 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(result["status"], "ready")
         self.assertEqual(result["source"], "AI 能力")
 
+    def test_bailian_preflight_validates_local_assets_without_uploading_to_oss(self):
+        request_type = getattr(api_server, "BalaVideoProviderPreflightRequest", None)
+        preflight = getattr(api_server, "_preflight_bala_video_provider", None)
+        self.assertTrue(request_type, "Provider preflight request model must exist")
+        self.assertTrue(callable(preflight), "Provider preflight validator must exist")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image = Path(tmpdir) / "source.png"
+            motion = Path(tmpdir) / "motion.mp4"
+            Image.new("RGB", (8, 8), color=(255, 255, 255)).save(image)
+            motion.write_bytes(b"\x00\x00\x00\x18ftypmp42")
+            config = {
+                "ai": {
+                    "video": {
+                        "bailian_api_key": "config-placeholder-happyhorse",
+                        "bailian_upload_api_key": "config-placeholder-upload",
+                    },
+                },
+            }
+
+            requests = [
+                request_type(
+                    provider="kling-v3",
+                    style_code="208326102205",
+                    prompt="在火车里吃火锅唱歌",
+                    image_paths=[str(image)],
+                    output_dir=tmpdir,
+                    ratio="16:9",
+                    duration=5,
+                    generate_audio=True,
+                    kling_mode="std",
+                ),
+                request_type(
+                    provider="pixverse-motioncontrol",
+                    style_code="208326102205",
+                    image_paths=[str(image)],
+                    pixverse_video_path=str(motion),
+                    output_dir=tmpdir,
+                    resolution="720P",
+                ),
+            ]
+
+            with patch("core.api_server.load_config", return_value=config), patch(
+                "core.api_server.ai_video_generation_service._upload_file_to_bailian_temp_storage",
+                side_effect=AssertionError("preflight must not upload local files to OSS"),
+            ), patch(
+                "core.api_server.asyncio.create_subprocess_exec",
+                side_effect=AssertionError("preflight must not launch a provider CLI"),
+            ):
+                results = [preflight(request) for request in requests]
+
+        self.assertEqual([result["provider"] for result in results], ["kling-v3", "pixverse-motioncontrol"])
+        self.assertTrue(all(result["ok"] for result in results))
+        self.assertEqual(results[0]["model"], "kling/kling-v3-video-generation")
+        self.assertEqual(results[1]["model"], "pixverse/pixverse-motioncontrol")
+
     def test_missing_video_provider_credentials_direct_users_to_ai_capabilities_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             output_dir = Path(tmpdir) / "output"
@@ -376,7 +546,7 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
                 refresh_result = asyncio.run(api_server._run_video_provider_task_cli(refresh_request))
 
         self.assertEqual(seedance_result["error"], "请先在 AI 能力配置 Seedance 凭据")
-        self.assertEqual(happyhorse_result["error"], "请先在 AI 能力配置 HappyHorse 凭据")
+        self.assertEqual(happyhorse_result["error"], "请先在 AI 能力配置 百炼 HappyHorse 凭据")
         self.assertEqual(refresh_result["error"], "请先在 AI 能力配置 Seedance 凭据")
 
     def test_provider_task_refresh_and_download_use_shared_cli_commands(self):

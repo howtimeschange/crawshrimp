@@ -5,7 +5,7 @@
     <header class="aiw-topbar" :inert="workbenchDialogOpen || undefined" :aria-hidden="workbenchDialogOpen ? 'true' : undefined">
       <div>
         <p class="aiw-kicker">AI 生图</p>
-        <h2>AI 生图工作台</h2>
+        <h1>AI 生图工作台</h1>
         <p class="aiw-subtitle">支持主图、参考图、Prompt、比例尺寸联动和多模型生成</p>
       </div>
       <div class="aiw-top-actions">
@@ -3700,11 +3700,12 @@ function localFileUrl(path) {
   height: 100%;
   min-height: 0;
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
-  gap: 14px;
-  padding: 18px 20px;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  gap: 0;
+  padding: 0;
   background: #141418;
   color: var(--text);
+  overflow: hidden;
 }
 
 .aiw-sr-only {
@@ -3719,7 +3720,6 @@ function localFileUrl(path) {
   border: 0;
 }
 
-.aiw-topbar,
 .aiw-prompt-panel,
 .aiw-results-grid {
   border: 1px solid #2e2e3a;
@@ -3727,31 +3727,34 @@ function localFileUrl(path) {
 }
 
 .aiw-topbar {
+  min-height: 86px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 18px;
-  padding: 16px 18px;
-  border-radius: 8px;
+  gap: 16px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid #2e2e3a;
+  background: #141418;
 }
 
 .aiw-kicker {
-  margin: 0 0 6px;
+  margin: 0 0 4px;
   color: #ff6b2b;
-  font-size: 12px;
-  font-weight: 800;
+  font-size: 11px;
+  font-weight: 700;
 }
 
+.aiw-topbar h1,
 .aiw-topbar h2 {
-  margin: 0;
+  margin: 0 0 6px;
   font-size: 22px;
-  line-height: 1.2;
+  line-height: 1.15;
 }
 
 .aiw-subtitle {
-  margin: 7px 0 0;
+  margin: 0;
   color: var(--text2);
-  line-height: 1.5;
+  font-size: 12px;
 }
 
 .aiw-top-actions,
@@ -3852,6 +3855,7 @@ function localFileUrl(path) {
   display: grid;
   grid-template-columns: minmax(320px, 360px) minmax(520px, 1fr);
   gap: 14px;
+  padding: 14px 20px 18px;
 }
 
 .aiw-prompt-panel {
@@ -5520,9 +5524,7 @@ textarea:focus-visible,
 }
 
 button.active,
-.aiw-primary-action,
-.aiw-top-primary,
-.aiw-ghost {
+.aiw-primary-action {
   border-color: rgba(255, 107, 43, 0.35);
   background: rgba(255, 107, 43, 0.1);
   color: #ff6b2b;
@@ -5549,25 +5551,48 @@ button.active,
 
 .aiw-top-primary {
   width: auto;
+  min-height: 32px;
+  padding: 0 13px;
+  border-color: #c94d16;
+  background: #c94d16;
+  color: #fff;
 }
 
 .aiw-ghost {
   flex: 0 0 auto;
+  min-height: 32px;
+  padding: 0 12px;
+  border-color: #2e2e3a;
+  background: #242430;
+  color: var(--text);
+}
+
+.aiw-ghost:hover {
+  border-color: rgba(255, 107, 43, 0.5);
+  color: #ff8b5f;
+}
+
+.aiw-top-primary:hover {
+  border-color: #ff6b2b;
+  background: #d85a1d;
+  color: #fff;
 }
 
 @media (max-width: 1060px) {
   .aiw-workbench {
     grid-template-rows: auto auto minmax(0, 1fr);
-    padding: 14px;
+    padding: 0;
   }
 
   .aiw-compact-tabs {
     display: flex;
+    margin: 12px 14px 0;
   }
 
   .aiw-main-grid {
     display: block;
     overflow: hidden;
+    padding: 12px 14px 14px;
   }
 
   .aiw-main-grid.compact-inputs .aiw-results-grid,
@@ -5600,22 +5625,31 @@ button.active,
 
 @media (max-width: 760px) {
   .aiw-workbench {
-    gap: 10px;
-    padding: 10px;
+    gap: 0;
+    padding: 0;
   }
 
   .aiw-topbar {
     gap: 10px;
-    padding: 12px;
+    min-height: auto;
+    padding: 12px 14px;
   }
 
+  .aiw-topbar h1,
   .aiw-topbar h2 {
     font-size: 18px;
   }
 
   .aiw-subtitle {
-    margin-top: 4px;
     font-size: 12px;
+  }
+
+  .aiw-compact-tabs {
+    margin: 10px 10px 0;
+  }
+
+  .aiw-main-grid {
+    padding: 10px;
   }
 
   .aiw-top-actions,

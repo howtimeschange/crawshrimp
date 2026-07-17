@@ -34,6 +34,8 @@ DEFAULT_CONFIG = {
             "bailian_workspace_id": "",
             "bailian_region": "cn-beijing",
             "bailian_base_url": "",
+            "bailian_upload_api_key": "",
+            "bailian_uploads_url": "https://dashscope.aliyuncs.com/api/v1/uploads",
         },
     },
     "cloud_approval": {

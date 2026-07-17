@@ -5,11 +5,19 @@ import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { DEFAULT_BAILIAN_REGION, buildBailianBaseUrl } from "./config.js";
 
-const VIDEO_SYNTHESIS_PATH = "/api/v1/services/aigc/video-generation/video-synthesis";
-const TASKS_PATH = "/api/v1/tasks";
+const VIDEO_SYNTHESIS_PATH = "/services/aigc/video-generation/video-synthesis";
+const TASKS_PATH = "/tasks";
 const TERMINAL_STATUSES = new Set(["SUCCEEDED", "FAILED", "CANCELED", "UNKNOWN"]);
 const RESOLUTIONS = new Set(["720P", "1080P"]);
 const RATIOS = new Set(["16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"]);
+const KLING_MODES = new Set(["std", "pro"]);
+const KLING_ASPECT_RATIOS = new Set(["16:9", "9:16", "1:1"]);
+const PIXVERSE_RESOLUTIONS = new Set(["360P", "540P", "720P"]);
+const BAILIAN_GATEWAY_MODELS = new Set([
+  "kling/kling-v3-video-generation",
+  "kling/kling-v3-omni-video-generation",
+  "pixverse/pixverse-motioncontrol"
+]);
 
 export class BailianApiError extends Error {
   constructor(message, { status, body } = {}) {
@@ -34,15 +42,21 @@ export class BailianVideoGenerationClient {
     }
 
     this.apiKey = apiKey;
-    this.baseUrl = (baseUrl || buildBailianBaseUrl({ workspaceId, region })).replace(/\/+$/, "");
+    this.baseUrl = normalizeBailianBaseUrl(
+      baseUrl || buildBailianBaseUrl({ workspaceId, region })
+    );
     this.fetch = fetchImpl;
   }
 
   async createVideoTask(payload) {
     validateBailianTaskPayload(payload);
+    const headers = { "X-DashScope-Async": "enable" };
+    if (payloadContainsBailianOssUrl(payload)) {
+      headers["X-DashScope-OssResourceResolve"] = "enable";
+    }
     return this.#request(VIDEO_SYNTHESIS_PATH, {
       method: "POST",
-      headers: { "X-DashScope-Async": "enable" },
+      headers,
       body: JSON.stringify(payload)
     });
   }
@@ -144,7 +158,21 @@ export function validateBailianTaskPayload(payload) {
   }
 
   const mode = getHappyHorseMode(payload.model);
-  validateParameters(payload.parameters, mode);
+  if (!mode) {
+    if (!BAILIAN_GATEWAY_MODELS.has(payload.model)) {
+      throw new Error(
+        "payload.model must be a supported HappyHorse or Bailian gateway video model."
+      );
+    }
+    if (payload.model === "pixverse/pixverse-motioncontrol") {
+      validatePixVersePayload(payload);
+      return;
+    }
+    validateKlingPayload(payload);
+    return;
+  }
+
+  validateHappyHorseParameters(payload.parameters, mode);
   if (mode === "t2v") {
     validatePrompt(payload.input.prompt, "payload.input.prompt is required for text-to-video.");
     return;
@@ -170,16 +198,15 @@ export function validateBailianTaskPayload(payload) {
 
 function getHappyHorseMode(model) {
   const match = /^happyhorse-\d+\.\d+-(t2v|i2v|r2v)$/.exec(model);
-  if (!match) {
-    throw new Error(
-      "payload.model must be one of HappyHorse text/image/reference video models, " +
-        "for example happyhorse-1.1-t2v, happyhorse-1.1-i2v, or happyhorse-1.1-r2v."
-    );
-  }
-  return match[1];
+  return match?.[1];
 }
 
-function validateParameters(parameters, mode) {
+function normalizeBailianBaseUrl(baseUrl) {
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  return /\/api\/v1$/i.test(normalized) ? normalized : `${normalized}/api/v1`;
+}
+
+function validateHappyHorseParameters(parameters, mode) {
   if (parameters === undefined) return;
   if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
     throw new Error("payload.parameters must be an object when provided.");
@@ -205,8 +232,146 @@ function validateParameters(parameters, mode) {
   }
 }
 
+function validateKlingPayload(payload) {
+  if (!hasNonEmptyPrompt(payload.input.prompt) && !Array.isArray(payload.input.media)) {
+    throw new Error("payload.input.prompt or payload.input.media is required for Kling video models.");
+  }
+  if (payload.input.media !== undefined) {
+    validateKlingMedia(payload.input.media, payload.model);
+  }
+  const parameters = payload.parameters;
+  if (parameters === undefined) return;
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+    throw new Error("payload.parameters must be an object when provided.");
+  }
+  if (parameters.mode !== undefined && !KLING_MODES.has(parameters.mode)) {
+    throw new Error("payload.parameters.mode must be std or pro for Kling models.");
+  }
+  if (parameters.aspect_ratio !== undefined && !KLING_ASPECT_RATIOS.has(parameters.aspect_ratio)) {
+    throw new Error("payload.parameters.aspect_ratio must be 16:9, 9:16, or 1:1 for Kling models.");
+  }
+  if (!Array.isArray(payload.input.media) && parameters.aspect_ratio === undefined) {
+    throw new Error("payload.parameters.aspect_ratio is required for Kling text-to-video.");
+  }
+  if (parameters.duration !== undefined) {
+    if (!Number.isInteger(parameters.duration) || parameters.duration < 3 || parameters.duration > 15) {
+      throw new Error("payload.parameters.duration must be an integer from 3 to 15 for Kling models.");
+    }
+  }
+  if (parameters.audio !== undefined && typeof parameters.audio !== "boolean") {
+    throw new Error("payload.parameters.audio must be a boolean for Kling models.");
+  }
+  if (parameters.watermark !== undefined && typeof parameters.watermark !== "boolean") {
+    throw new Error("payload.parameters.watermark must be a boolean.");
+  }
+}
+
+function validateKlingMedia(media, model) {
+  if (!Array.isArray(media)) {
+    throw new Error("payload.input.media must be an array for Kling media input.");
+  }
+  if (!media.length) {
+    throw new Error("payload.input.media cannot be empty for Kling media input.");
+  }
+  const allowedTypes = model === "kling/kling-v3-video-generation"
+    ? new Set(["first_frame", "last_frame"])
+    : new Set(["first_frame", "last_frame", "refer", "feature", "base"]);
+  let firstFrames = 0;
+  let lastFrames = 0;
+  let baseVideos = 0;
+  let featureVideos = 0;
+  for (const [index, item] of media.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`payload.input.media[${index}] must be an object.`);
+    }
+    if (!allowedTypes.has(item.type)) {
+      throw new Error(`payload.input.media[${index}].type is not supported by ${model}.`);
+    }
+    if (!isProviderMediaUrl(item.url)) {
+      throw new Error(`payload.input.media[${index}].url must be an http(s) URL or oss:// URL.`);
+    }
+    if (item.type === "first_frame") firstFrames += 1;
+    if (item.type === "last_frame") lastFrames += 1;
+    if (item.type === "base") baseVideos += 1;
+    if (item.type === "feature") featureVideos += 1;
+  }
+  if (lastFrames && firstFrames !== 1) {
+    throw new Error("Kling last_frame requires exactly one first_frame.");
+  }
+  if (firstFrames > 1 || lastFrames > 1 || baseVideos > 1 || featureVideos > 1) {
+    throw new Error("Kling first_frame, last_frame, base, and feature media are limited to one each.");
+  }
+}
+
+function validatePixVersePayload(payload) {
+  const media = payload.input.media;
+  if (!Array.isArray(media) || media.length !== 2) {
+    throw new Error("payload.input.media must include exactly one image_url and one video_url for PixVerse.");
+  }
+  const imageItems = media.filter((item) => item?.type === "image_url");
+  const videoItems = media.filter((item) => item?.type === "video_url");
+  if (imageItems.length !== 1 || videoItems.length !== 1) {
+    throw new Error("PixVerse requires exactly one image_url and one video_url media item.");
+  }
+  for (const [index, item] of media.entries()) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`payload.input.media[${index}] must be an object.`);
+    }
+    if (!isProviderMediaUrl(item.url)) {
+      throw new Error(`payload.input.media[${index}].url must be an http(s) URL or oss:// URL.`);
+    }
+  }
+  const parameters = payload.parameters;
+  if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)) {
+    throw new Error("payload.parameters must be an object for PixVerse.");
+  }
+  if (!PIXVERSE_RESOLUTIONS.has(parameters.resolution)) {
+    throw new Error("payload.parameters.resolution must be 360P, 540P, or 720P for PixVerse.");
+  }
+  if (parameters.watermark !== undefined && typeof parameters.watermark !== "boolean") {
+    throw new Error("payload.parameters.watermark must be a boolean.");
+  }
+}
+
 function validatePrompt(prompt, message) {
   if (!prompt || typeof prompt !== "string") throw new Error(message);
+}
+
+function hasNonEmptyPrompt(prompt) {
+  return typeof prompt === "string" && prompt.trim().length > 0;
+}
+
+function isHttpUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function isBailianOssUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "oss:" && Boolean(parsed.hostname) && parsed.pathname.length > 1;
+  } catch {
+    return false;
+  }
+}
+
+function isProviderMediaUrl(url) {
+  return isHttpUrl(url) || isBailianOssUrl(url);
+}
+
+function payloadContainsBailianOssUrl(value) {
+  if (typeof value === "string") return isBailianOssUrl(value);
+  if (Array.isArray(value)) return value.some((item) => payloadContainsBailianOssUrl(item));
+  if (value && typeof value === "object") {
+    return Object.values(value).some((item) => payloadContainsBailianOssUrl(item));
+  }
+  return false;
 }
 
 function validateMedia(media, { requiredType, minItems, maxItems, label }) {

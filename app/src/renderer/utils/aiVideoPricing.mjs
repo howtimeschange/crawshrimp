@@ -73,6 +73,18 @@ export function happyHorseModeLabel(mode) {
  * }}
  */
 export function estimateVideoCost({ provider, resolution, duration }) {
+  if (['kling-v3', 'kling-omni', 'pixverse-motioncontrol'].includes(String(provider || ''))) {
+    return {
+      currency: 'CNY',
+      duration: 0,
+      ratePerSec: Number.NaN,
+      total: Number.NaN,
+      formula: '百炼控制台按模型实际用量结算',
+      disclaimer: 'Kling / PixVerse 价格不在本地写死，实际以百炼控制台账单为准',
+      known: false,
+    }
+  }
+
   const secs = clampDuration(duration, {
     min: provider === 'seedance' ? 4 : 3,
     max: 15,
@@ -89,6 +101,7 @@ export function estimateVideoCost({ provider, resolution, duration }) {
       total,
       formula: `${secs} 秒 × ${rate} 元/秒（${res}）`,
       disclaimer: '百炼原价快照，实际以控制台结算为准（可能有折扣/额度）',
+      known: true,
     }
   }
 
@@ -102,6 +115,7 @@ export function estimateVideoCost({ provider, resolution, duration }) {
     total,
     formula: `${secs} 秒 × 约 ${rate} 元/秒（${res}）`,
     disclaimer: '方舟公开口径约 1 元/秒（720p 纯生成），实际以控制台结算为准',
+    known: true,
   }
 }
 

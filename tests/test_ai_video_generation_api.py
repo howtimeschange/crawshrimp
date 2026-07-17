@@ -45,7 +45,49 @@ class AiVideoGenerationApiTests(unittest.TestCase):
         self.assertTrue(result["ok"])
         models = result["data"]["models"]
         self.assertEqual(models[0]["id"], "seedance-2.0")
-        self.assertEqual(len(models), 4)
+        self.assertEqual(len(models), 7)
+        self.assertIn("kling/kling-v3-video-generation", {item["id"] for item in models})
+        self.assertIn("pixverse/pixverse-motioncontrol", {item["id"] for item in models})
+
+    def test_public_parameter_schema_accepts_bailian_gateway_fields(self):
+        req = api_server.AiVideoValidateRequest.model_validate({
+            "provider": "happyhorse",
+            "model": "kling/kling-v3-video-generation",
+            "prompt": "在火车里吃火锅唱歌",
+            "assets": [],
+            "parameters": {
+                "mode": "std",
+                "aspect_ratio": "16:9",
+                "duration": 5,
+                "audio": True,
+                "watermark": False,
+                "media": [
+                    {"type": "first_frame", "url": "https://example.com/start.jpg"},
+                    {"type": "last_frame", "url": "https://example.com/end.jpg"},
+                ],
+            },
+            "outputDirToken": "token",
+        })
+        payload = api_server._model_payload(req, exclude_none=True)
+        self.assertEqual(payload["parameters"]["mode"], "std")
+        self.assertEqual(payload["parameters"]["media"][0]["type"], "first_frame")
+
+        pixverse_req = api_server.AiVideoValidateRequest.model_validate({
+            "provider": "happyhorse",
+            "model": "pixverse/pixverse-motioncontrol",
+            "prompt": "",
+            "assets": [],
+            "parameters": {
+                "imageUrl": "https://example.com/character.png",
+                "videoUrl": "https://example.com/motion.mp4",
+                "resolution": "720P",
+                "watermark": False,
+            },
+            "outputDirToken": "token",
+        })
+        pixverse_payload = api_server._model_payload(pixverse_req, exclude_none=True)
+        self.assertEqual(pixverse_payload["parameters"]["imageUrl"], "https://example.com/character.png")
+        self.assertEqual(pixverse_payload["parameters"]["videoUrl"], "https://example.com/motion.mp4")
 
 
 if __name__ == "__main__":

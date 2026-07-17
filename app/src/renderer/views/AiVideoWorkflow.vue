@@ -34,7 +34,7 @@
     <main
       class="aiv-stage"
       :class="{ 'aiv-stage-material-active': activeStep === 'materials', 'aiv-stage-ai-edit-active': activeStep === 'ai-edit' }"
-      :inert="hasOpenModal ? '' : null"
+      :inert="hasOpenModal || undefined"
       :aria-busy="materialIsRunning ? 'true' : 'false'"
     >
       <section v-if="activeStep === 'materials'" :class="['aiv-stage-grid', 'aiv-material-stage', { 'params-collapsed': !materialPanelExpanded }]">
@@ -643,7 +643,9 @@
                     <div class="aiv-ai-actions">
                       <button type="button" class="ok" @click="setReviewAssetStatus(asset, 'approved')">通过</button>
                       <button type="button" class="danger" @click="setReviewAssetStatus(asset, 'rejected')">舍弃</button>
-                      <button type="button" @click="requestReviewAssetRetry(asset)">重跑</button>
+                      <button type="button" @click="requestReviewAssetRetry(asset)">
+                        {{ canRegenerateRemoteReviewAsset(asset) ? '重跑' : '继续改图' }}
+                      </button>
                     </div>
                   </footer>
                 </article>
@@ -654,7 +656,7 @@
                     <span>本地上传或继续 AI 改图</span>
                   </button>
                   <div class="aiv-add-menu" v-if="addImageMenuStyle === style.styleCode">
-                    <button type="button">上传本地图</button>
+                    <button type="button" @click="uploadLocalReviewImage(style.styleCode)">上传本地图</button>
                     <button type="button" @click="activeStep = 'ai-edit'; activeAction = 'face_swap'">AI 换脸</button>
                     <button type="button" @click="activeStep = 'ai-edit'; activeAction = 'background_swap'">AI 换背景</button>
                     <button type="button" @click="activeStep = 'ai-edit'; activeAction = 'outfit_swap'">AI 换装</button>
@@ -749,13 +751,13 @@
                   <span class="aiv-video-task-status">{{ task.assets.length }} 张素材 · {{ approvedVideoTaskAssetCount(task) }} 已审核 · {{ task.status }}</span>
                   <span :class="['aiv-badge', task.provider !== 'qn' ? 'orange' : '']">{{ providerLabel(task.provider) }}</span>
                   <span :class="['aiv-badge', task.template ? 'orange' : '']">
-                    {{ task.provider === 'happyhorse' ? happyHorseModeLabel(task.happyhorseMode) : (task.template ? task.template.title : '不选模板') }}
+                    {{ videoTaskResultTemplateLabel(task) }}
                   </span>
                 </div>
                 <div class="aiv-video-task-meta-line">
                   <span><strong>素材</strong>{{ task.assets.length }} 张组成一条视频</span>
                   <span
-                    v-if="task.provider === 'seedance' || task.provider === 'happyhorse'"
+                    v-if="isApiVideoProvider(task.provider)"
                     :title="videoTaskParamSummary(task)"
                   ><strong>参数</strong>{{ videoTaskParamSummary(task) }}</span>
                   <span :title="task.prompt || '生意管家页面生成可不填写 Prompt'"><strong>Prompt</strong>{{ task.prompt || '可不填写' }}</span>
@@ -1406,7 +1408,7 @@
             </div>
 
             <section
-              v-if="videoTaskDraft.provider === 'seedance' || videoTaskDraft.provider === 'happyhorse'"
+              v-if="isApiVideoProvider(videoTaskDraft.provider)"
               class="aiv-video-gen-params"
               aria-label="生成参数"
             >
@@ -1427,7 +1429,14 @@
                     <option v-for="ratio in videoTaskRatioOptions" :key="ratio" :value="ratio">{{ ratio }}</option>
                   </select>
                 </label>
-                <label class="aiv-field compact">
+                <label v-if="videoTaskShowKlingMode" class="aiv-field compact">
+                  <span>模式</span>
+                  <select v-model="videoTaskDraft.klingMode">
+                    <option value="std">std · 720P</option>
+                    <option value="pro">pro · 1080P</option>
+                  </select>
+                </label>
+                <label v-else class="aiv-field compact">
                   <span>清晰度</span>
                   <select v-model="videoTaskDraft.resolution">
                     <option v-for="item in videoTaskResolutionOptions" :key="item" :value="item">{{ item }}</option>
@@ -1451,7 +1460,46 @@
               <p class="aiv-video-gen-params-hint">{{ videoTaskParamHint }}</p>
             </section>
 
-            <label :class="['aiv-field', { 'aiv-field-invalid': !videoTaskDraftRequirement('prompt')?.complete }]">
+            <section
+              v-if="videoTaskDraft.provider === 'pixverse-motioncontrol'"
+              class="aiv-video-gen-params"
+              aria-label="PixVerse 动作模仿素材"
+            >
+              <header class="aiv-video-gen-params-head">
+                <strong>PixVerse 动作模仿素材</strong>
+                <span>本地优先 · 自动上传临时 OSS</span>
+              </header>
+              <div class="aiv-video-gen-params-grid">
+                <div class="aiv-field compact">
+                  <span>角色图</span>
+                  <strong class="aiv-local-media-summary">{{ selectedVideoTaskAssetCount === 1 ? '已选择 1 张本地角色图' : videoTaskDraft.pixverseImageUrl ? '已使用角色图 URL' : '请在右侧选择 1 张图片' }}</strong>
+                </div>
+                <div class="aiv-field compact">
+                  <span>动作视频（本地）</span>
+                  <button type="button" class="aiv-directory-picker compact" @click="pickPixVerseMotionVideo">
+                    <span class="aiv-directory-picker-path" :title="videoTaskDraft.pixverseVideoPath">
+                      {{ videoTaskDraft.pixverseVideoPath ? fileNameFromPath(videoTaskDraft.pixverseVideoPath) : '选择 MP4 / MOV / WEBM' }}
+                    </span>
+                  </button>
+                </div>
+              </div>
+              <details class="aiv-video-advanced-urls">
+                <summary>高级：使用素材 URL</summary>
+                <div class="aiv-video-gen-params-grid">
+                  <label class="aiv-field compact">
+                    <span>角色图 URL</span>
+                    <input v-model="videoTaskDraft.pixverseImageUrl" placeholder="https://.../character.png" />
+                  </label>
+                  <label class="aiv-field compact">
+                    <span>动作视频 URL</span>
+                    <input v-model="videoTaskDraft.pixverseVideoUrl" placeholder="https://.../motion.mp4" />
+                  </label>
+                </div>
+              </details>
+              <p class="aiv-video-gen-params-hint">优先使用本地角色图和动作视频；提交时会用百炼官方临时 OSS 转成模型可访问地址。</p>
+            </section>
+
+            <label v-if="!isPixVerseVideoProvider(videoTaskDraft.provider)" :class="['aiv-field', { 'aiv-field-invalid': !videoTaskDraftRequirement('prompt')?.complete }]">
               <span>Prompt</span>
               <textarea
                 v-model="videoTaskDraft.prompt"
@@ -1478,6 +1526,8 @@
               <strong>{{ providerLabel(videoTaskDraft.provider) }}</strong>
               <span>凭据状态：{{ providerStatusLabel(videoTaskDraft.provider) }}；预检通过后仍需明确授权才会生成。</span>
               <small v-if="videoTaskDraft.provider === 'seedance'">如触发隐私保护，改用服装、场景和动作文字描述生成原创人物版本。</small>
+              <small v-else-if="videoTaskDraft.provider === 'kling-v3' || videoTaskDraft.provider === 'kling-omni'">Kling 可直接选择本地图片；提交时自动上传百炼临时 OSS。</small>
+              <small v-else-if="videoTaskDraft.provider === 'pixverse-motioncontrol'">PixVerse 需要 1 张角色图和 1 条动作视频；优先本地选择，提交时自动上传临时 OSS。</small>
               <small v-else-if="videoTaskDraft.happyhorseMode === 't2v'">文生视频不需要图片，使用原创人物和场景描述。</small>
               <small v-else-if="videoTaskDraft.happyhorseMode === 'i2v'">图生视频只允许选择 1 张首帧图，画幅跟随图片。</small>
               <small v-else>参考生视频支持 1-9 张图片，可组合模拍图和细节图。</small>
@@ -1604,7 +1654,7 @@
           </section>
         </div>
         <footer class="aiv-modal-foot">
-          <span>{{ videoTaskDraft.provider === 'qn' ? '生意管家 Prompt 可空，模板可选；输出目录必填' : `${providerLabel(videoTaskDraft.provider)} 需要明确 Prompt 和输出目录` }}</span>
+          <span>{{ videoTaskDraft.provider === 'qn' ? '生意管家 Prompt 可空，模板可选；输出目录必填' : isPixVerseVideoProvider(videoTaskDraft.provider) ? 'PixVerse 需要角色图、动作视频和输出目录' : `${providerLabel(videoTaskDraft.provider)} 需要明确 Prompt 和输出目录` }}</span>
           <div class="aiv-modal-foot-actions">
             <button type="button" class="aiv-ghost" @click="closeVideoTaskDialog">取消</button>
             <button type="button" class="aiv-primary" :disabled="!canCreateVideoTask" @click="createVideoTaskFromDraft">{{ editingVideoTaskId ? '保存任务修改' : '创建视频任务' }}</button>
@@ -1681,6 +1731,7 @@ import {
   normalizeBalaMaterialProgress,
   normalizeBalaReviewBatchStyles,
   normalizeBalaReviewStatus,
+  normalizeOperationType,
   normalizeStyleCodeLines,
   normalizeBalaTemplateCatalog,
   normalizeBalaVideoTaskProvider,
@@ -1789,6 +1840,8 @@ const reviewBoardUrl = ref('')
 const aiStageRequest = ref(null)
 const SEEDANCE_RATIOS = ['16:9', '9:16', '1:1', '3:4', '4:3', '21:9', 'adaptive']
 const HAPPYHORSE_RATIOS = ['16:9', '9:16', '1:1', '4:3', '3:4', '4:5', '5:4', '9:21', '21:9']
+const KLING_RATIOS = ['16:9', '9:16', '1:1']
+const BAILIAN_VIDEO_PROVIDERS = ['happyhorse', 'kling-v3', 'kling-omni', 'pixverse-motioncontrol']
 
 /** 简写按钮卡：与 AI 生视频工作台同风格，侧栏三列紧凑展示 */
 const videoTaskProviderOptions = [
@@ -1813,6 +1866,27 @@ const videoTaskProviderOptions = [
     mark: aliyunMark,
     markAlt: '阿里云',
   },
+  {
+    id: 'kling-v3',
+    shortLabel: 'Kling v3',
+    title: '百炼 Kling v3 · 阿里云',
+    mark: aliyunMark,
+    markAlt: '阿里云',
+  },
+  {
+    id: 'kling-omni',
+    shortLabel: 'Kling Omni',
+    title: '百炼 Kling Omni · 阿里云',
+    mark: aliyunMark,
+    markAlt: '阿里云',
+  },
+  {
+    id: 'pixverse-motioncontrol',
+    shortLabel: 'PixVerse',
+    title: '百炼 PixVerse Motion Control · 阿里云',
+    mark: aliyunMark,
+    markAlt: '阿里云',
+  },
 ]
 
 const videoTaskDraft = reactive({
@@ -1828,6 +1902,11 @@ const videoTaskDraft = reactive({
   resolution: '720p',
   ratio: '9:16',
   generateAudio: true,
+  klingMode: 'std',
+  pixverseImageUrl: '',
+  pixverseImagePath: '',
+  pixverseVideoUrl: '',
+  pixverseVideoPath: '',
   watermark: false,
 })
 const materialExpanded = reactive({
@@ -2279,7 +2358,13 @@ function persistedVideoTask(task = {}) {
     duration: Number(task.duration ?? gen.duration ?? 5),
     resolution: String(task.resolution || gen.resolution || ''),
     ratio: String(task.ratio ?? gen.ratio ?? ''),
+    klingMode: String(task.klingMode || gen.mode || 'std'),
+    pixverseImagePath: String(task.pixverseImagePath || gen.imagePath || ''),
+    pixverseImageUrl: String(task.pixverseImageUrl || gen.imageUrl || ''),
+    pixverseVideoPath: String(task.pixverseVideoPath || gen.videoPath || ''),
+    pixverseVideoUrl: String(task.pixverseVideoUrl || gen.videoUrl || ''),
     generateAudio: normalizeBalaVideoTaskProvider(task.provider) === 'seedance'
+      || isKlingVideoProvider(normalizeBalaVideoTaskProvider(task.provider))
       ? task.generateAudio !== false && task.generateAudio !== 0
       : Boolean(task.generateAudio),
     watermark: Boolean(task.watermark),
@@ -2408,13 +2493,49 @@ const selectedVideoTaskAssetCount = computed(() => videoTaskDraft.assetIds.lengt
 const selectedVideoTaskDraftAssets = computed(() => videoTaskSelectableAssets.value.filter(asset => (
   asset.selectable && videoTaskDraft.assetIds.includes(asset.id)
 )))
+function isBailianVideoProvider(provider = '') {
+  return BAILIAN_VIDEO_PROVIDERS.includes(String(provider || '').trim())
+}
+function isKlingVideoProvider(provider = '') {
+  return ['kling-v3', 'kling-omni'].includes(String(provider || '').trim())
+}
+function isPixVerseVideoProvider(provider = '') {
+  return String(provider || '').trim() === 'pixverse-motioncontrol'
+}
+function isApiVideoProvider(provider = '') {
+  const key = String(provider || '').trim()
+  return key === 'seedance' || isBailianVideoProvider(key)
+}
+function providerUsesLocalImages(provider = '', mode = '') {
+  if (provider === 'seedance') return true
+  if (provider === 'happyhorse') return mode !== 't2v'
+  if (isKlingVideoProvider(provider)) return true
+  if (isPixVerseVideoProvider(provider)) return true
+  return false
+}
+function videoTaskResultTemplateLabel(task = {}) {
+  const provider = String(task?.provider || '').trim()
+  if (provider === 'seedance') return 'Seedance'
+  if (provider === 'happyhorse') return happyHorseModeLabel(task?.happyhorseMode)
+  if (provider === 'kling-v3') return 'Kling v3'
+  if (provider === 'kling-omni') return 'Kling Omni'
+  if (provider === 'pixverse-motioncontrol') return 'PixVerse Motion'
+  return task?.template?.title || '不选模板'
+}
 const videoTaskDraftRequirements = computed(() => {
   const provider = videoTaskDraft.provider
   const happyHorseMode = videoTaskDraft.happyhorseMode
   const textOnly = provider === 'happyhorse' && happyHorseMode === 't2v'
+  const pixverse = isPixVerseVideoProvider(provider)
   const assets = selectedVideoTaskDraftAssets.value
+  const pixverseImageReady = !pixverse || assets.length === 1 || /^https?:\/\//i.test(String(videoTaskDraft.pixverseImageUrl || '').trim())
+  const pixverseMotionReady = !pixverse || Boolean(String(videoTaskDraft.pixverseVideoPath || '').trim()) || /^https?:\/\//i.test(String(videoTaskDraft.pixverseVideoUrl || '').trim())
   const assetRequirement = textOnly
     ? { id: 'assets', label: '素材（文生视频无需图片）', complete: true, message: '' }
+    : isKlingVideoProvider(provider)
+      ? { id: 'assets', label: '本地参考图（可选，最多 2 张）', complete: assets.length <= 2, message: 'Kling 本地参考图最多选择 2 张（首帧 / 尾帧）' }
+      : pixverse
+        ? { id: 'assets', label: '角色图（恰好 1 张）', complete: pixverseImageReady, message: 'PixVerse 需要选择 1 张本地角色图，或在高级配置里填写角色图 URL' }
     : provider === 'happyhorse' && happyHorseMode === 'i2v'
       ? { id: 'assets', label: '首帧图（恰好 1 张）', complete: assets.length === 1, message: 'HappyHorse 图生视频需要恰好选择 1 张首帧图' }
       : provider === 'happyhorse' && happyHorseMode === 'r2v'
@@ -2423,17 +2544,20 @@ const videoTaskDraftRequirements = computed(() => {
   return [
     { id: 'style', label: '款号素材库', complete: Boolean(videoTaskDraft.styleCode), message: '请先选择一个款号素材库' },
     assetRequirement,
-    { id: 'prompt', label: provider === 'qn' ? 'Prompt（可选）' : 'Prompt', complete: provider === 'qn' || Boolean(videoTaskDraft.prompt.trim()), message: `${providerLabel(provider)} 任务需要填写 Prompt` },
+    { id: 'prompt', label: provider === 'qn' || pixverse ? 'Prompt（可选）' : 'Prompt', complete: provider === 'qn' || pixverse || Boolean(videoTaskDraft.prompt.trim()), message: `${providerLabel(provider)} 任务需要填写 Prompt` },
+    { id: 'pixverse', label: '动作视频', complete: pixverseMotionReady, message: 'PixVerse 需要选择 1 条本地动作视频，或在高级配置里填写动作视频 URL' },
     { id: 'output', label: '输出目录', complete: Boolean(videoTaskDraft.outputDir.trim()), message: '请选择视频结果输出目录' },
-  ]
+  ].filter(item => item.id !== 'pixverse' || pixverse)
 })
 const videoTaskDraftCompletedCount = computed(() => videoTaskDraftRequirements.value.filter(item => item.complete).length)
 const canCreateVideoTask = computed(() => videoTaskDraftRequirements.value.every(item => item.complete))
 
 const videoTaskShowRatio = computed(() => !(
-  videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v'
+  (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.happyhorseMode === 'i2v')
+  || isPixVerseVideoProvider(videoTaskDraft.provider)
 ))
-const videoTaskShowAudio = computed(() => videoTaskDraft.provider === 'seedance')
+const videoTaskShowAudio = computed(() => videoTaskDraft.provider === 'seedance' || isKlingVideoProvider(videoTaskDraft.provider))
+const videoTaskShowKlingMode = computed(() => isKlingVideoProvider(videoTaskDraft.provider))
 const videoTaskDurationOptions = computed(() => {
   const min = videoTaskDraft.provider === 'seedance' ? 4 : 3
   const options = []
@@ -2441,13 +2565,22 @@ const videoTaskDurationOptions = computed(() => {
   return options
 })
 const videoTaskRatioOptions = computed(() => (
-  videoTaskDraft.provider === 'seedance' ? SEEDANCE_RATIOS : HAPPYHORSE_RATIOS
+  videoTaskDraft.provider === 'seedance'
+    ? SEEDANCE_RATIOS
+    : isKlingVideoProvider(videoTaskDraft.provider)
+      ? KLING_RATIOS
+      : HAPPYHORSE_RATIOS
 ))
-const videoTaskResolutionOptions = computed(() => (
-  videoTaskDraft.provider === 'seedance' ? ['480p', '720p', '1080p'] : ['720P', '1080P']
-))
+const videoTaskResolutionOptions = computed(() => {
+  if (videoTaskDraft.provider === 'seedance') return ['480p', '720p', '1080p']
+  if (isPixVerseVideoProvider(videoTaskDraft.provider)) return ['360P', '540P', '720P']
+  return ['720P', '1080P']
+})
 const videoTaskParamBadge = computed(() => {
   if (videoTaskDraft.provider === 'seedance') return 'Seedance 2.0'
+  if (videoTaskDraft.provider === 'kling-v3') return 'Kling v3'
+  if (videoTaskDraft.provider === 'kling-omni') return 'Kling Omni'
+  if (isPixVerseVideoProvider(videoTaskDraft.provider)) return 'PixVerse Motion'
   return `HH · ${happyHorseModeLabel(videoTaskDraft.happyhorseMode)}`
 })
 const happyHorseAutoModeHint = computed(() => {
@@ -2459,6 +2592,12 @@ const happyHorseAutoModeHint = computed(() => {
 const videoTaskParamHint = computed(() => {
   if (videoTaskDraft.provider === 'seedance') {
     return `Seedance 默认 720p / 5 秒 / 9:16 / 音频开 / 水印关。当前：${videoTaskDraft.resolution} · ${videoTaskDraft.duration}s · ${videoTaskDraft.ratio} · 音频${videoTaskDraft.generateAudio ? '开' : '关'} · 水印${videoTaskDraft.watermark ? '开' : '关'}`
+  }
+  if (isKlingVideoProvider(videoTaskDraft.provider)) {
+    return `Kling 默认 std / 5 秒 / 16:9 / 音频开 / 水印关。当前：${videoTaskDraft.klingMode || 'std'} · ${videoTaskDraft.duration}s · ${videoTaskDraft.ratio || '16:9'} · 音频${videoTaskDraft.generateAudio ? '开' : '关'} · 水印${videoTaskDraft.watermark ? '开' : '关'}`
+  }
+  if (isPixVerseVideoProvider(videoTaskDraft.provider)) {
+    return `PixVerse 默认 720P / 水印关；输出时长跟随动作参考视频。当前：${videoTaskDraft.resolution || '720P'} · 水印${videoTaskDraft.watermark ? '开' : '关'}`
   }
   if (videoTaskDraft.happyhorseMode === 'i2v') {
     return `图生视频默认 720P / 5 秒 / 比例随首帧 / 水印关。当前：${videoTaskDraft.resolution} · ${videoTaskDraft.duration}s · 水印${videoTaskDraft.watermark ? '开' : '关'}`
@@ -2475,6 +2614,7 @@ function applyVideoTaskProviderDefaults(provider = videoTaskDraft.provider) {
     videoTaskDraft.resolution = '720p'
     videoTaskDraft.duration = 5
     videoTaskDraft.generateAudio = true
+    videoTaskDraft.klingMode = 'std'
     videoTaskDraft.watermark = false
     return
   }
@@ -2484,6 +2624,24 @@ function applyVideoTaskProviderDefaults(provider = videoTaskDraft.provider) {
     videoTaskDraft.generateAudio = false
     videoTaskDraft.watermark = false
     syncHappyHorseModeFromAssetCount()
+    return
+  }
+  if (isKlingVideoProvider(provider)) {
+    videoTaskDraft.ratio = '16:9'
+    videoTaskDraft.resolution = '720P'
+    videoTaskDraft.duration = 5
+    videoTaskDraft.generateAudio = true
+    videoTaskDraft.klingMode = 'std'
+    videoTaskDraft.watermark = false
+    return
+  }
+  if (isPixVerseVideoProvider(provider)) {
+    videoTaskDraft.ratio = ''
+    videoTaskDraft.resolution = '720P'
+    videoTaskDraft.duration = 5
+    videoTaskDraft.generateAudio = false
+    videoTaskDraft.klingMode = 'std'
+    videoTaskDraft.watermark = false
   }
 }
 
@@ -2543,12 +2701,47 @@ function videoTaskGenerationParams(task = videoTaskDraft) {
     }
     return params
   }
+  if (isKlingVideoProvider(provider)) {
+    return {
+      duration: Number.isFinite(duration) ? Math.max(3, Math.min(15, duration)) : 5,
+      mode: String(task?.klingMode || task?.mode || 'std').trim() || 'std',
+      aspect_ratio: String(task?.ratio || task?.aspect_ratio || '16:9').trim() || '16:9',
+      audio: task?.generateAudio !== false,
+      watermark,
+    }
+  }
+  if (isPixVerseVideoProvider(provider)) {
+    return {
+      resolution: String(task?.resolution || '720P').trim().toUpperCase() || '720P',
+      imagePath: String(task?.pixverseImagePath || task?.imagePath || '').trim(),
+      imageUrl: String(task?.pixverseImageUrl || task?.imageUrl || '').trim(),
+      videoPath: String(task?.pixverseVideoPath || task?.videoPath || '').trim(),
+      videoUrl: String(task?.pixverseVideoUrl || task?.videoUrl || '').trim(),
+      watermark,
+    }
+  }
   return {}
 }
 
 function videoTaskParamSummary(task = {}) {
   const gen = videoTaskGenerationParams(task)
   if (!gen || !Object.keys(gen).length) return ''
+  if (isKlingVideoProvider(task.provider)) {
+    return [
+      gen.mode || 'std',
+      gen.duration != null ? `${gen.duration}s` : '',
+      gen.aspect_ratio || '16:9',
+      `音频${gen.audio !== false ? '开' : '关'}`,
+      `水印${gen.watermark ? '开' : '关'}`,
+    ].filter(Boolean).join(' · ')
+  }
+  if (isPixVerseVideoProvider(task.provider)) {
+    return [
+      gen.resolution || '720P',
+      `水印${gen.watermark ? '开' : '关'}`,
+      (gen.imagePath || gen.imageUrl) && (gen.videoPath || gen.videoUrl) ? '角色图 + 动作视频' : '素材待补齐',
+    ].filter(Boolean).join(' · ')
+  }
   const parts = [
     gen.resolution,
     gen.duration != null ? `${gen.duration}s` : '',
@@ -3136,6 +3329,34 @@ async function pickVideoTaskOutputDirectory() {
   }
 }
 
+async function pickPixVerseMotionVideo() {
+  if (typeof window.cs?.browseFile !== 'function') {
+    videoTaskDraftError.value = '当前环境不支持系统文件选择器，请在抓虾桌面端使用'
+    return
+  }
+  try {
+    const selected = await window.cs.browseFile({
+      title: '选择 PixVerse 动作视频',
+      filters: [
+        { name: '视频文件', extensions: ['mp4', 'mov', 'm4v', 'webm'] },
+        { name: '所有文件', extensions: ['*'] },
+      ],
+    })
+    const path = Array.isArray(selected) ? selected[0] : selected
+    if (String(path || '').trim()) {
+      if (!isSupportedLocalVideoPath(path)) {
+        videoTaskDraftError.value = 'PixVerse 动作视频仅支持 MP4、MOV、M4V、WEBM'
+        return
+      }
+      videoTaskDraft.pixverseVideoPath = String(path).trim()
+      videoTaskDraft.pixverseVideoUrl = ''
+      videoTaskDraftError.value = ''
+    }
+  } catch (error) {
+    videoTaskDraftError.value = error?.message || String(error)
+  }
+}
+
 function materialRunParams() {
   return {
     ...buildBalaMaterialPrepareParams({
@@ -3480,6 +3701,91 @@ function openAddImageMenu(styleCode) {
   addImageMenuStyle.value = addImageMenuStyle.value === styleCode ? '' : styleCode
 }
 
+function normalizeSelectedFilePaths(selected) {
+  if (Array.isArray(selected)) {
+    return selected.map(item => String(item || '').trim()).filter(Boolean)
+  }
+  return String(selected || '').split(',').map(item => item.trim()).filter(Boolean)
+}
+
+function isSupportedLocalImagePath(path = '') {
+  return /\.(?:png|jpe?g|webp)$/i.test(String(path || '').trim())
+}
+
+function isSupportedLocalVideoPath(path = '') {
+  return /\.(?:mp4|mov|m4v|webm)$/i.test(String(path || '').trim())
+}
+
+async function uploadLocalReviewImage(styleCode = '') {
+  const targetStyleCode = String(styleCode || '').trim()
+  if (!targetStyleCode) return
+  if (typeof window.cs?.browseFile !== 'function') {
+    reviewActionError.value = '当前环境不支持系统文件选择器，请在抓虾桌面端使用'
+    aiTaskState.status = 'failed'
+    aiTaskState.error = reviewActionError.value
+    aiTaskState.message = reviewActionError.value
+    return
+  }
+  try {
+    const selected = await window.cs.browseFile({
+      title: '上传本地图到审图池',
+      images: true,
+      multi: true,
+    })
+    const pickedPaths = normalizeSelectedFilePaths(selected)
+    const paths = pickedPaths.filter(isSupportedLocalImagePath)
+    if (!paths.length) {
+      if (pickedPaths.length) {
+        reviewActionError.value = '请选择 JPG、PNG 或 WEBP 图片'
+        aiTaskState.status = 'failed'
+        aiTaskState.error = reviewActionError.value
+        aiTaskState.message = reviewActionError.value
+      }
+      return
+    }
+    let style = reviewStyles.find(item => item.styleCode === targetStyleCode)
+    if (!style) {
+      style = { styleCode: targetStyleCode, assets: [], sourceAssets: [] }
+      reviewStyles.push(style)
+    }
+    style.assets = Array.isArray(style.assets) ? style.assets : []
+    const now = Date.now()
+    paths.forEach((path, index) => {
+      const name = fileNameFromPath(path) || `本地图 ${index + 1}`
+      style.assets.push({
+        id: `local-review-${targetStyleCode}-${now}-${index}`,
+        label: name,
+        action: '本地上传',
+        operationType: 'local_upload',
+        status: 'pending',
+        meta: '本地上传 · 待审核',
+        path,
+        previewPath: path,
+        sourcePath: path,
+        sourceAssetId: '',
+        imageUrl: '',
+        jobUid: '',
+        runUid: '',
+        reviewBoardUrl: '',
+        kind: 'ai',
+      })
+    })
+    addImageMenuStyle.value = ''
+    reviewActionError.value = ''
+    aiTaskState.status = 'done'
+    aiTaskState.error = ''
+    const ignoredCount = pickedPaths.length - paths.length
+    aiTaskState.message = `已上传 ${paths.length} 张本地图到 ${targetStyleCode} 审图池${ignoredCount ? `，已忽略 ${ignoredCount} 个非图片文件` : ''}`
+    persistAiImageWorkspaceState()
+    buildVideoJobsFromReview()
+  } catch (error) {
+    reviewActionError.value = error?.message || String(error)
+    aiTaskState.status = 'failed'
+    aiTaskState.error = reviewActionError.value
+    aiTaskState.message = reviewActionError.value
+  }
+}
+
 function isMaterialExpanded(styleCode) {
   return materialExpanded[styleCode] !== false
 }
@@ -3633,7 +3939,7 @@ function selectedMaterialAssetIds(options = {}) {
   return styleWorkspaces.flatMap(style => [
     ...(style.modelPhotos || []),
     ...(options.modelOnly ? [] : (style.detailPhotos || [])),
-  ]).filter(asset => asset.selected && asset.id).map(asset => asset.id)
+  ]).filter(asset => asset.selected && asset.id && !asset.localReviewOnly).map(asset => asset.id)
 }
 
 function selectedSourceAssetsForAi() {
@@ -3643,6 +3949,206 @@ function selectedSourceAssetsForAi() {
       .filter(version => version.editSelected)
       .map(version => ({ style, asset, version })),
   ]))
+}
+
+function compactText(value = '') {
+  return String(value || '').trim()
+}
+
+function reviewAssetLocalPath(asset = {}) {
+  return compactText(asset?.path || asset?.previewPath || asset?.sourcePath)
+}
+
+function reviewAssetPathCandidates(asset = {}) {
+  return [
+    asset?.path,
+    asset?.previewPath,
+    asset?.sourcePath,
+  ].map(compactText).filter(Boolean)
+}
+
+function reviewAssetRemoteId(asset = {}) {
+  return compactText(asset?.remoteAssetId || asset?.remote_asset_id)
+}
+
+function canRegenerateRemoteReviewAsset(asset = {}) {
+  return Boolean(reviewAssetRemoteId(asset) && parseBalaReviewBoardUrl(asset?.reviewBoardUrl))
+}
+
+function reviewAssetIdentityMatches(left = {}, right = {}) {
+  if (!left || !right) return false
+  if (left === right) return true
+  const leftRemoteId = reviewAssetRemoteId(left)
+  const rightRemoteId = reviewAssetRemoteId(right)
+  if (leftRemoteId && rightRemoteId && leftRemoteId === rightRemoteId) return true
+  const leftId = compactText(left.id)
+  const rightId = compactText(right.id)
+  if (leftId && rightId && leftId === rightId) return true
+  const rightPaths = new Set(reviewAssetPathCandidates(right))
+  return reviewAssetPathCandidates(left).some(path => rightPaths.has(path))
+}
+
+function reviewStyleCodeForAsset(asset = {}) {
+  const direct = compactText(asset?.styleCode || asset?.style_code || asset?.itemCode || asset?.item_code)
+  if (direct) return direct
+  const owner = reviewStyles.find(style => (style.assets || []).some(candidate => reviewAssetIdentityMatches(candidate, asset)))
+  return compactText(owner?.styleCode)
+}
+
+function workspaceStylesForReviewAsset(asset = {}) {
+  const styleCode = reviewStyleCodeForAsset(asset)
+  const exact = styleCode ? styleWorkspaces.filter(style => style.styleCode === styleCode) : []
+  const others = styleWorkspaces.filter(style => !styleCode || style.styleCode !== styleCode)
+  return [...exact, ...others]
+}
+
+function findAiEditInputForReviewAsset(asset = {}) {
+  const paths = new Set(reviewAssetPathCandidates(asset))
+  const remoteId = reviewAssetRemoteId(asset)
+  const sourceAssetId = compactText(asset?.sourceAssetId || asset?.source_asset_id)
+  const jobUid = compactText(asset?.jobUid || asset?.job_uid)
+  const runUid = compactText(asset?.runUid || asset?.run_uid)
+  for (const style of workspaceStylesForReviewAsset(asset)) {
+    for (const source of style.modelPhotos || []) {
+      const sourcePath = compactText(source.path)
+      const sourceId = compactText(source.id)
+      if (
+        asset.kind === 'origin'
+        && (
+          (sourceAssetId && sourceId === sourceAssetId)
+          || (sourcePath && paths.has(sourcePath))
+        )
+      ) {
+        return { style, source, version: null }
+      }
+      const version = (source.versions || []).find(candidate => (
+        (jobUid && compactText(candidate.jobUid || candidate.job_uid) === jobUid)
+        || (runUid && compactText(candidate.runUid || candidate.run_uid) === runUid)
+        || (remoteId && compactText(candidate.remoteAssetId || candidate.remote_asset_id) === remoteId)
+        || paths.has(compactText(candidate.previewPath || candidate.path))
+      ))
+      if (version) return { style, source, version }
+      if (sourcePath && paths.has(sourcePath)) return { style, source, version: null }
+    }
+  }
+  return null
+}
+
+function findParentAiEditSourceForReviewAsset(asset = {}) {
+  const sourceAssetId = compactText(asset?.sourceAssetId || asset?.source_asset_id)
+  const sourcePath = compactText(asset?.sourcePath || asset?.source_path)
+  for (const style of workspaceStylesForReviewAsset(asset)) {
+    for (const source of style.modelPhotos || []) {
+      const sourceId = compactText(source.id)
+      const path = compactText(source.path)
+      if ((sourceAssetId && sourceId === sourceAssetId) || (sourcePath && path === sourcePath)) {
+        return { style, source }
+      }
+    }
+  }
+  return null
+}
+
+function ensureAiEditStyleForReviewAsset(asset = {}) {
+  const styleCode = reviewStyleCodeForAsset(asset)
+  let style = styleWorkspaces.find(item => item.styleCode === styleCode)
+  if (!style && styleCode) {
+    style = { styleCode, modelPhotos: [], detailPhotos: [], skippedRows: [] }
+    styleWorkspaces.push(style)
+  }
+  return style || styleWorkspaces[0] || null
+}
+
+function createAiEditVersionFromReviewAsset(asset = {}) {
+  const path = reviewAssetLocalPath(asset)
+  if (!path || asset?.kind === 'origin') return null
+  const parent = findParentAiEditSourceForReviewAsset(asset)
+  if (!parent?.source) return null
+  parent.source.versions = Array.isArray(parent.source.versions) ? parent.source.versions : []
+  const operationType = normalizeOperationType(compactText(asset.operationType || asset.operation_type || asset.action).replace(/\s+/g, ''))
+  const version = {
+    id: compactText(asset.id || path),
+    remoteAssetId: reviewAssetRemoteId(asset),
+    action: compactText(asset.action || activeActionTitle.value),
+    operationType,
+    label: compactText(asset.label || fileNameFromPath(path) || 'AI 结果'),
+    meta: compactText(asset.meta || ''),
+    selected: normalizeBalaReviewStatus(asset.status) === 'approved',
+    status: normalizeBalaReviewStatus(asset.status),
+    progress: 100,
+    sourceAssetId: compactText(parent.source.id),
+    sourcePath: compactText(parent.source.path),
+    previewPath: path,
+    imageUrl: '',
+    jobUid: compactText(asset.jobUid || asset.job_uid),
+    runUid: compactText(asset.runUid || asset.run_uid),
+    reviewBoardUrl: compactText(asset.reviewBoardUrl),
+    editSelected: true,
+  }
+  parent.source.versions.push(version)
+  return { ...parent, version }
+}
+
+function createAiEditSourceFromReviewAsset(asset = {}) {
+  const path = reviewAssetLocalPath(asset)
+  if (!path) return null
+  const style = ensureAiEditStyleForReviewAsset(asset)
+  if (!style) return null
+  style.modelPhotos = Array.isArray(style.modelPhotos) ? style.modelPhotos : []
+  const id = compactText(asset.kind === 'origin' ? (asset.sourceAssetId || asset.id || path) : (asset.id || path)) || `review-local-${Date.now()}`
+  const source = {
+    id,
+    role: '审图图片',
+    sourceType: 'model',
+    name: compactText(asset.label || asset.name || fileNameFromPath(path) || '本地审图图片'),
+    filename: fileNameFromPath(path),
+    path,
+    imageUrl: '',
+    thumbnailUrl: '',
+    selected: true,
+    editSelected: true,
+    localReviewOnly: true,
+    downloadResult: '本地审图图片',
+    action: compactText(asset.action || '继续改图'),
+    note: compactText(asset.meta || ''),
+    reviewStatus: normalizeBalaReviewStatus(asset.status),
+    remoteAssetId: reviewAssetRemoteId(asset),
+    reviewBoardUrl: compactText(asset.reviewBoardUrl),
+    versions: [],
+  }
+  style.modelPhotos.push(source)
+  return { style, source, version: null }
+}
+
+function activateAiEditInputForReviewAsset(match, asset = {}) {
+  if (!match?.source) return false
+  if (match.version) match.version.editSelected = true
+  else match.source.editSelected = true
+  const rawOperation = compactText(asset?.operationType || asset?.operation_type || asset?.action)
+  if (rawOperation && asset?.kind !== 'origin') activeAction.value = normalizeOperationType(rawOperation.replace(/\s+/g, ''))
+  activeStep.value = 'ai-edit'
+  reviewActionError.value = ''
+  addImageMenuStyle.value = ''
+  updateAiTaskState({
+    status: 'idle',
+    error: '',
+    message: '已选中这张图，请在左侧选择动作后点击开始生图',
+  })
+  persistAiImageWorkspaceState()
+  return true
+}
+
+function queueLocalReviewAssetForAiEdit(asset = {}) {
+  const match = findAiEditInputForReviewAsset(asset) || createAiEditVersionFromReviewAsset(asset) || createAiEditSourceFromReviewAsset(asset)
+  if (match) return activateAiEditInputForReviewAsset(match, asset)
+  const message = '这张图片没有可用的本地文件，无法继续改图。请先上传本地图，或回到找图步骤补选素材。'
+  reviewActionError.value = message
+  updateAiTaskState({
+    status: 'failed',
+    error: message,
+    message,
+  })
+  return false
 }
 
 function buildReviewWorkspaceStyles() {
@@ -4456,15 +4962,23 @@ async function refreshReviewBatch() {
 }
 
 async function requestReviewAssetRetry(asset) {
+  if (!asset) return
   const retryPrompt = String(asset.prompt || '').trim()
+  if (!canRegenerateRemoteReviewAsset(asset)) {
+    queueLocalReviewAssetForAiEdit(asset)
+    return
+  }
+  const previousStatus = asset.status
+  const previousMeta = asset.meta
   asset.status = 'retry'
   asset.meta = `${asset.meta || asset.action} · 已请求重跑`
   try {
-    const boardUrl = asset.reviewBoardUrl || reviewBoardUrl.value
+    const boardUrl = asset.reviewBoardUrl
     const ref = parseBalaReviewBoardUrl(boardUrl)
     if (!ref) return
+    const remoteAssetId = reviewAssetRemoteId(asset)
     const result = await window.cs.regenerateBalaReviewAsset(ref.batchId, ref.token, {
-      asset_id: asset.remoteAssetId || asset.id,
+      asset_id: remoteAssetId,
       prompt: retryPrompt,
       submit_async: true,
     })
@@ -4473,8 +4987,19 @@ async function requestReviewAssetRetry(asset) {
     const styles = normalizeBalaReviewBatchStyles(batch, { reviewBoardUrl: boardUrl })
     applyReviewBatchStyles(styles)
   } catch (error) {
+    const detail = error?.message || String(error)
+    if (/Bala review asset not found/i.test(detail)) {
+      asset.status = previousStatus
+      asset.meta = previousMeta
+      if (queueLocalReviewAssetForAiEdit(asset)) return
+      const message = '这张图不在当前审核批次里，请先上传本地图，或回到 AI 改图重新生成。'
+      aiTaskState.status = 'failed'
+      aiTaskState.error = message
+      aiTaskState.message = message
+      return
+    }
     aiTaskState.status = 'failed'
-    aiTaskState.error = error?.message || String(error)
+    aiTaskState.error = detail
     aiTaskState.message = aiTaskState.error
   }
 }
@@ -4608,7 +5133,7 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
   const task = videoTaskForResult(item)
   const provider = String(task?.provider || item?.providerKey || '').trim()
   const providerTaskId = String(task?.providerTaskId || item?.providerTaskId || item?.taskId || '').trim()
-  if (!['seedance', 'happyhorse'].includes(provider) || !providerTaskId) {
+  if (!isApiVideoProvider(provider) || !providerTaskId) {
     throw new Error('缺少可刷新的 provider task ID')
   }
   const existingLocalPath = /\.mp4$/i.test(String(item?.path || '').trim()) ? String(item.path).trim() : ''
@@ -4635,7 +5160,7 @@ async function refreshProviderVideoResult(item, { download = false } = {}) {
     id: item?.id || task?.id || `video-result-${providerTaskId}`,
     taskRefId: item?.taskRefId || task?.id || '',
     styleCode: item?.styleCode || task?.styleCode || '',
-    template: item?.template || (provider === 'seedance' ? 'Seedance' : happyHorseModeLabel(task?.happyhorseMode)),
+    template: item?.template || videoTaskResultTemplateLabel(task),
     provider: providerLabel(provider),
     providerKey: provider,
     providerTaskId: String(result.task_id || providerTaskId),
@@ -4725,7 +5250,7 @@ async function refreshVideoResults() {
 
 async function downloadCompletedVideoResults() {
   activeStep.value = 'results'
-  const providerResults = videoResults.filter(item => ['seedance', 'happyhorse'].includes(String(item.providerKey || videoTaskForResult(item)?.provider || '')))
+  const providerResults = videoResults.filter(item => isApiVideoProvider(String(item.providerKey || videoTaskForResult(item)?.provider || '')))
   let downloaded = 0
   const errors = []
   for (const item of providerResults) {
@@ -4758,6 +5283,12 @@ function sleep(ms) {
 function videoTaskImagePaths(task) {
   return (task?.assets || [])
     .map(asset => String(asset.path || asset.previewPath || '').trim())
+    .filter(Boolean)
+}
+
+function videoTaskVideoPaths(task) {
+  return [task?.pixverseVideoPath, ...(task?.videoPaths || [])]
+    .map(item => String(item || '').trim())
     .filter(Boolean)
 }
 
@@ -4897,23 +5428,32 @@ async function waitForQnVideoTask(task, runId = '', mode = 'plan') {
 
 async function preflightVideoProviderTask(task) {
   const gen = videoTaskGenerationParams(task)
+  const provider = String(task?.provider || '').trim()
+  const usesLocalImages = providerUsesLocalImages(provider, task?.happyhorseMode)
+  const imagePaths = isPixVerseVideoProvider(provider) && (gen.imageUrl || task.pixverseImageUrl)
+    ? []
+    : (usesLocalImages ? videoTaskImagePaths(task) : [])
   const payload = {
-    provider: task.provider,
+    provider,
     style_code: task.styleCode,
     mode: task.happyhorseMode || 'i2v',
     prompt: String(task.prompt || '').trim(),
-    image_paths: task.provider === 'happyhorse' && task.happyhorseMode === 't2v'
-      ? []
-      : videoTaskImagePaths(task),
+    image_paths: imagePaths,
+    video_paths: videoTaskVideoPaths(task),
     output_dir: task.outputDir || videoOutputDir.value,
-    resolution: gen.resolution || (task.provider === 'seedance' ? '720p' : '720P'),
+    resolution: gen.resolution || (provider === 'seedance' ? '720p' : '720P'),
     duration: gen.duration || 5,
-    generate_audio: gen.generateAudio !== false,
+    generate_audio: isKlingVideoProvider(provider) ? gen.audio !== false : gen.generateAudio !== false,
+    kling_mode: gen.mode || task.klingMode || 'std',
+    pixverse_image_path: gen.imagePath || task.pixverseImagePath || '',
+    pixverse_image_url: gen.imageUrl || task.pixverseImageUrl || '',
+    pixverse_video_path: gen.videoPath || task.pixverseVideoPath || '',
+    pixverse_video_url: gen.videoUrl || task.pixverseVideoUrl || '',
     watermark: Boolean(gen.watermark),
   }
-  // HappyHorse 图生不允许 ratio
-  if (!(task.provider === 'happyhorse' && task.happyhorseMode === 'i2v')) {
-    payload.ratio = gen.ratio || '9:16'
+  // HappyHorse 图生不允许 ratio；PixVerse 不接受 ratio/duration 类 Kling 参数。
+  if (!(provider === 'happyhorse' && task.happyhorseMode === 'i2v') && !isPixVerseVideoProvider(provider)) {
+    payload.ratio = gen.aspect_ratio || gen.ratio || '9:16'
   }
   const result = await window.cs.preflightBalaVideoProvider(payload)
   if (!result?.ok) throw new Error(result?.error || `${providerLabel(task.provider)} 预检失败`)
@@ -4994,6 +5534,8 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
 }
 
 async function runHappyHorseVideoTask(task, mode = 'plan') {
+  const provider = String(task?.provider || 'happyhorse').trim()
+  const templateLabel = videoTaskResultTemplateLabel(task)
   if (mode !== 'live') {
     await preflightVideoProviderTask(task)
     task.status = '预检完成，等待授权生成'
@@ -5001,9 +5543,9 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
       id: task.id,
       taskRefId: task.id,
       styleCode: task.styleCode,
-      template: happyHorseModeLabel(task.happyhorseMode),
-      provider: providerLabel(task.provider),
-      providerKey: task.provider,
+      template: templateLabel,
+      provider: providerLabel(provider),
+      providerKey: provider,
       providerTaskId: task.providerTaskId || '',
       taskId: '预检草稿',
       status: '待授权',
@@ -5013,33 +5555,46 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
     return
   }
   const prompt = String(task.prompt || '').trim()
-  if (!prompt) throw new Error('HappyHorse 任务需要填写 Prompt')
+  if (!prompt && !isPixVerseVideoProvider(provider)) throw new Error(`${providerLabel(provider)} 任务需要填写 Prompt`)
   const gen = videoTaskGenerationParams(task)
+  const imagePaths = isPixVerseVideoProvider(provider) && (gen.imageUrl || task.pixverseImageUrl)
+    ? []
+    : (providerUsesLocalImages(provider, task.happyhorseMode) ? videoTaskImagePaths(task) : [])
   const payload = {
+    provider,
     style_code: task.styleCode,
     mode: task.happyhorseMode || 'i2v',
     prompt,
-    image_paths: videoTaskImagePaths(task),
+    image_paths: imagePaths,
+    video_paths: videoTaskVideoPaths(task),
     output_dir: task.outputDir || videoOutputDir.value,
     resolution: gen.resolution || '720P',
     duration: gen.duration || 5,
+    generate_audio: isKlingVideoProvider(provider) ? gen.audio !== false : false,
+    kling_mode: gen.mode || task.klingMode || 'std',
+    pixverse_image_path: gen.imagePath || task.pixverseImagePath || '',
+    pixverse_image_url: gen.imageUrl || task.pixverseImageUrl || '',
+    pixverse_video_path: gen.videoPath || task.pixverseVideoPath || '',
+    pixverse_video_url: gen.videoUrl || task.pixverseVideoUrl || '',
     watermark: Boolean(gen.watermark),
     wait: true,
   }
-  if (gen.ratio) payload.ratio = gen.ratio
+  if (!isPixVerseVideoProvider(provider) && !(provider === 'happyhorse' && task.happyhorseMode === 'i2v')) {
+    payload.ratio = gen.aspect_ratio || gen.ratio || '9:16'
+  }
   const result = await window.cs.runBalaHappyHorseVideo(payload)
-  if (!result?.ok) throw new Error(result?.error || 'HappyHorse 视频任务未能启动')
+  if (!result?.ok) throw new Error(result?.error || `${providerLabel(provider)} 视频任务未能启动`)
   task.providerTaskId = String(result?.task_id || task.providerTaskId || '')
-  const displayStatus = providerTaskDisplayStatus(task.provider, result?.status, result?.local_video_path)
+  const displayStatus = providerTaskDisplayStatus(provider, result?.status, result?.local_video_path)
   const liveProgress = displayStatus === '生成中' ? extractLiveVideoProgress(result) : null
   task.status = displayStatus
   upsertVideoResults([{
     id: task.id,
     taskRefId: task.id,
     styleCode: task.styleCode,
-    template: happyHorseModeLabel(task.happyhorseMode),
-    provider: providerLabel(task.provider),
-    providerKey: task.provider,
+    template: templateLabel,
+    provider: providerLabel(provider),
+    providerKey: provider,
     providerTaskId: task.providerTaskId,
     taskId: result?.task_id || '',
     providerStatus: result?.status || '',
@@ -5061,16 +5616,27 @@ async function runVideoTask(task, mode = 'plan') {
     activeStep.value = 'results'
     return
   }
-  const textOnlyHappyHorse = task?.provider === 'happyhorse' && task?.happyhorseMode === 't2v'
-  if (!textOnlyHappyHorse && !task?.assets?.length) {
+  const provider = String(task?.provider || '').trim()
+  const pixverseUsesImageUrl = isPixVerseVideoProvider(provider) && /^https?:\/\//i.test(String(task?.pixverseImageUrl || '').trim())
+  const requiresLocalImages = provider === 'qn'
+    || provider === 'seedance'
+    || (provider === 'happyhorse' && task?.happyhorseMode !== 't2v')
+    || (isPixVerseVideoProvider(provider) && !pixverseUsesImageUrl)
+  if (requiresLocalImages && !task?.assets?.length) {
     videoStageState.status = 'failed'
     videoStageState.error = '视频任务缺少素材图片'
     videoStageState.message = videoStageState.error
     return
   }
-  if (!textOnlyHappyHorse && !videoTaskImagePaths(task).length) {
+  if (requiresLocalImages && !videoTaskImagePaths(task).length) {
     videoStageState.status = 'failed'
     videoStageState.error = '视频任务缺少可用的本地图片文件'
+    videoStageState.message = videoStageState.error
+    return
+  }
+  if (isPixVerseVideoProvider(provider) && !videoTaskVideoPaths(task).length && !/^https?:\/\//i.test(String(task?.pixverseVideoUrl || '').trim())) {
+    videoStageState.status = 'failed'
+    videoStageState.error = 'PixVerse 任务缺少本地动作视频或动作视频 URL'
     videoStageState.message = videoStageState.error
     return
   }
@@ -5082,7 +5648,7 @@ async function runVideoTask(task, mode = 'plan') {
   try {
     if (task.provider === 'seedance') {
       await runSeedanceVideoTask(task, mode)
-    } else if (task.provider === 'happyhorse') {
+    } else if (isBailianVideoProvider(task.provider)) {
       await runHappyHorseVideoTask(task, mode)
     } else {
       const params = buildQnVideoTaskParams(task, mode)
@@ -5417,6 +5983,9 @@ async function runPreviewImageEdit() {
 function providerLabel(provider) {
   if (provider === 'seedance') return 'Seedance 2.0'
   if (provider === 'happyhorse') return '百炼 HappyHorse'
+  if (provider === 'kling-v3') return '百炼 Kling v3'
+  if (provider === 'kling-omni') return '百炼 Kling Omni'
+  if (provider === 'pixverse-motioncontrol') return '百炼 PixVerse'
   return '生意管家'
 }
 
@@ -5427,7 +5996,8 @@ function happyHorseModeLabel(mode) {
 }
 
 function providerStatusLabel(provider) {
-  const status = videoProviderStatus[provider]
+  const statusKey = isBailianVideoProvider(provider) ? 'happyhorse' : provider
+  const status = videoProviderStatus[statusKey]
   if (!status) return '无需单独配置'
   return status.configured ? `已配置（${status.source || '本机'}）` : '未配置'
 }
@@ -5456,6 +6026,11 @@ function clearTemplateSelection() {
 
 function resetVideoTaskDraftAssets() {
   const assets = videoTaskSelectableAssets.value || []
+  if (!providerUsesLocalImages(videoTaskDraft.provider, videoTaskDraft.happyhorseMode)) {
+    videoTaskDraft.assetIds = []
+    syncHappyHorseModeFromAssetCount()
+    return
+  }
   // 默认勾选已审核图；HappyHorse 再按数量自动切模式（不强制清空）
   videoTaskDraft.assetIds = assets.filter(asset => asset.selectable).map(asset => asset.id)
   if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length > 9) {
@@ -5463,6 +6038,12 @@ function resetVideoTaskDraftAssets() {
   }
   if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length > 4) {
     videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 4)
+  }
+  if (isKlingVideoProvider(videoTaskDraft.provider) && videoTaskDraft.assetIds.length > 2) {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 2)
+  }
+  if (isPixVerseVideoProvider(videoTaskDraft.provider) && videoTaskDraft.assetIds.length > 1) {
+    videoTaskDraft.assetIds = videoTaskDraft.assetIds.slice(0, 1)
   }
   syncHappyHorseModeFromAssetCount()
 }
@@ -5483,18 +6064,28 @@ function openVideoTaskDialog(styleCode = '', sourceTask = null, mode = 'new') {
   videoTaskDraft.prompt = task?.prompt || ''
   videoTaskDraft.outputDir = task?.outputDir || videoOutputDir.value
   videoTaskDraft.templateId = task?.template?.id || ''
+  videoTaskDraft.pixverseImagePath = ''
+  videoTaskDraft.pixverseImageUrl = ''
+  videoTaskDraft.pixverseVideoPath = ''
+  videoTaskDraft.pixverseVideoUrl = ''
   selectedTemplateId.value = videoTaskDraft.templateId
   if (task) {
     videoTaskDraft.assetIds = (task.assets || []).map(asset => asset?.id).filter(Boolean)
     const gen = videoTaskGenerationParams(task)
     videoTaskDraft.duration = Number(task.duration ?? gen.duration ?? 5)
     videoTaskDraft.resolution = String(task.resolution || gen.resolution || '')
-    videoTaskDraft.ratio = String(task.ratio ?? gen.ratio ?? '')
+    videoTaskDraft.ratio = String(task.ratio ?? gen.ratio ?? gen.aspect_ratio ?? '')
+    videoTaskDraft.klingMode = String(task.klingMode || gen.mode || 'std')
+    videoTaskDraft.pixverseImagePath = String(task.pixverseImagePath || gen.imagePath || '')
+    videoTaskDraft.pixverseImageUrl = String(task.pixverseImageUrl || gen.imageUrl || '')
+    videoTaskDraft.pixverseVideoPath = String(task.pixverseVideoPath || gen.videoPath || '')
+    videoTaskDraft.pixverseVideoUrl = String(task.pixverseVideoUrl || gen.videoUrl || '')
     videoTaskDraft.generateAudio = videoTaskDraft.provider === 'seedance'
+      || isKlingVideoProvider(videoTaskDraft.provider)
       ? task.generateAudio !== false && task.generateAudio !== 0
       : Boolean(task.generateAudio)
     videoTaskDraft.watermark = Boolean(task.watermark)
-    if (videoTaskDraft.provider === 'seedance' || videoTaskDraft.provider === 'happyhorse') {
+    if (videoTaskDraft.provider === 'seedance' || isBailianVideoProvider(videoTaskDraft.provider)) {
       if (!videoTaskDraft.resolution) applyVideoTaskProviderDefaults(videoTaskDraft.provider)
     }
     // 编辑/复制时也按当前勾选图数量重算 HH 模式
@@ -5573,6 +6164,10 @@ function moveVideoTaskAssetTab(direction) {
 function toggleVideoTaskDraftAsset(asset) {
   if (!asset?.selectable) return
   videoTaskDraftError.value = ''
+  if (!providerUsesLocalImages(videoTaskDraft.provider, videoTaskDraft.happyhorseMode)) {
+    videoTaskDraftError.value = `${providerLabel(videoTaskDraft.provider)} 当前不使用本地图片素材`
+    return
+  }
   const assetId = asset.id
   const index = videoTaskDraft.assetIds.indexOf(assetId)
   if (index >= 0) {
@@ -5580,13 +6175,21 @@ function toggleVideoTaskDraftAsset(asset) {
     syncHappyHorseModeFromAssetCount()
     return
   }
-  // Seedance 最多 4 张；HappyHorse 最多 9 张（模式由数量自动决定）
+  // Seedance 最多 4 张；HappyHorse 最多 9 张；Kling/PixVerse 按模型角色限制
   if (videoTaskDraft.provider === 'happyhorse' && videoTaskDraft.assetIds.length >= 9) {
     videoTaskDraftError.value = 'HappyHorse 最多选择 9 张图片'
     return
   }
   if (videoTaskDraft.provider === 'seedance' && videoTaskDraft.assetIds.length >= 4) {
     videoTaskDraftError.value = 'Seedance 最多选择 4 张参考图'
+    return
+  }
+  if (isKlingVideoProvider(videoTaskDraft.provider) && videoTaskDraft.assetIds.length >= 2) {
+    videoTaskDraftError.value = 'Kling 最多选择 2 张图片（首帧 / 尾帧）'
+    return
+  }
+  if (isPixVerseVideoProvider(videoTaskDraft.provider) && videoTaskDraft.assetIds.length >= 1) {
+    videoTaskDraftError.value = 'PixVerse 只能选择 1 张角色图'
     return
   }
   videoTaskDraft.assetIds.push(assetId)
@@ -5623,8 +6226,15 @@ function createVideoTaskFromDraft() {
     assets: assets.map(asset => ({ ...asset })),
     duration: gen.duration ?? videoTaskDraft.duration,
     resolution: gen.resolution || videoTaskDraft.resolution,
-    ratio: gen.ratio ?? videoTaskDraft.ratio,
-    generateAudio: gen.generateAudio !== false,
+    ratio: gen.ratio ?? gen.aspect_ratio ?? videoTaskDraft.ratio,
+    klingMode: gen.mode || videoTaskDraft.klingMode,
+    pixverseImagePath: gen.imagePath || videoTaskDraft.pixverseImagePath,
+    pixverseImageUrl: gen.imageUrl || videoTaskDraft.pixverseImageUrl,
+    pixverseVideoPath: gen.videoPath || videoTaskDraft.pixverseVideoPath,
+    pixverseVideoUrl: gen.videoUrl || videoTaskDraft.pixverseVideoUrl,
+    generateAudio: isKlingVideoProvider(videoTaskDraft.provider)
+      ? gen.audio !== false
+      : gen.generateAudio !== false,
     watermark: Boolean(gen.watermark),
   }
   if (currentTask) {
@@ -5703,7 +6313,7 @@ async function refreshSingleVideoResult(item) {
   const task = videoTaskForResult(item)
   if (!task) return
   try {
-    if (['seedance', 'happyhorse'].includes(task.provider)) {
+    if (isApiVideoProvider(task.provider)) {
       await refreshProviderVideoResult(item)
     } else {
       await refreshQnVideoTask(task)
@@ -5722,7 +6332,7 @@ async function downloadVideoResult(item) {
   const task = videoTaskForResult(item)
   if (!task) return
   try {
-    if (['seedance', 'happyhorse'].includes(task.provider)) {
+    if (isApiVideoProvider(task.provider)) {
       await refreshProviderVideoResult(item, { download: true })
     } else {
       await refreshQnVideoTask(task)
@@ -6510,6 +7120,50 @@ function localFileUrl(path) {
   display: inline-flex;
   align-items: center;
   font-size: 11px;
+}
+
+.aiv-directory-picker.compact {
+  min-height: 32px;
+  padding: 0 9px;
+  justify-content: flex-start;
+}
+
+.aiv-local-media-summary {
+  min-height: 32px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text2);
+  background: var(--bg);
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.aiv-video-advanced-urls {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg);
+}
+
+.aiv-video-advanced-urls summary {
+  min-height: 34px;
+  padding: 0 10px;
+  color: var(--text2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.aiv-video-advanced-urls[open] {
+  padding-bottom: 10px;
+}
+
+.aiv-video-advanced-urls[open] .aiv-video-gen-params-grid {
+  padding: 0 10px;
 }
 
 .aiv-default-grid,

@@ -1540,10 +1540,18 @@ async function aiVideoConfigForRenderer() {
   })
 }
 
-function aiVideoPublicFileItem(rawPath, { scope = 'input', relativePath = '' } = {}) {
+function aiVideoPublicFileItem(rawPath, { scope = 'input', relativePath = '', allowedKinds = ['image'] } = {}) {
   const selected = issueAiVideoPathCapability(rawPath, { kind: 'file', scope })
   const ext = path.extname(selected.path).toLowerCase()
-  if (!LOCAL_MEDIA_IMAGE_EXTS.has(ext) || ext === '.gif') {
+  const mime = localMediaMime(selected.path)
+  const kinds = new Set((Array.isArray(allowedKinds) ? allowedKinds : [allowedKinds])
+    .map(item => String(item || '').trim())
+    .filter(Boolean))
+  const isImage = LOCAL_MEDIA_IMAGE_EXTS.has(ext) && ext !== '.gif'
+  const isVideo = LOCAL_MEDIA_VIDEO_EXTS.has(ext)
+  if ((!kinds.has('image') || !isImage) && (!kinds.has('video') || !isVideo)) {
+    if (kinds.has('video') && kinds.has('image')) throw new Error('AI 视频素材仅支持 JPG、PNG、WEBP、MP4、MOV、M4V、WEBM')
+    if (kinds.has('video')) throw new Error('AI 视频素材仅支持 MP4、MOV、M4V、WEBM')
     throw new Error('AI 视频参考图仅支持 JPG、PNG、WEBP')
   }
   return {
@@ -1551,6 +1559,8 @@ function aiVideoPublicFileItem(rawPath, { scope = 'input', relativePath = '' } =
     previewToken: selected.token,
     name: path.basename(selected.path),
     relativePath: String(relativePath || '').replace(/\\/g, '/'),
+    kind: isVideo ? 'video' : 'image',
+    mimeType: mime,
     size: selected.stat.size,
     mtimeMs: selected.stat.mtimeMs,
   }
@@ -1558,17 +1568,29 @@ function aiVideoPublicFileItem(rawPath, { scope = 'input', relativePath = '' } =
 
 async function selectAiVideoFiles(opts = {}) {
   const maxCount = Math.max(1, Math.min(Number(opts?.maxCount || 9) || 9, 9))
+  const requestedKind = String(opts?.mediaKind || opts?.kind || 'image').trim()
+  const allowedKinds = requestedKind === 'video'
+    ? ['video']
+    : requestedKind === 'image-video'
+      ? ['image', 'video']
+      : ['image']
+  const filters = []
+  if (allowedKinds.includes('image') && allowedKinds.includes('video')) {
+    filters.push({ name: '图片与视频素材', extensions: ['jpg', 'jpeg', 'png', 'webp', 'mp4', 'mov', 'm4v', 'webm'] })
+  } else if (allowedKinds.includes('video')) {
+    filters.push({ name: '视频文件', extensions: ['mp4', 'mov', 'm4v', 'webm'] })
+  } else {
+    filters.push({ name: '图片文件', extensions: ['jpg', 'jpeg', 'png', 'webp'] })
+  }
   const response = await dialog.showOpenDialog(mainWindow, {
-    title: String(opts?.title || '选择 AI 视频参考图'),
+    title: String(opts?.title || (allowedKinds.includes('video') ? '选择 AI 视频素材' : '选择 AI 视频参考图')),
     properties: ['openFile', 'multiSelections'],
-    filters: [
-      { name: '图片文件', extensions: ['jpg', 'jpeg', 'png', 'webp'] },
-    ],
+    filters,
   })
   if (response.canceled) return { ok: true, canceled: true, items: [] }
   const items = []
   for (const filePath of (response.filePaths || []).slice(0, maxCount)) {
-    items.push(aiVideoPublicFileItem(filePath))
+    items.push(aiVideoPublicFileItem(filePath, { allowedKinds }))
   }
   return { ok: true, canceled: false, items }
 }

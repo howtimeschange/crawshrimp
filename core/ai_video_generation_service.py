@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -45,21 +46,46 @@ ACTIVE_STATUSES = frozenset({"queued", "running", "downloading"})
 DELETE_BLOCKED_STATUSES = frozenset({"queued", "running", "downloading"})
 
 SEEDANCE_MODEL = "doubao-seedance-2-0-260128"
+KLING_V3_MODEL = "kling/kling-v3-video-generation"
+KLING_OMNI_MODEL = "kling/kling-v3-omni-video-generation"
+PIXVERSE_MOTIONCONTROL_MODEL = "pixverse/pixverse-motioncontrol"
 HAPPYHORSE_MODELS = {
     "happyhorse-1.1-t2v": "t2v",
     "happyhorse-1.1-i2v": "i2v",
     "happyhorse-1.1-r2v": "r2v",
 }
+KLING_MODELS = frozenset({KLING_V3_MODEL, KLING_OMNI_MODEL})
+BAILIAN_GATEWAY_MODELS = frozenset({
+    KLING_V3_MODEL,
+    KLING_OMNI_MODEL,
+    PIXVERSE_MOTIONCONTROL_MODEL,
+})
+BAILIAN_MODEL_IDS = frozenset(set(HAPPYHORSE_MODELS.keys()) | set(BAILIAN_GATEWAY_MODELS))
 UI_MODEL_IDS = {
     "seedance-2.0": {"provider": "seedance", "model": SEEDANCE_MODEL},
     "happyhorse-1.1-t2v": {"provider": "happyhorse", "model": "happyhorse-1.1-t2v"},
     "happyhorse-1.1-i2v": {"provider": "happyhorse", "model": "happyhorse-1.1-i2v"},
     "happyhorse-1.1-r2v": {"provider": "happyhorse", "model": "happyhorse-1.1-r2v"},
+    "kling-v3": {"provider": "happyhorse", "model": KLING_V3_MODEL},
+    "kling-v3-omni": {"provider": "happyhorse", "model": KLING_OMNI_MODEL},
+    "pixverse-motioncontrol": {"provider": "happyhorse", "model": PIXVERSE_MOTIONCONTROL_MODEL},
+    KLING_V3_MODEL: {"provider": "happyhorse", "model": KLING_V3_MODEL},
+    KLING_OMNI_MODEL: {"provider": "happyhorse", "model": KLING_OMNI_MODEL},
+    PIXVERSE_MOTIONCONTROL_MODEL: {"provider": "happyhorse", "model": PIXVERSE_MOTIONCONTROL_MODEL},
 }
 SEEDANCE_RATIOS = frozenset({"16:9", "9:16", "1:1", "3:4", "4:3", "21:9", "adaptive"})
 HAPPYHORSE_RATIOS = frozenset({"16:9", "9:16", "1:1", "4:3", "3:4", "4:5", "5:4", "9:21", "21:9"})
+KLING_ASPECT_RATIOS = frozenset({"16:9", "9:16", "1:1"})
+KLING_MODES = frozenset({"std", "pro"})
+PIXVERSE_RESOLUTIONS = frozenset({"360P", "540P", "720P"})
 ALLOWED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
+ALLOWED_VIDEO_EXTS = {".mp4", ".mov", ".m4v", ".webm"}
+ALLOWED_VIDEO_MIME = {"video/mp4", "video/quicktime", "video/webm"}
+KLING_V3_MEDIA_TYPES = frozenset({"first_frame", "last_frame"})
+KLING_OMNI_MEDIA_TYPES = frozenset({"first_frame", "last_frame", "refer", "feature", "base"})
+PIXVERSE_MEDIA_TYPES = frozenset({"image_url", "video_url"})
+BAILIAN_TEMP_UPLOAD_POLICY_URL = "https://dashscope.aliyuncs.com/api/v1/uploads"
 HIDDEN_REQUEST_FIELDS = frozenset({
     "seed",
     "raw",
@@ -363,7 +389,9 @@ def redact_obj(value: Any, secret_values: Optional[list[str]] = None) -> Any:
             key_text = str(key)
             if any(token in key_text.lower() for token in ("api_key", "authorization", "token", "secret")):
                 result[key] = "[redacted]"
-            elif key_text.lower() in {"video_url", "url"} and isinstance(item, str) and item.startswith("http"):
+            elif key_text.lower() in {"video_url", "url"} and isinstance(item, str) and (
+                item.startswith("http") or item.startswith("oss://")
+            ):
                 result[key] = "[redacted-url]"
             else:
                 result[key] = redact_obj(item, secret_values)
@@ -382,12 +410,22 @@ def provider_secrets() -> dict[str, str]:
     return {
         "seedance": _compact(_nested_config_value(cfg, "ai.video.seedance_api_key")),
         "happyhorse": _compact(_nested_config_value(cfg, "ai.video.bailian_api_key")),
+        "bailian_upload": _compact(_nested_config_value(cfg, "ai.video.bailian_upload_api_key")),
     }
+
+
+def bailian_upload_policy_url() -> str:
+    cfg = load_config()
+    configured = _compact(_nested_config_value(cfg, "ai.video.bailian_uploads_url"))
+    env_value = _compact(os.environ.get("BAILIAN_UPLOADS_URL") or os.environ.get("DASHSCOPE_UPLOADS_URL"))
+    return configured or env_value or BAILIAN_TEMP_UPLOAD_POLICY_URL
 
 
 def provider_status() -> dict:
     cfg = load_config()
     secrets = provider_secrets()
+    bailian_base_url = _compact(_nested_config_value(cfg, "ai.video.bailian_base_url"))
+    bailian_uses_semir_gateway = "ai-aigw.semir.com" in bailian_base_url.lower() or "bailian-vedio" in bailian_base_url.lower()
 
     def source_for(key: str) -> str:
         return "AI 能力" if _compact(_nested_config_value(cfg, key)) else "未配置"
@@ -402,6 +440,12 @@ def provider_status() -> dict:
             "configured": bool(secrets["happyhorse"]),
             "source": source_for("ai.video.bailian_api_key"),
             "cliReady": (BAILIAN_CLI_DIR / "bin" / "bailian.js").is_file(),
+            "pricingEstimateAvailable": not bailian_uses_semir_gateway,
+        },
+        "bailianUpload": {
+            "configured": bool(secrets["bailian_upload"]),
+            "source": source_for("ai.video.bailian_upload_api_key"),
+            "policyUrlConfigured": bool(_compact(_nested_config_value(cfg, "ai.video.bailian_uploads_url"))),
         },
     }
 
@@ -451,6 +495,189 @@ def provider_env(provider: str) -> tuple[dict[str, str], list[str]]:
                 env[env_name] = value
                 secret_values.append(value)
     return env, list(dict.fromkeys(secret_values))
+
+
+def _safe_upload_filename(name: str) -> str:
+    value = _compact(name) or "asset"
+    value = re.sub(r"[^A-Za-z0-9._-]+", "-", value).strip(".-")
+    return (value or "asset")[:120]
+
+
+def _request_bailian_upload_policy(api_key: str, model: str) -> dict:
+    query = urllib.parse.urlencode({"action": "getPolicy", "model": model})
+    request = urllib.request.Request(
+        f"{bailian_upload_policy_url().rstrip('/')}?{query}",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            status = int(getattr(response, "status", 0) or response.getcode() or 0)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise AiVideoError(
+            f"百炼临时文件上传凭证获取失败：HTTP {exc.code}",
+            code="PROVIDER_UPLOAD_FAILED",
+            provider_message=raw[:1000],
+            retryable=int(exc.code or 0) in {408, 429, 500, 502, 503, 504},
+        ) from None
+    except Exception as exc:
+        raise AiVideoError(
+            f"百炼临时文件上传凭证获取失败：{type(exc).__name__}",
+            code="PROVIDER_UPLOAD_FAILED",
+            retryable=True,
+        ) from exc
+    if status >= 400:
+        raise AiVideoError(
+            f"百炼临时文件上传凭证获取失败：HTTP {status}",
+            code="PROVIDER_UPLOAD_FAILED",
+            provider_message=raw[:1000],
+            retryable=status in {408, 429, 500, 502, 503, 504},
+        )
+    try:
+        body = json.loads(raw or "{}")
+    except Exception as exc:
+        raise AiVideoError("百炼临时文件上传凭证响应不是 JSON", code="PROVIDER_UPLOAD_FAILED") from exc
+    data = body.get("data") if isinstance(body, Mapping) else None
+    if not isinstance(data, Mapping):
+        raise AiVideoError("百炼临时文件上传凭证缺少 data", code="PROVIDER_UPLOAD_FAILED")
+    return dict(data)
+
+
+def _multipart_form_body(fields: Mapping[str, str], *, file_path: Path, file_field: str = "file") -> tuple[bytes, str]:
+    boundary = f"----CrawshrimpBailian{uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields.items():
+        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        chunks.append(str(value).encode("utf-8"))
+        chunks.append(b"\r\n")
+    file_name = _safe_upload_filename(file_path.name)
+    content_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
+    chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+    chunks.append(f'Content-Disposition: form-data; name="{file_field}"; filename="{file_name}"\r\n'.encode("utf-8"))
+    chunks.append(f"Content-Type: {content_type}\r\n\r\n".encode("utf-8"))
+    chunks.append(file_path.read_bytes())
+    chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), boundary
+
+
+def _upload_file_to_bailian_temp_storage(*, api_key: str, model: str, path: Path) -> str:
+    file_path = _validated_existing_file(path)
+    policy = _request_bailian_upload_policy(api_key, model)
+    upload_dir = _compact(policy.get("upload_dir"))
+    upload_host = _compact(policy.get("upload_host"))
+    if not upload_dir or not upload_host:
+        raise AiVideoError("百炼临时文件上传凭证缺少上传地址", code="PROVIDER_UPLOAD_FAILED")
+    try:
+        max_mb = float(policy.get("max_file_size_mb") or 0)
+    except Exception:
+        max_mb = 0.0
+    if max_mb > 0 and file_path.stat().st_size > max_mb * 1024 * 1024:
+        raise AiVideoError(f"文件超过百炼临时上传限制：{int(max_mb)}MB", code="VALIDATION_FAILED")
+    key = f"{upload_dir.rstrip('/')}/{uuid4().hex}-{_safe_upload_filename(file_path.name)}"
+    fields = {
+        "OSSAccessKeyId": _compact(policy.get("oss_access_key_id")),
+        "Signature": _compact(policy.get("signature")),
+        "policy": _compact(policy.get("policy")),
+        "x-oss-object-acl": _compact(policy.get("x_oss_object_acl")),
+        "x-oss-forbid-overwrite": _compact(policy.get("x_oss_forbid_overwrite")),
+        "key": key,
+        "success_action_status": "200",
+    }
+    missing = [name for name, value in fields.items() if name != "success_action_status" and not value]
+    if missing:
+        raise AiVideoError(f"百炼临时文件上传凭证缺少字段：{', '.join(missing)}", code="PROVIDER_UPLOAD_FAILED")
+    body, boundary = _multipart_form_body(fields, file_path=file_path)
+    request = urllib.request.Request(
+        upload_host,
+        data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            raw = response.read().decode("utf-8", errors="replace")
+            status = int(getattr(response, "status", 0) or response.getcode() or 0)
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        raise AiVideoError(
+            f"百炼临时文件上传失败：HTTP {exc.code}",
+            code="PROVIDER_UPLOAD_FAILED",
+            provider_message=raw[:1000],
+            retryable=int(exc.code or 0) in {408, 429, 500, 502, 503, 504},
+        ) from None
+    except Exception as exc:
+        raise AiVideoError(
+            f"百炼临时文件上传失败：{type(exc).__name__}",
+            code="PROVIDER_UPLOAD_FAILED",
+            retryable=True,
+        ) from exc
+    if status not in {200, 201, 204}:
+        raise AiVideoError(
+            f"百炼临时文件上传失败：HTTP {status}",
+            code="PROVIDER_UPLOAD_FAILED",
+            provider_message=raw[:1000],
+            retryable=status in {408, 429, 500, 502, 503, 504},
+        )
+    return f"oss://{key}"
+
+
+def _with_bailian_temp_uploaded_assets(normalized: Mapping[str, Any]) -> dict:
+    model = _compact(normalized.get("model"))
+    if model not in BAILIAN_GATEWAY_MODELS:
+        return dict(normalized)
+    assets = [dict(asset) for asset in (normalized.get("assets") or []) if isinstance(asset, Mapping)]
+    if not assets:
+        return dict(normalized)
+    secrets = provider_secrets()
+    api_key = secrets.get("bailian_upload") or secrets.get("happyhorse") or ""
+    if not api_key:
+        raise AiVideoError("百炼 OSS 上传 API Key 未配置，无法上传本地素材", code="CREDENTIAL_MISSING")
+    prepared = dict(normalized)
+    params = dict(prepared.get("parameters") or {})
+    if model in KLING_MODELS:
+        media = [dict(item) for item in (params.get("media") or []) if isinstance(item, Mapping)]
+        for asset in sorted(assets, key=lambda item: int(item.get("sortOrder") or 0)):
+            role = _compact(asset.get("role")) or "first_frame"
+            url = _upload_file_to_bailian_temp_storage(
+                api_key=api_key,
+                model=model,
+                path=Path(_compact(asset.get("localPath"))),
+            )
+            item = {"type": role, "url": url}
+            keep_sound = _compact(asset.get("keep_original_sound") or asset.get("keepOriginalSound"))
+            if keep_sound:
+                item["keep_original_sound"] = keep_sound
+            media.append(item)
+        _validate_kling_media(media, model=model)
+        params["media"] = media
+    elif model == PIXVERSE_MOTIONCONTROL_MODEL:
+        for asset in assets:
+            role = _compact(asset.get("role"))
+            url = _upload_file_to_bailian_temp_storage(
+                api_key=api_key,
+                model=model,
+                path=Path(_compact(asset.get("localPath"))),
+            )
+            if role == "image_url":
+                params["imageUrl"] = url
+            elif role == "video_url":
+                params["videoUrl"] = url
+            else:
+                raise AiVideoError("PixVerse 本地素材角色仅支持 image_url / video_url")
+        _validate_pixverse_media_sources(
+            image_count=1 if params.get("imageUrl") else 0,
+            video_count=1 if params.get("videoUrl") else 0,
+        )
+    prepared["parameters"] = params
+    return prepared
 
 
 def node_runtime() -> tuple[str, dict[str, str]]:
@@ -591,8 +818,8 @@ def resolve_model(provider: str, model: str) -> tuple[str, str]:
             raise AiVideoError("Seedance 模型必须是 doubao-seedance-2-0-260128")
         return "seedance", SEEDANCE_MODEL
     if provider_value == "happyhorse":
-        if model_value not in HAPPYHORSE_MODELS:
-            raise AiVideoError("HappyHorse 模型必须是 happyhorse-1.1-t2v/i2v/r2v")
+        if model_value not in BAILIAN_MODEL_IDS:
+            raise AiVideoError("百炼视频模型必须是 HappyHorse、Kling v3、Kling Omni 或 PixVerse Motion Control")
         return "happyhorse", model_value
     raise AiVideoError("不支持的 provider 或 model")
 
@@ -603,6 +830,12 @@ def model_short(model: str) -> str:
         return "seedance2"
     if value.startswith("happyhorse-"):
         return value.replace("happyhorse-", "hh-")
+    if value == KLING_V3_MODEL:
+        return "kling-v3"
+    if value == KLING_OMNI_MODEL:
+        return "kling-omni"
+    if value == PIXVERSE_MOTIONCONTROL_MODEL:
+        return "pixverse-motion"
     return re.sub(r"[^A-Za-z0-9._-]+", "-", value)[:24] or "model"
 
 
@@ -653,10 +886,151 @@ def _inspect_image(path: Path) -> dict:
     }
 
 
+def _video_mime_for_path(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix in {".mp4", ".m4v"}:
+        return "video/mp4"
+    if suffix == ".mov":
+        return "video/quicktime"
+    if suffix == ".webm":
+        return "video/webm"
+    return mimetypes.guess_type(str(path))[0] or ""
+
+
+def _inspect_video(path: Path) -> dict:
+    if not path.is_file():
+        raise AiVideoError(f"参考视频不存在：{path}")
+    if path.suffix.lower() not in ALLOWED_VIDEO_EXTS:
+        raise AiVideoError("视频格式仅允许 MP4、MOV、M4V、WEBM")
+    size = path.stat().st_size
+    if size > 200 * 1024 * 1024:
+        raise AiVideoError("本地视频不能超过 200MB")
+    mime = _video_mime_for_path(path)
+    if mime not in ALLOWED_VIDEO_MIME:
+        raise AiVideoError("视频格式仅允许 MP4、MOV、M4V、WEBM")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    return {
+        "kind": "video",
+        "sourceType": "local_file",
+        "originalName": path.name,
+        "localPath": str(path.resolve()),
+        "mimeType": mime,
+        "width": 0,
+        "height": 0,
+        "sizeBytes": int(size),
+        "sha256": digest,
+    }
+
+
+def _asset_role_to_media_type(role: Any, model: str) -> str:
+    value = _compact(role)
+    if value:
+        return value
+    if model == PIXVERSE_MOTIONCONTROL_MODEL:
+        return "image_url"
+    if model in KLING_MODELS:
+        return "first_frame"
+    return "reference_image"
+
+
+def _inspect_local_media(path: Path, *, role: str, model: str) -> dict:
+    media_type = _asset_role_to_media_type(role, model)
+    if media_type in {"feature", "base", "video_url"}:
+        return _inspect_video(path)
+    return _inspect_image(path)
+
+
+def _normalise_bailian_media_item(item: Mapping[str, Any], *, model: str, index: int) -> dict:
+    media_type = _compact(item.get("type") or item.get("role"))
+    if not media_type:
+        raise AiVideoError(f"media[{index}] 缺少 type")
+    url = _require_provider_media_url(item.get("url"), f"media[{index}].url")
+    result = {"type": media_type, "url": url}
+    keep_sound = _compact(item.get("keep_original_sound") or item.get("keepOriginalSound"))
+    if keep_sound:
+        result["keep_original_sound"] = keep_sound
+    return result
+
+
+def _normalise_media_list(value: Any, *, model: str) -> list[dict]:
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise AiVideoError("media 必须是数组")
+    media = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise AiVideoError(f"media[{index}] 必须是对象")
+        media.append(_normalise_bailian_media_item(item, model=model, index=index))
+    return media
+
+
+def _validate_kling_media(media: list[Mapping[str, Any]], *, model: str) -> None:
+    if not media:
+        return
+    allowed = KLING_V3_MEDIA_TYPES if model == KLING_V3_MODEL else KLING_OMNI_MEDIA_TYPES
+    counts = {"first_frame": 0, "last_frame": 0, "base": 0, "feature": 0}
+    for index, item in enumerate(media):
+        media_type = _compact(item.get("type") or item.get("role"))
+        if media_type not in allowed:
+            raise AiVideoError(f"{model_short(model)} 不支持 media 类型：{media_type or index}")
+        if media_type in counts:
+            counts[media_type] += 1
+    if counts["last_frame"] and counts["first_frame"] != 1:
+        raise AiVideoError("Kling last_frame 必须与且仅与 1 个 first_frame 配对")
+    if counts["first_frame"] > 1 or counts["last_frame"] > 1 or counts["base"] > 1 or counts["feature"] > 1:
+        raise AiVideoError("Kling first_frame、last_frame、base、feature 均最多 1 个")
+
+
+def _validate_pixverse_media_sources(*, image_count: int, video_count: int) -> None:
+    if image_count != 1 or video_count != 1:
+        raise AiVideoError("PixVerse Motion Control 必须且只能提供 1 张角色图和 1 条动作视频")
+
+
 def _reject_hidden_fields(parameters: Mapping[str, Any]) -> None:
     for key in parameters.keys():
         if str(key) in HIDDEN_REQUEST_FIELDS:
             raise AiVideoError(f"不允许提交隐藏字段：{key}")
+
+
+def _is_http_url(value: Any) -> bool:
+    text = _compact(value)
+    if not text:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(text)
+    except Exception:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+
+
+def _is_bailian_oss_url(value: Any) -> bool:
+    text = _compact(value)
+    if not text:
+        return False
+    try:
+        parsed = urllib.parse.urlparse(text)
+    except Exception:
+        return False
+    return parsed.scheme == "oss" and bool(parsed.netloc) and bool(parsed.path.strip("/"))
+
+
+def _is_provider_media_url(value: Any) -> bool:
+    return _is_http_url(value) or _is_bailian_oss_url(value)
+
+
+def _require_http_url(value: Any, label: str) -> str:
+    text = _compact(value)
+    if not _is_http_url(text):
+        raise AiVideoError(f"{label} 必须是 HTTP/HTTPS URL")
+    return text
+
+
+def _require_provider_media_url(value: Any, label: str) -> str:
+    text = _compact(value)
+    if not _is_provider_media_url(text):
+        raise AiVideoError(f"{label} 必须是 HTTP/HTTPS URL 或百炼临时 oss:// URL")
+    return text
 
 
 def normalize_parameters(provider: str, model: str, parameters: Optional[Mapping[str, Any]]) -> dict:
@@ -688,7 +1062,46 @@ def normalize_parameters(provider: str, model: str, parameters: Optional[Mapping
 
     mode = HAPPYHORSE_MODELS.get(model)
     if not mode:
-        raise AiVideoError("未知 HappyHorse 模型")
+        if model in KLING_MODELS:
+            kling_mode = _compact(source.get("mode")) or "std"
+            if kling_mode not in KLING_MODES:
+                raise AiVideoError("Kling mode 仅支持 std / pro")
+            aspect_ratio = _compact(source.get("aspect_ratio") or source.get("aspectRatio")) or "16:9"
+            if aspect_ratio not in KLING_ASPECT_RATIOS:
+                raise AiVideoError("Kling aspect_ratio 仅支持 16:9 / 9:16 / 1:1")
+            media = _normalise_media_list(source.get("media"), model=model)
+            _validate_kling_media(media, model=model)
+            try:
+                duration = int(source.get("duration") if source.get("duration") is not None else 5)
+            except Exception as exc:
+                raise AiVideoError("duration 必须是整数") from exc
+            if not 3 <= duration <= 15:
+                raise AiVideoError("Kling duration 必须是 3-15 的整数")
+            audio = source.get("audio")
+            if audio is None:
+                audio = source.get("generateAudio", False)
+            return {
+                "mode": kling_mode,
+                "aspect_ratio": aspect_ratio,
+                "duration": duration,
+                "audio": bool(audio),
+                "watermark": bool(source.get("watermark", False)),
+                "media": media,
+            }
+        if model == PIXVERSE_MOTIONCONTROL_MODEL:
+            resolution = _compact(source.get("resolution")) or "720P"
+            resolution = resolution.upper()
+            if resolution not in PIXVERSE_RESOLUTIONS:
+                raise AiVideoError("PixVerse resolution 仅支持 360P/540P/720P")
+            image_url = _compact(source.get("imageUrl") or source.get("image_url") or source.get("characterImageUrl"))
+            video_url = _compact(source.get("videoUrl") or source.get("video_url") or source.get("motionVideoUrl"))
+            return {
+                "imageUrl": _require_provider_media_url(image_url, "PixVerse 角色图 URL") if image_url else "",
+                "videoUrl": _require_provider_media_url(video_url, "PixVerse 动作视频 URL") if video_url else "",
+                "resolution": resolution,
+                "watermark": bool(source.get("watermark", False)),
+            }
+        raise AiVideoError("未知百炼视频模型")
     resolution = _compact(source.get("resolution")) or "720P"
     resolution = resolution.upper()
     if resolution not in {"720P", "1080P"}:
@@ -718,7 +1131,7 @@ def normalize_parameters(provider: str, model: str, parameters: Optional[Mapping
 def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
     provider, model = resolve_model(payload.get("provider"), payload.get("model"))
     prompt = _compact(payload.get("prompt"))
-    if not prompt:
+    if model != PIXVERSE_MOTIONCONTROL_MODEL and not prompt:
         raise AiVideoError("Prompt 不能为空")
     if len(prompt) > 4000:
         raise AiVideoError("Prompt 不能超过 4000 字符")
@@ -760,8 +1173,11 @@ def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
                 expected_kind="file",
                 expected_scope="input",
             )
-        inspected = _inspect_image(path)
-        role = _compact(source.get("role")) or ("first_frame" if model.endswith("-i2v") else "reference_image")
+        role = _asset_role_to_media_type(
+            source.get("role"),
+            model,
+        ) or ("first_frame" if model.endswith("-i2v") else "reference_image")
+        inspected = _inspect_local_media(path, role=role, model=model) if model in BAILIAN_GATEWAY_MODELS else _inspect_image(path)
         if model.endswith("-i2v"):
             role = "first_frame"
         inspected.update({
@@ -773,6 +1189,22 @@ def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
     if provider == "seedance":
         if len(assets) > 4:
             raise AiVideoError("Seedance v1 参考图最多 4 张")
+    elif model in KLING_MODELS:
+        media_sources = list(parameters.get("media") or [])
+        media_sources.extend({"type": asset.get("role")} for asset in assets)
+        _validate_kling_media(media_sources, model=model)
+    elif model == PIXVERSE_MOTIONCONTROL_MODEL:
+        image_count = 1 if parameters.get("imageUrl") else 0
+        video_count = 1 if parameters.get("videoUrl") else 0
+        for asset in assets:
+            role = _compact(asset.get("role"))
+            if role == "image_url":
+                image_count += 1
+            elif role == "video_url":
+                video_count += 1
+            else:
+                raise AiVideoError("PixVerse 本地素材角色仅支持 image_url / video_url")
+        _validate_pixverse_media_sources(image_count=image_count, video_count=video_count)
     elif model.endswith("-t2v"):
         if assets:
             raise AiVideoError("HappyHorse 文生视频不允许携带图片")
@@ -795,6 +1227,8 @@ def _validate_input(payload: Mapping[str, Any], *, trusted_paths: bool) -> dict:
     warnings: list[str] = []
     if model.endswith("-r2v") and not re.search(r"\[Image\s*\d+\]", prompt, flags=re.I):
         warnings.append("建议在 Prompt 中使用 [Image 1]、[Image 2] 引用参考图")
+    if model == PIXVERSE_MOTIONCONTROL_MODEL and prompt:
+        warnings.append("PixVerse Motion Control 不使用 Prompt；请确认角色图 URL 和动作视频 URL 描述了目标内容")
 
     status = provider_status()
     configured = bool(status.get(provider, {}).get("configured"))
@@ -988,10 +1422,55 @@ def build_happyhorse_payload(normalized: Mapping[str, Any]) -> dict:
     }
 
 
+def build_bailian_payload(normalized: Mapping[str, Any]) -> dict:
+    model = normalized["model"]
+    if model in HAPPYHORSE_MODELS:
+        return build_happyhorse_payload(normalized)
+
+    params = dict(normalized.get("parameters") or {})
+    if model in KLING_MODELS:
+        media = list(params.get("media") or [])
+        input_payload = {
+            "prompt": normalized["prompt"],
+        }
+        if media:
+            input_payload["media"] = media
+        parameters = {
+            "mode": params.get("mode") or "std",
+            "duration": int(params.get("duration") or 5),
+            "audio": bool(params.get("audio", False)),
+            "watermark": bool(params.get("watermark", False)),
+        }
+        if not media:
+            parameters["aspect_ratio"] = params.get("aspect_ratio") or "16:9"
+        return {
+            "model": model,
+            "input": input_payload,
+            "parameters": parameters,
+        }
+
+    if model == PIXVERSE_MOTIONCONTROL_MODEL:
+        return {
+            "model": model,
+            "input": {
+                "media": [
+                    {"type": "image_url", "url": params["imageUrl"]},
+                    {"type": "video_url", "url": params["videoUrl"]},
+                ],
+            },
+            "parameters": {
+                "resolution": params.get("resolution") or "720P",
+                "watermark": bool(params.get("watermark", False)),
+            },
+        }
+
+    raise AiVideoError("未知百炼视频模型")
+
+
 def build_provider_payload(normalized: Mapping[str, Any]) -> dict:
     if normalized["provider"] == "seedance":
         return build_seedance_payload(normalized)
-    return build_happyhorse_payload(normalized)
+    return build_bailian_payload(normalized)
 
 
 def archive_dir_for(job_id: str, run_id: str, output_root: Path, created_at: Optional[str] = None) -> Path:
@@ -1789,11 +2268,53 @@ def get_config() -> dict:
                     },
                     "configured": status["happyhorse"]["configured"],
                 },
+                {
+                    "id": KLING_V3_MODEL,
+                    "provider": "happyhorse",
+                    "model": KLING_V3_MODEL,
+                    "label": "Kling v3",
+                    "defaults": {
+                        "mode": "std",
+                        "aspect_ratio": "16:9",
+                        "duration": 5,
+                        "audio": True,
+                        "watermark": False,
+                    },
+                    "configured": status["happyhorse"]["configured"],
+                },
+                {
+                    "id": KLING_OMNI_MODEL,
+                    "provider": "happyhorse",
+                    "model": KLING_OMNI_MODEL,
+                    "label": "Kling Omni",
+                    "defaults": {
+                        "mode": "std",
+                        "aspect_ratio": "16:9",
+                        "duration": 5,
+                        "audio": True,
+                        "watermark": False,
+                    },
+                    "configured": status["happyhorse"]["configured"],
+                },
+                {
+                    "id": PIXVERSE_MOTIONCONTROL_MODEL,
+                    "provider": "happyhorse",
+                    "model": PIXVERSE_MOTIONCONTROL_MODEL,
+                    "label": "PixVerse Motion Control",
+                    "defaults": {
+                        "resolution": "720P",
+                        "watermark": False,
+                    },
+                    "configured": status["happyhorse"]["configured"],
+                },
             ],
             "defaultModelId": "seedance-2.0",
             "defaultOutputDir": str(default_output_dir()),
             "seedanceRatios": sorted(SEEDANCE_RATIOS),
             "happyhorseRatios": sorted(HAPPYHORSE_RATIOS),
+            "klingAspectRatios": sorted(KLING_ASPECT_RATIOS),
+            "klingModes": sorted(KLING_MODES),
+            "pixverseResolutions": sorted(PIXVERSE_RESOLUTIONS),
             "historyLimit": 50,
         },
     }
@@ -1919,8 +2440,9 @@ def _submit_run(run: Mapping[str, Any]) -> None:
     status = provider_status()
     provider = _compact(normalized["provider"])
     if not status.get(provider, {}).get("configured"):
+        provider_label = "Seedance" if provider == "seedance" else "百炼"
         error = AiVideoError(
-            f"请先在 AI 能力配置 {'Seedance' if provider == 'seedance' else 'HappyHorse'} 凭据",
+            f"请先在 AI 能力配置 {provider_label} 凭据",
             code="CREDENTIAL_MISSING",
             safe_suggestion="到设置中的 AI 能力配置对应密钥",
         )
@@ -1932,7 +2454,14 @@ def _submit_run(run: Mapping[str, Any]) -> None:
         return
 
     try:
-        provider_payload = build_provider_payload(normalized)
+        provider_normalized = _with_bailian_temp_uploaded_assets(normalized)
+        provider_payload = build_provider_payload(provider_normalized)
+    except AiVideoError as exc:
+        data_sink.update_ai_video_run(run_id, {
+            "status": "needs_config" if exc.code in {"CREDENTIAL_MISSING", "NEEDS_CONFIG"} else "failed",
+            "error": exc.as_dict(),
+        })
+        return
     except Exception as exc:
         error = AiVideoError(str(exc), code="VALIDATION_FAILED")
         data_sink.update_ai_video_run(run_id, {"status": "failed", "error": error.as_dict()})
@@ -1943,7 +2472,7 @@ def _submit_run(run: Mapping[str, Any]) -> None:
     payload_path: Optional[Path] = None
     try:
         archive_dir = _secure_prepare_archive_dir(archive_root, archive_dir)
-        _write_run_artifacts(archive_dir, normalized=normalized, provider_payload=provider_payload, event="submit_start")
+        _write_run_artifacts(archive_dir, normalized=provider_normalized, provider_payload=provider_payload, event="submit_start")
         payload_path = runtime_paths.child_dir("ai-video-generation") / f"payload-{run_id}.json"
         payload_path.parent.mkdir(parents=True, exist_ok=True)
         # Write raw payload for CLI only; redacted copy already archived.

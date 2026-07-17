@@ -37,6 +37,8 @@ class AiVideoGenerationSecurityApiTests(unittest.TestCase):
             "ai.video.bailian_workspace_id": "workspace-secret",
             "ai.video.bailian_region": "private-region",
             "ai.video.bailian_base_url": "https://private-bailian.invalid",
+            "ai.video.bailian_upload_api_key": "upload-secret",
+            "ai.video.bailian_uploads_url": "https://private-upload.invalid/api/v1/uploads",
         })
 
         settings = api_server.get_settings()
@@ -49,16 +51,21 @@ class AiVideoGenerationSecurityApiTests(unittest.TestCase):
             "bailian_workspace_id",
             "bailian_region",
             "bailian_base_url",
+            "bailian_upload_api_key",
+            "bailian_uploads_url",
         ):
             self.assertNotIn(field, video)
         self.assertEqual(video["seedance_configured"], True)
         self.assertEqual(video["happyhorse_configured"], True)
+        self.assertEqual(video["bailian_upload_configured"], True)
 
     def test_settings_writes_preserve_hidden_ai_video_values_when_omitted_or_blank(self):
         patch_config({
             "ai.video.seedance_api_key": "seedance-secret",
             "ai.video.seedance_base_url": "https://private-seedance.invalid",
             "ai.video.bailian_api_key": "bailian-secret",
+            "ai.video.bailian_upload_api_key": "upload-secret",
+            "ai.video.bailian_uploads_url": "https://private-upload.invalid/api/v1/uploads",
         })
 
         api_server.put_settings({"data_dir": "new-data"})
@@ -66,12 +73,16 @@ class AiVideoGenerationSecurityApiTests(unittest.TestCase):
             "ai.video.seedance_api_key": "",
             "ai.video.seedance_base_url": "",
             "ai.video.bailian_api_key": "replacement-secret",
+            "ai.video.bailian_upload_api_key": "",
+            "ai.video.bailian_uploads_url": "",
         })
 
         video = load_config()["ai"]["video"]
         self.assertEqual(video["seedance_api_key"], "seedance-secret")
         self.assertEqual(video["seedance_base_url"], "https://private-seedance.invalid")
         self.assertEqual(video["bailian_api_key"], "replacement-secret")
+        self.assertEqual(video["bailian_upload_api_key"], "upload-secret")
+        self.assertEqual(video["bailian_uploads_url"], "https://private-upload.invalid/api/v1/uploads")
 
     def test_non_owner_backend_rejects_every_ai_video_mutation_route(self):
         previous = getattr(api_server.app.state, "owns_backend_instance", None)

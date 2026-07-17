@@ -553,6 +553,128 @@ test('image selection stores opaque file tokens and sends no local paths', async
   assert.equal(JSON.stringify(payload).includes('/Users/'), false)
 })
 
+test('model selection is rendered as a video-model dropdown', async () => {
+  const source = fs.readFileSync(
+    path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
+    'utf8',
+  )
+  assert.match(source, /<label class="avg-model-select-label"[^>]*>视频模型<\/label>/)
+  assert.match(source, /id="avg-video-model-select"/)
+  assert.match(source, /class="avg-model-select"/)
+  assert.ok(source.indexOf('id="avg-video-model-select"') < source.indexOf('class="avg-model-select-current"'))
+  assert.doesNotMatch(source, /v-model="form\.provider"/)
+  assert.doesNotMatch(source, /class="avg-model-switcher/)
+})
+
+test('provider-specific media sections keep advanced URL inputs collapsed by default', async () => {
+  const source = fs.readFileSync(
+    path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
+    'utf8',
+  )
+  assert.match(source, /v-if="showPromptInput"/)
+  assert.match(source, /<section v-if="!isPixVerse" class="avg-section">/)
+  assert.match(source, /<details class="avg-advanced-panel">/)
+  assert.match(source, /Kling 素材 URL/)
+  assert.match(source, /URL \/ oss URL 输入/)
+  assert.doesNotMatch(source, /<details[^>]*open/)
+})
+
+test('Semir Bailian gateway hides local cost estimate', async () => {
+  const workbench = await setupWorkbench()
+  workbench.config.value = {
+    providers: {
+      happyhorse: {
+        configured: true,
+        cliReady: true,
+        pricingEstimateAvailable: false,
+      },
+    },
+  }
+
+  workbench.selectProvider('happyhorse')
+  assert.equal(workbench.costEstimate.value.known, true)
+  assert.equal(workbench.showCostEstimate.value, false)
+})
+
+test('switching video models clears model-specific media inputs', async () => {
+  const workbench = await setupWorkbench()
+
+  workbench.selectProvider('pixverse-motioncontrol')
+  workbench.form.pixverseImageUrl = 'https://example.com/character.png'
+  workbench.form.pixverseVideoUrl = 'https://example.com/motion.mp4'
+  workbench.addAssetItems({ fileToken: 'pix-image-token', name: 'character.png', role: 'image_url' })
+
+  workbench.selectProvider('kling-v3')
+  workbench.setKlingMediaUrl('first_frame', 'oss://dashscope-instant/demo/start.jpg')
+
+  assert.equal(workbench.form.pixverseImageUrl, '')
+  assert.equal(workbench.form.pixverseVideoUrl, '')
+  assert.deepEqual(workbench.form.assets, [])
+  assert.deepEqual(workbench.form.klingMedia, [
+    { type: 'first_frame', url: 'oss://dashscope-instant/demo/start.jpg' },
+  ])
+
+  workbench.selectProvider('seedance')
+  assert.deepEqual(workbench.form.klingMedia, [])
+})
+
+test('PixVerse local image and video are submitted as opaque assets', async () => {
+  const selected = [
+    { fileToken: 'pix-image-token', name: 'character.png', kind: 'image', mimeType: 'image/png' },
+    { fileToken: 'pix-video-token', name: 'motion.mp4', kind: 'video', mimeType: 'video/mp4' },
+  ]
+  const workbench = await setupWorkbench({
+    async selectAiVideoMedia(options) {
+      return { items: [options.mediaKind === 'video' ? selected[1] : selected[0]] }
+    },
+    async getAiVideoMediaUrl(fileToken) {
+      return { ok: true, media_url: `crawshrimp-media://local/${fileToken}` }
+    },
+  })
+
+  workbench.selectProvider('pixverse-motioncontrol')
+  await workbench.choosePixverseAsset('image')
+  await workbench.choosePixverseAsset('video')
+
+  assert.equal(workbench.pixverseImageAsset.value.fileToken, 'pix-image-token')
+  assert.equal(workbench.pixverseVideoAsset.value.fileToken, 'pix-video-token')
+  assert.deepEqual(workbench.buildAssetsPayload(), [
+    { role: 'image_url', sourceType: 'local_file', fileToken: 'pix-image-token', sortOrder: 0 },
+    { role: 'video_url', sourceType: 'local_file', fileToken: 'pix-video-token', sortOrder: 1 },
+  ])
+  assert.equal(workbench.buildParameters().imageUrl, '')
+  assert.equal(workbench.buildParameters().videoUrl, '')
+})
+
+test('Kling Omni local videos get feature and base roles by default', async () => {
+  const workbench = await setupWorkbench()
+  workbench.selectProvider('kling-omni')
+  workbench.addAssetItems([
+    { fileToken: 'feature-video-token', name: 'feature.mp4', kind: 'video', mimeType: 'video/mp4' },
+    { fileToken: 'base-video-token', name: 'base.mov', kind: 'video', mimeType: 'video/quicktime' },
+  ])
+
+  assert.deepEqual(workbench.form.assets.map(asset => asset.role), ['feature', 'base'])
+  assert.deepEqual(workbench.buildAssetsPayload(), [
+    { role: 'feature', sourceType: 'local_file', fileToken: 'feature-video-token', sortOrder: 0 },
+    { role: 'base', sourceType: 'local_file', fileToken: 'base-video-token', sortOrder: 1 },
+  ])
+})
+
+test('Kling URL media is included in parameters without local paths', async () => {
+  const workbench = await setupWorkbench()
+  workbench.selectProvider('kling-v3')
+  workbench.setKlingMediaUrl('first_frame', 'oss://dashscope-instant/demo/start.jpg')
+  workbench.setKlingMediaUrl('last_frame', 'https://example.com/end.jpg')
+
+  const params = workbench.buildParameters()
+  assert.deepEqual(params.media, [
+    { type: 'first_frame', url: 'oss://dashscope-instant/demo/start.jpg' },
+    { type: 'last_frame', url: 'https://example.com/end.jpg' },
+  ])
+  assert.equal(JSON.stringify(params).includes('/Users/'), false)
+})
+
 test('output selection stores an opaque directory token separately from its display name', async () => {
   let receivedOptions
   const workbench = await setupWorkbench({
