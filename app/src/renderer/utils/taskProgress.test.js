@@ -1,10 +1,18 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
   buildTaskRunnerProgressSummary,
   resolveTaskProgressConfig,
 } from './taskProgress.js'
+
+test('task runner constrains long target metadata so it cannot push the progress bar out of alignment', () => {
+  const taskRunnerSource = readFileSync(new URL('../views/TaskRunner.vue', import.meta.url), 'utf8')
+
+  assert.match(taskRunnerSource, /\.progress-strip-meta\s*\{[\s\S]*?\bflex:\s*1\s+1\s+auto;[\s\S]*?\bmin-width:\s*0;/)
+  assert.match(taskRunnerSource, /\.progress-strip-meta\s*>\s*span\s*\{[\s\S]*?\bmin-width:\s*0;[\s\S]*?\boverflow:\s*hidden;[\s\S]*?text-overflow:\s*ellipsis;[\s\S]*?white-space:\s*nowrap;/)
+})
 
 test('tmall material match-buy uses Semir batch download progress in task runner', () => {
   const config = resolveTaskProgressConfig('semir-cloud-drive', 'tmall_material_match_buy')

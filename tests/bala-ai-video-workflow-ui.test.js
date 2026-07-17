@@ -7,6 +7,7 @@ import {
   buildBalaAiStageRequest,
   buildBalaVideoStageRequest,
   latestRunForTaskData,
+  mergeBalaVideoResults,
   normalizeBalaMaterialGroups,
   normalizeBalaReviewBatchStyles,
   normalizeBalaTemplateCatalog,
@@ -578,6 +579,34 @@ test('AI video workflow normalizes local template catalog and qn result rows', (
   assert.equal(results[0].path, '/tmp/out.mp4')
 })
 
+test('completed business-manager result replaces the same task loading placeholder', () => {
+  const merged = mergeBalaVideoResults([
+    {
+      id: 'video-task-42',
+      taskRefId: 'video-task-42',
+      status: '生成中',
+      path: '',
+      videoUrl: '',
+    },
+  ], [
+    {
+      id: 'video-task-42-provider-result-7',
+      taskRefId: 'video-task-42',
+      status: '已完成',
+      path: '/tmp/finished.mp4',
+      videoUrl: '',
+    },
+  ])
+
+  assert.deepEqual(merged, [{
+    id: 'video-task-42-provider-result-7',
+    taskRefId: 'video-task-42',
+    status: '已完成',
+    path: '/tmp/finished.mp4',
+    videoUrl: '',
+  }])
+})
+
 test('Bala image review drawer exposes approval, retry, refresh, and video handoff actions', () => {
   const source = fs.readFileSync('app/src/renderer/views/BalaAiImageReviewDrawer.vue', 'utf8')
 
@@ -666,6 +695,41 @@ test('video tasks and provider results persist across reloads with real refresh 
   assert.match(main, /refresh-bala-video-provider-task/)
   assert.match(main, /read-bala-workspace-manifest/)
   assert.match(main, /write-bala-workspace-manifest/)
+})
+
+test('video generation keeps task controls independent, submits asynchronously, and labels the action as generate video', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(source, /const videoTaskBusyIds = reactive\(new Set\(\)\)/)
+  assert.match(templateSource, /:disabled="isVideoTaskBusy\(task\)"[^>]*@click="handleVideoTaskAction\(task\)">\{\{ videoTaskActionLabel\(task\) \}\}/)
+  assert.doesNotMatch(templateSource, /@click="runVideoTask\(task, 'live'\)">授权生成并下载<\/button>/)
+  assert.match(source, /wait:\s*false/)
+  assert.match(source, /finally\s*\{[\s\S]*?videoTaskBusyIds\.delete\(/)
+})
+
+test('video result cards show a bounded loading state for submitted async tasks', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+
+  assert.match(source, /function videoResultIsLoading\(item = \{\}\)/)
+  assert.match(source, /v-else-if="videoResultIsLoading\(item\)" class="aiv-result-preview-loading"/)
+  assert.match(source, /class="aiv-result-spinner"/)
+  assert.match(source, /\.aiv-result-preview\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*min\(360px, 50vh\);[\s\S]*?overflow:\s*hidden;/)
+  assert.match(source, /\.aiv-result-preview video\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?max-height:\s*100%;/)
+})
+
+test('completed video tasks switch to view action and autoplay their result', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(templateSource, /@click="handleVideoTaskAction\(task\)">\{\{ videoTaskActionLabel\(task\) \}\}/)
+  assert.doesNotMatch(templateSource, /@click="runVideoTask\(task, 'live'\)">生成视频<\/button>/)
+  assert.match(source, /function videoTaskHasViewableResult\(task = \{\}\)/)
+  assert.match(source, /async function handleVideoTaskAction\(task(?: = \{\})?\)/)
+  assert.match(source, /const videoResultToPlayId = ref\(''\)/)
+  assert.match(source, /:autoplay="videoResultToPlayId === item\.id"/)
+  assert.match(source, /@canplay="handleVideoResultCanPlay\(item\)"/)
+  assert.match(source, /await element\.play\(\)/)
 })
 
 test('TaskRunner opens Bala image review drawer after AI generation', () => {

@@ -4951,6 +4951,7 @@ onUnmounted(() => {
   display: flex;
   align-items: baseline;
   gap: 10px;
+  flex: 1 1 auto;
   min-width: 0;
   flex-wrap: wrap;
 }
@@ -4959,11 +4960,19 @@ onUnmounted(() => {
   align-items: center;
   justify-content: flex-end;
   gap: 6px 16px;
+  flex: 1 1 auto;
   flex-wrap: wrap;
   min-width: 0;
   text-align: right;
   font-size: 12px;
   color: var(--text2);
+}
+.progress-strip-meta > span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .progress-strip-title {
   font-size: 11px;

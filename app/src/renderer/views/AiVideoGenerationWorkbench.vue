@@ -18,20 +18,58 @@
     </nav>
 
     <div class="avg-main" :inert="backgroundInert || undefined">
-      <aside class="avg-control-pane" :class="{ 'mobile-active': compactPane === 'inputs' }">
-        <div class="avg-model-select-card">
-          <label class="avg-model-select-label" for="avg-video-model-select">视频模型</label>
-          <select id="avg-video-model-select" :value="form.provider" class="avg-model-select" @change="selectProvider($event.target.value)">
-            <option v-for="model in modelOptions" :key="model.id" :value="model.id">
-              {{ model.label }}
-            </option>
-          </select>
-          <div class="avg-model-select-current" aria-live="polite">
-            <img class="avg-provider-mark" :src="activeMeta.mark" alt="" />
-            <div>
+      <aside class="avg-control-pane" :class="{ 'mobile-active': compactPane === 'inputs' }" @click="closeModelPicker">
+        <div ref="modelPickerRef" class="avg-model-picker" :class="{ open: modelPickerOpen }" @click.stop>
+          <div class="avg-model-picker-head">
+            <span class="avg-model-picker-label">视频模型</span>
+            <span class="avg-model-picker-count">{{ modelOptions.length }} 个可用</span>
+          </div>
+          <button
+            class="avg-model-select-current"
+            type="button"
+            aria-haspopup="listbox"
+            aria-controls="avg-video-model-options"
+            :aria-expanded="modelPickerOpen"
+            aria-label="选择视频模型"
+            @click="toggleModelPicker"
+            @keydown.esc.prevent="closeModelPicker"
+          >
+            <span class="avg-model-icon" aria-hidden="true"><img class="avg-provider-mark" :src="activeMeta.mark" alt="" /></span>
+            <span class="avg-model-select-copy">
+              <span class="avg-model-select-eyebrow">当前模型</span>
               <strong>{{ activeMeta.label }}</strong>
               <span>{{ activeMeta.hint }}</span>
-            </div>
+            </span>
+            <span class="avg-model-picker-action" aria-hidden="true">
+              <AvgIcon name="chevron-down" />
+            </span>
+          </button>
+          <div
+            v-if="modelPickerOpen"
+            id="avg-video-model-options"
+            class="avg-model-options"
+            role="listbox"
+            aria-label="视频模型选项"
+          >
+            <button
+              v-for="model in modelOptions"
+              :key="model.id"
+              class="avg-model-option"
+              :class="{ active: model.id === form.provider }"
+              type="button"
+              role="option"
+              :aria-selected="model.id === form.provider"
+              @click="selectProvider(model.id)"
+            >
+              <span class="avg-model-icon avg-model-option-icon" aria-hidden="true"><img class="avg-provider-mark" :src="model.mark" alt="" /></span>
+              <span class="avg-model-option-copy">
+                <strong>{{ model.label }}</strong>
+                <small>{{ model.hint }}</small>
+              </span>
+              <span v-if="model.id === form.provider" class="avg-model-option-check" aria-hidden="true">
+                <AvgIcon name="check" />
+              </span>
+            </button>
           </div>
         </div>
 
@@ -666,7 +704,7 @@
 </template>
 
 <script setup>
-import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { computed, h, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import volcengineMark from '../assets/ai-video-generation/volcengine-mark.png'
 import aliyunMark from '../assets/ai-video-generation/aliyun-mark.png'
 import {
@@ -717,6 +755,34 @@ const modelOptions = [
     mark: aliyunMark,
   },
 ]
+
+const AVG_ICON_NODES = {
+  video: [
+    { tag: 'rect', attrs: { x: '4', y: '6', width: '12', height: '12', rx: '2' } },
+    { tag: 'path', attrs: { d: 'm16 10 4-2v8l-4-2' } },
+    { tag: 'path', attrs: { d: 'm9 10 4 2-4 2Z', fill: 'currentColor', stroke: 'none' } },
+  ],
+  'chevron-down': [{ tag: 'path', attrs: { d: 'm6 9 6 6 6-6' } }],
+  check: [{ tag: 'path', attrs: { d: 'm5 12 4 4L19 6' } }],
+}
+
+const AvgIcon = {
+  props: {
+    name: { type: String, required: true },
+  },
+  setup(props) {
+    return () => h(
+      'svg',
+      {
+        class: 'avg-button-icon',
+        viewBox: '0 0 24 24',
+        'aria-hidden': 'true',
+        focusable: 'false',
+      },
+      (AVG_ICON_NODES[props.name] || AVG_ICON_NODES.video).map((node, index) => h(node.tag, { ...node.attrs, key: index })),
+    )
+  },
+}
 
 const KLING_V3_LOCAL_ROLES = [
   { value: 'first_frame', label: '首帧图' },
@@ -791,6 +857,8 @@ const pollTimer = ref(null)
 const outputDirectoryName = ref('')
 const outputDirectorySource = ref('') // default | manual | job | ''
 const defaultOutputDirectoryName = ref('抓虾AI生视频')
+const modelPickerOpen = ref(false)
+const modelPickerRef = ref(null)
 const brokenCovers = reactive({})
 const coverUrls = reactive({})
 const coverLoading = reactive({})
@@ -1044,6 +1112,7 @@ function openVideoSettings() {
 }
 
 function selectProvider(provider) {
+  modelPickerOpen.value = false
   clearReusedAssetGuard()
   const previous = form.provider
   form.provider = modelOptions.some(item => item.id === provider) ? provider : 'seedance'
@@ -1054,6 +1123,14 @@ function selectProvider(provider) {
     form.pixverseVideoUrl = ''
   }
   applyProviderDefaults()
+}
+
+function toggleModelPicker() {
+  modelPickerOpen.value = !modelPickerOpen.value
+}
+
+function closeModelPicker() {
+  modelPickerOpen.value = false
 }
 
 function applyProviderDefaults() {
@@ -2523,7 +2600,10 @@ function updateCompact() {
 }
 
 function onKeydown(event) {
-  if (event.key === 'Tab' && detailJob.value) {
+  if (event.key === 'Escape' && modelPickerOpen.value) {
+    event.preventDefault()
+    closeModelPicker()
+  } else if (event.key === 'Tab' && detailJob.value) {
     trapDialogFocus(event, modalRef.value)
   } else if (event.key === 'Tab' && libraryOpen.value) {
     trapDialogFocus(event, libraryModalRef.value)
@@ -2537,6 +2617,11 @@ function onKeydown(event) {
     event.preventDefault()
     closeHistory()
   }
+}
+
+function onDocumentPointerdown(event) {
+  if (!modelPickerOpen.value || modelPickerRef.value?.contains(event.target)) return
+  closeModelPicker()
 }
 
 function startPolling() {
@@ -2584,6 +2669,7 @@ onMounted(() => {
   updateCompact()
   window.addEventListener('resize', updateCompact)
   window.addEventListener('keydown', onKeydown)
+  document.addEventListener('pointerdown', onDocumentPointerdown)
   applyProviderDefaults()
   clearLegacyLibraryCapabilities()
 })
@@ -2594,6 +2680,7 @@ onDeactivated(deactivateWorkbench)
 onUnmounted(() => {
   window.removeEventListener('resize', updateCompact)
   window.removeEventListener('keydown', onKeydown)
+  document.removeEventListener('pointerdown', onDocumentPointerdown)
   deactivateWorkbench()
 })
 </script>
@@ -2707,73 +2794,243 @@ onUnmounted(() => {
   overflow: hidden;
 }
 
-.avg-model-select-card {
+.avg-model-picker {
   flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-  padding: 12px;
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 13px 12px 12px;
   border-bottom: 1px solid var(--border);
   background: var(--bg2);
-  z-index: 2;
+  z-index: 4;
 }
 
-.avg-model-select-label {
-  color: var(--text3);
+.avg-model-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.avg-model-picker-label {
+  color: var(--text2);
   font-size: 11px;
   font-weight: 800;
+  letter-spacing: 0.02em;
+}
+
+.avg-model-picker-count {
+  color: var(--text3);
+  font-size: 10px;
 }
 
 .avg-model-select-current {
+  width: 100%;
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
-  min-height: 54px;
-  padding: 10px;
-  border: 1px solid var(--orange-line);
+  min-height: 62px;
+  padding: 10px 11px;
+  border: 1px solid var(--border);
   border-radius: 10px;
-  background: var(--orange-soft);
+  background: var(--bg3);
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+  transition: border-color 160ms ease, background-color 160ms ease, box-shadow 160ms ease;
 }
 
-.avg-model-select-current strong,
-.avg-model-select-current span {
+.avg-model-select-current:hover,
+.avg-model-select-current:focus-visible {
+  border-color: var(--orange-line);
+  background: rgba(255, 107, 43, 0.08);
+}
+
+.avg-model-picker.open .avg-model-select-current {
+  border-color: var(--orange-line);
+  background: linear-gradient(120deg, rgba(255, 107, 43, 0.13), var(--bg3) 72%);
+  box-shadow: inset 2px 0 0 var(--orange), inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.avg-model-icon {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 30px;
+  border: 1px solid rgba(255, 107, 43, 0.34);
+  border-radius: 8px;
+  background: rgba(255, 107, 43, 0.1);
+  color: var(--orange);
+}
+
+.avg-button-icon {
+  width: 17px;
+  height: 17px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.avg-model-select-copy,
+.avg-model-select-copy strong,
+.avg-model-select-copy span {
   display: block;
 }
 
-.avg-model-select-current strong {
-  color: var(--text);
-  font-size: 13px;
+.avg-model-select-copy {
+  min-width: 0;
 }
 
-.avg-model-select-current span {
+.avg-model-select-eyebrow {
+  margin-bottom: 2px;
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.avg-model-select-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avg-model-select-copy span {
   margin-top: 3px;
   color: var(--text3);
   font-size: 11px;
   line-height: 1.35;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.avg-model-select {
-  width: 100%;
-  height: 36px;
+.avg-model-picker-action {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #20202a;
-  color: var(--text);
-  padding: 0 34px 0 12px;
-  font: inherit;
-  font-size: 13px;
-  font-weight: 760;
-  outline: none;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
-  color-scheme: dark;
+  border-radius: 7px;
+  color: var(--text3);
+  transition: border-color 160ms ease, color 160ms ease, transform 160ms ease;
 }
 
-.avg-model-select:hover,
-.avg-model-select:focus {
+.avg-model-picker.open .avg-model-picker-action {
   border-color: var(--orange-line);
-  background: #242430;
+  color: var(--orange);
+  transform: rotate(180deg);
 }
+
+.avg-model-options {
+  position: absolute;
+  top: calc(100% - 1px);
+  left: 0;
+  right: 0;
+  z-index: 12;
+  display: grid;
+  gap: 4px;
+  max-height: min(350px, 56vh);
+  padding: 7px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-top-color: var(--orange-line);
+  border-radius: 0 0 10px 10px;
+  background: #20202a;
+  box-shadow: 0 18px 34px rgba(0, 0, 0, 0.38);
+}
+
+.avg-model-option {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 7px 8px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text2);
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.avg-model-option:hover,
+.avg-model-option:focus-visible,
+.avg-model-option.active {
+  border-color: var(--orange-line);
+  background: var(--orange-soft);
+  color: var(--text);
+}
+
+.avg-model-option:not(.active):active {
+  transform: scale(0.99);
+}
+
+.avg-model-option-icon {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+  border-color: var(--border);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text3);
+}
+
+.avg-model-option:hover .avg-model-option-icon,
+.avg-model-option:focus-visible .avg-model-option-icon,
+.avg-model-option.active .avg-model-option-icon {
+  border-color: rgba(255, 107, 43, 0.34);
+  background: rgba(255, 107, 43, 0.1);
+  color: var(--orange);
+}
+
+.avg-model-option-copy {
+  min-width: 0;
+}
+
+.avg-model-option strong,
+.avg-model-option small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.avg-model-option strong {
+  font-size: 12px;
+}
+
+.avg-model-option small {
+  margin-top: 3px;
+  color: var(--text3);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.avg-model-option-check {
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--orange-line);
+  border-radius: 50%;
+  background: rgba(255, 107, 43, 0.1);
+  color: var(--orange);
+}
+
+.avg-model-option-check .avg-button-icon { width: 13px; height: 13px; }
 
 .avg-cost-card {
   padding: 8px 10px;
@@ -4281,7 +4538,6 @@ select:focus-visible {
 }
 
 @media (max-width: 620px) {
-  .avg-model-select-card,
   .avg-param-row,
   .avg-ref-actions,
   .avg-library-toolbar,

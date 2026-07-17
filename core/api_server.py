@@ -6791,15 +6791,15 @@ async def _run_seedance_cli(req: BalaSeedanceVideoRequest) -> dict:
         str(payload_path),
     ]
     if req.wait:
-        command.append("--wait")
-    command.extend([
-        "--download",
-        str(output_path),
-        "--interval",
-        str(max(1, min(int(req.interval_seconds or 5), 60))),
-        "--timeout",
-        str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
-    ])
+        command.extend([
+            "--wait",
+            "--download",
+            str(output_path),
+            "--interval",
+            str(max(1, min(int(req.interval_seconds or 5), 60))),
+            "--timeout",
+            str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
+        ])
     env, secret_values = _bala_video_provider_env("seedance")
     env.update(node_env)
     if not str(env.get("ARK_API_KEY") or "").strip():
@@ -7179,15 +7179,15 @@ async def _run_happyhorse_cli(req: BalaHappyHorseVideoRequest) -> dict:
 
     command = [node_executable, "bin/bailian.js", "submit", str(payload_path)]
     if req.wait:
-        command.append("--wait")
-    command.extend([
-        "--download",
-        str(output_path),
-        "--interval",
-        str(max(1, min(int(req.interval_seconds or 5), 60))),
-        "--timeout",
-        str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
-    ])
+        command.extend([
+            "--wait",
+            "--download",
+            str(output_path),
+            "--interval",
+            str(max(1, min(int(req.interval_seconds or 5), 60))),
+            "--timeout",
+            str(max(30, min(int(req.timeout_seconds or 1800), 7200))),
+        ])
     process = await asyncio.create_subprocess_exec(
         *command,
         cwd=str(BALA_HAPPYHORSE_CLI_DIR),

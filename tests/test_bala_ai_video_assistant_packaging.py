@@ -583,6 +583,63 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         self.assertEqual(result["task_id"], "seedance-task")
         self.assertEqual(result["status"], "succeeded")
 
+    def test_provider_submission_returns_immediately_without_waiting_or_downloading(self):
+        runner_cases = [
+            (
+                api_server._run_seedance_cli,
+                api_server.BalaSeedanceVideoRequest(
+                    prompt="童装模特自然转身展示服装",
+                    output_dir="/tmp/provider-results",
+                    ratio="16:9",
+                    wait=False,
+                ),
+                {"id": "seedance-task", "status": "queued"},
+                "seedance",
+            ),
+            (
+                api_server._run_happyhorse_cli,
+                api_server.BalaHappyHorseVideoRequest(
+                    provider="kling-v3",
+                    mode="i2v",
+                    prompt="童装模特自然转身展示服装",
+                    output_dir="/tmp/provider-results",
+                    ratio="16:9",
+                    wait=False,
+                ),
+                {"output": {"task_id": "kling-task", "task_status": "PENDING"}},
+                "kling-v3",
+            ),
+        ]
+        calls = []
+
+        class SubmittedProcess:
+            returncode = 0
+
+            def __init__(self, payload):
+                self.payload = payload
+
+            async def communicate(self):
+                return (json.dumps(self.payload).encode("utf-8"), b"")
+
+        async def fake_create_subprocess_exec(*command, **kwargs):
+            calls.append(command)
+            provider = "seedance" if command[1].endswith("seedance.js") else "kling-v3"
+            payload = next(case[2] for case in runner_cases if case[3] == provider)
+            return SubmittedProcess(payload)
+
+        with patch("core.api_server._bala_video_node_runtime", return_value=("node", {})), \
+                patch("core.api_server._bala_video_provider_env", return_value=({"ARK_API_KEY": "placeholder", "DASHSCOPE_API_KEY": "placeholder"}, ["placeholder"])), \
+                patch("core.api_server.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            results = [asyncio.run(runner(request)) for runner, request, _, _ in runner_cases]
+
+        self.assertEqual(calls[0][:3], ("node", "bin/seedance.js", "submit"))
+        self.assertEqual(calls[1][:3], ("node", "bin/bailian.js", "submit"))
+        for command in calls:
+            self.assertNotIn("--wait", command)
+            self.assertNotIn("--download", command)
+        self.assertEqual(results[0]["task_id"], "seedance-task")
+        self.assertEqual(results[1]["task_id"], "kling-task")
+
     def test_apply_face_background_creates_ai_image_job_with_source_and_model_assets(self):
         manifest_path = ROOT / "adapters" / "bala-ai-video-assistant" / "assets" / "model-library" / "manifest.json"
 

@@ -711,9 +711,9 @@
               <details class="aiv-batch-actions">
                 <summary>批量操作</summary>
                 <div>
-                  <span>仅作用于当前已创建的视频任务；“授权生成”会创建外部视频任务。</span>
+                  <span>仅作用于当前已创建的视频任务；“生成视频”会创建外部视频任务。</span>
                   <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !videoTasks.length" @click="runAllVideoTasks('plan')">批量预检</button>
-                  <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !videoTasks.length" @click="runAllVideoTasks('live')">授权生成并下载</button>
+                  <button type="button" class="aiv-ghost small" :disabled="videoIsRunning || !videoTasks.length" @click="runAllVideoTasks('live')">生成视频</button>
                   <button type="button" class="aiv-ghost small" :disabled="!videoResults.length" @click="downloadCompletedVideoResults">只下载已完成视频</button>
                 </div>
               </details>
@@ -765,12 +765,12 @@
                 </div>
               </div>
               <div class="aiv-video-task-actions">
-                <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="openVideoTaskDialog('', task, 'edit')">编辑</button>
+                <button type="button" class="aiv-ghost small" :disabled="isVideoTaskBusy(task)" @click="openVideoTaskDialog('', task, 'edit')">编辑</button>
                 <button type="button" class="aiv-ghost small" @click="openVideoTaskDialog('', task, 'copy')">复制</button>
                 <button v-if="task.provider === 'qn'" type="button" class="aiv-ghost small" @click="openTemplateLibrary(task.styleCode)">模板</button>
                 <button v-if="task.provider !== 'qn'" type="button" class="aiv-ghost small" @click="openAiCapabilitySettings(task.provider)">配置</button>
-                <button type="button" class="aiv-ghost small" :disabled="videoIsRunning" @click="runVideoTask(task, 'plan')">预检</button>
-                <button type="button" class="aiv-primary small" :disabled="videoIsRunning" @click="runVideoTask(task, 'live')">授权生成并下载</button>
+                <button type="button" class="aiv-ghost small" :disabled="isVideoTaskBusy(task)" @click="runVideoTask(task, 'plan')">预检</button>
+                <button type="button" class="aiv-primary small" :disabled="isVideoTaskBusy(task)" @click="handleVideoTaskAction(task)">{{ videoTaskActionLabel(task) }}</button>
               </div>
             </div>
           </article>
@@ -811,19 +811,28 @@
             <div class="aiv-result-card-grid">
               <div v-if="!videoResults.length" class="aiv-result-empty">
                 <strong>还没有视频结果</strong>
-                <span>先回到“生视频”创建视频任务，完成预检后再明确授权生成。</span>
+                <span>先回到“生视频”创建视频任务，完成预检后再点击“生成视频”。</span>
                 <button type="button" class="aiv-primary small" @click="activeStep = 'templates'">去创建视频任务</button>
               </div>
               <article v-for="item in videoResults" :key="item.id" class="aiv-result-card">
                 <div class="aiv-result-preview">
-              <video
-                v-if="videoPlaybackSource(item) && !brokenPreviews[videoPlaybackSource(item)]"
-                :src="videoPlaybackSource(item)"
+                  <video
+                    :ref="element => setVideoResultElement(item, element)"
+                    v-if="videoPlaybackSource(item) && !brokenPreviews[videoPlaybackSource(item)]"
+                    :src="videoPlaybackSource(item)"
+                    :autoplay="videoResultToPlayId === item.id"
+                    :muted="videoResultToPlayId === item.id"
                     controls
                     playsinline
                     preload="metadata"
+                    @canplay="handleVideoResultCanPlay(item)"
                     @error="markPreviewBroken(videoPlaybackSource(item))"
                   ></video>
+                  <div v-else-if="videoResultIsLoading(item)" class="aiv-result-preview-loading" role="status" aria-live="polite">
+                    <div class="aiv-result-spinner" aria-hidden="true"></div>
+                    <strong>{{ item.styleCode }}</strong>
+                    <span>{{ videoResultStage(item).message }}</span>
+                  </div>
                   <div v-else class="aiv-result-preview-empty">
                     <strong>{{ item.styleCode }}</strong>
                     <span>{{ videoPlaybackLoading(item) ? '正在载入本地视频预览' : item.status === '已完成' ? '视频文件暂不可播放' : '等待视频生成结果' }}</span>
@@ -1833,6 +1842,8 @@ const localImagePreviews = reactive({})
 const localImagePreviewLoading = new Set()
 const localVideoPreviews = reactive({})
 const localVideoPreviewLoading = new Set()
+const videoResultToPlayId = ref('')
+const videoResultElements = new Map()
 const materialBatch = ref(null)
 const materialBoardUrl = ref('')
 const reviewBatch = ref(null)
@@ -1954,10 +1965,11 @@ const aiTaskState = reactive({
 })
 const videoStageState = reactive({
   status: 'idle',
-  message: '先创建视频任务，再做预检或等待授权生成',
+  message: '先创建视频任务，再做预检或生成视频',
   error: '',
   progress: 0,
 })
+const videoTaskBusyIds = reactive(new Set())
 const modelLibraryState = reactive({
   loading: false,
   error: '',
@@ -2758,6 +2770,9 @@ const hasRefreshableVideoTask = computed(() => videoTasks.some(task => String(ta
 const materialIsRunning = computed(() => isActiveWorkflowStatus(materialTask.status))
 const aiIsRunning = computed(() => isActiveWorkflowStatus(aiTaskState.status))
 const videoIsRunning = computed(() => isActiveWorkflowStatus(videoStageState.status))
+function isVideoTaskBusy(task = {}) {
+  return videoTaskBusyIds.has(String(task?.id || ''))
+}
 const hasOpenModal = computed(() => Boolean(
   previewImage.value || pendingVersionDeletion.value || localMaterialLibraryOpen.value || modelLibraryOpen.value || templateLibraryOpen.value || videoTaskDialogOpen.value || reviewBulkConfirmation.value || promptLibraryOpen.value,
 ))
@@ -5065,6 +5080,70 @@ function videoTaskForResult(item = {}) {
   return videoTasks.find(task => task.id === taskRefId || String(item.id || '').startsWith(`${task.id}-`)) || null
 }
 
+function videoResultForTask(task = {}) {
+  const taskId = String(task?.id || '').trim()
+  if (!taskId) return null
+  return videoResults.find(item => {
+    const itemId = String(item?.id || '')
+    return String(item?.taskRefId || '') === taskId || itemId === taskId || itemId.startsWith(`${taskId}-`)
+  }) || null
+}
+
+function videoTaskHasViewableResult(task = {}) {
+  const result = videoResultForTask(task)
+  return Boolean(
+    result
+      && videoResultHasOutput(result)
+      && ['downloaded', 'ready'].includes(videoResultStage(result).id),
+  )
+}
+
+function videoTaskActionLabel(task = {}) {
+  return videoTaskHasViewableResult(task) ? '查看视频' : '生成视频'
+}
+
+function setVideoResultElement(item = {}, element = null) {
+  const id = String(item?.id || '').trim()
+  if (!id) return
+  if (element) videoResultElements.set(id, element)
+  else videoResultElements.delete(id)
+}
+
+async function playVideoResult(item = {}) {
+  const id = String(item?.id || '').trim()
+  if (!id) return
+  activeStep.value = 'results'
+  videoResultToPlayId.value = id
+  await nextTick()
+  const element = videoResultElements.get(id)
+  if (!element) return
+  try {
+    await element.play()
+  } catch {
+    // The native controls remain available when autoplay is blocked by the runtime.
+  }
+}
+
+async function handleVideoResultCanPlay(item = {}) {
+  if (videoResultToPlayId.value !== String(item?.id || '').trim()) return
+  const element = videoResultElements.get(videoResultToPlayId.value)
+  if (!element) return
+  try {
+    await element.play()
+  } catch {
+    // The native controls remain available when autoplay is blocked by the runtime.
+  }
+}
+
+async function handleVideoTaskAction(task = {}) {
+  const result = videoResultForTask(task)
+  if (result && videoTaskHasViewableResult(task)) {
+    await playVideoResult(result)
+    return
+  }
+  await runVideoTask(task, 'live')
+}
+
 function videoTaskDraftRequirement(id = '') {
   return videoTaskDraftRequirements.value.find(item => item.id === id) || null
 }
@@ -5096,7 +5175,7 @@ function videoResultStage(item = {}) {
   if (/已提交/.test(status) || item.providerTaskId || item.taskId) {
     return { id: 'submitted', label: '已提交', message: '任务已提交，供应商尚未返回排队或生成状态；可刷新状态。' }
   }
-  return { id: 'pending', label: '待生成', message: '尚未创建外部视频任务，请返回生视频完成预检并明确授权生成。' }
+  return { id: 'pending', label: '待生成', message: '尚未创建外部视频任务，请返回生视频完成预检并点击“生成视频”。' }
 }
 
 function videoResultHasLiveProgress(item = {}) {
@@ -5106,6 +5185,10 @@ function videoResultHasLiveProgress(item = {}) {
     && Number.isFinite(progress)
     && progress >= 0
     && progress <= 100
+}
+
+function videoResultIsLoading(item = {}) {
+  return ['submitted', 'queued', 'generating'].includes(videoResultStage(item).id)
 }
 
 function extractLiveVideoProgress(payload = {}) {
@@ -5502,7 +5585,7 @@ async function runSeedanceVideoTask(task, mode = 'plan') {
     duration: gen.duration || 5,
     generate_audio: gen.generateAudio !== false,
     watermark: Boolean(gen.watermark),
-    wait: true,
+    wait: false,
   }
   let result
   let usedTextOnlyFallback = false
@@ -5587,7 +5670,7 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
     pixverse_video_path: gen.videoPath || task.pixverseVideoPath || '',
     pixverse_video_url: gen.videoUrl || task.pixverseVideoUrl || '',
     watermark: Boolean(gen.watermark),
-    wait: true,
+    wait: false,
   }
   if (!isPixVerseVideoProvider(provider) && !(provider === 'happyhorse' && task.happyhorseMode === 'i2v')) {
     payload.ratio = gen.aspect_ratio || gen.ratio || '9:16'
@@ -5618,14 +5701,7 @@ async function runHappyHorseVideoTask(task, mode = 'plan') {
   activeStep.value = 'results'
 }
 
-async function runVideoTask(task, mode = 'plan') {
-  if (!shouldCreateBalaVideoProviderRun(task)) {
-    videoStageState.status = 'done'
-    videoStageState.error = ''
-    videoStageState.message = `${task.styleCode} 这条视频任务已提交，请到结果页刷新或复制新建后再次生成。`
-    activeStep.value = 'results'
-    return
-  }
+async function runVideoTaskInternal(task, mode = 'plan') {
   const provider = String(task?.provider || '').trim()
   const pixverseUsesImageUrl = isPixVerseVideoProvider(provider) && /^https?:\/\//i.test(String(task?.pixverseImageUrl || '').trim())
   const requiresLocalImages = provider === 'qn'
@@ -5653,7 +5729,7 @@ async function runVideoTask(task, mode = 'plan') {
   videoStageState.status = 'running'
   videoStageState.error = ''
   videoStageState.progress = 0
-  videoStageState.message = `${task.styleCode} 正在${mode === 'live' ? '生成并下载视频' : '预检视频任务'}...`
+  videoStageState.message = `${task.styleCode} 正在${mode === 'live' ? '提交视频生成任务' : '预检视频任务'}...`
   task.status = mode === 'live' ? '生成中' : '预检中'
   try {
     if (task.provider === 'seedance') {
@@ -5678,8 +5754,31 @@ async function runVideoTask(task, mode = 'plan') {
       if (launch.status === 'failed') {
         throw new Error(launch.snapshot?.error || '生意管家视频任务未成功启动，请重试。')
       }
-      await waitForQnVideoTask(task, runId, mode)
-      task.status = mode === 'live' ? '已提交 / 查看结果' : '预检完成，等待授权生成'
+      const launchStatus = normalizeWorkflowStageStatus(launch.status)
+      if (mode === 'live' && !['done', 'failed', 'stopped', 'partial'].includes(launchStatus)) {
+        const liveProgress = launchStatus === 'running' ? workflowRunProgress(launch.snapshot) : null
+        task.status = liveProgress !== null ? '生成中' : '已提交'
+        upsertVideoResults([{
+          id: task.id,
+          taskRefId: task.id,
+          styleCode: task.styleCode,
+          template: task.template?.title || '不选模板',
+          provider: providerLabel(task.provider),
+          providerKey: task.provider,
+          providerTaskId: runId,
+          taskId: runId,
+          providerStatus: launchStatus,
+          status: task.status,
+          progress: liveProgress ?? 0,
+          progressSource: liveProgress === null ? '' : 'workflow',
+          path: '',
+          error: '',
+        }])
+        activeStep.value = 'results'
+      } else {
+        await waitForQnVideoTask(task, runId, mode)
+        task.status = mode === 'live' ? '已提交 / 查看结果' : '预检完成，等待授权生成'
+      }
     }
     videoStageState.status = 'done'
     videoStageState.progress = 100
@@ -5703,6 +5802,24 @@ async function runVideoTask(task, mode = 'plan') {
       path: task.outputDir || videoOutputDir.value,
       error: videoStageState.error,
     }])
+  }
+}
+
+async function runVideoTask(task, mode = 'plan') {
+  if (!shouldCreateBalaVideoProviderRun(task)) {
+    videoStageState.status = 'done'
+    videoStageState.error = ''
+    videoStageState.message = `${task.styleCode} 这条视频任务已提交，请到结果页刷新或复制新建后再次生成。`
+    activeStep.value = 'results'
+    return
+  }
+  const taskId = String(task?.id || '').trim()
+  if (!taskId || videoTaskBusyIds.has(taskId)) return
+  videoTaskBusyIds.add(taskId)
+  try {
+    await runVideoTaskInternal(task, mode)
+  } finally {
+    videoTaskBusyIds.delete(taskId)
   }
 }
 
@@ -9380,6 +9497,12 @@ function localFileUrl(path) {
 }
 
 .aiv-result-preview {
+  min-width: 0;
+  min-height: 0;
+  width: 100%;
+  height: min(360px, 50vh);
+  max-height: min(360px, 50vh);
+  overflow: hidden;
   aspect-ratio: 16 / 9;
   display: grid;
   align-content: center;
@@ -9390,8 +9513,12 @@ function localFileUrl(path) {
 }
 
 .aiv-result-preview video {
+  min-width: 0;
+  min-height: 0;
   width: 100%;
   height: 100%;
+  max-width: 100%;
+  max-height: 100%;
   display: block;
   object-fit: contain;
   background: #09090b;
@@ -9402,6 +9529,38 @@ function localFileUrl(path) {
   align-content: center;
   justify-items: center;
   gap: 6px;
+}
+
+.aiv-result-preview-loading {
+  min-width: 0;
+  max-width: 100%;
+  padding: 16px;
+  display: grid;
+  align-content: center;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+}
+
+.aiv-result-preview-loading strong,
+.aiv-result-preview-loading span {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aiv-result-spinner {
+  width: 28px;
+  height: 28px;
+  border: 2px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--orange);
+  border-radius: 50%;
+  animation: aiv-result-spin 0.8s linear infinite;
+}
+
+@keyframes aiv-result-spin {
+  to { transform: rotate(360deg); }
 }
 
 .aiv-result-preview strong,

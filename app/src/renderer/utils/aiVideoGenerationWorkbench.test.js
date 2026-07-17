@@ -583,17 +583,26 @@ test('image selection stores opaque file tokens and sends no local paths', async
   assert.equal(JSON.stringify(payload).includes('/Users/'), false)
 })
 
-test('model selection is rendered as a video-model dropdown', async () => {
+test('model selection uses the current model card as an expandable dropdown', async () => {
   const source = fs.readFileSync(
     path.join(appRoot, 'src/renderer/views/AiVideoGenerationWorkbench.vue'),
     'utf8',
   )
-  assert.match(source, /<label class="avg-model-select-label"[^>]*>视频模型<\/label>/)
-  assert.match(source, /id="avg-video-model-select"/)
-  assert.match(source, /class="avg-model-select"/)
-  assert.ok(source.indexOf('id="avg-video-model-select"') < source.indexOf('class="avg-model-select-current"'))
+  assert.doesNotMatch(source, /<label class="avg-model-select-label"[^>]*>视频模型<\/label>/)
+  assert.doesNotMatch(source, /id="avg-video-model-select"/)
+  assert.doesNotMatch(source, /class="avg-model-select"/)
+  assert.match(source, /<button[^>]*class="avg-model-select-current"[^>]*type="button"/)
+  assert.match(source, /:aria-expanded="modelPickerOpen"/)
+  assert.match(source, /role="listbox"/)
+  assert.match(source, /v-for="model in modelOptions"/)
+  assert.match(source, /@click="selectProvider\(model\.id\)"/)
+  assert.match(source, /<img class="avg-provider-mark" :src="activeMeta\.mark"/)
+  assert.match(source, /<img class="avg-provider-mark" :src="model\.mark"/)
+  assert.match(source, /import volcengineMark from '\.\.\/assets\/ai-video-generation\/volcengine-mark\.png'/)
+  assert.match(source, /import aliyunMark from '\.\.\/assets\/ai-video-generation\/aliyun-mark\.png'/)
+  assert.match(source, /const modelPickerOpen = ref\(false\)/)
+  assert.match(source, /function toggleModelPicker\(\)/)
   assert.doesNotMatch(source, /v-model="form\.provider"/)
-  assert.doesNotMatch(source, /class="avg-model-switcher/)
 })
 
 test('provider-specific media sections keep advanced URL inputs collapsed by default', async () => {
