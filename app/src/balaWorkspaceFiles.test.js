@@ -9,6 +9,7 @@ const path = require('node:path')
 const {
   authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
+  getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
@@ -173,6 +174,34 @@ test('authorized workspace video metadata never serializes video bytes and rejec
     )
     assert.throws(
       () => getAuthorizedBalaWorkspaceVideo({ workspaceRoot: workspace, filePath: linkPath, roots }),
+      /符号链接/,
+    )
+  })
+})
+
+test('authorized workspace image metadata permits only regular images inside the selected workspace', () => {
+  withTempTree(({ workspace, outside }) => {
+    const nested = path.join(workspace, '208326102205', '01_模拍原图')
+    const imagePath = path.join(nested, '1-AI.jpg')
+    const outsideImage = path.join(outside, 'outside.jpg')
+    const linkPath = path.join(workspace, 'linked.jpg')
+    fs.mkdirSync(nested, { recursive: true })
+    fs.writeFileSync(imagePath, 'image')
+    fs.writeFileSync(outsideImage, 'outside')
+    fs.symlinkSync(outsideImage, linkPath)
+    const roots = new Set()
+    authorizeBalaWorkspaceRoot(workspace, { roots })
+
+    const media = getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: imagePath, roots })
+
+    assert.equal(media.path, fs.realpathSync.native(imagePath))
+    assert.equal(media.mime, 'image/jpeg')
+    assert.throws(
+      () => getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: outsideImage, roots }),
+      /工作区内/,
+    )
+    assert.throws(
+      () => getAuthorizedBalaWorkspaceImage({ workspaceRoot: workspace, filePath: linkPath, roots }),
       /符号链接/,
     )
   })

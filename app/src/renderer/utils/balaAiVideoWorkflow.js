@@ -1095,6 +1095,26 @@ function balaVideoResultHasOutput(result = {}) {
   return Boolean(compact(result?.path || result?.videoUrl || result?.video_url))
 }
 
+function balaVideoResultSettlesTask(result = {}) {
+  if (balaVideoResultHasOutput(result) || compact(result?.error)) return true
+  const status = [result?.status, result?.providerStatus]
+    .map(value => compact(value).toLowerCase())
+    .filter(Boolean)
+    .join(' ')
+  return /失败|error|failed|cancelled|canceled|stopped|partial|已完成|生成完成|已下载|succeeded|completed|downloaded/.test(status)
+}
+
+export function clearBalaVideoTaskHistory(existingResults = [], targets = []) {
+  const taskRefIds = [...new Set((targets || [])
+    .map(item => compact(item?.taskRefId || item?.id))
+    .filter(Boolean))]
+  const clearedTaskRefIds = new Set(taskRefIds)
+  return {
+    taskRefIds,
+    results: (existingResults || []).filter(item => !clearedTaskRefIds.has(compact(item?.taskRefId || item?.id))),
+  }
+}
+
 export function mergeBalaVideoResults(existingResults = [], incomingResults = []) {
   const merged = [...(existingResults || [])]
   for (const item of incomingResults || []) {
@@ -1106,10 +1126,10 @@ export function mergeBalaVideoResults(existingResults = [], incomingResults = []
       continue
     }
 
-    const loadingIndex = balaVideoResultHasOutput(item)
+    const loadingIndex = balaVideoResultSettlesTask(item)
       ? merged.findIndex(existing => (
         compact(existing?.taskRefId || existing?.id) === taskRefId
-        && !balaVideoResultHasOutput(existing)
+        && !balaVideoResultSettlesTask(existing)
       ))
       : -1
     if (loadingIndex >= 0) merged.splice(loadingIndex, 1, item)

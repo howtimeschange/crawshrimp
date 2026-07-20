@@ -96,6 +96,14 @@ test('video-task asset selection keeps preview and selection as sibling native b
   assert.match(workflowSource, /@click\.stop="openImagePreview\(asset, videoTaskDraft\.styleCode\)"/)
 })
 
+test('video task images use the authorized workspace preview bridge', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /readBalaWorkspaceImageThumbnail/)
+  assert.match(workflowSource, /readBalaWorkspaceImagePreview/)
+  assert.match(workflowSource, /workspaceDir\.value, key/)
+})
+
 test('video result normalization keeps local files and remote playback URLs in separate fields', () => {
   const [localResult, remoteResult] = normalizeBalaVideoResultRows([
     {
@@ -113,6 +121,42 @@ test('video result normalization keeps local files and remote playback URLs in s
   assert.equal(remoteResult.path, '')
   assert.equal(remoteResult.videoUrl, 'https://cdn.example.com/remote-result.mp4')
   assert.equal(remoteResult.status, '已完成')
+})
+
+test('clearing a failed video task clears every persisted result for that task', () => {
+  assert.equal(typeof balaWorkflow.clearBalaVideoTaskHistory, 'function')
+
+  const result = balaWorkflow.clearBalaVideoTaskHistory([
+    {
+      id: 'video-task-42-output-row',
+      taskRefId: 'video-task-42',
+      status: '失败',
+      error: '文件过大，不能超过10M',
+    },
+    {
+      id: 'video-task-42',
+      taskRefId: 'video-task-42',
+      status: '生成中',
+      providerStatus: 'running',
+    },
+    {
+      id: 'video-task-99',
+      taskRefId: 'video-task-99',
+      status: '已完成',
+    },
+  ], [{
+    id: 'video-task-42-output-row',
+    taskRefId: 'video-task-42',
+  }])
+
+  assert.deepEqual(result, {
+    taskRefIds: ['video-task-42'],
+    results: [{
+      id: 'video-task-99',
+      taskRefId: 'video-task-99',
+      status: '已完成',
+    }],
+  })
 })
 
 test('AI video local material library uses category chips for model and detail photos', async () => {
@@ -415,6 +459,13 @@ test('large image editor uses a bounded viewport layout with a contained image a
   assert.match(workflowSource, /TldrawAnnotationLayer[\s\S]*?v-if="activePreviewHistoryItem\?\.src && !brokenPreviews/)
   assert.match(workflowSource, /selectedAiImageModelId/)
   assert.match(workflowSource, /openAiImageModelSettings/)
+})
+
+test('image preview opened from the video-task dialog has a higher modal layer', async () => {
+  const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
+
+  assert.match(workflowSource, /v-if="previewImage" class="aiv-modal aiv-preview-modal"/)
+  assert.match(workflowSource, /\.aiv-preview-modal\s*\{[\s\S]*?z-index:\s*90;/)
 })
 
 test('model library keeps age and gender filters fixed while only results scroll', async () => {

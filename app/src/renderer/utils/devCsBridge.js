@@ -482,6 +482,12 @@ export function createDevCsBridge() {
     getBalaWorkspaceVideoMedia: async () => {
       throw devModeError('浏览器开发模式不能安全流式预览本地视频，请在 Electron 开发壳中查看')
     },
+    readBalaWorkspaceImagePreview: async () => {
+      throw devModeError('浏览器开发模式不能安全预览工作区图片，请在 Electron 开发壳中查看')
+    },
+    readBalaWorkspaceImageThumbnail: async () => {
+      throw devModeError('浏览器开发模式不能安全生成工作区图片缩略图，请在 Electron 开发壳中查看')
+    },
     readBalaWorkspaceManifest: async () => null,
     writeBalaWorkspaceManifest: async () => {
       throw devModeError('浏览器开发模式不能安全写入工作区恢复清单，请在 Electron 开发壳中操作')

@@ -40,6 +40,7 @@ const { createUpdateCheckScheduler } = require('./updateCheckScheduler')
 const { evaluateUpdatePlatform, resolveUpdateFeedUrl } = require('./updatePlatform')
 const {
   deleteAuthorizedWorkspaceImage,
+  getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
@@ -3263,6 +3264,30 @@ secureHandle('get-bala-workspace-video-media', async (_, workspaceRoot, filePath
   }
 })
 
+secureHandle('read-bala-workspace-image-preview', async (_, workspaceRoot, filePath) => {
+  ensureBalaWorkspaceAuthorizationsLoaded()
+  const media = getAuthorizedBalaWorkspaceImage({
+    workspaceRoot,
+    filePath,
+    roots: authorizedBalaWorkspaceRoots,
+  })
+  return readLocalImageDataUrl(media.path)
+})
+
+secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, filePath, opts = {}) => {
+  try {
+    ensureBalaWorkspaceAuthorizationsLoaded()
+    const media = getAuthorizedBalaWorkspaceImage({
+      workspaceRoot,
+      filePath,
+      roots: authorizedBalaWorkspaceRoots,
+    })
+    return readLocalImageThumbnail(media.path, opts || {})
+  } catch (error) {
+    return { ok: false, error: error?.message || String(error) }
+  }
+})
+
 secureHandle('get-local-media-url', async (_, filePath) => {
   const media = getAuthorizedLocalMediaFile(filePath)
   const fileToken = signAiVideoCapability({
@@ -3297,16 +3322,12 @@ secureHandle('write-bala-workspace-manifest', async (_, workspaceRoot, payload) 
 })
 
 secureHandle('read-local-image-preview', async (_, filePath) => {
-  const media = getAuthorizedLocalMediaFile(filePath)
-  if (!String(media.mime || '').startsWith('image/')) throw new Error('该文件不是图片')
-  return readLocalImageDataUrl(media.path)
+  return readLocalImageDataUrl(filePath)
 })
 
 secureHandle('read-local-image-thumbnail', async (_, filePath, opts = {}) => {
   try {
-    const media = getAuthorizedLocalMediaFile(filePath)
-    if (!String(media.mime || '').startsWith('image/')) throw new Error('该文件不是图片')
-    return readLocalImageThumbnail(media.path, opts || {})
+    return readLocalImageThumbnail(filePath, opts || {})
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }

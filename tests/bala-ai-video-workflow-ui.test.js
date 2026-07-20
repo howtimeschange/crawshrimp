@@ -85,6 +85,61 @@ test('AI video workflow normalizes task output files and material batch groups',
   })
 })
 
+test('material recall is independent from the one-time cloud-download style-code input', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+
+  assert.match(source, /const styleWorkspaces = reactive\(\[\]\)/)
+  assert.doesNotMatch(source, /function resetDraftMaterialGroups\(/)
+  assert.doesNotMatch(source, /watch\(styleCodes, resetDraftMaterialGroups\)/)
+  assert.match(source, /replaceStyleWorkspaces\(savedStyles\.length \? savedStyles : \[\]\)/)
+  assert.match(source, /replaceStyleWorkspaces\(\[\]\)/)
+  assert.match(source, /const groups = normalizeBalaMaterialGroups\(\{\s*batch,\s*rows: downloadedRows,\s*\}\)/)
+  assert.doesNotMatch(source, /if \(rowStyleCodes\.length\) styleCodes\.value = rowStyleCodes\.join\('\\n'\)/)
+})
+
+test('missing material workspace shows an inline folder chooser and AI editing expands every material group', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const templateSource = source.split('<script setup>')[0]
+
+  assert.match(templateSource, /v-if="materialWorkspaceRequired"/)
+  assert.match(templateSource, /请先选择 AI 视频工作区目录/)
+  assert.match(templateSource, /@click="pickMaterialOutputDirectory"/)
+  assert.match(source, /const materialWorkspaceRequired = ref\(false\)/)
+  assert.match(source, /if \(!params\.export_folder\) \{\s*materialWorkspaceRequired\.value = true/)
+  assert.match(source, /function expandAllMaterialGroups\(\) \{[\s\S]*?materialExpanded\[style\.styleCode\] = true/)
+  assert.match(source, /function enterAiEditWorkspace\(\) \{\s*expandAllMaterialGroups\(\)/)
+  assert.match(source, /if \(stepId === 'ai-edit'\) \{\s*expandAllMaterialGroups\(\)/)
+})
+
+test('video task thumbnails prefer the existing local image and only fall back to a remote thumbnail after local preview fails', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const imagePreviewStart = source.indexOf('function imagePreviewSource')
+  const imagePreviewEnd = source.indexOf('function previewSourceFor', imagePreviewStart)
+  const imagePreview = source.slice(imagePreviewStart, imagePreviewEnd)
+  const queueStart = source.indexOf('function enqueueVideoTaskThumb')
+  const queueEnd = source.indexOf('function scheduleVideoTaskThumbs', queueStart)
+  const queue = source.slice(queueStart, queueEnd)
+
+  assert.ok(imagePreview.indexOf('if (localPath)') < imagePreview.indexOf('const remote'))
+  assert.match(imagePreview, /if \(!brokenPreviews\[cacheKey\]\) \{[\s\S]*?return ''/)
+  assert.match(imagePreview, /if \(remote\) return remote/)
+  assert.ok(queue.indexOf('const path') < queue.indexOf('const remoteSrc'))
+  assert.match(queue, /videoTaskThumbQueue\.push\(\{ id, path, remoteSrc \}\)/)
+  assert.match(queue, /else if \(next\.remoteSrc\) videoTaskThumbSrcMap\[next\.id\] = next\.remoteSrc/)
+})
+
+test('a successful workspace thumbnail response is retained instead of returning before it reaches the preview cache', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('async function loadLocalImagePreview')
+  const end = source.indexOf('function imagePreviewSource', start)
+  const loader = source.slice(start, end)
+
+  assert.match(loader, /if \(workspaceRoot && typeof workspaceReader === 'function'\)[\s\S]*?dataUrl = String\(response\?\.data_url \|\| response\?\.dataUrl \|\| ''\)\.trim\(\)/)
+  assert.doesNotMatch(loader, /else \{\s*return\s*\}/)
+  assert.match(loader, /if \(!dataUrl\) throw new Error\(thumbnail \? '本地缩略图不可用'/)
+  assert.match(loader, /localImagePreviews\[cacheKey\] = dataUrl/)
+})
+
 test('AI video workflow restores downloaded Excel rows into material groups without duplicating batch assets', () => {
   const downloadedRow = {
     输入款号: '208326102205',
@@ -600,6 +655,40 @@ test('completed business-manager result replaces the same task loading placehold
     status: '已完成',
     path: '/tmp/finished.mp4',
     videoUrl: '',
+  }])
+})
+
+test('failed business-manager result replaces the same task loading placeholder', () => {
+  const merged = mergeBalaVideoResults([
+    {
+      id: 'video-task-42-progress',
+      taskRefId: 'video-task-42',
+      status: '生成中',
+      providerStatus: 'running',
+      progress: 100,
+      path: '',
+      videoUrl: '',
+    },
+  ], [
+    {
+      id: 'video-task-42-failed',
+      taskRefId: 'video-task-42',
+      status: '失败',
+      providerStatus: 'failed',
+      path: '',
+      videoUrl: '',
+      error: '文件过大，不能超过10M',
+    },
+  ])
+
+  assert.deepEqual(merged, [{
+    id: 'video-task-42-failed',
+    taskRefId: 'video-task-42',
+    status: '失败',
+    providerStatus: 'failed',
+    path: '',
+    videoUrl: '',
+    error: '文件过大，不能超过10M',
   }])
 })
 

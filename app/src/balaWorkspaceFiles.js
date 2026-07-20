@@ -91,6 +91,35 @@ function videoMimeForPath(filePath = '') {
   return ''
 }
 
+function imageMimeForPath(filePath = '') {
+  const extension = path.extname(String(filePath || '')).toLowerCase()
+  if (extension === '.jpg' || extension === '.jpeg') return 'image/jpeg'
+  if (extension === '.png') return 'image/png'
+  if (extension === '.webp') return 'image/webp'
+  return ''
+}
+
+function getAuthorizedBalaWorkspaceImage({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
+  const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
+  const rawFile = String(filePath || '').trim()
+  if (!rawFile) throw new Error('缺少本地图片路径')
+  const resolvedFile = path.resolve(rawFile)
+  const stat = fsApi.lstatSync(resolvedFile)
+  if (stat.isSymbolicLink()) throw new Error('禁止预览符号链接')
+  if (!stat.isFile()) throw new Error('只能预览普通图片文件')
+  const mime = imageMimeForPath(resolvedFile)
+  if (!mime || !BALA_IMAGE_EXTENSIONS.has(path.extname(resolvedFile).toLowerCase())) {
+    throw new Error('只能预览 PNG、JPG、JPEG 或 WEBP 图片文件')
+  }
+  const canonicalFile = canonicalPath(resolvedFile, fsApi)
+  assertDescendant(canonicalRoot, canonicalFile)
+  return {
+    path: canonicalFile,
+    mime,
+    size: stat.size,
+  }
+}
+
 function getAuthorizedBalaWorkspaceVideo({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
   const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
   const rawFile = String(filePath || '').trim()
@@ -196,6 +225,7 @@ module.exports = {
   BALA_WORKSPACE_MANIFEST_FILENAME,
   authorizeBalaWorkspaceRoot,
   deleteAuthorizedWorkspaceImage,
+  getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,

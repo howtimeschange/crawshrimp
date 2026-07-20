@@ -87,6 +87,11 @@
                 <strong>选择文件夹</strong>
               </button>
             </div>
+            <section v-if="materialWorkspaceRequired" class="aiv-material-workspace-callout" role="alert">
+              <strong>请先选择 AI 视频工作区目录</strong>
+              <span>下载的素材、改图结果和视频任务都会保存在这个目录中。</span>
+              <button type="button" class="aiv-primary small" @click="pickMaterialOutputDirectory">现在选择文件夹</button>
+            </section>
             <label class="aiv-field">
               <span>导出包名称</span>
               <input v-model="materialPackageName" placeholder="可选，留空按时间生成" />
@@ -985,7 +990,7 @@
       </section>
     </main>
 
-    <div v-if="previewImage" class="aiv-modal" @click.self="closePreview">
+    <div v-if="previewImage" class="aiv-modal aiv-preview-modal" @click.self="closePreview">
       <section
         class="aiv-preview-modal-panel aiv-image-editor-panel"
         role="dialog"
@@ -1912,6 +1917,7 @@ import {
   buildBalaVideoAssetPool,
   collectVideoResultRows,
   collectDownloadedMaterialRows,
+  clearBalaVideoTaskHistory,
   filterBalaModelLibraryItems,
   formatBalaModelDisplayLabel,
   hasApprovedBalaVideoAsset,
@@ -2146,6 +2152,7 @@ const materialTask = reactive({
   logs: [],
   outputFiles: [],
 })
+const materialWorkspaceRequired = ref(false)
 const aiTaskState = reactive({
   status: 'idle',
   message: '选择素材和动作后生成预检任务',
@@ -2226,9 +2233,7 @@ const activePromptLabel = computed(() => {
   return '换脸补充要求'
 })
 
-const styleWorkspaces = reactive(normalizeBalaMaterialGroups({
-  fallbackCodes: normalizeStyleCodeLines(styleCodes.value),
-}))
+const styleWorkspaces = reactive([])
 
 const materialGroups = styleWorkspaces
 const activeMaterialStyleCode = ref(styleWorkspaces[0]?.styleCode || '')
@@ -2529,9 +2534,7 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
 
   const image = snapshot.image || {}
   const savedStyles = Array.isArray(image.styles) ? cloneWorkspaceValue(image.styles, []) : []
-  replaceStyleWorkspaces(savedStyles.length ? savedStyles : normalizeBalaMaterialGroups({
-    fallbackCodes: normalizeStyleCodeLines(styleCodes.value),
-  }))
+  replaceStyleWorkspaces(savedStyles.length ? savedStyles : [])
   reviewStyles.splice(0, reviewStyles.length, ...(cloneWorkspaceValue(image.reviewStyles, []) || []))
   reviewBatch.value = cloneWorkspaceValue(image.reviewBatch, null)
   reviewBoardUrl.value = String(image.reviewBoardUrl || '')
@@ -3175,15 +3178,6 @@ function showMoreMaterialAssets(styleCode, sourceType) {
   materialRenderLimits[key] = materialRenderLimit(styleCode, sourceType) + MATERIAL_RENDER_CHUNK
 }
 
-function resetDraftMaterialGroups() {
-  if (materialBatch.value || materialTask.status !== 'idle') return
-  replaceStyleWorkspaces(normalizeBalaMaterialGroups({
-    fallbackCodes: normalizeStyleCodeLines(styleCodes.value),
-  }))
-}
-
-watch(styleCodes, resetDraftMaterialGroups)
-
 function absoluteApiUrl(value = '') {
   const url = String(value || '').trim()
   if (!url) return ''
@@ -3227,17 +3221,32 @@ async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
   localImagePreviewLoading.add(cacheKey)
   try {
     let dataUrl = ''
+    const workspaceRoot = String(workspaceDir.value || '').trim()
+    const workspaceReader = thumbnail
+      ? window.cs?.readBalaWorkspaceImageThumbnail
+      : window.cs?.readBalaWorkspaceImagePreview
+    if (workspaceRoot && typeof workspaceReader === 'function') {
+      try {
+        const response = thumbnail
+          ? await workspaceReader(workspaceRoot, key, { maxEdge: 280, quality: 0.72 })
+          : await workspaceReader(workspaceRoot, key)
+        if (response?.ok !== false) {
+          dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
+        }
+      } catch {
+        // Assets outside the current workspace can still use the existing local-media bridge.
+      }
+    }
     // Grid / dense lists: compressed thumbnails only (full base64 of 10MB originals freezes the UI).
-    if (thumbnail && typeof window.cs?.readLocalImageThumbnail === 'function') {
+    if (!dataUrl && thumbnail && typeof window.cs?.readLocalImageThumbnail === 'function') {
       const response = await window.cs.readLocalImageThumbnail(key, { maxEdge: 280, quality: 0.72 })
       if (response?.ok === false) throw new Error(response?.error || '本地缩略图不可用')
       dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
-    } else if (typeof window.cs?.readLocalImagePreview === 'function') {
+    }
+    if (!dataUrl && typeof window.cs?.readLocalImagePreview === 'function') {
       const response = await window.cs.readLocalImagePreview(key)
       if (response?.ok === false) throw new Error(response?.error || '本地图片预览不可用')
       dataUrl = String(response?.data_url || response?.dataUrl || '').trim()
-    } else {
-      return
     }
     if (!dataUrl) throw new Error(thumbnail ? '本地缩略图不可用' : '本地图片预览不可用')
     localImagePreviews[cacheKey] = dataUrl
@@ -3250,22 +3259,25 @@ async function loadLocalImagePreview(path = '', { thumbnail = false } = {}) {
 
 function imagePreviewSource(asset = {}, { thumbnail = false } = {}) {
   const localPath = localImagePathFor(asset, thumbnail)
-  // Prefer remote URL when present (already small / CDN).
-  const remote = resolveRemoteImageUrl(
-    thumbnail
-      ? (asset.thumbnailUrl || asset.thumbnail_url || asset.imageUrl || asset.image_url)
-      : (asset.imageUrl || asset.image_url),
-  )
-  if (remote) return remote
-
   if (localPath) {
     const cacheKey = localImageCacheKey(localPath, thumbnail)
     if (localImagePreviews[cacheKey]) return localImagePreviews[cacheKey]
     // Full preview may already be cached under raw path — allow reuse for non-thumb.
     if (!thumbnail && localImagePreviews[localPath]) return localImagePreviews[localPath]
-    if (!brokenPreviews[cacheKey]) void loadLocalImagePreview(localPath, { thumbnail })
-    return ''
+    if (!brokenPreviews[cacheKey]) {
+      void loadLocalImagePreview(localPath, { thumbnail })
+      return ''
+    }
   }
+
+  // Local files are the stable source for workspace assets. A short-lived remote
+  // batch URL remains a fallback if the local file is unavailable or unreadable.
+  const remote = resolveRemoteImageUrl(
+    thumbnail
+      ? (asset.thumbnailUrl || asset.thumbnail_url || asset.imageUrl || asset.image_url)
+      : (asset.imageUrl || asset.image_url || asset.thumbnailUrl || asset.thumbnail_url),
+  )
+  if (remote) return remote
 
   // Fallback to shared resolver (remote / cached full previews).
   return resolveBalaAssetPreviewSource(
@@ -3282,8 +3294,7 @@ function videoTaskThumbLocalPath(asset = {}) {
   return String(asset?.path || asset?.previewPath || '').trim()
 }
 
-// Material batches provide a signed, generated thumbnail. Prefer it over raw local paths,
-// which are intentionally unavailable unless their directory was explicitly authorized.
+// Signed batch URLs are short-lived. Use them only after the local image preview fails.
 function videoTaskThumbRemoteSource(asset = {}) {
   return resolveRemoteImageUrl(asset.thumbnailUrl || asset.thumbnail_url)
 }
@@ -3292,17 +3303,15 @@ function enqueueVideoTaskThumb(asset = {}) {
   const id = String(asset?.id || '').trim()
   if (!id) return
   if (videoTaskThumbSrcMap[id] || videoTaskThumbLoading[id]) return
+  const path = videoTaskThumbLocalPath(asset)
   const remoteSrc = videoTaskThumbRemoteSource(asset)
-  if (remoteSrc) {
-    videoTaskThumbSrcMap[id] = remoteSrc
+  if (path && !brokenPreviews[localImageCacheKey(path, true)]) {
+    if (videoTaskThumbQueue.some(item => item.id === id)) return
+    videoTaskThumbQueue.push({ id, path, remoteSrc })
+    pumpVideoTaskThumbQueue()
     return
   }
-  const path = videoTaskThumbLocalPath(asset)
-  if (!path) return
-  if (brokenPreviews[localImageCacheKey(path, true)]) return
-  if (videoTaskThumbQueue.some(item => item.id === id)) return
-  videoTaskThumbQueue.push({ id, path })
-  pumpVideoTaskThumbQueue()
+  if (remoteSrc) videoTaskThumbSrcMap[id] = remoteSrc
 }
 
 function pumpVideoTaskThumbQueue() {
@@ -3317,10 +3326,13 @@ function pumpVideoTaskThumbQueue() {
         const cacheKey = localImageCacheKey(next.path, true)
         const src = localImagePreviews[cacheKey] || ''
         if (src) videoTaskThumbSrcMap[next.id] = src
+        else if (next.remoteSrc) videoTaskThumbSrcMap[next.id] = next.remoteSrc
         else brokenPreviews[cacheKey] = true
       })
       .catch(() => {
-        brokenPreviews[localImageCacheKey(next.path, true)] = true
+        const cacheKey = localImageCacheKey(next.path, true)
+        if (next.remoteSrc) videoTaskThumbSrcMap[next.id] = next.remoteSrc
+        else brokenPreviews[cacheKey] = true
       })
       .finally(() => {
         delete videoTaskThumbLoading[next.id]
@@ -3539,9 +3551,7 @@ function resetMaterialWorkspace() {
   materialBatch.value = null
   materialBoardUrl.value = ''
   for (const key of Object.keys(brokenPreviews)) delete brokenPreviews[key]
-  replaceStyleWorkspaces(normalizeBalaMaterialGroups({
-    fallbackCodes: normalizeStyleCodeLines(styleCodes.value),
-  }))
+  replaceStyleWorkspaces([])
   updateMaterialTask({
     status: 'idle',
     message: '工作区已切换，请开始找图并回显当前工作区素材。',
@@ -3625,6 +3635,7 @@ async function pickMaterialOutputDirectory() {
     })
     const path = Array.isArray(selected) ? selected[0] : selected
     await applyWorkspaceDirectory(path)
+    if (String(path || '').trim()) materialWorkspaceRequired.value = false
   } catch (error) {
     updateMaterialTask({
       status: 'failed',
@@ -3817,9 +3828,11 @@ async function startMaterialPrepare() {
     return
   }
   if (!params.export_folder) {
+    materialWorkspaceRequired.value = true
     updateMaterialTask({ status: 'failed', error: '请先选择 AI 视频工作区目录', message: '请先选择 AI 视频工作区目录。' })
     return
   }
+  materialWorkspaceRequired.value = false
   const previousStatus = await window.cs.getTaskStatus(
     BALA_AI_VIDEO_ADAPTER_ID,
     BALA_MATERIAL_PREPARE_TASK_ID,
@@ -4000,11 +4013,9 @@ async function finalizeMaterialTask(runId = '') {
   const rowStyleCodes = [...new Set(rows
     .map(row => String(row?.输入款号 || row?.款号 || row?.style_code || '').trim())
     .filter(Boolean))]
-  if (rowStyleCodes.length) styleCodes.value = rowStyleCodes.join('\n')
   const groups = normalizeBalaMaterialGroups({
     batch,
-    rows,
-    fallbackCodes: rowStyleCodes.length ? rowStyleCodes : normalizeStyleCodeLines(styleCodes.value),
+    rows: downloadedRows,
   })
   replaceStyleWorkspaces(groups)
   const summary = summarizeBalaMaterialGroups(groups)
@@ -4126,6 +4137,10 @@ function isMaterialExpanded(styleCode) {
   return materialExpanded[styleCode] !== false
 }
 
+function expandAllMaterialGroups() {
+  for (const style of styleWorkspaces) materialExpanded[style.styleCode] = true
+}
+
 function toggleMaterialGroup(styleCode) {
   materialExpanded[styleCode] = !isMaterialExpanded(styleCode)
 }
@@ -4149,6 +4164,7 @@ function continueEditingSource(source = {}) {
 }
 
 function enterAiEditWorkspace() {
+  expandAllMaterialGroups()
   activeStep.value = 'ai-edit'
 }
 
@@ -5064,6 +5080,7 @@ async function selectWorkflowStep(stepId) {
     return
   }
   if (stepId === 'ai-edit') {
+    expandAllMaterialGroups()
     void loadAiImageSettings()
   }
   if (stepId === 'templates') {
@@ -5854,7 +5871,13 @@ function buildQnVideoTaskParams(task, mode = 'plan') {
 }
 
 function upsertVideoResults(results = []) {
-  videoResults.splice(0, videoResults.length, ...mergeBalaVideoResults(videoResults, results))
+  const trackedTaskIds = new Set(videoTasks.map(task => String(task?.id || '').trim()).filter(Boolean))
+  const trackedResults = (results || []).filter(item => {
+    const taskRefId = String(item?.taskRefId || item?.id || '').trim()
+    return !taskRefId || trackedTaskIds.has(taskRefId)
+  })
+  if (!trackedResults.length) return
+  videoResults.splice(0, videoResults.length, ...mergeBalaVideoResults(videoResults, trackedResults))
 }
 
 async function readVideoRowsFromOutputFiles(files = []) {
@@ -6921,26 +6944,27 @@ function closeVideoHistoryCleanup() {
   videoHistoryCleanupError.value = ''
 }
 
-function removeClearedVideoTasks(removedResults = []) {
-  const removedTaskIds = new Set(removedResults.map(item => String(item.taskRefId || item.id || '').trim()).filter(Boolean))
+function removeClearedVideoTasks(taskRefIds = []) {
+  const removedTaskIds = new Set((taskRefIds || []).map(item => String(item || '').trim()).filter(Boolean))
   for (let index = videoTasks.length - 1; index >= 0; index -= 1) {
     const task = videoTasks[index]
     if (!removedTaskIds.has(String(task?.id || '').trim())) continue
-    const stillTracked = videoResults.some(item => String(item?.taskRefId || item?.id || '').trim() === String(task.id || '').trim())
-    if (!stillTracked) videoTasks.splice(index, 1)
+    videoTasks.splice(index, 1)
   }
 }
 
 async function clearVideoHistoryRecords(items = []) {
-  const ids = new Set(items.map(item => String(item?.id || '').trim()).filter(Boolean))
-  if (!ids.size) return
-  const removed = videoResults.filter(item => ids.has(String(item?.id || '').trim()))
-  videoResults.splice(0, videoResults.length, ...videoResults.filter(item => !ids.has(String(item?.id || '').trim())))
-  removeClearedVideoTasks(removed)
+  const cleared = clearBalaVideoTaskHistory(videoResults, items)
+  if (!cleared.taskRefIds.length) return
+  const removed = videoResults.filter(item => !cleared.results.includes(item))
+  videoResults.splice(0, videoResults.length, ...cleared.results)
+  removeClearedVideoTasks(cleared.taskRefIds)
+  resetVideoResultPoll()
   for (const item of removed) {
     delete videoResultElements[String(item.id || '')]
     if (videoResultToPlayId.value === item.id) videoResultToPlayId.value = ''
   }
+  await flushWorkspaceManifest()
   videoStageState.status = 'done'
   videoStageState.error = ''
   videoStageState.message = `已清除 ${removed.length} 条视频历史记录。`
@@ -7438,6 +7462,30 @@ function localFileUrl(path) {
   color: var(--text3);
   font-size: 11px;
   line-height: 1.5;
+}
+
+.aiv-material-workspace-callout {
+  display: grid;
+  gap: 7px;
+  padding: 10px;
+  border: 1px solid rgba(251, 146, 60, .62);
+  border-radius: 10px;
+  background: rgba(154, 52, 18, .2);
+}
+
+.aiv-material-workspace-callout strong {
+  color: #fed7aa;
+  font-size: 12px;
+}
+
+.aiv-material-workspace-callout span {
+  color: var(--text2);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.aiv-material-workspace-callout .aiv-primary {
+  justify-self: start;
 }
 
 .aiv-page-actions {
@@ -11518,6 +11566,10 @@ function localFileUrl(path) {
   place-items: center;
   padding: 28px;
   background: rgba(0, 0, 0, 0.56);
+}
+
+.aiv-preview-modal {
+  z-index: 90;
 }
 
 .aiv-modal-panel {

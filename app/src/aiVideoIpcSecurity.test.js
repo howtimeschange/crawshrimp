@@ -73,7 +73,7 @@ test('AI video files are opened only after resolving a media capability in main'
   assert.match(handlerSource, /openAiVideoFile\(fileToken\)/)
 })
 
-test('legacy raw-path media and image reads are bounded by native authorized roots', () => {
+test('legacy raw-path media stays bounded, while generic image previews honor image-only limits without a folder allowlist', () => {
   assert.doesNotMatch(main, /^\s*path\.join\(os\.homedir\(\), 'Downloads'\),?\s*$/m)
 
   const legacyMedia = section(main, "secureHandle('get-local-media-url'", "secureHandle('read-bala-workspace-manifest'")
@@ -81,13 +81,25 @@ test('legacy raw-path media and image reads are bounded by native authorized roo
   assert.match(legacyMedia, /signAiVideoCapability/)
 
   const legacyPreview = section(main, "secureHandle('read-local-image-preview'", "secureHandle('read-local-image-thumbnail'")
-  assert.match(legacyPreview, /getAuthorizedLocalMediaFile/)
+  assert.match(legacyPreview, /readLocalImageDataUrl\(filePath\)/)
+  assert.doesNotMatch(legacyPreview, /getAuthorizedLocalMediaFile/)
 
   const legacyThumbnail = section(main, "secureHandle('read-local-image-thumbnail'", "secureHandle('list-directory-files'")
-  assert.match(legacyThumbnail, /getAuthorizedLocalMediaFile/)
+  assert.match(legacyThumbnail, /readLocalImageThumbnail\(filePath, opts \|\| \{\}\)/)
+  assert.doesNotMatch(legacyThumbnail, /getAuthorizedLocalMediaFile/)
 
   const legacyList = section(main, "secureHandle('list-directory-files'", "secureHandle('render-pdf-preview'")
   assert.match(legacyList, /getAuthorizedLocalMediaDirectory/)
+})
+
+test('Bala workspace image preview IPC stays constrained to a selected workspace', () => {
+  assert.match(preload, /readBalaWorkspaceImagePreview: \(workspaceRoot, filePath\) => ipcRenderer\.invoke\('read-bala-workspace-image-preview'/)
+  assert.match(preload, /readBalaWorkspaceImageThumbnail: \(workspaceRoot, filePath, opts = \{\}\) => ipcRenderer\.invoke\('read-bala-workspace-image-thumbnail'/)
+
+  const previewHandler = section(main, "secureHandle('read-bala-workspace-image-preview'", "secureHandle('read-bala-workspace-image-thumbnail'")
+  const thumbnailHandler = section(main, "secureHandle('read-bala-workspace-image-thumbnail'", "secureHandle('get-local-media-url'")
+  assert.match(previewHandler, /getAuthorizedBalaWorkspaceImage/)
+  assert.match(thumbnailHandler, /getAuthorizedBalaWorkspaceImage/)
 })
 
 test('AI video config IPC removes backend paths and returns the fixed output capability', () => {
