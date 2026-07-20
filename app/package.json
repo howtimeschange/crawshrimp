@@ -1,7 +1,7 @@
 {
   "name": "crawshrimp",
-  "version": "2.2.1",
-  "description": "Ecommerce automation, AI image, and cloud approval desktop app",
+  "version": "2.2.2",
+  "description": "Ecommerce automation, AI image and video, and cloud approval desktop app",
   "author": "howtimeschange",
   "crawshrimpUpdateFeedUrl": "https://updates.crawshrimp.com/",
   "main": "src/main.js",
