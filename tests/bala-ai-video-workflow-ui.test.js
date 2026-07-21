@@ -85,6 +85,82 @@ test('AI video workflow normalizes task output files and material batch groups',
   })
 })
 
+test('material recall merges later batches by style without dropping the current selections', () => {
+  assert.equal(typeof balaWorkflow.mergeBalaMaterialGroups, 'function')
+  const merged = balaWorkflow.mergeBalaMaterialGroups([
+    {
+      styleCode: '208326102205',
+      modelPhotos: [{ id: 'old-model', path: '/tmp/old.jpg', name: 'old.jpg', selected: true, versions: [] }],
+      detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+    },
+  ], [
+    {
+      styleCode: '208326108104',
+      modelPhotos: [{ id: 'new-model', path: '/tmp/new.jpg', name: 'new.jpg', selected: false, versions: [] }],
+      detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+    },
+  ])
+
+  assert.deepEqual(merged.map(item => item.styleCode), ['208326102205', '208326108104'])
+  assert.equal(merged[0].modelPhotos[0].selected, true)
+})
+
+test('material recall keeps one card per filename inside the same style and source type', () => {
+  const merged = balaWorkflow.mergeBalaMaterialGroups([{
+    styleCode: '208326102205',
+    modelPhotos: [{ id: 'first-copy', path: '/tmp/first/1-AI.jpg', name: '1-AI.jpg', selected: true, versions: [] }],
+    detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+  }], [{
+    styleCode: '208326102205',
+    modelPhotos: [{ id: 'later-copy', path: '/tmp/later/1-AI.jpg', name: '1-AI.jpg', selected: false, versions: [] }],
+    detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+  }])
+
+  assert.equal(merged[0].modelPhotos.length, 1)
+  assert.equal(merged[0].modelPhotos[0].path, '/tmp/first/1-AI.jpg')
+  assert.equal(merged[0].modelPhotos[0].selected, true)
+})
+
+test('AI-named material is selected and sorted first while duplicate filenames collapse across source folders', () => {
+  const groups = normalizeBalaMaterialGroups({
+    batch: {
+      status: 'pending_selection',
+      items: [{
+        style_code: '208326102205',
+        assets: [
+          { id: 'detail-copy', source_type: 'detail', filename: 'same.jpg', path: '/tmp/detail/same.jpg' },
+          { id: 'ai', source_type: 'model', filename: 'lookAI-result.jpg', path: '/tmp/model/lookAI-result.jpg' },
+          { id: 'model-copy', source_type: 'model', filename: 'same.jpg', path: '/tmp/model/same.jpg' },
+        ],
+      }],
+    },
+  })
+
+  assert.equal(groups[0].modelPhotos.find(asset => asset.filename === 'lookAI-result.jpg')?.selected, true)
+  assert.equal(groups[0].modelPhotos.length + groups[0].detailPhotos.length, 2)
+  assert.equal(balaWorkflow.sortBalaMaterialAssets([
+    { filename: 'z.jpg', selected: false },
+    { filename: 'firstAI.jpg', selected: true },
+  ])[0].filename, 'firstAI.jpg')
+})
+
+test('find-materials supports grid and list display modes while keeping selected materials first', async () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /const materialDisplayMode = ref\('grid'\)/)
+  assert.match(source, /素材展示方式/)
+  assert.match(source, /materialDisplayMode === 'list'/)
+  assert.match(source, /\.aiv-material-tab-panel \.aiv-thumb-grid\.is-list/)
+  assert.match(source, /\.aiv-thumb\.is-list/)
+  assert.match(source, /const source = sortBalaMaterialAssets\(assets\)/)
+})
+
+test('AI image generation is marked backend-only so it never creates an about:blank CDP tab', () => {
+  const api = fs.readFileSync('core/api_server.py', 'utf8')
+  assert.match(api, /def _is_browserless_task\(adapter_id: str, task_id: str\) -> bool:/)
+  assert.match(api, /is_browserless_task = _is_browserless_task\(adapter_id, task_id\)/)
+  assert.match(api, /if is_browserless_task:[\s\S]{0,260}tab = \{"id": "", "url": "backend:\/\/task"\}/)
+})
+
 test('material recall is independent from the one-time cloud-download style-code input', () => {
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
 
@@ -154,7 +230,7 @@ test('AI video workflow restores downloaded Excel rows into material groups with
   assert.equal(rowOnlyGroups.length, 1)
   assert.equal(rowOnlyGroups[0].modelPhotos.length, 1)
   assert.equal(rowOnlyGroups[0].modelPhotos[0].path, downloadedRow.本地文件)
-  assert.equal(rowOnlyGroups[0].modelPhotos[0].selected, false)
+  assert.equal(rowOnlyGroups[0].modelPhotos[0].selected, true)
 
   const groupsWithBatch = normalizeBalaMaterialGroups({
     batch: {
@@ -173,7 +249,7 @@ test('AI video workflow restores downloaded Excel rows into material groups with
     rows: [downloadedRow],
   })
   assert.equal(groupsWithBatch[0].modelPhotos.length, 1)
-  assert.equal(groupsWithBatch[0].modelPhotos[0].selected, false)
+  assert.equal(groupsWithBatch[0].modelPhotos[0].selected, true)
 
   const persistedSelection = normalizeBalaMaterialGroups({
     batch: {
@@ -1169,6 +1245,28 @@ test('review workspace includes originals and every non-deleted AI result', () =
   const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
   assert.match(source, /reviewAssetCount\(style, 'origin'\).*张原图/)
   assert.match(source, /reviewAssetCount\(style, 'ai'\).*张 AI 图/)
+})
+
+test('review workspace collapses repeated original filenames in the same style', () => {
+  const styles = balaWorkflow.buildBalaReviewWorkspaceStyles([{
+    styleCode: '208326102205',
+    modelPhotos: [
+      { id: 'first', name: '1-AI.jpg', path: '/tmp/first/1-AI.jpg', sourceType: 'model', selected: true },
+      { id: 'later', name: '1-AI.jpg', path: '/tmp/later/1-AI.jpg', sourceType: 'model', selected: true },
+    ],
+    detailPhotos: [],
+  }])
+  assert.equal(styles[0].assets.length, 1)
+  assert.equal(styles[0].assets[0].path, '/tmp/first/1-AI.jpg')
+})
+
+test('material workspace preserves its own scroll position through local file sync', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  assert.match(source, /ref="materialStyleListRef"/)
+  assert.match(source, /function preserveMaterialScrollPosition\(\)/)
+  assert.match(source, /const restoreScroll = preserveMaterialScrollPosition\(\)/)
+  assert.match(source, /restoreScroll\(\)/)
+  assert.match(source, /\.aiv-material-results-panel \.aiv-style-list\s*\{[\s\S]*?overflow-anchor:\s*none;/)
 })
 
 test('review workspace merges remote origin decisions by path and keeps remote-only retries', () => {

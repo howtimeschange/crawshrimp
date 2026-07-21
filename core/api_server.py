@@ -918,6 +918,11 @@ def _resolve_task_open_mode(adapter_id: str, task_id: str, run_params: dict, tas
     return str(run_params.get('mode') or ('new' if 'mode' not in task_param_ids else 'current')).strip().lower()
 
 
+def _is_browserless_task(adapter_id: str, task_id: str) -> bool:
+    """Tasks that only call local/backend services must not allocate a CDP page."""
+    return (adapter_id, task_id) == (BALA_AI_VIDEO_ADAPTER_ID, BALA_AI_FACE_BACKGROUND_TASK_ID)
+
+
 async def _evaluate_filename_context(runner, expression: str) -> dict:
     try:
         result = await runner.evaluate(expression)
@@ -2076,6 +2081,22 @@ def _bala_video_source_folder(source_type: object) -> str:
     return "03_其他素材"
 
 
+def _bala_workspace_ai_results_dir(workspace_dir: object, style_code: object, fallback_output_dir: object = "") -> str:
+    """Keep every AI result beside the source material for its style.
+
+    The selected workspace is the stable project root.  Older runs used a
+    task artifact directory, which made AI results hard to find and left them
+    outside the style's material tree.
+    """
+    root = str(workspace_dir or fallback_output_dir or "").strip()
+    if not root:
+        return str(fallback_output_dir or "").strip()
+    style = _safe_local_name(style_code or "未分类", "未分类")
+    destination = Path(root).expanduser() / style / "03_AI图"
+    destination.mkdir(parents=True, exist_ok=True)
+    return str(destination)
+
+
 def _bala_video_image_threshold_bytes(run_params: Optional[dict], row: Optional[dict] = None) -> int:
     raw = (row or {}).get("__compress_threshold_bytes")
     if raw in (None, ""):
@@ -2608,8 +2629,9 @@ def _bala_create_ai_image_job_row(
         str(model_item.get("expression") or ""),
     ]
     title = _safe_local_name(" ".join(part for part in title_parts if part), f"巴拉{operation_label}")
-    output_dir = str(run_params.get("output_dir") or "").strip()
-    workspace_dir = str(run_params.get("workspace_dir") or output_dir).strip()
+    requested_output_dir = str(run_params.get("output_dir") or "").strip()
+    workspace_dir = str(run_params.get("workspace_dir") or requested_output_dir).strip()
+    output_dir = _bala_workspace_ai_results_dir(workspace_dir, style_code, requested_output_dir)
     params = {
         "prompt": prompt,
         "size": str(run_params.get("image_size") or "1536x2048").strip() or "1536x2048",
@@ -2862,12 +2884,20 @@ def _finalize_bala_ai_video_assistant_outputs(
     runtime_dir = Path(runtime_artifact_dir)
     runtime_dir.mkdir(parents=True, exist_ok=True)
 
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    package_base = _safe_local_name(
-        run_params.get("package_name") or f"巴拉AI视频素材_{timestamp}",
-        f"巴拉AI视频素材_{timestamp}",
-    )
-    package_root = _ensure_unique_local_dir(runtime_dir / package_base)
+    export_folder = str(run_params.get("export_folder") or "").strip()
+    direct_workspace = bool(export_folder)
+    if direct_workspace:
+        # A workspace is the project root.  Never put a timestamp/batch layer
+        # between it and the style code: <workspace>/<款号>/<素材类型>.
+        package_root = Path(export_folder).expanduser()
+        package_root.mkdir(parents=True, exist_ok=True)
+    else:
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        package_base = _safe_local_name(
+            run_params.get("package_name") or f"巴拉AI视频素材_{timestamp}",
+            f"巴拉AI视频素材_{timestamp}",
+        )
+        package_root = _ensure_unique_local_dir(runtime_dir / package_base)
 
     successful_rows = []
     for row in data_rows or []:
@@ -2892,7 +2922,15 @@ def _finalize_bala_ai_video_assistant_outputs(
                 local_path.name,
             )
             target = package_root / group_code / source_folder / clean_filename
-            relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
+            if direct_workspace and target.is_file():
+                # Repeated recall of a same-style, same-name image must not
+                # create a Finder duplicate or another UI card.  Keep the
+                # first local file, which is the stable preview source.
+                if local_path != target and _is_within_directory(local_path, runtime_dir):
+                    local_path.unlink(missing_ok=True)
+                relocated = target
+            else:
+                relocated = _relocate_runtime_file_to_unique_target(local_path, target, runtime_dir)
             threshold_bytes = _bala_video_image_threshold_bytes(run_params, row)
             final_path, compress_status = _compress_bala_video_image_if_needed(relocated, threshold_bytes, log)
             row["本地文件"] = str(final_path)
@@ -2907,22 +2945,17 @@ def _finalize_bala_ai_video_assistant_outputs(
 
     exported_refs = [str(path) for path in exported_files or [] if str(path or "").strip()]
     final_refs = [*exported_refs]
-    export_folder = str(run_params.get("export_folder") or "").strip()
 
     if successful_rows and package_root.exists():
-        if export_folder:
-            target_root = Path(export_folder).expanduser()
-            target_root.mkdir(parents=True, exist_ok=True)
-            external_dir = _move_dir_to_unique_target(package_root, target_root / package_root.name)
-            rewrite_row_paths(package_root, external_dir)
+        if direct_workspace:
             _rewrite_bala_material_summary_excels(exported_files, data_rows, log)
-            external_refs = [str(external_dir)]
-            log(f"Bala video material folder moved to export folder: {external_dir}")
+            external_refs = [str(package_root)]
+            log(f"Bala video material folder prepared in workspace root: {package_root}")
             for file_path in exported_files or []:
                 source = Path(str(file_path or "")).expanduser()
                 if not source.is_file():
                     continue
-                copied = _copy_file_to_unique_target(source, target_root / source.name)
+                copied = _copy_file_to_unique_target(source, package_root / source.name)
                 external_refs.append(str(copied))
             final_refs = external_refs
         else:
@@ -2933,7 +2966,7 @@ def _finalize_bala_ai_video_assistant_outputs(
             _rewrite_bala_material_summary_excels(exported_files, data_rows, log)
             log(f"Bala video material folder moved to default output folder: {external_dir}")
             final_refs = [str(external_dir), *exported_refs]
-    elif package_root.exists():
+    elif package_root.exists() and not direct_workspace:
         shutil.rmtree(package_root, ignore_errors=True)
 
     _cleanup_semir_runtime_artifacts(runtime_files, None)
@@ -4930,6 +4963,8 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
     from core.js_runner import JSRunner, RunAbortedError
     from core.models import OutputType
 
+    is_browserless_task = _is_browserless_task(adapter_id, task_id)
+
     instance_uid = str((params or {}).get("__task_instance_uid") or "").strip()
     schedule_uid = str((params or {}).get("__task_schedule_uid") or "").strip()
     jid = _run_jid(adapter_id, task_id, instance_uid)
@@ -5295,7 +5330,11 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
         tab = None
         current_mode_preferred_prefixes: list[str] = []
         new_mode_baseline_tab_ids: set[str] = set()
-        if mode == 'current':
+        if is_browserless_task:
+            # This is a 1XM API task.  Opening the manifest's about:blank entry
+            # used to create a visible empty CDP tab before the actual API call.
+            tab = {"id": "", "url": "backend://task"}
+        elif mode == 'current':
             all_tabs = [t for t in await _bridge_get_tabs() if t.get('type') == 'page']
             preferred_prefixes = configured_match_prefixes or [
                 'https://seller.shopee.cn/portal/marketing',
@@ -5436,12 +5475,13 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
             raise RuntimeError(f"无法打开或找到目标页面：{target_entry_url}")
 
         log(f"Found tab: {tab.get('url', '')[:120]}")
-        runner = JSRunner(
-            get_bridge().get_tab_ws_url(tab),
-            tab_id=str(tab.get('id') or ''),
-            tab_url=str(tab.get('url') or ''),
-            artifact_dir=runtime_artifact_dir,
-        )
+        if not is_browserless_task:
+            runner = JSRunner(
+                get_bridge().get_tab_ws_url(tab),
+                tab_id=str(tab.get('id') or ''),
+                tab_url=str(tab.get('url') or ''),
+                artifact_dir=runtime_artifact_dir,
+            )
 
         async def navigate_runner_to(url: str, wait_seconds: float = 2.0, via_page: bool = False):
             if via_page:
@@ -5809,7 +5849,9 @@ async def _execute_task(adapter_id: str, task_id: str, params: Optional[dict] = 
 
         await wait_for_control({"records": 0})
         log(f"Injecting script: {task.script}")
-        if (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") and per_item_review_urls:
+        if is_browserless_task:
+            data = []
+        elif (adapter_id, task_id) == ("tmall-ops-assistant", "buyer_reviews") and per_item_review_urls:
             aggregated_data = []
             total_item_count = len(per_item_review_urls)
             for item_index, item_url in enumerate(per_item_review_urls, start=1):
@@ -7433,7 +7475,11 @@ def _append_bala_review_regenerate_asset(batch: dict, req: BalaReviewRegenerateR
         "prompt": prompt,
         "model_key": "gpt-image-2",
         "status": "draft",
-        "output_dir": str(Path(str(batch.get("artifact_dir") or runtime_paths.child_dir("bala-ai-video-review"))).expanduser() / "regenerated"),
+        "output_dir": _bala_workspace_ai_results_dir(
+            batch.get("workspace_dir"),
+            item.get("style_code"),
+            Path(str(batch.get("artifact_dir") or runtime_paths.child_dir("bala-ai-video-review"))).expanduser() / "regenerated",
+        ),
         "params": {
             "prompt": prompt,
             "main_image_path": source_path,

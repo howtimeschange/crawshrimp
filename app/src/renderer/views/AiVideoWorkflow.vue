@@ -211,11 +211,33 @@
               >
                 {{ materialShowSelectedOnly ? '显示全部素材' : '只看已选素材' }}
               </button>
+              <div class="aiv-material-view-switcher" role="tablist" aria-label="素材展示方式">
+                <button
+                  type="button"
+                  role="tab"
+                  :class="{ active: materialDisplayMode === 'grid' }"
+                  :aria-selected="materialDisplayMode === 'grid'"
+                  @click="materialDisplayMode = 'grid'"
+                >平铺</button>
+                <button
+                  type="button"
+                  role="tab"
+                  :class="{ active: materialDisplayMode === 'list' }"
+                  :aria-selected="materialDisplayMode === 'list'"
+                  @click="materialDisplayMode = 'list'"
+                >列表</button>
+              </div>
+              <button type="button" class="aiv-ghost small" @click="toggleStyleEditSelection(activeMaterialGroup)">
+                {{ styleEditSelectionLabel(activeMaterialGroup) }}
+              </button>
+              <button type="button" class="aiv-ghost small" @click="toggleAllEditSelection">
+                {{ allEditSelectionLabel }}
+              </button>
             </div>
             <span>{{ activeMaterialSource === 'model' ? '默认优先确认模拍图' : '已切换到细节图' }}</span>
           </div>
 
-          <div class="aiv-panel-body aiv-style-list">
+          <div ref="materialStyleListRef" class="aiv-panel-body aiv-style-list">
             <article
               v-if="activeMaterialGroup"
               :id="`material-style-panel-${activeMaterialGroup.styleCode}`"
@@ -230,11 +252,11 @@
                   role="tabpanel"
                 >
                   <div class="aiv-source-title">模拍图 · 默认优先</div>
-                  <div class="aiv-thumb-grid">
+                  <div :class="['aiv-thumb-grid', { 'is-list': materialDisplayMode === 'list' }]">
                     <article
                       v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'model', activeMaterialGroup.modelPhotos)"
                       :key="asset.id || asset.path"
-                      :class="['aiv-thumb', { selected: asset.selected }]"
+                      :class="['aiv-thumb', { selected: asset.selected, 'is-list': materialDisplayMode === 'list' }]"
                       role="button"
                       tabindex="0"
                       :aria-pressed="asset.selected"
@@ -261,6 +283,7 @@
                       <span class="aiv-select-ribbon">
                         {{ asset.selected ? '已选' : '选择' }}
                       </span>
+                      <span class="aiv-thumb-filename" :title="asset.name">{{ shortDisplayName(asset.name, 34) }}</span>
                       <button type="button" class="aiv-thumb-zoom" title="查看大图" @click.stop="openImagePreview(asset, activeMaterialGroup.styleCode)">
                         <span aria-hidden="true">⌕</span>
                       </button>
@@ -282,11 +305,11 @@
                   role="tabpanel"
                 >
                   <div class="aiv-source-title">细节图</div>
-                  <div class="aiv-thumb-grid">
+                  <div :class="['aiv-thumb-grid', { 'is-list': materialDisplayMode === 'list' }]">
                     <article
                       v-for="asset in visibleMaterialAssets(activeMaterialGroup.styleCode, 'detail', activeMaterialGroup.detailPhotos)"
                       :key="asset.id || asset.path"
-                      :class="['aiv-thumb', { selected: asset.selected, muted: asset.muted }]"
+                      :class="['aiv-thumb', { selected: asset.selected, muted: asset.muted, 'is-list': materialDisplayMode === 'list' }]"
                       role="button"
                       tabindex="0"
                       :aria-pressed="asset.selected"
@@ -313,6 +336,7 @@
                       <span class="aiv-select-ribbon">
                         {{ asset.selected ? '已选' : '选择' }}
                       </span>
+                      <span class="aiv-thumb-filename" :title="asset.name">{{ shortDisplayName(asset.name, 34) }}</span>
                       <button type="button" class="aiv-thumb-zoom" title="查看大图" @click.stop="openImagePreview(asset, activeMaterialGroup.styleCode)">
                         <span aria-hidden="true">⌕</span>
                       </button>
@@ -476,13 +500,16 @@
               <strong>图片工作台</strong>
               <span>按款号分组，支持展开收起；原图在左，AI 修改版本接在后面</span>
             </div>
-            <button
-              type="button"
-              :class="['aiv-ghost', 'small', { active: showSelectedVersionsOnly }]"
-              @click="showSelectedVersionsOnly = !showSelectedVersionsOnly"
-            >
-              {{ showSelectedVersionsOnly ? '显示全部版本' : '只看已选版本' }}
-            </button>
+            <div class="aiv-inline-actions">
+              <button type="button" class="aiv-ghost small" @click="toggleAllEditSelection">{{ allEditSelectionLabel }}</button>
+              <button
+                type="button"
+                :class="['aiv-ghost', 'small', { active: showSelectedVersionsOnly }]"
+                @click="showSelectedVersionsOnly = !showSelectedVersionsOnly"
+              >
+                {{ showSelectedVersionsOnly ? '显示全部版本' : '只看已选版本' }}
+              </button>
+            </div>
           </header>
 
           <div class="aiv-panel-body aiv-edit-style-list">
@@ -501,6 +528,7 @@
                   </div>
                 </div>
                 <div>
+                  <button type="button" class="aiv-ghost small" @click.stop="toggleStyleEditSelection(style)">{{ styleEditSelectionLabel(style) }}</button>
                   <span class="aiv-badge orange">原图 {{ editSourcesForStyle(style).length }}</span>
                   <span class="aiv-badge">版本 {{ versionCountForStyle(style) }}</span>
                   <span class="aiv-workspace-collapse" :class="{ expanded: isMaterialExpanded(style.styleCode) }">
@@ -1358,7 +1386,7 @@
       </section>
     </div>
 
-    <div v-if="modelLibraryOpen" class="aiv-modal" @click.self="closeModelLibrary">
+    <div v-if="modelLibraryOpen" class="aiv-modal aiv-model-library-modal" @click.self="closeModelLibrary">
       <section
         class="aiv-modal-panel aiv-model-library-modal-panel aiv-picker-modal-panel"
         role="dialog"
@@ -1928,8 +1956,10 @@ import {
   latestRunForTaskData,
   mergeBalaVideoResults,
   mergeBalaReviewWorkspaceStyles,
+  mergeBalaMaterialGroups,
   mergeBalaWorkspaceVersions,
   migrateBalaBusinessManagerText,
+  isBalaAiNamedMaterial,
   normalizeBalaMaterialGroups,
   normalizeBalaMaterialProgress,
   normalizeBalaReviewBatchStyles,
@@ -1949,6 +1979,7 @@ import {
   resolveBalaAssetPreviewSource,
   resolveBalaVersionPreviewSource,
   resolveBalaVideoPlaybackSource,
+  sortBalaMaterialAssets,
   selectEditableSourcesForStyle,
   selectNewTaskRun,
   selectVisibleEditableVersions,
@@ -1991,6 +2022,7 @@ const activeStep = ref('materials')
 const activeAction = ref('face_swap')
 const materialPanelExpanded = ref(true)
 const materialShowSelectedOnly = ref(false)
+const materialDisplayMode = ref('grid')
 const selectedTemplateId = ref('')
 const selectedModel = ref(null)
 const showSelectedVersionsOnly = ref(false)
@@ -2124,6 +2156,7 @@ const materialExpanded = reactive({
   '208326108104': false,
 })
 const materialRenderLimits = reactive({})
+const materialStyleListRef = ref(null)
 
 const styleCodes = ref('208326102205\n208326105214\n208326108104')
 const cloudPath = ref('巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/')
@@ -2403,6 +2436,7 @@ function workspaceSnapshot() {
       materialPackageName: materialPackageName.value,
       activeMaterialStyleCode: activeMaterialStyleCode.value,
       activeMaterialSource: activeMaterialSource.value,
+      materialDisplayMode: materialDisplayMode.value,
     },
     material: {
       task: cloneWorkspaceValue(materialTask, {}),
@@ -2526,6 +2560,7 @@ function restoreWorkspaceSnapshot(path = workspaceDir.value) {
   materialPackageName.value = String(input.materialPackageName || '')
   activeMaterialStyleCode.value = String(input.activeMaterialStyleCode || '')
   activeMaterialSource.value = input.activeMaterialSource === 'detail' ? 'detail' : 'model'
+  materialDisplayMode.value = input.materialDisplayMode === 'list' ? 'list' : 'grid'
 
   const material = snapshot.material || {}
   materialBatch.value = cloneWorkspaceValue(material.batch, null)
@@ -3126,9 +3161,12 @@ let videoPollTimer = null
 let previewAnnotationResolve = null
 let previewAnnotationReject = null
 let previewAnnotationTimer = null
+let workspaceFileSyncTimer = null
 
-function replaceStyleWorkspaces(groups = []) {
-  for (const key of Object.keys(materialRenderLimits)) delete materialRenderLimits[key]
+function replaceStyleWorkspaces(groups = [], { preserveView = false } = {}) {
+  if (!preserveView) {
+    for (const key of Object.keys(materialRenderLimits)) delete materialRenderLimits[key]
+  }
   styleWorkspaces.splice(0, styleWorkspaces.length, ...groups)
   if (!groups.some(group => group.styleCode === activeMaterialStyleCode.value)) {
     activeMaterialStyleCode.value = groups[0]?.styleCode || ''
@@ -3138,6 +3176,25 @@ function replaceStyleWorkspaces(groups = []) {
     if (!Object.prototype.hasOwnProperty.call(materialExpanded, group.styleCode)) {
       materialExpanded[group.styleCode] = true
     }
+  }
+}
+
+function preserveMaterialScrollPosition() {
+  const element = materialStyleListRef.value
+  if (!element) return () => {}
+  const top = element.scrollTop
+  const distanceFromBottom = Math.max(0, element.scrollHeight - element.clientHeight - top)
+  return () => {
+    void nextTick().then(() => {
+      requestAnimationFrame(() => {
+        const current = materialStyleListRef.value
+        if (!current) return
+        const maxTop = Math.max(0, current.scrollHeight - current.clientHeight)
+        current.scrollTop = distanceFromBottom <= 2
+          ? maxTop
+          : Math.min(top, maxTop)
+      })
+    })
   }
 }
 
@@ -3161,7 +3218,7 @@ function materialRenderLimit(styleCode, sourceType) {
 }
 
 function materialAssetsForDisplay(assets = []) {
-  const source = assets || []
+  const source = sortBalaMaterialAssets(assets)
   return materialShowSelectedOnly.value ? source.filter(asset => asset.selected) : source
 }
 
@@ -3578,6 +3635,73 @@ function releaseWorkspacePreviews() {
   for (const key of Object.keys(localVideoPreviews)) delete localVideoPreviews[key]
   for (const key of Object.keys(localImagePreviews)) delete localImagePreviews[key]
   for (const key of Object.keys(brokenPreviews)) delete brokenPreviews[key]
+}
+
+function workspaceAssetFromFile(file = {}) {
+  return {
+    id: `workspace-${String(file.path || '').trim()}`,
+    path: String(file.path || '').trim(),
+    name: String(file.name || fileNameFromPath(file.path)).trim(),
+    filename: String(file.name || fileNameFromPath(file.path)).trim(),
+    styleCode: String(file.styleCode || '').trim(),
+    sourceType: String(file.sourceType || 'other').trim(),
+    role: String(file.sourceType || '') === 'model' ? '模拍' : (String(file.sourceType || '') === 'detail' ? '细节' : '素材'),
+    fileVersion: String(file.version || '').trim(),
+    selected: Boolean(file.isAi) || isBalaAiNamedMaterial(String(file.name || '')),
+    editSelected: false,
+    versions: [],
+  }
+}
+
+function applyWorkspaceFileSync(files = []) {
+  const restoreScroll = preserveMaterialScrollPosition()
+  const byPath = new Map((files || []).map(file => [String(file?.path || '').trim(), file]).filter(([path]) => path))
+  let changed = false
+  for (const style of styleWorkspaces) {
+    for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
+      const kept = []
+      for (const asset of style[key] || []) {
+        const current = byPath.get(String(asset?.path || '').trim())
+        if (!current) {
+          changed = true
+          continue
+        }
+        if (String(asset.fileVersion || '') !== String(current.version || '')) {
+          asset.fileVersion = String(current.version || '')
+          changed = true
+        }
+        asset.versions = (asset.versions || []).filter(version => !version.previewPath || byPath.has(String(version.previewPath)))
+        kept.push(asset)
+        byPath.delete(String(asset.path || ''))
+      }
+      style[key] = kept
+    }
+  }
+  for (const file of byPath.values()) {
+    if (!file.styleCode || !['model', 'detail'].includes(file.sourceType)) continue
+    let style = styleWorkspaces.find(item => item.styleCode === file.styleCode)
+    if (!style) {
+      style = { styleCode: file.styleCode, modelPhotos: [], detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [] }
+      styleWorkspaces.push(style)
+    }
+    style[file.sourceType === 'model' ? 'modelPhotos' : 'detailPhotos'].push(workspaceAssetFromFile(file))
+    changed = true
+  }
+  if (changed) {
+    const deduped = mergeBalaMaterialGroups([], styleWorkspaces)
+    styleWorkspaces.splice(0, styleWorkspaces.length, ...deduped)
+    releaseWorkspacePreviews()
+    restoreScroll()
+  }
+}
+
+async function syncWorkspaceFiles() {
+  if (!workspaceDir.value || typeof window.cs?.listBalaWorkspaceImages !== 'function') return
+  try {
+    applyWorkspaceFileSync(await window.cs.listBalaWorkspaceImages(workspaceDir.value))
+  } catch {
+    // Folder changes can race Finder writes; the next poll will retry safely.
+  }
 }
 
 function resetWorkflowWorkspace() {
@@ -4017,8 +4141,9 @@ async function finalizeMaterialTask(runId = '') {
     batch,
     rows: downloadedRows,
   })
-  replaceStyleWorkspaces(groups)
-  const summary = summarizeBalaMaterialGroups(groups)
+  const mergedGroups = mergeBalaMaterialGroups(styleWorkspaces, groups)
+  replaceStyleWorkspaces(mergedGroups, { preserveView: true })
+  const summary = summarizeBalaMaterialGroups(mergedGroups)
   const nextStatus = summary.failedCount > 0 ? 'partial' : 'done'
   updateMaterialTask({
     status: nextStatus,
@@ -4155,6 +4280,32 @@ function toggleVersionSelection(version) {
 
 function toggleEditInputSelection(asset) {
   asset.editSelected = !asset.editSelected
+}
+
+function editableInputsForStyle(style = {}) {
+  return (style.modelPhotos || []).flatMap(source => [source, ...visibleSourceVersions(source)])
+}
+
+function styleEditSelectionLabel(style = {}) {
+  const inputs = editableInputsForStyle(style)
+  return inputs.length && inputs.every(asset => asset.editSelected) ? '本款取消全选' : '本款全选改图'
+}
+
+function toggleStyleEditSelection(style = {}) {
+  const inputs = editableInputsForStyle(style)
+  const next = !inputs.length || !inputs.every(asset => asset.editSelected)
+  for (const asset of inputs) asset.editSelected = next
+}
+
+const allEditSelectionLabel = computed(() => {
+  const inputs = styleWorkspaces.flatMap(style => editableInputsForStyle(style))
+  return inputs.length && inputs.every(asset => asset.editSelected) ? '整列取消全选' : '整列全选改图'
+})
+
+function toggleAllEditSelection() {
+  const inputs = styleWorkspaces.flatMap(style => editableInputsForStyle(style))
+  const next = !inputs.length || !inputs.every(asset => asset.editSelected)
+  for (const asset of inputs) asset.editSelected = next
 }
 
 /** Select this original as an AI-edit input so the left action can generate more versions. */
@@ -7247,6 +7398,7 @@ watch([
   materialPackageName,
   activeMaterialStyleCode,
   activeMaterialSource,
+  materialDisplayMode,
 ], () => {
   persistWorkspaceState()
 }, { deep: true })
@@ -7262,9 +7414,11 @@ onMounted(() => {
       if (!restoredBatchCount) await restoreLatestReviewBatch({ silent: true })
     }
     if (restoredManifest && !restoredWorkspace) videoStageState.message = '已从当前工作区恢复视频任务和结果。'
+    await syncWorkspaceFiles()
     persistWorkspaceState()
     scheduleVideoResultPoll()
   })()
+  workspaceFileSyncTimer = setInterval(() => { void syncWorkspaceFiles() }, 4000)
   void loadAiImageSettings()
   void loadModelLibrary()
   void loadTemplateCatalog()
@@ -7287,6 +7441,8 @@ onBeforeUnmount(() => {
   resetAiPoll()
   aiReviewPollToken += 1
   resetVideoResultPoll()
+  if (workspaceFileSyncTimer) clearInterval(workspaceFileSyncTimer)
+  workspaceFileSyncTimer = null
   if (workspaceManifestWriteTimer) clearTimeout(workspaceManifestWriteTimer)
   clearPreviewAnnotationRequest()
   disconnectVideoTaskThumbObserver()
@@ -7772,6 +7928,12 @@ function localFileUrl(path) {
   min-height: 0;
   overflow-y: auto;
   align-content: start;
+}
+
+.aiv-material-results-panel .aiv-style-list {
+  overscroll-behavior-y: contain;
+  overflow-anchor: none;
+  scrollbar-gutter: stable;
 }
 
 .aiv-material-sticky-actions {
@@ -8563,6 +8725,37 @@ function localFileUrl(path) {
   gap: 10px;
 }
 
+.aiv-material-view-switcher {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--bg3);
+}
+
+.aiv-material-view-switcher button {
+  min-height: 28px;
+  padding: 4px 9px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  color: var(--text3);
+  background: transparent;
+  font-size: 11px;
+}
+
+.aiv-material-view-switcher button:first-child { border-left: 0; }
+
+.aiv-material-view-switcher button.active {
+  color: var(--on-orange);
+  background: var(--orange);
+  font-weight: 700;
+}
+
+.aiv-material-tab-panel .aiv-thumb-grid.is-list {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 7px;
+}
+
 .aiv-large-thumb-grid,
 .aiv-video-images {
   display: grid;
@@ -8594,6 +8787,39 @@ function localFileUrl(path) {
   gap: 6px;
   padding: 8px;
   overflow: hidden;
+}
+
+.aiv-thumb.is-list {
+  min-height: 94px;
+  aspect-ratio: auto;
+  display: block;
+  padding-left: 132px;
+}
+
+.aiv-thumb.is-list .aiv-thumb-media {
+  right: auto;
+  width: 122px;
+}
+
+.aiv-thumb.is-list .aiv-thumb-media::after {
+  background: none;
+}
+
+.aiv-thumb.is-list .aiv-thumb-filename {
+  top: 20px;
+  right: 60px;
+  bottom: auto;
+  left: 142px;
+  color: var(--text) !important;
+  font-size: 13px !important;
+  text-shadow: none;
+}
+
+.aiv-thumb.is-list .aiv-select-ribbon { right: 10px; }
+
+.aiv-thumb.is-list .aiv-thumb-zoom {
+  left: 61px;
+  top: 47px;
 }
 
 .aiv-load-more {
@@ -8655,6 +8881,22 @@ function localFileUrl(path) {
   color: var(--text2) !important;
   background: var(--bg);
   border: 1px solid var(--border);
+}
+
+.aiv-thumb-filename {
+  position: absolute;
+  z-index: 3;
+  right: 7px;
+  bottom: 7px;
+  left: 7px;
+  overflow: hidden;
+  color: #fff !important;
+  font-size: 11px !important;
+  font-weight: 650;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, .8);
 }
 
 .aiv-thumb-media {
@@ -11570,6 +11812,12 @@ function localFileUrl(path) {
 
 .aiv-preview-modal {
   z-index: 90;
+}
+
+/* The model picker can be opened from the large-image editor. Keep it above
+   that editor instead of rendering it behind the existing preview backdrop. */
+.aiv-modal.aiv-model-library-modal {
+  z-index: 110;
 }
 
 .aiv-modal-panel {

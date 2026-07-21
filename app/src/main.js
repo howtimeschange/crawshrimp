@@ -42,6 +42,7 @@ const {
   deleteAuthorizedWorkspaceImage,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
+  listAuthorizedBalaWorkspaceImages,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,
@@ -3286,6 +3287,11 @@ secureHandle('read-bala-workspace-image-thumbnail', async (_, workspaceRoot, fil
   } catch (error) {
     return { ok: false, error: error?.message || String(error) }
   }
+})
+
+secureHandle('list-bala-workspace-images', async (_, workspaceRoot) => {
+  ensureBalaWorkspaceAuthorizationsLoaded()
+  return listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots: authorizedBalaWorkspaceRoots })
 })
 
 secureHandle('get-local-media-url', async (_, filePath) => {

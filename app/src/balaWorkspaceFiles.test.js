@@ -11,6 +11,7 @@ const {
   deleteAuthorizedWorkspaceImage,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
+  listAuthorizedBalaWorkspaceImages,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,
@@ -92,6 +93,40 @@ test('workspace deletion rejects the root, directories, non-images, and symlinks
     assert.throws(() => deleteAuthorizedWorkspaceImage({ workspaceRoot: workspace, filePath: link, roots }), /符号链接/)
     assert.equal(fs.existsSync(textFile), true)
     assert.equal(fs.existsSync(outsideImage), true)
+  })
+})
+
+test('workspace image listing only returns real regular images with their current file versions', () => {
+  withTempTree(({ workspace, outside }) => {
+    const imageDir = path.join(workspace, '208326102205', '01_模拍原图')
+    fs.mkdirSync(imageDir, { recursive: true })
+    const imagePath = path.join(imageDir, 'front-AI.jpg')
+    fs.writeFileSync(imagePath, 'image')
+    fs.writeFileSync(path.join(workspace, 'note.txt'), 'not an image')
+    fs.symlinkSync(path.join(outside, 'outside.jpg'), path.join(workspace, 'unsafe.jpg'))
+    const roots = new Set()
+    authorizeBalaWorkspaceRoot(workspace, { roots })
+
+    const assets = listAuthorizedBalaWorkspaceImages({ workspaceRoot: workspace, roots })
+    assert.deepEqual(assets.map(asset => asset.path), [fs.realpathSync.native(imagePath)])
+    assert.equal(assets[0].styleCode, '208326102205')
+    assert.equal(assets[0].sourceType, 'model')
+    assert.match(assets[0].version, /-/)
+  })
+})
+
+test('workspace image listing treats the AI result folder as selected model material', () => {
+  withTempTree(({ workspace }) => {
+    const imageDir = path.join(workspace, '208326102205', '03_AI图')
+    fs.mkdirSync(imageDir, { recursive: true })
+    fs.writeFileSync(path.join(imageDir, 'result.png'), 'image')
+    const roots = new Set()
+    authorizeBalaWorkspaceRoot(workspace, { roots })
+
+    const [asset] = listAuthorizedBalaWorkspaceImages({ workspaceRoot: workspace, roots })
+    assert.equal(asset.styleCode, '208326102205')
+    assert.equal(asset.sourceType, 'model')
+    assert.equal(asset.isAi, true)
   })
 })
 

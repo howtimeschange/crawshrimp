@@ -120,6 +120,43 @@ function getAuthorizedBalaWorkspaceImage({ workspaceRoot, filePath, roots = new 
   }
 }
 
+function listAuthorizedBalaWorkspaceImages({ workspaceRoot, roots = new Set(), fsApi = fs } = {}) {
+  const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
+  const assets = []
+  const visit = (directory) => {
+    for (const entry of fsApi.readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name)
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        visit(candidate)
+        continue
+      }
+      if (!entry.isFile() || !BALA_IMAGE_EXTENSIONS.has(path.extname(entry.name).toLowerCase())) continue
+      const stat = fsApi.statSync(candidate)
+      const canonical = canonicalPath(candidate, fsApi)
+      assertDescendant(canonicalRoot, canonical)
+      const relative = path.relative(canonicalRoot, canonical).split(path.sep)
+      const styleCode = (relative.find(part => /^\d{12}$/.test(part)) || '')
+      const folders = relative.slice(0, -1).join('/')
+      const isAi = /(?:^|\/)03_AI图(?:\/|$)/.test(folders) || /AI/i.test(entry.name)
+      const sourceType = /01_模拍原图|模拍/.test(folders) ? 'model'
+        : (/02_商品细节图|细节|平拍/.test(folders) ? 'detail'
+          : (isAi ? 'model' : 'other'))
+      assets.push({
+        path: canonical,
+        name: path.basename(canonical),
+        styleCode,
+        sourceType,
+        isAi,
+        version: `${stat.mtimeMs.toString(16)}-${stat.size.toString(16)}`,
+        size: stat.size,
+      })
+    }
+  }
+  visit(canonicalRoot)
+  return assets.sort((left, right) => left.path.localeCompare(right.path))
+}
+
 function getAuthorizedBalaWorkspaceVideo({ workspaceRoot, filePath, roots = new Set(), fsApi = fs } = {}) {
   const canonicalRoot = authorizedWorkspaceRoot(workspaceRoot, { roots, fsApi })
   const rawFile = String(filePath || '').trim()
@@ -227,6 +264,7 @@ module.exports = {
   deleteAuthorizedWorkspaceImage,
   getAuthorizedBalaWorkspaceImage,
   getAuthorizedBalaWorkspaceVideo,
+  listAuthorizedBalaWorkspaceImages,
   loadAuthorizedBalaWorkspaceRoots,
   readAuthorizedBalaWorkspaceManifest,
   rememberAuthorizedBalaWorkspaceRoot,

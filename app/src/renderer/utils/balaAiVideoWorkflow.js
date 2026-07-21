@@ -259,6 +259,56 @@ function filenameFromPath(value = '') {
   return String(value || '').split('/').pop().split('\\').pop()
 }
 
+export function isBalaAiNamedMaterial(value = '') {
+  return /AI/i.test(compact(filenameFromPath(value)))
+}
+
+function materialFilenameKey(asset = {}) {
+  return compact(asset?.filename || asset?.name || filenameFromPath(asset?.path)).toLocaleLowerCase()
+}
+
+export function sortBalaMaterialAssets(assets = []) {
+  return [...(assets || [])].sort((left, right) => {
+    const selection = Number(Boolean(right?.selected)) - Number(Boolean(left?.selected))
+    if (selection) return selection
+    return materialFilenameKey(left).localeCompare(materialFilenameKey(right), 'zh-Hans-CN', { numeric: true })
+  })
+}
+
+function mergeMaterialAsset(existing = {}, incoming = {}) {
+  return {
+    ...existing,
+    ...incoming,
+    // Repeated searches may place the same filename under a different batch
+    // directory. Keep the first usable local file so a later recall cannot
+    // turn a stable card into a duplicate card or a broken preview.
+    id: compact(existing?.id) || compact(incoming?.id),
+    path: compact(existing?.path) || compact(incoming?.path),
+    name: compact(existing?.name) || compact(incoming?.name),
+    filename: compact(existing?.filename) || compact(incoming?.filename),
+    selected: Boolean(existing?.selected || incoming?.selected),
+    editSelected: Boolean(existing?.editSelected || incoming?.editSelected),
+    versions: mergeBalaWorkspaceVersions(existing?.versions, incoming?.versions),
+  }
+}
+
+export function mergeBalaMaterialAssets(existingAssets = [], incomingAssets = []) {
+  const merged = (existingAssets || []).map(asset => ({ ...asset, versions: [...(asset?.versions || [])] }))
+  for (const candidate of incomingAssets || []) {
+    const candidatePath = compact(candidate?.path)
+    const candidateId = compact(candidate?.id)
+    const candidateFilename = materialFilenameKey(candidate)
+    const index = merged.findIndex((asset) => (
+      (candidatePath && compact(asset?.path) === candidatePath)
+      || (candidateId && compact(asset?.id) === candidateId)
+      || (candidateFilename && materialFilenameKey(asset) === candidateFilename)
+    ))
+    if (index < 0) merged.push({ ...candidate, versions: [...(candidate?.versions || [])] })
+    else merged[index] = mergeMaterialAsset(merged[index], candidate)
+  }
+  return merged
+}
+
 function normalizeBatchAsset(asset = {}) {
   const sourceType = compact(asset.source_type || asset.sourceType || 'other') || 'other'
   return {
@@ -270,7 +320,7 @@ function normalizeBatchAsset(asset = {}) {
     path: compact(asset.path),
     imageUrl: compact(asset.image_url || asset.imageUrl),
     thumbnailUrl: compact(asset.thumbnail_url || asset.thumbnailUrl),
-    selected: asset.selected === true,
+    selected: asset.selected === true || isBalaAiNamedMaterial(asset.filename || filenameFromPath(asset.path)),
     downloadResult: compact(asset.download_result || asset.downloadResult || '已下载'),
     action: compact(asset.action),
     note: compact(asset.note),
@@ -297,7 +347,7 @@ function downloadedAssetForMaterial(row = {}) {
     path: localPath,
     imageUrl: compact(row.image_url || row.imageUrl),
     thumbnailUrl: compact(row.thumbnail_url || row.thumbnailUrl),
-    selected: false,
+    selected: isBalaAiNamedMaterial(filename),
     downloadResult: downloadResult || '已下载',
     action: compact(row['处理动作'] || row.action),
     note: compact(row['备注'] || row.note),
@@ -347,12 +397,13 @@ export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackC
 
   for (const code of fallbackCodes || []) ensure(code)
 
-  const preserveBatchSelection = compact(batch?.status) === 'selected'
   for (const item of batch?.items || []) {
     const group = ensure(item?.style_code || item?.styleCode)
     for (const rawAsset of item?.assets || []) {
       const asset = normalizeBatchAsset(rawAsset)
-      asset.selected = preserveBatchSelection && asset.selected
+      // AI-tagged local material is an explicit operator signal: it must stay
+      // selected on first recall as well as after a batch is restored.
+      asset.selected = Boolean(asset.selected || isBalaAiNamedMaterial(asset.filename || asset.path))
       if (!asset.id) continue
       if (asset.path) representedPaths.add(asset.path)
       if (asset.sourceType === 'model') group.modelPhotos.push(asset)
@@ -379,7 +430,63 @@ export function normalizeBalaMaterialGroups({ batch = null, rows = [], fallbackC
     }
   }
 
-  return Array.from(byStyle.values())
+  return Array.from(byStyle.values()).map(dedupeBalaMaterialGroup)
+}
+
+function dedupeBalaMaterialGroup(group = {}) {
+  const result = {
+    ...group,
+    modelPhotos: mergeBalaMaterialAssets([], group.modelPhotos),
+    detailPhotos: mergeBalaMaterialAssets([], group.detailPhotos),
+    otherPhotos: mergeBalaMaterialAssets([], group.otherPhotos),
+  }
+  // A workspace can contain a legacy batch folder plus the new direct style
+  // folder. Cards are business-facing by style and filename, not by where a
+  // particular recall happened to save the same image.
+  const seenFilenames = new Set()
+  for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
+    result[key] = result[key].filter((asset) => {
+      const filename = materialFilenameKey(asset)
+      if (!filename || !seenFilenames.has(filename)) {
+        if (filename) seenFilenames.add(filename)
+        return true
+      }
+      return false
+    })
+  }
+  return result
+}
+
+/**
+ * Incorporate a later material-download batch without discarding prior style
+ * workspaces, user selections, or AI-edit history.
+ */
+export function mergeBalaMaterialGroups(existingGroups = [], incomingGroups = []) {
+  const byStyle = new Map()
+  const addGroup = (group = {}) => {
+    const styleCode = compact(group.styleCode || group.style_code)
+    if (!styleCode) return
+    const existing = byStyle.get(styleCode)
+    if (!existing) {
+      byStyle.set(styleCode, dedupeBalaMaterialGroup({
+        ...group,
+        styleCode,
+        skippedRows: [...(group.skippedRows || [])],
+        errors: [...(group.errors || [])],
+        generated: [...(group.generated || [])],
+      }))
+      return
+    }
+    existing.modelPhotos = mergeBalaMaterialAssets(existing.modelPhotos, group.modelPhotos)
+    existing.detailPhotos = mergeBalaMaterialAssets(existing.detailPhotos, group.detailPhotos)
+    existing.otherPhotos = mergeBalaMaterialAssets(existing.otherPhotos, group.otherPhotos)
+    existing.skippedRows = [...existing.skippedRows, ...(group.skippedRows || [])]
+    existing.errors = [...existing.errors, ...(group.errors || [])]
+    existing.generated = [...existing.generated, ...(group.generated || [])]
+  }
+  for (const group of existingGroups || []) addGroup(group)
+  for (const group of incomingGroups || []) addGroup(group)
+  return [...byStyle.values()].map(dedupeBalaMaterialGroup)
 }
 
 function progressPercent(completed, total) {
@@ -752,7 +859,11 @@ export function buildBalaReviewWorkspaceStyles(styleWorkspaces = []) {
       imageUrl: compact(asset.imageUrl || asset.image_url),
       kind: 'reference',
     }))
-    return { styleCode: compact(style?.styleCode || style?.style_code), assets, sourceAssets }
+    return {
+      styleCode: compact(style?.styleCode || style?.style_code),
+      assets: mergeBalaMaterialAssets([], assets),
+      sourceAssets: mergeBalaMaterialAssets([], sourceAssets),
+    }
   }).filter(style => style.styleCode && (style.assets.length || style.sourceAssets.length))
 }
 
@@ -782,7 +893,20 @@ function sameReviewAsset(left = {}, right = {}) {
   if (leftId && rightId && leftId === rightId) return true
   const leftPath = compact(left.path || left.previewPath || left.sourcePath)
   const rightPath = compact(right.path || right.previewPath || right.sourcePath)
-  return Boolean(leftPath && rightPath && leftPath === rightPath)
+  if (leftPath && rightPath && leftPath === rightPath) return true
+  const leftName = compact(left.label || left.name || left.filename || filenameFromPath(leftPath)).toLocaleLowerCase()
+  const rightName = compact(right.label || right.name || right.filename || filenameFromPath(rightPath)).toLocaleLowerCase()
+  return Boolean(leftName && rightName && leftName === rightName)
+}
+
+function mergeBalaReviewAssets(assets = []) {
+  const result = []
+  for (const candidate of assets || []) {
+    const index = result.findIndex(asset => sameReviewAsset(asset, candidate))
+    if (index < 0) result.push({ ...candidate })
+    else result[index] = { ...result[index], ...candidate }
+  }
+  return result
 }
 
 function persistedBalaWorkspaceVersion(version = {}) {
@@ -881,7 +1005,12 @@ export function mergeBalaReviewWorkspaceStyles(localStyles = [], remoteStyles = 
       if (!usedReferences.has(index)) sourceAssets.push({ ...asset })
     })
 
-    merged.push({ ...localStyle, styleCode, assets, sourceAssets })
+    merged.push({
+      ...localStyle,
+      styleCode,
+      assets: mergeBalaReviewAssets(assets),
+      sourceAssets: mergeBalaReviewAssets(sourceAssets),
+    })
     seenStyles.add(styleCode)
   }
 
@@ -891,13 +1020,13 @@ export function mergeBalaReviewWorkspaceStyles(localStyles = [], remoteStyles = 
     merged.push({
       ...remoteStyle,
       styleCode,
-      assets: [
+      assets: mergeBalaReviewAssets([
         ...(remoteStyle.assets || []),
         ...(remoteStyle.sourceAssets || []).filter(asset => reviewAssetKind(asset) === 'origin'),
-      ].map(asset => ({ ...asset })),
-      sourceAssets: (remoteStyle.sourceAssets || [])
+      ].map(asset => ({ ...asset }))),
+      sourceAssets: mergeBalaReviewAssets((remoteStyle.sourceAssets || [])
         .filter(asset => reviewAssetKind(asset) === 'reference')
-        .map(asset => ({ ...asset })),
+        .map(asset => ({ ...asset }))),
     })
   }
   return merged

@@ -440,6 +440,7 @@ contextBridge.exposeInMainWorld('cs', {
   getBalaWorkspaceVideoMedia: (workspaceRoot, filePath) => ipcRenderer.invoke('get-bala-workspace-video-media', workspaceRoot, filePath),
   readBalaWorkspaceImagePreview: (workspaceRoot, filePath) => ipcRenderer.invoke('read-bala-workspace-image-preview', workspaceRoot, filePath),
   readBalaWorkspaceImageThumbnail: (workspaceRoot, filePath, opts = {}) => ipcRenderer.invoke('read-bala-workspace-image-thumbnail', workspaceRoot, filePath, opts || {}),
+  listBalaWorkspaceImages: (workspaceRoot) => ipcRenderer.invoke('list-bala-workspace-images', workspaceRoot),
   readBalaWorkspaceManifest: (workspaceRoot) => ipcRenderer.invoke('read-bala-workspace-manifest', workspaceRoot),
   writeBalaWorkspaceManifest: (workspaceRoot, payload) => ipcRenderer.invoke('write-bala-workspace-manifest', workspaceRoot, payload || {}),
   getLocalMediaUrl: (filePath) => ipcRenderer.invoke('get-local-media-url', filePath),

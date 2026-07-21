@@ -972,6 +972,9 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
             )
 
             copied_summary = next(Path(item) for item in result if str(item).endswith(".xlsx"))
+            self.assertEqual(Path(result[0]), export_dir)
+            self.assertTrue((export_dir / "208326102205" / "01_模拍原图" / "model.jpg").is_file())
+            self.assertFalse((export_dir / "final-paths").exists())
             exported = load_workbook(copied_summary, read_only=True, data_only=True)
             exported_path = exported.active.cell(row=2, column=2).value
             exported.close()
