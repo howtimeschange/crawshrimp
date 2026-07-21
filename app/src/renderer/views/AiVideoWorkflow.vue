@@ -227,12 +227,6 @@
                   @click="materialDisplayMode = 'list'"
                 >列表</button>
               </div>
-              <button type="button" class="aiv-ghost small" @click="toggleStyleEditSelection(activeMaterialGroup)">
-                {{ styleEditSelectionLabel(activeMaterialGroup) }}
-              </button>
-              <button type="button" class="aiv-ghost small" @click="toggleAllEditSelection">
-                {{ allEditSelectionLabel }}
-              </button>
             </div>
             <span>{{ activeMaterialSource === 'model' ? '默认优先确认模拍图' : '已切换到细节图' }}</span>
           </div>
@@ -495,12 +489,12 @@
         </aside>
 
         <section class="aiv-panel aiv-image-workbench">
-          <header class="aiv-workspace-head">
+          <header class="aiv-workspace-head aiv-edit-workspace-head">
             <div>
               <strong>图片工作台</strong>
               <span>按款号分组，支持展开收起；原图在左，AI 修改版本接在后面</span>
             </div>
-            <div class="aiv-inline-actions">
+            <div class="aiv-inline-actions aiv-edit-bulk-actions">
               <button type="button" class="aiv-ghost small" @click="toggleAllEditSelection">{{ allEditSelectionLabel }}</button>
               <button
                 type="button"
@@ -514,29 +508,39 @@
 
           <div class="aiv-panel-body aiv-edit-style-list">
             <article v-for="style in styleWorkspaces" :key="style.styleCode" class="aiv-style-card">
-              <button
-                type="button"
-                class="aiv-style-head aiv-collapse-head"
-                :aria-expanded="isMaterialExpanded(style.styleCode) ? 'true' : 'false'"
-                :aria-controls="`image-workbench-${style.styleCode}`"
-                @click="toggleMaterialGroup(style.styleCode)"
-              >
-                <div class="aiv-style-title-block">
-                  <div class="aiv-style-title-row">
-                    <strong>{{ style.styleCode }} 图片工作台</strong>
-                    <span class="aiv-title-meta">{{ style.modelPhotos.length }} 张模拍 · {{ style.detailPhotos.length }} 张细节 · {{ style.generated.length }} 张 AI 图</span>
+              <div class="aiv-style-head aiv-collapse-head">
+                <label class="aiv-style-select-all">
+                  <input
+                    type="checkbox"
+                    :checked="styleEditSelectionAllChecked(style)"
+                    :indeterminate="styleEditSelectionIndeterminate(style)"
+                    @change="setStyleEditSelection(style, $event.target.checked)"
+                  />
+                  <span>全选本款图片改图</span>
+                </label>
+                <button
+                  type="button"
+                  class="aiv-style-collapse-trigger"
+                  :aria-expanded="isMaterialExpanded(style.styleCode) ? 'true' : 'false'"
+                  :aria-controls="`image-workbench-${style.styleCode}`"
+                  @click="toggleMaterialGroup(style.styleCode)"
+                >
+                  <div class="aiv-style-title-block">
+                    <div class="aiv-style-title-row">
+                      <strong>{{ style.styleCode }} 图片工作台</strong>
+                      <span class="aiv-title-meta">{{ style.modelPhotos.length }} 张模拍 · {{ style.detailPhotos.length }} 张细节 · {{ style.generated.length }} 张 AI 图</span>
+                    </div>
                   </div>
-                </div>
-                <div>
-                  <button type="button" class="aiv-ghost small" @click.stop="toggleStyleEditSelection(style)">{{ styleEditSelectionLabel(style) }}</button>
-                  <span class="aiv-badge orange">原图 {{ editSourcesForStyle(style).length }}</span>
-                  <span class="aiv-badge">版本 {{ versionCountForStyle(style) }}</span>
-                  <span class="aiv-workspace-collapse" :class="{ expanded: isMaterialExpanded(style.styleCode) }">
-                    <span>{{ isMaterialExpanded(style.styleCode) ? '收起图片' : '展开图片' }}</span>
-                    <IconChevronDown class="aiv-workspace-collapse-icon" :size="16" :stroke-width="2.4" aria-hidden="true" />
-                  </span>
-                </div>
-              </button>
+                  <div class="aiv-style-collapse-meta">
+                    <span class="aiv-badge orange">原图 {{ editSourcesForStyle(style).length }}</span>
+                    <span class="aiv-badge">版本 {{ versionCountForStyle(style) }}</span>
+                    <span class="aiv-workspace-collapse" :class="{ expanded: isMaterialExpanded(style.styleCode) }">
+                      <span>{{ isMaterialExpanded(style.styleCode) ? '收起图片' : '展开图片' }}</span>
+                      <IconChevronDown class="aiv-workspace-collapse-icon" :size="16" :stroke-width="2.4" aria-hidden="true" />
+                    </span>
+                  </div>
+                </button>
+              </div>
 
               <div
                 v-if="isMaterialExpanded(style.styleCode)"
@@ -3164,15 +3168,16 @@ let previewAnnotationTimer = null
 let workspaceFileSyncTimer = null
 
 function replaceStyleWorkspaces(groups = [], { preserveView = false } = {}) {
+  const normalizedGroups = mergeBalaMaterialGroups([], groups)
   if (!preserveView) {
     for (const key of Object.keys(materialRenderLimits)) delete materialRenderLimits[key]
   }
-  styleWorkspaces.splice(0, styleWorkspaces.length, ...groups)
-  if (!groups.some(group => group.styleCode === activeMaterialStyleCode.value)) {
-    activeMaterialStyleCode.value = groups[0]?.styleCode || ''
+  styleWorkspaces.splice(0, styleWorkspaces.length, ...normalizedGroups)
+  if (!normalizedGroups.some(group => group.styleCode === activeMaterialStyleCode.value)) {
+    activeMaterialStyleCode.value = normalizedGroups[0]?.styleCode || ''
   }
   activeMaterialSource.value = 'model'
-  for (const group of groups) {
+  for (const group of normalizedGroups) {
     if (!Object.prototype.hasOwnProperty.call(materialExpanded, group.styleCode)) {
       materialExpanded[group.styleCode] = true
     }
@@ -4286,15 +4291,19 @@ function editableInputsForStyle(style = {}) {
   return (style.modelPhotos || []).flatMap(source => [source, ...visibleSourceVersions(source)])
 }
 
-function styleEditSelectionLabel(style = {}) {
+function styleEditSelectionAllChecked(style = {}) {
   const inputs = editableInputsForStyle(style)
-  return inputs.length && inputs.every(asset => asset.editSelected) ? '本款取消全选' : '本款全选改图'
+  return inputs.length > 0 && inputs.every(asset => asset.editSelected)
 }
 
-function toggleStyleEditSelection(style = {}) {
+function styleEditSelectionIndeterminate(style = {}) {
   const inputs = editableInputsForStyle(style)
-  const next = !inputs.length || !inputs.every(asset => asset.editSelected)
-  for (const asset of inputs) asset.editSelected = next
+  const selectedCount = inputs.filter(asset => asset.editSelected).length
+  return selectedCount > 0 && selectedCount < inputs.length
+}
+
+function setStyleEditSelection(style = {}, checked = false) {
+  for (const asset of editableInputsForStyle(style)) asset.editSelected = checked
 }
 
 const allEditSelectionLabel = computed(() => {
@@ -8099,6 +8108,15 @@ function localFileUrl(path) {
   font-size: 11px;
 }
 
+.aiv-edit-workspace-head {
+  align-items: flex-start;
+  flex-direction: column;
+}
+
+.aiv-edit-bulk-actions {
+  justify-content: flex-start;
+}
+
 .aiv-panel-body {
   padding: 14px;
   display: grid;
@@ -8484,6 +8502,59 @@ function localFileUrl(path) {
 .aiv-collapse-head[aria-expanded="true"] {
   border-color: var(--border);
   background: var(--bg3);
+}
+
+.aiv-style-select-all {
+  min-width: 142px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.aiv-style-select-all input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: var(--orange);
+  cursor: pointer;
+}
+
+.aiv-style-select-all span {
+  margin-top: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+.aiv-style-collapse-trigger {
+  min-width: 0;
+  flex: 1;
+  padding: 0;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.aiv-style-collapse-trigger:focus-visible {
+  outline: 2px solid rgba(255, 107, 43, 0.72);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+.aiv-style-collapse-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .aiv-style-title-block {

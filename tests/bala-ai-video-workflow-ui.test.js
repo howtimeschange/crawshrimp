@@ -121,6 +121,31 @@ test('material recall keeps one card per filename inside the same style and sour
   assert.equal(merged[0].modelPhotos[0].selected, true)
 })
 
+test('restored material groups dedupe legacy paths and reselect AI-named files', () => {
+  const restored = balaWorkflow.mergeBalaMaterialGroups([], [{
+    styleCode: '208326108104',
+    modelPhotos: [
+      { id: 'direct', path: '/workspace/208326108104/01_模拍原图/same.jpg', name: 'same.jpg', selected: false, versions: [] },
+      { id: 'legacy', path: '/workspace/legacy/208326108104/01_模拍原图/same.jpg', name: 'same.jpg', selected: false, versions: [] },
+      { id: 'saved-ai', path: '/workspace/legacy/208326108104/01_模拍原图/o-AI(2).png', name: 'o-AI(2).png', selected: false, versions: [] },
+    ],
+    detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [],
+  }])
+
+  assert.equal(restored[0].modelPhotos.length, 2)
+  assert.equal(restored[0].modelPhotos.find(asset => asset.name === 'o-AI(2).png')?.selected, true)
+})
+
+test('workspace snapshot restore normalizes cached material groups before rendering', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const replaceStart = source.indexOf('function replaceStyleWorkspaces(')
+  const replaceEnd = source.indexOf('\nfunction preserveMaterialScrollPosition', replaceStart)
+  const replaceSource = source.slice(replaceStart, replaceEnd)
+
+  assert.match(replaceSource, /const normalizedGroups = mergeBalaMaterialGroups\(\[\], groups\)/)
+  assert.match(replaceSource, /styleWorkspaces\.splice\(0, styleWorkspaces\.length, \.\.\.normalizedGroups\)/)
+})
+
 test('AI-named material is selected and sorted first while duplicate filenames collapse across source folders', () => {
   const groups = normalizeBalaMaterialGroups({
     batch: {
@@ -1173,6 +1198,38 @@ test('AI edit workspace treats selection as operation scope and exposes shared e
   assert.match(source, /\.aiv-edit-action-panel[\s\S]*?overflow:\s*hidden/)
   assert.match(source, /\.aiv-edit-action-panel \.aiv-panel-body[\s\S]*?overflow-y:\s*auto/)
   assert.match(source, /\.aiv-edit-style-list[\s\S]*?align-content:\s*start/)
+})
+
+test('material step hides AI-edit bulk selection controls', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const materialTemplate = source.slice(
+    source.indexOf('<section v-if="activeStep === \'materials\'"'),
+    source.indexOf('<section v-else-if="activeStep === \'ai-edit\'"'),
+  )
+
+  assert.doesNotMatch(materialTemplate, /toggleStyleEditSelection/)
+  assert.doesNotMatch(materialTemplate, /toggleAllEditSelection/)
+  assert.doesNotMatch(materialTemplate, /本款(?:取消)?全选/)
+  assert.doesNotMatch(materialTemplate, /整列(?:取消)?全选改图/)
+})
+
+test('AI edit bulk controls align left and per-style selection uses a checkbox', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const editTemplate = source.slice(
+    source.indexOf('<section v-else-if="activeStep === \'ai-edit\'"'),
+    source.indexOf('<section v-else-if="activeStep === \'review\'"'),
+  )
+
+  assert.match(editTemplate, /class="aiv-workspace-head aiv-edit-workspace-head"/)
+  assert.match(editTemplate, /class="aiv-inline-actions aiv-edit-bulk-actions"/)
+  assert.match(source, /\.aiv-edit-workspace-head\s*\{[\s\S]*?align-items:\s*flex-start/)
+  assert.match(editTemplate, /class="aiv-style-select-all"/)
+  assert.match(editTemplate, /type="checkbox"/)
+  assert.match(editTemplate, /:checked="styleEditSelectionAllChecked\(style\)"/)
+  assert.match(editTemplate, /:indeterminate="styleEditSelectionIndeterminate\(style\)"/)
+  assert.match(editTemplate, /@change="setStyleEditSelection\(style, \$event\.target\.checked\)"/)
+  assert.match(editTemplate, />全选本款图片改图</)
+  assert.doesNotMatch(editTemplate, /<button[^>]*toggleStyleEditSelection/)
 })
 
 test('deleting an AI result requires confirmation and removes the authorized local image', () => {

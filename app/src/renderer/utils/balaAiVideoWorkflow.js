@@ -446,6 +446,7 @@ function dedupeBalaMaterialGroup(group = {}) {
   const seenFilenames = new Set()
   for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
     result[key] = result[key].filter((asset) => {
+      asset.selected = Boolean(asset.selected || isBalaAiNamedMaterial(asset.filename || asset.name || asset.path))
       const filename = materialFilenameKey(asset)
       if (!filename || !seenFilenames.has(filename)) {
         if (filename) seenFilenames.add(filename)
