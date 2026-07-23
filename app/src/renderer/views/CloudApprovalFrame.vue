@@ -150,17 +150,17 @@ onUnmounted(clearFrameLoadTimer)
 }
 
 .pill.on {
-  color: #4ade80;
+  color: var(--green);
   background: rgba(74, 222, 128, 0.12);
 }
 
 .pill.off {
-  color: #f87171;
+  color: var(--red);
   background: rgba(248, 113, 113, 0.12);
 }
 
 .pill.neutral {
-  color: #cbd5e1;
+  color: var(--text2);
   background: rgba(148, 163, 184, 0.12);
 }
 
@@ -223,9 +223,9 @@ onUnmounted(clearFrameLoadTimer)
   min-height: 32px;
   padding: 0 14px;
   border-radius: 8px;
-  border: 1px solid rgba(255, 107, 43, 0.5);
+  border: 1px solid rgba(var(--orange-rgb), 0.5);
   background: var(--orange-bg);
-  color: var(--orange);
+  color: var(--orange-text);
   font-weight: 700;
 }
 

@@ -2757,21 +2757,8 @@ onUnmounted(() => {
 
 <style scoped>
 .avg-workbench {
-  --orange: #ff6b2b;
-  --orange-soft: rgba(255, 107, 43, 0.13);
-  --orange-line: rgba(255, 107, 43, 0.42);
-  --bg: #141418;
-  --bg2: #1c1c22;
-  --bg3: #242430;
-  --border: #2e2e3a;
-  --text: #e2e0f0;
-  --text2: #aaa8ba;
-  --text3: #737184;
-  --green: #4ade80;
-  --yellow: #facc15;
-  --red: #f87171;
-  --blue: #60a5fa;
-  --shadow: rgba(0, 0, 0, 0.32);
+  --orange-soft: var(--orange-bg);
+  --orange-line: rgba(var(--orange-rgb), 0.42);
   height: 100%;
   max-height: 100%;
   min-height: 0;
@@ -2795,7 +2782,7 @@ onUnmounted(() => {
 
 .avg-kicker {
   margin: 0 0 4px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 800;
 }
@@ -2839,7 +2826,7 @@ onUnmounted(() => {
 }
 
 .avg-mobile-tabs button.active {
-  color: var(--orange);
+  color: var(--orange-text);
   border-color: var(--orange);
   background: var(--orange-soft);
 }
@@ -2917,12 +2904,12 @@ onUnmounted(() => {
 .avg-model-select-current:hover,
 .avg-model-select-current:focus-visible {
   border-color: var(--orange-line);
-  background: rgba(255, 107, 43, 0.08);
+  background: rgba(var(--orange-rgb), 0.08);
 }
 
 .avg-model-picker.open .avg-model-select-current {
   border-color: var(--orange-line);
-  background: linear-gradient(120deg, rgba(255, 107, 43, 0.13), var(--bg3) 72%);
+  background: linear-gradient(120deg, rgba(var(--orange-rgb), 0.13), var(--bg3) 72%);
   box-shadow: inset 2px 0 0 var(--orange), inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
@@ -2932,10 +2919,10 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   flex: 0 0 30px;
-  border: 1px solid rgba(255, 107, 43, 0.34);
+  border: 1px solid rgba(var(--orange-rgb), 0.34);
   border-radius: 8px;
-  background: rgba(255, 107, 43, 0.1);
-  color: var(--orange);
+  background: rgba(var(--orange-rgb), 0.1);
+  color: var(--orange-text);
 }
 
 .avg-button-icon {
@@ -2996,7 +2983,7 @@ onUnmounted(() => {
 
 .avg-model-picker.open .avg-model-picker-action {
   border-color: var(--orange-line);
-  color: var(--orange);
+  color: var(--orange-text);
   transform: rotate(180deg);
 }
 
@@ -3014,7 +3001,7 @@ onUnmounted(() => {
   border: 1px solid var(--border);
   border-top-color: var(--orange-line);
   border-radius: 0 0 10px 10px;
-  background: #20202a;
+  background: var(--bg3);
   box-shadow: 0 18px 34px rgba(0, 0, 0, 0.38);
 }
 
@@ -3061,9 +3048,9 @@ onUnmounted(() => {
 .avg-model-option:hover .avg-model-option-icon,
 .avg-model-option:focus-visible .avg-model-option-icon,
 .avg-model-option.active .avg-model-option-icon {
-  border-color: rgba(255, 107, 43, 0.34);
-  background: rgba(255, 107, 43, 0.1);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.34);
+  background: rgba(var(--orange-rgb), 0.1);
+  color: var(--orange-text);
 }
 
 .avg-model-option-copy {
@@ -3096,8 +3083,8 @@ onUnmounted(() => {
   place-items: center;
   border: 1px solid var(--orange-line);
   border-radius: 50%;
-  background: rgba(255, 107, 43, 0.1);
-  color: var(--orange);
+  background: rgba(var(--orange-rgb), 0.1);
+  color: var(--orange-text);
 }
 
 .avg-model-option-check .avg-button-icon { width: 13px; height: 13px; }
@@ -3125,7 +3112,7 @@ onUnmounted(() => {
 }
 
 .avg-cost-main strong {
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 18px;
   font-weight: 850;
   letter-spacing: 0.02em;
@@ -3222,13 +3209,12 @@ onUnmounted(() => {
   min-height: 30px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: #20202a;
+  background: var(--bg3);
   color: var(--text);
   padding: 0 26px 0 9px;
   font-size: 12px;
   font-weight: 740;
   outline: none;
-  color-scheme: dark;
 }
 
 .avg-asset-role-select select:focus {
@@ -3257,7 +3243,7 @@ onUnmounted(() => {
 .avg-local-source-card.active {
   border-style: solid;
   border-color: var(--orange-line);
-  background: rgba(255, 107, 43, 0.08);
+  background: rgba(var(--orange-rgb), 0.08);
 }
 
 .avg-local-source-card-media {
@@ -3307,7 +3293,7 @@ onUnmounted(() => {
 }
 
 .avg-local-source-placeholder.video {
-  background: linear-gradient(135deg, #111827, #242430);
+  background: linear-gradient(135deg, #111827, var(--bg3));
   color: #fff;
 }
 
@@ -3342,7 +3328,7 @@ onUnmounted(() => {
 .avg-advanced-panel summary::after {
   content: '展开';
   flex: 0 0 auto;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 850;
 }
@@ -3544,7 +3530,7 @@ onUnmounted(() => {
 
 .avg-segmented button.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-soft);
   font-weight: 800;
 }
@@ -3712,7 +3698,7 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.avg-pill.orange { color: var(--orange); border-color: var(--orange-line); background: var(--orange-soft); }
+.avg-pill.orange { color: var(--orange-text); border-color: var(--orange-line); background: var(--orange-soft); }
 .avg-pill.green { color: var(--green); border-color: rgba(74, 222, 128, 0.32); }
 .avg-pill.yellow { color: var(--yellow); border-color: rgba(250, 204, 21, 0.32); }
 .avg-pill.red { color: var(--red); border-color: rgba(248, 113, 113, 0.32); }
@@ -3737,7 +3723,7 @@ onUnmounted(() => {
 }
 
 .avg-filter-tabs button.active {
-  color: var(--orange);
+  color: var(--orange-text);
   border-color: var(--orange);
   background: var(--orange-soft);
   font-weight: 800;
@@ -3790,7 +3776,7 @@ onUnmounted(() => {
 
 .avg-task-card:hover {
   border-color: var(--orange-line);
-  background: #202027;
+  background: var(--bg3);
   transform: translateY(-1px);
 }
 
@@ -3823,7 +3809,7 @@ onUnmounted(() => {
   aspect-ratio: 3 / 4;
   position: relative;
   overflow: hidden;
-  background: #101015;
+  background: var(--bg);
 }
 
 .avg-thumb-media,
@@ -3842,7 +3828,7 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   z-index: 3;
-  background: #050507;
+  background: color-mix(in srgb, var(--bg) 82%, #050507 18%);
 }
 
 .avg-inline-play,
@@ -3975,7 +3961,7 @@ onUnmounted(() => {
   aspect-ratio: 3 / 4;
   min-height: 96px;
   overflow: hidden;
-  background: #101015;
+  background: var(--bg);
 }
 
 .avg-library-media img,
@@ -3986,7 +3972,7 @@ onUnmounted(() => {
   height: 100%;
   display: block;
   object-fit: cover;
-  background: #101015;
+  background: var(--bg);
 }
 
 .avg-library-tile-ph {
@@ -4046,7 +4032,7 @@ onUnmounted(() => {
 }
 
 .avg-library-tile.selected .avg-library-check {
-  color: var(--orange);
+  color: var(--orange-text);
   border-color: var(--orange-line);
   background: var(--orange-soft);
 }
@@ -4075,7 +4061,7 @@ onUnmounted(() => {
   padding: 16px 12px;
   color: var(--text2);
   background:
-    radial-gradient(circle at 50% 38%, rgba(255, 107, 43, 0.14), transparent 42%),
+    radial-gradient(circle at 50% 38%, rgba(var(--orange-rgb), 0.14), transparent 42%),
     linear-gradient(160deg, #17171f, #0d0d12 60%);
 }
 
@@ -4143,7 +4129,7 @@ onUnmounted(() => {
 .avg-status-chip.running { color: var(--yellow); border-color: rgba(250, 204, 21, 0.38); }
 .avg-status-chip.completed { color: var(--green); border-color: rgba(74, 222, 128, 0.34); }
 .avg-status-chip.downloading { color: var(--blue); border-color: rgba(96, 165, 250, 0.34); }
-.avg-status-chip.needs_config { color: var(--orange); border-color: var(--orange-line); }
+.avg-status-chip.needs_config { color: var(--orange-text); border-color: var(--orange-line); }
 .avg-status-chip.cancelled,
 .avg-status-chip.expired { color: var(--text3); }
 .avg-status-chip.failed { color: var(--red); border-color: rgba(248, 113, 113, 0.34); }
@@ -4221,7 +4207,7 @@ onUnmounted(() => {
 }
 
 .avg-task-actions .avg-details-task {
-  color: var(--orange);
+  color: var(--orange-text);
   border-color: var(--orange-line);
   background: var(--orange-soft);
 }
@@ -4297,7 +4283,7 @@ select:focus-visible {
   border: 1px solid var(--orange-line);
   border-radius: 8px;
   background: var(--orange-soft);
-  color: var(--orange);
+  color: var(--orange-text);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -4369,7 +4355,7 @@ select:focus-visible {
 
 .avg-history-item:hover {
   border-color: var(--orange-line);
-  background: #1f1f26;
+  background: var(--bg2);
 }
 
 .avg-history-item strong,
@@ -4485,7 +4471,7 @@ select:focus-visible {
   min-height: 420px;
   height: min(70vh, 640px);
   max-height: min(70vh, 640px);
-  background: #0d0d12;
+  background: var(--bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -4511,7 +4497,7 @@ select:focus-visible {
   max-height: 100%;
   object-fit: contain;
   object-position: center center;
-  background: #0d0d12;
+  background: var(--bg);
 }
 
 .avg-modal-preview-pending {
@@ -4520,7 +4506,7 @@ select:focus-visible {
   min-height: 360px;
   opacity: 0.42;
   background:
-    radial-gradient(circle at 30% 40%, rgba(255, 107, 43, 0.18), transparent 40%),
+    radial-gradient(circle at 30% 40%, rgba(var(--orange-rgb), 0.18), transparent 40%),
     linear-gradient(160deg, #15151c, #0d0d12 60%);
 }
 
@@ -4602,7 +4588,7 @@ select:focus-visible {
 .avg-detail-status.running { color: var(--yellow); border-color: rgba(250, 204, 21, 0.38); }
 .avg-detail-status.completed { color: var(--green); border-color: rgba(74, 222, 128, 0.34); }
 .avg-detail-status.downloading { color: var(--blue); border-color: rgba(96, 165, 250, 0.34); }
-.avg-detail-status.needs_config { color: var(--orange); border-color: var(--orange-line); }
+.avg-detail-status.needs_config { color: var(--orange-text); border-color: var(--orange-line); }
 .avg-detail-status.cancelled,
 .avg-detail-status.expired { color: var(--text3); }
 .avg-detail-status.failed { color: var(--red); border-color: rgba(248, 113, 113, 0.34); }

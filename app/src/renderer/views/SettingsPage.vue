@@ -45,7 +45,55 @@
 
       <main class="settings-content">
         <Transition name="settings-panel" mode="out-in">
-        <section v-if="activePanelId === 'connection-overview'" key="connection-overview" class="panel">
+        <section v-if="activePanelId === 'appearance-theme'" key="appearance-theme" class="panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">外观</p>
+              <h3>主题</h3>
+            </div>
+            <span class="badge neutral">
+              当前为{{ props.effectiveTheme === 'light' ? '浅色' : '深色' }}
+            </span>
+          </div>
+
+          <div class="theme-intro">
+            <strong>选择抓虾的界面主题</strong>
+            <p>主题会立即应用并保存在当前设备。选择“系统”后，抓虾会跟随操作系统外观自动切换，支持 macOS 与 Windows。</p>
+          </div>
+
+          <div class="theme-options" role="radiogroup" aria-label="界面主题">
+            <button
+              v-for="option in themeOptions"
+              :key="option.value"
+              type="button"
+              :class="['theme-option', { active: props.themePreference === option.value }]"
+              role="radio"
+              :aria-checked="props.themePreference === option.value"
+              @click="selectTheme(option.value)"
+            >
+              <span :class="['theme-preview', `theme-preview-${option.value}`]" aria-hidden="true">
+                <span class="theme-preview-titlebar"></span>
+                <span class="theme-preview-sidebar"></span>
+                <span class="theme-preview-canvas">
+                  <i></i>
+                  <i></i>
+                  <i></i>
+                </span>
+              </span>
+              <span class="theme-option-copy">
+                <strong>{{ option.label }}</strong>
+                <small>{{ option.description }}</small>
+              </span>
+              <span class="theme-option-check" aria-hidden="true">✓</span>
+            </button>
+          </div>
+
+          <div class="appearance-note">
+            <span>品牌橙色、状态色和功能布局保持不变，仅调整背景、文字、边框和浮层层级。</span>
+          </div>
+        </section>
+
+        <section v-else-if="activePanelId === 'connection-overview'" key="connection-overview" class="panel">
           <div class="panel-head">
             <div>
               <p class="panel-kicker">连接</p>
@@ -767,14 +815,21 @@ import {
 
 const OFFICIAL_RELEASE_URL = 'https://github.com/howtimeschange/crawshrimp/releases/latest'
 
-const props = defineProps(['status', 'focusPanelId', 'updateStatus', 'updateActionBusy'])
-const emit = defineEmits(['runtime-refresh', 'check-update'])
+const props = defineProps([
+  'status',
+  'focusPanelId',
+  'updateStatus',
+  'updateActionBusy',
+  'themePreference',
+  'effectiveTheme',
+])
+const emit = defineEmits(['runtime-refresh', 'check-update', 'theme-change'])
 
 const cfg = ref({})
 const savedCfg = ref({})
 
-const activeGroupId = ref('connection')
-const activePanelId = ref('connection-overview')
+const activeGroupId = ref('appearance')
+const activePanelId = ref('appearance-theme')
 
 const launching = ref(false)
 const chromeMsg = ref('')
@@ -824,7 +879,20 @@ const aiVideoConnectionHints = {
 
 const saveState = reactive({})
 
+const themeOptions = [
+  { value: 'system', label: '系统', description: '跟随 macOS / Windows' },
+  { value: 'light', label: '浅色', description: '明亮、清晰' },
+  { value: 'dark', label: '深色', description: '低光、专注' },
+]
+
 const menuGroups = [
+  {
+    id: 'appearance',
+    icon: '●',
+    label: '外观',
+    desc: '主题 / 显示',
+    children: [{ id: 'appearance-theme', label: '主题' }],
+  },
   {
     id: 'connection',
     icon: '●',
@@ -1038,6 +1106,10 @@ function selectGroup(groupId) {
 function selectPanel(groupId, panelId) {
   activeGroupId.value = groupId
   activePanelId.value = panelId
+}
+
+function selectTheme(preference) {
+  emit('theme-change', preference)
 }
 
 function focusPanel(panelId) {
@@ -1428,10 +1500,10 @@ watch(activePanelId, panelId => {
 }
 
 .menu-group.active {
-  background: rgba(255, 107, 43, 0.11);
-  border-color: rgba(255, 107, 43, 0.2);
-  color: var(--orange);
-  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, 0.06), 0 10px 28px rgba(255, 107, 43, 0.06);
+  background: rgba(var(--orange-rgb), 0.11);
+  border-color: rgba(var(--orange-rgb), 0.2);
+  color: var(--orange-text);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), 0.06), 0 10px 28px rgba(var(--orange-rgb), 0.06);
 }
 
 .menu-icon {
@@ -1447,7 +1519,7 @@ watch(activePanelId, panelId => {
 
 .menu-group.active .menu-icon {
   transform: scale(1.28);
-  box-shadow: 0 0 0 4px rgba(255, 107, 43, 0.08);
+  box-shadow: 0 0 0 4px rgba(var(--orange-rgb), 0.08);
 }
 
 .menu-copy {
@@ -1508,12 +1580,12 @@ watch(activePanelId, panelId => {
 }
 
 .mini-state.on {
-  color: #4ade80;
+  color: var(--green);
   background: rgba(74, 222, 128, 0.1);
 }
 
 .mini-state.off {
-  color: #f87171;
+  color: var(--red);
   background: rgba(248, 113, 113, 0.1);
 }
 
@@ -1577,7 +1649,7 @@ watch(activePanelId, panelId => {
 
 .panel-kicker {
   margin: 0 0 5px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 12px;
   font-weight: 700;
 }
@@ -1600,6 +1672,215 @@ watch(activePanelId, panelId => {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
+}
+
+.theme-intro {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.theme-intro strong {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.theme-intro p {
+  max-width: 680px;
+  margin: 0;
+  color: var(--text3);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.theme-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 14px;
+}
+
+.theme-option {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 11px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg3);
+  color: var(--text2);
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+}
+
+.theme-option:hover {
+  border-color: var(--border-strong);
+  background: var(--soft-fill-hover);
+}
+
+.theme-option:active {
+  transform: translateY(1px);
+}
+
+.theme-option:focus-visible {
+  outline: 2px solid var(--orange);
+  outline-offset: 2px;
+}
+
+.theme-option.active {
+  border-color: var(--orange);
+  background: var(--orange-bg);
+  box-shadow: 0 0 0 1px var(--orange-bg);
+}
+
+.theme-preview {
+  position: relative;
+  display: grid;
+  grid-template-columns: 28% 72%;
+  grid-template-rows: 22% 78%;
+  width: 100%;
+  aspect-ratio: 1.7;
+  overflow: hidden;
+  border: 1px solid rgba(98, 99, 108, 0.36);
+  border-radius: 8px;
+  background: #f4f4f5;
+}
+
+.theme-preview-titlebar {
+  grid-column: 1 / -1;
+  background: #ececee;
+  border-bottom: 1px solid #d6d6da;
+}
+
+.theme-preview-sidebar {
+  background: #e7e7e9;
+  border-right: 1px solid #d6d6da;
+}
+
+.theme-preview-canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 12px 10px;
+  background: #fafafa;
+}
+
+.theme-preview-canvas i {
+  display: block;
+  width: 76%;
+  height: 7px;
+  border-radius: 3px;
+  background: #dedee2;
+}
+
+.theme-preview-canvas i:nth-child(2) {
+  width: 55%;
+}
+
+.theme-preview-canvas i:nth-child(3) {
+  width: 84%;
+  height: 24px;
+  background: #f0f0f2;
+  border: 1px solid #dddddf;
+}
+
+.theme-preview-dark {
+  border-color: rgba(255, 255, 255, 0.18);
+  background: #1a1a1f;
+}
+
+.theme-preview-dark .theme-preview-titlebar {
+  background: #202027;
+  border-color: #303039;
+}
+
+.theme-preview-dark .theme-preview-sidebar {
+  background: #1d1d23;
+  border-color: #303039;
+}
+
+.theme-preview-dark .theme-preview-canvas {
+  background: #151519;
+}
+
+.theme-preview-dark .theme-preview-canvas i {
+  background: #35353f;
+}
+
+.theme-preview-dark .theme-preview-canvas i:nth-child(3) {
+  background: #222229;
+  border-color: #393943;
+}
+
+.theme-preview-system {
+  background: linear-gradient(90deg, #f4f4f5 0 50%, #1a1a1f 50%);
+}
+
+.theme-preview-system .theme-preview-titlebar {
+  background: linear-gradient(90deg, #ececee 0 50%, #202027 50%);
+}
+
+.theme-preview-system .theme-preview-sidebar {
+  background: linear-gradient(90deg, #e7e7e9 0 78%, #1d1d23 78%);
+}
+
+.theme-preview-system .theme-preview-canvas {
+  background: linear-gradient(90deg, #fafafa 0 30.5%, #151519 30.5%);
+}
+
+.theme-preview-system .theme-preview-canvas i {
+  background: linear-gradient(90deg, #dedee2 0 35%, #35353f 35%);
+}
+
+.theme-option-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 0 2px;
+}
+
+.theme-option-copy strong {
+  color: var(--text);
+  font-size: 13px;
+}
+
+.theme-option-copy small {
+  color: var(--text3);
+  font-size: 11px;
+}
+
+.theme-option-check {
+  position: absolute;
+  right: 14px;
+  bottom: 14px;
+  display: grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border-radius: 50%;
+  background: var(--orange);
+  color: var(--on-orange);
+  font-size: 11px;
+  font-weight: 800;
+  opacity: 0;
+  transform: scale(0.75);
+  transition: opacity 0.15s ease, transform 0.15s ease;
+}
+
+.theme-option.active .theme-option-check {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.appearance-note {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--soft-fill);
+  color: var(--text3);
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .readonly-grid {
@@ -1695,7 +1976,7 @@ watch(activePanelId, panelId => {
 .settings-subsection {
   border: 1px solid var(--border);
   border-radius: 9px;
-  background: rgba(255, 255, 255, 0.025);
+  background: var(--soft-fill);
 }
 
 .settings-advanced-panel {
@@ -1722,14 +2003,14 @@ watch(activePanelId, panelId => {
 .settings-advanced-panel summary::after {
   content: '展开';
   flex: 0 0 auto;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 750;
 }
 
 .settings-advanced-panel[open] summary {
   border-bottom: 1px solid var(--border);
-  background: rgba(255, 255, 255, 0.02);
+  background: var(--soft-fill);
 }
 
 .settings-advanced-panel[open] summary::after {
@@ -1786,7 +2067,8 @@ watch(activePanelId, panelId => {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.input {
+.input,
+.select {
   width: 100%;
   min-width: 0;
   background: var(--bg);
@@ -1799,9 +2081,14 @@ watch(activePanelId, panelId => {
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.input:focus {
+.select {
+  cursor: pointer;
+}
+
+.input:focus,
+.select:focus {
   border-color: var(--orange);
-  background: #17171d;
+  background: var(--input-focus);
 }
 
 .side-note {
@@ -1858,17 +2145,17 @@ watch(activePanelId, panelId => {
 
 .badge.on {
   background: rgba(74, 222, 128, 0.12);
-  color: #4ade80;
+  color: var(--green);
 }
 
 .badge.off {
   background: rgba(248, 113, 113, 0.12);
-  color: #f87171;
+  color: var(--red);
 }
 
 .badge.neutral {
   background: rgba(148, 163, 184, 0.12);
-  color: #cbd5e1;
+  color: var(--text2);
 }
 
 .inline-msg,
@@ -1888,7 +2175,7 @@ watch(activePanelId, panelId => {
 .inline-msg.ok,
 .msg.ok,
 .test-result.ok {
-  color: #4ade80;
+  color: var(--green);
 }
 
 .inline-msg.ok,
@@ -1899,7 +2186,7 @@ watch(activePanelId, panelId => {
 .inline-msg.err,
 .msg.err,
 .test-result.err {
-  color: #f87171;
+  color: var(--red);
 }
 
 .inline-msg.err,
@@ -1914,11 +2201,11 @@ watch(activePanelId, panelId => {
 }
 
 .cloud-address-hint.ok {
-  color: #4ade80;
+  color: var(--green);
 }
 
 .cloud-address-hint.warn {
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 .guide-block {
@@ -1928,7 +2215,7 @@ watch(activePanelId, panelId => {
 
 .guide-title {
   margin: 0 0 10px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 12px;
   font-weight: 700;
 }
@@ -1937,7 +2224,7 @@ watch(activePanelId, panelId => {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 11px;
   background: var(--bg);
-  border: 1px solid rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--subtle-border);
   border-radius: 7px;
   padding: 11px 12px;
   margin: 0;
@@ -1965,18 +2252,18 @@ watch(activePanelId, panelId => {
 }
 
 .key-pill.on {
-  color: #4ade80;
+  color: var(--green);
   background: rgba(74, 222, 128, 0.09);
   border-color: rgba(74, 222, 128, 0.18);
 }
 
 .key-pill.off {
   color: var(--text3);
-  background: rgba(255, 255, 255, 0.03);
+  background: var(--soft-fill);
 }
 
 .key-pill.neutral {
-  color: #cbd5e1;
+  color: var(--text2);
   background: rgba(148, 163, 184, 0.12);
   border-color: rgba(148, 163, 184, 0.18);
 }
@@ -2018,11 +2305,11 @@ watch(activePanelId, panelId => {
   padding: 10px 18px;
   border: none;
   background: var(--orange);
-  color: white;
+  color: var(--on-orange);
 }
 
 .btn-orange:hover:not(:disabled) {
-  background: #ff7a3e;
+  background: var(--orange-hover);
 }
 
 .btn-ghost {
@@ -2055,14 +2342,14 @@ watch(activePanelId, panelId => {
   border: none;
   border-radius: 8px;
   background: var(--orange);
-  color: white;
+  color: var(--on-orange);
   font-size: 12px;
   font-weight: 700;
   transition: background 0.15s ease, opacity 0.15s ease, transform 0.15s ease;
 }
 
 :deep(.panel-actions .btn-orange:hover:not(:disabled)) {
-  background: #ff7a3e;
+  background: var(--orange-hover);
 }
 
 :deep(.panel-actions .btn-orange:active) {
@@ -2088,12 +2375,12 @@ watch(activePanelId, panelId => {
 
 :deep(.panel-actions .msg.ok) {
   background: rgba(74, 222, 128, 0.1);
-  color: #4ade80;
+  color: var(--green);
 }
 
 :deep(.panel-actions .msg.err) {
   background: rgba(248, 113, 113, 0.1);
-  color: #f87171;
+  color: var(--red);
 }
 
 .settings-panel-enter-active {
@@ -2191,6 +2478,14 @@ watch(activePanelId, panelId => {
 }
 
 @media (max-width: 980px) {
+  .theme-options {
+    grid-template-columns: 1fr;
+  }
+
+  .theme-preview {
+    aspect-ratio: 2.25;
+  }
+
   .settings-workspace {
     grid-template-columns: 1fr;
     overflow-y: auto;

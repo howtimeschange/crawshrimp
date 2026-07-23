@@ -223,10 +223,10 @@ onMounted(loadInstance)
   color: var(--text2);
   font-size: 12px;
 }
-.tir-status.active { border-color: rgba(96, 165, 250, .35); color: #93c5fd; }
-.tir-status.pending { border-color: rgba(251, 191, 36, .35); color: #fbbf24; }
-.tir-status.done { border-color: rgba(74, 222, 128, .32); color: #86efac; }
-.tir-status.error { border-color: rgba(248, 113, 113, .34); color: #fca5a5; }
+.tir-status.active { border-color: rgba(96, 165, 250, .35); color: var(--blue); }
+.tir-status.pending { border-color: rgba(251, 191, 36, .35); color: var(--yellow); }
+.tir-status.done { border-color: rgba(74, 222, 128, .32); color: var(--green); }
+.tir-status.error { border-color: rgba(248, 113, 113, .34); color: var(--red); }
 .tir-readback {
   flex: 0 0 auto;
   display: flex;
@@ -260,8 +260,8 @@ onMounted(loadInstance)
   font-size: 12px;
 }
 .tir-link {
-  border-color: rgba(255, 107, 43, .34);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), .34);
+  color: var(--orange-text);
 }
 .tir-artifacts {
   display: flex;

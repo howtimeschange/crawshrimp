@@ -4255,10 +4255,10 @@ onUnmounted(() => {
   overflow-y: auto;
   padding: 10px 16px 12px;
   border-top: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+  background: var(--dock-bg);
 }
 .ai-chain-runner .runner-body {
-  background: color-mix(in srgb, var(--bg) 88%, #111827 12%);
+  background: var(--dock-bg);
 }
 .ai-chain-runner .runner-main-scroll {
   padding: 16px 18px 0;
@@ -4309,15 +4309,15 @@ onUnmounted(() => {
   box-shadow: inset 0 2px 0 var(--orange);
 }
 .ai-chain-tab.active .ai-chain-tab-index {
-  color: var(--orange);
+  color: var(--orange-text);
   background: rgba(255, 106, 41, .1);
 }
 .ai-chain-tab.done .ai-chain-tab-index {
-  color: #86efac;
+  color: var(--green);
   background: rgba(74, 222, 128, .1);
 }
 .ai-chain-tab.error .ai-chain-tab-index {
-  color: #fca5a5;
+  color: var(--red);
   background: rgba(248, 113, 113, .06);
 }
 .ai-chain-tab-index {
@@ -4376,7 +4376,7 @@ onUnmounted(() => {
   display: grid;
   place-items: center;
   background: var(--bg3);
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 12px;
   font-weight: 900;
 }
@@ -4504,7 +4504,7 @@ onUnmounted(() => {
   margin-top: 6px;
   border: 0;
   background: transparent;
-  color: var(--orange);
+  color: var(--orange-text);
   padding: 0;
   font: inherit;
   font-size: 11px;
@@ -4519,7 +4519,7 @@ onUnmounted(() => {
   margin-top: 5px;
   max-height: 54px;
   overflow: auto;
-  color: #fca5a5;
+  color: var(--red);
   font-size: 11px;
   line-height: 1.45;
 }
@@ -4548,7 +4548,7 @@ onUnmounted(() => {
 .param-span-half { grid-column: span 3; }
 .param-span-third { grid-column: span 2; }
 .param-label { font-size: 12px; color: var(--text2); font-weight: 500; }
-.required { color: var(--orange); margin-left: 3px; }
+.required { color: var(--orange-text); margin-left: 3px; }
 .hint { font-size: 11px; color: var(--text3); line-height: 1.5; }
 .probe-note {
   font-size: 12px;
@@ -4604,7 +4604,7 @@ onUnmounted(() => {
 }
 .cloud-prompt-library-clear:hover {
   border-color: rgba(248, 113, 113, .5);
-  color: #fca5a5;
+  color: var(--red);
 }
 .cloud-prompt-library-modal {
   position: fixed;
@@ -4729,7 +4729,7 @@ onUnmounted(() => {
   padding: 10px 12px;
 }
 .cloud-prompt-template-preview span {
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 800;
 }
@@ -4754,7 +4754,7 @@ onUnmounted(() => {
   text-align: center;
 }
 .cloud-prompt-library-error {
-  color: #fca5a5;
+  color: var(--red);
 }
 
 .input {
@@ -4806,7 +4806,7 @@ onUnmounted(() => {
 }
 .line-list-remove:hover:not(:disabled) {
   border-color: rgba(255, 99, 35, 0.75);
-  color: var(--orange);
+  color: var(--orange-text);
   background: rgba(255, 99, 35, 0.08);
 }
 .line-list-remove:disabled {
@@ -4817,7 +4817,7 @@ onUnmounted(() => {
   align-self: flex-start;
   border: 1px solid rgba(255, 99, 35, 0.45);
   background: rgba(255, 99, 35, 0.08);
-  color: var(--orange);
+  color: var(--orange-text);
   border-radius: 8px;
   padding: 7px 11px;
   font-size: 12px;
@@ -4903,7 +4903,7 @@ onUnmounted(() => {
 .multi-select-clear {
   border: none;
   background: transparent;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 12px;
   cursor: pointer;
   padding: 0;
@@ -5017,7 +5017,7 @@ onUnmounted(() => {
   font-weight: 600;
   transition: all 0.15s;
 }
-.run-sub-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange); transform: translateY(-1px); }
+.run-sub-btn:hover:not(:disabled) { border-color: var(--orange); color: var(--orange-text); transform: translateY(-1px); }
 .run-sub-btn:disabled { opacity: 0.45; cursor: not-allowed; transform: none; }
 .run-sync-btn {
   min-width: 184px;
@@ -5030,15 +5030,15 @@ onUnmounted(() => {
   background: #15803d;
   color: #fff;
 }
-.run-sub-btn-stop { border-color: rgba(248,113,113,0.35); color: #fca5a5; }
-.run-sub-btn-stop:hover:not(:disabled) { border-color: #f87171; color: #f87171; }
+.run-sub-btn-stop { border-color: rgba(248,113,113,0.35); color: var(--red); }
+.run-sub-btn-stop:hover:not(:disabled) { border-color: var(--red); color: var(--red); }
 .action-note { font-size: 12px; color: var(--text3); }
 .missing-hint { font-size: 12px; color: var(--text3); }
 .reset-link { font-size: 12px; color: var(--text3); cursor: pointer; text-decoration: underline; }
-.reset-link:hover { color: #f87171; }
+.reset-link:hover { color: var(--red); }
 .result-badge { font-size: 12px; padding: 4px 10px; border-radius: 6px; }
-.result-badge.ok  { background: rgba(74,222,128,0.12); color: #4ade80; }
-.result-badge.err { background: rgba(248,113,113,0.12); color: #f87171; }
+.result-badge.ok  { background: rgba(74,222,128,0.12); color: var(--green); }
+.result-badge.err { background: rgba(248,113,113,0.12); color: var(--red); }
 
 .progress-strip {
   display: flex;
@@ -5096,7 +5096,7 @@ onUnmounted(() => {
 }
 .progress-strip-percent {
   font-size: 12px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-weight: 700;
 }
 .progress-strip-stack {
@@ -5299,12 +5299,12 @@ onUnmounted(() => {
 .f-ico { font-size: 15px; flex-shrink: 0; }
 .f-label { flex: 1; font-size: 13px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .f-clear { font-size: 12px; color: var(--text3); flex-shrink: 0; line-height: 1; }
-.f-clear:hover { color: #f87171; }
+.f-clear:hover { color: var(--red); }
 .btn-pick {
   padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border);
   background: var(--bg3); color: var(--text2); font-size: 12px; white-space: nowrap;
 }
-.btn-pick:hover { background: var(--orange-bg); color: var(--orange); border-color: var(--orange); }
+.btn-pick:hover { background: var(--orange-bg); color: var(--orange-text); border-color: var(--orange); }
 .pdf-crop-actions {
   display: flex;
   align-items: center;
@@ -5365,7 +5365,7 @@ onUnmounted(() => {
   font-size: 20px;
   line-height: 1;
 }
-.pdf-crop-close:hover { border-color: var(--orange); color: var(--orange); }
+.pdf-crop-close:hover { border-color: var(--orange); color: var(--orange-text); }
 .pdf-crop-toolbar {
   display: grid;
   grid-template-columns: minmax(240px, 1fr) auto auto auto;
@@ -5387,7 +5387,7 @@ onUnmounted(() => {
   font-size: 12px;
 }
 .pdf-crop-page-step:hover:not(:disabled) {
-  color: var(--orange);
+  color: var(--orange-text);
   border-color: var(--orange);
 }
 .pdf-crop-page-step:disabled {
@@ -5426,7 +5426,7 @@ onUnmounted(() => {
   min-width: 0;
 }
 .run-sub-btn.danger {
-  color: #fca5a5;
+  color: var(--red);
 }
 .run-sub-btn.danger:hover:not(:disabled) {
   border-color: rgba(248, 113, 113, 0.45);
@@ -5447,7 +5447,7 @@ onUnmounted(() => {
   border-radius: 10px;
   color: var(--text3);
 }
-.pdf-crop-error { color: #fca5a5; }
+.pdf-crop-error { color: var(--red); }
 .pdf-crop-error.compact {
   min-height: 0;
   justify-content: flex-start;
@@ -5498,7 +5498,7 @@ onUnmounted(() => {
 .pdf-crop-page-button:hover,
 .pdf-crop-page-button.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: rgba(255, 106, 41, 0.1);
 }
 .pdf-crop-stage {
@@ -5589,7 +5589,7 @@ onUnmounted(() => {
 }
 .btn-template {
   padding: 8px 14px; border-radius: 8px; border: 1px solid rgba(255, 106, 41, 0.28);
-  background: rgba(255, 106, 41, 0.1); color: var(--orange); font-size: 12px; font-weight: 600;
+  background: rgba(255, 106, 41, 0.1); color: var(--orange-text); font-size: 12px; font-weight: 600;
   white-space: nowrap;
 }
 .btn-template:hover { background: rgba(255, 106, 41, 0.16); border-color: rgba(255, 106, 41, 0.42); }
@@ -5647,12 +5647,12 @@ onUnmounted(() => {
   display: flex; gap: 12px; align-items: center;
   padding: 5px 10px; background: rgba(74,222,128,0.07); border-radius: 6px;
 }
-.preview-count { font-size: 12px; color: #4ade80; font-weight: 600; }
+.preview-count { font-size: 12px; color: var(--green); font-weight: 600; }
 .preview-cols { font-size: 11px; color: var(--text3); }
 .excel-loading { font-size: 12px; color: var(--text3); padding: 4px 0; }
 .template-feedback { font-size: 12px; padding: 4px 0; }
-.template-feedback.ok { color: #4ade80; }
-.template-feedback.err { color: #f87171; }
+.template-feedback.ok { color: var(--green); }
+.template-feedback.err { color: var(--red); }
 .image-file-list {
   display: flex;
   gap: 8px;

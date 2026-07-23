@@ -680,22 +680,22 @@ onUpdated(resizePromptTextareas)
 }
 
 .lpl-primary {
-  border-color: rgba(255, 107, 43, .48);
+  border-color: rgba(var(--orange-rgb), .48);
   background: var(--orange);
   color: #fff;
   font-weight: 700;
 }
 
 .lpl-secondary {
-  border-color: rgba(255, 255, 255, .18);
-  background: rgba(255, 255, 255, .08);
+  border-color: var(--border);
+  background: var(--bg3);
   color: var(--text);
   font-weight: 700;
 }
 
 .lpl-secondary:hover {
-  border-color: rgba(255, 107, 43, .48);
-  background: rgba(255, 107, 43, .12);
+  border-color: rgba(var(--orange-rgb), .48);
+  background: rgba(var(--orange-rgb), .12);
 }
 
 .lpl-primary:disabled,
@@ -705,7 +705,7 @@ onUpdated(resizePromptTextareas)
 }
 
 .lpl-icon.danger {
-  color: #fca5a5;
+  color: var(--red);
 }
 
 .lpl-notice {
@@ -713,14 +713,14 @@ onUpdated(resizePromptTextareas)
   border: 1px solid rgba(74, 222, 128, .35);
   border-radius: 8px;
   background: rgba(74, 222, 128, .08);
-  color: #bbf7d0;
+  color: var(--green);
   padding: 9px 12px;
 }
 
 .lpl-notice.error {
   border-color: rgba(248, 113, 113, .42);
   background: rgba(248, 113, 113, .08);
-  color: #fecaca;
+  color: var(--red);
 }
 
 .lpl-notice.warning {
@@ -737,7 +737,7 @@ onUpdated(resizePromptTextareas)
   border: 1px solid rgba(148, 163, 184, .32);
   border-radius: 999px;
   background: rgba(148, 163, 184, .1);
-  color: #cbd5e1;
+  color: var(--text2);
   padding: 3px 8px;
   font-size: 11px;
   font-weight: 750;
@@ -949,9 +949,9 @@ onUpdated(resizePromptTextareas)
 
 .lpl-groups button.active,
 .lpl-groups button:hover {
-  border-color: rgba(255, 107, 43, .52);
+  border-color: rgba(var(--orange-rgb), .52);
   background: var(--orange-bg);
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 .lpl-sync-meta {
@@ -1116,8 +1116,8 @@ onUpdated(resizePromptTextareas)
 }
 
 .lpl-switch input:checked + .lpl-switch-track {
-  border-color: rgba(255, 107, 43, .72);
-  background: rgba(255, 107, 43, .3);
+  border-color: rgba(var(--orange-rgb), .72);
+  background: rgba(var(--orange-rgb), .3);
 }
 
 .lpl-switch input:checked + .lpl-switch-track::after {

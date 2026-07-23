@@ -257,9 +257,9 @@ function selectTemplate(template) {
   gap: 14px;
   padding: 16px;
   overflow: hidden;
-  border: 1px solid #2e2e3a;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #1c1c22;
+  background: var(--bg2);
   color: var(--text, #f4f4f6);
   box-shadow: 0 24px 80px rgba(0, 0, 0, 0.44);
 }
@@ -291,7 +291,7 @@ function selectTemplate(template) {
   display: grid;
   grid-template-columns: minmax(180px, 260px) minmax(160px, 1fr) minmax(130px, 190px) auto;
   padding-top: 12px;
-  border-top: 1px solid #2e2e3a;
+  border-top: 1px solid var(--border);
 }
 
 .prompt-library-select,
@@ -299,9 +299,9 @@ function selectTemplate(template) {
 .prompt-library-category {
   min-width: 0;
   height: 38px;
-  border: 1px solid #2e2e3a;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #242430;
+  background: var(--bg3);
   color: inherit;
   font: inherit;
 }
@@ -323,9 +323,9 @@ function selectTemplate(template) {
 
 .prompt-library-refresh,
 .prompt-library-icon-btn {
-  border: 1px solid #2e2e3a;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #242430;
+  background: var(--bg3);
   color: inherit;
   font: inherit;
   font-weight: 800;
@@ -358,9 +358,9 @@ function selectTemplate(template) {
   flex-direction: column;
   gap: 5px;
   padding: 12px;
-  border: 1px solid #2e2e3a;
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: #202028;
+  background: var(--bg3);
   color: inherit;
   text-align: left;
   cursor: pointer;
@@ -369,12 +369,12 @@ function selectTemplate(template) {
 .prompt-library-template-row:hover,
 .prompt-library-refresh:hover,
 .prompt-library-icon-btn:hover {
-  border-color: rgba(255, 107, 43, 0.5);
-  background: rgba(255, 107, 43, 0.08);
+  border-color: rgba(var(--orange-rgb), 0.5);
+  background: rgba(var(--orange-rgb), 0.08);
 }
 
 .prompt-library-template-row span {
-  color: #ff8b5f;
+  color: var(--orange-text);
   font-size: 12px;
   font-weight: 800;
 }
@@ -396,7 +396,7 @@ function selectTemplate(template) {
   min-height: 180px;
   display: grid;
   place-items: center;
-  border: 1px dashed #2e2e3a;
+  border: 1px dashed var(--border);
   border-radius: 8px;
   color: var(--text2, #a0a0b0);
 }
@@ -405,7 +405,7 @@ function selectTemplate(template) {
   align-content: center;
   gap: 12px;
   padding: 18px;
-  color: #ff8b5f;
+  color: var(--orange-text);
   text-align: center;
 }
 

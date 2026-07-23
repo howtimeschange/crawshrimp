@@ -1956,7 +1956,7 @@ function showToast(message, isError = false) {
 }
 .approval-kicker {
   margin: 0 0 6px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.08em;
@@ -2029,11 +2029,11 @@ function showToast(message, isError = false) {
   cursor: not-allowed;
 }
 .ghost-btn.danger {
-  color: #fca5a5;
+  color: var(--red);
   border-color: rgba(248, 113, 113, .28);
 }
 .ghost-btn.ok {
-  color: #86efac;
+  color: var(--green);
   border-color: rgba(74, 222, 128, .24);
 }
 .ghost-btn.regenerate {
@@ -2107,7 +2107,7 @@ function showToast(message, isError = false) {
   font-size: 12px;
 }
 .submit-progress-percent {
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 13px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
@@ -2168,12 +2168,12 @@ function showToast(message, isError = false) {
   font-weight: 800;
 }
 .submit-result-badge.created {
-  color: #86efac;
+  color: var(--green);
   background: rgba(74, 222, 128, .10);
 }
 .submit-result-badge.partial_failed,
 .submit-result-badge.create_failed {
-  color: #fecaca;
+  color: var(--red);
   background: rgba(248, 113, 113, .12);
 }
 .submit-result-list {
@@ -2215,7 +2215,7 @@ function showToast(message, isError = false) {
   margin-top: 6px;
   border: 0;
   background: transparent;
-  color: var(--orange);
+  color: var(--orange-text);
   padding: 0;
   font: inherit;
   font-size: 11px;
@@ -2230,7 +2230,7 @@ function showToast(message, isError = false) {
   margin-top: 5px;
   max-height: 46px;
   overflow: auto;
-  color: #fca5a5;
+  color: var(--red);
   font-size: 11px;
   line-height: 1.45;
 }
@@ -2554,7 +2554,7 @@ function showToast(message, isError = false) {
   border-radius: 999px;
   padding: 3px 7px;
   background: rgba(74, 222, 128, .12);
-  color: #86efac;
+  color: var(--green);
   font-size: 11px;
   font-weight: 800;
 }
@@ -2580,11 +2580,11 @@ function showToast(message, isError = false) {
   border-color: var(--orange);
 }
 .asset-action.ok {
-  color: #86efac;
+  color: var(--green);
   border-color: rgba(74, 222, 128, .28);
 }
 .asset-action.danger {
-  color: #fca5a5;
+  color: var(--red);
   border-color: rgba(248, 113, 113, .32);
 }
 .asset-card.approved .asset-action.ok {
@@ -2619,7 +2619,7 @@ function showToast(message, isError = false) {
   display: grid;
   place-items: center;
   border: 1px solid rgba(255, 106, 41, .42);
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 24px;
   line-height: 1;
 }
@@ -3196,7 +3196,7 @@ function showToast(message, isError = false) {
   background: rgba(255, 106, 41, .07);
 }
 .prompt-library-template-row span {
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 800;
 }
@@ -3222,7 +3222,7 @@ function showToast(message, isError = false) {
   text-align: center;
 }
 .prompt-library-picker-empty.error {
-  color: #fca5a5;
+  color: var(--red);
   border-color: rgba(248, 113, 113, .36);
 }
 .image-preview-panel {
@@ -3335,7 +3335,7 @@ function showToast(message, isError = false) {
   text-align: center;
 }
 .approval-empty.error {
-  color: #fca5a5;
+  color: var(--red);
   border-color: rgba(248, 113, 113, .36);
 }
 .approval-toast {
@@ -3344,7 +3344,7 @@ function showToast(message, isError = false) {
   bottom: 18px;
   border: 1px solid rgba(74, 222, 128, .24);
   background: rgba(14, 54, 42, .96);
-  color: #bbf7d0;
+  color: var(--green);
   border-radius: 10px;
   padding: 10px 12px;
   font-size: 12px;
@@ -3353,7 +3353,7 @@ function showToast(message, isError = false) {
 .approval-toast.error {
   border-color: rgba(248, 113, 113, .36);
   background: rgba(69, 22, 31, .96);
-  color: #fecaca;
+  color: var(--red);
 }
 @media (max-width: 980px) {
   .approval-drawer { width: 100vw; }

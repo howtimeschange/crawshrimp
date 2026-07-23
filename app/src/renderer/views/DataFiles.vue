@@ -424,8 +424,8 @@ onUnmounted(clearNoticeTimer)
 .df-input { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; color: var(--text); font-size: 13px; outline: none; }
 .df-input:focus { border-color: var(--orange); }
 .df-dir-msg { font-size: 12px; padding: 5px 10px; border-radius: 6px; }
-.df-dir-msg.ok  { background: rgba(74,222,128,0.1);  color: #4ade80; }
-.df-dir-msg.err { background: rgba(248,113,113,0.1); color: #f87171; }
+.df-dir-msg.ok  { background: rgba(74,222,128,0.1);  color: var(--green); }
+.df-dir-msg.err { background: rgba(248,113,113,0.1); color: var(--red); }
 .df-dir-hint { font-size: 11px; color: var(--text3); margin: 0; }
 
 /* === 批量工具条 === */
@@ -481,17 +481,17 @@ onUnmounted(clearNoticeTimer)
 .df-notice.ok {
   border: 1px solid rgba(74, 222, 128, 0.25);
   background: rgba(74, 222, 128, 0.08);
-  color: #86efac;
+  color: var(--green);
 }
 .df-notice.warn {
   border: 1px solid rgba(251, 191, 36, 0.25);
   background: rgba(251, 191, 36, 0.08);
-  color: #fcd34d;
+  color: var(--yellow);
 }
 .df-notice.err {
   border: 1px solid rgba(248, 113, 113, 0.25);
   background: rgba(248, 113, 113, 0.08);
-  color: #fca5a5;
+  color: var(--red);
 }
 
 /* === 滚动区 === */
@@ -537,7 +537,7 @@ onUnmounted(clearNoticeTimer)
 .df-file-actions { display: flex; gap: 6px; flex-shrink: 0; }
 .df-btn { font-size: 12px; padding: 4px 10px; border-radius: 6px; border: 1px solid var(--border); background: transparent; color: var(--text2); cursor: pointer; white-space: nowrap; }
 .df-btn:hover { background: var(--bg); color: var(--text); }
-.df-btn-danger { color: #f87171; border-color: rgba(248,113,113,0.3); }
+.df-btn-danger { color: var(--red); border-color: rgba(248,113,113,0.3); }
 .df-btn-danger:hover { background: rgba(248,113,113,0.1); }
 
 /* === 模态框 === */
@@ -588,7 +588,7 @@ onUnmounted(clearNoticeTimer)
 .btn-sync-sm:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-danger-sm { padding: 6px 14px; border-radius: 7px; border: none; background: #ef4444; color: white; font-size: 12px; font-weight: 600; cursor: pointer; }
 .btn-danger-sm:disabled { opacity: 0.4; cursor: not-allowed; }
-.df-btn-sync { color: #86efac; border-color: rgba(74,222,128,0.3); }
-.df-btn-sync:hover:not(:disabled) { background: rgba(74,222,128,0.1); color: #bbf7d0; }
+.df-btn-sync { color: var(--green); border-color: rgba(74,222,128,0.3); }
+.df-btn-sync:hover:not(:disabled) { background: rgba(74,222,128,0.1); color: var(--green); }
 .df-btn-sync:disabled { opacity: 0.4; cursor: not-allowed; }
 </style>

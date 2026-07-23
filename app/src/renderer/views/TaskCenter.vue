@@ -719,7 +719,7 @@ onBeforeUnmount(stopAutoRefresh)
   font-size: 12px;
 }
 .tc-primary {
-  border-color: rgba(255, 107, 43, .48);
+  border-color: rgba(var(--orange-rgb), .48);
   background: var(--orange);
   color: #fff;
   font-weight: 700;
@@ -728,7 +728,7 @@ onBeforeUnmount(stopAutoRefresh)
   background: var(--bg2);
 }
 .tc-schedule-actions button.danger {
-  color: #fca5a5;
+  color: var(--red);
 }
 .tc-primary:disabled,
 .tc-search button:disabled {
@@ -753,9 +753,9 @@ onBeforeUnmount(stopAutoRefresh)
   min-width: 0;
 }
 .tc-tabs button.active {
-  border-color: rgba(255, 107, 43, .48);
+  border-color: rgba(var(--orange-rgb), .48);
   background: var(--orange-bg);
-  color: var(--orange);
+  color: var(--orange-text);
 }
 .tc-search input,
 .tc-schedule-form input,
@@ -998,7 +998,7 @@ onBeforeUnmount(stopAutoRefresh)
   cursor: default;
 }
 .tc-row:hover {
-  border-color: rgba(255, 107, 43, .34);
+  border-color: rgba(var(--orange-rgb), .34);
   background: color-mix(in srgb, var(--bg2) 88%, var(--orange) 12%);
 }
 .tc-row.schedule:hover {
@@ -1015,10 +1015,10 @@ onBeforeUnmount(stopAutoRefresh)
   color: var(--text3);
 }
 .tc-type-line b {
-  border: 1px solid rgba(255, 107, 43, .28);
+  border: 1px solid rgba(var(--orange-rgb), .28);
   border-radius: 999px;
-  background: rgba(255, 107, 43, .08);
-  color: var(--orange);
+  background: rgba(var(--orange-rgb), .08);
+  color: var(--orange-text);
   padding: 2px 7px;
   font-size: 11px;
   font-weight: 700;
@@ -1059,10 +1059,10 @@ onBeforeUnmount(stopAutoRefresh)
   color: var(--text2);
   font-size: 12px;
 }
-.tc-status.active { border-color: rgba(96, 165, 250, .35); color: #93c5fd; }
-.tc-status.pending { border-color: rgba(251, 191, 36, .35); color: #fbbf24; }
-.tc-status.done { border-color: rgba(74, 222, 128, .32); color: #86efac; }
-.tc-status.error { border-color: rgba(248, 113, 113, .34); color: #fca5a5; }
+.tc-status.active { border-color: rgba(96, 165, 250, .35); color: var(--blue); }
+.tc-status.pending { border-color: rgba(251, 191, 36, .35); color: var(--yellow); }
+.tc-status.done { border-color: rgba(74, 222, 128, .32); color: var(--green); }
+.tc-status.error { border-color: rgba(248, 113, 113, .34); color: var(--red); }
 .tc-status.neutral { color: var(--text3); }
 @media (max-width: 920px) {
   .tc-head,

@@ -56,8 +56,8 @@ test('script favorites use a tactile bookmark control rather than a decorative h
 
   assert.match(source, /import \{ IconBookmark \} from '@tabler\/icons-vue'/)
   assert.match(source, /<IconBookmark class="favorite-icon"/)
-  assert.match(source, /\.favorite-btn\s*\{[\s\S]*?border:\s*1px solid rgba\(255, 255, 255, .12\);/)
-  assert.match(source, /\.favorite-btn\.active\s*\{[\s\S]*?background:\s*rgba\(255, 107, 43, .16\);/)
+  assert.match(source, /\.favorite-btn\s*\{[\s\S]*?border:\s*1px solid var\(--subtle-border\);/)
+  assert.match(source, /\.favorite-btn\.active\s*\{[\s\S]*?background:\s*rgba\(var\(--orange-rgb\), .16\);/)
   assert.match(source, /\.favorite-btn\.active \.favorite-icon\s*\{[\s\S]*?fill:\s*currentColor;/)
 })
 

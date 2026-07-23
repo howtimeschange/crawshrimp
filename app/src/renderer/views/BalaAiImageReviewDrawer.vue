@@ -496,7 +496,7 @@ function statusClass(value) {
 }
 
 .bala-review-state.error {
-  border-color: #fecaca;
+  border-color: var(--red);
   background: #fef2f2;
   color: #991b1b;
 }

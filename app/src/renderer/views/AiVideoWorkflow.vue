@@ -7469,7 +7469,7 @@ function localFileUrl(path) {
   padding: 5px 8px;
   border: 1px solid rgba(248, 113, 113, .36);
   border-radius: 6px;
-  color: #fecaca;
+  color: var(--red);
   background: rgba(127, 29, 29, .26);
   font-size: 12px;
   line-height: 1.45;
@@ -7477,7 +7477,7 @@ function localFileUrl(path) {
 
 .aiv-kicker {
   margin: 0 0 4px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
   font-weight: 700;
 }
@@ -7564,8 +7564,8 @@ function localFileUrl(path) {
 }
 
 .aiv-ghost.active {
-  border-color: rgba(255, 107, 43, 0.45);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.45);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -7653,9 +7653,9 @@ function localFileUrl(path) {
 
 .aiv-step:hover:not(.active),
 .aiv-step:focus-visible:not(.active) {
-  border-color: rgba(255, 107, 43, .38);
+  border-color: rgba(var(--orange-rgb), .38);
   color: var(--text);
-  background: rgba(255, 107, 43, .06);
+  background: rgba(var(--orange-rgb), .06);
   box-shadow: 0 5px 14px rgba(0, 0, 0, .14);
   outline: none;
   transform: translateY(-1px);
@@ -7663,9 +7663,9 @@ function localFileUrl(path) {
 
 .aiv-step.active {
   border-color: var(--orange);
-  background: linear-gradient(90deg, rgba(255, 107, 43, .16), rgba(255, 107, 43, .06));
+  background: linear-gradient(90deg, rgba(var(--orange-rgb), .16), rgba(var(--orange-rgb), .06));
   color: var(--text);
-  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .14), 0 5px 14px rgba(0, 0, 0, .16);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), .14), 0 5px 14px rgba(0, 0, 0, .16);
 }
 
 .aiv-step.done .aiv-step-index {
@@ -7815,10 +7815,10 @@ function localFileUrl(path) {
 }
 
 .aiv-material-task-state.is-idle { color: var(--text3) !important; }
-.aiv-material-task-state.is-running { border-color: rgba(96, 165, 250, .48); color: #60a5fa; background: rgba(96, 165, 250, .10); }
+.aiv-material-task-state.is-running { border-color: rgba(96, 165, 250, .48); color: var(--blue); background: rgba(96, 165, 250, .10); }
 .aiv-material-task-state.is-running i { animation: aiv-status-pulse 1.2s ease-in-out infinite; }
 .aiv-material-task-state.is-ready { border-color: rgba(74, 222, 128, .42); color: var(--green) !important; background: rgba(74, 222, 128, .09); }
-.aiv-material-task-state.is-failed { border-color: rgba(248, 113, 113, .5); color: #f87171 !important; background: rgba(248, 113, 113, .10); }
+.aiv-material-task-state.is-failed { border-color: rgba(248, 113, 113, .5); color: var(--red) !important; background: rgba(248, 113, 113, .10); }
 
 .aiv-params-panel.collapsed .aiv-collapse-action {
   order: -1;
@@ -7877,7 +7877,7 @@ function localFileUrl(path) {
   line-height: 1.35;
 }
 
-.aiv-material-stat.selected strong { color: var(--orange); }
+.aiv-material-stat.selected strong { color: var(--orange-text); }
 
 .aiv-material-selection-summary {
   max-width: 250px;
@@ -7938,9 +7938,9 @@ function localFileUrl(path) {
 
 .aiv-material-stage .aiv-field input,
 .aiv-material-stage .aiv-field textarea {
-  border-color: rgba(255, 255, 255, .11);
+  border-color: var(--border);
   border-radius: 9px;
-  background: rgba(7, 8, 12, .42);
+  background: var(--bg);
   transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease;
 }
 
@@ -7948,16 +7948,16 @@ function localFileUrl(path) {
 .aiv-material-stage .aiv-field textarea:hover,
 .aiv-material-stage .aiv-field input:focus,
 .aiv-material-stage .aiv-field textarea:focus {
-  border-color: rgba(255, 107, 43, .58);
-  background: rgba(12, 12, 17, .78);
-  box-shadow: 0 0 0 3px rgba(255, 107, 43, .08);
+  border-color: rgba(var(--orange-rgb), .58);
+  background: var(--input-focus);
+  box-shadow: 0 0 0 3px rgba(var(--orange-rgb), .08);
 }
 
 .aiv-material-stage .aiv-directory-picker,
 .aiv-material-stage .aiv-progress-overview {
-  border-color: rgba(255, 255, 255, .11);
+  border-color: var(--border);
   border-radius: 10px;
-  background: rgba(7, 8, 12, .34);
+  background: var(--bg);
 }
 
 .aiv-material-stage .aiv-material-style-tabs {
@@ -7975,20 +7975,20 @@ function localFileUrl(path) {
 }
 
 .aiv-material-stage .aiv-material-style-tabs button:hover {
-  border-color: rgba(255, 107, 43, .48);
-  background: rgba(255, 107, 43, .065);
+  border-color: rgba(var(--orange-rgb), .48);
+  background: rgba(var(--orange-rgb), .065);
   transform: translateY(-1px);
 }
 
 .aiv-material-stage .aiv-material-source-switcher {
   min-height: 56px;
-  background: linear-gradient(90deg, rgba(255, 107, 43, .035), transparent 35%), rgba(255, 255, 255, .018);
+  background: linear-gradient(90deg, rgba(var(--orange-rgb), .035), transparent 35%), rgba(255, 255, 255, .018);
 }
 
 .aiv-material-stage .aiv-material-source-tabs {
-  border-color: rgba(255, 255, 255, .11);
+  border-color: var(--border);
   border-radius: 9px;
-  background: rgba(7, 8, 12, .46);
+  background: var(--bg2);
 }
 
 .aiv-material-stage .aiv-thumb {
@@ -8000,7 +8000,7 @@ function localFileUrl(path) {
 
 .aiv-material-stage .aiv-thumb:hover,
 .aiv-material-stage .aiv-thumb:focus-within {
-  border-color: rgba(255, 107, 43, .48);
+  border-color: rgba(var(--orange-rgb), .48);
   transform: translateY(-2px);
 }
 
@@ -8156,7 +8156,7 @@ function localFileUrl(path) {
 
 .aiv-directory-picker:hover,
 .aiv-directory-picker:focus-visible {
-  border-color: rgba(255, 107, 43, 0.55);
+  border-color: rgba(var(--orange-rgb), 0.55);
 }
 
 .aiv-directory-picker .aiv-directory-picker-path {
@@ -8173,7 +8173,7 @@ function localFileUrl(path) {
   padding: 0 9px;
   flex: 0 0 auto;
   border-radius: 6px;
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
   display: inline-flex;
   align-items: center;
@@ -8303,12 +8303,12 @@ function localFileUrl(path) {
 }
 
 .aiv-material-style-tabs button:hover {
-  border-color: rgba(255, 107, 43, 0.34);
+  border-color: rgba(var(--orange-rgb), 0.34);
 }
 
 .aiv-material-style-tabs button:focus-visible,
 .aiv-material-source-tabs button:focus-visible {
-  outline: 2px solid rgba(255, 107, 43, 0.72);
+  outline: 2px solid rgba(var(--orange-rgb), 0.72);
   outline-offset: 2px;
 }
 
@@ -8316,7 +8316,7 @@ function localFileUrl(path) {
   border-color: var(--orange);
   color: var(--text);
   background: var(--orange-bg);
-  box-shadow: inset 0 -2px 0 var(--orange), 0 6px 16px rgba(255, 107, 43, .12);
+  box-shadow: inset 0 -2px 0 var(--orange), 0 6px 16px rgba(var(--orange-rgb), .12);
 }
 
 .aiv-material-style-tabs strong,
@@ -8396,9 +8396,9 @@ function localFileUrl(path) {
 }
 
 .aiv-material-source-tabs button.active {
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
-  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, 0.34);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), 0.34);
 }
 
 .aiv-material-source-tabs strong {
@@ -8448,12 +8448,12 @@ function localFileUrl(path) {
 }
 
 .aiv-collapse-head:hover {
-  border-color: rgba(255, 107, 43, 0.34);
-  background: rgba(255, 107, 43, 0.055);
+  border-color: rgba(var(--orange-rgb), 0.34);
+  background: rgba(var(--orange-rgb), 0.055);
 }
 
 .aiv-collapse-head:focus-visible {
-  outline: 2px solid rgba(255, 107, 43, 0.72);
+  outline: 2px solid rgba(var(--orange-rgb), 0.72);
   outline-offset: 2px;
 }
 
@@ -8508,7 +8508,7 @@ function localFileUrl(path) {
 }
 
 .aiv-style-collapse-trigger:focus-visible {
-  outline: 2px solid rgba(255, 107, 43, 0.72);
+  outline: 2px solid rgba(var(--orange-rgb), 0.72);
   outline-offset: 3px;
   border-radius: 4px;
 }
@@ -8572,14 +8572,14 @@ function localFileUrl(path) {
   min-height: 30px;
   padding: 4px 7px 4px 9px;
   border-radius: 7px;
-  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .08);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), .08);
   font-size: 11px;
   font-weight: 750;
 }
 
 .aiv-params-panel:not(.collapsed) .aiv-collapse-action:hover {
-  border-color: rgba(255, 107, 43, .62);
-  background: rgba(255, 107, 43, .14);
+  border-color: rgba(var(--orange-rgb), .62);
+  background: rgba(var(--orange-rgb), .14);
 }
 
 .aiv-collapse-chevron {
@@ -8592,14 +8592,14 @@ function localFileUrl(path) {
 }
 
 .aiv-collapse-action.direction-left {
-  border-color: rgba(255, 107, 43, 0.38);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.38);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
 .aiv-collapse-head[aria-expanded="true"] .aiv-collapse-action {
-  border-color: rgba(255, 107, 43, 0.38);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.38);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -8651,10 +8651,10 @@ function localFileUrl(path) {
 }
 
 .aiv-workspace-collapse.expanded {
-  border-color: rgba(255, 107, 43, .46);
-  color: var(--orange) !important;
-  background: rgba(255, 107, 43, .095);
-  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .08), 0 4px 10px rgba(0, 0, 0, .1);
+  border-color: rgba(var(--orange-rgb), .46);
+  color: var(--orange-text) !important;
+  background: rgba(var(--orange-rgb), .095);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), .08), 0 4px 10px rgba(0, 0, 0, .1);
 }
 
 .aiv-workspace-collapse.expanded .aiv-workspace-collapse-icon {
@@ -8662,13 +8662,13 @@ function localFileUrl(path) {
 }
 
 .aiv-collapse-head:hover .aiv-workspace-collapse {
-  border-color: rgba(255, 107, 43, .58);
+  border-color: rgba(var(--orange-rgb), .58);
   color: var(--text) !important;
-  background: rgba(255, 107, 43, .11);
+  background: rgba(var(--orange-rgb), .11);
 }
 
 .aiv-collapse-head:hover .aiv-workspace-collapse.expanded {
-  color: var(--orange) !important;
+  color: var(--orange-text) !important;
 }
 
 .aiv-collapse-head:active .aiv-workspace-collapse {
@@ -8691,7 +8691,7 @@ function localFileUrl(path) {
 
 .aiv-chip.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -8703,12 +8703,12 @@ function localFileUrl(path) {
 }
 
 .aiv-filter-note.error {
-  color: #fca5a5;
+  color: var(--red);
 }
 
 .aiv-badge.orange {
-  border-color: rgba(255, 107, 43, 0.45);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.45);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -8720,7 +8720,7 @@ function localFileUrl(path) {
 
 .aiv-badge.retry {
   border-color: rgba(251, 191, 36, 0.38);
-  color: #fbbf24;
+  color: var(--yellow);
   background: rgba(251, 191, 36, 0.09);
 }
 
@@ -8868,21 +8868,21 @@ function localFileUrl(path) {
 
 .aiv-load-more:hover,
 .aiv-load-more:focus-visible {
-  border-color: rgba(255, 107, 43, 0.55);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.55);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
 .aiv-thumb.selected {
   border-color: var(--orange);
   color: var(--text);
-  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 3px rgba(255, 107, 43, .16);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 3px rgba(var(--orange-rgb), .16);
 }
 
 .aiv-large-thumb.selected {
   border-color: var(--orange);
   color: var(--text);
-  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 3px rgba(255, 107, 43, .16);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 3px rgba(var(--orange-rgb), .16);
 }
 
 .aiv-thumb.muted {
@@ -9026,7 +9026,7 @@ function localFileUrl(path) {
 .aiv-thumb-zoom:focus-visible {
   border-color: var(--orange);
   color: var(--on-orange);
-  background: rgba(255, 107, 43, 0.92);
+  background: rgba(var(--orange-rgb), 0.92);
 }
 
 .aiv-style-tab {
@@ -9040,7 +9040,7 @@ function localFileUrl(path) {
 .aiv-style-tab.active {
   border-color: var(--orange);
   background: var(--orange-bg);
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 .aiv-style-tab strong,
@@ -9120,22 +9120,22 @@ function localFileUrl(path) {
 }
 
 .aiv-edit-workbench .aiv-action-option.active {
-  border-color: rgba(255, 107, 43, .44);
+  border-color: rgba(var(--orange-rgb), .44);
   border-bottom-color: var(--orange);
   color: var(--text);
-  background: linear-gradient(180deg, rgba(255, 107, 43, .12), rgba(255, 107, 43, .035));
-  box-shadow: inset 0 -2px 0 var(--orange), inset 0 0 0 1px rgba(255, 107, 43, .08);
+  background: linear-gradient(180deg, rgba(var(--orange-rgb), .12), rgba(var(--orange-rgb), .035));
+  box-shadow: inset 0 -2px 0 var(--orange), inset 0 0 0 1px rgba(var(--orange-rgb), .08);
 }
 
 .aiv-edit-workbench .aiv-action-option:hover:not(.active) {
-  border-bottom-color: rgba(255, 107, 43, .54);
+  border-bottom-color: rgba(var(--orange-rgb), .54);
   color: var(--text);
   background: rgba(255, 255, 255, .05);
   transform: translateY(-1px);
 }
 
 .aiv-edit-workbench .aiv-action-option:focus-visible {
-  outline: 2px solid rgba(255, 107, 43, .78);
+  outline: 2px solid rgba(var(--orange-rgb), .78);
   outline-offset: 2px;
 }
 
@@ -9162,7 +9162,7 @@ function localFileUrl(path) {
 }
 
 .aiv-edit-workbench .aiv-action-option.active .aiv-action-option-icon {
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 .aiv-action-grid-hint {
@@ -9175,14 +9175,14 @@ function localFileUrl(path) {
   border-left: 2px solid var(--orange);
   border-radius: 0 6px 6px 0;
   color: var(--text3);
-  background: rgba(255, 107, 43, .06);
+  background: rgba(var(--orange-rgb), .06);
   font-size: 11px;
   line-height: 1.2;
 }
 
 .aiv-action-grid-hint strong {
   flex: 0 0 auto;
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 11px;
 }
 
@@ -9197,7 +9197,7 @@ function localFileUrl(path) {
 .aiv-selected-model-preview {
   min-width: 0;
   padding: 10px;
-  border: 1px solid rgba(255, 107, 43, .36);
+  border: 1px solid rgba(var(--orange-rgb), .36);
   border-radius: 8px;
   background: var(--orange-bg);
   display: grid;
@@ -9214,11 +9214,11 @@ function localFileUrl(path) {
   max-width: 44px;
   max-height: 56px;
   overflow: hidden;
-  border: 1px solid rgba(255, 107, 43, .38);
+  border: 1px solid rgba(var(--orange-rgb), .38);
   border-radius: 6px;
   display: grid;
   place-items: center;
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--bg);
   font-size: 10px;
 }
@@ -9278,7 +9278,7 @@ function localFileUrl(path) {
 
 .aiv-action-chip.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -9352,7 +9352,7 @@ function localFileUrl(path) {
 }
 
 .aiv-edit-origin-zone .aiv-edit-lane-head strong {
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 .aiv-edit-ai-zone .aiv-edit-lane-head {
@@ -9363,9 +9363,9 @@ function localFileUrl(path) {
   align-self: center;
   width: 24px;
   height: 24px;
-  border: 1px solid rgba(255, 107, 43, .28);
+  border: 1px solid rgba(var(--orange-rgb), .28);
   border-radius: 999px;
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
   display: grid;
   place-items: center;
@@ -9394,7 +9394,7 @@ function localFileUrl(path) {
   padding: 2px 7px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
   font-size: 10px;
   font-weight: 700;
@@ -9462,7 +9462,7 @@ function localFileUrl(path) {
 }
 
 .aiv-version-card.loading {
-  border-color: rgba(255, 107, 43, 0.55);
+  border-color: rgba(var(--orange-rgb), 0.55);
 }
 
 .aiv-version-card.add {
@@ -9583,13 +9583,13 @@ function localFileUrl(path) {
 }
 
 .aiv-media-select:focus-visible {
-  outline: 2px solid rgba(255, 107, 43, .78);
+  outline: 2px solid rgba(var(--orange-rgb), .78);
   outline-offset: -3px;
 }
 
 .aiv-media-card.selected {
   border-color: var(--orange);
-  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 1px rgba(255, 107, 43, .24);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 1px rgba(var(--orange-rgb), .24);
 }
 
 .aiv-media-card.selected .aiv-media-select {
@@ -9614,8 +9614,8 @@ function localFileUrl(path) {
 
 .aiv-edit-workbench .aiv-media-card:hover,
 .aiv-edit-workbench .aiv-media-card:focus-within {
-  border-color: rgba(255, 107, 43, .58);
-  box-shadow: 0 12px 22px rgba(0, 0, 0, .22), 0 0 0 1px rgba(255, 107, 43, .14);
+  border-color: rgba(var(--orange-rgb), .58);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, .22), 0 0 0 1px rgba(var(--orange-rgb), .14);
   transform: translateY(-2px);
 }
 
@@ -9642,12 +9642,12 @@ function localFileUrl(path) {
 
 .aiv-edit-workbench .aiv-media-card.selected {
   border-color: var(--orange);
-  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(255, 107, 43, .14);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(var(--orange-rgb), .14);
 }
 
 .aiv-edit-workbench .aiv-media-card.selected:hover,
 .aiv-edit-workbench .aiv-media-card.selected:focus-within {
-  box-shadow: inset 0 0 0 2px var(--orange), 0 12px 22px rgba(0, 0, 0, .24), 0 0 0 3px rgba(255, 107, 43, .18);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 12px 22px rgba(0, 0, 0, .24), 0 0 0 3px rgba(var(--orange-rgb), .18);
 }
 
 .aiv-media-card .aiv-thumb-zoom {
@@ -9669,9 +9669,9 @@ function localFileUrl(path) {
   display: grid;
   gap: 5px;
   padding: 6px 7px;
-  border: 1px solid rgba(255, 107, 43, .32);
+  border: 1px solid rgba(var(--orange-rgb), .32);
   border-radius: 6px;
-  background: rgba(255, 107, 43, .1);
+  background: rgba(var(--orange-rgb), .1);
 }
 
 .aiv-version-generation-status > span {
@@ -9684,7 +9684,7 @@ function localFileUrl(path) {
 }
 
 .aiv-version-generation-status > span strong {
-  color: var(--orange);
+  color: var(--orange-text);
   font-size: 10px;
 }
 
@@ -9717,8 +9717,8 @@ function localFileUrl(path) {
 .aiv-ai-actions button:focus-visible,
 .aiv-add-menu button:hover,
 .aiv-add-menu button:focus-visible {
-  border-color: rgba(255, 107, 43, 0.55);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.55);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -9727,7 +9727,7 @@ function localFileUrl(path) {
 .aiv-ai-actions .danger:hover,
 .aiv-ai-actions .danger:focus-visible {
   border-color: rgba(248, 113, 113, 0.5);
-  color: #f87171;
+  color: var(--red);
   background: rgba(248, 113, 113, 0.08);
 }
 
@@ -9827,7 +9827,7 @@ function localFileUrl(path) {
   padding: 9px 10px;
   border: 1px solid rgba(248, 113, 113, .34);
   border-radius: 8px;
-  color: #fca5a5;
+  color: var(--red);
   background: rgba(248, 113, 113, .08);
   font-size: 12px;
   line-height: 1.45;
@@ -9839,7 +9839,7 @@ function localFileUrl(path) {
   padding: 10px;
   border: 1px solid rgba(251, 191, 36, .25);
   border-radius: 8px;
-  color: #fbbf24;
+  color: var(--yellow);
   background: rgba(251, 191, 36, .07);
 }
 
@@ -9858,7 +9858,7 @@ function localFileUrl(path) {
 
 .aiv-edit-selection-summary {
   padding: 9px 10px;
-  border: 1px solid rgba(255, 107, 43, 0.35);
+  border: 1px solid rgba(var(--orange-rgb), 0.35);
   border-radius: 8px;
   background: var(--orange-bg);
   display: grid;
@@ -9888,7 +9888,7 @@ function localFileUrl(path) {
   position: sticky;
   bottom: 0;
   z-index: 5;
-  border-top-color: rgba(255, 107, 43, 0.22);
+  border-top-color: rgba(var(--orange-rgb), 0.22);
   background: linear-gradient(180deg, rgba(31, 31, 31, 0.92), var(--bg2));
   backdrop-filter: blur(10px);
 }
@@ -9934,8 +9934,8 @@ function localFileUrl(path) {
 .aiv-review-selection-bar {
   min-height: 44px;
   padding: 7px 12px;
-  border-bottom: 1px solid rgba(255, 107, 43, .17);
-  background: linear-gradient(90deg, rgba(255, 107, 43, .08), rgba(255, 107, 43, .018) 48%, transparent);
+  border-bottom: 1px solid rgba(var(--orange-rgb), .17);
+  background: linear-gradient(90deg, rgba(var(--orange-rgb), .08), rgba(var(--orange-rgb), .018) 48%, transparent);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10007,8 +10007,8 @@ function localFileUrl(path) {
 
 .aiv-ai-card:hover,
 .aiv-ai-card:focus-within {
-  border-color: rgba(255, 107, 43, .5);
-  box-shadow: 0 12px 24px rgba(0, 0, 0, .26), 0 0 0 1px rgba(255, 107, 43, .12);
+  border-color: rgba(var(--orange-rgb), .5);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, .26), 0 0 0 1px rgba(var(--orange-rgb), .12);
   transform: translateY(-2px);
 }
 
@@ -10018,8 +10018,8 @@ function localFileUrl(path) {
 }
 
 .aiv-ai-card.retry {
-  border-color: rgba(255, 107, 43, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(255, 107, 43, .1), 0 4px 12px rgba(0, 0, 0, .12);
+  border-color: rgba(var(--orange-rgb), 0.55);
+  box-shadow: inset 0 0 0 1px rgba(var(--orange-rgb), .1), 0 4px 12px rgba(0, 0, 0, .12);
 }
 
 .aiv-ai-card.rejected {
@@ -10028,8 +10028,8 @@ function localFileUrl(path) {
 }
 
 .aiv-ai-card.selected {
-  border-color: rgba(255, 107, 43, .62);
-  box-shadow: 0 0 0 2px rgba(255, 107, 43, .18), 0 9px 20px rgba(0, 0, 0, .2);
+  border-color: rgba(var(--orange-rgb), .62);
+  box-shadow: 0 0 0 2px rgba(var(--orange-rgb), .18), 0 9px 20px rgba(0, 0, 0, .2);
 }
 
 .aiv-ai-card.saving {
@@ -10084,17 +10084,17 @@ function localFileUrl(path) {
 
 .aiv-ai-actions .aiv-review-card-select:hover,
 .aiv-ai-actions .aiv-review-card-select:focus-within {
-  border-color: rgba(255, 107, 43, .62);
+  border-color: rgba(var(--orange-rgb), .62);
   color: #ffd4c1;
-  background: rgba(255, 107, 43, .11);
+  background: rgba(var(--orange-rgb), .11);
   transform: translateY(-1px);
 }
 
 .aiv-review-card-select.selected {
-  border-color: rgba(255, 107, 43, .82);
+  border-color: rgba(var(--orange-rgb), .82);
   color: #fff;
   background: var(--orange);
-  box-shadow: 0 3px 9px rgba(255, 107, 43, .22), inset 0 1px 0 rgba(255, 255, 255, .2);
+  box-shadow: 0 3px 9px rgba(var(--orange-rgb), .22), inset 0 1px 0 rgba(255, 255, 255, .2);
 }
 
 .aiv-review-card-select input {
@@ -10259,7 +10259,7 @@ function localFileUrl(path) {
 }
 
 .aiv-review-card-feedback.retry {
-  border-color: rgba(255, 107, 43, .56);
+  border-color: rgba(var(--orange-rgb), .56);
   background: rgba(136, 62, 29, .9);
 }
 
@@ -10317,7 +10317,7 @@ function localFileUrl(path) {
 
 .aiv-ai-actions button:hover:not(:disabled),
 .aiv-ai-actions button:focus-visible:not(:disabled) {
-  border-color: rgba(255, 107, 43, .45);
+  border-color: rgba(var(--orange-rgb), .45);
   color: var(--text);
   background: rgba(255, 255, 255, .07);
   outline: none;
@@ -10431,8 +10431,8 @@ function localFileUrl(path) {
 }
 
 .aiv-source-pill.selected {
-  border-color: rgba(255, 107, 43, 0.45);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.45);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -10468,7 +10468,7 @@ function localFileUrl(path) {
 
 .aiv-video-task-card.selected {
   border-left-color: var(--orange);
-  background: linear-gradient(90deg, rgba(255, 107, 43, .08), transparent 22%);
+  background: linear-gradient(90deg, rgba(var(--orange-rgb), .08), transparent 22%);
 }
 
 .aiv-video-task-row {
@@ -10601,13 +10601,13 @@ function localFileUrl(path) {
 
 .aiv-video-task-stage.is-pending { color: var(--text3); }
 .aiv-video-task-stage.is-authorization,
-.aiv-video-task-stage.is-ready { border-color: rgba(251, 191, 36, .48); color: #fbbf24; background: rgba(251, 191, 36, .10); }
+.aiv-video-task-stage.is-ready { border-color: rgba(251, 191, 36, .48); color: var(--yellow); background: rgba(251, 191, 36, .10); }
 .aiv-video-task-stage.is-submitted,
-.aiv-video-task-stage.is-queued { border-color: rgba(96, 165, 250, .48); color: #60a5fa; background: rgba(96, 165, 250, .10); }
+.aiv-video-task-stage.is-queued { border-color: rgba(96, 165, 250, .48); color: var(--blue); background: rgba(96, 165, 250, .10); }
 .aiv-video-task-stage.is-generating { border-color: rgba(192, 132, 252, .52); color: #c084fc; background: rgba(192, 132, 252, .10); }
 .aiv-video-task-stage.is-generating i { animation: aiv-status-pulse 1.2s ease-in-out infinite; }
 .aiv-video-task-stage.is-downloaded { border-color: rgba(74, 222, 128, .48); color: var(--green); background: rgba(74, 222, 128, .10); }
-.aiv-video-task-stage.is-failed { border-color: rgba(248, 113, 113, .5); color: #f87171; background: rgba(248, 113, 113, .10); }
+.aiv-video-task-stage.is-failed { border-color: rgba(248, 113, 113, .5); color: var(--red); background: rgba(248, 113, 113, .10); }
 
 @keyframes aiv-status-pulse {
   50% { transform: scale(1.45); opacity: .55; }
@@ -10713,8 +10713,8 @@ function localFileUrl(path) {
 
 .aiv-video-task-status-tabs button:hover,
 .aiv-video-task-status-tabs button.active {
-  border-color: rgba(255, 107, 43, .42);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), .42);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -10756,8 +10756,8 @@ function localFileUrl(path) {
 }
 
 .aiv-batch-actions[open] summary {
-  border-color: rgba(255, 107, 43, .45);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), .45);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -10788,7 +10788,7 @@ function localFileUrl(path) {
 
 .aiv-stage-feedback {
   padding: 8px 10px;
-  border: 1px solid rgba(255, 107, 43, .24);
+  border: 1px solid rgba(var(--orange-rgb), .24);
   border-radius: 8px;
   color: var(--text2);
   background: var(--orange-bg);
@@ -10842,7 +10842,7 @@ function localFileUrl(path) {
 
 .aiv-seedance-callout {
   padding: 10px 12px;
-  border: 1px solid rgba(255, 107, 43, 0.35);
+  border: 1px solid rgba(var(--orange-rgb), 0.35);
   border-radius: 8px;
   background: var(--orange-bg);
   display: grid;
@@ -10953,7 +10953,7 @@ function localFileUrl(path) {
 .aiv-video-asset-zoom:hover,
 .aiv-video-asset-zoom:focus-visible {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--bg);
 }
 
@@ -11009,8 +11009,8 @@ function localFileUrl(path) {
   background: var(--orange-bg);
   box-shadow:
     0 0 0 2px var(--orange),
-    0 0 0 5px rgba(255, 107, 43, 0.28),
-    inset 0 0 0 1px rgba(255, 107, 43, 0.55);
+    0 0 0 5px rgba(var(--orange-rgb), 0.28),
+    inset 0 0 0 1px rgba(var(--orange-rgb), 0.55);
 }
 
 .aiv-video-task-assets.picker .aiv-video-asset-card.selected {
@@ -11025,8 +11025,8 @@ function localFileUrl(path) {
   min-height: 22px;
   padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 107, 43, 0.75);
-  background: rgba(255, 107, 43, 0.95);
+  border: 1px solid rgba(var(--orange-rgb), 0.75);
+  background: rgba(var(--orange-rgb), 0.95);
   color: #fff;
   font-size: 11px;
   font-weight: 800;
@@ -11081,8 +11081,8 @@ function localFileUrl(path) {
 
 .aiv-status-pill.pending,
 .aiv-status-pill.retry {
-  border-color: rgba(255, 107, 43, 0.45);
-  color: var(--orange);
+  border-color: rgba(var(--orange-rgb), 0.45);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -11389,7 +11389,7 @@ function localFileUrl(path) {
 }
 
 .aiv-result-copy .aiv-result-error {
-  color: #f87171;
+  color: var(--red);
 }
 
 .aiv-result-clear {
@@ -11433,10 +11433,10 @@ function localFileUrl(path) {
 .aiv-editor-current-action {
   flex: 0 0 auto;
   padding: 3px 7px;
-  border: 1px solid rgba(255, 107, 43, .34);
+  border: 1px solid rgba(var(--orange-rgb), .34);
   border-radius: 999px;
-  color: var(--orange);
-  background: rgba(255, 107, 43, .08);
+  color: var(--orange-text);
+  background: rgba(var(--orange-rgb), .08);
   font-size: 10px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
@@ -11601,7 +11601,7 @@ function localFileUrl(path) {
   display: grid;
   gap: 8px;
   padding: 10px;
-  border: 1px dashed rgba(255, 107, 43, .4);
+  border: 1px dashed rgba(var(--orange-rgb), .4);
   border-radius: 8px;
   background: var(--orange-bg);
 }
@@ -11626,7 +11626,7 @@ function localFileUrl(path) {
 .aiv-image-annotation-toolbar button.active,
 .aiv-image-editor-actions button.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -11681,7 +11681,7 @@ function localFileUrl(path) {
 
 .aiv-preview-history-strip button.active {
   border-color: var(--orange);
-  box-shadow: 0 0 0 1px rgba(255, 107, 43, .22);
+  box-shadow: 0 0 0 1px rgba(var(--orange-rgb), .22);
 }
 
 .aiv-preview-history-strip img {
@@ -11750,7 +11750,7 @@ function localFileUrl(path) {
 }
 
 .aiv-image-editor-actions button:hover:not(.active) {
-  border-color: rgba(255, 107, 43, .48);
+  border-color: rgba(var(--orange-rgb), .48);
   color: var(--text);
   background: rgba(255, 255, 255, .05);
   transform: translateY(-1px);
@@ -11790,7 +11790,7 @@ function localFileUrl(path) {
 .aiv-preview-model-picker {
   min-width: 0;
   padding: 10px;
-  border: 1px solid rgba(255, 107, 43, .36);
+  border: 1px solid rgba(var(--orange-rgb), .36);
   border-radius: 8px;
   display: grid;
   grid-template-columns: 44px minmax(0, 1fr) auto;
@@ -11803,11 +11803,11 @@ function localFileUrl(path) {
   width: 44px;
   height: 54px;
   overflow: hidden;
-  border: 1px solid rgba(255, 107, 43, .38);
+  border: 1px solid rgba(var(--orange-rgb), .38);
   border-radius: 6px;
   display: grid;
   place-items: center;
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--bg);
   font-size: 10px;
 }
@@ -11891,17 +11891,17 @@ function localFileUrl(path) {
 .aiv-picker-modal-panel .aiv-modal-foot {
   min-height: 58px;
   padding: 11px 16px;
-  background: rgba(7, 8, 12, .46);
+  background: var(--soft-fill);
 }
 
 .aiv-picker-selection-summary {
   min-height: 26px;
   margin-top: 0 !important;
   padding: 4px 8px;
-  border: 1px solid rgba(255, 107, 43, .30);
+  border: 1px solid rgba(var(--orange-rgb), .30);
   border-radius: 6px;
   color: var(--text2) !important;
-  background: rgba(255, 107, 43, .065);
+  background: rgba(var(--orange-rgb), .065);
   font-variant-numeric: tabular-nums;
 }
 
@@ -11982,8 +11982,8 @@ function localFileUrl(path) {
 }
 
 .aiv-picker-modal-panel .aiv-local-material-style-search:focus {
-  border-color: rgba(255, 107, 43, .64);
-  box-shadow: 0 0 0 3px rgba(255, 107, 43, .09);
+  border-color: rgba(var(--orange-rgb), .64);
+  box-shadow: 0 0 0 3px rgba(var(--orange-rgb), .09);
   outline: none;
 }
 
@@ -12034,15 +12034,15 @@ function localFileUrl(path) {
 
 .aiv-local-material-card:hover,
 .aiv-local-material-card:focus-visible {
-  border-color: rgba(255, 107, 43, .56);
-  box-shadow: 0 12px 22px rgba(0, 0, 0, .24), 0 0 0 1px rgba(255, 107, 43, .14);
+  border-color: rgba(var(--orange-rgb), .56);
+  box-shadow: 0 12px 22px rgba(0, 0, 0, .24), 0 0 0 1px rgba(var(--orange-rgb), .14);
   outline: none;
   transform: translateY(-2px);
 }
 
 .aiv-local-material-card.selected {
   border-color: var(--orange);
-  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(255, 107, 43, .14);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(var(--orange-rgb), .14);
 }
 
 /* padding-top % is relative to width — reliable 3:4 thumbnail height */
@@ -12322,7 +12322,7 @@ function localFileUrl(path) {
 .aiv-modal-body.model-library {
   grid-template-columns: 190px minmax(0, 1fr);
   overflow: hidden;
-  background: rgba(7, 8, 12, .20);
+  background: var(--soft-fill);
 }
 
 .aiv-model-filter-rail {
@@ -12365,7 +12365,7 @@ function localFileUrl(path) {
 
 .aiv-task-readiness {
   padding: 10px;
-  border: 1px solid rgba(255, 107, 43, .32);
+  border: 1px solid rgba(var(--orange-rgb), .32);
   border-radius: 8px;
   display: grid;
   gap: 8px;
@@ -12418,7 +12418,7 @@ function localFileUrl(path) {
 }
 
 .aiv-field-invalid > span:first-child {
-  color: #fca5a5 !important;
+  color: var(--red) !important;
 }
 
 .aiv-picker-head.aiv-field-invalid {
@@ -12605,7 +12605,7 @@ function localFileUrl(path) {
 
 .aiv-video-asset-filter.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
 }
 
@@ -12640,7 +12640,7 @@ function localFileUrl(path) {
   border-color: var(--orange);
   box-shadow:
     0 0 0 2px var(--orange),
-    0 0 0 5px rgba(255, 107, 43, 0.28);
+    0 0 0 5px rgba(var(--orange-rgb), 0.28);
 }
 
 .aiv-vtask-card.pending {
@@ -12695,8 +12695,8 @@ function localFileUrl(path) {
   min-height: 22px;
   padding: 0 8px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 107, 43, 0.75);
-  background: rgba(255, 107, 43, 0.95);
+  border: 1px solid rgba(var(--orange-rgb), 0.75);
+  background: rgba(var(--orange-rgb), 0.95);
   color: #fff;
   font-size: 11px;
   font-weight: 800;
@@ -12796,7 +12796,7 @@ function localFileUrl(path) {
 
 .aiv-video-task-load-more:hover {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 /* 生成方式：对齐 AI 生视频模型卡，侧栏三列简写 */
@@ -12919,7 +12919,7 @@ function localFileUrl(path) {
 
 .aiv-segmented button.active {
   border-color: var(--orange);
-  color: var(--orange);
+  color: var(--orange-text);
   background: var(--orange-bg);
   box-shadow: inset 0 0 0 1px var(--orange);
 }
@@ -12997,8 +12997,8 @@ function localFileUrl(path) {
 
 .aiv-model-card:hover,
 .aiv-model-card:focus-visible {
-  border-color: rgba(255, 107, 43, .56);
-  box-shadow: 0 12px 24px rgba(0, 0, 0, .24), 0 0 0 1px rgba(255, 107, 43, .14);
+  border-color: rgba(var(--orange-rgb), .56);
+  box-shadow: 0 12px 24px rgba(0, 0, 0, .24), 0 0 0 1px rgba(var(--orange-rgb), .14);
   outline: none;
   transform: translateY(-2px);
 }
@@ -13006,7 +13006,7 @@ function localFileUrl(path) {
 .aiv-model-card.selected,
 .aiv-template-card.selected {
   border-color: var(--orange);
-  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(255, 107, 43, .14);
+  box-shadow: inset 0 0 0 2px var(--orange), 0 0 0 2px rgba(var(--orange-rgb), .14);
 }
 
 .aiv-model-image,

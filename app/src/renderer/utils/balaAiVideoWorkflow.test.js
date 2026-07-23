@@ -232,9 +232,9 @@ test('find-materials page exposes operational state, aligned stats, and selected
 test('find-materials page makes running, selected, and active states visually distinct', async () => {
   const workflowSource = await readFile(new URL('../views/AiVideoWorkflow.vue', import.meta.url), 'utf8')
 
-  assert.match(workflowSource, /\.aiv-material-task-state\.is-running\s*\{[\s\S]*?color:\s*#60a5fa;/)
-  assert.match(workflowSource, /\.aiv-thumb\.selected\s*\{[\s\S]*?box-shadow:[\s\S]*?0 0 0 3px rgba\(255, 107, 43, \.16\)/)
-  assert.match(workflowSource, /\.aiv-material-style-tabs button\.active\s*\{[\s\S]*?box-shadow:[\s\S]*?0 6px 16px rgba\(255, 107, 43, \.12\)/)
+  assert.match(workflowSource, /\.aiv-material-task-state\.is-running\s*\{[\s\S]*?color:\s*var\(--blue\);/)
+  assert.match(workflowSource, /\.aiv-thumb\.selected\s*\{[\s\S]*?box-shadow:[\s\S]*?0 0 0 3px rgba\(var\(--orange-rgb\), \.16\)/)
+  assert.match(workflowSource, /\.aiv-material-style-tabs button\.active\s*\{[\s\S]*?box-shadow:[\s\S]*?0 6px 16px rgba\(var\(--orange-rgb\), \.12\)/)
 })
 
 test('find-materials keeps batch stats in the results header and aligns selected-only filtering left', async () => {
@@ -569,7 +569,7 @@ test('review supports selecting the current filtered assets for targeted batch a
   assert.match(workflowSource, /全选当前筛选项/)
   assert.match(workflowSource, /批量通过/)
   assert.match(workflowSource, /批量舍弃/)
-  assert.match(workflowSource, /\.aiv-ai-card\.selected\s*\{[\s\S]*?border-color:\s*rgba\(255, 107, 43, .62\);/)
+  assert.match(workflowSource, /\.aiv-ai-card\.selected\s*\{[\s\S]*?border-color:\s*rgba\(var\(--orange-rgb\), .62\);/)
 })
 
 test('review selection uses a checkmark in the card action footer and confirmation actions stay grouped', async () => {

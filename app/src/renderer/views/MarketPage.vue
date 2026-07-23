@@ -38,7 +38,7 @@
 .market-logo { font-size: 56px; }
 .market-hero h2 { font-size: 24px; font-weight: 800; color: var(--text); }
 .market-hero p { font-size: 14px; color: var(--text2); }
-.coming-soon { padding: 6px 20px; border-radius: 20px; background: var(--orange-bg); color: var(--orange); font-size: 12px; font-weight: 700; border: 1px solid var(--orange); }
+.coming-soon { padding: 6px 20px; border-radius: 20px; background: var(--orange-bg); color: var(--orange-text); font-size: 12px; font-weight: 700; border: 1px solid var(--orange); }
 .feature-list { display: flex; gap: 20px; flex-wrap: wrap; justify-content: center; max-width: 600px; }
 .feature-item { display: flex; gap: 14px; align-items: flex-start; background: var(--bg2); border: 1px solid var(--border); border-radius: 12px; padding: 16px 20px; width: 180px; }
 .f-icon { font-size: 22px; }

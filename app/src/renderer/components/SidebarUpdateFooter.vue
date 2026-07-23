@@ -141,7 +141,7 @@ button.update-control {
 }
 
 button.update-control:hover {
-  border-color: rgba(255, 107, 43, 0.46);
+  border-color: rgba(var(--orange-rgb), 0.46);
   background: var(--orange-bg);
   color: var(--text);
 }
@@ -249,14 +249,14 @@ button.update-control:focus-visible {
   z-index: 30;
   max-width: 260px;
   padding: 6px 8px;
-  border: 1px solid var(--border);
+  border: 1px solid var(--subtle-border);
   border-radius: 6px;
-  background: rgba(15, 23, 42, 0.96);
-  color: var(--text);
+  background: var(--tooltip-bg);
+  color: #f7f7fa;
   font-size: 12px;
   line-height: 1.35;
   white-space: normal;
-  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.32);
+  box-shadow: var(--shadow-soft);
   opacity: 0;
   pointer-events: none;
   transform: translateX(-4px);
@@ -272,7 +272,7 @@ button.update-control:focus-visible {
 .tone-available .status-icon,
 .tone-ready .status-icon {
   background: var(--orange-bg);
-  color: var(--orange);
+  color: var(--orange-text);
 }
 
 .tone-downloading .status-icon,

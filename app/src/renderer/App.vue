@@ -171,8 +171,11 @@
         :focus-panel-id="focusSettingsPanelId"
         :update-status="updateStatus"
         :update-action-busy="updateActionBusy"
+        :theme-preference="themePreference"
+        :effective-theme="effectiveTheme"
         @runtime-refresh="refreshRuntimeStatus"
         @check-update="retryUpdateCheck"
+        @theme-change="setThemePreference"
       />
     </main>
   </div>
@@ -196,6 +199,13 @@ import { buildScriptGroups } from './utils/scriptGroups'
 import { buildTaskOverviewProgress, isTaskLiveActive, resolveTaskProgressConfig } from './utils/taskProgress'
 import { readSidebarCollapsed, writeSidebarCollapsed } from './utils/sidebarState.js'
 import { createUpdateActionRunner } from './utils/updateActions.js'
+import {
+  applyTheme,
+  normalizeThemePreference,
+  observeSystemTheme,
+  readThemePreference,
+  writeThemePreference,
+} from './utils/theme.mjs'
 
 const currentView = ref('scripts')
 const status = ref({
@@ -230,6 +240,12 @@ const updateStatus = ref({
   downloaded: false,
 })
 const updateActionBusy = ref(false)
+const systemThemeMedia = window.matchMedia?.('(prefers-color-scheme: dark)')
+const themePreference = ref(readThemePreference(window.localStorage))
+const effectiveTheme = ref(applyTheme(themePreference.value, {
+  documentRef: document,
+  systemPrefersDark: Boolean(systemThemeMedia?.matches),
+}))
 const updateActionRunner = createUpdateActionRunner({
   setBusy: busy => {
     updateActionBusy.value = busy
@@ -404,6 +420,25 @@ function toggleSidebar() {
   writeSidebarCollapsed(window.localStorage, sidebarCollapsed.value)
 }
 
+function syncTheme() {
+  effectiveTheme.value = applyTheme(themePreference.value, {
+    documentRef: document,
+    systemPrefersDark: Boolean(systemThemeMedia?.matches),
+  })
+}
+
+function setThemePreference(preference) {
+  themePreference.value = writeThemePreference(
+    window.localStorage,
+    normalizeThemePreference(preference),
+  )
+  syncTheme()
+}
+
+function handleSystemThemeChange() {
+  if (themePreference.value === 'system') syncTheme()
+}
+
 function formatUpdateActionError(error) {
   const message = String(error?.message || error || '').trim()
   return message ? `桌面更新失败：${message}` : '桌面更新失败，请稍后重试。'
@@ -426,7 +461,9 @@ async function installUpdate() {
 
 let pollTimer = null
 let updateStatusCleanup = null
+let systemThemeCleanup = null
 onMounted(async () => {
+  systemThemeCleanup = observeSystemTheme(systemThemeMedia, handleSystemThemeChange)
   window.cs.onStatus(({ key, value }) => { status.value[key] = value })
   if (typeof window.cs.onUpdateStatus === 'function') {
     updateStatusCleanup = window.cs.onUpdateStatus(nextStatus => {
@@ -463,6 +500,8 @@ onMounted(async () => {
   }, 5000)
 })
 onUnmounted(() => {
+  systemThemeCleanup?.()
+  systemThemeCleanup = null
   clearInterval(pollTimer)
   if (typeof updateStatusCleanup === 'function') updateStatusCleanup()
   window.cs.offStatus()
@@ -476,21 +515,72 @@ provide('repairCoreService', repairCoreService)
 </script>
 
 <style>
-:root {
+:root,
+:root[data-theme="dark"] {
+  --orange-rgb: 255, 107, 43;
   --orange: #FF6B2B;
+  --orange-text: #FF8B5F;
   --orange-dim: #cc5522;
-  --orange-bg: rgba(255, 107, 43, 0.12);
+  --orange-bg: rgba(var(--orange-rgb), 0.12);
+  --orange-hover: #ff7a3e;
+  --orange-strong: #c94d16;
   --on-orange: #17131A;
   --bg: #141418;
   --bg2: #1c1c22;
   --bg3: #242430;
+  --bg4: #292932;
+  --dock-bg: color-mix(in srgb, var(--bg) 88%, #111827 12%);
   --border: #2e2e3a;
+  --border-strong: #484858;
   --text: #e2e0f0;
   --text2: #aaa8bd;
   --text3: #8e8ca4;
   --green: #4ade80;
   --red: #f87171;
+  --yellow: #fbbf24;
+  --blue: #60a5fa;
+  --soft-fill: rgba(255, 255, 255, 0.03);
+  --soft-fill-hover: rgba(255, 255, 255, 0.06);
+  --subtle-border: rgba(255, 255, 255, 0.1);
+  --input-focus: #17171d;
+  --tooltip-bg: #292932;
+  --shadow: rgba(0, 0, 0, 0.32);
+  --shadow-soft: 0 12px 30px rgba(0, 0, 0, 0.22);
+  --scrim: rgba(0, 0, 0, 0.68);
   --radius: 10px;
+}
+
+:root[data-theme="light"] {
+  --orange-rgb: 255, 80, 0;
+  --orange: #FF5000;
+  --orange-text: #BD3C00;
+  --orange-dim: #D94700;
+  --orange-bg: rgba(var(--orange-rgb), 0.1);
+  --orange-hover: #E94700;
+  --orange-strong: #CC4000;
+  --on-orange: #fffaf7;
+  --bg: #f7f7f8;
+  --bg2: #ffffff;
+  --bg3: #efeff1;
+  --bg4: #e6e6e9;
+  --dock-bg: #f2f2f4;
+  --border: #d8d8de;
+  --border-strong: #b9bac3;
+  --text: #24242b;
+  --text2: #565866;
+  --text3: #626470;
+  --green: #14783a;
+  --red: #d02020;
+  --yellow: #985c06;
+  --blue: #2563eb;
+  --soft-fill: rgba(30, 31, 38, 0.035);
+  --soft-fill-hover: rgba(30, 31, 38, 0.065);
+  --subtle-border: rgba(30, 31, 38, 0.1);
+  --input-focus: #ffffff;
+  --tooltip-bg: #303038;
+  --shadow: rgba(34, 35, 43, 0.14);
+  --shadow-soft: 0 12px 30px rgba(34, 35, 43, 0.11);
+  --scrim: rgba(28, 29, 35, 0.5);
 }
 * { margin: 0; padding: 0; box-sizing: border-box; }
 html,
@@ -499,7 +589,12 @@ body {
   height: 100%;
   overflow: hidden;
 }
-body { background: var(--bg); color: var(--text); font-family: -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif; font-size: 13px; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: 13px;
+}
 #app {
   position: fixed;
   inset: 0;
@@ -508,7 +603,9 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'P
   overflow: hidden;
 }
 button { cursor: pointer; }
+button, input, select, textarea { color: inherit; }
 input, select, textarea { font-family: inherit; }
+::selection { background: var(--orange-bg); color: var(--text); }
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
@@ -649,11 +746,11 @@ nav {
   z-index: 1000;
   min-width: max-content;
   padding: 7px 10px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--subtle-border);
   border-radius: 7px;
-  background: #292932;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.36);
-  color: var(--text);
+  background: var(--tooltip-bg);
+  box-shadow: var(--shadow-soft);
+  color: #f7f7fa;
   font-size: 12px;
   font-weight: 600;
   line-height: 1;
@@ -670,7 +767,7 @@ nav {
   visibility: visible;
   transform: translate(0, -50%);
 }
-.nav-btn.active { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
+.nav-btn.active { background: var(--orange-bg); color: var(--orange-text); font-weight: 600; }
 .icon { font-size: 15px; width: 20px; }
 
 /* 二级菜单 */
@@ -712,7 +809,7 @@ nav {
   transition: all 0.15s;
 }
 .task-btn:hover { background: var(--bg3); color: var(--text); }
-.task-btn.active { background: var(--orange-bg); color: var(--orange); font-weight: 600; }
+.task-btn.active { background: var(--orange-bg); color: var(--orange-text); font-weight: 600; }
 .task-btn-detailed {
   flex-direction: column;
   align-items: stretch;
@@ -736,7 +833,7 @@ nav {
 }
 .task-btn-percent {
   font-size: 11px;
-  color: var(--orange);
+  color: var(--orange-text);
   font-variant-numeric: tabular-nums;
 }
 .running-dot {
@@ -748,8 +845,8 @@ nav {
   height: 5px;
   border-radius: 999px;
   overflow: hidden;
-  background: rgba(255,255,255,0.08);
-  border: 1px solid rgba(255, 107, 43, 0.16);
+  background: var(--soft-fill-hover);
+  border: 1px solid rgba(var(--orange-rgb), 0.16);
 }
 .task-btn-progress-fill {
   height: 100%;
