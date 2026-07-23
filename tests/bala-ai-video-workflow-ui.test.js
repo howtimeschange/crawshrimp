@@ -36,11 +36,18 @@ test('AI video workflow builds hidden Semir material prepare params from busines
   assert.equal(params.folder_scan_depth, 2)
   assert.equal(params.duplicate_mode, 'first_per_hash')
   assert.equal(params.download_concurrency, 8)
-  assert.equal(params.max_image_mb, 20)
+  assert.equal(params.max_image_mb, 10)
   assert.equal(params.item_codes, '208326102205\n208326105214')
   assert.equal(params.cloud_path, '巴拉营运BU-商品//根目录/')
   assert.equal(params.export_folder, '/tmp/bala-video')
   assert.equal(params.package_name, '第一批')
+})
+
+test('find-materials step describes the business-manager-safe 10MB compression threshold', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+
+  assert.match(source, /Hash 去重和 10MB 压缩阈值/)
+  assert.doesNotMatch(source, /Hash 去重和 20MB 压缩阈值/)
 })
 
 test('AI video workflow normalizes task output files and material batch groups', () => {
@@ -134,6 +141,67 @@ test('restored material groups dedupe legacy paths and reselect AI-named files',
 
   assert.equal(restored[0].modelPhotos.length, 2)
   assert.equal(restored[0].modelPhotos.find(asset => asset.name === 'o-AI(2).png')?.selected, true)
+})
+
+test('workspace polling ignores hidden duplicate batch files and stays stable after the first render', () => {
+  assert.equal(typeof balaWorkflow.reconcileBalaWorkspaceFiles, 'function')
+
+  const preferredPath = '/workspace/latest/208326102205/01_模拍原图/1-AI.jpg'
+  const existingGroups = [{
+    styleCode: '208326102205',
+    modelPhotos: [{
+      id: 'visible-copy',
+      path: preferredPath,
+      name: '1-AI.jpg',
+      filename: '1-AI.jpg',
+      sourceType: 'model',
+      fileVersion: 'v1',
+      selected: true,
+      versions: [],
+    }],
+    detailPhotos: [],
+    otherPhotos: [],
+    skippedRows: [],
+    errors: [],
+    generated: [],
+  }]
+  const scannedFiles = [
+    {
+      path: '/workspace/legacy/208326102205/01_模拍原图/1-AI.jpg',
+      name: '1-AI.jpg',
+      styleCode: '208326102205',
+      sourceType: 'model',
+      version: 'v1',
+    },
+    {
+      path: preferredPath,
+      name: '1-AI.jpg',
+      styleCode: '208326102205',
+      sourceType: 'model',
+      version: 'v1',
+    },
+  ]
+
+  const firstPoll = balaWorkflow.reconcileBalaWorkspaceFiles(existingGroups, scannedFiles)
+  const secondPoll = balaWorkflow.reconcileBalaWorkspaceFiles(firstPoll.groups, scannedFiles)
+
+  assert.equal(firstPoll.changed, false)
+  assert.deepEqual(firstPoll.changedPaths, [])
+  assert.equal(firstPoll.groups[0].modelPhotos.length, 1)
+  assert.equal(firstPoll.groups[0].modelPhotos[0].path, preferredPath)
+  assert.equal(secondPoll.changed, false)
+  assert.deepEqual(secondPoll.changedPaths, [])
+})
+
+test('workspace file sync invalidates thumbnails only for paths that actually changed', () => {
+  const source = fs.readFileSync('app/src/renderer/views/AiVideoWorkflow.vue', 'utf8')
+  const start = source.indexOf('function applyWorkspaceFileSync')
+  const end = source.indexOf('\nasync function syncWorkspaceFiles', start)
+  const syncSource = source.slice(start, end)
+
+  assert.match(syncSource, /reconcileBalaWorkspaceFiles\(styleWorkspaces, files\)/)
+  assert.match(syncSource, /releaseWorkspaceImagePreviews\(result\.changedPaths\)/)
+  assert.doesNotMatch(syncSource, /releaseWorkspacePreviews\(\)/)
 })
 
 test('workspace snapshot restore normalizes cached material groups before rendering', () => {

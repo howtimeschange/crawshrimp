@@ -78,8 +78,19 @@ class BalaAiVideoAssistantPackagingTests(unittest.TestCase):
         params = {item["id"]: item for item in task["params"]}
         self.assertEqual(params["item_codes"]["type"], "textarea")
         self.assertEqual(params["cloud_path"]["default"], "巴拉营运BU-商品//巴拉货控/02 产品上新模块/2-2 巴拉产品上新/")
-        self.assertEqual(params["max_image_mb"]["default"], 20)
+        self.assertEqual(params["max_image_mb"]["default"], 10)
+        self.assertIn("默认 10MB", params["max_image_mb"]["hint"])
         self.assertNotIn("auto_zip_package", params)
+
+    def test_material_prepare_backend_defaults_to_ten_mb_compression(self):
+        self.assertEqual(
+            api_server._bala_video_image_threshold_bytes({}),
+            10 * 1024 * 1024,
+        )
+        self.assertEqual(
+            api_server._bala_video_image_threshold_bytes({"max_image_mb": "invalid"}),
+            10 * 1024 * 1024,
+        )
 
     def test_manifest_declares_ai_video_copy_generation_task(self):
         manifest = yaml.safe_load(MANIFEST_PATH.read_text(encoding="utf-8"))

@@ -169,12 +169,12 @@ tasks:
       - id: max_image_mb
         type: number
         label: 单图压缩阈值 MB
-        default: 20
+        default: 10
         min: 1
         max: 80
         step: 1
         ui_span: third
-        hint: 下载后超过该大小的图片会尝试压缩；默认 20MB
+        hint: 下载后超过该大小的图片会尝试压缩；默认 10MB
       - id: package_name
         type: text
         label: 导出包名称

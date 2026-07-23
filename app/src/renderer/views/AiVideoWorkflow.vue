@@ -133,7 +133,7 @@
               >
                 {{ materialIsRunning ? '正在找图...' : '开始找图并回显' }}
               </button>
-              <span>默认启用最新文件夹、Hash 去重和 20MB 压缩阈值</span>
+              <span>默认启用最新文件夹、Hash 去重和 10MB 压缩阈值</span>
             </div>
           </div>
         </aside>
@@ -1963,7 +1963,6 @@ import {
   mergeBalaMaterialGroups,
   mergeBalaWorkspaceVersions,
   migrateBalaBusinessManagerText,
-  isBalaAiNamedMaterial,
   normalizeBalaMaterialGroups,
   normalizeBalaMaterialProgress,
   normalizeBalaReviewBatchStyles,
@@ -1980,6 +1979,7 @@ import {
   qnTerminalRunFailure,
   qnVideoResultFailure,
   rebaseBalaMaterialRowsToWorkspace,
+  reconcileBalaWorkspaceFiles,
   resolveBalaAssetPreviewSource,
   resolveBalaVersionPreviewSource,
   resolveBalaVideoPlaybackSource,
@@ -3642,62 +3642,24 @@ function releaseWorkspacePreviews() {
   for (const key of Object.keys(brokenPreviews)) delete brokenPreviews[key]
 }
 
-function workspaceAssetFromFile(file = {}) {
-  return {
-    id: `workspace-${String(file.path || '').trim()}`,
-    path: String(file.path || '').trim(),
-    name: String(file.name || fileNameFromPath(file.path)).trim(),
-    filename: String(file.name || fileNameFromPath(file.path)).trim(),
-    styleCode: String(file.styleCode || '').trim(),
-    sourceType: String(file.sourceType || 'other').trim(),
-    role: String(file.sourceType || '') === 'model' ? '模拍' : (String(file.sourceType || '') === 'detail' ? '细节' : '素材'),
-    fileVersion: String(file.version || '').trim(),
-    selected: Boolean(file.isAi) || isBalaAiNamedMaterial(String(file.name || '')),
-    editSelected: false,
-    versions: [],
+function releaseWorkspaceImagePreviews(paths = []) {
+  for (const path of paths) {
+    const key = String(path || '').trim()
+    if (!key) continue
+    delete localImagePreviews[key]
+    delete localImagePreviews[localImageCacheKey(key, true)]
+    delete brokenPreviews[key]
+    delete brokenPreviews[localImageCacheKey(key, true)]
   }
 }
 
 function applyWorkspaceFileSync(files = []) {
   const restoreScroll = preserveMaterialScrollPosition()
-  const byPath = new Map((files || []).map(file => [String(file?.path || '').trim(), file]).filter(([path]) => path))
-  let changed = false
-  for (const style of styleWorkspaces) {
-    for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
-      const kept = []
-      for (const asset of style[key] || []) {
-        const current = byPath.get(String(asset?.path || '').trim())
-        if (!current) {
-          changed = true
-          continue
-        }
-        if (String(asset.fileVersion || '') !== String(current.version || '')) {
-          asset.fileVersion = String(current.version || '')
-          changed = true
-        }
-        asset.versions = (asset.versions || []).filter(version => !version.previewPath || byPath.has(String(version.previewPath)))
-        kept.push(asset)
-        byPath.delete(String(asset.path || ''))
-      }
-      style[key] = kept
-    }
-  }
-  for (const file of byPath.values()) {
-    if (!file.styleCode || !['model', 'detail'].includes(file.sourceType)) continue
-    let style = styleWorkspaces.find(item => item.styleCode === file.styleCode)
-    if (!style) {
-      style = { styleCode: file.styleCode, modelPhotos: [], detailPhotos: [], otherPhotos: [], skippedRows: [], errors: [], generated: [] }
-      styleWorkspaces.push(style)
-    }
-    style[file.sourceType === 'model' ? 'modelPhotos' : 'detailPhotos'].push(workspaceAssetFromFile(file))
-    changed = true
-  }
-  if (changed) {
-    const deduped = mergeBalaMaterialGroups([], styleWorkspaces)
-    styleWorkspaces.splice(0, styleWorkspaces.length, ...deduped)
-    releaseWorkspacePreviews()
-    restoreScroll()
-  }
+  const result = reconcileBalaWorkspaceFiles(styleWorkspaces, files)
+  if (!result.changed) return
+  styleWorkspaces.splice(0, styleWorkspaces.length, ...result.groups)
+  releaseWorkspaceImagePreviews(result.changedPaths)
+  restoreScroll()
 }
 
 async function syncWorkspaceFiles() {

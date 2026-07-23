@@ -237,9 +237,9 @@
   }
 
   function normalizeMaxImageMb(rawValue) {
-    if (String(rawValue ?? '').trim() === '') return 20
+    if (String(rawValue ?? '').trim() === '') return 10
     const parsed = Number(rawValue)
-    if (!Number.isFinite(parsed)) return 20
+    if (!Number.isFinite(parsed)) return 10
     return Math.max(1, Math.min(80, Math.floor(parsed)))
   }
 

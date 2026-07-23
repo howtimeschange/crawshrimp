@@ -88,7 +88,7 @@ const MATERIAL_PREPARE_DEFAULTS = Object.freeze({
   folder_scan_depth: 2,
   duplicate_mode: 'first_per_hash',
   download_concurrency: 8,
-  max_image_mb: 20,
+  max_image_mb: 10,
 })
 
 export function normalizeStyleCodeLines(value = '') {
@@ -488,6 +488,142 @@ export function mergeBalaMaterialGroups(existingGroups = [], incomingGroups = []
   for (const group of existingGroups || []) addGroup(group)
   for (const group of incomingGroups || []) addGroup(group)
   return [...byStyle.values()].map(dedupeBalaMaterialGroup)
+}
+
+function workspaceFilePath(file = {}) {
+  return compact(file?.path)
+}
+
+function workspaceFileName(file = {}) {
+  return compact(file?.name || file?.filename || filenameFromPath(file?.path)).toLocaleLowerCase()
+}
+
+function workspaceFileBusinessKey(file = {}) {
+  const styleCode = compact(file?.styleCode || file?.style_code)
+  const filename = workspaceFileName(file)
+  if (!styleCode || !filename) return `path:${workspaceFilePath(file)}`
+  return `${styleCode}:${filename}`
+}
+
+function workspaceFileSourcePriority(file = {}) {
+  const sourceType = compact(file?.sourceType || file?.source_type)
+  if (sourceType === 'model') return 0
+  if (sourceType === 'detail') return 1
+  return 2
+}
+
+function dedupeWorkspaceFileScan(files = [], preferredPaths = new Set()) {
+  const byBusinessKey = new Map()
+  for (const file of files || []) {
+    const candidatePath = workspaceFilePath(file)
+    if (!candidatePath) continue
+    const key = workspaceFileBusinessKey(file)
+    const existing = byBusinessKey.get(key)
+    if (!existing) {
+      byBusinessKey.set(key, file)
+      continue
+    }
+    const existingPreferred = preferredPaths.has(workspaceFilePath(existing))
+    const candidatePreferred = preferredPaths.has(candidatePath)
+    if (candidatePreferred !== existingPreferred) {
+      if (candidatePreferred) byBusinessKey.set(key, file)
+      continue
+    }
+    const priority = workspaceFileSourcePriority(file) - workspaceFileSourcePriority(existing)
+    if (priority < 0 || (priority === 0 && candidatePath.localeCompare(workspaceFilePath(existing)) < 0)) {
+      byBusinessKey.set(key, file)
+    }
+  }
+  return [...byBusinessKey.values()]
+}
+
+function materialAssetFromWorkspaceFile(file = {}) {
+  const filePath = workspaceFilePath(file)
+  const sourceType = compact(file?.sourceType || file?.source_type || 'other') || 'other'
+  const filename = compact(file?.name || file?.filename || filenameFromPath(filePath))
+  return {
+    id: `workspace-${filePath}`,
+    path: filePath,
+    name: filename,
+    filename,
+    styleCode: compact(file?.styleCode || file?.style_code),
+    sourceType,
+    role: sourceType === 'model' ? '模拍' : (sourceType === 'detail' ? '细节' : '素材'),
+    fileVersion: compact(file?.version),
+    selected: Boolean(file?.isAi) || isBalaAiNamedMaterial(filename),
+    editSelected: false,
+    versions: [],
+  }
+}
+
+export function reconcileBalaWorkspaceFiles(existingGroups = [], files = []) {
+  const preferredPaths = new Set((existingGroups || []).flatMap(group => (
+    ['modelPhotos', 'detailPhotos', 'otherPhotos']
+      .flatMap(key => group?.[key] || [])
+      .map(asset => compact(asset?.path))
+      .filter(Boolean)
+  )))
+  const scannedFiles = dedupeWorkspaceFileScan(files, preferredPaths)
+  const byPath = new Map(scannedFiles
+    .map(file => [workspaceFilePath(file), file])
+    .filter(([filePath]) => filePath))
+  const groups = mergeBalaMaterialGroups([], existingGroups)
+  const changedPaths = new Set()
+
+  for (const style of groups) {
+    for (const key of ['modelPhotos', 'detailPhotos', 'otherPhotos']) {
+      const kept = []
+      for (const asset of style[key] || []) {
+        const assetPath = compact(asset?.path)
+        const current = byPath.get(assetPath)
+        if (!current) {
+          if (assetPath) changedPaths.add(assetPath)
+          continue
+        }
+        if (compact(asset?.fileVersion) !== compact(current?.version)) {
+          asset.fileVersion = compact(current?.version)
+          if (assetPath) changedPaths.add(assetPath)
+        }
+        asset.versions = (asset.versions || []).filter(version => (
+          !version?.previewPath || byPath.has(compact(version.previewPath))
+        ))
+        kept.push(asset)
+        byPath.delete(assetPath)
+      }
+      style[key] = kept
+    }
+  }
+
+  for (const file of byPath.values()) {
+    const styleCode = compact(file?.styleCode || file?.style_code)
+    const sourceType = compact(file?.sourceType || file?.source_type)
+    if (!styleCode || !['model', 'detail'].includes(sourceType)) continue
+    let style = groups.find(item => item.styleCode === styleCode)
+    if (!style) {
+      style = {
+        styleCode,
+        modelPhotos: [],
+        detailPhotos: [],
+        otherPhotos: [],
+        skippedRows: [],
+        errors: [],
+        generated: [],
+      }
+      groups.push(style)
+    }
+    const asset = materialAssetFromWorkspaceFile(file)
+    style[sourceType === 'model' ? 'modelPhotos' : 'detailPhotos'].push(asset)
+    changedPaths.add(asset.path)
+  }
+
+  if (!changedPaths.size) {
+    return { groups: existingGroups, changed: false, changedPaths: [] }
+  }
+  return {
+    groups: mergeBalaMaterialGroups([], groups),
+    changed: true,
+    changedPaths: [...changedPaths],
+  }
 }
 
 function progressPercent(completed, total) {

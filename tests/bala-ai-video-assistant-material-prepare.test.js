@@ -50,6 +50,15 @@ function jsonResponse(payload) {
   }
 }
 
+test('material preparation defaults downloaded images to a 10MB compression threshold', async () => {
+  const helpers = await loadExports()
+
+  assert.equal(helpers.normalizeMaxImageMb(undefined), 10)
+  assert.equal(helpers.normalizeMaxImageMb(''), 10)
+  assert.equal(helpers.normalizeMaxImageMb('invalid'), 10)
+  assert.equal(helpers.normalizeMaxImageMb(8), 8)
+})
+
 test('pickBestFolder prefers latest selected model folder and ignores packaging folders', async () => {
   const helpers = await loadExports()
   const root = '巴拉货控/02 产品上新模块/2-2 巴拉产品上新'
